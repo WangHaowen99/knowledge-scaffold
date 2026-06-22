@@ -1,0 +1,136 @@
+"""Streaming helpers for the agent-stream.v2 protocol."""
+
+from __future__ import annotations
+
+import threading
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from typing import Any, Callable, Dict, Iterator, Optional
+
+from ..models.events import (
+    AgentEventPayload,
+    AgentEventSource,
+    AgentEventType,
+    AgentStreamEvent,
+)
+
+StreamWriter = Callable[[AgentStreamEvent], None]
+
+PROTOCOL = "agent-stream.v2"
+SSE_EVENT = "agent.v2"
+
+_seq_lock = threading.Lock()
+_run_sequences: Dict[str, int] = {}
+_stream_writer_var: ContextVar[Optional[StreamWriter]] = ContextVar(
+    "agent_stream_writer",
+    default=None,
+)
+
+
+def get_stream_writer() -> StreamWriter:
+    """
+    Return the current run's stream writer.
+
+    This mirrors the former workflow lookup contract so existing call sites and
+    tests can keep using the same function name.
+    """
+    writer = _stream_writer_var.get()
+    if writer is None:
+        raise RuntimeError("Called get_stream_writer outside of a runnable context")
+    return writer
+
+
+@contextmanager
+def stream_writer_context(writer: Optional[StreamWriter]) -> Iterator[None]:
+    """Temporarily bind a stream writer for the current execution context."""
+    token: Token[Optional[StreamWriter]] = _stream_writer_var.set(writer)
+    try:
+        yield
+    finally:
+        _stream_writer_var.reset(token)
+
+
+def _get_timestamp() -> int:
+    return int(time.time() * 1000)
+
+
+def _next_seq(run_id: str) -> int:
+    with _seq_lock:
+        current = _run_sequences.get(run_id, 0) + 1
+        _run_sequences[run_id] = current
+        return current
+
+
+def clear_run_sequence(run_id: Optional[str]) -> None:
+    if not run_id:
+        return
+    with _seq_lock:
+        _run_sequences.pop(run_id, None)
+
+
+def build_agent_event(
+    *,
+    run_id: str,
+    turn_id: int,
+    event_type: AgentEventType,
+    payload: Optional[AgentEventPayload] = None,
+    session_id: Optional[str] = None,
+    source: Optional[AgentEventSource] = None,
+) -> AgentStreamEvent:
+    seq = _next_seq(run_id)
+    envelope = {
+        "protocol": PROTOCOL,
+        "event_id": "{}:{}".format(run_id, seq),
+        "seq": seq,
+        "ts": _get_timestamp(),
+        "session_id": session_id,
+        "run_id": run_id,
+        "turn_id": int(turn_id),
+        "type": event_type,
+        "source": source or {"node": "system", "component": "workflow"},
+        "payload": dict(payload or {}),
+    }
+    return {
+        "event": SSE_EVENT,
+        "data": envelope,
+    }
+
+
+def try_get_stream_writer() -> Optional[StreamWriter]:
+    """
+    Best-effort stream writer lookup.
+
+    Returns None when called outside of a bound workflow execution context.
+    """
+    try:
+        return get_stream_writer()
+    except RuntimeError as exc:
+        if "outside of a runnable context" in str(exc):
+            return None
+        raise
+
+
+def emit_agent_event(
+    *,
+    run_id: str,
+    turn_id: int,
+    event_type: AgentEventType,
+    payload: Optional[AgentEventPayload] = None,
+    session_id: Optional[str] = None,
+    source: Optional[AgentEventSource] = None,
+    writer: Optional[StreamWriter] = None,
+) -> None:
+    writer_fn = writer or try_get_stream_writer()
+    if not writer_fn:
+        return
+    writer_fn(
+        build_agent_event(
+            run_id=run_id,
+            turn_id=turn_id,
+            event_type=event_type,
+            payload=payload,
+            session_id=session_id,
+            source=source,
+        )
+    )

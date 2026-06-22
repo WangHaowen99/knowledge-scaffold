@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onto-agent-sdk"
+version = "0.1.0"
+description = "Python SDK for onto-agent agentic and A2A APIs"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "onto-agent" }
+]
+dependencies = [
+  "requests>=2.31.0"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

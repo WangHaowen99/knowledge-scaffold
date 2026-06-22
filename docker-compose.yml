@@ -1,0 +1,60 @@
+version: '3.3'
+
+# Full-stack deployment: both backend and frontend
+# For standalone deployment, use backend/docker-compose.yml or frontend/docker-compose.yml
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: onto-agent-backend:${TAG:-latest}
+    container_name: onto-agent-backend-${TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-5055}:5055"
+    volumes:
+      - ./backend/config:/app/config:ro
+      - ./backend/logs:/app/logs
+      - ./.onto-runtime:/app/.onto-runtime
+    env_file:
+      - ./backend/.env
+    environment:
+      - FLASK_APP=run.py
+      - PYTHONUNBUFFERED=1
+      - PROJECT_ROOT=/app/.onto-runtime
+    networks:
+      - onto-agent-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5055/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: onto-agent-frontend:${TAG:-latest}
+    container_name: onto-agent-frontend-${TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8888}:80"
+    volumes:
+      - ./frontend/logs/nginx:/var/log/nginx
+    depends_on:
+      - backend
+    environment:
+      - NGINX_BACKEND_UPSTREAM=${NGINX_BACKEND_UPSTREAM:-http://backend:5055}
+      - NGINX_TYPEDB_UPSTREAM=${NGINX_TYPEDB_UPSTREAM:-http://backend:9991}
+    networks:
+      - onto-agent-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  onto-agent-network:
+    driver: bridge
