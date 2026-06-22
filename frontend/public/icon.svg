@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Onto Agent">
+  <defs>
+    <linearGradient id="bg" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#122033"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+    <linearGradient id="agent" x1="20" y1="18" x2="45" y2="47" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4FCEB6"/>
+      <stop offset="1" stop-color="#2F7CF6"/>
+    </linearGradient>
+    <linearGradient id="node" x1="11" y1="12" x2="54" y2="53" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F6C85F"/>
+      <stop offset="0.55" stop-color="#4FCEB6"/>
+      <stop offset="1" stop-color="#7C5CFF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <path
+    d="M19 28.5 31 20l14 7.5M19 36l12 8.5L45 36M18.5 32.5h27"
+    fill="none"
+    stroke="#7892B7"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="0.72"
+  />
+
+  <circle cx="18" cy="32" r="6.5" fill="#10243A" stroke="url(#node)" stroke-width="3"/>
+  <circle cx="32" cy="18" r="6.5" fill="#10243A" stroke="url(#node)" stroke-width="3"/>
+  <circle cx="46" cy="32" r="6.5" fill="#10243A" stroke="url(#node)" stroke-width="3"/>
+  <circle cx="32" cy="46" r="6.5" fill="#10243A" stroke="url(#node)" stroke-width="3"/>
+
+  <path
+    d="M25 31.8c0-4 3-7.2 7-7.2s7 3.2 7 7.2v4.4c0 4-3 7.2-7 7.2s-7-3.2-7-7.2v-4.4Z"
+    fill="url(#agent)"
+  />
+  <path
+    d="M28.6 32.2h6.8M28.8 36.6c1.8 1.7 4.6 1.7 6.4 0"
+    fill="none"
+    stroke="#EAF6FF"
+    stroke-width="2.4"
+    stroke-linecap="round"
+  />
+  <circle cx="29.3" cy="31.5" r="1.45" fill="#EAF6FF"/>
+  <circle cx="34.7" cy="31.5" r="1.45" fill="#EAF6FF"/>
+  <path
+    d="M32 24.6v-4.1M29.2 21.3h5.6M20.7 32h-5.1M48.4 32h-5.1M32 43.4v5.1"
+    fill="none"
+    stroke="#EAF6FF"
+    stroke-width="2.3"
+    stroke-linecap="round"
+    opacity="0.95"
+  />
+</svg>

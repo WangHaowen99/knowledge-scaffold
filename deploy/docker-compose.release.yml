@@ -1,0 +1,43 @@
+version: '3.3'
+
+services:
+  backend:
+    image: ${BACKEND_IMAGE}
+    container_name: onto-agent-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-5055}:5055"
+    volumes:
+      - ./backend/config:/app/config:ro
+      - ./backend/logs:/app/logs
+      - ./.onto-runtime:/app/.onto-runtime
+    env_file:
+      - ./backend/.env
+    environment:
+      - FLASK_APP=run.py
+      - PYTHONUNBUFFERED=1
+      - PROJECT_ROOT=/app/.onto-runtime
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5055/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: ${FRONTEND_IMAGE}
+    container_name: onto-agent-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8888}:80"
+    volumes:
+      - ./frontend/logs/nginx:/var/log/nginx
+    environment:
+      - NGINX_BACKEND_UPSTREAM=${NGINX_BACKEND_UPSTREAM:-http://backend:5055}
+      - NGINX_TYPEDB_UPSTREAM=${NGINX_TYPEDB_UPSTREAM:-http://backend:9991}
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

@@ -1,0 +1,28 @@
+{
+  "name": "@onto-agent/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for onto-agent agentic and A2A APIs",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "package": "npm pack"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
