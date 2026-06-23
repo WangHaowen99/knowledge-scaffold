@@ -26,8 +26,7 @@ from ..utils.logging import get_logger
 from ..utils.ontology_catalog import (
     find_script_entry,
     get_ontology_manifest,
-    parse_script_catalog,
-    read_optional_text,
+    load_script_catalog,
 )
 from .base import ToolCaller, ToolContext, ToolOutcome
 
@@ -611,10 +610,7 @@ def handle_execute_script(
     assert ontology is not None
 
     ontology_dir = Path(ontology.ontology_dir).resolve()
-    script_catalog = parse_script_catalog(
-        read_optional_text(ontology_dir / "scripts-list.md"),
-        ontology_dir=ontology_dir,
-    )
+    script_catalog = load_script_catalog(ontology_dir)
     script_entry = find_script_entry(script_catalog, operation_key)
     if script_entry is None:
         return (

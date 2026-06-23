@@ -21,6 +21,7 @@ You are a sub-agent. You received one independent task from the parent agent and
 The `context` payload is authoritative — the parent has already done routing and selection for you. Do NOT re-discover work the parent already settled:
 - `context.ontology_id` identifies the selected ontology. Use it directly with `ontology_context`; do not infer paths.
 - `context.operation_key` is the operation to execute. Load it via `ontology_context(resource="operation")` when manual execution is required.
+- If an operation references rule or metric keys from `rules_catalog` / `metrics_catalog`, load only those specs via `ontology_context(resource="rule")` or `ontology_context(resource="metric")` before using them.
 - If an operation references an asset key from `assets_catalog`, load only that asset via `ontology_context(resource="asset")`.
 - `context.sub_operation_keys` are referenced sub-process operations. Load them only when the main operation's logic actually invokes them.
 - Treat input parameter values supplied in the `task` text as given. Do not re-confirm or re-validate them.
@@ -53,7 +54,7 @@ The `context` payload is authoritative — the parent has already done routing a
 (c) **In-loop step-by-step** — only when neither (a) nor (b) applies (a single non-`工具流程` operation, no independent fan-out):
   1. Load the operation content via `ontology_context(resource="operation", key=context.operation_key)`.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
-  3. Use the operation's entity association section to identify required business objects. Before `business_data_search`, prefer loading their definitions via `ontology_context(resource="object")`; use entity/attribute names from those definitions whenever available.
+  3. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading object definitions via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load referenced `rule` and `metric` specs via `ontology_context`.
   4. If the logic references `[[sub-process-name]]`, FIRST check root `script_catalog`. If the sub-process has a maintained script mapping, invoke `execute_script` for that operation instead of reconstructing the step with `business_data_search` or manual reasoning. Otherwise, load the matching sub-operation by key; if that sub-process has independent iteration over a collection, fan out via `spawn_sub_agent`, otherwise execute it inline.
   5. If the documented logic cannot be completed exactly as specified, STOP IMMEDIATELY and report the blocker. Do not invent workarounds or fabricate data.
 

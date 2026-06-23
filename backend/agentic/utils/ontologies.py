@@ -87,8 +87,9 @@ class OntologyLoader:
             )
             return None
 
-        if str(raw.get("kind")).strip() != "ontology":
-            logger.error("Ontology manifest kind must be 'ontology': %s", manifest_path)
+        kind = str(raw.get("kind")).strip()
+        if kind not in {"ontology", "ontology-package"}:
+            logger.error("Ontology manifest kind must be 'ontology' or 'ontology-package': %s", manifest_path)
             return None
 
         try:
@@ -103,7 +104,7 @@ class OntologyLoader:
 
             ontology_md_path = active_dir / "ONTOLOGY.md"
             return OntologyManifest(
-                kind=str(raw.get("kind")).strip(),
+                kind=kind,
                 id=str(raw.get("id")).strip(),
                 name=str(raw.get("name")).strip(),
                 description=str(raw.get("description")).strip(),
@@ -461,6 +462,12 @@ def _resolve_selected_ontology_root_docs(ontology: OntologyManifest) -> List[tup
     ontology_dir = Path(ontology.ontology_dir).resolve()
     return [
         ("manifest.yaml", Path(ontology.manifest_path).resolve(), True),
+        ("index.md", (ontology_dir / "index.md").resolve(), False),
+        ("objects/index.md", (ontology_dir / "objects" / "index.md").resolve(), False),
+        ("operations/index.md", (ontology_dir / "operations" / "index.md").resolve(), False),
+        ("rules/index.md", (ontology_dir / "rules" / "index.md").resolve(), False),
+        ("metrics/index.md", (ontology_dir / "metrics" / "index.md").resolve(), False),
+        ("scripts/index.md", (ontology_dir / "scripts" / "index.md").resolve(), False),
         ("operations-list.md", (ontology_dir / "operations-list.md").resolve(), True),
         ("objects-list.md", (ontology_dir / "objects-list.md").resolve(), True),
         ("scripts-list.md", (ontology_dir / "scripts-list.md").resolve(), False),

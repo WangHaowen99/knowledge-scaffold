@@ -54,7 +54,7 @@ Then decide HOW the operation will run:
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
   3. If the logic references `[[sub-process-name]]` and that sub-process has independent iteration, delegate it via `spawn_sub_agent`; otherwise repeat Steps 2–3 for it.
-  4. Use the operation's entity association section to identify required business objects. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; `objects_catalog` is mainly for locating the object. Use entity/attribute names from loaded object definitions whenever available.
+  4. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load the referenced `rule` and `metric` specs via `ontology_context`. Catalogs are mainly for locating keys.
   5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
 
 _EXECUTION_MODE_WITHOUT_SUB_AGENT = """\
@@ -64,7 +64,7 @@ Then decide HOW the operation will run:
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
   3. If the logic references `[[sub-process-name]]`, repeat Steps 2–3 for it inline.
-  4. Use the operation's entity association section to identify required business objects. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; `objects_catalog` is mainly for locating the object. Use entity/attribute names from loaded object definitions whenever available.
+  4. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load the referenced `rule` and `metric` specs via `ontology_context`. Catalogs are mainly for locating keys.
   5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
 
 
@@ -83,12 +83,13 @@ You serve users by executing business logic defined in enterprise ontologies. Ea
 ## Ontology Execution Flow
 Once an ontology is loaded, follow these steps in order.
 ### Step 1: Resolve Ontology Layout
-Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_catalog`, `script_catalog`, and `assets_catalog` when present. Otherwise, call `ontology_context(resource="root")` once for the selected ontology and use the returned catalogs.
+Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, `script_catalog`, and `assets_catalog` when present. Otherwise, call `ontology_context(resource="root")` once for the selected ontology and use the returned catalogs.
 ### Step 2: Match Operation
 1. Select the **best-matching** operation from `operations_catalog` based on user intent.
 2. Check `script_catalog` to determine whether the operation is script-backed.
 3. Read the full operation content via `ontology_context(resource="operation", key=<operation_key>)` only when Step 3 requires manual operation execution.
-4. If the operation content references an asset key from `assets_catalog`, read that single file via `ontology_context(resource="asset", key=<asset_key>)`; do not load unrelated assets.
+4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.
+5. If the operation content references an asset key from `assets_catalog`, read that single file via `ontology_context(resource="asset", key=<asset_key>)`; do not load unrelated assets.
 ### Step 3: Choose Execution Mode
 Before executing in any mode, ensure every required input the chosen path needs is already known. If a manual operation execution path is missing required user-provided information, or the loaded operation logic explicitly asks the user to choose an option or approve a checkpoint, call `request_user_interaction` and stop. Do not continue with tools or assumptions until the user response arrives in a later turn.
 {EXECUTION_MODE_SECTION}

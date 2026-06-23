@@ -7,8 +7,9 @@ arguments, or fall back to the Jiuwen ReAct loop.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional, Sequence, Set
 
 from ..config import DirectExecutionConfig
 from ..utils.ontology_catalog import get_ontology_manifest
@@ -144,6 +145,14 @@ class OperationDirectRouter:
             logger.info("忽略未声明的参数: %s (operation=%s)", unknown, operation_key)
             for k in unknown:
                 business_arguments.pop(k)
+        business_arguments.update(
+            _extract_business_arguments_from_request(
+                user_request=user_request,
+                script_parameters=script_parameters,
+                declared_keys=declared_keys,
+                existing_arguments=business_arguments,
+            )
+        )
         logger.info(
             "参数输入: arguments=%s (operation=%s)",
             business_arguments,
@@ -287,3 +296,88 @@ def _operation_requires_user_interaction(ontology_id: str, operation_key: str) -
         return False
 
     return any(marker in content for marker in _INTERACTION_MARKERS)
+
+
+_VALUE_PATTERN = r"([A-Za-z][A-Za-z0-9_.-]{1,})"
+
+
+def _extract_business_arguments_from_request(
+    *,
+    user_request: str,
+    script_parameters: Sequence[Mapping[str, Any]],
+    declared_keys: Set[str],
+    existing_arguments: Mapping[str, Any],
+) -> Dict[str, Any]:
+    if not user_request or not script_parameters:
+        return {}
+
+    extracted: Dict[str, Any] = {}
+    for parameter in script_parameters:
+        name = str(parameter.get("name") or "").strip()
+        if not name or name not in declared_keys:
+            continue
+        if name in existing_arguments and existing_arguments.get(name) is not None:
+            continue
+        for label in _parameter_labels(parameter):
+            value = _extract_value_after_label(user_request, label)
+            if value:
+                extracted[name] = value
+                break
+    return extracted
+
+
+def _parameter_labels(parameter: Mapping[str, Any]) -> list[str]:
+    labels: list[str] = []
+    name = str(parameter.get("name") or "").strip()
+    flag = str(parameter.get("flag") or "").strip().lstrip("-")
+    description = str(parameter.get("description") or "").strip()
+
+    for value in (name, flag, description):
+        if value:
+            labels.append(value)
+            labels.append(value.replace("_", ""))
+            labels.append(value.replace("_", "-"))
+            labels.append(value.replace("-", ""))
+
+    aliases = parameter.get("aliases")
+    if isinstance(aliases, list):
+        labels.extend(str(alias).strip() for alias in aliases if str(alias or "").strip())
+
+    stem = name.lower().removesuffix("_id")
+    if stem and stem != name.lower():
+        labels.extend(
+            [
+                "{}编号".format(stem),
+                "{}编码".format(stem),
+                "{}ID".format(stem),
+                "{}id".format(stem),
+            ]
+        )
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for label in labels:
+        clean = str(label or "").strip()
+        if not clean:
+            continue
+        normalized = clean.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(clean)
+    return unique
+
+
+def _extract_value_after_label(text: str, label: str) -> Optional[str]:
+    label_pattern = r"\s*".join(re.escape(ch) for ch in label if not ch.isspace())
+    if not label_pattern:
+        return None
+    patterns = [
+        r"{}\s*(?:是|为|=|:|：)\s*{}".format(label_pattern, _VALUE_PATTERN),
+        r"{}\s+{}".format(label_pattern, _VALUE_PATTERN),
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip(" ,，。；;")
+    return None

@@ -521,7 +521,14 @@ def _build_tool_progress_message(name: Optional[str], args: Dict[str, Any]) -> O
         ).strip()
         if resource == "root":
             return "加载本体 {}".format(ontology_label or "本体")
-        resource_label = {"operation": "逻辑", "object": "实体", "asset": "公共文件"}.get(resource, resource)
+        resource_label = {
+            "operation": "逻辑",
+            "object": "实体",
+            "rule": "规则",
+            "metric": "指标",
+            "script": "脚本",
+            "asset": "公共文件",
+        }.get(resource, resource)
         return "加载本体 {}".format("{} {}".format(resource_label, key).strip() or ontology_label or "本体")
 
     if name == "skill":
