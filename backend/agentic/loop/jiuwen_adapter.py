@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import asyncio
+import concurrent.futures
 import json
 import threading
 import time
@@ -1490,6 +1491,65 @@ async def _finalize_jiuwen_session(agent: Any, session: Any) -> None:
             await result
 
 
+class _JiuwenLoopRunner:
+    """Owns a single long-lived asyncio loop on a background thread.
+
+    openJiuwen keeps process-wide singletons (Runner.callback_framework, its
+    `asyncio.Lock`s, resource manager) that bind to whichever event loop first
+    awaits them. Running every engine invocation on its own `asyncio.run` loop
+    causes "bound to a different event loop" on the second call. This runner
+    ensures every Jiuwen await uses the same loop for the lifetime of the
+    process.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._ready = threading.Event()
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            return loop
+        with self._lock:
+            if self._loop is not None and self._loop.is_running():
+                return self._loop
+            self._ready.clear()
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._run_forever,
+                name="jiuwen-loop",
+                daemon=True,
+            )
+            self._thread.start()
+            if not self._ready.wait(timeout=5.0):
+                raise JiuwenBackendUnavailable(
+                    "Jiuwen background event loop failed to start."
+                )
+            return self._loop
+
+    def _run_forever(self) -> None:
+        loop = self._loop
+        assert loop is not None
+        asyncio.set_event_loop(loop)
+        loop.call_soon(self._ready.set)
+        try:
+            loop.run_forever()
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    def submit(self, coro: Any) -> "concurrent.futures.Future[Any]":
+        loop = self.get_loop()
+        return asyncio.run_coroutine_threadsafe(coro, loop)
+
+
+_JIUWEN_LOOP_RUNNER = _JiuwenLoopRunner()
+
+
 def _run_awaitable(
     awaitable: Any,
     *,
@@ -1499,43 +1559,34 @@ def _run_awaitable(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        if cancel_event is None:
-            return asyncio.run(awaitable)
-        return asyncio.run(
-            _await_with_cancel(
-                awaitable,
-                cancel_event=cancel_event,
-                state=state,
-            )
+        pass
+    else:
+        raise JiuwenBackendUnavailable(
+            "Jiuwen ReAct runtime returned an async invoke result, but JiuwenReactLoopEngine.run is synchronous."
         )
-    raise JiuwenBackendUnavailable(
-        "Jiuwen ReAct runtime returned an async invoke result, but JiuwenReactLoopEngine.run is synchronous."
-    )
 
+    if cancel_event is not None and cancel_event.is_set():
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        _raise_if_jiuwen_cancelled(cancel_event, state)
 
-async def _await_with_cancel(
-    awaitable: Any,
-    *,
-    cancel_event: threading.Event,
-    state: Optional[Mapping[str, Any]],
-) -> Any:
-    _raise_if_jiuwen_cancelled(cancel_event, state)
-    task = asyncio.ensure_future(awaitable)
-    try:
-        while True:
-            done, _pending = await asyncio.wait({task}, timeout=0.05)
-            if task in done:
-                return await task
+    future = _JIUWEN_LOOP_RUNNER.submit(awaitable)
+    if cancel_event is None:
+        return future.result()
+
+    while True:
+        try:
+            return future.result(timeout=0.05)
+        except concurrent.futures.TimeoutError:
             if cancel_event.is_set():
-                task.cancel()
+                future.cancel()
                 try:
-                    await task
-                except asyncio.CancelledError:
+                    future.result(timeout=1.0)
+                except (concurrent.futures.CancelledError, concurrent.futures.TimeoutError):
+                    pass
+                except Exception:
                     pass
                 _raise_if_jiuwen_cancelled(cancel_event, state)
-    finally:
-        if not task.done():
-            task.cancel()
 
 
 def _get_jiuwen_cancel_event(state: Mapping[str, Any]) -> Optional[threading.Event]:
