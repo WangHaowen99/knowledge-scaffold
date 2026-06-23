@@ -223,6 +223,134 @@ def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="
     return ontology_dir
 
 
+def _write_v01_ontology_package(tmp_path):
+    ontology_dir = tmp_path / "ontologies" / "demo-v01"
+    (ontology_dir / "operations").mkdir(parents=True)
+    (ontology_dir / "objects").mkdir(parents=True)
+    (ontology_dir / "rules").mkdir(parents=True)
+    (ontology_dir / "metrics").mkdir(parents=True)
+    (ontology_dir / "scripts").mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        "\n".join(
+            [
+                "kind: ontology-package",
+                "schema_version: 0.1",
+                "id: demo-v01",
+                "name: Demo v0.1",
+                "description: Demo ontology package",
+                "version: 0.1.0",
+                "language: zh-CN",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "operations" / "index.md").write_text(
+        (
+            "---\nresource: operation_index\n---\n\n"
+            "| operation key | 标题 | 输入 |\n"
+            "| --- | --- | --- |\n"
+            "| 分析影响 | 影响分析 | eco_id |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "operations" / "impact.md").write_text(
+        (
+            "---\n"
+            "resource: operation\n"
+            "key: 分析影响\n"
+            "canonical_key: impact_analysis\n"
+            "title: 影响分析\n"
+            "uses:\n"
+            "  objects:\n"
+            "    - 物料\n"
+            "  rules:\n"
+            "    - 生效规则\n"
+            "  metrics:\n"
+            "    - 处理成本\n"
+            "---\n\n"
+            "# 影响分析\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "objects" / "index.md").write_text(
+        (
+            "| object key | 标题 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| 物料 | TargetItem | 制造物料 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "objects" / "target_item.md").write_text(
+        (
+            "---\n"
+            "resource: object\n"
+            "key: 物料\n"
+            "canonical_key: target_item\n"
+            "aliases:\n"
+            "  - TargetItem\n"
+            "---\n\n"
+            "# 物料\n字段定义\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "rules" / "index.md").write_text(
+        (
+            "| rule key | 标题 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| 生效规则 | 变更生效 | 判断生效批次 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "rules" / "effectivity.md").write_text(
+        "---\nresource: rule\nkey: 生效规则\ncanonical_key: effectivity_rule\n---\n\n# 生效规则\n",
+        encoding="utf-8",
+    )
+    (ontology_dir / "metrics" / "index.md").write_text(
+        (
+            "| metric key | 标题 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| 处理成本 | 库存处理成本 | 数量乘单价 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "metrics" / "handling_cost.md").write_text(
+        "---\nresource: metric\nkey: 处理成本\ncanonical_key: handling_cost\n---\n\n# 处理成本\n",
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "index.md").write_text(
+        (
+            "| script key | 绑定 operation | 入口 |\n"
+            "| --- | --- | --- |\n"
+            "| 影响脚本 | 分析影响 | impact.py |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "impact_script.md").write_text(
+        (
+            "---\n"
+            "resource: script\n"
+            "key: 影响脚本\n"
+            "canonical_key: impact_script\n"
+            "bound_operation: 分析影响\n"
+            "entrypoint: impact.py\n"
+            "---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| eco_id | --eco-id | string | 是 | CHANGE_ORDER编号 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "impact.py").write_text(
+        (
+            "import json\n"
+            "import sys\n"
+            "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
+        ),
+        encoding="utf-8",
+    )
+    return ontology_dir
+
+
 def _patch_test_ontology_registry(monkeypatch, tmp_path):
     registry = OntologyRegistry(ontology_dirs=[tmp_path / "ontologies"])
     registry.discover_ontologies()
@@ -326,6 +454,90 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
         _make_context(project_root=str(tmp_path)),
     )
     assert "Unsupported asset format" in unsupported_asset_result.messages[0]["content"]
+
+
+def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
+    _write_v01_ontology_package(tmp_path)
+    _patch_test_ontology_registry(monkeypatch, tmp_path)
+
+    root_result = execute_tool_batch(
+        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "root"})],
+        _make_context(project_root=str(tmp_path)),
+    )
+    root_content = root_result.messages[0]["content"]
+    assert "id: demo-v01" in root_content
+    assert (
+        "operations_catalog:\n"
+        "columns: operation key | 标题 | 输入\n"
+        "- 分析影响 | 影响分析 | eco_id"
+    ) in root_content
+    assert (
+        "rules_catalog:\n"
+        "columns: rule key | 标题 | 说明\n"
+        "- 生效规则 | 变更生效 | 判断生效批次"
+    ) in root_content
+    assert (
+        "metrics_catalog:\n"
+        "columns: metric key | 标题 | 说明\n"
+        "- 处理成本 | 库存处理成本 | 数量乘单价"
+    ) in root_content
+    assert "- 分析影响 - 影响脚本 (parameters: eco_id=CHANGE_ORDER编号 required string)" in root_content
+
+    operation_result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "ontology_context",
+                {"ontology_id": "demo-v01", "resource": "operation", "key": "impact_analysis"},
+            )
+        ],
+        _make_context(project_root=str(tmp_path)),
+    )
+    assert "operation_key: impact_analysis" in operation_result.messages[0]["content"]
+    assert "key: 分析影响" in operation_result.messages[0]["content"]
+
+    object_result = execute_tool_batch(
+        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "object", "key": "TargetItem"})],
+        _make_context(project_root=str(tmp_path)),
+    )
+    assert "object_key: TargetItem" in object_result.messages[0]["content"]
+    assert "# 物料" in object_result.messages[0]["content"]
+
+    rule_result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "ontology_context",
+                {"ontology_id": "demo-v01", "resource": "rule", "key": "effectivity_rule"},
+            )
+        ],
+        _make_context(project_root=str(tmp_path)),
+    )
+    assert "rule_key: effectivity_rule" in rule_result.messages[0]["content"]
+    assert "# 生效规则" in rule_result.messages[0]["content"]
+
+    metric_result = execute_tool_batch(
+        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "metric", "key": "处理成本"})],
+        _make_context(project_root=str(tmp_path)),
+    )
+    assert "metric_key: 处理成本" in metric_result.messages[0]["content"]
+    assert "# 处理成本" in metric_result.messages[0]["content"]
+
+    script_doc_result = execute_tool_batch(
+        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "script", "key": "影响脚本"})],
+        _make_context(project_root=str(tmp_path)),
+    )
+    assert "script_key: 影响脚本" in script_doc_result.messages[0]["content"]
+    assert "CLI 参数" in script_doc_result.messages[0]["content"]
+
+    script_result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "execute_script",
+                {"ontology_id": "demo-v01", "operation_key": "分析影响", "arguments": {"eco_id": "CHANGE_ORDER-001"}},
+            )
+        ],
+        _make_context(project_root=str(tmp_path)),
+    )
+    assert json.loads(script_result.messages[0]["content"]) == ["--eco-id", "CHANGE_ORDER-001"]
 
 
 def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):

@@ -28,7 +28,7 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "ontology_context",
         "description": (
-            "Load ontology root catalogs, operation markdown, object/entity definitions, and shared asset files. "
+            "Load ontology root catalogs, operation, object/entity, rule, metric, script specs, and shared asset files. "
             "This tool reads ontology specs only; it does not query business data or execute scripts. "
             "Load each needed ontology resource once and reuse it."
         ),
@@ -41,18 +41,20 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "resource": {
                     "type": "string",
-                    "enum": ["root", "operation", "object", "asset"],
+                    "enum": ["root", "operation", "object", "rule", "metric", "script", "asset"],
                     "description": (
                         "The ontology resource to load: root returns ontology metadata and catalogs; "
                         "operation returns operation content by key; object returns object/entity definition by key; "
+                        "rule returns rule content by key; metric returns metric content by key; "
+                        "script returns registered script description by key; "
                         "asset returns a shared text/config file by key from assets_catalog."
                     ),
                 },
                 "key": {
                     "type": "string",
                     "description": (
-                        "Operation key when resource is `operation`, or object/entity key when "
-                        "resource is `object`, or asset file key when resource is `asset`. Leave empty for `root`."
+                        "Resource key when loading operation/object/rule/metric/script, or asset file key when "
+                        "resource is `asset`. Leave empty for `root`."
                     ),
                 },
             },
@@ -96,12 +98,39 @@ def handle_ontology_context(
             resource_name="object",
             key_field="object_key",
         )
+    if normalized_resource == "rule":
+        return _build_markdown_payload(
+            ontology_id=ontology.id,
+            ontology_dir=ontology_dir,
+            directory=ontology_dir / "rules",
+            key=key,
+            resource_name="rule",
+            key_field="rule_key",
+        )
+    if normalized_resource == "metric":
+        return _build_markdown_payload(
+            ontology_id=ontology.id,
+            ontology_dir=ontology_dir,
+            directory=ontology_dir / "metrics",
+            key=key,
+            resource_name="metric",
+            key_field="metric_key",
+        )
+    if normalized_resource == "script":
+        return _build_markdown_payload(
+            ontology_id=ontology.id,
+            ontology_dir=ontology_dir,
+            directory=ontology_dir / "scripts",
+            key=key,
+            resource_name="script",
+            key_field="script_key",
+        )
     if normalized_resource == "asset":
         return _build_asset_payload(
             ontology_dir=ontology_dir,
             key=key,
         )
-    return "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, or asset.".format(
+    return "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or asset.".format(
         normalized_resource
     )
 
@@ -213,10 +242,11 @@ def _build_read_record(
     ontology_dir = Path(ontology.ontology_dir).resolve()
     if resource == "root":
         resolved_path = Path(ontology.manifest_path).resolve()
-    elif resource == "operation":
-        resolved_path = ontology_dir / "operations" / "{}.md".format(key)
-    elif resource == "object":
-        resolved_path = ontology_dir / "objects" / "{}.md".format(key)
+    elif resource in {"operation", "object", "rule", "metric", "script"}:
+        directory = ontology_dir / "{}s".format(resource)
+        resolved_path, error = find_markdown_file(directory.resolve(), key, resource)
+        if error or resolved_path is None:
+            return None
     elif resource == "asset":
         resolved_path, error = find_asset_file(ontology_dir, key)
         if error or resolved_path is None:
