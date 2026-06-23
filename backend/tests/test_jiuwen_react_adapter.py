@@ -20,6 +20,7 @@ from agentic.loop.jiuwen_adapter import (
     JiuwenBackendUnavailable,
     JiuwenReactLoopEngine,
     _JiuwenModelTraceBridge,
+    _run_awaitable,
     create_default_jiuwen_agent,
     register_current_runtime_tools,
     _patch_jiuwen_openai_reasoning_alias,
@@ -4462,3 +4463,48 @@ def _agent_config(**overrides):
     }
     config.update(overrides)
     return AgentConfig(**config)
+
+
+_SHARED_CROSS_CALL_LOCK = asyncio.Lock()
+
+
+async def _acquire_shared_cross_call_lock_with_waiter() -> str:
+    await _SHARED_CROSS_CALL_LOCK.acquire()
+    waiter = asyncio.create_task(_SHARED_CROSS_CALL_LOCK.acquire())
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if not waiter.done():
+                break
+        assert not waiter.done()
+    finally:
+        _SHARED_CROSS_CALL_LOCK.release()
+    await waiter
+    _SHARED_CROSS_CALL_LOCK.release()
+    return "ok"
+
+
+def test_jiuwen_run_awaitable_reuses_loop_for_shared_asyncio_lock_waiters():
+    result_a = _run_awaitable(_acquire_shared_cross_call_lock_with_waiter())
+    assert result_a == "ok"
+    result_b = _run_awaitable(_acquire_shared_cross_call_lock_with_waiter())
+    assert result_b == "ok"
+
+
+def test_jiuwen_run_awaitable_does_not_submit_when_already_cancelled():
+    started = {"value": False}
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    async def awaitable():
+        started["value"] = True
+        return "unexpected"
+
+    with pytest.raises(WorkflowCancelledError):
+        _run_awaitable(
+            awaitable(),
+            cancel_event=cancel_event,
+            state={"run_id": "run-pre-cancelled"},
+        )
+
+    assert started["value"] is False
