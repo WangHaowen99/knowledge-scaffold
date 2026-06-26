@@ -53,8 +53,6 @@ Then decide HOW the operation will run:
 (c) **In-loop step-by-step** — only when neither (a) nor (b) applies (a single non-`工具流程` operation, no independent fan-out):
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
-     When the operation specifies a concrete business attribute for a calculation, use exactly that attribute. Do not combine sibling attributes from the same object unless the operation explicitly says to do so; for example, "单位成本（物料成本）" means use `物料成本/MaterialCost` only, not `物料成本 + 制造成本`.
-     When the operation specifies a range, cumulative scope, or iteration over a collection, first determine and query the complete collection before calculating. Do not replace a range such as "从起始批次到当前切换批次" or "累计" with only the start item; if the range boundary cannot be determined from user input, operation context, or retrieved data, ask for the missing boundary instead of calculating a partial result.
   3. If the logic references `[[sub-process-name]]` and that sub-process has independent iteration, delegate it via `spawn_sub_agent`; otherwise repeat Steps 2–3 for it.
   4. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load the referenced `rule` and `metric` specs via `ontology_context`. Catalogs are mainly for locating keys.
   5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
@@ -65,11 +63,9 @@ Then decide HOW the operation will run:
 (b) **In-loop step-by-step** — when (a) does not apply:
   1. Use the loaded operation content's `# 输入` section to confirm required parameters before proceeding.
   2. Execute strictly per `# 逻辑描述`, honoring every branch and condition. Do not assume beyond the document, do not skip steps.
-  3. When the operation specifies a concrete business attribute for a calculation, use exactly that attribute. Do not combine sibling attributes from the same object unless the operation explicitly says to do so; for example, "单位成本（物料成本）" means use `物料成本/MaterialCost` only, not `物料成本 + 制造成本`.
-  4. When the operation specifies a range, cumulative scope, or iteration over a collection, first determine and query the complete collection before calculating. Do not replace a range such as "从起始批次到当前切换批次" or "累计" with only the start item; if the range boundary cannot be determined from user input, operation context, or retrieved data, ask for the missing boundary instead of calculating a partial result.
-  5. If the logic references `[[sub-process-name]]`, repeat Steps 2–3 for it inline.
-  6. Use the operation's entity association section to identify required business objects. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; `objects_catalog` is mainly for locating the object. Use entity/attribute names from loaded object definitions whenever available.
-  7. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
+  3. If the logic references `[[sub-process-name]]`, repeat Steps 2–3 for it inline.
+  4. Use the operation's dependency/uses/entity association section to identify required business objects, rules, and metrics. Before `business_data_search`, prefer loading every entity definition you will query via `ontology_context(resource="object")`; before rule-based judgments or metric calculations, load the referenced `rule` and `metric` specs via `ontology_context`. Catalogs are mainly for locating keys.
+  5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
 
 
 UNIVERSAL_AGENT_SYSTEM_PROMPT = """\
@@ -92,11 +88,7 @@ Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_ca
 1. Select the **best-matching** operation from `operations_catalog` based on user intent.
 2. Check `script_catalog` to determine whether the operation is script-backed.
 3. Read the full operation content via `ontology_context(resource="operation", key=<operation_key>)` only when Step 3 requires manual operation execution.
-4. If the operation content references an asset key from `assets_catalog`, read that single file via `ontology_context(resource="asset", key=<asset_key>)`; do not load unrelated assets.
-5. When multiple operations mention similar entities, choose by result scope, not by shared keywords:
-   - If the user asks for a result on a specific item, flight, order, batch, or other concrete instance (for example "某批次上", "指定批次", "BatchID", "F000 上"), prefer the operation whose description says it calculates that instance-level result.
-   - Choose a global inventory/portfolio/summary operation only when the user explicitly asks for global inventory, total inventory cost, overall summary, or the operation description says it is the requested scope.
-   - Do not use a global inventory operation to answer an instance-level cost question just because the request also mentions a starting switch point.
+4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.
 ### Step 3: Choose Execution Mode
 Before executing in any mode, ensure every required input the chosen path needs is already known. If a manual operation execution path is missing required user-provided information, or the loaded operation logic explicitly asks the user to choose an option or approve a checkpoint, call `request_user_interaction` and stop. Do not continue with tools or assumptions until the user response arrives in a later turn.
 {EXECUTION_MODE_SECTION}
@@ -110,6 +102,7 @@ Before executing in any mode, ensure every required input the chosen path needs 
 
 ## Tool Usage Rules
 - Follow each tool's schema description for tool-specific requirements.
+- Use `skill` only for names listed in `<Available-Skills>`; use ontology ids only with ontology tools.
 - When multiple tool calls have known inputs and no dependency on each other's outputs, batch them in the same response. If a tool call depends on another tool's output, wait for that result and call it in a later response.
 - If a required input for the chosen tool or execution path is missing during manual ontology execution, call `request_user_interaction` with `type="input"` instead of guessing.
 - If the operation lists choices and requires the user to choose exactly one, call `request_user_interaction` with `type="single_choice"` and pass those choices as options.

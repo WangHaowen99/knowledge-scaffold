@@ -155,6 +155,14 @@ def test_universal_prompt_uses_selected_ontology_override():
     assert "Preloaded Selected Ontology Context" not in prompt
 
 
+def test_universal_prompt_keeps_ontology_ids_out_of_skill_tool():
+    prompt = build_universal_system_prompt()
+
+    assert "Use `skill` only for names listed in `<Available-Skills>`" in prompt
+    assert "use ontology ids only with ontology tools" in prompt
+    assert "Ontology ids from `<Available-Ontologies>` or `<Selected-Ontology>`" not in prompt
+
+
 def test_universal_prompt_matches_operation_by_result_scope():
     prompt = build_universal_system_prompt()
 
