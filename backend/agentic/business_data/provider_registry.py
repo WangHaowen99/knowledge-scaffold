@@ -9,6 +9,8 @@ from ..ontology_search.base import OntologySearchProvider
 from ..ontology_search.providers.mindsdb_provider import MindsDBOntologySearchProvider
 from ..ontology_search.providers.nl2sql_http_provider import NL2SQLHttpProvider
 from ..ontology_search.providers.nl2sql_template import NL2SQLTemplateProvider
+from ..ontology_search.providers.graph.hugegraph_provider import HugeGraphSearchProvider
+from ..ontology_search.providers.graph.neo4j_provider import Neo4jGraphSearchProvider
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,44 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("requires_auth", "需要鉴权", type="bool", default=False),
             ProviderField("timeout_seconds", "超时时间", type="int", default=600),
             ProviderField("max_retries", "最大重试次数", type="int", default=3),
+        ],
+    ),
+    "neo4j": BusinessDataProviderSpec(
+        name="neo4j",
+        label="Neo4J 图查询",
+        description="通过内置图查询 Provider 查询 Neo4J 本体实例数据。",
+        factory=Neo4jGraphSearchProvider,
+        fields=[
+            ProviderField("uri", "Neo4J URI", required=True),
+            ProviderField("database", "Database", default="neo4j"),
+            ProviderField("username", "用户名", required=True),
+            ProviderField("password", "密码", secret=True, required=True),
+            ProviderField("timeout_seconds", "超时时间", type="int", default=60),
+            ProviderField("max_retries", "最大重试次数", type="int", default=2),
+            ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
+            ProviderField("max_iterations", "GraphQueryAgent 最大轮次", type="int", default=4),
+            ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
+            ProviderField("ontology_property", "Ontology 隔离字段"),
+        ],
+    ),
+    "hugegraph": BusinessDataProviderSpec(
+        name="hugegraph",
+        label="HugeGraph 图查询",
+        description="通过内置图查询 Provider 查询 HugeGraph 本体实例数据。",
+        factory=HugeGraphSearchProvider,
+        fields=[
+            ProviderField("url", "HugeGraph 地址", required=True),
+            ProviderField("graph", "Graph 名称", default="hugegraph"),
+            ProviderField("graph_space", "Graph Space"),
+            ProviderField("username", "用户名"),
+            ProviderField("password", "密码", secret=True),
+            ProviderField("token", "访问 Token", secret=True),
+            ProviderField("timeout_seconds", "超时时间", type="int", default=60),
+            ProviderField("max_retries", "最大重试次数", type="int", default=2),
+            ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
+            ProviderField("max_iterations", "GraphQueryAgent 最大轮次", type="int", default=4),
+            ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
+            ProviderField("ontology_property", "Ontology 隔离字段"),
         ],
     ),
 }

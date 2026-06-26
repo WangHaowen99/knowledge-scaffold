@@ -39,6 +39,12 @@ const PROVIDER_FIELD_LAYOUT = {
   nl2sql_http: {
     fullWidth: ['url', 'token'],
   },
+  neo4j: {
+    fullWidth: ['uri', 'password'],
+  },
+  hugegraph: {
+    fullWidth: ['url', 'password', 'token'],
+  },
 };
 
 function shouldUseFullWidthField(providerId, field) {
@@ -59,6 +65,17 @@ function isConnectionConfigured(connection, provider) {
     if (field.secret) return Boolean(config[`has_${field.name}`] || config[field.name]);
     return Boolean(String(config[field.name] ?? '').trim());
   });
+}
+
+function formatConnectionEndpoint(connection) {
+  const config = connection?.config || {};
+  if (connection?.provider === 'neo4j') {
+    return `${maskUrl(config.uri)}${config.database ? ` · database: ${config.database}` : ''}`;
+  }
+  if (connection?.provider === 'hugegraph') {
+    return `${maskUrl(config.url)}${config.graph ? ` · graph: ${config.graph}` : ''}`;
+  }
+  return `${maskUrl(config.url)}${config.scene ? ` · scene: ${config.scene}` : ''}`;
 }
 
 function DataConnectionManagement({
@@ -417,7 +434,6 @@ function DataConnectionManagement({
     return connections.map((connection) => {
       const providerLabel = getProviderLabel(providers, connection.provider);
       const provider = providerMap[connection.provider];
-      const config = connection.config || {};
       const boundCount = bindingCounts[connection.id] || 0;
       const isDefault = connection.id === defaultConnectionId;
       const isReady = isConnectionConfigured(connection, provider);
@@ -437,7 +453,7 @@ function DataConnectionManagement({
             </div>
           </td>
           <td>{providerLabel}</td>
-          <td>{maskUrl(config.url)}{config.scene ? ` · scene: ${config.scene}` : ''}</td>
+          <td>{formatConnectionEndpoint(connection)}</td>
           <td>{boundCount} 个本体</td>
           <td>{renderStatus(isReady, boundCount ? '已绑定' : '未使用')}</td>
           <td>

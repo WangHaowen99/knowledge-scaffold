@@ -7,12 +7,14 @@ import importlib
 import threading
 import time
 from collections.abc import Mapping
+from concurrent.futures import Future
+from contextvars import copy_context
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
 from ...exceptions import WorkflowCancelledError
 from ...observability import AgentRuntimeTrace, RuntimeStatus
-from ...tools.base import ToolInvocation
+from ...tools.base import ToolBatchResult, ToolInvocation
 from ...tools.executor import execute_tool_batch
 from ...utils.json_utils import _loads_json_object_loose
 from ..shared.state_updates import apply_tool_batch_result_to_state
@@ -72,6 +74,17 @@ class CurrentRuntimeToolAdapter:
 
     async def invoke(self, tool_args: Any, session: Any = None) -> str:
         del session
+        if _requires_pre_append_pending_guard(self.tool_name) and self._serial_execution_lock is not None:
+            await _acquire_thread_lock_async(self._serial_execution_lock)
+            try:
+                return await self._invoke_after_pending_guard(tool_args, lock_held=True)
+            finally:
+                self._serial_execution_lock.release()
+        return await self._invoke_after_pending_guard(tool_args)
+
+    async def _invoke_after_pending_guard(self, tool_args: Any, *, lock_held: bool = False) -> str:
+        if _has_pending_user_interaction(self.state):
+            raise JiuwenTerminalToolBatch(_pending_user_interaction_batch_result(self.state))
         self._invocation_index += 1
         tool_call_id = "jiuwen_{}_{}".format(self.tool_name, self._invocation_index)
         invocation = ToolInvocation(
@@ -90,8 +103,8 @@ class CurrentRuntimeToolAdapter:
         }
         append_assistant_tool_call_to_state(self.state, assistant_tool_call)
         self._emit_state_snapshot()
-        if self._serial_execution_lock is not None:
-            await asyncio.to_thread(self._serial_execution_lock.acquire)
+        if self._serial_execution_lock is not None and not lock_held:
+            await _acquire_thread_lock_async(self._serial_execution_lock)
             try:
                 return await self._execute_tool_call(invocation)
             finally:
@@ -110,7 +123,7 @@ class CurrentRuntimeToolAdapter:
         else:
             runtime_trace.tool_batch_started(iteration=iteration, batch_index=batch_index)
         try:
-            batch_result = await asyncio.to_thread(
+            batch_result = await _run_sync_in_tool_thread(
                 self.tool_batch_executor,
                 [tool_call],
                 context,
@@ -160,8 +173,9 @@ class CurrentRuntimeToolAdapter:
                 },
                 terminal=terminal,
             )
-        if terminal and self.terminal_tool_batch_callback is not None:
-            self.terminal_tool_batch_callback(batch_result)
+        if terminal:
+            if self.terminal_tool_batch_callback is not None:
+                self.terminal_tool_batch_callback(batch_result)
             raise JiuwenTerminalToolBatch(batch_result)
         return first_tool_message_content(batch_result)
 
@@ -181,6 +195,48 @@ def _normalize_jiuwen_tool_args(tool_args: Any) -> Dict[str, Any]:
         if isinstance(parsed, Mapping):
             return dict(parsed)
     return {}
+
+
+def _has_pending_user_interaction(state: Mapping[str, Any]) -> bool:
+    pending = state.get("pending_user_interaction") if isinstance(state, Mapping) else None
+    return isinstance(pending, Mapping) and bool(pending)
+
+
+def _pending_user_interaction_batch_result(state: Mapping[str, Any]) -> ToolBatchResult:
+    updates: Dict[str, Any] = {}
+    pending = state.get("pending_user_interaction") if isinstance(state, Mapping) else None
+    final_output = state.get("final_output") if isinstance(state, Mapping) else None
+    if isinstance(pending, Mapping):
+        updates["pending_user_interaction"] = dict(pending)
+    if final_output:
+        updates["final_output"] = final_output
+    return ToolBatchResult(state_updates=updates, terminal=True)
+
+
+async def _acquire_thread_lock_async(lock: threading.Lock) -> None:
+    while True:
+        if lock.acquire(blocking=False):
+            return
+        await asyncio.sleep(0.001)
+
+
+async def _run_sync_in_tool_thread(func: Any, *args: Any) -> Any:
+    future: Future[Any] = Future()
+    context = copy_context()
+
+    def runner() -> None:
+        try:
+            result = context.run(func, *args)
+        except BaseException as exc:
+            future.set_exception(exc)
+        else:
+            future.set_result(result)
+
+    thread = threading.Thread(target=runner, name="jiuwen-tool", daemon=True)
+    thread.start()
+    while not future.done():
+        await asyncio.sleep(0.001)
+    return future.result()
 
 
 def runtime_trace_from_tool_context(context: Any) -> AgentRuntimeTrace:
@@ -464,3 +520,14 @@ def _is_tool_concurrency_safe(tool_name: str) -> bool:
     if spec is None:
         return False
     return bool(getattr(spec, "concurrency_safe", False))
+
+
+def _requires_pre_append_pending_guard(tool_name: str) -> bool:
+    if str(tool_name or "") == "request_user_interaction":
+        return True
+    try:
+        from ...tools.registry import get_tool_spec
+    except Exception:
+        return False
+    spec = get_tool_spec(str(tool_name or ""))
+    return bool(spec and getattr(spec, "category", "") == "interaction")

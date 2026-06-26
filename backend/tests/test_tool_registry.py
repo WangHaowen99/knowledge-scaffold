@@ -2353,6 +2353,70 @@ def test_execute_tool_batch_accepts_internal_tool_invocation(monkeypatch):
     ]
 
 
+def test_execute_tool_batch_stops_after_terminal_outcome(monkeypatch):
+    calls = []
+
+    class _TerminalUnitTool:
+        name = "terminal_unit_tool"
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "terminal_unit_tool",
+                "description": "terminal unit tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        allowed_callers = {"main"}
+        concurrency_safe = False
+        max_parallelism = 1
+        category = "regular"
+
+        def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
+            del args, context, event_emitter
+            calls.append(("terminal", tool_call_id))
+            return ToolOutcome(
+                content="awaiting input",
+                state_updates={"pending_user_interaction": {"id": "interaction_1"}},
+                terminal=True,
+            )
+
+    class _LaterUnitTool:
+        name = "later_unit_tool"
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "later_unit_tool",
+                "description": "later unit tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        allowed_callers = {"main"}
+        concurrency_safe = False
+        max_parallelism = 1
+        category = "regular"
+
+        def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
+            del args, context, event_emitter
+            calls.append(("later", tool_call_id))
+            return ToolOutcome(content="should not run")
+
+    monkeypatch.setitem(TOOL_SPECS, "terminal_unit_tool", _TerminalUnitTool())
+    monkeypatch.setitem(TOOL_SPECS, "later_unit_tool", _LaterUnitTool())
+
+    result = execute_tool_batch(
+        [
+            ToolInvocation(name="terminal_unit_tool", args={}, tool_call_id="call_terminal", index=0),
+            ToolInvocation(name="later_unit_tool", args={}, tool_call_id="call_later", index=1),
+        ],
+        _make_context(),
+    )
+
+    assert calls == [("terminal", "call_terminal")]
+    assert result.terminal is True
+    assert result.state_updates == {"pending_user_interaction": {"id": "interaction_1"}}
+    assert [message["name"] for message in result.messages] == ["terminal_unit_tool"]
+
+
 def test_execute_tool_batch_rejects_legacy_openai_style_tool_call_dict():
     legacy_tool_call = {
         "id": "call_legacy",

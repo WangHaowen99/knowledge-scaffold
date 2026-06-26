@@ -202,6 +202,76 @@ def test_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, monkeypat
         assert "token" not in public["connections"][0]["config"]
 
 
+def test_graph_provider_schemas_and_secrets_are_publicized():
+    from agentic.business_data.provider_registry import list_provider_schemas, publicize_provider_config
+
+    schemas = {item["name"]: item for item in list_provider_schemas()}
+
+    assert "neo4j" in schemas
+    assert "hugegraph" in schemas
+    neo4j_fields = {field["name"]: field for field in schemas["neo4j"]["fields"]}
+    hugegraph_fields = {field["name"]: field for field in schemas["hugegraph"]["fields"]}
+    assert neo4j_fields["password"]["secret"] is True
+    assert neo4j_fields["max_result_rows"]["default"] == 100
+    assert "enable_graph_agent" not in neo4j_fields
+    assert neo4j_fields["max_iterations"]["default"] == 4
+    assert neo4j_fields["workspace_property"]["default"] == "d2o_workspace_id"
+    assert hugegraph_fields["token"]["secret"] is True
+    assert hugegraph_fields["graph"]["default"] == "hugegraph"
+    assert "graph_space" in hugegraph_fields
+    assert hugegraph_fields["max_result_rows"]["default"] == 100
+    assert "enable_graph_agent" not in hugegraph_fields
+    assert hugegraph_fields["max_iterations"]["default"] == 4
+    assert hugegraph_fields["workspace_property"]["default"] == "d2o_workspace_id"
+
+    public = publicize_provider_config(
+        "neo4j",
+        {
+            "uri": "bolt://neo4j.test:7687",
+            "database": "neo4j",
+            "username": "neo4j",
+            "password": "secret-password",
+            "workspace_property": "d2o_workspace_id",
+        },
+    )
+    assert public["has_password"] is True
+    assert "password" not in public
+    assert public["uri"] == "bolt://neo4j.test:7687"
+
+
+def test_neo4j_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch):
+    from agentic.business_data.connections_store import create_data_connection, list_data_connections
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+
+    with workspace_scope("demo"):
+        create_data_connection(
+            {
+                "id": "secure-neo4j",
+                "name": "Secure Neo4J",
+                "provider": "neo4j",
+                "config": {
+                    "uri": "bolt://neo4j.example.local:7687",
+                    "database": "neo4j",
+                    "username": "neo4j",
+                    "password": "secret-password",
+                    "workspace_property": "d2o_workspace_id",
+                },
+            },
+            workspace_id="demo",
+        )
+
+        raw_text = (paths.workspace_dir / "data-connections.json").read_text(encoding="utf-8")
+        raw = json.loads(raw_text)
+
+        assert "secret-password" not in raw_text
+        assert raw["connections"][0]["config"]["password"].startswith("enc:v1:")
+        public = list_data_connections("demo")
+        assert public["connections"][0]["config"]["has_password"] is True
+        assert "password" not in public["connections"][0]["config"]
+
+
 def test_legacy_plaintext_data_connection_secret_is_rewritten_on_read(tmp_path, monkeypatch):
     from agentic.business_data.connections_store import get_data_connection
 
@@ -566,4 +636,136 @@ def test_data_connection_test_route_probes_mindsdb_auth_and_query(tmp_path, monk
             },
             "timeout": 15,
         },
+    ]
+
+
+def test_data_connection_test_route_probes_neo4j_service(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeResult:
+        def single(self):
+            return {"ok": 1}
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, query):
+            calls.append(("run", query))
+            return FakeResult()
+
+    class FakeDriver:
+        def verify_connectivity(self):
+            calls.append(("verify", None))
+
+        def session(self, database=None):
+            calls.append(("session", database))
+            return FakeSession()
+
+        def close(self):
+            calls.append(("close", None))
+
+    class FakeGraphDatabase:
+        @staticmethod
+        def driver(uri, auth=None, connection_timeout=None):
+            calls.append(("driver", uri, auth, connection_timeout))
+            return FakeDriver()
+
+    monkeypatch.setitem(sys.modules, "neo4j", SimpleNamespace(GraphDatabase=FakeGraphDatabase))
+    create_response = client.post(
+        "/agentic/data-connections",
+        headers=headers,
+        json={
+            "id": "test-neo4j",
+            "name": "Test Neo4J",
+            "provider": "neo4j",
+            "config": {
+                "uri": "bolt://neo4j.example.com:7687",
+                "database": "domain",
+                "username": "neo4j",
+                "password": "secret-password",
+                "workspace_property": "d2o_workspace_id",
+            },
+        },
+    )
+    assert create_response.status_code == 201
+
+    response = client.post("/agentic/data-connections/test-neo4j/test", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "Neo4J 连接成功" in payload["message"]
+    assert calls == [
+        ("driver", "bolt://neo4j.example.com:7687", ("neo4j", "secret-password"), 15),
+        ("verify", None),
+        ("session", "domain"),
+        ("run", "RETURN 1 AS ok"),
+        ("close", None),
+    ]
+
+
+def test_data_connection_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"name": "demo"}
+
+    def fake_get(url, headers=None, auth=None, timeout=None):
+        calls.append({
+            "url": url,
+            "headers": headers or {},
+            "auth": auth,
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+    create_response = client.post(
+        "/agentic/data-connections",
+        headers=headers,
+        json={
+            "id": "test-hugegraph",
+            "name": "Test HugeGraph",
+            "provider": "hugegraph",
+            "config": {
+                "url": "https://hugegraph.example.com",
+                "graph": "demo",
+                "username": "graph-user",
+                "password": "secret-password",
+                "token": "secret-token",
+                "workspace_property": "d2o_workspace_id",
+            },
+        },
+    )
+    assert create_response.status_code == 201
+
+    response = client.post("/agentic/data-connections/test-hugegraph/test", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "HugeGraph 连接成功" in payload["message"]
+    assert calls == [
+        {
+            "url": "https://hugegraph.example.com/graphs/demo/schema",
+            "headers": {"Authorization": "Bearer secret-token"},
+            "auth": ("graph-user", "secret-password"),
+            "timeout": 15,
+        }
     ]

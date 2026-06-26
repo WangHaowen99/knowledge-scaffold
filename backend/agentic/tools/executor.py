@@ -54,15 +54,30 @@ def execute_tool_batch(
         pending_safe_batch = []
 
     for task in tasks:
+        if _outputs_contain_terminal(outputs):
+            break
         if task["spec"].concurrency_safe:
             pending_safe_batch.append(task)
             continue
         flush_safe_batch()
+        if _outputs_contain_terminal(outputs):
+            break
         outputs.append(_execute_single_task(task, context, subagent_event_emitter))
-    flush_safe_batch()
+        if _outputs_contain_terminal(outputs):
+            break
+    if not _outputs_contain_terminal(outputs):
+        flush_safe_batch()
 
     outputs.sort(key=lambda item: item["index"])
     return _aggregate_outputs(outputs)
+
+
+def _outputs_contain_terminal(outputs: List[Dict[str, Any]]) -> bool:
+    for output in outputs:
+        outcome = output.get("outcome") if isinstance(output, Mapping) else None
+        if bool(getattr(outcome, "terminal", False)):
+            return True
+    return False
 
 
 def _aggregate_outputs(outputs: List[Dict[str, Any]]) -> ToolBatchResult:
