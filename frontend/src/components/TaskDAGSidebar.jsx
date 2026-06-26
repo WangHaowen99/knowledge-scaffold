@@ -119,7 +119,6 @@ function buildOntologyContextRest(params, ontologyLabelMap = null) {
     root: '',
     operation: '逻辑',
     object: '实体',
-    asset: '公共文件',
   };
 
   if (resource === 'root') {

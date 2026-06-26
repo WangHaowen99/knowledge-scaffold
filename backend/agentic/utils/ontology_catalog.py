@@ -11,26 +11,6 @@ import yaml
 
 from .ontologies import OntologyManifest, get_ontology_registry
 
-ASSET_TEXT_EXTENSIONS = {
-    ".conf",
-    ".cfg",
-    ".ini",
-    ".env",
-    ".properties",
-    ".yaml",
-    ".yml",
-    ".json",
-    ".toml",
-    ".txt",
-    ".md",
-    ".csv",
-    ".tsv",
-    ".sql",
-    ".xml",
-}
-ASSET_TEXT_FILENAMES = {".env"}
-ASSET_MAX_READ_BYTES = 512_000
-
 _SCRIPT_ENTRY_PATTERN = re.compile(r"^-\s*`([^`]+)`\s*->\s*`([^`]+)`\s*$")
 _SCRIPT_ARGS_PATTERN = re.compile(r"`args`\s*:\s*`([^`]+)`")
 _SCRIPT_PARAMETERS_PATTERN = re.compile(r"`(?:parameters|params)`\s*:\s*`([^`]+)`")
@@ -89,91 +69,6 @@ def read_required_text(path: Path, label: str) -> Tuple[Optional[str], Optional[
     if not path.is_file():
         return None, "Error: {} is not a file.".format(label)
     return path.read_text(encoding="utf-8").strip(), None
-
-
-def is_supported_asset_file(path: Path) -> bool:
-    name = path.name.lower()
-    suffix = path.suffix.lower()
-    return name in ASSET_TEXT_FILENAMES or suffix in ASSET_TEXT_EXTENSIONS
-
-
-def supported_asset_formats_text() -> str:
-    formats = sorted(ASSET_TEXT_EXTENSIONS)
-    return ", ".join(formats)
-
-
-def find_assets_dir(ontology_dir: Path) -> Optional[Path]:
-    preferred = ontology_dir / "assets"
-    if preferred.is_dir():
-        return preferred
-    return None
-
-
-def build_asset_catalog(ontology_dir: Path) -> List[str]:
-    assets_dir = find_assets_dir(ontology_dir)
-    if assets_dir is None:
-        return []
-
-    keys: List[str] = []
-    base = assets_dir.resolve()
-    for path in sorted(assets_dir.rglob("*"), key=lambda item: item.relative_to(assets_dir).as_posix().lower()):
-        if not path.is_file():
-            continue
-        try:
-            resolved = path.resolve()
-            resolved.relative_to(base)
-        except ValueError:
-            continue
-        keys.append(path.relative_to(assets_dir).as_posix())
-    return keys
-
-
-def find_asset_file(ontology_dir: Path, key: str) -> Tuple[Optional[Path], Optional[str]]:
-    normalized_key = str(key or "").strip().replace("\\", "/").strip("/")
-    if not normalized_key:
-        return None, "Error: `key` is required when resource is `asset`."
-
-    assets_dir = find_assets_dir(ontology_dir)
-    if assets_dir is None:
-        return None, "Error: asset directory not found."
-
-    requested_path = Path(normalized_key)
-    if requested_path.is_absolute() or ".." in requested_path.parts:
-        return None, "Error: Invalid asset key."
-
-    base = assets_dir.resolve()
-    candidate = (base / requested_path).resolve()
-    try:
-        candidate.relative_to(base)
-    except ValueError:
-        return None, "Error: Invalid asset key."
-
-    if not candidate.exists() or not candidate.is_file():
-        available = build_asset_catalog(ontology_dir)
-        suffix = " Available keys: {}.".format(", ".join(available[:30])) if available else ""
-        return None, "Error: asset '{}' not found.{}".format(normalized_key, suffix)
-
-    if not is_supported_asset_file(candidate):
-        return None, (
-            "Error: Unsupported asset format '{}'. Supported formats: {}."
-        ).format(candidate.suffix.lower() or candidate.name, supported_asset_formats_text())
-
-    try:
-        if candidate.stat().st_size > ASSET_MAX_READ_BYTES:
-            return None, "Error: asset '{}' is too large to read.".format(normalized_key)
-    except OSError:
-        return None, "Error: failed to inspect asset '{}'.".format(normalized_key)
-
-    return candidate, None
-
-
-def read_required_asset_text(path: Path, label: str) -> Tuple[Optional[str], Optional[str]]:
-    try:
-        return path.read_text(encoding="utf-8").strip(), None
-    except UnicodeDecodeError:
-        return None, "Error: {} is not valid UTF-8 text.".format(label)
-    except OSError as exc:
-        return None, "Error: failed to read {}: {}".format(label, exc)
 
 
 def parse_markdown_table(markdown: str) -> List[Dict[str, str]]:
@@ -546,7 +441,6 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
         "rules_catalog": parse_markdown_table(rules_text) or rules_text,
         "metrics_catalog": parse_markdown_table(metrics_text) or metrics_text,
         "script_catalog": public_script_catalog(script_catalog),
-        "assets_catalog": build_asset_catalog(ontology_dir),
     }
 
 
@@ -585,9 +479,6 @@ def format_root_payload_compact(
         "",
         "script_catalog:",
         *_format_script_catalog(root_payload.get("script_catalog")),
-        "",
-        "assets_catalog:",
-        *_format_asset_catalog(root_payload.get("assets_catalog")),
     ]
 
 
@@ -668,53 +559,6 @@ def _format_script_catalog(catalog: Any) -> List[str]:
         else:
             lines.append("- {} (parameters: none)".format(label))
     return lines or ["- none"]
-
-
-def _format_asset_catalog(catalog: Any) -> List[str]:
-    if not catalog:
-        return ["- none"]
-    if not isinstance(catalog, list):
-        return _format_catalog(catalog)
-
-    keys = sorted(
-        {
-            str(item or "").strip().replace("\\", "/").strip("/")
-            for item in catalog
-            if str(item or "").strip()
-        }
-    )
-    if not keys:
-        return ["- none"]
-
-    tree: Dict[str, Any] = {}
-    for key in keys:
-        node = tree
-        parts = [part for part in key.split("/") if part]
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = None
-
-    lines = [
-        "supported formats: {}".format(supported_asset_formats_text()),
-        "key format: pass the shown file key to ontology_context(resource=\"asset\", key=...).",
-    ]
-    lines.extend(_format_asset_tree(tree, prefix="", parent_key=""))
-    return lines
-
-
-def _format_asset_tree(tree: Dict[str, Any], *, prefix: str, parent_key: str) -> List[str]:
-    lines: List[str] = []
-    for name in sorted(tree):
-        value = tree[name]
-        key = "{}/{}".format(parent_key, name).strip("/")
-        if isinstance(value, dict):
-            lines.append("{}- {}/".format(prefix, name))
-            lines.extend(_format_asset_tree(value, prefix=prefix + "  ", parent_key=key))
-        elif key == name:
-            lines.append("{}- {}".format(prefix, name))
-        else:
-            lines.append("{}- {} (key: {})".format(prefix, name, key))
-    return lines
 
 
 def _format_script_parameter(parameter: Dict[str, Any]) -> str:

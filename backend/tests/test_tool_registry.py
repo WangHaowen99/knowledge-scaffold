@@ -399,11 +399,6 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     )
     (ontology_dir / "objects").mkdir(exist_ok=True)
     (ontology_dir / "objects" / "TargetItem.md").write_text("# TargetItem\n字段", encoding="utf-8")
-    (ontology_dir / "assets" / "common.conf").parent.mkdir(exist_ok=True)
-    (ontology_dir / "assets" / "common.conf").write_text("threshold=3\n", encoding="utf-8")
-    (ontology_dir / "assets" / "rules").mkdir(exist_ok=True)
-    (ontology_dir / "assets" / "rules" / "limits.ini").write_text("[limits]\nmax=10\n", encoding="utf-8")
-    (ontology_dir / "assets" / "binary.bin").write_bytes(b"\x00\x01")
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
     root_result = execute_tool_batch(
@@ -428,12 +423,7 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
         "parameter format: name=description required|optional type; type[] means pass an array value.\n"
         "- 流程A (parameters: none)"
     ) in root_content
-    assert "assets_catalog:\n" in root_content
-    assert "supported formats: " in root_content
-    assert "- common.conf" in root_content
-    assert "- rules/" in root_content
-    assert "  - limits.ini (key: rules/limits.ini)" in root_content
-    assert "- binary.bin" in root_content
+    assert "assets_catalog" not in root_content
 
     object_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "object", "key": "TargetItem"})],
@@ -442,18 +432,11 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     assert object_result.messages[0]["content"] == "object_key: TargetItem\n\ncontent:\n# TargetItem\n字段"
     assert object_result.state_updates["read_document_records"][0]["doc_type"] == "object_doc"
 
-    asset_result = execute_tool_batch(
+    unsupported_resource_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "rules/limits.ini"})],
         _make_context(project_root=str(tmp_path)),
     )
-    assert asset_result.messages[0]["content"] == "asset_key: rules/limits.ini\n\ncontent:\n[limits]\nmax=10"
-    assert asset_result.state_updates["read_document_records"][0]["path"].endswith("assets/rules/limits.ini")
-
-    unsupported_asset_result = execute_tool_batch(
-        [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "binary.bin"})],
-        _make_context(project_root=str(tmp_path)),
-    )
-    assert "Unsupported asset format" in unsupported_asset_result.messages[0]["content"]
+    assert "Unsupported ontology_context resource 'asset'" in unsupported_resource_result.messages[0]["content"]
 
 
 def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
@@ -2217,11 +2200,13 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
     memory_schema = TOOL_SPECS["memory"].schema["function"]
     spawn_schema = TOOL_SPECS["spawn_sub_agent"].schema["function"]
 
-    ontology_resource_description = ontology_schema["parameters"]["properties"]["resource"]["description"]
+    ontology_resource_property = ontology_schema["parameters"]["properties"]["resource"]
+    ontology_resource_description = ontology_resource_property["description"]
     assert "root returns ontology metadata and catalogs" in ontology_resource_description
     assert "operation returns operation content by key" in ontology_resource_description
     assert "object returns object/entity definition by key" in ontology_resource_description
-    assert "asset returns a shared text/config file by key" in ontology_resource_description
+    assert "asset" not in ontology_resource_property["enum"]
+    assert "asset" not in ontology_resource_description
     assert "resource='root'" not in ontology_description
     assert "semantic keys" not in ontology_description
     assert "file paths" not in ontology_description

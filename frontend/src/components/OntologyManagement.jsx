@@ -32,7 +32,6 @@ import OntologySelector from './OntologySelector';
 const ONTOLOGY_FOLDERS = [
   { key: 'objects', label: '实体' },
   { key: 'operations', label: '逻辑' },
-  { key: 'assets', label: '公共文件' },
 ];
 const MAX_MD_LINES = 500;
 const MAX_MD_BYTES = MAX_MD_LINES * 400;
@@ -61,8 +60,7 @@ function getDisplayFileName(fileName) {
   return fileName.replace(/\.md$/i, '');
 }
 
-function getDisplayFileNameForFolder(fileName, folderKey) {
-  if (folderKey === 'assets') return fileName;
+function getDisplayFileNameForFolder(fileName) {
   return getDisplayFileName(fileName);
 }
 
@@ -238,7 +236,6 @@ function OntologyManagement({
 
   const isAdmin = currentUser?.role === 'admin';
   const activeFolderLabel = ONTOLOGY_FOLDERS.find((item) => item.key === activeFolder)?.label || '';
-  const isAssetFolder = activeFolder === 'assets';
   const currentOntology = ontologyOptions.find((item) => item.id === ontologyId);
   const currentOntologyName = currentOntology?.name || ontologyId || '';
   const currentOntologyEnabled = currentOntology?.enabled !== false;
@@ -250,7 +247,7 @@ function OntologyManagement({
   ), [currentOntology?.versions, currentActiveVersion]);
   const [selectedVersion, setSelectedVersion] = useState('');
   const isDirty = editorContent !== originalContent;
-  const canEditActiveFile = isAdmin && !isAssetFolder;
+  const canEditActiveFile = isAdmin;
 
   const fetchFiles = useCallback(async (folder, preferredFileName = null) => {
     if (!ontologyId) {
@@ -405,10 +402,6 @@ function OntologyManagement({
       setError('仅管理员可以保存文件');
       return;
     }
-    if (isAssetFolder) {
-      setError('公共文件当前仅支持浏览，请通过本体 zip 更新。');
-      return;
-    }
     if (!selectedFileName || !isDirty) {
       return;
     }
@@ -452,7 +445,7 @@ function OntologyManagement({
     } finally {
       setSaving(false);
     }
-  }, [isAdmin, isAssetFolder, selectedFileName, isDirty, activeFolder, ontologyId, editorContent, selectedVersion, fetchFiles]);
+  }, [isAdmin, selectedFileName, isDirty, activeFolder, ontologyId, editorContent, selectedVersion, fetchFiles]);
 
   const handleUpload = useCallback(async (file) => {
     if (!isAdmin) {
@@ -460,10 +453,6 @@ function OntologyManagement({
       return;
     }
     if (!file) return;
-    if (isAssetFolder) {
-      setError('公共文件当前仅支持随本体 zip 导入。');
-      return;
-    }
 
     if (!file.name.toLowerCase().endsWith('.md')) {
       setError('仅支持上传 .md 文件');
@@ -524,7 +513,7 @@ function OntologyManagement({
     } finally {
       setUploading(false);
     }
-  }, [isAdmin, isAssetFolder, activeFolder, activeFolderLabel, ontologyId, selectedVersion, fetchFiles]);
+  }, [isAdmin, activeFolder, activeFolderLabel, ontologyId, selectedVersion, fetchFiles]);
 
   const handleUploadFileSelect = useCallback((e) => {
     if (!isAdmin) {
@@ -1201,7 +1190,7 @@ function OntologyManagement({
                     className="btn btn-secondary btn-compact"
                     onClick={() => isAdmin && fileInputRef.current?.click()}
                     disabled={!canEditActiveFile || uploading}
-                    title={isAssetFolder ? '公共文件请通过本体 zip 更新' : '上传 Markdown 文件'}
+                    title="上传 Markdown 文件"
                     type="button"
                   >
                     {uploading ? (
@@ -1289,37 +1278,35 @@ function OntologyManagement({
                 <div className="sops-editor-file">{selectedFileName || '未选择文件'}</div>
               </div>
               <div className="sops-editor-actions">
-                {!isAssetFolder && (
-                  <div className="sops-preview-modes">
-                    <button
-                      className={`sops-preview-mode ${previewMode === 'edit' ? 'active' : ''}`}
-                      onClick={() => setPreviewMode('edit')}
-                      type="button"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      className={`sops-preview-mode ${previewMode === 'preview' ? 'active' : ''}`}
-                      onClick={() => setPreviewMode('preview')}
-                      type="button"
-                    >
-                      渲染
-                    </button>
-                    <button
-                      className={`sops-preview-mode ${previewMode === 'split' ? 'active' : ''}`}
-                      onClick={() => setPreviewMode('split')}
-                      type="button"
-                    >
-                      同步
-                    </button>
-                  </div>
-                )}
+                <div className="sops-preview-modes">
+                  <button
+                    className={`sops-preview-mode ${previewMode === 'edit' ? 'active' : ''}`}
+                    onClick={() => setPreviewMode('edit')}
+                    type="button"
+                  >
+                    编辑
+                  </button>
+                  <button
+                    className={`sops-preview-mode ${previewMode === 'preview' ? 'active' : ''}`}
+                    onClick={() => setPreviewMode('preview')}
+                    type="button"
+                  >
+                    渲染
+                  </button>
+                  <button
+                    className={`sops-preview-mode ${previewMode === 'split' ? 'active' : ''}`}
+                    onClick={() => setPreviewMode('split')}
+                    type="button"
+                  >
+                    同步
+                  </button>
+                </div>
                 <button
                   className="btn btn-primary"
                   onClick={handleSave}
                   disabled={!canEditActiveFile || !selectedFileName || !isDirty || saving || loadingContent}
                   type="button"
-                  title={isAssetFolder ? '公共文件请通过本体 zip 更新' : '保存修改'}
+                  title="保存修改"
                 >
                   {saving ? (
                     <>
@@ -1337,14 +1324,12 @@ function OntologyManagement({
             </div>
 
             {!selectedFileName ? (
-              <div className="sops-editor-empty">请选择一个{isAssetFolder ? '公共文件' : 'Markdown 文件'}</div>
+              <div className="sops-editor-empty">请选择一个 Markdown 文件</div>
             ) : loadingContent ? (
               <div className="sops-editor-empty">
                 <Loader2 size={22} className="spin" />
                 <span>加载内容中...</span>
               </div>
-            ) : isAssetFolder ? (
-              <pre className="sops-asset-preview">{editorContent || '空文件'}</pre>
             ) : previewMode === 'edit' ? (
               <textarea
                 className="sops-editor-textarea"
@@ -1485,10 +1470,10 @@ function OntologyManagement({
             </h3>
             <p>
               {deleteConfirmStep === 1 && deleteConfirmTarget === 'ontology'
-                ? `将删除本体“${currentOntologyName || ontologyId}”（ID: ${ontologyId}）及其全部版本、实体、逻辑、脚本和公共文件。`
+                ? `将删除本体“${currentOntologyName || ontologyId}”（ID: ${ontologyId}）及其全部版本、实体、逻辑和脚本。`
                 : null}
               {deleteConfirmStep === 1 && deleteConfirmTarget !== 'ontology'
-                ? `将删除本体“${currentOntologyName || ontologyId}”（ID: ${ontologyId}）的版本 ${selectedVersion}，以及该版本的全部实体/逻辑/脚本/公共文件。`
+                ? `将删除本体“${currentOntologyName || ontologyId}”（ID: ${ontologyId}）的版本 ${selectedVersion}，以及该版本的全部实体/逻辑/脚本。`
                 : null}
               {deleteConfirmStep !== 1 && deleteConfirmTarget === 'ontology'
                 ? `删除后不可恢复。确认彻底删除“${currentOntologyName || ontologyId}”？`

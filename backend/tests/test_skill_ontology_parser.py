@@ -105,8 +105,6 @@ def test_build_file_mapping_uses_new_modeling_layout(tmp_path):
     _write_logic(source_root / "logic" / "供应商查询.md")
     (source_root / "action" / "supplier_lookup.py").parent.mkdir(parents=True, exist_ok=True)
     (source_root / "action" / "supplier_lookup.py").write_text("print('ok')\n", encoding="utf-8")
-    (source_root / "asset" / "common.conf").parent.mkdir(parents=True, exist_ok=True)
-    (source_root / "asset" / "common.conf").write_text("threshold=3\n", encoding="utf-8")
     (source_root / "SKILL.md").write_text("---\nid: demo\nname: Demo\n---\n", encoding="utf-8")
 
     mapping = build_file_mapping(source_root, target_root)
@@ -114,7 +112,7 @@ def test_build_file_mapping_uses_new_modeling_layout(tmp_path):
     assert mapping["objects"] == [{"source": "object/物料.md", "target": "objects/物料.md"}]
     assert mapping["operations"] == [{"source": "logic/供应商查询.md", "target": "operations/供应商查询.md"}]
     assert mapping["scripts"] == [{"source": "action/supplier_lookup.py", "target": "scripts/supplier_lookup.py"}]
-    assert mapping["assets"] == [{"source": "asset/common.conf", "target": "assets/common.conf"}]
+    assert "assets" not in mapping
     assert mapping["warnings"] == []
 
 
@@ -132,10 +130,6 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
     (source_root / "action" / "supplier_lookup.py").write_text("print('supplier')\n", encoding="utf-8")
     (source_root / "action" / "nested" / "cleanup.py").parent.mkdir(parents=True, exist_ok=True)
     (source_root / "action" / "nested" / "cleanup.py").write_text("print('cleanup')\n", encoding="utf-8")
-    (source_root / "asset" / "common.conf").parent.mkdir(parents=True, exist_ok=True)
-    (source_root / "asset" / "common.conf").write_text("threshold=3\n", encoding="utf-8")
-    (source_root / "asset" / "rules" / "limits.ini").parent.mkdir(parents=True, exist_ok=True)
-    (source_root / "asset" / "rules" / "limits.ini").write_text("[limits]\nmax=10\n", encoding="utf-8")
 
     result = run(source_root=source_root, target_root=target_root)
 
@@ -171,13 +165,12 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
     assert (target_root / "scripts" / "supplier_lookup.py").read_text(encoding="utf-8") == "print('supplier')\n"
     assert (target_root / "scripts" / "cleanup.py").read_text(encoding="utf-8") == "print('cleanup')\n"
     assert not (target_root / "operations" / "supplier_lookup.md").exists()
-    assert (target_root / "assets" / "common.conf").read_text(encoding="utf-8") == "threshold=3\n"
-    assert (target_root / "assets" / "rules" / "limits.ini").read_text(encoding="utf-8") == "[limits]\nmax=10\n"
+    assert not (target_root / "assets").exists()
 
     assert result["objects_trimmed"]["count"] == 1
     assert result["operations_count"] == 2
     assert result["scripts"]["count"] == 2
-    assert result["assets"]["count"] == 2
+    assert "assets" not in result
 
 
 def test_run_reads_compatible_entity_titles_for_object_summary(tmp_path):

@@ -5,7 +5,6 @@ The source layout is intentionally narrow:
 - ``object/**/*.md`` describes business objects.
 - ``logic/**/*.md`` describes business logic.
 - ``action/**/*.py`` registers executable scripts.
-- ``asset/**/*`` carries shared runtime/model-readable asset files.
 """
 
 from __future__ import annotations
@@ -36,12 +35,10 @@ from .models import OperationSummary
 OBJECT_SOURCE_DIR = "object"
 LOGIC_SOURCE_DIR = "logic"
 ACTION_SOURCE_DIR = "action"
-ASSET_SOURCE_DIR = "asset"
 
 OBJECTS_TARGET_DIR = "objects"
 OPERATIONS_TARGET_DIR = "operations"
 SCRIPTS_TARGET_DIR = "scripts"
-ASSETS_TARGET_DIR = "assets"
 
 OBJECT_ATTRIBUTES_SOURCE_TITLE = "对象属性清单"
 OBJECT_ATTRIBUTES_SOURCE_TITLES = (OBJECT_ATTRIBUTES_SOURCE_TITLE, "实体属性清单")
@@ -105,10 +102,6 @@ def compile_modeling_template(
         source_root / ACTION_SOURCE_DIR,
         target_root=target_root,
     )
-    assets_result = generate_assets(
-        source_root / ASSET_SOURCE_DIR,
-        target_root=target_root,
-    )
 
     output: Dict[str, object] = {
         "mapping": mapping,
@@ -147,7 +140,6 @@ def compile_modeling_template(
         "operations_list_path": operations_result["operations_list_path"],
         "objects_list_path": objects_list_result["path"],
         "scripts": scripts_result,
-        "assets": assets_result,
     }
 
     if write_mapping_json:
@@ -165,13 +157,11 @@ def build_file_mapping(source_root: Path, target_root: Path) -> Dict[str, object
     object_dir = source_root / OBJECT_SOURCE_DIR
     logic_dir = source_root / LOGIC_SOURCE_DIR
     action_dir = source_root / ACTION_SOURCE_DIR
-    asset_dir = source_root / ASSET_SOURCE_DIR
     skill_path = source_root / "SKILL.md"
 
     object_files = collect_md_files(object_dir, recursive=True)
     logic_files = collect_md_files(logic_dir, recursive=True)
     script_files = collect_action_files(action_dir)
-    asset_files = collect_asset_files(asset_dir)
 
     warnings: List[str] = []
     if not object_dir.exists():
@@ -198,16 +188,6 @@ def build_file_mapping(source_root: Path, target_root: Path) -> Dict[str, object
         "scripts": [
             {"source": relative_path(path, source_root), "target": "{}/{}".format(SCRIPTS_TARGET_DIR, path.name)}
             for path in script_files
-        ],
-        "assets": [
-            {
-                "source": relative_path(path, source_root),
-                "target": "{}/{}".format(
-                    ASSETS_TARGET_DIR,
-                    str(path.relative_to(asset_dir)).replace("\\", "/"),
-                ),
-            }
-            for path in asset_files
         ],
         "objects_list": {
             "source": None,
@@ -237,15 +217,6 @@ def collect_py_files(folder: Path) -> List[Path]:
         return []
     return sorted(
         [item for item in folder.rglob("*.py") if item.is_file()],
-        key=lambda p: str(p.relative_to(folder)).replace("\\", "/").lower(),
-    )
-
-
-def collect_asset_files(folder: Path) -> List[Path]:
-    if not folder.exists() or not folder.is_dir():
-        return []
-    return sorted(
-        [item for item in folder.rglob("*") if item.is_file()],
         key=lambda p: str(p.relative_to(folder)).replace("\\", "/").lower(),
     )
 
@@ -438,28 +409,6 @@ def generate_scripts(source_action_dir: Path, *, target_root: Path) -> Dict[str,
         "files": generated,
         "warnings": warnings,
         "scripts_list_path": str(scripts_list_path) if mappings else None,
-    }
-
-
-def generate_assets(source_asset_dir: Path, *, target_root: Path) -> Dict[str, object]:
-    asset_files = collect_asset_files(source_asset_dir)
-    target_assets_dir = target_root / ASSETS_TARGET_DIR
-    generated: List[str] = []
-
-    if asset_files:
-        target_assets_dir.mkdir(parents=True, exist_ok=True)
-
-    for source_file in asset_files:
-        relative = source_file.relative_to(source_asset_dir)
-        target_file = target_assets_dir / relative
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_file, target_file)
-        generated.append(str(target_file))
-
-    return {
-        "count": len(asset_files),
-        "files": generated,
-        "assets_dir": str(target_assets_dir) if asset_files else None,
     }
 
 
