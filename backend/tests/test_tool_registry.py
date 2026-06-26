@@ -23,6 +23,7 @@ from agentic.tools.registry import (
     TOOL_SPECS,
     _ARGUMENT_PARSE_ERROR_KEY,
     execute_tool_batch,
+    get_regular_tools_schema,
     get_tools_schema,
     is_tool_available,
 )
@@ -384,6 +385,15 @@ def _patch_test_skill_registry(monkeypatch, tmp_path):
     registry = SkillRegistry(skill_dirs=[tmp_path / "skills"])
     registry.discover_skills()
     monkeypatch.setattr("agentic.tools.skill.get_skill_registry", lambda: registry)
+    monkeypatch.setattr("agentic.tools.registry.get_skill_registry", lambda: registry)
+    return registry
+
+
+def _patch_empty_skill_registry(monkeypatch, tmp_path):
+    registry = SkillRegistry(skill_dirs=[tmp_path / "skills"])
+    registry.discover_skills()
+    monkeypatch.setattr("agentic.tools.skill.get_skill_registry", lambda: registry)
+    monkeypatch.setattr("agentic.tools.registry.get_skill_registry", lambda: registry)
     return registry
 
 
@@ -2457,7 +2467,10 @@ def test_registry_propagates_workflow_cancellation_from_tool(monkeypatch):
         )
 
 
-def test_registry_enforces_tool_whitelist_for_sub_agents():
+def test_registry_enforces_tool_whitelist_for_sub_agents(tmp_path, monkeypatch):
+    _write_demo_skill(tmp_path)
+    _patch_test_skill_registry(monkeypatch, tmp_path)
+
     subagent_tools = [tool["function"]["name"] for tool in get_tools_schema("subagent")]
     removed_tool = "ask" + "_user"
 
@@ -2484,7 +2497,9 @@ def test_registry_enforces_tool_whitelist_for_sub_agents():
     assert removed_tool not in subagent_tools
 
 
-def test_registry_no_longer_registers_removed_hitl_tool():
+def test_registry_no_longer_registers_removed_hitl_tool(tmp_path, monkeypatch):
+    _patch_empty_skill_registry(monkeypatch, tmp_path)
+
     removed_tool = "ask" + "_user"
 
     assert removed_tool not in TOOL_SPECS
@@ -2499,7 +2514,9 @@ def test_registry_no_longer_registers_removed_hitl_tool():
     )
 
 
-def test_registry_exposes_request_user_interaction_to_main_only():
+def test_registry_exposes_request_user_interaction_to_main_only(tmp_path, monkeypatch):
+    _patch_empty_skill_registry(monkeypatch, tmp_path)
+
     main_tools = [tool["function"]["name"] for tool in get_tools_schema("main")]
     subagent_tools = [tool["function"]["name"] for tool in get_tools_schema("subagent")]
 
@@ -2507,7 +2524,9 @@ def test_registry_exposes_request_user_interaction_to_main_only():
     assert "request_user_interaction" not in subagent_tools
 
 
-def test_registry_exposes_single_subagent_tool_for_main_agent():
+def test_registry_exposes_single_subagent_tool_for_main_agent(tmp_path, monkeypatch):
+    _patch_empty_skill_registry(monkeypatch, tmp_path)
+
     main_tools = [tool["function"]["name"] for tool in get_tools_schema("main")]
 
     assert "spawn_sub_agent" in main_tools
@@ -2535,7 +2554,10 @@ def test_spawn_sub_agent_schema_contains_invocation_contract_not_plan_sync_guida
     assert "sub_operation_keys" in context_description
 
 
-def test_registry_can_hide_memory_tools_for_main_agent():
+def test_registry_can_hide_memory_tools_for_main_agent(tmp_path, monkeypatch):
+    _write_demo_skill(tmp_path)
+    _patch_test_skill_registry(monkeypatch, tmp_path)
+
     main_tools = [
         tool["function"]["name"]
         for tool in get_tools_schema("main", include_memory=False)
@@ -2546,6 +2568,32 @@ def test_registry_can_hide_memory_tools_for_main_agent():
     assert "memory" not in main_tools
     assert "store_memory" not in main_tools
     assert "recall_memory" not in main_tools
+
+
+def test_registry_hides_skill_schema_when_no_skills_are_registered(tmp_path, monkeypatch):
+    _patch_empty_skill_registry(monkeypatch, tmp_path)
+
+    main_tools = [tool["function"]["name"] for tool in get_tools_schema("main")]
+    subagent_tools = [tool["function"]["name"] for tool in get_tools_schema("subagent")]
+    regular_tools = [tool["function"]["name"] for tool in get_regular_tools_schema()]
+
+    assert "skill" not in main_tools
+    assert "skill" not in subagent_tools
+    assert "skill" not in regular_tools
+    assert "skill" in TOOL_SPECS
+
+
+def test_registry_exposes_skill_schema_when_skills_are_registered(tmp_path, monkeypatch):
+    _write_demo_skill(tmp_path)
+    _patch_test_skill_registry(monkeypatch, tmp_path)
+
+    main_tools = [tool["function"]["name"] for tool in get_tools_schema("main")]
+    subagent_tools = [tool["function"]["name"] for tool in get_tools_schema("subagent")]
+    regular_tools = [tool["function"]["name"] for tool in get_regular_tools_schema()]
+
+    assert "skill" in main_tools
+    assert "skill" in subagent_tools
+    assert "skill" in regular_tools
 
 
 def test_registry_hides_web_search_until_enabled_for_schema_exposure():

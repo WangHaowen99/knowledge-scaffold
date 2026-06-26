@@ -15,6 +15,7 @@ from .request_user_interaction import RequestUserInteractionTool
 from .skill import SkillTool
 from .spawn_sub_agent import SpawnSubAgentTool
 from .web_search import WebSearchTool
+from ..utils.skills import get_skill_registry
 
 # Re-export execute_tool_batch for backward compatibility
 from .executor import execute_tool_batch  # noqa: F401
@@ -62,8 +63,11 @@ def get_tool_specs_for_caller(
     include_web_search: bool = False,
 ) -> List[BaseTool]:
     specs: List[BaseTool] = []
+    has_skills = _has_registered_skills()
     for spec in TOOL_SPECS.values():
         if caller not in spec.allowed_callers:
+            continue
+        if spec.name == "skill" and not has_skills:
             continue
         if not include_memory and spec.category == "memory":
             continue
@@ -99,8 +103,11 @@ def get_regular_tools_schema(
     include_web_search: bool = False,
 ) -> List[Dict[str, Any]]:
     schemas = []
+    has_skills = _has_registered_skills()
     for spec in TOOL_SPECS.values():
         if spec.category not in {"regular", "business_data_search", "web_search"}:
+            continue
+        if spec.name == "skill" and not has_skills:
             continue
         if spec.category == "web_search" and not include_web_search:
             continue
@@ -120,6 +127,14 @@ def get_universal_tools_schema(
         include_memory=include_memory,
         include_web_search=include_web_search,
     )
+
+
+def _has_registered_skills() -> bool:
+    try:
+        return bool(get_skill_registry().list_skills())
+    except Exception:
+        logger.warning("Failed to inspect skill registry while building tool schemas", exc_info=True)
+        return False
 
 
 # ============================================================================
