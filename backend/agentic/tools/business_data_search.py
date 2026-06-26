@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Callable, Dict, Iterator, Optional, Set
 
 from .base import ToolCaller, ToolContext, ToolOutcome
@@ -26,9 +27,11 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
         "name": "business_data_search",
         "description": (
             "Query actual business records for a loaded ontology entity. "
-            "Use this for concrete domain data. "
+            "Use this for concrete domain data, including SQL-like records, MindsDB-backed data, "
+            "graph database records, object relationships, paths, counts, and aggregates. "
             "For reliable field and entity names, prefer loading the matching object definition with "
             "ontology_context(resource='object'). "
+            "Do not ask users for database connection details; the selected ontology binding resolves the provider. "
             "Use one entity per call unless querying a join table explicitly defined in object definitions. "
             "An empty result means no matching data by default; do not retry the same retrieval goal unless "
             "the previous attempt failed due to an explicit prerequisite, argument, or runtime error."
@@ -73,6 +76,10 @@ def handle_business_data_search(
     query: str,
     entity: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    model_profile_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    turn_id: int = 0,
     event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
     tool_call_id: Optional[str] = None,
 ) -> str:
@@ -114,6 +121,10 @@ def handle_business_data_search(
             ontology_id=normalized_ontology_id,
             entity=normalized_entity,
             query=normalized_query,
+            model_profile_id=str(model_profile_id or ""),
+            run_id=str(run_id or ""),
+            session_id=str(session_id or ""),
+            turn_id=int(turn_id or 0),
         )
         for event in query_business_data_stream(
             request,
@@ -128,7 +139,14 @@ def handle_business_data_search(
                 final_content = str(event.get("content") or "").strip()
     except Exception as e:
         logger.exception("Unexpected error during database search: %s", str(e))
-        return "Error: Unexpected error during database search."
+        return _json_error_result(
+            provider=str(getattr(connection, "provider", "") or ""),
+            entity=normalized_entity,
+            query=normalized_query,
+            error_code="BUSINESS_DATA_SEARCH_UNEXPECTED_ERROR",
+            error=_public_exception_message(e),
+            retryable=True,
+        )
 
     logger.info(
         "Business data search completed: connection_id=%s provider=%s tool_call_id=%s result=%s",
@@ -138,6 +156,38 @@ def handle_business_data_search(
         final_content,
     )
     return final_content
+
+
+def _json_error_result(
+    *,
+    provider: str,
+    entity: str,
+    query: str,
+    error_code: str,
+    error: str,
+    retryable: bool,
+) -> str:
+    return json.dumps(
+        {
+            "success": False,
+            "provider": provider,
+            "engine": "business_data_search",
+            "entity": entity,
+            "query": query,
+            "error_code": error_code,
+            "error": error,
+            "retryable": retryable,
+            "warnings": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _public_exception_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        message = exc.__class__.__name__
+    return message[:500]
 
 
 def _emit_business_data_search_event(
@@ -183,6 +233,10 @@ class BusinessDataSearchTool:
         content = handle_business_data_search(
             **args,
             workspace_id=context.workspace_id,
+            model_profile_id=context.model_profile_id,
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
             event_emitter=event_emitter,
             tool_call_id=tool_call_id,
         )

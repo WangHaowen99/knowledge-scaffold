@@ -17,6 +17,10 @@ class BusinessDataSearchRequest:
     ontology_id: str
     entity: str
     query: str
+    model_profile_id: str = ""
+    run_id: str = ""
+    session_id: str = ""
+    turn_id: int = 0
 
 
 def query_business_data_stream(
@@ -39,7 +43,12 @@ def query_business_data_stream(
             connection.provider: {
                 **dict(connection.config),
                 "_workspace_root": workspace_root,
+                "workspace_id": request.workspace_id,
                 "ontology_id": request.ontology_id,
+                "model_profile_id": request.model_profile_id,
+                "run_id": request.run_id,
+                "session_id": request.session_id,
+                "turn_id": request.turn_id,
             },
         }
     }

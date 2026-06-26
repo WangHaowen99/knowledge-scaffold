@@ -13,7 +13,7 @@ import pytest
 from agentic.config.settings import AgentConfig, LimitsConfig, WebSearchConfig
 from agentic.loop.jiuwen import smoke as jiuwen_smoke
 from agentic.loop.jiuwen.smoke import run_jiuwen_smoke
-from agentic.loop.jiuwen.tools import jiuwen_tool_info_from_spec
+from agentic.loop.jiuwen.tools import JiuwenTerminalToolBatch, jiuwen_tool_info_from_spec
 from agentic.loop.jiuwen.trace import jiuwen_tool_call_to_trace_tool_call
 from agentic.loop.jiuwen_adapter import (
     CurrentRuntimeToolAdapter,
@@ -2601,6 +2601,95 @@ def test_current_runtime_tool_adapter_executes_current_tool_batch_and_merges_sta
     }
     assert state["results"] == {"existing": "kept", "tool": "done"}
     assert state["errors"] == ["soft warning"]
+
+
+def test_current_runtime_tool_adapter_raises_terminal_batch_without_callback():
+    state = {"messages": [], "results": {}}
+
+    def fake_executor(tool_calls, context):
+        del context
+        return ToolBatchResult(
+            messages=[
+                {
+                    "role": "tool",
+                    "content": "需要用户补充信息",
+                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "name": "request_user_interaction",
+                }
+            ],
+            state_updates={
+                "pending_user_interaction": {"id": "interaction_1", "type": "input"},
+                "final_output": {"type": "user_interaction", "text": "需要用户补充信息"},
+            },
+            terminal=True,
+        )
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="request_user_interaction",
+        state=state,
+        context_factory=lambda: SimpleNamespace(name="ctx"),
+        tool_batch_executor=fake_executor,
+        terminal_tool_batch_callback=None,
+    )
+
+    with pytest.raises(JiuwenTerminalToolBatch) as raised:
+        asyncio.run(adapter.invoke({"type": "input", "prompt": "需要用户补充信息"}))
+
+    assert raised.value.batch_result.terminal is True
+    assert state["pending_user_interaction"]["id"] == "interaction_1"
+    assert state["final_output"] == {"type": "user_interaction", "text": "需要用户补充信息"}
+    assert len([message for message in state["messages"] if message.get("role") == "tool"]) == 1
+
+
+def test_current_runtime_tool_adapter_does_not_repeat_pending_user_interaction():
+    calls = []
+    state = {"messages": [], "results": {}}
+
+    def fake_executor(tool_calls, context):
+        del context
+        calls.append(tool_calls[0].tool_call_id)
+        time.sleep(0.05)
+        return ToolBatchResult(
+            messages=[
+                {
+                    "role": "tool",
+                    "content": "请补充当前切换批次",
+                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "name": "request_user_interaction",
+                }
+            ],
+            state_updates={
+                "pending_user_interaction": {"id": "interaction_current_batch", "type": "input"},
+                "final_output": {"type": "user_interaction", "text": "请补充当前切换批次"},
+            },
+            terminal=True,
+        )
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="request_user_interaction",
+        state=state,
+        context_factory=lambda: SimpleNamespace(name="ctx"),
+        tool_batch_executor=fake_executor,
+        terminal_tool_batch_callback=None,
+    )
+
+    async def invoke_twice():
+        return await asyncio.gather(
+            adapter.invoke({"type": "input", "prompt": "请补充当前切换批次"}),
+            adapter.invoke({"type": "input", "prompt": "请补充当前切换批次"}),
+            return_exceptions=True,
+        )
+
+    results = asyncio.run(invoke_twice())
+
+    assert len(calls) == 1
+    assert all(isinstance(result, JiuwenTerminalToolBatch) for result in results)
+    assert state["pending_user_interaction"]["id"] == "interaction_current_batch"
+    assistant_messages = [message for message in state["messages"] if message.get("role") == "assistant"]
+    tool_messages = [message for message in state["messages"] if message.get("role") == "tool"]
+    assert len(assistant_messages) == 1
+    assert len(assistant_messages[0]["tool_calls"]) == 1
+    assert len(tool_messages) == 1
 
 
 def test_current_runtime_tool_adapter_parses_json_string_tool_arguments_for_executor():
