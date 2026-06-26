@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Type
 
 from ..ontology_search.base import OntologySearchProvider
+from ..ontology_search.providers.dataagent_provider import DataAgentProvider
 from ..ontology_search.providers.mindsdb_provider import MindsDBOntologySearchProvider
 from ..ontology_search.providers.nl2sql_http_provider import NL2SQLHttpProvider
 from ..ontology_search.providers.nl2sql_template import NL2SQLTemplateProvider
@@ -72,6 +73,18 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("default_agent_name", "Agent 名称", default="my_agent"),
             ProviderField("project_name", "Project 名称", default="mindsdb"),
             ProviderField("requires_auth", "需要鉴权", type="bool", default=False),
+            ProviderField("timeout_seconds", "超时时间", type="int", default=600),
+            ProviderField("max_retries", "最大重试次数", type="int", default=3),
+        ],
+    ),
+    "dataagent": BusinessDataProviderSpec(
+        name="dataagent",
+        label="DataAgent",
+        description="通过 DataAgent A2A REST 服务进行自然语言数据查询与分析。",
+        factory=DataAgentProvider,
+        fields=[
+            ProviderField("url", "DataAgent 服务地址", required=True),
+            ProviderField("token", "访问 Token", secret=True),
             ProviderField("timeout_seconds", "超时时间", type="int", default=600),
             ProviderField("max_retries", "最大重试次数", type="int", default=3),
         ],

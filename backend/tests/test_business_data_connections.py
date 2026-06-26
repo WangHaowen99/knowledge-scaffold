@@ -207,10 +207,16 @@ def test_graph_provider_schemas_and_secrets_are_publicized():
 
     schemas = {item["name"]: item for item in list_provider_schemas()}
 
+    assert "dataagent" in schemas
     assert "neo4j" in schemas
     assert "hugegraph" in schemas
+    dataagent_fields = {field["name"]: field for field in schemas["dataagent"]["fields"]}
     neo4j_fields = {field["name"]: field for field in schemas["neo4j"]["fields"]}
     hugegraph_fields = {field["name"]: field for field in schemas["hugegraph"]["fields"]}
+    assert dataagent_fields["url"]["required"] is True
+    assert dataagent_fields["token"]["secret"] is True
+    assert dataagent_fields["timeout_seconds"]["default"] == 600
+    assert dataagent_fields["max_retries"]["default"] == 3
     assert neo4j_fields["password"]["secret"] is True
     assert neo4j_fields["max_result_rows"]["default"] == 100
     assert "enable_graph_agent" not in neo4j_fields
@@ -237,6 +243,19 @@ def test_graph_provider_schemas_and_secrets_are_publicized():
     assert public["has_password"] is True
     assert "password" not in public
     assert public["uri"] == "bolt://neo4j.test:7687"
+
+    public_dataagent = publicize_provider_config(
+        "dataagent",
+        {
+            "url": "https://dataagent.example.com",
+            "token": "secret-token",
+            "timeout_seconds": 120,
+            "max_retries": 2,
+        },
+    )
+    assert public_dataagent["has_token"] is True
+    assert "token" not in public_dataagent
+    assert public_dataagent["url"] == "https://dataagent.example.com"
 
 
 def test_neo4j_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch):
@@ -637,6 +656,145 @@ def test_data_connection_test_route_probes_mindsdb_auth_and_query(tmp_path, monk
             "timeout": 15,
         },
     ]
+
+
+def test_data_connection_test_route_probes_dataagent_service(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"name": "DataAgent", "version": "1.0.0"}
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append({
+            "url": url,
+            "headers": headers or {},
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+    create_response = client.post(
+        "/agentic/data-connections",
+        headers=headers,
+        json={
+            "id": "test-dataagent",
+            "name": "Test DataAgent",
+            "provider": "dataagent",
+            "config": {
+                "url": "https://dataagent.example.com/",
+                "token": "secret-token",
+                "timeout_seconds": 120,
+            },
+        },
+    )
+    assert create_response.status_code == 201
+
+    response = client.post("/agentic/data-connections/test-dataagent/test", headers=headers)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert "DataAgent REST 服务连接正常" in payload["message"]
+    assert calls == [
+        {
+            "url": "https://dataagent.example.com/.well-known/agent-card.json",
+            "headers": {"Authorization": "Bearer secret-token"},
+            "timeout": 10,
+        }
+    ]
+
+
+def test_data_connection_test_route_probes_dataagent_legacy_agent_card(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeResponse:
+        text = "{}"
+
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise AssertionError("unexpected status")
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if url.endswith("/.well-known/agent-card.json"):
+            return FakeResponse(404, {"detail": "not found"})
+        return FakeResponse(200, {"name": "DataAgent"})
+
+    monkeypatch.setattr("requests.get", fake_get)
+    create_response = client.post(
+        "/agentic/data-connections",
+        headers=headers,
+        json={
+            "id": "test-dataagent-legacy",
+            "name": "Test DataAgent Legacy",
+            "provider": "dataagent",
+            "config": {"url": "https://dataagent.example.com/"},
+        },
+    )
+    assert create_response.status_code == 201
+
+    response = client.post("/agentic/data-connections/test-dataagent-legacy/test", headers=headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert calls == [
+        "https://dataagent.example.com/.well-known/agent-card.json",
+        "https://dataagent.example.com/.well-known/agent.json",
+    ]
+
+
+def test_data_connection_create_and_desensitize_dataagent(tmp_path, monkeypatch):
+    from agentic.business_data.connections_store import create_data_connection, get_data_connection, list_data_connections
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+
+    with workspace_scope("demo"):
+        create_data_connection(
+            {
+                "id": "demo-dataagent",
+                "name": "Demo DataAgent",
+                "provider": "dataagent",
+                "config": {
+                    "url": "https://dataagent.example.com/",
+                    "token": "secret-token",
+                    "timeout_seconds": 120,
+                },
+            },
+            workspace_id="demo",
+        )
+
+        raw_text = (paths.workspace_dir / "data-connections.json").read_text(encoding="utf-8")
+        raw = json.loads(raw_text)
+
+        assert "secret-token" not in raw_text
+        assert raw["connections"][0]["config"]["token"].startswith("enc:v1:")
+        stored = get_data_connection("demo-dataagent", workspace_id="demo")
+        assert stored.provider == "dataagent"
+        assert stored.config["url"] == "https://dataagent.example.com"
+        assert stored.config["token"] == "secret-token"
+
+        public = list_data_connections("demo")
+        conn = public["connections"][0]
+        assert conn["config"]["url"] == "https://dataagent.example.com"
+        assert conn["config"]["has_token"] is True
+        assert "token" not in conn["config"]
 
 
 def test_data_connection_test_route_probes_neo4j_service(tmp_path, monkeypatch):

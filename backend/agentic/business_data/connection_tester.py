@@ -11,6 +11,8 @@ import requests
 from .resolver import ResolvedBusinessDataConnection
 
 _NL2SQL_CONNECTION_PROBE_QUESTION = "连接测试"
+_DATAAGENT_AGENT_CARD_PATH = "/.well-known/agent-card.json"
+_DATAAGENT_LEGACY_AGENT_CARD_PATH = "/.well-known/agent.json"
 
 
 def _utc_now() -> str:
@@ -55,6 +57,8 @@ def test_business_data_connection(connection: ResolvedBusinessDataConnection) ->
         return _test_mindsdb(connection)
     if connection.provider in ("nl2sql_http", "nl2sql_template"):
         return _test_nl2sql(connection)
+    if connection.provider == "dataagent":
+        return _test_dataagent(connection)
     if connection.provider == "neo4j":
         return _test_neo4j(connection)
     if connection.provider == "hugegraph":
@@ -171,6 +175,54 @@ def _test_nl2sql(connection: ResolvedBusinessDataConnection) -> Dict[str, Any]:
         return {"success": False, "message": message, "tested_at": tested_at}
     except requests.exceptions.RequestException as exc:
         return {"success": False, "message": "{} 服务请求失败：{}".format(label, str(exc)), "tested_at": tested_at}
+
+
+def _test_dataagent(connection: ResolvedBusinessDataConnection) -> Dict[str, Any]:
+    tested_at = _utc_now()
+    config = dict(connection.config or {})
+    url = _coerce_string(config.get("url")).rstrip("/")
+    if not url:
+        return {"success": False, "message": "DataAgent 服务地址未配置", "tested_at": tested_at}
+
+    timeout = min(int(config.get("timeout_seconds") or 10), 10)
+    token = _coerce_string(config.get("token"))
+    headers: Dict[str, str] = {}
+    if token:
+        headers["Authorization"] = "Bearer {}".format(token)
+
+    try:
+        response = requests.get(
+            "{}{}".format(url, _DATAAGENT_AGENT_CARD_PATH),
+            headers=headers,
+            timeout=timeout,
+        )
+        if response.status_code == 404:
+            response = requests.get(
+                "{}{}".format(url, _DATAAGENT_LEGACY_AGENT_CARD_PATH),
+                headers=headers,
+                timeout=timeout,
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not _coerce_string(payload.get("name")):
+            return {"success": False, "message": "DataAgent AgentCard 响应格式无效", "tested_at": tested_at}
+        return {"success": True, "message": "DataAgent REST 服务连接正常", "tested_at": tested_at}
+    except requests.exceptions.HTTPError as exc:
+        response = exc.response
+        status_code = response.status_code if response is not None else "unknown"
+        detail = _sanitize_secret_text(_error_detail(response), [token])
+        message = "DataAgent REST 连接失败（HTTP {}）".format(status_code)
+        if detail:
+            message = "{}：{}".format(message, detail[:200])
+        return {"success": False, "message": message, "tested_at": tested_at}
+    except requests.exceptions.RequestException as exc:
+        return {
+            "success": False,
+            "message": "DataAgent REST 请求失败：{}".format(_sanitize_secret_text(str(exc), [token])),
+            "tested_at": tested_at,
+        }
+    except ValueError:
+        return {"success": False, "message": "DataAgent AgentCard 返回非 JSON 响应", "tested_at": tested_at}
 
 
 def _test_neo4j(connection: ResolvedBusinessDataConnection) -> Dict[str, Any]:
