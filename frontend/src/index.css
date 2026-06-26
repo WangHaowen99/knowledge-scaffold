@@ -8467,23 +8467,6 @@ details.tools-block[open] .tools-header::after {
   line-height: 1.7;
 }
 
-.sops-asset-preview {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  overflow: auto;
-  border: none;
-  border-radius: 0 0 10px 10px;
-  background: #fff;
-  color: var(--text);
-  font-family: 'SFMono-Regular', 'Menlo', 'Consolas', monospace;
-  font-size: 0.8rem;
-  line-height: 1.68;
-  padding: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .sops-markdown-preview h1,
 .sops-markdown-preview h2,
 .sops-markdown-preview h3,

@@ -133,7 +133,6 @@ function buildToolDisplay(segment) {
       root: '',
       operation: '逻辑',
       object: '实体',
-      asset: '公共文件',
     };
     const ontologyName = String(params?.ontology_name || params?.ontology_label || params?.name || '').trim();
     const ontologyId = String(params?.ontology_id || '').trim();
@@ -745,7 +744,7 @@ function ChatMessage({ msg, isInTimeline = false, isFirst = false, isLast = fals
                           if (toolName === 'ontology_context') {
                             const resource = String(params?.resource || '').trim();
                             const key = String(params?.key || '').trim();
-                            const resourceLabels = { root: '', operation: '逻辑', object: '实体', asset: '公共文件' };
+                            const resourceLabels = { root: '', operation: '逻辑', object: '实体' };
                             const ontologyName = String(params?.ontology_name || params?.ontology_label || params?.name || '').trim();
                             const ontologyId = String(params?.ontology_id || '').trim();
                             subtitle = resource === 'root'

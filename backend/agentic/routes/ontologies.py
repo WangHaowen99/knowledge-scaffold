@@ -26,11 +26,6 @@ from ..utils.ontologies import (
     save_ontology_manifest_data,
     set_ontology_active_version,
 )
-from ..utils.ontology_catalog import (
-    find_asset_file,
-    read_required_asset_text,
-    supported_asset_formats_text,
-)
 from ..business_data.bindings_store import (
     clear_ontology_data_binding_on_delete,
     get_ontology_data_binding,
@@ -51,7 +46,6 @@ ontologies_bp = Blueprint("ontologies", __name__, url_prefix="/agentic")
 ONTOLOGY_FOLDER_LABELS = {
     "operations": "逻辑",
     "objects": "实体",
-    "assets": "公共文件",
 }
 ONTOLOGY_MAX_ZIP_BYTES = 50 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
@@ -233,16 +227,6 @@ def _sanitize_md_filename(filename: str) -> Optional[str]:
     if Path(safe_name).suffix.lower() != ".md":
         return None
     return safe_name
-
-
-def _normalize_asset_key(value: str) -> Optional[str]:
-    normalized = str(value or "").strip().replace("\\", "/").strip("/")
-    if not normalized:
-        return None
-    requested_path = Path(normalized)
-    if requested_path.is_absolute() or ".." in requested_path.parts:
-        return None
-    return normalized
 
 
 def _operation_max_chars() -> int:
@@ -735,7 +719,7 @@ def list_ontology_files(ontology_id: str):
             return jsonify(payload), status_code
         folder_path, folder_key = _resolve_ontology_folder(ontology_id, request.args.get("folder", ""), version or None)
         if folder_path is None or folder_key is None:
-            return jsonify({"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}), 400
+            return jsonify({"error": "Invalid ontology or folder. Use 'operations' or 'objects'."}), 400
 
         if not folder_path.exists():
             return jsonify({
@@ -746,22 +730,14 @@ def list_ontology_files(ontology_id: str):
             })
 
         files = []
-        iterator = folder_path.rglob("*") if folder_key == "assets" else folder_path.iterdir()
-        for file_path in iterator:
+        for file_path in folder_path.iterdir():
             if not file_path.is_file():
                 continue
-            if folder_key != "assets" and file_path.suffix.lower() != ".md":
-                continue
-            if folder_key == "assets" and not _is_safe_path(folder_path, file_path):
+            if file_path.suffix.lower() != ".md":
                 continue
             stat_result = file_path.stat()
-            file_name = (
-                file_path.relative_to(folder_path).as_posix()
-                if folder_key == "assets"
-                else file_path.name
-            )
             files.append({
-                "name": file_name,
+                "name": file_path.name,
                 "size": stat_result.st_size,
                 "updated_at": int(stat_result.st_mtime),
             })
@@ -793,29 +769,7 @@ def get_ontology_file(ontology_id: str):
             return jsonify(payload), status_code
         folder_path, folder_key = _resolve_ontology_folder(ontology_id, request.args.get("folder", ""), version or None)
         if folder_path is None or folder_key is None:
-            return jsonify({"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}), 400
-
-        if folder_key == "assets":
-            safe_name = _normalize_asset_key(request.args.get("name", ""))
-            if not safe_name:
-                return jsonify({"error": "Invalid asset key"}), 400
-            version_dir = folder_path.parent
-            file_path, asset_error = find_asset_file(version_dir, safe_name)
-            if asset_error:
-                return jsonify({"error": asset_error}), 400
-            assert file_path is not None
-            content, read_error = read_required_asset_text(file_path, "asset '{}'".format(safe_name))
-            if read_error:
-                return jsonify({"error": read_error}), 400
-            return jsonify({
-                "folder": folder_key,
-                "label": ONTOLOGY_FOLDER_LABELS[folder_key],
-                "version": version,
-                "name": safe_name,
-                "content": content,
-                "read_only": True,
-                "supported_formats": supported_asset_formats_text(),
-            })
+            return jsonify({"error": "Invalid ontology or folder. Use 'operations' or 'objects'."}), 400
 
         safe_name = _sanitize_md_filename(request.args.get("name", ""))
         if not safe_name:
@@ -862,9 +816,7 @@ def update_ontology_file(ontology_id: str):
             return jsonify(payload), status_code
         folder_path, folder_key = _resolve_ontology_folder(ontology_id, data.get("folder", ""), version or None)
         if folder_path is None or folder_key is None:
-            return jsonify({"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}), 400
-        if folder_key == "assets":
-            return jsonify({"error": "Asset files are read-only in this editor."}), 400
+            return jsonify({"error": "Invalid ontology or folder. Use 'operations' or 'objects'."}), 400
 
         safe_name = _sanitize_md_filename(data.get("name", ""))
         if not safe_name:
@@ -916,9 +868,7 @@ def upload_ontology_file(ontology_id: str):
             return jsonify(payload), status_code
         folder_path, folder_key = _resolve_ontology_folder(ontology_id, request.form.get("folder", ""), version or None)
         if folder_path is None or folder_key is None:
-            return jsonify({"error": "Invalid ontology or folder. Use 'operations', 'objects', or 'assets'."}), 400
-        if folder_key == "assets":
-            return jsonify({"error": "Asset upload is not supported from this editor."}), 400
+            return jsonify({"error": "Invalid ontology or folder. Use 'operations' or 'objects'."}), 400
 
         if "file" not in request.files:
             return jsonify({"error": "No file uploaded"}), 400

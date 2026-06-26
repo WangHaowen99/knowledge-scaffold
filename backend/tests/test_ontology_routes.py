@@ -117,8 +117,6 @@ def _build_source_ontology_zip(*, include_scripts: bool, version: str = "") -> i
             "执行 process_a 脚本",
             "",
         ]),
-        "source-demo/asset/common.conf": "threshold=3\n",
-        "source-demo/asset/rules/limits.ini": "[limits]\nmax=10\n",
     }
     if include_scripts:
         entries.update({
@@ -247,20 +245,16 @@ def test_get_ontology_file_reads_object_markdown(tmp_path):
     assert "TargetItem_ID" in payload["content"]
 
 
-def test_ontology_file_routes_list_and_read_assets(tmp_path, monkeypatch):
+def test_ontology_file_routes_reject_assets_folder(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
-    resources_dir = ontology_dir / "versions" / "1.0.0" / "assets"
-    (resources_dir / "rules").mkdir(parents=True)
-    (resources_dir / "common.conf").write_text("threshold=3\n", encoding="utf-8")
-    (resources_dir / "rules" / "limits.ini").write_text("[limits]\nmax=10\n", encoding="utf-8")
-    (resources_dir / "binary.bin").write_bytes(b"\x00\x01")
+    (ontology_dir / "versions" / "1.0.0").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
             "kind: ontology\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
-            "description: Demo ontology for asset route tests\n"
+            "description: Demo ontology for folder route tests\n"
             "version: 1.0.0\n"
             "active_version: 1.0.0\n"
             "versions:\n"
@@ -277,34 +271,16 @@ def test_ontology_file_routes_list_and_read_assets(tmp_path, monkeypatch):
         headers=headers,
     )
 
-    assert list_response.status_code == 200
-    list_payload = list_response.get_json()
-    assert list_payload["folder"] == "assets"
-    assert list_payload["label"] == "公共文件"
-    assert [item["name"] for item in list_payload["files"]] == [
-        "binary.bin",
-        "common.conf",
-        "rules/limits.ini",
-    ]
+    assert list_response.status_code == 400
+    assert list_response.get_json()["error"] == "Invalid ontology or folder. Use 'operations' or 'objects'."
 
     read_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
         query_string={"folder": "assets", "name": "rules/limits.ini"},
         headers=headers,
     )
-    assert read_response.status_code == 200
-    read_payload = read_response.get_json()
-    assert read_payload["name"] == "rules/limits.ini"
-    assert read_payload["read_only"] is True
-    assert read_payload["content"] == "[limits]\nmax=10"
-
-    unsupported_response = client.get(
-        "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "assets", "name": "binary.bin"},
-        headers=headers,
-    )
-    assert unsupported_response.status_code == 400
-    assert "Unsupported asset format" in unsupported_response.get_json()["error"]
+    assert read_response.status_code == 400
+    assert read_response.get_json()["error"] == "Invalid ontology or folder. Use 'operations' or 'objects'."
 
 
 def test_get_ontology_file_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
@@ -1014,17 +990,15 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
     assert payload is not None
     assert payload["import_mode"] == "source"
     assert payload["ontology_id"] == "source-demo"
-    assert payload["preview"]["source"]["total_files"] == 7
+    assert payload["preview"]["source"]["total_files"] == 5
     assert payload["preview"]["result"]["total_files"] >= 9
     source_paths = {item["path"] for item in payload["preview"]["source"]["files"]}
     result_paths = {item["path"] for item in payload["preview"]["result"]["files"]}
     assert "object/实体A.md" in source_paths
     assert "action/process_a.py" in source_paths
-    assert "asset/common.conf" in source_paths
     assert "objects-list.md" in result_paths
     assert "objects/实体A.md" in result_paths
-    assert "assets/common.conf" in result_paths
-    assert "assets/rules/limits.ini" in result_paths
+    assert not any(path.startswith("assets/") for path in result_paths)
     result_object = next(item for item in payload["preview"]["result"]["files"] if item["path"] == "objects/实体A.md")
     assert "| 实体A编号 | EntityACode | 实体A编号描述 | A编号 |" in result_object["content"]
 
@@ -1045,8 +1019,7 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
     )
     assert (version_dir / "scripts" / ".env").read_text(encoding="utf-8") == "API_TOKEN=demo-token\n"
     assert ".env" not in scripts_list_content
-    assert (version_dir / "assets" / "common.conf").read_text(encoding="utf-8") == "threshold=3\n"
-    assert (version_dir / "assets" / "rules" / "limits.ini").read_text(encoding="utf-8") == "[limits]\nmax=10\n"
+    assert not (version_dir / "assets").exists()
 
 
 def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, monkeypatch):

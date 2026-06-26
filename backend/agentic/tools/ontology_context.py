@@ -10,12 +10,10 @@ from ..evolution import build_near_point_block
 from ..utils.logging import get_logger
 from ..utils.ontology_catalog import (
     build_root_payload,
-    find_asset_file,
     find_markdown_file,
     format_markdown_payload_compact,
     format_root_payload_compact,
     get_ontology_manifest,
-    read_required_asset_text,
     read_required_text,
 )
 from ..utils.read_docs import build_read_document_record, normalize_read_documents_registry
@@ -28,7 +26,7 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "ontology_context",
         "description": (
-            "Load ontology root catalogs, operation, object/entity, rule, metric, script specs, and shared asset files. "
+            "Load ontology root catalogs, operation, object/entity, rule, metric, and script specs. "
             "This tool reads ontology specs only; it does not query business data or execute scripts. "
             "Load each needed ontology resource once and reuse it."
         ),
@@ -41,20 +39,18 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
                 },
                 "resource": {
                     "type": "string",
-                    "enum": ["root", "operation", "object", "rule", "metric", "script", "asset"],
+                    "enum": ["root", "operation", "object", "rule", "metric", "script"],
                     "description": (
                         "The ontology resource to load: root returns ontology metadata and catalogs; "
                         "operation returns operation content by key; object returns object/entity definition by key; "
                         "rule returns rule content by key; metric returns metric content by key; "
-                        "script returns registered script description by key; "
-                        "asset returns a shared text/config file by key from assets_catalog."
+                        "script returns registered script description by key."
                     ),
                 },
                 "key": {
                     "type": "string",
                     "description": (
-                        "Resource key when loading operation/object/rule/metric/script, or asset file key when "
-                        "resource is `asset`. Leave empty for `root`."
+                        "Resource key when loading operation/object/rule/metric/script. Leave empty for `root`."
                     ),
                 },
             },
@@ -125,12 +121,7 @@ def handle_ontology_context(
             resource_name="script",
             key_field="script_key",
         )
-    if normalized_resource == "asset":
-        return _build_asset_payload(
-            ontology_dir=ontology_dir,
-            key=key,
-        )
-    return "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, script, or asset.".format(
+    return "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, or script.".format(
         normalized_resource
     )
 
@@ -161,27 +152,6 @@ def _build_markdown_payload(
     return format_markdown_payload_compact(
         key_field=key_field,
         key=str(key or "").strip(),
-        content=content or "",
-    )
-
-
-def _build_asset_payload(
-    *,
-    ontology_dir: Path,
-    key: str,
-) -> str:
-    path, error = find_asset_file(ontology_dir, key)
-    if error:
-        return error
-    assert path is not None
-
-    content, read_error = read_required_asset_text(path, "asset '{}'".format(key))
-    if read_error:
-        return read_error
-
-    return format_markdown_payload_compact(
-        key_field="asset_key",
-        key=str(key or "").strip().replace("\\", "/").strip("/"),
         content=content or "",
     )
 
@@ -245,10 +215,6 @@ def _build_read_record(
     elif resource in {"operation", "object", "rule", "metric", "script"}:
         directory = ontology_dir / "{}s".format(resource)
         resolved_path, error = find_markdown_file(directory.resolve(), key, resource)
-        if error or resolved_path is None:
-            return None
-    elif resource == "asset":
-        resolved_path, error = find_asset_file(ontology_dir, key)
         if error or resolved_path is None:
             return None
     else:

@@ -22,7 +22,6 @@ The `context` payload is authoritative — the parent has already done routing a
 - `context.ontology_id` identifies the selected ontology. Use it directly with `ontology_context`; do not infer paths.
 - `context.operation_key` is the operation to execute. Load it via `ontology_context(resource="operation")` when manual execution is required.
 - If an operation references rule or metric keys from `rules_catalog` / `metrics_catalog`, load only those specs via `ontology_context(resource="rule")` or `ontology_context(resource="metric")` before using them.
-- If an operation references an asset key from `assets_catalog`, load only that asset via `ontology_context(resource="asset")`.
 - `context.sub_operation_keys` are referenced sub-process operations. Load them only when the main operation's logic actually invokes them.
 - Treat input parameter values supplied in the `task` text as given. Do not re-confirm or re-validate them.
 

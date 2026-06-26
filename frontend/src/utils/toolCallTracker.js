@@ -43,7 +43,7 @@ const buildDisplayParam = (toolType, params, rawText) => {
     if (resource === 'root') {
       return truncateText(params.ontology_name || params.ontology_label || params.name || params.ontology_id || '本体', QUERY_PREVIEW_LIMIT);
     }
-    const resourceLabel = { operation: '逻辑', object: '实体', asset: '公共文件' }[resource] || truncateText(resource, 40);
+    const resourceLabel = { operation: '逻辑', object: '实体' }[resource] || truncateText(resource, 40);
     return [resourceLabel, key].filter(Boolean).join(': ') || truncateText(params.ontology_id, QUERY_PREVIEW_LIMIT);
   }
 
@@ -97,7 +97,7 @@ const buildSummary = (toolName, params, rawText) => {
     const key = truncateText(params.key, QUERY_PREVIEW_LIMIT);
     const ontologyLabel = truncateText(params.ontology_name || params.ontology_label || params.name || params.ontology_id, 80);
     if (resource === 'root') return ontologyLabel || '本体';
-    const resourceLabel = { operation: '逻辑', object: '实体', asset: '公共文件' }[resource] || truncateText(resource, 40);
+    const resourceLabel = { operation: '逻辑', object: '实体' }[resource] || truncateText(resource, 40);
     return [ontologyLabel, resourceLabel, key].filter(Boolean).join(' / ');
   }
 

@@ -527,7 +527,6 @@ def _build_tool_progress_message(name: Optional[str], args: Dict[str, Any]) -> O
             "rule": "规则",
             "metric": "指标",
             "script": "脚本",
-            "asset": "公共文件",
         }.get(resource, resource)
         return "加载本体 {}".format("{} {}".format(resource_label, key).strip() or ontology_label or "本体")
 
