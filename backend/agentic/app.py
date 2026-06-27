@@ -17,6 +17,7 @@ from .services.auth import (
 from .services.llm import LLMRouter, configure_llm_router
 from .stores import UserStoreManager
 from .utils.logging import get_logger
+from .warmup import start_runtime_warmup
 
 logger = get_logger("app")
 
@@ -85,6 +86,8 @@ def create_app() -> Flask:
         runtime["user_store_manager"],
         agent_config=runtime["agent_config"],
     )
+
+    start_runtime_warmup(agent_config=runtime["agent_config"])
 
     @app.route("/health", methods=["GET"])
     def health():

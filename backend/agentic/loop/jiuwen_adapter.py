@@ -1125,6 +1125,46 @@ def create_default_jiuwen_agent(
     return agent
 
 
+def warm_up_jiuwen_runtime(*, agent_config: Any = None) -> dict[str, Any]:
+    """Preload Jiuwen runtime modules and global resources without invoking the LLM.
+
+    This creates a throwaway warm-up agent to trigger module imports, class
+    loading, global registry initialization and the background event loop, then
+    discards the agent. Real user requests create their own agent instances and
+    reuse the already-loaded runtime environment.
+    """
+    started = time.perf_counter()
+
+    require_openjiuwen()
+    _JIUWEN_LOOP_RUNNER.get_loop()
+
+    llm_config = _resolve_jiuwen_llm_config(
+        {},
+        caller="main",
+        agent_config=agent_config,
+    )
+
+    agent = create_default_jiuwen_agent(
+        llm_config=llm_config,
+        max_iterations=1,
+        system_prompt="warmup",
+        agent_id="onto_agent_jiuwen_react.warmup",
+        enable_reasoning=False,
+        stream_enabled=True,
+    )
+
+    get_jiuwen_tool_infos("main")
+    importlib.import_module("openjiuwen.core.foundation.tool")
+    importlib.import_module("openjiuwen.core.runner")
+
+    del agent
+
+    return {
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+        "mode": "jiuwen-runtime",
+    }
+
+
 def _map_jiuwen_provider(provider: Any) -> str:
     normalized = str(provider or "").strip().lower()
     if normalized in {"", "openai", "openai_compatible", "glm"}:

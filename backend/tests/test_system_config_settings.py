@@ -517,8 +517,74 @@ def test_agent_config_exposes_only_runtime_knobs(monkeypatch):
         "evolution_patch_cooldown_sec",
         "evolution_sweep_interval_sec",
         "execute_script_timeout",
+        "runtime_warmup_enabled",
     }
     assert config.main_agent_max_iterations == 50
+    assert config.runtime_warmup_enabled is True
+
+
+def test_system_config_template_exposes_runtime_warmup_enabled_default():
+    import agentic.config.system_config as system_config_module
+
+    template = system_config_module.get_system_config_template()
+
+    assert template["agent"]["runtime_warmup_enabled"] is True
+
+
+def test_update_system_config_section_can_save_runtime_warmup_enabled(tmp_path, monkeypatch):
+    import agentic.config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+
+    public = system_config_module.update_system_config_section(
+        "agent",
+        {"runtime_warmup_enabled": False},
+    )
+
+    assert public["runtime_warmup_enabled"] is False
+
+    effective = system_config_module.load_system_config()
+    assert effective["agent"]["runtime_warmup_enabled"] is False
+
+    agent_config = AgentConfig.from_env()
+    assert agent_config.runtime_warmup_enabled is False
+
+
+def test_agent_config_env_fallback_can_disable_runtime_warmup(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_WARMUP_ENABLED", "false")
+
+    config = AgentConfig.from_env()
+
+    assert config.runtime_warmup_enabled is False
+
+
+def test_import_system_config_accepts_runtime_warmup_enabled(tmp_path, monkeypatch):
+    import agentic.config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+
+    imported_sections, public_config = system_config_module.import_system_config(
+        {
+            "agent": {
+                "runtime_warmup_enabled": False,
+                "jiuwen_unknown_field": "discard-me",
+            },
+        }
+    )
+
+    assert imported_sections == ["agent"]
+    assert public_config["agent"]["runtime_warmup_enabled"] is False
+    assert "jiuwen_unknown_field" not in public_config["agent"]
 
 
 def test_import_system_config_discards_unknown_runtime_fields(tmp_path, monkeypatch):
