@@ -24,6 +24,7 @@ from agentic.loop.jiuwen_adapter import (
     create_default_jiuwen_agent,
     register_current_runtime_tools,
     _patch_jiuwen_openai_reasoning_alias,
+    warm_up_jiuwen_runtime,
 )
 from agentic.exceptions import InputTokenLimitError, WorkflowCancelledError
 from agentic.services.llm import LLMPurpose
@@ -4526,6 +4527,103 @@ def test_create_default_jiuwen_agent_maps_glm_provider_to_openai_client_provider
     assert created["model_client_config"]["client_provider"] == "OpenAI"
     assert created["model_request_config"]["extra_body"]["reasoning"]["enabled"] is True
     assert created["model_request_config"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_warm_up_jiuwen_runtime_requires_openjiuwen(monkeypatch):
+    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: False)
+
+    with pytest.raises(JiuwenBackendUnavailable, match="openjiuwen"):
+        warm_up_jiuwen_runtime()
+
+
+def test_warm_up_jiuwen_runtime_constructs_agent_without_invoking(monkeypatch):
+    """Warm-up creates a throwaway agent but never calls invoke/stream."""
+    created = {}
+
+    class _NoInvokeAgent:
+        def __init__(self):
+            created["agent_instance"] = self
+
+        async def invoke(self, *args, **kwargs):
+            raise AssertionError("warm-up must not call agent.invoke")
+
+        async def stream(self, *args, **kwargs):
+            raise AssertionError("warm-up must not call agent.stream")
+
+    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter._JIUWEN_LOOP_RUNNER.get_loop",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter._resolve_jiuwen_llm_config",
+        lambda state, *, caller, agent_config=None: SimpleNamespace(
+            provider="openai_compatible",
+            api_key="",
+            base_url="",
+            model="warmup-model",
+            timeout=60,
+            max_tokens=128,
+            temperature=0.5,
+        ),
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        lambda **kwargs: _NoInvokeAgent(),
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.get_jiuwen_tool_infos",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.importlib.import_module",
+        lambda name: SimpleNamespace(__name__=name),
+    )
+
+    result = warm_up_jiuwen_runtime(agent_config=_agent_config())
+
+    assert result["mode"] == "jiuwen-runtime"
+    assert result["duration_ms"] >= 0
+    assert "agent_instance" in created
+
+
+def test_warm_up_jiuwen_runtime_does_not_register_tools(monkeypatch):
+    """Warm-up must not bind fake-state tool instances into Jiuwen."""
+    register_calls = []
+
+    def spy_register(*args, **kwargs):
+        register_calls.append({"args": args, "kwargs": kwargs})
+        return []
+
+    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter._JIUWEN_LOOP_RUNNER.get_loop",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter._resolve_jiuwen_llm_config",
+        lambda state, *, caller, agent_config=None: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.get_jiuwen_tool_infos",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.importlib.import_module",
+        lambda name: SimpleNamespace(__name__=name),
+    )
+    monkeypatch.setattr(
+        "agentic.loop.jiuwen_adapter.register_current_runtime_tools",
+        spy_register,
+    )
+
+    warm_up_jiuwen_runtime(agent_config=_agent_config())
+
+    assert register_calls == []
 
 
 class _FakeJiuwenAgent:

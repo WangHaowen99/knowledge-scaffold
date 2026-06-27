@@ -17,13 +17,7 @@ business_data_search
 
 - 当前项目已有 `nl2sql_http`、`nl2sql_template`、`mindsdb`、`neo4j`、`hugegraph` provider。
 - 当前项目尚未注册 `dataagent` provider。
-- `reference/onto-agent-main/` 已经实现了最小 DataAgent provider，核心文件是：
-  - `reference/onto-agent-main/backend/agentic/ontology_search/providers/dataagent_provider.py`
-  - `reference/onto-agent-main/backend/agentic/services/dataagent.py`
-  - `reference/onto-agent-main/backend/agentic/business_data/provider_registry.py`
-  - `reference/onto-agent-main/backend/agentic/business_data/connection_tester.py`
-  - `reference/onto-agent-main/backend/tests/test_dataagent_provider.py`
-- `reference/dataagent-main/` 支持 A2A 1.0 服务模式，REST 入口为 `POST /a2a/rest/message:send`，AgentCard 发现接口文档为 `GET /.well-known/agent-card.json`。
+- DataAgent 对外提供 A2A 1.0 REST 服务，业务查询入口为 `POST /a2a/rest/message:send`，服务发现入口为 `GET /.well-known/agent-card.json`。
 
 这个对接不应该新增 Agent 工具面。Agent 仍然只调用 `business_data_search(ontology_id, entity, query)`，DataAgent 只是底层业务数据 provider。
 
@@ -38,7 +32,7 @@ primary endpoint: POST {url}/a2a/rest/message:send
 discovery endpoint: GET {url}/.well-known/agent-card.json
 ```
 
-首版明确采用 `onto-agent-main` 已验证的 RESTful 调用方式：
+首版明确采用 RESTful 调用方式：
 
 ```text
 DataAgentProvider.search_stream()
@@ -48,13 +42,12 @@ DataAgentProvider.search_stream()
   -> format_output(show_sql=False)
 ```
 
-不采用进程内 SDK 调用、直接导入 `dataagent-main` Python 包、JSON-RPC 或自定义 HTTP API。原因是 RESTful 方式和 `dataagent-main serve-a2a` 的服务化边界一致，也和 `onto-agent-main` 的参考实现一致，部署上只需要 DataAgent 服务地址和 token，不把两个项目的 Python 依赖、运行时配置、workspace 目录和模型配置耦合在同一进程里。
+不采用进程内 SDK 调用、直接导入 DataAgent Python 包、JSON-RPC 或自定义 HTTP API。原因是 RESTful 方式保持了清晰的服务化边界，部署上只需要 DataAgent 服务地址和 token，不把两个系统的 Python 依赖、运行时配置、workspace 目录和模型配置耦合在同一进程里。
 
 选择 `dataagent` 而不是 `dataagent_a2a` 的原因：
 
-- `onto-agent-main` 的参考实现已经使用 `dataagent`。
 - 当前 `provider_registry.py` 中 provider id 是产品/后端类型语义，如 `mindsdb`、`neo4j`、`hugegraph`，不是传输协议语义。
-- DataAgent 当前可用北向服务就是 A2A；如果未来 DataAgent 增加其他协议，可在 config 中加 `rest_path` / `agent_card_path`，不必提前拆 provider id。
+- DataAgent 当前对接形态是 A2A REST；如果未来 DataAgent 增加其他协议，可在 config 中加 `rest_path` / `agent_card_path`，不必提前拆 provider id。
 
 ## Architecture
 
@@ -66,7 +59,7 @@ flowchart LR
   Resolver --> Registry["provider_registry: dataagent"]
   Registry --> Provider["DataAgentProvider"]
   Provider --> Client["DataAgent A2A REST client"]
-  Client --> DataAgent["dataagent-main serve-a2a"]
+  Client --> DataAgent["DataAgent A2A REST service"]
   DataAgent --> Source["DataAgent YAML 中配置的数据源 / NL2SQL 能力"]
 ```
 
@@ -78,11 +71,11 @@ flowchart LR
 | workspace data binding | 把 ontology 绑定到具体 connection |
 | data connection | 保存 `provider=dataagent` 和 DataAgent 服务地址、token、超时等配置 |
 | DataAgentProvider | 把 `business_data_search` 请求转换成 A2A REST message |
-| dataagent-main | 根据自身 YAML / NL2SQL / 数据源配置执行数据分析 |
+| DataAgent 服务 | 根据自身 YAML / NL2SQL / 数据源配置执行数据分析 |
 
 ## Provider Schema
 
-首版 schema 应优先与 `onto-agent-main` 保持兼容，只要求 RESTful 调用必需的字段：
+首版 schema 只要求 RESTful 调用必需的字段：
 
 ```python
 "dataagent": BusinessDataProviderSpec(
@@ -112,11 +105,11 @@ _REST_PATH = "/a2a/rest/message:send"
 _AGENT_CARD_PATH = "/.well-known/agent-card.json"
 ```
 
-只有当生产环境确实存在网关改写路径、多版本 DataAgent 并存，或需要兼容非标准部署时，再把路径配置开放到 provider schema。这样能最大限度贴近 `onto-agent-main` 的 RESTful provider，实现和测试也更小。
+只有当生产环境确实存在网关改写路径、多版本 DataAgent 并存，或需要兼容非标准部署时，再把路径配置开放到 provider schema。首版保持固定路径可以降低配置面和测试复杂度。
 
 ## Request Mapping
 
-`DataAgentProvider.search_stream(query, entity)` 首版不改变 tool 入参。为了和 `onto-agent-main` 完全对齐，最小实现可以直接把 `query` 作为 DataAgent message text：
+`DataAgentProvider.search_stream(query, entity)` 首版不改变 tool 入参。最小实现可以直接把 `query` 作为 DataAgent message text：
 
 ```python
 result = call_query(self.base_url, self.token, query, timeout=self.timeout)
@@ -210,7 +203,7 @@ start -> intermediate* -> final -> done
 }
 ```
 
-SQL 默认不放入 `final.content`，只保留 `has_sql=true`，与 `onto-agent-main` 参考实现保持一致。后续如果要审计 SQL，可通过受控 trace/evidence 存储，而不是直接暴露给 Agent。
+SQL 默认不放入 `final.content`，只保留 `has_sql=true`。后续如果要审计 SQL，可通过受控 trace/evidence 存储，而不是直接暴露给 Agent。
 
 ## Connectivity Test
 
@@ -221,7 +214,7 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`，与 `onto-agent
 1. 优先 `GET {url}{agent_card_path}`。
 2. 校验响应是 JSON object，且至少包含 `name`。
 3. 可选校验 `supportedInterfaces` 中存在 `HTTP+JSON` 或 URL 指向 `{rest_path}`。
-4. 如果遇到 404，可兼容尝试 `/.well-known/agent.json`，因为 `dataagent-main` README/CLI 输出里出现过该路径，但服务实现和 API 文档以 `/.well-known/agent-card.json` 为准。
+4. 如果遇到 404，可兼容尝试 `/.well-known/agent.json`，用于支持少量历史或非标准部署。
 
 连接测试不建议直接发业务查询，因为 DataAgent 的 YAML、模型和数据源可能较重，管理界面测试按钮应该快速验证服务和鉴权可用。
 
@@ -240,30 +233,21 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`，与 `onto-agent
 
 通常不需要改 `frontend/src/components/DataConnectionManagement.jsx`。前端表单由后端 provider schema 动态渲染，`url`、`token` 字段也已经会按整行字段处理。
 
-## Differences From onto-agent-main
-
-可以直接复用的部分：
-
-- `DataAgentProvider` 的整体事件模型：`start -> final -> done`。
-- `services.dataagent.call_query()` 的 RESTful HTTP 调用方式：`POST {server}/a2a/rest/message:send`。
-- `format_output()` 对成功、失败、自然语言回答的输出风格。
-- `test_dataagent_provider.py` 的大部分测试思路。
-
-需要在当前项目中调整的部分：
+## Implementation Notes
 
 - 当前项目已有 graph providers，注册时不能覆盖或回退已有 `neo4j` / `hugegraph`。
 - 当前项目 `connection_tester.py` 已有 `_sanitize_secret_text()` 等安全辅助，DataAgent 失败信息也应做 token 脱敏。
-- `dataagent-main` 文档与 CLI 输出中 AgentCard 路径存在差异，连接测试应以 `/.well-known/agent-card.json` 为主，兼容 `/.well-known/agent.json`。
-- `onto-agent-main` 参考 client 使用 `urllib.request`。当前项目已有 `requests` 和 retry/session 风格；可以用 `requests.Session` 实现同一个 RESTful 协议，但不要改变接口语义。
+- 连接测试应以 `/.well-known/agent-card.json` 为主，兼容 `/.well-known/agent.json`。
+- 当前项目已有 `requests` 和 retry/session 风格；DataAgent client 应使用 `requests.Session` 实现 RESTful 协议。
 - 首版可以继续“一次 business_data_search 创建一个 provider”，但中期应对齐 `docs/本体消费关键设计.md` 里的 provider client 复用方向。
 
-不建议复用的方式：
+不建议采用的方式：
 
 | 方式 | 不作为首版原因 |
 | --- | --- |
-| 直接导入 `dataagent-main` SDK | 会把 DataAgent 的 Python 依赖、配置、workspace、模型环境耦合进当前后端进程 |
-| JSON-RPC | `onto-agent-main` 参考实现没有走 JSON-RPC；RESTful `message:send` 已满足首版同步查询 |
-| 自定义 `/query` HTTP API | `dataagent-main` 已提供标准 A2A REST，另造协议会增加两边维护成本 |
+| 直接导入 DataAgent SDK | 会把 DataAgent 的 Python 依赖、配置、workspace、模型环境耦合进当前后端进程 |
+| JSON-RPC | RESTful `message:send` 已满足首版同步查询，协议面更小 |
+| 自定义 `/query` HTTP API | A2A REST 已提供标准消息入口，另造协议会增加两边维护成本 |
 | 把 DataAgent 做成新 Agent 工具 | 会绕开现有 `business_data_search`、ontology binding 和 workspace connection 治理 |
 
 ## Error Handling
@@ -323,7 +307,7 @@ git diff --check
 
 ## Open Questions
 
-- `dataagent-main` 返回的 NL2SQL state 是否会长期保持 Python dict repr 字符串格式，还是会改成标准 JSON artifact？如果能由 DataAgent 输出标准 JSON，当前解析逻辑可以大幅简化。
+- DataAgent 返回的 NL2SQL state 是否会长期保持 Python dict repr 字符串格式，还是会改成标准 JSON artifact？如果能由 DataAgent 输出标准 JSON，当前解析逻辑可以大幅简化。
 - DataAgent 是否需要接收 `entity` / `resource` / `fields` 的结构化上下文？首版可以拼进 message text，中期建议扩展到 metadata/configuration。
 - 生产环境是否使用统一 secret store？当前项目连接配置只有脱敏存储和回填行为，后续如引入 secret ref，需要同步调整 provider schema。
 - 是否需要展示 SQL？首版不展示 SQL 给 Agent；如果调试或审计要看 SQL，应走受控日志或 evidence，不建议直接扩大工具输出。

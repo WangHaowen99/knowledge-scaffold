@@ -277,6 +277,7 @@ class AgentConfig:
     context_max_rounds: int
     context_prune_tools: Set[str]
     execute_script_timeout: int = 300
+    runtime_warmup_enabled: bool = True
 
     # Operation evolution (see docs/operation-evolution.md)
     evolution_min_occurrences: int = 3
@@ -325,6 +326,7 @@ class AgentConfig:
             evolution_patch_cooldown_sec=int(config.get("evolution_patch_cooldown_sec", 3600)),
             evolution_sweep_interval_sec=int(config.get("evolution_sweep_interval_sec", 1800)),
             execute_script_timeout=int(config["execute_script_timeout"]),
+            runtime_warmup_enabled=bool(config.get("runtime_warmup_enabled", True)),
             direct_execution=DirectExecutionConfig.from_env(),
             web_search=WebSearchConfig.from_env(),
             limits=LimitsConfig.from_env(),

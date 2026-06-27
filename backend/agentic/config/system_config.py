@@ -126,6 +126,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "evolution_patch_cooldown_sec": {"env": "EVO_PATCH_COOLDOWN_SEC", "type": "int", "default": 3600},
         "evolution_sweep_interval_sec": {"env": "EVO_SWEEP_INTERVAL_SEC", "type": "int", "default": 1800},
         "execute_script_timeout": {"env": "EXECUTE_SCRIPT_TIMEOUT", "type": "int", "default": 300},
+        "runtime_warmup_enabled": {"env": "AGENT_RUNTIME_WARMUP_ENABLED", "type": "bool", "default": True},
     },
     "memory": {
         "mode": {"env": "MEMORY_MODE", "type": "str", "default": "filesystem"},

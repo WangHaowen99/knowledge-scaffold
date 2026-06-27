@@ -63,6 +63,7 @@ def test_get_system_config_hides_secrets(tmp_path, monkeypatch):
     assert payload["web_search"]["provider"] == "tavily"
     assert payload["web_search"]["has_api_key"] is False
     assert "api_key" not in payload["web_search"]
+    assert payload["agent"]["runtime_warmup_enabled"] is True
     assert "_status" not in payload
 
 
@@ -134,6 +135,7 @@ def test_template_and_import_round_trip(tmp_path, monkeypatch):
     assert template_payload["web_search"]["enabled"] is False
     assert template_payload["web_search"]["provider"] == "tavily"
     assert template_payload["web_search"]["api_key"] == ""
+    assert template_payload["agent"]["runtime_warmup_enabled"] is True
 
     import_response = client.post(
         "/api/system-config/import",
@@ -154,6 +156,30 @@ def test_template_and_import_round_trip(tmp_path, monkeypatch):
     assert payload["success"] is True
     assert payload["config"]["llm"]["base_url"] == "https://example.com/v1"
     assert payload["config"]["llm"]["has_api_key"] is True
+
+
+def test_patch_updates_agent_runtime_warmup_enabled(tmp_path, monkeypatch):
+    client, headers = _build_client(tmp_path, monkeypatch)
+
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "section": "agent",
+            "data": {
+                "runtime_warmup_enabled": False,
+            },
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["section"] == "agent"
+    assert payload["config"]["runtime_warmup_enabled"] is False
+
+    fetch_response = client.get("/api/system-config", headers=headers)
+    fetch_payload = fetch_response.get_json()
+    assert fetch_payload["agent"]["runtime_warmup_enabled"] is False
 
 
 def test_patch_updates_web_search_and_preserves_secret_masking(tmp_path, monkeypatch):
