@@ -6,17 +6,17 @@ import time
 
 import pytest
 
-from agentic.ontology_search.providers.graph.agent import GraphAgentError
-from agentic.ontology_search.providers.graph.agent import GraphAgentTimeoutError
-from agentic.ontology_search.providers.graph.agent import GraphAgentToolInputError
-from agentic.ontology_search.providers.graph.agent import GraphQueryAgent
-from agentic.ontology_search.providers.graph.models import (
+from agentic.business_data.providers.graph.agent import GraphAgentError
+from agentic.business_data.providers.graph.agent import GraphAgentTimeoutError
+from agentic.business_data.providers.graph.agent import GraphAgentToolInputError
+from agentic.business_data.providers.graph.agent import GraphQueryAgent
+from agentic.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
     GraphScope,
     GraphSearchRuntimeContext,
 )
-from agentic.ontology_search.providers.graph.tools.executor import GraphToolExecutor
+from agentic.business_data.providers.graph.tools.executor import GraphToolExecutor
 
 
 class _Backend:

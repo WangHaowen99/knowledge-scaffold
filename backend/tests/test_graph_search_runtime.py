@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 
-from agentic.ontology_search.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
-from agentic.ontology_search.providers.graph.models import (
+from agentic.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
+from agentic.business_data.providers.graph.models import (
     GraphAgentResult,
     GraphBackendResult,
     GraphEntityMapping,
 )
-from agentic.ontology_search.providers.graph.runtime import GraphSearchRuntime
+from agentic.business_data.providers.graph.runtime import GraphSearchRuntime
 
 
 class _StaticResolver:

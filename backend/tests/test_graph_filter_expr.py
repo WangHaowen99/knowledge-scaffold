@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agentic.ontology_search.providers.graph.filter_expr import build_filter_where
+from agentic.business_data.providers.graph.filter_expr import build_filter_where
 
 
 def test_filter_expr_accepts_mongo_style_operator_aliases():

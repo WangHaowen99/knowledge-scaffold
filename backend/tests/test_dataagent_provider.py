@@ -15,7 +15,7 @@ from agentic.business_data.provider_registry import (
     normalize_provider_config,
     publicize_provider_config,
 )
-from agentic.ontology_search.providers.dataagent_provider import DataAgentProvider
+from agentic.business_data.providers.dataagent_provider import DataAgentProvider
 from agentic.services.dataagent import (
     _extract_fields,
     _normalize_rows,
@@ -104,7 +104,7 @@ def test_provider_search_stream_yields_formatted_events(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "agentic.ontology_search.providers.dataagent_provider.call_query",
+        "agentic.business_data.providers.dataagent_provider.call_query",
         fake_call_query,
     )
     provider = _make_provider(
@@ -137,7 +137,7 @@ def test_provider_search_stream_yields_formatted_events(monkeypatch):
 
 def test_provider_search_stream_formats_failure(monkeypatch):
     monkeypatch.setattr(
-        "agentic.ontology_search.providers.dataagent_provider.call_query",
+        "agentic.business_data.providers.dataagent_provider.call_query",
         lambda *args, **kwargs: {
             "success": False,
             "data": None,

@@ -50,11 +50,10 @@ agentic/
 │   └── shared/               # Jiuwen 运行时复用的 loop helper
 ├── a2a/                      # A2A 协议适配、模型与 service
 ├── acp/                      # ACP 协议适配与配置
-├── business_data/            # 工作区数据连接模型与 provider
+├── business_data/            # 工作区数据连接、绑定与 provider 适配器
 ├── direct_execution/         # 脚本直连执行保护与作用域
 ├── evolution/                # operation evolution 提案与审核
 ├── observability/            # RuntimeEvent 总线与 exporter
-├── ontology_search/          # ontology_search provider 注册表与适配器
 ├── perf_analysis/            # 本地性能 JSONL 分析
 ├── routes/
 │   ├── workflows.py          # /agentic/runs/*

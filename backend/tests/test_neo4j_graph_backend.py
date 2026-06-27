@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from agentic.ontology_search.providers.graph.backends.base import GraphBackendTimeoutError
-from agentic.ontology_search.providers.graph.backends.neo4j import Neo4jGraphBackend
-from agentic.ontology_search.providers.graph.models import GraphScope
+from agentic.business_data.providers.graph.backends.base import GraphBackendTimeoutError
+from agentic.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
+from agentic.business_data.providers.graph.models import GraphScope
 
 
 class _FakeNode:

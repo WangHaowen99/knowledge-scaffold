@@ -166,7 +166,7 @@ DataAgent A2A 响应可能有两类：
 1. 结构化 NL2SQL state 文本，里面包含 `sql`、`columns`、`rows_preview`、`confidence`、`error` 等字段。
 2. 普通自然语言回答，只有 message/artifact text。
 
-Provider 对外统一产出 `OntologySearchEvent`：
+Provider 对外统一产出 `BusinessDataSearchEvent`：
 
 ```text
 start -> intermediate* -> final -> done
@@ -224,7 +224,7 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`。后续如果要
 
 | 文件 | 变更 |
 | --- | --- |
-| `backend/agentic/ontology_search/providers/dataagent_provider.py` | 新增 provider adapter |
+| `backend/agentic/business_data/providers/dataagent_provider.py` | 新增 provider adapter |
 | `backend/agentic/services/dataagent.py` | 新增 DataAgent A2A REST client、响应解析、输出归一化 |
 | `backend/agentic/business_data/provider_registry.py` | 注册 `dataagent` schema |
 | `backend/agentic/business_data/connection_tester.py` | 增加 DataAgent AgentCard 探测 |
@@ -279,7 +279,7 @@ python -m pytest tests/test_dataagent_provider.py tests/test_business_data_conne
 
 ```bash
 cd backend
-python -m pytest tests/test_business_data_search_resolution.py tests/test_ontology_search_providers.py -q
+python -m pytest tests/test_business_data_search_resolution.py tests/test_dataagent_provider.py -q
 ```
 
 如果同步改了前端布局，再补跑：

@@ -6,12 +6,12 @@ import logging
 from typing import Iterator
 
 from ...services.mindsdb import MindsDBClient
-from ..base import OntologySearchEvent
+from ..provider_base import BusinessDataSearchEvent
 
 logger = logging.getLogger(__name__)
 
 
-class MindsDBOntologySearchProvider:
+class MindsDBBusinessDataProvider:
     name = "mindsdb"
 
     def __init__(self, config: dict):
@@ -23,7 +23,7 @@ class MindsDBOntologySearchProvider:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         logger.info(
             "MindsDB provider search: project=%s agent=%s entity=%s query_chars=%d",
             self._client.project_name,

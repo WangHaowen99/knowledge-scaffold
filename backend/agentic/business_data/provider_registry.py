@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type
 
-from ..ontology_search.base import OntologySearchProvider
-from ..ontology_search.providers.dataagent_provider import DataAgentProvider
-from ..ontology_search.providers.mindsdb_provider import MindsDBOntologySearchProvider
-from ..ontology_search.providers.nl2sql_http_provider import NL2SQLHttpProvider
-from ..ontology_search.providers.nl2sql_template import NL2SQLTemplateProvider
-from ..ontology_search.providers.graph.hugegraph_provider import HugeGraphSearchProvider
-from ..ontology_search.providers.graph.neo4j_provider import Neo4jGraphSearchProvider
+from .provider_base import BusinessDataProvider
+from .providers.dataagent_provider import DataAgentProvider
+from .providers.mindsdb_provider import MindsDBBusinessDataProvider
+from .providers.nl2sql_http_provider import NL2SQLHttpProvider
+from .providers.nl2sql_template import NL2SQLTemplateProvider
+from .providers.graph.hugegraph_provider import HugeGraphSearchProvider
+from .providers.graph.neo4j_provider import Neo4jGraphSearchProvider
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class BusinessDataProviderSpec:
     name: str
     label: str
     description: str
-    factory: Type[OntologySearchProvider]
+    factory: Type[BusinessDataProvider]
     fields: List[ProviderField]
 
 
@@ -64,7 +64,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         name="mindsdb",
         label="MindsDB",
         description="通过 MindsDB Agent 流式接口检索本体业务数据。",
-        factory=MindsDBOntologySearchProvider,
+        factory=MindsDBBusinessDataProvider,
         fields=[
             ProviderField("url", "服务地址", required=True),
             ProviderField("login", "登录名", default="mindsdb"),

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Mapping
 
-from ...base import OntologySearchEvent
+from ...provider_base import BusinessDataSearchEvent
 from .agent import GraphQueryAgent
 from .backends.base import GraphBackend
 from .runtime import GraphSearchRuntime
 
 
 class GraphSearchProvider:
-    """Shared provider wrapper implementing OntologySearchProvider."""
+    """Shared provider wrapper implementing BusinessDataProvider."""
 
     name = "graph"
 
@@ -36,7 +36,7 @@ class GraphSearchProvider:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         yield {"type": "start", "content": "开始图谱业务数据查询"}
         yield from self._runtime.search_stream(query=query, entity=entity)
         yield {"type": "done", "content": "图谱业务数据查询结束"}

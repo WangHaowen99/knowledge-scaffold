@@ -154,7 +154,7 @@ def _load_relevant_items(
         text = _read_limited(path, _MAX_ITEM_CHARS)
         if not text:
             continue
-        relative = str(path.relative_to(directory.parent))
+        relative = path.relative_to(directory.parent).as_posix()
         score = _relevance_score(relative=relative, text=text, keywords=keywords)
         if score <= 0 and kind != "script":
             continue

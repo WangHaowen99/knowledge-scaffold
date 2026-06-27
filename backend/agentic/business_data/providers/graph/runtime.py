@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator, Mapping
 
-from ...base import OntologySearchEvent
+from ...provider_base import BusinessDataSearchEvent
 from .agent import GraphAgentError, GraphAgentTimeoutError, GraphAgentUnavailableError, GraphQueryAgent
 from .backends.base import GraphBackend, GraphBackendError, GraphBackendUnsupportedError
 from .formatting import build_error_result, build_success_result
@@ -45,7 +45,7 @@ class GraphSearchRuntime:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         normalized_query = str(query or "").strip()
         normalized_entity = str(entity or "").strip()
 
@@ -284,7 +284,7 @@ class GraphSearchRuntime:
         return schema_context
 
 
-def _final(payload: Mapping[str, Any]) -> OntologySearchEvent:
+def _final(payload: Mapping[str, Any]) -> BusinessDataSearchEvent:
     return {"type": "final", "content": json.dumps(dict(payload), ensure_ascii=False)}
 
 

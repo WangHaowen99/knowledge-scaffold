@@ -6,7 +6,7 @@ import json
 from typing import Iterator
 
 from ...services.dataagent import call_query, format_output
-from ..base import OntologySearchEvent
+from ..provider_base import BusinessDataSearchEvent
 
 
 class DataAgentProvider:
@@ -25,7 +25,7 @@ class DataAgentProvider:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         del entity
         yield {"type": "start", "content": "开始调用 DataAgent 查询数据"}
 
