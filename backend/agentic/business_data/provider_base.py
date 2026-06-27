@@ -1,14 +1,14 @@
-"""Shared ontology search provider types."""
+"""Shared business data provider types."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Iterator, Protocol
 
-OntologySearchEvent = Dict[str, str]
+BusinessDataSearchEvent = Dict[str, str]
 
 
-class OntologySearchProvider(Protocol):
-    """Provider interface behind the public ontology_search tool."""
+class BusinessDataProvider(Protocol):
+    """Provider interface behind business_data_search."""
 
     name: str
 
@@ -17,11 +17,11 @@ class OntologySearchProvider(Protocol):
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         """Yield normalized search progress events."""
 
 
-def normalize_event(event: Dict[str, Any]) -> OntologySearchEvent:
+def normalize_event(event: Dict[str, Any]) -> BusinessDataSearchEvent:
     return {
         "type": str(event.get("type") or "").strip(),
         "content": str(event.get("content") or "").strip(),

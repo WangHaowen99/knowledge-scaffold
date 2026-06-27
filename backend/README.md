@@ -56,11 +56,10 @@ agentic/
 │   ├── models.py             # A2A data models
 │   └── service.py            # A2A service layer
 ├── acp/                      # ACP protocol adapter and config
-├── business_data/            # Workspace-local data connection models/providers
+├── business_data/            # Workspace-local data connections, bindings, and provider adapters
 ├── direct_execution/         # Script direct-execution guards and scoped runtime
 ├── evolution/                # Operation evolution proposal/review services
 ├── observability/            # Runtime event bus and exporters
-├── ontology_search/          # Ontology search provider registry/adapters
 ├── perf_analysis/            # Local performance JSONL analysis
 ├── routes/
 │   ├── workflows.py          # /agentic/runs/*

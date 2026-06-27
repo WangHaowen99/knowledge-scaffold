@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentic.ontology_search.providers.graph.scope import (
+from agentic.business_data.providers.graph.scope import (
     GraphScopeError,
     build_graph_scope,
     sanitize_labels,

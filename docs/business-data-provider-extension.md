@@ -29,8 +29,8 @@ business_data_search
 
 | 职责 | 文件 |
 | --- | --- |
-| provider 接口定义 | `backend/agentic/ontology_search/base.py` |
-| provider 实现 | `backend/agentic/ontology_search/providers/` |
+| provider 接口定义 | `backend/agentic/business_data/provider_base.py` |
+| provider 实现 | `backend/agentic/business_data/providers/` |
 | 业务数据 provider 注册与表单 schema | `backend/agentic/business_data/provider_registry.py` |
 | workspace 数据连接存储与配置归一化 | `backend/agentic/business_data/connections_store.py` |
 | 运行时 provider 调用 | `backend/agentic/business_data/service.py` |
@@ -58,7 +58,7 @@ warehouse_http
 
 ### 2. 实现 provider 类
 
-在 `backend/agentic/ontology_search/providers/` 下新增实现文件，例如：
+在 `backend/agentic/business_data/providers/` 下新增实现文件，例如：
 
 ```python
 """Warehouse HTTP business data provider."""
@@ -70,7 +70,7 @@ from typing import Any, Dict, Iterator
 
 import requests
 
-from ..base import OntologySearchEvent
+from ..provider_base import BusinessDataSearchEvent
 
 
 class WarehouseHttpProvider:
@@ -89,7 +89,7 @@ class WarehouseHttpProvider:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         yield {"type": "start", "content": "开始查询业务数据"}
 
         response = self._session.post(
@@ -131,7 +131,7 @@ class WarehouseHttpProvider:
 修改 `backend/agentic/business_data/provider_registry.py`：
 
 ```python
-from ..ontology_search.providers.warehouse_http import WarehouseHttpProvider
+from .providers.warehouse_http import WarehouseHttpProvider
 
 
 PROVIDER_SPECS = {

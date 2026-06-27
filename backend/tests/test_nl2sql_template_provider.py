@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic.ontology_search.providers.nl2sql_template import (
+from agentic.business_data.providers.nl2sql_template import (
     NL2SQLTemplateProvider,
     _DefaultMatcher,
 )

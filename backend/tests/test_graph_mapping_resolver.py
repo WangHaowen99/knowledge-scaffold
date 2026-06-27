@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from agentic.ontology_search.providers.graph.mapping import GraphMappingResolver
+from agentic.business_data.providers.graph.mapping import GraphMappingResolver
 
 
 def _write_ontology(tmp_path, payload=None):

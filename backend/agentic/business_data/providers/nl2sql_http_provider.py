@@ -6,7 +6,7 @@ import json
 from typing import Iterator
 
 from ...services.nl2sql import NL2SQLClient
-from ..base import OntologySearchEvent
+from ..provider_base import BusinessDataSearchEvent
 
 
 class NL2SQLHttpProvider:
@@ -21,7 +21,7 @@ class NL2SQLHttpProvider:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         del entity
         yield {"type": "start", "content": "开始查询本体数据"}
         result = self.query(query)

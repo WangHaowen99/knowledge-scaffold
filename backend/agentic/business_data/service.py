@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterator
 
-from ..ontology_search.base import OntologySearchEvent
+from .provider_base import BusinessDataSearchEvent
 from ..workspaces import get_workspace_paths
 from .provider_registry import get_provider_spec
 from .resolver import ResolvedBusinessDataConnection
@@ -27,7 +27,7 @@ def query_business_data_stream(
     request: BusinessDataSearchRequest,
     *,
     connection: ResolvedBusinessDataConnection,
-) -> Iterator[OntologySearchEvent]:
+) -> Iterator[BusinessDataSearchEvent]:
     spec = get_provider_spec(connection.provider)
 
     # Inject workspace context for providers that need it (e.g., nl2sql_template)

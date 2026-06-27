@@ -7,7 +7,7 @@ import json
 import pytest
 
 from agentic.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
-from agentic.ontology_search.providers.nl2sql_http_provider import NL2SQLHttpProvider
+from agentic.business_data.providers.nl2sql_http_provider import NL2SQLHttpProvider
 from agentic.services.data_provider_client import DataProviderClient
 from agentic.services.nl2sql import NL2SQLClient, NL2SQLError
 

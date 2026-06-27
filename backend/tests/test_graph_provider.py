@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from agentic.ontology_search.providers.graph.models import GraphAgentResult, GraphBackendResult
-from agentic.ontology_search.providers.graph.provider import GraphSearchProvider
+from agentic.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
+from agentic.business_data.providers.graph.provider import GraphSearchProvider
 
 
 class _ProviderBackend:

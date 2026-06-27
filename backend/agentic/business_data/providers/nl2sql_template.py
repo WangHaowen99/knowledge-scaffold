@@ -12,7 +12,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from ...utils.ontologies import get_ontology_version_dir
-from ..base import OntologySearchEvent
+from ..provider_base import BusinessDataSearchEvent
 
 # Matcher protocol type: (query) -> (sql | None, metadata | None)
 MatcherFn = Callable[[str], Tuple[Optional[str], Optional[Dict[str, Any]]]]
@@ -170,7 +170,7 @@ class NL2SQLTemplateProvider:
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> Iterator[BusinessDataSearchEvent]:
         del entity
         yield {"type": "start", "content": "开始查询本体数据"}
 

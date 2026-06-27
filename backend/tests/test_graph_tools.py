@@ -6,13 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from agentic.ontology_search.providers.graph.models import (
+from agentic.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
     GraphScope,
     GraphSearchRuntimeContext,
 )
-from agentic.ontology_search.providers.graph.tools import (
+from agentic.business_data.providers.graph.tools import (
     GraphToolExecutor,
     GraphToolInputError,
     aggregate_search,
@@ -24,7 +24,7 @@ from agentic.ontology_search.providers.graph.tools import (
     property_filter,
     sorted_search,
 )
-from agentic.ontology_search.providers.graph.trace import GraphProviderTrace
+from agentic.business_data.providers.graph.trace import GraphProviderTrace
 
 
 class _ToolBackend:

@@ -1,8 +1,8 @@
-"""Tests for the MindsDB ontology_search provider adapter."""
+"""Tests for the MindsDB business data provider adapter."""
 
 from __future__ import annotations
 
-from agentic.ontology_search.providers.mindsdb_provider import MindsDBOntologySearchProvider
+from agentic.business_data.providers.mindsdb_provider import MindsDBBusinessDataProvider
 
 
 def _config() -> dict:
@@ -24,7 +24,7 @@ def _config() -> dict:
 
 
 def test_mindsdb_provider_streams_through_service_client():
-    provider = MindsDBOntologySearchProvider(_config())
+    provider = MindsDBBusinessDataProvider(_config())
     captured = {}
 
     class _FakeResponse:
@@ -75,7 +75,7 @@ def test_mindsdb_provider_streams_through_service_client():
 
 
 def test_mindsdb_provider_keeps_plain_text_sse_chunks_as_messages():
-    provider = MindsDBOntologySearchProvider(_config())
+    provider = MindsDBBusinessDataProvider(_config())
 
     class _FakeResponse:
         status_code = 200
