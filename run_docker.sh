@@ -8,6 +8,8 @@ set -euo pipefail
 TAG=${1:-latest}
 TARGET=${2:-all}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_DIR="${SCRIPT_DIR}/platform/server"
+CONSOLE_DIR="${SCRIPT_DIR}/platform/console"
 
 ensure_dir_writable() {
     local dir="$1"
@@ -63,23 +65,23 @@ ensure_env() {
 
 case "$TARGET" in
     all)
-        ensure_env "$SCRIPT_DIR/backend/.env" "$SCRIPT_DIR/backend/.env.example"
-        ensure_dir_exists "$SCRIPT_DIR/backend/config"
+        ensure_env "$SERVER_DIR/.env" "$SERVER_DIR/.env.example"
+        ensure_dir_exists "$SCRIPT_DIR/platform/config/legacy-backend-config"
         ensure_dir_writable "$SCRIPT_DIR/.onto-runtime/config"
-        ensure_dir_writable "$SCRIPT_DIR/backend/logs"
-        ensure_dir_writable "$SCRIPT_DIR/frontend/logs/nginx"
+        ensure_dir_writable "$SERVER_DIR/logs"
+        ensure_dir_writable "$CONSOLE_DIR/logs/nginx"
         $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-directory "$SCRIPT_DIR" up -d --build
         ;;
     backend)
-        ensure_env "$SCRIPT_DIR/backend/.env" "$SCRIPT_DIR/backend/.env.example"
-        ensure_dir_exists "$SCRIPT_DIR/backend/config"
+        ensure_env "$SERVER_DIR/.env" "$SERVER_DIR/.env.example"
+        ensure_dir_exists "$SCRIPT_DIR/platform/config/legacy-backend-config"
         ensure_dir_writable "$SCRIPT_DIR/.onto-runtime/config"
-        ensure_dir_writable "$SCRIPT_DIR/backend/logs"
-        $COMPOSE_CMD -f "$SCRIPT_DIR/backend/docker-compose.yml" --project-directory "$SCRIPT_DIR/backend" up -d --build
+        ensure_dir_writable "$SERVER_DIR/logs"
+        $COMPOSE_CMD -f "$SERVER_DIR/docker-compose.yml" --project-directory "$SERVER_DIR" up -d --build
         ;;
     frontend)
-        ensure_dir_writable "$SCRIPT_DIR/frontend/logs/nginx"
-        $COMPOSE_CMD -f "$SCRIPT_DIR/frontend/docker-compose.yml" --project-directory "$SCRIPT_DIR/frontend" up -d --build
+        ensure_dir_writable "$CONSOLE_DIR/logs/nginx"
+        $COMPOSE_CMD -f "$CONSOLE_DIR/docker-compose.yml" --project-directory "$CONSOLE_DIR" up -d --build
         ;;
     *)
         echo "Error: Invalid target '$TARGET'. Use 'all', 'backend', or 'frontend'."
