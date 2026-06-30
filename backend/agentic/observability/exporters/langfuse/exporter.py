@@ -449,7 +449,17 @@ def _status_from_event_type(event_type: str) -> str:
 
 
 def _stable_trace_id(event) -> str:
-    """Return a deterministic trace id for replaying the same logical run."""
+    """Return a trace id for this run.
+
+    Prefer an external W3C trace id injected by the eval platform (carried in
+    RUN_STARTED payload as external_trace_id) so spans join the caller trace;
+    otherwise fall back to a deterministic session:run uuid5.
+    """
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        ext = str(payload.get("external_trace_id") or "").strip().lower()
+        if len(ext) == 32 and all(c in "0123456789abcdef" for c in ext):
+            return ext
     return uuid.uuid5(
         uuid.NAMESPACE_DNS,
         "{}:{}".format(event.session_id or "", event.run_id),
