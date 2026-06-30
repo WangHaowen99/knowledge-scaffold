@@ -29,14 +29,14 @@ business_data_search
 
 | 职责 | 文件 |
 | --- | --- |
-| provider 接口定义 | `backend/agentic/business_data/provider_base.py` |
-| provider 实现 | `backend/agentic/business_data/providers/` |
-| 业务数据 provider 注册与表单 schema | `backend/agentic/business_data/provider_registry.py` |
-| workspace 数据连接存储与配置归一化 | `backend/agentic/business_data/connections_store.py` |
-| 运行时 provider 调用 | `backend/agentic/business_data/service.py` |
-| 测试连接 | `backend/agentic/business_data/connection_tester.py` |
-| 前端数据连接表单 | `frontend/src/components/DataConnectionManagement.jsx` |
-| 后端测试 | `backend/tests/test_business_data_connections.py`、`backend/tests/test_business_data_search_resolution.py` |
+| provider 接口定义 | `runtime/data_search/agentic/business_data/provider_base.py` |
+| provider 实现 | `runtime/data_search/agentic/business_data/providers/` |
+| 业务数据 provider 注册与表单 schema | `runtime/data_search/agentic/business_data/provider_registry.py` |
+| workspace 数据连接存储与配置归一化 | `runtime/data_search/agentic/business_data/connections_store.py` |
+| 运行时 provider 调用 | `runtime/data_search/agentic/business_data/service.py` |
+| 测试连接 | `runtime/data_search/agentic/business_data/connection_tester.py` |
+| 前端数据连接表单 | `platform/console/src/components/DataConnectionManagement.jsx` |
+| 后端测试 | `tests/backend/test_business_data_connections.py`、`tests/backend/test_business_data_search_resolution.py` |
 
 ## 新增步骤
 
@@ -58,7 +58,7 @@ warehouse_http
 
 ### 2. 实现 provider 类
 
-在 `backend/agentic/business_data/providers/` 下新增实现文件，例如：
+在 `runtime/data_search/agentic/business_data/providers/` 下新增实现文件，例如：
 
 ```python
 """Warehouse HTTP business data provider."""
@@ -128,7 +128,7 @@ class WarehouseHttpProvider:
 
 ### 3. 注册 provider schema
 
-修改 `backend/agentic/business_data/provider_registry.py`：
+修改 `runtime/data_search/agentic/business_data/provider_registry.py`：
 
 ```python
 from .providers.warehouse_http import WarehouseHttpProvider
@@ -173,7 +173,7 @@ secret 字段的行为：
 
 ### 4. 增加测试连接逻辑
 
-修改 `backend/agentic/business_data/connection_tester.py`。
+修改 `runtime/data_search/agentic/business_data/connection_tester.py`。
 
 入口函数增加分支：
 
@@ -237,7 +237,7 @@ GET /agentic/business-data/provider-schemas
 
 然后按返回的 `fields` 动态渲染表单。
 
-只有在字段宽度需要特殊处理时，才修改 `frontend/src/components/DataConnectionManagement.jsx` 的 `PROVIDER_FIELD_LAYOUT`：
+只有在字段宽度需要特殊处理时，才修改 `platform/console/src/components/DataConnectionManagement.jsx` 的 `PROVIDER_FIELD_LAYOUT`：
 
 ```js
 const PROVIDER_FIELD_LAYOUT = {
@@ -275,8 +275,8 @@ url, endpoint, token, schema, prompt, query, json, headers, sql
 推荐测试位置：
 
 ```text
-backend/tests/test_business_data_connections.py
-backend/tests/test_business_data_search_resolution.py
+tests/backend/test_business_data_connections.py
+tests/backend/test_business_data_search_resolution.py
 ```
 
 测试连接示例：
@@ -342,16 +342,16 @@ def test_data_connection_test_route_probes_warehouse_http_service(tmp_path, monk
 后端：
 
 ```bash
-PYTHONPATH=backend python -m pytest \
-  backend/tests/test_business_data_connections.py \
-  backend/tests/test_business_data_search_resolution.py \
+PYTHONPATH=platform/server:modeling/skills python -m pytest \
+  tests/backend/test_business_data_connections.py \
+  tests/backend/test_business_data_search_resolution.py \
   -q
 ```
 
 如果 provider 会影响导入默认绑定或 ontology summary，再补跑：
 
 ```bash
-PYTHONPATH=backend python -m pytest backend/tests/test_ontology_routes.py -q
+PYTHONPATH=platform/server:modeling/skills python -m pytest tests/backend/test_ontology_routes.py -q
 ```
 
 前端：
