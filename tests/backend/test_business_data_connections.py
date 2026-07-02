@@ -221,6 +221,8 @@ def test_graph_provider_schemas_and_secrets_are_publicized():
     assert neo4j_fields["max_result_rows"]["default"] == 100
     assert "enable_graph_agent" not in neo4j_fields
     assert neo4j_fields["max_iterations"]["default"] == 4
+    assert "graph_agent_runtime" not in neo4j_fields
+    assert "enable_jiuwen_graph_agent" not in neo4j_fields
     assert neo4j_fields["workspace_property"]["default"] == "d2o_workspace_id"
     assert hugegraph_fields["token"]["secret"] is True
     assert hugegraph_fields["graph"]["default"] == "hugegraph"
@@ -228,6 +230,8 @@ def test_graph_provider_schemas_and_secrets_are_publicized():
     assert hugegraph_fields["max_result_rows"]["default"] == 100
     assert "enable_graph_agent" not in hugegraph_fields
     assert hugegraph_fields["max_iterations"]["default"] == 4
+    assert "graph_agent_runtime" not in hugegraph_fields
+    assert "enable_jiuwen_graph_agent" not in hugegraph_fields
     assert hugegraph_fields["workspace_property"]["default"] == "d2o_workspace_id"
 
     public = publicize_provider_config(

@@ -214,6 +214,12 @@ class GraphToolExecutor:
             "success": True,
             "message": {"description": "查询成功"},
         }
+        if total_returned > 0 and _record_filter_hit_is_sufficient(self.context.schema_context):
+            payload.update({
+                "sufficient_for_query": True,
+                "recommended_next_action": "final",
+                "completion_reason": "record_query_property_filter_hit",
+            })
         if warnings:
             payload["warnings"] = list(warnings)
         backend_result = GraphBackendResult(
@@ -321,6 +327,12 @@ class GraphToolExecutor:
             "success": True,
             "message": {"description": "排序查询成功"},
         }
+        if result.records and _record_filter_hit_is_sufficient(self.context.schema_context):
+            payload.update({
+                "sufficient_for_query": True,
+                "recommended_next_action": "final",
+                "completion_reason": "record_query_sorted_search_hit",
+            })
         backend_result = GraphBackendResult(
             records=list(result.records or []),
             total=result.total if result.total is not None else len(result.records or []),
@@ -877,6 +889,17 @@ def _forbidden_scope_fields(context: GraphSearchRuntimeContext) -> set[str]:
     if context.scope.ontology_property:
         fields.add(context.scope.ontology_property)
     return fields
+
+
+def _record_filter_hit_is_sufficient(schema_context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(schema_context, Mapping):
+        return False
+    mapping_intent = schema_context.get("mapping_intent")
+    if not isinstance(mapping_intent, Mapping):
+        return False
+    return bool(mapping_intent.get("property_filter_sufficient_after_hit")) and not bool(
+        mapping_intent.get("pattern_search_required")
+    )
 
 
 def _success_payload(payload: dict[str, Any]) -> dict[str, Any]:

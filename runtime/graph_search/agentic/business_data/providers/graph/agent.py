@@ -1,17 +1,15 @@
-"""LLM-backed internal graph tool loop for business_data_search."""
+"""Shared graph-query agent helpers for business_data_search."""
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import json
 from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from ....services.llm import LLMPurpose, get_llm_router
 from ....utils.ontologies import get_ontology_version_dir
 from .models import GraphAgentResult, GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
-from .tools.executor import DATA_TOOLS, GraphToolExecution, GraphToolExecutor, GraphToolInputError
+from .tools.executor import GraphToolExecution
 
 
 GRAPH_AGENT_SYSTEM_PROMPT = """你是 business_data_search Provider 内部的图查询 Agent。
@@ -34,10 +32,15 @@ GRAPH_AGENT_SYSTEM_PROMPT = """你是 business_data_search Provider 内部的图
 14. 结构化 filter_dict 操作符使用 eq/ne/gt/gte/lt/lte/contains/starts_with/ends_with/in/not_in/is_null，不要使用 Mongo 风格 "$contains"。
 15. filter_dict 顶层 key 必须是 schema 中存在的字段名，不能使用 "$or"、"$and" 等 Mongo 风格逻辑操作符；“编码或名称”等 OR 查询必须拆成 queries 数组里的多个子查询。
 16. 示例：查询编码或名称包含 A001 时，应生成两个 queries 子项，分别使用 {"SourceItemCode":{"contains":"A001"}} 和 {"SourceItemDesc":{"contains":"A001"}}。
+17. 同一字段同一值不要同时使用 eq 和 contains/starts_with/ends_with 重复查询；精确 eq 已命中时，不要再追加模糊兜底查询。
+18. 同一个 element_class/element_type/filter_dict/return_properties 查询不要重复调用。
+19. 需要追加更窄过滤条件时可以继续查询，但最终事实以 Provider 去重后的工具结果为准。
+20. 当 schema_context.mapping_intent.prefer_tool 为 property_filter，且 property_filter/sorted_search 返回 success=true、sufficient_for_query=true 时，立即结束本次内部图检索，不要再追加 pattern_search。
+21. “关系记录/工艺关系记录/受影响对象记录/表记录”的查询不等同于图路径查询；如果用户只要求记录字段、编号、列表或表信息，property_filter 命中后即视为充分。
 
 路径检索策略：
-- schema_context.query_analysis.path_intent 为 true 时，应至少尝试一次 pattern_search，除非 schema_context 中完全没有可用 relation_triples。
-- 若 object mapping 的 resource 是关系记录节点（例如 *_obj、*_TargetItem、SOURCE_STRUCTURE、STRUCTURE_LIST 等），可先用 property_filter 查记录字段，但不能把它当作已完成路径检索；问题需要关联对象详情时继续 pattern_search。
+- schema_context.query_analysis.path_intent 为 true 且 schema_context.mapping_intent.pattern_search_required 为 true 时，应至少尝试一次 pattern_search，除非 schema_context 中完全没有可用 relation_triples。
+- 若 object mapping 的 resource 是关系记录节点（例如 *_obj、*_TargetItem、SOURCE_STRUCTURE、STRUCTURE_LIST 等），用户只查询“记录/字段/编号/表信息”时应使用 property_filter；只有问题明确需要关联对象详情、上下游对象、从 A 找 B 的对象属性时，才继续 pattern_search。
 - 构造 path_pattern 时使用 relation_triples 的 source_label、relation_type、target_label；物理关系 type 通常来自 edges_schema.relationship_types 或 relation_triples.physical_relation_type/type。
 - 对 D2O_RELATION 这类通用物理边，业务关系名通常在边属性 relation_type 中；可在边段 props/filters 中约束 relation_type。
 
@@ -81,226 +84,6 @@ class GraphAgentToolInputError(GraphAgentError):
 
     error_code = "GRAPH_TOOL_INPUT_ERROR"
     retryable = True
-
-
-class GraphQueryAgent:
-    """Provider-internal graph query agent backed by the existing task LLM."""
-
-    def __init__(self, *, llm_call: Any | None = None) -> None:
-        self._llm_call = llm_call
-
-    def run(
-        self,
-        *,
-        context: GraphSearchRuntimeContext,
-        mapping: GraphEntityMapping,
-        tool_executor: GraphToolExecutor,
-    ) -> GraphAgentResult:
-        tool_schemas = _graph_tool_schemas_for_context(context)
-        messages = [
-            {"role": "system", "content": _build_graph_agent_system_prompt(context.schema_context)},
-            {
-                "role": "user",
-                "content": json.dumps(
-                    _build_agent_input(context=context, mapping=mapping, tool_schemas=tool_schemas),
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        max_iterations = _graph_agent_max_iterations(context.provider_config)
-        executed_steps: list[dict[str, Any]] = []
-        data_executions: list[GraphToolExecution] = []
-        last_error = "GraphQueryAgent 未调用可用图检索工具"
-        last_tool_input_error: GraphToolInputError | None = None
-        path_retry_requested = False
-
-        for iteration in range(1, max_iterations + 1):
-            response = self._call_with_timeout(
-                messages=messages,
-                tool_schemas=tool_schemas,
-                provider_config=context.provider_config,
-                timeout_seconds=_graph_agent_timeout_seconds(
-                    provider_config=context.provider_config,
-                    outer_timeout_seconds=context.timeout_seconds,
-                ),
-            )
-            tool_calls = _normalize_tool_calls(response.get("tool_calls"))
-            content = str(response.get("content") or "")
-            if not tool_calls:
-                if data_executions:
-                    if (
-                        not path_retry_requested
-                        and iteration < max_iterations
-                        and _path_intent_missing_pattern(context=context, executions=data_executions)
-                    ):
-                        path_retry_requested = True
-                        messages.append({
-                            "role": "user",
-                            "content": _path_pattern_retry_message(context),
-                        })
-                        executed_steps.append({
-                            "tool": "GraphQueryAgent",
-                            "summary": "关系/路径意图尚未尝试 pattern_search，追加一次路径检索修正",
-                        })
-                        continue
-                    return _agent_result_from_executions(
-                        executions=data_executions,
-                        executed_steps=executed_steps,
-                        final_message=content,
-                        warnings=_path_missing_pattern_warnings(context, data_executions),
-                    )
-                if content.strip():
-                    last_error = "GraphQueryAgent 未调用内部图检索工具: {}".format(content.strip()[:200])
-                break
-
-            assistant_message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
-            messages.append(assistant_message)
-            for call in tool_calls:
-                call_id = str(call.get("id") or "graph_tool_{}_{}".format(iteration, len(executed_steps) + 1))
-                name = str((call.get("function") or {}).get("name") or "").strip()
-                try:
-                    arguments = _loads_tool_arguments((call.get("function") or {}).get("arguments"))
-                    execution = tool_executor.execute(name, arguments)
-                    tool_payload = execution.payload
-                    if execution.backend_result is not None and execution.tool_name in DATA_TOOLS:
-                        data_executions.append(execution)
-                    executed_steps.append({
-                        "tool": execution.tool_name,
-                        "summary": _summarize_tool_execution(execution),
-                    })
-                except GraphToolInputError as exc:
-                    last_tool_input_error = exc
-                    tool_payload = {
-                        "success": False,
-                        "error_code": exc.error_code,
-                        "error": str(exc),
-                        "retryable": exc.retryable,
-                    }
-                    last_error = str(exc)
-                    executed_steps.append({
-                        "tool": name or "<empty>",
-                        "summary": "内部图工具参数错误: {}".format(str(exc)),
-                    })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "name": name,
-                    "content": json.dumps(tool_payload, ensure_ascii=False, default=str),
-                })
-            if (
-                _graph_agent_early_stop_enabled(context.provider_config)
-                and _has_primary_mapping_result(
-                    executions=data_executions,
-                    mapping=mapping,
-                )
-                and not _path_intent_missing_pattern(context=context, executions=data_executions)
-            ):
-                return _agent_result_from_executions(
-                    executions=data_executions,
-                    executed_steps=executed_steps,
-                    final_message="",
-                )
-
-        if data_executions:
-            return _agent_result_from_executions(
-                executions=data_executions,
-                executed_steps=[
-                    *executed_steps,
-                    {"tool": "GraphQueryAgent", "summary": "达到最大轮次，使用已获得的真实图工具结果"},
-                ],
-                final_message="",
-                warnings=[
-                    "GraphQueryAgent 达到最大轮次，使用已获得的真实图工具结果",
-                    *_path_missing_pattern_warnings(context, data_executions),
-                ],
-            )
-        if last_tool_input_error is not None:
-            raise GraphAgentToolInputError(str(last_tool_input_error))
-        raise GraphAgentError(last_error)
-
-    def _call_with_timeout(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        tool_schemas: list[dict[str, Any]],
-        provider_config: Mapping[str, Any],
-        timeout_seconds: float,
-    ) -> dict[str, Any]:
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-query-agent")
-        future = executor.submit(
-            self._call_llm,
-            messages=list(messages),
-            tool_schemas=list(tool_schemas),
-            provider_config=provider_config,
-        )
-        try:
-            return future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError as exc:
-            future.cancel()
-            raise GraphAgentTimeoutError(
-                "GraphQueryAgent 调用超时（{}s）".format(_format_timeout(timeout_seconds))
-            ) from exc
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-    def _call_llm(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        tool_schemas: list[dict[str, Any]],
-        provider_config: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        if self._llm_call is not None:
-            try:
-                raw = self._llm_call({
-                    "messages": messages,
-                    "tools": tool_schemas,
-                    "provider_config": dict(provider_config or {}),
-                })
-                return _normalize_llm_response(raw)
-            except GraphAgentError:
-                raise
-            except RuntimeError as exc:
-                raise GraphAgentUnavailableError(
-                    "GraphQueryAgent LLM 不可用: {}".format(_safe_exception_detail(exc))
-                ) from exc
-            except Exception as exc:
-                raise GraphAgentError(
-                    "GraphQueryAgent 调用失败: {}".format(_safe_exception_detail(exc))
-                ) from exc
-
-        try:
-            router = get_llm_router()
-        except Exception as exc:
-            raise GraphAgentUnavailableError(
-                "GraphQueryAgent LLM router 未配置: {}".format(_safe_exception_detail(exc))
-            ) from exc
-
-        try:
-            response = router.call(
-                purpose=LLMPurpose.TASK,
-                profile_id=str(provider_config.get("model_profile_id") or "").strip() or None,
-                messages=messages,
-                tools=tool_schemas,
-                stream=False,
-                temperature=0,
-                max_tokens=int(provider_config.get("graph_agent_max_tokens") or 1600),
-                enable_reasoning=False,
-                run_id=str(provider_config.get("run_id") or "").strip() or None,
-                request_label="graph_query_agent_tools",
-            )
-        except RuntimeError as exc:
-            raise GraphAgentUnavailableError(
-                "GraphQueryAgent LLM 不可用: {}".format(_safe_exception_detail(exc))
-            ) from exc
-        except Exception as exc:
-            raise GraphAgentError(
-                "GraphQueryAgent 调用失败: {}".format(_safe_exception_detail(exc))
-            ) from exc
-        return {
-            "content": str(response.content or ""),
-            "tool_calls": response.tool_calls or [],
-        }
 
 
 def _build_agent_input(
@@ -352,6 +135,7 @@ def _agent_input_schema_context(schema_context: Mapping[str, Any] | None) -> Any
         "focused_relationship_types": list(schema_context.get("focused_relationship_types") or []),
         "mapping_resource": str(schema_context.get("mapping_resource") or ""),
         "query_analysis": dict(schema_context.get("query_analysis") or {}),
+        "mapping_intent": dict(schema_context.get("mapping_intent") or {}),
     }
 
 
@@ -394,20 +178,6 @@ def _read_object_definition(context: GraphSearchRuntimeContext) -> str:
         return ""
 
 
-def _normalize_llm_response(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, str):
-        return {"content": raw, "tool_calls": []}
-    if isinstance(raw, Mapping):
-        return {
-            "content": str(raw.get("content") or ""),
-            "tool_calls": raw.get("tool_calls") or [],
-        }
-    return {
-        "content": str(getattr(raw, "content", "") or ""),
-        "tool_calls": getattr(raw, "tool_calls", None) or [],
-    }
-
-
 def _safe_exception_detail(exc: Exception, *, limit: int = 400) -> str:
     detail = "{}: {}".format(exc.__class__.__name__, str(exc or "").strip()).strip()
     detail = _redact_sensitive_text(detail.replace("\n", " ").replace("\r", " "))
@@ -425,45 +195,6 @@ def _redact_sensitive_text(text: str) -> str:
     return re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", redacted)
 
 
-def _normalize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
-    if not isinstance(tool_calls, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for index, call in enumerate(tool_calls):
-        if not isinstance(call, Mapping):
-            continue
-        function = call.get("function") or {}
-        if not isinstance(function, Mapping):
-            continue
-        name = str(function.get("name") or "").strip()
-        if not name:
-            continue
-        normalized.append({
-            "id": str(call.get("id") or "graph_tool_{}".format(index + 1)),
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": function.get("arguments") or "{}",
-            },
-        })
-    return normalized
-
-
-def _loads_tool_arguments(raw: Any) -> dict[str, Any]:
-    if isinstance(raw, Mapping):
-        return dict(raw)
-    text = str(raw or "").strip()
-    if not text:
-        return {}
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise GraphToolInputError("tool arguments 必须是 JSON object") from exc
-    if not isinstance(payload, dict):
-        raise GraphToolInputError("tool arguments 必须是 JSON object")
-    return payload
-
-
 def _agent_result_from_execution(
     *,
     execution: GraphToolExecution,
@@ -471,10 +202,11 @@ def _agent_result_from_execution(
     final_message: str,
     warnings: list[str] | None = None,
 ) -> GraphAgentResult:
+    backend_result = _deduped_backend_result_for_execution(execution)
     return GraphAgentResult(
         tool_name=execution.tool_name,
         tool_args=dict(execution.tool_args or {}),
-        backend_result=execution.backend_result or GraphBackendResult(),
+        backend_result=backend_result,
         executed_steps=list(executed_steps or []),
         warnings=list(warnings or []),
         final_message=final_message,
@@ -498,11 +230,21 @@ def _agent_result_from_executions(
 
     combined_records: list[dict[str, Any]] = []
     combined_warnings: list[str] = list(warnings or [])
+    seen_record_keys: set[str] = set()
     total = 0
+    raw_total = 0
     truncated = False
     for execution in executions:
         backend_result = execution.backend_result or GraphBackendResult()
-        record_count = backend_result.total if backend_result.total is not None else len(backend_result.records or [])
+        raw_records = list(backend_result.records or [])
+        raw_record_count = backend_result.total if backend_result.total is not None else len(raw_records)
+        raw_total += int(raw_record_count or 0)
+        records = _dedupe_execution_records(
+            tool_name=execution.tool_name,
+            records=raw_records,
+            seen_record_keys=seen_record_keys,
+        )
+        record_count = len(records) if _dedupe_records_for_tool(execution.tool_name) else raw_record_count
         total += int(record_count or 0)
         truncated = truncated or bool(backend_result.truncated)
         combined_warnings.extend(backend_result.warnings or [])
@@ -510,8 +252,9 @@ def _agent_result_from_executions(
             "tool": execution.tool_name,
             "tool_args": dict(execution.tool_args or {}),
             "record_count": record_count,
+            "raw_record_count": raw_record_count,
             "result": _compact_execution_result(execution),
-            "records": list(backend_result.records or []),
+            "records": records,
             "truncated": bool(backend_result.truncated),
         })
 
@@ -537,6 +280,8 @@ def _agent_result_from_executions(
                     "results": combined_records,
                     "count": len(combined_records),
                     "total_record_count": total,
+                    "raw_total_record_count": raw_total,
+                    "deduplicated": raw_total != total,
                 },
             },
         ),
@@ -580,6 +325,123 @@ def _strip_duplicate_result_payload(value: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _dedupe_execution_records(
+    *,
+    tool_name: str,
+    records: list[dict[str, Any]],
+    seen_record_keys: set[str],
+) -> list[dict[str, Any]]:
+    if not _dedupe_records_for_tool(tool_name):
+        return list(records or [])
+    deduped: list[dict[str, Any]] = []
+    for record in records or []:
+        key = _record_dedupe_key(record)
+        if key in seen_record_keys:
+            continue
+        seen_record_keys.add(key)
+        deduped.append(record)
+    return deduped
+
+
+def _deduped_backend_result_for_execution(execution: GraphToolExecution) -> GraphBackendResult:
+    backend_result = execution.backend_result or GraphBackendResult()
+    if not _dedupe_records_for_tool(execution.tool_name):
+        return backend_result
+    raw_records = list(backend_result.records or [])
+    raw_record_count = backend_result.total if backend_result.total is not None else len(raw_records)
+    records = _dedupe_execution_records(
+        tool_name=execution.tool_name,
+        records=raw_records,
+        seen_record_keys=set(),
+    )
+    if len(records) == len(raw_records) and raw_record_count == len(records):
+        return backend_result
+    payload = dict(backend_result.payload or {})
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        result_payload = dict(result)
+        result_payload["raw_record_count"] = raw_record_count
+        result_payload["deduplicated"] = True
+        payload["result"] = result_payload
+    elif payload:
+        payload["raw_record_count"] = raw_record_count
+        payload["deduplicated"] = True
+    return GraphBackendResult(
+        records=records,
+        total=len(records),
+        truncated=bool(backend_result.truncated),
+        warnings=list(backend_result.warnings or []),
+        payload=payload,
+    )
+
+
+def _dedupe_records_for_tool(tool_name: str) -> bool:
+    return str(tool_name or "").strip() in {
+        "property_filter",
+        "sorted_search",
+        "pattern_search",
+        "get_element_info",
+    }
+
+
+def _record_dedupe_key(record: Any) -> str:
+    if isinstance(record, Mapping):
+        for field in ("entity_instance_id", "element_id", "id", "ID", "_id"):
+            value = record.get(field)
+            if value not in (None, ""):
+                return "{}={}".format(field, str(value))
+        path_key = _path_record_key(record)
+        if path_key:
+            return path_key
+        properties = record.get("properties")
+        if isinstance(properties, Mapping):
+            for field in _candidate_property_identity_fields(properties):
+                value = properties.get(field)
+                if value not in (None, ""):
+                    return "properties.{}={}".format(field, str(value))
+    try:
+        return "json:{}".format(json.dumps(record, sort_keys=True, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return "repr:{}".format(repr(record))
+
+
+def _path_record_key(record: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for collection_name in ("nodes", "relationships"):
+        collection = record.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, Mapping):
+                continue
+            identity = item.get("entity_instance_id") or item.get("element_id") or item.get("id") or item.get("ID")
+            if identity not in (None, ""):
+                parts.append("{}:{}".format(collection_name, str(identity)))
+    if not parts:
+        return ""
+    return "path:{}".format("|".join(parts))
+
+
+def _candidate_property_identity_fields(properties: Mapping[str, Any]) -> list[str]:
+    preferred = [
+        "InventoryDetailCode",
+        "KC_BM",
+        "ConclusionID",
+        "AffectedObjectCode",
+        "SourceItemVersionID",
+        "TargetItemID",
+        "ID",
+    ]
+    keys = [str(key) for key in properties if str(key)]
+    selected = [key for key in preferred if key in properties]
+    selected.extend(
+        key
+        for key in sorted(keys)
+        if key not in selected and (key.endswith("ID") or key.endswith("_ID"))
+    )
+    return selected
+
+
 def _graph_agent_timeout_seconds(
     *,
     provider_config: Mapping[str, Any],
@@ -601,52 +463,6 @@ def _graph_agent_max_iterations(provider_config: Mapping[str, Any]) -> int:
     except (TypeError, ValueError):
         value = 4
     return max(1, min(value, 8))
-
-
-def _graph_agent_early_stop_enabled(provider_config: Mapping[str, Any]) -> bool:
-    raw = provider_config.get("graph_agent_early_stop_on_primary_result")
-    if raw in (None, ""):
-        return True
-    if isinstance(raw, bool):
-        return raw
-    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _has_primary_mapping_result(
-    *,
-    executions: list[GraphToolExecution],
-    mapping: GraphEntityMapping,
-) -> bool:
-    primary_tools = _primary_tools_for_mapping(mapping)
-    if not primary_tools:
-        return False
-    return any(
-        execution.tool_name in primary_tools and _execution_has_data(execution)
-        for execution in executions
-    )
-
-
-def _primary_tools_for_mapping(mapping: GraphEntityMapping) -> set[str]:
-    kind = str(mapping.kind or "").strip().lower()
-    if kind == "path":
-        return {"pattern_search"}
-    if kind in {"node", "edge"}:
-        return {"property_filter", "count_search", "aggregate_search", "sorted_search"}
-    return set()
-
-
-def _execution_has_data(execution: GraphToolExecution) -> bool:
-    result = execution.backend_result
-    if result is None:
-        return False
-    if result.records:
-        return True
-    if result.total is None:
-        return False
-    try:
-        return int(result.total) > 0
-    except (TypeError, ValueError):
-        return False
 
 
 def _path_intent_missing_pattern(
