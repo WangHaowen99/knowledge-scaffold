@@ -57,7 +57,7 @@ backend/agentic/
 | `agentic/loop/jiuwen_adapter.py` | 构造 Jiuwen ReAct 请求时注入语言指令 | +15 |
 | `agentic/workspaces.py` | runtime_config 读写函数 | +30 |
 | `agentic/routes/workspaces.py` | runtime_config API 端点 | +40 |
-| `frontend/src/components/WorkspaceManagement.jsx` | 运行时参数标签页（语言跟随 + 输出过滤） | +60 |
+| `platform/console/src/components/WorkspaceManagement.jsx` | 运行时参数标签页（语言跟随 + 输出过滤） | +60 |
 | `backend/requirements.txt` | `langdetect`, `httpx` | +2 |
 
 ### 2.3 Workspace 运行时配置存储

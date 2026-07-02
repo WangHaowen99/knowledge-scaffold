@@ -207,7 +207,7 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`。后续如果要
 
 ## Connectivity Test
 
-当前项目已有 `backend/agentic/business_data/connection_tester.py`，需要增加 `dataagent` 分支。
+当前项目已有 `runtime/data_search/agentic/business_data/connection_tester.py`，需要增加 `dataagent` 分支。
 
 推荐测试策略：
 
@@ -224,14 +224,14 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`。后续如果要
 
 | 文件 | 变更 |
 | --- | --- |
-| `backend/agentic/business_data/providers/dataagent_provider.py` | 新增 provider adapter |
-| `backend/agentic/services/dataagent.py` | 新增 DataAgent A2A REST client、响应解析、输出归一化 |
-| `backend/agentic/business_data/provider_registry.py` | 注册 `dataagent` schema |
-| `backend/agentic/business_data/connection_tester.py` | 增加 DataAgent AgentCard 探测 |
-| `backend/tests/test_dataagent_provider.py` | 覆盖 provider schema、请求构造、响应解析、输出归一化 |
-| `backend/tests/test_business_data_connections.py` | 覆盖连接创建、secret 脱敏、测试连接 |
+| `runtime/data_search/agentic/business_data/providers/dataagent_provider.py` | 新增 provider adapter |
+| `runtime/agent/agentic/services/dataagent.py` | 新增 DataAgent A2A REST client、响应解析、输出归一化 |
+| `runtime/data_search/agentic/business_data/provider_registry.py` | 注册 `dataagent` schema |
+| `runtime/data_search/agentic/business_data/connection_tester.py` | 增加 DataAgent AgentCard 探测 |
+| `tests/backend/test_dataagent_provider.py` | 覆盖 provider schema、请求构造、响应解析、输出归一化 |
+| `tests/backend/test_business_data_connections.py` | 覆盖连接创建、secret 脱敏、测试连接 |
 
-通常不需要改 `frontend/src/components/DataConnectionManagement.jsx`。前端表单由后端 provider schema 动态渲染，`url`、`token` 字段也已经会按整行字段处理。
+通常不需要改 `platform/console/src/components/DataConnectionManagement.jsx`。前端表单由后端 provider schema 动态渲染，`url`、`token` 字段也已经会按整行字段处理。
 
 ## Implementation Notes
 

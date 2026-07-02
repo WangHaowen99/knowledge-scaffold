@@ -431,7 +431,7 @@ warm-up 可前移节约：约 8-12s，理想情况下 10-15s
 
 ### 12.1 单元测试
 
-新增 `backend/tests/test_runtime_warmup.py`。
+新增 `tests/backend/test_runtime_warmup.py`。
 
 覆盖点：
 
@@ -446,7 +446,7 @@ warm-up 可前移节约：约 8-12s，理想情况下 10-15s
 
 ### 12.2 系统配置测试
 
-在 `backend/tests/test_system_config_settings.py` 和 `backend/tests/test_system_config_api.py` 补充：
+在 `tests/backend/test_system_config_settings.py` 和 `tests/backend/test_system_config_api.py` 补充：
 
 1. `get_system_config_template()` 暴露 `agent.runtime_warmup_enabled=true` 默认值。
 2. `update_system_config_section("agent", {"runtime_warmup_enabled": False})` 能保存并返回公共配置。
@@ -456,7 +456,7 @@ warm-up 可前移节约：约 8-12s，理想情况下 10-15s
 
 ### 12.3 Jiuwen adapter 测试
 
-在 `backend/tests/test_jiuwen_react_adapter.py` 补充：
+在 `tests/backend/test_jiuwen_react_adapter.py` 补充：
 
 1. `warm_up_jiuwen_runtime()` 会调用 `require_openjiuwen()`。
 2. 会构造 warm-up agent。
@@ -466,7 +466,7 @@ warm-up 可前移节约：约 8-12s，理想情况下 10-15s
 ### 12.4 建议命令
 
 ```powershell
-python -m pytest backend/tests/test_runtime_warmup.py backend/tests/test_jiuwen_react_adapter.py backend/tests/test_system_config_settings.py backend/tests/test_system_config_api.py -q
+python -m pytest tests/backend/test_runtime_warmup.py tests/backend/test_jiuwen_react_adapter.py tests/backend/test_system_config_settings.py tests/backend/test_system_config_api.py -q
 ```
 
 如果本地 Windows 环境存在“系统 Python 有 pytest、backend venv 有 Flask 但没有 pytest”的拆分情况，可临时把 `backend` 和 `backend/venv/Lib/site-packages` 加入 `sys.path` 后运行同一组测试。
@@ -559,13 +559,13 @@ python backend/run.py
    - 在 `AgentConfig` 增加 `runtime_warmup_enabled: bool = True` 并从系统配置读取。
 5. `backend/agentic/app.py`
    - 调用 `start_runtime_warmup(...)`。
-6. `backend/tests/test_runtime_warmup.py`
+6. `tests/backend/test_runtime_warmup.py`
    - 覆盖 warm-up 一次性启动逻辑。
-7. `backend/tests/test_system_config_settings.py`
+7. `tests/backend/test_system_config_settings.py`
    - 覆盖系统配置字段、env fallback 和 `AgentConfig.from_env()`。
-8. `backend/tests/test_system_config_api.py`
+8. `tests/backend/test_system_config_api.py`
    - 覆盖配置模板和 API 保存返回。
-9. `backend/tests/test_jiuwen_react_adapter.py`
+9. `tests/backend/test_jiuwen_react_adapter.py`
    - 覆盖 Jiuwen adapter warm-up 边界。
 
 这个版本能解决重启后第一次问答前的 Jiuwen 冷启动等待，同时不改变真实请求 agent 生命周期。
