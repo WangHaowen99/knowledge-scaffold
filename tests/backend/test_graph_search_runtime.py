@@ -10,7 +10,8 @@ from agentic.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
 )
-from agentic.business_data.providers.graph.runtime import GraphSearchRuntime
+from agentic.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
+from agentic.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
 
 
 class _StaticResolver:
@@ -327,12 +328,54 @@ def test_runtime_marks_path_intent_and_preloads_relation_triples():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询 SourceItem 与 TargetItem 的工艺关系", entity="SourceItem与TargetItem工艺关系"))
+    events = list(runtime.search_stream(query="查询 SourceItem 编码 101000-001 对应的 TargetItem 信息", entity="SourceItem与TargetItem工艺关系"))
     final = json.loads(events[-1]["content"])
     schema_context = agent.calls[0]["context"].schema_context
 
     assert final["success"] is True
     assert schema_context["query_analysis"]["path_intent"] is True
     assert schema_context["query_analysis"]["preferred_tool"] == "pattern_search"
+    assert schema_context["mapping_intent"]["pattern_search_required"] is True
     assert schema_context["edges_schema"]["relation_triples"][0]["source_label"] == "SourceItemVersion"
     assert schema_context["focused_node_labels"] == ["SourceItem_TargetItem"]
+
+
+def test_runtime_marks_relationship_record_query_as_property_filter_sufficient():
+    backend = _FakeBackend()
+    mapping = GraphEntityMapping(
+        entity="SourceItem与TargetItem工艺关系",
+        kind="node",
+        source="mappings/object-data-mappings.json",
+        label="SourceItem_TargetItem",
+        property_map={"SourceItem编码": "SourceItemCode", "TargetItem编码": "TargetItemCode", "SourceItem版本": "SourceItemVersion"},
+    )
+    agent = _StaticGraphAgent(_agent_result())
+    runtime = GraphSearchRuntime(
+        provider="hugegraph",
+        provider_config=_provider_config(),
+        backend=backend,
+        mapping_resolver=_StaticResolver(mapping),
+        graph_agent=agent,
+    )
+
+    events = list(
+        runtime.search_stream(
+            query='查询SourceItem编码为"101001-001"且SourceItem版本为"A"的工艺关系记录',
+            entity="SourceItem与TargetItem工艺关系",
+        )
+    )
+    final = json.loads(events[-1]["content"])
+    schema_context = agent.calls[0]["context"].schema_context
+
+    assert final["success"] is True
+    assert schema_context["query_analysis"]["path_intent"] is False
+    assert schema_context["query_analysis"]["preferred_tool"] == "property_filter"
+    assert schema_context["mapping_intent"]["resource_kind"] == "record_node"
+    assert schema_context["mapping_intent"]["is_relationship_record"] is True
+    assert schema_context["mapping_intent"]["pattern_search_required"] is False
+    assert schema_context["mapping_intent"]["property_filter_sufficient_after_hit"] is True
+
+
+def test_runtime_uses_jiuwen_graph_agent_by_default():
+    assert _make_graph_query_agent({}).__class__ is JiuwenGraphQueryAgent
+    assert _make_graph_query_agent({"graph_agent_runtime": "legacy"}).__class__ is JiuwenGraphQueryAgent

@@ -1,15 +1,14 @@
-"""Tests for GraphQueryAgent internal tool loop."""
+"""Tests for JiuwenGraphQueryAgent internal graph tool loop."""
 
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
-from agentic.business_data.providers.graph.agent import GraphAgentError
 from agentic.business_data.providers.graph.agent import GraphAgentTimeoutError
-from agentic.business_data.providers.graph.agent import GraphAgentToolInputError
-from agentic.business_data.providers.graph.agent import GraphQueryAgent
+from agentic.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
 from agentic.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
@@ -69,31 +68,20 @@ class _Backend:
         return {"found": False, "element_id": element_instance_id}
 
 
-class _RecoveringBackend(_Backend):
-    def __init__(self):
-        super().__init__()
-        self.fail_once = True
-
+class _DuplicateTargetItemBackend(_Backend):
     def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
         self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
-        if self.fail_once:
-            self.fail_once = False
-            raise ValueError("filter_dict.SourceItemDesc 包含不支持的操作符: '$contains'")
-        return GraphBackendResult(records=[{"properties": {"TargetItemCode": "A001"}}], total=1)
+        return GraphBackendResult(
+            records=[{"element_id": "m-part-a001", "properties": {"TargetItemCode": "A001"}}],
+            total=1,
+        )
 
-
-class _FieldEchoBackend(_Backend):
-    def property_filter(self, *, element_class, element_type, filter_dict, return_properties, limit, offset, scope):
-        self.calls.append(("property_filter", element_class, element_type, filter_dict, return_properties, limit, offset, scope.workspace_value))
-        properties = {
-            "AffectedObjectCode": "0001",
-            "SourceItemVersionIDBefore": "VERSION0003",
-            "SourceItemVersionIDAfter": "VERSION0006",
-            "MaterialType": "物料替换",
-        }
-        if return_properties:
-            properties = {key: value for key, value in properties.items() if key in return_properties}
-        return GraphBackendResult(records=[{"properties": properties}], total=1)
+    def sorted_search(self, *, element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope):
+        self.calls.append(("sorted_search", element_class, element_type, filter_dict, return_properties, sort_by, ascending, limit, offset, scope.workspace_value))
+        return GraphBackendResult(
+            records=[{"element_id": "m-part-a001", "properties": {"TargetItemCode": "A001"}}],
+            total=1,
+        )
 
 
 def _context():
@@ -112,175 +100,182 @@ def _context():
     )
 
 
-def test_graph_query_agent_executes_internal_tool_loop():
-    captured = []
+def _executor(backend, context, mapping):
+    return GraphToolExecutor(backend=backend, context=context, mapping=mapping)
 
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
+
+def _record_context():
+    return GraphSearchRuntimeContext(
+        provider="neo4j",
+        workspace_id="workspace-a",
+        ontology_id="demo-ontology",
+        workspace_root="/missing",
+        entity="SourceItem与TargetItem工艺关系",
+        query='查询SourceItem编码为"101001-001"且SourceItem版本为"A"的工艺关系记录',
+        timeout_seconds=60,
+        max_result_rows=100,
+        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        mapping=GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"),
+        provider_config={},
+        schema_context={
+            "source": "provider_preload",
+            "nodes_schema": {
+                "labels": ["SourceItem_TargetItem"],
+                "schema": {"SourceItem_TargetItem": {"SourceItemCode": "STRING", "TargetItemCode": "STRING", "SourceItemVersion": "STRING"}},
+            },
+            "edges_schema": {
+                "relationship_types": ["D2O_RELATION"],
+                "schema": {"D2O_RELATION": {"relation_type": "STRING"}},
+                "relation_triples": [
                     {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"CHANGE_ORDER_affected_obj",'
-                                '"element_type":"NODE","filter_dict":{"CHANGE_ORDER_ID":"CHANGE_ORDER-001"},'
-                                '"return_properties":["CHANGE_ORDER_ID"],"limit":20}]}'
-                            ),
-                        },
+                        "source_label": "SourceItemVersion",
+                        "relation_type": "PROCESS_TO",
+                        "type": "D2O_RELATION",
+                        "target_label": "TargetItem",
                     }
                 ],
-            }
-        return {"content": '{"done":true}', "tool_calls": []}
+            },
+            "query_analysis": {
+                "path_intent": False,
+                "preferred_tool": "property_filter",
+                "record_query": True,
+            },
+            "mapping_intent": {
+                "resource_kind": "record_node",
+                "is_relationship_record": True,
+                "record_query": True,
+                "associated_object_detail": False,
+                "prefer_tool": "property_filter",
+                "pattern_search_required": False,
+                "property_filter_sufficient_after_hit": True,
+            },
+            "disable_schema_tools": True,
+        },
+    )
+
+
+def test_jiuwen_graph_query_agent_executes_private_graph_tool_adapter():
+    invocations = []
+
+    def fake_invoker(payload):
+        invocations.append(payload)
+        assert payload["attempt"] == 1
+        return payload["adapter"]._invoke_sync(
+            "property_filter",
+            {
+                "queries": [
+                    {
+                        "element_class": "CHANGE_ORDER_affected_obj",
+                        "element_type": "NODE",
+                        "filter_dict": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
+                        "return_properties": ["CHANGE_ORDER_ID"],
+                        "limit": 20,
+                    }
+                ]
+            },
+        )
 
     context = _context()
     mapping = GraphEntityMapping(
         entity="CHANGE_ORDER受影响对象",
-        kind="path",
+        kind="node",
         source="test",
+        label="CHANGE_ORDER_affected_obj",
         property_map={"CHANGE_ORDER编码": "CHANGE_ORDER_ID"},
     )
     backend = _Backend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
+
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
         context=context,
         mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
+        tool_executor=_executor(backend, context, mapping),
     )
 
     assert result.tool_name == "property_filter"
     assert result.backend_result.records == [{"properties": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}}]
-    assert captured[0]["messages"][1]["content"]
-    assert [tool["function"]["name"] for tool in captured[0]["tools"]] == [
-        "get_nodes_schema",
-        "get_edges_schema",
-        "property_filter",
-        "count_search",
-        "aggregate_search",
-        "sorted_search",
-        "pattern_search",
-        "get_element_info",
+    assert result.executed_steps == [
+        {"tool": "property_filter", "summary": "执行内部图工具 property_filter，返回 1 条"}
     ]
+    assert len(invocations) == 1
     assert backend.calls == [
         ("property_filter", "CHANGE_ORDER_affected_obj", "NODE", {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}, ["CHANGE_ORDER_ID"], 20, 0, "workspace-a")
     ]
 
 
-def test_graph_query_agent_hides_schema_tools_when_schema_context_is_preloaded():
-    captured = []
+def test_jiuwen_graph_query_agent_retries_when_model_does_not_call_tool():
+    invocations = []
 
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
+    def fake_invoker(payload):
+        invocations.append(payload)
+        if payload["attempt"] == 1:
+            return "查询完成，但没有调用内部图工具"
+        return payload["adapter"]._invoke_sync(
+            "property_filter",
+            {
+                "queries": [
                     {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"TargetItem","element_type":"NODE",'
-                                '"filter_dict":{"TargetItemCode":"A001"},"return_properties":["TargetItemCode"]}]}'
-                            ),
-                        },
+                        "element_class": "CHANGE_ORDER_affected_obj",
+                        "element_type": "NODE",
+                        "filter_dict": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
+                        "return_properties": ["CHANGE_ORDER_ID"],
+                        "limit": 20,
                     }
-                ],
-            }
-        return {"content": '{"done":true}', "tool_calls": []}
-
-    context = GraphSearchRuntimeContext(
-        provider="neo4j",
-        workspace_id="workspace-a",
-        ontology_id="demo-ontology",
-        workspace_root="/missing",
-        entity="TargetItem",
-        query="查询 TargetItemCode 为 A001 的物料",
-        timeout_seconds=60,
-        max_result_rows=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
-        mapping=GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem"),
-        provider_config={},
-        schema_context={
-            "source": "provider_preload",
-            "node_labels": ["TargetItem"],
-            "nodes_schema": {
-                "labels": ["TargetItem"],
-                "schema": {"TargetItem": {"TargetItemCode": "STRING"}},
+                ]
             },
-            "disable_schema_tools": True,
-        },
-    )
-    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+        )
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj")
     backend = _Backend()
 
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
         context=context,
         mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
+        tool_executor=_executor(backend, context, mapping),
     )
 
-    tool_names = [tool["function"]["name"] for tool in captured[0]["tools"]]
-    assert "get_nodes_schema" not in tool_names
-    assert "get_edges_schema" not in tool_names
-    system_prompt = captured[0]["messages"][0]["content"]
-    agent_input = captured[0]["messages"][1]["content"]
-    assert "预取图 schema 上下文" in system_prompt
-    assert "TargetItemCode" in system_prompt
-    assert '"in_system_prompt": true' in agent_input
     assert result.tool_name == "property_filter"
-    assert backend.calls == [
-        ("property_filter", "TargetItem", "NODE", {"TargetItemCode": "A001"}, ["TargetItemCode"], 100, 0, "workspace-a")
+    assert len(invocations) == 2
+    assert invocations[0]["invocation_id"] != invocations[1]["invocation_id"]
+    assert "上一轮没有调用任何内部图检索工具" in invocations[1]["query"]
+    assert result.executed_steps == [
+        {"tool": "GraphQueryAgent", "summary": "上一轮未调用内部图工具，使用隔离会话重试"},
+        {"tool": "property_filter", "summary": "执行内部图工具 property_filter，返回 1 条"},
     ]
 
 
-def test_graph_query_agent_retries_pattern_search_for_path_intent_after_record_lookup():
-    captured = []
+def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
+    invocations = []
 
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"SourceItem_TargetItem","element_type":"NODE",'
-                                '"filter_dict":{"SourceItemCode":"101000-001"},"return_properties":["SourceItemCode","TargetItemCode"]}]}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        if len(captured) == 2:
-            return {"content": '{"done":true}', "tool_calls": []}
-        assert "尚未调用 pattern_search" in captured[-1]["messages"][-1]["content"]
-        return {
-            "content": "",
-            "tool_calls": [
+    def fake_invoker(payload):
+        invocations.append(payload)
+        if payload["attempt"] == 1:
+            return payload["adapter"]._invoke_sync(
+                "property_filter",
                 {
-                    "id": "call-2",
-                    "type": "function",
-                    "function": {
-                        "name": "pattern_search",
-                        "arguments": (
-                            '{"path_pattern":[[{"label":"SourceItemVersion","props":{"SourceItemCode":"101000-001"}}],'
-                            '["D2O_RELATION",{"props":{"relation_type":"PROCESS_TO"}}],[{"label":"TargetItem"}]],'
-                            '"return_vars":["a","r1","b"],'
-                            '"return_properties":{"a":["SourceItemCode"],"b":["TargetItemCode"]},"limit":20}'
-                        ),
-                    },
-                }
-            ],
-        }
+                    "queries": [
+                        {
+                            "element_class": "SourceItem_TargetItem",
+                            "element_type": "NODE",
+                            "filter_dict": {"SourceItemCode": "101000-001"},
+                            "return_properties": ["SourceItemCode", "TargetItemCode"],
+                        }
+                    ]
+                },
+            )
+        return payload["adapter"]._invoke_sync(
+            "pattern_search",
+            {
+                "path_pattern": [
+                    [{"label": "SourceItemVersion", "props": {"SourceItemCode": "101000-001"}}],
+                    ["D2O_RELATION", {"props": {"relation_type": "PROCESS_TO"}}],
+                    [{"label": "TargetItem"}],
+                ],
+                "return_vars": ["a", "r1", "b"],
+                "return_properties": {"a": ["SourceItemCode"], "b": ["TargetItemCode"]},
+                "limit": 20,
+            },
+        )
 
     context = GraphSearchRuntimeContext(
         provider="neo4j",
@@ -296,8 +291,6 @@ def test_graph_query_agent_retries_pattern_search_for_path_intent_after_record_l
         provider_config={},
         schema_context={
             "source": "provider_preload",
-            "node_labels": ["SourceItemVersion", "SourceItem_TargetItem", "TargetItem"],
-            "relationship_types": ["D2O_RELATION"],
             "nodes_schema": {
                 "labels": ["SourceItemVersion", "SourceItem_TargetItem", "TargetItem"],
                 "schema": {
@@ -322,560 +315,341 @@ def test_graph_query_agent_retries_pattern_search_for_path_intent_after_record_l
             "disable_schema_tools": True,
         },
     )
-    mapping = GraphEntityMapping(
-        entity="SourceItem与TargetItem工艺关系",
-        kind="node",
-        source="test",
-        label="SourceItem_TargetItem",
-        property_map={"SourceItem编码": "SourceItemCode", "TargetItem编码": "TargetItemCode"},
-    )
+    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem")
     backend = _Backend()
 
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
         context=context,
         mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
+        tool_executor=_executor(backend, context, mapping),
     )
 
     assert result.tool_name == "multi_tool_search"
     assert [record["tool"] for record in result.backend_result.records] == ["property_filter", "pattern_search"]
-    assert any(step["tool"] == "GraphQueryAgent" and "追加一次路径检索修正" in step["summary"] for step in result.executed_steps)
-    assert len(captured) == 3
+    assert len(invocations) == 2
+    assert any("追加一次路径检索修正" in step["summary"] for step in result.executed_steps)
 
 
-def test_graph_query_agent_does_not_retry_pattern_when_property_filter_covers_requested_fields():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
+def test_jiuwen_graph_query_agent_skips_pattern_search_after_sufficient_record_hit():
+    def fake_invoker(payload):
+        property_payload = payload["adapter"]._invoke_sync(
+            "property_filter",
+            {
+                "queries": [
                     {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"CHANGE_ORDER_affected_obj","element_type":"NODE",'
-                                '"filter_dict":{"CHANGE_ORDER_ID":"CHANGE_ORDER-001"},'
-                                '"return_properties":["AffectedObjectCode","SourceItemVersionIDBefore",'
-                                '"SourceItemVersionIDAfter","MaterialType"]}]}'
-                            ),
-                        },
+                        "element_class": "SourceItem_TargetItem",
+                        "element_type": "NODE",
+                        "filter_dict": {"SourceItemCode": "101001-001", "SourceItemVersion": "A"},
+                        "return_properties": ["SourceItemCode", "TargetItemCode", "SourceItemVersion"],
                     }
-                ],
-            }
-        return {"content": '{"done":true}', "tool_calls": []}
-
-    context = GraphSearchRuntimeContext(
-        provider="neo4j",
-        workspace_id="workspace-a",
-        ontology_id="demo-ontology",
-        workspace_root="/missing",
-        entity="CHANGE_ORDER受影响对象",
-        query=(
-            "查询CHANGE_ORDER编码为'CHANGE_ORDER-001'的所有受影响对象记录，包括受影响编码、"
-            "变更前SourceItem版本编号、变更后SourceItem版本编号、物料变更类型"
-        ),
-        timeout_seconds=60,
-        max_result_rows=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
-        mapping=GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj"),
-        provider_config={},
-        schema_context={
-            "source": "provider_preload",
-            "node_labels": ["CHANGE_ORDER_affected_obj", "CHANGE_ORDER", "SourceItemVersion"],
-            "relationship_types": ["D2O_RELATION"],
-            "nodes_schema": {
-                "labels": ["CHANGE_ORDER_affected_obj", "CHANGE_ORDER", "SourceItemVersion"],
-                "schema": {
-                    "CHANGE_ORDER_affected_obj": {
-                        "AffectedObjectCode": "STRING",
-                        "SourceItemVersionIDBefore": "STRING",
-                        "SourceItemVersionIDAfter": "STRING",
-                        "MaterialType": "STRING",
-                    },
-                    "CHANGE_ORDER": {"CHANGE_ORDER_ID": "STRING"},
-                    "SourceItemVersion": {"SourceItemVersionID": "STRING"},
-                },
+                ]
             },
-            "edges_schema": {
-                "relationship_types": ["D2O_RELATION"],
-                "schema": {"D2O_RELATION": {"relation_type": "STRING"}},
-                "relation_triples": [
-                    {
-                        "source_label": "CHANGE_ORDER",
-                        "relation_type": "CHANGE_ORDER_AFFECTS_BEFORE",
-                        "type": "D2O_RELATION",
-                        "target_label": "SourceItemVersion",
-                    }
+        )
+        skipped_payload = payload["adapter"]._invoke_sync(
+            "pattern_search",
+            {
+                "path_pattern": [
+                    {"var": "e", "label": "REF_SOURCE_ITEM", "props": {"SourceItemCode": "101001-001"}},
+                    {"var": "r", "type": "D2O_RELATION", "props": {"relation_type": "PROCESS_TO"}},
+                    {"var": "m", "label": "TargetItem"},
                 ],
+                "return_vars": ["e", "r", "m"],
             },
-            "query_analysis": {"path_intent": True, "preferred_tool": "pattern_search"},
-            "disable_schema_tools": True,
-        },
-    )
-    mapping = GraphEntityMapping(
-        entity="CHANGE_ORDER受影响对象",
-        kind="node",
-        source="test",
-        label="CHANGE_ORDER_affected_obj",
-        property_map={
-            "受影响编码": "AffectedObjectCode",
-            "变更前SourceItem版本编号": "SourceItemVersionIDBefore",
-            "变更后SourceItem版本编号": "SourceItemVersionIDAfter",
-            "物料变更类型": "MaterialType",
-            "CHANGE_ORDER编码": "CHANGE_ORDER_ID",
-        },
-    )
-    backend = _FieldEchoBackend()
+        )
+        assert '"sufficient_for_query": true' in property_payload
+        assert '"skipped": true' in skipped_payload
+        assert "record_query_already_satisfied_by_property_filter" in skipped_payload
+        return skipped_payload
 
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
+    context = _record_context()
+    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem")
+    backend = _DuplicateTargetItemBackend()
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
         context=context,
         mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
+        tool_executor=_executor(backend, context, mapping),
     )
 
     assert result.tool_name == "property_filter"
-    assert len(captured) == 1
-    assert not any("追加一次路径检索修正" in step["summary"] for step in result.executed_steps)
-    assert result.warnings == []
-    assert backend.calls == [
-        (
-            "property_filter",
-            "CHANGE_ORDER_affected_obj",
-            "NODE",
-            {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
-            ["AffectedObjectCode", "SourceItemVersionIDBefore", "SourceItemVersionIDAfter", "MaterialType"],
-            100,
-            0,
-            "workspace-a",
+    assert result.backend_result.payload["sufficient_for_query"] is True
+    assert result.backend_result.payload["recommended_next_action"] == "final"
+    assert [call[0] for call in backend.calls] == ["property_filter"]
+    assert result.executed_steps == [
+        {"tool": "property_filter", "summary": "执行内部图工具 property_filter，返回 1 条"}
+    ]
+
+
+def test_jiuwen_graph_query_agent_uses_isolated_conversation_for_each_run():
+    created_agents = []
+    registrar_calls = []
+
+    class _FakeAgent:
+        def __init__(self):
+            self.card = SimpleNamespace(id="")
+            self.inputs = []
+            self.adapter = None
+
+        def invoke(self, inputs):
+            self.inputs.append(inputs)
+            return self.adapter._invoke_sync(
+                "property_filter",
+                {
+                    "queries": [
+                        {
+                            "element_class": "CHANGE_ORDER_affected_obj",
+                            "element_type": "NODE",
+                            "filter_dict": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"},
+                            "return_properties": ["CHANGE_ORDER_ID"],
+                            "limit": 20,
+                        }
+                    ]
+                },
+            )
+
+    def fake_agent_factory():
+        agent = _FakeAgent()
+        created_agents.append(agent)
+        return agent
+
+    def fake_tool_registrar(agent, **kwargs):
+        registrar_calls.append(kwargs)
+        agent.adapter = kwargs["adapter"]
+        agent.card.id = "fake-agent.{}".format(kwargs["invocation_id"])
+        return []
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="node", source="test", label="CHANGE_ORDER_affected_obj")
+
+    for _ in range(2):
+        JiuwenGraphQueryAgent(
+            agent_factory=fake_agent_factory,
+            tool_registrar=fake_tool_registrar,
+        ).run(
+            context=context,
+            mapping=mapping,
+            tool_executor=_executor(_Backend(), context, mapping),
         )
-    ]
+
+    invocation_ids = [call["invocation_id"] for call in registrar_calls]
+    conversation_ids = [agent.inputs[0]["conversation_id"] for agent in created_agents]
+    assert len(set(invocation_ids)) == 2
+    assert len(set(conversation_ids)) == 2
+    assert all(invocation_id in conversation_id for invocation_id, conversation_id in zip(invocation_ids, conversation_ids))
 
 
-def test_graph_query_agent_preserves_multiple_data_tool_results():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "aggregate_search",
-                            "arguments": (
-                                '{"element_class":"InventoryDetail","element_type":"NODE",'
-                                '"target_property":"InventoryNum","agg":"SUM",'
-                                '"filter_dict":{"TargetItemCode":"A001","InventoryStatus":"在库"}}'
-                            ),
-                        },
-                    },
-                    {
-                        "id": "call-2",
-                        "type": "function",
-                        "function": {
-                            "name": "aggregate_search",
-                            "arguments": (
-                                '{"element_class":"InventoryDetail","element_type":"NODE",'
-                                '"target_property":"InventoryNum","agg":"SUM",'
-                                '"filter_dict":{"TargetItemCode":"A001","InventoryStatus":"在制"}}'
-                            ),
-                        },
-                    },
-                ],
+def test_jiuwen_graph_query_agent_skips_duplicate_property_filter_after_hit():
+    args = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": "A001"},
+                "return_properties": ["TargetItemCode"],
+                "limit": 20,
             }
-        return {"content": '{"done":true}', "tool_calls": []}
+        ]
+    }
 
-    context = _context()
-    mapping = GraphEntityMapping(entity="物料库存明细", kind="node", source="test", label="InventoryDetail")
-    backend = _Backend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
-        context=context,
-        mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
-    )
-
-    assert result.tool_name == "multi_tool_search"
-    assert result.backend_result.total == 2
-    assert [record["tool"] for record in result.backend_result.records] == [
-        "aggregate_search",
-        "aggregate_search",
-    ]
-    assert result.backend_result.records[0]["result"]["value"] == 1
-    assert result.backend_result.records[1]["result"]["value"] == 1
-
-
-def test_graph_query_agent_early_stops_only_after_primary_path_result():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"TargetItem","element_type":"NODE",'
-                                '"filter_dict":{"TargetItemCode":"A001"},'
-                                '"return_properties":["TargetItemCode"]}]}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        if len(captured) == 2:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-2",
-                        "type": "function",
-                        "function": {
-                            "name": "pattern_search",
-                            "arguments": (
-                                '{"path_pattern":[["SourceItemVersion"],["D2O_RELATION","->"],["TargetItem"]],'
-                                '"return_vars":["a","b"],'
-                                '"return_properties":{"a":["SourceItemCode"],"b":["TargetItemCode"]},"limit":20}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        raise AssertionError("GraphQueryAgent should stop after the primary path result")
-
-    context = _context()
-    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="path", source="test")
-    backend = _Backend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
-        context=context,
-        mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
-    )
-
-    assert result.tool_name == "multi_tool_search"
-    assert [record["tool"] for record in result.backend_result.records] == ["property_filter", "pattern_search"]
-    assert len(captured) == 2
-
-
-def test_graph_query_agent_compacts_duplicate_payloads_in_multi_tool_results():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"element_class":"SourceItemVersion","element_type":"NODE",'
-                                '"filter_dict":{"SourceItemCode":"101000-001"},'
-                                '"return_properties":["SourceItemCode"],"limit":20}'
-                            ),
-                        },
-                    },
-                    {
-                        "id": "call-2",
-                        "type": "function",
-                        "function": {
-                            "name": "pattern_search",
-                            "arguments": (
-                                '{"path_pattern":[[{"label":"SourceItemVersion","filters":{"SourceItemCode":"101000-001"}}],'
-                                '["PROCESS_TO","->"],[{"label":"TargetItem"}]],'
-                                '"return_vars":["a","r1","b"],"limit":20}'
-                            ),
-                        },
-                    },
-                ],
-            }
-        return {"content": '{"done":true}', "tool_calls": []}
-
-    context = _context()
-    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="path", source="test")
-    backend = _Backend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
-        context=context,
-        mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
-    )
-
-    property_record, pattern_record = result.backend_result.records
-    assert property_record["tool"] == "property_filter"
-    assert "items" not in property_record["result"]
-    assert property_record["records"] == [{"properties": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}}]
-    assert pattern_record["tool"] == "pattern_search"
-    assert "paths" not in pattern_record["result"]
-    assert pattern_record["result"] == {"count": 1, "return_vars": ["a", "r1", "b"], "truncated": False}
-    assert pattern_record["records"][0]["nodes"][1]["properties"]["TargetItemCode"] == "A001"
-
-
-def test_graph_query_agent_recovers_from_wildcard_return_properties():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "pattern_search",
-                            "arguments": (
-                                '{"path_pattern":[["SourceItemVersion"],["D2O_RELATION","->"],["TargetItem"]],'
-                                '"return_vars":["a","b"],"return_properties":["*"],"limit":20}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        if len(captured) == 2:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-2",
-                        "type": "function",
-                        "function": {
-                            "name": "pattern_search",
-                            "arguments": (
-                                '{"path_pattern":[["SourceItemVersion"],["D2O_RELATION","->"],["TargetItem"]],'
-                                '"return_vars":["a","b"],'
-                                '"return_properties":{"a":["SourceItemCode"],"b":["TargetItemCode"]},"limit":20}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        return {"content": '{"done":true}', "tool_calls": []}
-
-    context = _context()
-    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="path", source="test")
-    backend = _Backend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
-        context=context,
-        mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
-    )
-
-    assert result.tool_name == "pattern_search"
-    assert backend.calls == [
-        (
-            "pattern_search",
-            [["SourceItemVersion"], ["D2O_RELATION", "->"], ["TargetItem"]],
-            ["a", "b"],
-            {"a": ["SourceItemCode"], "b": ["TargetItemCode"]},
-            20,
-            "workspace-a",
-        )
-    ]
-    assert "GRAPH_TOOL_INPUT_ERROR" in str(captured[1]["messages"])
-    assert "不能使用 *" in str(captured[1]["messages"])
-
-
-def test_graph_query_agent_recovers_from_backend_input_error():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"TargetItem","element_type":"NODE",'
-                                '"filter_dict":{"TargetItemDesc":{"$contains":"A001"}},'
-                                '"return_properties":["TargetItemCode"]}]}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        if len(captured) == 2:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-2",
-                        "type": "function",
-                        "function": {
-                            "name": "property_filter",
-                            "arguments": (
-                                '{"queries":[{"element_class":"TargetItem","element_type":"NODE",'
-                                '"filter_dict":{"TargetItemCode":"A001"},'
-                                '"return_properties":["TargetItemCode"]}]}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        return {"content": '{"done":true}', "tool_calls": []}
+    def fake_invoker(payload):
+        payload["adapter"]._invoke_sync("property_filter", args)
+        return payload["adapter"]._invoke_sync("property_filter", args)
 
     context = _context()
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
-    backend = _RecoveringBackend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
+    backend = _DuplicateTargetItemBackend()
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
         context=context,
         mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
+        tool_executor=_executor(backend, context, mapping),
     )
 
     assert result.tool_name == "property_filter"
-    assert result.backend_result.records == [{"properties": {"TargetItemCode": "A001"}}]
-    assert "GRAPH_TOOL_INPUT_ERROR" in str(captured[1]["messages"])
-    assert "$contains" in str(captured[1]["messages"])
+    assert len(backend.calls) == 1
+    assert any("跳过重复 property_filter 子查询 1 个" in step["summary"] for step in result.executed_steps)
+
+
+def test_jiuwen_graph_query_agent_skips_duplicate_property_filter_query_in_same_call():
+    args = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": "A001"},
+                "return_properties": ["TargetItemCode"],
+                "limit": 20,
+            },
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": "A001"},
+                "return_properties": ["TargetItemCode"],
+                "limit": 20,
+            },
+        ]
+    }
+
+    def fake_invoker(payload):
+        return payload["adapter"]._invoke_sync("property_filter", args)
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    backend = _DuplicateTargetItemBackend()
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
+        context=context,
+        mapping=mapping,
+        tool_executor=_executor(backend, context, mapping),
+    )
+
+    assert result.tool_name == "property_filter"
+    assert len(backend.calls) == 1
+    assert any("跳过重复 property_filter 子查询 1 个" in step["summary"] for step in result.executed_steps)
+
+
+def test_jiuwen_graph_query_agent_skips_broader_fuzzy_property_filter_after_exact_hit():
+    exact_args = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": "A001"},
+                "return_properties": ["TargetItemCode", "TargetItemName"],
+                "limit": 20,
+            }
+        ]
+    }
+    fuzzy_args = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": {"contains": "A001"}},
+                "return_properties": ["TargetItemCode"],
+                "limit": 20,
+            }
+        ]
+    }
+
+    def fake_invoker(payload):
+        payload["adapter"]._invoke_sync("property_filter", exact_args)
+        return payload["adapter"]._invoke_sync("property_filter", fuzzy_args)
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    backend = _DuplicateTargetItemBackend()
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
+        context=context,
+        mapping=mapping,
+        tool_executor=_executor(backend, context, mapping),
+    )
+
+    assert result.tool_name == "property_filter"
+    assert len(backend.calls) == 1
+    assert any("跳过重复 property_filter 子查询 1 个" in step["summary"] for step in result.executed_steps)
+
+
+def test_jiuwen_graph_query_agent_keeps_narrower_property_filter_after_exact_hit():
+    exact_args = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": "A001"},
+                "return_properties": ["TargetItemCode"],
+                "limit": 20,
+            }
+        ]
+    }
+    narrower_args = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": "A001", "InventoryStatus": {"ne": "总装在制"}},
+                "return_properties": ["TargetItemCode", "InventoryStatus"],
+                "limit": 20,
+            }
+        ]
+    }
+
+    def fake_invoker(payload):
+        payload["adapter"]._invoke_sync("property_filter", exact_args)
+        return payload["adapter"]._invoke_sync("property_filter", narrower_args)
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    backend = _DuplicateTargetItemBackend()
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
+        context=context,
+        mapping=mapping,
+        tool_executor=_executor(backend, context, mapping),
+    )
+
+    assert result.tool_name == "multi_tool_search"
+    assert len(backend.calls) == 2
+    assert not any("跳过重复 property_filter" in step["summary"] for step in result.executed_steps)
+
+
+def test_jiuwen_graph_query_agent_deduplicates_overlapping_data_tool_results():
+    def fake_invoker(payload):
+        payload["adapter"]._invoke_sync(
+            "property_filter",
+            {
+                "queries": [
+                    {
+                        "element_class": "TargetItem",
+                        "element_type": "NODE",
+                        "filter_dict": {"TargetItemCode": "A001"},
+                        "return_properties": ["TargetItemCode"],
+                        "limit": 20,
+                    }
+                ]
+            },
+        )
+        return payload["adapter"]._invoke_sync(
+            "sorted_search",
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {"TargetItemCode": {"contains": "A001"}},
+                "return_properties": ["TargetItemCode"],
+                "sort_by": ["TargetItemCode"],
+                "limit": 20,
+            },
+        )
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    backend = _DuplicateTargetItemBackend()
+    result = JiuwenGraphQueryAgent(invoker=fake_invoker).run(
+        context=context,
+        mapping=mapping,
+        tool_executor=_executor(backend, context, mapping),
+    )
+
+    assert result.tool_name == "multi_tool_search"
+    assert result.backend_result.total == 1
+    assert result.backend_result.payload["result"]["raw_total_record_count"] == 2
+    assert result.backend_result.payload["result"]["deduplicated"] is True
+    assert result.backend_result.records[0]["record_count"] == 1
+    assert result.backend_result.records[1]["record_count"] == 0
     assert len(backend.calls) == 2
 
 
-def test_graph_query_agent_expands_or_filter_without_tool_input_error():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        return {
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "property_filter",
-                        "arguments": (
-                            '{"queries":[{"element_class":"SourceItem","element_type":"NODE",'
-                            '"filter_dict":{"$or":[{"SourceItemCode":{"contains":"A001"}},'
-                            '{"SourceItemDesc":{"contains":"A001"}}]},'
-                            '"return_properties":["SourceItemID","SourceItemCode","SourceItemDesc"]}]}'
-                        ),
-                    },
-                }
-            ],
-        }
-
-    context = _context()
-    mapping = GraphEntityMapping(entity="SourceItem", kind="node", source="test", label="SourceItem")
-    backend = _Backend()
-    result = GraphQueryAgent(llm_call=fake_llm_call).run(
-        context=context,
-        mapping=mapping,
-        tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
-    )
-
-    assert result.tool_name == "property_filter"
-    assert [call[3] for call in backend.calls] == [
-        {"SourceItemCode": {"contains": "A001"}},
-        {"SourceItemDesc": {"contains": "A001"}},
-    ]
-    assert not any("内部图工具参数错误" in step["summary"] for step in result.executed_steps)
-    assert len(captured) == 1
-
-
-def test_graph_query_agent_surfaces_unrecovered_tool_input_error():
-    captured = []
-
-    def fake_llm_call(payload):
-        captured.append(payload)
-        if len(captured) == 1:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "pattern_search",
-                            "arguments": (
-                                '{"path_pattern":[["SourceItemVersion"],["D2O_RELATION","->"],["TargetItem"]],'
-                                '"return_vars":["a","b"],"return_properties":["*"]}'
-                            ),
-                        },
-                    }
-                ],
-            }
-        return {"content": '{"done":false}', "tool_calls": []}
-
-    context = _context()
-    mapping = GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="path", source="test")
-    backend = _Backend()
-
-    with pytest.raises(GraphAgentToolInputError) as exc_info:
-        GraphQueryAgent(llm_call=fake_llm_call).run(
-            context=context,
-            mapping=mapping,
-            tool_executor=GraphToolExecutor(backend=backend, context=context, mapping=mapping),
-        )
-
-    assert exc_info.value.error_code == "GRAPH_TOOL_INPUT_ERROR"
-    assert "不能使用 *" in str(exc_info.value)
-    assert backend.calls == []
-
-
-def test_graph_query_agent_timeout_raises_structured_error():
-    def slow_llm_call(payload):
+def test_jiuwen_graph_query_agent_timeout_raises_structured_error():
+    def slow_invoker(payload):
         del payload
         time.sleep(0.05)
-        return "{}"
+        return ""
 
     context = _context()
     context.provider_config["graph_agent_timeout_seconds"] = 0.001
-    mapping = GraphEntityMapping(
-        entity="CHANGE_ORDER受影响对象",
-        kind="path",
-        source="test",
-        property_map={"CHANGE_ORDER编码": "CHANGE_ORDER_ID"},
-    )
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
 
     with pytest.raises(GraphAgentTimeoutError) as exc_info:
-        GraphQueryAgent(llm_call=slow_llm_call).run(
+        JiuwenGraphQueryAgent(invoker=slow_invoker).run(
             context=context,
             mapping=mapping,
-            tool_executor=GraphToolExecutor(backend=_Backend(), context=context, mapping=mapping),
+            tool_executor=_executor(_Backend(), context, mapping),
         )
 
     assert exc_info.value.error_code == "GRAPH_AGENT_TIMEOUT"
-
-
-def test_graph_query_agent_surfaces_safe_llm_exception_detail():
-    def failing_llm_call(payload):
-        del payload
-        raise ValueError("bad json from model token=secret-token password=plain-text")
-
-    context = _context()
-    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
-
-    with pytest.raises(GraphAgentError) as exc_info:
-        GraphQueryAgent(llm_call=failing_llm_call).run(
-            context=context,
-            mapping=mapping,
-            tool_executor=GraphToolExecutor(backend=_Backend(), context=context, mapping=mapping),
-        )
-
-    message = str(exc_info.value)
-    assert exc_info.value.error_code == "GRAPH_AGENT_ERROR"
-    assert "GraphQueryAgent 调用失败" in message
-    assert "ValueError" in message
-    assert "bad json from model" in message
-    assert "secret-token" not in message
-    assert "plain-text" not in message
