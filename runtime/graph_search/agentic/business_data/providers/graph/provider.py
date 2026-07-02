@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any, Iterator, Mapping
 
 from ...provider_base import BusinessDataSearchEvent
-from .agent import GraphQueryAgent
 from .backends.base import GraphBackend
 from .runtime import GraphSearchRuntime
 
@@ -20,7 +19,7 @@ class GraphSearchProvider:
         *,
         provider_config: Mapping[str, Any],
         backend: GraphBackend,
-        graph_agent: GraphQueryAgent | None = None,
+        graph_agent: Any | None = None,
     ) -> None:
         self.provider_config = dict(provider_config or {})
         self.backend = backend
