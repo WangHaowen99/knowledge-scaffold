@@ -65,7 +65,10 @@ function TopBar({
           <div className="global-topbar-icon">
             <Bot size={18} />
           </div>
-          <span className="global-topbar-name">本体消费智能体</span>
+          <div className="global-topbar-copy">
+            <span className="global-topbar-name">本体消费智能体</span>
+            <span className="global-topbar-powered">powered by openJiuwen</span>
+          </div>
         </div>
 
         <div className="global-topbar-divider"></div>

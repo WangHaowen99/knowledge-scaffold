@@ -10726,6 +10726,7 @@ details.tools-block[open] .tools-header::after {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .global-topbar-icon {
@@ -10744,6 +10745,23 @@ details.tools-block[open] .tools-header::after {
   font-size: 1.1rem;
   font-weight: 700;
   color: #1a202c;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+
+.global-topbar-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.global-topbar-powered {
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
   white-space: nowrap;
 }
 
@@ -11112,6 +11130,10 @@ details.tools-block[open] .tools-header::after {
     font-size: 0.95rem;
   }
 
+  .global-topbar-powered {
+    font-size: 0.62rem;
+  }
+
   .global-topbar-divider {
     margin: 0 12px;
   }
@@ -11132,6 +11154,7 @@ details.tools-block[open] .tools-header::after {
   }
 
   .global-topbar-name,
+  .global-topbar-powered,
   .global-topbar-workspace-label {
     display: none;
   }

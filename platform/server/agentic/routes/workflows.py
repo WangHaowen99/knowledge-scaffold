@@ -51,6 +51,21 @@ def _reject_if_run_rate_limited(orchestrator):
     return None
 
 
+def _external_trace_id_from_request():
+    """Extract the W3C trace id from the incoming traceparent header, if valid.
+
+    Lets the eval platform's injected trace id propagate so this run's Langfuse
+    spans join the caller's trace. Returns None when absent or malformed.
+    """
+    raw = request.headers.get("traceparent") or ""
+    parts = raw.split("-")
+    if len(parts) >= 3:
+        tid = parts[1].strip().lower()
+        if len(tid) == 32 and all(c in "0123456789abcdef" for c in tid):
+            return tid
+    return None
+
+
 def _ensure_run_owner(run_id: str, user_id: str) -> bool:
     orchestrator = _get_orchestrator()
     run = orchestrator.run_store.get_run(run_id)
@@ -96,6 +111,7 @@ def start_workflow_stream():
     arguments = data.get("arguments")
     session_id = str(data.get("session_id") or "").strip()
     requested_run_id = str(data.get("run_id") or "").strip() or None
+    external_trace_id = _external_trace_id_from_request()
     workspace_id = _get_request_workspace_id()
 
     if not session_id:
@@ -138,6 +154,7 @@ def start_workflow_stream():
                     user_id=current_user.username,
                     workspace_id=workspace_id,
                     requested_run_id=requested_run_id,
+                    external_trace_id=external_trace_id,
                 ):
                     event_type = "agent.v2"
                     event_data = event.get("data", event)
@@ -303,6 +320,7 @@ def start_workflow_sync():
     user_context = data.get("context", {})
     arguments = data.get("arguments")
     session_id = str(data.get("session_id") or "").strip() or f"sync_{uuid.uuid4().hex[:8]}"
+    external_trace_id = _external_trace_id_from_request()
     workspace_id = _get_request_workspace_id()
 
     logger.info("Starting agentic workflow sync, session=%s", session_id)
@@ -334,6 +352,7 @@ def start_workflow_sync():
                 session_id=session_id,
                 user_id=current_user.username,
                 workspace_id=workspace_id,
+                external_trace_id=external_trace_id,
             ):
                 event_data = event.get("data", event) if isinstance(event, dict) else event
                 if not isinstance(event_data, dict):
