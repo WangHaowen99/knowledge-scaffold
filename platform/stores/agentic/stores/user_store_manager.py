@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import threading
-from pathlib import Path
 from typing import Dict, Tuple
 
 from .chat_store import ChatStore
@@ -13,9 +12,7 @@ from ..workspaces import get_workspace_paths
 
 
 class UserStoreManager:
-    def __init__(self, chat_base_dir: str, execution_base_dir: str) -> None:
-        self._chat_base_dir = Path(chat_base_dir)
-        self._execution_base_dir = Path(execution_base_dir)
+    def __init__(self) -> None:
         self._chat_stores: Dict[Tuple[str, str], ChatStore] = {}
         self._execution_stores: Dict[Tuple[str, str], ExecutionStore] = {}
         self._lock = threading.Lock()

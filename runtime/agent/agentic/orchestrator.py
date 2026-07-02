@@ -11,7 +11,7 @@ import uuid
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
-from .config import AgentConfig, AppConfig
+from .config import AgentConfig
 from .config.system_config import SystemConfigValidationError, resolve_llm_profile_config
 from .direct_execution import OperationDirectRouter
 from .direct_execution.models import RuntimeContext
@@ -330,9 +330,15 @@ class AgenticOrchestrator:
         self.agent_config = agent_config or AgentConfig.from_env()
         self.run_store = run_store or RunStore()
         if chat_store is None or execution_store is None:
-            app_config = AppConfig.from_env()
-        self.chat_store = chat_store or ChatStore(app_config.chat_storage_dir)
-        self.execution_store = execution_store or ExecutionStore(app_config.execution_storage_dir)
+            from .workspaces import get_workspace_paths
+            _fallback_paths = get_workspace_paths("default")
+            _fallback_user = "admin"
+        self.chat_store = chat_store or ChatStore(
+            str(_fallback_paths.users_runtime_dir / _fallback_user / "chats")
+        )
+        self.execution_store = execution_store or ExecutionStore(
+            str(_fallback_paths.users_runtime_dir / _fallback_user / "executions")
+        )
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
         self.jiuwen_agent_factory = jiuwen_agent_factory

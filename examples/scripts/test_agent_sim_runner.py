@@ -96,8 +96,6 @@ def test_prepare_run_writes_public_and_private_artifacts(monkeypatch, tmp_path):
         "task_llm": {},
         "storage": {
             "project_root": str(tmp_path / "runtime"),
-            "chat_storage_dir": str(tmp_path / "runtime" / "chats"),
-            "execution_storage_dir": str(tmp_path / "runtime" / "executions"),
             "auth_users_file": str(tmp_path / "runtime" / "users.json"),
         },
         "auth": {},

@@ -16,7 +16,6 @@ services:
       - "${BACKEND_PORT:-5055}:5055"
     volumes:
       - ./platform/config/legacy-backend-config:/app/config:ro
-      - ./platform/server/logs:/app/logs
       - ./.onto-runtime:/app/.onto-runtime
     env_file:
       - ./platform/server/.env

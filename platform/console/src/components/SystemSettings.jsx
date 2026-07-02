@@ -152,27 +152,19 @@ const SECTION_META = {
   storage: {
     title: '存储路径',
     detailTitle: '存储与工作目录',
-    description: '配置聊天记录、执行记录与运行根目录。',
+    description: '配置运行根目录与用户认证文件。',
     icon: FolderCog,
     fields: [
-      { name: 'chat_storage_dir', label: '聊天存储目录', placeholder: './data/chats' },
-      { name: 'execution_storage_dir', label: '执行记录目录', placeholder: './data/executions' },
       { name: 'project_root', label: '运行根目录', placeholder: '.onto-runtime' },
-      { name: 'ontologies_root', label: '本体目录', placeholder: '.onto-runtime/workspaces/<workspace_id>/ontologies（运行时动态解析）' },
-      { name: 'skills_root', label: '技能目录', placeholder: '.onto-runtime/workspaces/<workspace_id>/skills（运行时动态解析）' },
       { name: 'auth_users_file', label: '用户文件', placeholder: '.onto-runtime/users.json' },
     ],
     fieldGroups: [
       {
         title: '运行目录',
-        description: '这些路径会影响运行根目录、会话存储以及用户鉴权文件位置；workspace 模式下本体与技能目录按当前工作空间动态解析。',
+        description: '会话与执行记录固定存放在当前工作空间 runtime/users 目录下，本体与技能目录按工作空间动态解析。',
         tone: 'embedding',
         fields: [
-          { name: 'chat_storage_dir', label: '聊天存储目录', placeholder: './data/chats' },
-          { name: 'execution_storage_dir', label: '执行记录目录', placeholder: './data/executions' },
           { name: 'project_root', label: '运行根目录', placeholder: '.onto-runtime' },
-          { name: 'ontologies_root', label: '本体目录', placeholder: '.onto-runtime/workspaces/<workspace_id>/ontologies（运行时动态解析）' },
-          { name: 'skills_root', label: '技能目录', placeholder: '.onto-runtime/workspaces/<workspace_id>/skills（运行时动态解析）' },
           { name: 'auth_users_file', label: '用户文件', placeholder: '.onto-runtime/users.json', fullWidth: true },
         ],
       },
@@ -216,6 +208,7 @@ const SECTION_META = {
       { name: 'parallel_default_max_workers', label: '默认并发数', placeholder: '10', type: 'number', step: '1' },
       { name: 'context_max_rounds', label: '上下文保留轮次', placeholder: '10', type: 'number', step: '1' },
       { name: 'context_prune_tools', label: '上下文裁剪工具', placeholder: '逗号分隔，例如 ontology_context,business_data_search,web_search', fullWidth: true },
+      { name: 'runtime_warmup_enabled', label: '启动预热', type: 'checkbox', fullWidth: true, enabledText: '服务启动时预热 Jiuwen Runtime', disabledText: '服务启动时跳过 Jiuwen Runtime 预热' },
     ],
     fieldGroups: [
       {
@@ -228,6 +221,7 @@ const SECTION_META = {
           { name: 'sub_agent_max_iterations', label: '子智能体最大轮次', placeholder: '5', type: 'number', step: '1' },
           { name: 'sub_agent_max_concurrency', label: '子智能体最大并发数', placeholder: '4', type: 'number', step: '1' },
           { name: 'sub_agent_max_depth', label: '子智能体最大深度', placeholder: '2', type: 'number', step: '1' },
+          { name: 'runtime_warmup_enabled', label: '启动预热', type: 'checkbox', fullWidth: true, enabledText: '服务启动时预热 Jiuwen Runtime', disabledText: '服务启动时跳过 Jiuwen Runtime 预热' },
         ],
       },
       {
@@ -277,11 +271,7 @@ function buildInitialState() {
       has_api_key: false,
     },
     storage: {
-      chat_storage_dir: './data/chats',
-      execution_storage_dir: './data/executions',
       project_root: '',
-      ontologies_root: '',
-      skills_root: '',
       auth_users_file: '.onto-runtime/users.json',
     },
     auth: {
@@ -298,6 +288,7 @@ function buildInitialState() {
       parallel_default_max_workers: '10',
       context_max_rounds: '10',
       context_prune_tools: '',
+      runtime_warmup_enabled: true,
     },
   };
 }
@@ -513,7 +504,7 @@ function isSectionConfigured(section, state) {
       && state.has_api_key
     );
   }
-  if (section === 'storage') return !!(String(state.project_root || '').trim() && String(state.ontologies_root || '').trim() && String(state.skills_root || '').trim());
+  if (section === 'storage') return !!String(state.project_root || '').trim();
   if (section === 'auth') return !!state.has_auth_secret;
   if (section === 'agent') return !!String(state.main_agent_max_iterations || '').trim();
   return false;

@@ -229,8 +229,6 @@ class AppConfig:
 
     llm: LLMConfig
     task_llm: LLMConfig
-    chat_storage_dir: str
-    execution_storage_dir: str  # Workflow execution records
     project_root: str
     auth_users_file: str
     auth_secret: Optional[str]
@@ -247,8 +245,6 @@ class AppConfig:
         return cls(
             llm=llm,
             task_llm=task_llm,
-            chat_storage_dir=storage["chat_storage_dir"],
-            execution_storage_dir=storage["execution_storage_dir"],
             project_root=storage["project_root"],
             auth_users_file=storage["auth_users_file"],
             auth_secret=auth.get("auth_secret") or None,

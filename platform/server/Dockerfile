@@ -26,8 +26,7 @@ COPY platform/ ./platform/
 COPY runtime/ ./runtime/
 COPY modeling/skills/ ./modeling/skills/
 
-# Create necessary directories
-RUN mkdir -p data logs
+# .onto-runtime directory is volume-mounted at runtime; no local data/logs dirs needed
 
 # Expose the port the app runs on
 EXPOSE 5055

@@ -7,7 +7,7 @@ def test_benchmark_lang_loads_local_dotenv_into_environment(tmp_path, monkeypatc
     helper_dir = tmp_path / "benchmark"
     helper_dir.mkdir()
     helper_path = helper_dir / "lang.py"
-    source_path = os.path.join(os.getcwd(), "evaluation", "tests", "backend", "benchmark", "lang.py")
+    source_path = os.path.join(os.getcwd(), "tests", "backend", "benchmark", "lang.py")
     helper_path.write_text(open(source_path, encoding="utf-8").read(), encoding="utf-8")
     (helper_dir / ".env").write_text(
         "LLM_API_KEY=from-dotenv\nLLM_BASE_URL=https://dotenv.example/v1\nLLM_MODEL_NAME=dotenv-model\n",

@@ -126,8 +126,6 @@ Important variables:
 | `TASK_LLM_MAX_TOKENS` | Lightweight model max tokens | `4096` |
 | `TASK_LLM_TEMPERATURE` | Lightweight model temperature | `0.7` |
 | `SYSTEM_CONFIG_PATH` | Optional saved system config file path | `<repo>/.onto-runtime/config/system_config.json` |
-| `CHAT_STORAGE_DIR` | Session JSON storage | `./data/chats` |
-| `EXECUTION_STORAGE_DIR` | Execution records | `./data/executions` |
 | `PROJECT_ROOT` | Runtime root containing `system/` and `workspaces/` | `<repo>/.onto-runtime` |
 | `AUTH_USERS_FILE` | User credential file | `<repo>/.onto-runtime/users.json` |
 | `AUTH_SECRET` | JWT signing secret | `dev-secret-change` fallback if unset |

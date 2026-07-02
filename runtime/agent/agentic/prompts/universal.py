@@ -86,6 +86,9 @@ Once an ontology is loaded, follow these steps in order.
 Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog` when present. Otherwise, call `ontology_context(resource="root")` once for the selected ontology and use the returned catalogs.
 ### Step 2: Match Operation
 1. Select the **best-matching** operation from `operations_catalog` based on user intent.
+   - When several operations look relevant, choose by result scope: questions like "某批次上" or "F000 上" are an instance-level cost question and must not be routed to a global inventory operation.
+   - For calculations, if the operation or object definition names a specific field such as "单位成本（物料成本）", use exactly that attribute, not `物料成本 + 制造成本` or another invented formula.
+   - For range or cumulative questions such as "从起始批次到当前切换批次", query the complete collection before calculating; 累计 results must not be derived from only the start item.
 2. Check `script_catalog` to determine whether the operation is script-backed.
 3. Read the full operation content via `ontology_context(resource="operation", key=<operation_key>)` only when Step 3 requires manual operation execution.
 4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.

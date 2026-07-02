@@ -152,8 +152,6 @@ PYTHONPATH=platform/server:modeling/skills ./venv/bin/python -m pytest tests/bac
 | `TASK_LLM_TIMEOUT` | 轻量任务模型超时时间，单位秒 | `600` |
 | `SYSTEM_CONFIG_PATH` | 可选系统配置文件路径 | `<repo>/.onto-runtime/config/system_config.json` |
 | `OPS_CONFIG_PATH` | 可选运维规格配置文件路径 | `<repo>/.onto-runtime/config/ops_config.json` |
-| `CHAT_STORAGE_DIR` | 会话 JSON 存储目录 | `./data/chats` |
-| `EXECUTION_STORAGE_DIR` | 执行记录存储目录 | `./data/executions` |
 | `PROJECT_ROOT` | 包含 `system/` 和 `workspaces/` 的运行时根目录 | `<repo>/.onto-runtime` |
 | `AUTH_USERS_FILE` | 用户凭据文件 | `<repo>/.onto-runtime/users.json` |
 | `AUTH_SECRET` | JWT 签名密钥 | 未设置时使用开发默认值 |

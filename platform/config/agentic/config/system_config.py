@@ -122,8 +122,8 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "timeout": {"env": "TASK_LLM_TIMEOUT", "type": "int", "default": 600},
     },
     "storage": {
-        "chat_storage_dir": {"env": "CHAT_STORAGE_DIR", "type": "str", "default": "./data/chats"},
-        "execution_storage_dir": {"env": "EXECUTION_STORAGE_DIR", "type": "str", "default": "./data/executions"},
+        # Chat and execution history are stored under project_root/workspaces/{id}/runtime/
+        # and are managed by UserStoreManager via get_workspace_paths(); no separate config needed.
         "project_root": {"env": "PROJECT_ROOT", "type": "str", "default": str(ONTO_RUNTIME_ROOT)},
         "auth_users_file": {"env": "AUTH_USERS_FILE", "type": "str", "default": str(ONTO_RUNTIME_ROOT / "users.json")},
     },

@@ -19,7 +19,21 @@ import time
 from functools import wraps
 from typing import Any, Callable, Optional, TypeVar
 
-LOG_DIR = "logs"
+def _find_repo_root(start: Path) -> Path:
+    for candidate in (start, *start.parents):
+        if (candidate / "platform").is_dir() and (candidate / "runtime").is_dir():
+            return candidate
+    return start.parents[4]
+
+
+def _default_log_dir() -> str:
+    project_root = os.getenv("PROJECT_ROOT")
+    if project_root:
+        return str(Path(project_root) / "logs")
+    return str(_find_repo_root(Path(__file__).resolve()) / ".onto-runtime" / "logs")
+
+
+LOG_DIR = _default_log_dir()
 LOG_FILE = "agent.log"
 DEFAULT_FORMAT = "%(asctime)s %(levelname)s %(name)s:%(lineno)d [P%(process)d|T%(thread)d] %(message)s"
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -31,11 +45,6 @@ LOG_REQUEST_BODY_ENV = "LOG_REQUEST_BODY"
 LOG_RESPONSE_BODY_ENV = "LOG_RESPONSE_BODY"
 LOG_MAX_BYTES_ENV = "LOG_MAX_BYTES"
 LOG_BACKUP_COUNT_ENV = "LOG_BACKUP_COUNT"
-def _find_repo_root(start: Path) -> Path:
-    for candidate in (start, *start.parents):
-        if (candidate / "platform").is_dir() and (candidate / "runtime").is_dir():
-            return candidate
-    return start.parents[4]
 
 
 DEFAULT_LOG_LEVEL_CONFIG_PATH = str(

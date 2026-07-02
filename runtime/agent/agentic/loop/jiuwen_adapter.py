@@ -1047,6 +1047,25 @@ def require_openjiuwen() -> None:
     )
 
 
+_JIUWEN_LOG_CONFIGURED = False
+
+
+def _configure_jiuwen_log_path() -> None:
+    """Direct openjiuwen's own log files into our log directory to avoid logs/logs/ nesting."""
+    global _JIUWEN_LOG_CONFIGURED
+    if _JIUWEN_LOG_CONFIGURED:
+        return
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+        from ..utils.logging import LOG_DIR
+        import os
+        jiuwen_log_path = os.path.join(LOG_DIR, "jiuwen") + os.sep
+        configure_log_config({"log_path": jiuwen_log_path})
+        _JIUWEN_LOG_CONFIGURED = True
+    except Exception:
+        pass
+
+
 def create_default_jiuwen_agent(
     *,
     llm_config: Any,
@@ -1056,6 +1075,7 @@ def create_default_jiuwen_agent(
     enable_reasoning: bool = False,
     stream_enabled: bool = True,
 ) -> Any:
+    _configure_jiuwen_log_path()
     try:
         agent_card_module = importlib.import_module("openjiuwen.core.single_agent.schema.agent_card")
         react_agent_module = importlib.import_module("openjiuwen.core.single_agent.agents.react_agent")
@@ -1136,6 +1156,7 @@ def warm_up_jiuwen_runtime(*, agent_config: Any = None) -> dict[str, Any]:
     started = time.perf_counter()
 
     require_openjiuwen()
+    _configure_jiuwen_log_path()
     _JIUWEN_LOOP_RUNNER.get_loop()
 
     llm_config = _resolve_jiuwen_llm_config(

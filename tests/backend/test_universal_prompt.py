@@ -8,6 +8,16 @@ import pytest
 from agentic.prompts.universal import build_universal_system_prompt
 
 
+def _repo_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "platform").is_dir() and (candidate / "runtime").is_dir():
+            return candidate
+    raise RuntimeError("Could not locate repository root")
+
+
+REPO_ROOT = _repo_root()
+
+
 def test_universal_prompt_contains_top_level_sections_and_language_policy():
     prompt = build_universal_system_prompt()
     # Orthogonal top-level sections (no priority/conflict-resolution clause).
@@ -40,7 +50,7 @@ def test_universal_prompt_omits_planning_tool_usage_guidance():
 
 def test_subagent_prompt_omits_planning_tool_guidance():
     subagent_source = (
-        Path(__file__).resolve().parents[3]
+        REPO_ROOT
         / "runtime"
         / "agent"
         / "agentic"
@@ -53,7 +63,7 @@ def test_subagent_prompt_omits_planning_tool_guidance():
 
 def test_subagent_prompt_inherits_main_parallel_batching_rules_without_tool_rule_duplication():
     subagent_source = (
-        Path(__file__).resolve().parents[3]
+        REPO_ROOT
         / "runtime"
         / "agent"
         / "agentic"
@@ -203,7 +213,7 @@ def test_universal_prompt_no_longer_mentions_removed_hitl_tool():
 
 def test_ontology_optional_doc_no_longer_mentions_removed_hitl_tool():
     ontology_doc_path = (
-        Path(__file__).resolve().parents[3]
+        REPO_ROOT
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
@@ -220,14 +230,14 @@ def test_ontology_optional_doc_no_longer_mentions_removed_hitl_tool():
 
 def test_ontology_doc_and_scripts_list_document_script_first_tool_flows():
     ontology_doc_path = (
-        Path(__file__).resolve().parents[3]
+        REPO_ROOT
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
         / "ONTOLOGY.md"
     )
     scripts_list_path = (
-        Path(__file__).resolve().parents[3]
+        REPO_ROOT
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
