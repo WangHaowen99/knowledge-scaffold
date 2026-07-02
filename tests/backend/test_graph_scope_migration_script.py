@@ -7,9 +7,16 @@ import importlib.util
 from pathlib import Path
 
 
+def _repo_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "platform").is_dir() and (candidate / "runtime").is_dir():
+            return candidate
+    raise RuntimeError("Could not locate repository root")
+
+
 def _load_script_module():
     path = (
-        Path(__file__).resolve().parents[3]
+        _repo_root()
         / "examples"
         / "scripts"
         / "migrate_neo4j_graph_scope.py"

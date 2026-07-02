@@ -83,8 +83,6 @@ https://open.bigmodel.cn/api/paas/v4
 | `SYSTEM_CONFIG_PATH` | 可选系统配置文件路径，默认 `.onto-runtime/config/system_config.json` |
 | `OPS_CONFIG_PATH` | 可选运维规格配置路径，默认 `.onto-runtime/config/ops_config.json` |
 | `PROJECT_ROOT` | 运行时根目录，默认 `.onto-runtime` |
-| `CHAT_STORAGE_DIR` | 会话 JSON 存储目录 |
-| `EXECUTION_STORAGE_DIR` | 执行记录存储目录 |
 | `AUTH_USERS_FILE` | 用户文件路径 |
 | `AUTH_SECRET` | JWT 签名密钥 |
 | `SECRET_ENCRYPTION_KEY` | 可选 32 字节 base64 加密根密钥，用于加密落盘 API key 和业务数据连接 secret |

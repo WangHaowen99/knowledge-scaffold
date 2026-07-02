@@ -6,7 +6,7 @@ This module provides the ExecutionStore class for:
 2. Managing LLM conversation context (session_history for multi-turn memory)
 
 Storage structure:
-    {execution_storage_dir}/
+    {storage_dir}/
         {session_id}/
             execution.json    # SessionExecutionHistory + session_history
 """

@@ -6,6 +6,16 @@ from pathlib import Path
 import pytest
 
 
+def _repo_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "platform").is_dir() and (candidate / "runtime").is_dir():
+            return candidate
+    raise RuntimeError("Could not locate repository root")
+
+
+REPO_ROOT = _repo_root()
+
+
 @pytest.fixture(autouse=True)
 def _reset_observability_provider_between_tests():
     from agentic.observability.provider import shutdown_observer
@@ -16,7 +26,7 @@ def _reset_observability_provider_between_tests():
 
 
 def test_business_layers_do_not_reference_langfuse_trace_ids():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = REPO_ROOT
     checked_paths = [
         repo_root / "runtime/agent/agentic/orchestrator.py",
         repo_root / "runtime/agent/agentic/loop/jiuwen_adapter.py",
@@ -518,7 +528,7 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
 
 
 def test_jiuwen_adapter_uses_semantic_trace_facade_for_observability():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = REPO_ROOT
     adapter_text = (repo_root / "runtime/agent/agentic/loop/jiuwen_adapter.py").read_text(encoding="utf-8")
 
     assert "AgentRuntimeTrace" in adapter_text
@@ -527,7 +537,7 @@ def test_jiuwen_adapter_uses_semantic_trace_facade_for_observability():
 
 
 def test_runtime_code_uses_observability_facades_not_raw_events():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = REPO_ROOT
     checked_paths = [
         repo_root / "runtime/agent/agentic/orchestrator.py",
         repo_root / "runtime/agent/agentic/loop/jiuwen_adapter.py",
@@ -545,7 +555,7 @@ def test_runtime_code_uses_observability_facades_not_raw_events():
 
 
 def test_runtime_code_does_not_use_legacy_perf_logger():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = REPO_ROOT
     checked_paths = [
         repo_root / "runtime/agent/agentic/orchestrator.py",
         repo_root / "runtime/direct_execution/agentic/direct_execution/runner.py",
@@ -564,7 +574,7 @@ def test_runtime_code_does_not_use_legacy_perf_logger():
 
 
 def test_jiuwen_adapter_uses_trace_facade_without_enabled_branching():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = REPO_ROOT
     adapter_text = (repo_root / "runtime/agent/agentic/loop/jiuwen_adapter.py").read_text(encoding="utf-8")
 
     assert "AgentRuntimeTrace(" in adapter_text
@@ -1941,7 +1951,7 @@ def test_langfuse_trace_id_is_stable_for_the_same_run_identity():
 
 
 def test_langfuse_langchain_dependency_is_not_required():
-    repo_root = Path(__file__).resolve().parents[3]
+    repo_root = REPO_ROOT
     requirements = (repo_root / "platform/server/requirements.txt").read_text(encoding="utf-8")
 
     assert "langfuse-langchain" not in requirements

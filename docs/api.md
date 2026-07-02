@@ -1638,8 +1638,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "timeout": 600
   },
   "storage": {
-    "chat_storage_dir": "./data/chats",
-    "execution_storage_dir": "./data/executions",
     "project_root": ".../.onto-runtime",
     "auth_users_file": ".../.onto-runtime/users.json"
   },
@@ -1888,8 +1886,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `chat_storage_dir` | string | 聊天存储目录 |
-| `execution_storage_dir` | string | 执行存储目录 |
 | `project_root` | string | `.onto-runtime` 根目录 |
 | `auth_users_file` | string | 用户文件路径 |
 

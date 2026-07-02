@@ -3,10 +3,21 @@
 from pathlib import Path
 
 from agentic.config import AppConfig
-from agentic.workspaces import create_workspace, get_default_workspace_id, get_workspace_paths
+from agentic.workspaces import create_workspace, get_workspace_paths
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
+EXAMPLE_ONTOLOGY_DESCRIPTION = "Example DOMAIN ontology for tests"
+
+
+def _repo_root() -> Path:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "platform").is_dir() and (candidate / "runtime").is_dir():
+            return candidate
+    raise RuntimeError("Could not locate repository root")
+
+
+REPO_ROOT = _repo_root()
 ONTO_RUNTIME_ROOT = REPO_ROOT / ".onto-runtime"
 
 
@@ -15,6 +26,26 @@ def _create_demo_workspace(tmp_path, monkeypatch, workspace_id: str = "demo"):
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     create_workspace("Demo Workspace", workspace_id=workspace_id, set_as_default=True)
     return get_workspace_paths(workspace_id)
+
+
+def _write_example_manifest(workspace_paths):
+    ontology_dir = workspace_paths.ontologies_dir / EXAMPLE_ONTOLOGY_ID
+    ontology_dir.mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology\n"
+            "schema_version: 0.1\n"
+            f"id: {EXAMPLE_ONTOLOGY_ID}\n"
+            f"name: {EXAMPLE_ONTOLOGY_ID}\n"
+            f"description: {EXAMPLE_ONTOLOGY_DESCRIPTION}\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+            "enabled: true\n"
+            "scope: []\n"
+        ),
+        encoding="utf-8",
+    )
+    return ontology_dir
 
 
 def test_app_config_defaults_to_onto_runtime_root(monkeypatch):
@@ -27,23 +58,24 @@ def test_app_config_defaults_to_onto_runtime_root(monkeypatch):
     assert not hasattr(config, "skills_root")
 
 
-def test_ontology_registry_loads_manifest_and_builds_section(monkeypatch):
+def test_ontology_registry_loads_manifest_and_builds_section(tmp_path, monkeypatch):
     from agentic.utils import ontologies as ontologies_module
     from agentic.utils.ontologies import build_ontologies_section, get_ontology_registry
 
+    _write_example_manifest(_create_demo_workspace(tmp_path, monkeypatch, workspace_id="example"))
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
     registry = get_ontology_registry()
-    ontology = registry.get_ontology("example-domain-operations-manual")
+    ontology = registry.get_ontology(EXAMPLE_ONTOLOGY_ID)
 
     assert ontology is not None
-    assert ontology.id == "example-domain-operations-manual"
+    assert ontology.id == EXAMPLE_ONTOLOGY_ID
     assert ontology.manifest_path.endswith("manifest.yaml")
 
     section = build_ontologies_section()
     assert section.startswith("<Available-Ontologies>")
     assert section.endswith("</Available-Ontologies>")
-    assert "example-domain-operations-manual" in section
-    assert "面向示例企业内部流程执行的领域本体" in section
+    assert EXAMPLE_ONTOLOGY_ID in section
+    assert EXAMPLE_ONTOLOGY_DESCRIPTION in section
 
 
 def test_ontology_registry_uses_project_root_env(tmp_path, monkeypatch):
@@ -148,37 +180,29 @@ def test_build_ontologies_section_keeps_empty_block_for_empty_workspace(tmp_path
 def test_example_ontology_manifest_contains_expected_metadata():
     import yaml
 
-    default_workspace_id = get_default_workspace_id()
-    assert default_workspace_id is not None
-    manifest_path = (
-        ONTO_RUNTIME_ROOT
-        / "workspaces"
-        / default_workspace_id
-        / "ontologies"
-        / "example-domain-operations-manual"
-        / "manifest.yaml"
-    )
+    manifest_path = REPO_ROOT / "examples" / "example-domain-knowledge" / "ontology" / "manifest.yaml"
 
     content = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
 
-    assert content["kind"] == "ontology"
-    assert content["id"] == "example-domain-operations-manual"
+    assert content["kind"] == "ontology-package"
+    assert content["id"] == EXAMPLE_ONTOLOGY_ID
     assert content["language"] == "zh-CN"
-    assert "scope" in content
+    assert content["version"] == "1.0.0"
 
 
-def test_build_ontologies_section_honors_selected_ontology(monkeypatch):
+def test_build_ontologies_section_honors_selected_ontology(tmp_path, monkeypatch):
     from agentic.utils import ontologies as ontologies_module
     from agentic.utils.ontologies import build_ontologies_section
 
+    _write_example_manifest(_create_demo_workspace(tmp_path, monkeypatch, workspace_id="selected-example"))
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
 
     section = build_ontologies_section(
-        selected_ontology_id="example-domain-operations-manual",
+        selected_ontology_id=EXAMPLE_ONTOLOGY_ID,
     )
 
     assert "The current user turn has an explicitly selected ontology" not in section
-    assert "example-domain-operations-manual" in section
+    assert EXAMPLE_ONTOLOGY_ID in section
 
 
 def test_build_selected_ontology_preload_context_includes_root_docs(tmp_path, monkeypatch):

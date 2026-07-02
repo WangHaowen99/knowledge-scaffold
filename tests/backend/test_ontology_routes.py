@@ -13,6 +13,9 @@ from agentic.services.auth import AuthManager
 from agentic.workspaces import create_workspace, get_workspace_paths
 
 
+EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
+
+
 def _build_test_client(
     tmp_path,
     username: str = "admin",
@@ -47,6 +50,31 @@ def _create_demo_workspace(tmp_path, monkeypatch, workspace_id: str = "demo"):
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     create_workspace("Demo Workspace", workspace_id=workspace_id, set_as_default=True)
     return get_workspace_paths(workspace_id)
+
+
+def _write_example_ontology(workspace_paths):
+    ontology_dir = workspace_paths.ontologies_dir / EXAMPLE_ONTOLOGY_ID
+    objects_dir = ontology_dir / "versions" / "1.0.0" / "objects"
+    objects_dir.mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology\n"
+            f"id: {EXAMPLE_ONTOLOGY_ID}\n"
+            f"name: {EXAMPLE_ONTOLOGY_ID}\n"
+            "description: Example DOMAIN ontology for route tests\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions:\n"
+            "  - 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    (objects_dir / "TargetItem.md").write_text(
+        "# 实体属性清单\n\n| 字段 | 说明 |\n| --- | --- |\n| TargetItem_ID | TargetItem identifier |\n",
+        encoding="utf-8",
+    )
+    return ontology_dir
 
 
 def _build_zip_file(entries: dict[str, str]) -> io.BytesIO:
@@ -131,7 +159,8 @@ def _build_source_ontology_zip(*, include_scripts: bool, version: str = "") -> i
     return _build_zip_file(entries)
 
 
-def test_list_ontologies_returns_example_manifest(tmp_path):
+def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
+    _write_example_ontology(_create_demo_workspace(tmp_path, monkeypatch, workspace_id="example-routes"))
     client, headers = _build_test_client(tmp_path)
 
     response = client.get("/agentic/ontologies", headers=headers)
@@ -139,9 +168,7 @@ def test_list_ontologies_returns_example_manifest(tmp_path):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload is not None
-    example_manifest = next(
-        item for item in payload["ontologies"] if item["id"] == "example-domain-operations-manual"
-    )
+    example_manifest = next(item for item in payload["ontologies"] if item["id"] == EXAMPLE_ONTOLOGY_ID)
     assert example_manifest["manifest_path"].endswith("manifest.yaml")
 
 
@@ -228,11 +255,12 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
     assert list_payload["ontologies"][0]["enabled"] is False
 
 
-def test_get_ontology_file_reads_object_markdown(tmp_path):
+def test_get_ontology_file_reads_object_markdown(tmp_path, monkeypatch):
+    _write_example_ontology(_create_demo_workspace(tmp_path, monkeypatch, workspace_id="example-file"))
     client, headers = _build_test_client(tmp_path)
 
     response = client.get(
-        "/agentic/ontologies/example-domain-operations-manual/file",
+        f"/agentic/ontologies/{EXAMPLE_ONTOLOGY_ID}/file",
         query_string={"folder": "objects", "name": "TargetItem.md"},
         headers=headers,
     )

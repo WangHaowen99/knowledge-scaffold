@@ -202,8 +202,6 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     "timeout": 45
   },
   "storage": {
-    "chat_storage_dir": "./runtime/chats",
-    "execution_storage_dir": "./runtime/executions",
     "project_root": "/tmp/project",
     "auth_users_file": "./runtime/users.json"
   },
@@ -250,7 +248,6 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     assert app_config.task_llm.timeout == 45
     assert app_config.task_llm.max_tokens == 2048
     assert app_config.task_llm.temperature == 0.3
-    assert app_config.chat_storage_dir == "./runtime/chats"
     assert app_config.auth_secret == "auth-secret"
     assert app_config.auth_token_ttl_seconds == 999
     assert not hasattr(app_config, "ontologies_root")
@@ -300,7 +297,6 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
     monkeypatch.setenv("LLM_MODEL", "env-model")
     monkeypatch.setenv("LLM_API_KEY", "env-secret")
     monkeypatch.setenv("PROJECT_ROOT", "/env/project")
-    monkeypatch.setenv("CHAT_STORAGE_DIR", "/env/chats")
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
 
     config = system_config_module.load_system_config()
@@ -311,7 +307,6 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
     assert config["llm"]["api_key"] == "saved-secret"
     assert config["storage"]["project_root"] == "/saved/project"
     assert "ontology_search" not in config
-    assert config["storage"]["chat_storage_dir"] == "/env/chats"
     assert app_config.llm.base_url == "https://saved.example/v1"
     assert app_config.llm.model == "saved-model"
 
@@ -517,6 +512,7 @@ def test_agent_config_exposes_only_runtime_knobs(monkeypatch):
         "evolution_patch_cooldown_sec",
         "evolution_sweep_interval_sec",
         "execute_script_timeout",
+        "runtime_warmup_enabled",
     }
     assert config.main_agent_max_iterations == 50
 

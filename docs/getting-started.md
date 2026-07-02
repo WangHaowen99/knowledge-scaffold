@@ -101,7 +101,7 @@ docker compose up --build
 ./run_docker.sh latest all
 ```
 
-脚本会自动创建 `.onto-runtime/config`、`platform/server/logs` 和 `platform/console/logs/nginx` 等目录。
+脚本会自动创建 `.onto-runtime/config`、`.onto-runtime/logs` 和 `platform/console/logs/nginx` 等目录。
 
 ## Try an Ontology Example
 

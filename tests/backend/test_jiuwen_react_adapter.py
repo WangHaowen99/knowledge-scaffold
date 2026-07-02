@@ -33,6 +33,9 @@ from agentic.tools.registry import get_tool_schema, get_tool_spec
 import agentic.utils.logging as logging_utils
 
 
+_REAL_IMPORT_MODULE = importlib.import_module
+
+
 def test_jiuwen_adapter_support_modules_are_split_out():
     for module_name in (
         "agentic.loop.jiuwen",
@@ -1603,7 +1606,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
 
         async def invoke(self, inputs, session=None):
             del inputs, session
-            await observed["tool_by_name"]["skill"].invoke({"skill_id": "finance"})
+            await observed["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
             return {"output": "done", "result_type": "answer"}
 
     def fake_import_module(name):
@@ -1613,7 +1616,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         observed["tool_context_read_documents"] = context.read_documents
@@ -1623,7 +1626,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
                     "role": "tool",
                     "content": "tool response",
                     "tool_call_id": tool_calls[0].tool_call_id,
-                    "name": "skill",
+                    "name": "ontology_context",
                 }
             ],
         )
@@ -3003,7 +3006,7 @@ def test_register_current_runtime_tools_adds_abilities_and_runner_resources(monk
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     captured = {}
 
@@ -3085,7 +3088,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
         async def invoke(self, inputs, session=None):
             del session
             self.inputs = inputs
-            tool_result = await created["tool_by_name"]["skill"].invoke({"skill_id": "finance"})
+            tool_result = await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
             return {"output": "agent saw {}".format(tool_result)}
 
     def fake_import_module(name):
@@ -3095,7 +3098,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         created["tool_calls"] = tool_calls
@@ -3105,8 +3108,8 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
                 {
                     "role": "tool",
                     "content": "registered tool response",
-                    "tool_call_id": "jiuwen_skill",
-                    "name": "skill",
+                    "tool_call_id": "jiuwen_ontology_context",
+                    "name": "ontology_context",
                 }
             ],
         )
@@ -3155,13 +3158,13 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
         message for message in state["messages"]
         if message.get("role") == "assistant" and message.get("tool_calls")
     )
-    assert assistant_tool_message["tool_calls"][0]["function"]["name"] == "skill"
+    assert assistant_tool_message["tool_calls"][0]["function"]["name"] == "ontology_context"
     tool_message = next(message for message in state["messages"] if message.get("role") == "tool")
-    assert tool_message["name"] == "skill"
+    assert tool_message["name"] == "ontology_context"
     assert state["messages"].index(assistant_tool_message) < state["messages"].index(tool_message)
     assert state["final_output"] == "agent saw registered tool response"
-    assert created["tool_calls"][0].name == "skill"
-    assert created["tool_calls"][0].args == {"skill_id": "finance"}
+    assert created["tool_calls"][0].name == "ontology_context"
+    assert created["tool_calls"][0].args == {"resource": "root"}
     assert created["context"].caller == "main"
     assert created["tag"] == "agent-e2e"
     assert created["refresh"] is True
@@ -3180,7 +3183,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
     tool_payload = iteration_events[0]["payload"]
     assert tool_payload["status"] == "continue"
     assert tool_payload["tool_calls_count"] == 1
-    assert tool_payload["tool_names"] == ["skill"]
+    assert tool_payload["tool_names"] == ["ontology_context"]
     final_payload = iteration_events[-1]["payload"]
     assert final_payload["status"] == "final_output"
     assert final_payload["tool_calls_count"] == 0
@@ -3254,7 +3257,7 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         created["contexts"].append(context)
@@ -3411,7 +3414,7 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         del context
@@ -3514,7 +3517,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
         async def stream(self, inputs):
             del inputs
             observed_agent_contexts.append(logging_utils.get_log_context())
-            await created["tool_by_name"]["skill"].invoke({"skill_id": "finance"})
+            await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
             yield SimpleNamespace(
                 type="answer",
                 payload={"output": "child done", "result_type": "answer"},
@@ -3527,7 +3530,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         del context
@@ -3538,7 +3541,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
                     "role": "tool",
                     "content": "tool response",
                     "tool_call_id": tool_calls[0].tool_call_id,
-                    "name": "skill",
+                    "name": "ontology_context",
                 }
             ],
         )
@@ -3632,7 +3635,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
 
         async def stream(self, inputs):
             del inputs
-            await created["tool_by_name"]["skill"].invoke({"skill_id": "finance"})
+            await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
             raise RuntimeError("agent failed after tool")
             yield None
 
@@ -3643,7 +3646,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         del context
@@ -3653,7 +3656,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
                     "role": "tool",
                     "content": "tool response",
                     "tool_call_id": tool_calls[0].tool_call_id,
-                    "name": "skill",
+                    "name": "ontology_context",
                 }
             ],
         )
@@ -3733,7 +3736,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
 
         async def stream(self, inputs):
             del inputs
-            await created["tool_by_name"]["skill"].invoke({"skill_id": "finance"})
+            await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
             raise WorkflowCancelledError("Workflow cancelled by user")
             yield None
 
@@ -3744,7 +3747,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         del context
@@ -3754,7 +3757,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
                     "role": "tool",
                     "content": "tool response",
                     "tool_call_id": tool_calls[0].tool_call_id,
-                    "name": "skill",
+                    "name": "ontology_context",
                 }
             ],
         )
@@ -3842,7 +3845,7 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         del context
@@ -3948,7 +3951,7 @@ def test_run_jiuwen_smoke_constructs_agent_and_registers_tools_without_invoke():
         calls["tool_infos"] = tool_infos
         calls["tool_batch_executor"] = tool_batch_executor
         return [
-            SimpleNamespace(name="skill"),
+            SimpleNamespace(name="business_data_search"),
             SimpleNamespace(name="ontology_context"),
         ]
 
@@ -3962,7 +3965,7 @@ def test_run_jiuwen_smoke_constructs_agent_and_registers_tools_without_invoke():
         "ok": True,
         "agent_id": "agent-smoke",
         "registered_tool_count": 2,
-        "registered_tool_names": ["skill", "ontology_context"],
+        "registered_tool_names": ["business_data_search", "ontology_context"],
     }
     assert calls["llm_config"].model == "model-a"
     assert calls["state"]["user_request"] == "jiuwen smoke check"
@@ -3970,7 +3973,7 @@ def test_run_jiuwen_smoke_constructs_agent_and_registers_tools_without_invoke():
     assert calls["context"].agent_mode == "quick"
     tool_names = [info["name"] for info in calls["tool_infos"]]
     assert "ontology_context" in tool_names
-    assert "skill" in tool_names
+    assert "business_data_search" in tool_names
 
 
 def test_register_current_runtime_tools_uses_run_scoped_tool_ids(monkeypatch):
@@ -4018,7 +4021,7 @@ def test_register_current_runtime_tools_uses_run_scoped_tool_ids(monkeypatch):
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
     tool_info = jiuwen_tool_info_from_spec(get_tool_spec("business_data_search"))
@@ -4084,7 +4087,7 @@ def test_register_current_runtime_tools_uses_native_jiuwen_tool_infos(monkeypatc
                 Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fail_schema_registry(*_args, **_kwargs):
         raise AssertionError("legacy OpenAI tool schema registry should not be used")
@@ -4104,7 +4107,7 @@ def test_register_current_runtime_tools_uses_native_jiuwen_tool_infos(monkeypatc
 
     registered_names = [card.name for card in agent.ability_manager.cards]
     assert "ontology_context" in registered_names
-    assert "skill" in registered_names
+    assert "business_data_search" in registered_names
     business_data_card = next(card for card in agent.ability_manager.cards if card.name == "business_data_search")
     assert business_data_card.input_params["type"] == "object"
     assert registered_batches[0][0].id.startswith("agent-native-tools.tool.")
@@ -4170,7 +4173,7 @@ def test_create_default_jiuwen_agent_lazy_loads_react_agent(monkeypatch):
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
     llm_config = SimpleNamespace(
@@ -4268,7 +4271,7 @@ def test_create_default_jiuwen_agent_does_not_send_enable_reasoning_top_level(mo
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
 
@@ -4332,7 +4335,7 @@ def test_create_default_jiuwen_agent_passes_provider_stream_usage_options(monkey
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
 
@@ -4507,7 +4510,7 @@ def test_create_default_jiuwen_agent_maps_glm_provider_to_openai_client_provider
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
         }
-        return modules[name]
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
 
@@ -4577,7 +4580,7 @@ def test_warm_up_jiuwen_runtime_constructs_agent_without_invoking(monkeypatch):
     )
     monkeypatch.setattr(
         "agentic.loop.jiuwen_adapter.importlib.import_module",
-        lambda name: SimpleNamespace(__name__=name),
+        lambda name: SimpleNamespace(__name__=name) if name.startswith("openjiuwen.") else _REAL_IMPORT_MODULE(name),
     )
 
     result = warm_up_jiuwen_runtime(agent_config=_agent_config())
@@ -4614,7 +4617,7 @@ def test_warm_up_jiuwen_runtime_does_not_register_tools(monkeypatch):
     )
     monkeypatch.setattr(
         "agentic.loop.jiuwen_adapter.importlib.import_module",
-        lambda name: SimpleNamespace(__name__=name),
+        lambda name: SimpleNamespace(__name__=name) if name.startswith("openjiuwen.") else _REAL_IMPORT_MODULE(name),
     )
     monkeypatch.setattr(
         "agentic.loop.jiuwen_adapter.register_current_runtime_tools",

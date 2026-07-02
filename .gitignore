@@ -36,6 +36,8 @@ platform/config/legacy-backend-config/*
 .onto-runtime/**
 **/__pycache__/
 *.log
+platform/server/logs/
+platform/server/data/
 
 .tmp
 frontend/.env

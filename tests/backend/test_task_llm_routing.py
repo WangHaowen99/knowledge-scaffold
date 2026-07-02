@@ -110,10 +110,7 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
     user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
     app.config["AUTH_MANAGER"] = auth_manager
 
-    user_store_manager = UserStoreManager(
-        str(tmp_path / "chats"),
-        str(tmp_path / "executions"),
-    )
+    user_store_manager = UserStoreManager()
     main_llm = _RecordingLLM("main-model", "不该走这里")
     task_llm = _RecordingLLM("task-model", "排产优化")
     configure_llm_router(_RecordingRouter(main_llm=main_llm, task_llm=task_llm))

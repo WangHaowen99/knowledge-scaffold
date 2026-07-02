@@ -37,10 +37,7 @@ def build_runtime_services(previous_llm_router=None):
         config.auth_secret,
         config.auth_token_ttl_seconds,
     )
-    user_store_manager = UserStoreManager(
-        config.chat_storage_dir,
-        config.execution_storage_dir,
-    )
+    user_store_manager = UserStoreManager()
     return {
         "config": config,
         "agent_config": agent_config,
