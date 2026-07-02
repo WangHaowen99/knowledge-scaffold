@@ -6,7 +6,7 @@ import json
 from typing import Any, Iterator, Mapping
 
 from ...provider_base import BusinessDataSearchEvent
-from .agent import GraphAgentError, GraphAgentTimeoutError, GraphAgentUnavailableError, GraphQueryAgent
+from .agent import GraphAgentError, GraphAgentTimeoutError, GraphAgentUnavailableError
 from .backends.base import GraphBackend, GraphBackendError, GraphBackendUnsupportedError
 from .formatting import build_error_result, build_success_result
 from .business_context import load_graph_business_context
@@ -32,7 +32,7 @@ class GraphSearchRuntime:
         provider_config: Mapping[str, Any],
         backend: GraphBackend,
         mapping_resolver: GraphMappingResolver | None = None,
-        graph_agent: GraphQueryAgent | None = None,
+        graph_agent: Any | None = None,
     ) -> None:
         self.provider = str(provider or "").strip().lower()
         self.provider_config = dict(provider_config or {})
@@ -80,8 +80,11 @@ class GraphSearchRuntime:
             "content": "已解析图谱映射: {} ({})".format(context.mapping.entity, context.mapping.source),
         }
 
-        yield {"type": "intermediate", "content": "调用 GraphQueryAgent 执行内部图检索工具"}
-        agent = self.graph_agent or GraphQueryAgent()
+        agent = self.graph_agent or _make_graph_query_agent(context.provider_config)
+        yield {
+            "type": "intermediate",
+            "content": "调用 {} 执行内部图检索工具".format(agent.__class__.__name__),
+        }
         trace = GraphProviderTrace(context)
         tool_executor = GraphToolExecutor(
             backend=self.backend,
@@ -231,6 +234,18 @@ class GraphSearchRuntime:
         focused_node_labels = sorted(_mapping_node_labels(mapping))
         focused_relationship_types = sorted(_mapping_relationship_types(mapping))
         path_analysis = _analyze_path_intent(query=query, entity=entity, mapping=mapping)
+        mapping_intent = _mapping_intent(query=query, entity=entity, mapping=mapping, path_analysis=path_analysis)
+        if mapping_intent["prefer_tool"] == "property_filter":
+            path_analysis = {
+                **path_analysis,
+                "path_intent": bool(mapping_intent["pattern_search_required"]),
+                "preferred_tool": "pattern_search" if mapping_intent["pattern_search_required"] else "property_filter",
+                "record_query": bool(mapping_intent["record_query"]),
+                "instruction": (
+                    "该问题查询的是映射资源上的记录/字段；优先使用 property_filter。"
+                    "property_filter 命中且返回所需字段后，不要追加 pattern_search。"
+                ),
+            }
         expand_for_path_planning = _graph_schema_expand_for_path_planning(self.provider_config)
         node_labels = [] if expand_for_path_planning else focused_node_labels
         relationship_types = [] if expand_for_path_planning else focused_relationship_types
@@ -243,6 +258,7 @@ class GraphSearchRuntime:
             "mapping_resource": mapping.label or mapping.edge_type,
             "mapping_fields": dict(mapping.property_map or {}),
             "query_analysis": path_analysis,
+            "mapping_intent": mapping_intent,
             "schema_strategy": "expanded_for_path_planning" if expand_for_path_planning else "focused",
             "nodes_schema": {},
             "edges_schema": {},
@@ -286,6 +302,13 @@ class GraphSearchRuntime:
 
 def _final(payload: Mapping[str, Any]) -> BusinessDataSearchEvent:
     return {"type": "final", "content": json.dumps(dict(payload), ensure_ascii=False)}
+
+
+def _make_graph_query_agent(provider_config: Mapping[str, Any]):
+    del provider_config
+    from .jiuwen_agent import JiuwenGraphQueryAgent
+
+    return JiuwenGraphQueryAgent()
 
 
 def _mapping_node_labels(mapping: GraphEntityMapping) -> set[str]:
@@ -452,14 +475,131 @@ def _analyze_path_intent(*, query: str, entity: str, mapping: GraphEntityMapping
         )
         if cue in text
     ]
+    associated_object_detail = _requires_associated_object_detail(query=query, entity=entity)
+    record_query = _looks_like_record_query(query=query, entity=entity) and not associated_object_detail
+    path_intent = bool(cues) and not record_query and associated_object_detail
     return {
-        "path_intent": bool(cues),
+        "path_intent": path_intent,
         "path_cues": cues,
-        "preferred_tool": "pattern_search" if cues else "",
+        "record_query": record_query,
+        "associated_object_detail": associated_object_detail,
+        "preferred_tool": "pattern_search" if path_intent else "property_filter" if record_query else "",
         "instruction": (
             "该问题包含关系/路径意图；若 schema_context.edges_schema.relation_triples 中存在可连接的节点和关系，"
             "应优先尝试 pattern_search。"
-            if cues
+            if path_intent
+            else "该问题更像记录/字段查询；优先使用 property_filter。"
+            if record_query
             else ""
         ),
     }
+
+
+def _mapping_intent(
+    *,
+    query: str,
+    entity: str,
+    mapping: GraphEntityMapping,
+    path_analysis: Mapping[str, Any],
+) -> dict[str, Any]:
+    resource_kind = _mapping_resource_kind(mapping)
+    relationship_record = (
+        resource_kind == "record_node"
+        and _looks_like_relationship_record(
+            entity=entity,
+            mapping=mapping,
+        )
+    )
+    associated_object_detail = bool(path_analysis.get("associated_object_detail")) or _requires_associated_object_detail(
+        query=query,
+        entity=entity,
+    )
+    record_query = _looks_like_record_query(query=query, entity=entity) and not associated_object_detail
+    pattern_search_required = resource_kind == "path" or associated_object_detail
+    prefer_tool = "pattern_search" if pattern_search_required else "property_filter" if resource_kind == "record_node" else ""
+    reason = (
+        "用户需要关联对象详情或映射本身为 path，优先 pattern_search"
+        if pattern_search_required
+        else "用户查询的是映射资源记录/字段，property_filter 命中后即可结束"
+        if resource_kind == "record_node"
+        else "未识别到必须使用 pattern_search 的路径意图"
+    )
+    return {
+        "resource_kind": resource_kind,
+        "is_relationship_record": relationship_record,
+        "record_query": record_query,
+        "associated_object_detail": associated_object_detail,
+        "prefer_tool": prefer_tool,
+        "pattern_search_required": pattern_search_required,
+        "property_filter_sufficient_after_hit": resource_kind == "record_node" and not pattern_search_required,
+        "reason": reason,
+    }
+
+
+def _mapping_resource_kind(mapping: GraphEntityMapping) -> str:
+    kind = str(mapping.kind or "").strip().lower()
+    if kind == "path" or mapping.path_pattern:
+        return "path"
+    if kind == "edge":
+        return "edge"
+    if kind == "node" and mapping.label:
+        return "record_node"
+    return kind or "unknown"
+
+
+def _looks_like_relationship_record(*, entity: str, mapping: GraphEntityMapping) -> bool:
+    text = "{} {} {} {}".format(entity or "", mapping.entity or "", mapping.title or "", mapping.label or "")
+    return any(
+        cue in text
+        for cue in (
+            "关系",
+            "关联",
+            "影响对象",
+            "受影响",
+            "映射",
+            "BOM",
+            "SOURCE_STRUCTURE",
+            "STRUCTURE_LIST",
+            "_obj",
+            "_TargetItem",
+            "_TargetItem",
+        )
+    )
+
+
+def _looks_like_record_query(*, query: str, entity: str) -> bool:
+    text = "{} {}".format(query or "", entity or "")
+    return any(
+        cue in text
+        for cue in (
+            "记录",
+            "表",
+            "字段",
+            "编号",
+            "编码",
+            "信息",
+            "所有",
+            "列表",
+            "包含",
+        )
+    )
+
+
+def _requires_associated_object_detail(*, query: str, entity: str) -> bool:
+    text = "{} {}".format(query or "", entity or "")
+    relation_cues = ("对应", "关联", "连接", "映射到", "追溯", "展开", "上下游", "上游", "下游")
+    object_detail_cues = (
+        "TargetItem",
+        "SourceItem",
+        "AO",
+        "工序",
+        "版本详情",
+        "对象详情",
+        "节点详情",
+        "关联对象",
+        "关联节点",
+        "父项",
+        "子项",
+        "供应商",
+    )
+    return any(cue in text for cue in relation_cues) and any(cue in text for cue in object_detail_cues)
