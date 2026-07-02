@@ -440,6 +440,7 @@ class AgenticOrchestrator:
         debug: bool = False,
         requested_run_id: Optional[str] = None,
         allow_existing_acp_run_id: bool = False,
+        external_trace_id: Optional[str] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         Execute the agentic workflow.
@@ -633,6 +634,7 @@ class AgenticOrchestrator:
                 "selected_ontology_id": str(context.get("selected_ontology_id") or "").strip() or None,
                 "agent_mode": resolve_agent_mode(context),
                 "llm_request_mode": str(context.get("llm_request_mode") or "").strip() or None,
+                "external_trace_id": external_trace_id,
             },
         )
 
