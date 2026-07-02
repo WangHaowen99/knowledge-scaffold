@@ -1,24 +1,25 @@
 version: '3.3'
 
 # Full-stack deployment: both backend and frontend
-# For standalone deployment, use backend/docker-compose.yml or frontend/docker-compose.yml
+# For standalone deployment, use platform/server/docker-compose.yml or
+# platform/console/docker-compose.yml.
 
 services:
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: platform/server/Dockerfile
     image: onto-agent-backend:${TAG:-latest}
     container_name: onto-agent-backend-${TAG:-latest}
     restart: unless-stopped
     ports:
       - "${BACKEND_PORT:-5055}:5055"
     volumes:
-      - ./backend/config:/app/config:ro
-      - ./backend/logs:/app/logs
+      - ./platform/config/legacy-backend-config:/app/config:ro
+      - ./platform/server/logs:/app/logs
       - ./.onto-runtime:/app/.onto-runtime
     env_file:
-      - ./backend/.env
+      - ./platform/server/.env
     environment:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
@@ -33,7 +34,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./platform/console
       dockerfile: Dockerfile
     image: onto-agent-frontend:${TAG:-latest}
     container_name: onto-agent-frontend-${TAG:-latest}
@@ -41,7 +42,7 @@ services:
     ports:
       - "${FRONTEND_PORT:-8888}:80"
     volumes:
-      - ./frontend/logs/nginx:/var/log/nginx
+      - ./platform/console/logs/nginx:/var/log/nginx
     depends_on:
       - backend
     environment:
