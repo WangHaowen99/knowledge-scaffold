@@ -208,7 +208,6 @@ const SECTION_META = {
       { name: 'parallel_default_max_workers', label: '默认并发数', placeholder: '10', type: 'number', step: '1' },
       { name: 'context_max_rounds', label: '上下文保留轮次', placeholder: '10', type: 'number', step: '1' },
       { name: 'context_prune_tools', label: '上下文裁剪工具', placeholder: '逗号分隔，例如 ontology_context,business_data_search,web_search', fullWidth: true },
-      { name: 'runtime_warmup_enabled', label: '启动预热', type: 'checkbox', fullWidth: true, enabledText: '服务启动时预热 Jiuwen Runtime', disabledText: '服务启动时跳过 Jiuwen Runtime 预热' },
     ],
     fieldGroups: [
       {
@@ -221,7 +220,6 @@ const SECTION_META = {
           { name: 'sub_agent_max_iterations', label: '子智能体最大轮次', placeholder: '5', type: 'number', step: '1' },
           { name: 'sub_agent_max_concurrency', label: '子智能体最大并发数', placeholder: '4', type: 'number', step: '1' },
           { name: 'sub_agent_max_depth', label: '子智能体最大深度', placeholder: '2', type: 'number', step: '1' },
-          { name: 'runtime_warmup_enabled', label: '启动预热', type: 'checkbox', fullWidth: true, enabledText: '服务启动时预热 Jiuwen Runtime', disabledText: '服务启动时跳过 Jiuwen Runtime 预热' },
         ],
       },
       {
