@@ -13,7 +13,7 @@ import KbSidebarTree from './KbSidebarTree';
 import useKbBrowser from './useKbBrowser';
 import ConfigCenter from './ConfigCenter';
 
-const SURFACES = { chat: '知识应用', kb: '知识包工作台', config: '配置中心' };
+const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心' };
 
 export default function AppShell() {
   const auth = useAuthContext();
@@ -29,6 +29,7 @@ export default function AppShell() {
   const wsMenuRef = useRef(null);
   const userMenuRef = useRef(null);
   const kbImportRef = useRef(null);
+  const [chatHistoryEl, setChatHistoryEl] = useState(null);
 
   // 每次新登录弹出操作向导（会话级标记，跳过/完成后本次不再弹）
   useEffect(() => {
@@ -72,14 +73,15 @@ export default function AppShell() {
         <div className="logo"><span className="mk">知</span>知识工程工具</div>
         <div className="nav">
           <div className="grp">工作</div>
-          {navBtn('chat', '💬', '知识应用', 'nav-chat')}
+          {navBtn('chat', '💬', '新建对话', 'nav-chat')}
+          {surface === 'chat' && <div ref={setChatHistoryEl} className="chat-side-history" />}
           {navBtn('kb', '📦', '知识包工作台', 'nav-kb')}
           {surface === 'kb' && <KbSidebarTree kb={kb} />}
           <div className="grp">管理</div>
           {navBtn('config', '⚙️', '配置中心', 'nav-config')}
         </div>
         <div className="vercard">
-          <div className="vn">知识工程 控制台</div>
+          <div className="vn">powered by openjiuwen</div>
           <div className="vv">{APP_VERSION} · {CHANNEL}</div>
         </div>
       </div>
@@ -149,7 +151,7 @@ export default function AppShell() {
           </div>
         </div>
         <div className="content" style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
-          {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace streamManager={streamManager} /></div>}
+          {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace streamManager={streamManager} historyContainer={chatHistoryEl} /></div>}
           {surface === 'kb' && <div style={{ flex: 1, minHeight: 0 }}><KnowledgeWorkbench kb={kb} /></div>}
           {surface === 'config' && <ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} />}
         </div>
