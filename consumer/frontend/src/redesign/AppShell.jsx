@@ -1,19 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { Compass } from 'lucide-react';
 import useStreamManager from '../hooks/useStreamManager';
-import { APP_VERSION, CHANNEL } from './version';
+import useChatSessions from '../hooks/useChatSessions';
+import { APP_VERSION } from './version';
 import ForceChangePasswordPage from '../components/ForceChangePasswordPage';
 import { useAuthContext } from './useAuthContext';
 import LoginPage from './LoginPage';
 import OnboardingWizard from './OnboardingWizard';
 import { wizardSeen } from './wizardState';
 import ChatWorkspace from './ChatWorkspace';
+import ChatHistorySidebar from './ChatHistorySidebar';
 import KnowledgeWorkbench from './KnowledgeWorkbench';
 import KbSidebarTree from './KbSidebarTree';
 import useKbBrowser from './useKbBrowser';
 import ConfigCenter from './ConfigCenter';
 
-const SURFACES = { chat: '知识应用', kb: '知识包工作台', config: '配置中心' };
+const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心' };
 
 export default function AppShell() {
   const auth = useAuthContext();
@@ -25,6 +27,7 @@ export default function AppShell() {
   const [userMenu, setUserMenu] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const streamManager = useStreamManager();
+  const chat = useChatSessions(streamManager);
   const kb = useKbBrowser();
   const wsMenuRef = useRef(null);
   const userMenuRef = useRef(null);
@@ -36,6 +39,13 @@ export default function AppShell() {
     const timer = setTimeout(() => setWizardOpen(true), 0);
     return () => clearTimeout(timer);
   }, [status, user?.password_change_required]);
+
+  useEffect(() => {
+    if (status !== 'authenticated') return undefined;
+    const t = setTimeout(() => chat.loadSessions(true), 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, workspaceId, chat.loadSessions]);
 
   useEffect(() => {
     const onDocClick = (e) => {
@@ -72,7 +82,13 @@ export default function AppShell() {
         <div className="logo"><span className="mk">知</span>知识工程工具</div>
         <div className="nav">
           <div className="grp">工作</div>
-          {navBtn('chat', '💬', '知识应用', 'nav-chat')}
+          <button className={surface === 'chat' ? 'on' : ''} data-wiz="nav-chat"
+            onClick={() => { setSurface('chat'); chat.startNewChat(); }}>
+            <span style={{ width: 17, textAlign: 'center' }}>💬</span>新建对话
+          </button>
+          {surface === 'chat' && (
+            <ChatHistorySidebar chat={chat} onOpen={(id) => { setSurface('chat'); chat.selectChat(id); }} />
+          )}
           {navBtn('kb', '📦', '知识包工作台', 'nav-kb')}
           {surface === 'kb' && <KbSidebarTree kb={kb} />}
           <div className="grp">管理</div>
@@ -80,7 +96,7 @@ export default function AppShell() {
         </div>
         <div className="vercard">
           <div className="vn">知识工程 控制台</div>
-          <div className="vv">{APP_VERSION} · {CHANNEL}</div>
+          <div className="vv">{APP_VERSION} · powered by openJiuwen</div>
         </div>
       </div>
       <div className="main">
@@ -149,7 +165,7 @@ export default function AppShell() {
           </div>
         </div>
         <div className="content" style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
-          {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace streamManager={streamManager} /></div>}
+          {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace chat={chat} streamManager={streamManager} /></div>}
           {surface === 'kb' && <div style={{ flex: 1, minHeight: 0 }}><KnowledgeWorkbench kb={kb} /></div>}
           {surface === 'config' && <ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} />}
         </div>

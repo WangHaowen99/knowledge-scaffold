@@ -1,24 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import useChatSessions from '../hooks/useChatSessions';
+import { useEffect, useRef, useState } from 'react';
+import { PanelRightClose, PanelRightOpen } from 'lucide-react';
 import useAgenticStream from '../hooks/useAgenticStream';
 import { authFetch } from '../utils/auth';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
+import { formatTime, truncate } from './chatUtils';
 
-// 知识应用：左侧历史记录 + 右侧富消息线程。
-// 流式协议复用现有 useStreamManager / useAgenticStream（agent-stream.v2）。
-export default function ChatWorkspace({ streamManager }) {
+// 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
+// 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
+// useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
+export default function ChatWorkspace({ chat, streamManager }) {
   const { workspaceId } = useAuthContext();
-  const {
-    sessions, currentChatId, messages, setMessages,
-    loadSessions, createChat, deleteChat, selectChat, startNewChat, generateSessionTitle,
-  } = useChatSessions(streamManager);
+  const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle } = chat;
   const { sendAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
   const [input, setInput] = useState('');
-  const [search, setSearch] = useState('');
+  const [traceOpen, setTraceOpen] = useState(true);
   const bodyRef = useRef(null);
-
-  useEffect(() => { loadSessions(true); }, [loadSessions, workspaceId]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -42,46 +39,25 @@ export default function ChatWorkspace({ streamManager }) {
     if (isNew) generateSessionTitle(sessionId, text);
   };
 
-  const groups = useMemo(() => groupSessions(sessions, search), [sessions, search]);
   const current = sessions.find((s) => s.id === currentChatId);
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
 
   return (
     <div className="chatwrap">
-      <div className="hist">
-        <div className="h-top">
-          <button className="btn btn-p" style={{ width: '100%' }} onClick={() => startNewChat()}>＋ 新建对话</button>
-          <input className="kb-search" placeholder="搜索历史对话…" value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-        <div className="h-list">
-          {groups.map(([label, items]) => (
-            <div key={label}>
-              <div className="hg">{label}</div>
-              {items.map((s) => (
-                <div key={s.id} className={`hs ${s.id === currentChatId ? 'on' : ''}`} onClick={() => selectChat(s.id)}>
-                  <div className="t">{s.title || '未命名对话'}</div>
-                  <div className="m">
-                    {formatTime(s.updated_at || s.created_at)} · {s.message_count ?? 0} 条
-                    <a style={{ float: 'right', color: 'var(--muted)' }} title="删除对话"
-                      onClick={(e) => { e.stopPropagation(); if (window.confirm('删除该对话？')) deleteChat(s.id); }}>✕</a>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-          {!sessions.length && <div className="empty">还没有对话，直接在右侧提问开始</div>}
-        </div>
-      </div>
       <div className="thread">
         <div className="th-head">
           <span className="tt">{current?.title || '新对话'}</span>
           {current && <span className="tm">{formatTime(current.updated_at || current.created_at)}</span>}
+          <button className="iconbtn" style={{ marginLeft: 'auto' }} title={traceOpen ? '收起 Trace' : '展开 Trace'}
+            onClick={() => setTraceOpen((v) => !v)}>
+            {traceOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+          </button>
         </div>
         <div className="th-body" ref={bodyRef}>
           {messages.map((m) => <MessageBubble key={m.id} msg={m} />)}
           {!messages.length && (
             <div className="empty" style={{ paddingTop: 80 }}>
-              向知识包提问，例如：“分析一下某个 CHANGE_ORDER 的综合影响、成本和周期”
+              开始新对话——向知识包提问，例如：“分析一下某个 CHANGE_ORDER 的综合影响、成本和周期”
             </div>
           )}
         </div>
@@ -96,6 +72,67 @@ export default function ChatWorkspace({ streamManager }) {
           </div>
         </div>
       </div>
+      {traceOpen && <TracePanel messages={messages} />}
+    </div>
+  );
+}
+
+/* ---------------- Trace 竖栏 ---------------- */
+
+function TracePanel({ messages }) {
+  const turns = messages.filter((m) => m.role === 'assistant');
+  return (
+    <div className="trace">
+      <div className="tr-head">运行轨迹 · Trace</div>
+      <div className="tr-body">
+        {!turns.length && <div className="ch-empty" style={{ padding: '30px 12px' }}>发起对话后，这里按轮次展示模型思考、工具调用与状态明细</div>}
+        {turns.map((m, i) => <TraceTurn key={m.id} msg={m} index={i + 1} />)}
+      </div>
+    </div>
+  );
+}
+
+function TraceTurn({ msg, index }) {
+  const segs = (msg.streamSegments || []).filter((s) => s.type !== 'content');
+  const running = !!msg.isLoading;
+  const status = running ? 'running' : (msg.status || 'finished');
+  const statusText = { running: '进行中', finished: '成功', error: '出错', cancelled: '已停止', awaiting: '等待输入' }[status] || status;
+  return (
+    <div className="tr-turn">
+      <div className="tr-turn-h">
+        <span className={`tr-dot ${status}`} />
+        <span className="tr-turn-t">第 {index} 轮</span>
+        <span className="tr-turn-s">{statusText}{msg.ts ? ` · ${formatTime(msg.ts)}` : ''}</span>
+      </div>
+      {segs.map((seg, i) => <TraceRow key={i} seg={seg} />)}
+      {msg.runId && <div className="tr-run">run: {String(msg.runId).slice(0, 24)}…</div>}
+    </div>
+  );
+}
+
+function TraceRow({ seg }) {
+  const done = seg.finished || seg.state === 'done' || seg.state === 'final';
+  let icon = '·';
+  let label = '';
+  if (seg.type === 'tool') {
+    icon = '⚙';
+    label = seg.meta?.tool_name || '工具调用';
+  } else if (seg.type === 'reasoning') {
+    icon = '🧠';
+    label = '模型思考';
+  } else if (seg.type === 'subagent' || seg.type === 'subagent_group') {
+    icon = '⑂';
+    label = seg.meta?.title || '子任务';
+  } else {
+    label = seg.type;
+  }
+  const elapsed = seg.meta?.elapsed_ms ? `${(seg.meta.elapsed_ms / 1000).toFixed(1)}s` : '';
+  const detail = truncate(seg.text || '', 60);
+  return (
+    <div className="tr-row" title={seg.text || ''}>
+      <span className="tr-ic">{icon}</span>
+      <span className="tr-lb">{label}{detail && seg.type === 'tool' ? ` · ${detail}` : ''}</span>
+      <span className="tr-st">{elapsed || (done ? '✓' : '…')}</span>
     </div>
   );
 }
@@ -126,7 +163,7 @@ function AssistantBubble({ msg }) {
 
   return (
     <div className="msg a">
-      <div className="av">M</div>
+      <div className="av">知</div>
       <div className="bubwrap">
         <div className={`bub ${isError ? 'err' : ''}`}>
           {toolNames.length > 0 && (
@@ -195,37 +232,4 @@ function FeedbackBar({ runId, content }) {
       <button onClick={() => navigator.clipboard?.writeText(content || '')}>复制</button>
     </span>
   );
-}
-
-/* ---------------- 工具函数 ---------------- */
-
-function groupSessions(sessions, search) {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const yesterday = today - 86400000;
-  const buckets = { 今天: [], 昨天: [], 更早: [] };
-  for (const s of sessions) {
-    if (search && !(s.title || '').toLowerCase().includes(search.toLowerCase())) continue;
-    const ts = Date.parse(s.updated_at || s.created_at || '') || 0;
-    if (ts >= today) buckets['今天'].push(s);
-    else if (ts >= yesterday) buckets['昨天'].push(s);
-    else buckets['更早'].push(s);
-  }
-  return Object.entries(buckets).filter(([, items]) => items.length);
-}
-
-function formatTime(ts) {
-  if (!ts) return '';
-  const d = typeof ts === 'number' ? new Date(ts) : new Date(String(ts));
-  if (Number.isNaN(d.getTime())) return '';
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const hh = `${d.getHours()}`.padStart(2, '0');
-  const mm = `${d.getMinutes()}`.padStart(2, '0');
-  return sameDay ? `${hh}:${mm}` : `${d.getMonth() + 1}-${d.getDate()} ${hh}:${mm}`;
-}
-
-function truncate(s, n) {
-  const t = String(s || '').replace(/\s+/g, ' ').trim();
-  return t.length > n ? `${t.slice(0, n)}…` : t;
 }

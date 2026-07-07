@@ -98,6 +98,40 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .uchip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--hair); background: #fff; border-radius: 99px; padding: 3px 12px 3px 4px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .mwr .uchip:hover { border-color: #c9c8c1; }
 .mwr .uav { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--blue-dd)); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 750; flex: none; }
+/* 侧边栏 · 历史对话（挂在“新建对话”导航项下） */
+.mwr .chathist { margin: 2px 0 6px; padding-left: 6px; }
+.mwr .chathist .ch-search { font-size: 12px; padding: 6px 10px; margin: 2px 0 6px; }
+.mwr .chathist .ch-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
+.mwr .chathist .ch-group { font-size: 10.5px; color: var(--muted); letter-spacing: 1px; padding: 8px 8px 3px; font-weight: 600; }
+.mwr .chathist .ch-item { padding: 6px 8px; border-radius: 8px; cursor: pointer; margin-bottom: 1px; }
+.mwr .chathist .ch-item:hover { background: #f4f5f7; }
+.mwr .chathist .ch-item.on { background: var(--blue-ll); }
+.mwr .chathist .ch-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mwr .chathist .ch-item.on .ch-title { color: var(--blue-dd); }
+.mwr .chathist .ch-meta { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .chathist .ch-meta a { color: var(--muted); cursor: pointer; visibility: hidden; padding: 0 3px; }
+.mwr .chathist .ch-item:hover .ch-meta a { visibility: visible; }
+.mwr .chathist .ch-meta a:hover { color: var(--crit); }
+
+/* 对话 · 右侧 Trace 竖栏 */
+.mwr .trace { width: 272px; flex: none; border-left: 1px solid #ebeae5; background: #fbfbf9; display: flex; flex-direction: column; min-height: 0; }
+.mwr .trace .tr-head { padding: 13px 16px; font-size: 12.5px; font-weight: 700; letter-spacing: .5px; color: var(--ink2); border-bottom: 1px solid #f0efec; flex: none; }
+.mwr .trace .tr-body { flex: 1; overflow: auto; padding: 10px 12px 20px; }
+.mwr .trace .tr-turn { border: 1px solid #eceae2; border-radius: 10px; background: #fff; padding: 8px 10px; margin-bottom: 10px; }
+.mwr .trace .tr-turn-h { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.mwr .trace .tr-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.mwr .trace .tr-dot.finished { background: var(--good); }
+.mwr .trace .tr-dot.running { background: var(--blue); animation: mwblink 1.2s infinite; }
+.mwr .trace .tr-dot.error { background: var(--crit); }
+.mwr .trace .tr-dot.cancelled { background: var(--warn); }
+.mwr .trace .tr-turn-t { font-size: 12px; font-weight: 700; }
+.mwr .trace .tr-turn-s { font-size: 11px; color: var(--muted); margin-left: auto; }
+.mwr .trace .tr-row { display: flex; align-items: flex-start; gap: 7px; padding: 3.5px 2px; font-size: 11.5px; color: var(--ink2); border-top: 1px dashed #f2f1ea; }
+.mwr .trace .tr-row .tr-ic { flex: none; width: 14px; text-align: center; }
+.mwr .trace .tr-row .tr-lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .trace .tr-row .tr-st { flex: none; color: var(--muted); font-size: 10.5px; font-family: ui-monospace, monospace; }
+.mwr .trace .tr-run { font-size: 10px; color: #b6b4ab; font-family: ui-monospace, monospace; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; }
+
 /* 侧边栏 · 知识包目录树（挂在“知识包工作台”导航项下） */
 .mwr .kbtree { margin: 2px 0 6px; padding-left: 6px; }
 .mwr .kbtree .kbt-notice { font-size: 11px; color: var(--ink2); padding: 2px 10px 6px; line-height: 1.5; }
@@ -213,7 +247,7 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .kbx .doc-h { font-size: 19px; font-weight: 730; display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
 .mwr .kbx .doc-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 16px; font-family: ui-monospace, monospace; }
 
-/* ---- 知识应用 ---- */
+/* ---- 对话（新建对话 + Trace） ---- */
 .mwr .chatwrap { display: flex; height: 100%; border: 1px solid #ebeae5; border-radius: 14px; overflow: hidden; background: #fff; }
 .mwr .hist { width: 266px; flex: none; border-right: 1px solid #ebeae5; background: #fbfbf9; display: flex; flex-direction: column; }
 .mwr .hist .h-top { padding: 14px 14px 10px; display: flex; flex-direction: column; gap: 10px; }
