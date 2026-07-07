@@ -15,7 +15,7 @@ Primary goals:
 
 ## 1. Project Status
 
-Current status: empty project / early-stage project.
+Current status: directory-refactor workspace with multiple top-level areas. The Onto Agent consumer application that previously lived at the repository root now lives under `consumer/`; commands and paths for that application should be resolved from `consumer/` unless a task explicitly targets another top-level area.
 
 Before creating major files or directories, Claude should first clarify or infer the following from the user request:
 
@@ -166,14 +166,15 @@ If tests cannot be run, explain why and list the exact command that should be ru
 
 When project commands become known, record them here.
 
-Current commands:
+Current commands for the consumer application:
 
-- Install dependencies: TBD
-- Start development server: TBD
-- Run tests: TBD
-- Run lint: TBD
-- Run type check: TBD
-- Build: TBD
+- Install backend dependencies: `cd consumer/backend && python -m venv venv && pip install -r requirements.txt`
+- Start backend development server: `cd consumer/backend && python run.py`
+- Install frontend dependencies: `cd consumer/frontend && npm install`
+- Start frontend development server: `cd consumer/frontend && npm run dev`
+- Run backend tests: `cd consumer && PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests`
+- Run frontend lint/build: `cd consumer/frontend && npm run lint && npm run build`
+- Run full-stack Docker Compose: `cd consumer && docker compose up --build`
 
 After initializing the project, Claude must update this section with real commands.
 

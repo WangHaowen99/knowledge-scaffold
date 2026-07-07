@@ -11,8 +11,6 @@ parlant*
 *parlant
 logs/
 data/
-!examples/data/
-!examples/data/**
 .env
 logs*
 /data*/
@@ -20,7 +18,7 @@ logs*
 .codex/
 .pytest_cache/
 frontend/dist/
-platform/console/dist/
+consumer/frontend/dist/
 .claude/
 *.z*
 *.zip
@@ -29,17 +27,18 @@ pkg/
 .claude
 backend/config/system_config.json
 backend/config/langfuse.json
-platform/config/legacy-backend-config/*
-!platform/config/legacy-backend-config/.gitkeep
+consumer/backend/config/system_config.json
+consumer/backend/config/langfuse.json
 
 # Runtime and local data
 .onto-runtime/**
+consumer/.onto-runtime/**
 **/__pycache__/
 *.log
 
 .tmp
 frontend/.env
-platform/console/.env
+consumer/frontend/.env
 
 business-frontend/dist
 business-frontend/node_modules
