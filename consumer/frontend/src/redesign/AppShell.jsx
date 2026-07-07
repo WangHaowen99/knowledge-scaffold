@@ -164,7 +164,8 @@ export default function AppShell() {
             )}
           </div>
         </div>
-        <div className="content" style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
+        <div className={surface !== 'config' ? 'content content-full' : 'content'}
+          style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
           {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace chat={chat} streamManager={streamManager} /></div>}
           {surface === 'kb' && <div style={{ flex: 1, minHeight: 0 }}><KnowledgeWorkbench kb={kb} /></div>}
           {surface === 'config' && <ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} />}

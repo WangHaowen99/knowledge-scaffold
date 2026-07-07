@@ -66,7 +66,8 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .side { width: 224px; flex: none; background: #fff; border-right: 1px solid #ebeae5; display: flex; flex-direction: column; }
 .mwr .logo { padding: 20px 20px 14px; font-size: 17px; font-weight: 750; display: flex; align-items: center; gap: 9px; }
 .mwr .logo .mk { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, var(--blue), var(--blue-dd)); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; }
-.mwr .nav { padding: 8px 12px; flex: 1; }
+.mwr .nav { padding: 8px 12px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.mwr .nav > button, .mwr .nav .grp { flex: none; }
 .mwr .nav .grp { font-size: 11px; color: var(--muted); letter-spacing: 1.5px; padding: 14px 10px 6px; font-weight: 600; }
 .mwr .nav button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 9px; color: var(--ink2); border: none; background: none; font-size: 13.5px; font-weight: 550; margin-bottom: 2px; text-align: left; }
 .mwr .nav button:hover { background: #f4f5f7; }
@@ -80,6 +81,8 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .topbar { height: 56px; flex: none; background: #fff; border-bottom: 1px solid #ebeae5; display: flex; align-items: center; padding: 0 26px; gap: 14px; }
 .mwr .topbar .crumb { font-size: 14px; font-weight: 650; }
 .mwr .content { flex: 1; overflow: auto; padding: 24px 28px; }
+.mwr .content-full { padding: 0; overflow: hidden; }
+.mwr .content-full .chatwrap, .mwr .content-full .kbx { border: none; border-radius: 0; }
 .mwr .wswrap { margin-left: auto; position: relative; }
 .mwr .wschip { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2); border: 1px solid var(--hair); border-radius: 9px; padding: 6px 12px; background: #fff; cursor: pointer; }
 .mwr .wschip:hover { border-color: #c9c8c1; }
@@ -99,7 +102,7 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .uchip:hover { border-color: #c9c8c1; }
 .mwr .uav { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--blue-dd)); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 750; flex: none; }
 /* 侧边栏 · 历史对话（挂在“新建对话”导航项下） */
-.mwr .chathist { margin: 2px 0 6px; padding-left: 6px; }
+.mwr .chathist { margin: 2px 0 6px; padding-left: 6px; flex: 1 1 auto; min-height: 0; overflow: auto; }
 .mwr .chathist .ch-search { font-size: 12px; padding: 6px 10px; margin: 2px 0 6px; }
 .mwr .chathist .ch-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
 .mwr .chathist .ch-group { font-size: 10.5px; color: var(--muted); letter-spacing: 1px; padding: 8px 8px 3px; font-weight: 600; }
@@ -113,27 +116,46 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .chathist .ch-item:hover .ch-meta a { visibility: visible; }
 .mwr .chathist .ch-meta a:hover { color: var(--crit); }
 
-/* 对话 · 右侧 Trace 竖栏 */
-.mwr .trace { width: 272px; flex: none; border-left: 1px solid #ebeae5; background: #fbfbf9; display: flex; flex-direction: column; min-height: 0; }
+/* 对话 · 右侧 Trace 竖栏（树形层级） */
+.mwr .trace { width: 300px; flex: none; border-left: 1px solid #ebeae5; background: #fbfbf9; display: flex; flex-direction: column; min-height: 0; }
 .mwr .trace .tr-head { padding: 13px 16px; font-size: 12.5px; font-weight: 700; letter-spacing: .5px; color: var(--ink2); border-bottom: 1px solid #f0efec; flex: none; }
 .mwr .trace .tr-body { flex: 1; overflow: auto; padding: 10px 12px 20px; }
-.mwr .trace .tr-turn { border: 1px solid #eceae2; border-radius: 10px; background: #fff; padding: 8px 10px; margin-bottom: 10px; }
-.mwr .trace .tr-turn-h { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.mwr .trace summary { list-style: none; cursor: pointer; }
+.mwr .trace summary::-webkit-details-marker { display: none; }
+.mwr .trace .car { font-size: 8px; color: var(--muted); width: 10px; flex: none; transition: transform .15s; }
+.mwr .trace details[open] > summary .car { transform: rotate(90deg); }
 .mwr .trace .tr-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
 .mwr .trace .tr-dot.finished { background: var(--good); }
 .mwr .trace .tr-dot.running { background: var(--blue); animation: mwblink 1.2s infinite; }
 .mwr .trace .tr-dot.error { background: var(--crit); }
 .mwr .trace .tr-dot.cancelled { background: var(--warn); }
-.mwr .trace .tr-turn-t { font-size: 12px; font-weight: 700; }
-.mwr .trace .tr-turn-s { font-size: 11px; color: var(--muted); margin-left: auto; }
-.mwr .trace .tr-row { display: flex; align-items: flex-start; gap: 7px; padding: 3.5px 2px; font-size: 11.5px; color: var(--ink2); border-top: 1px dashed #f2f1ea; }
-.mwr .trace .tr-row .tr-ic { flex: none; width: 14px; text-align: center; }
-.mwr .trace .tr-row .tr-lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mwr .trace .tr-row .tr-st { flex: none; color: var(--muted); font-size: 10.5px; font-family: ui-monospace, monospace; }
-.mwr .trace .tr-run { font-size: 10px; color: #b6b4ab; font-family: ui-monospace, monospace; margin-top: 5px; overflow: hidden; text-overflow: ellipsis; }
+/* 轮次（根节点） */
+.mwr .trace .trt { border: 1px solid #eceae2; border-radius: 10px; background: #fff; margin-bottom: 10px; overflow: hidden; }
+.mwr .trace .trt > summary { display: flex; align-items: center; gap: 7px; padding: 8px 11px; }
+.mwr .trace .trt > summary:hover { background: #f7f7f3; }
+.mwr .trace .trt-t { font-size: 12px; font-weight: 700; }
+.mwr .trace .trt-s { font-size: 10.5px; color: var(--muted); margin-left: auto; text-align: right; }
+.mwr .trace .trt-kids { margin: 0 10px 9px 15px; border-left: 2px solid #e9e7df; padding-left: 9px; }
+/* 子节点（思考 / 工具 / 子任务） */
+.mwr .trace .trn { margin: 2px 0; }
+.mwr .trace .trn > summary, .mwr .trace .trn-plain { display: flex; align-items: center; gap: 6px; padding: 3.5px 4px; font-size: 11.5px; color: var(--ink2); border-radius: 6px; }
+.mwr .trace .trn > summary:hover { background: #f4f4ef; }
+.mwr .trace .tr-ic { flex: none; width: 15px; text-align: center; }
+.mwr .trace .tr-lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mwr .trace .tr-lb.err { color: var(--crit); }
+.mwr .trace .tr-st { flex: none; color: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
+.mwr .trace .trn-plain { color: var(--muted); font-weight: 400; }
+/* 明细（输入 / 输出 / 内容） */
+.mwr .trace .trn-detail { margin: 3px 0 6px 20px; border-left: 2px solid #f0eee6; padding-left: 8px; }
+.mwr .trace .trn-block { margin-bottom: 6px; }
+.mwr .trace .trn-bt { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .5px; margin-bottom: 3px; }
+.mwr .trace .trn-pre { background: #f6f6f1; border: 1px solid #eceae0; border-radius: 7px; padding: 7px 9px; margin: 0;
+  font-family: ui-monospace, monospace; font-size: 10.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+  color: #3c3b36; max-height: 180px; overflow: auto; }
+.mwr .trace .tr-run { font-size: 10px; color: #b6b4ab; font-family: ui-monospace, monospace; margin-top: 6px; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 侧边栏 · 知识包目录树（挂在“知识包工作台”导航项下） */
-.mwr .kbtree { margin: 2px 0 6px; padding-left: 6px; }
+.mwr .kbtree { margin: 2px 0 6px; padding-left: 6px; flex: 1 1 auto; min-height: 0; overflow: auto; }
 .mwr .kbtree .kbt-notice { font-size: 11px; color: var(--ink2); padding: 2px 10px 6px; line-height: 1.5; }
 .mwr .kbtree .kbt-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
 .mwr .kbtree .kbt-pkg { display: flex; width: 100%; align-items: center; gap: 6px; border: none; background: none;
