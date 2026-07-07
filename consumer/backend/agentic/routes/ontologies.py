@@ -798,6 +798,142 @@ def get_ontology_file(ontology_id: str):
         })
 
 
+# 整包浏览：知识包版本目录的完整结构对外只读可见（控制台知识包工作台使用），
+# 但原始数据目录不暴露（origin_data / datasets），隐藏文件与缓存目录一并排除。
+_TREE_EXCLUDED_DIRS = {"origin_data", "origin-data", "datasets", "dataset", "__pycache__"}
+_TREE_TEXT_EXTENSIONS = {".md", ".yaml", ".yml", ".json", ".py", ".txt", ".csv", ".sql"}
+_TREE_MAX_FILE_BYTES = 2 * 1024 * 1024
+
+
+def _build_ontology_tree(base_dir: Path, current: Path) -> list[dict]:
+    entries: list[dict] = []
+    try:
+        children = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except OSError:
+        return entries
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        rel_path = child.relative_to(base_dir).as_posix()
+        if child.is_dir():
+            if child.name.lower() in _TREE_EXCLUDED_DIRS:
+                continue
+            entries.append({
+                "name": child.name,
+                "path": rel_path,
+                "type": "dir",
+                "children": _build_ontology_tree(base_dir, child),
+            })
+        elif child.is_file():
+            stat_result = child.stat()
+            entries.append({
+                "name": child.name,
+                "path": rel_path,
+                "type": "file",
+                "size": stat_result.st_size,
+                "viewable": (
+                    child.suffix.lower() in _TREE_TEXT_EXTENSIONS
+                    and stat_result.st_size <= _TREE_MAX_FILE_BYTES
+                ),
+            })
+    return entries
+
+
+def _resolve_tree_relative_path(version_dir: Path, raw_path: str) -> Optional[Path]:
+    normalized = (raw_path or "").strip().replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
+        return None
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." or part.startswith(".") for part in parts):
+        return None
+    if any(part.lower() in _TREE_EXCLUDED_DIRS for part in parts):
+        return None
+    target = version_dir.joinpath(*parts)
+    if not _is_safe_path(version_dir, target):
+        return None
+    return target
+
+
+@ontologies_bp.route("/ontologies/<ontology_id>/tree", methods=["GET"])
+@require_auth()
+def get_ontology_tree(ontology_id: str):
+    try:
+        workspace_id = resolve_workspace_id(request)
+    except KeyError as exc:
+        return jsonify({"detail": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
+
+    with workspace_scope(workspace_id):
+        version = _get_requested_version()
+        if version and not is_valid_ontology_version(version):
+            payload, status_code = _version_error_payload(version)
+            return jsonify(payload), status_code
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return jsonify({"error": "Ontology not found"}), 404
+        version_dir = _resolve_existing_version_dir(ontology_dir, version or None)
+        if version_dir is None:
+            return jsonify({"error": "Ontology version not found"}), 404
+
+        return jsonify({
+            "ontology_id": ontology_id,
+            "version": version,
+            "excluded": sorted(_TREE_EXCLUDED_DIRS - {"__pycache__"}),
+            "entries": _build_ontology_tree(version_dir, version_dir),
+        })
+
+
+@ontologies_bp.route("/ontologies/<ontology_id>/raw-file", methods=["GET"])
+@require_auth()
+def get_ontology_raw_file(ontology_id: str):
+    try:
+        workspace_id = resolve_workspace_id(request)
+    except KeyError as exc:
+        return jsonify({"detail": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
+
+    with workspace_scope(workspace_id):
+        version = _get_requested_version()
+        if version and not is_valid_ontology_version(version):
+            payload, status_code = _version_error_payload(version)
+            return jsonify(payload), status_code
+        ontology_dir = _resolve_ontology_dir(ontology_id)
+        if ontology_dir is None:
+            return jsonify({"error": "Ontology not found"}), 404
+        version_dir = _resolve_existing_version_dir(ontology_dir, version or None)
+        if version_dir is None:
+            return jsonify({"error": "Ontology version not found"}), 404
+
+        file_path = _resolve_tree_relative_path(version_dir, request.args.get("path", ""))
+        if file_path is None:
+            return jsonify({"error": "Invalid file path"}), 400
+        if not file_path.exists() or not file_path.is_file():
+            return jsonify({"error": "File not found"}), 404
+        if file_path.suffix.lower() not in _TREE_TEXT_EXTENSIONS:
+            return jsonify({"error": "File type not viewable"}), 400
+        if file_path.stat().st_size > _TREE_MAX_FILE_BYTES:
+            return jsonify({"error": "File too large to view online"}), 400
+
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return jsonify({"error": "File encoding must be UTF-8"}), 400
+        except Exception:
+            logger.exception("Failed to read ontology file: %s", file_path)
+            return jsonify({"error": "Failed to read file"}), 500
+
+        return jsonify({
+            "ontology_id": ontology_id,
+            "version": version,
+            "path": file_path.relative_to(version_dir).as_posix(),
+            "name": file_path.name,
+            "size": file_path.stat().st_size,
+            "content": content,
+        })
+
+
 @ontologies_bp.route("/ontologies/<ontology_id>/file", methods=["PUT"])
 @require_auth(roles=["admin"])
 def update_ontology_file(ontology_id: str):
