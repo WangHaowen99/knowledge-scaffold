@@ -77,7 +77,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
   );
 }
 
-/* ---------------- Trace 竖栏 ---------------- */
+/* ---------------- Trace 竖栏（树形层级：轮次 → 思考/工具/子任务，可展开明细） ---------------- */
 
 function TracePanel({ messages }) {
   const turns = messages.filter((m) => m.role === 'assistant');
@@ -85,56 +85,97 @@ function TracePanel({ messages }) {
     <div className="trace">
       <div className="tr-head">运行轨迹 · Trace</div>
       <div className="tr-body">
-        {!turns.length && <div className="ch-empty" style={{ padding: '30px 12px' }}>发起对话后，这里按轮次展示模型思考、工具调用与状态明细</div>}
-        {turns.map((m, i) => <TraceTurn key={m.id} msg={m} index={i + 1} />)}
+        {!turns.length && <div className="ch-empty" style={{ padding: '30px 12px' }}>发起对话后，这里按轮次展示模型思考、工具调用与状态明细，可逐层展开</div>}
+        {turns.map((m, i) => (
+          <TraceTurn key={m.id} msg={m} index={i + 1} defaultOpen={!!m.isLoading || i === turns.length - 1} />
+        ))}
       </div>
     </div>
   );
 }
 
-function TraceTurn({ msg, index }) {
+function TraceTurn({ msg, index, defaultOpen }) {
   const segs = (msg.streamSegments || []).filter((s) => s.type !== 'content');
   const running = !!msg.isLoading;
   const status = running ? 'running' : (msg.status || 'finished');
   const statusText = { running: '进行中', finished: '成功', error: '出错', cancelled: '已停止', awaiting: '等待输入' }[status] || status;
+  const toolCount = segs.filter((s) => s.type === 'tool').length;
   return (
-    <div className="tr-turn">
-      <div className="tr-turn-h">
+    <details className="trt" open={defaultOpen}>
+      <summary>
+        <span className="car">▶</span>
         <span className={`tr-dot ${status}`} />
-        <span className="tr-turn-t">第 {index} 轮</span>
-        <span className="tr-turn-s">{statusText}{msg.ts ? ` · ${formatTime(msg.ts)}` : ''}</span>
+        <span className="trt-t">第 {index} 轮</span>
+        <span className="trt-s">{statusText}{toolCount ? ` · ${toolCount} 次工具` : ''}{msg.ts ? ` · ${formatTime(msg.ts)}` : ''}</span>
+      </summary>
+      <div className="trt-kids">
+        {!segs.length && <div className="trn-plain">直接回答，未调用工具</div>}
+        {segs.map((seg, i) => <TraceNode key={i} seg={seg} />)}
+        {msg.runId && <div className="tr-run" title={String(msg.runId)}>run · {String(msg.runId).slice(0, 26)}…</div>}
       </div>
-      {segs.map((seg, i) => <TraceRow key={i} seg={seg} />)}
-      {msg.runId && <div className="tr-run">run: {String(msg.runId).slice(0, 24)}…</div>}
-    </div>
+    </details>
   );
 }
 
-function TraceRow({ seg }) {
+function TraceNode({ seg }) {
   const done = seg.finished || seg.state === 'done' || seg.state === 'final';
+  const meta = seg.meta || {};
   let icon = '·';
   let label = '';
+  if (seg.type === 'tool') { icon = '⚙'; label = meta.tool_name || '工具调用'; }
+  else if (seg.type === 'reasoning') { icon = '🧠'; label = '模型思考'; }
+  else if (seg.type === 'subagent' || seg.type === 'subagent_group') { icon = '⑂'; label = meta.title || '子任务'; }
+  else { label = seg.type; }
+  const elapsed = meta.elapsed_ms ? `${(meta.elapsed_ms / 1000).toFixed(1)}s` : '';
+  const stateMark = elapsed || (done ? '✓' : '⋯');
+  const hasError = meta.error || meta.status === 'error';
+
+  // 可展开的明细：工具的输入参数 / 输出预览 / 错误，思考与子任务的文本
+  const detailBlocks = [];
   if (seg.type === 'tool') {
-    icon = '⚙';
-    label = seg.meta?.tool_name || '工具调用';
-  } else if (seg.type === 'reasoning') {
-    icon = '🧠';
-    label = '模型思考';
-  } else if (seg.type === 'subagent' || seg.type === 'subagent_group') {
-    icon = '⑂';
-    label = seg.meta?.title || '子任务';
-  } else {
-    label = seg.type;
+    if (meta.input && Object.keys(meta.input).length) {
+      detailBlocks.push(['输入', safeJson(meta.input)]);
+    }
+    if (meta.output_preview) {
+      detailBlocks.push([`输出${meta.output_truncated ? '（截断）' : ''}`, String(meta.output_preview)]);
+    }
+    if (meta.error) detailBlocks.push(['错误', String(meta.error)]);
+    if (!detailBlocks.length && seg.text) detailBlocks.push(['进度', String(seg.text)]);
+  } else if (seg.text) {
+    detailBlocks.push(['内容', String(seg.text)]);
   }
-  const elapsed = seg.meta?.elapsed_ms ? `${(seg.meta.elapsed_ms / 1000).toFixed(1)}s` : '';
-  const detail = truncate(seg.text || '', 60);
+
+  if (!detailBlocks.length) {
+    return (
+      <div className="trn-plain" title={label}>
+        <span className="tr-ic">{icon}</span>
+        <span className="tr-lb">{label}</span>
+        <span className="tr-st">{stateMark}</span>
+      </div>
+    );
+  }
   return (
-    <div className="tr-row" title={seg.text || ''}>
-      <span className="tr-ic">{icon}</span>
-      <span className="tr-lb">{label}{detail && seg.type === 'tool' ? ` · ${detail}` : ''}</span>
-      <span className="tr-st">{elapsed || (done ? '✓' : '…')}</span>
-    </div>
+    <details className="trn">
+      <summary>
+        <span className="car">▶</span>
+        <span className="tr-ic">{icon}</span>
+        <span className={`tr-lb ${hasError ? 'err' : ''}`}>{label}</span>
+        <span className="tr-st">{stateMark}</span>
+      </summary>
+      <div className="trn-detail">
+        {detailBlocks.map(([title, text]) => (
+          <div key={title} className="trn-block">
+            <div className="trn-bt">{title}</div>
+            <pre className="trn-pre">{truncate(text, 800)}</pre>
+          </div>
+        ))}
+      </div>
+    </details>
   );
+}
+
+function safeJson(v) {
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
 }
 
 /* ---------------- 富消息渲染 ---------------- */
