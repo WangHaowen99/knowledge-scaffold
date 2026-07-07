@@ -12,9 +12,9 @@ function stepsFor(isAdmin) {
     { ic: '🔌', t: '第 2 步 · 连接数据', d: <>高亮处是当前工作空间的<b>数据连接</b>：新建业务数据库连接，知识包将通过它查询真实业务数据。</>, nav: { surface: 'config', scope: 'workspace', sec: 'conn' }, target: 'cfg-conn' },
     { ic: '📦', t: '第 3 步 · 导入知识包', d: <>点高亮的按钮导入 .zip 知识包，左侧树会出现包内的<b>业务对象 / 操作</b>，右侧可逐个查看内容。</>, nav: { surface: 'kb' }, target: 'kb-import' },
     { ic: '🔗', t: '第 4 步 · 知识与数据绑定', d: <>高亮处把<b>知识包映射到数据连接</b>——绑定后，知识包中的业务对象才能查询真实业务数据。</>, nav: { surface: 'config', scope: 'workspace', sec: 'bind' }, target: 'cfg-bind' },
-    { ic: '💬', t: '一切就绪', d: <>从高亮的入口进入<b>新建对话</b>，试试知识包的典型问题。</>, target: 'nav-chat' },
+    { ic: '💬', t: '一切就绪', d: <>从高亮的入口进入<b>知识应用</b>，试试知识包的典型问题。</>, target: 'nav-chat' },
   ] : [
-    { ic: '👋', t: '欢迎使用 meta-wise', d: <>用几步蒙版引导快速了解三个区域：<b>新建对话、知识包工作台、配置中心</b>（对你只读开放）。可随时跳过。</> },
+    { ic: '👋', t: '欢迎使用 meta-wise', d: <>用几步蒙版引导快速了解三个区域：<b>知识应用、知识包工作台、配置中心</b>（对你只读开放）。可随时跳过。</> },
     { ic: '📦', t: '知识包工作台', d: <>高亮入口进入<b>知识包工作台</b>：查看已导入知识包的业务对象、操作和典型问题。</>, nav: { surface: 'kb' }, target: 'nav-kb' },
     { ic: '⚙️', t: '个人设置', d: <>配置中心对你只读；但高亮处的<b>个人偏好</b>（默认工作空间、回复语言）可以自己修改。</>, nav: { surface: 'config', scope: 'personal', sec: 'prefs' }, target: 'cfg-prefs' },
     { ic: '💬', t: '开始对话', d: <>选好工作空间后从高亮入口直接提问，例如知识包里的典型问题。</>, target: 'nav-chat' },
