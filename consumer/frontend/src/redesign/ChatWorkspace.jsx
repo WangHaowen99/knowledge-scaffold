@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import useChatSessions from '../hooks/useChatSessions';
 import useAgenticStream from '../hooks/useAgenticStream';
 import { authFetch } from '../utils/auth';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
 
-// 知识应用：左侧历史记录 + 右侧富消息线程。
+// 新建对话：历史记录挂到应用侧边栏，主区域展示消息线程和 trace。
 // 流式协议复用现有 useStreamManager / useAgenticStream（agent-stream.v2）。
-export default function ChatWorkspace({ streamManager }) {
+export default function ChatWorkspace({ streamManager, historyContainer }) {
   const { workspaceId } = useAuthContext();
   const {
     sessions, currentChatId, messages, setMessages,
@@ -45,33 +46,27 @@ export default function ChatWorkspace({ streamManager }) {
   const groups = useMemo(() => groupSessions(sessions, search), [sessions, search]);
   const current = sessions.find((s) => s.id === currentChatId);
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const latestAssistant = useMemo(
+    () => [...messages].reverse().find((m) => m.role !== 'user'),
+    [messages]
+  );
+
+  const history = (
+    <ChatHistory
+      groups={groups}
+      sessions={sessions}
+      currentChatId={currentChatId}
+      search={search}
+      setSearch={setSearch}
+      startNewChat={startNewChat}
+      selectChat={selectChat}
+      deleteChat={deleteChat}
+    />
+  );
 
   return (
     <div className="chatwrap">
-      <div className="hist">
-        <div className="h-top">
-          <button className="btn btn-p" style={{ width: '100%' }} onClick={() => startNewChat()}>＋ 新建对话</button>
-          <input className="kb-search" placeholder="搜索历史对话…" value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-        <div className="h-list">
-          {groups.map(([label, items]) => (
-            <div key={label}>
-              <div className="hg">{label}</div>
-              {items.map((s) => (
-                <div key={s.id} className={`hs ${s.id === currentChatId ? 'on' : ''}`} onClick={() => selectChat(s.id)}>
-                  <div className="t">{s.title || '未命名对话'}</div>
-                  <div className="m">
-                    {formatTime(s.updated_at || s.created_at)} · {s.message_count ?? 0} 条
-                    <a style={{ float: 'right', color: 'var(--muted)' }} title="删除对话"
-                      onClick={(e) => { e.stopPropagation(); if (window.confirm('删除该对话？')) deleteChat(s.id); }}>✕</a>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-          {!sessions.length && <div className="empty">还没有对话，直接在右侧提问开始</div>}
-        </div>
-      </div>
+      {historyContainer ? createPortal(history, historyContainer) : <div className="hist hist-inline">{history}</div>}
       <div className="thread">
         <div className="th-head">
           <span className="tt">{current?.title || '新对话'}</span>
@@ -96,11 +91,79 @@ export default function ChatWorkspace({ streamManager }) {
           </div>
         </div>
       </div>
+      <TraceRail msg={latestAssistant} streamState={streamState} />
     </div>
   );
 }
 
 /* ---------------- 富消息渲染 ---------------- */
+
+function ChatHistory({ groups, sessions, currentChatId, search, setSearch, startNewChat, selectChat, deleteChat }) {
+  return (
+    <div className="hist">
+      <div className="h-top">
+        <button className="btn btn-p" style={{ width: '100%' }} onClick={() => startNewChat()}>＋ 新建对话</button>
+        <input className="kb-search" placeholder="搜索历史对话…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+      <div className="h-list">
+        {groups.map(([label, items]) => (
+          <div key={label}>
+            <div className="hg">{label}</div>
+            {items.map((s) => (
+              <div key={s.id} className={`hs ${s.id === currentChatId ? 'on' : ''}`} onClick={() => selectChat(s.id)}>
+                <div className="t">{s.title || '未命名对话'}</div>
+                <div className="m">
+                  {formatTime(s.updated_at || s.created_at)} · {s.message_count ?? 0} 条
+                  <a style={{ float: 'right', color: 'var(--muted)' }} title="删除对话"
+                    onClick={(e) => { e.stopPropagation(); if (window.confirm('删除该对话？')) deleteChat(s.id); }}>✕</a>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+        {!sessions.length && <div className="empty">还没有对话，直接在右侧提问开始</div>}
+      </div>
+    </div>
+  );
+}
+
+function TraceRail({ msg, streamState }) {
+  const segments = msg?.streamSegments || [];
+  const traceItems = segments.filter((s) => s.type !== 'content');
+  const runId = msg?.runId || '';
+  const status = msg?.isLoading || streamState?.isLoading ? '运行中' : msg?.status === 'error' ? '异常' : msg ? '已完成' : '待开始';
+
+  return (
+    <aside className="trace-rail">
+      <div className="tr-head">
+        <div className="tr-title">Trace</div>
+        <span className={`tr-status ${status === '异常' ? 'err' : status === '运行中' ? 'run' : ''}`}>{status}</span>
+      </div>
+      {runId && <div className="tr-run" title={runId}>run {truncate(runId, 18)}</div>}
+      <div className="tr-list">
+        {!traceItems.length && <div className="tr-empty">暂无执行轨迹</div>}
+        {traceItems.map((seg, i) => <TraceItem key={`${seg.type}-${i}`} seg={seg} index={i} />)}
+      </div>
+    </aside>
+  );
+}
+
+function TraceItem({ seg, index }) {
+  const done = seg.finished || seg.state === 'done' || seg.state === 'final';
+  const kind = seg.type === 'tool' ? '工具' : seg.type === 'reasoning' ? '思考' : seg.type === 'subagent' || seg.type === 'subagent_group' ? '子任务' : '事件';
+  const text = seg.type === 'tool'
+    ? (seg.meta?.tool_name || seg.text || '工具调用')
+    : (seg.text || seg.meta?.title || seg.type);
+  return (
+    <div className="tr-item">
+      <div className={`tr-dot ${done ? 'done' : ''}`}>{done ? '✓' : index + 1}</div>
+      <div className="tr-copy">
+        <div className="tr-kind">{kind}</div>
+        <div className="tr-text">{truncate(text, 86)}</div>
+      </div>
+    </div>
+  );
+}
 
 function MessageBubble({ msg }) {
   if (msg.role === 'user') {
