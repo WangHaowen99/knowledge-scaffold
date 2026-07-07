@@ -44,3 +44,8 @@ consumer/frontend/.env
 
 business-frontend/dist
 business-frontend/node_modules
+
+# Loop engineering local state
+/LOOP.md
+/STATE.md
+/loop-*.md
