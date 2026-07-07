@@ -21,8 +21,8 @@ export default function LoginPage() {
   return (
     <div className="mwr login">
       <div className="lbrand">
-        <div className="mk">M</div>
-        <h1>meta-wise</h1>
+        <div className="mk">知</div>
+        <h1>知识工程工具</h1>
         <div className="tg">企业本体驱动的 Agent 工作台。把领域知识包、业务数据和多 Agent 编排放进同一个工作空间。</div>
         <div className="feats">
           <div className="feat"><div className="fi">📦</div><div><div className="ft">知识包驱动</div><div className="fd">业务对象、操作与受控脚本按包导入，语义与口径可追溯</div></div></div>
@@ -33,7 +33,7 @@ export default function LoginPage() {
       <div className="lform">
         <form className="lcard" onSubmit={submit}>
           <h2>欢迎回来</h2>
-          <div className="ld">登录 meta-wise 控制台</div>
+          <div className="ld">登录 知识工程工具</div>
           <div className="lfield">
             <label>用户名</label>
             <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
