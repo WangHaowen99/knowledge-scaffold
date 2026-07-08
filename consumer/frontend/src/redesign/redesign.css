@@ -101,20 +101,23 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .uchip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--hair); background: #fff; border-radius: 99px; padding: 3px 12px 3px 4px; font-size: 13px; font-weight: 600; color: var(--ink); }
 .mwr .uchip:hover { border-color: #c9c8c1; }
 .mwr .uav { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--blue-dd)); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 750; flex: none; }
-/* 侧边栏 · 历史对话（挂在“新建对话”导航项下） */
-.mwr .chathist { margin: 2px 0 6px; padding-left: 6px; flex: 1 1 auto; min-height: 0; overflow: auto; }
-.mwr .chathist .ch-search { font-size: 12px; padding: 6px 10px; margin: 2px 0 6px; }
-.mwr .chathist .ch-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
-.mwr .chathist .ch-group { font-size: 10.5px; color: var(--muted); letter-spacing: 1px; padding: 8px 8px 3px; font-weight: 600; }
-.mwr .chathist .ch-item { padding: 6px 8px; border-radius: 8px; cursor: pointer; margin-bottom: 1px; }
-.mwr .chathist .ch-item:hover { background: #f4f5f7; }
-.mwr .chathist .ch-item.on { background: var(--blue-ll); }
-.mwr .chathist .ch-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mwr .chathist .ch-item.on .ch-title { color: var(--blue-dd); }
-.mwr .chathist .ch-meta { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); margin-top: 1px; }
-.mwr .chathist .ch-meta a { color: var(--muted); cursor: pointer; visibility: hidden; padding: 0 3px; }
-.mwr .chathist .ch-item:hover .ch-meta a { visibility: visible; }
-.mwr .chathist .ch-meta a:hover { color: var(--crit); }
+/* 侧边栏左下 · 固定的历史对话区块（导航之下、版本卡之上，所有页面常驻） */
+.mwr .side-hist { flex: none; height: 268px; display: flex; flex-direction: column; min-height: 0;
+  margin: 0 12px; padding-top: 8px; border-top: 1px solid #efeee9; }
+.mwr .side-hist .sh-title { flex: none; font-size: 11px; color: var(--muted); letter-spacing: 1.5px; font-weight: 600; padding: 4px 4px 6px; }
+.mwr .side-hist .ch-search { flex: none; font-size: 12px; padding: 6px 10px; margin-bottom: 6px; }
+.mwr .side-hist .ch-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px; }
+.mwr .side-hist .ch-empty { font-size: 12px; color: var(--muted); padding: 6px 6px; }
+.mwr .side-hist .ch-group { font-size: 10.5px; color: var(--muted); letter-spacing: 1px; padding: 6px 6px 3px; font-weight: 600; }
+.mwr .side-hist .ch-item { padding: 6px 8px; border-radius: 8px; cursor: pointer; margin-bottom: 1px; }
+.mwr .side-hist .ch-item:hover { background: #f4f5f7; }
+.mwr .side-hist .ch-item.on { background: var(--blue-ll); }
+.mwr .side-hist .ch-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mwr .side-hist .ch-item.on .ch-title { color: var(--blue-dd); }
+.mwr .side-hist .ch-meta { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .side-hist .ch-meta a { color: var(--muted); cursor: pointer; visibility: hidden; padding: 0 3px; }
+.mwr .side-hist .ch-item:hover .ch-meta a { visibility: visible; }
+.mwr .side-hist .ch-meta a:hover { color: var(--crit); }
 
 /* 对话 · 右侧 Trace 竖栏（树形层级） */
 .mwr .trace { width: 300px; flex: none; border-left: 1px solid #ebeae5; background: #fbfbf9; display: flex; flex-direction: column; min-height: 0; }

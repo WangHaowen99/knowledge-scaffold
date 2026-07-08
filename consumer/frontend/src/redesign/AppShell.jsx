@@ -86,14 +86,12 @@ export default function AppShell() {
             onClick={() => { setSurface('chat'); chat.startNewChat(); }}>
             <span style={{ width: 17, textAlign: 'center' }}>💬</span>新建对话
           </button>
-          {surface === 'chat' && (
-            <ChatHistorySidebar chat={chat} onOpen={(id) => { setSurface('chat'); chat.selectChat(id); }} />
-          )}
           {navBtn('kb', '📦', '知识包工作台', 'nav-kb')}
           {surface === 'kb' && <KbSidebarTree kb={kb} />}
           <div className="grp">管理</div>
           {navBtn('config', '⚙️', '配置中心', 'nav-config')}
         </div>
+        <ChatHistorySidebar chat={chat} onOpen={(id) => { setSurface('chat'); chat.selectChat(id); }} />
         <div className="vercard">
           <div className="vn">知识工程 控制台</div>
           <div className="vv">{APP_VERSION} · powered by openJiuwen</div>
