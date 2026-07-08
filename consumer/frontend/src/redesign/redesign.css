@@ -184,7 +184,7 @@ html[data-mwr-theme='graphite'] .mwr {
 
 .mwr .vercard { margin: 12px; padding: 10px 13px; border-top: 1px solid #efeee9; }
 .mwr .vercard .vn { font-size: 12px; font-weight: 650; color: var(--ink2); }
-.mwr .vercard .vv { font-size: 11.5px; color: var(--muted); margin-top: 2px; font-family: ui-monospace, monospace; }
+.mwr .vercard .vv { font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
 
 /* ---- Markdown 视图 ---- */
 .mwr .mdv { font-size: 13.5px; line-height: 1.8; color: #26251f; }
