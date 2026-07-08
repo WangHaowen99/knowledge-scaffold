@@ -4,6 +4,8 @@ import { useAuthContext } from './useAuthContext';
 
 // 知识包浏览的共享状态：侧边栏目录树（AppShell 内）与工作台内容区共用。
 // 数据源：/agentic/ontologies + /tree（整包结构，后端已排除 origin_data/datasets）+ /raw-file。
+// 管理操作走既有本体端点：启用/禁用 PUT /status、激活版本 PUT /active-version、
+// 删除版本 DELETE /versions/<v>、下载 GET /download（均支持 version 参数按版本操作）。
 export const DIR_LABELS = {
   objects: '业务对象', operations: '操作', scripts: '脚本', mappings: '数据映射',
 };
@@ -21,6 +23,15 @@ export default function useKbBrowser() {
   const [sel, setSel] = useState({ dir: 'objects', file: null });
   const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState('');
+  // versionOverride = null 表示跟随激活版本；字符串表示浏览指定历史版本
+  const [versionOverride, setVersionOverride] = useState(null);
+  const [opBusy, setOpBusy] = useState('');
+  const [opNotice, setOpNotice] = useState('');
+
+  const pkg = packages.find((p) => p.id === pkgId) || null;
+  const activeVersion = pkg?.active_version || pkg?.version || '';
+  const viewVersion = versionOverride ?? activeVersion;
+  const viewingActive = versionOverride === null || versionOverride === activeVersion;
 
   const loadPackages = useCallback(async () => {
     setPkgsLoading(true);
@@ -42,13 +53,21 @@ export default function useKbBrowser() {
     return () => clearTimeout(t);
   }, [loadPackages, workspaceId]);
 
+  // 浏览中的版本从包里消失时（如刚被删除）回落到激活版本
+  useEffect(() => {
+    if (versionOverride !== null && pkg && !(pkg.versions || []).includes(versionOverride)) {
+      setVersionOverride(null);
+    }
+  }, [pkg, versionOverride]);
+
   useEffect(() => {
     if (!pkgId) { setTree([]); return undefined; }
     let cancelled = false;
     const t = setTimeout(async () => {
       setTreeLoading(true);
       try {
-        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/tree`);
+        const q = versionOverride !== null ? `?version=${encodeURIComponent(versionOverride)}` : '';
+        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/tree${q}`);
         const data = res.ok ? await res.json() : { entries: [] };
         if (cancelled) return;
         const entries = data.entries || [];
@@ -61,14 +80,17 @@ export default function useKbBrowser() {
       }
     }, 0);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [pkgId, workspaceId]);
+  }, [pkgId, workspaceId, versionOverride]);
 
-  const selectPkg = useCallback((id) => { setPkgId(id); }, []);
+  const selectPkg = useCallback((id) => { setPkgId(id); setVersionOverride(null); setOpNotice(''); }, []);
   const selectDir = useCallback((dirPath) => { setSel({ dir: dirPath, file: null }); }, []);
   const selectFile = useCallback((filePath) => {
     const parent = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
     setSel({ dir: parent, file: filePath });
   }, []);
+  const selectVersion = useCallback((version) => {
+    setVersionOverride(version === activeVersion ? null : version);
+  }, [activeVersion]);
 
   const importZip = useCallback(async (file) => {
     setImporting(true);
@@ -99,10 +121,110 @@ export default function useKbBrowser() {
     }
   }, [loadPackages]);
 
-  const pkg = packages.find((p) => p.id === pkgId) || null;
+  const setPkgEnabled = useCallback(async (enabled) => {
+    if (!pkgId) return;
+    setOpBusy('status');
+    setOpNotice('');
+    try {
+      const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOpNotice(enabled ? '知识包已启用' : '知识包已禁用，Agent 将不再使用该知识包');
+        await loadPackages();
+      } else {
+        setOpNotice(`操作失败：${data.error || data.detail || res.status}`);
+      }
+    } finally {
+      setOpBusy('');
+    }
+  }, [pkgId, loadPackages]);
+
+  const activateVersion = useCallback(async () => {
+    if (!pkgId || !viewVersion) return;
+    setOpBusy('activate');
+    setOpNotice('');
+    try {
+      const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/active-version`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: viewVersion }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOpNotice(`已激活版本 ${viewVersion}`);
+        setVersionOverride(null);
+        await loadPackages();
+      } else {
+        setOpNotice(`激活失败：${data.error || data.detail || res.status}`);
+      }
+    } finally {
+      setOpBusy('');
+    }
+  }, [pkgId, viewVersion, loadPackages]);
+
+  const deleteVersion = useCallback(async () => {
+    if (!pkgId || !viewVersion) return;
+    setOpBusy('deleteVersion');
+    setOpNotice('');
+    try {
+      const res = await authFetch(
+        `/agentic/ontologies/${encodeURIComponent(pkgId)}/versions/${encodeURIComponent(viewVersion)}`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOpNotice(`已删除版本 ${viewVersion}`);
+        setVersionOverride(null);
+        await loadPackages();
+      } else {
+        setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
+      }
+    } finally {
+      setOpBusy('');
+    }
+  }, [pkgId, viewVersion, loadPackages]);
+
+  const downloadPkg = useCallback(async () => {
+    if (!pkgId) return;
+    setOpBusy('download');
+    setOpNotice('');
+    try {
+      const q = viewVersion ? `?version=${encodeURIComponent(viewVersion)}` : '';
+      const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/download${q}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setOpNotice(`下载失败：${data.error || data.detail || res.status}`);
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+      const fileName = match
+        ? decodeURIComponent(match[1])
+        : `${pkgId}${viewVersion ? `-${viewVersion}` : ''}.zip`;
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(objectUrl);
+      setOpNotice(`已下载：${fileName}`);
+    } finally {
+      setOpBusy('');
+    }
+  }, [pkgId, viewVersion]);
+
   return {
-    canImport, packages, pkgsLoading, pkg, pkgId, tree, treeLoading,
+    canImport, canManage: canImport, packages, pkgsLoading, pkg, pkgId, tree, treeLoading,
     sel, selectPkg, selectDir, selectFile, importZip, importing, notice,
+    viewVersion, viewingActive, versionOverride, selectVersion,
+    setPkgEnabled, activateVersion, deleteVersion, downloadPkg, opBusy, opNotice,
   };
 }
 

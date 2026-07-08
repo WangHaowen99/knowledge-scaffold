@@ -9,7 +9,11 @@ import { DIR_ICONS, DIR_LABELS, findDirEntries } from './useKbBrowser';
 const EXT_LANG = { '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json', '.py': 'python', '.sql': 'sql', '.csv': 'csv', '.txt': 'text' };
 
 export default function KnowledgeWorkbench({ kb }) {
-  const { pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile } = kb;
+  const {
+    pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
+    canManage, viewVersion, viewingActive, versionOverride, selectVersion,
+    setPkgEnabled, activateVersion, deleteVersion, downloadPkg, opBusy, opNotice,
+  } = kb;
   const [content, setContent] = useState('');
   const [contentErr, setContentErr] = useState('');
   const [contentLoading, setContentLoading] = useState(false);
@@ -38,7 +42,9 @@ export default function KnowledgeWorkbench({ kb }) {
       setContentLoading(true);
       setContentErr('');
       try {
-        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/raw-file?path=${encodeURIComponent(sel.file)}`);
+        const params = new URLSearchParams({ path: sel.file });
+        if (versionOverride !== null) params.set('version', versionOverride);
+        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/raw-file?${params.toString()}`);
         const data = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (res.ok) setContent(data.content || '');
@@ -48,7 +54,7 @@ export default function KnowledgeWorkbench({ kb }) {
       }
     }, 0);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [pkgId, sel.file]);
+  }, [pkgId, sel.file, versionOverride]);
 
   const shown = entries.filter((e) => !filter || e.name.toLowerCase().includes(filter.toLowerCase()));
   const ext = sel.file ? sel.file.slice(sel.file.lastIndexOf('.')).toLowerCase() : '';
@@ -60,8 +66,58 @@ export default function KnowledgeWorkbench({ kb }) {
       {treeLoading ? '加载中…' : '左侧选择或导入一个知识包'}</div></div>;
   }
 
+  const versions = [...(pkg.versions || [])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  const activeVersion = pkg.active_version || pkg.version || '';
+  const onToggleEnabled = () => {
+    if (pkg.enabled && !window.confirm(`禁用后 Agent 将无法使用「${pkg.name || pkgId}」，确认禁用？`)) return;
+    setPkgEnabled(!pkg.enabled);
+  };
+  const onDeleteVersion = () => {
+    if (!window.confirm(`确认删除「${pkg.name || pkgId}」的版本 ${viewVersion}？该版本文件将被永久删除。`)) return;
+    deleteVersion();
+  };
+
   return (
-    <div className="kbx">
+    <div className="kbwrap">
+      <div className="kb-toolbar">
+        <span className="kb-tb-name">{pkg.name || pkgId}</span>
+        <span className={`tag ${pkg.enabled ? 'tag-ok' : 'tag-off'}`}>{pkg.enabled ? '已启用' : '已禁用'}</span>
+        {activeVersion && <span className="tag tag-lang">激活版本 {activeVersion}</span>}
+        {versions.length > 0 && (
+          <label className="kb-tb-ver">查看版本
+            <select value={viewVersion} onChange={(e) => selectVersion(e.target.value)}>
+              {versions.map((v) => (
+                <option key={v} value={v}>{v}{v === activeVersion ? '（激活）' : ''}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <span className="kb-tb-sp" />
+        <button className="btn" disabled={!!opBusy} onClick={downloadPkg}>
+          {opBusy === 'download' ? '打包中…' : '下载知识包(zip)'}
+        </button>
+        {canManage && (
+          <button className="btn" disabled={!!opBusy} onClick={onToggleEnabled}>
+            {opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用知识包' : '启用知识包'}
+          </button>
+        )}
+        {canManage && (viewingActive ? (
+          <button className="btn" disabled>已是激活版本</button>
+        ) : (
+          <button className="btn btn-p" disabled={!!opBusy} onClick={activateVersion}>
+            {opBusy === 'activate' ? '激活中…' : '设为激活版本'}
+          </button>
+        ))}
+        {canManage && (
+          <button className="btn btn-danger" disabled={!!opBusy || viewingActive || versions.length <= 1}
+            title={viewingActive ? '不能删除激活版本，请先切换查看其他版本' : versions.length <= 1 ? '仅剩一个版本，不能删除' : ''}
+            onClick={onDeleteVersion}>
+            {opBusy === 'deleteVersion' ? '删除中…' : '删除版本'}
+          </button>
+        )}
+      </div>
+      {opNotice && <div className="kb-opnotice">{opNotice}</div>}
+      <div className="kbx">
       <div className="col2" style={{ width: 320 }}>
         <div className="kb-crumbs">
           <a onClick={() => selectDir('')} className={!sel.dir ? 'cur' : ''}>{pkg.name || pkgId}</a>
@@ -117,6 +173,7 @@ export default function KnowledgeWorkbench({ kb }) {
             )}
           </>
         )}
+      </div>
       </div>
     </div>
   );

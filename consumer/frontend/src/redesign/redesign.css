@@ -43,6 +43,9 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .tag-draft { background: #fbf0d7; color: #7a5200; }
 .mwr .tag-ok { background: #e2f5ed; color: #0e6b4a; }
 .mwr .tag-lang { background: #eef1f6; color: #52514e; }
+.mwr .tag-off { background: #f4f4f5; color: #8a8f98; }
+.mwr .btn-danger { border-color: #f0c9c9; color: #b23f3f; }
+.mwr .btn-danger:hover { background: #fdf3f3; border-color: #e5b0b0; }
 .mwr .scope-badge { font-size: 10.5px; font-weight: 700; color: #fff; border-radius: 5px; padding: 1.5px 7px; letter-spacing: .5px; flex: none; }
 .mwr .sb-l1 { background: var(--l1); } .mwr .sb-l2 { background: var(--l2); } .mwr .sb-l3 { background: var(--l3); }
 .mwr .kb-search { border: 1px solid var(--hair); border-radius: 9px; padding: 8px 12px; width: 100%; background: #fff; }
@@ -251,6 +254,16 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .card .foot .who { font-size: 12px; color: var(--muted); margin-right: auto; }
 
 /* ---- 知识包工作台（三栏浏览器） ---- */
+.mwr .kbwrap { display: flex; flex-direction: column; height: 100%; gap: 10px; }
+.mwr .kbwrap .kbx { flex: 1; min-height: 0; height: auto; }
+.mwr .kb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid #ebeae5; border-radius: 14px; background: #fff; flex: none; }
+.mwr .content-full .kb-toolbar { border: none; border-radius: 0; border-bottom: 1px solid var(--hair); }
+.mwr .kb-toolbar .kb-tb-name { font-size: 15px; font-weight: 730; }
+.mwr .kb-toolbar .kb-tb-ver { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.mwr .kb-toolbar select { border: 1px solid var(--hair); border-radius: 8px; padding: 5px 8px; background: #fff; font-size: 12.5px; color: var(--ink); }
+.mwr .kb-toolbar .kb-tb-sp { flex: 1; }
+.mwr .kb-opnotice { font-size: 12.5px; color: var(--muted); padding: 0 4px; flex: none; }
+.mwr .content-full .kb-opnotice { padding: 6px 14px 0; }
 .mwr .kbx { display: flex; height: 100%; border: 1px solid #ebeae5; border-radius: 14px; overflow: hidden; background: #fff; }
 .mwr .kbx .col1 { width: 260px; flex: none; border-right: 1px solid #e8e9ee; background: #fbfbfd; overflow: auto; padding: 12px 10px; }
 .mwr .kbx .pkh { padding: 8px 10px; font-size: 12px; font-weight: 700; letter-spacing: 1px; color: var(--ink2); display: flex; justify-content: space-between; align-items: center; }
