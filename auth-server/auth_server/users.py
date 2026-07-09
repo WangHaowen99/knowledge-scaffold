@@ -3,7 +3,9 @@
 文件格式与 consumer 完全兼容：
 {"users": [{username, password_hash, role, must_change_password,
             password_changed_at, password_version}]}
-在此之上新增 token_version 字段（缺省视为 1），用于 refresh token 全量吊销。
+在此之上新增：
+- token_version 字段（缺省视为 1），用于 refresh token 全量吊销；
+- email 字段（可选，存量用户没有），开放注册用户必填且全局唯一。
 """
 
 from __future__ import annotations
@@ -26,6 +28,10 @@ from .policy import validate_password_policy
 PASSWORD_HASH_ITERATIONS = 600_000
 
 
+def normalize_email(email: Any) -> str:
+    return str(email or "").strip().lower()
+
+
 @dataclass(frozen=True)
 class UserView:
     username: str
@@ -33,13 +39,21 @@ class UserView:
     password_change_required: bool = False
     password_version: int = 1
     token_version: int = 1
+    email: Optional[str] = None
 
     def to_public_dict(self) -> Dict[str, Any]:
+        # 现有契约形状，不暴露 email；admin list 用 to_admin_dict
         return {
             "username": self.username,
             "role": self.role,
             "password_change_required": self.password_change_required,
         }
+
+    def to_admin_dict(self) -> Dict[str, Any]:
+        result = self.to_public_dict()
+        if self.email:
+            result["email"] = self.email
+        return result
 
 
 class UserStore:
@@ -124,6 +138,7 @@ class UserStore:
             password_change_required=self._password_change_required(record),
             password_version=self._password_version(record),
             token_version=self._token_version(record),
+            email=normalize_email(record.get("email")) or None,
         )
 
     # ------------------------------------------------------------------ 存取
@@ -191,6 +206,8 @@ class UserStore:
             entry["password_changed_at"] = str(record.get("password_changed_at") or "")
             entry["password_version"] = self._password_version(record)
             entry["token_version"] = self._token_version(record)
+            if normalize_email(record.get("email")):
+                entry["email"] = normalize_email(record.get("email"))
             records.append(entry)
         payload = json.dumps({"users": records}, ensure_ascii=False, indent=2)
         with self._lock:
@@ -216,6 +233,15 @@ class UserStore:
             return None
         return self._user_view_from_record(username, record)
 
+    def get_user_by_email(self, email: str) -> Optional[UserView]:
+        email = normalize_email(email)
+        if not email:
+            return None
+        for username, record in self._load_users().items():
+            if normalize_email(record.get("email")) == email:
+                return self._user_view_from_record(username, record)
+        return None
+
     def list_users(self) -> list:
         users = self._load_users()
         result = []
@@ -228,6 +254,14 @@ class UserStore:
                 }
             )
         return result
+
+    def list_users_admin(self) -> list:
+        """admin list 形状：现有契约字段 + email（仅在存在时附带，存量用户形状不变）。"""
+        users = self._load_users()
+        return [
+            self._user_view_from_record(username, record).to_admin_dict()
+            for username, record in users.items()
+        ]
 
     # ------------------------------------------------------------------ 认证
 
@@ -294,6 +328,38 @@ class UserStore:
             "password_changed_at": "",
             "password_version": 1,
             "token_version": 1,
+        }
+        self._save_users(users)
+        return self._user_view_from_record(username, users[username])
+
+    def create_registered_user(self, username: str, email: str, password_hash: str) -> UserView:
+        """开放注册验证通过后创建用户：role=user；密码是本人刚设置的，不强制改密。
+
+        密码策略在注册提交时已校验；用户名/邮箱唯一性与数量上限在此再查一次
+        （pending 不计入上限，创建时才占名额）。
+        """
+        username = str(username or "").strip()
+        email = normalize_email(email)
+        if not username or not password_hash:
+            raise ValueError("用户名和密码不能为空")
+        if not email:
+            raise ValueError("邮箱格式不合法")
+        users = self._load_users()
+        if username in users:
+            raise ValueError(f"用户 {username} 已存在")
+        if any(normalize_email(r.get("email")) == email for r in users.values()):
+            raise ValueError("邮箱已被注册")
+        if len(users) >= self._user_max_count:
+            raise ValueError("用户数量已达上限: {}".format(self._user_max_count))
+        users[username] = {
+            "username": username,
+            "password_hash": password_hash,
+            "role": "user",
+            "must_change_password": False,
+            "password_changed_at": self._now_iso(),
+            "password_version": 1,
+            "token_version": 1,
+            "email": email,
         }
         self._save_users(users)
         return self._user_view_from_record(username, users[username])
