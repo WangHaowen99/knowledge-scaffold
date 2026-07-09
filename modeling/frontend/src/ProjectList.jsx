@@ -6,6 +6,7 @@ const STAGE_LABEL = {
   competency: '胜任力问题', generate: '包生成', review: '包评审', testcases: '用例录入',
   evaluate: '评测运行', optimize: '优化迭代',
 };
+const STAGE_KEYS = Object.keys(STAGE_LABEL);
 
 export default function ProjectList({ onOpen }) {
   const [projects, setProjects] = useState([]);
@@ -30,17 +31,25 @@ export default function ProjectList({ onOpen }) {
     <div>
       {loading && <div className="empty">加载中…</div>}
       <div className="pj-grid">
-        {projects.map((p) => (
-          <div key={p.id} className="pj-card" onClick={() => onOpen(p.id)}>
-            <h3>{p.name}</h3>
-            <div className="pd">{p.background || p.domain || '（无描述）'}</div>
-            <div className="pm">
-              <span className="tag tag-lang">{STAGE_LABEL[p.stage] || p.stage}</span>
-              {p.domain && <span className="tag tag-ok">{p.domain}</span>}
-              <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 11.5 }}>{(p.updatedAt || '').slice(0, 10)}</span>
+        {projects.map((p) => {
+          const stageIdx = STAGE_KEYS.indexOf(p.stage);
+          const pct = stageIdx >= 0 ? Math.round(((stageIdx + 1) / STAGE_KEYS.length) * 100) : 0;
+          return (
+            <div key={p.id} className="pj-card" onClick={() => onOpen(p.id)}>
+              <h3 title={p.name}>{p.name}</h3>
+              <div className={`pd ${p.background ? '' : 'pd-empty'}`}>{p.background || '暂无场景背景描述'}</div>
+              <div className="pj-prog"
+                title={stageIdx >= 0 ? `建模进度：${STAGE_LABEL[p.stage]}（${stageIdx + 1}/${STAGE_KEYS.length}）` : undefined}>
+                <div className="pj-prog-in" style={{ width: `${pct}%` }} />
+              </div>
+              <div className="pm">
+                <span className="tag tag-lang">{STAGE_LABEL[p.stage] || p.stage}</span>
+                {p.domain && <span className="tag tag-ok" title={p.domain}>{p.domain}</span>}
+                <span className="pj-date">{(p.updatedAt || '').slice(0, 10)}</span>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <button className="pj-card pj-new" onClick={() => { setCreating(true); setErr(''); }}>＋ 新建建模项目</button>
       </div>
 

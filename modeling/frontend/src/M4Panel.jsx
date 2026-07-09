@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   listRounds, proposeOptimize, listSuggestions, applyOptimize, rejectSuggestions,
   listVersions, exportVersionUrl, getToken,
@@ -10,6 +12,63 @@ const KIND_LABEL = {
   add_operation: '新增操作', modify_operation: '修改操作',
   add_object: '新增对象', modify_object: '修改对象', clarify_description: '澄清描述',
 };
+const KIND_CLASS = {
+  add_operation: 'sg-kind-add', add_object: 'sg-kind-add',
+  modify_operation: 'sg-kind-mod', modify_object: 'sg-kind-mod',
+  clarify_description: 'sg-kind-clr',
+};
+
+// 标题里形如「[add_operation] xxx」的类型前缀与左侧类型标签重复，展示时剥掉
+const cleanTitle = (title = '') => title.replace(/^\s*[\[［][a-z_ ]+[\]］]\s*/i, '');
+
+function SuggestionCard({ s, checked, onToggle, onReject }) {
+  const pending = s.status === 'pending';
+  const [open, setOpen] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const bodyRef = useRef(null);
+
+  // 折叠态下检测正文是否溢出，只有溢出才显示「展开详情」；宽度变化（窗口缩放）后需重测
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const measure = () => { if (!open) setOverflowing(el.scrollHeight > el.clientHeight + 1); };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [s.detail, s.relatedQuestion, open]);
+
+  return (
+    <div className={`sg-card ${pending ? '' : 'settled'}`}>
+      <div className="sg-head" style={{ cursor: overflowing || open ? 'pointer' : 'default' }}
+        onClick={() => (overflowing || open) && setOpen((v) => !v)}>
+        {pending
+          ? <input type="checkbox" aria-label={cleanTitle(s.title) || s.title} checked={checked}
+              onClick={(e) => e.stopPropagation()} onChange={onToggle} />
+          : <span className={`tag ${s.status === 'applied' ? 'tag-ok' : 'tag-lang'}`}>
+              {s.status === 'applied' ? `已应用 ${s.appliedVersion}` : '已忽略'}
+            </span>}
+        <span className={`tag sg-kind ${KIND_CLASS[s.kind] || 'sg-kind-mod'}`}>{KIND_LABEL[s.kind] ?? s.kind}</span>
+        <span className="sg-title" title={s.title}>{cleanTitle(s.title) || s.title}</span>
+        {pending && (
+          <button className="tc-del" title="忽略该建议"
+            onClick={(e) => { e.stopPropagation(); onReject(); }}>✕</button>
+        )}
+      </div>
+      <div ref={bodyRef} className={`sg-body ${open ? '' : 'clamp'}${!open && overflowing ? ' fade' : ''}`}>
+        <div className="mdv sg-md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{s.detail || ''}</ReactMarkdown></div>
+        {s.relatedQuestion && (
+          <div className="sg-q"><b>关联用例</b><div>{s.relatedQuestion}</div></div>
+        )}
+      </div>
+      {(overflowing || open) && (
+        <button className="sg-toggle" onClick={() => setOpen((v) => !v)}>
+          {open ? '收起 ▲' : '展开详情 ▼'}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function OptimizePanel({ projectId, onGoEvaluate }) {
   const [rounds, setRounds] = useState(null);
@@ -92,26 +151,20 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
       {/* 建议列表 */}
       {suggestions.length > 0 && (
         <div style={{ marginTop: 16 }}>
+          <div className="sg-bar">
+            <span className="sg-bar-t">优化建议</span>
+            <span className="sg-bar-c">{pending.length > 0 ? `${sel.size}/${pending.length} 条待处理已选` : '均已处理'}</span>
+            {pending.length > 0 && (
+              <span className="sg-bar-ops">
+                <button onClick={() => setSel(new Set(pending.map((s) => s.id)))}>全选</button>
+                <i>·</i>
+                <button onClick={() => setSel(new Set())}>清空</button>
+              </span>
+            )}
+          </div>
           {suggestions.map((s) => (
-            <div key={s.id} className={`sg-row ${s.status !== 'pending' ? 'settled' : ''}`}>
-              <label className="sg-main">
-                {s.status === 'pending'
-                  ? <input type="checkbox" checked={sel.has(s.id)} onChange={() => toggle(s.id)} />
-                  : <span className={`tag ${s.status === 'applied' ? 'tag-ok' : 'tag-lang'}`}>
-                      {s.status === 'applied' ? `已应用 ${s.appliedVersion}` : '已忽略'}
-                    </span>}
-                <div>
-                  <div className="sg-title">
-                    <span className="tag tag-lang">{KIND_LABEL[s.kind] ?? s.kind}</span> {s.title}
-                  </div>
-                  <div className="sg-detail">{s.detail}</div>
-                  {s.relatedQuestion && <div className="sg-q">关联用例：{s.relatedQuestion}</div>}
-                </div>
-              </label>
-              {s.status === 'pending' && (
-                <button className="tc-del" title="忽略该建议" onClick={() => reject(s.id)}>✕</button>
-              )}
-            </div>
+            <SuggestionCard key={s.id} s={s} checked={sel.has(s.id)}
+              onToggle={() => toggle(s.id)} onReject={() => reject(s.id)} />
           ))}
           {pending.length > 0 && (
             <button className="btn btn-p" style={{ marginTop: 8 }} disabled={!!busy || !sel.size} onClick={apply}>
