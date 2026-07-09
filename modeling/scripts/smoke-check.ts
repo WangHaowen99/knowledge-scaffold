@@ -5,6 +5,8 @@
  * ③ 修缮对话：咨询→文字回复；修改→计划→应用→新版本；删除计划→数量收缩被计划豁免；
  *    计划外丢失→拒绝入库
  */
+import * as XLSX from 'xlsx';
+import { parseDocument } from '../src/documents/parser.js';
 import { createProject, getProject } from '../src/projects/repo.js';
 import { insertPackageVersion, listPackageVersions } from '../src/workflow/m2-repo.js';
 import { runRuleChecks, runSemanticCheck } from '../src/workflow/package-check.js';
@@ -33,6 +35,26 @@ const BAD: PackageSpec = {
 
 async function main() {
   console.log('\n=== 包体检 + 两段式修缮冒烟 ===\n');
+
+  // ⓪ Excel 解析回归（真实验收暴露：中文数据行被注释启发式吃掉 + 前导零编码变数字）
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['ID', 'ParentPart'], ['行号', '父项件号'], ['1', 'A001'], ['2', 'A001'],
+  ]), 'WithNote');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['CHANGE_ORDER_ID', 'Code', 'Type', 'Opinion'],
+    ['CHANGE_ORDER-001', '0001', '物料替换', '建议处理'],
+    ['CHANGE_ORDER-001', '0002', '物料替换', '建议处理'],
+  ]), 'CjkData');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['K', 'V'], ['唯一', '一行'],
+  ]), 'OneRow');
+  const parsed = await parseDocument('excel', XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
+  const tb = Object.fromEntries((parsed.tables ?? []).map((t: any) => [t.name, t]));
+  ok(tb.WithNote.rowCount === 2 && tb.WithNote.fields[1].note === '父项件号', '注释行模板：注释识别 + 数据 2 行');
+  ok(tb.CjkData.rowCount === 2 && tb.CjkData.rows[0][1] === '0001', '中文数据行不再被吃掉（此前丢首行）');
+  ok(tb.CjkData.fields[1].inferredType === 'string', '前导零编码推断为 string（防 0002→2）');
+  ok(tb.OneRow.rowCount === 1, '仅一行数据时宁可当数据不当注释');
 
   // ① 规则引擎
   const fs = runRuleChecks(BAD, TABLES, ['问题一', '没人认领的问题']);
