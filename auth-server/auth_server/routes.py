@@ -15,6 +15,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from .config import AuthServerConfig
 from .policy import PasswordPolicyError
+from .registration import RegistrationRateLimited, RegistrationService
 from .tokens import TokenService
 from .users import UserStore, UserView
 
@@ -31,6 +32,10 @@ def _store() -> UserStore:
 
 def _tokens() -> TokenService:
     return current_app.config["TOKEN_SERVICE"]
+
+
+def _registration() -> Optional[RegistrationService]:
+    return current_app.config.get("REGISTRATION_SERVICE")
 
 
 def _request_data() -> Dict[str, Any]:
@@ -145,6 +150,73 @@ def health():
     return jsonify({"status": "ok"})
 
 
+# ---------------------------------------------------------------- 开放注册
+
+
+def _rate_limited():
+    return jsonify({"error": "请求过于频繁，请稍后再试"}), 429
+
+
+def require_registration_enabled(fn):
+    """注册未开启（或 AUTH_MAIL_MODE=smtp 且 SMTP 未配置）时一律 503。"""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if _registration() is None:
+            return jsonify({"error": "注册功能未开启"}), 503
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@bp.route("/register", methods=["POST"])
+@require_registration_enabled
+def register():
+    data = _request_data()
+    try:
+        _registration().register(
+            username=str(data.get("username", "")),
+            email=str(data.get("email", "")),
+            password=str(data.get("password", "")),
+            client_ip=request.remote_addr or "unknown",
+        )
+        return jsonify({"message": "验证码已发送"})
+    except RegistrationRateLimited:
+        return _rate_limited()
+    except PasswordPolicyError as exc:
+        return _password_policy_response(exc)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.route("/register/verify", methods=["POST"])
+@require_registration_enabled
+def register_verify():
+    data = _request_data()
+    try:
+        user = _registration().verify(
+            email=str(data.get("email", "")), code=str(data.get("code", ""))
+        )
+        return jsonify({"success": True, "user": user.to_public_dict()})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.route("/register/resend", methods=["POST"])
+@require_registration_enabled
+def register_resend():
+    data = _request_data()
+    try:
+        _registration().resend(
+            email=str(data.get("email", "")), client_ip=request.remote_addr or "unknown"
+        )
+        return jsonify({"message": "验证码已发送"})
+    except RegistrationRateLimited:
+        return _rate_limited()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 # ------------------------------------------------------------------ Admin API
 
 
@@ -172,7 +244,8 @@ def _password_policy_response(exc: PasswordPolicyError):
 @bp.route("/admin/users", methods=["GET"])
 @require_admin
 def admin_list_users():
-    return jsonify({"users": _store().list_users()})
+    # admin list 形状 = 现有契约 + email（仅注册用户有），consumer BFF 可按需透传
+    return jsonify({"users": _store().list_users_admin()})
 
 
 @bp.route("/admin/users", methods=["POST"])

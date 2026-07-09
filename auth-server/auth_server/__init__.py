@@ -6,17 +6,22 @@ consumer/docs/decisions/2026-07-09-decoupled-auth-architecture.md）。
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from flask import Flask
 
 from .config import AuthServerConfig
 from .keys import KeyManager
+from .mailer import create_mailer
+from .registration import RegistrationService
 from .routes import bp
 from .tokens import TokenService
 from .users import UserStore
 
 __all__ = ["create_app"]
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(config: Optional[AuthServerConfig] = None) -> Flask:
@@ -28,10 +33,23 @@ def create_app(config: Optional[AuthServerConfig] = None) -> Flask:
     key_manager = KeyManager(cfg.data_dir / "keys")
     token_service = TokenService(cfg, key_manager)
 
+    mailer = create_mailer(cfg)
+    registration_service = None
+    if cfg.enable_registration:
+        if mailer is None:
+            logger.warning(
+                "AUTH_ENABLE_REGISTRATION=true 但 AUTH_MAIL_MODE=smtp 且 AUTH_SMTP_HOST 未配置，"
+                "注册端点将返回 503"
+            )
+        else:
+            registration_service = RegistrationService(user_store, mailer, cfg.data_dir)
+
     app.config["AUTH_SERVER_CONFIG"] = cfg
     app.config["USER_STORE"] = user_store
     app.config["KEY_MANAGER"] = key_manager
     app.config["TOKEN_SERVICE"] = token_service
+    app.config["MAILER"] = mailer
+    app.config["REGISTRATION_SERVICE"] = registration_service
 
     app.register_blueprint(bp)
     return app

@@ -28,6 +28,22 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `GET /userinfo` | Bearer access token，通过校验返回 `{sub, role, password_change_required}`（以存储为准），否则 401 |
 | `GET /health` | `{"status": "ok"}` |
 
+### 开放注册（opt-in，`AUTH_ENABLE_REGISTRATION=true` 才开启）
+
+注册功能未开启（或 `AUTH_MAIL_MODE=smtp` 但 SMTP 未配置）时三个端点一律 503 `{"error": "注册功能未开启"}`。
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /register` | `{username, email, password}`。校验用户名格式（3-32 位字母/数字/`_`/`.`/`-`）与唯一性、邮箱格式与全局唯一（含待验证注册）、密码策略（同 Admin API，违规透传 `PASSWORD_POLICY_FAILED` violations）→ 生成 6 位验证码发邮件 → 200 `{"message": "验证码已发送"}` |
+| `POST /register/verify` | `{email, code}`。验证码 15 分钟有效、错 5 次锁死；通过则正式创建用户（role=user、不强制改密——密码是本人刚设置的）→ 200 `{"success": true, "user": {username, role, password_change_required}}` |
+| `POST /register/resend` | `{email}`。60 秒冷却，重新生成验证码并发送 → 200 `{"message": "验证码已发送"}` |
+
+防滥用：`/register` 与 `/register/resend` 共享进程内固定窗口限流（按 IP 和按 email 各计，每小时 5 次，
+超限 429 `{"error": "请求过于频繁，请稍后再试"}`）；验证码只存 salted 哈希不存明文；待验证注册落盘
+`<DATA_DIR>/pending_registrations.json`（0600 原子写，重启不丢，读写时清理过期项）。
+防枚举权衡：用户名/邮箱被占用会返回明确中文错误（而非模糊响应），可枚举性靠限流兜底——
+这是内部工具的务实取舍，公网部署前应重新评估。
+
 ### Admin API（供 consumer BFF 转发）
 
 鉴权：请求头 `X-Admin-Token` 必须等于环境变量 `AUTH_SERVER_ADMIN_TOKEN`；
@@ -36,7 +52,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 
 | 端点 | 说明 |
 | --- | --- |
-| `GET /admin/users` | `{"users": [{username, role, password_change_required}]}` |
+| `GET /admin/users` | `{"users": [{username, role, password_change_required[, email]}]}`（email 仅注册用户有，存量用户形状不变） |
 | `POST /admin/users` | `{username, password[, role]}` → 201 `{"user": {...}}`；策略违规 400 `{error, code: "PASSWORD_POLICY_FAILED", violations}` |
 | `PUT /admin/users/<username>` | `{password}` 管理员重置：`password_version+1` 且 `token_version+1`、`must_change_password=True`（可选 `{role}` 改角色） |
 | `DELETE /admin/users/<username>` | `{"success": true}`；用户不存在 400 中文错误 |
@@ -64,7 +80,16 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `AUTH_REFRESH_TTL_SECONDS` | `259200` | refresh TTL |
 | `AUTH_SERVER_ADMIN_TOKEN` | 未设置 | Admin API 共享密钥；未设置则 /admin/* 全部 503 |
 | `AUTH_SERVER_HOST` / `AUTH_SERVER_PORT` | `127.0.0.1` / `5056` | 监听地址与端口 |
-| `AUTH_USER_MAX_COUNT` | `10` | 用户数量上限（与 consumer `USER_MAX_COUNT` 语义一致） |
+| `AUTH_USER_MAX_COUNT` | `10` | 用户数量上限（与 consumer `USER_MAX_COUNT` 语义一致；待验证注册不计入，创建时再查） |
+| `AUTH_ENABLE_REGISTRATION` | `false` | 开放注册开关（opt-in） |
+| `AUTH_MAIL_MODE` | `console` | `smtp` \| `console`（console 把验证码打日志，仅供开发/测试） |
+| `AUTH_SMTP_HOST` / `AUTH_SMTP_PORT` | 空 / `587` | SMTP 服务器；mode=smtp 且 HOST 为空 → 启动打警告、注册端点 503。端口 465 走隐式 SSL |
+| `AUTH_SMTP_USERNAME` / `AUTH_SMTP_PASSWORD` | 空 | SMTP 登录凭据（留空则不 login） |
+| `AUTH_SMTP_USE_TLS` | `true` | 非 465 端口时是否 STARTTLS |
+| `AUTH_MAIL_FROM` | `no-reply@meta-wise.local` | 发件人地址 |
+
+验证码 TTL（15 分钟）、重发冷却（60 秒）、验证尝试上限（5 次）、限流窗口（每小时 5 次）为
+`registration.py` 内常量，不做 env。
 
 ## 运行
 
@@ -88,6 +113,8 @@ docker run -v auth-data:/data -e AUTH_SERVER_ADMIN_TOKEN=... meta-wise-auth-serv
 - 不做 SSO / 企业 IdP 联邦（替换路径是整体换 issuer，不是在本服务内桥接）
 - 不做 MFA
 - 不做多租户
-- 不做自助注册（用户 CRUD 只经 Admin API，由 consumer BFF 转发）
 - 不做逐请求 introspection（决策 D2 已否决）
 - 不做授权（authZ）：角色裁决、workspace 隔离、前端权限全部留在 consumer（决策 D3）
+
+开放注册（`/register*`）已支持但默认关闭（opt-in），防滥用措施见"开放注册"一节：
+限流 + 验证码哈希存储 + 防枚举权衡（占用类错误返回明确中文消息、靠限流兜底）。
