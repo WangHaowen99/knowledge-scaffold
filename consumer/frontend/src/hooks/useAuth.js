@@ -13,7 +13,8 @@ const useAuth = () => {
     if (!data.token) {
       throw new Error('缺少登录令牌');
     }
-    setAuthToken(data.token);
+    // remote 模式登录响应携带 refresh_token（local 模式无此字段，行为不变）
+    setAuthToken(data.token, data.refresh_token);
     setUser(data.user || null);
     setStatus('authenticated');
     setError(null);
