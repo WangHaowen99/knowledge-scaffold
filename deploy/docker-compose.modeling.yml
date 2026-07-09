@@ -1,0 +1,76 @@
+# 建模工作台（modeling）容器编排：加入 consumer 的 compose 网络，复用其 backend 做登录与评测。
+# 前置：consumer 的 compose 已启动（网络已存在）。推荐通过 ../deploy/deploy-stack.sh 调用，
+# 它会自动探测网络名并注入 CONSUMER_NETWORK；手动使用见 deploy/README.md 第 5 节。
+#
+# profiles:
+#   （默认）  modeling 服务本体
+#   eval      附带评测库 MySQL（建模评测闭环用，EVAL_DB_URL 同时要指到它）
+
+services:
+  modeling:
+    build:
+      context: ../modeling
+      dockerfile: Dockerfile
+    image: mw-modeling:${MODELING_TAG:-latest}
+    container_name: mw-modeling
+    restart: unless-stopped
+    ports:
+      - "${MODELING_PORT:-5100}:5100"
+    environment:
+      - PORT=5100
+      - DATA_DIR=/data
+      # LLM：默认 faux 演示模式（无需 Key 全流程可跑）；生产请显式传入三项 MODELING_LLM_*
+      - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-faux}
+      - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-faux}
+      - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
+      # 预留：轻量任务模型（当前版本代码未消费，设置无运行时效果）
+      - MODELING_TASK_LLM_BASE_URL=${MODELING_TASK_LLM_BASE_URL:-}
+      - MODELING_TASK_LLM_MODEL=${MODELING_TASK_LLM_MODEL:-}
+      - MODELING_TASK_LLM_API_KEY=${MODELING_TASK_LLM_API_KEY:-}
+      # 登录/评测都走 consumer；backend 是 consumer compose 里的服务名
+      - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://backend:5055}
+      - AUTH_VERIFY_MODE=introspect
+      - CONSUMER_API_URL=${CONSUMER_API_URL:-http://backend:5055}
+      # 评测库：启用 eval profile 时设为 mysql://root:<密码>@eval-mysql:3306；留空则跳过落库
+      - EVAL_DB_URL=${EVAL_DB_URL:-}
+    volumes:
+      - modeling-data:/data
+    networks:
+      - consumer-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  eval-mysql:
+    profiles: ["eval"]
+    image: mysql:8
+    container_name: mw-eval-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${EVAL_MYSQL_ROOT_PASSWORD:?EVAL_MYSQL_ROOT_PASSWORD must be set}
+    ports:
+      - "${EVAL_MYSQL_PORT:-3306}:3306"
+    volumes:
+      - eval-mysql-data:/var/lib/mysql
+    networks:
+      - consumer-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+networks:
+  consumer-net:
+    external: true
+    # consumer compose 未显式命名网络，实际名 = <compose 项目名>_onto-agent-network；
+    # 用 consumer/ 目录作为 project-directory 启动时即为下面的默认值
+    name: ${CONSUMER_NETWORK:-consumer_onto-agent-network}
+
+volumes:
+  modeling-data:
+  eval-mysql-data:
