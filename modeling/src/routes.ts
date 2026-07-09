@@ -12,7 +12,9 @@ import { zipPackage } from './workflow/export.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, getConsumerApiUrl } from './settings/repo.js';
 import * as m3repo from './workflow/m3-repo.js';
+import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
+import { proposeOptimizations, applyOptimizations } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
@@ -187,20 +189,25 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     // ---- 节点 7 包评审：读文件树 / 单文件 / 导出 ----
+    // ?version= 指定历史版本，缺省为最新版
+    const pickVersion = (projectId: string, req: any) => {
+      const v = String((req.query as any)?.version ?? '');
+      return v ? m2repo.getPackageVersion(projectId, v) : m2repo.latestPackageVersion(projectId);
+    };
     r.get('/api/projects/:id/package', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const latest = m2repo.latestPackageVersion(c.p.id);
-      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
-      const files = renderPackage(latest.spec);
-      return { version: latest.version, coverage: latest.coverage, files: Object.keys(files).sort(), versions: m2repo.listPackageVersions(c.p.id) };
+      const pv = pickVersion(c.p.id, req);
+      if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
+      const files = renderPackage(pv.spec);
+      return { version: pv.version, coverage: pv.coverage, files: Object.keys(files).sort(), versions: m2repo.listPackageVersions(c.p.id) };
     });
     r.get('/api/projects/:id/package/file', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const latest = m2repo.latestPackageVersion(c.p.id);
-      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
-      const files = renderPackage(latest.spec);
+      const pv = pickVersion(c.p.id, req);
+      if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
+      const files = renderPackage(pv.spec);
       const path = String((req.query as any).path || '');
       if (!(path in files)) return reply.code(404).send({ error: '文件不存在' });
       return { path, content: files[path] };
@@ -208,11 +215,11 @@ export async function registerRoutes(app: FastifyInstance) {
     r.get('/api/projects/:id/package/export', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const latest = m2repo.latestPackageVersion(c.p.id);
-      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
-      const zip = zipPackage(renderPackage(latest.spec));
+      const pv = pickVersion(c.p.id, req);
+      if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
+      const zip = zipPackage(renderPackage(pv.spec));
       reply.header('Content-Type', 'application/zip');
-      reply.header('Content-Disposition', `attachment; filename="${latest.spec.id}-${latest.version}.zip"`);
+      reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.version}.zip"`);
       return reply.send(Buffer.from(zip));
     });
 
@@ -283,6 +290,82 @@ export async function registerRoutes(app: FastifyInstance) {
       if (!['pass', 'partial', 'fail'].includes(verdict)) return reply.code(400).send({ error: 'verdict 非法' });
       const res = m3repo.overrideVerdict((req.params as any).resultId, verdict);
       return { result: res };
+    });
+
+    // ---- 节点 10 优化建议与应用 ----
+    r.post('/api/projects/:id/optimize/propose', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { roundId } = (req.body ?? {}) as any;
+      const round = roundId ? m3repo.getRound(roundId) : m3repo.listRounds(c.p.id).find((x) => x.status === 'done');
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+      if (round.status !== 'done') return reply.code(400).send({ error: '该轮评测尚未完成' });
+      const pv = m2repo.getPackageVersion(c.p.id, round.packageVersion) ?? m2repo.latestPackageVersion(c.p.id);
+      if (!pv) return reply.code(404).send({ error: '尚未生成知识包' });
+      const failed = m3repo.listResults(round.id).filter((x) => x.verdict !== 'pass');
+      if (!failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需优化' });
+      try {
+        const raw = await proposeOptimizations(c.p, pv.spec, failed);
+        // 幂等：同一问题已有未拒绝的建议则跳过，防重复点击累积重复建议
+        const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
+          .filter((s) => s.status !== 'rejected').map((s) => s.relatedQuestion ?? s.title));
+        const fresh = raw.filter((s) => !seen.has(s.relatedQuestion ?? s.title));
+        const suggestions = m4repo.insertSuggestions(c.p.id, round.id, round.packageVersion, fresh);
+        return { suggestions };
+      } catch (e) {
+        return reply.code(500).send({ error: `优化建议生成失败：${e instanceof Error ? e.message : e}` });
+      }
+    });
+    r.get('/api/projects/:id/optimize/suggestions', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const roundId = (req.query as any).roundId ? String((req.query as any).roundId) : undefined;
+      return { suggestions: m4repo.listSuggestions(c.p.id, roundId) };
+    });
+    r.post('/api/projects/:id/optimize/apply', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { suggestionIds } = (req.body ?? {}) as any;
+      if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: 'suggestionIds 必填' });
+      const adopted = m4repo.getSuggestions(suggestionIds).filter((s) => s.projectId === c.p.id && s.status === 'pending');
+      if (!adopted.length) return reply.code(400).send({ error: '没有可应用的建议（可能已应用过）' });
+      const latest = m2repo.latestPackageVersion(c.p.id);
+      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
+      try {
+        const revised = await applyOptimizations(c.p, latest.spec, adopted);
+        const version = `1.${m2repo.listPackageVersions(c.p.id).length}.0`;
+        const spec = { ...latest.spec, version, objects: revised.objects, operations: revised.operations };
+        const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
+        const coverage = m2.checkCoverage(spec, selected);
+        m2repo.insertPackageVersion(c.p.id, version, spec, coverage,
+          `优化迭代：基于 ${adopted[0].basedVersion} 应用 ${adopted.length} 条建议`);
+        m4repo.markApplied(adopted.map((s) => s.id), version);
+        setProjectStage(c.p.id, 'optimize');
+        return { version, applied: adopted.length, coverage };
+      } catch (e) {
+        return reply.code(500).send({ error: `优化应用失败：${e instanceof Error ? e.message : e}` });
+      }
+    });
+    r.post('/api/projects/:id/optimize/reject', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { suggestionIds } = (req.body ?? {}) as any;
+      if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: 'suggestionIds 必填' });
+      m4repo.markRejected(suggestionIds, c.p.id);
+      return { suggestions: m4repo.listSuggestions(c.p.id) };
+    });
+
+    // ---- 版本与评测汇总（评测中心 / 交付选版） ----
+    r.get('/api/projects/:id/versions', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const rounds = m3repo.listRounds(c.p.id);
+      const versions = m2repo.listPackageVersions(c.p.id).map((v) => ({
+        ...v,
+        rounds: rounds.filter((rd) => rd.packageVersion === v.version)
+          .map((rd) => ({ id: rd.id, status: rd.status, passCount: rd.passCount, progressTotal: rd.progressTotal, createdAt: rd.createdAt })),
+      }));
+      return { versions };
     });
   });
 }

@@ -51,3 +51,11 @@ export const startEvaluate = (id, binding) => api(`${P(id)}/evaluate`, { method:
 export const listRounds = (id) => api(`${P(id)}/rounds`);
 export const getRound = (id, roundId) => api(`${P(id)}/rounds/${encodeURIComponent(roundId)}`);
 export const overrideVerdict = (id, resultId, verdict) => api(`${P(id)}/results/${encodeURIComponent(resultId)}`, { method: 'PATCH', body: JSON.stringify({ verdict }) });
+
+// ---- M4 优化与版本 ----
+export const proposeOptimize = (id, roundId) => api(`${P(id)}/optimize/propose`, { method: 'POST', body: JSON.stringify(roundId ? { roundId } : {}) });
+export const listSuggestions = (id, roundId) => api(`${P(id)}/optimize/suggestions${roundId ? `?roundId=${encodeURIComponent(roundId)}` : ''}`);
+export const applyOptimize = (id, suggestionIds) => api(`${P(id)}/optimize/apply`, { method: 'POST', body: JSON.stringify({ suggestionIds }) });
+export const rejectSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/reject`, { method: 'POST', body: JSON.stringify({ suggestionIds }) });
+export const listVersions = (id) => api(`${P(id)}/versions`);
+export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;

@@ -118,6 +118,45 @@ export function buildFauxModeler(): LlmDeps {
         })),
       })]);
     }
+    if (sys.includes('submit_suggestions')) {
+      // faux 优化器：从最后一条用户消息解析未通过用例，逐条产出「沉淀业务口径」建议
+      const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
+      const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
+      const fails = [...text.matchAll(/\d+\.\s*问题：(.+?)\s*｜标准答案：(.+?)\s*｜判定：/g)]
+        .map((m) => ({ question: m[1].trim(), groundTruth: m[2].trim() }));
+      return fauxAssistantMessage([fauxToolCall('submit_suggestions', {
+        suggestions: fails.map((f) => ({
+          title: `沉淀「${f.question.slice(0, 18)}」的业务口径`,
+          detail: `新增操作，把该问题的业务规则写入包内说明：${f.groundTruth}`,
+          kind: 'add_operation',
+          relatedQuestion: f.question,
+        })),
+      })]);
+    }
+    if (sys.includes('submit_revised_spec')) {
+      // faux 修订：解析【当前规格】与【采纳的建议】，每条建议追加一个含业务规则的操作
+      const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
+      const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
+      let spec: any = { objects: [], operations: [] };
+      let adopted: any[] = [];
+      try { spec = JSON.parse((text.match(/【当前规格】\n([\s\S]*?)\n【采纳的建议】/) ?? [])[1] ?? '{}'); } catch { /* 保底空规格 */ }
+      try { adopted = JSON.parse((text.match(/【采纳的建议】\n([\s\S]*?)\n请应用/) ?? [])[1] ?? '[]'); } catch { /* 保底空建议 */ }
+      const baseCount = (spec.operations ?? []).length;
+      const newOps = adopted.map((s: any, i: number) => ({
+        key: `opt_${baseCount + i + 1}`,
+        title: String(s.relatedQuestion ?? s.title ?? '优化操作').slice(0, 24),
+        description: `（优化新增）${s.relatedQuestion ?? ''}：${s.detail ?? ''}`,
+        inputs: [{ param: 'keyword', type: 'string', required: true, note: '查询关键字' }],
+        outputs: [{ field: 'result', type: 'string', note: '结论' }],
+        flow: ['按沉淀的业务规则直接作答', String(s.detail ?? '')],
+        relatedObjects: (spec.objects ?? []).slice(0, 1).map((o: any) => o.key),
+        competencyQuestion: s.relatedQuestion ?? undefined,
+      }));
+      return fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
+        objects: spec.objects ?? [],
+        operations: [...(spec.operations ?? []), ...newOps],
+      })]);
+    }
     if (sys.includes('submit_verdict')) {
       // faux judge：标准答案的关键片段是否包含于回答（长度>1 的片段命中≥半数为 pass）
       const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getProject, uploadDocument, runAnalyze } from './api.js';
 import { InterviewPanel, CompetencyPanel, GeneratePanel, ReviewPanel } from './M2Panels.jsx';
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
+import { OptimizePanel } from './M4Panel.jsx';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板。
 // M1 覆盖节点 1~3；后续节点在时间线上预留灰态。
@@ -45,6 +46,7 @@ export default function Workbench({ projectId }) {
     review: !!generateNode,
     testcases: !!generateNode,
     evaluate: !!generateNode,
+    optimize: stageIdx >= STAGE_INDEX.evaluate,
   };
   const nodeStatus = {
     project_setup: 'done', ingest: parsedDocs.length ? 'done' : 'pending',
@@ -55,6 +57,7 @@ export default function Workbench({ projectId }) {
     review: generateNode ? 'done' : 'pending',
     testcases: stageIdx >= STAGE_INDEX.testcases ? 'done' : 'pending',
     evaluate: stageIdx >= STAGE_INDEX.evaluate ? 'done' : 'pending',
+    optimize: stageIdx >= STAGE_INDEX.optimize ? 'done' : 'pending',
   };
   // 自动焦点：最靠后的已解锁未完成节点（进入评测阶段后跟随 stage）
   const autoFocus = !unlocked.analyze ? 'ingest'
@@ -62,6 +65,7 @@ export default function Workbench({ projectId }) {
     : !(interviewNode?.status === 'done') ? 'interview'
     : !competencyNode ? 'competency'
     : !generateNode ? 'generate'
+    : project.stage === 'optimize' ? 'optimize'
     : project.stage === 'evaluate' ? 'evaluate'
     : project.stage === 'testcases' ? 'testcases'
     : 'review';
@@ -104,7 +108,7 @@ export default function Workbench({ projectId }) {
         <div className="wb-h">
           {{ ingest: '资料上传与解析', analyze: '初步分析', interview: '建模访谈',
              competency: '胜任力问题', generate: '知识包生成', review: '包评审',
-             testcases: '评测用例录入', evaluate: '评测运行',
+             testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
              project_setup: '项目信息' }[effFocus]}
           {effFocus === 'analyze' && !analyzeNode && tables.length > 0 && (
             <button className="btn btn-p" style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }}
@@ -135,6 +139,9 @@ export default function Workbench({ projectId }) {
             <TestcasesPanel projectId={projectId} onAdvance={() => { load(); setFocus('evaluate'); }} />
           )}
           {effFocus === 'evaluate' && <EvaluatePanel projectId={projectId} />}
+          {effFocus === 'optimize' && (
+            <OptimizePanel projectId={projectId} onGoEvaluate={() => { load(); setFocus('evaluate'); }} />
+          )}
         </div>
       </div>
 

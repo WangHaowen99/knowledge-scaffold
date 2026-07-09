@@ -149,7 +149,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   return { spec, coverage, files, version };
 }
 
-function checkCoverage(spec: PackageSpec, selected: string[]): CoverageResult {
+export function checkCoverage(spec: PackageSpec, selected: string[]): CoverageResult {
   const covered: { question: string; operation: string }[] = [];
   const uncovered: string[] = [];
   for (const q of selected) {
