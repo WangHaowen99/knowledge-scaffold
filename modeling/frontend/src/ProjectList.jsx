@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { listProjects, createProject } from './api.js';
 
 const STAGE_LABEL = {
-  project_setup: '项目创建', ingest: '资料解析', analyze: '初步分析', interview: '建模访谈',
+  project_setup: '项目创建', ingest: '资料解析', analyze: '初步分析', interview: '知识萃取访谈',
   competency: '胜任力问题', generate: '包生成', review: '包评审', testcases: '用例录入',
   evaluate: '评测运行', optimize: '优化迭代',
 };
