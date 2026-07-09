@@ -111,10 +111,13 @@ html, body, #root { height: 100%; }
 /* 分析结果卡 */
 .mwr .an-sec { margin-bottom: 18px; }
 .mwr .an-sec h4 { font-size: 13.5px; margin-bottom: 8px; color: var(--ink2); }
-.mwr .an-obj { border: 1px solid #eceae2; border-radius: 10px; padding: 10px 13px; margin-bottom: 8px; }
-.mwr .an-obj .on { font-weight: 650; font-size: 13.5px; }
-.mwr .an-obj .od { font-size: 12.5px; color: var(--ink2); margin-top: 3px; }
-.mwr .an-obj .ot { font-size: 11.5px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, monospace; }
+.mwr .an-objs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 10px; }
+.mwr .an-obj { border: 1px solid #eceae2; border-radius: 12px; padding: 12px 14px; background: #fff; min-width: 0; display: flex; flex-direction: column; }
+.mwr .an-obj .on { font-weight: 650; font-size: 13px; word-break: break-word; }
+.mwr .an-obj .od { font-size: 12.5px; color: var(--ink2); margin-top: 5px; line-height: 1.65; }
+.mwr .an-obj .ot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: auto; padding-top: 9px; }
+.mwr .an-obj .ot-lb { font-size: 11px; color: var(--muted); }
+.mwr .ot-chip { font-family: ui-monospace, monospace; font-size: 10.5px; background: #f6f6f1; border: 1px solid #e7e6dd; border-radius: 6px; padding: 1.5px 7px; color: var(--ink2); word-break: break-all; }
 .mwr .oq { background: #fbf6e8; border: 1px solid #f0e2bb; border-radius: 10px; padding: 9px 13px; margin-bottom: 8px; font-size: 12.5px; color: #6b5a1e; }
 
 /* 右栏上下文 */
@@ -182,9 +185,10 @@ html, body, #root { height: 100%; }
 .mwr .tc-head { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
 .mwr .tc-del { margin-left: auto; border: none; background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
 .mwr .tc-del:hover { color: var(--crit); }
-.mwr .tc-q { width: 100%; border: 1px solid transparent; border-radius: 7px; padding: 6px 8px; font-size: 13.5px; font-weight: 600; background: transparent; }
+.mwr .tc-q { display: block; width: 100%; border: 1px solid transparent; border-radius: 7px; padding: 6px 8px; font-size: 13.5px; font-weight: 600; background: transparent; line-height: 1.6; resize: none; overflow: hidden; }
 .mwr .tc-q:hover, .mwr .tc-q:focus { border-color: var(--hair); background: #fff; outline: none; }
-.mwr .tc-gt { width: 100%; border: 1px solid var(--hair); border-radius: 7px; padding: 7px 9px; font-size: 12.5px; margin: 6px 0; color: var(--ink2); }
+.mwr .tc-gt { display: block; width: 100%; border: 1px solid var(--hair); border-radius: 7px; padding: 7px 9px; font-size: 12.5px; margin: 6px 0; color: var(--ink2); line-height: 1.6; resize: none; overflow: hidden; }
+.mwr .tc-add .field textarea { resize: none; overflow: hidden; line-height: 1.6; }
 .mwr .tc-add { border: 1.5px dashed #d5d4cd; border-radius: 12px; padding: 16px; margin-top: 16px; }
 .mwr .ev-launch { border: 1px solid var(--hair); border-radius: 12px; padding: 16px; background: #fff; }
 .mwr .ev-bind-toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink2); cursor: pointer; }
@@ -252,6 +256,8 @@ html, body, #root { height: 100%; }
 .mwr .tl-node.stale .no { background: #fbf0d7; color: #7a5200; }
 .mwr .stale-ts { color: #7a5200 !important; }
 .mwr .stale-banner { margin: 10px 16px 0; border: 1px solid #ecd9a0; background: #fdf7e7; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; color: #6b4e00; line-height: 1.7; }
+.mwr .err-banner { margin: 10px 20px 0; border: 1px solid #f0c4c0; background: #fdf0ef; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; color: #a8322c; line-height: 1.7; display: flex; align-items: flex-start; gap: 10px; overflow-wrap: anywhere; }
+.mwr .err-banner .tc-del { margin-left: auto; }
 
 /* ---- 资料上传：Excel 配图说明 ---- */
 .mwr .ig-guide { display: flex; gap: 20px; border: 1px solid var(--hair); border-radius: 12px; padding: 16px; margin-bottom: 14px; background: #fff; }
@@ -366,7 +372,7 @@ html, body, #root { height: 100%; }
 .mwr .tour-bubble { position: fixed; background: #fff; border-radius: 14px; padding: 16px 18px; box-shadow: 0 12px 40px rgba(0,0,0,.25); transition: all .25s ease; }
 .mwr .tour-step { font-size: 11px; color: var(--muted); font-weight: 650; margin-bottom: 4px; }
 .mwr .tour-title { font-size: 14.5px; font-weight: 750; margin-bottom: 6px; }
-.mwr .tour-body { font-size: 12.5px; color: var(--ink2); line-height: 1.75; }
+.mwr .tour-body { font-size: 12.5px; color: var(--ink2); line-height: 1.75; white-space: pre-line; }
 .mwr .tour-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .mwr .tour-skip { border: none; background: none; font-size: 12px; color: var(--muted); cursor: pointer; padding: 0; }
 .mwr .tour-skip:hover { color: var(--ink2); }

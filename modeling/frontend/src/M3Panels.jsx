@@ -3,6 +3,7 @@ import {
   listTestcases, addTestcase, prefillTestcases, updateTestcase, deleteTestcase,
   startEvaluate, listRounds, getRound, overrideVerdict, getSettings,
 } from './api.js';
+import { AutoTextarea } from './ui.jsx';
 
 /* ================= 节点 8 · 评测用例录入 ================= */
 
@@ -45,11 +46,11 @@ export function TestcasesPanel({ projectId, onAdvance }) {
       <div className="tc-add">
         <div className="field">
           <label>新增用例 · 问题</label>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="例：STRUCTURE_LIST 中零件 A001 共有多少行有效？" />
+          <AutoTextarea value={q} onChange={(e) => setQ(e.target.value)} placeholder="例：STRUCTURE_LIST 中零件 A001 共有多少行有效？" />
         </div>
         <div className="field">
           <label>标准答案</label>
-          <textarea rows={2} value={gt} onChange={(e) => setGt(e.target.value)} placeholder="判分依据的关键结论 / 数值" />
+          <AutoTextarea value={gt} onChange={(e) => setGt(e.target.value)} placeholder="判分依据的关键结论 / 数值" />
         </div>
         <button className="btn btn-p" disabled={busy || !q.trim()}
           onClick={() => run(async () => { await addTestcase(projectId, q.trim(), gt.trim()); setQ(''); setGt(''); })}>
@@ -79,8 +80,8 @@ function CaseRow({ c, busy, onSave, onDelete }) {
         {!c.groundTruth.trim() && <span className="tag tag-draft">待补答案</span>}
         <button className="tc-del" title="删除" disabled={busy} onClick={onDelete}>✕</button>
       </div>
-      <input className="tc-q" value={question} onChange={(e) => setQuestion(e.target.value)} />
-      <textarea className="tc-gt" rows={2} value={groundTruth} placeholder="标准答案（留空的用例不参与评测）"
+      <AutoTextarea className="tc-q" value={question} onChange={(e) => setQuestion(e.target.value)} />
+      <AutoTextarea className="tc-gt" value={groundTruth} placeholder="标准答案（留空的用例不参与评测）"
         onChange={(e) => setGroundTruth(e.target.value)} />
       {dirty && (
         <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }} disabled={busy}

@@ -10,7 +10,7 @@ import {
 import { BusyButton } from './ui.jsx';
 import PackageCheck from './PackageCheck.jsx';
 
-/* ================= 节点 4 · 建模访谈 ================= */
+/* ================= 节点 4 · 知识萃取访谈 ================= */
 
 export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
   const [batches, setBatches] = useState(null);
@@ -59,7 +59,7 @@ export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
       {!batches.length && !serverThinking && (
         <div style={{ textAlign: 'center', padding: '48px 0' }}>
           <BusyButton busy={busy} busyText="agent 出题中" expect="约 30~90 秒" onClick={start}>
-            ▶ 开始建模访谈
+            ▶ 开始知识萃取访谈
           </BusyButton>
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>围绕对象划分 / 字段含义 / 关系 / 口径出题，一般 2~3 批</div>
         </div>
@@ -307,7 +307,7 @@ export function ReviewPanel({ projectId }) {
   const [err, setErr] = useState('');
   const [path, setPath] = useState(null);
   const [file, setFile] = useState(null); // { content, overridden, rendered }
-  const [view, setView] = useState('render'); // render | source | edit
+  const [view, setView] = useState('view'); // view | edit（查看：md 渲染 / 其他文件原文）
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -328,7 +328,7 @@ export function ReviewPanel({ projectId }) {
     if (!path) return;
     getPackageFile(projectId, path).then((d) => { setFile(d); setDraft(d.content); }).catch((e) => setErr(e.message));
   };
-  useEffect(() => { loadFile(); setView('render'); setMsg(''); }, [projectId, path]);
+  useEffect(() => { loadFile(); setView('view'); setMsg(''); }, [projectId, path]);
 
   const save = async () => {
     setSaving(true); setMsg('');
@@ -393,8 +393,7 @@ export function ReviewPanel({ projectId }) {
             {path}{file?.overridden ? <span className="tag tag-draft" style={{ marginLeft: 8 }}>人工修订稿</span> : null}
           </span>
           <span className="viewtog" style={{ marginLeft: 'auto' }}>
-            {isMd && <button className={view === 'render' ? 'on' : ''} onClick={() => setView('render')}>渲染</button>}
-            <button className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button>
+            <button className={view === 'view' ? 'on' : ''} onClick={() => setView('view')}>查看</button>
             <button className={view === 'edit' ? 'on' : ''} onClick={() => { setDraft(content); setView('edit'); }}>编辑</button>
           </span>
         </div>
@@ -407,7 +406,7 @@ export function ReviewPanel({ projectId }) {
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>{msg || '修订对导出与评测生效，新版本生成后仍保留'}</span>
             </div>
           </div>
-        ) : isMd && view === 'render'
+        ) : isMd
           ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown></div>
           : <pre className="srcview">{content}</pre>}
       </div>

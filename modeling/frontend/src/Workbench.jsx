@@ -13,7 +13,7 @@ import { BusyButton } from './ui.jsx';
 // 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
 const TRUNK = [
   ['project_setup', '项目创建'], ['ingest', '资料上传与解析'], ['analyze', '领域分析'],
-  ['interview', '建模访谈'], ['generate', '知识包生成'],
+  ['interview', '知识萃取访谈'], ['generate', '知识包生成'],
   ['review', '知识包完善'], ['testcases', '评测用例录入'], ['evaluate', '评测运行'], ['optimize', '优化建议与应用'],
 ];
 // stage 序含历史节点 competency（老项目 stage 可能停在该值）
@@ -21,7 +21,7 @@ const STAGE_ORDER = ['project_setup', 'ingest', 'analyze', 'interview', 'compete
 const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((k, i) => [k, i]));
 
 const TITLE = {
-  ingest: '资料上传与解析', analyze: '领域分析', interview: '建模访谈',
+  ingest: '资料上传与解析', analyze: '领域分析', interview: '知识萃取访谈',
   competency: '领域问题', generate: '知识包生成', review: '知识包完善',
   testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
   project_setup: '项目信息',
@@ -46,7 +46,8 @@ export default function Workbench({ projectId }) {
     return () => clearInterval(t);
   }, [anyRunning, load]);
 
-  if (err) return <div className="empty">{err}</div>;
+  // 数据未加载成功才整页报错；已有数据时（如重新分析失败）用可关闭的横幅提示，不吞掉页面
+  if (err && !data) return <div className="empty">{err}</div>;
   if (!data) return <div className="empty">加载中…</div>;
 
   const { project, documents, nodes } = data;
@@ -100,7 +101,12 @@ export default function Workbench({ projectId }) {
   const analyzeRunning = analyzing || analyzeNode?.status === 'running';
   const doAnalyze = async () => {
     setAnalyzing(true); setErr('');
-    try { await runAnalyze(projectId); await load(); }
+    try {
+      const req = runAnalyze(projectId);
+      // 服务端一开跑就把节点置为 running，稍后刷新一次让时间线/标题栏同步显示「进行中」
+      setTimeout(load, 800);
+      await req; await load();
+    }
     catch (e) { setErr(e.message); }
     finally { setAnalyzing(false); }
   };
@@ -144,6 +150,12 @@ export default function Workbench({ projectId }) {
             </BusyButton>
           )}
         </div>
+        {err && (
+          <div className="err-banner">
+            {err}
+            <button className="tc-del" title="关闭" onClick={() => setErr('')}>✕</button>
+          </div>
+        )}
         {staleTypes.length > 0 && (
           <div className="stale-banner">
             ⟳ 资料已变更，{staleTypes.map((t) => TITLE[t] ?? t).join('、')}的结果可能过时（历史评测与版本保留）。
@@ -333,13 +345,20 @@ function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAd
       </div>
       <div className="an-sec">
         <h4>候选业务对象（{analysis.candidateObjects?.length ?? 0}）</h4>
-        {(analysis.candidateObjects ?? []).map((o) => (
-          <div key={o.name} className="an-obj">
-            <div className="on">▤ {o.name}</div>
-            <div className="od">{o.rationale}</div>
-            {o.sourceTables?.length > 0 && <div className="ot">来源表：{o.sourceTables.join(', ')}</div>}
-          </div>
-        ))}
+        <div className="an-objs">
+          {(analysis.candidateObjects ?? []).map((o) => (
+            <div key={o.name} className="an-obj">
+              <div className="on">▤ {o.name}</div>
+              <div className="od">{o.rationale}</div>
+              {o.sourceTables?.length > 0 && (
+                <div className="ot">
+                  <span className="ot-lb">来源表</span>
+                  {o.sourceTables.map((t) => <span key={t} className="ot-chip">{t}</span>)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
       <div className="an-sec">
         <h4>领域问题<span className="h4-sub">建成后必须能回答的业务问题 · 勾选 ≥5 条</span></h4>
@@ -347,10 +366,11 @@ function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAd
           onCountChange={(n) => { setSelectedCount(n); onQuestionsChange?.(); }} />
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 6, alignItems: 'center' }}>
-        <button className="btn" disabled={analyzing} onClick={onReanalyze}>重新分析</button>
+        <BusyButton busy={analyzing} busyText="重新分析中" expect="通常 1~3 分钟，可切换页面"
+          className="btn" onClick={onReanalyze}>重新分析</BusyButton>
         <button className="btn btn-p" disabled={!ready} onClick={onAdvance}
           title={ready ? '' : '勾选满 5 条领域问题后解锁'}>
-          进入建模访谈 →{ready ? '' : `（还差 ${5 - (selectedCount ?? 0)} 条）`}
+          进入知识萃取访谈 →{ready ? '' : `（还差 ${5 - (selectedCount ?? 0)} 条）`}
         </button>
       </div>
     </div>

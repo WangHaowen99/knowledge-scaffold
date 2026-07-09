@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { runPackageCheck, getPackageCheck } from './api.js';
 import { BusyButton } from './ui.jsx';
 
-// 包体检面板（知识包完善页顶部）：规则引擎 + 语义 agent 的结构化发现。
+// 知识包体检面板（知识包完善页顶部）：规则引擎 + 语义 agent 的结构化发现。
 // 每条发现可一键把修复指令预填进右栏修缮对话。
 const SEV_TAG = { 错误: 'tag-err', 警告: 'tag-draft', 提示: 'tag-lang' };
 
@@ -44,7 +44,7 @@ export default function PackageCheck({ projectId, onOpenFile }) {
     <div className="pcheck">
       <div className="pcheck-bar">
         <BusyButton busy={busy} busyText="体检中" expect="含语义检查约 1~3 分钟" className="btn" onClick={run}>
-          🩺 包体检
+          🩺 知识包体检
         </BusyButton>
         {counts && (
           <button className="pcheck-sum" onClick={() => setOpen((v) => !v)}>
