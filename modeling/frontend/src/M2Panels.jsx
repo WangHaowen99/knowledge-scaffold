@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   getInterview, startInterview, answerInterview,
   getCompetency, proposeCompetency, selectCompetency,
   generatePackage, getPackage, getPackageFile, exportPackageUrl, getToken,
+  savePackageFile, resetPackageFile,
 } from './api.js';
+import { BusyButton } from './ui.jsx';
 
 /* ================= 节点 4 · 建模访谈 ================= */
 
@@ -49,11 +51,11 @@ export function InterviewPanel({ projectId, onAdvance }) {
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
           <div style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 16, lineHeight: 1.8 }}>
             访谈将围绕四类决策点出题：<b>对象划分 / 字段含义 / 关系 / 口径</b>。<br />
-            每批 1~5 题，答完一批 agent 决定追问或结束。
+            每批 1~5 题，答完一批 agent 决定追问或结束（一般 2~3 批）。
           </div>
-          <button className="btn btn-p" disabled={busy} onClick={start}>
-            {busy ? '出题中…' : '▶ 开始建模访谈'}
-          </button>
+          <BusyButton busy={busy} busyText="agent 出题中" expect="约 30~90 秒" onClick={start}>
+            ▶ 开始建模访谈
+          </BusyButton>
         </div>
       )}
       {batches.filter((b) => b.answered).map((b) => <AnsweredBatch key={b.id} batch={b} />)}
@@ -62,7 +64,7 @@ export function InterviewPanel({ projectId, onAdvance }) {
         <div style={{ textAlign: 'center', padding: '20px 0' }}>
           <div className="tag tag-ok" style={{ fontSize: 12.5, padding: '5px 16px' }}>✓ 访谈已完成</div>
           <div style={{ marginTop: 14 }}>
-            <button className="btn btn-p" onClick={onAdvance}>进入胜任力问题 →</button>
+            <button className="btn btn-p" onClick={onAdvance}>进入知识包生成 →</button>
           </div>
         </div>
       )}
@@ -148,21 +150,20 @@ function BatchForm({ batch, busy, onSubmit }) {
         );
       })}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-        <button className="btn btn-p" disabled={busy} onClick={submit}>{busy ? '提交中…agent 在决定下一步' : '提交本批答案'}</button>
+        <BusyButton busy={busy} busyText="agent 在决定下一步" expect="约 30~90 秒" onClick={submit}>提交本批答案</BusyButton>
       </div>
     </div>
   );
 }
 
-/* ================= 节点 5 · 胜任力问题 ================= */
+/* ================= 领域问题（并入领域分析步骤） ================= */
 
-export function CompetencyPanel({ projectId, onAdvance }) {
+export function DomainQuestionsBlock({ projectId }) {
   const [questions, setQuestions] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [draft, setDraft] = useState('');
 
-  const load = () => getCompetency(projectId).then((d) => setQuestions(d.questions));
+  const load = () => getCompetency(projectId).then((d) => setQuestions(d.questions)).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, [projectId]);
 
   const propose = async () => {
@@ -174,52 +175,40 @@ export function CompetencyPanel({ projectId, onAdvance }) {
   const toggleSel = (q) => {
     setQuestions((prev) => {
       const next = prev.map((x) => (x.id === q.id ? { ...x, selected: !x.selected } : x));
-      // fire-and-forget 保存选择（以函数式更新保证连续快速点击不丢状态）
       selectCompetency(projectId, next.filter((x) => x.selected).map((x) => x.id)).catch(() => {});
       return next;
     });
   };
 
-  if (!questions) return <div className="empty">加载中…</div>;
+  if (err) return <div className="lerr">{err}</div>;
+  if (!questions) return <div className="empty" style={{ padding: '14px 0' }}>加载中…</div>;
   const selectedCount = questions.filter((q) => q.selected).length;
 
+  if (!questions.length) {
+    return (
+      <div style={{ padding: '6px 0' }}>
+        <span style={{ fontSize: 12.5, color: 'var(--muted)', marginRight: 10 }}>候选尚未生成（分析完成后会自动生成，也可手动触发）</span>
+        <BusyButton busy={busy} busyText="生成候选中" expect="约 30~60 秒" className="btn" onClick={propose}>生成领域问题候选</BusyButton>
+      </div>
+    );
+  }
   return (
     <div>
-      {err && <div className="lerr">{err}</div>}
-      {!questions.length ? (
-        <div style={{ textAlign: 'center', padding: '40px 0' }}>
-          <div style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 16, lineHeight: 1.8 }}>
-            胜任力问题 = <b>这个知识包建成后必须能回答的业务问题</b>。<br />
-            agent 将基于数据字典与访谈结论提出候选，勾选至少 5 条进入包生成；<br />
-            选中的问题会驱动 operations 生成，并自动预填评测用例。
-          </div>
-          <button className="btn btn-p" disabled={busy} onClick={propose}>{busy ? '生成候选中…' : '▶ 生成候选问题'}</button>
-        </div>
-      ) : (
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
-            <span style={{ fontSize: 13, color: 'var(--ink2)' }}>已选 <b>{selectedCount}</b> / {questions.length} 条（至少 5 条）</span>
-            <button className="btn" style={{ marginLeft: 'auto', padding: '5px 12px', fontSize: 12 }} disabled={busy} onClick={propose}>重新生成候选</button>
-          </div>
-          {questions.map((q) => (
-            <button key={q.id} className={`cq-item ${q.selected ? 'on' : ''}`} onClick={() => toggleSel(q)}>
-              <span className="cq-check">{q.selected ? '☑' : '☐'}</span>
-              <span>{q.question}</span>
-            </button>
-          ))}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-            <button className="btn btn-p" disabled={selectedCount < 5} onClick={onAdvance}
-              title={selectedCount < 5 ? '至少勾选 5 条' : ''}>
-              进入知识包生成 →（{selectedCount}/5）
-            </button>
-          </div>
-        </div>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>已选 <b>{selectedCount}</b> / {questions.length} 条（进入包生成至少 5 条）</span>
+        <BusyButton busy={busy} busyText="重新生成中" className="btn" style={{ marginLeft: 'auto', padding: '4px 12px', fontSize: 12 }} onClick={propose}>重新生成候选</BusyButton>
+      </div>
+      {questions.map((q) => (
+        <button key={q.id} className={`cq-item ${q.selected ? 'on' : ''}`} onClick={() => toggleSel(q)}>
+          <span className="cq-check">{q.selected ? '☑' : '☐'}</span>
+          <span>{q.question}</span>
+        </button>
+      ))}
     </div>
   );
 }
 
-/* ================= 节点 6 · 知识包生成 ================= */
+/* ================= 节点 5 · 知识包生成 ================= */
 
 export function GeneratePanel({ projectId, onAdvance }) {
   const [result, setResult] = useState(null);
@@ -238,10 +227,10 @@ export function GeneratePanel({ projectId, onAdvance }) {
       {!result ? (
         <div style={{ textAlign: 'center', padding: '40px 0' }}>
           <div style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 16, lineHeight: 1.8 }}>
-            agent 将基于数据字典、访谈结论与选中的胜任力问题产出<b>知识包规格</b>，<br />
-            系统渲染为标准包结构（manifest / objects / operations / mappings），并做胜任力覆盖检查。
+            agent 将基于数据字典、访谈结论与选中的领域问题产出<b>知识包规格</b>，<br />
+            系统渲染为标准包结构（manifest / objects / operations / mappings），并做领域问题覆盖检查。
           </div>
-          <button className="btn btn-p" disabled={busy} onClick={gen}>{busy ? '生成中…（约 1~2 分钟）' : '▶ 生成知识包'}</button>
+          <BusyButton busy={busy} busyText="生成中" expect="规格较大时可达数分钟" onClick={gen}>▶ 生成知识包</BusyButton>
         </div>
       ) : (
         <div>
@@ -249,7 +238,7 @@ export function GeneratePanel({ projectId, onAdvance }) {
             <Stat v={result.version} k="版本" />
             <Stat v={result.objectCount} k="业务对象" />
             <Stat v={result.operationCount} k="操作" />
-            <Stat v={`${result.coverage.covered.length}/${result.coverage.covered.length + result.coverage.uncovered.length}`} k="胜任力覆盖" />
+            <Stat v={`${result.coverage.covered.length}/${result.coverage.covered.length + result.coverage.uncovered.length}`} k="领域问题覆盖" />
           </div>
           <h4 style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 8 }}>覆盖明细</h4>
           {result.coverage.covered.map((c) => (
@@ -259,8 +248,8 @@ export function GeneratePanel({ projectId, onAdvance }) {
             <div key={q} className="cov-row bad">✗ 未覆盖：{q}</div>
           ))}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
-            <button className="btn" disabled={busy} onClick={gen}>重新生成</button>
-            <button className="btn btn-p" onClick={onAdvance}>进入包评审 →</button>
+            <BusyButton busy={busy} busyText="重新生成中" expect="数分钟" className="btn" onClick={gen}>重新生成</BusyButton>
+            <button className="btn btn-p" onClick={onAdvance}>进入知识包完善 →</button>
           </div>
         </div>
       )}
@@ -272,24 +261,53 @@ function Stat({ v, k }) {
   return <div><div style={{ fontSize: 22, fontWeight: 750 }}>{v}</div><div style={{ fontSize: 12, color: 'var(--muted)' }}>{k}</div></div>;
 }
 
-/* ================= 节点 7 · 包评审 ================= */
+/* ================= 节点 6 · 知识包完善（查看 / 编辑 / 导出；右栏为修缮对话） ================= */
 
 export function ReviewPanel({ projectId }) {
   const [pkg, setPkg] = useState(null);
   const [err, setErr] = useState('');
   const [path, setPath] = useState(null);
-  const [content, setContent] = useState('');
-  const [view, setView] = useState('render');
+  const [file, setFile] = useState(null); // { content, overridden, rendered }
+  const [view, setView] = useState('render'); // render | source | edit
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
 
+  const loadPkg = () => getPackage(projectId).then((d) => {
+    setPkg(d);
+    setPath((p) => (p && d.files.includes(p) ? p : (d.files.includes('index.md') ? 'index.md' : d.files[0])));
+  }).catch((e) => setErr(e.message));
+  useEffect(() => { loadPkg(); }, [projectId]);
+  // 右栏修缮对话生成新版本后自动刷新文件树与当前文件
   useEffect(() => {
-    getPackage(projectId).then((d) => { setPkg(d); setPath(d.files.includes('index.md') ? 'index.md' : d.files[0]); })
-      .catch((e) => setErr(e.message));
-  }, [projectId]);
-
-  useEffect(() => {
-    if (!path) return;
-    getPackageFile(projectId, path).then((d) => setContent(d.content)).catch((e) => setErr(e.message));
+    const h = () => { loadPkg(); if (path) getPackageFile(projectId, path).then((d) => { setFile(d); setDraft(d.content); }).catch(() => {}); };
+    window.addEventListener('mw-package-updated', h);
+    return () => window.removeEventListener('mw-package-updated', h);
   }, [projectId, path]);
+
+  const loadFile = () => {
+    if (!path) return;
+    getPackageFile(projectId, path).then((d) => { setFile(d); setDraft(d.content); }).catch((e) => setErr(e.message));
+  };
+  useEffect(() => { loadFile(); setView('render'); setMsg(''); }, [projectId, path]);
+
+  const save = async () => {
+    setSaving(true); setMsg('');
+    try {
+      await savePackageFile(projectId, path, draft);
+      setMsg('✓ 修订已保存（导出与评测将使用修订稿）');
+      await loadPkg(); loadFile();
+    } catch (e) { setMsg(`保存失败：${e.message}`); } finally { setSaving(false); }
+  };
+  const reset = async () => {
+    if (!window.confirm('恢复为系统渲染稿？你的人工修订将被删除。')) return;
+    setSaving(true); setMsg('');
+    try {
+      await resetPackageFile(projectId, path);
+      setMsg('已恢复渲染稿');
+      await loadPkg(); loadFile();
+    } catch (e) { setMsg(`恢复失败：${e.message}`); } finally { setSaving(false); }
+  };
 
   const download = async () => {
     const res = await fetch(exportPackageUrl(projectId), { headers: { Authorization: `Bearer ${getToken()}` } });
@@ -304,6 +322,8 @@ export function ReviewPanel({ projectId }) {
   if (err) return <div className="empty">{err}</div>;
   if (!pkg) return <div className="empty">加载中…</div>;
   const isMd = path?.endsWith('.md');
+  const overriddenSet = new Set(pkg.overriddenPaths ?? []);
+  const content = file?.content ?? '';
 
   return (
     <div className="rv">
@@ -313,20 +333,35 @@ export function ReviewPanel({ projectId }) {
           <button className="btn" style={{ marginLeft: 'auto', padding: '3px 10px', fontSize: 11.5 }} onClick={download}>导出 zip</button>
         </div>
         {pkg.files.map((f) => (
-          <button key={f} className={`rv-file ${f === path ? 'on' : ''}`} onClick={() => setPath(f)}>{f}</button>
+          <button key={f} className={`rv-file ${f === path ? 'on' : ''}`} onClick={() => setPath(f)}>
+            {f}{overriddenSet.has(f) ? ' ✎' : ''}
+          </button>
         ))}
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>
+          ✎ = 有人工修订。右栏可用自然语言让 agent 修缮包内容。
+        </div>
       </div>
       <div className="rv-view">
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
-          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--muted)' }}>{path}</span>
-          {isMd && (
-            <span className="viewtog" style={{ marginLeft: 'auto' }}>
-              <button className={view !== 'source' ? 'on' : ''} onClick={() => setView('render')}>渲染</button>
-              <button className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button>
-            </span>
-          )}
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--muted)' }}>
+            {path}{file?.overridden ? <span className="tag tag-draft" style={{ marginLeft: 8 }}>人工修订稿</span> : null}
+          </span>
+          <span className="viewtog" style={{ marginLeft: 'auto' }}>
+            {isMd && <button className={view === 'render' ? 'on' : ''} onClick={() => setView('render')}>渲染</button>}
+            <button className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button>
+            <button className={view === 'edit' ? 'on' : ''} onClick={() => { setDraft(content); setView('edit'); }}>编辑</button>
+          </span>
         </div>
-        {isMd && view === 'render'
+        {view === 'edit' ? (
+          <div>
+            <textarea className="rv-editor" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+              <button className="btn btn-p" disabled={saving || draft === content} onClick={save}>{saving ? '保存中…' : '保存修订'}</button>
+              {file?.overridden && <button className="btn" disabled={saving} onClick={reset}>恢复渲染稿</button>}
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>{msg || '修订会覆盖该文件的渲染产物（导出/评测生效）；重新生成新版本后修订仍保留'}</span>
+            </div>
+          </div>
+        ) : isMd && view === 'render'
           ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown></div>
           : <pre className="srcview">{content}</pre>}
       </div>

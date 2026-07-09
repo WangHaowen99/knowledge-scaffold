@@ -93,7 +93,7 @@ export async function proposeCompetency(project: Project, ctx: Ctx, analysis: un
   const cap: CompetencyCapture = {};
   const tools = buildCompetencyTools(toolCtx(ctx), cap);
   const sys = [
-    '你是知识建模助手。基于数据字典、初步分析与访谈结论，提出 10~20 条"该知识包建成后必须能回答的业务问题"（胜任力问题）。',
+    '你是知识建模助手。基于数据字典、领域分析与已有访谈结论，提出 10~20 条"该知识包建成后必须能回答的业务问题"（领域问题）。',
     '问题应具体、可被数据回答、覆盖核心业务场景。用 propose_competency_questions 提交。',
     `初步分析：${JSON.stringify(analysis).slice(0, 1500)}`,
   ].join('\n');
@@ -118,11 +118,11 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   const cap: SpecCapture = {};
   const tools = buildGenerateTools(toolCtx(ctx), cap);
   const sys = [
-    '你是知识建模助手。基于数据字典、访谈结论与选中的胜任力问题，产出结构化知识包规格。',
+    '你是知识建模助手。基于数据字典、访谈结论与选中的领域问题，产出结构化知识包规格。',
     '要求：① 每个业务对象给出字段（含中文名/类型/业务说明），标注对应的数据表（sourceTable）与主键；',
-    '② 每个选中的胜任力问题至少对应一个 operation（在 operation.competencyQuestion 里填该问题原文），operation 要有输入/输出/流程/关联对象；',
+    '② 每个选中的领域问题至少对应一个 operation（在 operation.competencyQuestion 里填该问题原文），operation 要有输入/输出/流程/关联对象；',
     '③ 用 submit_package_spec 提交。',
-    `选中的胜任力问题（每条都要被 operation 覆盖）：\n${selected.map((q, i) => `${i + 1}. ${q}`).join('\n')}`,
+    `选中的领域问题（每条都要被 operation 覆盖）：\n${selected.map((q, i) => `${i + 1}. ${q}`).join('\n')}`,
     `访谈结论：\n${interviewSummary.slice(0, 2000)}`,
   ].join('\n');
 

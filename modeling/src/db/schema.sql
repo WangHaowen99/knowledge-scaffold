@@ -149,3 +149,12 @@ CREATE TABLE IF NOT EXISTS opt_suggestions (
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opt_project ON opt_suggestions(project_id, created_at);
+
+-- ---- 包文件人工修订（覆盖渲染产物；重新生成/优化出新版本后仍生效，直至清除） ----
+CREATE TABLE IF NOT EXISTS package_overrides (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path          TEXT NOT NULL,       -- 包内相对路径（如 operations/OP-001.md）
+  content       TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, path)
+);
