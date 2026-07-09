@@ -35,20 +35,36 @@ export async function provisionEvalDb(projectId: string, tables: DataDictTable[]
     await conn.query(`DROP DATABASE IF EXISTS ${ident(schema)}`);
     await conn.query(`CREATE DATABASE ${ident(schema)} CHARACTER SET utf8mb4`);
     await conn.query(`USE ${ident(schema)}`);
+    // 布尔列的中文/英文枚举值 → 0/1（'是' 直插 TINYINT 会报错）
+    const BOOL_MAP: Record<string, string> = { '是': '1', '否': '0', 'true': '1', 'false': '0', 'yes': '1', 'no': '0', 'y': '1', 'n': '0' };
+    const coerce = (v: string, type: string) => {
+      if (v === '') return null;
+      if (type === 'boolean') return BOOL_MAP[v.toLowerCase()] ?? BOOL_MAP[v] ?? v;
+      return v;
+    };
     let rowTotal = 0;
+    let okTables = 0;
+    const failed: string[] = [];
     for (const t of withRows) {
-      const cols = t.fields.map((f) => `${ident(f.name)} ${TYPE_MAP[f.inferredType] ?? 'VARCHAR(512)'} COMMENT ${JSON.stringify(f.note ?? '')}`);
-      await conn.query(`CREATE TABLE ${ident(t.name)} (${cols.join(', ')})`);
-      const rows = t.rows!;
-      for (let i = 0; i < rows.length; i += 200) {
-        const chunk = rows.slice(i, i + 200);
-        const placeholders = chunk.map(() => `(${t.fields.map(() => '?').join(',')})`).join(',');
-        const values = chunk.flatMap((r) => t.fields.map((_, c) => r[c] === '' ? null : r[c]));
-        await conn.query(`INSERT INTO ${ident(t.name)} VALUES ${placeholders}`, values);
+      // 按表隔离：单表失败只跳过该表，不拖垮整个评测库
+      try {
+        const cols = t.fields.map((f) => `${ident(f.name)} ${TYPE_MAP[f.inferredType] ?? 'VARCHAR(512)'} COMMENT ${JSON.stringify(f.note ?? '')}`);
+        await conn.query(`CREATE TABLE ${ident(t.name)} (${cols.join(', ')})`);
+        const rows = t.rows!;
+        for (let i = 0; i < rows.length; i += 200) {
+          const chunk = rows.slice(i, i + 200);
+          const placeholders = chunk.map(() => `(${t.fields.map(() => '?').join(',')})`).join(',');
+          const values = chunk.flatMap((r) => t.fields.map((f, c) => coerce(String(r[c] ?? ''), f.inferredType)));
+          await conn.query(`INSERT INTO ${ident(t.name)} VALUES ${placeholders}`, values);
+        }
+        rowTotal += rows.length;
+        okTables++;
+      } catch (e) {
+        failed.push(`${t.name}（${e instanceof Error ? e.message.slice(0, 80) : e}）`);
       }
-      rowTotal += rows.length;
     }
-    return { ok: true, schema, detail: `评测库就绪：schema=${schema}，${withRows.length} 张表 / ${rowTotal} 行` };
+    const failNote = failed.length ? `；失败 ${failed.length} 表：${failed.join('、')}` : '';
+    return { ok: okTables > 0, schema, detail: `评测库就绪：schema=${schema}，${okTables} 张表 / ${rowTotal} 行${failNote}` };
   } catch (e) {
     return { ok: false, schema, detail: `评测库落库失败：${e instanceof Error ? e.message : e}` };
   } finally {
