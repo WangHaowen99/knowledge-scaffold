@@ -1,6 +1,7 @@
 import { Type } from '@earendil-works/pi-ai';
 import { buildLlm, type LlmDeps } from '../llm/provider.js';
 import { makeAgent, runAgent } from '../workflow/agent.js';
+import { specObjectSchema, specOperationSchema } from '../workflow/tools.js';
 import type { CheckFinding } from '../workflow/package-check.js';
 import type { PackageSpec, Project } from '../types.js';
 import type { EvalResult } from '../workflow/m3-repo.js';
@@ -122,27 +123,10 @@ export async function applyOptimizations(
     name: 'submit_revised_spec',
     label: '提交修订后的规格',
     description: '提交应用优化建议后的完整知识包规格（全量 objects + operations，不是增量）',
+    // 与 submit_package_spec 共用对象/操作 schema（tools.ts），修订时不丢新字段
     parameters: Type.Object({
-      objects: Type.Array(Type.Object({
-        key: Type.String(), title: Type.String(), description: Type.String(),
-        sourceTable: Type.Optional(Type.String()),
-        primaryKey: Type.Optional(Type.Array(Type.String())),
-        fields: Type.Array(Type.Object({
-          key: Type.String(),
-          cnName: Type.Optional(Type.String()),
-          type: Type.Optional(Type.String()),
-          required: Type.Optional(Type.Boolean()),
-          note: Type.Optional(Type.String()),
-        })),
-      })),
-      operations: Type.Array(Type.Object({
-        key: Type.String(), title: Type.String(), description: Type.String(),
-        inputs: Type.Array(Type.Object({ param: Type.String(), type: Type.String(), required: Type.Boolean(), note: Type.Optional(Type.String()) })),
-        outputs: Type.Array(Type.Object({ field: Type.String(), type: Type.String(), note: Type.Optional(Type.String()) })),
-        flow: Type.Array(Type.String()),
-        relatedObjects: Type.Array(Type.String()),
-        competencyQuestion: Type.Optional(Type.String()),
-      })),
+      objects: Type.Array(specObjectSchema()),
+      operations: Type.Array(specOperationSchema()),
     }),
     async execute(_id: string, params: any) {
       cap.revised = { objects: params.objects ?? [], operations: params.operations ?? [] };

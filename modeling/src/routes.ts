@@ -12,7 +12,7 @@ import { zipPackage } from './workflow/export.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalDbUrl, getEvalBindingDefaults } from './settings/repo.js';
 import { packageChatPlan, packageChatApply, getOverrides, setOverride, clearOverride } from './workflow/package-chat.js';
-import { runRuleChecks, runSemanticCheck, saveCheck, getCheck } from './workflow/package-check.js';
+import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
@@ -319,6 +319,7 @@ export async function registerRoutes(app: FastifyInstance) {
     });
 
     // 人工修订包文件（覆盖渲染产物；对导出与后续版本渲染持续生效，直至清除）
+    // 写入前过渲染产物层格式校验：override 改坏 frontmatter/索引/manifest/mapping 时拒绝落库
     r.put('/api/projects/:id/package/file', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -328,6 +329,16 @@ export async function registerRoutes(app: FastifyInstance) {
       const files = renderPackage(latest.spec);
       if (!path || !(path in files)) return reply.code(400).send({ error: 'path 不存在于当前包' });
       if (typeof content !== 'string') return reply.code(400).send({ error: 'content 必填' });
+      // 以「全部 override 合并 + 本次修订」的最终产物做校验（导出看到的就是这份）
+      for (const [op, oc] of Object.entries(getOverrides(c.p.id))) if (op in files) files[op] = oc;
+      files[path] = content;
+      const bad = runFormatChecks(latest.spec, files).filter((f) => f.severity === '错误');
+      if (bad.length) {
+        return reply.code(400).send({
+          error: `修订内容未通过包格式校验，未保存：${bad.map((f) => f.message).join('；')}`,
+          findings: bad,
+        });
+      }
       setOverride(c.p.id, path, content);
       return { ok: true, path, overridden: true };
     });
@@ -378,9 +389,13 @@ export async function registerRoutes(app: FastifyInstance) {
       if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
       try {
+        // 双层体检：spec 语义层（规则 + LLM 语义）+ 渲染产物层（含 override 后的最终文件）
+        const rendered = renderPackage(latest.spec);
+        for (const [op, oc] of Object.entries(getOverrides(c.p.id))) if (op in rendered) rendered[op] = oc;
+        const formatFindings = runFormatChecks(latest.spec, rendered);
         const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, selected);
         const semanticFindings = await runSemanticCheck(c.p, latest.spec);
-        const findings = [...ruleFindings, ...semanticFindings]
+        const findings = [...formatFindings, ...ruleFindings, ...semanticFindings]
           .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
         saveCheck(c.p.id, latest.version, findings);
         return { version: latest.version, findings, counts: {
@@ -406,6 +421,14 @@ export async function registerRoutes(app: FastifyInstance) {
       const rendered = renderPackage(pv.spec);
       const overrides = getOverrides(c.p.id);
       for (const [op, oc] of Object.entries(overrides)) if (op in rendered) rendered[op] = oc;
+      // 导出前过渲染产物层格式校验：override 改坏的包不得原样交付
+      const bad = runFormatChecks(pv.spec, rendered).filter((f) => f.severity === '错误');
+      if (bad.length) {
+        return reply.code(400).send({
+          error: `导出中止：包格式校验未通过——${bad.map((f) => f.message).join('；')}（请修正人工修订稿或清除对应 override 后重试）`,
+          findings: bad,
+        });
+      }
       const zip = zipPackage(rendered);
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.version}.zip"`);

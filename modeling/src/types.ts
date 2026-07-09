@@ -138,6 +138,8 @@ export interface CompetencyQuestion {
 }
 
 // ---- M2：知识包规格（agent 产出 → 渲染器生成标准包）----
+// 兼容性约定：库里存量 spec JSON 没有后加字段，因此本节所有新增字段一律可选，
+// 渲染器对缺省值回落（不得因旧数据报错）。
 export interface SpecField {
   key: string;
   cnName?: string;
@@ -145,13 +147,21 @@ export interface SpecField {
   required?: boolean;
   note?: string;
   alias?: string;
+  sourceColumn?: string; // 数据字典中的真实列名（mapping 的 source；缺省回落 key）
+}
+export interface SpecRelation {
+  relation: string; // 关系名（如 belongs_to / references）
+  target: string;   // 目标对象 key
+  note?: string;
 }
 export interface SpecObject {
   key: string;
   title: string;
   description: string;
   fields: SpecField[];
+  aliases?: string[];        // 自然语言别名（frontmatter aliases，规范 §5.1）
   queryBoundary?: string;
+  relations?: SpecRelation[]; // 「# 关系」表（规范 §9，推荐）
   sourceTable?: string; // 对应数据字典的表名（用于 mapping）
   primaryKey?: string[];
 }
@@ -159,20 +169,53 @@ export interface SpecOperation {
   key: string;
   title: string;
   description: string;
-  inputs: { param: string; type: string; required: boolean; note?: string }[];
-  outputs: { field: string; type: string; note?: string }[];
+  inputs: { param: string; cnName?: string; type: string; required: boolean; note?: string }[];
+  outputs: { field: string; cnName?: string; type: string; note?: string }[];
   flow: string[];
   relatedObjects: string[];
+  usesRules?: string[];   // frontmatter uses.rules（引用 SpecRule.key）
+  usesMetrics?: string[]; // frontmatter uses.metrics（引用 SpecMetric.key）
+  notes?: string[];       // 「# 规则、指标和注意事项」的注意事项条目
+  // 绑定脚本（frontmatter script 块，规范 §11）。生成链暂不产出脚本（脚本必须注册，
+  // 规范 §17 边界），此字段仅为渲染兼容保留。
+  script?: { key: string; required?: boolean };
   competencyQuestion?: string; // 该 operation 覆盖的胜任力问题
 }
+// 规则（规范 §12-13）：可复用的业务判断条件
+export interface SpecRule {
+  key: string;
+  title: string;
+  description?: string;
+  appliesToObjects?: string[]; // frontmatter applies_to.objects
+  content: string;             // 「# 规则内容」（必需）
+  conditions?: { condition: string; conclusion: string }[]; // 「# 判断条件」表（推荐）
+  exceptions?: string[];       // 「# 例外」列表（推荐）
+}
+// 指标（规范 §14-15）：有明确口径、公式和边界的业务指标
+export interface SpecMetric {
+  key: string;
+  title: string;
+  description?: string;
+  unit?: string;
+  grain?: string;
+  usesObjects?: string[];  // frontmatter uses.objects
+  caliber: string;         // 「# 业务口径」（必需，含公式）
+  boundaries: string[];    // 「# 计算边界」列表（必需）
+  nullPolicy?: { field: string; handling: string }[]; // 「# 空值策略」表（推荐）
+  dimensions?: { key: string; note: string }[];       // 「# 维度」表（推荐）
+}
+export type PackageStatus = 'draft' | 'review' | 'released' | 'deprecated';
 export interface PackageSpec {
   id: string;
   name: string;
   description: string;
   version: string;
   language: string;
+  status?: PackageStatus; // manifest status（规范 §6 枚举）；缺省 draft
   objects: SpecObject[];
   operations: SpecOperation[];
+  rules?: SpecRule[];     // 可选目录 rules/；空或缺省则不生成目录
+  metrics?: SpecMetric[]; // 可选目录 metrics/；空或缺省则不生成目录
   defaultProviderAlias: string;
 }
 

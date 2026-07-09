@@ -120,8 +120,12 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   const sys = [
     '你是知识建模助手。基于数据字典、访谈结论与选中的领域问题，产出结构化知识包规格。',
     '要求：① 每个业务对象给出字段（含中文名/类型/业务说明），标注对应的数据表（sourceTable）与主键；',
-    '② 每个选中的领域问题至少对应一个 operation（在 operation.competencyQuestion 里填该问题原文），operation 要有输入/输出/流程/关联对象；',
-    '③ 用 submit_package_spec 提交。',
+    '字段 key 用业务命名，sourceColumn 填数据字典中的真实列名（二者一致时可省略）；',
+    '尽量补充对象的查询边界（queryBoundary）、别名（aliases）、字段别名（alias）与对象间关系（relations）；',
+    '② 每个选中的领域问题至少对应一个 operation（在 operation.competencyQuestion 里填该问题原文），operation 要有输入/输出（含中文名 cnName）/流程/关联对象；',
+    '流程步骤中引用对象统一写 object:<key>、引用脚本统一写 script:<key>；',
+    '③ 可复用的业务判断条件沉淀为 rule（规则内容/判断条件/例外/适用对象），可复用的计算口径沉淀为 metric（业务口径公式/计算边界/空值策略/维度），不要把它们长期埋在 operation 正文里；operation 通过 usesRules/usesMetrics 引用；',
+    '④ 用 submit_package_spec 提交。',
     `选中的领域问题（每条都要被 operation 覆盖）：\n${selected.map((q, i) => `${i + 1}. ${q}`).join('\n')}`,
     `访谈结论：\n${interviewSummary.slice(0, 2000)}`,
   ].join('\n');
@@ -142,6 +146,8 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
     defaultProviderAlias: slug(project.domain || 'data'),
     objects: raw.objects ?? [],
     operations: raw.operations ?? [],
+    rules: raw.rules ?? [],
+    metrics: raw.metrics ?? [],
   };
 
   const coverage = checkCoverage(spec, selected);
