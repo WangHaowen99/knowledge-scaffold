@@ -21,7 +21,8 @@ function buildModel(baseUrl: string, modelId: string): any {
     reasoning: false,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
-    maxTokens: 8192,
+    // 大规格（几十个对象）的 submit_package_spec 输出可能超 8k token，可通过 env 放宽
+    maxTokens: Number(process.env.MODELING_LLM_MAX_TOKENS ?? 8192),
   };
 }
 

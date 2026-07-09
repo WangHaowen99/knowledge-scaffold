@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+// consumerFetch 走 npm undici 的 fetch（放宽超时），multipart 必须用同一 undici 的 FormData，
+// 混用内置全局 FormData 会被序列化成空体（consumer 报 No file uploaded）
+import { FormData } from 'undici';
 import { consumerFetch } from '../consumer/client.js';
 import { latestPackageVersion } from '../workflow/m2-repo.js';
 import { renderPackage } from '../workflow/package-render.js';
