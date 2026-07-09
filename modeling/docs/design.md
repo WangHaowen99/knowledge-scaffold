@@ -114,6 +114,17 @@ compose：`modeling`（Node，5100，挂 `modeling-data` 卷）+ `modeling-eval-
 | **M3 ✅** | 评测闭环（影子工作区/评测库落地/runs·sync/Judge/结果页） | 端到端出分 —— **已达成**（stub consumer 层面）。后端：`scripts/smoke-m3.ts` 通过（影子工作区创建、import-zip 409→overwrite_active 重试、数据连接+绑定、runs/sync 429 退避、faux Judge 判分、轮次统计、人工改判同步 pass_count）。评测库落地 `evaluation/eval-db.ts`（Excel 全量行→MySQL `mw_proj_<id>`，best-effort，服务外部 NL2SQL/MindsDB 数据链路）。前端：用例录入（胜任力预填/增删改）+ 评测运行（可选数据连接、进度条轮询、日志、结果卡改判、轮次历史）。遗留：真实 consumer + example 13 条用例端到端验收（依赖真实环境） |
 | **M4 ✅** | 优化器 + 版本迭代 + 评测中心完整 UI + 导出交付 | 两轮优化后通过率可见提升 —— **已达成**。后端：`scripts/smoke-m4.ts` 通过（内容感知 stub consumer：回答质量取决于导入包内容），两轮优化通过率 1/3 → 2/3 → 3/3；优化器 `evaluation/optimizer.ts`（propose：未通过用例 → 结构化建议 submit_suggestions；apply：采纳建议 → 修订规格 submit_revised_spec → 版本 1.N.0 递增 + 覆盖重算）；建议状态机 pending/applied/rejected（`workflow/m4-repo.ts`）；package 路由支持 `?version=` 历史版本查看/导出；`/versions` 聚合各版本评测通过率。前端：节点 10 优化面板（建议卡勾选采纳/忽略、应用生成新版本、去评测验证）+ 版本历史与交付表（通过率趋势 ↑提升 标记、逐版本导出 zip）——puppeteer 端到端（建议生成 → 应用 v1.1.0 → 复评 2/2 → 版本表提升标记）截图验证。遗留：真实 consumer + example 样例端到端验收（依赖真实环境） |
 
+## 8.5 真实场景验收记录
+
+| 场景 | 输入 | 结果 | 迭代 |
+| --- | --- | --- | --- |
+| 示例业务 DOMAIN（CHANGE_ORDER 变更成本/切换分析，计算推理型） | 16 张核心表 xlsx + 领域规则文档 ×2 | 13 例：基线 3 → 10 通过（数据链与路由缺陷修复后） | 6 版本 / 9 轮 |
+| 企业对公营销（场景→产品方案推荐型） | 10 张营销数据表 xlsx + 20 万字符产品手册 docx | **8 例满分**：基线 5(+3 partial) → 7 → 8 | 3 版本 / 3 轮 |
+
+企业银行满分的方法论前提（均为通用管线能力，无案例特化）：长文档三件套
+（大纲/分页/检索）、导入后显式激活确认、修订落实校验、协议恢复轻推、
+评测库布尔映射与按表隔离、优化器执行痕迹分诊 + 回退标注。
+
 ## 9. 风险与开放问题
 
 - **pi API 细节**：✅ 已 spike 验证（见 [spike-notes.md](spike-notes.md)）——自定义工具、状态序列化/恢复、`terminate` 挂起模式、OpenAI-compatible 接入四项全部成立；「waiting_user 序列化对象=`agent.state.messages` 数组」得到确认。✅ 真实端点冒烟已完成：`npm run smoke:real`（`.env` 配真实 OpenAI-compatible 端点）覆盖全部 6 个 agent 角色——初析（4 候选对象/8 开放问题）、访谈（收敛提示后 2 批内主动结束）、胜任力（15 候选）、包生成（4 对象/5 操作，胜任力覆盖 5/5）、Judge（正/负例判定正确）、优化器（建议→修订保留既有内容→版本迭代）；连通性快检 `npm run check:llm`；
