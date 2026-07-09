@@ -6,6 +6,7 @@ import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 import { OptimizePanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
+import Tour from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
@@ -106,16 +107,17 @@ export default function Workbench({ projectId }) {
 
   return (
     <div className="wb">
+      <Tour />
       {/* 左：workflow 时间线 */}
       <div className="wb-col wb-left">
         <div className="wb-h">建模流程</div>
-        <div className="wb-b">
+        <div className="wb-b" data-tour="timeline">
           {TRUNK.map(([key, title], i) => {
             const canGo = unlocked[key];
             const st = nodeStatus[key];
             const active = key === effFocus;
             return (
-              <div key={key}
+              <div key={key} data-tour={`node-${key}`}
                 className={`tl-node ${st === 'done' ? 'done' : ''} ${st === 'stale' ? 'stale' : ''} ${st === 'running' ? 'running' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
                 onClick={() => canGo && setFocus(key)}>
                 <div className="th">
@@ -179,7 +181,7 @@ export default function Workbench({ projectId }) {
       </div>
 
       {/* 右：上下文面板；包完善时切换为修缮对话 */}
-      <div className="wb-col wb-right">
+      <div className="wb-col wb-right" data-tour="context">
         {effFocus === 'review' ? (
           <PackageChat projectId={projectId} />
         ) : (

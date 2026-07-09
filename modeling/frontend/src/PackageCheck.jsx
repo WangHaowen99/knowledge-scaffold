@@ -26,9 +26,12 @@ export default function PackageCheck({ projectId, onOpenFile }) {
   };
 
   const toChat = (f) => {
-    window.dispatchEvent(new CustomEvent('mw-chat-prefill', {
-      detail: f.suggestion || `修复体检发现（${f.category} · ${f.target}）：${f.message}`,
-    }));
+    // 预填带全上下文（类别/目标/现象/修复要求）——只发 suggestion 一句话 agent 不知道改哪个问题
+    const text = [
+      `修复体检发现（${f.category} · ${f.target}）：${f.message}`,
+      f.suggestion ? `修复要求：${f.suggestion}` : '',
+    ].filter(Boolean).join('\n');
+    window.dispatchEvent(new CustomEvent('mw-chat-prefill', { detail: text }));
   };
 
   const counts = check ? {

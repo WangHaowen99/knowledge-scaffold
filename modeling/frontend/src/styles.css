@@ -316,3 +316,24 @@ html, body, #root { height: 100%; }
 .mwr .tl-node.running .no { background: #eef4fd; color: var(--blue-d); }
 .mwr .tl-node.running .no .spinner { width: 10px; height: 10px; border-width: 2px; }
 .mwr .run-ts { color: var(--blue-d) !important; font-weight: 650; }
+
+/* ---- 工作台三栏通栏满铺（去卡片圆角） ---- */
+.mwr .main:has(.wb) { padding: 0; }
+.mwr .wb { gap: 0; }
+.mwr .wb-col { border: none; border-radius: 0; }
+.mwr .wb-left { border-right: 1px solid #ebeae5; }
+.mwr .wb-right { border-left: 1px solid #ebeae5; }
+.mwr .wb-h { padding: 13px 20px; }
+.mwr .wb-b { padding: 16px 20px; }
+.mwr .stale-banner { margin: 10px 20px 0; }
+
+/* ---- 功能引导（蒙版 + 气泡） ---- */
+.mwr .tour-ov { position: fixed; inset: 0; z-index: 300; }
+.mwr .tour-hl { position: fixed; border-radius: 10px; box-shadow: 0 0 0 9999px rgba(18, 18, 12, .55), 0 0 0 2px var(--blue); transition: all .25s ease; pointer-events: none; }
+.mwr .tour-bubble { position: fixed; background: #fff; border-radius: 14px; padding: 16px 18px; box-shadow: 0 12px 40px rgba(0,0,0,.25); transition: all .25s ease; }
+.mwr .tour-step { font-size: 11px; color: var(--muted); font-weight: 650; margin-bottom: 4px; }
+.mwr .tour-title { font-size: 14.5px; font-weight: 750; margin-bottom: 6px; }
+.mwr .tour-body { font-size: 12.5px; color: var(--ink2); line-height: 1.75; }
+.mwr .tour-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.mwr .tour-skip { border: none; background: none; font-size: 12px; color: var(--muted); cursor: pointer; padding: 0; }
+.mwr .tour-skip:hover { color: var(--ink2); }
