@@ -1,22 +1,253 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuthContext } from './useAuthContext';
+
+// 后端 PASSWORD_POLICY_FAILED violations 代码 → 中文文案
+const VIOLATION_LABELS = {
+  min_length: '至少 8 位',
+  max_length: '不超过 128 位',
+  character_classes: '需包含大写/小写/数字/符号中至少三类',
+  contains_username: '不能包含用户名',
+  common_password: '过于常见',
+  surrounding_whitespace: '首尾不能有空格',
+  same_as_old: '不能与旧密码相同',
+};
+
+const NO_REG_ERROR = { message: '', violations: [] };
+
+const parseRegisterError = (status, data) => {
+  if (status === 503) return { message: '注册功能未开启', violations: [] };
+  if (status === 429) return { message: '请求过于频繁，请稍后再试', violations: [] };
+  const violations = data.code === 'PASSWORD_POLICY_FAILED'
+    ? (data.violations || []).map((code) => VIOLATION_LABELS[code] || code)
+    : [];
+  return { message: data.error || '注册失败', violations };
+};
+
+const postJson = async (url, body) => {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+};
 
 export default function LoginPage() {
   const { login } = useAuthContext();
+  const [view, setView] = useState('login');
+
+  // 登录
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // 注册：step 1 填资料 → step 2 邮箱验证码
+  const [regStep, setRegStep] = useState(1);
+  const [regUsername, setRegUsername] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regCode, setRegCode] = useState('');
+  const [regError, setRegError] = useState(NO_REG_ERROR);
+  const [regBusy, setRegBusy] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (cooldown <= 0) return undefined;
+    const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
 
   const submit = async (e) => {
     e.preventDefault();
     if (!username || !password || busy) return;
     setBusy(true);
     setError('');
+    setNotice('');
     const result = await login(username, password);
     setBusy(false);
     if (!result.success) setError(result.error || '登录失败');
   };
+
+  const showRegister = () => {
+    setView('register');
+    setRegStep(1);
+    setRegError(NO_REG_ERROR);
+    setNotice('');
+  };
+
+  const showLogin = () => {
+    setView('login');
+    setError('');
+  };
+
+  const submitRegister = async (e) => {
+    e.preventDefault();
+    if (!regUsername || !regEmail || !regPassword || regBusy) return;
+    setRegBusy(true);
+    setRegError(NO_REG_ERROR);
+    try {
+      const { ok, status, data } = await postJson('/auth/register', {
+        username: regUsername,
+        email: regEmail,
+        password: regPassword,
+      });
+      if (!ok) {
+        setRegError(parseRegisterError(status, data));
+        return;
+      }
+      setRegStep(2);
+      setRegCode('');
+      setCooldown(60);
+    } catch {
+      setRegError({ message: '网络异常，请稍后再试', violations: [] });
+    } finally {
+      setRegBusy(false);
+    }
+  };
+
+  const submitVerify = async (e) => {
+    e.preventDefault();
+    if (regCode.length !== 6 || regBusy) return;
+    setRegBusy(true);
+    setRegError(NO_REG_ERROR);
+    try {
+      const { ok, status, data } = await postJson('/auth/register/verify', {
+        email: regEmail,
+        code: regCode,
+      });
+      if (!ok) {
+        setRegError(parseRegisterError(status, data));
+        return;
+      }
+      setUsername(regUsername);
+      setPassword('');
+      setNotice('注册成功，请登录');
+      setError('');
+      setView('login');
+      setRegStep(1);
+      setRegPassword('');
+      setRegCode('');
+    } catch {
+      setRegError({ message: '网络异常，请稍后再试', violations: [] });
+    } finally {
+      setRegBusy(false);
+    }
+  };
+
+  const resendCode = async () => {
+    if (cooldown > 0 || regBusy) return;
+    setRegError(NO_REG_ERROR);
+    try {
+      const { ok, status, data } = await postJson('/auth/register/resend', { email: regEmail });
+      if (!ok) {
+        setRegError(parseRegisterError(status, data));
+        return;
+      }
+      setCooldown(60);
+    } catch {
+      setRegError({ message: '网络异常，请稍后再试', violations: [] });
+    }
+  };
+
+  const regErrorBox = regError.message && (
+    <div className="lerr">
+      {regError.message}
+      {regError.violations.length > 0 && (
+        <ul>
+          {regError.violations.map((v) => <li key={v}>{v}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+
+  const loginView = (
+    <>
+      <form className="lcard" onSubmit={submit}>
+        <h2>欢迎回来</h2>
+        <div className="ld">登录 知识工程工具</div>
+        <div className="lfield">
+          <label>用户名</label>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
+        </div>
+        <div className="lfield">
+          <label>密码</label>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+        </div>
+        {notice && <div className="lok">{notice}</div>}
+        {error && <div className="lerr">{error}</div>}
+        <button className="lbtn" type="submit" disabled={busy}>{busy ? '登录中…' : '登 录'}</button>
+        <div className="lnote">首次登录将要求修改初始密码 · 登录即代表同意平台使用规范</div>
+      </form>
+      <div className="lswitch">
+        还没有账号？<button type="button" className="llink" onClick={showRegister}>注册账号</button>
+      </div>
+    </>
+  );
+
+  const registerView = (
+    <>
+      <form className="lcard" onSubmit={submitRegister}>
+        <h2>注册账号</h2>
+        <div className="ld">创建你的 知识工程工具 账号</div>
+        <div className="lfield">
+          <label>用户名</label>
+          <input value={regUsername} onChange={(e) => setRegUsername(e.target.value)} autoFocus autoComplete="username" />
+        </div>
+        <div className="lfield">
+          <label>邮箱</label>
+          <input type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} autoComplete="email" />
+        </div>
+        <div className="lfield">
+          <label>密码</label>
+          <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" />
+        </div>
+        {regErrorBox}
+        <button className="lbtn" type="submit" disabled={regBusy}>{regBusy ? '提交中…' : '下一步'}</button>
+      </form>
+      <div className="lswitch">
+        已有账号？<button type="button" className="llink" onClick={showLogin}>返回登录</button>
+      </div>
+    </>
+  );
+
+  const verifyView = (
+    <>
+      <form className="lcard" onSubmit={submitVerify}>
+        <h2>验证邮箱</h2>
+        <div className="ld">验证码已发送至 {regEmail}，请在 15 分钟内完成验证</div>
+        <div className="lfield">
+          <label>验证码</label>
+          <input
+            value={regCode}
+            onChange={(e) => setRegCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            autoFocus
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="6 位数字验证码"
+          />
+        </div>
+        {regErrorBox}
+        <button className="lbtn" type="submit" disabled={regBusy || regCode.length !== 6}>
+          {regBusy ? '验证中…' : '验证并完成注册'}
+        </button>
+        <div className="lswitch">
+          没收到验证码？
+          <button type="button" className="llink" disabled={cooldown > 0 || regBusy} onClick={resendCode}>
+            {cooldown > 0 ? `重新发送（${cooldown}s）` : '重新发送'}
+          </button>
+        </div>
+      </form>
+      <div className="lswitch">
+        <button type="button" className="llink" onClick={showLogin}>返回登录</button>
+      </div>
+    </>
+  );
+
+  let card = loginView;
+  if (view === 'register') card = regStep === 1 ? registerView : verifyView;
 
   return (
     <div className="mwr login">
@@ -31,21 +262,7 @@ export default function LoginPage() {
         </div>
       </div>
       <div className="lform">
-        <form className="lcard" onSubmit={submit}>
-          <h2>欢迎回来</h2>
-          <div className="ld">登录 知识工程工具</div>
-          <div className="lfield">
-            <label>用户名</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
-          </div>
-          <div className="lfield">
-            <label>密码</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
-          </div>
-          {error && <div className="lerr">{error}</div>}
-          <button className="lbtn" type="submit" disabled={busy}>{busy ? '登录中…' : '登 录'}</button>
-          <div className="lnote">首次登录将要求修改初始密码 · 登录即代表同意平台使用规范</div>
-        </form>
+        <div>{card}</div>
       </div>
     </div>
   );

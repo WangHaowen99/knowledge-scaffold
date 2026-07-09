@@ -239,7 +239,13 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .lbtn:hover { background: var(--blue-d); }
 .mwr .lbtn:disabled { opacity: .6; }
 .mwr .lerr { color: var(--crit); font-size: 12.5px; margin-bottom: 10px; }
+.mwr .lerr ul { margin: 4px 0 0; padding-left: 18px; }
+.mwr .lok { color: var(--good); font-size: 12.5px; margin-bottom: 10px; }
 .mwr .lnote { font-size: 12px; color: var(--muted); text-align: center; margin-top: 16px; line-height: 1.7; }
+.mwr .lswitch { font-size: 12.5px; color: var(--muted); text-align: center; margin-top: 16px; }
+.mwr .llink { border: none; background: none; padding: 0; font-size: 12.5px; font-weight: 650; color: var(--blue); cursor: pointer; }
+.mwr .llink:hover { color: var(--blue-d); text-decoration: underline; }
+.mwr .llink:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 
 /* ---- 配置中心 ---- */
 .mwr .scope-tabs { display: flex; gap: 6px; background: #eceef1; border-radius: 11px; padding: 4px; width: fit-content; margin-bottom: 6px; }
