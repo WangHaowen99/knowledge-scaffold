@@ -88,3 +88,8 @@ export function listPackageVersions(projectId: string): { id: string; version: s
   return (getDb().prepare('SELECT id, version, note, created_at FROM package_versions WHERE project_id = ? ORDER BY created_at').all(projectId) as any[])
     .map((r) => ({ id: r.id, version: r.version, note: r.note ?? undefined, createdAt: r.created_at }));
 }
+export function getPackageVersion(projectId: string, version: string): { id: string; version: string; spec: PackageSpec; coverage: CoverageResult } | null {
+  const r = getDb().prepare('SELECT * FROM package_versions WHERE project_id = ? AND version = ? ORDER BY created_at DESC LIMIT 1').get(projectId, version) as any;
+  if (!r) return null;
+  return { id: r.id, version: r.version, spec: JSON.parse(r.spec_json), coverage: r.coverage_json ? JSON.parse(r.coverage_json) : { covered: [], uncovered: [] } };
+}

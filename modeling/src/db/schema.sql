@@ -132,3 +132,20 @@ CREATE TABLE IF NOT EXISTS eval_results (
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_res_round ON eval_results(round_id);
+
+-- ---- M4：优化建议（Judge 失败结果 → 结构化建议 → 采纳 → 版本迭代） ----
+CREATE TABLE IF NOT EXISTS opt_suggestions (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  round_id      TEXT NOT NULL,       -- 基于哪一轮评测产生
+  based_version TEXT NOT NULL,       -- 基于的包版本
+  title         TEXT NOT NULL,
+  detail        TEXT NOT NULL,       -- 建议详情（含要沉淀进包的业务规则）
+  kind          TEXT NOT NULL,       -- add_operation | modify_operation | add_object | modify_object | clarify_description
+  target        TEXT,                -- 目标对象/操作 key（新增类可空）
+  related_question TEXT,             -- 关联的未通过用例问题
+  status        TEXT NOT NULL DEFAULT 'pending',  -- pending | applied | rejected
+  applied_version TEXT,              -- 应用产生的新版本号
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opt_project ON opt_suggestions(project_id, created_at);
