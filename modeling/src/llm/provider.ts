@@ -136,24 +136,60 @@ export function buildFauxModeler(): LlmDeps {
         })),
       })]);
     }
-    if (sys.includes('package_chat')) {
-      // faux 包修缮：带「修改/增加/调整/删除」意图时追加演示操作并提交修订，否则纯文字回复
+    if (sys.includes('package_chat_plan')) {
+      // faux 修缮·影响分析：带修改意图时给结构化计划，否则纯文字回复
       const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
       const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
       const msg = (text.match(/【专家消息】\n([\s\S]*)$/) ?? [])[1]?.trim() ?? '';
       let spec: any = { objects: [], operations: [] };
       try { spec = JSON.parse((text.match(/【当前规格】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
       if (/修改|增加|新增|调整|删除|补充|改成|改为/.test(msg) && (spec.operations ?? []).length) {
-        return fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
-          objects: spec.objects ?? [],
-          operations: [...spec.operations, {
-            key: `chat_${(spec.operations ?? []).length + 1}`, title: `（修缮）${msg.slice(0, 18)}`,
-            description: `（演示修缮）按专家要求落实：${msg.slice(0, 100)}`,
-            inputs: [], outputs: [], flow: ['按专家要求执行'], relatedObjects: (spec.objects ?? []).slice(0, 1).map((o: any) => o.key),
-          }],
+        const removing = /删除/.test(msg);
+        const target = spec.operations[0];
+        return fauxAssistantMessage([fauxToolCall('submit_change_plan', {
+          summary: `（演示计划）${msg.slice(0, 40)}`,
+          changes: removing
+            ? [{ targetKind: 'operation', targetKey: target.key, action: 'remove', description: `移除操作 ${target.key}` }]
+            : [{ targetKind: 'operation', targetKey: `chat_${(spec.operations ?? []).length + 1}`, action: 'add', description: `（演示）按要求新增操作：${msg.slice(0, 60)}` }],
+          risks: ['（演示）请确认改动不影响既有典型问题路由'],
         })]);
       }
-      return fauxAssistantMessage(`（演示模式）已收到：「${msg.slice(0, 60)}」。当前包共 ${(spec.objects ?? []).length} 个对象、${(spec.operations ?? []).length} 个操作；如需修改请描述具体改动（如“增加/修改/删除…”）。`);
+      return fauxAssistantMessage(`（演示模式）已收到：「${msg.slice(0, 60)}」。当前包共 ${(spec.objects ?? []).length} 个对象、${(spec.operations ?? []).length} 个操作；如需修改请描述具体改动。`);
+    }
+    if (sys.includes('package_chat_apply')) {
+      // faux 修缮·应用：按计划逐条落实（add 追加演示操作 / remove 移除指名条目）
+      const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
+      const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
+      let spec: any = { objects: [], operations: [] };
+      let plan: any = { changes: [] };
+      try { spec = JSON.parse((text.match(/【当前规格】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
+      try { plan = JSON.parse((text.match(/【已确认的修缮计划】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
+      let operations = [...(spec.operations ?? [])];
+      for (const c of plan.changes ?? []) {
+        if (c.targetKind !== 'operation') continue;
+        if (c.action === 'remove') operations = operations.filter((o: any) => o.key !== c.targetKey);
+        if (c.action === 'add') operations.push({
+          key: c.targetKey, title: `（修缮）${String(c.description ?? '').slice(0, 18)}`,
+          description: `（演示修缮）${c.description ?? ''}`,
+          inputs: [], outputs: [], flow: ['按计划执行'], relatedObjects: (spec.objects ?? []).slice(0, 1).map((o: any) => o.key),
+        });
+      }
+      return fauxAssistantMessage([fauxToolCall('submit_revised_spec', { objects: spec.objects ?? [], operations })]);
+    }
+    if (sys.includes('package_check')) {
+      // faux 语义体检：返回一条演示发现（规则检查是确定性代码，不走这里）
+      const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
+      const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
+      let spec: any = { objects: [], operations: [] };
+      try { spec = JSON.parse((text.match(/【当前规格】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
+      const op = (spec.operations ?? [])[0];
+      return fauxAssistantMessage([fauxToolCall('submit_findings', {
+        findings: op ? [{
+          severity: '警告', category: '兜底缺失', target: op.key,
+          message: `（演示）操作「${op.title ?? op.key}」的流程引用查询结果时未见显式兜底`,
+          suggestion: `为操作 ${op.key} 的查询步骤补充空结果兜底（跳过/默认值）`,
+        }] : [],
+      })]);
     }
     if (sys.includes('submit_revised_spec')) {
       // faux 修订：解析【当前规格】与【采纳的建议】，每条建议追加一个含业务规则的操作

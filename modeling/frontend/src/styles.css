@@ -267,3 +267,22 @@ html, body, #root { height: 100%; }
 .mwr .cfg-test.ok { border-color: #bfe3d2; background: #f0faf5; }
 .mwr .cfg-test.bad { border-color: #f2c9c5; background: #fdf3f2; }
 .mwr .cfg-raw { margin: 6px 0 0; background: #1f2428; color: #ffb4ab; border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.6; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+
+/* ---- 修缮计划卡（两段式确认） ---- */
+.mwr .plan-card { margin-top: 8px; border: 1px solid #d9e6f7; background: #f7fafd; border-radius: 10px; padding: 10px 12px; color: var(--ink); }
+.mwr .plan-title { font-size: 12px; font-weight: 750; color: #1d4f91; margin-bottom: 4px; }
+.mwr .plan-sum { font-size: 12.5px; margin-bottom: 8px; }
+.mwr .plan-chg { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+.mwr .plan-key { font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 650; }
+.mwr .plan-desc { flex-basis: 100%; font-size: 12px; color: var(--ink2); line-height: 1.6; }
+.mwr .plan-risks { font-size: 11.5px; color: #7a5200; background: #fdf7e7; border-radius: 7px; padding: 6px 9px; margin-top: 4px; }
+
+/* ---- 包体检 ---- */
+.mwr .pcheck { margin-bottom: 12px; }
+.mwr .pcheck-bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.mwr .pcheck-sum { border: none; background: none; display: inline-flex; gap: 6px; align-items: center; font-size: 12px; cursor: pointer; color: var(--ink2); }
+.mwr .pcheck-list { margin-top: 10px; border: 1px solid var(--hair); border-radius: 10px; background: #fff; max-height: 260px; overflow-y: auto; }
+.mwr .pcheck-item { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid #f0efec; }
+.mwr .pcheck-item:last-child { border-bottom: none; }
+.mwr .pcheck-target { border: none; background: none; font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--blue-d); cursor: pointer; padding: 0; }
+.mwr .pcheck-msg { flex-basis: 100%; font-size: 12.5px; color: var(--ink); line-height: 1.6; }

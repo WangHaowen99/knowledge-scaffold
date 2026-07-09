@@ -65,6 +65,9 @@ export const exportVersionUrl = (id, version) => `${P(id)}/package/export${versi
 export const savePackageFile = (id, path, content) => api(`${P(id)}/package/file`, { method: 'PUT', body: JSON.stringify({ path, content }) });
 export const resetPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
 export const packageChat = (id, message, history) => api(`${P(id)}/package/chat`, { method: 'POST', body: JSON.stringify({ message, history }) });
+export const packageChatApply = (id, message, history, plan) => api(`${P(id)}/package/chat/apply`, { method: 'POST', body: JSON.stringify({ message, history, plan }) });
+export const runPackageCheck = (id) => api(`${P(id)}/package/check`, { method: 'POST', body: '{}' });
+export const getPackageCheck = (id) => api(`${P(id)}/package/check`);
 
 // ---- 配置中心 ----
 export const getSettings = () => api('/api/settings');

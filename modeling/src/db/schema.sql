@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS opt_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_opt_project ON opt_suggestions(project_id, created_at);
 
+-- ---- 包体检（最近一次结果；规则引擎 + 语义 agent 的结构化发现） ----
+CREATE TABLE IF NOT EXISTS package_checks (
+  project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  version       TEXT NOT NULL,       -- 体检时的包版本
+  findings_json TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+
 -- ---- 包文件人工修订（覆盖渲染产物；重新生成/优化出新版本后仍生效，直至清除） ----
 CREATE TABLE IF NOT EXISTS package_overrides (
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
