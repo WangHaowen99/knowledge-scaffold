@@ -25,7 +25,8 @@ export function makeAgent(
 // 跑一轮 prompt 并等空闲；返回可序列化的 messages 快照。
 // 保险：单次 run 超过 MAX_TURNS 个回合仍未收敛（如模型反复调用不存在的工具）则 abort，
 // 防止死循环挂死 HTTP 请求。
-const MAX_TURNS = 8;
+// 防死循环保险；长文档探索（大纲→检索→分页精读）需要更多回合，可用 env 调
+const MAX_TURNS = Number(process.env.MODELING_AGENT_MAX_TURNS ?? 12);
 
 export async function runAgent(agent: Agent, prompt: string): Promise<unknown[]> {
   let turns = 0;
@@ -46,4 +47,17 @@ export async function resumeAgent(agent: Agent, userMessage: string): Promise<un
   await agent.prompt(userMessage);
   await agent.waitForIdle();
   return agent.state.messages as unknown[];
+}
+
+// 捕获型 agent 的协议恢复：跑完未捕获到工具产物（模型把结果写成了正文）时，
+// 轻推一次要求改用工具提交。所有 submit_* / ask_user 类 agent 通用。
+export async function runAgentCaptured(
+  agent: any,
+  prompt: string,
+  captured: () => boolean,
+  nudge: string,
+): Promise<unknown[]> {
+  let messages = await runAgent(agent, prompt);
+  if (!captured()) messages = await runAgent(agent, nudge);
+  return messages;
 }

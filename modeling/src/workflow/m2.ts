@@ -1,7 +1,7 @@
 import type { DataDictTable, PackageSpec, CoverageResult, InterviewBatch, Project } from '../types.js';
 import { buildLlm, type LlmDeps } from '../llm/provider.js';
 import { buildInterviewTools, buildCompetencyTools, buildGenerateTools, type ToolContext, type InterviewCapture, type CompetencyCapture, type SpecCapture } from './tools.js';
-import { makeAgent, runAgent } from './agent.js';
+import { makeAgent, runAgent, runAgentCaptured } from './agent.js';
 import { upsertNode, getNode, nextOrdinal, listNodes } from './engine.js';
 import * as repo from './m2-repo.js';
 import { renderPackage } from './package-render.js';
@@ -32,7 +32,9 @@ export async function startInterview(project: Project, ctx: Ctx, analysis: unkno
 
   const node = upsertNode({ projectId: project.id, type: 'interview', status: 'running', ordinal: nextOrdinal(project.id) });
   const agent = makeAgent(llm, sys, tools);
-  const messages = await runAgent(agent, '请基于初步分析开始建模访谈，用 ask_user 提交第一批题。');
+  const messages = await runAgentCaptured(agent, '请基于初步分析开始建模访谈，用 ask_user 提交第一批题。',
+    () => !!(cap.finished || cap.pendingBatch),
+    '你刚才把题目写成了正文。请立即调用 ask_user 工具提交这批题（结构化），不要以正文形式输出；若确无需访谈请调用 finish_interview。');
 
   return finalizeInterviewStep(project.id, node.id, cap, messages);
 }
@@ -40,7 +42,8 @@ export async function startInterview(project: Project, ctx: Ctx, analysis: unkno
 // ---- 节点 4 访谈：专家应答 → 恢复继续 ----
 export async function answerInterview(project: Project, ctx: Ctx, batchId: string, answers: any[], llmOverride?: LlmDeps): Promise<{ nodeId: string; batch: InterviewBatch | null; finished: boolean }> {
   repo.saveAnswers(batchId, answers);
-  const node = listNodes(project.id).find((n) => n.type === 'interview');
+  // 取最新访谈节点（访谈可能被重开，旧节点残留）
+  const node = [...listNodes(project.id)].reverse().find((n) => n.type === 'interview');
   if (!node) throw new Error('访谈节点不存在');
 
   const llm = llmOverride ?? buildLlm();
@@ -56,7 +59,9 @@ export async function answerInterview(project: Project, ctx: Ctx, batchId: strin
   const agent = makeAgent(llm, sys, tools, (node.agentMessages as unknown[]) ?? []);
   const batch = repo.getBatch(batchId);
   const answerText = summarizeAnswers(batch, answers);
-  const messages = await runAgent(agent, `专家对上一批题的答复：\n${answerText}`);
+  const messages = await runAgentCaptured(agent, `专家对上一批题的答复：\n${answerText}`,
+    () => !!(cap.finished || cap.pendingBatch),
+    '请调用 ask_user 工具提交下一批题，或调用 finish_interview 结束访谈——不要以正文形式输出题目。');
 
   return finalizeInterviewStep(project.id, node.id, cap, messages);
 }
@@ -72,9 +77,14 @@ function finalizeInterviewStep(projectId: string, nodeId: string, cap: Interview
     upsertNode({ id: nodeId, projectId, type: 'interview', status: 'waiting_user', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
     return { nodeId, batch, finished: false };
   }
-  // agent 未出题也未结束——兜底视为结束
-  upsertNode({ id: nodeId, projectId, type: 'interview', status: 'done', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
-  return { nodeId, batch: null, finished: true };
+  // agent 未出题也未结束：只有已经问过至少一批时才宽容地视为结束；
+  // 一批都没问过就"完成"是伪成功（实测：模型把题目写成正文），必须显式失败可重试
+  if (repo.listBatches(projectId).length > 0) {
+    upsertNode({ id: nodeId, projectId, type: 'interview', status: 'done', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
+    return { nodeId, batch: null, finished: true };
+  }
+  upsertNode({ id: nodeId, projectId, type: 'interview', status: 'pending', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
+  throw new Error('访谈 agent 未按协议出题（已轻推仍失败），请重试');
 }
 
 function summarizeAnswers(batch: InterviewBatch | null, answers: any[]): string {
@@ -100,7 +110,8 @@ export async function proposeCompetency(project: Project, ctx: Ctx, analysis: un
 
   const node = upsertNode({ projectId: project.id, type: 'competency', status: 'running', ordinal: nextOrdinal(project.id) });
   const agent = makeAgent(llm, sys, tools);
-  const messages = await runAgent(agent, '请提出候选胜任力问题并调用 propose_competency_questions。');
+  const messages = await runAgentCaptured(agent, '请提出候选胜任力问题并调用 propose_competency_questions。',
+    () => !!cap.questions, '请调用 propose_competency_questions 工具提交候选问题（不要以正文形式输出）。');
 
   const questions = cap.questions ?? [];
   repo.replaceCompetency(project.id, questions);
@@ -132,7 +143,8 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
 
   const node = upsertNode({ projectId: project.id, type: 'generate', status: 'running', ordinal: nextOrdinal(project.id) });
   const agent = makeAgent(llm, sys, tools);
-  const messages = await runAgent(agent, '请产出知识包规格并调用 submit_package_spec。');
+  const messages = await runAgentCaptured(agent, '请产出知识包规格并调用 submit_package_spec。',
+    () => !!cap.spec, '请调用 submit_package_spec 工具提交完整规格 JSON（不要以正文形式输出）。');
 
   const raw = (cap.spec as any) ?? { objects: [], operations: [] };
   const versions = repo.listPackageVersions(project.id);
