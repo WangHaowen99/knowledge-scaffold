@@ -163,7 +163,8 @@ async function importZip(token: string, ws: string, zip: Uint8Array, ontologyId:
   let res = await attempt();
   let data = (await res.json().catch(() => ({}))) as any;
   if (res.status === 409 && data.requires_confirmation) {
-    res = await attempt('overwrite_active');
+    // overwrite_version 同时覆盖两类冲突：包未带版本号（覆盖激活版）与包内版本已存在（覆盖同版本）
+    res = await attempt('overwrite_version');
     data = (await res.json().catch(() => ({}))) as any;
   }
   if (!res.ok) throw new Error(`导入知识包失败：${data.error || data.detail || res.status}`);
