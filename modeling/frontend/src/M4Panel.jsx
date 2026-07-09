@@ -75,10 +75,6 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
 
       {/* 生成建议 */}
       <div className="ev-launch">
-        <div style={{ fontSize: 13, color: 'var(--ink2)', lineHeight: 1.7, marginBottom: 10 }}>
-          优化器分析<b>最近一轮评测的未通过用例</b>，产出对知识包规格的结构化建议。
-          勾选采纳后一键应用：生成新版本 → 回到评测运行验证提升。
-        </div>
         {latestDone
           ? <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
               基于轮次：包 v{latestDone.packageVersion} · 通过 {latestDone.passCount}/{latestDone.progressTotal}

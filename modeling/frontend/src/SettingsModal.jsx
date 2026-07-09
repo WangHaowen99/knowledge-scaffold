@@ -76,13 +76,9 @@ function LlmTab({ form, set, apiKeySet, source }) {
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12 }}>
-        建模 agent、评测 Judge 与优化器共用此配置。当前来源：{source === 'settings' ? '页面配置' : '环境变量'}。
-        填 <code>faux</code> 可进入演示模式（无需 key）。
-      </div>
       <div className="field">
-        <label>Base URL（OpenAI-compatible，一般以 /v1 结尾）</label>
-        <input value={form.llmBaseUrl ?? ''} onChange={set('llmBaseUrl')} placeholder="https://api.example.com/v1" />
+        <label>Base URL <span className="lbl-src">{source === 'settings' ? '页面配置' : '环境变量'}</span></label>
+        <input value={form.llmBaseUrl ?? ''} onChange={set('llmBaseUrl')} placeholder="https://api.example.com/v1（填 faux 进入演示模式）" />
       </div>
       <div className="field">
         <label>模型名</label>
@@ -94,12 +90,11 @@ function LlmTab({ form, set, apiKeySet, source }) {
           placeholder={apiKeySet ? '留空 = 保持现有 key 不变' : '粘贴 API Key'} autoComplete="new-password" />
       </div>
       <div className="field">
-        <label>单次输出上限（maxTokens，规格大时建议 ≥16384）</label>
-        <input value={form.llmMaxTokens ?? ''} onChange={set('llmMaxTokens')} placeholder="8192" style={{ width: 160 }} />
+        <label>单次输出上限</label>
+        <input value={form.llmMaxTokens ?? ''} onChange={set('llmMaxTokens')} placeholder="8192（大规格建议 16384+）" style={{ width: 220 }} />
       </div>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
+      <div style={{ marginBottom: 10 }}>
         <button className="btn" disabled={testing} onClick={test}>{testing ? '测试中…' : '测试有效性'}</button>
-        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>发送一次最小请求验证 url / key / 模型名</span>
       </div>
       {result && (
         <div className={`cfg-test ${result.ok ? 'ok' : 'bad'}`}>
@@ -158,25 +153,25 @@ function EvalTab({ form, set }) {
   return (
     <div>
       <div className="field">
-        <label>评测库 MySQL 地址（上传的 Excel 全量行会自动落库到 mw_proj_* 供数据服务查询；留空则跳过落库）</label>
-        <input value={form.evalDbUrl ?? ''} onChange={set('evalDbUrl')} placeholder="mysql://user:pass@host:3306" />
+        <label>评测库 MySQL 地址</label>
+        <input value={form.evalDbUrl ?? ''} onChange={set('evalDbUrl')} placeholder="mysql://user:pass@host:3306（Excel 数据自动落库；留空跳过）" />
       </div>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)', margin: '14px 0 8px' }}>评测数据连接默认值（评测运行面板自动预填）</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)', margin: '14px 0 8px' }}>评测数据连接默认值</div>
       <div className="field">
         <label>provider</label>
         <input value={form.evalBindingProvider ?? ''} onChange={set('evalBindingProvider')} placeholder="nl2sql_template" style={{ width: 240 }} />
       </div>
       <div className="field">
-        <label>数据服务 URL（如本地 NL2SQL 桥接服务）</label>
+        <label>数据服务 URL</label>
         <input value={form.evalBindingUrl ?? ''} onChange={set('evalBindingUrl')} placeholder="http://localhost:5600" />
       </div>
       <div className="field">
         <label>token</label>
-        <input value={form.evalBindingToken ?? ''} onChange={set('evalBindingToken')} placeholder="数据服务的访问 token" />
+        <input value={form.evalBindingToken ?? ''} onChange={set('evalBindingToken')} />
       </div>
       <div className="field">
-        <label>scene（数据源名；留空则评测时默认用本项目落库 schema mw_proj_*）</label>
-        <input value={form.evalBindingScene ?? ''} onChange={set('evalBindingScene')} placeholder="留空 = 项目评测库" />
+        <label>scene</label>
+        <input value={form.evalBindingScene ?? ''} onChange={set('evalBindingScene')} placeholder="留空 = 本项目评测库 mw_proj_*" />
       </div>
     </div>
   );

@@ -49,14 +49,11 @@ export function InterviewPanel({ projectId, onAdvance }) {
     <div>
       {err && <div className="lerr">{err}</div>}
       {!batches.length && (
-        <div style={{ textAlign: 'center', padding: '40px 0' }}>
-          <div style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 16, lineHeight: 1.8 }}>
-            访谈将围绕四类决策点出题：<b>对象划分 / 字段含义 / 关系 / 口径</b>。<br />
-            每批 1~5 题，答完一批 agent 决定追问或结束（一般 2~3 批）。
-          </div>
+        <div style={{ textAlign: 'center', padding: '48px 0' }}>
           <BusyButton busy={busy} busyText="agent 出题中" expect="约 30~90 秒" onClick={start}>
             ▶ 开始建模访谈
           </BusyButton>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>围绕对象划分 / 字段含义 / 关系 / 口径出题，一般 2~3 批</div>
         </div>
       )}
       {batches.filter((b) => b.answered).map((b) => <AnsweredBatch key={b.id} batch={b} />)}
@@ -123,14 +120,17 @@ function BatchForm({ batch, busy, onSubmit }) {
         })}</span>
         <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>{answeredCount}/{batch.questions.length}</span>
       </div>
-      {batch.questions.map((q) => {
+      {batch.questions.map((q, qi) => {
         const a = get(q.id);
         return (
           <div key={q.id} className={`iv-q ${a.skipped ? 'skipped' : ''}`}>
-            <div className="iv-qt">
-              {q.q}
-              <span className="tag tag-lang" style={{ marginLeft: 8 }}>{q.topic}</span>
-              {q.kind === 'multi' && <span className="tag tag-lang">多选</span>}
+            <div className="iv-qh">
+              <span className="iv-no">{qi + 1}</span>
+              <span className="iv-qt">{q.q}</span>
+              <span className="iv-tags">
+                <span className="tag tag-lang">{q.topic}</span>
+                {q.kind === 'multi' && <span className="tag tag-lang">多选</span>}
+              </span>
             </div>
             {q.options.length > 0 && (
               <div className="iv-opts">
@@ -159,12 +159,13 @@ function BatchForm({ batch, busy, onSubmit }) {
 
 /* ================= 领域问题（并入领域分析步骤） ================= */
 
-export function DomainQuestionsBlock({ projectId }) {
+export function DomainQuestionsBlock({ projectId, onCountChange }) {
   const [questions, setQuestions] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  const load = () => getCompetency(projectId).then((d) => setQuestions(d.questions)).catch((e) => setErr(e.message));
+  const report = (qs) => onCountChange?.(qs.filter((x) => x.selected).length);
+  const load = () => getCompetency(projectId).then((d) => { setQuestions(d.questions); report(d.questions); }).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, [projectId]);
 
   const propose = async () => {
@@ -176,7 +177,12 @@ export function DomainQuestionsBlock({ projectId }) {
   const toggleSel = (q) => {
     setQuestions((prev) => {
       const next = prev.map((x) => (x.id === q.id ? { ...x, selected: !x.selected } : x));
-      selectCompetency(projectId, next.filter((x) => x.selected).map((x) => x.id)).catch(() => {});
+      // 副作用移出 render 阶段（updater 内更新父组件状态会被 React 丢弃）；
+      // 保存成功后再上报计数——父组件的节点解锁依赖服务端一致的选中数
+      queueMicrotask(() => {
+        selectCompetency(projectId, next.filter((x) => x.selected).map((x) => x.id))
+          .then(() => report(next)).catch(() => {});
+      });
       return next;
     });
   };
@@ -188,7 +194,6 @@ export function DomainQuestionsBlock({ projectId }) {
   if (!questions.length) {
     return (
       <div style={{ padding: '6px 0' }}>
-        <span style={{ fontSize: 12.5, color: 'var(--muted)', marginRight: 10 }}>候选尚未生成（分析完成后会自动生成，也可手动触发）</span>
         <BusyButton busy={busy} busyText="生成候选中" expect="约 30~60 秒" className="btn" onClick={propose}>生成领域问题候选</BusyButton>
       </div>
     );
@@ -196,7 +201,7 @@ export function DomainQuestionsBlock({ projectId }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>已选 <b>{selectedCount}</b> / {questions.length} 条（进入包生成至少 5 条）</span>
+        <span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>已选 <b>{selectedCount}</b> / {questions.length}</span>
         <BusyButton busy={busy} busyText="重新生成中" className="btn" style={{ marginLeft: 'auto', padding: '4px 12px', fontSize: 12 }} onClick={propose}>重新生成候选</BusyButton>
       </div>
       {questions.map((q) => (
@@ -226,12 +231,9 @@ export function GeneratePanel({ projectId, onAdvance }) {
     <div>
       {err && <div className="lerr">{err}</div>}
       {!result ? (
-        <div style={{ textAlign: 'center', padding: '40px 0' }}>
-          <div style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 16, lineHeight: 1.8 }}>
-            agent 将基于数据字典、访谈结论与选中的领域问题产出<b>知识包规格</b>，<br />
-            系统渲染为标准包结构（manifest / objects / operations / mappings），并做领域问题覆盖检查。
-          </div>
+        <div style={{ textAlign: 'center', padding: '48px 0' }}>
           <BusyButton busy={busy} busyText="生成中" expect="规格较大时可达数分钟" onClick={gen}>▶ 生成知识包</BusyButton>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>基于数据字典、访谈结论与选中的领域问题产出标准包结构</div>
         </div>
       ) : (
         <div>
@@ -347,9 +349,7 @@ export function ReviewPanel({ projectId }) {
             {f}{overriddenSet.has(f) ? ' ✎' : ''}
           </button>
         ))}
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, lineHeight: 1.6 }}>
-          ✎ = 有人工修订。右栏可用自然语言让 agent 修缮包内容。
-        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>✎ 已修订</div>
       </div>
       <div className="rv-view">
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
@@ -368,7 +368,7 @@ export function ReviewPanel({ projectId }) {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <button className="btn btn-p" disabled={saving || draft === content} onClick={save}>{saving ? '保存中…' : '保存修订'}</button>
               {file?.overridden && <button className="btn" disabled={saving} onClick={reset}>恢复渲染稿</button>}
-              <span style={{ fontSize: 12, color: 'var(--muted)' }}>{msg || '修订会覆盖该文件的渲染产物（导出/评测生效）；重新生成新版本后修订仍保留'}</span>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>{msg || '修订对导出与评测生效，新版本生成后仍保留'}</span>
             </div>
           </div>
         ) : isMd && view === 'render'

@@ -52,7 +52,7 @@ export default function PackageCheck({ projectId, onOpenFile }) {
             <span style={{ color: 'var(--muted)' }}>{open ? '收起 ▾' : '展开 ▸'}</span>
           </button>
         )}
-        {!counts && !busy && <span style={{ fontSize: 12, color: 'var(--muted)' }}>规则引擎 + 语义 agent 检查规格质量（口径冲突、兜底缺失、路由重复…）</span>}
+        {!counts && !busy && <span style={{ fontSize: 12, color: 'var(--muted)' }}>检查口径冲突、兜底缺失、路由重复等规格问题</span>}
         {err && <span className="lerr" style={{ margin: 0 }}>{err}</span>}
       </div>
       {open && check && (

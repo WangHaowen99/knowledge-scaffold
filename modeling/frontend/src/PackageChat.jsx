@@ -64,11 +64,8 @@ export default function PackageChat({ projectId }) {
       <div className="pchat-body" ref={bodyRef}>
         {!turns.length && (
           <div className="pchat-hint">
-            用自然语言修缮知识包。要求修改时会先给出<b>影响分析计划</b>（改哪些对象/操作、有什么风险），确认后才落新版本。例如：
-            <ul>
-              <li>「处理成本只算物料成本，把这条口径写进相关操作」</li>
-              <li>「解释一下 OP-003 是干什么的」（咨询不改包）</li>
-            </ul>
+            用自然语言修缮知识包：先出<b>影响分析计划</b>，确认后落新版本。<br />
+            例：「处理成本只算物料成本，写进相关操作」
           </div>
         )}
         {turns.map((t, i) => (

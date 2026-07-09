@@ -286,3 +286,28 @@ html, body, #root { height: 100%; }
 .mwr .pcheck-item:last-child { border-bottom: none; }
 .mwr .pcheck-target { border: none; background: none; font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--blue-d); cursor: pointer; padding: 0; }
 .mwr .pcheck-msg { flex-basis: 100%; font-size: 12.5px; color: var(--ink); line-height: 1.6; }
+
+/* ---- 访谈题卡（改版） ---- */
+.mwr .iv-q { background: #fff; box-shadow: 0 1px 2px rgba(20,20,10,.03); }
+.mwr .iv-qh { display: flex; gap: 10px; align-items: flex-start; }
+.mwr .iv-no { flex: none; width: 22px; height: 22px; border-radius: 7px; background: #eef4fd; color: var(--blue-d); font-size: 12px; font-weight: 750; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+.mwr .iv-qh .iv-qt { flex: 1; }
+.mwr .iv-tags { flex: none; display: flex; gap: 5px; margin-top: 2px; }
+.mwr .iv-opts { margin-left: 32px; }
+.mwr .iv-opt { transition: all .12s; }
+.mwr .iv-opt.on { box-shadow: 0 0 0 2.5px rgba(59,122,208,.14); }
+.mwr .iv-other { margin-left: 32px; }
+.mwr .iv-other input:focus { outline: none; border-color: var(--blue-l); }
+
+/* ---- 领域分析排版 ---- */
+.mwr .an-sec h4 { display: flex; align-items: baseline; gap: 8px; }
+.mwr .h4-sub { font-size: 11.5px; font-weight: 400; color: var(--muted); }
+.mwr .an-ov { border: 1px solid #eceae2; border-radius: 12px; padding: 14px 18px; background: #fff; }
+.mwr .an-ov h1, .mwr .an-ov h2 { border-bottom: none; margin: 10px 0 6px; font-size: 14px; }
+.mwr .an-ov h3 { font-size: 13px; margin: 10px 0 4px; }
+.mwr .an-ov ul, .mwr .an-ov ol { margin: 4px 0 8px 18px; }
+.mwr .an-ov li { margin-bottom: 3px; }
+.mwr .an-ov p { margin: 6px 0; }
+
+/* ---- 配置中心标签内嵌来源 ---- */
+.mwr .lbl-src { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
