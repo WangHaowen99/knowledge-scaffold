@@ -53,16 +53,23 @@ function parseExcel(buffer: Buffer): DataDictTable[] {
     const header = (rows[0] as unknown[]).map((c) => String(c ?? '').trim());
     if (!header.some((h) => h)) continue;
 
-    // 次行：若整行都不像数据（短、含中文/单位）视作注释行——简单启发式：
-    // 若第二行单元格数量与表头一致且多数非纯数字，认定为注释行。
+    // 次行注释判定。仅"多数非数字+含中文"会误吃中文数据行（真实业务数据常含中文枚举值），
+    // 增加与第三行的"形态相似度"判据：注释行与数据行形态迥异，数据行之间形态相近。
+    // 只有 header+1 行时宁可当数据（吃掉唯一数据行的代价远大于少一行注释）。
+    const cellClass = (v: string) => v === '' ? 'empty'
+      : /^-?\d+(\.\d+)?$/.test(v) ? 'num'
+      : /[一-龥]/.test(v) ? 'cjk' : 'code';
     let noteRow: string[] | null = null;
     let dataStart = 1;
-    if (rows.length > 1) {
+    if (rows.length > 2) {
       const second = (rows[1] as unknown[]).map((c) => String(c ?? '').trim());
-      const looksLikeNote = second.length === header.length
+      const third = (rows[2] as unknown[]).map((c) => String(c ?? '').trim());
+      const chineseHeavy = second.length === header.length
         && second.filter((v) => v && !/^-?\d+(\.\d+)?$/.test(v)).length >= header.length / 2
         && second.some((v) => /[一-龥：:（(]/.test(v));
-      if (looksLikeNote) { noteRow = second; dataStart = 2; }
+      const similar = header.filter((_, c) => cellClass(second[c] ?? '') === cellClass(third[c] ?? '')).length
+        / Math.max(header.length, 1);
+      if (chineseHeavy && similar < 0.6) { noteRow = second; dataStart = 2; }
     }
 
     const dataRows = rows.slice(dataStart) as unknown[][];
@@ -89,6 +96,8 @@ function parseExcel(buffer: Buffer): DataDictTable[] {
 function inferType(values: string[]): DataDictField['inferredType'] {
   if (!values.length) return 'unknown';
   const sample = values.slice(0, 20);
+  // 前导零编码（0001 之类）是字符串不是数字——按 number 落库会丢前导零（0002→2）
+  if (sample.some((v) => /^0\d/.test(v))) return 'string';
   if (sample.every((v) => /^-?\d+(\.\d+)?$/.test(v))) return 'number';
   if (sample.every((v) => /^(true|false|是|否|yes|no|0|1)$/i.test(v))) return 'boolean';
   if (sample.every((v) => /^\d{4}[-/]\d{1,2}([-/]\d{1,2})?/.test(v))) return 'date';
