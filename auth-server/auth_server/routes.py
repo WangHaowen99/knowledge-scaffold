@@ -45,6 +45,15 @@ def _request_data() -> Dict[str, Any]:
     return request.form
 
 
+def _client_ip() -> str:
+    """限流用客户端 IP：经 consumer BFF 转发时取 X-Forwarded-For 首跳。
+
+    本服务只在内网供 BFF 访问，该头可信；直连时回落 remote_addr。
+    """
+    forwarded = str(request.headers.get("X-Forwarded-For", "")).split(",")[0].strip()
+    return forwarded or request.remote_addr or "unknown"
+
+
 def _invalid_grant(description: str):
     return jsonify({"error": "invalid_grant", "error_description": description}), 400
 
@@ -178,7 +187,7 @@ def register():
             username=str(data.get("username", "")),
             email=str(data.get("email", "")),
             password=str(data.get("password", "")),
-            client_ip=request.remote_addr or "unknown",
+            client_ip=_client_ip(),
         )
         return jsonify({"message": "验证码已发送"})
     except RegistrationRateLimited:
@@ -208,7 +217,7 @@ def register_resend():
     data = _request_data()
     try:
         _registration().resend(
-            email=str(data.get("email", "")), client_ip=request.remote_addr or "unknown"
+            email=str(data.get("email", "")), client_ip=_client_ip()
         )
         return jsonify({"message": "验证码已发送"})
     except RegistrationRateLimited:

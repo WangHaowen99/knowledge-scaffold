@@ -1,8 +1,13 @@
-"""Authentication and user management endpoints (extracted from app.py, behavior unchanged)."""
+"""Authentication and user management endpoints (extracted from app.py, behavior unchanged).
+
+注册相关端点是对独立 auth server 的薄代理（BFF）：consumer 自身不实现注册，
+仅在配置了 AUTH_SERVER_URL 时转发（docs/decisions/2026-07-09-decoupled-auth-architecture.md D5）。
+"""
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+import requests
+from flask import Blueprint, current_app, jsonify, request
 
 from ..services.auth import (
     PasswordPolicyError,
@@ -13,6 +18,50 @@ from ..services.auth import (
 )
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+
+# 连接 3s / 读取 10s：注册链路含发邮件，读取超时给足
+_REGISTER_PROXY_TIMEOUT = (3, 10)
+
+
+def _auth_server_url() -> str:
+    config = current_app.config.get("APP_CONFIG")
+    return str(getattr(config, "auth_server_url", "") or "").strip().rstrip("/")
+
+
+def _proxy_register(path: str):
+    base = _auth_server_url()
+    if not base:
+        return jsonify({"error": "注册功能未开启"}), 503
+    try:
+        upstream = requests.post(
+            base + path,
+            json=request.get_json(silent=True) or {},
+            # auth server 按客户端 IP 限流，转发时必须带上真实来源 IP
+            headers={"X-Forwarded-For": request.remote_addr or "unknown"},
+            timeout=_REGISTER_PROXY_TIMEOUT,
+        )
+    except requests.RequestException:
+        return jsonify({"error": "注册服务暂不可用，请稍后再试"}), 502
+    try:
+        payload = upstream.json()
+    except ValueError:
+        payload = {"error": "注册服务响应异常"}
+    return jsonify(payload), upstream.status_code
+
+
+@auth_bp.route("/register", methods=["POST"])
+def register():
+    return _proxy_register("/register")
+
+
+@auth_bp.route("/register/verify", methods=["POST"])
+def register_verify():
+    return _proxy_register("/register/verify")
+
+
+@auth_bp.route("/register/resend", methods=["POST"])
+def register_resend():
+    return _proxy_register("/register/resend")
 
 
 @auth_bp.route("/login", methods=["POST"])
