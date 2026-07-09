@@ -116,7 +116,7 @@ compose：`modeling`（Node，5100，挂 `modeling-data` 卷）+ `modeling-eval-
 
 ## 9. 风险与开放问题
 
-- **pi API 细节**：✅ 已 spike 验证（见 [spike-notes.md](spike-notes.md)）——自定义工具、状态序列化/恢复、`terminate` 挂起模式、OpenAI-compatible 接入四项全部成立；「waiting_user 序列化对象=`agent.state.messages` 数组」得到确认。仅剩真实端点冒烟留待 M1；
+- **pi API 细节**：✅ 已 spike 验证（见 [spike-notes.md](spike-notes.md)）——自定义工具、状态序列化/恢复、`terminate` 挂起模式、OpenAI-compatible 接入四项全部成立；「waiting_user 序列化对象=`agent.state.messages` 数组」得到确认。✅ 真实端点冒烟已完成：`npm run smoke:real`（`.env` 配真实 OpenAI-compatible 端点）覆盖全部 6 个 agent 角色——初析（4 候选对象/8 开放问题）、访谈（收敛提示后 2 批内主动结束）、胜任力（15 候选）、包生成（4 对象/5 操作，胜任力覆盖 5/5）、Judge（正/负例判定正确）、优化器（建议→修订保留既有内容→版本迭代）；连通性快检 `npm run check:llm`；
 - Node 侧文档解析选型：xlsx（SheetJS）/ mammoth（docx）/ pdf-parse，扫描版 PDF 首版不支持（明确报「不可解析」）；
 - 长会话 token 过期：AuthClient 需处理评测长跑中的 401 → 前端引导重登后续跑；
 - consumer 普通用户并发 run=1 的限流：评测串行执行 + 退避即可，无需改 consumer；
