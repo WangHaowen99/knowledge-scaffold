@@ -147,7 +147,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   const coverage = checkCoverage(spec, selected);
   const files = renderPackage(spec);
   repo.insertPackageVersion(project.id, version, spec, coverage, node.id);
-  upsertNode({ id: node.id, projectId: project.id, type: 'generate', status: 'done', ordinal: node.ordinal, agentMessages: messages, output: { version, coverage } });
+  upsertNode({ id: node.id, projectId: project.id, type: 'generate', status: 'done', ordinal: node.ordinal, agentMessages: messages, output: { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length } });
   return { spec, coverage, files, version };
 }
 

@@ -12,7 +12,7 @@ import PackageCheck from './PackageCheck.jsx';
 
 /* ================= 节点 4 · 建模访谈 ================= */
 
-export function InterviewPanel({ projectId, onAdvance }) {
+export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
   const [batches, setBatches] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -23,6 +23,8 @@ export function InterviewPanel({ projectId, onAdvance }) {
     if (d.batches.length && d.batches.every((b) => b.answered)) setFinished(true);
   });
   useEffect(() => { load(); }, [projectId]);
+  // 服务端 agent 完成出题（running → waiting_user/done）后自动刷新批次
+  useEffect(() => { if (!agentBusy) load(); }, [agentBusy]);
 
   const start = async () => {
     setBusy(true); setErr('');
@@ -44,11 +46,17 @@ export function InterviewPanel({ projectId, onAdvance }) {
 
   if (!batches) return <div className="empty">加载中…</div>;
   const pending = batches.find((b) => !b.answered);
+  const serverThinking = agentBusy && !busy && !pending;
 
   return (
     <div>
       {err && <div className="lerr">{err}</div>}
-      {!batches.length && (
+      {serverThinking && (
+        <div className="empty" style={{ padding: '32px 0' }}>
+          <span className="spinner" style={{ marginRight: 8 }} />agent 出题中（服务端执行，切换页面不影响）…
+        </div>
+      )}
+      {!batches.length && !serverThinking && (
         <div style={{ textAlign: 'center', padding: '48px 0' }}>
           <BusyButton busy={busy} busyText="agent 出题中" expect="约 30~90 秒" onClick={start}>
             ▶ 开始建模访谈
@@ -159,7 +167,7 @@ function BatchForm({ batch, busy, onSubmit }) {
 
 /* ================= 领域问题（并入领域分析步骤） ================= */
 
-export function DomainQuestionsBlock({ projectId, onCountChange }) {
+export function DomainQuestionsBlock({ projectId, generating, onCountChange }) {
   const [questions, setQuestions] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -167,6 +175,7 @@ export function DomainQuestionsBlock({ projectId, onCountChange }) {
   const report = (qs) => onCountChange?.(qs.filter((x) => x.selected).length);
   const load = () => getCompetency(projectId).then((d) => { setQuestions(d.questions); report(d.questions); }).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, [projectId]);
+  useEffect(() => { if (!generating) load(); }, [generating]);
 
   const propose = async () => {
     setBusy(true); setErr('');
@@ -192,6 +201,9 @@ export function DomainQuestionsBlock({ projectId, onCountChange }) {
   const selectedCount = questions.filter((q) => q.selected).length;
 
   if (!questions.length) {
+    if (generating && !busy) {
+      return <div style={{ padding: '6px 0', fontSize: 12.5, color: 'var(--ink2)' }}><span className="spinner" style={{ marginRight: 8 }} />候选生成中（切换页面不影响）…</div>;
+    }
     return (
       <div style={{ padding: '6px 0' }}>
         <BusyButton busy={busy} busyText="生成候选中" expect="约 30~60 秒" className="btn" onClick={propose}>生成领域问题候选</BusyButton>
@@ -216,14 +228,22 @@ export function DomainQuestionsBlock({ projectId, onCountChange }) {
 
 /* ================= 节点 5 · 知识包生成 ================= */
 
-export function GeneratePanel({ projectId, onAdvance }) {
-  const [result, setResult] = useState(null);
+export function GeneratePanel({ projectId, node, onRefresh, onAdvance }) {
+  const [localResult, setLocalResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  // 状态从服务端节点复原：切页/回项目列表再进来，进行中与结果都不丢
+  const serverRunning = node?.status === 'running';
+  const serverResult = !localResult && node?.status === 'done' && node.output ? node.output : null;
+  const result = localResult ?? serverResult;
+  const running = busy || serverRunning;
+  // 服务端 running 超过 15 分钟视为疑似中断（进程重启等），允许重新触发
+  const runStaleMin = serverRunning && node?.updatedAt ? (Date.now() - new Date(node.updatedAt).getTime()) / 60000 : 0;
+
   const gen = async () => {
     setBusy(true); setErr('');
-    try { setResult(await generatePackage(projectId)); }
+    try { setLocalResult(await generatePackage(projectId)); onRefresh?.(); }
     catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
@@ -232,15 +252,31 @@ export function GeneratePanel({ projectId, onAdvance }) {
       {err && <div className="lerr">{err}</div>}
       {!result ? (
         <div style={{ textAlign: 'center', padding: '48px 0' }}>
-          <BusyButton busy={busy} busyText="生成中" expect="规格较大时可达数分钟" onClick={gen}>▶ 生成知识包</BusyButton>
-          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>基于数据字典、访谈结论与选中的领域问题产出标准包结构</div>
+          {serverRunning && !busy ? (
+            <div>
+              <div style={{ fontSize: 13.5, color: 'var(--ink2)' }}>
+                <span className="spinner" style={{ marginRight: 8 }} />生成进行中（服务端执行，切换页面不影响）…
+              </div>
+              {runStaleMin > 15 && (
+                <div style={{ marginTop: 14 }}>
+                  <div style={{ fontSize: 12, color: 'var(--crit)', marginBottom: 8 }}>已进行超过 15 分钟，可能因服务重启而中断</div>
+                  <BusyButton busy={busy} busyText="生成中" className="btn" onClick={gen}>重新生成</BusyButton>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <BusyButton busy={busy} busyText="生成中" expect="规格较大时可达数分钟，可切换页面" onClick={gen}>▶ 生成知识包</BusyButton>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>基于数据字典、访谈结论与选中的领域问题产出标准包结构</div>
+            </>
+          )}
         </div>
       ) : (
         <div>
           <div style={{ display: 'flex', gap: 24, marginBottom: 18 }}>
             <Stat v={result.version} k="版本" />
-            <Stat v={result.objectCount} k="业务对象" />
-            <Stat v={result.operationCount} k="操作" />
+            <Stat v={result.objectCount ?? '—'} k="业务对象" />
+            <Stat v={result.operationCount ?? '—'} k="操作" />
             <Stat v={`${result.coverage.covered.length}/${result.coverage.covered.length + result.coverage.uncovered.length}`} k="领域问题覆盖" />
           </div>
           <h4 style={{ fontSize: 13.5, color: 'var(--ink2)', marginBottom: 8 }}>覆盖明细</h4>
@@ -251,7 +287,7 @@ export function GeneratePanel({ projectId, onAdvance }) {
             <div key={q} className="cov-row bad">✗ 未覆盖：{q}</div>
           ))}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
-            <BusyButton busy={busy} busyText="重新生成中" expect="数分钟" className="btn" onClick={gen}>重新生成</BusyButton>
+            <BusyButton busy={running} busyText="重新生成中" expect="数分钟" className="btn" onClick={gen}>重新生成</BusyButton>
             <button className="btn btn-p" onClick={onAdvance}>进入知识包完善 →</button>
           </div>
         </div>
