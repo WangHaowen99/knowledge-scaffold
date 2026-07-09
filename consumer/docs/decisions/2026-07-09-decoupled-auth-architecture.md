@@ -75,12 +75,12 @@
 - 强制改密跨边界：`password_change_required` 数据在 auth server（claim 下发），403 拦截与白名单
   （`/auth/me`、`/auth/change-password`）留在 consumer 的 require_auth wrapper。
 
-## 待拍板：Step 4 远程模式下前端会话形态（实现时发现的分叉）
+## D6 Step 4 远程模式前端会话形态：方案 a（2026-07-09 用户拍板）
 
 D2 的短 TTL access token（10~15 分钟）与"前端零改动"存在冲突：前端 useAuth 目前
 拿到 `token` 后长期使用（本地 12h TTL），没有任何续期逻辑。remote 模式三选一：
 
-- **方案 a（推荐）**：`token` = auth server 的 access JWT；BFF 新增 `POST /auth/refresh`；
+- **方案 a（已采纳）**：`token` = auth server 的 access JWT；BFF 新增 `POST /auth/refresh`；
   前端 authFetch 加一层"401 时静默调 refresh 重试一次"（前端小改，约几十行，一次性）。
   语义最正，token 生命周期完全由 auth server 掌控。
 - 方案 b：BFF 登录时拿 access+refresh，自己签发 12h 的本地会话 token 给前端（沿用现有
