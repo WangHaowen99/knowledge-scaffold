@@ -53,3 +53,6 @@ business-frontend/node_modules
 # auth-server
 .venv/
 auth-server/data/
+
+# auth-server 数据目录（bind mount）
+consumer/.onto-auth/**

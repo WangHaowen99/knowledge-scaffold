@@ -10,8 +10,10 @@ source "${SCRIPT_DIR}/common.sh"
 TARGET_VERSION="$(manifest_get app_version)"
 BACKEND_IMAGE="$(manifest_get backend_image)"
 FRONTEND_IMAGE="$(manifest_get frontend_image)"
+AUTH_IMAGE="$(manifest_get auth_server_image)"
 BACKEND_TAR="${BUNDLE_ROOT}/$(manifest_get backend_image_tar)"
 FRONTEND_TAR="${BUNDLE_ROOT}/$(manifest_get frontend_image_tar)"
+AUTH_TAR_REL="$(manifest_get auth_server_image_tar)"
 
 [ -n "${TARGET_VERSION}" ] || die "app_version is missing in manifest.json"
 [ -n "${BACKEND_IMAGE}" ] || die "backend_image is missing in manifest.json"
@@ -39,20 +41,29 @@ fi
 log "Loading release images"
 docker_load_image "${BACKEND_TAR}"
 docker_load_image "${FRONTEND_TAR}"
+# auth-server 镜像随包分发则一并导入（即使 local 模式也入账本，便于后续切 remote 后直接重启生效）
+if [ -n "${AUTH_TAR_REL}" ] && [ -f "${BUNDLE_ROOT}/${AUTH_TAR_REL}" ]; then
+    docker_load_image "${BUNDLE_ROOT}/${AUTH_TAR_REL}"
+elif auth_profile_enabled; then
+    warn "AUTH_MODE=remote but auth-server image tar is missing from this bundle"
+fi
 
 log "Applying migration step"
 "${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}"
 
 if [ "${MODE}" = "upgrade" ]; then
     log "Stopping previous release containers"
-    compose_down "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}"
+    compose_down "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_AUTH_IMAGE:-}"
 fi
 
 log "Starting release containers"
-compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}"
+compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy"
+if auth_profile_enabled; then
+    wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
+fi
 
 write_state \
     "${TARGET_VERSION}" \
@@ -61,6 +72,8 @@ write_state \
     "${BACKEND_IMAGE}" \
     "${FRONTEND_IMAGE}" \
     "${CURRENT_BACKEND_IMAGE:-}" \
-    "${CURRENT_FRONTEND_IMAGE:-}"
+    "${CURRENT_FRONTEND_IMAGE:-}" \
+    "${AUTH_IMAGE}" \
+    "${CURRENT_AUTH_IMAGE:-}"
 
 log "Deployment finished successfully"

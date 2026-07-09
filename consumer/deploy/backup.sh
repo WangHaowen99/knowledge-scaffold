@@ -29,6 +29,7 @@ backup_path_if_present "${BUNDLE_ROOT}/backend/config" "backend-config.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/backend/logs" "backend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/frontend/logs" "frontend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
+backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
 
 if [ -n "${CURRENT_BACKEND_IMAGE:-}" ] && docker image inspect "${CURRENT_BACKEND_IMAGE}" >/dev/null 2>&1; then
     docker save -o "${BACKUP_DIR}/backend-image.tar" "${CURRENT_BACKEND_IMAGE}"
@@ -38,12 +39,17 @@ if [ -n "${CURRENT_FRONTEND_IMAGE:-}" ] && docker image inspect "${CURRENT_FRONT
     docker save -o "${BACKUP_DIR}/frontend-image.tar" "${CURRENT_FRONTEND_IMAGE}"
 fi
 
+if [ -n "${CURRENT_AUTH_IMAGE:-}" ] && docker image inspect "${CURRENT_AUTH_IMAGE}" >/dev/null 2>&1; then
+    docker save -o "${BACKUP_DIR}/auth-server-image.tar" "${CURRENT_AUTH_IMAGE}"
+fi
+
 {
     printf 'BACKUP_CREATED_AT=%q\n' "${TIMESTAMP}"
     printf 'FROM_VERSION=%q\n' "${FROM_VERSION}"
     printf 'TARGET_VERSION=%q\n' "${TARGET_VERSION}"
     printf 'CURRENT_BACKEND_IMAGE=%q\n' "${CURRENT_BACKEND_IMAGE:-}"
     printf 'CURRENT_FRONTEND_IMAGE=%q\n' "${CURRENT_FRONTEND_IMAGE:-}"
+    printf 'CURRENT_AUTH_IMAGE=%q\n' "${CURRENT_AUTH_IMAGE:-}"
 } > "${BACKUP_DIR}/metadata.env"
 
 printf '%s\n' "${BACKUP_DIR}"
