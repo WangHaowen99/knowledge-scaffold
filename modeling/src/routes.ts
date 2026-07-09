@@ -519,6 +519,14 @@ export async function registerRoutes(app: FastifyInstance) {
       if (!pv) return reply.code(404).send({ error: '尚未生成知识包' });
       const failed = m3repo.listResults(round.id).filter((x) => x.verdict !== 'pass');
       if (!failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需优化' });
+      // 回退标注：上一轮通过、本轮未通过的用例——多为新增/修改操作抢答相邻场景（边界侵蚀）
+      const prevRound = m3repo.listRounds(c.p.id).filter((x) => x.status === 'done' && x.id !== round.id)[0];
+      if (prevRound) {
+        const prevPass = new Set(m3repo.listResults(prevRound.id).filter((x) => x.verdict === 'pass').map((x) => x.question));
+        for (const f of failed) {
+          if (prevPass.has(f.question)) f.reason = `【回退：上一轮（${prevRound.packageVersion}）曾通过】${f.reason ?? ''}`;
+        }
+      }
       try {
         // 包体检确定性发现：直接转建议（不经 LLM），同时作为优化器的诊断上下文
         const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
