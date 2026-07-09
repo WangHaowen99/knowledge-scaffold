@@ -1,19 +1,13 @@
 """Flask application factory for the agentic system."""
 
-from flask import Flask, jsonify, request
+from flask import Flask
 from flask_cors import CORS
 
 from .config import AgentConfig, AppConfig
 from .observability import reset_observer
 from .routes import register_routes, update_runtime_dependencies
-from .services.auth import (
-    AuthManager,
-    PasswordPolicyError,
-    require_auth,
-    require_role,
-    get_auth_manager,
-    get_current_user,
-)
+from .routes.auth import auth_bp
+from .services.auth import AuthManager
 from .services.llm import LLMRouter, configure_llm_router
 from .stores import UserStoreManager
 from .utils.logging import get_logger
@@ -32,11 +26,17 @@ def build_runtime_services(previous_llm_router=None):
         previous_router=previous_llm_router,
     )
     configure_llm_router(llm_router)
-    auth_manager = AuthManager(
-        config.auth_users_file,
-        config.auth_secret,
-        config.auth_token_ttl_seconds,
-    )
+    if config.auth_mode == "local":
+        auth_manager = AuthManager(
+            config.auth_users_file,
+            config.auth_secret,
+            config.auth_token_ttl_seconds,
+        )
+    elif config.auth_mode == "remote":
+        # 施工步骤 4 接入 RemoteAuthBackend（对接独立 auth server）后开放
+        raise RuntimeError("AUTH_MODE=remote 尚未实现，请使用 local（默认）")
+    else:
+        raise RuntimeError(f"未知 AUTH_MODE：{config.auth_mode}（支持 local）")
     user_store_manager = UserStoreManager()
     return {
         "config": config,
@@ -71,6 +71,10 @@ def create_app() -> Flask:
     CORS(app, supports_credentials=True, allow_headers=["Content-Type", "Authorization", "X-Workspace-Id"])
     app.config["REFRESH_RUNTIME_SERVICES"] = refresh_runtime_services
 
+    # 认证是应用外壳设施而非 agentic 域路由：在此注册，保证 create_app()
+    # 单独构造（如测试打桩 register_routes）时 /auth/* 仍可用
+    app.register_blueprint(auth_bp)
+
     runtime = build_runtime_services()
     app.config["AUTH_MANAGER"] = runtime["auth_manager"]
     app.config["USER_STORE_MANAGER"] = runtime["user_store_manager"]
@@ -89,127 +93,5 @@ def create_app() -> Flask:
     @app.route("/health", methods=["GET"])
     def health():
         return {"status": "ok"}
-
-    @app.route("/auth/login", methods=["POST"])
-    def login():
-        data = request.get_json() or {}
-        username = str(data.get("username", "")).strip()
-        password = str(data.get("password", ""))
-        auth_manager = get_auth_manager()
-        if not auth_manager:
-            return jsonify({"error": "Auth not configured"}), 500
-        user = auth_manager.authenticate(username, password)
-        if not user:
-            return jsonify({"error": "Invalid credentials"}), 401
-        token = auth_manager.issue_token(user)
-        return jsonify({"token": token, "user": user.to_public_dict()})
-
-    @app.route("/auth/me", methods=["GET"])
-    @require_auth()
-    def me():
-        user = get_current_user()
-        if not user:
-            return jsonify({"error": "Unauthorized"}), 401
-        return jsonify({"user": user.to_public_dict()})
-
-    @app.route("/auth/users", methods=["GET"])
-    @require_role("admin")
-    def list_users():
-        auth_manager = get_auth_manager()
-        if not auth_manager:
-            return jsonify({"error": "Auth not configured"}), 500
-        return jsonify({"users": auth_manager.list_users()})
-
-    @app.route("/auth/users", methods=["POST"])
-    @require_role("admin")
-    def create_user():
-        auth_manager = get_auth_manager()
-        if not auth_manager:
-            return jsonify({"error": "Auth not configured"}), 500
-        data = request.get_json() or {}
-        username = str(data.get("username", "")).strip()
-        password = str(data.get("password", ""))
-        try:
-            user = auth_manager.create_user(username, password)
-            return jsonify({"user": user.to_public_dict()}), 201
-        except PasswordPolicyError as exc:
-            return jsonify({
-                "error": str(exc),
-                "code": "PASSWORD_POLICY_FAILED",
-                "violations": exc.violations,
-            }), 400
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-    @app.route("/auth/users/<username>", methods=["PUT"])
-    @require_role("admin")
-    def update_user(username):
-        auth_manager = get_auth_manager()
-        if not auth_manager:
-            return jsonify({"error": "Auth not configured"}), 500
-        data = request.get_json() or {}
-        password = data.get("password")
-        if password is not None:
-            password = str(password)
-        current = get_current_user()
-        if password is not None and current and current.username == username:
-            return jsonify({"error": "不能通过用户管理重置当前登录用户密码，请使用修改密码入口"}), 400
-        try:
-            user = auth_manager.update_user(username, password=password)
-            return jsonify({"user": user.to_public_dict()})
-        except PasswordPolicyError as exc:
-            return jsonify({
-                "error": str(exc),
-                "code": "PASSWORD_POLICY_FAILED",
-                "violations": exc.violations,
-            }), 400
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-    @app.route("/auth/users/<username>", methods=["DELETE"])
-    @require_role("admin")
-    def delete_user(username):
-        auth_manager = get_auth_manager()
-        if not auth_manager:
-            return jsonify({"error": "Auth not configured"}), 500
-        current = get_current_user()
-        if current and current.username == username:
-            return jsonify({"error": "不能删除自己"}), 400
-        if username == "admin":
-            return jsonify({"error": "不能删除 admin 管理员"}), 400
-        try:
-            auth_manager.delete_user(username)
-            return jsonify({"success": True})
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-
-    @app.route("/auth/change-password", methods=["PUT"])
-    @require_auth()
-    def change_password():
-        auth_manager = get_auth_manager()
-        if not auth_manager:
-            return jsonify({"error": "Auth not configured"}), 500
-        user = get_current_user()
-        if not user:
-            return jsonify({"error": "Unauthorized"}), 401
-        data = request.get_json() or {}
-        old_password = str(data.get("old_password", ""))
-        new_password = str(data.get("new_password", ""))
-        if not old_password or not new_password:
-            return jsonify({"error": "原密码和新密码不能为空"}), 400
-        try:
-            auth_manager.change_password(user.username, old_password, new_password)
-            return jsonify({
-                "success": True,
-                "requires_relogin": True,
-            })
-        except PasswordPolicyError as exc:
-            return jsonify({
-                "error": str(exc),
-                "code": "PASSWORD_POLICY_FAILED",
-                "violations": exc.violations,
-            }), 400
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
 
     return app

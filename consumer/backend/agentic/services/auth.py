@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Protocol
 
 from flask import current_app, g, jsonify, request
 
@@ -39,6 +39,34 @@ class PasswordPolicyError(ValueError):
     def __init__(self, violations: list[str]) -> None:
         self.violations = violations
         super().__init__("密码复杂度不满足要求")
+
+
+class AuthBackend(Protocol):
+    """认证后端接缝：本地实现为 AuthManager（users.json + 自签 token）。
+
+    远程实现（对接独立 auth server）按 docs/decisions/2026-07-09-decoupled-auth-architecture.md
+    的 D4 接入时，必须保持以下语义：错误以 ValueError（中文消息）与
+    PasswordPolicyError(violations) 抛出；verify_token 在 TTL 过期、用户被删、
+    password_version 变化后必须返回 None。
+    """
+
+    def authenticate(self, username: str, password: str) -> Optional[AuthUser]: ...
+
+    def issue_token(self, user: AuthUser) -> str: ...
+
+    def verify_token(self, token: str) -> Optional[AuthUser]: ...
+
+    def get_user(self, username: str) -> Optional[AuthUser]: ...
+
+    def list_users(self) -> list: ...
+
+    def create_user(self, username: str, password: str, role: str = "user") -> AuthUser: ...
+
+    def update_user(self, username: str, *, password: Optional[str] = None, role: Optional[str] = None) -> AuthUser: ...
+
+    def delete_user(self, username: str) -> None: ...
+
+    def change_password(self, username: str, old_password: str, new_password: str) -> AuthUser: ...
 
 
 class AuthManager:
@@ -405,6 +433,10 @@ def _b64url_encode(data: bytes) -> str:
 def _b64url_decode(data: str) -> bytes:
     padding = "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(data + padding)
+
+
+# 本地认证后端：AuthManager 即 AuthBackend 协议的内置实现（AUTH_MODE=local）
+LocalAuthBackend = AuthManager
 
 
 def get_auth_manager() -> Optional[AuthManager]:

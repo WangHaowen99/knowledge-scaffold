@@ -107,6 +107,8 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
     "auth": {
         "auth_secret": {"env": "AUTH_SECRET", "type": "secret", "default": ""},
         "auth_token_ttl_seconds": {"env": "AUTH_TOKEN_TTL", "type": "int", "default": 43200},
+        # local=内置 AuthManager；remote=对接独立 auth server（施工步骤 4 起可用）
+        "auth_mode": {"env": "AUTH_MODE", "type": "str", "default": "local"},
     },
     "agent": {
         "llm_connection_max_retries": {"env": "AGENT_LLM_CONNECTION_MAX_RETRIES", "type": "int", "default": 3},
