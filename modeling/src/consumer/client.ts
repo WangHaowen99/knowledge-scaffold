@@ -1,4 +1,10 @@
+import { Agent, fetch as undiciFetch } from 'undici';
 import { getConsumerApiUrl } from '../settings/repo.js';
+
+// 评测单用例的 runs/sync 可能远超 undici 默认 300s 头超时（复杂业务题多轮工具循环），
+// 放宽到 15 分钟。注意：npm undici 的 Agent 不能传给 Node 内置 fetch（版本不匹配会
+// fetch failed），必须配套使用 undici 自己的 fetch。
+const longDispatcher = new Agent({ headersTimeout: 15 * 60_000, bodyTimeout: 15 * 60_000 });
 
 // consumer API 客户端（M3 评测闭环的地基）。
 // 地址来自页面设置（settings 表），专家 token 透传——以专家身份调用。
@@ -51,5 +57,7 @@ export async function consumerFetch(token: string, path: string, options: Reques
     ...((init.headers as Record<string, string>) ?? {}),
   };
   if (workspaceId) headers['X-Workspace-Id'] = encodeURIComponent(workspaceId);
-  return fetch(`${getConsumerApiUrl()}${path}`, { ...init, headers });
+  return undiciFetch(`${getConsumerApiUrl()}${path}`, {
+    ...(init as any), headers, dispatcher: longDispatcher,
+  }) as unknown as Promise<Response>;
 }

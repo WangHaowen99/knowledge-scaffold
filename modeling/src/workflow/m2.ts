@@ -163,7 +163,8 @@ export function checkCoverage(spec: PackageSpec, selected: string[]): CoverageRe
 }
 
 function slug(s: string): string {
-  return (s || 'pkg').toLowerCase().replace(/[^a-z0-9一-龥]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'pkg';
+  // consumer 的 ontology id 仅允许字母数字下划线短横线且字母/数字开头——中文必须剔除
+  return (s || 'pkg').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'pkg';
 }
 
 export { repo as m2repo };
