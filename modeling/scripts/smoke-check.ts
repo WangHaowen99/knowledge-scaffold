@@ -9,6 +9,7 @@ import { createProject, getProject } from '../src/projects/repo.js';
 import { insertPackageVersion, listPackageVersions } from '../src/workflow/m2-repo.js';
 import { runRuleChecks, runSemanticCheck } from '../src/workflow/package-check.js';
 import { packageChatPlan, packageChatApply } from '../src/workflow/package-chat.js';
+import { findingsToSuggestions, extractCitedKeys } from '../src/evaluation/optimizer.js';
 import type { DataDictTable, PackageSpec } from '../src/types.js';
 
 const ok = (c: boolean, m: string) => { console.log(`  ${c ? '✓' : '✗ FAIL'}  ${m}`); if (!c) process.exitCode = 1; };
@@ -44,6 +45,16 @@ async function main() {
   ok(has('数据映射失效'), '规则：来源表不在数据字典');
   ok(has('输入未使用'), '规则：必填输入未在流程中引用');
   ok(has('描述过简'), '规则：对象描述过短');
+
+  // ①b 体检发现 → 优化建议（确定性转换）
+  const sugs = findingsToSuggestions(fs);
+  ok(sugs.length > 0 && sugs.every((s) => s.title.startsWith('[体检]')), `体检发现转建议 ${sugs.length} 条（带 [体检] 前缀）`);
+  ok(!sugs.some((s) => s.detail.includes('描述过短')), '提示级发现不转建议（过滤噪音）');
+  ok(sugs.find((s) => s.title.includes('典型问题重复认领'))?.kind === 'modify_operation', '重复认领 → modify_operation');
+
+  // ①c 执行痕迹提取
+  const cited = extractCitedKeys('本次通过 OP-A 查询，并参考对象 STRUCTURE_LIST 的字段；OP-Z 未出现', BAD);
+  ok(cited.includes('OP-A') && cited.includes('STRUCTURE_LIST') && !cited.includes('OP-B'), `执行痕迹提取：${cited.join(',')}`);
 
   // ② 语义检查（faux 回路）
   const project = createProject({ owner: 'smoke', name: '体检演示', domain: 'DOMAIN', background: 'x' });
