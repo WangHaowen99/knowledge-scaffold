@@ -11,7 +11,8 @@ import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalDbUrl, getEvalBindingDefaults } from './settings/repo.js';
-import { packageChat, getOverrides, setOverride, clearOverride } from './workflow/package-chat.js';
+import { packageChatPlan, packageChatApply, getOverrides, setOverride, clearOverride } from './workflow/package-chat.js';
+import { runRuleChecks, runSemanticCheck, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
@@ -320,18 +321,56 @@ export async function registerRoutes(app: FastifyInstance) {
       return { ok: true, path, content: (files as Record<string, string>)[path] ?? '' };
     });
 
-    // 包修缮 agent 对话：咨询直接回答；要求修改则修订规格并落新版本
+    // 包修缮 agent 对话·两段式：① plan 影响分析（咨询直接回答）② 专家确认后 apply 落新版本
     r.post('/api/projects/:id/package/chat', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const { message, history } = (req.body ?? {}) as { message?: string; history?: { role: 'user' | 'assistant'; text: string }[] };
       if (!message?.trim()) return reply.code(400).send({ error: 'message 必填' });
       try {
-        const result = await packageChat(c.p, history ?? [], message.trim());
-        return result;
+        return await packageChatPlan(c.p, history ?? [], message.trim());
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
+    });
+    r.post('/api/projects/:id/package/chat/apply', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { message, history, plan } = (req.body ?? {}) as any;
+      if (!plan?.changes?.length) return reply.code(400).send({ error: 'plan 必填（先调用 chat 获取修缮计划）' });
+      try {
+        return await packageChatApply(c.p, history ?? [], String(message ?? ''), plan);
+      } catch (e) {
+        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    });
+
+    // 包体检：规则引擎（确定性）+ 语义检查（LLM）；结果落库供回看
+    r.post('/api/projects/:id/package/check', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const latest = m2repo.latestPackageVersion(c.p.id);
+      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
+      const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
+      try {
+        const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, selected);
+        const semanticFindings = await runSemanticCheck(c.p, latest.spec);
+        const findings = [...ruleFindings, ...semanticFindings]
+          .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
+        saveCheck(c.p.id, latest.version, findings);
+        return { version: latest.version, findings, counts: {
+          错误: findings.filter((f) => f.severity === '错误').length,
+          警告: findings.filter((f) => f.severity === '警告').length,
+          提示: findings.filter((f) => f.severity === '提示').length,
+        } };
+      } catch (e) {
+        return reply.code(500).send({ error: `体检失败：${e instanceof Error ? e.message : e}` });
+      }
+    });
+    r.get('/api/projects/:id/package/check', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { check: getCheck(c.p.id) };
     });
     r.get('/api/projects/:id/package/export', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);

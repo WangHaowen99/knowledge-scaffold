@@ -8,6 +8,7 @@ import {
   savePackageFile, resetPackageFile,
 } from './api.js';
 import { BusyButton } from './ui.jsx';
+import PackageCheck from './PackageCheck.jsx';
 
 /* ================= 节点 4 · 建模访谈 ================= */
 
@@ -324,8 +325,17 @@ export function ReviewPanel({ projectId }) {
   const isMd = path?.endsWith('.md');
   const overriddenSet = new Set(pkg.overriddenPaths ?? []);
   const content = file?.content ?? '';
+  // 体检发现的 target（对象/操作 key）→ 包内文件路径
+  const openByTarget = (target) => {
+    const hit = pkg.files.find((f) => f === target)
+      ?? pkg.files.find((f) => f.endsWith(`/${target}.md`))
+      ?? pkg.files.find((f) => f.includes(target));
+    if (hit) setPath(hit);
+  };
 
   return (
+    <div>
+    <PackageCheck projectId={projectId} onOpenFile={openByTarget} />
     <div className="rv">
       <div className="rv-files">
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
@@ -365,6 +375,7 @@ export function ReviewPanel({ projectId }) {
           ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown></div>
           : <pre className="srcview">{content}</pre>}
       </div>
+    </div>
     </div>
   );
 }
