@@ -25,6 +25,7 @@ export async function startInterview(project: Project, ctx: Ctx, analysis: unkno
   const sys = [
     '你是知识建模访谈助手。基于初步分析的开放问题、数据字典与文档，设计访谈澄清四类决策点：对象划分/字段含义/关系/口径。',
     '每次用 ask_user 提交一批（1~5 道）选择题（single/multi/text，均可含"其他"由前端补充）。专家答复后你再决定继续追问或 finish_interview。',
+    '控制专家负担：整场访谈一般 2~3 批内结束；只有仍存在影响建模的关键分歧时才追问，勿为完备性重复确认。',
     `项目背景：${project.background || project.domain}`,
     `初步分析：${JSON.stringify(analysis).slice(0, 2000)}`,
   ].join('\n');
@@ -47,6 +48,7 @@ export async function answerInterview(project: Project, ctx: Ctx, batchId: strin
   const tools = buildInterviewTools(toolCtx(ctx), cap);
   const sys = [
     '你是知识建模访谈助手。继续澄清四类决策点。收到专家答复后，继续 ask_user 追问，或在澄清充分时 finish_interview。',
+    '控制专家负担：整场访谈一般 2~3 批内结束；关键决策点已有答案就 finish_interview，勿为完备性重复确认。',
     `项目背景：${project.background || project.domain}`,
   ].join('\n');
 
