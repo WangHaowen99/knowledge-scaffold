@@ -10,6 +10,9 @@ import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { setStage as setProjectStage } from './projects/repo.js';
+import { getSetting, setSetting, getConsumerApiUrl } from './settings/repo.js';
+import { testConsumerConnectivity } from './consumer/client.js';
+import { config } from './config.js';
 import type { DataDictTable } from './types.js';
 
 export async function registerRoutes(app: FastifyInstance) {
@@ -29,6 +32,29 @@ export async function registerRoutes(app: FastifyInstance) {
     r.addHook('preHandler', requireAuth);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
+
+    // ---- 服务设置（consumer 评测端点页面可配置） ----
+    r.get('/api/settings', async () => ({
+      consumerApiUrl: getConsumerApiUrl(),
+      consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : (config.consumerApiUrl ? 'env' : 'issuer'),
+      authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer 由部署配置
+    }));
+
+    r.put('/api/settings', async (req, reply) => {
+      const { consumerApiUrl } = (req.body ?? {}) as { consumerApiUrl?: string };
+      if (!consumerApiUrl || !/^https?:\/\//.test(consumerApiUrl)) {
+        return reply.code(400).send({ error: 'consumerApiUrl 必须是 http(s) 地址' });
+      }
+      setSetting('consumer_api_url', consumerApiUrl.trim());
+      return { consumerApiUrl: getConsumerApiUrl() };
+    });
+
+    // 连通性测试：health / auth（token 透传）/ 模型就绪
+    r.post('/api/settings/consumer/test', async (req) => {
+      const { url } = (req.body ?? {}) as { url?: string };
+      const token = (req.headers.authorization ?? '').slice(7);
+      return testConsumerConnectivity(token, url);
+    });
 
     // ---- 项目（节点 1）----
     r.get('/api/projects', async (req) => ({ projects: listProjects(req.user!.username) }));

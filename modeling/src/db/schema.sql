@@ -86,3 +86,10 @@ CREATE TABLE IF NOT EXISTS package_versions (
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pkgver_project ON package_versions(project_id, created_at);
+
+-- ---- M3：服务设置（键值，页面可配置） ----
+CREATE TABLE IF NOT EXISTS settings (
+  key           TEXT PRIMARY KEY,
+  value         TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
