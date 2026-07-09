@@ -75,6 +75,19 @@
 - 强制改密跨边界：`password_change_required` 数据在 auth server（claim 下发），403 拦截与白名单
   （`/auth/me`、`/auth/change-password`）留在 consumer 的 require_auth wrapper。
 
+## 待拍板：Step 4 远程模式下前端会话形态（实现时发现的分叉）
+
+D2 的短 TTL access token（10~15 分钟）与"前端零改动"存在冲突：前端 useAuth 目前
+拿到 `token` 后长期使用（本地 12h TTL），没有任何续期逻辑。remote 模式三选一：
+
+- **方案 a（推荐）**：`token` = auth server 的 access JWT；BFF 新增 `POST /auth/refresh`；
+  前端 authFetch 加一层"401 时静默调 refresh 重试一次"（前端小改，约几十行，一次性）。
+  语义最正，token 生命周期完全由 auth server 掌控。
+- 方案 b：BFF 登录时拿 access+refresh，自己签发 12h 的本地会话 token 给前端（沿用现有
+  HMAC 机制），auth server 只做凭据校验与用户管理。前端零改动，但 12h 吊销窗口的
+  安全回归重新出现，且偏离 D2。
+- 方案 c：`token` 直接用 access JWT 且不做 refresh——前端每 15 分钟被登出，不可接受。
+
 ## 施工顺序（每步独立合入、全量测试通过）
 
 1. 纯重构接缝：定义 `AuthBackend` 协议、AuthManager 声明为本地实现、app.py 内联的 7 个 `/auth/*` 路由抽 blueprint（零行为变化）。
