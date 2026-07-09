@@ -49,3 +49,7 @@ business-frontend/node_modules
 /LOOP.md
 /STATE.md
 /loop-*.md
+
+# auth-server
+.venv/
+auth-server/data/
