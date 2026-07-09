@@ -1,14 +1,17 @@
 import { Type } from '@earendil-works/pi-ai';
 import { buildLlm, type LlmDeps } from '../llm/provider.js';
 import { makeAgent, runAgent } from '../workflow/agent.js';
+import type { CheckFinding } from '../workflow/package-check.js';
 import type { PackageSpec, Project } from '../types.js';
 import type { EvalResult } from '../workflow/m3-repo.js';
 import type { OptSuggestion } from '../workflow/m4-repo.js';
 
 // M4 优化器（design.md 决策 8）：
 // ① proposeOptimizations —— 读未通过的评测结果 + 当前规格，产出结构化优化建议；
+//    诊断维度含「执行痕迹」：从 finalAnswer 提取实际引用的操作 vs 认领该问题的操作，
+//    区分三类根因——知识缺失（add）/ 知识在包里但没被走到（改路由与交叉引用）/ 知识写错（改内容）。
 // ② applyOptimizations —— 把专家采纳的建议应用到规格上，产出修订版（版本号由调用方递增）。
-// 两个 agent 用不同工具名（submit_suggestions / submit_revised_spec），faux 模式据此分流。
+// 另有 findingsToSuggestions —— 把包体检的确定性发现直接转成建议（不经 LLM）。
 
 export interface RawSuggestion {
   title: string; detail: string; kind: string; target?: string; relatedQuestion?: string;
@@ -16,11 +19,44 @@ export interface RawSuggestion {
 
 const KIND_LITERALS = ['add_operation', 'modify_operation', 'add_object', 'modify_object', 'clarify_description'] as const;
 
+// 从回答文本里提取被引用的操作/对象 key（执行痕迹，确定性提取）
+export function extractCitedKeys(text: string, spec: PackageSpec): string[] {
+  const keys = [...spec.operations.map((o) => o.key), ...spec.objects.map((o) => o.key)];
+  const hit = keys.filter((k) => k.length >= 3 && text.includes(k));
+  return [...new Set(hit)];
+}
+
+// 认领该问题的操作（消费端路由的"应答入口"）
+function claimingOps(question: string, spec: PackageSpec): string[] {
+  return spec.operations
+    .filter((op) => op.competencyQuestion &&
+      (op.competencyQuestion === question || question.includes(op.competencyQuestion) || op.competencyQuestion.includes(question)))
+    .map((op) => op.key);
+}
+
+// 包体检确定性发现 → 优化建议（错误/警告级、带修复建议的才转；提示级噪音大不转）
+const FINDING_KIND: Record<string, string> = {
+  典型问题重复认领: 'modify_operation', 悬空引用: 'modify_operation',
+  领域问题未覆盖: 'add_operation', 操作不完整: 'modify_operation',
+  数据映射失效: 'modify_object', 主键失配: 'modify_object',
+};
+export function findingsToSuggestions(findings: CheckFinding[]): RawSuggestion[] {
+  return findings
+    .filter((f) => f.severity !== '提示' && f.suggestion)
+    .map((f) => ({
+      title: `[体检] ${f.category}：${f.target}`,
+      detail: `${f.message}。修复：${f.suggestion}`,
+      kind: FINDING_KIND[f.category] ?? 'clarify_description',
+      target: f.target,
+    }));
+}
+
 export async function proposeOptimizations(
   project: Project,
   spec: PackageSpec,
   failedResults: EvalResult[],
   llmOverride?: LlmDeps,
+  checkFindings: CheckFinding[] = [],
 ): Promise<RawSuggestion[]> {
   const cap: { suggestions?: RawSuggestion[] } = {};
   const submitSuggestions = {
@@ -43,20 +79,34 @@ export async function proposeOptimizations(
   };
 
   const sys = [
-    '你是知识包优化器。评测中部分用例未通过，说明当前知识包规格缺少回答这些问题所需的操作或业务规则。',
-    '请针对每条未通过用例给出可落地的优化建议：新增/修改哪个 operation 或 object、要沉淀什么业务口径（把标准答案中的关键规则写进 detail）。',
+    '你是知识包优化器。评测中部分用例未通过，请先按执行痕迹诊断根因，再给可落地的优化建议：',
+    '每条用例给出了「应答操作」（认领该问题的操作）与「实际引用」（回答里真实用到的操作）。三类根因分别处理：',
+    'A) 知识缺失——没有操作沉淀该口径 → add_operation，把标准答案里的关键规则写进 detail；',
+    'B) 知识在包里但没被走到——应答操作含正确口径但实际引用的是别的操作 → modify_operation 修路由：',
+    '   收紧被误走操作的认领/描述、加“该问题必须走 XX 操作”的交叉引用；不要重复新增已有规则；',
+    'C) 知识写错——实际走了应答操作但结论仍错 → modify_operation 修正该操作的口径/流程措辞（写成不可绕过的强约束、',
+    '   把追溯/遍历步骤写成逐行指令，避免执行时漏项）。',
     'kind 取值：add_operation / modify_operation / add_object / modify_object / clarify_description；',
-    'relatedQuestion 填对应用例的问题原文。用 submit_suggestions 提交。',
+    'relatedQuestion 填对应用例的问题原文；target 填要改的操作/对象 key。用 submit_suggestions 提交。',
     `项目背景：${project.background || project.domain || project.name}`,
     `当前规格概要：对象 [${spec.objects.map((o) => o.key).join(', ')}]；操作 [${spec.operations.map((o) => `${o.key}:${o.title}`).join(', ')}]`,
   ].join('\n');
 
   // 压成单行：faux 分支按行正则解析，多行的标准答案/回答会破坏对应关系
   const one = (s: string) => (s || '').replace(/\s*\n\s*/g, ' ').trim();
-  const failLines = failedResults.map((r, i) =>
-    `${i + 1}. 问题：${one(r.question)} ｜标准答案：${one(r.groundTruth)} ｜判定：${r.verdict} ｜智能体回答：${one(r.finalAnswer || '（无）').slice(0, 300)} ｜理由：${one(r.reason ?? '')}`);
+  const failLines = failedResults.map((r, i) => {
+    const answer = one(r.finalAnswer || '（无）');
+    const cited = extractCitedKeys(answer, spec);
+    const claiming = claimingOps(r.question, spec);
+    return `${i + 1}. 问题：${one(r.question)} ｜标准答案：${one(r.groundTruth)} ｜判定：${r.verdict}` +
+      ` ｜应答操作：${claiming.join(',') || '（无认领）'} ｜实际引用：${cited.join(',') || '（未识别）'}` +
+      ` ｜智能体回答：${answer.slice(0, 600)} ｜理由：${one(r.reason ?? '')}`;
+  });
+  const checkBlock = checkFindings.length
+    ? `\n【包体检发现（确定性检查，可直接采信）】\n${checkFindings.map((f) => `- [${f.severity}/${f.category}] ${f.target}：${f.message}`).join('\n')}`
+    : '';
   const agent = makeAgent(llmOverride ?? buildLlm(), sys, [submitSuggestions] as any);
-  await runAgent(agent, `未通过的评测用例如下，请给出优化建议：\n${failLines.join('\n')}`);
+  await runAgent(agent, `未通过的评测用例如下，请给出优化建议：\n${failLines.join('\n')}${checkBlock}`);
   if (!cap.suggestions?.length) throw new Error('优化器未产出建议，请重试');
   return cap.suggestions;
 }

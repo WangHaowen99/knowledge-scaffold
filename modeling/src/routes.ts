@@ -17,7 +17,7 @@ import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
 import { evalSchemaName } from './evaluation/eval-db.js';
-import { proposeOptimizations, applyOptimizations } from './evaluation/optimizer.js';
+import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
@@ -470,11 +470,20 @@ export async function registerRoutes(app: FastifyInstance) {
       const failed = m3repo.listResults(round.id).filter((x) => x.verdict !== 'pass');
       if (!failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需优化' });
       try {
-        const raw = await proposeOptimizations(c.p, pv.spec, failed);
-        // 幂等：同一问题已有未拒绝的建议则跳过，防重复点击累积重复建议
+        // 包体检确定性发现：直接转建议（不经 LLM），同时作为优化器的诊断上下文
+        const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
+        const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, selected);
+        const checkSuggestions = findingsToSuggestions(ruleFindings);
+        const raw = await proposeOptimizations(c.p, pv.spec, failed, undefined, ruleFindings);
+        // 幂等：同一问题/同一体检发现已有未拒绝的建议则跳过，防重复点击累积重复建议
         const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
           .filter((s) => s.status !== 'rejected').map((s) => s.relatedQuestion ?? s.title));
-        const fresh = raw.filter((s) => !seen.has(s.relatedQuestion ?? s.title));
+        const fresh = [...checkSuggestions, ...raw].filter((s) => {
+          const k = s.relatedQuestion ?? s.title;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
         const suggestions = m4repo.insertSuggestions(c.p.id, round.id, round.packageVersion, fresh);
         return { suggestions };
       } catch (e) {
