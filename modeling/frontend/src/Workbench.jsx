@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { getProject, uploadDocument, deleteDocument, runAnalyze } from './api.js';
 import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from './M2Panels.jsx';
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
@@ -52,12 +54,13 @@ export default function Workbench({ projectId }) {
   const analyzeDone = analyzeNode && analyzeNode.status !== 'running';
   const interviewDone = interviewNode?.status === 'done';
   const generateDone = generateNode && ['done', 'stale'].includes(generateNode.status);
+  const cqSelected = data.competency?.selected ?? 0;
 
-  // 节点解锁：1~2 始终可进；3 需资料；4 需领域分析产出；5 需访谈完成 + 领域问题就绪；6~9 需包已生成
+  // 节点解锁：1~2 始终可进；3 需资料；4 需领域分析产出且领域问题选满 5 条；5 需访谈完成；6~9 需包已生成
   const unlocked = {
     project_setup: true, ingest: true,
     analyze: tables.length > 0 || parsedDocs.length > 0,
-    interview: !!analyzeDone,
+    interview: !!analyzeDone && cqSelected >= 5,
     generate: interviewDone && !!competencyNode,
     review: !!generateDone,
     testcases: !!generateDone,
@@ -76,7 +79,7 @@ export default function Workbench({ projectId }) {
   };
   // 自动焦点：最靠后的已解锁未完成节点（进入评测阶段后跟随 stage）
   const autoFocus = !unlocked.analyze ? 'ingest'
-    : !analyzeDone ? (tables.length ? 'analyze' : 'ingest')
+    : !analyzeDone || cqSelected < 5 ? (tables.length ? 'analyze' : 'ingest')
     : !interviewDone ? 'interview'
     : !generateDone ? 'generate'
     : project.stage === 'optimize' ? 'optimize'
@@ -131,8 +134,7 @@ export default function Workbench({ projectId }) {
         </div>
         {staleTypes.length > 0 && (
           <div className="stale-banner">
-            ⟳ 资料已变更：{staleTypes.map((t) => TITLE[t] ?? t).join('、')} 的结果<b>可能已过时</b>。
-            建议从「领域分析」起重新执行受影响步骤（评测轮次与版本历史会保留，用例不受影响）。
+            ⟳ 资料已变更，{staleTypes.map((t) => TITLE[t] ?? t).join('、')}的结果可能过时（历史评测与版本保留）。
             <button className="btn" style={{ marginLeft: 10, padding: '3px 12px', fontSize: 12 }}
               onClick={() => setFocus('analyze')}>去重新分析</button>
           </div>
@@ -143,7 +145,7 @@ export default function Workbench({ projectId }) {
           )}
           {effFocus === 'analyze' && (analyzeNode
             ? <AnalysisView projectId={projectId} analysis={analyzeNode.output} stale={nodeStatus.analyze === 'stale'}
-                onReanalyze={doAnalyze} analyzing={analyzing}
+                onReanalyze={doAnalyze} analyzing={analyzing} onQuestionsChange={load}
                 onAdvance={() => { load(); setFocus('interview'); }} />
             : <IngestView project={project} documents={documents} onChanged={load} />)}
           {effFocus === 'interview' && (
@@ -244,12 +246,10 @@ function IngestView({ project, documents, onChanged }) {
         <div className="ig-left">
           <div className="ig-title">📊 Excel 数据库表怎么准备？</div>
           <div className="ig-desc">
-            每个 <b>sheet 是一张表</b>（sheet 名 = 表名）；<b>首行是字段名</b>；
-            <b>第二行可选写中文注释</b>（会进入数据字典的「说明」列）；之后是数据行。
-            解析后可在右栏「数据字典」查看，评测时数据可一键落库供查询。
+            每个 <b>sheet 是一张表</b>；<b>首行 = 字段名</b>；<b>次行可选中文注释</b>；之后是数据行。
           </div>
           <div className="ig-desc" style={{ marginTop: 6 }}>
-            另支持 Markdown / Word / PDF / 文本文档：业务规则、口径说明、流程规范等——这些会成为建模 agent 的领域知识来源。
+            业务规则、口径、流程规范等文档（md / docx / pdf / txt）是建模的领域知识来源，建议一并上传。
           </div>
         </div>
         <div className="ig-sheet" aria-hidden="true">
@@ -303,14 +303,18 @@ function IngestView({ project, documents, onChanged }) {
 
 /* ---- 节点 3：领域分析（分析结果 + 领域问题候选） ---- */
 
-function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance }) {
+function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance, onQuestionsChange }) {
+  const [selectedCount, setSelectedCount] = useState(null); // null=未知（加载中）
   if (!analysis) return <div className="empty">（无分析结果）</div>;
+  const ready = (selectedCount ?? 0) >= 5;
   return (
     <div>
-      {stale && <div className="lerr">⟳ 该分析基于已变更的资料，建议点右上角「重新领域分析」。</div>}
+      {stale && <div className="lerr">⟳ 资料已变更，建议重新领域分析。</div>}
       <div className="an-sec">
         <h4>领域概览</h4>
-        <div style={{ fontSize: 13.5, lineHeight: 1.8 }}>{analysis.domainOverview}</div>
+        <div className="mdv an-ov">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis.domainOverview || ''}</ReactMarkdown>
+        </div>
       </div>
       <div className="an-sec">
         <h4>候选业务对象（{analysis.candidateObjects?.length ?? 0}）</h4>
@@ -323,18 +327,16 @@ function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAd
         ))}
       </div>
       <div className="an-sec">
-        <h4>待澄清的开放问题（{analysis.openQuestions?.length ?? 0}）— 将进入建模访谈</h4>
-        {(analysis.openQuestions ?? []).map((q, i) => (
-          <div key={i} className="oq"><b>{q.topic}</b> — {q.why}</div>
-        ))}
+        <h4>领域问题<span className="h4-sub">建成后必须能回答的业务问题 · 勾选 ≥5 条</span></h4>
+        <DomainQuestionsBlock projectId={projectId}
+          onCountChange={(n) => { setSelectedCount(n); onQuestionsChange?.(); }} />
       </div>
-      <div className="an-sec">
-        <h4>领域问题 — 知识包建成后必须能回答的业务问题（勾选 ≥5 条驱动包生成，并自动预填评测用例）</h4>
-        <DomainQuestionsBlock projectId={projectId} />
-      </div>
-      <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+      <div style={{ display: 'flex', gap: 10, marginTop: 6, alignItems: 'center' }}>
         <button className="btn" disabled={analyzing} onClick={onReanalyze}>重新分析</button>
-        <button className="btn btn-p" onClick={onAdvance}>进入建模访谈 →</button>
+        <button className="btn btn-p" disabled={!ready} onClick={onAdvance}
+          title={ready ? '' : '勾选满 5 条领域问题后解锁'}>
+          进入建模访谈 →{ready ? '' : `（还差 ${5 - (selectedCount ?? 0)} 条）`}
+        </button>
       </div>
     </div>
   );

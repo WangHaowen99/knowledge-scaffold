@@ -131,7 +131,11 @@ export async function registerRoutes(app: FastifyInstance) {
     r.get('/api/projects/:id', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
-      return { project: p, documents: listDocuments(p.id), nodes: listNodes(p.id) };
+      const cqs = m2repo.listCompetency(p.id);
+      return {
+        project: p, documents: listDocuments(p.id), nodes: listNodes(p.id),
+        competency: { total: cqs.length, selected: cqs.filter((q) => q.selected).length },
+      };
     });
 
     // ---- 资料上传与解析（节点 2）----
@@ -213,6 +217,8 @@ export async function registerRoutes(app: FastifyInstance) {
     r.post('/api/projects/:id/interview/start', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const selectedCq = m2repo.listCompetency(c.p.id).filter((q) => q.selected).length;
+      if (selectedCq < 5) return reply.code(400).send({ error: `请先在领域分析中勾选至少 5 条领域问题（当前 ${selectedCq} 条）` });
       try {
         const res = await m2.startInterview(c.p, c.ctx, c.analysis);
         setProjectStage(c.p.id, 'interview');

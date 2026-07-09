@@ -27,10 +27,6 @@ export function TestcasesPanel({ projectId, onAdvance }) {
   return (
     <div>
       {err && <div className="lerr">{err}</div>}
-      <div style={{ fontSize: 13, color: 'var(--ink2)', lineHeight: 1.7, marginBottom: 14 }}>
-        每条用例 = <b>问题 + 标准答案</b>。评测时智能体在影子工作区回答问题，由 LLM Judge 与标准答案比对判分。
-        可从已选领域问题一键预填（标准答案需人工补充）。
-      </div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
         <button className="btn" disabled={busy} onClick={() => run(() => prefillTestcases(projectId))}>
           ⤓ 从领域问题预填
@@ -165,13 +161,9 @@ export function EvaluatePanel({ projectId }) {
 
       {/* 启动区 */}
       <div className="ev-launch">
-        <div style={{ fontSize: 13, color: 'var(--ink2)', lineHeight: 1.7, marginBottom: 10 }}>
-          评测在 consumer 的<b>影子工作区</b>中进行：导入当前知识包 → 逐条运行用例 → LLM Judge 判分。
-          不影响正式工作区。
-        </div>
         <label className="ev-bind-toggle">
           <input type="checkbox" checked={bindOn} onChange={(e) => setBindOn(e.target.checked)} />
-          绑定数据连接（查询类用例需要；判断类用例可不绑定）
+          绑定数据连接<span style={{ color: 'var(--muted)' }}>（查询类用例需要）</span>
         </label>
         {bindOn && (
           <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>
@@ -188,8 +180,8 @@ export function EvaluatePanel({ projectId }) {
               <input value={bind.token} onChange={(e) => setBind((b) => ({ ...b, token: e.target.value }))} />
             </div>
             <div className="field">
-              <label>scene（留空 = 本项目评测库 mw_proj_*）</label>
-              <input value={bind.scene} onChange={(e) => setBind((b) => ({ ...b, scene: e.target.value }))} placeholder="留空即用项目落库数据" />
+              <label>scene</label>
+              <input value={bind.scene} onChange={(e) => setBind((b) => ({ ...b, scene: e.target.value }))} placeholder="留空 = 本项目评测库" />
             </div>
           </div>
         )}
