@@ -53,7 +53,13 @@ load_state() {
         CURRENT_FRONTEND_IMAGE=""
         PREVIOUS_BACKEND_IMAGE=""
         PREVIOUS_FRONTEND_IMAGE=""
+        CURRENT_AUTH_IMAGE=""
+        PREVIOUS_AUTH_IMAGE=""
     fi
+
+    # 旧版本发布包写出的 state 文件没有 auth 镜像字段，升级时补默认值
+    CURRENT_AUTH_IMAGE="${CURRENT_AUTH_IMAGE:-}"
+    PREVIOUS_AUTH_IMAGE="${PREVIOUS_AUTH_IMAGE:-}"
 }
 
 write_state() {
@@ -64,6 +70,8 @@ write_state() {
     local current_frontend_image="$5"
     local previous_backend_image="$6"
     local previous_frontend_image="$7"
+    local current_auth_image="${8:-}"
+    local previous_auth_image="${9:-}"
 
     mkdir -p "${STATE_DIR}"
     {
@@ -74,7 +82,19 @@ write_state() {
         printf 'CURRENT_FRONTEND_IMAGE=%q\n' "${current_frontend_image}"
         printf 'PREVIOUS_BACKEND_IMAGE=%q\n' "${previous_backend_image}"
         printf 'PREVIOUS_FRONTEND_IMAGE=%q\n' "${previous_frontend_image}"
+        printf 'CURRENT_AUTH_IMAGE=%q\n' "${current_auth_image}"
+        printf 'PREVIOUS_AUTH_IMAGE=%q\n' "${previous_auth_image}"
     } > "${STATE_FILE}"
+}
+
+# auth-server 为 opt-in（compose profile "auth"）：backend/.env 中 AUTH_MODE=remote 即视为启用
+auth_profile_enabled() {
+    local env_file="${BUNDLE_ROOT}/backend/.env"
+    [ -f "${env_file}" ] || return 1
+
+    local mode
+    mode="$(sed -n 's/^[[:space:]]*AUTH_MODE[[:space:]]*=[[:space:]]*//p' "${env_file}" | tail -n 1 | tr -d '"'"'"' \r' )"
+    [ "${mode}" = "remote" ]
 }
 
 ensure_runtime_layout() {
@@ -86,6 +106,11 @@ ensure_runtime_layout() {
 
     if [ ! -d "${BUNDLE_ROOT}/.onto-runtime" ]; then
         mkdir -p "${BUNDLE_ROOT}/.onto-runtime"
+    fi
+
+    # 仅在启用 auth profile 时创建 auth-server 数据目录（local 模式行为保持不变）
+    if auth_profile_enabled; then
+        mkdir -p "${BUNDLE_ROOT}/.onto-auth"
     fi
 }
 
@@ -132,6 +157,15 @@ docker_compose_cmd() {
     fi
 
     if command -v docker-compose >/dev/null 2>&1; then
+        # compose 文件使用 profiles 键（docker-compose >= 1.28 支持）；
+        # 更老的 v1 连 local 模式都无法解析，这里快速失败给出明确指引
+        local ver
+        ver="$(docker-compose version --short 2>/dev/null || true)"
+        case "${ver}" in
+            1.2[0-7].*|1.1?.*|1.?.*|0.*)
+                die "docker-compose ${ver} 过旧（<1.28 不支持 compose profiles），请升级 Docker Compose v2"
+                ;;
+        esac
         printf 'docker-compose'
         return 0
     fi
@@ -139,23 +173,36 @@ docker_compose_cmd() {
     return 1
 }
 
-compose_up() {
-    local compose_cmd
-    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+# auth profile 启用时追加 --profile auth（up/down 需一致，否则 down 不会停 auth-server）
+compose_profile_args() {
+    if auth_profile_enabled; then
+        printf -- '--profile auth'
+    fi
+}
 
-    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" ${compose_cmd} \
+compose_up() {
+    local compose_cmd profile_args
+    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    profile_args="$(compose_profile_args)"
+
+    # shellcheck disable=SC2086
+    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" ${compose_cmd} \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
+        ${profile_args} \
         up -d
 }
 
 compose_down() {
-    local compose_cmd
+    local compose_cmd profile_args
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    profile_args="$(compose_profile_args)"
 
-    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" ${compose_cmd} \
+    # shellcheck disable=SC2086
+    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" ${compose_cmd} \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
+        ${profile_args} \
         down
 }
 

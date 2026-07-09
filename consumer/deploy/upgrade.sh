@@ -56,7 +56,7 @@ source "${STATE_FILE}"
 log "Upgrading from ${CURRENT_VERSION}"
 log "Install directory: ${INSTALL_DIR}"
 
-PROTECTED_ITEMS="backend/.env backend/config backend/logs frontend/logs/nginx .onto-runtime"
+PROTECTED_ITEMS="backend/.env backend/config backend/logs frontend/logs/nginx .onto-runtime .onto-auth"
 
 log "Creating pre-extract backup"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"

@@ -40,3 +40,24 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
+
+  # 独立鉴权服务（opt-in）：仅在 compose 带 --profile auth 时启动（部署脚本按
+  # backend/.env 的 AUTH_MODE=remote 自动判定）。不发布宿主端口，仅 backend
+  # 经容器网络访问 http://auth-server:5056；健康检查由镜像自带 HEALTHCHECK 提供。
+  # AUTH_SERVER_IMAGE 未设置时回退 latest——profile 不激活时该服务不会被拉起，
+  # 不影响 local 模式部署。
+  auth-server:
+    image: ${AUTH_SERVER_IMAGE:-onto-agent-auth-server:latest}
+    container_name: onto-agent-auth-server
+    restart: unless-stopped
+    profiles:
+      - auth
+    volumes:
+      - ./.onto-auth:/data
+    environment:
+      - AUTH_SERVER_HOST=0.0.0.0
+      - AUTH_SERVER_DATA_DIR=/data
+      - AUTH_SERVER_ISSUER=${AUTH_SERVER_ISSUER:-http://auth-server:5056}
+      - AUTH_SERVER_ADMIN_TOKEN=${AUTH_SERVER_ADMIN_TOKEN:-}
+      - AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-false}
+      - AUTH_MAIL_MODE=${AUTH_MAIL_MODE:-console}

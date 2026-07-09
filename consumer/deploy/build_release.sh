@@ -92,6 +92,17 @@ ${BUILD_CMD} \
     "${PROJECT_ROOT}/frontend"
 docker save -o "${IMAGES_DIR}/onto-agent-frontend-${VERSION}.tar" "onto-agent-frontend:${VERSION}"
 
+# auth-server 与 consumer 平级（架构决策 D4），构建上下文在 consumer/ 的上一级
+AUTH_SERVER_SRC="${PROJECT_ROOT}/../auth-server"
+[ -d "${AUTH_SERVER_SRC}" ] || {
+    echo "Error: auth-server source directory not found: ${AUTH_SERVER_SRC}" >&2
+    exit 1
+}
+${BUILD_CMD} \
+    -t "onto-agent-auth-server:${VERSION}" \
+    "${AUTH_SERVER_SRC}"
+docker save -o "${IMAGES_DIR}/onto-agent-auth-server-${VERSION}.tar" "onto-agent-auth-server:${VERSION}"
+
 cp "${PROJECT_ROOT}/backend/.env.example" "${BUNDLE_DIR}/backend/.env.example"
 cp "${PROJECT_ROOT}/frontend/.env.example" "${BUNDLE_DIR}/frontend/.env.example"
 cp -r "${PROJECT_ROOT}/deploy/"* "${BUNDLE_DIR}/deploy/"
@@ -112,8 +123,10 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "release_arch": "${RELEASE_ARCH}",
   "backend_image": "onto-agent-backend:${VERSION}",
   "frontend_image": "onto-agent-frontend:${VERSION}",
+  "auth_server_image": "onto-agent-auth-server:${VERSION}",
   "backend_image_tar": "images/onto-agent-backend-${VERSION}.tar",
-  "frontend_image_tar": "images/onto-agent-frontend-${VERSION}.tar"
+  "frontend_image_tar": "images/onto-agent-frontend-${VERSION}.tar",
+  "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar"
 }
 EOF
 
