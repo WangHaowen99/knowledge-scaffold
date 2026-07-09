@@ -1,0 +1,36 @@
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { getAuthClient } from './client.js';
+import type { AuthUser } from '../types.js';
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    user?: AuthUser;
+  }
+}
+
+// preHandler：解析 Bearer token，经 AuthClient 校验，注入 request.user。
+// 校验通过存缓存（同一 token 短期内不重复远程 introspect）。
+const cache = new Map<string, { user: AuthUser; exp: number }>();
+const TTL_MS = 60_000;
+
+export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+  const header = req.headers.authorization ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!token) {
+    reply.code(401).send({ error: '缺少认证令牌' });
+    return;
+  }
+  const cached = cache.get(token);
+  if (cached && cached.exp > Date.now()) {
+    req.user = cached.user;
+    return;
+  }
+  const user = await getAuthClient().verify(token);
+  if (!user) {
+    cache.delete(token);
+    reply.code(401).send({ error: '认证失败或令牌已过期' });
+    return;
+  }
+  cache.set(token, { user, exp: Date.now() + TTL_MS });
+  req.user = user;
+}
