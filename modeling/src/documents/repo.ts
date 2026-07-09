@@ -31,3 +31,12 @@ export function listDocuments(projectId: string): DocumentRecord[] {
   const rows = getDb().prepare('SELECT * FROM documents WHERE project_id = ? ORDER BY created_at').all(projectId);
   return rows.map(rowToDoc);
 }
+
+export function getDocument(id: string): DocumentRecord | null {
+  const r = getDb().prepare('SELECT * FROM documents WHERE id = ?').get(id);
+  return r ? rowToDoc(r) : null;
+}
+
+export function deleteDocument(id: string): void {
+  getDb().prepare('DELETE FROM documents WHERE id = ?').run(id);
+}

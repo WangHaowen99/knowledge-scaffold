@@ -1,17 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getProject, uploadDocument, runAnalyze } from './api.js';
-import { InterviewPanel, CompetencyPanel, GeneratePanel, ReviewPanel } from './M2Panels.jsx';
+import { getProject, uploadDocument, deleteDocument, runAnalyze } from './api.js';
+import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from './M2Panels.jsx';
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 import { OptimizePanel } from './M4Panel.jsx';
+import PackageChat from './PackageChat.jsx';
+import { BusyButton } from './ui.jsx';
 
-// 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板。
-// M1 覆盖节点 1~3；后续节点在时间线上预留灰态。
+// 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
+// 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
 const TRUNK = [
-  ['project_setup', '项目创建'], ['ingest', '资料上传与解析'], ['analyze', '初步分析'],
-  ['interview', '建模访谈'], ['competency', '胜任力问题'], ['generate', '知识包生成'],
-  ['review', '包评审'], ['testcases', '评测用例录入'], ['evaluate', '评测运行'], ['optimize', '优化建议与应用'],
+  ['project_setup', '项目创建'], ['ingest', '资料上传与解析'], ['analyze', '领域分析'],
+  ['interview', '建模访谈'], ['generate', '知识包生成'],
+  ['review', '知识包完善'], ['testcases', '评测用例录入'], ['evaluate', '评测运行'], ['optimize', '优化建议与应用'],
 ];
-const STAGE_INDEX = Object.fromEntries(TRUNK.map(([k], i) => [k, i]));
+// stage 序含历史节点 competency（老项目 stage 可能停在该值）
+const STAGE_ORDER = ['project_setup', 'ingest', 'analyze', 'interview', 'competency', 'generate', 'review', 'testcases', 'evaluate', 'optimize'];
+const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((k, i) => [k, i]));
+
+const TITLE = {
+  ingest: '资料上传与解析', analyze: '领域分析', interview: '建模访谈',
+  competency: '领域问题', generate: '知识包生成', review: '知识包完善',
+  testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
+  project_setup: '项目信息',
+};
 
 export default function Workbench({ projectId }) {
   const [data, setData] = useState(null); // { project, documents, nodes }
@@ -29,42 +40,45 @@ export default function Workbench({ projectId }) {
 
   const { project, documents, nodes } = data;
   const stageIdx = STAGE_INDEX[project.stage] ?? 0;
-  const analyzeNode = nodes.find((n) => n.type === 'analyze' && n.status === 'done');
-  const interviewNode = nodes.find((n) => n.type === 'interview');
-  const competencyNode = nodes.find((n) => n.type === 'competency');
-  const generateNode = nodes.find((n) => n.type === 'generate' && n.status === 'done');
+  const nodeOf = (type) => nodes.find((n) => n.type === type);
+  const analyzeNode = nodeOf('analyze');
+  const interviewNode = nodeOf('interview');
+  const competencyNode = nodeOf('competency');
+  const generateNode = nodeOf('generate');
   const tables = documents.flatMap((d) => d.tables ?? []);
   const parsedDocs = documents.filter((d) => d.parseStatus === 'parsed');
+  const staleTypes = nodes.filter((n) => n.status === 'stale').map((n) => n.type);
 
-  // 节点解锁判定：1~2 始终可进；3 需资料；4 需分析完成；5 需访谈节点存在；6 需胜任力节点；7~9 需包已生成
+  const analyzeDone = analyzeNode && analyzeNode.status !== 'running';
+  const interviewDone = interviewNode?.status === 'done';
+  const generateDone = generateNode && ['done', 'stale'].includes(generateNode.status);
+
+  // 节点解锁：1~2 始终可进；3 需资料；4 需领域分析产出；5 需访谈完成 + 领域问题就绪；6~9 需包已生成
   const unlocked = {
     project_setup: true, ingest: true,
     analyze: tables.length > 0 || parsedDocs.length > 0,
-    interview: !!analyzeNode,
-    competency: !!interviewNode && interviewNode.status === 'done',
-    generate: !!competencyNode,
-    review: !!generateNode,
-    testcases: !!generateNode,
-    evaluate: !!generateNode,
+    interview: !!analyzeDone,
+    generate: interviewDone && !!competencyNode,
+    review: !!generateDone,
+    testcases: !!generateDone,
+    evaluate: !!generateDone,
     optimize: stageIdx >= STAGE_INDEX.evaluate,
   };
   const nodeStatus = {
     project_setup: 'done', ingest: parsedDocs.length ? 'done' : 'pending',
-    analyze: analyzeNode ? 'done' : 'pending',
-    interview: interviewNode?.status === 'done' ? 'done' : interviewNode ? 'active-run' : 'pending',
-    competency: competencyNode?.status === 'done' ? 'done' : 'pending',
-    generate: generateNode ? 'done' : 'pending',
-    review: generateNode ? 'done' : 'pending',
+    analyze: analyzeNode?.status === 'stale' ? 'stale' : analyzeDone ? 'done' : 'pending',
+    interview: interviewNode?.status === 'stale' ? 'stale' : interviewDone ? 'done' : interviewNode ? 'active-run' : 'pending',
+    generate: generateNode?.status === 'stale' ? 'stale' : generateDone ? 'done' : 'pending',
+    review: generateDone ? 'done' : 'pending',
     testcases: stageIdx >= STAGE_INDEX.testcases ? 'done' : 'pending',
     evaluate: stageIdx >= STAGE_INDEX.evaluate ? 'done' : 'pending',
     optimize: stageIdx >= STAGE_INDEX.optimize ? 'done' : 'pending',
   };
   // 自动焦点：最靠后的已解锁未完成节点（进入评测阶段后跟随 stage）
   const autoFocus = !unlocked.analyze ? 'ingest'
-    : !analyzeNode ? (tables.length ? 'analyze' : 'ingest')
-    : !(interviewNode?.status === 'done') ? 'interview'
-    : !competencyNode ? 'competency'
-    : !generateNode ? 'generate'
+    : !analyzeDone ? (tables.length ? 'analyze' : 'ingest')
+    : !interviewDone ? 'interview'
+    : !generateDone ? 'generate'
     : project.stage === 'optimize' ? 'optimize'
     : project.stage === 'evaluate' ? 'evaluate'
     : project.stage === 'testcases' ? 'testcases'
@@ -86,15 +100,16 @@ export default function Workbench({ projectId }) {
         <div className="wb-b">
           {TRUNK.map(([key, title], i) => {
             const canGo = unlocked[key];
-            const done = nodeStatus[key] === 'done';
+            const st = nodeStatus[key];
             const active = key === effFocus;
             return (
               <div key={key}
-                className={`tl-node ${done ? 'done' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
+                className={`tl-node ${st === 'done' ? 'done' : ''} ${st === 'stale' ? 'stale' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
                 onClick={() => canGo && setFocus(key)}>
                 <div className="th">
-                  <span className="no">{done ? '✓' : i + 1}</span>
+                  <span className="no">{st === 'done' ? '✓' : st === 'stale' ? '⟳' : i + 1}</span>
                   <span className="tt" style={!canGo ? { color: 'var(--muted)' } : undefined}>{title}</span>
+                  {st === 'stale' && <span className="ts stale-ts">可能过时</span>}
                   {!canGo && <span className="ts">待解锁</span>}
                 </div>
               </div>
@@ -106,30 +121,33 @@ export default function Workbench({ projectId }) {
       {/* 中：当前节点交互区（按 effFocus 路由） */}
       <div className="wb-col wb-mid">
         <div className="wb-h">
-          {{ ingest: '资料上传与解析', analyze: '初步分析', interview: '建模访谈',
-             competency: '胜任力问题', generate: '知识包生成', review: '包评审',
-             testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
-             project_setup: '项目信息' }[effFocus]}
-          {effFocus === 'analyze' && !analyzeNode && tables.length > 0 && (
-            <button className="btn btn-p" style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }}
-              disabled={analyzing} onClick={doAnalyze}>
-              {analyzing ? '分析中…（约 1~2 分钟）' : '▶ 开始初步分析'}
-            </button>
+          {TITLE[effFocus]}
+          {effFocus === 'analyze' && (!analyzeDone || nodeStatus.analyze === 'stale') && tables.length > 0 && (
+            <BusyButton busy={analyzing} busyText="领域分析中" expect="通常 1~3 分钟"
+              style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }} onClick={doAnalyze}>
+              ▶ {nodeStatus.analyze === 'stale' ? '重新领域分析' : '开始领域分析'}
+            </BusyButton>
           )}
         </div>
+        {staleTypes.length > 0 && (
+          <div className="stale-banner">
+            ⟳ 资料已变更：{staleTypes.map((t) => TITLE[t] ?? t).join('、')} 的结果<b>可能已过时</b>。
+            建议从「领域分析」起重新执行受影响步骤（评测轮次与版本历史会保留，用例不受影响）。
+            <button className="btn" style={{ marginLeft: 10, padding: '3px 12px', fontSize: 12 }}
+              onClick={() => setFocus('analyze')}>去重新分析</button>
+          </div>
+        )}
         <div className="wb-b">
           {(effFocus === 'ingest' || effFocus === 'project_setup') && (
-            <IngestView project={project} documents={documents} onUploaded={load} />
+            <IngestView project={project} documents={documents} onChanged={load} />
           )}
           {effFocus === 'analyze' && (analyzeNode
-            ? <AnalysisView analysis={analyzeNode.output} onReanalyze={doAnalyze} analyzing={analyzing}
-                onAdvance={() => setFocus('interview')} />
-            : <IngestView project={project} documents={documents} onUploaded={load} />)}
+            ? <AnalysisView projectId={projectId} analysis={analyzeNode.output} stale={nodeStatus.analyze === 'stale'}
+                onReanalyze={doAnalyze} analyzing={analyzing}
+                onAdvance={() => { load(); setFocus('interview'); }} />
+            : <IngestView project={project} documents={documents} onChanged={load} />)}
           {effFocus === 'interview' && (
-            <InterviewPanel projectId={projectId} onAdvance={() => { load(); setFocus('competency'); }} />
-          )}
-          {effFocus === 'competency' && (
-            <CompetencyPanel projectId={projectId} onAdvance={() => { load(); setFocus('generate'); }} />
+            <InterviewPanel projectId={projectId} onAdvance={() => { load(); setFocus('generate'); }} />
           )}
           {effFocus === 'generate' && (
             <GeneratePanel projectId={projectId} onAdvance={() => { load(); setFocus('review'); }} />
@@ -145,48 +163,56 @@ export default function Workbench({ projectId }) {
         </div>
       </div>
 
-      {/* 右：上下文面板 */}
+      {/* 右：上下文面板；包完善时切换为修缮对话 */}
       <div className="wb-col wb-right">
-        <div className="ctx-tabs">
-          <button className={ctxTab === 'dict' ? 'on' : ''} onClick={() => setCtxTab('dict')}>数据字典（{tables.length}）</button>
-          <button className={ctxTab === 'docs' ? 'on' : ''} onClick={() => setCtxTab('docs')}>文档（{parsedDocs.length}）</button>
-        </div>
-        <div className="wb-b">
-          {ctxTab === 'dict' && (tables.length
-            ? tables.map((t) => (
-              <div key={t.name} className="dict-table">
-                <div className="tn">▤ {t.name} <span className="tag tag-lang">{t.rowCount} 行</span></div>
-                <table className="dt">
-                  <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
-                  <tbody>
-                    {t.fields.map((f) => (
-                      <tr key={f.name}>
-                        <td style={{ fontFamily: 'ui-monospace, monospace' }}>{f.name}{f.distinctRatio === 1 ? ' 🔑' : ''}</td>
-                        <td>{f.inferredType}</td>
-                        <td style={{ color: 'var(--ink2)' }}>{f.note || ''}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))
-            : <div className="empty">上传 Excel 数据表后，这里显示解析出的数据字典</div>)}
-          {ctxTab === 'docs' && (parsedDocs.length
-            ? parsedDocs.map((d) => (
-              <div key={d.id} className="doc-row">
-                <span>{d.kind === 'excel' ? '📊' : '📄'}</span>
-                <span className="dn">{d.filename}</span>
-                <span className="tag tag-ok">已解析</span>
-              </div>
-            ))
-            : <div className="empty">暂无文档</div>)}
-        </div>
+        {effFocus === 'review' ? (
+          <PackageChat projectId={projectId} />
+        ) : (
+          <>
+            <div className="ctx-tabs">
+              <button className={ctxTab === 'dict' ? 'on' : ''} onClick={() => setCtxTab('dict')}>数据字典（{tables.length}）</button>
+              <button className={ctxTab === 'docs' ? 'on' : ''} onClick={() => setCtxTab('docs')}>文档（{parsedDocs.length}）</button>
+            </div>
+            <div className="wb-b">
+              {ctxTab === 'dict' && (tables.length
+                ? tables.map((t) => (
+                  <div key={t.name} className="dict-table">
+                    <div className="tn">▤ {t.name} <span className="tag tag-lang">{t.rowCount} 行</span></div>
+                    <table className="dt">
+                      <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+                      <tbody>
+                        {t.fields.map((f) => (
+                          <tr key={f.name}>
+                            <td style={{ fontFamily: 'ui-monospace, monospace' }}>{f.name}{f.distinctRatio === 1 ? ' 🔑' : ''}</td>
+                            <td>{f.inferredType}</td>
+                            <td style={{ color: 'var(--ink2)' }}>{f.note || ''}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))
+                : <div className="empty">上传 Excel 数据表后，这里显示解析出的数据字典</div>)}
+              {ctxTab === 'docs' && (parsedDocs.length
+                ? parsedDocs.map((d) => (
+                  <div key={d.id} className="doc-row">
+                    <span>{d.kind === 'excel' ? '📊' : '📄'}</span>
+                    <span className="dn">{d.filename}</span>
+                    <span className="tag tag-ok">已解析</span>
+                  </div>
+                ))
+                : <div className="empty">暂无文档</div>)}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-function IngestView({ project, documents, onUploaded }) {
+/* ---- 节点 2：资料上传（配图说明 + 删除） ---- */
+
+function IngestView({ project, documents, onChanged }) {
   const inputRef = useRef(null);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -198,23 +224,61 @@ function IngestView({ project, documents, onUploaded }) {
     try {
       for (const f of files) await uploadDocument(project.id, f);
       setMsg(`已上传 ${files.length} 个文件`);
-      onUploaded();
+      onChanged();
     } catch (e) { setMsg(`上传失败：${e.message}`); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (doc) => {
+    if (!window.confirm(`删除「${doc.filename}」？\n\n删除后已完成的领域分析/访谈/生成结果会标记为「可能过时」，建议之后重新执行领域分析。已录入的评测用例与历史评测不受影响。`)) return;
+    setBusy(true); setMsg('');
+    try { await deleteDocument(project.id, doc.id); setMsg(`已删除 ${doc.filename}`); onChanged(); }
+    catch (e) { setMsg(`删除失败：${e.message}`); }
     finally { setBusy(false); }
   };
 
   return (
     <div>
-      <div style={{ fontSize: 13, color: 'var(--ink2)', marginBottom: 14, lineHeight: 1.7 }}>
-        上传领域资料：<b>Excel 数据库表</b>（sheet=表、首行=字段名、次行可选中文注释）、
-        以及 Markdown / Word / PDF / 文本说明文档。Excel 会被解析为数据字典（右栏可查看）。
+      {/* 配图说明：Excel 格式示例 */}
+      <div className="ig-guide">
+        <div className="ig-left">
+          <div className="ig-title">📊 Excel 数据库表怎么准备？</div>
+          <div className="ig-desc">
+            每个 <b>sheet 是一张表</b>（sheet 名 = 表名）；<b>首行是字段名</b>；
+            <b>第二行可选写中文注释</b>（会进入数据字典的「说明」列）；之后是数据行。
+            解析后可在右栏「数据字典」查看，评测时数据可一键落库供查询。
+          </div>
+          <div className="ig-desc" style={{ marginTop: 6 }}>
+            另支持 Markdown / Word / PDF / 文本文档：业务规则、口径说明、流程规范等——这些会成为建模 agent 的领域知识来源。
+          </div>
+        </div>
+        <div className="ig-sheet" aria-hidden="true">
+          <div className="ig-cap">示例：structure-list.xlsx</div>
+          <table>
+            <tbody>
+              <tr className="ig-hd"><td>ID</td><td>ParentPart</td><td>ChildPart</td><td>Num</td></tr>
+              <tr className="ig-note"><td>行号</td><td>父项件号</td><td>子项件号</td><td>数量</td></tr>
+              <tr><td>1</td><td>A001</td><td>B010</td><td>2</td></tr>
+              <tr><td>2</td><td>A001</td><td>B011</td><td>4</td></tr>
+            </tbody>
+          </table>
+          <div className="ig-tabs">
+            <span className="on">STRUCTURE_LIST</span><span>CHANGE_ORDER</span><span>TargetItem</span><span>＋</span>
+          </div>
+          <div className="ig-legend">
+            <span><i className="lg lg-hd" />首行=字段名</span>
+            <span><i className="lg lg-note" />次行=注释（可选）</span>
+            <span><i className="lg lg-tab" />sheet=表</span>
+          </div>
+        </div>
       </div>
+
       <div className={`dropzone ${drag ? 'drag' : ''}`}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
         onDragLeave={() => setDrag(false)}
         onDrop={(e) => { e.preventDefault(); setDrag(false); upload([...e.dataTransfer.files]); }}>
-        {busy ? '上传解析中…' : '点击选择或拖拽文件到此处（支持 xlsx / md / docx / pdf / txt，可多选）'}
+        {busy ? '处理中…' : '点击选择或拖拽文件到此处（支持 xlsx / md / docx / pdf / txt，可多选）'}
         <input ref={inputRef} type="file" multiple style={{ display: 'none' }}
           accept=".xlsx,.xls,.md,.markdown,.txt,.docx,.doc,.pdf"
           onChange={(e) => { upload([...e.target.files]); e.target.value = ''; }} />
@@ -228,6 +292,7 @@ function IngestView({ project, documents, onUploaded }) {
               <span className="dn">{d.filename}</span>
               {d.parseStatus === 'parsed' && <span className="tag tag-ok">已解析{d.tables ? ` · ${d.tables.length} 表` : ''}</span>}
               {d.parseStatus === 'failed' && <span className="tag tag-err" title={d.parseError}>解析失败</span>}
+              <button className="tc-del" title="删除该资料" disabled={busy} onClick={() => remove(d)}>✕</button>
             </div>
           ))}
         </div>
@@ -236,10 +301,13 @@ function IngestView({ project, documents, onUploaded }) {
   );
 }
 
-function AnalysisView({ analysis, onReanalyze, analyzing, onAdvance }) {
+/* ---- 节点 3：领域分析（分析结果 + 领域问题候选） ---- */
+
+function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance }) {
   if (!analysis) return <div className="empty">（无分析结果）</div>;
   return (
     <div>
+      {stale && <div className="lerr">⟳ 该分析基于已变更的资料，建议点右上角「重新领域分析」。</div>}
       <div className="an-sec">
         <h4>领域概览</h4>
         <div style={{ fontSize: 13.5, lineHeight: 1.8 }}>{analysis.domainOverview}</div>
@@ -259,6 +327,10 @@ function AnalysisView({ analysis, onReanalyze, analyzing, onAdvance }) {
         {(analysis.openQuestions ?? []).map((q, i) => (
           <div key={i} className="oq"><b>{q.topic}</b> — {q.why}</div>
         ))}
+      </div>
+      <div className="an-sec">
+        <h4>领域问题 — 知识包建成后必须能回答的业务问题（勾选 ≥5 条驱动包生成，并自动预填评测用例）</h4>
+        <DomainQuestionsBlock projectId={projectId} />
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
         <button className="btn" disabled={analyzing} onClick={onReanalyze}>重新分析</button>

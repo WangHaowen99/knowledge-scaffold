@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   listTestcases, addTestcase, prefillTestcases, updateTestcase, deleteTestcase,
-  startEvaluate, listRounds, getRound, overrideVerdict,
+  startEvaluate, listRounds, getRound, overrideVerdict, getSettings,
 } from './api.js';
 
 /* ================= 节点 8 · 评测用例录入 ================= */
@@ -29,11 +29,11 @@ export function TestcasesPanel({ projectId, onAdvance }) {
       {err && <div className="lerr">{err}</div>}
       <div style={{ fontSize: 13, color: 'var(--ink2)', lineHeight: 1.7, marginBottom: 14 }}>
         每条用例 = <b>问题 + 标准答案</b>。评测时智能体在影子工作区回答问题，由 LLM Judge 与标准答案比对判分。
-        可从已选胜任力问题一键预填（标准答案需人工补充）。
+        可从已选领域问题一键预填（标准答案需人工补充）。
       </div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
         <button className="btn" disabled={busy} onClick={() => run(() => prefillTestcases(projectId))}>
-          ⤓ 从胜任力问题预填
+          ⤓ 从领域问题预填
         </button>
         <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'var(--muted)', alignSelf: 'center' }}>
           共 {cases.length} 条 · 已填标准答案 {ready} 条
@@ -79,7 +79,7 @@ function CaseRow({ c, busy, onSave, onDelete }) {
   return (
     <div className="tc-row">
       <div className="tc-head">
-        {c.source === 'competency' && <span className="tag tag-lang">胜任力</span>}
+        {c.source === 'competency' && <span className="tag tag-lang">领域问题</span>}
         {!c.groundTruth.trim() && <span className="tag tag-draft">待补答案</span>}
         <button className="tc-del" title="删除" disabled={busy} onClick={onDelete}>✕</button>
       </div>
@@ -96,17 +96,22 @@ function CaseRow({ c, busy, onSave, onDelete }) {
 
 /* ================= 节点 9 · 评测运行 ================= */
 
-const BINDING_TEMPLATE = '{\n  "url": "http://<nl2sql 服务>:8080",\n  "token": "",\n  "scene": ""\n}';
-
 export function EvaluatePanel({ projectId }) {
   const [rounds, setRounds] = useState(null);
   const [current, setCurrent] = useState(null); // { round, results }
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [bindOn, setBindOn] = useState(false);
-  const [provider, setProvider] = useState('nl2sql_template');
-  const [bindCfg, setBindCfg] = useState(BINDING_TEMPLATE);
+  const [bind, setBind] = useState({ provider: 'nl2sql_template', url: '', token: '', scene: '' });
   const pollRef = useRef(null);
+
+  // 配置中心的评测连接默认值自动预填（配了 url 就默认勾选绑定）
+  useEffect(() => {
+    getSettings().then((d) => {
+      const b = d.evalBinding || {};
+      if (b.url) { setBind({ provider: b.provider || 'nl2sql_template', url: b.url, token: b.token || '', scene: b.scene || '' }); setBindOn(true); }
+    }).catch(() => {});
+  }, [projectId]);
 
   const loadRounds = () => listRounds(projectId).then((d) => {
     setRounds(d.rounds);
@@ -142,9 +147,8 @@ export function EvaluatePanel({ projectId }) {
     try {
       let binding;
       if (bindOn) {
-        let config;
-        try { config = JSON.parse(bindCfg); } catch { throw new Error('数据连接配置不是合法 JSON'); }
-        binding = { provider, config };
+        if (!bind.url) throw new Error('请填写数据服务 URL（或在配置中心配好默认值）');
+        binding = { provider: bind.provider || 'nl2sql_template', config: { url: bind.url, token: bind.token, scene: bind.scene } };
       }
       const { roundId } = await startEvaluate(projectId, binding);
       await loadRounds();
@@ -170,15 +174,22 @@ export function EvaluatePanel({ projectId }) {
           绑定数据连接（查询类用例需要；判断类用例可不绑定）
         </label>
         {bindOn && (
-          <div style={{ marginTop: 10 }}>
+          <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>
             <div className="field">
               <label>provider</label>
-              <input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="nl2sql_template" />
+              <input value={bind.provider} onChange={(e) => setBind((b) => ({ ...b, provider: e.target.value }))} placeholder="nl2sql_template" />
             </div>
             <div className="field">
-              <label>config（JSON，指向外部 NL2SQL / MindsDB 服务）</label>
-              <textarea rows={5} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12 }}
-                value={bindCfg} onChange={(e) => setBindCfg(e.target.value)} />
+              <label>数据服务 URL</label>
+              <input value={bind.url} onChange={(e) => setBind((b) => ({ ...b, url: e.target.value }))} placeholder="http://localhost:5600" />
+            </div>
+            <div className="field">
+              <label>token</label>
+              <input value={bind.token} onChange={(e) => setBind((b) => ({ ...b, token: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label>scene（留空 = 本项目评测库 mw_proj_*）</label>
+              <input value={bind.scene} onChange={(e) => setBind((b) => ({ ...b, scene: e.target.value }))} placeholder="留空即用项目落库数据" />
             </div>
           </div>
         )}

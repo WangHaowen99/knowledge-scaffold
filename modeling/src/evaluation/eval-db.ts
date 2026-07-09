@@ -1,4 +1,4 @@
-import { config } from '../config.js';
+import { getEvalDbUrl } from '../settings/repo.js';
 import type { DataDictTable } from '../types.js';
 
 // Excel → 评测 MySQL 落库（design.md 决策 5 第三段）：
@@ -16,7 +16,8 @@ export function evalSchemaName(projectId: string): string {
 }
 
 export async function provisionEvalDb(projectId: string, tables: DataDictTable[]): Promise<{ ok: boolean; schema?: string; detail: string }> {
-  if (!config.evalDbUrl) return { ok: false, detail: '未配置 EVAL_DB_URL，跳过评测库落库' };
+  const evalDbUrl = getEvalDbUrl();
+  if (!evalDbUrl) return { ok: false, detail: '未配置评测库地址（配置中心或 EVAL_DB_URL），跳过落库' };
   const withRows = tables.filter((t) => t.rows?.length);
   if (!withRows.length) return { ok: false, detail: '数据字典无全量行（旧项目需重新上传 Excel），跳过落库' };
 
@@ -30,7 +31,7 @@ export async function provisionEvalDb(projectId: string, tables: DataDictTable[]
   const schema = evalSchemaName(projectId);
   let conn: import('mysql2/promise').Connection | null = null;
   try {
-    conn = await mysql.createConnection(config.evalDbUrl);
+    conn = await mysql.createConnection(evalDbUrl);
     await conn.query(`DROP DATABASE IF EXISTS ${ident(schema)}`);
     await conn.query(`CREATE DATABASE ${ident(schema)} CHARACTER SET utf8mb4`);
     await conn.query(`USE ${ident(schema)}`);

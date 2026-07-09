@@ -2,18 +2,20 @@ import type { FastifyInstance } from 'fastify';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient } from './auth/client.js';
 import { createProject, getProject, listProjects, setStage } from './projects/repo.js';
-import { insertDocument, listDocuments } from './documents/repo.js';
+import { insertDocument, listDocuments, getDocument, deleteDocument } from './documents/repo.js';
 import { kindOf, parseDocument } from './documents/parser.js';
-import { listNodes, runAnalyze } from './workflow/engine.js';
+import { listNodes, runAnalyze, upsertNode } from './workflow/engine.js';
 import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
-import { getSetting, setSetting, getConsumerApiUrl } from './settings/repo.js';
+import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalDbUrl, getEvalBindingDefaults } from './settings/repo.js';
+import { packageChat, getOverrides, setOverride, clearOverride } from './workflow/package-chat.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
+import { evalSchemaName } from './evaluation/eval-db.js';
 import { proposeOptimizations, applyOptimizations } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
@@ -38,19 +40,71 @@ export async function registerRoutes(app: FastifyInstance) {
     r.get('/api/me', async (req) => ({ user: req.user }));
 
     // ---- 服务设置（consumer 评测端点页面可配置） ----
-    r.get('/api/settings', async () => ({
-      consumerApiUrl: getConsumerApiUrl(),
-      consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : (config.consumerApiUrl ? 'env' : 'issuer'),
-      authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer 由部署配置
-    }));
+    r.get('/api/settings', async () => {
+      const llm = getLlmSettings();
+      const binding = getEvalBindingDefaults();
+      return {
+        consumerApiUrl: getConsumerApiUrl(),
+        consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : (config.consumerApiUrl ? 'env' : 'issuer'),
+        authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer 由部署配置
+        llm: {
+          baseUrl: llm.baseUrl, model: llm.model, maxTokens: llm.maxTokens,
+          apiKeySet: !!llm.apiKey, // key 不回显
+          source: getSetting('llm_base_url') ? 'settings' : 'env',
+        },
+        evalDbUrl: getEvalDbUrl(),
+        evalBinding: binding,
+      };
+    });
 
     r.put('/api/settings', async (req, reply) => {
-      const { consumerApiUrl } = (req.body ?? {}) as { consumerApiUrl?: string };
-      if (!consumerApiUrl || !/^https?:\/\//.test(consumerApiUrl)) {
-        return reply.code(400).send({ error: 'consumerApiUrl 必须是 http(s) 地址' });
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const put = (key: string, v: unknown) => {
+        if (v === undefined) return; // 未提交 = 不修改
+        const s = String(v).trim();
+        s ? setSetting(key, s) : deleteSetting(key); // 空串 = 清除（回退 env）
+      };
+      if (b.consumerApiUrl !== undefined) {
+        const v = String(b.consumerApiUrl).trim();
+        if (v && !/^https?:\/\//.test(v)) return reply.code(400).send({ error: 'consumerApiUrl 必须是 http(s) 地址' });
+        put('consumer_api_url', v);
       }
-      setSetting('consumer_api_url', consumerApiUrl.trim());
-      return { consumerApiUrl: getConsumerApiUrl() };
+      put('llm_base_url', b.llmBaseUrl);
+      put('llm_model', b.llmModel);
+      put('llm_max_tokens', b.llmMaxTokens);
+      if (b.llmApiKey !== undefined && String(b.llmApiKey) !== '') put('llm_api_key', b.llmApiKey); // key 留空 = 保持不变
+      if (b.llmApiKeyClear === true) deleteSetting('llm_api_key');
+      put('eval_db_url', b.evalDbUrl);
+      put('eval_binding_provider', b.evalBindingProvider);
+      put('eval_binding_url', b.evalBindingUrl);
+      put('eval_binding_token', b.evalBindingToken);
+      put('eval_binding_scene', b.evalBindingScene);
+      return { ok: true };
+    });
+
+    // LLM 有效性测试：最小 chat/completions 调用；失败时返回原始错误（供排障）
+    r.post('/api/settings/llm/test', async (req) => {
+      const b = (req.body ?? {}) as Record<string, string>;
+      const saved = getLlmSettings();
+      const baseUrl = (b.baseUrl || saved.baseUrl).replace(/\/+$/, '');
+      const apiKey = b.apiKey || saved.apiKey;
+      const model = b.model || saved.model;
+      if (baseUrl === 'faux') return { ok: true, detail: 'faux 演示模式（不调用真实端点）' };
+      if (!baseUrl || !model) return { ok: false, error: 'base url 与模型名必填' };
+      const t0 = Date.now();
+      try {
+        const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey ?? ''}` },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+          signal: AbortSignal.timeout(20_000),
+        });
+        const raw = await res.text();
+        if (!res.ok) return { ok: false, status: res.status, latencyMs: Date.now() - t0, error: raw.slice(0, 1000) };
+        return { ok: true, status: res.status, latencyMs: Date.now() - t0 };
+      } catch (e) {
+        return { ok: false, latencyMs: Date.now() - t0, error: e instanceof Error ? `${e.name}: ${e.message}${e.cause ? `（${e.cause}）` : ''}` : String(e) };
+      }
     });
 
     // 连通性测试：health / auth（token 透传）/ 模型就绪
@@ -97,6 +151,23 @@ export async function registerRoutes(app: FastifyInstance) {
       return reply.code(201).send({ document: doc });
     });
 
+    r.delete('/api/projects/:id/documents/:docId', async (req, reply) => {
+      const p = getProject((req.params as any).id);
+      if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      const doc = getDocument((req.params as any).docId);
+      if (!doc || doc.projectId !== p.id) return reply.code(404).send({ error: '文档不存在' });
+      deleteDocument(doc.id);
+      // 资料变更使下游产物「可能过时」：已完成节点标记 stale，由专家决定何时重跑（不强制清数据）
+      const stale: string[] = [];
+      for (const n of listNodes(p.id)) {
+        if (n.status === 'done' && ['analyze', 'interview', 'competency', 'generate'].includes(n.type)) {
+          upsertNode({ id: n.id, projectId: p.id, type: n.type, status: 'stale', ordinal: n.ordinal });
+          stale.push(n.type);
+        }
+      }
+      return { deleted: doc.id, staleNodes: stale, documents: listDocuments(p.id) };
+    });
+
     // ---- 初步分析（节点 3）----
     r.post('/api/projects/:id/analyze', async (req, reply) => {
       const p = getProject((req.params as any).id);
@@ -108,7 +179,12 @@ export async function registerRoutes(app: FastifyInstance) {
       try {
         const { node, analysis } = await runAnalyze(p.id, tables, textDocs);
         setStage(p.id, 'analyze');
-        return { node, analysis };
+        // 领域分析完成即生成「领域问题」候选（勾选后驱动包生成）；失败不阻断分析结果
+        let domainQuestions: unknown[] = [];
+        try {
+          domainQuestions = await m2.proposeCompetency(p, { tables, documents: textDocs }, analysis) as unknown[];
+        } catch { /* 面板可手动重试生成 */ }
+        return { node, analysis, domainQuestions };
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
@@ -121,7 +197,8 @@ export async function registerRoutes(app: FastifyInstance) {
       const docs = listDocuments(p.id);
       const tables: DataDictTable[] = docs.flatMap((d) => d.tables ?? []);
       const textDocs = docs.filter((d) => d.textContent).map((d) => ({ filename: d.filename, textContent: d.textContent }));
-      const analyzeNode = listNodes(p.id).find((n) => n.type === 'analyze' && n.status === 'done');
+      // stale（资料变更后）也返回旧分析——结果仍可用，由前端提示重跑
+      const analyzeNode = listNodes(p.id).find((n) => n.type === 'analyze' && ['done', 'stale'].includes(n.status));
       return { p, ctx: { tables, documents: textDocs }, analysis: analyzeNode?.output };
     };
 
@@ -200,7 +277,13 @@ export async function registerRoutes(app: FastifyInstance) {
       const pv = pickVersion(c.p.id, req);
       if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
       const files = renderPackage(pv.spec);
-      return { version: pv.version, coverage: pv.coverage, files: Object.keys(files).sort(), versions: m2repo.listPackageVersions(c.p.id) };
+      const overrides = getOverrides(c.p.id);
+      return {
+        version: pv.version, coverage: pv.coverage,
+        files: Object.keys(files).sort(),
+        overriddenPaths: Object.keys(overrides).filter((k) => k in files).sort(),
+        versions: m2repo.listPackageVersions(c.p.id),
+      };
     });
     r.get('/api/projects/:id/package/file', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -210,14 +293,55 @@ export async function registerRoutes(app: FastifyInstance) {
       const files = renderPackage(pv.spec);
       const path = String((req.query as any).path || '');
       if (!(path in files)) return reply.code(404).send({ error: '文件不存在' });
-      return { path, content: files[path] };
+      const overrides = getOverrides(c.p.id);
+      return { path, content: overrides[path] ?? files[path], overridden: path in overrides, rendered: files[path] };
+    });
+
+    // 人工修订包文件（覆盖渲染产物；对导出与后续版本渲染持续生效，直至清除）
+    r.put('/api/projects/:id/package/file', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { path, content } = (req.body ?? {}) as { path?: string; content?: string };
+      const latest = m2repo.latestPackageVersion(c.p.id);
+      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
+      const files = renderPackage(latest.spec);
+      if (!path || !(path in files)) return reply.code(400).send({ error: 'path 不存在于当前包' });
+      if (typeof content !== 'string') return reply.code(400).send({ error: 'content 必填' });
+      setOverride(c.p.id, path, content);
+      return { ok: true, path, overridden: true };
+    });
+    r.delete('/api/projects/:id/package/file', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const path = String((req.query as any).path || '');
+      clearOverride(c.p.id, path);
+      const latest = m2repo.latestPackageVersion(c.p.id);
+      const files = latest ? renderPackage(latest.spec) : {};
+      return { ok: true, path, content: (files as Record<string, string>)[path] ?? '' };
+    });
+
+    // 包修缮 agent 对话：咨询直接回答；要求修改则修订规格并落新版本
+    r.post('/api/projects/:id/package/chat', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { message, history } = (req.body ?? {}) as { message?: string; history?: { role: 'user' | 'assistant'; text: string }[] };
+      if (!message?.trim()) return reply.code(400).send({ error: 'message 必填' });
+      try {
+        const result = await packageChat(c.p, history ?? [], message.trim());
+        return result;
+      } catch (e) {
+        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
+      }
     });
     r.get('/api/projects/:id/package/export', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const pv = pickVersion(c.p.id, req);
       if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
-      const zip = zipPackage(renderPackage(pv.spec));
+      const rendered = renderPackage(pv.spec);
+      const overrides = getOverrides(c.p.id);
+      for (const [op, oc] of Object.entries(overrides)) if (op in rendered) rendered[op] = oc;
+      const zip = zipPackage(rendered);
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.version}.zip"`);
       return reply.send(Buffer.from(zip));
@@ -263,6 +387,8 @@ export async function registerRoutes(app: FastifyInstance) {
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const token = (req.headers.authorization ?? '').slice(7);
       const { binding } = (req.body ?? {}) as any;
+      // scene 缺省 = 本项目评测库 schema（Excel 全量行自动落库的那个）
+      if (binding?.config && !binding.config.scene) binding.config.scene = evalSchemaName(c.p.id);
       try {
         const { roundId } = startEvaluation({ projectId: c.p.id, token, tables: c.ctx.tables, binding });
         setProjectStage(c.p.id, 'evaluate');

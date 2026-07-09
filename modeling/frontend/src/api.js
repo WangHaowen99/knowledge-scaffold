@@ -26,6 +26,7 @@ export const uploadDocument = (id, file) => {
   form.append('file', file);
   return api(`/api/projects/${encodeURIComponent(id)}/documents`, { method: 'POST', body: form });
 };
+export const deleteDocument = (id, docId) => api(`/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' });
 export const runAnalyze = (id) => api(`/api/projects/${encodeURIComponent(id)}/analyze`, { method: 'POST' });
 
 // ---- M2 ----
@@ -59,3 +60,14 @@ export const applyOptimize = (id, suggestionIds) => api(`${P(id)}/optimize/apply
 export const rejectSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/reject`, { method: 'POST', body: JSON.stringify({ suggestionIds }) });
 export const listVersions = (id) => api(`${P(id)}/versions`);
 export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;
+
+// ---- 包完善（人工修订 + 修缮对话）----
+export const savePackageFile = (id, path, content) => api(`${P(id)}/package/file`, { method: 'PUT', body: JSON.stringify({ path, content }) });
+export const resetPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+export const packageChat = (id, message, history) => api(`${P(id)}/package/chat`, { method: 'POST', body: JSON.stringify({ message, history }) });
+
+// ---- 配置中心 ----
+export const getSettings = () => api('/api/settings');
+export const saveSettings = (patch) => api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+export const testLlm = (cfg) => api('/api/settings/llm/test', { method: 'POST', body: JSON.stringify(cfg || {}) });
+export const testConsumer = (url) => api('/api/settings/consumer/test', { method: 'POST', body: JSON.stringify({ url }) });

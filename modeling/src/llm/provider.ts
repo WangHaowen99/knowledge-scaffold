@@ -1,5 +1,5 @@
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
-import { config } from '../config.js';
+import { getLlmSettings } from '../settings/repo.js';
 
 // pi agent 的 LLM 依赖：一个 model 对象 + streamFn + getApiKey。
 // 真实端点走 openai-completions；冒烟/测试可注入 faux（见 scripts/smoke-nodes.ts）。
@@ -10,7 +10,7 @@ export interface LlmDeps {
 }
 
 // 手构一个最小 openai-completions Model 对象（字段参照内置 provider 的 models）。
-function buildModel(baseUrl: string, modelId: string): any {
+function buildModel(baseUrl: string, modelId: string, maxTokens: number): any {
   return {
     id: modelId,
     name: modelId,
@@ -21,20 +21,22 @@ function buildModel(baseUrl: string, modelId: string): any {
     reasoning: false,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128000,
-    // 大规格（几十个对象）的 submit_package_spec 输出可能超 8k token，可通过 env 放宽
-    maxTokens: Number(process.env.MODELING_LLM_MAX_TOKENS ?? 8192),
+    // 大规格（几十个对象）的 submit_package_spec 输出可能超 8k token，页面/env 可放宽
+    maxTokens,
   };
 }
 
+// LLM 配置来源：配置中心（settings 表）优先，env 兜底——每次构建即时读取，页面改完即生效。
 export function buildLlm(): LlmDeps {
-  if (config.llm.baseUrl === 'faux') return buildFauxModeler();
-  if (!config.llm.baseUrl || !config.llm.model) {
-    throw new Error('未配置 MODELING_LLM_BASE_URL / MODELING_LLM_MODEL');
+  const llm = getLlmSettings();
+  if (llm.baseUrl === 'faux') return buildFauxModeler();
+  if (!llm.baseUrl || !llm.model) {
+    throw new Error('未配置 LLM（请在配置中心填写 base url 与模型名，或设置 MODELING_LLM_BASE_URL / MODELING_LLM_MODEL）');
   }
   return {
-    model: buildModel(config.llm.baseUrl, config.llm.model),
+    model: buildModel(llm.baseUrl, llm.model, llm.maxTokens),
     streamFn: streamSimple,
-    getApiKey: () => config.llm.apiKey || undefined,
+    getApiKey: () => llm.apiKey || undefined,
   };
 }
 
@@ -133,6 +135,25 @@ export function buildFauxModeler(): LlmDeps {
           relatedQuestion: f.question,
         })),
       })]);
+    }
+    if (sys.includes('package_chat')) {
+      // faux 包修缮：带「修改/增加/调整/删除」意图时追加演示操作并提交修订，否则纯文字回复
+      const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
+      const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
+      const msg = (text.match(/【专家消息】\n([\s\S]*)$/) ?? [])[1]?.trim() ?? '';
+      let spec: any = { objects: [], operations: [] };
+      try { spec = JSON.parse((text.match(/【当前规格】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
+      if (/修改|增加|新增|调整|删除|补充|改成|改为/.test(msg) && (spec.operations ?? []).length) {
+        return fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
+          objects: spec.objects ?? [],
+          operations: [...spec.operations, {
+            key: `chat_${(spec.operations ?? []).length + 1}`, title: `（修缮）${msg.slice(0, 18)}`,
+            description: `（演示修缮）按专家要求落实：${msg.slice(0, 100)}`,
+            inputs: [], outputs: [], flow: ['按专家要求执行'], relatedObjects: (spec.objects ?? []).slice(0, 1).map((o: any) => o.key),
+          }],
+        })]);
+      }
+      return fauxAssistantMessage(`（演示模式）已收到：「${msg.slice(0, 60)}」。当前包共 ${(spec.objects ?? []).length} 个对象、${(spec.operations ?? []).length} 个操作；如需修改请描述具体改动（如“增加/修改/删除…”）。`);
     }
     if (sys.includes('submit_revised_spec')) {
       // faux 修订：解析【当前规格】与【采纳的建议】，每条建议追加一个含业务规则的操作

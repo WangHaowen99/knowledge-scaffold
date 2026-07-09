@@ -80,8 +80,10 @@ async function runRound(
   const db = await provisionEvalDb(projectId, tables);
   log(db.detail);
 
-  // 3. 导入知识包（已存在则覆盖激活版本）
+  // 3. 导入知识包（已存在则覆盖激活版本；人工修订的文件以修订稿为准）
   const files = renderPackage(latest.spec);
+  const { getOverrides } = await import('../workflow/package-chat.js');
+  for (const [op, oc] of Object.entries(getOverrides(projectId))) if (op in files) files[op] = oc;
   const zip = zipPackage(files);
   const importResult = await importZip(token, ws, zip, latest.spec.id);
   log(`知识包已导入影子工作区：${importResult.ontology_id}（对象 ${importResult.objects_count ?? '-'} / 操作 ${importResult.operations_count ?? '-'}）`);
