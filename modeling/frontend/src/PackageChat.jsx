@@ -4,12 +4,23 @@ import { useElapsed } from './ui.jsx';
 
 // 知识包完善右栏：修缮对话（两段式）。
 // 发消息 → agent 影响分析：咨询直接回答；修改类返回计划卡片（改哪些对象/操作 + 风险）→ 专家确认 → 应用落新版本。
+const chatKey = (projectId) => `mw_pchat_${projectId}`;
+const loadTurns = (projectId) => {
+  try { return JSON.parse(sessionStorage.getItem(chatKey(projectId)) || '[]'); } catch { return []; }
+};
+
 export default function PackageChat({ projectId }) {
-  const [turns, setTurns] = useState([]); // {role, text, plan?, version?, planState?: 'pending'|'applied'|'cancelled'}
+  // 会话存 sessionStorage：切页/回项目列表再进来对话不丢（关浏览器标签才清）
+  const [turns, setTurns] = useState(() => loadTurns(projectId));
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState('');   // '' | plan | apply
   const sec = useElapsed(!!busy);
   const bodyRef = useRef(null);
+
+  useEffect(() => { setTurns(loadTurns(projectId)); }, [projectId]);
+  useEffect(() => {
+    try { sessionStorage.setItem(chatKey(projectId), JSON.stringify(turns.slice(-40))); } catch { /* 容量满忽略 */ }
+  }, [projectId, turns]);
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });

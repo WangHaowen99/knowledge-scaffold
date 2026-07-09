@@ -36,6 +36,14 @@ export default function Workbench({ projectId }) {
   const load = useCallback(() =>
     getProject(projectId).then(setData).catch((e) => setErr(e.message)), [projectId]);
   useEffect(() => { load(); }, [load]);
+  // 长任务（分析/出题/生成…）在服务端执行并落节点状态；只要有节点 running 就轮询，
+  // 切走再回来、甚至回项目列表再进来，进行中/已完成状态都能接上
+  const anyRunning = (data?.nodes ?? []).some((n) => n.status === 'running');
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, [anyRunning, load]);
 
   if (err) return <div className="empty">{err}</div>;
   if (!data) return <div className="empty">加载中…</div>;
@@ -69,9 +77,9 @@ export default function Workbench({ projectId }) {
   };
   const nodeStatus = {
     project_setup: 'done', ingest: parsedDocs.length ? 'done' : 'pending',
-    analyze: analyzeNode?.status === 'stale' ? 'stale' : analyzeDone ? 'done' : 'pending',
-    interview: interviewNode?.status === 'stale' ? 'stale' : interviewDone ? 'done' : interviewNode ? 'active-run' : 'pending',
-    generate: generateNode?.status === 'stale' ? 'stale' : generateDone ? 'done' : 'pending',
+    analyze: analyzeNode?.status === 'running' ? 'running' : analyzeNode?.status === 'stale' ? 'stale' : analyzeDone ? 'done' : 'pending',
+    interview: interviewNode?.status === 'running' ? 'running' : interviewNode?.status === 'stale' ? 'stale' : interviewDone ? 'done' : interviewNode ? 'active-run' : 'pending',
+    generate: generateNode?.status === 'running' ? 'running' : generateNode?.status === 'stale' ? 'stale' : generateDone ? 'done' : 'pending',
     review: generateDone ? 'done' : 'pending',
     testcases: stageIdx >= STAGE_INDEX.testcases ? 'done' : 'pending',
     evaluate: stageIdx >= STAGE_INDEX.evaluate ? 'done' : 'pending',
@@ -88,6 +96,7 @@ export default function Workbench({ projectId }) {
     : 'review';
   const effFocus = focus && unlocked[focus] ? focus : autoFocus;
 
+  const analyzeRunning = analyzing || analyzeNode?.status === 'running';
   const doAnalyze = async () => {
     setAnalyzing(true); setErr('');
     try { await runAnalyze(projectId); await load(); }
@@ -107,13 +116,14 @@ export default function Workbench({ projectId }) {
             const active = key === effFocus;
             return (
               <div key={key}
-                className={`tl-node ${st === 'done' ? 'done' : ''} ${st === 'stale' ? 'stale' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
+                className={`tl-node ${st === 'done' ? 'done' : ''} ${st === 'stale' ? 'stale' : ''} ${st === 'running' ? 'running' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
                 onClick={() => canGo && setFocus(key)}>
                 <div className="th">
-                  <span className="no">{st === 'done' ? '✓' : st === 'stale' ? '⟳' : i + 1}</span>
+                  <span className="no">{st === 'done' ? '✓' : st === 'stale' ? '⟳' : st === 'running' ? <span className="spinner" /> : i + 1}</span>
                   <span className="tt" style={!canGo ? { color: 'var(--muted)' } : undefined}>{title}</span>
+                  {st === 'running' && <span className="ts run-ts">进行中</span>}
                   {st === 'stale' && <span className="ts stale-ts">可能过时</span>}
-                  {!canGo && <span className="ts">待解锁</span>}
+                  {!canGo && st !== 'running' && <span className="ts">待解锁</span>}
                 </div>
               </div>
             );
@@ -126,7 +136,7 @@ export default function Workbench({ projectId }) {
         <div className="wb-h">
           {TITLE[effFocus]}
           {effFocus === 'analyze' && (!analyzeDone || nodeStatus.analyze === 'stale') && tables.length > 0 && (
-            <BusyButton busy={analyzing} busyText="领域分析中" expect="通常 1~3 分钟"
+            <BusyButton busy={analyzeRunning} busyText="领域分析中" expect="通常 1~3 分钟，可切换页面"
               style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }} onClick={doAnalyze}>
               ▶ {nodeStatus.analyze === 'stale' ? '重新领域分析' : '开始领域分析'}
             </BusyButton>
@@ -145,14 +155,17 @@ export default function Workbench({ projectId }) {
           )}
           {effFocus === 'analyze' && (analyzeNode
             ? <AnalysisView projectId={projectId} analysis={analyzeNode.output} stale={nodeStatus.analyze === 'stale'}
-                onReanalyze={doAnalyze} analyzing={analyzing} onQuestionsChange={load}
+                onReanalyze={doAnalyze} analyzing={analyzeRunning} onQuestionsChange={load}
+                questionsGenerating={competencyNode?.status === 'running'}
                 onAdvance={() => { load(); setFocus('interview'); }} />
             : <IngestView project={project} documents={documents} onChanged={load} />)}
           {effFocus === 'interview' && (
-            <InterviewPanel projectId={projectId} onAdvance={() => { load(); setFocus('generate'); }} />
+            <InterviewPanel projectId={projectId} agentBusy={interviewNode?.status === 'running'}
+              onAdvance={() => { load(); setFocus('generate'); }} />
           )}
           {effFocus === 'generate' && (
-            <GeneratePanel projectId={projectId} onAdvance={() => { load(); setFocus('review'); }} />
+            <GeneratePanel projectId={projectId} node={generateNode} onRefresh={load}
+              onAdvance={() => { load(); setFocus('review'); }} />
           )}
           {effFocus === 'review' && <ReviewPanel projectId={projectId} />}
           {effFocus === 'testcases' && (
@@ -303,7 +316,7 @@ function IngestView({ project, documents, onChanged }) {
 
 /* ---- 节点 3：领域分析（分析结果 + 领域问题候选） ---- */
 
-function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance, onQuestionsChange }) {
+function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance, onQuestionsChange, questionsGenerating }) {
   const [selectedCount, setSelectedCount] = useState(null); // null=未知（加载中）
   if (!analysis) return <div className="empty">（无分析结果）</div>;
   const ready = (selectedCount ?? 0) >= 5;
@@ -328,7 +341,7 @@ function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAd
       </div>
       <div className="an-sec">
         <h4>领域问题<span className="h4-sub">建成后必须能回答的业务问题 · 勾选 ≥5 条</span></h4>
-        <DomainQuestionsBlock projectId={projectId}
+        <DomainQuestionsBlock projectId={projectId} generating={questionsGenerating}
           onCountChange={(n) => { setSelectedCount(n); onQuestionsChange?.(); }} />
       </div>
       <div style={{ display: 'flex', gap: 10, marginTop: 6, alignItems: 'center' }}>

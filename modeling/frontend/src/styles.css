@@ -311,3 +311,8 @@ html, body, #root { height: 100%; }
 
 /* ---- 配置中心标签内嵌来源 ---- */
 .mwr .lbl-src { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
+
+/* ---- 时间线进行中 ---- */
+.mwr .tl-node.running .no { background: #eef4fd; color: var(--blue-d); }
+.mwr .tl-node.running .no .spinner { width: 10px; height: 10px; border-width: 2px; }
+.mwr .run-ts { color: var(--blue-d) !important; font-weight: 650; }

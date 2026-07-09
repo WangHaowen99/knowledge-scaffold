@@ -181,6 +181,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const tables: DataDictTable[] = docs.flatMap((d) => d.tables ?? []);
       const textDocs = docs.filter((d) => d.textContent).map((d) => ({ filename: d.filename, textContent: d.textContent }));
       if (!tables.length && !textDocs.length) return reply.code(400).send({ error: '尚无可分析的资料，请先上传文档' });
+      return withLock(`${p.id}:analyze`, reply, async () => {
       try {
         const { node, analysis } = await runAnalyze(p.id, tables, textDocs);
         setStage(p.id, 'analyze');
@@ -193,7 +194,16 @@ export async function registerRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
+      });
     });
+
+    // 长任务防重入（同项目同操作并发触发 → 409），配合前端从节点状态推导进行中
+    const inFlight = new Set<string>();
+    const withLock = async (key: string, reply: any, fn: () => Promise<unknown>) => {
+      if (inFlight.has(key)) return reply.code(409).send({ error: '该操作正在进行中，请稍候（切换页面不会中断执行）' });
+      inFlight.add(key);
+      try { return await fn(); } finally { inFlight.delete(key); }
+    };
 
     // 取项目 + 数据字典上下文的公共辅助
     const loadCtx = (id: string, username: string) => {
@@ -245,11 +255,13 @@ export async function registerRoutes(app: FastifyInstance) {
     r.post('/api/projects/:id/competency/propose', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:competency`, reply, async () => {
       try {
         const questions = await m2.proposeCompetency(c.p, c.ctx, c.analysis);
         setProjectStage(c.p.id, 'competency');
         return { questions };
       } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      });
     });
     r.post('/api/projects/:id/competency/select', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -263,6 +275,7 @@ export async function registerRoutes(app: FastifyInstance) {
     r.post('/api/projects/:id/generate', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:generate`, reply, async () => {
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected);
       if (selected.length < 5) return reply.code(400).send({ error: '请先在胜任力问题中至少勾选 5 条' });
       try {
@@ -270,6 +283,7 @@ export async function registerRoutes(app: FastifyInstance) {
         setProjectStage(c.p.id, 'generate');
         return { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length };
       } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      });
     });
 
     // ---- 节点 7 包评审：读文件树 / 单文件 / 导出 ----
@@ -331,6 +345,7 @@ export async function registerRoutes(app: FastifyInstance) {
     r.post('/api/projects/:id/package/chat', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:chat`, reply, async () => {
       const { message, history } = (req.body ?? {}) as { message?: string; history?: { role: 'user' | 'assistant'; text: string }[] };
       if (!message?.trim()) return reply.code(400).send({ error: 'message 必填' });
       try {
@@ -338,10 +353,12 @@ export async function registerRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
+      });
     });
     r.post('/api/projects/:id/package/chat/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:chat`, reply, async () => {
       const { message, history, plan } = (req.body ?? {}) as any;
       if (!plan?.changes?.length) return reply.code(400).send({ error: 'plan 必填（先调用 chat 获取修缮计划）' });
       try {
@@ -349,12 +366,14 @@ export async function registerRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
+      });
     });
 
     // 包体检：规则引擎（确定性）+ 语义检查（LLM）；结果落库供回看
     r.post('/api/projects/:id/package/check', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:check`, reply, async () => {
       const latest = m2repo.latestPackageVersion(c.p.id);
       if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
@@ -372,6 +391,7 @@ export async function registerRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(500).send({ error: `体检失败：${e instanceof Error ? e.message : e}` });
       }
+      });
     });
     r.get('/api/projects/:id/package/check', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -467,6 +487,7 @@ export async function registerRoutes(app: FastifyInstance) {
     r.post('/api/projects/:id/optimize/propose', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:optimize`, reply, async () => {
       const { roundId } = (req.body ?? {}) as any;
       const round = roundId ? m3repo.getRound(roundId) : m3repo.listRounds(c.p.id).find((x) => x.status === 'done');
       if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
@@ -495,6 +516,7 @@ export async function registerRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(500).send({ error: `优化建议生成失败：${e instanceof Error ? e.message : e}` });
       }
+      });
     });
     r.get('/api/projects/:id/optimize/suggestions', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -505,6 +527,7 @@ export async function registerRoutes(app: FastifyInstance) {
     r.post('/api/projects/:id/optimize/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:optimize`, reply, async () => {
       const { suggestionIds } = (req.body ?? {}) as any;
       if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: 'suggestionIds 必填' });
       const adopted = m4repo.getSuggestions(suggestionIds).filter((s) => s.projectId === c.p.id && s.status === 'pending');
@@ -525,6 +548,7 @@ export async function registerRoutes(app: FastifyInstance) {
       } catch (e) {
         return reply.code(500).send({ error: `优化应用失败：${e instanceof Error ? e.message : e}` });
       }
+      });
     });
     r.post('/api/projects/:id/optimize/reject', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
