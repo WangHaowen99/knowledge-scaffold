@@ -44,11 +44,14 @@ export async function parseDocument(kind: DocKind, buffer: Buffer): Promise<Pars
 
 // Excel 语义（design.md 决策 5）：sheet=表，首行=字段名，次行可选注释，余行=样例数据。
 function parseExcel(buffer: Buffer): DataDictTable[] {
-  const wb = XLSX.read(buffer, { type: 'buffer' });
+  // cellDates：银行/企业表常见日期列，避免 agent 面对 46152 这类 Excel 序列号
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const tables: DataDictTable[] = [];
   for (const sheetName of wb.SheetNames) {
     const sheet = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
+    const rawRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
+    const fmt = (c: unknown) => c instanceof Date ? c.toISOString().slice(0, 10) : c;
+    const rows = rawRows.map((r) => (r as unknown[]).map(fmt));
     if (!rows.length) continue;
     const header = (rows[0] as unknown[]).map((c) => String(c ?? '').trim());
     if (!header.some((h) => h)) continue;

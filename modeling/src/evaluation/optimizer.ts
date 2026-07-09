@@ -156,6 +156,11 @@ export async function applyOptimizations(
   if (!cap.revised || (!cap.revised.objects.length && !cap.revised.operations.length)) {
     throw new Error('优化器未产出修订规格');
   }
+  // 落实校验：修订与原规格完全相同 = agent 空转，拒绝产出无效版本
+  if (JSON.stringify(cap.revised.objects) === JSON.stringify(spec.objects)
+    && JSON.stringify(cap.revised.operations) === JSON.stringify(spec.operations)) {
+    throw new Error('修订与原规格完全相同（建议未被落实），已拒绝入库，请重试');
+  }
   // 现有建议类型只增改不删：修订版对象/操作数量变少 = 模型丢了内容，拒绝入库
   if (cap.revised.objects.length < spec.objects.length || cap.revised.operations.length < spec.operations.length) {
     throw new Error(`修订规格丢失既有内容（对象 ${spec.objects.length}→${cap.revised.objects.length}，操作 ${spec.operations.length}→${cap.revised.operations.length}），已拒绝入库，请重试`);
