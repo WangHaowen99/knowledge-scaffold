@@ -1,5 +1,6 @@
 import { Type } from '@earendil-works/pi-ai';
 import type { DataDictTable } from '../types.js';
+import { KEY_SCHEMA_PATTERN, KEY_SCHEMA_DESCRIPTION } from './keys.js';
 
 // 建模工具集。M1 用到：读数据字典、读文档、发起访谈（terminate 挂起）、产出初步分析。
 // execute 抛错即失败（pi 约定），返回 { content, details, terminate? }。
@@ -153,34 +154,78 @@ export function buildCompetencyTools(ctx: ToolContext, cap: CompetencyCapture) {
 }
 
 // ---- M2 包生成工具 ----
+// key 一律带 pattern/描述引导（keys.ts 统一规则）；渲染入包前 renderPackage 还会强制校验。
+const KeyString = () => Type.String({ pattern: KEY_SCHEMA_PATTERN, maxLength: 80, description: KEY_SCHEMA_DESCRIPTION });
+
+// spec 的 objects/operations/rules/metrics schema——submit_package_spec 与
+// optimizer 的 submit_revised_spec 共用，保证两处捕获的字段一致。
+export const specObjectSchema = () => Type.Object({
+  key: KeyString(), title: Type.String(), description: Type.String(),
+  aliases: Type.Optional(Type.Array(Type.String({ description: '用户可能使用的自然语言别名' }))),
+  queryBoundary: Type.Optional(Type.String({ description: '查询边界：查询该对象前的前置条件与不得推断的事项' })),
+  relations: Type.Optional(Type.Array(Type.Object({
+    relation: Type.String({ description: '关系名，如 belongs_to / references' }),
+    target: KeyString(),
+    note: Type.Optional(Type.String()),
+  }, { description: '对象间关系（目标对象须是包内已声明的对象 key）' }))),
+  sourceTable: Type.Optional(Type.String()),
+  primaryKey: Type.Optional(Type.Array(Type.String())),
+  fields: Type.Array(Type.Object({
+    key: KeyString(),
+    cnName: Type.Optional(Type.String()),
+    type: Type.Optional(Type.String()),
+    required: Type.Optional(Type.Boolean()),
+    note: Type.Optional(Type.String()),
+    alias: Type.Optional(Type.String({ description: '字段的业务别名' })),
+    sourceColumn: Type.Optional(Type.String({ description: '数据字典中的真实列名（与字段 key 不同时必填）' })),
+  })),
+});
+
+export const specOperationSchema = () => Type.Object({
+  key: KeyString(), title: Type.String(), description: Type.String(),
+  inputs: Type.Array(Type.Object({ param: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), required: Type.Boolean(), note: Type.Optional(Type.String()) })),
+  outputs: Type.Array(Type.Object({ field: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), note: Type.Optional(Type.String()) })),
+  flow: Type.Array(Type.String({ description: '流程步骤；引用对象写 object:<key>，引用脚本写 script:<key>' })),
+  relatedObjects: Type.Array(Type.String()),
+  usesRules: Type.Optional(Type.Array(Type.String({ description: '引用的规则 key（须在 rules 中声明）' }))),
+  usesMetrics: Type.Optional(Type.Array(Type.String({ description: '引用的指标 key（须在 metrics 中声明）' }))),
+  notes: Type.Optional(Type.Array(Type.String({ description: '注意事项（兜底、追问、不得推断等）' }))),
+  competencyQuestion: Type.Optional(Type.String()),
+});
+
+export const specRuleSchema = () => Type.Object({
+  key: KeyString(), title: Type.String(),
+  description: Type.Optional(Type.String()),
+  appliesToObjects: Type.Optional(Type.Array(Type.String({ description: '适用对象 key' }))),
+  content: Type.String({ description: '规则内容：完整的业务判断口径' }),
+  conditions: Type.Optional(Type.Array(Type.Object({ condition: Type.String(), conclusion: Type.String() }))),
+  exceptions: Type.Optional(Type.Array(Type.String())),
+}, { description: '可复用的业务判断条件（判断类问题优先沉淀为 rule）' });
+
+export const specMetricSchema = () => Type.Object({
+  key: KeyString(), title: Type.String(),
+  description: Type.Optional(Type.String()),
+  unit: Type.Optional(Type.String()),
+  grain: Type.Optional(Type.String({ description: '统计粒度，如 material + warehouse + batch' })),
+  usesObjects: Type.Optional(Type.Array(Type.String({ description: '口径涉及的对象 key' }))),
+  caliber: Type.String({ description: '业务口径（含公式）' }),
+  boundaries: Type.Array(Type.String({ description: '计算边界：统计范围、不计入项' })),
+  nullPolicy: Type.Optional(Type.Array(Type.Object({ field: Type.String(), handling: Type.String() }))),
+  dimensions: Type.Optional(Type.Array(Type.Object({ key: Type.String(), note: Type.String() }))),
+}, { description: '有明确口径、公式和边界的业务指标（计算类口径优先沉淀为 metric）' });
+
 export interface SpecCapture { spec?: unknown; }
 export function buildGenerateTools(ctx: ToolContext, cap: SpecCapture) {
   const base = buildTools(ctx).filter((t) => t.name !== 'submit_analysis');
   const submitSpec = {
     name: 'submit_package_spec',
     label: '提交知识包规格',
-    description: '提交结构化的知识包规格（对象、字段、操作、映射来源表）。系统据此渲染标准包文件。',
+    description: '提交结构化的知识包规格（对象、字段、操作、规则、指标、映射来源表）。系统据此渲染标准包文件。',
     parameters: Type.Object({
-      objects: Type.Array(Type.Object({
-        key: Type.String(), title: Type.String(), description: Type.String(),
-        sourceTable: Type.Optional(Type.String()),
-        primaryKey: Type.Optional(Type.Array(Type.String())),
-        fields: Type.Array(Type.Object({
-          key: Type.String(),
-          cnName: Type.Optional(Type.String()),
-          type: Type.Optional(Type.String()),
-          required: Type.Optional(Type.Boolean()),
-          note: Type.Optional(Type.String()),
-        })),
-      })),
-      operations: Type.Array(Type.Object({
-        key: Type.String(), title: Type.String(), description: Type.String(),
-        inputs: Type.Array(Type.Object({ param: Type.String(), type: Type.String(), required: Type.Boolean(), note: Type.Optional(Type.String()) })),
-        outputs: Type.Array(Type.Object({ field: Type.String(), type: Type.String(), note: Type.Optional(Type.String()) })),
-        flow: Type.Array(Type.String()),
-        relatedObjects: Type.Array(Type.String()),
-        competencyQuestion: Type.Optional(Type.String()),
-      })),
+      objects: Type.Array(specObjectSchema()),
+      operations: Type.Array(specOperationSchema()),
+      rules: Type.Optional(Type.Array(specRuleSchema())),
+      metrics: Type.Optional(Type.Array(specMetricSchema())),
     }),
     async execute(_id: string, params: unknown) {
       cap.spec = params;

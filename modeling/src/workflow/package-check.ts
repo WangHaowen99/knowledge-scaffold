@@ -2,16 +2,22 @@ import { Type } from '@earendil-works/pi-ai';
 import { getDb, nowIso } from '../db/index.js';
 import { buildLlm } from '../llm/provider.js';
 import { makeAgent, runAgent } from './agent.js';
+import { validateKey } from './keys.js';
+import type { PackageFiles } from './package-render.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
 
-// 包体检（知识包完善阶段）：规则引擎（确定性，代码直查）+ 语义检查（LLM agent）。
-// 规则集基于既有知识包检查实践整理，
-// rule-check / semantic-check / coverage-check agent，按本工具的 objects/operations 格式适配。
+// 包体检（知识包完善阶段）双层：
+// ① spec 语义层——规则引擎（确定性，代码直查）+ 语义检查（LLM agent）。
+//    规则集基于既有知识包检查实践整理，
+//    rule-check / semantic-check / coverage-check agent，按本工具的 objects/operations 格式适配。
+// ② 渲染产物层（runFormatChecks）——对最终 files（含 override 后内容）校验包格式：
+//    必选文件、frontmatter、索引-详情一致性、manifest/mappings 结构、key 合法性。
+//    override 写入与导出前都过这层（routes.ts），人工改坏的包不再原样导出。
 
 export type Severity = '错误' | '警告' | '提示';
 export interface CheckFinding {
   id: string;
-  source: 'rule' | 'semantic';
+  source: 'rule' | 'semantic' | 'format';
   severity: Severity;
   category: string;
   target: string;       // 对象/操作 key 或包内路径
@@ -28,6 +34,8 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
   const add = (severity: Severity, category: string, target: string, message: string, suggestion?: string) =>
     out.push({ id: fid(), source: 'rule', severity, category, target, message, suggestion });
   const objKeys = new Set(spec.objects.map((o) => o.key));
+  const ruleKeys = new Set((spec.rules ?? []).map((r) => r.key));
+  const metricKeys = new Set((spec.metrics ?? []).map((m) => m.key));
   const tableNames = new Set(tables.map((t) => t.name));
 
   for (const o of spec.objects) {
@@ -54,6 +62,12 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
         add('提示', '输入未使用', op.key, `操作「${op.title || op.key}」的必填输入 ${inp.param} 未在流程中被引用`);
       }
     }
+    for (const rk of op.usesRules ?? []) {
+      if (!ruleKeys.has(rk)) add('错误', '悬空引用', op.key, `操作「${op.title || op.key}」引用了不存在的规则 ${rk}`, `修正操作 ${op.key} 的 usesRules（改为已声明的规则或补建规则）`);
+    }
+    for (const mk of op.usesMetrics ?? []) {
+      if (!metricKeys.has(mk)) add('错误', '悬空引用', op.key, `操作「${op.title || op.key}」引用了不存在的指标 ${mk}`, `修正操作 ${op.key} 的 usesMetrics（改为已声明的指标或补建指标）`);
+    }
     if (op.competencyQuestion) {
       const k = op.competencyQuestion.trim();
       if (cqOwner.has(k)) {
@@ -61,6 +75,21 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
           `「${k.slice(0, 40)}…」同时被 ${cqOwner.get(k)} 与 ${op.key} 认领——消费端路由会二义，agent 可能走到不含关键口径的那个操作`,
           `保留业务口径最完整的一个操作认领该问题（把另一个操作的 competencyQuestion 改掉或清空），并在被让位的操作描述里加“该问题请走 ${op.key}”的交叉引用`);
       } else cqOwner.set(k, op.key);
+    }
+  }
+
+  // rules / metrics（可选目录启用时）：必需正文缺失、悬空引用
+  for (const r of spec.rules ?? []) {
+    if (!(r.content ?? '').trim()) add('错误', '规则不完整', r.key, `规则「${r.title || r.key}」缺少规则内容（content）`, `为规则 ${r.key} 补充完整的判断口径`);
+    for (const ok of r.appliesToObjects ?? []) {
+      if (!objKeys.has(ok)) add('警告', '悬空引用', r.key, `规则「${r.title || r.key}」的适用对象 ${ok} 不存在`, `修正规则 ${r.key} 的适用对象`);
+    }
+  }
+  for (const m of spec.metrics ?? []) {
+    if (!(m.caliber ?? '').trim()) add('错误', '指标不完整', m.key, `指标「${m.title || m.key}」缺少业务口径（caliber）`, `为指标 ${m.key} 补充口径公式`);
+    if (!(m.boundaries ?? []).length) add('错误', '指标不完整', m.key, `指标「${m.title || m.key}」缺少计算边界（boundaries）`, `为指标 ${m.key} 补充统计范围与不计入项`);
+    for (const ok of m.usesObjects ?? []) {
+      if (!objKeys.has(ok)) add('警告', '悬空引用', m.key, `指标「${m.title || m.key}」引用的对象 ${ok} 不存在`, `修正指标 ${m.key} 的 usesObjects`);
     }
   }
 
@@ -73,6 +102,145 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
         `为领域问题「${q}」新增一个操作认领（competencyQuestion 填问题原文，flow 写清回答该问题的取数与计算步骤），或指派给现有最相关的操作`);
     }
   }
+  return out;
+}
+
+// ---- 渲染产物层格式校验（对最终 files——含 override 后内容） ----
+// 覆盖：必选文件存在、全部 .md frontmatter 完整（resource/key/title 且 resource 与路径匹配）、
+// 索引声明的详情文件存在、manifest 可解析且必选字段齐、mappings JSON 结构合法、key 合法性。
+// 纯渲染产物由构造保证通过；这层的目标是拦截 override 改坏的内容（routes 写入与导出前调用）。
+
+const REQUIRED_FILES = ['manifest.yaml', 'index.md', 'objects/index.md', 'operations/index.md'];
+const MANIFEST_REQUIRED = ['kind', 'schema_version', 'id', 'name', 'description', 'version'];
+// index 文件 → 期望 resource；详情目录 → 期望 resource
+const INDEX_RESOURCE: Record<string, string> = {
+  'index.md': 'root', 'objects/index.md': 'object_index', 'operations/index.md': 'operation_index',
+  'rules/index.md': 'rule_index', 'metrics/index.md': 'metric_index', 'scripts/index.md': 'script_index',
+};
+const DETAIL_RESOURCE: Record<string, string> = {
+  objects: 'object', operations: 'operation', rules: 'rule', metrics: 'metric', scripts: 'script',
+};
+// 索引文件 → 其表格声明的详情所在目录
+const INDEX_DETAIL_DIR: [string, string][] = [
+  ['objects/index.md', 'objects'], ['operations/index.md', 'operations'],
+  ['rules/index.md', 'rules'], ['metrics/index.md', 'metrics'], ['scripts/index.md', 'scripts'],
+];
+
+// 解析 frontmatter 顶层扁平字段（嵌套块的子行带缩进，不会被匹配——够用于 resource/key/title 校验）
+function parseFrontmatter(md: string): Record<string, string> | null {
+  if (!md.startsWith('---\n')) return null;
+  const end = md.indexOf('\n---', 4);
+  if (end < 0) return null;
+  const out: Record<string, string> = {};
+  for (const line of md.slice(4, end).split('\n')) {
+    const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (!m) continue;
+    let v = m[2].trim();
+    if (v.startsWith('"')) { try { v = JSON.parse(v); } catch { /* 保留原文 */ } }
+    out[m[1]] = v;
+  }
+  return out;
+}
+
+// 提取 markdown 索引表格的第一列（跳过表头与分隔行、以及「—」占位）
+function tableFirstColumn(md: string): string[] {
+  const keys: string[] = [];
+  let headerSeen = false;
+  for (const line of md.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('|')) continue;
+    const first = (t.split('|').map((c) => c.trim())[1] ?? '');
+    if (/^:?-{3,}:?$/.test(first)) { headerSeen = true; continue; }
+    if (!headerSeen || !first || first === '—') continue;
+    keys.push(first.replace(/\\\|/g, '|'));
+  }
+  return keys;
+}
+
+export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFinding[] {
+  const out: CheckFinding[] = [];
+  const add = (severity: Severity, category: string, target: string, message: string, suggestion?: string) =>
+    out.push({ id: fid(), source: 'format', severity, category, target, message, suggestion });
+
+  // 1) 必选文件存在且非空（规范 §2.1）
+  for (const p of REQUIRED_FILES) {
+    if (!(p in files) || !files[p].trim()) add('错误', '必选文件缺失', p, `必选文件 ${p} 缺失或为空，本体包不能被稳定消费`);
+  }
+  for (const o of spec.objects ?? []) {
+    if (!(`objects/${o.key}.md` in files)) add('错误', '必选文件缺失', `objects/${o.key}.md`, `对象 ${o.key} 的详情文件缺失`);
+  }
+  for (const op of spec.operations ?? []) {
+    if (!(`operations/${op.key}.md` in files)) add('错误', '必选文件缺失', `operations/${op.key}.md`, `操作 ${op.key} 的详情文件缺失`);
+  }
+
+  // 2) manifest 可解析且必选字段齐（规范 §6）
+  const mani = files['manifest.yaml'];
+  if (mani?.trim()) {
+    const kv: Record<string, string> = {};
+    for (const line of mani.split('\n')) {
+      const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+      if (!m) continue;
+      let v = m[2].trim();
+      if (v.startsWith('"')) { try { v = JSON.parse(v); } catch { /* 保留原文 */ } }
+      kv[m[1]] = v;
+    }
+    if (kv.kind !== 'ontology-package') add('错误', 'manifest 非法', 'manifest.yaml', `manifest 的 kind 必须为 ontology-package（当前：${kv.kind ?? '缺失'}）`);
+    for (const f of MANIFEST_REQUIRED) {
+      if (!kv[f]) add('错误', 'manifest 非法', 'manifest.yaml', `manifest 缺少必选字段 ${f}`);
+    }
+  }
+
+  // 3) 全部 .md：frontmatter 完整、resource 与路径匹配、key 合法
+  for (const [path, content] of Object.entries(files)) {
+    if (!path.endsWith('.md')) continue;
+    const fm = parseFrontmatter(content);
+    if (!fm) { add('错误', 'frontmatter 缺失', path, `${path} 缺少 frontmatter（--- 包裹的 resource/key/title），Agent 无法按 resource+key 消费`); continue; }
+    for (const k of ['resource', 'key', 'title']) {
+      if (!fm[k]) add('错误', 'frontmatter 不完整', path, `${path} 的 frontmatter 缺少 ${k} 字段`);
+    }
+    const expected = INDEX_RESOURCE[path] ?? DETAIL_RESOURCE[path.split('/')[0]];
+    if (expected && fm.resource && fm.resource !== expected) {
+      add('错误', 'resource 声明不符', path, `${path} 的 resource 应为 ${expected}（当前：${fm.resource}）`);
+    }
+    if (fm.key) {
+      try { validateKey(fm.key, `${path} 的`); } catch (e) { add('错误', 'key 非法', path, e instanceof Error ? e.message : String(e)); }
+    }
+  }
+
+  // 4) 索引声明的详情文件必须存在（规范 §2.2）
+  for (const [idxPath, dir] of INDEX_DETAIL_DIR) {
+    const content = files[idxPath];
+    if (!content) continue;
+    for (const key of tableFirstColumn(content)) {
+      if (!(`${dir}/${key}.md` in files)) {
+        add('错误', '索引与详情不一致', idxPath, `${idxPath} 声明了「${key}」，但详情文件 ${dir}/${key}.md 不存在`);
+      }
+    }
+  }
+
+  // 5) mappings JSON 结构合法（规范 §18）
+  const mp = files['mappings/object-data-mappings.json'];
+  if (mp !== undefined) {
+    try {
+      const j = JSON.parse(mp);
+      if (!j.schema_version) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'mapping 缺少 schema_version');
+      if (!j.default_provider_alias) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'mapping 缺少 default_provider_alias');
+      if (!j.objects || typeof j.objects !== 'object' || Array.isArray(j.objects)) {
+        add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'mapping 缺少 objects 映射（以 object key 为键）');
+      } else {
+        for (const [k, v] of Object.entries<any>(j.objects)) {
+          if (!v || typeof v !== 'object') { add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 不是对象`); continue; }
+          if (!v.provider_alias) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 缺少 provider_alias`);
+          if (!v.resource) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 缺少 resource`);
+          if (!Array.isArray(v.primary_key)) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 的 primary_key 必须是数组`);
+          if (!v.fields || typeof v.fields !== 'object') add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 缺少 fields`);
+        }
+      }
+    } catch {
+      add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'mappings/object-data-mappings.json 不是合法 JSON');
+    }
+  }
+
   return out;
 }
 

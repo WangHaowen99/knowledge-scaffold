@@ -60,8 +60,12 @@ function startStubConsumer(port: number) {
     if (url === '/agentic/runs/sync') {
       const q = (JSON.parse(body.toString()).request ?? '') as string;
       const qf = frags(q);
-      // 内容感知：把命中问题片段的包内文件拼成回答（包里有知识才答得出）
+      // 内容感知：把命中问题片段的包内文件拼成回答（包里有知识才答得出）。
+      // 只读详情文件——新格式的索引按规范「目录只放摘要」不再承载口径正文（objects 索引
+      // 三列、operations 索引四列均无 description 全文），消费端要靠详情文件作答；
+      // 不过滤的话索引/映射文件会以同分挤掉详情文件，与真实消费链路不符。
       const hits = Object.entries(importedPkgText)
+        .filter(([p]) => !p.endsWith('/index.md') && !p.includes('/mappings/'))
         .map(([p, text]) => ({ p, text, score: qf.filter((f) => text.includes(f)).length }))
         .filter((x) => x.score > 0)
         .sort((a, b) => b.score - a.score);
