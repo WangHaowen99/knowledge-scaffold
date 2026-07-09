@@ -120,8 +120,23 @@ export async function packageChatApply(project: Project, history: ChatTurn[], me
   if (!cap.revised || (!cap.revised.objects.length && !cap.revised.operations.length)) {
     throw new Error('agent 未产出修订规格，请重试');
   }
-  // 内容丢失防护：数量减少必须能被计划中的 remove 条目解释
   const spec = latest.spec;
+  const revisedSpec = cap.revised;
+  // 落实校验：agent 声称"已修订"但目标未变是实测出现过的失败模式——确定性比对，防空转版本
+  const opJson = (ops: any[], key: string) => JSON.stringify(ops.find((o: any) => o.key === key) ?? null);
+  const objJson = (objs: any[], key: string) => JSON.stringify(objs.find((o: any) => o.key === key) ?? null);
+  const modifyTargets = plan.changes.filter((c) => c.action === 'modify');
+  const unexecuted = modifyTargets.filter((c) => c.targetKind === 'operation'
+    ? opJson(spec.operations as any[], c.targetKey) === opJson(revisedSpec.operations as any[], c.targetKey)
+    : objJson(spec.objects as any[], c.targetKey) === objJson(revisedSpec.objects as any[], c.targetKey));
+  if (modifyTargets.length && unexecuted.length === modifyTargets.length) {
+    throw new Error(`修订未落实：计划中的 ${modifyTargets.map((c) => c.targetKey).join('/')} 内容与原规格完全相同，已拒绝入库，请重试`);
+  }
+  if (unexecuted.length) {
+    // 部分未落实：放行但在回执中明示，专家可追问补刀
+    (cap as any).partialNote = `注意：${unexecuted.map((c) => c.targetKey).join('/')} 未发生实际变化，如需修改请再次明确要求`;
+  }
+  // 内容丢失防护：数量减少必须能被计划中的 remove 条目解释
   const removedObjs = plan.changes.filter((c) => c.action === 'remove' && c.targetKind === 'object').length;
   const removedOps = plan.changes.filter((c) => c.action === 'remove' && c.targetKind === 'operation').length;
   if (spec.objects.length - cap.revised.objects.length > removedObjs
@@ -133,7 +148,8 @@ export async function packageChatApply(project: Project, history: ChatTurn[], me
   const newSpec: PackageSpec = { ...spec, version, objects: cap.revised.objects, operations: cap.revised.operations };
   const selected = repo.listCompetency(project.id).filter((q) => q.selected).map((q) => q.question);
   repo.insertPackageVersion(project.id, version, newSpec, checkCoverage(newSpec, selected), `包修缮对话：${plan.summary.slice(0, 60)}`);
-  return { reply: `已按计划修订并生成新版本 v${version}（对象 ${newSpec.objects.length} / 操作 ${newSpec.operations.length}）。左侧文件树已是最新内容。`, version };
+  const note = (cap as any).partialNote ? `\n${(cap as any).partialNote}` : '';
+  return { reply: `已按计划修订并生成新版本 v${version}（对象 ${newSpec.objects.length} / 操作 ${newSpec.operations.length}）。左侧文件树已是最新内容。${note}`, version };
 }
 
 // ---- 包文件人工修订（覆盖渲染产物）----

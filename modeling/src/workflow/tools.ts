@@ -43,26 +43,71 @@ export function buildTools(ctx: ToolContext) {
     },
   };
 
+  // 标题行启发式：编号/章节样式的短行（长文档大纲用）
+  const isHeading = (line: string) => {
+    const t = line.trim();
+    return t.length > 0 && t.length <= 40
+      && /^(第?[一二三四五六七八九十百0-9]{1,4}\s*[、．.章节条）)]|[（(][一二三四五六七八九十0-9]{1,3}[）)]|#{1,4}\s)/.test(t);
+  };
+
   const listDocuments = {
     name: 'list_documents',
     label: '列出文档',
-    description: '列出已上传的文本类文档（非 Excel）',
+    description: '列出已上传的文本类文档：文件名、总字符数与章节大纲（长文档先看大纲，再用 search_documents 定位、read_document 分页精读）',
     parameters: Type.Object({}),
     async execute() {
-      const names = ctx.documents.map((d) => d.filename).join(', ');
-      return { content: [{ type: 'text' as const, text: names || '（无文本文档）' }], details: {} };
+      if (!ctx.documents.length) return text('（无文本文档）');
+      const out = ctx.documents.map((d) => {
+        const body = d.textContent ?? '';
+        const heads = body.split('\n').filter(isHeading).slice(0, 40);
+        return `【${d.filename}】共 ${body.length} 字符${heads.length ? `\n大纲：${heads.map((h) => h.trim()).join(' / ')}` : ''}`;
+      }).join('\n\n');
+      return text(out);
     },
   };
 
   const readDocument = {
     name: 'read_document',
     label: '读取文档',
-    description: '读取某个文本文档的正文（截断到前 8000 字符）',
-    parameters: Type.Object({ filename: Type.String() }),
-    async execute(_id: string, params: { filename: string }) {
+    description: '分页读取文档正文：每次返回约 6000 字符，长文档用 offset 翻页（返回中含下一页偏移提示）',
+    parameters: Type.Object({ filename: Type.String(), offset: Type.Optional(Type.Number()) }),
+    async execute(_id: string, params: { filename: string; offset?: number }) {
       const d = ctx.documents.find((x) => x.filename === params.filename);
       if (!d?.textContent) return text(`未找到文档或无正文：${params.filename}`);
-      return text(d.textContent.slice(0, 8000));
+      const body = d.textContent;
+      const off = Math.max(0, Math.floor(params.offset ?? 0));
+      const chunk = body.slice(off, off + 6000);
+      const tail = off + 6000 < body.length ? `\n\n……（未完，全文 ${body.length} 字符，续读请传 offset=${off + 6000}）` : '\n\n（已到文末）';
+      return text(`[${d.filename} @${off}]\n${chunk}${tail}`);
+    },
+  };
+
+  const searchDocuments = {
+    name: 'search_documents',
+    label: '检索文档',
+    description: '按关键词（空格分隔多个，OR 命中）在全部文档中检索，返回命中段落及其偏移（可据此 read_document 精读上下文）。长文档找产品/规则/口径先用这个。',
+    parameters: Type.Object({ query: Type.String() }),
+    async execute(_id: string, params: { query: string }) {
+      const kws = params.query.split(/\s+/).map((k) => k.trim()).filter((k) => k.length >= 2);
+      if (!kws.length) return text('请提供至少一个长度 ≥2 的关键词');
+      const hits: string[] = [];
+      for (const d of ctx.documents) {
+        const body = d.textContent ?? '';
+        if (!body) continue;
+        const lines = body.split('\n');
+        let offset = 0;
+        for (let i = 0; i < lines.length && hits.length < 8; i++) {
+          const line = lines[i];
+          if (kws.some((k) => line.includes(k))) {
+            const ctxText = lines.slice(Math.max(0, i - 1), i + 3).join('\n');
+            hits.push(`【${d.filename} @${offset}】\n${ctxText.slice(0, 500)}`);
+            i += 2; // 避免相邻行重复命中
+          }
+          offset += line.length + 1;
+        }
+        if (hits.length >= 8) break;
+      }
+      return text(hits.length ? hits.join('\n---\n') : `未命中：${params.query}（可换近义词或拆词重试）`);
     },
   };
 
@@ -90,7 +135,7 @@ export function buildTools(ctx: ToolContext) {
     },
   };
 
-  return [listTables, describeTable, listDocuments, readDocument, submitAnalysis];
+  return [listTables, describeTable, listDocuments, readDocument, searchDocuments, submitAnalysis];
 }
 
 // ---- M2 访谈工具：ask_user（terminate 挂起）+ finish_interview ----

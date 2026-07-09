@@ -87,6 +87,18 @@ async function runRound(
   const zip = zipPackage(files);
   const importResult = await importZip(token, ws, zip, latest.spec.id);
   log(`知识包已导入影子工作区：${importResult.ontology_id}（对象 ${importResult.objects_count ?? '-'} / 操作 ${importResult.operations_count ?? '-'}）`);
+  // 导入 ≠ 生效：consumer 可能仍激活旧版本（实测吃过亏）。显式激活本次版本并确认。
+  try {
+    const act = await consumerFetch(token, `/agentic/ontologies/${encodeURIComponent(importResult.ontology_id)}/active-version`, {
+      method: 'PUT', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: latest.spec.version }),
+    });
+    const actData = (await act.json().catch(() => ({}))) as any;
+    if (act.ok) log(`已激活版本：${latest.spec.version}`);
+    else log(`⚠ 激活版本失败（${act.status}）：${actData.error ?? actData.detail ?? ''}——评测可能运行旧版本`);
+  } catch (e) {
+    log(`⚠ 激活版本请求异常：${e instanceof Error ? e.message : e}`);
+  }
 
   // 4. 可选：数据连接 + 绑定
   if (binding?.provider) {
