@@ -111,6 +111,11 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "auth_mode": {"env": "AUTH_MODE", "type": "str", "default": "local"},
         # 独立 auth server 地址（BFF 注册代理与 remote 模式使用），空=未接入
         "auth_server_url": {"env": "AUTH_SERVER_URL", "type": "str", "default": ""},
+        # remote 模式用户管理所需（auth server Admin API 的 X-Admin-Token）
+        "auth_server_admin_token": {"env": "AUTH_SERVER_ADMIN_TOKEN", "type": "secret", "default": ""},
+        # remote 模式 JWT 本地验签的 aud/iss；issuer 留空 = 使用 auth_server_url
+        "auth_server_audience": {"env": "AUTH_SERVER_AUDIENCE", "type": "str", "default": "meta-wise"},
+        "auth_server_issuer": {"env": "AUTH_SERVER_ISSUER", "type": "str", "default": ""},
     },
     "agent": {
         "llm_connection_max_retries": {"env": "AGENT_LLM_CONNECTION_MAX_RETRIES", "type": "int", "default": 3},

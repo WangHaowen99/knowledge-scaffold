@@ -1,5 +1,7 @@
 """Flask application factory for the agentic system."""
 
+from pathlib import Path
+
 from flask import Flask
 from flask_cors import CORS
 
@@ -8,6 +10,7 @@ from .observability import reset_observer
 from .routes import register_routes, update_runtime_dependencies
 from .routes.auth import auth_bp
 from .services.auth import AuthManager
+from .services.remote_auth import RemoteAuthBackend
 from .services.llm import LLMRouter, configure_llm_router
 from .stores import UserStoreManager
 from .utils.logging import get_logger
@@ -33,10 +36,26 @@ def build_runtime_services(previous_llm_router=None):
             config.auth_token_ttl_seconds,
         )
     elif config.auth_mode == "remote":
-        # 施工步骤 4 接入 RemoteAuthBackend（对接独立 auth server）后开放
-        raise RuntimeError("AUTH_MODE=remote 尚未实现，请使用 local（默认）")
+        if not config.auth_server_url:
+            raise RuntimeError("AUTH_MODE=remote 需要配置 AUTH_SERVER_URL（auth server 地址）")
+        fallback = None
+        if Path(config.auth_users_file).exists():
+            # 双验证链：users.json 尚在时保留本地 AuthManager，回落验证迁移期
+            # 旧 HMAC token 一个 TTL 周期（决策 Consequences，避免在线用户被踢出）
+            fallback = AuthManager(
+                config.auth_users_file,
+                config.auth_secret,
+                config.auth_token_ttl_seconds,
+            )
+        auth_manager = RemoteAuthBackend(
+            base_url=config.auth_server_url,
+            admin_token=config.auth_server_admin_token,
+            audience=config.auth_server_audience,
+            issuer=config.auth_server_issuer,
+            fallback=fallback,
+        )
     else:
-        raise RuntimeError(f"未知 AUTH_MODE：{config.auth_mode}（支持 local）")
+        raise RuntimeError(f"未知 AUTH_MODE：{config.auth_mode}（支持 local|remote）")
     user_store_manager = UserStoreManager()
     return {
         "config": config,

@@ -235,6 +235,9 @@ class AppConfig:
     auth_token_ttl_seconds: int
     auth_mode: str = "local"
     auth_server_url: str = ""
+    auth_server_admin_token: str = ""
+    auth_server_audience: str = "meta-wise"
+    auth_server_issuer: str = ""
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -253,6 +256,9 @@ class AppConfig:
             auth_token_ttl_seconds=int(auth["auth_token_ttl_seconds"]),
             auth_mode=str(auth.get("auth_mode") or "local").strip().lower(),
             auth_server_url=str(auth.get("auth_server_url") or "").strip(),
+            auth_server_admin_token=str(auth.get("auth_server_admin_token") or "").strip(),
+            auth_server_audience=str(auth.get("auth_server_audience") or "meta-wise").strip(),
+            auth_server_issuer=str(auth.get("auth_server_issuer") or "").strip(),
         )
 
 

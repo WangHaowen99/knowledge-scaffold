@@ -76,7 +76,37 @@ def login():
     if not user:
         return jsonify({"error": "Invalid credentials"}), 401
     token = auth_manager.issue_token(user)
-    return jsonify({"token": token, "user": user.to_public_dict()})
+    payload = {"token": token, "user": user.to_public_dict()}
+    # remote 模式在冻结契约 {token, user} 之上加法追加 refresh_token/expires_in
+    # （agent_eval/SDK 只读 token 不受影响）；local 后端无 pop_login_tokens，响应不变
+    if hasattr(auth_manager, "pop_login_tokens"):
+        login_tokens = auth_manager.pop_login_tokens(user.username)
+        if login_tokens:
+            payload["refresh_token"] = login_tokens.get("refresh_token")
+            payload["expires_in"] = login_tokens.get("expires_in")
+    return jsonify(payload)
+
+
+@auth_bp.route("/refresh", methods=["POST"])
+def refresh():
+    """方案 a：前端 authFetch 401 时静默调此端点换新 access token（仅 remote 模式）。"""
+    auth_manager = get_auth_manager()
+    if not auth_manager or not hasattr(auth_manager, "refresh_tokens"):
+        return jsonify({"error": "当前认证模式不支持刷新"}), 503
+    data = request.get_json(silent=True) or {}
+    refresh_token = str(data.get("refresh_token", "")).strip()
+    try:
+        tokens = auth_manager.refresh_tokens(refresh_token)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 503
+    if not tokens:
+        # 上游拒绝（过期/已吊销）→ 401，前端据此登出
+        return jsonify({"error": "Unauthorized"}), 401
+    return jsonify({
+        "token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "expires_in": tokens["expires_in"],
+    })
 
 
 @auth_bp.route("/me", methods=["GET"])
