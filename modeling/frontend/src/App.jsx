@@ -34,7 +34,11 @@ export default function App() {
             : '项目'}
         </span>
         <div className="right">
-          <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
+          {projectId && (
+            <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }} title="功能引导"
+              onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start'))}>❓ 引导</button>
+          )}
+          <button className="btn" data-tour="config" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
           <span>{user?.username}</span>
           <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }}
             onClick={() => { setToken(''); setStatus('out'); setUser(null); setProjectId(null); }}>退出</button>

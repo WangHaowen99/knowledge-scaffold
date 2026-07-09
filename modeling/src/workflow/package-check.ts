@@ -67,7 +67,11 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
   for (const q of selectedQuestions) {
     const covered = spec.operations.some((op) => op.competencyQuestion &&
       (op.competencyQuestion === q || q.includes(op.competencyQuestion) || op.competencyQuestion.includes(q)));
-    if (!covered) add('警告', '领域问题未覆盖', 'index.md', `选中的领域问题「${q.slice(0, 40)}…」没有任何操作认领`, `新增或指派一个操作覆盖该问题`);
+    if (!covered) {
+      add('警告', '领域问题未覆盖', 'index.md',
+        `选中的领域问题「${q.slice(0, 40)}…」没有任何操作认领`,
+        `为领域问题「${q}」新增一个操作认领（competencyQuestion 填问题原文，flow 写清回答该问题的取数与计算步骤），或指派给现有最相关的操作`);
+    }
   }
   return out;
 }
