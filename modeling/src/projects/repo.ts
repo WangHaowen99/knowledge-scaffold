@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
+import { FIXED_TRUNK } from '../types.js';
 import type { Project, NodeType } from '../types.js';
 
 function rowToProject(r: any): Project {
@@ -36,4 +37,12 @@ export function listProjects(owner: string): Project[] {
 
 export function setStage(id: string, stage: NodeType): void {
   getDb().prepare('UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?').run(stage, nowIso(), id);
+}
+
+// stage 语义 = 「最远到达的主干节点」：只前进不回退（重访早期节点不应降级进度标记）。
+export function advanceStage(id: string, stage: NodeType): void {
+  const p = getProject(id);
+  if (!p) return;
+  if (FIXED_TRUNK.indexOf(stage) <= FIXED_TRUNK.indexOf(p.stage as NodeType)) return;
+  setStage(id, stage);
 }

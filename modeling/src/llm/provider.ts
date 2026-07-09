@@ -26,10 +26,10 @@ function buildModel(baseUrl: string, modelId: string): any {
 }
 
 export function buildLlm(): LlmDeps {
+  if (config.llm.baseUrl === 'faux') return buildFauxModeler();
   if (!config.llm.baseUrl || !config.llm.model) {
     throw new Error('未配置 MODELING_LLM_BASE_URL / MODELING_LLM_MODEL');
   }
-  if (config.llm.baseUrl === 'faux') return buildFauxModeler();
   return {
     model: buildModel(config.llm.baseUrl, config.llm.model),
     streamFn: streamSimple,
@@ -116,6 +116,20 @@ export function buildFauxModeler(): LlmDeps {
           relatedObjects: tables.slice(0, 1).map((t) => t.name),
           competencyQuestion: q,
         })),
+      })]);
+    }
+    if (sys.includes('submit_verdict')) {
+      // faux judge：标准答案的关键片段是否包含于回答（长度>1 的片段命中≥半数为 pass）
+      const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
+      const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
+      const gt = (text.match(/标准答案：([\s\S]*?)\n智能体回答：/) ?? [])[1] ?? '';
+      const ans = (text.match(/智能体回答：([\s\S]*)$/) ?? [])[1] ?? '';
+      const frags = gt.split(/[，。；、\s]+/).filter((f: string) => f.length > 1);
+      const hit = frags.filter((f: string) => ans.includes(f)).length;
+      const ratio = frags.length ? hit / frags.length : 0;
+      const verdict = ratio >= 0.99 ? 'pass' : ratio >= 0.4 ? 'partial' : 'fail';
+      return fauxAssistantMessage([fauxToolCall('submit_verdict', {
+        verdict, reason: `（演示 judge）标准答案片段命中 ${hit}/${frags.length}`,
       })]);
     }
     return fauxAssistantMessage('（演示模式）收到。');
