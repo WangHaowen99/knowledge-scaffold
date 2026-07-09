@@ -3,11 +3,13 @@ import { getToken, setToken, me } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
 import Workbench from './Workbench.jsx';
+import SettingsModal from './SettingsModal.jsx';
 
 export default function App() {
   const [status, setStatus] = useState('checking'); // checking | out | in
   const [user, setUser] = useState(null);
   const [projectId, setProjectId] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
@@ -32,6 +34,7 @@ export default function App() {
             : '项目'}
         </span>
         <div className="right">
+          <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => setSettingsOpen(true)}>⚙ 设置</button>
           <span>{user?.username}</span>
           <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }}
             onClick={() => { setToken(''); setStatus('out'); setUser(null); setProjectId(null); }}>退出</button>
@@ -42,6 +45,7 @@ export default function App() {
           ? <Workbench projectId={projectId} onBack={() => setProjectId(null)} />
           : <ProjectList onOpen={setProjectId} />}
       </div>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
