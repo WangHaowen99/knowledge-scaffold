@@ -93,3 +93,42 @@ CREATE TABLE IF NOT EXISTS settings (
   value         TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
+
+-- ---- M3：评测用例 / 轮次 / 结果 ----
+CREATE TABLE IF NOT EXISTS testcases (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  question      TEXT NOT NULL,
+  ground_truth  TEXT NOT NULL DEFAULT '',
+  source        TEXT NOT NULL DEFAULT 'manual',  -- manual | competency
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tc_project ON testcases(project_id);
+
+CREATE TABLE IF NOT EXISTS eval_rounds (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  package_version TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'running', -- running | done | failed
+  progress_done INTEGER NOT NULL DEFAULT 0,
+  progress_total INTEGER NOT NULL DEFAULT 0,
+  pass_count    INTEGER NOT NULL DEFAULT 0,
+  log           TEXT NOT NULL DEFAULT '',        -- 轮次执行日志（换行分隔）
+  created_at    TEXT NOT NULL,
+  finished_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_round_project ON eval_rounds(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS eval_results (
+  id            TEXT PRIMARY KEY,
+  round_id      TEXT NOT NULL REFERENCES eval_rounds(id) ON DELETE CASCADE,
+  testcase_id   TEXT NOT NULL,
+  question      TEXT NOT NULL,
+  ground_truth  TEXT NOT NULL,
+  final_answer  TEXT,
+  verdict       TEXT,               -- pass | partial | fail | error
+  reason        TEXT,
+  overridden    INTEGER NOT NULL DEFAULT 0,  -- 人工改判标记
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_res_round ON eval_results(round_id);

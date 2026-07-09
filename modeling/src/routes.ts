@@ -9,8 +9,10 @@ import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
-import { setStage as setProjectStage } from './projects/repo.js';
+import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, getConsumerApiUrl } from './settings/repo.js';
+import * as m3repo from './workflow/m3-repo.js';
+import { startEvaluation } from './evaluation/engine.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
@@ -212,6 +214,75 @@ export async function registerRoutes(app: FastifyInstance) {
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${latest.spec.id}-${latest.version}.zip"`);
       return reply.send(Buffer.from(zip));
+    });
+
+    // ---- 节点 8 评测用例录入 ----
+    r.get('/api/projects/:id/testcases', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { testcases: m3repo.listTestcases(c.p.id) };
+    });
+    r.post('/api/projects/:id/testcases', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { question, groundTruth } = (req.body ?? {}) as any;
+      if (!question) return reply.code(400).send({ error: 'question 必填' });
+      return { testcase: m3repo.addTestcase(c.p.id, question, groundTruth ?? '') };
+    });
+    r.post('/api/projects/:id/testcases/prefill', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
+      const added = m3repo.prefillFromCompetency(c.p.id, selected);
+      setProjectStage(c.p.id, 'testcases');
+      return { added, testcases: m3repo.listTestcases(c.p.id) };
+    });
+    r.patch('/api/projects/:id/testcases/:tcId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      m3repo.updateTestcase((req.params as any).tcId, (req.body ?? {}) as any);
+      return { testcases: m3repo.listTestcases(c.p.id) };
+    });
+    r.delete('/api/projects/:id/testcases/:tcId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      m3repo.deleteTestcase((req.params as any).tcId);
+      return { testcases: m3repo.listTestcases(c.p.id) };
+    });
+
+    // ---- 节点 9 评测运行 ----
+    r.post('/api/projects/:id/evaluate', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const token = (req.headers.authorization ?? '').slice(7);
+      const { binding } = (req.body ?? {}) as any;
+      try {
+        const { roundId } = startEvaluation({ projectId: c.p.id, token, tables: c.ctx.tables, binding });
+        setProjectStage(c.p.id, 'evaluate');
+        return { roundId };
+      } catch (e) {
+        return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    });
+    r.get('/api/projects/:id/rounds', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { rounds: m3repo.listRounds(c.p.id) };
+    });
+    r.get('/api/projects/:id/rounds/:roundId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const round = m3repo.getRound((req.params as any).roundId);
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '轮次不存在' });
+      return { round, results: m3repo.listResults(round.id) };
+    });
+    r.patch('/api/projects/:id/results/:resultId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { verdict } = (req.body ?? {}) as any;
+      if (!['pass', 'partial', 'fail'].includes(verdict)) return reply.code(400).send({ error: 'verdict 非法' });
+      const res = m3repo.overrideVerdict((req.params as any).resultId, verdict);
+      return { result: res };
     });
   });
 }

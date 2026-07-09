@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getProject, uploadDocument, runAnalyze } from './api.js';
 import { InterviewPanel, CompetencyPanel, GeneratePanel, ReviewPanel } from './M2Panels.jsx';
+import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板。
 // M1 覆盖节点 1~3；后续节点在时间线上预留灰态。
@@ -34,7 +35,7 @@ export default function Workbench({ projectId }) {
   const tables = documents.flatMap((d) => d.tables ?? []);
   const parsedDocs = documents.filter((d) => d.parseStatus === 'parsed');
 
-  // 节点解锁判定：1~2 始终可进；3 需资料；4 需分析完成；5 需访谈节点存在；6 需胜任力节点；7 需包已生成
+  // 节点解锁判定：1~2 始终可进；3 需资料；4 需分析完成；5 需访谈节点存在；6 需胜任力节点；7~9 需包已生成
   const unlocked = {
     project_setup: true, ingest: true,
     analyze: tables.length > 0 || parsedDocs.length > 0,
@@ -42,6 +43,8 @@ export default function Workbench({ projectId }) {
     competency: !!interviewNode && interviewNode.status === 'done',
     generate: !!competencyNode,
     review: !!generateNode,
+    testcases: !!generateNode,
+    evaluate: !!generateNode,
   };
   const nodeStatus = {
     project_setup: 'done', ingest: parsedDocs.length ? 'done' : 'pending',
@@ -50,13 +53,17 @@ export default function Workbench({ projectId }) {
     competency: competencyNode?.status === 'done' ? 'done' : 'pending',
     generate: generateNode ? 'done' : 'pending',
     review: generateNode ? 'done' : 'pending',
+    testcases: stageIdx >= STAGE_INDEX.testcases ? 'done' : 'pending',
+    evaluate: stageIdx >= STAGE_INDEX.evaluate ? 'done' : 'pending',
   };
-  // 自动焦点：最靠后的已解锁未完成节点
+  // 自动焦点：最靠后的已解锁未完成节点（进入评测阶段后跟随 stage）
   const autoFocus = !unlocked.analyze ? 'ingest'
     : !analyzeNode ? (tables.length ? 'analyze' : 'ingest')
     : !(interviewNode?.status === 'done') ? 'interview'
     : !competencyNode ? 'competency'
     : !generateNode ? 'generate'
+    : project.stage === 'evaluate' ? 'evaluate'
+    : project.stage === 'testcases' ? 'testcases'
     : 'review';
   const effFocus = focus && unlocked[focus] ? focus : autoFocus;
 
@@ -97,6 +104,7 @@ export default function Workbench({ projectId }) {
         <div className="wb-h">
           {{ ingest: '资料上传与解析', analyze: '初步分析', interview: '建模访谈',
              competency: '胜任力问题', generate: '知识包生成', review: '包评审',
+             testcases: '评测用例录入', evaluate: '评测运行',
              project_setup: '项目信息' }[effFocus]}
           {effFocus === 'analyze' && !analyzeNode && tables.length > 0 && (
             <button className="btn btn-p" style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }}
@@ -123,6 +131,10 @@ export default function Workbench({ projectId }) {
             <GeneratePanel projectId={projectId} onAdvance={() => { load(); setFocus('review'); }} />
           )}
           {effFocus === 'review' && <ReviewPanel projectId={projectId} />}
+          {effFocus === 'testcases' && (
+            <TestcasesPanel projectId={projectId} onAdvance={() => { load(); setFocus('evaluate'); }} />
+          )}
+          {effFocus === 'evaluate' && <EvaluatePanel projectId={projectId} />}
         </div>
       </div>
 

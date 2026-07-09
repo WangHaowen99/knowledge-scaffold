@@ -78,7 +78,10 @@ function parseExcel(buffer: Buffer): DataDictTable[] {
       };
     });
 
-    tables.push({ name: sheetName, fields, rowCount: dataRows.length });
+    const MAX_ROWS = 2000;
+    const rowMatrix = dataRows.slice(0, MAX_ROWS).map((r) =>
+      header.map((_, col) => String((r[col] ?? '')).trim()));
+    tables.push({ name: sheetName, fields, rowCount: dataRows.length, rows: rowMatrix });
   }
   return tables;
 }

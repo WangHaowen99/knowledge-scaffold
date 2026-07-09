@@ -69,6 +69,8 @@ export interface DataDictTable {
   name: string; // sheet 名 = 表名
   fields: DataDictField[];
   rowCount: number;
+  // 全量数据行（按 fields 顺序的字符串矩阵，cap 2000 行）——评测库灌数据用
+  rows?: string[][];
 }
 
 export interface DocumentRecord {

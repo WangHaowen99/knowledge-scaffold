@@ -40,3 +40,14 @@ export const generatePackage = (id) => api(`${P(id)}/generate`, { method: 'POST'
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`);
 export const exportPackageUrl = (id) => `${P(id)}/package/export`;
+
+// ---- M3 评测 ----
+export const listTestcases = (id) => api(`${P(id)}/testcases`);
+export const addTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases`, { method: 'POST', body: JSON.stringify({ question, groundTruth }) });
+export const prefillTestcases = (id) => api(`${P(id)}/testcases/prefill`, { method: 'POST', body: '{}' });
+export const updateTestcase = (id, tcId, patch) => api(`${P(id)}/testcases/${encodeURIComponent(tcId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+export const deleteTestcase = (id, tcId) => api(`${P(id)}/testcases/${encodeURIComponent(tcId)}`, { method: 'DELETE' });
+export const startEvaluate = (id, binding) => api(`${P(id)}/evaluate`, { method: 'POST', body: JSON.stringify(binding ? { binding } : {}) });
+export const listRounds = (id) => api(`${P(id)}/rounds`);
+export const getRound = (id, roundId) => api(`${P(id)}/rounds/${encodeURIComponent(roundId)}`);
+export const overrideVerdict = (id, resultId, verdict) => api(`${P(id)}/results/${encodeURIComponent(resultId)}`, { method: 'PATCH', body: JSON.stringify({ verdict }) });
