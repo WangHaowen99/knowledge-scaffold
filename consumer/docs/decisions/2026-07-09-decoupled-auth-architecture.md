@@ -45,6 +45,17 @@
 - 预置 server 落位：新顶层目录 `auth-server/`（与 consumer 平级），独立容器、不对外暴露端口；
   **禁止与 consumer 之间任何 Python import**，唯一接口是 HTTP。
 
+### D5 开放注册 + 邮箱验证（2026-07-09 用户拍板，从"不做清单"移入范围）
+
+- auth server 增加自助注册：`/register`（用户名+邮箱+密码）→ 6 位邮箱验证码（15 分钟有效、
+  60 秒重发冷却、5 次尝试上限）→ 验证通过创建账号，默认角色 `user`、不强制首登改密。
+- 用户模型新增 `email` 字段（注册用户必填唯一，存量用户可空）——同时作为将来切换企业 IdP
+  时的账号关联键（解决"sub 映射"遗留问题）。
+- 注册功能默认关闭（`AUTH_ENABLE_REGISTRATION=false`，opt-in）；邮件经 SMTP（env 配置），
+  开发/测试用 console 模式。防滥用：按 IP 与邮箱限流、验证码只存哈希。
+- 前端注册入口与 BFF 代理端点随施工步骤 4（consumer 接通 auth server）一并交付，
+  local 模式无注册功能。
+
 ## Alternatives considered
 
 - 自定义 client-server REST 协议：实现快，但替换成本转嫁到每次 IdP 对接，否决。
