@@ -16,7 +16,7 @@ INTERNAL_NODE_LABELS: set[str] = {"D2O_NODE"}
 INTERNAL_PROPERTY_KEYS: set[str] = {"d2o_workspace_id", "d2o_ontology_id", "_d2o_record_key"}
 HIDDEN_PROPERTY_KEYS: set[str] = SCOPE_HIDDEN_KEYS | LOGIC_HIDDEN_KEYS | INTERNAL_PROPERTY_KEYS
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]*$")
 _PROPERTY_SELECTOR_RE = re.compile(r"[*?\[\]]")
 
 
@@ -26,13 +26,17 @@ class GraphScopeError(ValueError):
 
 def build_graph_scope(provider_config: Mapping[str, Any]) -> GraphScope:
     workspace_property = str(provider_config.get("workspace_property") or "d2o_workspace_id").strip()
-    workspace_value = str(provider_config.get("workspace_id") or "").strip()
+    workspace_id = str(provider_config.get("workspace_id") or "").strip()
+    workspace_name = str(provider_config.get("workspace_name") or "").strip()
+    workspace_value = workspace_name if workspace_property == "workspace_name" else workspace_id
     ontology_property = str(provider_config.get("ontology_property") or "").strip()
     ontology_value = str(provider_config.get("ontology_id") or "").strip() if ontology_property else ""
 
     if not workspace_property:
         raise GraphScopeError("workspace_property 不能为空")
     if not workspace_value:
+        if workspace_property == "workspace_name":
+            raise GraphScopeError("workspace_name 不能为空，无法执行带 scope 的图查询")
         raise GraphScopeError("workspace_id 不能为空，无法执行带 scope 的图查询")
     validate_graph_identifier(workspace_property, "workspace_property")
     if ontology_property:

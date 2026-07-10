@@ -57,6 +57,7 @@ log "Starting release containers"
 compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy"
+wait_for_container "onto-agent-mcp" 180 || die "MCP container did not become healthy"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy"
 wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
 

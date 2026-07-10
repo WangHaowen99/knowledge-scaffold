@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 import re
 from typing import Any
 
@@ -536,6 +537,219 @@ class Neo4jGraphBackend:
             _raise_backend_error("Neo4J pattern_search failed", exc)
         return GraphBackendResult(records=records, truncated=len(records) >= max(1, int(limit or 100)))
 
+    def hop_search(
+        self,
+        *,
+        entity_instance_id: str,
+        hop_num: int,
+        accurate_flag: bool,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        normalized_element_id = str(entity_instance_id or "").strip()
+        if not normalized_element_id:
+            raise GraphBackendUnsupportedError("entity_instance_id 不能为空")
+        depth = max(1, min(int(hop_num or 1), 5))
+        depth_expr = "*{}..{}".format(depth, depth) if accurate_flag else "*1..{}".format(depth)
+        params: dict[str, Any] = {"element_id": normalized_element_id, "limit": 500}
+        start_where = ["(elementId(start) = $element_id OR toString(start.id) = $element_id)"]
+        start_where.extend(_build_scope_where("start", scope, params, prefix="start_scope"))
+        start_where.extend(_build_exclude_logic_where("start"))
+        start_where.extend(_build_path_scope_guards(scope, params))
+        query = (
+            "MATCH path = (start)-[{depth}]-(n) "
+            "WHERE {where} "
+            "WITH path LIMIT $limit "
+            "RETURN nodes(path) AS nodes, relationships(path) AS relationships"
+        ).format(depth=depth_expr, where=" AND ".join(start_where))
+
+        nodes: list[dict[str, Any]] = []
+        relationships: list[dict[str, Any]] = []
+        seen_nodes: set[str] = set()
+        seen_relationships: set[str] = set()
+        try:
+            hidden_properties = _scope_hidden_properties(scope)
+            for record in self._run(query, params):
+                for node in _record_get(record, "nodes") or []:
+                    normalized = _normalize_node(node, hidden_properties=hidden_properties)
+                    node_id = str(normalized.get("entity_instance_id") or normalized.get("element_id") or "")
+                    if not node_id or node_id in seen_nodes:
+                        continue
+                    seen_nodes.add(node_id)
+                    nodes.append(normalized)
+                for rel in _record_get(record, "relationships") or []:
+                    normalized = _relationship_with_compat(
+                        rel,
+                        hidden_properties=hidden_properties,
+                    )
+                    rel_id = str(normalized.get("relation_instance_id") or normalized.get("element_id") or "")
+                    if not rel_id or rel_id in seen_relationships:
+                        continue
+                    seen_relationships.add(rel_id)
+                    relationships.append(normalized)
+        except Exception as exc:
+            _raise_backend_error("Neo4J hop_search failed", exc)
+
+        payload = {
+            "nodes": nodes,
+            "edges": relationships,
+            "relationships": relationships,
+            "node_count": len(nodes),
+            "edge_count": len(relationships),
+            "relationship_count": len(relationships),
+            "center_id": normalized_element_id,
+            "hop_num": depth,
+            "accurate_flag": bool(accurate_flag),
+        }
+        return GraphBackendResult(
+            records=[payload],
+            total=len(nodes),
+            truncated=len(seen_relationships) >= int(params["limit"]),
+            payload={"result": payload},
+        )
+
+    def shortest_path_search(
+        self,
+        *,
+        start_label: str,
+        start_props: dict[str, Any],
+        end_label: str,
+        end_props: dict[str, Any],
+        max_depth: int,
+        directed: bool,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        start_label_name = quote_graph_identifier(start_label, "start_label")
+        end_label_name = quote_graph_identifier(end_label, "end_label")
+        depth = max(1, min(int(max_depth or 15), 15))
+        params: dict[str, Any] = {}
+        where_parts = ["start <> end"]
+        where_parts.extend(build_filter_where(start_props or {}, "start", params, "sp"))
+        where_parts.extend(build_filter_where(end_props or {}, "end", params, "ep"))
+        where_parts.extend(_build_scope_where("start", scope, params, prefix="start_scope"))
+        where_parts.extend(_build_scope_where("end", scope, params, prefix="end_scope"))
+        where_parts.extend(_build_exclude_logic_where("start"))
+        where_parts.extend(_build_exclude_logic_where("end"))
+        path_where = _build_path_scope_guards(scope, params)
+        path_expr = "(start)-[*1..{}]->(end)".format(depth) if directed else "(start)-[*1..{}]-(end)".format(depth)
+        query = (
+            "MATCH (start:{start_label}), (end:{end_label}) "
+            "WHERE {where} "
+            "WITH start, end "
+            "MATCH path = shortestPath({path_expr}) "
+            "WHERE {path_where} "
+            "RETURN path LIMIT 5"
+        ).format(
+            start_label=start_label_name,
+            end_label=end_label_name,
+            where=" AND ".join(where_parts),
+            path_expr=path_expr,
+            path_where=" AND ".join(path_where),
+        )
+        records: list[dict[str, Any]] = []
+        try:
+            hidden_properties = _scope_hidden_properties(scope)
+            for record in self._run(query, params):
+                path = _record_get(record, "path")
+                if path is None:
+                    continue
+                records.append(_normalize_graph_path(path, hidden_properties=hidden_properties))
+        except Exception as exc:
+            _raise_backend_error("Neo4J shortest_path failed", exc)
+        return GraphBackendResult(records=records, total=len(records), truncated=False)
+
+    def list_logic_titles(
+        self,
+        *,
+        entity_type: str = "",
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        normalized_entity_type = str(entity_type or "").strip()
+        params: dict[str, Any] = {}
+        where_parts = _build_logic_block_where("n")
+        where_parts.extend(_build_scope_where("n", scope, params))
+        if normalized_entity_type:
+            params["entity_type"] = normalized_entity_type
+            where_parts.append("$entity_type IN labels(n)")
+        query = (
+            "MATCH (n) WHERE {where} "
+            "RETURN elementId(n) AS entity_instance_id, labels(n) AS labels, "
+            "coalesce(n.entity_type, n.entity_name, '') AS entity_type, "
+            "coalesce(n.logic_blocks, '') AS logic_blocks "
+            "ORDER BY entity_instance_id ASC"
+        ).format(where=" AND ".join(where_parts))
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        try:
+            for record in self._run(query, params):
+                for entry in _iter_logic_entries(record):
+                    title = _normalize_text(entry.get("logic_title"))
+                    content = _normalize_text(entry.get("logic_content"))
+                    if not title:
+                        continue
+                    dedup_key = (_normalize_text(entry.get("entity_type")).casefold(), title.casefold(), content.casefold())
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
+                    items.append({
+                        "entity_instance_id": _normalize_text(entry.get("entity_instance_id")),
+                        "entity_type": _normalize_text(entry.get("entity_type")),
+                        "logic_title": title,
+                    })
+        except Exception as exc:
+            _raise_backend_error("Neo4J list_logic_titles failed", exc)
+        return GraphBackendResult(records=items, total=len(items), truncated=False)
+
+    def get_logic_content(
+        self,
+        *,
+        entity_instance_ids: list[str],
+        logic_titles: list[str] | None,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        normalized_entity_ids = _normalize_text_list(entity_instance_ids)
+        if not normalized_entity_ids:
+            raise GraphBackendUnsupportedError("entity_instance_ids 不能为空")
+        normalized_titles = {item.casefold() for item in _normalize_text_list(logic_titles)}
+        params: dict[str, Any] = {"entity_instance_ids": normalized_entity_ids}
+        where_parts = _build_logic_block_where("n")
+        where_parts.extend(_build_scope_where("n", scope, params))
+        query = (
+            "MATCH (n) WHERE {where} "
+            "WITH elementId(n) AS entity_instance_id, toString(id(n)) AS legacy_entity_instance_id, "
+            "toString(n.id) AS property_entity_instance_id, labels(n) AS labels, "
+            "coalesce(n.entity_type, n.entity_name, '') AS entity_type, "
+            "coalesce(n.logic_blocks, '') AS logic_blocks "
+            "WHERE entity_instance_id IN $entity_instance_ids "
+            "OR legacy_entity_instance_id IN $entity_instance_ids "
+            "OR property_entity_instance_id IN $entity_instance_ids "
+            "RETURN entity_instance_id, labels, entity_type, logic_blocks "
+            "ORDER BY entity_instance_id ASC"
+        ).format(where=" AND ".join(where_parts))
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        try:
+            for record in self._run(query, params):
+                for entry in _iter_logic_entries(record):
+                    title = _normalize_text(entry.get("logic_title"))
+                    content = _normalize_text(entry.get("logic_content"))
+                    if normalized_titles and title.casefold() not in normalized_titles:
+                        continue
+                    if not title or not content:
+                        continue
+                    dedup_key = (_normalize_text(entry.get("entity_type")).casefold(), title.casefold(), content.casefold())
+                    if dedup_key in seen:
+                        continue
+                    seen.add(dedup_key)
+                    items.append({
+                        "entity_instance_id": _normalize_text(entry.get("entity_instance_id")),
+                        "entity_type": _normalize_text(entry.get("entity_type")),
+                        "logic_title": title,
+                        "logic_content": content,
+                    })
+        except Exception as exc:
+            _raise_backend_error("Neo4J get_logic_content failed", exc)
+        return GraphBackendResult(records=items, total=len(items), truncated=False)
+
     def get_element_info(
         self,
         *,
@@ -688,8 +902,27 @@ def _build_exclude_logic_where(alias: str) -> list[str]:
     return [
         "("
         "toLower(trim(coalesce({}.class_kind, ''))) <> 'logic' "
+        "AND toLower(trim(coalesce({}.class_kind, ''))) <> 'rule' "
         "AND toLower(trim(coalesce({}.source_table, ''))) <> 'unstructured_data_logic_core'"
-        ")".format(alias, alias)
+        ")".format(alias, alias, alias)
+    ]
+
+
+def _build_logic_block_where(alias: str) -> list[str]:
+    return [
+        "toLower(trim(coalesce({}.class_kind, ''))) <> 'logic'".format(alias),
+        "toLower(trim(coalesce({}.class_kind, ''))) <> 'rule'".format(alias),
+        "coalesce({}.logic_blocks, '') <> ''".format(alias),
+    ]
+
+
+def _build_path_scope_guards(scope: GraphScope, params: dict[str, Any]) -> list[str]:
+    node_parts = _build_scope_where("node", scope, params, prefix="path_node_scope")
+    node_parts.extend(_build_exclude_logic_where("node"))
+    rel_parts = _build_scope_where("rel", scope, params, prefix="path_rel_scope")
+    return [
+        "ALL(node IN nodes(path) WHERE {})".format(" AND ".join(node_parts)),
+        "ALL(rel IN relationships(path) WHERE {})".format(" AND ".join(rel_parts)),
     ]
 
 
@@ -1023,6 +1256,41 @@ def _normalize_relationship(
     }
 
 
+def _relationship_with_compat(
+    rel: Any,
+    *,
+    start_node: Any | None = None,
+    end_node: Any | None = None,
+    return_properties: list[str] | None = None,
+    hidden_properties: list[str] | None = None,
+) -> dict[str, Any]:
+    payload = _normalize_relationship(
+        rel,
+        start_node=start_node,
+        end_node=end_node,
+        return_properties=return_properties,
+        hidden_properties=hidden_properties,
+    )
+    payload.setdefault("relation_physical_type", payload.get("type") or "")
+    return payload
+
+
+def _normalize_graph_path(path: Any, *, hidden_properties: list[str] | None = None) -> dict[str, Any]:
+    nodes = [
+        _normalize_node(node, hidden_properties=hidden_properties)
+        for node in list(getattr(path, "nodes", []) or [])
+    ]
+    relationships = [
+        _relationship_with_compat(rel, hidden_properties=hidden_properties)
+        for rel in list(getattr(path, "relationships", []) or [])
+    ]
+    return {
+        "nodes": nodes,
+        "edges": relationships,
+        "relationships": relationships,
+    }
+
+
 def _normalize_pattern_node(
     node: Any,
     *,
@@ -1131,9 +1399,85 @@ def _mapping_get(value: Any, key: str) -> Any:
     return getattr(value, key, None)
 
 
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_text_list(value: list[str] | None = None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value or []:
+        text = _normalize_text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _normalize_logic_blocks(value: Any) -> list[dict[str, str]]:
+    raw_items: Any = value
+    if isinstance(value, str):
+        raw_text = value.strip()
+        if not raw_text:
+            return []
+        try:
+            raw_items = json.loads(raw_text)
+        except Exception:
+            return []
+    if isinstance(raw_items, Mapping):
+        raw_items = [raw_items]
+    if not isinstance(raw_items, list):
+        return []
+
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        title = _normalize_text(item.get("title") or item.get("logic_title"))
+        content = _normalize_text(item.get("content") or item.get("logic_content"))
+        if not title or not content:
+            continue
+        dedup_key = (title.casefold(), content.casefold())
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        result.append({"logic_title": title, "logic_content": content})
+    return result
+
+
+def _iter_logic_entries(record: Any) -> list[dict[str, str]]:
+    entity_instance_id = _normalize_text(_record_get(record, "entity_instance_id"))
+    entity_type = _pick_business_label_with_fallback(
+        _record_get(record, "labels"),
+        _record_get(record, "entity_type"),
+    )
+    if not entity_instance_id or not entity_type:
+        return []
+    result: list[dict[str, str]] = []
+    for block in _normalize_logic_blocks(_record_get(record, "logic_blocks")):
+        title = _normalize_text(block.get("logic_title"))
+        content = _normalize_text(block.get("logic_content"))
+        if not title or not content:
+            continue
+        result.append({
+            "entity_instance_id": entity_instance_id,
+            "entity_type": entity_type,
+            "logic_title": title,
+            "logic_content": content,
+        })
+    return result
+
+
 def _pick_business_label(labels: Any) -> str:
     cleaned = sanitize_labels(labels)
     return cleaned[0] if cleaned else ""
+
+
+def _pick_business_label_with_fallback(labels: Any, fallback: Any) -> str:
+    cleaned = sanitize_labels(labels)
+    return cleaned[0] if cleaned else _normalize_text(fallback)
 
 
 def _query_with_timeout(query: str, timeout_seconds: int) -> Any:

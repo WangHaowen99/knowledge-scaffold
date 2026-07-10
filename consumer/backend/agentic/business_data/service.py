@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 from .provider_base import BusinessDataSearchEvent
-from ..workspaces import get_workspace_paths
+from ..workspaces import get_workspace, get_workspace_paths
 from .provider_registry import get_provider_spec
 from .resolver import ResolvedBusinessDataConnection
 
@@ -37,11 +37,17 @@ def query_business_data_stream(
 
     # Inject workspace context for providers that need it (e.g., nl2sql_template)
     workspace_root = ""
+    workspace_name = ""
     if request.workspace_id:
         try:
-            workspace_root = str(get_workspace_paths(request.workspace_id).ontologies_dir)
+            workspace_paths = get_workspace_paths(request.workspace_id)
+            workspace_root = str(workspace_paths.ontologies_dir)
         except Exception:
             pass
+        try:
+            workspace_name = str(get_workspace(request.workspace_id).get("name") or "").strip()
+        except Exception:
+            workspace_name = ""
 
     provider_config = {
         "ontology_search": {
@@ -49,6 +55,7 @@ def query_business_data_stream(
                 **dict(connection.config),
                 "_workspace_root": workspace_root,
                 "workspace_id": request.workspace_id,
+                "workspace_name": workspace_name,
                 "ontology_id": request.ontology_id,
                 "model_profile_id": request.model_profile_id,
                 "run_id": request.run_id,

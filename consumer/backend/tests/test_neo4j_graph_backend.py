@@ -25,6 +25,12 @@ class _FakeRelationship:
         self.end_node = end_node
 
 
+class _FakePath:
+    def __init__(self, nodes, relationships):
+        self.nodes = nodes
+        self.relationships = relationships
+
+
 class _FakeSession:
     def __init__(self, calls):
         self.calls = calls
@@ -96,6 +102,53 @@ class _FakeSession:
                             },
                         )
                     ],
+                }
+            ]
+        if "MATCH path = (start)-" in query_text and "RETURN nodes(path) AS nodes" in query_text:
+            start = _FakeNode(
+                element_id="node-start",
+                labels=["D2O_NODE", "SourceItemVersion"],
+                properties={"SourceItemVersionID": "VERSION0001", "d2o_workspace_id": "workspace-a"},
+            )
+            end = _FakeNode(
+                element_id="node-end",
+                labels=["D2O_NODE", "TargetItem"],
+                properties={"TargetItemCode": "M-001", "d2o_workspace_id": "workspace-a"},
+            )
+            rel = _FakeRelationship(
+                element_id="rel-hop",
+                rel_type="D2O_RELATION",
+                properties={"relation_type": "PROCESS_TO", "d2o_workspace_id": "workspace-a"},
+                start_node=start,
+                end_node=end,
+            )
+            return [{"nodes": [start, end], "relationships": [rel]}]
+        if "shortestPath" in query_text:
+            start = _FakeNode(
+                element_id="node-start",
+                labels=["D2O_NODE", "SourceItemVersion"],
+                properties={"SourceItemVersionID": "VERSION0001", "d2o_workspace_id": "workspace-a"},
+            )
+            end = _FakeNode(
+                element_id="node-end",
+                labels=["D2O_NODE", "TargetItem"],
+                properties={"TargetItemCode": "M-001", "d2o_workspace_id": "workspace-a"},
+            )
+            rel = _FakeRelationship(
+                element_id="rel-shortest",
+                rel_type="D2O_RELATION",
+                properties={"relation_type": "PROCESS_TO", "d2o_workspace_id": "workspace-a"},
+                start_node=start,
+                end_node=end,
+            )
+            return [{"path": _FakePath([start, end], [rel])}]
+        if "logic_blocks" in query_text and "entity_instance_id" in query_text:
+            return [
+                {
+                    "entity_instance_id": "node-logic",
+                    "labels": ["D2O_NODE", "Product"],
+                    "entity_type": "Product",
+                    "logic_blocks": '[{"title":"推荐规则","content":"命中后推荐"}]',
                 }
             ]
         if "RETURN n LIMIT 1" in query_text:
@@ -324,6 +377,53 @@ def test_neo4j_pattern_search_projects_return_vars_and_properties(monkeypatch):
     assert record["nodes"][0]["labels"] == ["SourceItemVersion"]
     assert record["nodes"][0]["properties"] == {"SourceItemVersionID": "VERSION0003"}
     assert record["selected"] == {"version": record["nodes"][0]}
+
+
+def test_neo4j_backend_runs_extra_mcp_graph_tools(monkeypatch):
+    calls = []
+    backend = _backend()
+    monkeypatch.setattr(backend, "_get_driver", lambda: _FakeDriver(calls))
+
+    hop = backend.hop_search(
+        entity_instance_id="node-start",
+        hop_num=1,
+        accurate_flag=False,
+        scope=_scope(),
+    )
+    shortest = backend.shortest_path_search(
+        start_label="SourceItemVersion",
+        start_props={"SourceItemVersionID": "VERSION0001"},
+        end_label="TargetItem",
+        end_props={"TargetItemCode": "M-001"},
+        max_depth=3,
+        directed=True,
+        scope=_scope(),
+    )
+    titles = backend.list_logic_titles(scope=_scope())
+    content = backend.get_logic_content(
+        entity_instance_ids=["node-logic"],
+        logic_titles=["推荐规则"],
+        scope=_scope(),
+    )
+
+    query_texts = [str(call[0]) for call in calls if call[0] != "database"]
+    assert any("MATCH path = (start)-[*1..1]-(n)" in text for text in query_texts)
+    assert any("shortestPath((start)-[*1..3]->(end))" in text for text in query_texts)
+    assert any("ALL(node IN nodes(path) WHERE" in text for text in query_texts)
+    assert hop.records[0]["node_count"] == 2
+    assert hop.records[0]["relationships"][0]["relation_physical_type"] == "D2O_RELATION"
+    assert shortest.records[0]["relationships"][0]["relation_type"] == "PROCESS_TO"
+    assert titles.records == [
+        {"entity_instance_id": "node-logic", "entity_type": "Product", "logic_title": "推荐规则"}
+    ]
+    assert content.records == [
+        {
+            "entity_instance_id": "node-logic",
+            "entity_type": "Product",
+            "logic_title": "推荐规则",
+            "logic_content": "命中后推荐",
+        }
+    ]
 
 
 def test_neo4j_timeout_maps_to_backend_timeout_error(monkeypatch):

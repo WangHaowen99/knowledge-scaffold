@@ -3,11 +3,13 @@ import {
   Boxes,
   Database,
   FolderCog,
+  KeyRound,
   Link2,
   SlidersHorizontal,
 } from 'lucide-react';
 
 import DataConnectionManagement from './DataConnectionManagement';
+import McpManagement from './McpManagement';
 import OntologyManagement from './OntologyManagement';
 import SystemSettings from './SystemSettings';
 import WorkspaceManagement from './WorkspaceManagement';
@@ -50,6 +52,11 @@ const WORKSPACE_SECTIONS = [
     label: '运行参数',
     icon: SlidersHorizontal,
   },
+  {
+    id: 'mcp',
+    label: 'MCP 服务',
+    icon: KeyRound,
+  },
 ];
 
 function ConfigurationCenter({
@@ -74,6 +81,7 @@ function ConfigurationCenter({
   const isOntologySection = currentTopSection === 'workspace' && currentWorkspaceSection === 'ontology';
   const isOntologyBindingSection = currentTopSection === 'workspace' && currentWorkspaceSection === 'ontology-bindings';
   const isWorkspaceRuntimeSection = currentTopSection === 'workspace' && currentWorkspaceSection === 'workspace-runtime';
+  const isMcpSection = currentTopSection === 'workspace' && currentWorkspaceSection === 'mcp';
 
   return (
     <div className="configuration-center-page">
@@ -158,6 +166,14 @@ function ConfigurationCenter({
 
             {isWorkspaceRuntimeSection && (
               <WorkspaceRuntimeConfig
+                currentWorkspaceId={currentWorkspaceId}
+                currentWorkspaceName={currentWorkspace?.name || currentWorkspaceId}
+                canEdit={currentUser?.role === 'admin'}
+              />
+            )}
+
+            {isMcpSection && (
+              <McpManagement
                 currentWorkspaceId={currentWorkspaceId}
                 currentWorkspaceName={currentWorkspace?.name || currentWorkspaceId}
                 canEdit={currentUser?.role === 'admin'}

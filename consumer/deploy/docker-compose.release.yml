@@ -16,11 +16,38 @@ services:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
+      - MCP_SERVER_HOST=mcp
+      - MCP_SERVER_PORT=7488
     depends_on:
       auth-server:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:5055/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp:
+    image: ${BACKEND_IMAGE}
+    container_name: onto-agent-mcp
+    restart: unless-stopped
+    command: ["python", "-m", "agentic.mcp.server"]
+    ports:
+      - "${MCP_SERVER_PORT:-7488}:7488"
+    volumes:
+      - ./backend/config:/app/config:ro
+      - ./.onto-runtime:/app/.onto-runtime
+    env_file:
+      - ./backend/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PROJECT_ROOT=/app/.onto-runtime
+      - MCP_SERVER_HOST=0.0.0.0
+      - MCP_SERVER_PORT=7488
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:7488/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -38,6 +65,7 @@ services:
       - NGINX_TYPEDB_UPSTREAM=${NGINX_TYPEDB_UPSTREAM:-http://backend:9991}
     depends_on:
       - backend
+      - mcp
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:80"]
       interval: 30s
@@ -51,11 +79,12 @@ services:
     image: ${AUTH_SERVER_IMAGE:-onto-agent-auth-server:latest}
     container_name: onto-agent-auth-server
     restart: unless-stopped
+    env_file:
+      - ./backend/.env
     volumes:
       - ./.onto-auth:/data
     environment:
       - AUTH_SERVER_HOST=0.0.0.0
       - AUTH_SERVER_DATA_DIR=/data
       - AUTH_SERVER_ISSUER=${AUTH_SERVER_ISSUER:-http://auth-server:5056}
-      - AUTH_SERVER_ADMIN_TOKEN=${AUTH_SERVER_ADMIN_TOKEN:-}
       - AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-false}

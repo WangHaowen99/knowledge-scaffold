@@ -106,6 +106,46 @@ class GraphBackend(Protocol):
     ) -> GraphBackendResult:
         ...
 
+    def hop_search(
+        self,
+        *,
+        entity_instance_id: str,
+        hop_num: int,
+        accurate_flag: bool,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        ...
+
+    def shortest_path_search(
+        self,
+        *,
+        start_label: str,
+        start_props: dict[str, Any],
+        end_label: str,
+        end_props: dict[str, Any],
+        max_depth: int,
+        directed: bool,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        ...
+
+    def list_logic_titles(
+        self,
+        *,
+        entity_type: str = "",
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        ...
+
+    def get_logic_content(
+        self,
+        *,
+        entity_instance_ids: list[str],
+        logic_titles: list[str] | None,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        ...
+
     def get_element_info(
         self,
         *,
