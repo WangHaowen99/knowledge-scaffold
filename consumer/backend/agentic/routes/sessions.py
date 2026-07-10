@@ -132,6 +132,34 @@ def get_session_messages(session_id: str):
     })
 
 
+@sessions_bp.route("/sessions/<session_id>/turns", methods=["GET"])
+@require_auth()
+def list_session_turns(session_id: str):
+    """List a session's structured turn records, optionally filtered.
+
+    Query params:
+        status: optional filter (running/success/failed/cancelled/awaiting_input)
+        has_feedback: "true" to return only turns that carry a feedback vote
+
+    Returns turn records (turn_id, run_id, user_request, status, times, final_output,
+    feedback) for structured trace queries that do not depend on the 7-day perf
+    log window.
+    """
+    chat_store, execution_store = _get_user_stores()
+    if not chat_store.get_session(session_id):
+        return jsonify({"error": "Session not found"}), 404
+
+    status = str(request.args.get("status") or "").strip() or None
+    turns = execution_store.list_turns_by_status(session_id, status)
+    if _is_truthy(request.args.get("has_feedback")):
+        turns = [t for t in turns if isinstance(t.get("feedback"), dict) and t["feedback"].get("vote")]
+    return jsonify({"turns": turns, "count": len(turns)})
+
+
+def _is_truthy(value) -> bool:
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 @sessions_bp.route("/sessions/<session_id>/generate-title", methods=["POST", "OPTIONS"])
 @cross_origin()
 @require_auth()

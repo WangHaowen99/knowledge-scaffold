@@ -66,6 +66,8 @@ def emit_protocol_event(
         source=source,
         payload=scoped_payload,
         writer=writer,
+        span_key=_tool_span_key(context, scoped_payload),
+        parent_key=_tool_sse_parent_key(context),
     )
     if context.protocol_event_observer:
         context.protocol_event_observer(event_type, scoped_payload)
@@ -159,6 +161,17 @@ def _tool_span_key(context: ToolContext, payload: Dict[str, Any]) -> str:
 
 def _tool_batch_span_key(context: ToolContext) -> str:
     return "tools:{}:{}".format(_caller_suffix(context), context.agent_iteration)
+
+
+def _tool_sse_parent_key(context: ToolContext) -> str:
+    """Parent span for tool events on the SSE tree.
+
+    The observability path parents tools under the tool_batch span, but that
+    span is not emitted over SSE. On the SSE stream the iteration span is the
+    real node present (carried by iteration.completed), so tools attach to it,
+    keeping the frontend tree connected without a phantom tool_batch level.
+    """
+    return "iteration:{}:{}".format(_caller_suffix(context), context.agent_iteration)
 
 
 def _caller_suffix(context: ToolContext) -> str:

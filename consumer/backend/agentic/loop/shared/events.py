@@ -135,6 +135,10 @@ def emit_iteration_completed_event(
         )
     if caller != "main" or event_writer is None or not state.get("run_id"):
         return
+    iteration_span_key = "iteration:{}:{}".format(
+        event_source_node(caller, source_node) if caller != "main" else "main",
+        iteration,
+    )
     emit_agent_event(
         run_id=str(state.get("run_id") or ""),
         session_id=str(state.get("session_id") or ""),
@@ -155,4 +159,6 @@ def emit_iteration_completed_event(
             **timing_metrics,
         },
         writer=event_writer,
+        span_key=iteration_span_key,
+        parent_key="agent_loop:main",
     )
