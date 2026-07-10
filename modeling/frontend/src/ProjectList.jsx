@@ -30,7 +30,7 @@ export default function ProjectList({ onOpen }) {
   return (
     <div>
       {loading && <div className="empty">加载中…</div>}
-      <div className="pj-grid">
+      <div className="pj-grid" data-tour="pj-grid">
         {projects.map((p) => {
           const stageIdx = STAGE_KEYS.indexOf(p.stage);
           const pct = stageIdx >= 0 ? Math.round(((stageIdx + 1) / STAGE_KEYS.length) * 100) : 0;
@@ -50,7 +50,7 @@ export default function ProjectList({ onOpen }) {
             </div>
           );
         })}
-        <button className="pj-card pj-new" onClick={() => { setCreating(true); setErr(''); }}>＋ 新建建模项目</button>
+        <button className="pj-card pj-new" data-tour="pj-new" onClick={() => { setCreating(true); setErr(''); }}>＋ 新建建模项目</button>
       </div>
 
       {creating && (

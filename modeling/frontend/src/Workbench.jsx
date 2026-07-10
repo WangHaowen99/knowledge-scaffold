@@ -6,7 +6,7 @@ import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 import { OptimizePanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
-import Tour from './Tour.jsx';
+import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
@@ -113,7 +113,7 @@ export default function Workbench({ projectId }) {
 
   return (
     <div className="wb">
-      <Tour />
+      <Tour scene="workbench" steps={WORKBENCH_STEPS} />
       {/* 左：workflow 时间线 */}
       <div className="wb-col wb-left">
         <div className="wb-h">建模流程</div>
@@ -171,6 +171,7 @@ export default function Workbench({ projectId }) {
             ? <AnalysisView projectId={projectId} analysis={analyzeNode.output} stale={nodeStatus.analyze === 'stale'}
                 onReanalyze={doAnalyze} analyzing={analyzeRunning} onQuestionsChange={load}
                 questionsGenerating={competencyNode?.status === 'running'}
+                tableCount={tables.length} docCount={parsedDocs.length}
                 onAdvance={() => { load(); setFocus('interview'); }} />
             : <IngestView project={project} documents={documents} onChanged={load} />)}
           {effFocus === 'interview' && (
@@ -375,9 +376,54 @@ function QualitySection({ q }) {
   );
 }
 
-function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance, onQuestionsChange, questionsGenerating }) {
+// 分析进行中的占位：说明正在发生什么 + 步骤药丸 + 结果骨架预览，避免整屏只有一行空态
+function AnalyzeRunning({ tableCount, docCount }) {
+  const steps = ['探查数据表结构与字段', '阅读业务规范文档', '归纳领域概览', '识别候选业务对象', '生成领域问题候选'];
+  return (
+    <div>
+      <div className="an-run-head">
+        <span className="spinner" />
+        <div>
+          <div className="an-run-t">领域分析进行中</div>
+          <div className="an-run-d">
+            正在阅读 {tableCount} 张数据表{docCount > 0 ? `与 ${docCount} 份文档` : ''}，归纳领域概览、识别候选业务对象并生成领域问题。
+            通常需要 1~3 分钟；分析在服务端执行，切换页面或稍后回来都不会中断。
+          </div>
+        </div>
+      </div>
+      <div className="an-run-steps">
+        {steps.map((s, i) => (
+          <span key={s} className="an-run-step" style={{ animationDelay: `${i * 0.3}s` }}>
+            <span className="no">{i + 1}</span>{s}
+          </span>
+        ))}
+      </div>
+      <div className="an-sec">
+        <h4>领域概览</h4>
+        <div className="skel-card"><div className="skel w80" /><div className="skel w95" /><div className="skel w60" /></div>
+      </div>
+      <div className="an-sec">
+        <h4>候选业务对象</h4>
+        <div className="an-objs">
+          {[0, 1].map((i) => (
+            <div key={i} className="skel-card"><div className="skel w40" /><div className="skel w90" /><div className="skel w70" /></div>
+          ))}
+        </div>
+      </div>
+      <div className="an-sec">
+        <h4>领域问题</h4>
+        <div className="skel-card"><div className="skel w90" /><div className="skel w85" /><div className="skel w75" /></div>
+      </div>
+    </div>
+  );
+}
+
+function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance, onQuestionsChange, questionsGenerating, tableCount, docCount }) {
   const [selectedCount, setSelectedCount] = useState(null); // null=未知（加载中）
-  if (!analysis) return <div className="empty">（无分析结果）</div>;
+  if (!analysis) {
+    if (analyzing) return <AnalyzeRunning tableCount={tableCount} docCount={docCount} />;
+    return <div className="empty">（无分析结果）</div>;
+  }
   const ready = (selectedCount ?? 0) >= 5;
   return (
     <div>

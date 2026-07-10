@@ -3,8 +3,10 @@ import { getSettings, saveSettings, testLlm, testConsumer } from './api.js';
 
 // 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测（评测库与数据连接默认值）。
 // 优先级统一为：页面配置 > 环境变量。api key 保存后不回显；测试失败展示服务端原始错误便于排障。
-export default function SettingsModal({ onClose }) {
-  const [tab, setTab] = useState('llm');
+export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
+  const [tab, setTab] = useState(tabProp);
+  // 操作引导逐 tab 讲解时经 props 切换
+  useEffect(() => { setTab(tabProp); }, [tabProp]);
   const [s, setS] = useState(null);       // GET /api/settings 原始数据
   const [form, setForm] = useState({});    // 编辑缓冲
   const [msg, setMsg] = useState('');
@@ -48,9 +50,9 @@ export default function SettingsModal({ onClose }) {
           <button className={tab === 'eval' ? 'on' : ''} onClick={() => setTab('eval')}>评测数据</button>
         </div>
 
-        {tab === 'llm' && <LlmTab form={form} set={set} apiKeySet={s.llm.apiKeySet} source={s.llm.source} />}
-        {tab === 'consumer' && <ConsumerTab form={form} set={set} authIssuerUrl={s.authIssuerUrl} source={s.consumerApiUrlSource} />}
-        {tab === 'eval' && <EvalTab form={form} set={set} />}
+        {tab === 'llm' && <div data-tour="cfg-llm"><LlmTab form={form} set={set} apiKeySet={s.llm.apiKeySet} source={s.llm.source} /></div>}
+        {tab === 'consumer' && <div data-tour="cfg-consumer"><ConsumerTab form={form} set={set} authIssuerUrl={s.authIssuerUrl} source={s.consumerApiUrlSource} /></div>}
+        {tab === 'eval' && <div data-tour="cfg-eval"><EvalTab form={form} set={set} /></div>}
 
         {msg && <div style={{ fontSize: 12.5, color: msg.startsWith('✓') ? 'var(--good, #0e6b4a)' : 'var(--crit)', marginTop: 4 }}>{msg}</div>}
         <div className="foot">

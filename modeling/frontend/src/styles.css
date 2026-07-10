@@ -143,6 +143,21 @@ html, body, #root { height: 100%; }
 .mwr .ot-chip { font-family: ui-monospace, monospace; font-size: 10.5px; background: #f6f6f1; border: 1px solid #e7e6dd; border-radius: 6px; padding: 1.5px 7px; color: var(--ink2); word-break: break-all; }
 .mwr .oq { background: #fbf6e8; border: 1px solid #f0e2bb; border-radius: 10px; padding: 9px 13px; margin-bottom: 8px; font-size: 12.5px; color: #6b5a1e; }
 
+/* 领域分析进行中：说明卡 + 步骤药丸 + 结果骨架 */
+.mwr .an-run-head { display: flex; gap: 12px; align-items: flex-start; border: 1px solid #d9e6f7; background: #f7fafd; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+.mwr .an-run-head .spinner { width: 16px; height: 16px; margin-top: 3px; color: var(--blue); flex: none; }
+.mwr .an-run-t { font-size: 13.5px; font-weight: 700; }
+.mwr .an-run-d { font-size: 12.5px; color: var(--ink2); margin-top: 4px; line-height: 1.7; }
+.mwr .an-run-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.mwr .an-run-step { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink2); border: 1px solid var(--hair); background: #fff; border-radius: 99px; padding: 4px 12px 4px 5px; animation: mwpulse 2.4s ease-in-out infinite; }
+.mwr .an-run-step .no { width: 17px; height: 17px; border-radius: 50%; background: #e3ecfa; color: var(--blue-dd); font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; }
+@keyframes mwpulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+.mwr .skel-card { border: 1px solid #f0efec; border-radius: 12px; padding: 14px 16px; background: #fff; display: flex; flex-direction: column; gap: 10px; }
+.mwr .skel { height: 10px; border-radius: 6px; background: linear-gradient(90deg, #f1f0ec 25%, #e6e5df 37%, #f1f0ec 63%); background-size: 400% 100%; animation: mwshimmer 1.4s ease infinite; }
+@keyframes mwshimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+.mwr .skel.w40 { width: 40%; } .mwr .skel.w60 { width: 60%; } .mwr .skel.w70 { width: 70%; } .mwr .skel.w75 { width: 75%; }
+.mwr .skel.w80 { width: 80%; } .mwr .skel.w85 { width: 85%; } .mwr .skel.w90 { width: 90%; } .mwr .skel.w95 { width: 95%; }
+
 /* 右栏上下文 */
 .mwr .ctx-tabs { display: flex; gap: 4px; padding: 8px 10px 0; }
 .mwr .ctx-tabs button { border: none; background: none; padding: 6px 12px; font-size: 12.5px; font-weight: 600; color: var(--muted); border-radius: 8px 8px 0 0; }

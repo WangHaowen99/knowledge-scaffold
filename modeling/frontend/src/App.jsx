@@ -4,12 +4,14 @@ import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
 import Workbench from './Workbench.jsx';
 import SettingsModal from './SettingsModal.jsx';
+import Tour, { PROJECT_STEPS } from './Tour.jsx';
 
 export default function App() {
   const [status, setStatus] = useState('checking'); // checking | out | in
   const [user, setUser] = useState(null);
   const [projectId, setProjectId] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('llm');
   const [menuOpen, setMenuOpen] = useState(false);
   const userRef = useRef(null);
 
@@ -37,6 +39,15 @@ export default function App() {
 
   const logout = () => { clearSession(); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false); };
 
+  // 操作引导联动：引导步骤可打开配置中心并切换 tab；引导结束时收起弹窗
+  useEffect(() => {
+    const open = (e) => { setSettingsTab(e.detail?.tab || 'llm'); setSettingsOpen(true); };
+    const end = () => setSettingsOpen(false);
+    window.addEventListener('mw-settings-open', open);
+    window.addEventListener('mw-tour-end', end);
+    return () => { window.removeEventListener('mw-settings-open', open); window.removeEventListener('mw-tour-end', end); };
+  }, []);
+
   if (status === 'checking') {
     return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;
   }
@@ -54,10 +65,8 @@ export default function App() {
             : '项目'}
         </span>
         <div className="right">
-          {projectId && (
-            <button className="tb-btn" title="功能引导"
-              onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start'))}>❓ 引导</button>
-          )}
+          <button className="tb-btn" title="功能引导"
+            onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start', { detail: { scene: projectId ? 'workbench' : 'projects' } }))}>❓ 引导</button>
           <button className="tb-btn" data-tour="config" onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
           <span className="tb-sep" />
           <div className="tb-user" ref={userRef}>
@@ -87,7 +96,8 @@ export default function App() {
           ? <Workbench projectId={projectId} onBack={() => setProjectId(null)} />
           : <ProjectList onOpen={setProjectId} />}
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}
+      {settingsOpen && <SettingsModal tab={settingsTab} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
