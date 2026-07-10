@@ -15,6 +15,46 @@ export default function ChatWorkspace({ chat, streamManager }) {
   const { sendAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
   const [input, setInput] = useState('');
   const [traceOpen, setTraceOpen] = useState(true);
+  // Agent 模式：quick(快速) / standard(深度思考) / multi_agent(多智能体)。
+  // 按 workspace 持久化到 localStorage，默认 quick。
+  const agentModeKey = `mw_ws_agentmode_${workspaceId}`;
+  const [agentMode, setAgentMode] = useState(
+    () => localStorage.getItem(agentModeKey) || 'quick'
+  );
+  const changeAgentMode = (mode) => {
+    setAgentMode(mode);
+    try { localStorage.setItem(agentModeKey, mode); } catch { /* ignore */ }
+  };
+  // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
+  const TRACE_MIN_W = 300;
+  const [traceWidth, setTraceWidth] = useState(
+    () => Math.max(TRACE_MIN_W, Number(localStorage.getItem('mw_trace_w')) || TRACE_MIN_W)
+  );
+  const wrapRef = useRef(null);
+  const startResize = (e) => {
+    e.preventDefault();
+    const onMove = (ev) => {
+      const wrap = wrapRef.current;
+      if (!wrap) return;
+      const right = wrap.getBoundingClientRect().right;
+      // 分隔条向左拖 → Trace 变大；右边界减去光标 X 即 Trace 宽度
+      const next = Math.round(right - ev.clientX);
+      const maxW = wrap.getBoundingClientRect().width - 360; // 给对话区留最小空间
+      const clamped = Math.max(TRACE_MIN_W, Math.min(next, Math.max(TRACE_MIN_W, maxW)));
+      setTraceWidth(clamped);
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = '';
+      try { localStorage.setItem('mw_trace_w', String(traceWidthRef.current)); } catch { /* ignore */ }
+    };
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+  const traceWidthRef = useRef(traceWidth);
+  traceWidthRef.current = traceWidth;
   const bodyRef = useRef(null);
 
   useEffect(() => {
@@ -35,7 +75,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
       sessionId = session.id;
       isNew = true;
     }
-    sendAgentic(text, sessionId, {});
+    sendAgentic(text, sessionId, { agentMode });
     if (isNew) generateSessionTitle(sessionId, text);
   };
 
@@ -43,7 +83,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
 
   return (
-    <div className="chatwrap">
+    <div className="chatwrap" ref={wrapRef}>
       <div className="thread">
         <div className="th-head">
           <span className="tt">{current?.title || '新对话'}</span>
@@ -63,6 +103,14 @@ export default function ChatWorkspace({ chat, streamManager }) {
         </div>
         <div className="th-input">
           <div className="ti-box">
+            <select className="mode-select" value={agentMode}
+              title="对话模式：快速最快；深度思考启用推理链；多智能体可派生子任务"
+              onChange={(e) => changeAgentMode(e.target.value)}
+              disabled={streamState.isLoading}>
+              <option value="quick">快速</option>
+              <option value="standard">深度思考</option>
+              <option value="multi_agent">多智能体</option>
+            </select>
             <input value={input} placeholder="输入问题，Enter 发送…"
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
@@ -72,17 +120,22 @@ export default function ChatWorkspace({ chat, streamManager }) {
           </div>
         </div>
       </div>
-      {traceOpen && <TracePanel messages={messages} />}
+      {traceOpen && (
+        <>
+          <div className="trace-resizer" onMouseDown={startResize} title="拖拽调整 Trace 宽度" />
+          <TracePanel messages={messages} width={traceWidth} />
+        </>
+      )}
     </div>
   );
 }
 
 /* ---------------- Trace 竖栏（树形层级：轮次 → 思考/工具/子任务，可展开明细） ---------------- */
 
-function TracePanel({ messages }) {
+function TracePanel({ messages, width }) {
   const turns = messages.filter((m) => m.role === 'assistant');
   return (
-    <div className="trace">
+    <div className="trace" style={width ? { width } : undefined}>
       <div className="tr-head">运行轨迹 · Trace</div>
       <div className="tr-body">
         {!turns.length && <div className="ch-empty" style={{ padding: '30px 12px' }}>发起对话后，这里按轮次展示模型思考、工具调用与状态明细，可逐层展开</div>}
@@ -94,12 +147,71 @@ function TracePanel({ messages }) {
   );
 }
 
+// 从 parentKey（形如 iteration:main:3）解析出人类可读的分组标签。
+function synthLabelForKey(key) {
+  const m = /^iteration:(?:[^:]+:)*(\d+)$/.exec(String(key || ''));
+  if (m) return `迭代 ${m[1]}`;
+  if (String(key || '').startsWith('agent_loop')) return '主循环';
+  return '分组';
+}
+
+// 把带 spanKey/parentKey 的 segment 组织成父子树。
+// 若 parentKey 指向的父 span 本身没有对应 segment（如 iteration 不单独成段），
+// 则合成一个分组父节点把子节点挂进去，从而形成「迭代 N → 工具」的层级；
+// 完全没有 spanKey 时降级为平铺列表。
+function buildTraceTree(segs) {
+  const hasSpan = segs.some((s) => s.spanKey);
+  if (!hasSpan) return segs.map((seg) => ({ seg, children: [] }));
+
+  const bySpan = new Map();
+  const nodes = segs.map((seg) => {
+    const node = { seg, children: [] };
+    if (seg.spanKey) bySpan.set(seg.spanKey, node);
+    return node;
+  });
+
+  const synthByKey = new Map();
+  const roots = [];
+  const ensureSynthParent = (parentKey) => {
+    if (synthByKey.has(parentKey)) return synthByKey.get(parentKey);
+    const synth = {
+      seg: { type: 'group', synthetic: true, spanKey: parentKey, label: synthLabelForKey(parentKey) },
+      children: [],
+    };
+    synthByKey.set(parentKey, synth);
+    roots.push(synth); // 合成的分组节点作为根
+    return synth;
+  };
+
+  nodes.forEach((node) => {
+    const parentKey = node.seg.parentKey;
+    if (!parentKey) { roots.push(node); return; }
+    const realParent = bySpan.get(parentKey);
+    if (realParent && realParent !== node) { realParent.children.push(node); return; }
+    ensureSynthParent(parentKey).children.push(node); // 父 span 无对应 segment → 合成分组
+  });
+  return roots;
+}
+
+function TraceTreeNode({ node }) {
+  if (!node.children.length) return <TraceNode seg={node.seg} />;
+  return (
+    <div className="trn-branch">
+      <TraceNode seg={node.seg} />
+      <div className="trn-children" style={{ marginLeft: 14, borderLeft: '1px solid var(--line)', paddingLeft: 8 }}>
+        {node.children.map((child, i) => <TraceTreeNode key={child.seg.spanKey || i} node={child} />)}
+      </div>
+    </div>
+  );
+}
+
 function TraceTurn({ msg, index, defaultOpen }) {
   const segs = (msg.streamSegments || []).filter((s) => s.type !== 'content');
   const running = !!msg.isLoading;
   const status = running ? 'running' : (msg.status || 'finished');
   const statusText = { running: '进行中', finished: '成功', error: '出错', cancelled: '已停止', awaiting: '等待输入' }[status] || status;
   const toolCount = segs.filter((s) => s.type === 'tool').length;
+  const tree = buildTraceTree(segs);
   return (
     <details className="trt" open={defaultOpen}>
       <summary>
@@ -110,7 +222,7 @@ function TraceTurn({ msg, index, defaultOpen }) {
       </summary>
       <div className="trt-kids">
         {!segs.length && <div className="trn-plain">直接回答，未调用工具</div>}
-        {segs.map((seg, i) => <TraceNode key={i} seg={seg} />)}
+        {tree.map((node, i) => <TraceTreeNode key={node.seg.spanKey || i} node={node} />)}
         {msg.runId && <div className="tr-run" title={String(msg.runId)}>run · {String(msg.runId).slice(0, 26)}…</div>}
       </div>
     </details>
@@ -118,12 +230,28 @@ function TraceTurn({ msg, index, defaultOpen }) {
 }
 
 function TraceNode({ seg }) {
+  // 合成的分组节点（如「迭代 N」）：只作层级标题，无明细
+  if (seg.type === 'group' && seg.synthetic) {
+    return (
+      <div className="trn-plain trn-group" title={seg.label}>
+        <span className="tr-ic">◇</span>
+        <span className="tr-lb">{seg.label}</span>
+      </div>
+    );
+  }
   const done = seg.finished || seg.state === 'done' || seg.state === 'final';
   const meta = seg.meta || {};
+  const reasoningSummary = seg.type === 'reasoning'
+    ? String(meta.reasoning_summary || '').trim()
+    : '';
   let icon = '·';
   let label = '';
   if (seg.type === 'tool') { icon = '⚙'; label = meta.tool_name || '工具调用'; }
-  else if (seg.type === 'reasoning') { icon = '🧠'; label = '模型思考'; }
+  else if (seg.type === 'reasoning') {
+    icon = '🧠';
+    // 有摘要时用摘要做标签（一等公民：一眼看到「想了什么」），否则回退通用文案
+    label = reasoningSummary ? `思考：${truncate(reasoningSummary, 60)}` : '模型思考';
+  }
   else if (seg.type === 'subagent' || seg.type === 'subagent_group') { icon = '⑂'; label = meta.title || '子任务'; }
   else { label = seg.type; }
   const elapsed = meta.elapsed_ms ? `${(meta.elapsed_ms / 1000).toFixed(1)}s` : '';
@@ -141,6 +269,10 @@ function TraceNode({ seg }) {
     }
     if (meta.error) detailBlocks.push(['错误', String(meta.error)]);
     if (!detailBlocks.length && seg.text) detailBlocks.push(['进度', String(seg.text)]);
+  } else if (seg.type === 'reasoning') {
+    // reasoning 一等公民：摘要在前，完整思考链在后，二者都可见
+    if (reasoningSummary) detailBlocks.push(['思考摘要', reasoningSummary]);
+    if (seg.text) detailBlocks.push(['完整思考过程', String(seg.text)]);
   } else if (seg.text) {
     detailBlocks.push(['内容', String(seg.text)]);
   }
@@ -243,14 +375,19 @@ function AssistantBubble({ msg }) {
 
 function StepRow({ seg }) {
   const done = seg.finished || seg.state === 'done' || seg.state === 'final';
+  const isReasoning = seg.type === 'reasoning';
   let label = '';
   if (seg.type === 'tool') label = `${seg.meta?.tool_name ? `工具 ${seg.meta.tool_name}` : '工具调用'}${seg.text ? ` — ${truncate(seg.text, 120)}` : ''}`;
-  else if (seg.type === 'reasoning') label = `思考：${truncate(seg.text, 120)}`;
+  else if (isReasoning) {
+    // 优先展示思考摘要（reasoning_summary），无摘要再回退原始思考文本
+    const summary = String(seg.meta?.reasoning_summary || '').trim();
+    label = `思考：${truncate(summary || seg.text || '', 120)}`;
+  }
   else if (seg.type === 'subagent' || seg.type === 'subagent_group') label = `子任务：${truncate(seg.text || seg.meta?.title || '', 120)}`;
   else label = truncate(seg.text || seg.type, 120);
   return (
-    <div className="step">
-      <span className="ok">{done ? '✓' : '…'}</span>
+    <div className={`step${isReasoning ? ' step-reasoning' : ''}`}>
+      <span className="ok">{isReasoning ? '🧠' : (done ? '✓' : '…')}</span>
       <span>{label}</span>
     </div>
   );

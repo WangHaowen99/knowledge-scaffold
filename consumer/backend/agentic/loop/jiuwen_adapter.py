@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional
 
 from ..exceptions import InputTokenLimitError, WorkflowCancelledError
 from ..observability import AgentRuntimeTrace, NOOP_OBSERVER, RuntimeStatus
+from ..observability import bind_observability_context
 from ..services.llm import LLMPurpose, get_llm_router
 from ..services.llm.provider_adapters import get_provider_adapter
 from ..tools.executor import execute_tool_batch
@@ -513,6 +514,13 @@ class JiuwenReactLoopEngine:
                         reasoning_summary_callback=kwargs.get("reasoning_summary_callback"),
                         stream_enabled=stream_enabled,
                         event_source_node=event_source_node,
+                        observability_context={
+                            "observer": runtime_observer,
+                            "run_id": runtime_trace.run_id,
+                            "session_id": runtime_trace.session_id,
+                            "turn_id": runtime_trace.turn_id,
+                            "parent_key": runtime_trace.loop_span_key,
+                        },
                     )
                 except _JiuwenTerminalToolBatch:
                     close_terminal_tool_iteration()
@@ -657,6 +665,7 @@ class JiuwenReactLoopEngine:
         reasoning_summary_callback: Optional[Any] = None,
         stream_enabled: bool = True,
         event_source_node: Optional[str] = None,
+        observability_context: Optional[Dict[str, Any]] = None,
     ) -> Any:
         _raise_if_jiuwen_cancelled(cancel_event, state)
         history_messages = _build_jiuwen_history_messages(state or {}, self.agent_config)
@@ -672,22 +681,30 @@ class JiuwenReactLoopEngine:
                 state=state,
             )
             _raise_if_jiuwen_cancelled(cancel_event, state)
+        obs_ctx = observability_context or {}
         stream = getattr(agent, "stream", None) if stream_enabled else None
         if callable(stream):
             return _run_awaitable(
-                self._consume_agent_stream(
-                    agent,
-                    stream,
-                    inputs,
-                    session=session,
-                    state=state,
-                    caller=caller,
-                    event_writer=event_writer,
-                    iteration_provider=iteration_provider,
-                    cancel_event=cancel_event,
-                    token_callback=token_callback,
-                    reasoning_summary_callback=reasoning_summary_callback,
-                    event_source_node=event_source_node,
+                _with_observability_context(
+                    self._consume_agent_stream(
+                        agent,
+                        stream,
+                        inputs,
+                        session=session,
+                        state=state,
+                        caller=caller,
+                        event_writer=event_writer,
+                        iteration_provider=iteration_provider,
+                        cancel_event=cancel_event,
+                        token_callback=token_callback,
+                        reasoning_summary_callback=reasoning_summary_callback,
+                        event_source_node=event_source_node,
+                    ),
+                    observer=obs_ctx.get("observer") or NOOP_OBSERVER,
+                    run_id=str(obs_ctx.get("run_id") or ""),
+                    session_id=obs_ctx.get("session_id"),
+                    turn_id=obs_ctx.get("turn_id"),
+                    parent_key=obs_ctx.get("parent_key"),
                 ),
                 cancel_event=cancel_event,
                 state=state,
@@ -696,7 +713,14 @@ class JiuwenReactLoopEngine:
         if invoke is None:
             raise JiuwenBackendUnavailable("Configured Jiuwen agent does not expose invoke().")
         return _run_awaitable(
-            _invoke_jiuwen_agent(agent, invoke, inputs, session=session),
+            _with_observability_context(
+                _invoke_jiuwen_agent(agent, invoke, inputs, session=session),
+                observer=obs_ctx.get("observer") or NOOP_OBSERVER,
+                run_id=str(obs_ctx.get("run_id") or ""),
+                session_id=obs_ctx.get("session_id"),
+                turn_id=obs_ctx.get("turn_id"),
+                parent_key=obs_ctx.get("parent_key"),
+            ),
             cancel_event=cancel_event,
             state=state,
         )
@@ -1609,6 +1633,33 @@ class _JiuwenLoopRunner:
 
 
 _JIUWEN_LOOP_RUNNER = _JiuwenLoopRunner()
+
+
+async def _with_observability_context(
+    awaitable: Any,
+    *,
+    observer: Any,
+    run_id: str,
+    session_id: Optional[str],
+    turn_id: Optional[int],
+    parent_key: Optional[str],
+) -> Any:
+    """Bind the observability context on the Jiuwen loop thread.
+
+    run_coroutine_threadsafe runs the coroutine in the loop's own context, not
+    the caller's, so ContextVars set on the main thread do not propagate here.
+    Binding inside the coroutine makes the real observer/run_id available to
+    downstream synchronous reads (e.g. reasoning-summary scheduling in the LLM
+    service), preventing them from silently falling back to NOOP_OBSERVER.
+    """
+    with bind_observability_context(
+        observer=observer,
+        run_id=run_id,
+        session_id=session_id,
+        turn_id=turn_id,
+        parent_key=parent_key,
+    ):
+        return await awaitable
 
 
 def _run_awaitable(

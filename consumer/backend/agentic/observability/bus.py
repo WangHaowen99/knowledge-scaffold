@@ -64,7 +64,7 @@ class ObservabilityBus:
                 )
                 return False
 
-    def close(self, timeout: Optional[float] = 1.0) -> None:
+    def close(self, timeout: Optional[float] = 5.0) -> None:
         with self._lock:
             if self._closed:
                 return
@@ -74,8 +74,13 @@ class ObservabilityBus:
             except queue.Full:
                 pass
         self._worker.join(timeout=timeout)
-        if not self._worker.is_alive():
-            self._close_exporter()
+        # Always close the exporter, even if the worker did not finish draining
+        # within the timeout. _close_exporter is idempotent (guarded by
+        # _exporter_close_lock/_exporter_closed) and the exporter does its own
+        # flush on close, so this guarantees a final flush/shutdown at process
+        # exit instead of losing the last queued events when the daemon worker
+        # thread is killed mid-drain.
+        self._close_exporter()
 
     def _run(self) -> None:
         try:

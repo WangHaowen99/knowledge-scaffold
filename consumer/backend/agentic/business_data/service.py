@@ -21,6 +21,11 @@ class BusinessDataSearchRequest:
     run_id: str = ""
     session_id: str = ""
     turn_id: int = 0
+    # Trace linkage: span_key of the outer tool_batch that invoked this search,
+    # and the agent iteration index, so provider-internal (e.g. graph) tool spans
+    # can attach to the parent span tree instead of appearing as orphans.
+    parent_span_key: str = ""
+    agent_iteration: int = 0
 
 
 def query_business_data_stream(
@@ -49,6 +54,8 @@ def query_business_data_stream(
                 "run_id": request.run_id,
                 "session_id": request.session_id,
                 "turn_id": request.turn_id,
+                "parent_span_key": request.parent_span_key,
+                "agent_iteration": request.agent_iteration,
             },
         }
     }
