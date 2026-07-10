@@ -23,6 +23,7 @@ const SCOPES = {
     hint: '当前空间的资源与运行行为 · 写 管理员（规划：workspace_admin 限所辖空间）· 读 空间成员',
     sections: [
       { id: 'info', name: '空间信息' },
+      { id: 'members', name: '成员' },
       { id: 'model', name: '模型选用' },
       { id: 'conn', name: '数据连接' },
       { id: 'bind', name: '知识与数据绑定' },
@@ -86,6 +87,7 @@ function Field({ label, hint, children }) {
 }
 
 function SectionBody({ scope, section }) {
+  const { workspaceId } = useAuthContext();
   if (scope === 'global') {
     if (section === 'wsmgmt') return <WorkspaceMgmt />;
     if (section === 'users') return <UserMgmt />;
@@ -93,6 +95,8 @@ function SectionBody({ scope, section }) {
   }
   if (scope === 'workspace') {
     if (section === 'info') return <WorkspaceInfo />;
+    // key=workspaceId：切换空间时整体重挂，丢弃未保存的成员草稿，避免切回复活旧草稿覆盖他人变更
+    if (section === 'members') return <WorkspaceMembers key={workspaceId} />;
     if (section === 'model') return <WorkspaceModel />;
     if (section === 'conn') return <DataConnections />;
     if (section === 'bind') return <KnowledgeBinding />;
@@ -514,6 +518,94 @@ function WorkspaceInfo() {
       {canEdit && (
         <div className="foot">
           <span className="who">{msg}</span>
+          <button className="btn" disabled={!draft} onClick={() => setDraft(null)}>重置</button>
+          <button className="btn btn-p" disabled={!draft} onClick={save}>保存修改</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkspaceMembers() {
+  const { can, workspaceId, workspaces, reloadWorkspaces } = useAuthContext();
+  const canEdit = can('ws.members.write');
+  const [fetched, setFetched] = useState(null);
+  const ws = workspaces.find((w) => w.id === workspaceId) || fetched;
+  // draft 记录所属空间：切换空间后自动失效回退到服务端数据
+  const [draftState, setDraftState] = useState(null);
+  const draft = draftState && draftState.wsId === workspaceId ? draftState.members : null;
+  const setDraft = (members) => setDraftState(members === null ? null : { wsId: workspaceId, members });
+  const [newName, setNewName] = useState('');
+  const [msg, setMsg] = useState('');
+  const members = draft ?? (ws?.members || []);
+
+  // 优先复用 AuthContext 已拉取的条目；找不到当前空间时兜底重拉一次列表
+  useEffect(() => {
+    if (workspaces.some((w) => w.id === workspaceId)) return undefined;
+    const t = setTimeout(async () => {
+      const res = await authFetch('/agentic/workspaces');
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      setFetched((data.workspaces || []).find((w) => w.id === workspaceId) || null);
+    }, 0);
+    return () => clearTimeout(t);
+  }, [workspaces, workspaceId]);
+
+  const add = () => {
+    const name = newName.trim();
+    if (!name) return;
+    if (members.includes(name)) { setMsg(`「${name}」已在成员列表`); return; }
+    setDraft([...members, name]);
+    setNewName('');
+    setMsg('');
+  };
+  const removeMember = (name) => setDraft(members.filter((m) => m !== name));
+
+  const save = async () => {
+    const res = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/members`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ members }),
+    });
+    const data = await res.json().catch(() => ({}));
+    // 后端 403 用 error 字段、400 校验错用 detail 字段，两者都取
+    setMsg(res.ok ? '已保存' : `失败：${data.error || data.detail || res.status}`);
+    if (res.ok) { setDraft(null); reloadWorkspaces(); }
+  };
+
+  return (
+    <div className="card">
+      <h3>成员</h3>
+      <div className="cd">空间归属与成员名单；owner 变更仅平台管理员可操作（在后端 PATCH 中）</div>
+      {!canEdit && <ReadOnlyBanner who="平台管理员 / 空间 owner" />}
+      <Field label="Owner" hint="空间负责人，自动获得空间管理权限">
+        <span style={{ fontSize: 13, color: 'var(--ink2)' }}>{ws?.owner || '—（公共空间，所有登录用户可访问）'}</span>
+      </Field>
+      {canEdit && (
+        <div style={{ display: 'flex', gap: 8, margin: '12px 0', alignItems: 'center' }}>
+          <input type="text" placeholder="用户名" style={inputS(160)} value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
+          <button className="btn btn-p" disabled={!newName.trim()} onClick={add}>＋ 添加成员</button>
+        </div>
+      )}
+      {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
+      <table className="dt">
+        <thead><tr><th>成员</th>{canEdit && <th style={{ width: 100 }}>操作</th>}</tr></thead>
+        <tbody>
+          {members.map((m) => (
+            <tr key={m}>
+              <td style={{ fontWeight: 600 }}>{m}</td>
+              {canEdit && (
+                <td>
+                  <button className="btn" style={btnS} onClick={() => removeMember(m)}>移除</button>
+                </td>
+              )}
+            </tr>
+          ))}
+          {!members.length && <tr><td colSpan={canEdit ? 2 : 1} className="empty">暂无成员{ws?.owner ? '（仅 owner 与管理员可访问）' : ''}</td></tr>}
+        </tbody>
+      </table>
+      {canEdit && (
+        <div className="foot">
           <button className="btn" disabled={!draft} onClick={() => setDraft(null)}>重置</button>
           <button className="btn btn-p" disabled={!draft} onClick={save}>保存修改</button>
         </div>
