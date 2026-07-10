@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getToken, setToken, me } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
@@ -10,12 +10,27 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [projectId, setProjectId] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const userRef = useRef(null);
 
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
     me().then((d) => { setUser(d.user); setStatus('in'); })
       .catch(() => { setToken(''); setStatus('out'); });
   }, []);
+
+  // 点击菜单外任意处 / 按 Esc 关闭用户菜单。
+  // 用捕获阶段 + contains 判断：页面里有组件对 click 调 stopPropagation（如优化建议卡的勾选），冒泡监听会被吞
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e) => { if (!userRef.current?.contains(e.target)) setMenuOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('pointerdown', close, true);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
+
+  const logout = () => { setToken(''); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false); };
 
   if (status === 'checking') {
     return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;
@@ -35,13 +50,31 @@ export default function App() {
         </span>
         <div className="right">
           {projectId && (
-            <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }} title="功能引导"
+            <button className="tb-btn" title="功能引导"
               onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start'))}>❓ 引导</button>
           )}
-          <button className="btn" data-tour="config" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
-          <span>{user?.username}</span>
-          <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }}
-            onClick={() => { setToken(''); setStatus('out'); setUser(null); setProjectId(null); }}>退出</button>
+          <button className="tb-btn" data-tour="config" onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
+          <span className="tb-sep" />
+          <div className="tb-user" ref={userRef}>
+            <button className={`tb-chip ${menuOpen ? 'open' : ''}`} title="账号菜单"
+              onClick={() => setMenuOpen((v) => !v)}>
+              <span className="tb-avatar">{(user?.username || '?').slice(0, 1).toUpperCase()}</span>
+              <span className="tb-name">{user?.username}</span>
+              <span className={`tb-caret ${menuOpen ? 'up' : ''}`}>▾</span>
+            </button>
+            {menuOpen && (
+              <div className="tb-menu">
+                <div className="tb-menu-head">
+                  <span className="tb-avatar lg">{(user?.username || '?').slice(0, 1).toUpperCase()}</span>
+                  <div>
+                    <div className="tb-menu-name">{user?.username}</div>
+                    <div className="tb-menu-sub">当前登录账号</div>
+                  </div>
+                </div>
+                <button className="tb-menu-item" onClick={logout}>⎋ 退出登录</button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="main">
