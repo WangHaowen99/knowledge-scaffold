@@ -280,6 +280,37 @@ class ExecutionStore:
 
             self._save_session(session_id)
 
+    def set_turn_feedback(
+        self,
+        session_id: str,
+        turn_id: int,
+        vote: str,
+    ) -> bool:
+        """Persist a user feedback vote onto a turn record.
+
+        Independent of the evolution-proposal voting path: this durably records
+        the vote (up/down/none) against the turn so it survives restarts and can
+        be exported as labeled data for evaluation. Semantics of the vote follow
+        the existing 👍/👎 (evolution endorsement), surfaced here for export.
+        """
+        normalized = str(vote or "").strip().lower()
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if not history:
+                return False
+            for turn in history["turns"]:
+                if turn["turn_id"] == turn_id:
+                    if normalized == "none":
+                        turn.pop("feedback", None)
+                    else:
+                        turn["feedback"] = {
+                            "vote": normalized,
+                            "ts": datetime.now().isoformat(),
+                        }
+                    self._save_session(session_id)
+                    return True
+            return False
+
     # =========================================================================
     # Retrieval
     # =========================================================================
@@ -349,6 +380,72 @@ class ExecutionStore:
             # Return most recent turns
             turns = history["turns"]
             return list(reversed(turns[-limit:]))
+
+    def list_turns_by_status(
+        self,
+        session_id: str,
+        status: Optional[str] = None,
+    ) -> List[TurnExecutionRecord]:
+        """
+        List a session's turns, optionally filtered by status.
+
+        Args:
+            session_id: The session ID
+            status: Optional status filter (running/success/failed/cancelled/awaiting_input)
+
+        Returns:
+            List of matching TurnExecutionRecords (most recent first)
+        """
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if not history:
+                return []
+            turns = history.get("turns", [])
+            if status:
+                normalized = str(status).strip()
+                turns = [t for t in turns if str(t.get("status") or "") == normalized]
+            return list(reversed(turns))
+
+    def query_turns(
+        self,
+        *,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[TurnExecutionRecord]:
+        """
+        Query turns across all sessions in this store (one user/workspace scope).
+
+        The store is already scoped to a single user's executions directory, so
+        this scans the session subdirectories under storage_dir. Intended for
+        structured trace queries (e.g. "all failed turns"), not hot-path use.
+
+        Args:
+            status: Optional status filter
+            limit: Maximum number of turns to return (most recent first)
+
+        Returns:
+            List of matching TurnExecutionRecords sorted by start_time desc
+        """
+        normalized_status = str(status).strip() if status else None
+        collected: List[TurnExecutionRecord] = []
+        try:
+            session_dirs = [p.name for p in self.storage_dir.iterdir() if p.is_dir()]
+        except (OSError, FileNotFoundError):
+            return []
+
+        for session_id in session_dirs:
+            history = self.get_session_history(session_id)
+            if not history:
+                continue
+            for turn in history.get("turns", []):
+                if normalized_status and str(turn.get("status") or "") != normalized_status:
+                    continue
+                collected.append(turn)
+
+        collected.sort(key=lambda t: str(t.get("start_time") or ""), reverse=True)
+        if limit and limit > 0:
+            return collected[:limit]
+        return collected
 
     def delete_session(self, session_id: str) -> bool:
         """

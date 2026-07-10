@@ -24,6 +24,11 @@ class GraphProviderTrace:
         self.run_id = str(provider_config.get("run_id") or "").strip()
         self.session_id = str(provider_config.get("session_id") or "").strip() or None
         self.turn_id = _optional_int(provider_config.get("turn_id"))
+        # Parent span (outer tool_batch that invoked business_data_search) and the
+        # agent iteration, so internal graph tool spans attach to the span tree
+        # and get grouped under the right iteration in local perf analysis.
+        self.parent_span_key = str(provider_config.get("parent_span_key") or "").strip() or None
+        self.iteration = _optional_int(provider_config.get("agent_iteration"))
         self.observer = observer if observer is not None else get_observer()
         self.enabled = bool(self.run_id and getattr(self.observer, "enabled", False))
         self._counter = 0
@@ -101,7 +106,7 @@ class GraphProviderTrace:
         )
 
     def _base_payload(self, *, tool_name: str) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "tool_name": tool_name,
             "display_name": "graph:{}".format(tool_name),
             "provider": self.context.provider,
@@ -111,6 +116,9 @@ class GraphProviderTrace:
             "engine": "graph_search_runtime",
             "request_label": "graph_internal_tool",
         }
+        if self.iteration is not None:
+            payload["iteration"] = self.iteration
+        return payload
 
     def _emit(
         self,
@@ -129,6 +137,7 @@ class GraphProviderTrace:
                     session_id=self.session_id,
                     turn_id=self.turn_id,
                     span_key=span_key,
+                    parent_key=self.parent_span_key,
                     payload=dict(payload or {}),
                 )
             )

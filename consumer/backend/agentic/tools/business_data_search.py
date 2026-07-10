@@ -71,6 +71,22 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _tool_batch_parent_span_key(caller: Optional[str], subagent_lineage: Optional[Dict[str, Any]], iteration: int) -> str:
+    """Rebuild the tool_batch span_key that AgentRuntimeTrace uses as the parent.
+
+    Mirrors AgentRuntimeTrace._caller_suffix() + tool_batch_span_key() so that
+    provider-internal (e.g. graph) tool spans attach under the correct parent.
+    Uses the base key (no batch_index) since the tool layer does not know it.
+    """
+    normalized_caller = str(caller or "main").strip() or "main"
+    if normalized_caller == "subagent":
+        subagent_id = str((subagent_lineage or {}).get("subagent_id") or "").strip()
+        suffix = "subagent:{}".format(subagent_id) if subagent_id else "subagent"
+    else:
+        suffix = normalized_caller
+    return "tools:{}:{}".format(suffix, int(iteration or 0))
+
+
 def handle_business_data_search(
     ontology_id: str,
     query: str,
@@ -82,6 +98,8 @@ def handle_business_data_search(
     turn_id: int = 0,
     event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
     tool_call_id: Optional[str] = None,
+    parent_span_key: str = "",
+    agent_iteration: int = 0,
 ) -> str:
     normalized_ontology_id = str(ontology_id or "").strip()
     if not normalized_ontology_id:
@@ -125,6 +143,8 @@ def handle_business_data_search(
             run_id=str(run_id or ""),
             session_id=str(session_id or ""),
             turn_id=int(turn_id or 0),
+            parent_span_key=str(parent_span_key or ""),
+            agent_iteration=int(agent_iteration or 0),
         )
         for event in query_business_data_stream(
             request,
@@ -230,6 +250,12 @@ class BusinessDataSearchTool:
         tool_call_id: Optional[str] = None,
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
+        iteration = int(context.agent_iteration or 0)
+        parent_span_key = _tool_batch_parent_span_key(
+            context.caller,
+            context.subagent_lineage,
+            iteration,
+        )
         content = handle_business_data_search(
             **args,
             workspace_id=context.workspace_id,
@@ -239,6 +265,8 @@ class BusinessDataSearchTool:
             turn_id=context.turn_id,
             event_emitter=event_emitter,
             tool_call_id=tool_call_id,
+            parent_span_key=parent_span_key,
+            agent_iteration=iteration,
         )
         state_updates: Dict[str, Any] = {}
         entity_name = str(args.get("entity") or "").strip()
