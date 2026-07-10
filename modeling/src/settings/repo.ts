@@ -17,9 +17,10 @@ export function deleteSetting(key: string): void {
   getDb().prepare('DELETE FROM settings WHERE key = ?').run(key);
 }
 
-// 评测用 consumer API 地址：设置优先，其次 env CONSUMER_API_URL，最后回退 auth issuer。
+// 评测用 consumer 业务 API 地址：页面设置优先，其次 env CONSUMER_API_URL（默认 consumer 本机地址）。
+// 注意：这是 consumer 的业务 API，与登录 issuer（auth-server）是两个不同服务，不再互为回退。
 export function getConsumerApiUrl(): string {
-  return (getSetting('consumer_api_url') || config.consumerApiUrl || config.auth.issuerUrl).replace(/\/+$/, '');
+  return (getSetting('consumer_api_url') || config.consumerApiUrl).replace(/\/+$/, '');
 }
 
 // LLM 配置：页面设置优先，env 兜底（faux 演示模式同样可在页面配 base url = faux）。

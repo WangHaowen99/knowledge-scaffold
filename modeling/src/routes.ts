@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from './auth/middleware.js';
-import { getAuthClient } from './auth/client.js';
+import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { createProject, getProject, listProjects, setStage } from './projects/repo.js';
 import { insertDocument, listDocuments, getDocument, deleteDocument } from './documents/repo.js';
 import { kindOf, parseDocument } from './documents/parser.js';
@@ -25,14 +25,57 @@ import type { DataDictTable } from './types.js';
 export async function registerRoutes(app: FastifyInstance) {
   app.get('/health', async () => ({ status: 'ok' }));
 
-  // ---- 认证：登录转发给 issuer ----
+  // ---- 认证：登录/刷新/注册转发给 issuer ----
   app.post('/auth/login', async (req, reply) => {
     const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
     if (!username || !password) return reply.code(400).send({ error: '用户名和密码必填' });
-    const result = await getAuthClient().login(username, password);
+    let result;
+    try {
+      result = await getAuthClient().login(username, password);
+    } catch (e) {
+      if (e instanceof PasswordChangeRequiredError) {
+        return reply.code(403).send({ error: e.message, code: 'PASSWORD_CHANGE_REQUIRED' });
+      }
+      req.log.warn({ err: e }, '登录上游不可用或配置错误');
+      return reply.code(503).send({ error: '认证服务暂不可用' });
+    }
     if (!result) return reply.code(401).send({ error: '登录失败' });
-    return result;
+    const body: Record<string, unknown> = { token: result.token, user: result.user };
+    // 上游提供 refresh 能力时加法追加（冻结契约 {token, user} 不变）
+    if (result.refreshToken) {
+      body.refresh_token = result.refreshToken;
+      body.expires_in = result.expiresIn;
+    }
+    return body;
   });
+
+  app.post('/auth/refresh', async (req, reply) => {
+    const { refresh_token } = (req.body ?? {}) as { refresh_token?: string };
+    if (!refresh_token) return reply.code(400).send({ error: 'refresh_token 必填' });
+    try {
+      const tokens = await getAuthClient().refresh(refresh_token);
+      // 401 → 前端清 token 登出；503（上游不可达）→ 前端不登出
+      if (!tokens) return reply.code(401).send({ error: 'Unauthorized' });
+      return { token: tokens.token, refresh_token: tokens.refreshToken, expires_in: tokens.expiresIn };
+    } catch {
+      return reply.code(503).send({ error: '认证服务暂不可用' });
+    }
+  });
+
+  // 注册代理：上游状态码 + body 原样透传（限流 429 / 密码策略 400 / 未开启 503 语义由 auth-server 决定）
+  const registerProxy = (path: string, method: 'register' | 'registerVerify' | 'registerResend') => {
+    app.post(path, async (req, reply) => {
+      try {
+        const { status, body } = await getAuthClient()[method](req.body ?? {}, req.ip);
+        return reply.code(status).send(body);
+      } catch {
+        return reply.code(502).send({ error: '注册服务暂不可用，请稍后再试' });
+      }
+    });
+  };
+  registerProxy('/auth/register', 'register');
+  registerProxy('/auth/register/verify', 'registerVerify');
+  registerProxy('/auth/register/resend', 'registerResend');
 
   // 以下均需认证
   app.register(async (r) => {
@@ -46,8 +89,8 @@ export async function registerRoutes(app: FastifyInstance) {
       const binding = getEvalBindingDefaults();
       return {
         consumerApiUrl: getConsumerApiUrl(),
-        consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : (config.consumerApiUrl ? 'env' : 'issuer'),
-        authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer 由部署配置
+        consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : 'env',
+        authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer（auth-server）由部署配置
         llm: {
           baseUrl: llm.baseUrl, model: llm.model, maxTokens: llm.maxTokens,
           apiKeySet: !!llm.apiKey, // key 不回显

@@ -8,8 +8,8 @@ declare module 'fastify' {
   }
 }
 
-// preHandler：解析 Bearer token，经 AuthClient 校验，注入 request.user。
-// 校验通过存缓存（同一 token 短期内不重复远程 introspect）。
+// preHandler：解析 Bearer token，经 AuthClient 本地 JWKS 验签，注入 request.user。
+// 校验通过存缓存（同一 token 短期内不重复验签）。
 const cache = new Map<string, { user: AuthUser; exp: number }>();
 const TTL_MS = 60_000;
 

@@ -22,8 +22,12 @@ export const config = {
   },
 
   auth: {
-    issuerUrl: env('AUTH_ISSUER_URL', 'http://localhost:5055'),
-    verifyMode: env('AUTH_VERIFY_MODE', 'introspect') as 'introspect' | 'jwks',
+    // 独立 auth-server 地址（OAuth2 /token + JWKS + /register*）；容器内用服务名如 http://auth-server:5056
+    issuerUrl: env('AUTH_ISSUER_URL', 'http://localhost:5056'),
+    // 验签期望的 iss claim：容器内外地址可能不同（auth-server 默认签 http://auth-server:5056），
+    // 与访问地址不一致时用 AUTH_JWT_ISSUER 单独指定
+    jwtIssuer: env('AUTH_JWT_ISSUER') || env('AUTH_ISSUER_URL', 'http://localhost:5056'),
+    jwtAudience: env('AUTH_JWT_AUDIENCE', 'meta-wise'),
   },
 
   consumerApiUrl: env('CONSUMER_API_URL', 'http://localhost:5055'),

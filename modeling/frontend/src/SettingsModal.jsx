@@ -128,7 +128,7 @@ function ConsumerTab({ form, set, authIssuerUrl, source }) {
           <button className="btn" disabled={testing || !form.consumerApiUrl} onClick={test}>{testing ? '测试中…' : '测试连接'}</button>
         </div>
         <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
-          当前来源：{{ settings: '页面配置', env: '环境变量', issuer: '默认（登录 issuer）' }[source]}
+          当前来源：{{ settings: '页面配置', env: '环境变量' }[source]}
         </div>
       </div>
       {result && (
@@ -142,7 +142,7 @@ function ConsumerTab({ form, set, authIssuerUrl, source }) {
         </div>
       )}
       <div className="field">
-        <label>登录认证 issuer（部署配置，只读——避免把自己锁出去）</label>
+        <label>登录认证服务 auth-server（部署配置，只读——避免把自己锁出去）</label>
         <input value={authIssuerUrl} disabled style={{ background: '#f7f6f3', color: 'var(--muted)' }} />
       </div>
     </div>
