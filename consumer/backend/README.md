@@ -18,7 +18,6 @@ Runtime ontology and skill assets now live under the `consumer/` application roo
 │       ├── skills/
 │       ├── files/
 │       └── runtime/
-├── users.json
 └── workspace-settings.json
 ```
 
@@ -156,7 +155,7 @@ Default server address: `http://localhost:5055`
 
 Notes:
 
-- `AUTH_USERS_FILE` defaults to `<consumer>/.onto-runtime/users.json`. If the file does not exist, the backend bootstraps default users automatically.
+- Authentication is provided solely by the standalone auth-server. `AUTH_SERVER_URL` is required (for example `http://auth-server:5056` in Docker, or `http://localhost:5056` for a local auth-server); the backend fails to start when it is unset.
 - `PROJECT_ROOT` defaults to `<consumer>/.onto-runtime`, which is now the runtime root containing `system/` and `workspaces/`.
 - `system_config.json` defaults to `<consumer>/.onto-runtime/config/system_config.json`; legacy `<consumer>/backend/config/system_config.json` is migrated when the new file does not exist.
 - Ontologies are resolved per workspace under `<consumer>/.onto-runtime/workspaces/<workspace_id>/ontologies`.
@@ -195,9 +194,10 @@ Important variables:
 | `CHAT_STORAGE_DIR` | Session JSON storage | `./data/chats` |
 | `EXECUTION_STORAGE_DIR` | Execution records | `./data/executions` |
 | `PROJECT_ROOT` | Runtime root containing `system/` and `workspaces/` | `<consumer>/.onto-runtime` |
-| `AUTH_USERS_FILE` | User credential file | `<consumer>/.onto-runtime/users.json` |
-| `AUTH_SECRET` | JWT signing secret | `dev-secret-change` fallback if unset |
-| `AUTH_TOKEN_TTL` | JWT TTL in seconds | `43200` |
+| `AUTH_SERVER_URL` | Standalone auth-server base URL (required; startup fails when unset), e.g. `http://auth-server:5056` | empty |
+| `AUTH_SERVER_ADMIN_TOKEN` | Shared admin token for the auth-server Admin API (required for user management) | empty |
+| `AUTH_SERVER_AUDIENCE` | Expected JWT audience for local token verification | `meta-wise` |
+| `AUTH_SERVER_ISSUER` | Expected JWT issuer; empty means `AUTH_SERVER_URL` is used | empty |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | Max main-loop iterations | `50` |
 | `AGENT_SUB_AGENT_MAX_ITERATIONS` | Max sub-agent iterations | `20` |
 | `AGENT_SUB_AGENT_MAX_CONCURRENCY` | Max concurrent sub-agents per run | `6` |
