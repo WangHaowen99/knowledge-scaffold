@@ -149,30 +149,23 @@ cd /opt/onto-agent
 ```
 
 
-## 独立鉴权服务 auth-server（可选，默认关闭）
+## 独立鉴权服务 auth-server（必备组件）
 
-发布包内含 `onto-agent-auth-server` 镜像，对应 compose profile `auth`，**默认不启动**。
-不启用时（`AUTH_MODE=local`，默认），部署、升级、回滚、重启行为与以往版本完全一致。
+发布包内含 `onto-agent-auth-server` 镜像。remote 是唯一鉴权路径，auth-server 随
+backend 一起部署、升级、回滚、重启，backend 依赖其健康（`service_healthy`）后才启动。
 
-### 启用方式
+### 配置
 
-1. 编辑安装目录下的 `backend/.env`，设置：
+安装目录下的 `backend/.env` 必填以下两项：
 
 ```bash
-AUTH_MODE=remote
 AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>
 ```
 
-2. 重新执行 `./deploy/deploy.sh`（或已部署过则 `./deploy/restart.sh`）。
-
-部署脚本检测到 `backend/.env` 中 `AUTH_MODE=remote` 后，会自动为 compose 追加
-`--profile auth` 拉起 auth-server 容器，无需手动传参。手动操作 compose 时需要
-自带该参数，例如：
-
-```bash
-docker compose -f deploy/docker-compose.release.yml --project-directory . --profile auth up -d
-```
+`AUTH_SERVER_ADMIN_TOKEN` 须与 auth-server 容器的同名环境变量一致。配置后执行
+`./deploy/deploy.sh`（或已部署过则 `./deploy/restart.sh`）即可，compose 会随主服务
+一起拉起 auth-server，无需额外参数。
 
 auth-server **不发布宿主端口**，仅 backend 通过容器网络访问 `http://auth-server:5056`；
 健康检查由镜像自带的 HEALTHCHECK 提供。可通过环境变量透传覆盖默认配置：
@@ -188,12 +181,16 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 - `upgrade.sh`：升级覆盖文件时列入保护清单，不会被新发布包覆盖
 - `rollback.sh`：回滚时随镜像一并恢复（备份不含该目录则跳过）
 
-### 首次迁移导入
+### 存量用户迁移导入
 
-首次以 remote 模式部署时，`migrate.sh` 会检测：若 `.onto-auth/users.json` 不存在
+首次部署时，`migrate.sh` 会检测：若 `.onto-auth/users.json` 不存在
 且 `.onto-runtime/users.json`（consumer 内嵌认证的存量用户）存在，则自动复制导入
 （0600 权限）。用户密码哈希自包含，导入后无需重设密码。`.onto-auth/users.json`
 已存在时跳过，不会覆盖。
+
+> **升级提示**：从旧的内置认证（原 `AUTH_MODE=local`）部署升级前，务必先执行
+> `migrate.sh` 将 `.onto-runtime/users.json` 导入到 `.onto-auth/`；且内置 HMAC 认证
+> 回退已移除，升级后在线用户会被强制重新登录（与 ADR consequences 一致）。
 
 ## 运行目录
 
@@ -203,4 +200,4 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 - `./backend/config`（只读旧配置迁移源）
 - `./backend/logs`
 - `./frontend/logs/nginx`
-- `./.onto-auth`（仅启用 auth profile 时创建，auth-server 用户数据）
+- `./.onto-auth`（始终创建，auth-server 用户数据）

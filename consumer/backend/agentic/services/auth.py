@@ -70,6 +70,9 @@ class AuthBackend(Protocol):
 
 
 class AuthManager:
+    # users.json + 自签 HMAC token 的 AuthBackend 实现。生产已收敛为 remote
+    # 唯一路径（RemoteAuthBackend），此类不再被 build_runtime_services 装配，
+    # 仅保留为测试后端与 AuthBackend 契约测试使用。
     PASSWORD_HASH_ITERATIONS = 600_000
     _WEAK_PASSWORDS = {
         "123456",
@@ -433,10 +436,6 @@ def _b64url_encode(data: bytes) -> str:
 def _b64url_decode(data: str) -> bytes:
     padding = "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(data + padding)
-
-
-# 本地认证后端：AuthManager 即 AuthBackend 协议的内置实现（AUTH_MODE=local）
-LocalAuthBackend = AuthManager
 
 
 def get_auth_manager() -> Optional[AuthManager]:

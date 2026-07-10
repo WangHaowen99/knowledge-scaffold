@@ -35,7 +35,7 @@ Each scenario ships with knowledge-package source files (plain directories), sam
 - ✅ **Layered configuration and access control**
     + Three scopes: Global (model pool, web search, observability, agent limits) → Workspace (data connections, knowledge-data binding, runtime parameters) → Personal (preferences, themes).
     + API keys live only in the global scope; workspaces reference model profiles without ever touching keys.
-    + Optional decoupled authentication (`auth-server/`, an OAuth2/OIDC subset): built-in auth works with zero configuration by default; set `AUTH_MODE=remote` to switch, with opt-in open registration and email verification.
+    + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and modeling share one account system, the backend requires `AUTH_SERVER_URL`, with opt-in open registration and email verification.
 - ✅ **Protocols and SDK**
     + A2A and ACP adapter layers plus an SDK expose the same runtime capabilities to external systems.
 - ✅ **Evaluation platform**
@@ -80,8 +80,8 @@ A typical request enters the Flask API from the console or a protocol adapter; t
 - **Orchestrator / ReAct loop** (runtime): run lifecycle, iteration limits, cancellation, usage accounting.
 - **Workspace runtime**: packages, connections, sessions, and configuration isolated per workspace under `.onto-runtime/`.
 - **Evaluation platform**: offline agent-quality evaluation on scenario test cases.
-- **Modeling workbench** (design time): builds knowledge packages from domain material and expert interviews, wired to consumer for the evaluation loop; login reuses consumer accounts (modeling → consumer → optional auth-server).
-- **Auth server** (optional): `auth-server/` provides standalone identity and token issuance (an OAuth2/OIDC subset); consumer connects with `AUTH_MODE=remote`. Disabled by default — built-in auth behaves as before.
+- **Modeling workbench** (design time): builds knowledge packages from domain material and expert interviews, wired to consumer for the evaluation loop; login shares the auth-server account system with consumer.
+- **Auth server**: `auth-server/` provides standalone identity and token issuance (an OAuth2/OIDC subset). It is a required dependency of the consumer backend (`AUTH_SERVER_URL` must be set); consumer and modeling share one account system.
 
 # 📦 Installation
 
@@ -110,7 +110,7 @@ LLM_MODEL=<model-id>
 LLM_API_KEY=<api-key>
 ```
 
-For full-stack deployment (consumer + modeling workbench + optional auth / evaluation database) with a one-shot orchestration script, see [deploy/README.md](../deploy/README.md).
+For full-stack deployment (consumer + modeling workbench + auth server / evaluation database) with a one-shot orchestration script, see [deploy/README.md](../deploy/README.md).
 
 ## Start the modeling workbench
 
@@ -187,7 +187,7 @@ Repository layout:
 .
 ├── consumer/                 # Runtime main app: backend, frontend, deploy scripts, SDK, app docs
 ├── modeling/                 # Design-time modeling workbench (Fastify + React + SQLite)
-├── auth-server/              # Optional standalone auth service (OAuth2/OIDC subset, opt-in)
+├── auth-server/              # Standalone auth service (OAuth2/OIDC subset, required by consumer/modeling)
 ├── common/                   # Lightweight shared code across modules
 ├── evaluation/agent_eval/    # Agent evaluation platform
 ├── examples/                 # Scenario cases, knowledge packages, sample scripts

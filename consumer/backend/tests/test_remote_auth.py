@@ -2,7 +2,7 @@
 
 覆盖施工步骤 4（docs/decisions/2026-07-09-decoupled-auth-architecture.md 方案 a）：
 密码登录、JWKS 本地验签、refresh 轮换、改密后的吊销语义（D2：旧 refresh 立即失效、
-旧 access 在 ≤TTL 窗口内仍可验签——本文件显式固化该放宽语义）、双验证链、
+旧 access 在 ≤TTL 窗口内仍可验签——本文件显式固化该放宽语义）、
 用户管理 Admin API 翻译、故障路径、以及 build_runtime_services 的 remote 装配。
 """
 
@@ -191,29 +191,6 @@ def test_change_password_revokes_refresh_but_old_access_survives_ttl(backend):
     assert renewed is not None and renewed.password_change_required is False
 
 
-# ---------------------------------------------------------------- 双验证链
-
-
-def test_fallback_chain_verifies_legacy_hmac_token(auth_server, tmp_path):
-    local = AuthManager(str(tmp_path / "users.json"), "legacy-secret")
-    hmac_token = local.issue_token(local.authenticate("admin", "admin123"))
-
-    with_fallback = RemoteAuthBackend(auth_server.base_url, fallback=local)
-    verified = with_fallback.verify_token(hmac_token)
-    assert verified is not None and verified.username == "admin"
-
-    # 链的优先级：新 JWT 本地验签在前，fallback 只兜旧 HMAC
-    with_fallback_admin = RemoteAuthBackend(
-        auth_server.base_url, admin_token=ADMIN_TOKEN, fallback=local
-    )
-    user = with_fallback_admin.authenticate("admin", "admin123")
-    access = with_fallback_admin.issue_token(user)
-    assert with_fallback_admin.verify_token(access).username == "admin"
-
-    without_fallback = RemoteAuthBackend(auth_server.base_url)
-    assert without_fallback.verify_token(hmac_token) is None
-
-
 # ---------------------------------------------------------------- 用户管理
 
 
@@ -328,9 +305,10 @@ def test_login_wrong_password_remote_mode_contract(auth_server):
     assert response.get_json() == {"error": "Invalid credentials"}
 
 
-def test_refresh_route_local_mode_returns_503(tmp_path):
-    local = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    client = _build_consumer_app(local).test_client()
+def test_refresh_route_backend_without_refresh_returns_503(tmp_path):
+    # 后端未实现 refresh_tokens（如 AuthManager 契约测试后端）时，/auth/refresh 返回 503
+    backend_without_refresh = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    client = _build_consumer_app(backend_without_refresh).test_client()
     response = client.post("/auth/refresh", json={"refresh_token": "anything"})
     assert response.status_code == 503
     assert response.get_json() == {"error": "当前认证模式不支持刷新"}
@@ -339,39 +317,41 @@ def test_refresh_route_local_mode_returns_503(tmp_path):
 # ---------------------------------------------------------------- 装配
 
 
-def test_build_runtime_services_remote_assembly(auth_server, tmp_path, monkeypatch):
+def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, monkeypatch):
     import agentic.app as app_module
 
-    users_file = tmp_path / "users.json"
-    monkeypatch.setenv("AUTH_MODE", "remote")
     monkeypatch.setenv("AUTH_SERVER_URL", auth_server.base_url)
     monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", ADMIN_TOKEN)
-    monkeypatch.setenv("AUTH_USERS_FILE", str(users_file))
-    monkeypatch.setenv("AUTH_SECRET", "legacy-secret")
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
 
-    # users.json 不存在 → 不构造 fallback（也绝不能顺手创建该文件）
+    # remote 是唯一路径：无需 AUTH_MODE，装配即得 RemoteAuthBackend
     runtime = app_module.build_runtime_services()
     remote = runtime["auth_manager"]
     assert isinstance(remote, RemoteAuthBackend)
-    assert remote._fallback is None
-    assert not users_file.exists()
 
-    # remote 装配后端可用：真 HTTP 打到 fixture 起的 auth server
+    # 装配后端可用：真 HTTP 打到 fixture 起的 auth server
     user = remote.authenticate("admin", "admin123")
     assert user is not None and user.role == "admin"
 
-    # users.json 存在 → 双验证链装配生效，旧 HMAC token 仍可验证
-    local = AuthManager(str(users_file), "legacy-secret")
-    hmac_token = local.issue_token(local.authenticate("admin", "admin123"))
-    runtime = app_module.build_runtime_services()
-    verified = runtime["auth_manager"].verify_token(hmac_token)
-    assert verified is not None and verified.username == "admin"
 
-    # remote 模式必须配置 AUTH_SERVER_URL
-    monkeypatch.setenv("AUTH_SERVER_URL", "")
+def test_build_runtime_services_requires_auth_server_url(tmp_path, monkeypatch):
+    import agentic.app as app_module
+
+    # 默认配置（未设置 AUTH_SERVER_URL）即 remote 唯一路径：缺 auth server 地址必须抛错
+    monkeypatch.delenv("AUTH_SERVER_URL", raising=False)
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
     with pytest.raises(RuntimeError, match="AUTH_SERVER_URL"):
         app_module.build_runtime_services()
+
+
+def test_create_app_requires_auth_server_url(tmp_path, monkeypatch):
+    import agentic.app as app_module
+
+    # create_app 不打桩 build_runtime_services 时，缺 AUTH_SERVER_URL 同样抛错
+    monkeypatch.delenv("AUTH_SERVER_URL", raising=False)
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
+    with pytest.raises(RuntimeError, match="AUTH_SERVER_URL"):
+        app_module.create_app()
 
 
 def test_remote_backend_requires_base_url():

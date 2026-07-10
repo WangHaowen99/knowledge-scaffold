@@ -102,18 +102,13 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         # Chat and execution history are stored under project_root/workspaces/{id}/runtime/
         # and are managed by UserStoreManager via get_workspace_paths(); no separate config needed.
         "project_root": {"env": "PROJECT_ROOT", "type": "str", "default": str(ONTO_RUNTIME_ROOT)},
-        "auth_users_file": {"env": "AUTH_USERS_FILE", "type": "str", "default": str(ONTO_RUNTIME_ROOT / "users.json")},
     },
     "auth": {
-        "auth_secret": {"env": "AUTH_SECRET", "type": "secret", "default": ""},
-        "auth_token_ttl_seconds": {"env": "AUTH_TOKEN_TTL", "type": "int", "default": 43200},
-        # local=内置 AuthManager；remote=对接独立 auth server（施工步骤 4 起可用）
-        "auth_mode": {"env": "AUTH_MODE", "type": "str", "default": "local"},
-        # 独立 auth server 地址（BFF 注册代理与 remote 模式使用），空=未接入
+        # 独立 auth server 地址（BFF 注册代理与认证使用），空=未配置
         "auth_server_url": {"env": "AUTH_SERVER_URL", "type": "str", "default": ""},
-        # remote 模式用户管理所需（auth server Admin API 的 X-Admin-Token）
+        # 用户管理所需（auth server Admin API 的 X-Admin-Token）
         "auth_server_admin_token": {"env": "AUTH_SERVER_ADMIN_TOKEN", "type": "secret", "default": ""},
-        # remote 模式 JWT 本地验签的 aud/iss；issuer 留空 = 使用 auth_server_url
+        # JWT 本地验签的 aud/iss；issuer 留空 = 使用 auth_server_url
         "auth_server_audience": {"env": "AUTH_SERVER_AUDIENCE", "type": "str", "default": "meta-wise"},
         "auth_server_issuer": {"env": "AUTH_SERVER_ISSUER", "type": "str", "default": ""},
     },
@@ -177,7 +172,6 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
 _CLEAR_FIELDS = {
     "llm": {"clear_api_key": "api_key"},
     "task_llm": {"clear_api_key": "api_key"},
-    "auth": {"clear_auth_secret": "auth_secret"},
     "web_search": {"clear_api_key": "api_key"},
 }
 _OBSERVABILITY_CLEAR_SECRET_FIELD = "clear_langfuse_secret_key"
@@ -437,8 +431,6 @@ def _normalize_effective_value(section: str, field_name: str, value: Any) -> Any
     normalized = _coerce_string(value)
     if field_name == "project_root" and normalized == "/.onto-runtime":
         return str(ONTO_RUNTIME_ROOT)
-    if field_name == "auth_users_file" and normalized == "/.onto-runtime/users.json":
-        return str(ONTO_RUNTIME_ROOT / "users.json")
     return value
 
 

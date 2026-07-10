@@ -25,7 +25,23 @@ Onto Agent 的核心目标是把“企业本体”作为 Agent 的运行上下�
 
 ## 快速开始
 
-### 1. 准备后端
+### 1. 启动 auth-server
+
+认证统一由独立 auth-server 提供（consumer 与 modeling 共用账号体系），本地开发需先启动它（在仓库根目录执行）：
+
+```bash
+cd auth-server
+pip install -r requirements.txt
+AUTH_SERVER_PORT=5056 python run.py
+```
+
+说明：
+
+- `backend/.env` 必须配置 `AUTH_SERVER_URL`（本地开发如 `http://localhost:5056`，容器内为 `http://auth-server:5056`），否则后端启动直接报错。
+- auth-server 首次启动会自动 bootstrap 管理员账号 `admin` / `admin123`，首次登录会被强制修改密码。
+- 使用 Docker Compose 部署时无需单独启动：auth-server 已是 compose 必备服务，会随 `docker compose up` 一并拉起。
+
+### 2. 准备后端
 
 ```bash
 cd backend
@@ -74,7 +90,7 @@ LLM_API_KEY=<api-key>
 
 业务数据检索不再使用全局本体检索 provider。启动后在「工作区 -> 数据连接」中为当前 workspace 创建 MindsDB 或 NL2SQL HTTP 连接，再在「本体绑定」中为每个 ontology 显式绑定一个连接。运行时 `business_data_search` 只使用该 workspace 下当前 ontology 的绑定连接。
 
-### 2. 准备前端
+### 3. 准备前端
 
 ```bash
 cd frontend
@@ -96,7 +112,7 @@ VITE_LOG_LEVEL=info
 http://localhost:6600
 ```
 
-### 3. 使用 Docker Compose
+### 4. 使用 Docker Compose
 
 应用目录提供完整前后端编排：
 
@@ -140,7 +156,6 @@ docker compose up --build
 │       ├── skills/
 │       ├── files/
 │       └── runtime/
-├── users.json
 └── workspace-settings.json
 ```
 
@@ -308,8 +323,10 @@ data: { ... }
 | `PROJECT_ROOT` | 运行时根目录，默认 `.onto-runtime` |
 | `CHAT_STORAGE_DIR` | 会话 JSON 存储目录 |
 | `EXECUTION_STORAGE_DIR` | 执行记录存储目录 |
-| `AUTH_USERS_FILE` | 用户文件 |
-| `AUTH_SECRET` | JWT 签名密钥 |
+| `AUTH_SERVER_URL` | 独立 auth-server 地址【必填】，如 `http://auth-server:5056`，未配置后端启动报错 |
+| `AUTH_SERVER_ADMIN_TOKEN` | 与 auth-server 共享的管理令牌，用户管理必填 |
+| `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience，默认 `meta-wise` |
+| `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` |
 | `SECRET_ENCRYPTION_KEY` | 可选的 32 字节 base64 加密根密钥，用于加密落盘 API key 和业务数据连接 secret |
 | `MEMORY_MODE` | 记忆后端模式，默认 `filesystem` |
 | `MEMORY_WORKSPACE_ROOT` | 文件系统记忆工作区根目录 |

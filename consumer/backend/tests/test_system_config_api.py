@@ -52,7 +52,7 @@ def test_get_system_config_hides_secrets(tmp_path, monkeypatch):
     assert "ontologies_root" not in payload["storage"]
     assert "skills_root" not in payload["storage"]
     assert "ontology_search" not in payload
-    assert payload["auth"]["has_auth_secret"] is False
+    assert payload["auth"]["has_auth_server_admin_token"] is False
     assert payload["llm_profiles"]["profiles"] == []
     assert payload["observability"]["enabled"] is False
     assert payload["observability"]["mode"] == "local"
@@ -121,7 +121,7 @@ def test_template_and_import_round_trip(tmp_path, monkeypatch):
     assert template_response.status_code == 200
     template_payload = template_response.get_json()
     assert template_payload["agent"]["main_agent_max_iterations"] == 50
-    assert template_payload["auth"]["auth_secret"] == ""
+    assert template_payload["auth"]["auth_server_url"] == ""
     assert template_payload["llm"]["base_url"] == ""
     assert template_payload["llm"]["model"] == ""
     assert "max_tokens" not in template_payload["task_llm"]

@@ -19,7 +19,6 @@
 │       ├── skills/
 │       ├── files/
 │       └── runtime/
-├── users.json
 └── workspace-settings.json
 ```
 
@@ -119,7 +118,7 @@ http://localhost:5055
 
 说明：
 
-- `AUTH_USERS_FILE` 默认是 `<consumer>/.onto-runtime/users.json`。如果文件不存在，后端会自动初始化默认用户文件。
+- 认证统一由独立 auth-server 提供：必须配置 `AUTH_SERVER_URL`（Docker 中为 `http://auth-server:5056`，本地运行 auth-server 时如 `http://localhost:5056`），未配置时后端启动直接报错。
 - `PROJECT_ROOT` 默认指向 `consumer/.onto-runtime`，这是运行时根目录。
 - `system_config.json` 默认保存在 `<consumer>/.onto-runtime/config/system_config.json`；旧的 `<consumer>/backend/config/system_config.json` 会在新文件不存在时自动迁移。
 - 运维规格配置默认读取 `<consumer>/.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
@@ -182,9 +181,10 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `CHAT_STORAGE_DIR` | 会话 JSON 存储目录 | `./data/chats` |
 | `EXECUTION_STORAGE_DIR` | 执行记录存储目录 | `./data/executions` |
 | `PROJECT_ROOT` | 包含 `system/` 和 `workspaces/` 的运行时根目录 | `<consumer>/.onto-runtime` |
-| `AUTH_USERS_FILE` | 用户凭据文件 | `<consumer>/.onto-runtime/users.json` |
-| `AUTH_SECRET` | JWT 签名密钥 | 未设置时使用开发默认值 |
-| `AUTH_TOKEN_TTL` | JWT 有效期，单位秒 | `43200` |
+| `AUTH_SERVER_URL` | 独立 auth-server 地址（必填，未配置后端启动报错），如 `http://auth-server:5056` | 空 |
+| `AUTH_SERVER_ADMIN_TOKEN` | auth-server Admin API 共享管理令牌（用户管理必填） | 空 |
+| `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience | `meta-wise` |
+| `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` | 空 |
 | `SECRET_ENCRYPTION_KEY` | API key / 业务数据连接 secret 落盘加密根密钥，base64 编码 32 字节 | 未设置时本地生成 `<PROJECT_ROOT>/config/secret.key` |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | 主 Agent 最大迭代次数 | `50` |
 | `AGENT_SUB_AGENT_MAX_ITERATIONS` | 子 Agent 最大迭代次数 | `20` |

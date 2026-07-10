@@ -16,6 +16,9 @@ services:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
+    depends_on:
+      auth-server:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:5055/health"]
       interval: 30s
@@ -41,17 +44,13 @@ services:
       timeout: 10s
       retries: 5
 
-  # 独立鉴权服务（opt-in）：仅在 compose 带 --profile auth 时启动（部署脚本按
-  # backend/.env 的 AUTH_MODE=remote 自动判定）。不发布宿主端口，仅 backend
-  # 经容器网络访问 http://auth-server:5056；健康检查由镜像自带 HEALTHCHECK 提供。
-  # AUTH_SERVER_IMAGE 未设置时回退 latest——profile 不激活时该服务不会被拉起，
-  # 不影响 local 模式部署。
+  # 独立鉴权服务（必备组件）：remote 是唯一鉴权路径，backend 依赖其健康后启动。
+  # 不发布宿主端口，仅 backend 经容器网络访问 http://auth-server:5056；
+  # 健康检查由镜像自带 HEALTHCHECK 提供。AUTH_SERVER_IMAGE 未设置时回退 latest。
   auth-server:
     image: ${AUTH_SERVER_IMAGE:-onto-agent-auth-server:latest}
     container_name: onto-agent-auth-server
     restart: unless-stopped
-    profiles:
-      - auth
     volumes:
       - ./.onto-auth:/data
     environment:
