@@ -707,6 +707,10 @@ export const applyAgentV2Event = (current, envelope) => {
   const type = envelope.type;
   const payload = envelope.payload || {};
   const sourceNode = envelope?.source?.node || 'agent';
+  // Optional trace-tree linkage (backend 2.1/2.2). Absent on plain events;
+  // segments without spanKey fall back to a flat list in TracePanel.
+  const envelopeSpanKey = typeof envelope?.span_key === 'string' ? envelope.span_key : '';
+  const envelopeParentKey = typeof envelope?.parent_key === 'string' ? envelope.parent_key : '';
   const subagentIdInPayload = typeof payload?.subagent_id === 'string' && payload.subagent_id
     ? payload.subagent_id
     : null;
@@ -1072,6 +1076,8 @@ export const applyAgentV2Event = (current, envelope) => {
         node: sourceNode || target.node,
         meta: mergeToolMeta(target.meta, payload),
         finished: false,
+        spanKey: envelopeSpanKey || target.spanKey,
+        parentKey: envelopeParentKey || target.parentKey,
       };
     } else {
       next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
@@ -1083,6 +1089,8 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         finished: false,
         toolStatus: null,
+        spanKey: envelopeSpanKey || undefined,
+        parentKey: envelopeParentKey || undefined,
       });
     }
     next.status = 'running';

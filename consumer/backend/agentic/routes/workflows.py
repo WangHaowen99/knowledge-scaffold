@@ -266,10 +266,14 @@ def submit_run_feedback(run_id: str):
 
     orchestrator = _get_orchestrator()
     voted = orchestrator.vote_on_run_memories(run_id, vote=vote)
+    # Also durably persist the vote onto the turn record (independent of
+    # evolution recall) so it can be exported as labeled evaluation data.
+    persisted = orchestrator.persist_run_feedback(run_id, vote=vote)
     return jsonify({
         "success": True,
         "vote": vote,
         "fingerprints_voted": voted,
+        "feedback_persisted": persisted,
     })
 
 

@@ -1447,6 +1447,32 @@ class AgenticOrchestrator:
         except Exception:
             logger.warning("Failed to submit reflection for run=%s", run_id, exc_info=True)
 
+    def persist_run_feedback(self, run_id: str, *, vote: str) -> bool:
+        """Durably record the user's vote on the turn behind this run.
+
+        Unlike vote_on_run_memories (which only touches evolution proposals and
+        no-ops when nothing was recalled), this always persists the vote to the
+        turn record so it survives restarts and can be exported as labeled data
+        for evaluation. Returns True if a turn record was updated.
+        """
+        run = self.run_store.get_run(run_id)
+        if run is None:
+            return False
+        meta = run.metadata or {}
+        session_id = str(meta.get("session_id") or "").strip()
+        turn_id = meta.get("turn_id")
+        if not session_id or turn_id is None:
+            return False
+        _chat_store, execution_store = self._get_stores(
+            str(meta.get("user_id") or "").strip() or None,
+            str(meta.get("workspace_id") or "").strip() or None,
+        )
+        try:
+            return execution_store.set_turn_feedback(session_id, int(turn_id), vote)
+        except Exception:
+            logger.warning("persist_run_feedback failed run=%s", run_id, exc_info=True)
+            return False
+
     def vote_on_run_memories(self, run_id: str, *, vote: str) -> int:
         """Cast 👍/👎 on the proposal fingerprints injected into this run.
 
