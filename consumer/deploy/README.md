@@ -84,13 +84,13 @@ cd /opt/onto-agent
 
 部署脚本会自动完成：
 
-- 部署前检查（Docker、架构匹配、端口占用）
+- 部署前检查（Docker、架构匹配、Flask/MCP/前端端口占用）
 - 运行目录初始化（自动创建所需目录，自动从 `backend/.env.example` 复制 `backend/.env`）
 - 镜像导入
-- 容器启动
+- 容器启动（`backend`、`mcp`、`frontend`）
 - 部署后健康检查
 
-部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。
+部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。若需要对外提供 MCP 客户端接入，请在 `backend/.env` 中设置 `MCP_PUBLIC_BASE_URL` 为服务器 IP 或域名，例如 `http://192.0.2.20:7488`。
 
 ## 升级
 
@@ -202,3 +202,15 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 - `./backend/logs`
 - `./frontend/logs/nginx`
 - `./.onto-auth`（始终创建，auth-server 用户数据）
+
+## MCP 服务
+
+发布部署会额外启动 `onto-agent-mcp` 容器，复用后端镜像和 `.onto-runtime`：
+
+- Flask 管理接口：`/agentic/mcp/*`
+- MCP endpoint 按 `MCP_TRANSPORT` 只暴露一种协议：
+  - `streamable-http`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/mcp`、`/chat/mcp`
+  - `sse`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/sse`、`/chat/sse`
+- 健康检查：`http://127.0.0.1:7488/health`
+
+`MCP_SERVER_HOST` 在 Compose 内部由服务覆盖：`backend` 容器使用 `mcp` 探测独立 MCP 容器，`mcp` 容器使用 `0.0.0.0` 监听。外部客户端展示地址不要依赖该字段，应使用 `MCP_PUBLIC_BASE_URL`。

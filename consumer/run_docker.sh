@@ -2,6 +2,7 @@
 
 # Run onto-agent with Docker Compose
 # Usage: ./run_docker.sh <tag> [all|backend|frontend]
+# The all and backend targets start the standalone MCP server alongside Flask.
 
 set -euo pipefail
 

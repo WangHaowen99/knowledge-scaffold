@@ -34,6 +34,7 @@ require_file "${BUNDLE_ROOT}/${backend_tar}"
 require_file "${BUNDLE_ROOT}/${frontend_tar}"
 
 check_port_available "${BACKEND_PORT:-5055}"
+check_port_available "${MCP_SERVER_PORT:-7488}"
 check_port_available "${FRONTEND_PORT:-8888}"
 
 # auth-server 附加检查（必备组件，不发布宿主端口，无需查端口占用）

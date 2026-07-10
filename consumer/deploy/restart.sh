@@ -19,6 +19,7 @@ compose_down "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_A
 compose_up "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_AUTH_IMAGE:-}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy after restart"
+wait_for_container "onto-agent-mcp" 180 || die "MCP container did not become healthy after restart"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy after restart"
 wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy after restart"
 

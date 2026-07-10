@@ -1,0 +1,24 @@
+services:
+  - id: meta-wise-search
+    enabled: true
+    toolset: search
+    title: 知识检索
+    summary: 原子检索工具集
+    description: 提供不调用 LLM 的 schema、属性过滤、路径查询、统计、聚合、邻域、最短路径和业务逻辑读取等原子检索工具。
+    icon: search
+    tags:
+      - 图谱查询
+      - 原子工具
+    endpoint_prefix: /search
+
+  - id: meta-wise-chat
+    enabled: true
+    toolset: chat
+    title: 知识问答
+    summary: Agent级对话工具集
+    description: 调用 MetaWise 主 Agent workflow，提供面向知识应用的 Agent 级单轮问答能力。
+    icon: message-circle
+    tags:
+      - Agent
+      - 问答
+    endpoint_prefix: /chat

@@ -116,6 +116,16 @@ python run.py
 http://localhost:5055
 ```
 
+### MCP 服务
+
+MCP 服务作为独立 FastMCP 进程运行。安装依赖后在 `consumer/backend` 目录启动：
+
+```bash
+PYTHONPATH=. python -m agentic.mcp.server --transport streamable-http --host 0.0.0.0 --port 7488
+```
+
+Docker Compose 部署会自动启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。Flask 主服务提供 `/agentic/mcp/*` 管理 API；独立 MCP 进程只暴露 `MCP_TRANSPORT` 指定的协议：`streamable-http` 暴露 `/search/mcp`、`/chat/mcp`，`sse` 暴露 `/search/sse`、`/chat/sse`。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具，不调用 LLM；Chat 入口用 MCP token 中的用户和 workspace 直接调用当前 Agent Orchestrator。
+
 说明：
 
 - 认证统一由独立 auth-server 提供：必须配置 `AUTH_SERVER_URL`（Docker 中为 `http://auth-server:5056`，本地运行 auth-server 时如 `http://localhost:5056`），未配置时后端启动直接报错。
@@ -185,6 +195,19 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AUTH_SERVER_ADMIN_TOKEN` | auth-server Admin API 共享管理令牌（用户管理必填） | 空 |
 | `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience | `meta-wise` |
 | `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` | 空 |
+| `AUTH_USERS_FILE` | 用户凭据文件 | `<consumer>/.onto-runtime/users.json` |
+| `AUTH_SECRET` | JWT 签名密钥 | 未设置时使用开发默认值 |
+| `AUTH_TOKEN_TTL` | JWT 有效期，单位秒 | `43200` |
+| `MCP_SERVER_HOST` | 独立 MCP Server 监听地址；Docker Compose 中 Flask 容器会覆盖为 `mcp` 用于内部探测，MCP 容器会覆盖为 `0.0.0.0` 用于监听 | `0.0.0.0` |
+| `MCP_SERVER_PORT` | 独立 MCP Server 端口；Docker Compose 默认将宿主机 `${MCP_SERVER_PORT:-7488}` 映射到容器 `7488` | `7488` |
+| `MCP_PUBLIC_BASE_URL` | 前端 MCP 页面展示和客户端配置复制使用的外部可访问地址，Docker 部署建议显式配置为服务器 IP 或域名 | 根据 host/port 推导 |
+| `MCP_TRANSPORT` | 独立 MCP Server transport；`streamable-http` 暴露 `/search/mcp`、`/chat/mcp`，`sse` 暴露 `/search/sse`、`/chat/sse` | `streamable-http` |
+| `MCP_SERVICES_CONFIG_FILE` | 可选 YAML 服务目录路径；相对路径按 `consumer/backend` 解析 | 存在时使用 `config/mcp_services.yaml` |
+| `MCP_TOKEN_SECRET` | MCP JWT 签名密钥 | 回退到 `AUTH_SECRET` 或开发默认值 |
+| `MCP_TOKEN_ISSUER` | MCP JWT `iss` claim | `meta-wise` |
+| `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
+| `MCP_TOKEN_TTL_SECONDS` | MCP token 默认有效期，单位秒 | `86400` |
+| `MCP_TOKEN_STORE_PATH` | MCP 可吊销 token 注册表文件 | `<PROJECT_ROOT>/mcp-tokens.json` |
 | `SECRET_ENCRYPTION_KEY` | API key / 业务数据连接 secret 落盘加密根密钥，base64 编码 32 字节 | 未设置时本地生成 `<PROJECT_ROOT>/config/secret.key` |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | 主 Agent 最大迭代次数 | `50` |
 | `AGENT_SUB_AGENT_MAX_ITERATIONS` | 子 Agent 最大迭代次数 | `20` |
