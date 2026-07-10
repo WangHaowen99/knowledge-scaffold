@@ -15,15 +15,17 @@ export default function ChatWorkspace({ chat, streamManager }) {
   const { sendAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
   const [input, setInput] = useState('');
   const [traceOpen, setTraceOpen] = useState(true);
-  // Agent 模式：quick(快速) / standard(深度思考) / multi_agent(多智能体)。
+  // Agent 模式：quick(快速) / thinking(深度思考) / multi_agent(多智能体)。
   // 按 workspace 持久化到 localStorage，默认 quick。
   const agentModeKey = `mw_ws_agentmode_${workspaceId}`;
+  const normalizeAgentMode = (mode) => (mode === 'standard' ? 'thinking' : mode);
   const [agentMode, setAgentMode] = useState(
-    () => localStorage.getItem(agentModeKey) || 'quick'
+    () => normalizeAgentMode(localStorage.getItem(agentModeKey)) || 'quick'
   );
   const changeAgentMode = (mode) => {
-    setAgentMode(mode);
-    try { localStorage.setItem(agentModeKey, mode); } catch { /* ignore */ }
+    const nextMode = normalizeAgentMode(mode);
+    setAgentMode(nextMode);
+    try { localStorage.setItem(agentModeKey, nextMode); } catch { /* ignore */ }
   };
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
   const TRACE_MIN_W = 300;
@@ -108,7 +110,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
               onChange={(e) => changeAgentMode(e.target.value)}
               disabled={streamState.isLoading}>
               <option value="quick">快速</option>
-              <option value="standard">深度思考</option>
+              <option value="thinking">深度思考</option>
               <option value="multi_agent">多智能体</option>
             </select>
             <input value={input} placeholder="输入问题，Enter 发送…"
