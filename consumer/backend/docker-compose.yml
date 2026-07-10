@@ -21,14 +21,17 @@ services:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
+    depends_on:
+      auth-server:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://127.0.0.1:5055/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # 独立鉴权服务（opt-in）：docker compose --profile auth up 时启用，
-  # 配套在 ./.env 设置 AUTH_MODE=remote、AUTH_SERVER_URL=http://auth-server:5056
+  # 独立鉴权服务（必备组件）：remote 是唯一鉴权路径，backend 依赖其健康后启动。
+  # 配套在 ./.env 设置 AUTH_SERVER_URL=http://auth-server:5056
   auth-server:
     build:
       context: ../../auth-server
@@ -36,8 +39,6 @@ services:
     image: onto-agent-auth-server:${TAG:-latest}
     container_name: onto-agent-auth-server-${TAG:-latest}
     restart: unless-stopped
-    profiles:
-      - auth
     volumes:
       - ../.onto-auth:/data
     environment:

@@ -41,12 +41,9 @@ fi
 log "Loading release images"
 docker_load_image "${BACKEND_TAR}"
 docker_load_image "${FRONTEND_TAR}"
-# auth-server 镜像随包分发则一并导入（即使 local 模式也入账本，便于后续切 remote 后直接重启生效）
-if [ -n "${AUTH_TAR_REL}" ] && [ -f "${BUNDLE_ROOT}/${AUTH_TAR_REL}" ]; then
-    docker_load_image "${BUNDLE_ROOT}/${AUTH_TAR_REL}"
-elif auth_profile_enabled; then
-    warn "AUTH_MODE=remote but auth-server image tar is missing from this bundle"
-fi
+# auth-server 为必备组件，镜像必须随包分发并导入
+[ -n "${AUTH_TAR_REL}" ] || die "auth_server_image_tar is missing in manifest.json"
+docker_load_image "${BUNDLE_ROOT}/${AUTH_TAR_REL}"
 
 log "Applying migration step"
 "${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}"
@@ -61,9 +58,7 @@ compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy"
-if auth_profile_enabled; then
-    wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
-fi
+wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
 
 write_state \
     "${TARGET_VERSION}" \

@@ -66,9 +66,16 @@ fi
 [ -n "${ROLLBACK_AUTH_IMAGE}" ] || ROLLBACK_AUTH_IMAGE="${PREVIOUS_AUTH_IMAGE:-}"
 [ -n "${ROLLBACK_BACKEND_IMAGE}" ] || die "Could not determine backend image for rollback"
 [ -n "${ROLLBACK_FRONTEND_IMAGE}" ] || die "Could not determine frontend image for rollback"
-# auth 镜像是 opt-in，缺失不阻塞回滚；仅在启用 auth profile 时提醒
-if [ -z "${ROLLBACK_AUTH_IMAGE}" ] && auth_profile_enabled; then
-    warn "Could not determine auth-server image for rollback; compose will fall back to onto-agent-auth-server:latest"
+# auth-server 现为必备服务（backend depends_on service_healthy）：镜像无法确定时
+# compose 会回退到从未构建过的 :latest，导致回滚卡死在健康等待。优先复用本机已有的
+# 带版本镜像；一个都没有则快速失败并给指引，避免半残态。
+if [ -z "${ROLLBACK_AUTH_IMAGE}" ]; then
+    ROLLBACK_AUTH_IMAGE="$(docker images --format '{{.Repository}}:{{.Tag}}' onto-agent-auth-server 2>/dev/null | head -n 1 || true)"
+    if [ -n "${ROLLBACK_AUTH_IMAGE}" ]; then
+        warn "Rollback metadata lacks auth-server image; reusing local ${ROLLBACK_AUTH_IMAGE}"
+    else
+        die "Could not determine auth-server image for rollback and no local onto-agent-auth-server image exists; load one (docker load < auth-server-image.tar) then retry"
+    fi
 fi
 
 log "Rolling back to ${PREVIOUS_VERSION}"
@@ -76,9 +83,7 @@ compose_up "${ROLLBACK_BACKEND_IMAGE}" "${ROLLBACK_FRONTEND_IMAGE}" "${ROLLBACK_
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy after rollback"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy after rollback"
-if auth_profile_enabled; then
-    wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy after rollback"
-fi
+wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy after rollback"
 
 write_state \
     "${PREVIOUS_VERSION}" \

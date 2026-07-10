@@ -35,7 +35,7 @@ Meta Wise 面向的是回答必须遵循**领域语义与既定计算口径**、
 - ✅ **分层配置与访问控制**
     + 三层配置作用域：**全局**（模型池、联网搜索、观测、Agent 限额）→ **工作空间**（数据连接、知识与数据绑定、运行参数）→ **个人**（偏好、主题）。
     + 模型密钥仅存全局层；工作空间只引用模型 profile，不接触 API Key。
-    + 可选接入独立鉴权服务（`auth-server/`，OAuth2/OIDC 子集）：默认内置认证零配置可用，设 `AUTH_MODE=remote` 即切换到解耦鉴权，支持开放注册与邮箱验证。
+    + 认证统一由独立鉴权服务提供（`auth-server/`，OAuth2/OIDC 子集）：consumer 与 modeling 共用同一账号体系，后端必填 `AUTH_SERVER_URL` 对接，支持开放注册与邮箱验证。
 - ✅ **协议与 SDK 扩展**
     + A2A、ACP 适配层与 SDK，外部系统可集成同一套运行能力。
 - ✅ **评测平台**
@@ -80,8 +80,8 @@ flowchart LR
 - **编排器 / ReAct 循环**（运行期）：运行生命周期、轮次限额、取消与用量统计。
 - **工作区运行时**：知识包、数据连接、会话与运行配置在 `.onto-runtime/` 下按工作区隔离。
 - **评测平台**：基于场景测试用例离线评测智能体质量。
-- **知识包建模工作台**（设计期）：从领域资料与专家访谈构建知识包，与 consumer 打通评测闭环；登录复用 consumer 账号（modeling → consumer → 可选 auth-server）。
-- **鉴权服务**（可选）：`auth-server/` 提供独立的身份与 token 签发（OAuth2/OIDC 子集），consumer 以 `AUTH_MODE=remote` 对接；默认不启用，内置认证行为不变。
+- **知识包建模工作台**（设计期）：从领域资料与专家访谈构建知识包，与 consumer 打通评测闭环；登录与 consumer 共用 auth-server 账号体系。
+- **鉴权服务**：`auth-server/` 提供独立的身份与 token 签发（OAuth2/OIDC 子集），是 consumer 后端的必备依赖（`AUTH_SERVER_URL` 必填）；consumer 与 modeling 共用同一账号体系。
 
 # 📦 安装指导
 
@@ -110,7 +110,7 @@ LLM_MODEL=<model-id>
 LLM_API_KEY=<api-key>
 ```
 
-全栈部署（consumer + 建模工作台 + 可选鉴权/评测库）的完整步骤与一键脚本见 [deploy/README.md](deploy/README.md)。
+全栈部署（consumer + 建模工作台 + 鉴权服务/评测库）的完整步骤与一键脚本见 [deploy/README.md](deploy/README.md)。
 
 ## 启动知识包建模工作台
 
@@ -187,7 +187,7 @@ Windows 用户如果遇到 Python 依赖安装路径过长，可以先启用系�
 .
 ├── consumer/                 # 运行期主应用：后端、前端、部署脚本、SDK 和应用文档
 ├── modeling/                 # 设计期知识包建模工作台（Fastify + React + SQLite）
-├── auth-server/              # 可选独立鉴权服务（OAuth2/OIDC 子集，opt-in）
+├── auth-server/              # 独立鉴权服务（OAuth2/OIDC 子集，consumer/modeling 必备）
 ├── common/                   # 跨模块共享的轻量公共代码
 ├── evaluation/agent_eval/    # 智能体评测平台
 ├── examples/                 # 场景案例、知识包和示例脚本

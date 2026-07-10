@@ -202,12 +202,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     "timeout": 45
   },
   "storage": {
-    "project_root": "/tmp/project",
-    "auth_users_file": "./runtime/users.json"
-  },
-  "auth": {
-    "auth_secret": "auth-secret",
-    "auth_token_ttl_seconds": 999
+    "project_root": "/tmp/project"
   },
   "agent": {
     "llm_connection_max_retries": 8,
@@ -248,8 +243,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     assert app_config.task_llm.timeout == 45
     assert app_config.task_llm.max_tokens == 2048
     assert app_config.task_llm.temperature == 0.3
-    assert app_config.auth_secret == "auth-secret"
-    assert app_config.auth_token_ttl_seconds == 999
+    assert app_config.project_root == "/tmp/project"
     assert not hasattr(app_config, "ontologies_root")
     assert not hasattr(app_config, "skills_root")
 
@@ -1061,24 +1055,6 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
     assert captured["timeout"] == 8
 
 
-def test_system_config_defaults_auth_users_file_to_runtime_root(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.delenv("AUTH_USERS_FILE", raising=False)
-
-    config = system_config_module.load_system_config()
-
-    assert config["storage"]["auth_users_file"] == str(
-        system_config_module.ONTO_RUNTIME_ROOT / "users.json"
-    )
-
-
 def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, monkeypatch):
     import agentic.config.system_config as system_config_module
 
@@ -1089,8 +1065,7 @@ def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, m
         """
 {
   "storage": {
-    "project_root": "/.onto-runtime",
-    "auth_users_file": "/.onto-runtime/users.json"
+    "project_root": "/.onto-runtime"
   }
 }
 """.strip(),
@@ -1105,7 +1080,6 @@ def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, m
     config = system_config_module.load_system_config()
 
     assert config["storage"]["project_root"] == "/app/.onto-runtime"
-    assert config["storage"]["auth_users_file"] == "/app/.onto-runtime/users.json"
 
 
 def test_system_config_ignores_legacy_status_metadata(tmp_path, monkeypatch):
