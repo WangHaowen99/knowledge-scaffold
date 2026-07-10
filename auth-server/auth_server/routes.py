@@ -167,7 +167,7 @@ def _rate_limited():
 
 
 def require_registration_enabled(fn):
-    """注册未开启（或 AUTH_MAIL_MODE=smtp 且 SMTP 未配置）时一律 503。"""
+    """注册未开启（AUTH_ENABLE_REGISTRATION=false）时一律 503。"""
 
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -183,45 +183,17 @@ def require_registration_enabled(fn):
 def register():
     data = _request_data()
     try:
-        _registration().register(
+        user = _registration().register(
             username=str(data.get("username", "")),
             email=str(data.get("email", "")),
             password=str(data.get("password", "")),
             client_ip=_client_ip(),
         )
-        return jsonify({"message": "验证码已发送"})
+        return jsonify({"success": True, "user": user.to_public_dict()})
     except RegistrationRateLimited:
         return _rate_limited()
     except PasswordPolicyError as exc:
         return _password_policy_response(exc)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-
-@bp.route("/register/verify", methods=["POST"])
-@require_registration_enabled
-def register_verify():
-    data = _request_data()
-    try:
-        user = _registration().verify(
-            email=str(data.get("email", "")), code=str(data.get("code", ""))
-        )
-        return jsonify({"success": True, "user": user.to_public_dict()})
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-
-@bp.route("/register/resend", methods=["POST"])
-@require_registration_enabled
-def register_resend():
-    data = _request_data()
-    try:
-        _registration().resend(
-            email=str(data.get("email", "")), client_ip=_client_ip()
-        )
-        return jsonify({"message": "验证码已发送"})
-    except RegistrationRateLimited:
-        return _rate_limited()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 

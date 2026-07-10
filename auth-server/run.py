@@ -9,8 +9,7 @@ from auth_server.config import AuthServerConfig
 
 
 def main() -> None:
-    # INFO 级：console 邮件模式的验证码、TTL 钳制告警等以 INFO/WARNING 输出，
-    # 不配置的话根 logger 默认 WARNING 会吞掉验证码日志
+    # INFO 级：让请求日志与 TTL 钳制等运维告警可见（根 logger 默认 WARNING 过于安静）
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     config = AuthServerConfig.from_env()
     app = create_app(config)

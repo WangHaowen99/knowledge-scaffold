@@ -49,7 +49,7 @@ def _free_port() -> int:
 
 @pytest.fixture()
 def auth_server(tmp_path):
-    """随机端口起真实 auth server：console 邮件、开启注册、admin token、tmp 数据目录。"""
+    """随机端口起真实 auth server：开启注册（一步建号，无邮件）、admin token、tmp 数据目录。"""
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     config = AuthServerConfig(
@@ -60,7 +60,6 @@ def auth_server(tmp_path):
         access_ttl_seconds=60,  # server 允许的最小值；测试内旧 access 始终处于 TTL 窗口
         admin_token=ADMIN_TOKEN,
         enable_registration=True,
-        mail_mode="console",
     )
     app = create_auth_server_app(config)
     server = make_server("127.0.0.1", port, app)

@@ -1,7 +1,8 @@
 """Authentication and user management endpoints (extracted from app.py, behavior unchanged).
 
 注册相关端点是对独立 auth server 的薄代理（BFF）：consumer 自身不实现注册，
-仅在配置了 AUTH_SERVER_URL 时转发（docs/decisions/2026-07-09-decoupled-auth-architecture.md D5）。
+仅在配置了 AUTH_SERVER_URL 时转发。注册一步直接建号（无邮箱验证码），
+见 docs/decisions/2026-07-10-open-registration-no-email-verification.md。
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from ..services.auth import (
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
-# 连接 3s / 读取 10s：注册链路含发邮件，读取超时给足
+# 连接 3s / 读取 10s
 _REGISTER_PROXY_TIMEOUT = (3, 10)
 
 
@@ -52,16 +53,6 @@ def _proxy_register(path: str):
 @auth_bp.route("/register", methods=["POST"])
 def register():
     return _proxy_register("/register")
-
-
-@auth_bp.route("/register/verify", methods=["POST"])
-def register_verify():
-    return _proxy_register("/register/verify")
-
-
-@auth_bp.route("/register/resend", methods=["POST"])
-def register_resend():
-    return _proxy_register("/register/resend")
 
 
 @auth_bp.route("/login", methods=["POST"])

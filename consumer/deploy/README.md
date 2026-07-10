@@ -170,12 +170,13 @@ AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>
 auth-server **不发布宿主端口**，仅 backend 通过容器网络访问 `http://auth-server:5056`；
 健康检查由镜像自带的 HEALTHCHECK 提供。可通过环境变量透传覆盖默认配置：
 `AUTH_SERVER_ISSUER`、`AUTH_SERVER_ADMIN_TOKEN`（须与 `backend/.env` 一致）、
-`AUTH_ENABLE_REGISTRATION`、`AUTH_MAIL_MODE`。
+`AUTH_ENABLE_REGISTRATION`。开启注册后一步直接建号，无需邮箱验证码，也无需配置任何
+SMTP / 邮件相关变量。
 
 ### 数据目录与备份
 
-auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、`keys/` 签名私钥、
-`pending_registrations.json`）。该目录已纳入：
+auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、`keys/` 签名私钥）。
+该目录已纳入：
 
 - `backup.sh`：打包为 `onto-auth.tar.gz`，auth 镜像同时 `docker save`
 - `upgrade.sh`：升级覆盖文件时列入保护清单，不会被新发布包覆盖

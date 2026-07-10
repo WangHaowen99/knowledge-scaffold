@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { login, register, registerVerify, registerResend, setSession } from './api.js';
+import { useState } from 'react';
+import { login, register, setSession } from './api.js';
 
 // 后端 PASSWORD_POLICY_FAILED violations 代码 → 中文文案
 const VIOLATION_LABELS = {
@@ -33,21 +33,12 @@ export default function LoginPage({ onLogin }) {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // 注册：step 1 填资料 → step 2 邮箱验证码
-  const [regStep, setRegStep] = useState(1);
+  // 注册：单步填资料，成功即建正式账号（无邮箱验证码）
   const [regUsername, setRegUsername] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
-  const [regCode, setRegCode] = useState('');
   const [regErr, setRegErr] = useState(NO_REG_ERROR);
   const [regBusy, setRegBusy] = useState(false);
-  const [cooldown, setCooldown] = useState(0);
-
-  useEffect(() => {
-    if (cooldown <= 0) return undefined;
-    const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [cooldown]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -64,7 +55,7 @@ export default function LoginPage({ onLogin }) {
     }
   };
 
-  const showRegister = () => { setView('register'); setRegStep(1); setRegErr(NO_REG_ERROR); setNotice(''); };
+  const showRegister = () => { setView('register'); setRegErr(NO_REG_ERROR); setNotice(''); };
   const showLogin = () => { setView('login'); setErr(''); };
 
   const submitRegister = async (e) => {
@@ -73,54 +64,18 @@ export default function LoginPage({ onLogin }) {
     setRegBusy(true); setRegErr(NO_REG_ERROR);
     try {
       await register(regUsername, regEmail, regPassword);
-      setRegStep(2);
-      setRegCode('');
-      setCooldown(60);
-    } catch (e2) {
-      setRegErr(parseRegisterError(e2));
-    } finally {
-      setRegBusy(false);
-    }
-  };
-
-  const submitVerify = async (e) => {
-    e.preventDefault();
-    if (regCode.length !== 6 || regBusy) return;
-    setRegBusy(true); setRegErr(NO_REG_ERROR);
-    try {
-      await registerVerify(regEmail, regCode);
+      // 一步建号成功：回登录视图，预填用户名，提示去登录
       setUsername(regUsername);
       setPassword('');
       setNotice('注册成功，请登录');
       setErr('');
       setView('login');
-      setRegStep(1);
       setRegPassword('');
-      setRegCode('');
     } catch (e2) {
       setRegErr(parseRegisterError(e2));
     } finally {
       setRegBusy(false);
     }
-  };
-
-  const resendCode = async () => {
-    if (cooldown > 0 || regBusy) return;
-    setRegBusy(true); setRegErr(NO_REG_ERROR);
-    try {
-      await registerResend(regEmail);
-      setCooldown(60);
-    } catch (e2) {
-      setRegErr(parseRegisterError(e2));
-    } finally {
-      setRegBusy(false);
-    }
-  };
-
-  // 中途离开/刷新后重回验证码步骤的入口（验证码 15 分钟内有效，冷却由服务端把关）
-  const goVerify = () => {
-    if (!regEmail) { setRegErr({ message: '请先填写注册时使用的邮箱', violations: [] }); return; }
-    setRegStep(2); setRegCode(''); setRegErr(NO_REG_ERROR);
   };
 
   const regErrBox = regErr.message && (
@@ -163,10 +118,7 @@ export default function LoginPage({ onLogin }) {
         <div className="field"><label>密码</label>
           <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" /></div>
         {regErrBox}
-        <button className="lbtn" type="submit" disabled={regBusy}>{regBusy ? '提交中…' : '下一步'}</button>
-        <div className="lswitch">
-          已收到验证码？<button type="button" className="llink" onClick={goVerify}>直接输入验证码</button>
-        </div>
+        <button className="lbtn" type="submit" disabled={regBusy}>{regBusy ? '提交中…' : '注 册'}</button>
         <div className="lswitch">
           已有账号？<button type="button" className="llink" onClick={showLogin}>返回登录</button>
         </div>
@@ -174,33 +126,7 @@ export default function LoginPage({ onLogin }) {
     </>
   );
 
-  const verifyView = (
-    <>
-      <form className="lcard" onSubmit={submitVerify}>
-        <h2>验证邮箱</h2>
-        <div className="ld">验证码已发送至 {regEmail}，请查收邮件完成验证</div>
-        <div className="field"><label>验证码</label>
-          <input value={regCode} onChange={(e) => setRegCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            autoFocus inputMode="numeric" autoComplete="one-time-code" placeholder="6 位数字验证码" /></div>
-        {regErrBox}
-        <button className="lbtn" type="submit" disabled={regBusy || regCode.length !== 6}>
-          {regBusy ? '验证中…' : '验证并完成注册'}
-        </button>
-        <div className="lswitch">
-          没收到验证码？
-          <button type="button" className="llink" disabled={cooldown > 0 || regBusy} onClick={resendCode}>
-            {cooldown > 0 ? `重新发送（${cooldown}s）` : '重新发送'}
-          </button>
-        </div>
-        <div className="lswitch">
-          <button type="button" className="llink" onClick={showLogin}>返回登录</button>
-        </div>
-      </form>
-    </>
-  );
-
-  let card = loginView;
-  if (view === 'register') card = regStep === 1 ? registerView : verifyView;
+  const card = view === 'register' ? registerView : loginView;
 
   return (
     <div className="mwr login">

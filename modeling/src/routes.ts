@@ -62,20 +62,15 @@ export async function registerRoutes(app: FastifyInstance) {
     }
   });
 
-  // 注册代理：上游状态码 + body 原样透传（限流 429 / 密码策略 400 / 未开启 503 语义由 auth-server 决定）
-  const registerProxy = (path: string, method: 'register' | 'registerVerify' | 'registerResend') => {
-    app.post(path, async (req, reply) => {
-      try {
-        const { status, body } = await getAuthClient()[method](req.body ?? {}, req.ip);
-        return reply.code(status).send(body);
-      } catch {
-        return reply.code(502).send({ error: '注册服务暂不可用，请稍后再试' });
-      }
-    });
-  };
-  registerProxy('/auth/register', 'register');
-  registerProxy('/auth/register/verify', 'registerVerify');
-  registerProxy('/auth/register/resend', 'registerResend');
+  // 注册代理：一步建号，上游状态码 + body 原样透传（限流 429 / 密码策略 400 / 未开启 503 语义由 auth-server 决定）
+  app.post('/auth/register', async (req, reply) => {
+    try {
+      const { status, body } = await getAuthClient().register(req.body ?? {}, req.ip);
+      return reply.code(status).send(body);
+    } catch {
+      return reply.code(502).send({ error: '注册服务暂不可用，请稍后再试' });
+    }
+  });
 
   // 以下均需认证
   app.register(async (r) => {

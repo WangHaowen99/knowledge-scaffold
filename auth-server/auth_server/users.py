@@ -333,10 +333,9 @@ class UserStore:
         return self._user_view_from_record(username, users[username])
 
     def create_registered_user(self, username: str, email: str, password_hash: str) -> UserView:
-        """开放注册验证通过后创建用户：role=user；密码是本人刚设置的，不强制改密。
+        """开放注册创建用户：role=user；密码是本人刚设置的，不强制改密。
 
-        密码策略在注册提交时已校验；用户名/邮箱唯一性与数量上限在此再查一次
-        （pending 不计入上限，创建时才占名额）。
+        密码策略在注册提交时已校验；用户名/邮箱唯一性与数量上限在此再兜底一次。
         """
         username = str(username or "").strip()
         email = normalize_email(email)
