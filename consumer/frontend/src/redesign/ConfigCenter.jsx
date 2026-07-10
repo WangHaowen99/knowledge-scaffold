@@ -4,11 +4,10 @@ import { useAuthContext } from './useAuthContext';
 import { THEMES, applyTheme, getTheme } from './theme';
 
 // 配置中心：三层作用域（L1 全局 / L2 工作空间 / L3 个人）。
-// 全局写 = platform_admin；空间写 = admin（为 workspace_admin 预留）；个人 = 本人。
 const SCOPES = {
   global: {
     lv: 'L1', badge: 'sb-l1', label: '全局配置',
-    hint: '平台运行时能力，影响所有空间 · 写 platform_admin · 读 全员（secret 脱敏为 has_*）',
+    hint: '平台级配置，影响所有工作空间；仅平台管理员可修改，其他人可查看',
     sections: [
       { id: 'llm', name: '模型池' },
       { id: 'web_search', name: '联网搜索' },
@@ -20,7 +19,7 @@ const SCOPES = {
   },
   workspace: {
     lv: 'L2', badge: 'sb-l2', label: '工作空间',
-    hint: '当前空间的资源与运行行为 · 写 管理员（规划：workspace_admin 限所辖空间）· 读 空间成员',
+    hint: '当前工作空间的资源与运行设置；空间管理员可修改，成员可查看',
     sections: [
       { id: 'info', name: '空间信息' },
       { id: 'members', name: '成员' },
@@ -32,7 +31,7 @@ const SCOPES = {
   },
   personal: {
     lv: 'L3', badge: 'sb-l3', label: '个人设置',
-    hint: '个人偏好，随账号走 · 仅本人可改，任何角色都可写',
+    hint: '仅对你自己生效的个人偏好，随账号同步',
     sections: [
       { id: 'prefs', name: '偏好' },
       { id: 'account', name: '账号安全' },
@@ -112,10 +111,10 @@ function SectionBody({ scope, section }) {
 /* ---------------- L1 · 系统配置各 section（/api/system-config） ---------------- */
 
 const GLOBAL_SECTION_META = {
-  llm: { title: '模型池', desc: '全局定义模型 profile，密钥仅存本层；空间通过“模型选用”引用', wiz: 'cfg-llm' },
-  web_search: { title: '联网搜索', desc: '域名黑白名单为合规项，独占全局、不可覆盖' },
-  observability: { title: '观测打点', desc: 'local / langfuse 双模式' },
-  agent: { title: 'Agent 全局参数', desc: '全局硬顶：轮次 / 并发 / 深度 / 上下文' },
+  llm: { title: '模型池', desc: '集中管理可用的大模型；密钥加密存储，各工作空间在“模型选用”里引用', wiz: 'cfg-llm' },
+  web_search: { title: '联网搜索', desc: '联网搜索的域名白/黑名单，仅在此处统一设置' },
+  observability: { title: '观测打点', desc: '运行链路追踪：本地日志或 Langfuse' },
+  agent: { title: 'Agent 全局参数', desc: '智能体运行上限：对话轮次、子任务并发与深度、上下文长度' },
 };
 
 function SystemConfigSection({ section }) {
@@ -216,29 +215,33 @@ function SystemConfigSection({ section }) {
 function LlmProfiles({ data, canEdit, onSave, busy }) {
   const profiles = data.profiles || [];
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(null); // 正在编辑的模型（null=未编辑）
+  const colSpan = canEdit ? 7 : 6;
   return (
     <>
-      <Field label="默认模型" hint="可被空间级覆盖（规划能力）">
+      <Field label="默认模型" hint="工作空间未单独指定时使用此模型">
         <select disabled={!canEdit || busy} value={data.default_profile_id || ''}
           onChange={(e) => onSave({ default_profile_id: e.target.value })}>
           {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}（{p.model}）</option>)}
         </select>
       </Field>
-      {canEdit && !creating && (
+      {canEdit && !creating && !editing && (
         <div style={{ margin: '12px 0' }}>
           <button className="btn btn-p" onClick={() => setCreating(true)}>＋ 新增模型</button>
         </div>
       )}
-      {creating && (
-        <LlmProfileCreateForm
+      {(creating || editing) && (
+        <LlmProfileForm
+          initial={editing}
           existing={profiles}
+          defaultProfileId={data.default_profile_id || ''}
           busy={busy}
-          onSubmit={async (payload) => { await onSave(payload); setCreating(false); }}
-          onCancel={() => setCreating(false)}
+          onSubmit={async (payload) => { await onSave(payload); setCreating(false); setEditing(null); }}
+          onCancel={() => { setCreating(false); setEditing(null); }}
         />
       )}
       <table className="dt" style={{ marginTop: 10 }}>
-        <thead><tr><th>名称</th><th>Provider</th><th>模型</th><th>Base URL</th><th>密钥</th><th>状态</th></tr></thead>
+        <thead><tr><th>名称</th><th>类型</th><th>模型</th><th>接口地址</th><th>密钥</th><th>状态</th>{canEdit && <th style={{ width: 70 }}>操作</th>}</tr></thead>
         <tbody>
           {profiles.map((p) => (
             <tr key={p.id}>
@@ -248,29 +251,36 @@ function LlmProfiles({ data, canEdit, onSave, busy }) {
               <td style={{ color: 'var(--ink2)', fontSize: 12 }}>{p.base_url}</td>
               <td>{p.has_api_key ? <span className="tag tag-ok">已配置</span> : <span className="tag tag-draft">未配置</span>}</td>
               <td>{p.enabled ? '启用' : '停用'}</td>
+              {canEdit && (
+                <td><button className="btn" style={btnS} onClick={() => { setEditing(p); setCreating(false); }}>编辑</button></td>
+              )}
             </tr>
           ))}
-          {!profiles.length && <tr><td colSpan={6} className="empty">尚未配置模型 profile</td></tr>}
+          {!profiles.length && <tr><td colSpan={colSpan} className="empty">尚未配置模型</td></tr>}
         </tbody>
       </table>
     </>
   );
 }
 
-// 新增模型 profile：提交完整 profiles 数组——已有项只带 {id}（后端按 id 合并、保留含密钥的全部旧值），
-// 新增项带全字段；可选“设为默认”一并提交 default_profile_id。
+// 模型表单（新增 / 编辑两用）：提交完整模型数组——未改动的项只带 {id}（后端按 id 合并、
+// 保留含密钥的全部旧值），新增或被编辑的项带全字段；密钥留空则保留旧值。
 const PROVIDER_PRESETS = {
   glm: { label: 'GLM（智谱）', base_url: 'https://open.bigmodel.cn/api/paas/v4' },
   deepseek: { label: 'DeepSeek', base_url: 'https://api.deepseek.com' },
   openai_compatible: { label: 'OpenAI 兼容', base_url: '' },
 };
 
-function LlmProfileCreateForm({ existing, busy, onSubmit, onCancel }) {
-  const [form, setForm] = useState({
-    id: '', name: '', provider: 'openai_compatible', model: '', base_url: '',
-    api_key: '', timeout: 60, max_tokens: 4096, temperature: 0.7,
-  });
-  const [asDefault, setAsDefault] = useState(false);
+function LlmProfileForm({ initial, existing, defaultProfileId, busy, onSubmit, onCancel }) {
+  const isEdit = !!initial;
+  const [form, setForm] = useState(() => ({
+    id: initial?.id || '', name: initial?.name || '',
+    provider: initial?.provider || 'openai_compatible', model: initial?.model || '',
+    base_url: initial?.base_url || '', api_key: '',
+    timeout: initial?.timeout ?? 60, max_tokens: initial?.max_tokens ?? 4096,
+    temperature: initial?.temperature ?? 0.7, enabled: initial ? initial.enabled !== false : true,
+  }));
+  const [asDefault, setAsDefault] = useState(isEdit && initial.id === defaultProfileId);
   const [err, setErr] = useState('');
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -285,40 +295,52 @@ function LlmProfileCreateForm({ existing, busy, onSubmit, onCancel }) {
   };
 
   const submit = async () => {
-    const id = form.id.trim() || `profile-${Date.now().toString(36)}`;
-    if (!form.name.trim()) { setErr('显示名称必填'); return; }
-    if (!form.model.trim()) { setErr('模型 ID 必填'); return; }
-    if (/\s/.test(id) || id.length > 80) { setErr('Profile ID 不能含空白字符且不超过 80 字符'); return; }
-    if (existing.some((p) => p.id === id)) { setErr(`Profile ID「${id}」已存在`); return; }
+    const id = isEdit ? initial.id : (form.id.trim() || `profile-${Date.now().toString(36)}`);
+    if (!form.name.trim()) { setErr('请填写显示名称'); return; }
+    if (!form.model.trim()) { setErr('请填写模型名称'); return; }
+    if (!isEdit) {
+      if (/\s/.test(id) || id.length > 80) { setErr('标识不能含空格且不超过 80 字符'); return; }
+      if (existing.some((p) => p.id === id)) { setErr(`标识「${id}」已存在`); return; }
+    }
     setErr('');
-    const newProfile = {
+    const edited = {
       id, name: form.name.trim(), provider: form.provider, model: form.model.trim(),
       base_url: form.base_url.trim(), timeout: Number(form.timeout) || 60,
-      max_tokens: Number(form.max_tokens) || 4096, temperature: Number(form.temperature), enabled: true,
+      max_tokens: Number(form.max_tokens) || 4096, temperature: Number(form.temperature),
+      enabled: form.enabled,
     };
-    if (form.api_key) newProfile.api_key = form.api_key;
-    const payload = { profiles: [...existing.map((p) => ({ id: p.id })), newProfile] };
+    if (form.api_key) edited.api_key = form.api_key; // 留空则后端保留旧密钥
+    // 未改动的项只带 {id}（后端保留旧值），被编辑/新增的项带全字段
+    const profiles = isEdit
+      ? existing.map((p) => (p.id === id ? edited : { id: p.id }))
+      : [...existing.map((p) => ({ id: p.id })), edited];
+    const payload = { profiles };
     if (asDefault) payload.default_profile_id = id;
     await onSubmit(payload);
   };
 
   return (
     <div style={{ border: '1px solid var(--hair)', borderRadius: 12, padding: '6px 18px 14px', margin: '12px 0', background: '#fbfbf9' }}>
-      <Field label="显示名称 *" hint="如 GLM-4.7"><input type="text" value={form.name} onChange={(e) => set('name', e.target.value)} /></Field>
-      <Field label="Profile ID" hint="可选，留空自动生成；不能含空白字符">
-        <input type="text" value={form.id} onChange={(e) => set('id', e.target.value)} /></Field>
-      <Field label="Provider">
+      <div style={{ fontWeight: 650, fontSize: 13, margin: '8px 0 4px' }}>{isEdit ? `编辑模型 · ${initial.name}` : '新增模型'}</div>
+      <Field label="显示名称 *" hint="展示用，如 GLM-4.7"><input type="text" value={form.name} onChange={(e) => set('name', e.target.value)} /></Field>
+      {!isEdit && (
+        <Field label="标识" hint="可选，留空自动生成；创建后不可改">
+          <input type="text" value={form.id} onChange={(e) => set('id', e.target.value)} /></Field>
+      )}
+      <Field label="类型">
         <select value={form.provider} onChange={(e) => pickProvider(e.target.value)}>
           {Object.entries(PROVIDER_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
       </Field>
-      <Field label="模型 ID *" hint="如 glm-4.7 / deepseek-chat"><input type="text" value={form.model} onChange={(e) => set('model', e.target.value)} /></Field>
-      <Field label="Base URL"><input type="text" value={form.base_url} onChange={(e) => set('base_url', e.target.value)} /></Field>
-      <Field label="API Key" hint="加密存储，不会回显；留空可稍后补配">
-        <input type="password" value={form.api_key} onChange={(e) => set('api_key', e.target.value)} autoComplete="new-password" /></Field>
-      <Field label="超时（秒）"><input type="number" value={form.timeout} onChange={(e) => set('timeout', e.target.value)} /></Field>
-      <Field label="max_tokens"><input type="number" value={form.max_tokens} onChange={(e) => set('max_tokens', e.target.value)} /></Field>
-      <Field label="temperature"><input type="number" step="0.1" value={form.temperature} onChange={(e) => set('temperature', e.target.value)} /></Field>
+      <Field label="模型名称 *" hint="模型的调用名，如 glm-4.7 / deepseek-chat"><input type="text" value={form.model} onChange={(e) => set('model', e.target.value)} /></Field>
+      <Field label="接口地址"><input type="text" value={form.base_url} onChange={(e) => set('base_url', e.target.value)} /></Field>
+      <Field label="API 密钥" hint={isEdit && initial.has_api_key ? '已配置，留空则保留原密钥' : '加密存储，不会回显；留空可稍后补配'}>
+        <input type="password" value={form.api_key} placeholder={isEdit && initial.has_api_key ? '••••••（留空保留）' : ''}
+          onChange={(e) => set('api_key', e.target.value)} autoComplete="new-password" /></Field>
+      <Field label="超时（秒）" hint="单次请求最长等待时间"><input type="number" value={form.timeout} onChange={(e) => set('timeout', e.target.value)} /></Field>
+      <Field label="最大输出长度" hint="单次回复的最多字数上限"><input type="number" value={form.max_tokens} onChange={(e) => set('max_tokens', e.target.value)} /></Field>
+      <Field label="回答随机性" hint="0 更稳定确定，越高越发散（一般 0.7）"><input type="number" step="0.1" value={form.temperature} onChange={(e) => set('temperature', e.target.value)} /></Field>
+      <Field label="启用" hint="停用后该模型不可被选用"><Toggle on={form.enabled} onChange={(v) => set('enabled', v)} /></Field>
       <Field label="设为全局默认"><Toggle on={asDefault} onChange={setAsDefault} /></Field>
       {err && <div style={{ fontSize: 12.5, color: 'var(--crit)', margin: '8px 0' }}>{err}</div>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 10 }}>
@@ -457,7 +479,7 @@ function UserMgmt() {
   return (
     <div className="card">
       <h3>用户与授权</h3>
-      <div className="cd">新建用户默认为普通用户；角色分配与 workspace 角色授予为规划能力（对应权限重构 Phase 2/3）</div>
+      <div className="cd">新建用户默认为普通用户；空间级角色授予为后续规划能力</div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
         <input type="text" placeholder="用户名" style={inputS(140)} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
         <input type="password" placeholder="初始密码" style={inputS(160)} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
@@ -510,7 +532,7 @@ function WorkspaceInfo() {
   return (
     <div className="card">
       <h3>空间信息</h3>
-      <div className="cd">仅名称与描述；空间的增删 / 设默认在 全局配置 → 工作空间管理</div>
+      <div className="cd">修改空间名称与描述；新建 / 删除空间请到 全局配置 → 工作空间管理</div>
       {!canEdit && <ReadOnlyBanner who="空间管理员" />}
       <Field label="ID"><span style={{ fontSize: 13, color: 'var(--ink2)' }}>{workspaceId || '—'}</span></Field>
       <Field label="名称"><input type="text" disabled={!canEdit} value={current.name} onChange={(e) => setDraft({ ...current, name: e.target.value })} /></Field>
@@ -574,9 +596,9 @@ function WorkspaceMembers() {
   return (
     <div className="card">
       <h3>成员</h3>
-      <div className="cd">空间归属与成员名单；owner 变更仅平台管理员可操作（在后端 PATCH 中）</div>
-      {!canEdit && <ReadOnlyBanner who="平台管理员 / 空间 owner" />}
-      <Field label="Owner" hint="空间负责人，自动获得空间管理权限">
+      <div className="cd">管理本空间的成员；成员可访问本空间的数据与知识。变更空间负责人需平台管理员操作</div>
+      {!canEdit && <ReadOnlyBanner who="平台管理员或空间负责人" />}
+      <Field label="空间负责人" hint="可管理本空间的成员与设置">
         <span style={{ fontSize: 13, color: 'var(--ink2)' }}>{ws?.owner || '—（公共空间，所有登录用户可访问）'}</span>
       </Field>
       {canEdit && (
@@ -601,7 +623,7 @@ function WorkspaceMembers() {
               )}
             </tr>
           ))}
-          {!members.length && <tr><td colSpan={canEdit ? 2 : 1} className="empty">暂无成员{ws?.owner ? '（仅 owner 与管理员可访问）' : ''}</td></tr>}
+          {!members.length && <tr><td colSpan={canEdit ? 2 : 1} className="empty">暂无成员{ws?.owner ? '（仅空间负责人与管理员可访问）' : ''}</td></tr>}
         </tbody>
       </table>
       {canEdit && (
@@ -644,7 +666,7 @@ function WorkspaceModel() {
   return (
     <div className="card">
       <h3>模型选用</h3>
-      <div className="cd">从全局模型池引用本空间默认模型，不接触密钥。对话默认使用此模型，可在会话内临时切换。</div>
+      <div className="cd">选择本空间对话默认使用的模型，可在会话中临时切换。</div>
       <Field label="本空间默认模型" hint="留空则跟随全局默认">
         <select value={selected} onChange={(e) => pick(e.target.value)}>
           <option value="">跟随全局{defaultId ? `（${profiles.find((p) => p.id === defaultId)?.name || defaultId}）` : ''}</option>
@@ -652,7 +674,7 @@ function WorkspaceModel() {
         </select>
       </Field>
       <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
-        说明：空间级默认模型的服务端存储对应权限重构 Phase 2 的 config registry；当前版本先存于浏览器本地并在新建会话时生效。
+        该选择保存在当前浏览器，新建会话时生效。
       </div>
     </div>
   );
@@ -665,6 +687,7 @@ function DataConnections() {
   const [defaultId, setDefaultId] = useState('');
   const [msg, setMsg] = useState('');
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(null); // 正在编辑的连接（null=未编辑）
 
   const load = useCallback(async () => {
     const res = await authFetch('/agentic/data-connections');
@@ -697,22 +720,23 @@ function DataConnections() {
   return (
     <div className="card" data-wiz="cfg-conn">
       <h3>数据连接</h3>
-      <div className="cd">当前工作空间的业务数据库连接；测试连接为写侧权限</div>
+      <div className="cd">当前工作空间可用的业务数据库连接</div>
       {!canEdit && <ReadOnlyBanner who="空间管理员" />}
-      {canEdit && !creating && (
+      {canEdit && !creating && !editing && (
         <div style={{ marginBottom: 12 }}>
           <button className="btn btn-p" onClick={() => setCreating(true)}>＋ 新建连接</button>
         </div>
       )}
-      {creating && (
-        <ConnectionCreateForm
-          onDone={(text) => { setCreating(false); if (text) setMsg(text); load(); }}
-          onCancel={() => setCreating(false)}
+      {(creating || editing) && (
+        <ConnectionForm
+          initial={editing}
+          onDone={(text) => { setCreating(false); setEditing(null); if (text) setMsg(text); load(); }}
+          onCancel={() => { setCreating(false); setEditing(null); }}
         />
       )}
       {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
       <table className="dt">
-        <thead><tr><th>连接</th><th>Provider</th><th>默认</th>{canEdit && <th style={{ width: 220 }}>操作</th>}</tr></thead>
+        <thead><tr><th>连接</th><th>类型</th><th>默认</th>{canEdit && <th style={{ width: 260 }}>操作</th>}</tr></thead>
         <tbody>
           {conns.map((c) => (
             <tr key={c.id}>
@@ -721,6 +745,7 @@ function DataConnections() {
               <td>{c.id === defaultId ? '★ 默认' : ''}</td>
               {canEdit && (
                 <td>
+                  <button className="btn" style={btnS} onClick={() => { setEditing(c); setCreating(false); }}>编辑</button>
                   <button className="btn" style={btnS} onClick={() => test(c.id)}>测试</button>
                   {c.id !== defaultId && <button className="btn" style={btnS} onClick={() => setDefault(c.id)}>设默认</button>}
                   <button className="btn" style={btnS} onClick={() => remove(c.id)}>删除</button>
@@ -735,16 +760,27 @@ function DataConnections() {
   );
 }
 
-// 新建连接表单：provider 字段由后端 provider-schemas 下发，按 schema 动态渲染
-function ConnectionCreateForm({ onDone, onCancel }) {
+// 连接表单（新建 / 编辑两用）：连接类型的字段由后端下发，按其定义动态渲染。
+// 编辑时密钥字段留空则保留原值（类型不变时后端自动保留）。
+function ConnectionForm({ initial, onDone, onCancel }) {
+  const isEdit = !!initial;
   const [providers, setProviders] = useState([]);
-  const [provider, setProvider] = useState('');
-  const [name, setName] = useState('');
-  const [connId, setConnId] = useState('');
+  const [provider, setProvider] = useState(initial?.provider || '');
+  const [name, setName] = useState(initial?.name || '');
+  const [connId, setConnId] = useState(initial?.id || '');
   const [asDefault, setAsDefault] = useState(false);
   const [config, setConfig] = useState({});
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // 从连接的已有配置回填非密钥字段（密钥不回显，留空即保留）
+  const configFromInitial = (fields) => {
+    const next = {};
+    (fields || []).forEach((f) => {
+      if (!f.secret && initial?.config?.[f.name] !== undefined) next[f.name] = initial.config[f.name];
+    });
+    return next;
+  };
 
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -753,38 +789,58 @@ function ConnectionCreateForm({ onDone, onCancel }) {
         const data = await res.json();
         const list = data.providers || [];
         setProviders(list);
-        if (list.length) setProvider((prev) => prev || list[0].name);
+        const initName = isEdit ? initial.provider : (list[0]?.name || '');
+        setProvider((prev) => prev || initName);
+        const initSchema = list.find((p) => p.name === initName);
+        if (isEdit) {
+          setConfig(configFromInitial(initSchema?.fields));
+        } else {
+          const defaults = {};
+          (initSchema?.fields || []).forEach((f) => { if (f.default !== undefined && f.default !== null) defaults[f.name] = f.default; });
+          setConfig(defaults);
+        }
       }
     }, 0);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const schema = providers.find((p) => p.name === provider);
+  // 编辑时若未换类型，已配置的密钥可留空保留
+  const secretKept = (f) => isEdit && provider === initial.provider && initial?.config?.[`has_${f.name}`];
 
   const pickProvider = (nextName) => {
     setProvider(nextName);
     const next = providers.find((p) => p.name === nextName);
+    if (isEdit && nextName === initial.provider) {
+      setConfig(configFromInitial(next?.fields));
+      return;
+    }
     const defaults = {};
     (next?.fields || []).forEach((f) => { if (f.default !== undefined && f.default !== null) defaults[f.name] = f.default; });
     setConfig(defaults);
   };
 
   const submit = async () => {
-    if (!name.trim()) { setErr('名称必填'); return; }
-    const missing = (schema?.fields || []).filter((f) => f.required && (config[f.name] === undefined || config[f.name] === ''));
-    if (missing.length) { setErr(`缺少必填字段：${missing.map((f) => f.label || f.name).join('、')}`); return; }
+    if (!name.trim()) { setErr('请填写名称'); return; }
+    // 已保留的密钥字段视为已满足
+    const missing = (schema?.fields || []).filter((f) => f.required && !secretKept(f) && (config[f.name] === undefined || config[f.name] === ''));
+    if (missing.length) { setErr(`请填写：${missing.map((f) => f.label || f.name).join('、')}`); return; }
     setBusy(true);
     setErr('');
     try {
       const body = { name: name.trim(), provider, config };
-      if (connId.trim()) body.id = connId.trim();
-      if (asDefault) body.set_as_default = true;
-      const res = await authFetch('/agentic/data-connections', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
+      const res = isEdit
+        ? await authFetch(`/agentic/data-connections/${encodeURIComponent(initial.id)}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+          })
+        : await authFetch('/agentic/data-connections', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...body, ...(connId.trim() ? { id: connId.trim() } : {}), ...(asDefault ? { set_as_default: true } : {}) }),
+          });
       const data = await res.json().catch(() => ({}));
-      if (res.ok) onDone(`已创建连接 ${data.connection?.name || name}`);
-      else setErr(`创建失败：${data.detail || data.error || res.status}`);
+      if (res.ok) onDone(isEdit ? `已更新连接 ${data.connection?.name || name}` : `已创建连接 ${data.connection?.name || name}`);
+      else setErr(`${isEdit ? '更新' : '创建'}失败：${data.detail || data.error || res.status}`);
     } finally {
       setBusy(false);
     }
@@ -792,31 +848,35 @@ function ConnectionCreateForm({ onDone, onCancel }) {
 
   return (
     <div style={{ border: '1px solid var(--hair)', borderRadius: 12, padding: '6px 18px 14px', marginBottom: 14, background: '#fbfbf9' }}>
-      <Field label="名称" hint="必填，展示用"><input type="text" value={name} onChange={(e) => setName(e.target.value)} /></Field>
-      <Field label="连接 ID" hint="可选，留空自动生成；创建后不可改"><input type="text" value={connId} onChange={(e) => setConnId(e.target.value)} /></Field>
-      <Field label="Provider" hint={schema?.description || ''}>
+      <div style={{ fontWeight: 650, fontSize: 13, margin: '8px 0 4px' }}>{isEdit ? `编辑连接 · ${initial.name}` : '新建连接'}</div>
+      <Field label="名称" hint="展示用"><input type="text" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+      <Field label="连接标识" hint={isEdit ? '创建后不可修改' : '可选，留空自动生成；创建后不可改'}>
+        <input type="text" value={connId} disabled={isEdit} onChange={(e) => setConnId(e.target.value)} /></Field>
+      <Field label="类型" hint={schema?.description || ''}>
         <select value={provider} onChange={(e) => pickProvider(e.target.value)}>
           {providers.map((p) => <option key={p.name} value={p.name}>{p.label || p.name}</option>)}
         </select>
       </Field>
       {(schema?.fields || []).map((f) => (
-        <Field key={f.name} label={`${f.label || f.name}${f.required ? ' *' : ''}`} hint={f.secret ? '加密存储，不会回显' : ''}>
+        <Field key={f.name} label={`${f.label || f.name}${f.required ? ' *' : ''}`}
+          hint={f.secret ? (secretKept(f) ? '已配置，留空则保留原值' : '加密存储，不会回显') : ''}>
           {f.type === 'bool' ? (
             <Toggle on={!!config[f.name]} onChange={(v) => setConfig((c) => ({ ...c, [f.name]: v }))} />
           ) : (
             <input
               type={f.secret ? 'password' : f.type === 'int' ? 'number' : 'text'}
               value={config[f.name] ?? ''}
+              placeholder={secretKept(f) ? '••••••（留空保留）' : ''}
               onChange={(e) => setConfig((c) => ({ ...c, [f.name]: f.type === 'int' ? Number(e.target.value) : e.target.value }))}
             />
           )}
         </Field>
       ))}
-      <Field label="设为默认连接"><Toggle on={asDefault} onChange={setAsDefault} /></Field>
+      {!isEdit && <Field label="设为默认连接"><Toggle on={asDefault} onChange={setAsDefault} /></Field>}
       {err && <div style={{ fontSize: 12.5, color: 'var(--crit)', margin: '8px 0' }}>{err}</div>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 10 }}>
         <button className="btn" disabled={busy} onClick={onCancel}>取消</button>
-        <button className="btn btn-p" disabled={busy || !provider} onClick={submit}>{busy ? '创建中…' : '创建连接'}</button>
+        <button className="btn btn-p" disabled={busy || !provider} onClick={submit}>{busy ? '保存中…' : (isEdit ? '保存修改' : '创建连接')}</button>
       </div>
     </div>
   );
@@ -852,7 +912,7 @@ function KnowledgeBinding() {
   return (
     <div className="card" data-wiz="cfg-bind">
       <h3>知识与数据绑定</h3>
-      <div className="cd">知识包 ↔ 数据连接映射：知识包中的业务对象经此映射查询真实业务数据</div>
+      <div className="cd">为每个知识包指定要查询的数据连接，让它能读到真实业务数据</div>
       {!canEdit && <ReadOnlyBanner who="空间管理员" />}
       {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
       {pkgs.map((p) => (
@@ -904,17 +964,17 @@ function WorkspaceRuntime() {
   return (
     <div className="card">
       <h3>空间运行参数</h3>
-      <div className="cd">回复语言兜底与 ACP 工具结果隐藏</div>
+      <div className="cd">控制回复语言，以及哪些工具输出对用户隐藏</div>
       {!canEdit && <ReadOnlyBanner who="空间管理员" />}
       <Field label="启用语言控制">
         <Toggle on={current.lang.enabled} disabled={!canEdit} onChange={(v) => setDraft({ ...current, lang: { ...current.lang, enabled: v } })} />
       </Field>
-      <Field label="兜底语言" hint="优先级：请求 › 用户偏好 › 此兜底">
+      <Field label="默认回复语言" hint="当请求和个人偏好都没指定语言时使用">
         <select disabled={!canEdit} value={current.lang.default} onChange={(e) => setDraft({ ...current, lang: { ...current.lang, default: e.target.value } })}>
           <option value="zh">zh</option><option value="en">en</option>
         </select>
       </Field>
-      <Field label="隐藏工具结果关键词" hint="逗号分隔，仅影响 ACP 流式响应">
+      <Field label="隐藏工具输出的关键词" hint="多个关键词用逗号分隔；命中的工具输出不展示给用户">
         <input type="text" disabled={!canEdit} value={current.acp_suppress_script_patterns}
           onChange={(e) => setDraft({ ...current, acp_suppress_script_patterns: e.target.value })} />
       </Field>
@@ -941,13 +1001,13 @@ function PersonalPrefs() {
   return (
     <div className="card" data-wiz="cfg-prefs">
       <h3>偏好</h3>
-      <div className="cd">个人偏好随账号走；服务端存储（/auth/me/preferences）对应权限重构 Phase 2，当前先存于浏览器本地</div>
+      <div className="cd">以下偏好当前保存在你的浏览器</div>
       <Field label="当前工作空间" hint="切换后全站生效">
         <select value={workspaceId || ''} onChange={(e) => switchWorkspace(e.target.value)}>
           {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}（{w.id}）</option>)}
         </select>
       </Field>
-      <Field label="回复语言偏好" hint="覆盖空间兜底语言">
+      <Field label="回复语言偏好" hint="优先于工作空间的语言设置">
         <select value={lang} onChange={(e) => { setLang(e.target.value); localStorage.setItem('mw_pref_reply_lang', e.target.value); }}>
           <option value="">跟随空间</option><option value="zh">中文</option><option value="en">English</option>
         </select>
