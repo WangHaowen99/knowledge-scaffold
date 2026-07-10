@@ -8,9 +8,7 @@
   按 D2 显式放宽为“≤ access TTL 内失效”（改密后旧 access 在 TTL 窗口内仍可验签，
   旧 refresh 立即失效）；
 - 用户管理走 ``/admin/*``（X-Admin-Token 头），上游错误翻译为 ValueError（中文消息）
-  与 PasswordPolicyError(violations)，routes/auth.py 现有异常处理零改动；
-- fallback 双验证链：迁移期本地 AuthManager 签的旧 HMAC token 回落验证一个 TTL 周期，
-  避免切 remote 时全体在线用户被踢出（决策 Consequences）。
+  与 PasswordPolicyError(violations)，routes/auth.py 现有异常处理零改动。
 
 验签库选 PyJWT 而非 authlib：authlib 对 consumer 是新的重依赖，PyJWT 更轻，
 且 RS256 所需的 cryptography 已在 requirements.txt 中。
@@ -26,7 +24,7 @@ from urllib.parse import quote
 import jwt
 import requests
 
-from .auth import AuthManager, AuthUser, PasswordPolicyError
+from .auth import AuthUser, PasswordPolicyError
 
 # 连接 3s / 读取 10s：与注册 BFF 代理保持一致
 _TIMEOUT = (3, 10)
@@ -38,7 +36,7 @@ DEFAULT_JWKS_CACHE_TTL_SECONDS = 300
 
 
 class RemoteAuthBackend:
-    """通过 HTTP 对接独立 auth server 的认证后端（AUTH_MODE=remote）。"""
+    """通过 HTTP 对接独立 auth server 的认证后端（consumer 唯一认证路径）。"""
 
     # authenticate 成功后 token 三元组的暂存时长：只需覆盖同一次 login 请求内
     # 紧随其后的 issue_token / pop_login_tokens 调用
@@ -50,7 +48,6 @@ class RemoteAuthBackend:
         admin_token: Optional[str] = None,
         session: Optional[requests.Session] = None,
         jwks_cache_ttl_seconds: int = DEFAULT_JWKS_CACHE_TTL_SECONDS,
-        fallback: Optional[AuthManager] = None,
         audience: str = DEFAULT_AUDIENCE,
         issuer: str = "",
     ) -> None:
@@ -60,7 +57,6 @@ class RemoteAuthBackend:
         self._admin_token = str(admin_token or "").strip()
         self._session = session or requests.Session()
         self._jwks_cache_ttl_seconds = max(1, int(jwks_cache_ttl_seconds))
-        self._fallback = fallback
         self._audience = str(audience or "").strip() or DEFAULT_AUDIENCE
         # issuer 未显式配置时默认等于 base_url（预置 auth server 的部署约定）
         self._issuer = str(issuer or "").strip() or self._base_url
@@ -143,13 +139,7 @@ class RemoteAuthBackend:
         }
 
     def verify_token(self, token: str) -> Optional[AuthUser]:
-        user = self._verify_access_token_locally(token)
-        if user is not None:
-            return user
-        if self._fallback is not None:
-            # 双验证链：迁移期回落验证本地 AuthManager 签的旧 HMAC token
-            return self._fallback.verify_token(token)
-        return None
+        return self._verify_access_token_locally(token)
 
     # ------------------------------------------------------------ 用户管理
 
@@ -293,7 +283,7 @@ class RemoteAuthBackend:
         try:
             header = jwt.get_unverified_header(token)
         except jwt.PyJWTError:
-            # 非 JWT（例如旧 HMAC 两段式 token）→ 交给 fallback 链
+            # 非 JWT（无法解析头部）→ 验签失败
             return None
         if header.get("alg") != "RS256":
             return None
@@ -339,7 +329,7 @@ class RemoteAuthBackend:
             return self._jwks_keys.get(kid) or key
 
     def _refresh_jwks(self) -> None:
-        """拉取 JWKS 重建 kid→公钥映射；网络失败静默（verify 走 fallback/None，不抛错）。"""
+        """拉取 JWKS 重建 kid→公钥映射；网络失败静默沿用旧缓存（verify 失败返回 None，不抛错）。"""
         try:
             response = self._session.get(
                 self._base_url + "/jwks.json", timeout=_TIMEOUT

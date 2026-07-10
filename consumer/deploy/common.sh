@@ -87,30 +87,17 @@ write_state() {
     } > "${STATE_FILE}"
 }
 
-# auth-server 为 opt-in（compose profile "auth"）：backend/.env 中 AUTH_MODE=remote 即视为启用
-auth_profile_enabled() {
-    local env_file="${BUNDLE_ROOT}/backend/.env"
-    [ -f "${env_file}" ] || return 1
-
-    local mode
-    mode="$(sed -n 's/^[[:space:]]*AUTH_MODE[[:space:]]*=[[:space:]]*//p' "${env_file}" | tail -n 1 | tr -d '"'"'"' \r' )"
-    [ "${mode}" = "remote" ]
-}
-
 ensure_runtime_layout() {
+    # auth-server 为必备组件，其数据目录 .onto-auth 始终创建
     mkdir -p \
         "${BUNDLE_ROOT}/backend/config" \
         "${BUNDLE_ROOT}/backend/logs" \
         "${BUNDLE_ROOT}/.onto-runtime/config" \
-        "${BUNDLE_ROOT}/frontend/logs/nginx"
+        "${BUNDLE_ROOT}/frontend/logs/nginx" \
+        "${BUNDLE_ROOT}/.onto-auth"
 
     if [ ! -d "${BUNDLE_ROOT}/.onto-runtime" ]; then
         mkdir -p "${BUNDLE_ROOT}/.onto-runtime"
-    fi
-
-    # 仅在启用 auth profile 时创建 auth-server 数据目录（local 模式行为保持不变）
-    if auth_profile_enabled; then
-        mkdir -p "${BUNDLE_ROOT}/.onto-auth"
     fi
 }
 
@@ -173,36 +160,25 @@ docker_compose_cmd() {
     return 1
 }
 
-# auth profile 启用时追加 --profile auth（up/down 需一致，否则 down 不会停 auth-server）
-compose_profile_args() {
-    if auth_profile_enabled; then
-        printf -- '--profile auth'
-    fi
-}
-
 compose_up() {
-    local compose_cmd profile_args
+    local compose_cmd
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
-    profile_args="$(compose_profile_args)"
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" ${compose_cmd} \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
-        ${profile_args} \
         up -d
 }
 
 compose_down() {
-    local compose_cmd profile_args
+    local compose_cmd
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
-    profile_args="$(compose_profile_args)"
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" ${compose_cmd} \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
-        ${profile_args} \
         down
 }
 

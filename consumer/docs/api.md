@@ -1638,12 +1638,13 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "timeout": 600
   },
   "storage": {
-    "project_root": ".../.onto-runtime",
-    "auth_users_file": ".../.onto-runtime/users.json"
+    "project_root": ".../.onto-runtime"
   },
   "auth": {
-    "has_auth_secret": true,
-    "auth_token_ttl_seconds": 43200
+    "auth_server_url": "http://auth-server:5056",
+    "has_auth_server_admin_token": true,
+    "auth_server_audience": "meta-wise",
+    "auth_server_issuer": ""
   },
   "agent": {
     "llm_connection_max_retries": 3,
@@ -1759,7 +1760,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 - secret 清空不能直接传空字符串，需使用对应清除字段：
   - `llm.clear_api_key`
   - `task_llm.clear_api_key`
-  - `auth.clear_auth_secret`
   - `observability.clear_langfuse_secret_key`
   - `web_search.clear_api_key`
 - 配置保存后会尝试刷新运行时依赖；若保存成功但刷新失败，会返回 `500`
@@ -1887,14 +1887,15 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `project_root` | string | `.onto-runtime` 根目录 |
-| `auth_users_file` | string | 用户文件路径 |
 
 #### `auth`
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `auth_secret` | secret | token 签名密钥 |
-| `auth_token_ttl_seconds` | int | token 有效期（秒） |
+| `auth_server_url` | string | 独立 auth-server 地址（必填），如 `http://auth-server:5056` |
+| `auth_server_admin_token` | secret | auth-server Admin API 共享管理令牌（对外仅返回 `has_auth_server_admin_token` 布尔） |
+| `auth_server_audience` | string | JWT 本地验签 audience，默认 `meta-wise` |
+| `auth_server_issuer` | string | JWT issuer，留空 = 使用 `auth_server_url` |
 
 #### `agent`
 
