@@ -36,6 +36,19 @@ import agentic.utils.logging as logging_utils
 _REAL_IMPORT_MODULE = importlib.import_module
 
 
+@pytest.fixture(autouse=True)
+def _configure_workspace_runtime(tmp_path, monkeypatch):
+    import agentic.utils.ontologies as ontologies_module
+    import agentic.utils.skills as skills_module
+    from agentic.workspaces import create_workspace
+
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(skills_module, "_global_registry", None)
+    create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
+
+
 def test_jiuwen_adapter_support_modules_are_split_out():
     for module_name in (
         "agentic.loop.jiuwen",

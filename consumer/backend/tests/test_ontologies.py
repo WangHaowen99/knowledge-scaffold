@@ -172,7 +172,7 @@ def test_example_ontology_manifest_contains_expected_metadata():
     import yaml
 
     manifest_path = (
-        REPO_ROOT
+        REPO_ROOT.parent
         / "examples"
         / "example-domain-knowledge"
         / "ontology"

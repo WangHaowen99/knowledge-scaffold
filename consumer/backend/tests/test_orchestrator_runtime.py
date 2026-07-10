@@ -49,10 +49,14 @@ def test_public_workflow_error_does_not_expose_generic_value_error_by_prefix():
 @pytest.fixture(autouse=True)
 def _configure_runtime_llm(monkeypatch, tmp_path):
     import agentic.config.system_config as system_config_module
+    import agentic.utils.ontologies as ontologies_module
+    import agentic.utils.skills as skills_module
+    from agentic.workspaces import create_workspace
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "system_config.json"
+    runtime_root = tmp_path / ".onto-runtime"
     config_path.write_text(
         """
 {
@@ -77,6 +81,10 @@ def _configure_runtime_llm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(skills_module, "_global_registry", None)
+    create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
     configure_llm_router(
         LLMRouter(
             AppConfig.from_env(),
