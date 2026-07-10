@@ -27,7 +27,8 @@ export async function startInterview(project: Project, ctx: Ctx, analysis: unkno
     '每次用 ask_user 提交一批（1~5 道）选择题（single/multi/text，均可含"其他"由前端补充）。专家答复后你再决定继续追问或 finish_interview。',
     '控制专家负担：整场访谈一般 2~3 批内结束；只有仍存在影响建模的关键分歧时才追问，勿为完备性重复确认。',
     `项目背景：${project.background || project.domain}`,
-    `初步分析：${JSON.stringify(analysis).slice(0, 2000)}`,
+    `初步分析：${JSON.stringify(stripQuality(analysis)).slice(0, 2000)}`,
+    ...gapHints(analysis),
   ].join('\n');
 
   const node = upsertNode({ projectId: project.id, type: 'interview', status: 'running', ordinal: nextOrdinal(project.id) });
@@ -85,6 +86,19 @@ function finalizeInterviewStep(projectId: string, nodeId: string, cap: Interview
   }
   upsertNode({ id: nodeId, projectId, type: 'interview', status: 'pending', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
   throw new Error('访谈 agent 未按协议出题（已轻推仍失败），请重试');
+}
+
+// 资料质量评估的缺口 → 访谈优先澄清点（分析摘要剔除 quality 防挤占篇幅）
+function stripQuality(analysis: unknown): unknown {
+  if (!analysis || typeof analysis !== 'object') return analysis;
+  const { quality, ...rest } = analysis as Record<string, unknown>;
+  return rest;
+}
+function gapHints(analysis: unknown): string[] {
+  const gaps = (analysis as any)?.quality?.gaps;
+  if (!Array.isArray(gaps) || !gaps.length) return [];
+  const lines = gaps.slice(0, 6).map((g: any) => `${g.kind}·${g.target}：${g.message}`).join('；');
+  return [`资料缺口（访谈应优先澄清）：${lines}`.slice(0, 900)];
 }
 
 function summarizeAnswers(batch: InterviewBatch | null, answers: any[]): string {

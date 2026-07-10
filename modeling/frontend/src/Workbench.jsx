@@ -330,6 +330,51 @@ function IngestView({ project, documents, onChanged }) {
 
 /* ---- 节点 3：领域分析（分析结果 + 领域问题候选） ---- */
 
+const Q_SEV = { 错误: 'tag-err', 警告: 'tag-draft', 提示: 'tag-lang' };
+
+// 资料质量与建包缺口：确定性检查发现 + LLM 缺口分析（附补齐方式）
+function QualitySection({ q }) {
+  const [open, setOpen] = useState((q.summary?.错误 ?? 0) + (q.summary?.警告 ?? 0) > 0);
+  const total = (q.findings?.length ?? 0) + (q.gaps?.length ?? 0);
+  return (
+    <div className="an-sec">
+      <h4>
+        资料质量与建包缺口
+        <button className="pcheck-sum" onClick={() => setOpen((v) => !v)}>
+          <span className="tag tag-err">警告 {(q.summary?.错误 ?? 0) + (q.summary?.警告 ?? 0)}</span>
+          <span className="tag tag-lang">提示 {q.summary?.提示 ?? 0}</span>
+          <span className="tag tag-draft">缺口 {q.gaps?.length ?? 0}</span>
+          <span style={{ color: 'var(--muted)' }}>{open ? '收起 ▾' : '展开 ▸'}</span>
+        </button>
+      </h4>
+      {total === 0 && <div style={{ fontSize: 12.5, color: 'var(--good, #0e6b4a)' }}>✓ 未发现影响建包的资料问题</div>}
+      {open && total > 0 && (
+        <div className="pcheck-list" style={{ maxHeight: 320 }}>
+          {(q.findings ?? []).map((f, i) => (
+            <div key={`f${i}`} className="pcheck-item">
+              <span className={`tag ${Q_SEV[f.severity] ?? 'tag-lang'}`}>{f.severity}</span>
+              <span className="tag tag-lang">{f.category}</span>
+              <span className="pcheck-target">{f.target}</span>
+              <div className="pcheck-msg">{f.message}{f.suggestion ? <span style={{ color: 'var(--muted)' }}>（{f.suggestion}）</span> : null}</div>
+            </div>
+          ))}
+          {(q.gaps ?? []).map((g, i) => (
+            <div key={`g${i}`} className="pcheck-item" style={{ background: '#fdfaf2' }}>
+              <span className="tag tag-draft">缺口</span>
+              <span className="tag tag-lang">{g.kind}</span>
+              <span className="pcheck-target">{g.target}</span>
+              <div className="pcheck-msg">{g.message}<span style={{ color: 'var(--muted)' }}>（补齐：{g.how}）</span></div>
+            </div>
+          ))}
+        </div>
+      )}
+      {(q.gaps?.length ?? 0) > 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>缺口已同步给建模访谈作为优先澄清点</div>
+      )}
+    </div>
+  );
+}
+
 function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAdvance, onQuestionsChange, questionsGenerating }) {
   const [selectedCount, setSelectedCount] = useState(null); // null=未知（加载中）
   if (!analysis) return <div className="empty">（无分析结果）</div>;
@@ -343,6 +388,7 @@ function AnalysisView({ projectId, analysis, stale, onReanalyze, analyzing, onAd
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis.domainOverview || ''}</ReactMarkdown>
         </div>
       </div>
+      {analysis.quality && <QualitySection q={analysis.quality} />}
       <div className="an-sec">
         <h4>候选业务对象（{analysis.candidateObjects?.length ?? 0}）</h4>
         <div className="an-objs">
