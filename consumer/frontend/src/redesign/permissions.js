@@ -10,13 +10,16 @@ const RULES = {
   'workspace.manage':     { roles: ['admin'] },            // 空间集合的增删/设默认
   'users.manage':         { roles: ['admin'] },
   'observability.global': { roles: ['admin'] },
-  // 空间层（L2）——wsRoles 在引入 workspace_admin 后生效
+  // 空间层（L2）——wsRoles 仅用于后端已放开 owner 通道的权限点，
+  // 避免 owner 看到可写 UI 但后端 admin-only 必 403；其余待后端放开后再补 wsRoles。
   'ws.config.read':       { roles: ['admin', 'user'] },
-  'ws.config.write':      { roles: ['admin'], wsRoles: ['admin'] },
-  'ws.info.write':        { roles: ['admin'], wsRoles: ['admin'] },
-  'ws.connections.write': { roles: ['admin'], wsRoles: ['admin'] },
-  'ws.connections.test':  { roles: ['admin'], wsRoles: ['admin'] },   // 测试连接=写侧
-  'ws.kb.write':          { roles: ['admin'], wsRoles: ['admin'] },   // 知识包导入/删除/绑定
+  'ws.info.write':        { roles: ['admin'], wsRoles: ['admin'] },   // PATCH 改名/描述（owner 可）
+  'ws.members.write':     { roles: ['admin'], wsRoles: ['admin'] },   // PUT members（owner 可）
+
+  'ws.config.write':      { roles: ['admin'] },   // runtime-config PATCH：后端仍 admin-only
+  'ws.connections.write': { roles: ['admin'] },   // 数据连接增删改：后端仍 admin-only
+  'ws.connections.test':  { roles: ['admin'] },   // 测试连接=写侧
+  'ws.kb.write':          { roles: ['admin'] },   // 知识包导入/删除/绑定：后端仍 admin-only
   // 个人层（L3）
   'self.preferences':     { self: true },
 };

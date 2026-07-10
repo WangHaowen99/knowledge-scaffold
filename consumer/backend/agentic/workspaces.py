@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import shutil
+import threading
 import unicodedata
 import uuid
 from contextlib import contextmanager
@@ -13,10 +15,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import unquote
 
-from flask import Request
+from flask import Request, abort, g, has_request_context, jsonify, make_response
 
 from .config import AppConfig, LimitsConfig
 
@@ -24,8 +26,18 @@ from .config import AppConfig, LimitsConfig
 WORKSPACE_HEADER = "X-Workspace-Id"
 LEGACY_DEFAULT_WORKSPACE_ID = "default"
 _WORKSPACE_ID_MAX_LEN = 64
+_WORKSPACE_MEMBERS_MAX_COUNT = 64
+
+# update_workspace 用：区分“不改该字段”与“显式设为 None（清空 owner 回公共空间）”
+_UNCHANGED = object()
 _INVALID_WORKSPACE_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _workspace_var: ContextVar[Optional[str]] = ContextVar("workspace_id", default=None)
+
+# 保护 workspace.json / runtime_config.json 的 read-modify-write，
+# 避免并发请求相互覆盖字段（如 owner/members 与 name 同时更新）。
+# 用 RLock：create_workspace 持锁期间会经 list_workspaces 触发 _ensure_workspace_state → 迁移，
+# 需允许同线程重入。注意：仅单进程有效，多 worker 部署见 ADR 已知限制。
+_workspace_metadata_lock = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -115,12 +127,24 @@ def _read_workspace_metadata_raw(metadata_path: Path) -> Dict[str, str]:
         return json.load(f)
 
 
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    """先写临时文件再 os.replace，避免进程中断留下半截 JSON。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
 def _write_workspace_metadata(paths: WorkspacePaths, payload: Dict[str, str]) -> None:
     paths.workspace_dir.mkdir(parents=True, exist_ok=True)
-    paths.metadata_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(paths.metadata_path, payload)
 
 
 def _read_workspace_settings() -> Dict[str, str]:
@@ -136,12 +160,7 @@ def _read_workspace_settings() -> Dict[str, str]:
 
 
 def _write_workspace_settings(payload: Dict[str, str]) -> None:
-    settings_path = get_workspace_settings_path()
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(get_workspace_settings_path(), payload)
 
 
 def _list_workspace_dirs() -> List[Path]:
@@ -155,6 +174,39 @@ def _list_workspace_dirs() -> List[Path]:
     )
 
 
+def _normalize_workspace_owner(owner: Optional[str]) -> Optional[str]:
+    if owner is None:
+        return None
+    if not isinstance(owner, str) or not owner.strip():
+        raise ValueError("owner 必须是非空字符串")
+    return owner.strip()
+
+
+def _normalize_workspace_members(members: Any) -> List[str]:
+    if not isinstance(members, list):
+        raise ValueError("members 必须是字符串数组")
+    normalized: List[str] = []
+    seen = set()
+    for item in members:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("members 只能包含非空字符串")
+        value = item.strip()
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    if len(normalized) > _WORKSPACE_MEMBERS_MAX_COUNT:
+        raise ValueError(f"members 数量超过上限 {_WORKSPACE_MEMBERS_MAX_COUNT}")
+    return normalized
+
+
+def _public_members(data: Dict[str, str]) -> List[str]:
+    members = data.get("members")
+    if not isinstance(members, list):
+        return []
+    return [item for item in members if isinstance(item, str) and item]
+
+
 def _workspace_to_public(data: Dict[str, str], *, default_workspace_id: Optional[str] = None) -> Dict[str, str]:
     workspace_id = validate_workspace_id(data["id"])
     return {
@@ -164,10 +216,41 @@ def _workspace_to_public(data: Dict[str, str], *, default_workspace_id: Optional
         "created_at": data["created_at"],
         "updated_at": data["updated_at"],
         "is_default": workspace_id == default_workspace_id,
+        "owner": data.get("owner") or None,
+        "members": _public_members(data),
     }
 
 
-def _init_workspace_layout(paths: WorkspacePaths, *, name: str, description: str = "") -> Dict[str, str]:
+def user_can_access_workspace(user: Any, meta_raw: Dict[str, str], is_default: bool) -> bool:
+    """访问规则唯一真源：admin / 无 owner 的公共空间 / 默认空间 / owner / member 可访问。
+
+    user 为 None（无登录上下文，如 ACP auth=none 或非请求上下文）时保持放行。
+    """
+    if user is None:
+        return True
+    if getattr(user, "role", None) == "admin":
+        return True
+    owner = meta_raw.get("owner") or None
+    if not owner:
+        return True
+    if is_default:
+        return True
+    username = getattr(user, "username", None)
+    if username and username == owner:
+        return True
+    members = meta_raw.get("members")
+    if username and isinstance(members, list) and username in members:
+        return True
+    return False
+
+
+def _init_workspace_layout(
+    paths: WorkspacePaths,
+    *,
+    name: str,
+    description: str = "",
+    owner: Optional[str] = None,
+) -> Dict[str, str]:
     now = _utc_now()
     payload = {
         "id": paths.workspace_id,
@@ -175,6 +258,8 @@ def _init_workspace_layout(paths: WorkspacePaths, *, name: str, description: str
         "description": str(description or "").strip(),
         "created_at": now,
         "updated_at": now,
+        "owner": _normalize_workspace_owner(owner),
+        "members": [],
     }
     paths.ontologies_dir.mkdir(parents=True, exist_ok=True)
     paths.skills_dir.mkdir(parents=True, exist_ok=True)
@@ -235,10 +320,20 @@ def _migrate_legacy_default_workspace() -> Optional[str]:
     _ensure_runtime_layout()
     legacy_dir = get_workspaces_root() / LEGACY_DEFAULT_WORKSPACE_ID
     legacy_metadata = legacy_dir / "workspace.json"
+    # 无锁快路径：绝大多数调用（每次 resolve/list/get）此处直接返回
     if not legacy_metadata.exists():
         return None
 
-    raw = _read_workspace_metadata_raw(legacy_metadata)
+    # 持锁迁移并重检：并发首请求下只有一个线程搬迁，其余见 legacy 已消失即返回，
+    # 避免 shutil.move 竞争导致 FileNotFoundError → 500
+    with _workspace_metadata_lock:
+        if not legacy_metadata.exists():
+            return None
+        raw = _read_workspace_metadata_raw(legacy_metadata)
+        return _do_migrate_legacy(legacy_dir, raw)
+
+
+def _do_migrate_legacy(legacy_dir: Path, raw: Dict[str, str]) -> str:
     target_id = _slugify_workspace_name(raw.get("name") or raw.get("id") or "workspace")
     if target_id == LEGACY_DEFAULT_WORKSPACE_ID:
         target_id = validate_workspace_id(f"workspace-{uuid.uuid4().hex[:8]}")
@@ -355,26 +450,34 @@ def create_workspace(
     description: str = "",
     *,
     workspace_id: Optional[str] = None,
-    set_as_default: bool = False
+    set_as_default: bool = False,
+    owner: Optional[str] = None,
 ) -> Dict[str, str]:
     _ensure_workspace_state()
     normalized_name = _normalize_workspace_name(name)
-    
-    if workspace_id:
-        candidate = validate_workspace_id(workspace_id)
-        if workspace_exists(candidate):
-            raise ValueError(f"工作空间 ID '{candidate}' 已存在")
-    else:
-        candidate = _slugify_workspace_name(normalized_name)
-        while workspace_exists(candidate):
-            candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
+    normalized_owner = _normalize_workspace_owner(owner)
 
-    max_workspaces = LimitsConfig.from_env().workspace_max_count
-    if len(list_workspaces()) >= max_workspaces:
-        raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
+    with _workspace_metadata_lock:
+        if workspace_id:
+            candidate = validate_workspace_id(workspace_id)
+            if workspace_exists(candidate):
+                raise ValueError(f"工作空间 ID '{candidate}' 已存在")
+        else:
+            candidate = _slugify_workspace_name(normalized_name)
+            while workspace_exists(candidate):
+                candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
 
-    paths = get_workspace_paths(candidate)
-    _init_workspace_layout(paths, name=normalized_name, description=description)
+        max_workspaces = LimitsConfig.from_env().workspace_max_count
+        if len(list_workspaces()) >= max_workspaces:
+            raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
+
+        paths = get_workspace_paths(candidate)
+        _init_workspace_layout(
+            paths,
+            name=normalized_name,
+            description=description,
+            owner=normalized_owner,
+        )
     if set_as_default or get_default_workspace_id() is None:
         set_default_workspace(candidate)
     return get_workspace(candidate)
@@ -385,17 +488,28 @@ def update_workspace(
     *,
     name: Optional[str] = None,
     description: Optional[str] = None,
+    owner: Any = _UNCHANGED,
+    members: Optional[List[str]] = None,
 ) -> Dict[str, str]:
-    paths = get_workspace_paths(workspace_id)
-    if not paths.metadata_path.exists():
-        raise KeyError(f"工作空间 '{validate_workspace_id(workspace_id)}' 不存在")
-    payload = _read_workspace_metadata_raw(paths.metadata_path)
-    if name is not None:
-        payload["name"] = _normalize_workspace_name(name)
-    if description is not None:
-        payload["description"] = str(description or "").strip()
-    payload["updated_at"] = _utc_now()
-    _write_workspace_metadata(paths, payload)
+    # owner=_UNCHANGED 不改；owner=None 清空为公共空间；owner="x" 设置
+    normalized_owner = _UNCHANGED if owner is _UNCHANGED else _normalize_workspace_owner(owner)
+    normalized_members = _normalize_workspace_members(members) if members is not None else None
+
+    with _workspace_metadata_lock:
+        paths = get_workspace_paths(workspace_id)
+        if not paths.metadata_path.exists():
+            raise KeyError(f"工作空间 '{validate_workspace_id(workspace_id)}' 不存在")
+        payload = _read_workspace_metadata_raw(paths.metadata_path)
+        if name is not None:
+            payload["name"] = _normalize_workspace_name(name)
+        if description is not None:
+            payload["description"] = str(description or "").strip()
+        if normalized_owner is not _UNCHANGED:
+            payload["owner"] = normalized_owner
+        if normalized_members is not None:
+            payload["members"] = normalized_members
+        payload["updated_at"] = _utc_now()
+        _write_workspace_metadata(paths, payload)
     return get_workspace(paths.workspace_id)
 
 
@@ -405,28 +519,72 @@ def delete_workspace(workspace_id: str) -> None:
     if default_workspace_id == resolved_id:
         raise ValueError("默认工作空间不可删除，请先切换默认工作空间")
 
-    paths = get_workspace_paths(resolved_id)
-    if not paths.metadata_path.exists():
-        raise KeyError(f"工作空间 '{resolved_id}' 不存在")
-    shutil.rmtree(paths.workspace_dir, ignore_errors=True)
+    # 持锁：与 update_workspace 的 read-modify-write 互斥，避免删除后被并发写回“复活”幽灵元数据
+    with _workspace_metadata_lock:
+        paths = get_workspace_paths(resolved_id)
+        if not paths.metadata_path.exists():
+            raise KeyError(f"工作空间 '{resolved_id}' 不存在")
+        shutil.rmtree(paths.workspace_dir, ignore_errors=True)
+
+
+def _current_request_user() -> Any:
+    if not has_request_context():
+        return None
+    return g.get("current_user")
+
+
+def _abort_workspace_access_denied() -> None:
+    # 用 HTTPException 抛出：能穿透调用方的 except (KeyError, ValueError)，
+    # 且裸 Flask 测试 app 无需注册 errorhandler 即可返回该 JSON。
+    abort(make_response(
+        jsonify({"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}),
+        403,
+    ))
+
+
+def _enforce_workspace_access(
+    workspace_id: str, *, default_workspace_id: Optional[str] = None
+) -> str:
+    user = _current_request_user()
+    if user is None:
+        return workspace_id
+    paths = get_workspace_paths(workspace_id)
+    try:
+        meta_raw = _read_workspace_metadata_raw(paths.metadata_path)
+    except Exception:
+        # 元数据缺失/损坏时维持修复前行为（视为无 owner 的公共空间）
+        meta_raw = {}
+    if default_workspace_id is None:
+        default_workspace_id = get_default_workspace_id()
+    is_default = workspace_id == default_workspace_id
+    if not user_can_access_workspace(user, meta_raw, is_default):
+        _abort_workspace_access_denied()
+    return workspace_id
+
+
+def enforce_workspace_access(workspace_id: str) -> str:
+    """对已解析出的 workspace id 强制访问校验（供不经 resolve_workspace_id 的入口复用，
+    如 ACP 续跑端点用持久化 workspace_id 续跑时的权限重检）。不通过则 abort 403。"""
+    return _enforce_workspace_access(workspace_id)
 
 
 def resolve_workspace_id(request: Request) -> str:
     _ensure_workspace_state()
+    # 一次解析默认工作空间并透传给强制校验，避免热路径上重复 _ensure_workspace_state 读盘
+    default_workspace_id = get_default_workspace_id()
     header_value = request.headers.get(WORKSPACE_HEADER)
     if header_value:
         workspace_id = validate_workspace_id(unquote(header_value))
         if not workspace_exists(workspace_id):
             raise KeyError(f"工作空间 '{workspace_id}' 不存在")
-        return workspace_id
+        return _enforce_workspace_access(workspace_id, default_workspace_id=default_workspace_id)
 
-    default_workspace_id = get_default_workspace_id()
     if default_workspace_id and workspace_exists(default_workspace_id):
-        return default_workspace_id
+        return _enforce_workspace_access(default_workspace_id, default_workspace_id=default_workspace_id)
 
     workspaces = list_workspaces()
     if len(workspaces) == 1:
-        return workspaces[0]["id"]
+        return _enforce_workspace_access(workspaces[0]["id"], default_workspace_id=default_workspace_id)
     if not workspaces:
         raise ValueError("当前不存在任何工作空间")
     raise ValueError("X-Workspace-Id 不能为空；当前存在多个工作空间")
@@ -478,17 +636,15 @@ def get_workspace_runtime_config(workspace_id: str) -> dict:
 
 
 def update_workspace_runtime_config(workspace_id: str, data: dict) -> dict:
-    if not workspace_exists(workspace_id):
-        raise KeyError(f"工作空间 '{workspace_id}' 不存在")
     normalized = _normalize_runtime_config_patch(data, strict=True)
-    current = get_workspace_runtime_config(workspace_id)
-    _deep_update_runtime_config(current, normalized)
-    config_path = _get_runtime_config_path(workspace_id)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        json.dumps(current, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    # 与 workspace.json 同一把锁 + 原子写：并发 PATCH 不丢更新，崩溃不留半截文件。
+    # exists 复检放锁内：避免与并发 delete 竞态后 _write_json_atomic 重建孤儿 runtime_config.json
+    with _workspace_metadata_lock:
+        if not workspace_exists(workspace_id):
+            raise KeyError(f"工作空间 '{workspace_id}' 不存在")
+        current = get_workspace_runtime_config(workspace_id)
+        _deep_update_runtime_config(current, normalized)
+        _write_json_atomic(_get_runtime_config_path(workspace_id), current)
     return current
 
 

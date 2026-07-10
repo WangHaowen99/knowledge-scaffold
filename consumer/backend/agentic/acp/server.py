@@ -19,6 +19,7 @@ from agentic.services.auth import get_current_user, require_auth
 from agentic.stores.run_store import RunStatus as StoreRunStatus
 from agentic.utils.logging import bind_log_context, get_logger
 from agentic.workspaces import (
+    enforce_workspace_access,
     get_current_workspace_runtime_config,
     get_workspace_runtime_config,
     resolve_workspace_id,
@@ -593,6 +594,8 @@ def execute_run(run_id: str):
         return jsonify({"detail": "Run not found"}), 404
 
     workspace_id = entry["workspace_id"]
+    # 续跑用持久化 workspace_id，须重检访问权：owner 移除成员后旧 run 不能继续在其空间内驱动
+    enforce_workspace_access(workspace_id)
     session_id = entry["session_id"]
     user_query = entry["user_query"]
     user_context = dict(entry.get("user_context") or {})
@@ -782,6 +785,8 @@ def stream_run(run_id: str):
         return jsonify({"detail": "Run not found"}), 404
 
     workspace_id = entry["workspace_id"]
+    # 续跑用持久化 workspace_id，须重检访问权：owner 移除成员后旧 run 不能继续在其空间内驱动
+    enforce_workspace_access(workspace_id)
     session_id = entry["session_id"]
     user_query = entry["user_query"]
     user_context = dict(entry.get("user_context") or {})
@@ -897,6 +902,8 @@ def respond_to_await(run_id: str):
 
     payload = request.get_json(silent=True) or {}
     workspace_id = entry["workspace_id"]
+    # 续跑用持久化 workspace_id，须重检访问权：owner 移除成员后旧 run 不能继续在其空间内驱动
+    enforce_workspace_access(workspace_id)
     session_id = entry["session_id"]
     user_lang = entry.get("lang")
     current_user = get_current_user()
@@ -1019,6 +1026,8 @@ def interact_stream(run_id: str):
 
     payload = request.get_json(silent=True) or {}
     workspace_id = entry["workspace_id"]
+    # 续跑用持久化 workspace_id，须重检访问权：owner 移除成员后旧 run 不能继续在其空间内驱动
+    enforce_workspace_access(workspace_id)
     session_id = entry["session_id"]
     user_lang = entry.get("lang")
     current_user = get_current_user()
