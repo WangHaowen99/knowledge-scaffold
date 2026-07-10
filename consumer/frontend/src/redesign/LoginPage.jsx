@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useAuthContext } from './useAuthContext';
 
 // 后端 PASSWORD_POLICY_FAILED violations 代码 → 中文文案
@@ -44,21 +44,12 @@ export default function LoginPage() {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // 注册：step 1 填资料 → step 2 邮箱验证码
-  const [regStep, setRegStep] = useState(1);
+  // 注册：一步填资料直接建号（无邮箱验证码）
   const [regUsername, setRegUsername] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
-  const [regCode, setRegCode] = useState('');
   const [regError, setRegError] = useState(NO_REG_ERROR);
   const [regBusy, setRegBusy] = useState(false);
-  const [cooldown, setCooldown] = useState(0);
-
-  useEffect(() => {
-    if (cooldown <= 0) return undefined;
-    const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [cooldown]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -73,7 +64,6 @@ export default function LoginPage() {
 
   const showRegister = () => {
     setView('register');
-    setRegStep(1);
     setRegError(NO_REG_ERROR);
     setNotice('');
   };
@@ -98,57 +88,17 @@ export default function LoginPage() {
         setRegError(parseRegisterError(status, data));
         return;
       }
-      setRegStep(2);
-      setRegCode('');
-      setCooldown(60);
-    } catch {
-      setRegError({ message: '网络异常，请稍后再试', violations: [] });
-    } finally {
-      setRegBusy(false);
-    }
-  };
-
-  const submitVerify = async (e) => {
-    e.preventDefault();
-    if (regCode.length !== 6 || regBusy) return;
-    setRegBusy(true);
-    setRegError(NO_REG_ERROR);
-    try {
-      const { ok, status, data } = await postJson('/auth/register/verify', {
-        email: regEmail,
-        code: regCode,
-      });
-      if (!ok) {
-        setRegError(parseRegisterError(status, data));
-        return;
-      }
+      // 一步建号成功：不自动登录，回登录视图并预填用户名
       setUsername(regUsername);
       setPassword('');
       setNotice('注册成功，请登录');
       setError('');
       setView('login');
-      setRegStep(1);
       setRegPassword('');
-      setRegCode('');
     } catch {
       setRegError({ message: '网络异常，请稍后再试', violations: [] });
     } finally {
       setRegBusy(false);
-    }
-  };
-
-  const resendCode = async () => {
-    if (cooldown > 0 || regBusy) return;
-    setRegError(NO_REG_ERROR);
-    try {
-      const { ok, status, data } = await postJson('/auth/register/resend', { email: regEmail });
-      if (!ok) {
-        setRegError(parseRegisterError(status, data));
-        return;
-      }
-      setCooldown(60);
-    } catch {
-      setRegError({ message: '网络异常，请稍后再试', violations: [] });
     }
   };
 
@@ -205,7 +155,7 @@ export default function LoginPage() {
           <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" />
         </div>
         {regErrorBox}
-        <button className="lbtn" type="submit" disabled={regBusy}>{regBusy ? '提交中…' : '下一步'}</button>
+        <button className="lbtn" type="submit" disabled={regBusy}>{regBusy ? '提交中…' : '注 册'}</button>
       </form>
       <div className="lswitch">
         已有账号？<button type="button" className="llink" onClick={showLogin}>返回登录</button>
@@ -213,41 +163,7 @@ export default function LoginPage() {
     </>
   );
 
-  const verifyView = (
-    <>
-      <form className="lcard" onSubmit={submitVerify}>
-        <h2>验证邮箱</h2>
-        <div className="ld">验证码已发送至 {regEmail}，请在 15 分钟内完成验证</div>
-        <div className="lfield">
-          <label>验证码</label>
-          <input
-            value={regCode}
-            onChange={(e) => setRegCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            autoFocus
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            placeholder="6 位数字验证码"
-          />
-        </div>
-        {regErrorBox}
-        <button className="lbtn" type="submit" disabled={regBusy || regCode.length !== 6}>
-          {regBusy ? '验证中…' : '验证并完成注册'}
-        </button>
-        <div className="lswitch">
-          没收到验证码？
-          <button type="button" className="llink" disabled={cooldown > 0 || regBusy} onClick={resendCode}>
-            {cooldown > 0 ? `重新发送（${cooldown}s）` : '重新发送'}
-          </button>
-        </div>
-      </form>
-      <div className="lswitch">
-        <button type="button" className="llink" onClick={showLogin}>返回登录</button>
-      </div>
-    </>
-  );
-
-  let card = loginView;
-  if (view === 'register') card = regStep === 1 ? registerView : verifyView;
+  const card = view === 'register' ? registerView : loginView;
 
   return (
     <div className="mwr login">

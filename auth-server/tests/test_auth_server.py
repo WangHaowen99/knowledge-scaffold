@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
-import time
 
 import pytest
 from authlib.jose import JsonWebKey, JsonWebToken
@@ -508,14 +506,6 @@ def reg_client(tmp_path):
     return create_app(make_config(tmp_path, enable_registration=True)).test_client()
 
 
-def last_mail(client):
-    return client.application.config["MAILER"].sent[-1]
-
-
-def last_code(client):
-    return re.search(r"\d{6}", last_mail(client)["body"]).group(0)
-
-
 def register(client, username, email, password=STRONG_PASSWORD, ip=None):
     kwargs = {"json": {"username": username, "email": email, "password": password}}
     if ip is not None:
@@ -523,38 +513,8 @@ def register(client, username, email, password=STRONG_PASSWORD, ip=None):
     return client.post("/register", **kwargs)
 
 
-def verify(client, email, code):
-    return client.post("/register/verify", json={"email": email, "code": code})
-
-
-def pending_file(tmp_path):
-    return tmp_path / "data" / "pending_registrations.json"
-
-
-def edit_pending(tmp_path, email, **updates):
-    path = pending_file(tmp_path)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    for entry in data["pending"]:
-        if entry["email"] == email:
-            entry.update(updates)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def test_register_verify_login_full_flow(reg_client, tmp_path):
+def test_register_creates_user_and_login_full_flow(reg_client, tmp_path):
     resp = register(reg_client, "walter", "walter@example.com")
-    assert resp.status_code == 200
-    assert resp.get_json() == {"message": "验证码已发送"}
-    assert last_mail(reg_client)["to"] == "walter@example.com"
-
-    # pending 落盘且验证码只存哈希
-    pending = json.loads(pending_file(tmp_path).read_text(encoding="utf-8"))["pending"]
-    (entry,) = pending
-    assert entry["username"] == "walter"
-    assert entry["attempts"] == 0
-    assert last_code(reg_client) not in entry["code_hash"]
-    assert entry["password_hash"].startswith("pbkdf2_sha256$600000$")
-
-    resp = verify(reg_client, "walter@example.com", last_code(reg_client))
     assert resp.status_code == 200
     assert resp.get_json() == {
         "success": True,
@@ -564,8 +524,14 @@ def test_register_verify_login_full_flow(reg_client, tmp_path):
             "password_change_required": False,
         },
     }
-    # pending 已清
-    assert json.loads(pending_file(tmp_path).read_text(encoding="utf-8"))["pending"] == []
+
+    # 一步建号：users.json 落盘（email 归一化、不强制改密），不再写 pending 文件
+    data = json.loads((tmp_path / "data" / "users.json").read_text(encoding="utf-8"))
+    record = next(r for r in data["users"] if r["username"] == "walter")
+    assert record["email"] == "walter@example.com"
+    assert record["must_change_password"] is False
+    assert record["password_hash"].startswith("pbkdf2_sha256$600000$")
+    assert not (tmp_path / "data" / "pending_registrations.json").exists()
 
     # /token 登录闭环：默认 role=user、不强制改密
     body = login(reg_client, "walter", STRONG_PASSWORD).get_json()
@@ -583,22 +549,10 @@ def test_register_verify_login_full_flow(reg_client, tmp_path):
 
 
 def test_registration_disabled_503(client):
-    for path, payload in [
-        ("/register", {"username": "x", "email": "x@example.com", "password": STRONG_PASSWORD}),
-        ("/register/verify", {"email": "x@example.com", "code": "000000"}),
-        ("/register/resend", {"email": "x@example.com"}),
-    ]:
-        resp = client.post(path, json=payload)
-        assert resp.status_code == 503
-        assert resp.get_json() == {"error": "注册功能未开启"}
-
-
-def test_registration_smtp_unconfigured_503(tmp_path):
-    client = create_app(
-        make_config(tmp_path, enable_registration=True, mail_mode="smtp")
-    ).test_client()
-    assert client.application.config["MAILER"] is None
-    resp = register(client, "walter", "walter@example.com")
+    resp = client.post(
+        "/register",
+        json={"username": "x", "email": "x@example.com", "password": STRONG_PASSWORD},
+    )
     assert resp.status_code == 503
     assert resp.get_json() == {"error": "注册功能未开启"}
 
@@ -620,21 +574,15 @@ def test_register_format_validation(reg_client):
 def test_register_duplicate_username_and_email(reg_client):
     assert register(reg_client, "gina", "gina@example.com").status_code == 200
 
-    resp = register(reg_client, "gina", "other@example.com")  # pending 用户名占用
+    resp = register(reg_client, "gina", "other@example.com")  # 用户名占用
     assert resp.status_code == 400
     assert resp.get_json() == {"error": "用户 gina 已存在"}
 
-    resp = register(reg_client, "gina2", "gina@example.com")  # pending 邮箱占用
-    assert resp.status_code == 400
-    assert "该邮箱已提交注册" in resp.get_json()["error"]
-
-    assert verify(reg_client, "gina@example.com", last_code(reg_client)).status_code == 200
-
-    resp = register(reg_client, "gina3", "GINA@Example.COM")  # 正式用户邮箱占用（大小写不敏感）
+    resp = register(reg_client, "gina2", "GINA@Example.COM")  # 邮箱占用（大小写不敏感）
     assert resp.status_code == 400
     assert resp.get_json() == {"error": "邮箱已被注册"}
 
-    resp = register(reg_client, "admin", "admin2@example.com")  # 正式用户名占用
+    resp = register(reg_client, "admin", "admin2@example.com")  # bootstrap 用户名占用
     assert resp.status_code == 400
     assert resp.get_json() == {"error": "用户 admin 已存在"}
 
@@ -651,62 +599,6 @@ def test_register_password_policy_violations_passthrough(reg_client):
         "contains_username",
         "character_classes",
     ]
-
-
-def test_verify_wrong_code_locks_after_five_attempts(reg_client):
-    assert register(reg_client, "carol", "carol@example.com").status_code == 200
-    code = last_code(reg_client)
-    wrong = "000000" if code != "000000" else "111111"
-
-    for _ in range(5):
-        resp = verify(reg_client, "carol@example.com", wrong)
-        assert resp.status_code == 400
-        assert resp.get_json() == {"error": "验证码错误"}
-
-    # 第 6 次即使验证码正确也已锁死
-    resp = verify(reg_client, "carol@example.com", code)
-    assert resp.status_code == 400
-    assert resp.get_json() == {"error": "验证码错误次数过多，请重新注册"}
-
-
-def test_verify_expired_code(reg_client, tmp_path):
-    assert register(reg_client, "dave1", "dave@example.com").status_code == 200
-    code = last_code(reg_client)
-    edit_pending(tmp_path, "dave@example.com", expires_at=int(time.time()) - 1)
-
-    resp = verify(reg_client, "dave@example.com", code)
-    assert resp.status_code == 400
-    assert resp.get_json() == {"error": "验证码无效或已过期"}
-    # 读时清理过期项
-    assert json.loads(pending_file(tmp_path).read_text(encoding="utf-8"))["pending"] == []
-
-
-def test_verify_unknown_email(reg_client):
-    resp = verify(reg_client, "nobody@example.com", "123456")
-    assert resp.status_code == 400
-    assert resp.get_json() == {"error": "验证码无效或已过期"}
-
-    resp = reg_client.post("/register/resend", json={"email": "nobody@example.com"})
-    assert resp.status_code == 400
-    assert resp.get_json() == {"error": "未找到待验证的注册，请重新注册"}
-
-
-def test_resend_cooldown_and_code_rotation(reg_client, tmp_path):
-    assert register(reg_client, "erin1", "erin@example.com").status_code == 200
-
-    # 60 秒冷却内重发 → 429
-    resp = reg_client.post("/register/resend", json={"email": "erin@example.com"})
-    assert resp.status_code == 429
-    assert resp.get_json() == {"error": "请求过于频繁，请稍后再试"}
-
-    edit_pending(tmp_path, "erin@example.com", last_sent_at=int(time.time()) - 61)
-    resp = reg_client.post("/register/resend", json={"email": "erin@example.com"})
-    assert resp.status_code == 200
-    assert resp.get_json() == {"message": "验证码已发送"}
-    assert len(reg_client.application.config["MAILER"].sent) == 2
-
-    # 新验证码可完成注册
-    assert verify(reg_client, "erin@example.com", last_code(reg_client)).status_code == 200
 
 
 def test_register_rate_limited_by_ip(reg_client):
@@ -730,7 +622,6 @@ def test_register_rate_limited_by_email_across_ips(reg_client):
 
 def test_registered_email_persisted_and_admin_list_visible(reg_client, tmp_path):
     assert register(reg_client, "hank1", "Hank@Example.com").status_code == 200
-    assert verify(reg_client, "hank@example.com", last_code(reg_client)).status_code == 200
 
     data = json.loads((tmp_path / "data" / "users.json").read_text(encoding="utf-8"))
     record = next(r for r in data["users"] if r["username"] == "hank1")
@@ -751,25 +642,8 @@ def test_registered_email_persisted_and_admin_list_visible(reg_client, tmp_path)
 
 
 def test_registration_config_from_env():
-    cfg = AuthServerConfig.from_env(
-        {
-            "AUTH_ENABLE_REGISTRATION": "true",
-            "AUTH_MAIL_MODE": "SMTP",
-            "AUTH_SMTP_HOST": "smtp.example.com",
-            "AUTH_SMTP_PORT": "465",
-            "AUTH_SMTP_USERNAME": "mailer",
-            "AUTH_SMTP_PASSWORD": "secret",
-            "AUTH_SMTP_USE_TLS": "false",
-            "AUTH_MAIL_FROM": "auth@example.com",
-        }
-    )
+    cfg = AuthServerConfig.from_env({"AUTH_ENABLE_REGISTRATION": "true"})
     assert cfg.enable_registration is True
-    assert cfg.mail_mode == "smtp"
-    assert cfg.smtp_host == "smtp.example.com"
-    assert cfg.smtp_port == 465
-    assert cfg.smtp_use_tls is False
-    assert cfg.mail_from == "auth@example.com"
 
     default_cfg = AuthServerConfig.from_env({})
     assert default_cfg.enable_registration is False
-    assert default_cfg.mail_mode == "console"

@@ -70,10 +70,6 @@ export const login = (username, password) =>
   api('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
 export const register = (username, email, password) =>
   api('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) });
-export const registerVerify = (email, code) =>
-  api('/auth/register/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
-export const registerResend = (email) =>
-  api('/auth/register/resend', { method: 'POST', body: JSON.stringify({ email }) });
 export const me = () => api('/api/me');
 export const listProjects = () => api('/api/projects');
 export const createProject = (input) => api('/api/projects', { method: 'POST', body: JSON.stringify(input) });

@@ -28,11 +28,10 @@ NODE_OPTIONS=--experimental-sqlite node --env-file=.env node_modules/.bin/tsx sr
 
 ## 认证与注册
 
-直连独立 auth-server（详见 `.env.example` 与 docs/design.md 决策 3）：`AUTH_ISSUER_URL` 指向 auth-server，登录/续期走 OAuth2 `/token`（password/refresh 两种 grant），校验用 JWKS 本地 RS256 验签（不逐请求回查），注册三端点转发 auth-server 的 `/register*`。
+直连独立 auth-server（详见 `.env.example` 与 docs/design.md 决策 3）：`AUTH_ISSUER_URL` 指向 auth-server，登录/续期走 OAuth2 `/token`（password/refresh 两种 grant），校验用 JWKS 本地 RS256 验签（不逐请求回查），注册转发 auth-server 的 `/register`（一步建号，无邮箱验证码）。
 
 ```bash
-# auth-server 需开启注册：AUTH_ENABLE_REGISTRATION=true，
-# 邮件用 console 模式时验证码打在 auth-server 日志里。
+# auth-server 需开启注册：AUTH_ENABLE_REGISTRATION=true。
 # AUTH_JWT_ISSUER 必须等于 auth-server 侧 AUTH_SERVER_ISSUER 的取值（默认 http://auth-server:5056），
 # 不一致时登录报 503「认证服务暂不可用」并在日志提示验签配置错误
 AUTH_ISSUER_URL=http://localhost:5056 \
@@ -40,7 +39,7 @@ AUTH_JWT_ISSUER=http://auth-server:5056 \
 NODE_OPTIONS=--experimental-sqlite npx tsx --env-file=.env src/server.ts
 ```
 
-前端登录页带「注册新账号」入口（用户名+邮箱+密码 → 6 位邮箱验证码，60 秒重发冷却，中途离开可经「直接输入验证码」回到输码步骤）；
+前端登录页带「注册新账号」入口（用户名+邮箱+密码，一步提交即建正式账号，成功后回登录页并预填用户名）；
 access token 过期后前端对 401 自动静默续期（单飞 `/auth/refresh`，上游明确拒绝才清凭据，刷新页面后回登录页；上游暂不可用则保留凭据待重试）。
 
 评测闭环访问的 consumer 业务 API（`CONSUMER_API_URL`）是另一个服务；consumer 须信任同一 auth-server（remote 模式），本工具透传的专家 token 才能被其接受。
@@ -66,7 +65,7 @@ npm run build
 | --- | --- | --- |
 | POST | `/auth/login` | auth-server `/token` 登录（加发 `refresh_token`/`expires_in`）|
 | POST | `/auth/refresh` | 刷新 token（`{refresh_token}` → 新 token 对；401=上游拒绝，503=上游不可达）|
-| POST | `/auth/register` `/auth/register/verify` `/auth/register/resend` | 注册三端点，转发 auth-server（未开启时 503）|
+| POST | `/auth/register` | 注册（一步建号），转发 auth-server（未开启时 503）|
 | GET | `/api/me` | 当前用户 |
 | GET/POST | `/api/projects` | 项目列表 / 新建（节点 1）|
 | GET | `/api/projects/:id` | 项目详情（含文档、workflow 节点）|

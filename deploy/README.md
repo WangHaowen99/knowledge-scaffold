@@ -110,7 +110,7 @@ cd $REPO
 ./deploy/deploy-stack.sh up --with-auth
 ```
 
-脚本会校验三行齐全（缺任意一行即 `[FAIL]` 中止并打印上述模板），并把 `AUTH_SERVER_ADMIN_TOKEN` 同步注入 auth-server 容器（backend 经 env_file、auth-server 经 compose 变量插值，两边必须一致——脚本自动保证）。auth-server 不暴露宿主端口，仅 backend 经容器网访问；首启引导账号 `admin/<REDACTED_INITIAL_PASSWORD>`（强制改密）。开放注册再叠加环境变量 `AUTH_ENABLE_REGISTRATION=true`，生产邮件验证需同时配 `AUTH_MAIL_MODE=smtp` 与 `AUTH_SMTP_*`（变量清单见第 6.3 节）。默认 `AUTH_MODE=local` 时行为与既往完全一致。
+脚本会校验三行齐全（缺任意一行即 `[FAIL]` 中止并打印上述模板），并把 `AUTH_SERVER_ADMIN_TOKEN` 同步注入 auth-server 容器（backend 经 env_file、auth-server 经 compose 变量插值，两边必须一致——脚本自动保证）。auth-server 不暴露宿主端口，仅 backend 经容器网访问；首启引导账号 `admin/<REDACTED_INITIAL_PASSWORD>`（强制改密）。开放注册叠加环境变量 `AUTH_ENABLE_REGISTRATION=true` 即可——注册为一步直接建号，无邮箱验证码，无需任何 SMTP/邮件配置。
 
 ## 4. 首次初始化（部署后必做）
 
@@ -176,7 +176,7 @@ curl -fsS http://127.0.0.1:5100/health            # 预期 HTTP 200
 
 ### 6.3 auth-server（compose 透传，前缀 `AUTH_`）
 
-常用（compose 透传，在宿主 shell 设置即生效）：`AUTH_SERVER_ADMIN_TOKEN`（Admin API 共享密钥，须与 backend/.env 一致，编排脚本自动同步）、`AUTH_ENABLE_REGISTRATION`（默认 `false`）、`AUTH_MAIL_MODE`（`console`|`smtp`）、`AUTH_SMTP_HOST/PORT/USERNAME/PASSWORD/USE_TLS`、`AUTH_MAIL_FROM`。其余变量（如 `AUTH_ACCESS_TTL_SECONDS`）compose 未透传，需改 compose 或裸机运行才能覆盖；完整表见 [auth-server/README.md](../auth-server/README.md)。
+常用（compose 透传，在宿主 shell 设置即生效）：`AUTH_SERVER_ADMIN_TOKEN`（Admin API 共享密钥，须与 backend/.env 一致，编排脚本自动同步）、`AUTH_ENABLE_REGISTRATION`（默认 `false`；开启后注册一步直接建号，无邮箱验证码，无需 SMTP）。其余变量（如 `AUTH_ACCESS_TTL_SECONDS`）compose 未透传，需改 compose 或裸机运行才能覆盖；完整表见 [auth-server/README.md](../auth-server/README.md)。
 
 ## 7. 验证清单（机器可执行）
 

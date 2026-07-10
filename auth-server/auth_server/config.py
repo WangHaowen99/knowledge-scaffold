@@ -21,11 +21,6 @@ DEFAULT_AUDIENCE = "meta-wise"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5056
 DEFAULT_USER_MAX_COUNT = 10
-DEFAULT_MAIL_MODE = "console"
-DEFAULT_SMTP_PORT = 587
-DEFAULT_MAIL_FROM = "no-reply@meta-wise.local"
-
-MAIL_MODES = ("smtp", "console")
 
 
 def _int_env(env: Mapping[str, str], name: str, default: int) -> int:
@@ -58,13 +53,6 @@ class AuthServerConfig:
     port: int = DEFAULT_PORT
     user_max_count: int = DEFAULT_USER_MAX_COUNT
     enable_registration: bool = False
-    mail_mode: str = DEFAULT_MAIL_MODE
-    smtp_host: str = ""
-    smtp_port: int = DEFAULT_SMTP_PORT
-    smtp_username: str = ""
-    smtp_password: str = ""
-    smtp_use_tls: bool = True
-    mail_from: str = DEFAULT_MAIL_FROM
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", Path(self.data_dir))
@@ -89,15 +77,7 @@ class AuthServerConfig:
 
         object.__setattr__(self, "user_max_count", max(1, int(self.user_max_count)))
 
-        mail_mode = str(self.mail_mode or "").strip().lower()
-        if mail_mode not in MAIL_MODES:
-            logger.warning("AUTH_MAIL_MODE=%r 不合法（smtp|console），回退为 console", self.mail_mode)
-            mail_mode = DEFAULT_MAIL_MODE
-        object.__setattr__(self, "mail_mode", mail_mode)
         object.__setattr__(self, "enable_registration", bool(self.enable_registration))
-        object.__setattr__(self, "smtp_host", str(self.smtp_host or "").strip())
-        object.__setattr__(self, "smtp_port", int(self.smtp_port))
-        object.__setattr__(self, "mail_from", str(self.mail_from or "").strip() or DEFAULT_MAIL_FROM)
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "AuthServerConfig":
@@ -113,11 +93,4 @@ class AuthServerConfig:
             port=_int_env(env, "AUTH_SERVER_PORT", DEFAULT_PORT),
             user_max_count=_int_env(env, "AUTH_USER_MAX_COUNT", DEFAULT_USER_MAX_COUNT),
             enable_registration=_bool_env(env, "AUTH_ENABLE_REGISTRATION", False),
-            mail_mode=str(env.get("AUTH_MAIL_MODE") or DEFAULT_MAIL_MODE),
-            smtp_host=str(env.get("AUTH_SMTP_HOST") or ""),
-            smtp_port=_int_env(env, "AUTH_SMTP_PORT", DEFAULT_SMTP_PORT),
-            smtp_username=str(env.get("AUTH_SMTP_USERNAME") or ""),
-            smtp_password=str(env.get("AUTH_SMTP_PASSWORD") or ""),
-            smtp_use_tls=_bool_env(env, "AUTH_SMTP_USE_TLS", True),
-            mail_from=str(env.get("AUTH_MAIL_FROM") or DEFAULT_MAIL_FROM),
         )

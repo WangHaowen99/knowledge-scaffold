@@ -220,17 +220,17 @@ test('jwks register：状态码与 body 透传，带 X-Forwarded-For（无 /auth
   assert.deepEqual(req?.body, { username: 'u1', email: 'u1@x.com', password: 'p' });
 });
 
-test('jwks registerVerify：密码策略等 400 body 原样透传', async () => {
-  routes.set('POST /register/verify', {
+test('jwks register：密码策略等 400 body 原样透传', async () => {
+  routes.set('POST /register', {
     status: 400,
-    body: JSON.stringify({ error: '验证码错误' }),
+    body: JSON.stringify({ error: '密码不符合策略', code: 'PASSWORD_POLICY_FAILED', violations: ['min_length'] }),
   });
-  const result = await jwksClient().registerVerify({ email: 'u1@x.com', code: '000000' }, '10.0.0.9');
-  assert.deepEqual(result, { status: 400, body: { error: '验证码错误' } });
+  const result = await jwksClient().register({ username: 'u1', email: 'u1@x.com', password: 'p' }, '10.0.0.9');
+  assert.deepEqual(result, { status: 400, body: { error: '密码不符合策略', code: 'PASSWORD_POLICY_FAILED', violations: ['min_length'] } });
 });
 
 test('jwks register：上游响应非 JSON → 兜底 error 但保留状态码', async () => {
-  routes.set('POST /register/resend', { status: 502, body: '<html>Bad Gateway</html>', contentType: 'text/html' });
-  const result = await jwksClient().registerResend({ email: 'u1@x.com' }, '10.0.0.9');
+  routes.set('POST /register', { status: 502, body: '<html>Bad Gateway</html>', contentType: 'text/html' });
+  const result = await jwksClient().register({ username: 'u1', email: 'u1@x.com', password: 'p' }, '10.0.0.9');
   assert.deepEqual(result, { status: 502, body: { error: '注册服务响应异常' } });
 });

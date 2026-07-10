@@ -4,7 +4,7 @@ import type { AuthUser } from '../types.js';
 
 // AuthClient —— 直连独立 auth-server（design.md 决策 3）：
 // 登录/续期走 OAuth2 /token（password/refresh grant），校验用 JWKS 本地 RS256 验签，
-// 注册转发 auth-server 的 /register*。issuer 固定指向 auth-server。
+// 注册一步转发 auth-server 的 /register（直接建正式用户，无验证码）。issuer 固定指向 auth-server。
 export interface LoginResult {
   token: string;
   user: AuthUser;
@@ -40,8 +40,6 @@ export interface AuthClient {
   refresh(refreshToken: string): Promise<RefreshResult | null>;
   // 抛错=网络错（路由→502）
   register(body: unknown, clientIp: string): Promise<ProxyResult>;
-  registerVerify(body: unknown, clientIp: string): Promise<ProxyResult>;
-  registerResend(body: unknown, clientIp: string): Promise<ProxyResult>;
 }
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -151,17 +149,9 @@ export class AuthServerJwksClient implements AuthClient {
     return { token: data.access_token, refreshToken: data.refresh_token, expiresIn: data.expires_in };
   }
 
-  // 注册端点在 auth-server 上无 /auth 前缀
+  // 注册端点在 auth-server 上无 /auth 前缀；一步建正式用户（不发码不验证）
   register(body: unknown, clientIp: string) {
     return proxyPost(`${this.issuerUrl}/register`, body, clientIp);
-  }
-
-  registerVerify(body: unknown, clientIp: string) {
-    return proxyPost(`${this.issuerUrl}/register/verify`, body, clientIp);
-  }
-
-  registerResend(body: unknown, clientIp: string) {
-    return proxyPost(`${this.issuerUrl}/register/resend`, body, clientIp);
   }
 }
 
