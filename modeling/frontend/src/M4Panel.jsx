@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   listRounds, proposeOptimize, listSuggestions, applyOptimize, rejectSuggestions,
-  listVersions, exportVersionUrl, getToken,
+  listVersions, exportVersionUrl, authFetch,
 } from './api.js';
 
 /* ================= 节点 10 · 优化建议与应用 ================= */
@@ -195,18 +195,24 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
 }
 
 export function VersionTable({ projectId, versions }) {
+  const [dlErr, setDlErr] = useState('');
   const download = async (version) => {
-    const res = await fetch(exportVersionUrl(projectId, version), { headers: { Authorization: `Bearer ${getToken()}` } });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = (res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]) || `package-${version}.zip`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    setDlErr('');
+    try {
+      const res = await authFetch(exportVersionUrl(projectId, version));
+      if (!res.ok) { setDlErr(`导出失败（${res.status}）`); return; }
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = (res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]) || `package-${version}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { setDlErr(`导出失败：${e.message}`); }
   };
 
   return (
+    <>
+    {dlErr && <div style={{ color: 'var(--crit)', fontSize: 12, marginBottom: 6 }}>{dlErr}</div>}
     <table className="dt">
       <thead><tr><th>版本</th><th>说明</th><th>评测通过率</th><th></th></tr></thead>
       <tbody>
@@ -233,5 +239,6 @@ export function VersionTable({ projectId, versions }) {
         })}
       </tbody>
     </table>
+    </>
   );
 }
