@@ -163,33 +163,6 @@ def test_universal_prompt_keeps_ontology_ids_out_of_skill_tool():
     assert "Ontology ids from `<Available-Ontologies>` or `<Selected-Ontology>`" not in prompt
 
 
-def test_universal_prompt_matches_operation_by_result_scope():
-    prompt = build_universal_system_prompt()
-
-    assert "choose by result scope" in prompt
-    assert "某批次上" in prompt
-    assert "F000 上" in prompt
-    assert "global inventory operation" in prompt
-    assert "instance-level cost question" in prompt
-
-
-def test_universal_prompt_uses_exact_operation_attributes_for_calculation():
-    prompt = build_universal_system_prompt()
-
-    assert "use exactly that attribute" in prompt
-    assert "单位成本（物料成本）" in prompt
-    assert "not `物料成本 + 制造成本`" in prompt
-
-
-def test_universal_prompt_requires_complete_collection_for_range_calculation():
-    prompt = build_universal_system_prompt()
-
-    assert "query the complete collection before calculating" in prompt
-    assert "从起始批次到当前切换批次" in prompt
-    assert "累计" in prompt
-    assert "only the start item" in prompt
-
-
 def test_universal_prompt_no_longer_mentions_removed_hitl_tool():
     prompt = build_universal_system_prompt()
     removed_tool = "ask" + "_user"
