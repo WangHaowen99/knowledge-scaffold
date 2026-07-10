@@ -1,22 +1,79 @@
-// 后端 API 客户端：token 存 localStorage，统一注入 Bearer。
+// 后端 API 客户端：token 存 localStorage，统一注入 Bearer；有 refresh token 时 401 静默续期。
 const TOKEN_KEY = 'mw_modeling_token';
+const REFRESH_KEY = 'mw_modeling_refresh_token';
 
 export const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 export const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ } };
+export const getRefreshToken = () => { try { return localStorage.getItem(REFRESH_KEY) || ''; } catch { return ''; } };
 
-export async function api(path, options = {}) {
+export const setSession = (data) => {
+  setToken(data.token);
+  try { data.refresh_token ? localStorage.setItem(REFRESH_KEY, data.refresh_token) : localStorage.removeItem(REFRESH_KEY); } catch { /* ignore */ }
+};
+export const clearSession = () => {
+  setToken('');
+  try { localStorage.removeItem(REFRESH_KEY); } catch { /* ignore */ }
+};
+
+const doFetch = (path, options = {}) => {
   const headers = { ...(options.headers || {}) };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
-  const res = await fetch(path, { ...options, headers });
+  return fetch(path, { ...options, headers });
+};
+
+// 静默续期并发去重：同一时刻只发一个 refresh 请求，其余 401 请求共用其结果
+let refreshInFlight = null;
+
+const refreshAuthToken = () => {
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      const res = await fetch('/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: getRefreshToken() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.token) throw Object.assign(new Error('刷新登录令牌失败'), { status: res.status });
+      setSession(data);
+    })().finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+};
+
+// 认证接口自身不参与静默续期（防递归）
+const REFRESH_EXEMPT = ['/auth/refresh', '/auth/login', '/auth/register'];
+
+export async function authFetch(path, options = {}) {
+  const res = await doFetch(path, options);
+  if (res.status !== 401 || !getRefreshToken() || REFRESH_EXEMPT.some((p) => path.startsWith(p))) return res;
+  try {
+    await refreshAuthToken();
+  } catch (e) {
+    // 400/401=上游明确拒绝（过期/吊销），清凭据走现有登出路径；
+    // 503/网络错=认证服务暂不可用，保留凭据待下次重试。原 401 均交还调用方
+    if (e.status === 400 || e.status === 401) clearSession();
+    return res;
+  }
+  return doFetch(path, options);
+}
+
+export async function api(path, options = {}) {
+  const res = await authFetch(path, options);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
   return data;
 }
 
 export const login = (username, password) =>
   api('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+export const register = (username, email, password) =>
+  api('/auth/register', { method: 'POST', body: JSON.stringify({ username, email, password }) });
+export const registerVerify = (email, code) =>
+  api('/auth/register/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+export const registerResend = (email) =>
+  api('/auth/register/resend', { method: 'POST', body: JSON.stringify({ email }) });
 export const me = () => api('/api/me');
 export const listProjects = () => api('/api/projects');
 export const createProject = (input) => api('/api/projects', { method: 'POST', body: JSON.stringify(input) });

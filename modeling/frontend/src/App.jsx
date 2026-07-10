@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getToken, setToken, me } from './api.js';
+import { getToken, getRefreshToken, clearSession, me } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
 import Workbench from './Workbench.jsx';
@@ -14,7 +14,12 @@ export default function App() {
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
     me().then((d) => { setUser(d.user); setStatus('in'); })
-      .catch(() => { setToken(''); setStatus('out'); });
+      .catch((e) => {
+        // 只在明确鉴权拒绝且静默续期链已放弃（refresh token 已被 authFetch 清掉/不存在）时清凭据；
+        // 瞬时故障（网络错、5xx、认证服务暂不可用）保留凭据，服务恢复后仍可续期
+        if ((e.status === 401 || e.status === 403) && !getRefreshToken()) clearSession();
+        setStatus('out');
+      });
   }, []);
 
   if (status === 'checking') {
@@ -41,7 +46,7 @@ export default function App() {
           <button className="btn" data-tour="config" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
           <span>{user?.username}</span>
           <button className="btn" style={{ padding: '4px 12px', fontSize: 12 }}
-            onClick={() => { setToken(''); setStatus('out'); setUser(null); setProjectId(null); }}>退出</button>
+            onClick={() => { clearSession(); setStatus('out'); setUser(null); setProjectId(null); }}>退出</button>
         </div>
       </div>
       <div className="main">
