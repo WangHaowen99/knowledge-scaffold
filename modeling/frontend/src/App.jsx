@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getToken, setToken, me } from './api.js';
+import { getToken, getRefreshToken, clearSession, me } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
 import Workbench from './Workbench.jsx';
@@ -16,7 +16,12 @@ export default function App() {
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
     me().then((d) => { setUser(d.user); setStatus('in'); })
-      .catch(() => { setToken(''); setStatus('out'); });
+      .catch((e) => {
+        // 只在明确鉴权拒绝且静默续期链已放弃（refresh token 已被 authFetch 清掉/不存在）时清凭据；
+        // 瞬时故障（网络错、5xx、认证服务暂不可用）保留凭据，服务恢复后仍可续期
+        if ((e.status === 401 || e.status === 403) && !getRefreshToken()) clearSession();
+        setStatus('out');
+      });
   }, []);
 
   // 点击菜单外任意处 / 按 Esc 关闭用户菜单。
@@ -30,7 +35,7 @@ export default function App() {
     return () => { document.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', onKey); };
   }, [menuOpen]);
 
-  const logout = () => { setToken(''); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false); };
+  const logout = () => { clearSession(); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false); };
 
   if (status === 'checking') {
     return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;

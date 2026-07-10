@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import {
   getInterview, startInterview, answerInterview,
   getCompetency, proposeCompetency, selectCompetency,
-  generatePackage, getPackage, getPackageFile, exportPackageUrl, getToken,
+  generatePackage, getPackage, getPackageFile, exportPackageUrl, authFetch,
   savePackageFile, resetPackageFile,
 } from './api.js';
 import { BusyButton } from './ui.jsx';
@@ -349,13 +349,17 @@ export function ReviewPanel({ projectId }) {
   };
 
   const download = async () => {
-    const res = await fetch(exportPackageUrl(projectId), { headers: { Authorization: `Bearer ${getToken()}` } });
-    const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = (res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]) || 'package.zip';
-    a.click();
-    URL.revokeObjectURL(a.href);
+    setMsg('');
+    try {
+      const res = await authFetch(exportPackageUrl(projectId));
+      if (!res.ok) { setMsg(`导出失败（${res.status}）`); return; }
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = (res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]) || 'package.zip';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { setMsg(`导出失败：${e.message}`); }
   };
 
   if (err) return <div className="empty">{err}</div>;
