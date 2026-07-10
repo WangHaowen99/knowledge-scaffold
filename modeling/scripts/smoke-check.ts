@@ -12,6 +12,7 @@ import { insertPackageVersion, listPackageVersions } from '../src/workflow/m2-re
 import { runRuleChecks, runSemanticCheck } from '../src/workflow/package-check.js';
 import { packageChatPlan, packageChatApply } from '../src/workflow/package-chat.js';
 import { findingsToSuggestions, extractCitedKeys } from '../src/evaluation/optimizer.js';
+import { runDataQualityChecks } from '../src/workflow/data-quality.js';
 import type { DataDictTable, PackageSpec } from '../src/types.js';
 
 const ok = (c: boolean, m: string) => { console.log(`  ${c ? '✓' : '✗ FAIL'}  ${m}`); if (!c) process.exitCode = 1; };
@@ -55,6 +56,30 @@ async function main() {
   ok(tb.CjkData.rowCount === 2 && tb.CjkData.rows[0][1] === '0001', '中文数据行不再被吃掉（此前丢首行）');
   ok(tb.CjkData.fields[1].inferredType === 'string', '前导零编码推断为 string（防 0002→2）');
   ok(tb.OneRow.rowCount === 1, '仅一行数据时宁可当数据不当注释');
+
+  // ⓪b 资料质量评估（确定性）：各类缺陷逐条触发
+  const qTables: any[] = [
+    { name: 'NoNote', rowCount: 5, rows: [['1','在库'],['2','在制'],['3','在库'],['4','总装在制'],['5','在库']],
+      fields: [
+        { name: 'ID', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 },
+        { name: 'STATUS', inferredType: 'string', sampleValues: ['在库','在制','总装在制'], distinctRatio: 0.4 },
+      ] },
+    { name: 'Empty', rowCount: 0, rows: [], fields: [{ name: 'X', inferredType: 'unknown', sampleValues: [], distinctRatio: 0 }] },
+    { name: 'NoPK', rowCount: 4, rows: [['a'],['a'],['b'],['b']], fields: [{ name: 'V', inferredType: 'string', sampleValues: ['a','b'], distinctRatio: 0.5 }] },
+    { name: 'Child', rowCount: 4, rows: [['1'],['2'],['9'],['9']], fields: [{ name: 'ID', inferredType: 'string', sampleValues: ['1','9'], distinctRatio: 0.75 }] },
+  ];
+  // Child.ID 引用 NoNote.ID（主键），命中率 50% → 外键悬空
+  const qf = runDataQualityChecks(qTables, []);
+  const hasQ = (cat: string) => qf.some((f) => f.category === cat);
+  ok(hasQ('规则来源缺失'), '质量：无文档 → 规则来源缺失');
+  ok(hasQ('字段无注释'), '质量：整表无注释');
+  ok(hasQ('枚举语义不明'), '质量：无注释枚举列（在库/在制…）');
+  ok(hasQ('空表'), '质量：空表');
+  ok(hasQ('主键候选缺失'), '质量：无唯一值字段');
+  ok(hasQ('外键悬空'), '质量：同名键列取值互证失败');
+  const qf2 = runDataQualityChecks([qTables[0]], [{ filename: 'r.md', textContent: 'NoNote 表说明……' + '规'.repeat(600) }]);
+  ok(!qf2.some((f) => f.category === '规则来源缺失'), '质量：有文档时不再报规则来源缺失');
+  ok(!qf2.some((f) => f.category === '文档未提及' && f.target === 'NoNote'), '质量：文档提及表名不报未提及');
 
   // ① 规则引擎
   const fs = runRuleChecks(BAD, TABLES, ['问题一', '没人认领的问题']);

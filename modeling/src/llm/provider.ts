@@ -121,6 +121,13 @@ export function buildFauxModeler(): LlmDeps {
         })),
       })]);
     }
+    if (sys.includes('submit_quality_gaps')) {
+      // faux 资料缺口分析：返回一条演示缺口
+      return fauxAssistantMessage([fauxToolCall('submit_quality_gaps', { gaps: [{
+        kind: '口径不明', target: '演示字段',
+        message: '（演示）关键枚举列缺少口径说明，统计边界不明', how: '访谈确认各枚举值口径',
+      }] })]);
+    }
     if (sys.includes('submit_suggestions')) {
       // faux 优化器：从最后一条用户消息解析未通过用例，逐条产出「沉淀业务口径」建议
       const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');

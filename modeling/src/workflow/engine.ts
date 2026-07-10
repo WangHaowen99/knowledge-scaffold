@@ -95,9 +95,21 @@ export async function runAnalyze(
     candidateObjects: [], openQuestions: [],
   };
 
+  // 资料质量评估：确定性检查（同步、零成本）+ LLM 缺口分析（best-effort）。
+  // 结论并入节点 output（quality 字段），供面板展示与访谈优先澄清。
+  const { runDataQualityChecks, runGapAnalysis, buildQualityReport } = await import('./data-quality.js');
+  const findings = runDataQualityChecks(tables, documents);
+  let gaps: Awaited<ReturnType<typeof runGapAnalysis>> = [];
+  try {
+    const { getProject } = await import('../projects/repo.js');
+    const project = getProject(projectId);
+    if (project) gaps = await runGapAnalysis(project, tables, documents, analysis, llmOverride);
+  } catch { /* 缺口分析失败不阻断领域分析 */ }
+  const quality = buildQualityReport(findings, gaps, tables.length, documents.filter((d) => d.textContent).length);
+
   const done = upsertNode({
     id: node.id, projectId, type: 'analyze', status: 'done', ordinal: node.ordinal,
-    agentMessages: messages, output: analysis,
+    agentMessages: messages, output: { ...analysis, quality },
   });
   return { node: done, analysis };
 }
