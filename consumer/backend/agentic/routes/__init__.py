@@ -21,6 +21,7 @@ from .workspaces import workspaces_bp
 from .business_data import business_data_bp
 from .a2a import a2a_bp
 from .performance import performance_bp
+from .mcp import mcp_bp
 from ..acp.server import acp_bp, set_orchestrator as acp_set_orchestrator
 
 logger = get_logger("routes")
@@ -63,6 +64,7 @@ def register_routes(
     app.register_blueprint(business_data_bp)
     app.register_blueprint(a2a_bp)
     app.register_blueprint(performance_bp)
+    app.register_blueprint(mcp_bp)
     app.register_blueprint(acp_bp)
 
     acp_set_orchestrator(_orchestrator)

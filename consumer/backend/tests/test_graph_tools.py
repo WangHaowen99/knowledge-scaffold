@@ -59,6 +59,46 @@ class _ToolBackend:
         self.calls.append(("pattern_search", path_pattern, return_vars, return_properties, limit, scope.workspace_value))
         return GraphBackendResult(records=[])
 
+    def hop_search(self, *, entity_instance_id, hop_num, accurate_flag, scope):
+        self.calls.append(("hop_search", entity_instance_id, hop_num, accurate_flag, scope.workspace_value))
+        return GraphBackendResult(
+            records=[
+                {
+                    "nodes": [{"entity_instance_id": entity_instance_id}],
+                    "edges": [],
+                    "relationships": [],
+                    "node_count": 1,
+                    "edge_count": 0,
+                }
+            ],
+            total=1,
+        )
+
+    def shortest_path_search(self, *, start_label, start_props, end_label, end_props, max_depth, directed, scope):
+        self.calls.append(("shortest_path", start_label, start_props, end_label, end_props, max_depth, directed, scope.workspace_value))
+        return GraphBackendResult(
+            records=[{"nodes": [{"labels": [start_label]}, {"labels": [end_label]}], "edges": [], "relationships": []}],
+            total=1,
+        )
+
+    def list_logic_titles(self, *, entity_type="", scope):
+        self.calls.append(("list_logic_titles", entity_type, scope.workspace_value))
+        return GraphBackendResult(records=[{"entity_instance_id": "node-logic", "entity_type": entity_type or "Product", "logic_title": "推荐规则"}], total=1)
+
+    def get_logic_content(self, *, entity_instance_ids, logic_titles=None, scope):
+        self.calls.append(("get_logic_content", entity_instance_ids, logic_titles, scope.workspace_value))
+        return GraphBackendResult(
+            records=[
+                {
+                    "entity_instance_id": entity_instance_ids[0],
+                    "entity_type": "Product",
+                    "logic_title": (logic_titles or ["推荐规则"])[0],
+                    "logic_content": "命中后推荐",
+                }
+            ],
+            total=1,
+        )
+
     def get_element_info(self, *, element_instance_id, element_class="", element_type="", scope=None):
         self.calls.append(("get_element_info", element_instance_id, element_class, element_type, scope.workspace_value))
         return {"found": True, "element_id": element_instance_id}
@@ -252,6 +292,41 @@ def test_graph_tool_executor_passes_pattern_return_properties():
         5,
         "workspace-a",
     )
+
+
+def test_graph_tool_executor_runs_mcp_extra_graph_tools():
+    backend = _ToolBackend()
+    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    mapping = GraphEntityMapping(entity="product", kind="node", source="test", label="Product")
+    executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
+
+    hop = executor.execute("hop_search", {"entity_instance_id": "node-1", "hop_num": 2})
+    shortest = executor.execute(
+        "shortest_path",
+        {
+            "start_label": "Product",
+            "start_props": {"code": "A"},
+            "end_label": "Customer",
+            "end_props": {"code": "C"},
+            "directed": True,
+        },
+    )
+    titles = executor.execute("list_logic_titles", {"entity_type": "Product"})
+    content = executor.execute(
+        "get_logic_content",
+        {"entity_instance_ids": ["node-logic"], "logic_titles": ["推荐规则"]},
+    )
+
+    assert hop.payload["result"]["node_count"] == 1
+    assert shortest.payload["result"]["count"] == 1
+    assert titles.payload["result"]["items"][0]["logic_title"] == "推荐规则"
+    assert content.payload["result"]["items"][0]["logic_content"] == "命中后推荐"
+    assert backend.calls[-4:] == [
+        ("hop_search", "node-1", 2, False, "workspace-a"),
+        ("shortest_path", "Product", {"code": "A"}, "Customer", {"code": "C"}, 15, True, "workspace-a"),
+        ("list_logic_titles", "Product", "workspace-a"),
+        ("get_logic_content", ["node-logic"], ["推荐规则"], "workspace-a"),
+    ]
 
 
 def test_graph_tool_executor_validates_pattern_search_against_preloaded_schema():

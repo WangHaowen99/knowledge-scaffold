@@ -176,6 +176,10 @@ def test_query_business_data_stream_injects_graph_runtime_context(monkeypatch):
         "agentic.business_data.service.get_workspace_paths",
         lambda workspace_id: SimpleNamespace(ontologies_dir="/runtime/{}/ontologies".format(workspace_id)),
     )
+    monkeypatch.setattr(
+        "agentic.business_data.service.get_workspace",
+        lambda workspace_id: {"id": workspace_id, "name": "示例工程变更空间"},
+    )
 
     events = list(query_business_data_stream(
         BusinessDataSearchRequest(
@@ -194,6 +198,7 @@ def test_query_business_data_stream_injects_graph_runtime_context(monkeypatch):
 
     provider_config = captured["config"]["ontology_search"]["neo4j"]
     assert provider_config["workspace_id"] == "workspace-a"
+    assert provider_config["workspace_name"] == "示例工程变更空间"
     assert provider_config["ontology_id"] == "demo-ontology"
     assert provider_config["model_profile_id"] == ""
     assert provider_config["run_id"] == ""

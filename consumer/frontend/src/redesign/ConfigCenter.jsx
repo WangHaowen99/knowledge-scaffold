@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Monitor, Moon, Settings2, Sun } from 'lucide-react';
 import { authFetch } from '../utils/auth';
 import { friendlyRequestError } from '../utils/requestErrors';
+import McpManagement from '../components/McpManagement';
 import { useAuthContext } from './useAuthContext';
 import { APPEARANCES, THEMES, applyAppearance, applyTheme, getAppearance, getTheme } from './theme';
 import { ConfirmDialog, InputDialog, SkeletonState, ToastNotice } from './UiFeedback';
@@ -30,6 +31,7 @@ const SCOPES = {
       { id: 'conn', name: '数据连接' },
       { id: 'bind', name: '知识与数据绑定' },
       { id: 'runtime', name: '空间运行参数' },
+      { id: 'mcp', name: 'MCP 接入' },
     ],
   },
   personal: {
@@ -111,6 +113,7 @@ function SectionBody({ scope, section }) {
     if (section === 'conn') return <DataConnections />;
     if (section === 'bind') return <KnowledgeBinding />;
     if (section === 'runtime') return <WorkspaceRuntime />;
+    if (section === 'mcp') return <WorkspaceMcp />;
   }
   if (scope === 'personal') {
     if (section === 'prefs') return <PersonalPrefs />;
@@ -1154,6 +1157,18 @@ function WorkspaceRuntime() {
         </div>
       )}
     </div>
+  );
+}
+
+function WorkspaceMcp() {
+  const { user, workspaceId, workspaces } = useAuthContext();
+  const ws = workspaces.find((w) => w.id === workspaceId);
+  return (
+    <McpManagement
+      currentWorkspaceId={workspaceId}
+      currentWorkspaceName={ws?.name || workspaceId}
+      canEdit={Boolean(user?.username && workspaceId)}
+    />
   );
 }
 

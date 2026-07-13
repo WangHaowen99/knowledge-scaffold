@@ -19,3 +19,5 @@ jsonschema-path>=0.3.4
 # remote 认证模式（AUTH_MODE=remote）的 JWT/JWKS 本地验签：选 PyJWT 而非 authlib——
 # authlib 对 consumer 是新的重依赖；RS256 所需 cryptography 上方已声明，无需 [crypto] extra
 PyJWT>=2.8.0
+fastmcp>=2.0.0
+uvicorn>=0.30.0

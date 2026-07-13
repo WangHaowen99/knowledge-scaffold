@@ -9,6 +9,7 @@ from agentic.business_data.providers.graph.scope import (
     build_graph_scope,
     sanitize_labels,
     sanitize_properties,
+    validate_graph_identifier,
 )
 
 
@@ -26,9 +27,37 @@ def test_build_graph_scope_uses_runtime_workspace_id():
     assert scope.ontology_value == "demo-ontology"
 
 
+def test_build_graph_scope_uses_workspace_name_when_property_is_workspace_name():
+    scope = build_graph_scope({
+        "workspace_id": "workspace-a",
+        "workspace_name": "示例工程变更空间",
+        "workspace_property": "workspace_name",
+    })
+
+    assert scope.workspace_property == "workspace_name"
+    assert scope.workspace_value == "示例工程变更空间"
+
+
+def test_build_graph_scope_requires_workspace_name_for_workspace_name_property():
+    with pytest.raises(GraphScopeError, match="workspace_name"):
+        build_graph_scope({
+            "workspace_id": "workspace-a",
+            "workspace_property": "workspace_name",
+        })
+
+
 def test_build_graph_scope_requires_workspace_id():
     with pytest.raises(GraphScopeError):
         build_graph_scope({"workspace_property": "d2o_workspace_id"})
+
+
+def test_validate_graph_identifier_allows_chinese_but_rejects_unsafe_names():
+    assert validate_graph_identifier("制造物料") == "制造物料"
+    assert validate_graph_identifier("TargetItem_制造物料1") == "TargetItem_制造物料1"
+
+    for value in ("1制造物料", "制造 物料", "制造-物料", "制造`物料"):
+        with pytest.raises(ValueError):
+            validate_graph_identifier(value)
 
 
 def test_sanitize_graph_output_hides_internal_fields():

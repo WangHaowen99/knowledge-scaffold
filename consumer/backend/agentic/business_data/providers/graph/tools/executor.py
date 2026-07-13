@@ -17,6 +17,10 @@ DATA_TOOLS = {
     "aggregate_search",
     "sorted_search",
     "pattern_search",
+    "hop_search",
+    "shortest_path",
+    "list_logic_titles",
+    "get_logic_content",
     "get_element_info",
 }
 
@@ -116,6 +120,14 @@ class GraphToolExecutor:
             return self._sorted_search(args)
         if name == "pattern_search":
             return self._pattern_search(args)
+        if name == "hop_search":
+            return self._hop_search(args)
+        if name == "shortest_path":
+            return self._shortest_path(args)
+        if name == "list_logic_titles":
+            return self._list_logic_titles(args)
+        if name == "get_logic_content":
+            return self._get_logic_content(args)
         if name == "get_element_info":
             return self._get_element_info(args)
         raise GraphToolInputError("不支持的内部图工具: {}".format(name or "<empty>"))
@@ -383,6 +395,123 @@ class GraphToolExecutor:
         )
         return GraphToolExecution("pattern_search", args, payload, backend_result)
 
+    def _hop_search(self, args: dict[str, Any]) -> GraphToolExecution:
+        entity_instance_id = str(args.get("entity_instance_id") or args.get("element_instance_id") or "").strip()
+        if not entity_instance_id:
+            raise GraphToolInputError("entity_instance_id 不能为空")
+        hop_num = _positive_int(args.get("hop_num"), default=1, upper=5)
+        accurate_flag = bool(args.get("accurate_flag", False))
+        result = self.backend.hop_search(
+            entity_instance_id=entity_instance_id,
+            hop_num=hop_num,
+            accurate_flag=accurate_flag,
+            scope=self.context.scope,
+        )
+        result_payload = _single_payload_record(result)
+        result_payload.setdefault("center_id", entity_instance_id)
+        result_payload.setdefault("hop_num", hop_num)
+        result_payload.setdefault("accurate_flag", accurate_flag)
+        result_payload.setdefault("truncated", bool(result.truncated))
+        payload = {
+            "result": result_payload,
+            "success": True,
+            "message": {"description": "N 度邻域查询成功"},
+        }
+        backend_result = GraphBackendResult(
+            records=list(result.records or []),
+            total=result.total,
+            truncated=bool(result.truncated),
+            warnings=list(result.warnings or []),
+            payload=payload,
+        )
+        return GraphToolExecution("hop_search", args, payload, backend_result)
+
+    def _shortest_path(self, args: dict[str, Any]) -> GraphToolExecution:
+        start_label = str(args.get("start_label") or "").strip()
+        end_label = str(args.get("end_label") or "").strip()
+        start_props = args.get("start_props") or {}
+        end_props = args.get("end_props") or {}
+        if not start_label:
+            raise GraphToolInputError("start_label 不能为空")
+        if not end_label:
+            raise GraphToolInputError("end_label 不能为空")
+        if not isinstance(start_props, Mapping):
+            raise GraphToolInputError("start_props 必须是对象")
+        if not isinstance(end_props, Mapping):
+            raise GraphToolInputError("end_props 必须是对象")
+        max_depth = _positive_int(args.get("max_depth"), default=15, upper=15)
+        result = self.backend.shortest_path_search(
+            start_label=start_label,
+            start_props=dict(start_props),
+            end_label=end_label,
+            end_props=dict(end_props),
+            max_depth=max_depth,
+            directed=bool(args.get("directed", False)),
+            scope=self.context.scope,
+        )
+        result_payload = {
+            "paths": list(result.records or []),
+            "count": len(result.records or []),
+            "max_depth": max_depth,
+            "directed": bool(args.get("directed", False)),
+            "truncated": bool(result.truncated),
+        }
+        payload = {
+            "result": result_payload,
+            "success": True,
+            "message": {"description": "最短路径查询成功"},
+        }
+        backend_result = GraphBackendResult(
+            records=list(result.records or []),
+            total=result.total if result.total is not None else len(result.records or []),
+            truncated=bool(result.truncated),
+            warnings=list(result.warnings or []),
+            payload=payload,
+        )
+        return GraphToolExecution("shortest_path", args, payload, backend_result)
+
+    def _list_logic_titles(self, args: dict[str, Any]) -> GraphToolExecution:
+        result = self.backend.list_logic_titles(
+            entity_type=str(args.get("entity_type") or "").strip(),
+            scope=self.context.scope,
+        )
+        items = list(result.records or [])
+        payload = {
+            "result": {"items": items, "total": result.total if result.total is not None else len(items)},
+            "success": True,
+            "message": {"description": "业务逻辑目录查询成功"},
+        }
+        backend_result = GraphBackendResult(
+            records=items,
+            total=result.total if result.total is not None else len(items),
+            truncated=bool(result.truncated),
+            warnings=list(result.warnings or []),
+            payload=payload,
+        )
+        return GraphToolExecution("list_logic_titles", args, payload, backend_result)
+
+    def _get_logic_content(self, args: dict[str, Any]) -> GraphToolExecution:
+        entity_instance_ids = _required_string_list(args.get("entity_instance_ids"), field_name="entity_instance_ids")
+        result = self.backend.get_logic_content(
+            entity_instance_ids=entity_instance_ids,
+            logic_titles=_optional_string_list(args.get("logic_titles")),
+            scope=self.context.scope,
+        )
+        items = list(result.records or [])
+        payload = {
+            "result": {"items": items, "total": result.total if result.total is not None else len(items)},
+            "success": True,
+            "message": {"description": "业务逻辑内容查询成功"},
+        }
+        backend_result = GraphBackendResult(
+            records=items,
+            total=result.total if result.total is not None else len(items),
+            truncated=bool(result.truncated),
+            warnings=list(result.warnings or []),
+            payload=payload,
+        )
+        return GraphToolExecution("get_logic_content", args, payload, backend_result)
+
     def _get_element_info(self, args: dict[str, Any]) -> GraphToolExecution:
         element_instance_id = str(args.get("element_instance_id") or args.get("element_id") or "").strip()
         if not element_instance_id:
@@ -577,6 +706,22 @@ def _optional_string_list(raw_value: Any) -> list[str] | None:
         seen.add(value)
         cleaned.append(value)
     return cleaned or None
+
+
+def _required_string_list(raw_value: Any, *, field_name: str) -> list[str]:
+    values = _optional_string_list(raw_value)
+    if not values:
+        raise GraphToolInputError("{} 必须是非空字符串数组".format(field_name))
+    return values
+
+
+def _single_payload_record(result: GraphBackendResult) -> dict[str, Any]:
+    if isinstance(result.payload, Mapping):
+        payload_result = result.payload.get("result")
+        if isinstance(payload_result, Mapping):
+            return dict(payload_result)
+    first = (result.records or [None])[0]
+    return dict(first) if isinstance(first, Mapping) else {}
 
 
 def _normalize_pattern_return_properties(raw_value: Any) -> Any | None:

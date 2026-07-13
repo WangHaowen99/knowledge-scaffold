@@ -82,6 +82,7 @@ log "Rolling back to ${PREVIOUS_VERSION}"
 compose_up "${ROLLBACK_BACKEND_IMAGE}" "${ROLLBACK_FRONTEND_IMAGE}" "${ROLLBACK_AUTH_IMAGE}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy after rollback"
+wait_for_container "onto-agent-mcp" 180 || die "MCP container did not become healthy after rollback"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy after rollback"
 wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy after rollback"
 
