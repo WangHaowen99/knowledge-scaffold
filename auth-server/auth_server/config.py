@@ -20,7 +20,7 @@ DEFAULT_ISSUER = "http://auth-server:5056"
 DEFAULT_AUDIENCE = "meta-wise"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5056
-DEFAULT_USER_MAX_COUNT = 10
+DEFAULT_USER_MAX_COUNT = 1000
 
 
 def _int_env(env: Mapping[str, str], name: str, default: int) -> int:
@@ -75,7 +75,12 @@ class AuthServerConfig:
         admin_token = str(self.admin_token or "").strip() or None
         object.__setattr__(self, "admin_token", admin_token)
 
-        object.__setattr__(self, "user_max_count", max(1, int(self.user_max_count)))
+        user_max_count = int(self.user_max_count)
+        object.__setattr__(
+            self,
+            "user_max_count",
+            0 if user_max_count == 0 else max(1, user_max_count),
+        )
 
         object.__setattr__(self, "enable_registration", bool(self.enable_registration))
 

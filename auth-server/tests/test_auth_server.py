@@ -443,6 +443,33 @@ def test_access_ttl_clamped_from_env(tmp_path):
     assert cfg.admin_token is None
 
 
+def test_user_max_count_defaults_to_1000():
+    cfg = AuthServerConfig.from_env({})
+    assert cfg.user_max_count == 1000
+
+
+def test_zero_user_max_count_allows_admin_created_users(tmp_path):
+    cfg = AuthServerConfig.from_env(
+        {
+            "AUTH_SERVER_DATA_DIR": str(tmp_path / "data"),
+            "AUTH_SERVER_ADMIN_TOKEN": ADMIN_TOKEN,
+            "AUTH_USER_MAX_COUNT": "0",
+        }
+    )
+    client = create_app(cfg).test_client()
+
+    assert create_user(client, "unlimited-admin-created").status_code == 201
+
+
+def test_zero_user_max_count_allows_registered_users(tmp_path):
+    client = create_app(
+        make_config(tmp_path, user_max_count=0, enable_registration=True)
+    ).test_client()
+
+    response = register(client, "unlimited-registered", "unlimited@example.com")
+    assert response.status_code == 200
+
+
 # ------------------------------------------------------------------ 兼容性
 
 
