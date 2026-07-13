@@ -11,11 +11,11 @@ from types import SimpleNamespace
 import pytest
 from flask import jsonify
 
-from agentic.services.auth import AuthManager, require_auth
+from api.auth.auth import AuthManager, require_auth
 
 
 def _build_app(auth_manager):
-    import agentic.app as app_module
+    import app as app_module
 
     runtime = {
         "config": SimpleNamespace(),

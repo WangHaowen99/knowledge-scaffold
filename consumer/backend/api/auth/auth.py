@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Protocol
 
 from flask import current_app, g, jsonify, request
 
@@ -35,13 +35,51 @@ class AuthUser:
         }
 
 
+@dataclass(frozen=True)
+class LoginResult:
+    """Atomic login result returned without shared, username-keyed state."""
+
+    user: AuthUser
+    access_token: str
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
+
+
 class PasswordPolicyError(ValueError):
     def __init__(self, violations: list[str]) -> None:
         self.violations = violations
         super().__init__("密码复杂度不满足要求")
 
 
+class AuthBackend(Protocol):
+    """Authentication contract shared by the remote backend and test backend."""
+
+    def login(self, username: str, password: str) -> Optional[LoginResult]: ...
+
+    def verify_token(self, token: str) -> Optional[AuthUser]: ...
+
+    def get_user(self, username: str) -> Optional[AuthUser]: ...
+
+    def list_users(self) -> list: ...
+
+    def create_user(self, username: str, password: str, role: str = "user") -> AuthUser: ...
+
+    def update_user(
+        self,
+        username: str,
+        *,
+        password: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> AuthUser: ...
+
+    def delete_user(self, username: str) -> None: ...
+
+    def change_password(self, username: str, old_password: str, new_password: str) -> AuthUser: ...
+
+
 class AuthManager:
+    """File-backed test backend; production app assembly uses RemoteAuthBackend."""
+
     PASSWORD_HASH_ITERATIONS = 600_000
     _WEAK_PASSWORDS = {
         "123456",
@@ -249,6 +287,12 @@ class AuthManager:
             self._save_users(users)
         return self._auth_user_from_record(username, record)
 
+    def login(self, username: str, password: str) -> Optional[LoginResult]:
+        user = self.authenticate(username, password)
+        if user is None:
+            return None
+        return LoginResult(user=user, access_token=self.issue_token(user))
+
     def _save_users(self, users: Dict[str, Dict[str, Any]]) -> None:
         records = []
         for record in users.values():
@@ -407,7 +451,7 @@ def _b64url_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + padding)
 
 
-def get_auth_manager() -> Optional[AuthManager]:
+def get_auth_manager() -> Optional[AuthBackend]:
     return current_app.config.get("AUTH_MANAGER")
 
 
