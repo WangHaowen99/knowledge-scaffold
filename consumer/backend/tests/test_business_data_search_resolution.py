@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from agentic.business_data.resolver import ResolvedBusinessDataConnection
-from agentic.tools.business_data_search import handle_business_data_search
+from agent.tools.business_data.resolver import ResolvedBusinessDataSource
+from agent.tools.business_data_search import handle_business_data_search
 
 
 def _fake_ontology(ontology_id):
@@ -13,15 +13,17 @@ def _fake_ontology(ontology_id):
     return object(), None
 
 
-def test_business_data_search_uses_workspace_ontology_binding(monkeypatch):
+def _install_search_fakes(monkeypatch, *, mode: str):
     captured = {"events": []}
 
-    def fake_resolve_business_data_connection(*, workspace_id, ontology_id):
+    def fake_resolve_business_data_source(*, workspace_id, ontology_id):
         captured["workspace_id"] = workspace_id
         captured["ontology_id"] = ontology_id
-        return ResolvedBusinessDataConnection(
-            id="example-nl2sql",
-            name="示例制造 NL2SQL",
+        return ResolvedBusinessDataSource(
+            ontology_id=ontology_id,
+            mode=mode,
+            id="example-nl2sql" if mode == "connection_ref" else ontology_id,
+            name="示例制造 NL2SQL" if mode == "connection_ref" else ontology_id,
             provider="nl2sql_http",
             config={
                 "url": "https://nl2sql.equipment.local",
@@ -39,25 +41,26 @@ def test_business_data_search_uses_workspace_ontology_binding(monkeypatch):
         yield {"type": "final", "content": "查询结果"}
         yield {"type": "done", "content": "完成"}
 
-    monkeypatch.setattr("agentic.tools.business_data_search.get_ontology_manifest", _fake_ontology)
+    monkeypatch.setattr("agent.tools.business_data_search.get_ontology_manifest", _fake_ontology)
     monkeypatch.setattr(
-        "agentic.tools.business_data_search.resolve_business_data_connection",
-        fake_resolve_business_data_connection,
+        "agent.tools.business_data_search.resolve_business_data_source",
+        fake_resolve_business_data_source,
     )
     monkeypatch.setattr(
-        "agentic.tools.business_data_search.query_business_data_stream",
+        "agent.tools.business_data_search.query_business_data_stream",
         fake_query_business_data_stream,
     )
+    return captured
+
+
+def test_business_data_search_uses_workspace_direct_provider(monkeypatch):
+    captured = _install_search_fakes(monkeypatch, mode="direct_provider")
 
     result = handle_business_data_search(
         ontology_id="demo-ontology",
         entity="TargetItem",
         query="  查询 TargetItem  ",
         workspace_id="demo-workspace",
-        model_profile_id="profile-main",
-        run_id="run-1",
-        session_id="session-1",
-        turn_id=7,
         event_emitter=captured["events"].append,
     )
 
@@ -68,26 +71,40 @@ def test_business_data_search_uses_workspace_ontology_binding(monkeypatch):
     assert captured["request"].ontology_id == "demo-ontology"
     assert captured["request"].entity == "TargetItem"
     assert captured["request"].query == "查询 TargetItem"
-    assert captured["request"].model_profile_id == "profile-main"
-    assert captured["request"].run_id == "run-1"
-    assert captured["request"].session_id == "session-1"
-    assert captured["request"].turn_id == 7
-    assert captured["connection"].id == "example-nl2sql"
+    assert captured["connection"].ontology_id == "demo-ontology"
+    assert captured["connection"].mode == "direct_provider"
     assert [event["type"] for event in captured["events"]] == ["start", "final", "done"]
 
 
-def test_business_data_search_reports_missing_binding(monkeypatch):
-    from agentic.business_data.resolver import BusinessDataConnectionError
+def test_business_data_search_uses_resolved_connection_ref(monkeypatch):
+    captured = _install_search_fakes(monkeypatch, mode="connection_ref")
 
-    monkeypatch.setattr("agentic.tools.business_data_search.get_ontology_manifest", _fake_ontology)
+    result = handle_business_data_search(
+        ontology_id="demo-ontology",
+        entity="TargetItem",
+        query="查询 TargetItem",
+        workspace_id="demo-workspace",
+    )
 
-    def fake_resolve_business_data_connection(*, workspace_id, ontology_id):
+    assert result == "查询结果"
+    assert captured["connection"].id == "example-nl2sql"
+    assert captured["connection"].mode == "connection_ref"
+    assert captured["connection"].provider == "nl2sql_http"
+    assert captured["connection"].config["token"] == "secret-token"
+
+
+def test_business_data_search_reports_missing_data_source(monkeypatch):
+    from agent.tools.business_data.resolver import BusinessDataConnectionError
+
+    monkeypatch.setattr("agent.tools.business_data_search.get_ontology_manifest", _fake_ontology)
+
+    def fake_resolve_business_data_source(*, workspace_id, ontology_id):
         del workspace_id, ontology_id
-        raise BusinessDataConnectionError("本体 'demo-ontology' 未绑定业务数据源")
+        raise BusinessDataConnectionError("本体 'demo-ontology' 未配置/未绑定业务数据源")
 
     monkeypatch.setattr(
-        "agentic.tools.business_data_search.resolve_business_data_connection",
-        fake_resolve_business_data_connection,
+        "agent.tools.business_data_search.resolve_business_data_source",
+        fake_resolve_business_data_source,
     )
 
     result = handle_business_data_search(
@@ -97,10 +114,13 @@ def test_business_data_search_reports_missing_binding(monkeypatch):
         workspace_id="demo-workspace",
     )
 
-    assert result == "Error: 本体 'demo-ontology' 未绑定业务数据源"
+    assert result == "Error: 本体 'demo-ontology' 未配置/未绑定业务数据源"
 
 
-def test_business_data_search_returns_structured_json_for_unexpected_runtime_error(monkeypatch):
+def test_legacy_business_data_search_returns_structured_json_for_unexpected_runtime_error(monkeypatch):
+    from agentic.business_data.resolver import ResolvedBusinessDataConnection
+    from agentic.tools.business_data_search import handle_business_data_search as legacy_search
+
     def fake_resolve_business_data_connection(*, workspace_id, ontology_id):
         del workspace_id, ontology_id
         return ResolvedBusinessDataConnection(
@@ -125,7 +145,7 @@ def test_business_data_search_returns_structured_json_for_unexpected_runtime_err
         fake_query_business_data_stream,
     )
 
-    result = handle_business_data_search(
+    result = legacy_search(
         ontology_id="demo-ontology",
         entity="SourceItem",
         query='查询SourceItem中编码或名称为"A001"的物料信息',
@@ -140,10 +160,11 @@ def test_business_data_search_returns_structured_json_for_unexpected_runtime_err
     assert "$contains" in payload["error"]
 
 
-def test_query_business_data_stream_injects_graph_runtime_context(monkeypatch):
+def test_legacy_query_business_data_stream_injects_graph_runtime_context(monkeypatch):
     from types import SimpleNamespace
 
     from agentic.business_data.provider_registry import BusinessDataProviderSpec
+    from agentic.business_data.resolver import ResolvedBusinessDataConnection
     from agentic.business_data.service import BusinessDataSearchRequest, query_business_data_stream
 
     captured = {}
@@ -174,7 +195,9 @@ def test_query_business_data_stream_injects_graph_runtime_context(monkeypatch):
     )
     monkeypatch.setattr(
         "agentic.business_data.service.get_workspace_paths",
-        lambda workspace_id: SimpleNamespace(ontologies_dir="/runtime/{}/ontologies".format(workspace_id)),
+        lambda workspace_id: SimpleNamespace(
+            ontologies_dir="/runtime/{}/ontologies".format(workspace_id)
+        ),
     )
     monkeypatch.setattr(
         "agentic.business_data.service.get_workspace",

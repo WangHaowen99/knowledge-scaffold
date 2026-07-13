@@ -41,6 +41,15 @@ class BusinessDataConnectionStoreError(ValueError):
     """Raised when a business data connection cannot be stored."""
 
 
+class BusinessDataConnectionConflictError(BusinessDataConnectionStoreError):
+    """Raised when a connection is still referenced by ontology data sources."""
+
+    def __init__(self, connection_id: str, bound_ontology_ids: List[str]) -> None:
+        self.connection_id = connection_id
+        self.bound_ontology_ids = list(bound_ontology_ids)
+        super().__init__("该连接仍被本体绑定，不能删除")
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -339,6 +348,11 @@ def update_data_connection(
 
 def delete_data_connection(connection_id: str, workspace_id: Optional[str] = None) -> None:
     resolved_id = _normalize_connection_id(connection_id)
+    from agent.tools.business_data.ontology_sources_store import list_bound_ontology_ids
+
+    bound_ontology_ids = list_bound_ontology_ids(resolved_id, workspace_id=workspace_id)
+    if bound_ontology_ids:
+        raise BusinessDataConnectionConflictError(resolved_id, bound_ontology_ids)
     document = _read_document(workspace_id)
     next_connections = [
         item for item in document["connections"]

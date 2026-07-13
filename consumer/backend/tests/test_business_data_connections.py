@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from flask import Flask
 
-from agentic.services.auth import AuthManager
-from agentic.workspaces import create_workspace, get_workspace_paths, workspace_scope
+from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace, get_workspace_paths, workspace_scope
 
 
 SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
@@ -38,8 +39,8 @@ def _create_workspace_with_ontology(tmp_path, monkeypatch, workspace_id: str = "
 
 
 def _build_test_client(tmp_path, monkeypatch):
-    from agentic.routes.business_data import business_data_bp
-    from agentic.routes.ontologies import ontologies_bp
+    from api.routes.business_data import business_data_bp
+    from api.routes.ontologies import ontologies_bp
 
     _create_workspace_with_ontology(tmp_path, monkeypatch)
 
@@ -60,10 +61,48 @@ def _build_test_client(tmp_path, monkeypatch):
     return client, {"Authorization": "Bearer {}".format(token)}
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/agentic/business-data/provider-schemas"),
+        ("GET", "/agentic/data-connections"),
+        ("POST", "/agentic/data-connections"),
+        ("PATCH", "/agentic/data-connections/example"),
+        ("DELETE", "/agentic/data-connections/example"),
+        ("POST", "/agentic/data-connections/example/default"),
+        ("POST", "/agentic/data-connections/example/test"),
+        ("GET", "/agentic/ontologies/demo-ontology/data-binding"),
+        ("PUT", "/agentic/ontologies/demo-ontology/data-binding"),
+        ("DELETE", "/agentic/ontologies/demo-ontology/data-binding"),
+        ("GET", "/agentic/ontologies/demo-ontology/data-source"),
+        ("PUT", "/agentic/ontologies/demo-ontology/data-source"),
+        ("DELETE", "/agentic/ontologies/demo-ontology/data-source"),
+        ("POST", "/agentic/ontologies/demo-ontology/data-source/test"),
+    ],
+)
+def test_business_data_routes_enforce_workspace_authz_before_access(
+    tmp_path,
+    monkeypatch,
+    method,
+    path,
+):
+    from flask import abort
+
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "api.routes.business_data.resolve_workspace_id",
+        lambda _request: abort(403),
+    )
+
+    response = client.open(path, method=method, headers=headers, json={})
+
+    assert response.status_code == 403
+
+
 def test_resolver_requires_explicit_ontology_binding(tmp_path, monkeypatch):
-    from agentic.business_data.bindings_store import set_ontology_data_binding
-    from agentic.business_data.connections_store import create_data_connection
-    from agentic.business_data.resolver import (
+    from agent.tools.business_data.ontology_sources_store import set_ontology_data_binding
+    from agent.tools.business_data.connections_store import create_data_connection
+    from agent.tools.business_data.resolver import (
         BusinessDataConnectionError,
         resolve_business_data_connection,
     )
@@ -145,15 +184,32 @@ def test_data_connection_routes_and_ontology_summary(tmp_path, monkeypatch):
     assert bind_response.status_code == 200
     assert bind_response.get_json()["binding"]["connection_id"] == "example-nl2sql"
 
+    binding_response = client.get(
+        "/agentic/ontologies/demo-ontology/data-binding",
+        headers=headers,
+    )
+    assert binding_response.status_code == 200
+    assert binding_response.get_json()["binding"]["connection_id"] == "example-nl2sql"
+    source_document = json.loads(
+        (get_workspace_paths("demo").workspace_dir / "ontology-data-sources.json").read_text(
+            encoding="utf-8",
+        )
+    )
+    source_payload = source_document["sources"]["demo-ontology"]
+    assert source_payload["mode"] == "connection_ref"
+    assert source_payload["connection_id"] == "example-nl2sql"
+    assert "provider" not in source_payload
+    assert "config" not in source_payload
+
     ontologies_response = client.get("/agentic/ontologies", headers=headers)
     assert ontologies_response.status_code == 200
     ontology = ontologies_response.get_json()["ontologies"][0]
-    assert ontology["business_data"] == {
-        "connection_id": "example-nl2sql",
-        "connection_name": "示例制造 NL2SQL",
-        "provider": "nl2sql_http",
-        "ready": True,
-    }
+    assert ontology["business_data"]["configured"] is True
+    assert ontology["business_data"]["ready"] is True
+    assert ontology["business_data"]["mode"] == "connection_ref"
+    assert ontology["business_data"]["connection_id"] == "example-nl2sql"
+    assert ontology["business_data"]["connection_name"] == "示例制造 NL2SQL"
+    assert ontology["business_data"]["provider"] == "nl2sql_http"
 
     delete_response = client.delete(
         "/agentic/data-connections/example-nl2sql",
@@ -164,7 +220,7 @@ def test_data_connection_routes_and_ontology_summary(tmp_path, monkeypatch):
 
 
 def test_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch):
-    from agentic.business_data.connections_store import (
+    from agent.tools.business_data.connections_store import (
         create_data_connection,
         get_data_connection,
         list_data_connections,
@@ -203,7 +259,7 @@ def test_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, monkeypat
 
 
 def test_graph_provider_schemas_and_secrets_are_publicized():
-    from agentic.business_data.provider_registry import list_provider_schemas, publicize_provider_config
+    from agent.tools.business_data.provider_registry import list_provider_schemas, publicize_provider_config
 
     schemas = {item["name"]: item for item in list_provider_schemas()}
 
@@ -263,7 +319,7 @@ def test_graph_provider_schemas_and_secrets_are_publicized():
 
 
 def test_neo4j_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch):
-    from agentic.business_data.connections_store import create_data_connection, list_data_connections
+    from agent.tools.business_data.connections_store import create_data_connection, list_data_connections
 
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
@@ -296,7 +352,7 @@ def test_neo4j_data_connection_secret_fields_are_encrypted_at_rest(tmp_path, mon
 
 
 def test_legacy_plaintext_data_connection_secret_is_rewritten_on_read(tmp_path, monkeypatch):
-    from agentic.business_data.connections_store import get_data_connection
+    from agent.tools.business_data.connections_store import get_data_connection
 
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
@@ -440,7 +496,7 @@ def test_data_connection_name_must_be_unique_within_workspace(tmp_path, monkeypa
 
 
 def test_data_connection_create_rejects_eleventh_connection(tmp_path, monkeypatch):
-    from agentic.business_data.connections_store import (
+    from agent.tools.business_data.connections_store import (
         BusinessDataConnectionStoreError,
         create_data_connection,
     )
@@ -764,7 +820,7 @@ def test_data_connection_test_route_probes_dataagent_legacy_agent_card(tmp_path,
 
 
 def test_data_connection_create_and_desensitize_dataagent(tmp_path, monkeypatch):
-    from agentic.business_data.connections_store import create_data_connection, get_data_connection, list_data_connections
+    from agent.tools.business_data.connections_store import create_data_connection, get_data_connection, list_data_connections
 
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
     paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
