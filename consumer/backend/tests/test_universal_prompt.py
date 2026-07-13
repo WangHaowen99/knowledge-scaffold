@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic.prompts.universal import build_universal_system_prompt
+from agent.prompts.universal import build_universal_system_prompt
 
 
 def test_universal_prompt_contains_top_level_sections_and_language_policy():
@@ -41,7 +41,7 @@ def test_universal_prompt_omits_planning_tool_usage_guidance():
 def test_subagent_prompt_omits_planning_tool_guidance():
     subagent_source = (
         Path(__file__).resolve().parents[1]
-        / "agentic"
+        / "agent"
         / "sub_agents"
         / "base.py"
     ).read_text(encoding="utf-8")
@@ -52,7 +52,7 @@ def test_subagent_prompt_omits_planning_tool_guidance():
 def test_subagent_prompt_inherits_main_parallel_batching_rules_without_tool_rule_duplication():
     subagent_source = (
         Path(__file__).resolve().parents[1]
-        / "agentic"
+        / "agent"
         / "sub_agents"
         / "base.py"
     ).read_text(encoding="utf-8")
@@ -118,12 +118,13 @@ def test_universal_prompt_includes_skill_rules():
 def test_universal_prompt_prefers_script_backed_execution():
     prompt = build_universal_system_prompt()
     # Script-backed routing is stated exactly once, in Step 4(a).
-    assert "Script-backed (工具流程)" in prompt
+    assert "Script-backed operation" in prompt
     assert "script_catalog" in prompt
+    assert "only source of truth for script-backed execution" in prompt
     assert "invoke `execute_script`" in prompt
     # Old duplicated phrasings are gone.
     assert "If `scripts-list.md` exists" not in prompt
-    assert "execute_python_script" not in prompt
+    assert "Script-backed (工具流程)" not in prompt
 
 
 def test_universal_prompt_appends_memory_context_without_memory_tool_rules():

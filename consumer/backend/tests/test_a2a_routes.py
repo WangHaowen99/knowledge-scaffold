@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 from flask import Flask
 
-from agentic.a2a.models import A2ATaskSnapshot, A2ATaskState
-from agentic.routes.a2a import a2a_bp
-from agentic.services.auth import AuthManager
+from api.protocols.a2a.models import A2ATaskSnapshot, A2ATaskState
+from api.routes.a2a import a2a_bp
+from api.auth.auth import AuthManager
 
 
 class _FakeTaskService:
@@ -65,7 +65,7 @@ def test_agent_card_is_public(tmp_path):
 def test_get_task_returns_404_for_not_found(monkeypatch, tmp_path):
     client, headers = _build_test_client(tmp_path)
 
-    monkeypatch.setattr("agentic.routes.a2a._build_task_service", lambda: _FakeTaskService())
+    monkeypatch.setattr("api.routes.a2a._build_task_service", lambda: _FakeTaskService())
 
     resp = client.get("/a2a/tasks/task-not-exists", headers=headers)
     assert resp.status_code == 404
@@ -95,11 +95,11 @@ def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tm
     )
 
     monkeypatch.setattr(
-        "agentic.routes.a2a._build_task_service",
+        "api.routes.a2a._build_task_service",
         lambda: _FakeTaskService(snapshot=snapshot),
     )
     monkeypatch.setattr(
-        "agentic.routes.a2a._get_user_stores",
+        "api.routes.a2a._get_user_stores",
         lambda: (_FakeChatStore(session=session), None),
     )
 
