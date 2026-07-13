@@ -536,11 +536,11 @@ PYTHONPATH=backend ./venv/bin/python -m agent.core.jiuwen.smoke
 - `consumer/backend/agent/tools/business_data/providers/clients/dataagent.py`
 - `consumer/backend/agent/tools/business_data/providers/clients/data_provider_client.py`
 
-- [ ] 保留本地 `OntologySearchEvent`、本体级数据源解析和 secret encryption。
-- [ ] 合入远端 `requests.Session`、urllib3 retry/backoff、`max_retries` 和 500/502/503/504 自动重试。
-- [ ] 保留 A2A 1.0 Header，兼容 `TASK_STATE_COMPLETED` 与 `completed`。
-- [ ] status message 为空时从 artifacts 提取结果。
-- [ ] 统一归一化非 JSON、HTTP 错误、自然语言答案和结构化 SQL rows；错误和日志不得泄露密钥。
+- [x] 保留本地 `OntologySearchEvent`、本体级数据源解析和 secret encryption。
+- [x] 合入远端 `requests.Session`、urllib3 retry/backoff、`max_retries` 和 500/502/503/504 自动重试。
+- [x] 保留 A2A 1.0 Header，兼容 `TASK_STATE_COMPLETED` 与 `completed`。
+- [x] status message 为空时从 artifacts 提取结果。
+- [x] 统一归一化非 JSON、HTTP 错误、自然语言答案和结构化 SQL rows；错误和日志不得泄露密钥。
 
 验证：扩展 `test_dataagent_provider.py`，覆盖 retry 次数、artifact fallback、失败状态、自然语言、SQL rows、无效 JSON 和密钥脱敏。
 
@@ -548,12 +548,12 @@ PYTHONPATH=backend ./venv/bin/python -m agent.core.jiuwen.smoke
 
 #### M4-2 合并数据连接模型
 
-- [ ] 保留本地 `ontology-data-sources.json` 和 provider secret encryption。
-- [ ] 恢复远端 `/data-connections*` CRUD/default/test。
-- [ ] 增加 `connection_ref` mode，binding 解析为共享连接。
-- [ ] 迁移旧 `ontology-bindings.json`，迁移幂等且先备份。
-- [ ] 删除连接时拒绝删除仍被引用的连接，或要求显式解除绑定；不得产生悬空引用。
-- [ ] direct/provider 与 shared/reference 都经过 workspace authz。
+- [x] 保留本地 `ontology-data-sources.json` 和 provider secret encryption。
+- [x] 恢复远端 `/data-connections*` CRUD/default/test。
+- [x] 增加 `connection_ref` mode，binding 解析为共享连接。
+- [x] 迁移旧 `ontology-bindings.json`，迁移幂等且先备份。
+- [x] 删除连接时拒绝删除仍被引用的连接，或要求显式解除绑定；不得产生悬空引用。
+- [x] direct/provider 与 shared/reference 都经过 workspace authz。
 
 验证：扩展本地 `test_ontology_data_sources.py`、`test_business_data_connections.py`，覆盖两种模式和迁移。
 
@@ -561,20 +561,20 @@ PYTHONPATH=backend ./venv/bin/python -m agent.core.jiuwen.smoke
 
 目标路径：`consumer/backend/agent/tools/business_data/providers/graph/`。
 
-- [ ] 迁移 backends、mapping、scope、models、runtime、GraphToolExecutor 和 14 类图工具。
-- [ ] 冻结 14 个工具名：`get_object_types`、`get_relation_types`、`get_nodes_schema`、`get_edges_schema`、`property_filter`、`pattern_search`、`count_search`、`aggregate_search`、`sorted_search`、`get_element_info`、`hop_search`、`shortest_path`、`list_logic_titles`、`get_logic_content`。
-- [ ] 在本地 provider registry 注册 `neo4j`、`hugegraph`。
-- [ ] 迁移 connection tester 和 provider schema。
-- [ ] 保留 `workspace_id + ontology_id` 强制 scope，禁止调用方覆盖内部 scope 字段。
-- [ ] 保留标识符校验、通配符限制、行数上限和统一 sanitize，隐藏内部 workspace/scope 字段。
-- [ ] 映射解析顺序固定为本体版本 mapping、Graph 扩展 mapping、Schema 精确匹配。
-- [ ] 保留 schema 预加载、关系三元组、路径意图、operation/rule/script 业务上下文注入。
-- [ ] 迁移 GraphQueryAgent，复用 M3 的 Jiuwen runtime/LLM profile 解析。
-- [ ] 保留批量子查询、去重、截断、标准错误码、超时、重试和 path intent。
-- [ ] Graph 内部工具只供 Graph Agent 和 MCP Search 使用，禁止注册为主 Agent 公共工具。
-- [ ] 保留图工具 trace parent，挂到外层 `business_data_search` span。
-- [ ] 本地 `/agentic/ontologies/<id>/graph` 继续表示知识包静态结构；Neo4j/HugeGraph 表示业务实例数据，两项能力分别保留。
-- [ ] 迁移图导入、scope migration 工具到 `consumer/tools/`。
+- [x] 迁移 backends、mapping、scope、models、runtime、GraphToolExecutor 和 14 类图工具。
+- [x] 冻结 14 个工具名：`get_object_types`、`get_relation_types`、`get_nodes_schema`、`get_edges_schema`、`property_filter`、`pattern_search`、`count_search`、`aggregate_search`、`sorted_search`、`get_element_info`、`hop_search`、`shortest_path`、`list_logic_titles`、`get_logic_content`。
+- [x] 在本地 provider registry 注册 `neo4j`、`hugegraph`。
+- [x] 迁移 connection tester 和 provider schema。
+- [x] 保留 `workspace_id + ontology_id` 强制 scope，禁止调用方覆盖内部 scope 字段。
+- [x] 保留标识符校验、通配符限制、行数上限和统一 sanitize，隐藏内部 workspace/scope 字段。
+- [x] 映射解析顺序固定为本体版本 mapping、Graph 扩展 mapping、Schema 精确匹配。
+- [x] 保留 schema 预加载、关系三元组、路径意图、operation/rule/script 业务上下文注入。
+- [x] 迁移 GraphQueryAgent，复用 M3 的 Jiuwen runtime/LLM profile 解析。
+- [x] 保留批量子查询、去重、截断、标准错误码、超时、重试和 path intent。
+- [x] Graph 内部工具只供 Graph Agent 和 MCP Search 使用，禁止注册为主 Agent 公共工具。
+- [x] 保留图工具 trace parent，挂到外层 `business_data_search` span。
+- [x] 本地 `/agentic/ontologies/<id>/graph` 继续表示知识包静态结构；Neo4j/HugeGraph 表示业务实例数据，两项能力分别保留。
+- [x] 迁移图导入、scope migration 工具到 `consumer/tools/`。
 
 验证：迁移并运行远端所有 `test_graph_*`、`test_neo4j_graph_backend.py`、`test_hugegraph_graph_backend.py`。
 
@@ -588,15 +588,24 @@ PYTHONPATH=backend ./venv/bin/python -m agent.core.jiuwen.smoke
 
 #### M4-4 保留 v0.1 与当前知识包格式
 
-- [ ] import 层识别远端 v0.1 和当前格式。
-- [ ] 统一转换成当前内部 manifest/catalog，运行时不维护两套分支。
-- [ ] 保留远端树浏览、raw/Markdown 预览、启停、active version、版本删除和下载能力。
-- [ ] 在本地 `ontologies.py` 上增量接入 `ontology/package_browser.py`，禁止整文件覆盖。
-- [ ] 保留远端 `GET /agentic/ontologies/<id>/tree` 和 `GET /agentic/ontologies/<id>/raw-file?path=&version=` 契约；它们与本地 `/files`、`/file` 共用一个 package browser，不形成第二套存储。
-- [ ] 浏览器排除 `origin_data`、`origin-data`、`datasets`、`dataset`、点目录和 `__pycache__`，拒绝路径穿越、符号链接、二进制文件和超过 2 MB 的文件。
-- [ ] 保留 409 覆盖活动版本确认、历史版本只读、目录筛选、面包屑和首个可查看文件自动选择。
+- [x] import 层识别远端 v0.1 和当前格式。
+- [x] 统一转换成当前内部 manifest/catalog，运行时不维护两套分支。
+- [x] 保留远端树浏览、raw/Markdown 预览、启停、active version、版本删除和下载能力。
+- [x] 在本地 `ontologies.py` 上增量接入 `ontology/package_browser.py`，禁止整文件覆盖。
+- [x] 保留远端 `GET /agentic/ontologies/<id>/tree` 和 `GET /agentic/ontologies/<id>/raw-file?path=&version=` 契约；它们与本地 `/files`、`/file` 共用一个 package browser，不形成第二套存储。
+- [x] 浏览器排除 `origin_data`、`origin-data`、`datasets`、`dataset`、点目录和 `__pycache__`，拒绝路径穿越、符号链接、二进制文件和超过 2 MB 的文件。
+- [x] 保留 409 覆盖活动版本确认、历史版本只读、目录筛选、面包屑和首个可查看文件自动选择。
 
 建议提交：`feat(ontology): preserve legacy package import in the latest runtime`
+
+Phase 4 本地自动化门禁（2026-07-13）：
+
+- DataAgent、共享连接、数据源解析与 SSE：108 passed。
+- Graph scope、mapping、provider、14 个私有工具、Jiuwen Graph Agent、Neo4j/HugeGraph adapter：74 passed；私有工具注册和清理后残留均为 0。
+- 知识包 import/browser、ontology routes 与 tool registry：157 passed。
+- 全后端回归：1109 passed，2 skipped。
+- 前端工具函数：21 passed。
+- 本机 Docker daemon 未运行，Neo4j、HugeGraph 和外部 DataAgent 的真实服务门禁未执行，保留到具备环境后的真实外部服务验收。
 
 ### Phase 5：MCP
 
