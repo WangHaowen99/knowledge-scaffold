@@ -110,7 +110,17 @@ def test_invalid_auth_user_file_fails_closed(tmp_path):
         load_auth_usernames(users_file)
 
 
-def test_audit_reports_pending_user_deletion_reconciliation(tmp_path):
+@pytest.mark.parametrize(
+    "status",
+    [
+        "pending",
+        "deleting_identity",
+        "identity_delete_unconfirmed",
+        "cleaning_consumer_artifacts",
+        "cleanup_pending",
+    ],
+)
+def test_audit_reports_pending_user_deletion_reconciliation(tmp_path, status):
     runtime_root = tmp_path / ".onto-runtime"
     users_file = tmp_path / "users.json"
     workspaces_root = runtime_root / "workspaces"
@@ -124,7 +134,7 @@ def test_audit_reports_pending_user_deletion_reconciliation(tmp_path):
                 {
                     "id": "cleanup-1",
                     "username": "alice",
-                    "status": "pending",
+                    "status": status,
                 }
             ],
         },
