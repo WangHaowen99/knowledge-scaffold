@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ontology.ontologies import OntologyManifest, get_ontology_registry
+from ontology.package_browser import (
+    PackageBrowserError,
+    list_package_files,
+    resolve_package_file,
+)
 
 ASSET_TEXT_EXTENSIONS = {
     ".conf",
@@ -81,26 +86,33 @@ def find_assets_dir(ontology_dir: Path) -> Optional[Path]:
     return None
 
 
-def build_asset_catalog(ontology_dir: Path) -> List[str]:
+def build_asset_catalog(
+    ontology_dir: Path,
+    *,
+    trusted_root: Optional[Path] = None,
+) -> List[str]:
     assets_dir = find_assets_dir(ontology_dir)
     if assets_dir is None:
         return []
 
-    keys: List[str] = []
-    base = assets_dir.resolve()
-    for path in sorted(assets_dir.rglob("*"), key=lambda item: item.relative_to(assets_dir).as_posix().lower()):
-        if not path.is_file():
-            continue
-        try:
-            resolved = path.resolve()
-            resolved.relative_to(base)
-        except ValueError:
-            continue
-        keys.append(path.relative_to(assets_dir).as_posix())
-    return keys
+    try:
+        files = list_package_files(
+            assets_dir,
+            recursive=True,
+            include_hidden_files=True,
+            trusted_root=trusted_root or ontology_dir,
+        )
+    except PackageBrowserError:
+        return []
+    return [str(item["name"]) for item in files]
 
 
-def find_asset_file(ontology_dir: Path, key: str) -> Tuple[Optional[Path], Optional[str]]:
+def find_asset_file(
+    ontology_dir: Path,
+    key: str,
+    *,
+    trusted_root: Optional[Path] = None,
+) -> Tuple[Optional[Path], Optional[str]]:
     normalized_key = str(key or "").strip().replace("\\", "/").strip("/")
     if not normalized_key:
         return None, "Error: `key` is required when resource is `asset`."
@@ -109,21 +121,19 @@ def find_asset_file(ontology_dir: Path, key: str) -> Tuple[Optional[Path], Optio
     if assets_dir is None:
         return None, "Error: asset directory not found."
 
-    requested_path = Path(normalized_key)
-    if requested_path.is_absolute() or ".." in requested_path.parts:
-        return None, "Error: Invalid asset key."
-
-    base = assets_dir.resolve()
-    candidate = (base / requested_path).resolve()
     try:
-        candidate.relative_to(base)
-    except ValueError:
+        candidate = resolve_package_file(
+            assets_dir,
+            normalized_key,
+            allow_hidden_file=True,
+            trusted_root=trusted_root or ontology_dir,
+        )
+    except PackageBrowserError as exc:
+        if exc.code == "not_found":
+            available = build_asset_catalog(ontology_dir, trusted_root=trusted_root)
+            suffix = " Available keys: {}.".format(", ".join(available[:30])) if available else ""
+            return None, "Error: asset '{}' not found.{}".format(normalized_key, suffix)
         return None, "Error: Invalid asset key."
-
-    if not candidate.exists() or not candidate.is_file():
-        available = build_asset_catalog(ontology_dir)
-        suffix = " Available keys: {}.".format(", ".join(available[:30])) if available else ""
-        return None, "Error: asset '{}' not found.{}".format(normalized_key, suffix)
 
     if not is_supported_asset_file(candidate):
         return None, (
@@ -365,7 +375,10 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
         "operations_catalog": parse_markdown_table(operations_text) or operations_text,
         "objects_catalog": parse_markdown_table(objects_text) or objects_text,
         "script_catalog": public_script_catalog(script_catalog),
-        "assets_catalog": build_asset_catalog(ontology_dir),
+        "assets_catalog": build_asset_catalog(
+            ontology_dir,
+            trusted_root=Path(ontology.manifest_path).resolve().parent,
+        ),
     }
 
 

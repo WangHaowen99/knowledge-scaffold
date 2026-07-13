@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from agentic.config import AppConfig
-from agentic.workspaces import create_workspace, get_workspace_paths
+from config import AppConfig
+from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
@@ -50,8 +50,8 @@ def test_app_config_defaults_to_onto_runtime_root(monkeypatch):
 
 
 def test_ontology_registry_loads_manifest_and_builds_section(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import build_ontologies_section, get_ontology_registry
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import build_ontologies_section, get_ontology_registry
 
     _write_example_manifest(_create_demo_workspace(tmp_path, monkeypatch, workspace_id="example"))
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
@@ -70,8 +70,8 @@ def test_ontology_registry_loads_manifest_and_builds_section(tmp_path, monkeypat
 
 
 def test_ontology_registry_uses_project_root_env(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import build_ontologies_section, get_ontology_registry
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import build_ontologies_section, get_ontology_registry
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -102,8 +102,8 @@ def test_ontology_registry_uses_project_root_env(tmp_path, monkeypatch):
 
 
 def test_disabled_ontology_is_not_exposed_to_model_context(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import (
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import (
         build_ontologies_section,
         build_selected_ontology_preload_context,
         get_ontology_registry,
@@ -155,8 +155,8 @@ def test_disabled_ontology_is_not_exposed_to_model_context(tmp_path, monkeypatch
 
 
 def test_build_ontologies_section_keeps_empty_block_for_empty_workspace(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import build_ontologies_section, get_ontology_registry
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import build_ontologies_section, get_ontology_registry
 
     _create_demo_workspace(tmp_path, monkeypatch, workspace_id="empty")
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
@@ -188,8 +188,8 @@ def test_example_ontology_manifest_contains_expected_metadata():
 
 
 def test_build_ontologies_section_honors_selected_ontology(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import build_ontologies_section
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import build_ontologies_section
 
     _write_example_manifest(_create_demo_workspace(tmp_path, monkeypatch, workspace_id="selected-example"))
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
@@ -203,8 +203,8 @@ def test_build_ontologies_section_honors_selected_ontology(tmp_path, monkeypatch
 
 
 def test_build_selected_ontology_preload_context_includes_root_docs(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import (
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import (
         SELECTED_ONTOLOGY_CONTEXT_END,
         SELECTED_ONTOLOGY_CONTEXT_START,
         build_selected_ontology_preload_context,
@@ -250,8 +250,8 @@ def test_build_selected_ontology_preload_context_includes_root_docs(tmp_path, mo
 
 
 def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import build_selected_ontology_preload_context
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import build_selected_ontology_preload_context
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, workspace_id="compact-preload")
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -313,8 +313,8 @@ def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_
 
 
 def test_registry_preload_uses_active_ontology_version(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import build_selected_ontology_preload_context, get_ontology_registry
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import build_selected_ontology_preload_context, get_ontology_registry
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, workspace_id="versioned-preload")
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
