@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from agentic.mcp.service_catalog import load_mcp_service_catalog, list_search_tools
-from agentic.mcp.tool_contracts import normalize_search_tool_args
+from integration.mcp.service_catalog import load_mcp_service_catalog, list_search_tools
+from api.protocols.mcp.tool_contracts import normalize_search_tool_args
+from api.protocols.mcp import server as mcp_server
 
 
 def test_mcp_search_extra_tools_are_advertised_as_supported():
@@ -73,3 +74,37 @@ services:
     assert len(items) == 1
     assert items[0].service_id == "custom-search"
     assert items[0].endpoint_prefix == "/custom-search"
+
+
+def test_mcp_server_registers_exactly_fourteen_private_search_tools():
+    registered = []
+
+    class FakeMCP:
+        @staticmethod
+        def tool():
+            def decorate(func):
+                registered.append(func.__name__)
+                return func
+            return decorate
+
+    mcp_server._register_search_tools(
+        FakeMCP(),
+        call_with_scope=lambda *_args, **_kwargs: {},
+    )
+
+    assert registered == [
+        "get_object_types",
+        "get_relation_types",
+        "get_nodes_schema",
+        "get_edges_schema",
+        "property_filter",
+        "pattern_search",
+        "count_search",
+        "aggregate_search",
+        "sorted_search",
+        "get_element_info",
+        "hop_search",
+        "shortest_path",
+        "list_logic_titles",
+        "get_logic_content",
+    ]

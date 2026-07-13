@@ -65,6 +65,12 @@ def create_mcp_token(
     store: MCPTokenStore | None = None,
 ) -> dict[str, Any]:
     cfg = config or load_mcp_runtime_config()
+    normalized_username = str(username or "").strip()
+    normalized_workspace_id = str(workspace_id or "").strip()
+    if not normalized_username:
+        raise MCPTokenServiceError("username 不能为空")
+    if not normalized_workspace_id:
+        raise MCPTokenServiceError("workspace_id 不能为空")
     resolved_scopes = normalize_scopes(scopes)
     ttl = _normalize_expires_in(expires_in, cfg)
     now_ts = int(time.time())
@@ -72,8 +78,8 @@ def create_mcp_token(
     payload: dict[str, Any] = {
         "iss": cfg.token_issuer,
         "aud": cfg.token_audience,
-        "sub": str(username or "").strip(),
-        "workspace_id": str(workspace_id or "").strip(),
+        "sub": normalized_username,
+        "workspace_id": normalized_workspace_id,
         "scope": " ".join(resolved_scopes),
         "jti": jti,
         "iat": now_ts,
@@ -87,7 +93,6 @@ def create_mcp_token(
     item = {
         "token_id": "mcp_{}".format(uuid.uuid4().hex),
         "jti": jti,
-        "token_value": token,
         "token_hash": hash_token(token),
         "token_masked": mask_token(token),
         "username": payload["sub"],

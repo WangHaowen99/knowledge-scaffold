@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 from starlette.applications import Starlette
 
-from agentic.mcp.config import MCPRuntimeConfig
-from agentic.mcp import server as mcp_server
-from agentic.mcp.service_catalog import list_mcp_service_cards
+from integration.mcp.config import MCPRuntimeConfig
+from api.protocols.mcp import server as mcp_server
+from integration.mcp.service_catalog import list_mcp_service_cards
 
 
 def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
@@ -98,3 +98,35 @@ def test_mcp_service_catalog_reports_only_exposed_transport_urls(tmp_path):
     assert sse_search["mcp_url"] == ""
     assert sse_search["sse_url"] == "http://mcp.example/search/sse"
     assert sse_search["sse_enabled"] is True
+
+
+def test_mcp_http_root_app_mounts_all_four_endpoints_for_both_transport(monkeypatch, tmp_path):
+    captured_transports: list[str] = []
+
+    class FakeMcpServer:
+        def http_app(self, *, path: str, transport: str):
+            captured_transports.append(transport)
+            return Starlette()
+
+    monkeypatch.setattr(
+        mcp_server,
+        "load_mcp_service_catalog",
+        lambda: [
+            SimpleNamespace(service_id="meta-wise-search", toolset="search", endpoint_prefix="/search"),
+            SimpleNamespace(service_id="meta-wise-chat", toolset="chat", endpoint_prefix="/chat"),
+        ],
+    )
+    monkeypatch.setattr(mcp_server, "create_mcp_server", lambda *_args, **_kwargs: FakeMcpServer())
+
+    cfg = MCPRuntimeConfig(**{**_config(tmp_path, "streamable-http").__dict__, "transport": "both"})
+    app = mcp_server.create_mcp_http_root_app(cfg)
+    route_paths = {route.path for route in app.routes}
+
+    assert {"/search/mcp", "/chat/mcp", "/search/sse", "/chat/sse", "/health"} <= route_paths
+    assert captured_transports.count("streamable-http") == 2
+    assert captured_transports.count("sse") == 2
+
+    cards = list_mcp_service_cards(cfg)
+    search = next(card for card in cards if card["toolset"] == "search")
+    assert search["streamable_http_url"] == "http://mcp.example/search/mcp"
+    assert search["sse_url"] == "http://mcp.example/search/sse"

@@ -21,7 +21,7 @@ from .workspaces import workspaces_bp
 from .business_data import business_data_bp
 from .a2a import a2a_bp
 from .performance import performance_bp
-from .mcp import mcp_bp
+from api.routes.mcp import mcp_bp
 from ..acp.server import acp_bp, set_orchestrator as acp_set_orchestrator
 
 logger = get_logger("routes")

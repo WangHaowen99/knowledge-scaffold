@@ -624,20 +624,20 @@ Phase 4 本地自动化门禁（2026-07-13）：
 
 执行：
 
-- [ ] MCP 保持独立进程，默认端口 7488；提供 `/health`。
-- [ ] 保留 Streamable HTTP 的 `/search/mcp`、`/chat/mcp` 和 SSE 的 `/search/sse`、`/chat/sse`。
-- [ ] 保留 FastMCP streamable-http/SSE 两种 transport。
-- [ ] 保留 search/chat toolset 和服务目录。
-- [ ] 保留用户+workspace scope 的 Token 创建、列表、吊销、过期和 last-used。
-- [ ] Token 明文只在 POST 创建响应出现一次；磁盘只存 jti/hash、masked token 和元数据，GET 列表永不返回明文。
-- [ ] 为存量 `token_value` 提供一次性清理迁移，迁移前备份，完成后扫描磁盘和 API 响应确认无明文。
-- [ ] `MCP_TOKEN_SECRET` 必须独立配置；生产禁止开发默认值。
-- [ ] 每次 MCP 调用重新检查 token registry 状态和当前 workspace membership。
-- [ ] search adapter 复用 M4 Graph runtime，直接暴露 14 个确定性图工具，不调用 LLM。
-- [ ] chat adapter 通过 consumer backend 的内部 workflow bridge 进入 canonical Jiuwen orchestrator 和 `RunAdmissionQueue`；独立 MCP 进程不得创建模块级 orchestrator 单例。
-- [ ] backend bridge 在服务端重新验证 MCP token、scope、subject 和当前 workspace membership；创建的 run/session owner 必须是 token subject。
-- [ ] queued chat 在配置的等待时间内等待 admission；超时返回结构化错误，不绕过队列。
-- [ ] awaiting-input 必须返回明确的可恢复状态、run_id 和 session_id，禁止伪装成成功完成。
+- [x] MCP 保持独立进程，默认端口 7488；提供 `/health`。
+- [x] 保留 Streamable HTTP 的 `/search/mcp`、`/chat/mcp` 和 SSE 的 `/search/sse`、`/chat/sse`。
+- [x] 保留 FastMCP streamable-http/SSE 两种 transport。
+- [x] 保留 search/chat toolset 和服务目录。
+- [x] 保留用户+workspace scope 的 Token 创建、列表、吊销、过期和 last-used。
+- [x] Token 明文只在 POST 创建响应出现一次；磁盘只存 jti/hash、masked token 和元数据，GET 列表永不返回明文。
+- [x] 为存量 `token_value` 提供一次性清理迁移，迁移前备份，完成后扫描磁盘和 API 响应确认无明文。
+- [x] `MCP_TOKEN_SECRET` 必须独立配置；生产禁止开发默认值。
+- [x] 每次 MCP 调用重新检查 token registry 状态和当前 workspace membership。
+- [x] search adapter 复用 M4 Graph runtime，直接暴露 14 个确定性图工具，不调用 LLM。
+- [x] chat adapter 通过 consumer backend 的内部 workflow bridge 进入 canonical Jiuwen orchestrator 和 `RunAdmissionQueue`；独立 MCP 进程不得创建模块级 orchestrator 单例。
+- [x] backend bridge 在服务端重新验证 MCP token、scope、subject 和当前 workspace membership；创建的 run/session owner 必须是 token subject。
+- [x] queued chat 在配置的等待时间内等待 admission；超时返回结构化错误，不绕过队列。
+- [x] awaiting-input 必须返回明确的可恢复状态、run_id 和 session_id，禁止伪装成成功完成。
 
 验证：
 
@@ -652,6 +652,13 @@ PYTHONPATH=backend ./venv/bin/python -m pytest \
 真实服务门禁：7488 health、四个端点、wrong scope、expired、revoked、跨 workspace token、chat run owner、重启后 token metadata 全部验证。
 
 建议提交：`feat(mcp): rebase search and chat services on the latest runtime`
+
+Phase 5 本地自动化门禁（2026-07-13）：
+
+- MCP Token、scope、14 个 search tools、transport、chat bridge、用户删除清理和相邻路由：38 passed。
+- 真实 Uvicorn/FastMCP 临时进程健康检查返回 200，四个 search/chat Streamable HTTP/SSE 路由均已挂载。
+- 全后端回归：1119 passed，2 skipped。
+- 未调用外部 Neo4j、HugeGraph 或 LLM；这些调用保留到具备真实服务凭据后的 U2 门禁。
 
 ### Phase 6：Trace 和观测
 

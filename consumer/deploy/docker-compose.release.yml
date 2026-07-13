@@ -31,7 +31,7 @@ services:
     image: ${BACKEND_IMAGE}
     container_name: onto-agent-mcp
     restart: unless-stopped
-    command: ["python", "-m", "agentic.mcp.server"]
+    command: ["python", "-m", "api.protocols.mcp.server"]
     ports:
       - "${MCP_SERVER_PORT:-7488}:7488"
     volumes:
@@ -44,6 +44,8 @@ services:
       - PROJECT_ROOT=/app/.onto-runtime
       - MCP_SERVER_HOST=0.0.0.0
       - MCP_SERVER_PORT=7488
+      - MCP_TRANSPORT=both
+      - MCP_AGENTIC_BASE_URL=http://backend:5055
     depends_on:
       - backend
     healthcheck:

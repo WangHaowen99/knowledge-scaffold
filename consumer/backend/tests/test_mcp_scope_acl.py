@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from agentic.mcp.config import MCPRuntimeConfig
-from agentic.mcp.scope import resolve_mcp_scope_from_token
-from agentic.mcp.token_service import MCPTokenAuthError, create_mcp_token
+from integration.mcp.config import MCPRuntimeConfig
+from integration.mcp.scope import resolve_mcp_scope_from_token
+from integration.mcp.token_service import MCPTokenAuthError, create_mcp_token
 
 
 def _config(path: Path) -> MCPRuntimeConfig:

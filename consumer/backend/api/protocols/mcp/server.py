@@ -12,10 +12,10 @@ from typing import Annotated, Any, Callable, Mapping
 from pydantic import Field
 
 from .chat_adapter import execute_chat_tool
-from .config import MCPRuntimeConfig, load_mcp_runtime_config
-from .scope import MCPRequestScope, auth_error_payload, extract_bearer_token, resolve_mcp_scope_from_token
+from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
+from integration.mcp.scope import MCPRequestScope, auth_error_payload, extract_bearer_token, resolve_mcp_scope_from_token
 from .search_adapter import execute_search_tool
-from .service_catalog import load_mcp_service_catalog
+from integration.mcp.service_catalog import load_mcp_service_catalog
 
 StringListInput = list[str] | str | None
 DictInput = dict[str, Any] | str | None
@@ -33,7 +33,7 @@ def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = 
         try:
             scope = _resolve_scope(cfg, required_scope=required_scope)
         except Exception as exc:
-            from .token_service import MCPTokenAuthError
+            from integration.mcp.token_service import MCPTokenAuthError
 
             if isinstance(exc, MCPTokenAuthError):
                 return auth_error_payload(exc)
@@ -231,7 +231,11 @@ def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[M
 def _resolve_scope(cfg: MCPRuntimeConfig, *, required_scope: str) -> MCPRequestScope:
     headers = _get_headers_best_effort()
     token = extract_bearer_token(headers) or os.getenv("MCP_BEARER_TOKEN", "").strip()
-    return resolve_mcp_scope_from_token(token, required_scope=required_scope)
+    return resolve_mcp_scope_from_token(
+        token,
+        required_scope=required_scope,
+        traceparent=str(headers.get("traceparent") or "").strip(),
+    )
 
 
 def _get_headers_best_effort() -> Mapping[str, str]:
@@ -256,19 +260,19 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
     from starlette.routing import Mount, Route
 
     cfg = config or load_mcp_runtime_config()
-    normalized_transport = _normalize_http_transport(transport or cfg.transport)
-    endpoint_path = "/sse" if normalized_transport == "sse" else "/mcp"
     mounted_apps = []
     routes = []
     for item in load_mcp_service_catalog():
-        server = create_mcp_server(cfg, toolset=item.toolset)
-        subapp = server.http_app(path="/", transport=normalized_transport)
-        mounted_apps.append(subapp)
-        routes.append(Mount(
-            "{}{}".format(item.endpoint_prefix, endpoint_path),
-            app=subapp,
-            name="{}-{}".format(item.service_id, normalized_transport),
-        ))
+        for normalized_transport in _normalize_http_transports(transport or cfg.transport):
+            endpoint_path = "/sse" if normalized_transport == "sse" else "/mcp"
+            server = create_mcp_server(cfg, toolset=item.toolset)
+            subapp = server.http_app(path="/", transport=normalized_transport)
+            mounted_apps.append(subapp)
+            routes.append(Mount(
+                "{}{}".format(item.endpoint_prefix, endpoint_path),
+                app=subapp,
+                name="{}-{}".format(item.service_id, normalized_transport),
+            ))
 
     async def health(_request):
         return JSONResponse({"status": "ok"})
@@ -285,12 +289,14 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
     return Starlette(routes=routes, lifespan=lifespan)
 
 
-def _normalize_http_transport(value: str | None) -> str:
-    transport = str(value or "streamable-http").strip().lower()
+def _normalize_http_transports(value: str | None) -> tuple[str, ...]:
+    transport = str(value or "both").strip().lower()
     if transport == "http":
-        return "streamable-http"
+        transport = "streamable-http"
+    if transport == "both":
+        return ("streamable-http", "sse")
     if transport in {"streamable-http", "sse"}:
-        return transport
+        return (transport,)
     raise ValueError("HTTP 模式不支持 transport={!r}".format(value))
 
 
@@ -345,7 +351,7 @@ def _suppress_fastmcp_authlib_deprecation_warning() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run MetaWise MCP Server")
-    parser.add_argument("--transport", default="", choices=["", "streamable-http", "sse", "stdio"])
+    parser.add_argument("--transport", default="", choices=["", "both", "streamable-http", "sse", "stdio"])
     parser.add_argument("--host", default="")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--toolset", default="all", choices=["search", "chat", "all"])

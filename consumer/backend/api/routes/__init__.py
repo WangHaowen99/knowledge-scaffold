@@ -23,6 +23,7 @@ from api.routes.business_data import business_data_bp
 from api.routes.a2a import a2a_bp
 from api.routes.performance import performance_bp
 from api.routes.memories import memories_bp
+from api.routes.mcp import mcp_bp
 from api.routes.errors import workspace_not_found_response
 from api.protocols.acp.server import acp_bp, set_orchestrator as acp_set_orchestrator
 from agent.skill_evolution.registry import init_skill_evolution_worker
@@ -70,6 +71,7 @@ def register_routes(
     app.register_blueprint(a2a_bp)
     app.register_blueprint(performance_bp)
     app.register_blueprint(memories_bp)
+    app.register_blueprint(mcp_bp)
     app.register_blueprint(acp_bp)
     app.register_blueprint(skill_evolution_bp)
     app.register_error_handler(WorkspaceNotFoundError, workspace_not_found_response)
