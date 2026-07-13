@@ -13,6 +13,10 @@ export interface AgenticRunStreamOptions {
   signal?: AbortSignal;
 }
 
+export interface AgenticRunEventsOptions extends AgenticRunStreamOptions {
+  afterSeq?: number;
+}
+
 export class AgenticRunsApi {
   constructor(private readonly http: HttpClient) {}
 
@@ -35,6 +39,30 @@ export class AgenticRunsApi {
     return this.http.get<AgenticRunStatus>(`/agentic/runs/${encodeURIComponent(runId)}/status`, {
       signal: options.signal,
     });
+  }
+
+  async events(
+    runId: string,
+    options: AgenticRunEventsOptions = {},
+  ): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
+    const cursor = Math.max(0, Math.trunc(options.afterSeq || 0));
+    const source = await this.http.stream(
+      'GET',
+      `/agentic/runs/${encodeURIComponent(runId)}/events`,
+      {
+        query: { after_seq: cursor },
+        headers: cursor ? { 'Last-Event-ID': String(cursor) } : undefined,
+        signal: options.signal,
+      },
+    );
+    return mapAbortableStream(source, normalizeAgenticSseMessage);
+  }
+
+  resume(
+    runId: string,
+    options: AgenticRunEventsOptions = {},
+  ): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
+    return this.events(runId, options);
   }
 
   cancel(
