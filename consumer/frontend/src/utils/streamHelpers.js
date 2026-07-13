@@ -676,7 +676,7 @@ const buildToolEventFromPayload = (type, payload, ts) => {
       kind: 'tool',
       toolCallId,
       toolName,
-      finishedStatus: payload?.status === 'error' ? 'error' : 'completed',
+      finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
       output: payload?.output_preview || '',
       error: payload?.error || '',
       ts,

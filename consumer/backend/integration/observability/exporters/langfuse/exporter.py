@@ -186,17 +186,22 @@ class LangfuseExporter:
         label = str(payload.get("request_label") or "")
         caller = str(payload.get("caller") or "main")
         iteration = payload.get("iteration")
+        call_index = payload.get("call_index")
         self._record_llm_started(event.run_id, payload)
-        name = (
-            "llm:reasoning_summary"
-            if label == RuntimeRequestLabel.REASONING_SUMMARY
-            else "llm:{}_iteration".format(caller)
-        )
+        if label == RuntimeRequestLabel.REASONING_SUMMARY:
+            name = "llm:reasoning_summary"
+        elif call_index is not None and iteration is not None:
+            name = "llm:{}_iteration_{}_call_{}".format(caller, iteration, call_index)
+        else:
+            name = "llm:{}_iteration".format(caller)
+        tags = ["llm", caller] + (["iteration_{}".format(iteration)] if iteration is not None else [])
+        if call_index is not None:
+            tags.append("call_{}".format(call_index))
         span_id = self._trace.create_llm_span(
             trace_id=trace_id,
             name=name,
             metadata=_metadata_without_payload(payload, {"input"}),
-            tags=["llm", caller] + (["iteration_{}".format(iteration)] if iteration is not None else []),
+            tags=tags,
             parent_observation_id=self._span_id(event.run_id, event.parent_key),
             input=payload.get("input"),
             model=payload.get("model"),

@@ -89,7 +89,7 @@ class ToolProgressPayload(TypedDict, total=False):
 class ToolFinishedPayload(TypedDict, total=False):
     tool_call_id: str
     tool_name: str
-    status: Literal["completed", "error"]
+    status: Literal["completed", "error", "cancelled"]
     output_preview: str
     output_truncated: bool
     error: str

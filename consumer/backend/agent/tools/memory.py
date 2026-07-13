@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import Future, ThreadPoolExecutor
+import threading
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
-from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.evolution import append_operation_proposal_with_relations, get_proposal_buffer
+from agent.exceptions import WorkflowCancelledError
 from agent.memory.models import MEMORY_TYPE_TO_DIR
+from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from llm import LLMPurpose, get_llm_router
 from utils.json_utils import _loads_json_object_loose
 from utils.logging import get_logger
@@ -25,7 +27,7 @@ logger = get_logger("tools.memory")
 _MEMORY_TYPES = set(MEMORY_TYPE_TO_DIR)
 _EVOLUTION_KINDS = {"procedure", "pitfall", "schema"}
 _MEMORY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-classifier")
-_MEMORY_FUTURES: Set[Future] = set()
+_MEMORY_FUTURES_BY_RUN: Dict[Optional[str], Set[Future]] = {}
 _MEMORY_FUTURES_LOCK = Lock()
 
 MEMORY_TOOL_SCHEMA: Dict[str, Any] = {
@@ -157,6 +159,42 @@ class _MemoryTaskContext:
     workspace_id: Optional[str]
     selected_ontology_id: Optional[str]
     read_documents: Optional[Dict[str, Any]]
+    cancel_event: Optional[threading.Event]
+
+
+def _raise_if_memory_cancelled(context: Optional[_MemoryTaskContext]) -> None:
+    if context is None or context.cancel_event is None or not context.cancel_event.is_set():
+        return
+    raise WorkflowCancelledError(
+        "Workflow cancelled by user",
+        details={"run_id": context.run_id},
+    )
+
+
+@dataclass(frozen=True)
+class _CancellationAwareProposalBuffer:
+    """Check cancellation at every storage boundary used by proposal writes."""
+
+    buffer: Any
+    context: _MemoryTaskContext
+
+    def recall(self, *args: Any, **kwargs: Any) -> Any:
+        _raise_if_memory_cancelled(self.context)
+        result = self.buffer.recall(*args, **kwargs)
+        _raise_if_memory_cancelled(self.context)
+        return result
+
+    def reject(self, *args: Any, **kwargs: Any) -> Any:
+        _raise_if_memory_cancelled(self.context)
+        result = self.buffer.reject(*args, **kwargs)
+        _raise_if_memory_cancelled(self.context)
+        return result
+
+    def append(self, *args: Any, **kwargs: Any) -> Any:
+        _raise_if_memory_cancelled(self.context)
+        result = self.buffer.append(*args, **kwargs)
+        _raise_if_memory_cancelled(self.context)
+        return result
 
 
 def _strip_json_fence(text: str) -> str:
@@ -272,7 +310,9 @@ def _call_memory_llm(
     payload: Any,
     max_tokens: int,
     request_label: str,
+    context: Optional[_MemoryTaskContext] = None,
 ) -> Dict[str, Any]:
+    _raise_if_memory_cancelled(context)
     user_content = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     response = get_llm_router().call(
         purpose=LLMPurpose.MEMORY,
@@ -288,30 +328,37 @@ def _call_memory_llm(
         run_id=None,
         request_label=request_label,
     )
-    return _parse_memory_payload(response.content)
+    _raise_if_memory_cancelled(context)
+    result = _parse_memory_payload(response.content)
+    _raise_if_memory_cancelled(context)
+    return result
 
 
 def _route_memory_destination(
     *,
     content: str,
+    context: Optional[_MemoryTaskContext] = None,
 ) -> Dict[str, Any]:
     return _call_memory_llm(
         system_prompt=_ROUTER_SYSTEM_PROMPT,
         payload={"content": content},
         max_tokens=250,
         request_label="memory_route",
+        context=context,
     )
 
 
 def _extract_ordinary_memory(
     *,
     content: str,
+    context: Optional[_MemoryTaskContext] = None,
 ) -> Dict[str, Any]:
     return _call_memory_llm(
         system_prompt=_ORDINARY_EXTRACTOR_SYSTEM_PROMPT,
         payload={"content": content},
         max_tokens=500,
         request_label="memory_extract_ordinary",
+        context=context,
     )
 
 
@@ -329,6 +376,7 @@ def _extract_operation_memory(
         payload=operation_input,
         max_tokens=700,
         request_label="memory_extract_operation",
+        context=context,
     )
 
 
@@ -337,9 +385,11 @@ def _ordinary_relation_candidates(
     memory_manager: "MemoryManager",
     content: str,
     memory_type: str,
+    context: Optional[_MemoryTaskContext] = None,
 ) -> List[Any]:
+    _raise_if_memory_cancelled(context)
     try:
-        return memory_manager.recall_memory(
+        candidates = memory_manager.recall_memory(
             query=content,
             memory_type=memory_type,
             scope="user",
@@ -348,16 +398,22 @@ def _ordinary_relation_candidates(
             k=20,
             include_archived=False,
         )
+    except WorkflowCancelledError:
+        raise
     except Exception:
         logger.warning("ordinary memory candidate recall failed; appending as new", exc_info=True)
         return []
+    _raise_if_memory_cancelled(context)
+    return candidates
 
 
 def _judge_ordinary_relations(
     *,
     new_item: Dict[str, Any],
     candidates: List[Any],
+    context: Optional[_MemoryTaskContext] = None,
 ) -> Dict[str, Dict[str, str]]:
+    _raise_if_memory_cancelled(context)
     if not candidates:
         return {}
     payload = {
@@ -383,7 +439,10 @@ def _judge_ordinary_relations(
             payload=payload,
             max_tokens=900,
             request_label="memory_relation_ordinary",
+            context=context,
         )
+    except WorkflowCancelledError:
+        raise
     except Exception:
         logger.warning("ordinary memory relation judgment failed; appending as new", exc_info=True)
         return {}
@@ -414,6 +473,7 @@ def _classify_memory_item(
 ) -> Dict[str, Any]:
     route = _route_memory_destination(
         content=content,
+        context=context,
     )
     destination = _safe_str(route.get("destination")).lower()
     route_reason = _safe_str(route.get("reason"))
@@ -427,6 +487,7 @@ def _classify_memory_item(
     else:
         extracted = _extract_ordinary_memory(
             content=content,
+            context=context,
         )
         extracted["destination"] = "ordinary_memory"
 
@@ -464,7 +525,9 @@ def _store_ordinary_memory(
     route: Dict[str, Any],
     memory_manager: "MemoryManager",
     session_id: Optional[str],
+    context: Optional[_MemoryTaskContext] = None,
 ) -> Dict[str, Any]:
+    _raise_if_memory_cancelled(context)
     memory_type = _safe_str(route.get("memory_type")).lower()
     if memory_type not in _MEMORY_TYPES:
         memory_type = "preference"
@@ -473,10 +536,12 @@ def _store_ordinary_memory(
         memory_manager=memory_manager,
         content=content,
         memory_type=memory_type,
+        context=context,
     )
     relation_decisions = _judge_ordinary_relations(
         new_item={"content": content, "memory_type": memory_type},
         candidates=candidates,
+        context=context,
     )
 
     duplicate_candidate = next(
@@ -493,6 +558,7 @@ def _store_ordinary_memory(
         decision = relation_decisions.get(candidate.source_uri) or {}
         relation = decision.get("relation")
         if relation in {"supersedes", "refines", "conflicts"}:
+            _raise_if_memory_cancelled(context)
             try:
                 archived = memory_manager.archive_memory(
                     source_uri=candidate.source_uri,
@@ -505,11 +571,13 @@ def _store_ordinary_memory(
                     exc_info=True,
                 )
                 archived = False
+            _raise_if_memory_cancelled(context)
             if archived:
                 archived_source_uris.append(candidate.source_uri)
                 relation_summary[candidate.source_uri] = relation
 
     store_content = duplicate_candidate.content if duplicate_candidate is not None else content
+    _raise_if_memory_cancelled(context)
     result = memory_manager.store_memory(
         content=store_content,
         memory_type=memory_type,
@@ -518,6 +586,7 @@ def _store_ordinary_memory(
         app_session_id=session_id,
         source="explicit",
     )
+    _raise_if_memory_cancelled(context)
     payload = result.to_dict()
     payload["destination"] = "ordinary_memory"
     if duplicate_candidate is not None:
@@ -556,6 +625,7 @@ def _store_operation_evolution(
                 route=fallback_route,
                 memory_manager=context.memory_manager,
                 session_id=context.session_id,
+                context=context,
             )
             payload["fallback_from"] = "operation_evolution"
             return payload
@@ -566,7 +636,11 @@ def _store_operation_evolution(
             "error": "Operation evolution scope missing and memory manager not available.",
         }
 
-    buffer = get_proposal_buffer()
+    _raise_if_memory_cancelled(context)
+    buffer = _CancellationAwareProposalBuffer(
+        buffer=get_proposal_buffer(),
+        context=context,
+    )
     write_result = append_operation_proposal_with_relations(
         buffer=buffer,
         workspace_id=context.workspace_id,
@@ -580,6 +654,7 @@ def _store_operation_evolution(
         run_id=context.run_id,
         user_id=None,
     )
+    _raise_if_memory_cancelled(context)
     aggregate = write_result.aggregate
     aggregate_payload = aggregate.to_dict()
     payload = {
@@ -606,6 +681,7 @@ def _store_operation_evolution(
 
 
 def _process_memory_task(content: str, context: _MemoryTaskContext) -> Dict[str, Any]:
+    _raise_if_memory_cancelled(context)
     route = _classify_memory_item(
         content=content,
         context=context,
@@ -615,6 +691,7 @@ def _process_memory_task(content: str, context: _MemoryTaskContext) -> Dict[str,
         context,
         content,
     )
+    _raise_if_memory_cancelled(context)
     destination = _safe_str(route.get("destination")).lower()
     if destination == "ordinary_memory":
         if not context.memory_manager:
@@ -628,6 +705,7 @@ def _process_memory_task(content: str, context: _MemoryTaskContext) -> Dict[str,
             route=route,
             memory_manager=context.memory_manager,
             session_id=context.session_id,
+            context=context,
         )
     if destination == "operation_evolution":
         return _store_operation_evolution(route=route, context=context)
@@ -647,6 +725,7 @@ def _process_memory_task(content: str, context: _MemoryTaskContext) -> Dict[str,
         },
         memory_manager=context.memory_manager,
         session_id=context.session_id,
+        context=context,
     )
 
 
@@ -677,11 +756,18 @@ def store_user_memory(
     )
 
 
-def _on_memory_task_done(future: Future) -> None:
+def _on_memory_task_done(future: Future, *, run_id: Optional[str]) -> None:
     with _MEMORY_FUTURES_LOCK:
-        _MEMORY_FUTURES.discard(future)
+        run_futures = _MEMORY_FUTURES_BY_RUN.get(run_id)
+        if run_futures is not None:
+            run_futures.discard(future)
+            if not run_futures:
+                _MEMORY_FUTURES_BY_RUN.pop(run_id, None)
     try:
         result = future.result()
+    except (CancelledError, WorkflowCancelledError):
+        logger.info("async memory task cancelled for run %s", run_id)
+        return
     except Exception:
         logger.exception("async memory task failed")
         return
@@ -689,19 +775,41 @@ def _on_memory_task_done(future: Future) -> None:
 
 
 def _submit_memory_task(content: str, context: _MemoryTaskContext) -> Future:
+    _raise_if_memory_cancelled(context)
     future = _MEMORY_EXECUTOR.submit(_process_memory_task, content, context)
     with _MEMORY_FUTURES_LOCK:
-        _MEMORY_FUTURES.add(future)
-    future.add_done_callback(_on_memory_task_done)
+        _MEMORY_FUTURES_BY_RUN.setdefault(context.run_id, set()).add(future)
+    future.add_done_callback(
+        lambda completed, run_id=context.run_id: _on_memory_task_done(
+            completed,
+            run_id=run_id,
+        )
+    )
+    if context.cancel_event is not None and context.cancel_event.is_set():
+        future.cancel()
     return future
 
 
-def wait_for_memory_tasks(timeout: Optional[float] = None) -> None:
-    """Wait for currently queued memory tasks. Test seam."""
+def wait_for_memory_tasks(
+    timeout: Optional[float] = None,
+    *,
+    run_id: Optional[str] = None,
+) -> None:
+    """Wait for queued memory tasks, optionally scoped to one run. Test seam."""
     with _MEMORY_FUTURES_LOCK:
-        futures = list(_MEMORY_FUTURES)
+        if run_id is None:
+            futures = [
+                future
+                for run_futures in _MEMORY_FUTURES_BY_RUN.values()
+                for future in run_futures
+            ]
+        else:
+            futures = list(_MEMORY_FUTURES_BY_RUN.get(run_id, ()))
     for future in futures:
-        future.result(timeout=timeout)
+        try:
+            future.result(timeout=timeout)
+        except (CancelledError, WorkflowCancelledError):
+            continue
 
 
 def handle_memory(
@@ -724,6 +832,7 @@ def handle_memory(
             workspace_id=context.workspace_id,
             selected_ontology_id=context.selected_ontology_id,
             read_documents=dict(context.read_documents or {}),
+            cancel_event=context.cancel_event,
         )
         _submit_memory_task(content, task_context)
         return json.dumps(
@@ -734,6 +843,8 @@ def handle_memory(
             },
             ensure_ascii=False,
         )
+    except WorkflowCancelledError:
+        raise
     except Exception as exc:
         logger.exception("memory tool failed")
         return json.dumps(

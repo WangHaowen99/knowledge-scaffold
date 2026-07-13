@@ -104,6 +104,13 @@ def emit_tool_finished(
     elapsed_ms: int,
 ) -> None:
     preview, truncated = _truncate_text(raw_output, limit=4096)
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status in {"cancelled", "canceled"}:
+        normalized_status = "cancelled"
+    elif normalized_status == "error":
+        normalized_status = "error"
+    else:
+        normalized_status = "completed"
     emit_protocol_event(
         context=context,
         event_type="tool.finished",
@@ -111,7 +118,7 @@ def emit_tool_finished(
         payload={
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
-            "status": "error" if status == "error" else "completed",
+            "status": normalized_status,
             "output_preview": preview,
             "output_truncated": truncated,
             "error": error,

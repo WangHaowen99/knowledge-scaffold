@@ -102,6 +102,11 @@ class OpenAICompatiblePayloadAdapter(ProviderPayloadAdapter):
         payload.update(DeepSeekPayloadAdapter().extra_body(enable_reasoning=enable_reasoning))
         return payload
 
+    def normalize_usage(self, usage: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = super().normalize_usage(usage)
+        normalized = DeepSeekPayloadAdapter().normalize_usage(normalized)
+        return GLMPayloadAdapter().normalize_usage(normalized)
+
 
 _DEFAULT_ADAPTER = ProviderPayloadAdapter()
 _PROVIDER_ADAPTERS: Dict[str, ProviderPayloadAdapter] = {
