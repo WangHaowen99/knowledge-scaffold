@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Loader2, LogOut } from 'lucide-react';
+import { KeyRound, Loader2, LogOut, ShieldCheck } from 'lucide-react';
 import { evaluatePasswordRules } from '../utils/passwordPolicy';
 
 function ForceChangePasswordPage({ user, onChangePassword, onLogout, error = null }) {
@@ -33,14 +33,22 @@ function ForceChangePasswordPage({ user, onChangePassword, onLogout, error = nul
   };
 
   return (
-    <div className="login-page">
-      <div className="login-card force-password-card">
-        <div className="login-header">
-          <div className="login-brand">首次登录修改密码</div>
-          <p className="login-subtitle">账号 {user?.username || ''} 需要设置新的登录密码。</p>
+    <div className="mwr login force-login">
+      <div className="lbrand">
+        <img className="mk" src="/brand-mark.png" alt="" aria-hidden="true" />
+        <h1>知识工程工具</h1>
+        <div className="tg">首次登录需要更新初始密码，以保护账号和工作空间数据安全。</div>
+        <div className="feats">
+          <div className="feat"><div className="fi"><KeyRound size={17} /></div><div><div className="ft">设置专属密码</div><div className="fd">密码仅由你掌握，平台不会显示或回传明文</div></div></div>
+          <div className="feat"><div className="fi"><ShieldCheck size={17} /></div><div><div className="ft">保护工作空间</div><div className="fd">完成改密后重新登录，即可进入知识工程工作台</div></div></div>
         </div>
-        <form className="login-form" onSubmit={handleSubmit}>
-          <label className="login-field">
+      </div>
+      <div className="lform">
+        <div>
+        <form className="lcard force-password-form" onSubmit={handleSubmit}>
+          <h2>首次登录修改密码</h2>
+          <div className="ld">账号 {user?.username || ''} 需要设置新的登录密码</div>
+          <label className="lfield">
             <span>当前密码</span>
             <input
               type="password"
@@ -49,7 +57,7 @@ function ForceChangePasswordPage({ user, onChangePassword, onLogout, error = nul
               autoComplete="current-password"
             />
           </label>
-          <label className="login-field">
+          <label className="lfield">
             <span>新密码</span>
             <input
               type="password"
@@ -58,7 +66,7 @@ function ForceChangePasswordPage({ user, onChangePassword, onLogout, error = nul
               autoComplete="new-password"
             />
           </label>
-          <label className="login-field">
+          <label className="lfield">
             <span>确认新密码</span>
             <input
               type="password"
@@ -81,16 +89,17 @@ function ForceChangePasswordPage({ user, onChangePassword, onLogout, error = nul
               </div>
             )}
           </div>
-          {(localError || error) && <div className="login-error">{localError || error}</div>}
-          <button className="btn login-submit" type="submit" disabled={!canSubmit || submitting}>
+          {(localError || error) && <div className="lerr">{localError || error}</div>}
+          <button className="lbtn" type="submit" disabled={!canSubmit || submitting}>
             {submitting && <Loader2 size={14} className="spin" />}
             <span>{submitting ? '提交中...' : '修改密码并重新登录'}</span>
           </button>
-          <button className="btn login-secondary" type="button" onClick={onLogout} disabled={submitting}>
+          <button className="btn force-password-logout" type="button" onClick={onLogout} disabled={submitting}>
             <LogOut size={14} />
             <span>退出登录</span>
           </button>
         </form>
+        </div>
       </div>
     </div>
   );

@@ -50,6 +50,20 @@ def _proxy_register(path: str):
     return jsonify(payload), upstream.status_code
 
 
+@auth_bp.route("/capabilities", methods=["GET"])
+def capabilities():
+    """登录页能力探测；上游不可用时安全地隐藏可选注册入口。"""
+    base = _auth_server_url()
+    if not base:
+        return jsonify({"registration_enabled": False})
+    try:
+        upstream = requests.get(base + "/capabilities", timeout=_REGISTER_PROXY_TIMEOUT)
+        payload = upstream.json() if upstream.status_code == 200 else {}
+    except (requests.RequestException, ValueError):
+        payload = {}
+    return jsonify({"registration_enabled": payload.get("registration_enabled") is True})
+
+
 @auth_bp.route("/register", methods=["POST"])
 def register():
     return _proxy_register("/register")

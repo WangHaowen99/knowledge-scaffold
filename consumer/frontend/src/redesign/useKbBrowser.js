@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '../utils/auth';
+import { friendlyRequestError } from '../utils/requestErrors';
 import { useAuthContext } from './useAuthContext';
 
 // 知识包浏览的共享状态：侧边栏目录树（AppShell 内）与工作台内容区共用。
@@ -9,20 +10,23 @@ import { useAuthContext } from './useAuthContext';
 export const DIR_LABELS = {
   objects: '业务对象', operations: '操作', scripts: '脚本', mappings: '数据映射',
 };
-export const DIR_ICONS = { objects: '▤', operations: '⚙', scripts: '𝑓', mappings: '⇄' };
 
 export default function useKbBrowser() {
-  const { can, workspaceId } = useAuthContext();
+  const { can, workspaceId, status } = useAuthContext();
   const canImport = can('ws.kb.write');
   const [packages, setPackages] = useState([]);
   const [pkgsLoading, setPkgsLoading] = useState(true);
+  const [packagesError, setPackagesError] = useState('');
   const [pkgId, setPkgId] = useState(null);
   const [tree, setTree] = useState([]);
   const [treeLoading, setTreeLoading] = useState(false);
+  const [treeError, setTreeError] = useState('');
+  const [treeReloadKey, setTreeReloadKey] = useState(0);
   // sel.dir = 当前目录相对路径（'' 为包根）；sel.file = 当前文件相对路径或 null
   const [sel, setSel] = useState({ dir: 'objects', file: null });
   const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState('');
+  const [pendingOverwrite, setPendingOverwrite] = useState(null);
   // versionOverride = null 表示跟随激活版本；字符串表示浏览指定历史版本
   const [versionOverride, setVersionOverride] = useState(null);
   const [opBusy, setOpBusy] = useState('');
@@ -34,19 +38,30 @@ export default function useKbBrowser() {
   const viewingActive = versionOverride === null || versionOverride === activeVersion;
 
   const loadPackages = useCallback(async () => {
+    if (status !== 'authenticated') {
+      setPackages([]);
+      setPkgId(null);
+      setTree([]);
+      setPkgsLoading(false);
+      setPackagesError('');
+      return;
+    }
     setPkgsLoading(true);
+    setPackagesError('');
     try {
       const res = await authFetch('/agentic/ontologies');
-      const data = res.ok ? await res.json() : { ontologies: [] };
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.detail || `知识包列表加载失败（${res.status}）`);
       const list = data.ontologies || [];
       setPackages(list);
       setPkgId((prev) => (prev && list.some((p) => p.id === prev) ? prev : list[0]?.id || null));
-    } catch {
+    } catch (error) {
       setPackages([]);
+      setPackagesError(friendlyRequestError(error, '知识包列表加载失败'));
     } finally {
       setPkgsLoading(false);
     }
-  }, []);
+  }, [status]);
 
   useEffect(() => {
     const t = setTimeout(loadPackages, 0);
@@ -61,26 +76,33 @@ export default function useKbBrowser() {
   }, [pkg, versionOverride]);
 
   useEffect(() => {
-    if (!pkgId) { setTree([]); return undefined; }
+    if (status !== 'authenticated' || !pkgId) { setTree([]); return undefined; }
     let cancelled = false;
     const t = setTimeout(async () => {
       setTreeLoading(true);
+      setTreeError('');
       try {
         const q = versionOverride !== null ? `?version=${encodeURIComponent(versionOverride)}` : '';
         const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/tree${q}`);
-        const data = res.ok ? await res.json() : { entries: [] };
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || data.detail || `知识包目录加载失败（${res.status}）`);
         if (cancelled) return;
         const entries = data.entries || [];
         setTree(entries);
         const firstDir = entries.find((e) => e.type === 'dir' && e.name === 'objects')
           || entries.find((e) => e.type === 'dir');
         setSel({ dir: firstDir ? firstDir.path : '', file: null });
+      } catch (error) {
+        if (!cancelled) {
+          setTree([]);
+          setTreeError(friendlyRequestError(error, '知识包目录加载失败'));
+        }
       } finally {
         if (!cancelled) setTreeLoading(false);
       }
     }, 0);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [pkgId, workspaceId, versionOverride]);
+  }, [pkgId, workspaceId, versionOverride, status, treeReloadKey]);
 
   const selectPkg = useCallback((id) => { setPkgId(id); setVersionOverride(null); setOpNotice(''); }, []);
   const selectDir = useCallback((dirPath) => { setSel({ dir: dirPath, file: null }); }, []);
@@ -92,34 +114,68 @@ export default function useKbBrowser() {
     setVersionOverride(version === activeVersion ? null : version);
   }, [activeVersion]);
 
+  const finishImport = useCallback(async (res, data) => {
+    if (res.ok) {
+      setNotice(`导入成功：${data.ontology_name || data.ontology_id}（对象 ${data.objects_count ?? '-'} · 操作 ${data.operations_count ?? '-'}）`);
+      await loadPackages();
+      setPkgId(data.ontology_id);
+    } else {
+      setNotice(`导入失败：${data.error || data.detail || res.status}`);
+    }
+  }, [loadPackages]);
+
   const importZip = useCallback(async (file) => {
+    if (!file) {
+      setNotice('未选择知识包文件');
+      return;
+    }
+    if (!file.name?.toLowerCase().endsWith('.zip')) {
+      setNotice('导入失败：仅支持 .zip 知识包');
+      return;
+    }
+    if (!file.size) {
+      setNotice('导入失败：所选 ZIP 文件为空');
+      return;
+    }
     setImporting(true);
-    setNotice('');
+    setNotice(`正在上传并解析：${file.name}`);
     try {
       const form = new FormData();
       form.append('file', file);
       let res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: form });
       let data = await res.json().catch(() => ({}));
       if (res.status === 409 && data.requires_confirmation) {
-        const ok = window.confirm(`知识包「${data.ontology_name || data.ontology_id}」已存在，是否覆盖当前激活版本？`);
-        if (!ok) return;
-        const retry = new FormData();
-        retry.append('file', file);
-        retry.append('action', 'overwrite_active');
-        res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: retry });
-        data = await res.json().catch(() => ({}));
+        setPendingOverwrite({ file, name: data.ontology_name || data.ontology_id });
+        setNotice(`检测到同名知识包「${data.ontology_name || data.ontology_id}」，请确认是否覆盖`);
+        return;
       }
-      if (res.ok) {
-        setNotice(`导入成功：${data.ontology_name || data.ontology_id}（对象 ${data.objects_count ?? '-'} · 操作 ${data.operations_count ?? '-'}）`);
-        await loadPackages();
-        setPkgId(data.ontology_id);
-      } else {
-        setNotice(`导入失败：${data.error || data.detail || res.status}`);
-      }
+      await finishImport(res, data);
+    } catch (error) {
+      setNotice(`导入失败：${error?.message === 'Failed to fetch' ? '网络异常或后端服务不可用' : (error?.message || '请求异常，请稍后重试')}`);
     } finally {
       setImporting(false);
     }
-  }, [loadPackages]);
+  }, [finishImport]);
+
+  const confirmOverwrite = useCallback(async () => {
+    if (!pendingOverwrite) return;
+    const { file } = pendingOverwrite;
+    setPendingOverwrite(null);
+    setImporting(true);
+    setNotice(`正在覆盖并解析：${file.name}`);
+    try {
+      const retry = new FormData();
+      retry.append('file', file);
+      retry.append('action', 'overwrite_active');
+      const res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: retry });
+      const data = await res.json().catch(() => ({}));
+      await finishImport(res, data);
+    } catch (error) {
+      setNotice(`覆盖失败：${error?.message === 'Failed to fetch' ? '网络异常或后端服务不可用' : (error?.message || '请求异常，请稍后重试')}`);
+    } finally {
+      setImporting(false);
+    }
+  }, [finishImport, pendingOverwrite]);
 
   const setPkgEnabled = useCallback(async (enabled) => {
     if (!pkgId) return;
@@ -221,8 +277,11 @@ export default function useKbBrowser() {
   }, [pkgId, viewVersion]);
 
   return {
-    canImport, canManage: canImport, packages, pkgsLoading, pkg, pkgId, tree, treeLoading,
+    canImport, canManage: canImport, packages, pkgsLoading, packagesError, retryPackages: loadPackages,
+    pkg, pkgId, tree, treeLoading, treeError, retryTree: () => setTreeReloadKey((value) => value + 1),
     sel, selectPkg, selectDir, selectFile, importZip, importing, notice,
+    pendingOverwrite, confirmOverwrite, cancelOverwrite: () => { setPendingOverwrite(null); setNotice('已取消覆盖知识包'); },
+    cancelImportSelection: () => setNotice('已取消选择知识包文件'),
     viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, activateVersion, deleteVersion, downloadPkg, opBusy, opNotice,
   };
