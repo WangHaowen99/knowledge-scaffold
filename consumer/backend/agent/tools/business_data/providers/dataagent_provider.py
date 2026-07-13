@@ -18,6 +18,8 @@ class DataAgentProvider:
         self.base_url = str(provider_config.get("url") or "").rstrip("/")
         self.token = str(provider_config.get("token") or "").strip()
         self.timeout = int(provider_config.get("timeout_seconds") or 600)
+        retries = provider_config.get("max_retries")
+        self.max_retries = 3 if retries in {None, ""} else max(0, int(retries))
 
     def search_stream(
         self,
@@ -33,6 +35,7 @@ class DataAgentProvider:
             self.token,
             query,
             timeout=self.timeout,
+            max_retries=self.max_retries,
         )
         output = format_output(result, show_sql=False)
 

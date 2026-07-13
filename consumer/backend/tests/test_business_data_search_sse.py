@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from agentic.services.mindsdb import (
+from agent.tools.business_data.providers.clients.mindsdb import (
     ACTION_THOUGHT_MARKER,
     MindsDBClient,
     _parse_mindsdb_chunk_to_events,
 )
-from agentic.tools.business_data_search import (
+from agent.tools.business_data_search import (
     BUSINESS_DATA_SEARCH_TOOL_SCHEMA,
     handle_business_data_search,
 )
@@ -19,7 +19,7 @@ def _fake_ontology(ontology_id):
 
 
 def test_business_data_search_rejects_empty_query(monkeypatch):
-    monkeypatch.setattr("agentic.tools.business_data_search.get_ontology_manifest", _fake_ontology)
+    monkeypatch.setattr("agent.tools.business_data_search.get_ontology_manifest", _fake_ontology)
     assert handle_business_data_search(ontology_id="demo", query="   ", entity="TargetItem") == "Error: Search query cannot be empty"
 
 

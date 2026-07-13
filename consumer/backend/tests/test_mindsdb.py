@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from agentic.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
-from agentic.services.data_provider_client import DataProviderClient, DataProviderError
-from agentic.services.mindsdb import MindsDBClient, MindsDBConfig, MindsDBError
+from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
+from agent.tools.business_data.providers.clients.data_provider_client import (
+    DataProviderClient,
+    DataProviderError,
+)
+from agent.tools.business_data.providers.clients.mindsdb import (
+    MindsDBClient,
+    MindsDBConfig,
+    MindsDBError,
+)
 
 
 def test_client_query_agent_stream_parses_raw_mindsdb_chunks():
@@ -255,7 +262,7 @@ def test_data_provider_client_routes_mindsdb_default_database_to_sql_context():
 def test_data_provider_client_requires_explicit_or_script_injected_connection(monkeypatch):
     monkeypatch.delenv(SCRIPT_BUSINESS_DATA_CONNECTION_ENV, raising=False)
 
-    with pytest.raises(DataProviderError, match="business data connection"):
+    with pytest.raises(DataProviderError, match="business data source"):
         DataProviderClient()
 
 
@@ -266,12 +273,12 @@ def test_mindsdb_client_requires_script_injected_connection(monkeypatch):
         pytest.fail("legacy system_config fallback was used")
 
     monkeypatch.setattr(
-        "agentic.services.mindsdb.load_system_config",
+        "agent.tools.business_data.providers.clients.mindsdb.load_system_config",
         _fail_on_legacy_system_config,
         raising=False,
     )
 
-    with pytest.raises(MindsDBError, match="business data connection"):
+    with pytest.raises(MindsDBError, match="business data source"):
         MindsDBClient()
 
 
