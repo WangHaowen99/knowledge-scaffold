@@ -6,8 +6,8 @@ from typing import List
 
 import pytest
 
-from agentic.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
-from agentic.observability.traces.direct_execution import DirectExecutionRuntimeTrace
+from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
+from integration.observability.traces.direct_execution import DirectExecutionRuntimeTrace
 
 
 class MockObserver:

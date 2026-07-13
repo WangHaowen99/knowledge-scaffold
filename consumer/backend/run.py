@@ -16,7 +16,7 @@ try:
 except ImportError:
     pass
 
-from agentic import create_app
+from app import create_app
 
 # Import server configuration
 try:

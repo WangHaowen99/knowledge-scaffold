@@ -13,7 +13,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import agentic.utils.logging as logging_utils
+import utils.logging as logging_utils
 
 DatePartitionedRotatingFileHandler = logging_utils.DatePartitionedRotatingFileHandler
 configure_logging = logging_utils.configure_logging

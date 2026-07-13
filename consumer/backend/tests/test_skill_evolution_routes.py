@@ -94,7 +94,7 @@ def _build_app(tmp_path, monkeypatch, tasks):
         yield "ws1"
 
     monkeypatch.setattr(se_routes, "workspace_scope", _scope)
-    # /start imports get_request_stores from agentic.routes; stub it so the
+    # /start imports get_request_stores from api.routes; stub it so the
     # route doesn't require a real UserStoreManager.
     import api.routes as app_routes
     monkeypatch.setattr(app_routes, "get_request_stores", lambda: (None, object()))

@@ -1,7 +1,7 @@
 import json
 
-from agentic.stores import UserStoreManager
-from agentic.workspaces import create_workspace
+from workspace.user_store_manager import UserStoreManager
+from workspace.workspaces import create_workspace
 
 
 def _set_session_updated_at(storage_dir, session_id, updated_at):
@@ -14,7 +14,7 @@ def _set_session_updated_at(storage_dir, session_id, updated_at):
 def test_user_store_manager_prunes_old_sessions_and_execution_records(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
-    manager = UserStoreManager()
+    manager = UserStoreManager("", "")
 
     chat_store = manager.get_chat_store("alice", "demo")
     execution_store = manager.get_execution_store("alice", "demo")
