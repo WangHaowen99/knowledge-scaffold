@@ -15,6 +15,7 @@ docker_compose_cmd >/dev/null 2>&1 || die "Docker Compose is required but not av
 
 ensure_runtime_layout
 ensure_env_files
+require_mcp_token_secret
 
 host_arch="$(detect_host_arch)"
 release_arch="$(manifest_get release_arch)"

@@ -216,7 +216,7 @@ Important variables:
 | `MCP_PUBLIC_BASE_URL` | Externally reachable base URL shown in the console MCP page and copied client configs; set this explicitly to the server IP or domain in Docker deployments | derived from host/port |
 | `MCP_TRANSPORT` | Standalone MCP server transport, `streamable-http` exposes `/search/mcp` and `/chat/mcp`; `sse` exposes `/search/sse` and `/chat/sse` | `streamable-http` |
 | `MCP_SERVICES_CONFIG_FILE` | Optional YAML service catalog path; relative paths resolve from `consumer/backend` | `config/mcp_services.yaml` when present |
-| `MCP_TOKEN_SECRET` | MCP JWT signing secret | falls back to `AUTH_SECRET` or dev fallback |
+| `MCP_TOKEN_SECRET` | MCP JWT signing secret (required, at least 32 characters; do not reuse another service secret) | no default |
 | `MCP_TOKEN_ISSUER` | MCP JWT `iss` claim | `meta-wise` |
 | `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
 | `MCP_TOKEN_TTL_SECONDS` | Default MCP token TTL | `86400` |

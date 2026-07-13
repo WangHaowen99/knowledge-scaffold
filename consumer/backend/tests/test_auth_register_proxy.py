@@ -56,6 +56,31 @@ def test_register_disabled_without_auth_server_url(auth_manager):
     assert response.get_json() == {"error": "注册功能未开启"}
 
 
+def test_capabilities_disabled_without_auth_server_url(auth_manager):
+    client = _build_app(auth_manager).test_client()
+
+    response = client.get("/auth/capabilities")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"registration_enabled": False}
+
+
+def test_capabilities_proxy_registration_setting(auth_manager, monkeypatch):
+    import agentic.routes.auth as auth_routes
+
+    monkeypatch.setattr(
+        auth_routes.requests,
+        "get",
+        lambda *args, **kwargs: _StubResponse(200, {"registration_enabled": True}),
+    )
+    client = _build_app(auth_manager, "http://auth-server:5056/").test_client()
+
+    response = client.get("/auth/capabilities")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"registration_enabled": True}
+
+
 def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
     calls = {}
 

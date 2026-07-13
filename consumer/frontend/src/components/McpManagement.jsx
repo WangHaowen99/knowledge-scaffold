@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Info, KeyRound, Loader2, Plus, RefreshCw, Server, Trash2, X } from 'lucide-react';
 
 import { authFetch } from '../utils/auth';
+import { friendlyRequestError } from '../utils/requestErrors';
 
 const DEFAULT_SCOPES = ['mcp:search', 'mcp:chat'];
 
@@ -87,11 +88,7 @@ function McpManagement({
   const searchService = services.find((item) => item.toolset === 'search') || services[0] || null;
   const chatService = services.find((item) => item.toolset === 'chat') || null;
   const selectedService = services.find((item) => item.id === selectedServiceId) || null;
-  const activeToken = useMemo(() => {
-    const firstActive = tokens.find((token) => token.status === 'active' && token.token);
-    return firstActive?.token || '';
-  }, [tokens]);
-  const clientConfigToken = createdToken || activeToken || '<MCP_TOKEN>';
+  const clientConfigToken = createdToken || '<MCP_TOKEN>';
   const isMcpRunning = Boolean(status?.running);
   const transportMode = status?.transport || searchService?.transport || chatService?.transport || '';
   const activeTokenCount = useMemo(
@@ -115,7 +112,7 @@ function McpManagement({
       setStatus(statusPayload);
       setTokens(Array.isArray(tokensPayload.items) ? tokensPayload.items : []);
     } catch (error) {
-      setMessage({ type: 'error', text: error?.message || '加载 MCP 配置失败' });
+      setMessage({ type: 'error', text: friendlyRequestError(error, '加载 MCP 配置失败') });
     } finally {
       setLoading(false);
     }
@@ -168,7 +165,7 @@ function McpManagement({
       setForm({ name: '', expires_in: '86400', scopes: DEFAULT_SCOPES });
       await loadData();
     } catch (error) {
-      setMessage({ type: 'error', text: error?.message || '创建 MCP Token 失败' });
+      setMessage({ type: 'error', text: friendlyRequestError(error, '创建 MCP Token 失败') });
     } finally {
       setCreating(false);
     }
@@ -188,7 +185,7 @@ function McpManagement({
       setMessage({ type: 'success', text: 'Token 已吊销' });
       await loadData();
     } catch (error) {
-      setMessage({ type: 'error', text: error?.message || '吊销 Token 失败' });
+      setMessage({ type: 'error', text: friendlyRequestError(error, '吊销 Token 失败') });
     } finally {
       setBusyTokenId('');
     }
@@ -373,7 +370,7 @@ function McpManagement({
 
       <div className="card">
         <h3>客户端配置</h3>
-        <div className="cd">生成 Token 后，下方配置会自动使用最新明文；刷新页面后使用 Token 注册表中的可用 token。</div>
+        <div className="cd">生成 Token 后，下方配置仅在本次页面会话中自动填入明文；刷新后请手动替换 &lt;MCP_TOKEN&gt;。</div>
         <div className="mcp-config-grid">
           {[searchService, chatService].filter(Boolean).map((service) => (
             <div className="mcp-config-block" key={service.id}>

@@ -203,7 +203,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `MCP_PUBLIC_BASE_URL` | 前端 MCP 页面展示和客户端配置复制使用的外部可访问地址，Docker 部署建议显式配置为服务器 IP 或域名 | 根据 host/port 推导 |
 | `MCP_TRANSPORT` | 独立 MCP Server transport；`streamable-http` 暴露 `/search/mcp`、`/chat/mcp`，`sse` 暴露 `/search/sse`、`/chat/sse` | `streamable-http` |
 | `MCP_SERVICES_CONFIG_FILE` | 可选 YAML 服务目录路径；相对路径按 `consumer/backend` 解析 | 存在时使用 `config/mcp_services.yaml` |
-| `MCP_TOKEN_SECRET` | MCP JWT 签名密钥 | 回退到 `AUTH_SECRET` 或开发默认值 |
+| `MCP_TOKEN_SECRET` | MCP JWT 签名密钥（必填，至少 32 个字符；不要与其他服务共用） | 无默认值 |
 | `MCP_TOKEN_ISSUER` | MCP JWT `iss` claim | `meta-wise` |
 | `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
 | `MCP_TOKEN_TTL_SECONDS` | MCP token 默认有效期，单位秒 | `86400` |

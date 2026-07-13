@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
-import { Compass } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ChevronDown, Compass, FolderKanban, LogOut, Menu, MessageSquarePlus,
+  PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings2, SlidersHorizontal, Upload, X,
+} from 'lucide-react';
 import useStreamManager from '../hooks/useStreamManager';
 import useChatSessions from '../hooks/useChatSessions';
 import { APP_VERSION } from './version';
@@ -10,28 +13,40 @@ import OnboardingWizard from './OnboardingWizard';
 import { wizardSeen } from './wizardState';
 import ChatWorkspace from './ChatWorkspace';
 import ChatHistorySidebar from './ChatHistorySidebar';
-import KnowledgeWorkbench from './KnowledgeWorkbench';
 import KbSidebarTree from './KbSidebarTree';
 import useKbBrowser from './useKbBrowser';
-import ConfigCenter from './ConfigCenter';
+import { ConfirmDialog, SkeletonState, ToastNotice } from './UiFeedback';
+
+const KnowledgeWorkbench = lazy(() => import('./KnowledgeWorkbench'));
+const ConfigCenter = lazy(() => import('./ConfigCenter'));
 
 const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心' };
 
 export default function AppShell() {
   const auth = useAuthContext();
-  const { status, user, logout, changePassword, isAdmin, workspaces, workspaceId, defaultWorkspaceId, switchWorkspace, can } = auth;
+  const { status, user, logout, changePassword, isAdmin, workspaces, workspaceId, defaultWorkspaceId, workspacesError, reloadWorkspaces, switchWorkspace, can } = auth;
   const [surface, setSurface] = useState('chat');
   const [cfgScope, setCfgScope] = useState('global');
   const [cfgSec, setCfgSec] = useState('llm');
   const [wsMenu, setWsMenu] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [sideCollapsed, setSideCollapsed] = useState(() => {
+    try { return localStorage.getItem('mw_sidebar_collapsed') === '1'; } catch { return false; }
+  });
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
   const kb = useKbBrowser();
   const wsMenuRef = useRef(null);
   const userMenuRef = useRef(null);
   const kbImportRef = useRef(null);
+  const openMobileNavigation = useCallback(() => setMobileNavOpen(true), []);
+  const toggleDesktopSidebar = () => setSideCollapsed((current) => {
+    const next = !current;
+    try { localStorage.setItem('mw_sidebar_collapsed', next ? '1' : '0'); } catch { /* ignore */ }
+    return next;
+  });
 
   // 每次新登录弹出操作向导（会话级标记，跳过/完成后本次不再弹）
   useEffect(() => {
@@ -68,42 +83,67 @@ export default function AppShell() {
     if (sf) setSurface(sf);
     if (scope) setCfgScope(scope);
     if (sec) setCfgSec(sec);
+    setMobileNavOpen(false);
   };
 
-  const navBtn = (id, icon, label, wiz) => (
-    <button className={surface === id ? 'on' : ''} data-wiz={wiz} onClick={() => setSurface(id)}>
-      <span style={{ width: 17, textAlign: 'center' }}>{icon}</span>{label}
+  const navBtn = (id, Icon, label, wiz) => (
+    <button className={surface === id ? 'on' : ''} data-wiz={wiz} title={label}
+      onClick={() => { setSurface(id); setMobileNavOpen(false); }}>
+      <Icon className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">{label}</span>
     </button>
   );
 
   return (
-    <div className="mwr shell">
-      <div className="side">
-        <div className="logo"><span className="mk">知</span>知识工程工具</div>
+    <div className={`mwr shell ${sideCollapsed ? 'side-collapsed' : ''}`}>
+      <aside className={`side ${mobileNavOpen ? 'side-open' : ''}`} aria-label="主导航">
+        <div className="logo">
+          <img className="mk" src="/brand-mark.png" alt="" aria-hidden="true" />
+          <span className="logo-title">知识工程工具</span>
+          <button className="mobile-side-close" type="button" aria-label="关闭导航"
+            onClick={() => setMobileNavOpen(false)}>
+            <X size={18} />
+          </button>
+        </div>
         <div className="nav">
           <div className="grp">工作</div>
-          <button className={surface === 'chat' ? 'on' : ''} data-wiz="nav-chat"
-            onClick={() => { setSurface('chat'); chat.startNewChat(); }}>
-            <span style={{ width: 17, textAlign: 'center' }}>💬</span>新建对话
+          <button className={surface === 'chat' ? 'on' : ''} data-wiz="nav-chat" title="新建对话"
+            onClick={() => { setSurface('chat'); setMobileNavOpen(false); chat.startNewChat(); }}>
+            <MessageSquarePlus className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">新建对话</span>
           </button>
-          {navBtn('kb', '📦', '知识包工作台', 'nav-kb')}
+          {navBtn('kb', PackageOpen, '知识包工作台', 'nav-kb')}
           {surface === 'kb' && <KbSidebarTree kb={kb} />}
           <div className="grp">管理</div>
-          {navBtn('config', '⚙️', '配置中心', 'nav-config')}
+          {navBtn('config', Settings2, '配置中心', 'nav-config')}
         </div>
         <ChatHistorySidebar chat={chat} onOpen={(id) => { setSurface('chat'); chat.selectChat(id); }} />
         <div className="vercard">
           <div className="vn">知识工程 控制台</div>
           <div className="vv">{APP_VERSION} · powered by openJiuwen</div>
         </div>
-      </div>
+      </aside>
+      {mobileNavOpen && (
+        <button className="side-backdrop" type="button" aria-label="关闭导航"
+          onClick={() => setMobileNavOpen(false)} />
+      )}
       <div className="main">
         <div className="topbar">
+          <button className="iconbtn mobile-menu-btn" type="button" aria-label="打开导航"
+            onClick={() => setMobileNavOpen(true)}>
+            <Menu size={18} />
+          </button>
+          <button className="iconbtn desktop-sidebar-toggle" type="button"
+            aria-label={sideCollapsed ? '展开侧栏' : '折叠侧栏'} title={sideCollapsed ? '展开侧栏' : '折叠侧栏'}
+            onClick={toggleDesktopSidebar}>
+            {sideCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+          </button>
           <span className="crumb">{SURFACES[surface]}</span>
           <div className="wswrap" ref={wsMenuRef}>
-            <div className="wschip" onClick={() => setWsMenu((v) => !v)}>
-              🗂 {workspaces.find((w) => w.id === workspaceId)?.name || workspaceId || '选择工作空间'} ▾
-            </div>
+            <button className="wschip" type="button" aria-haspopup="menu" aria-expanded={wsMenu}
+              onClick={() => setWsMenu((v) => !v)}>
+              <FolderKanban size={15} strokeWidth={1.9} />
+              <span className="wschip-label">{workspaces.find((w) => w.id === workspaceId)?.name || workspaceId || '选择工作空间'}</span>
+              <ChevronDown size={14} strokeWidth={1.9} />
+            </button>
             {wsMenu && (
               <div className="wsmenu">
                 <div className="wm-h">切换工作空间</div>
@@ -117,7 +157,7 @@ export default function AppShell() {
                   <>
                     <div className="div" />
                     <button className="new" onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
-                      ＋ 新建工作空间
+                      <span><Plus size={14} /> 新建工作空间</span>
                     </button>
                     <button style={{ color: 'var(--ink2)' }} onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
                       管理工作空间…
@@ -131,20 +171,22 @@ export default function AppShell() {
             <>
               <button className="btn btn-p" data-wiz="kb-import" disabled={kb.importing}
                 onClick={() => kbImportRef.current?.click()}>
-                {kb.importing ? '导入中…' : '＋ 导入知识包'}
+                <Upload size={14} />{kb.importing ? '导入中…' : '导入知识包'}
               </button>
               <input ref={kbImportRef} type="file" accept=".zip" style={{ display: 'none' }}
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) kb.importZip(f); e.target.value = ''; }} />
+                onCancel={kb.cancelImportSelection}
+                onChange={(e) => { const f = e.target.files?.[0]; kb.importZip(f); e.target.value = ''; }} />
             </>
           )}
-          <button className="iconbtn" title="操作向导" onClick={() => setWizardOpen(true)}>
+          <button className="iconbtn" title="操作向导" aria-label="打开操作向导"
+            onClick={() => setWizardOpen(true)}>
             <Compass size={16} strokeWidth={2} />
           </button>
           <div className="uwrap" ref={userMenuRef}>
             <button className="uchip" onClick={() => setUserMenu((v) => !v)}>
               <span className="uav">{(user.username || '?')[0].toUpperCase()}</span>
               <span className="uname">{user.username}</span>
-              <span style={{ color: 'var(--muted)', fontSize: 11 }}>▾</span>
+              <ChevronDown className="user-chevron" size={13} />
             </button>
             {userMenu && (
               <div className="wsmenu" style={{ width: 220 }}>
@@ -154,22 +196,31 @@ export default function AppShell() {
                     {isAdmin ? '平台管理员' : '普通用户'}
                   </span>
                 </div>
-                <button onClick={() => { setUserMenu(false); navigate({ surface: 'config', scope: 'personal', sec: 'prefs' }); }}>个人设置</button>
-                <button onClick={() => { setUserMenu(false); setWizardOpen(true); }}>操作向导</button>
+                <button onClick={() => { setUserMenu(false); navigate({ surface: 'config', scope: 'personal', sec: 'prefs' }); }}><SlidersHorizontal size={14} />个人设置</button>
+                <button onClick={() => { setUserMenu(false); setWizardOpen(true); }}><Compass size={14} />操作向导</button>
                 <div className="div" />
-                <button style={{ color: 'var(--crit)' }} onClick={logout}>退出登录</button>
+                <button className="menu-danger" onClick={logout}><LogOut size={14} />退出登录</button>
               </div>
             )}
           </div>
         </div>
         <div className={surface !== 'config' ? 'content content-full' : 'content'}
           style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
-          {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace chat={chat} streamManager={streamManager} /></div>}
-          {surface === 'kb' && <div style={{ flex: 1, minHeight: 0 }}><KnowledgeWorkbench kb={kb} /></div>}
-          {surface === 'config' && <ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} />}
+          <div key={surface} className={`surface-stage surface-${surface}`}>
+            {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager} />}
+            {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} /></Suspense>}
+            {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
+          </div>
         </div>
       </div>
-      {wizardOpen && <OnboardingWizard onNavigate={navigate} onClose={() => setWizardOpen(false)} />}
+      {wizardOpen && <OnboardingWizard onNavigate={navigate} onOpenNavigation={openMobileNavigation}
+        onClose={() => setWizardOpen(false)} />}
+      <ConfirmDialog open={Boolean(kb.pendingOverwrite)} title="覆盖当前知识包版本"
+        description={`知识包「${kb.pendingOverwrite?.name || ''}」已存在。继续后将覆盖当前激活版本。`}
+        confirmLabel="确认覆盖" danger busy={kb.importing} onConfirm={kb.confirmOverwrite} onCancel={kb.cancelOverwrite} />
+      <ToastNotice message={kb.notice} tone={kb.importing || kb.pendingOverwrite ? 'info' : undefined}
+        duration={kb.importing ? 0 : 5200} />
+      <ToastNotice message={workspacesError} tone="error" duration={0} actionLabel="重新加载" onAction={reloadWorkspaces} />
     </div>
   );
 }

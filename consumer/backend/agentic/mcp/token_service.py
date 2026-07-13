@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .config import MCPRuntimeConfig, load_mcp_runtime_config
+from .config import MCPRuntimeConfig, load_mcp_runtime_config, validate_mcp_runtime_config
 from .token_crypto import decode_jwt, encode_jwt, hash_token, mask_token
 from .token_store import MCPTokenStore, utc_now_iso
 
@@ -65,6 +65,7 @@ def create_mcp_token(
     store: MCPTokenStore | None = None,
 ) -> dict[str, Any]:
     cfg = config or load_mcp_runtime_config()
+    _validate_config(cfg)
     resolved_scopes = normalize_scopes(scopes)
     ttl = _normalize_expires_in(expires_in, cfg)
     now_ts = int(time.time())
@@ -87,7 +88,6 @@ def create_mcp_token(
     item = {
         "token_id": "mcp_{}".format(uuid.uuid4().hex),
         "jti": jti,
-        "token_value": token,
         "token_hash": hash_token(token),
         "token_masked": mask_token(token),
         "username": payload["sub"],
@@ -114,6 +114,10 @@ def revoke_mcp_token(*, username: str, workspace_id: str, token_id: str, store: 
 
 def verify_mcp_token(token: str, *, required_scope: str | None = None, config: MCPRuntimeConfig | None = None) -> dict[str, Any]:
     cfg = config or load_mcp_runtime_config()
+    try:
+        validate_mcp_runtime_config(cfg)
+    except ValueError as exc:
+        raise MCPTokenAuthError("MCP_CONFIG_INVALID", str(exc)) from exc
     try:
         payload = decode_jwt(
             token,
@@ -166,6 +170,13 @@ def _normalize_expires_in(value: Any, cfg: MCPRuntimeConfig) -> int | None:
     if ttl > cfg.token_max_ttl_seconds:
         raise MCPTokenServiceError("expires_in 不能超过 {} 秒".format(cfg.token_max_ttl_seconds))
     return ttl
+
+
+def _validate_config(cfg: MCPRuntimeConfig) -> None:
+    try:
+        validate_mcp_runtime_config(cfg)
+    except ValueError as exc:
+        raise MCPTokenServiceError(str(exc)) from exc
 
 
 def _reason_detail(reason: str) -> str:

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import useAuth from '../hooks/useAuth';
 import { authFetch, getCurrentWorkspaceId, setCurrentWorkspaceId } from '../utils/auth';
+import { friendlyRequestError } from '../utils/requestErrors';
 import { can as canCheck } from './permissions';
 import { AuthCtx } from './useAuthContext';
 
@@ -10,6 +11,7 @@ export default function AuthProvider({ children }) {
   const auth = useAuth();
   const [workspaces, setWorkspaces] = useState([]);
   const [defaultWorkspaceId, setDefaultWorkspaceId] = useState(null);
+  const [workspacesError, setWorkspacesError] = useState('');
   const [workspaceId, setWorkspaceIdState] = useState(() => getCurrentWorkspaceId());
   // 由列表接口的 role 字段派生 {wsId: 'admin'|'member'}，供 permissions.can 的 wsRoles 分支消费
   const [wsRoles, setWsRoles] = useState({});
@@ -22,13 +24,15 @@ export default function AuthProvider({ children }) {
     setWorkspaces([]);
     setWsRoles({});
     setDefaultWorkspaceId(null);
+    setWorkspacesError('');
   }
 
   const loadWorkspaces = useCallback(async () => {
+    setWorkspacesError('');
     try {
       const res = await authFetch('/agentic/workspaces');
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `工作空间加载失败（${res.status}）`);
       const list = data.workspaces || [];
       setWorkspaces(list);
       setWsRoles(Object.fromEntries(list.filter((w) => w.role).map((w) => [w.id, w.role])));
@@ -41,8 +45,8 @@ export default function AuthProvider({ children }) {
           setWorkspaceIdState(fallback);
         }
       }
-    } catch {
-      // 网络异常时保持现状，页面各自处理空态
+    } catch (error) {
+      setWorkspacesError(friendlyRequestError(error, '工作空间加载失败'));
     }
   }, []);
 
@@ -68,9 +72,10 @@ export default function AuthProvider({ children }) {
     workspaces,
     workspaceId,
     defaultWorkspaceId,
+    workspacesError,
     switchWorkspace,
     reloadWorkspaces: loadWorkspaces,
-  }), [auth, workspaces, wsRoles, workspaceId, defaultWorkspaceId, switchWorkspace, loadWorkspaces]);
+  }), [auth, workspaces, wsRoles, workspaceId, defaultWorkspaceId, workspacesError, switchWorkspace, loadWorkspaces]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

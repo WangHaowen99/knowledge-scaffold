@@ -73,6 +73,12 @@ def _validate_refresh_token(refresh_token: str) -> Optional[UserView]:
 # --------------------------------------------------------------- 标准协议侧
 
 
+@bp.route("/capabilities", methods=["GET"])
+def capabilities():
+    """公开、非敏感的登录页能力开关。"""
+    return jsonify({"registration_enabled": _config().enable_registration})
+
+
 @bp.route("/token", methods=["POST"])
 def token():
     data = _request_data()
