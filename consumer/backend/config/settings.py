@@ -202,6 +202,10 @@ class AppConfig:
     auth_users_file: str
     auth_secret: Optional[str]
     auth_token_ttl_seconds: int
+    auth_server_url: str = ""
+    auth_server_admin_token: str = ""
+    auth_server_audience: str = "meta-wise"
+    auth_server_issuer: str = ""
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -220,6 +224,10 @@ class AppConfig:
             auth_users_file=storage["auth_users_file"],
             auth_secret=auth.get("auth_secret") or None,
             auth_token_ttl_seconds=int(auth["auth_token_ttl_seconds"]),
+            auth_server_url=str(auth.get("auth_server_url") or "").strip(),
+            auth_server_admin_token=str(auth.get("auth_server_admin_token") or "").strip(),
+            auth_server_audience=str(auth.get("auth_server_audience") or "meta-wise").strip(),
+            auth_server_issuer=str(auth.get("auth_server_issuer") or "").strip(),
         )
 
 

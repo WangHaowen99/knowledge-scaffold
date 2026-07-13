@@ -102,6 +102,19 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
     "auth": {
         "auth_secret": {"env": "AUTH_SECRET", "type": "secret", "default": ""},
         "auth_token_ttl_seconds": {"env": "AUTH_TOKEN_TTL", "type": "int", "default": 43200},
+        "auth_server_url": {"env": "AUTH_SERVER_URL", "type": "str", "default": ""},
+        "auth_server_admin_token": {
+            "env": "AUTH_SERVER_ADMIN_TOKEN",
+            "type": "secret",
+            "default": "",
+        },
+        "auth_server_audience": {
+            "env": "AUTH_SERVER_AUDIENCE",
+            "type": "str",
+            "default": "meta-wise",
+        },
+        # 留空时 RemoteAuthBackend 使用 auth_server_url 作为 issuer。
+        "auth_server_issuer": {"env": "AUTH_SERVER_ISSUER", "type": "str", "default": ""},
     },
     "agent": {
         "llm_connection_max_retries": {"env": "AGENT_LLM_CONNECTION_MAX_RETRIES", "type": "int", "default": 3},

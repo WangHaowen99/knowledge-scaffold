@@ -1,6 +1,6 @@
 import pytest
 
-from agentic.services.auth import AuthManager
+from api.auth.auth import AuthManager
 
 
 def test_create_user_rejects_when_user_count_reaches_ops_limit(tmp_path, monkeypatch):

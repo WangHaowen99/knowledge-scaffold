@@ -11,14 +11,15 @@ from __future__ import annotations
 import socket
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from werkzeug.serving import make_server
 
-from agentic.services.auth import AuthManager, PasswordPolicyError
-from agentic.services.remote_auth import RemoteAuthBackend
+from api.auth.auth import AuthManager, PasswordPolicyError
+from api.auth.remote_auth import RemoteAuthBackend
 
 # 测试专用例外：决策 D4 禁止 consumer 与 auth-server 之间任何生产代码 Python import
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
@@ -62,7 +63,7 @@ def auth_server(tmp_path):
         enable_registration=True,
     )
     app = create_auth_server_app(config)
-    server = make_server("127.0.0.1", port, app)
+    server = make_server("127.0.0.1", port, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -79,7 +80,7 @@ def backend(auth_server):
 
 def _build_consumer_app(auth_manager):
     """与 test_auth_contract.py 相同的装配打桩方式，只替换 auth_manager。"""
-    import agentic.app as app_module
+    import app as app_module
 
     runtime = {
         "config": SimpleNamespace(),
@@ -104,20 +105,17 @@ def _build_consumer_app(auth_manager):
 
 
 def test_password_login_issue_and_verify(backend):
-    user = backend.authenticate("admin", "admin123")
-    assert user is not None
+    result = backend.login("admin", "admin123")
+    assert result is not None
+    user = result.user
     assert user.username == "admin"
     assert user.role == "admin"
     assert user.password_change_required is True
 
-    token = backend.issue_token(user)
+    token = result.access_token
     assert isinstance(token, str) and token.count(".") == 2  # RS256 JWT
-
-    tokens = backend.pop_login_tokens("admin")
-    assert tokens is not None
-    assert tokens["access_token"] == token
-    assert tokens["refresh_token"]
-    assert tokens["expires_in"] == 60
+    assert result.refresh_token
+    assert result.expires_in == 60
 
     # 本地验签（JWKS）同一条代码路径
     verified = backend.verify_token(token)
@@ -126,40 +124,51 @@ def test_password_login_issue_and_verify(backend):
     assert verified.role == "admin"
     assert verified.password_change_required is True
 
-    # pop 是取出并清除：第二次拿不到；issue_token 也随之失序报错
-    assert backend.pop_login_tokens("admin") is None
-    with pytest.raises(RuntimeError):
-        backend.issue_token(user)
+
+def test_login_rejects_bad_credentials(backend):
+    assert backend.login("admin", "wrong-password") is None
+    assert backend.login("no-such-user", "whatever") is None
+    assert backend.login("", "") is None
 
 
-def test_authenticate_rejects_bad_credentials(backend):
-    assert backend.authenticate("admin", "wrong-password") is None
-    assert backend.authenticate("no-such-user", "whatever") is None
-    assert backend.authenticate("", "") is None
+def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
+    """同用户名并发登录必须各自拿到本次请求的 token 对，不能经共享缓存串号。"""
+    barrier = threading.Barrier(3)
 
+    def login_once():
+        barrier.wait(timeout=5)
+        return backend.login("admin", "admin123")
 
-def test_issue_token_without_prior_authenticate_raises(backend):
-    with pytest.raises(RuntimeError):
-        backend.issue_token(SimpleNamespace(username="admin"))
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(login_once) for _ in range(2)]
+        barrier.wait(timeout=5)
+        results = [future.result(timeout=10) for future in futures]
+
+    assert all(result is not None for result in results)
+    assert len({result.refresh_token for result in results}) == 2
+    for result in results:
+        assert result.refresh_token
+        verified = backend.verify_token(result.access_token)
+        assert verified is not None and verified.username == "admin"
 
 
 def test_verify_token_rejects_non_access_tokens(backend):
-    backend.authenticate("admin", "admin123")
-    tokens = backend.pop_login_tokens("admin")
+    result = backend.login("admin", "admin123")
+    assert result is not None and result.refresh_token
 
     # refresh token 不能当访问凭据（typ != access）
-    assert backend.verify_token(tokens["refresh_token"]) is None
+    assert backend.verify_token(result.refresh_token) is None
     # 篡改签名
-    assert backend.verify_token(tokens["access_token"][:-3] + "abc") is None
+    assert backend.verify_token(result.access_token[:-3] + "abc") is None
     assert backend.verify_token("not-a-token") is None
     assert backend.verify_token("") is None
 
 
 def test_refresh_tokens_rotates_pair(backend):
-    backend.authenticate("admin", "admin123")
-    tokens = backend.pop_login_tokens("admin")
+    result = backend.login("admin", "admin123")
+    assert result is not None and result.refresh_token
 
-    renewed = backend.refresh_tokens(tokens["refresh_token"])
+    renewed = backend.refresh_tokens(result.refresh_token)
     assert renewed is not None
     assert renewed["access_token"] and renewed["refresh_token"]
     assert renewed["expires_in"] == 60
@@ -171,23 +180,23 @@ def test_refresh_tokens_rotates_pair(backend):
 
 
 def test_change_password_revokes_refresh_but_old_access_survives_ttl(backend):
-    backend.authenticate("admin", "admin123")
-    old_tokens = backend.pop_login_tokens("admin")
+    old_login = backend.login("admin", "admin123")
+    assert old_login is not None and old_login.refresh_token
 
     changed = backend.change_password("admin", "admin123", "NewRemote#2026")
     assert changed.username == "admin"
     assert changed.password_change_required is False
 
     # D2 固化语义：改密吊销全部 refresh token（等价 password_version+1）……
-    assert backend.refresh_tokens(old_tokens["refresh_token"]) is None
+    assert backend.refresh_tokens(old_login.refresh_token) is None
     # ……但 verify 是 JWKS 本地验签、不回查 ver：旧 access 在 ≤TTL 窗口内仍可验签。
     # 这是决策 D2 显式放宽的吊销窗口，不是缺陷；此断言防止后人“顺手修复”改回逐请求回查。
-    still_valid = backend.verify_token(old_tokens["access_token"])
+    still_valid = backend.verify_token(old_login.access_token)
     assert still_valid is not None and still_valid.username == "admin"
 
-    assert backend.authenticate("admin", "admin123") is None
-    renewed = backend.authenticate("admin", "NewRemote#2026")
-    assert renewed is not None and renewed.password_change_required is False
+    assert backend.login("admin", "admin123") is None
+    renewed = backend.login("admin", "NewRemote#2026")
+    assert renewed is not None and renewed.user.password_change_required is False
 
 
 # ---------------------------------------------------------------- 用户管理
@@ -248,7 +257,7 @@ def test_auth_server_down_raises_unavailable(tmp_path):
     backend = RemoteAuthBackend(dead_url, admin_token=ADMIN_TOKEN)
 
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        backend.authenticate("admin", "admin123")
+        backend.login("admin", "admin123")
     with pytest.raises(ValueError, match="认证服务暂不可用"):
         backend.refresh_tokens("some-refresh-token")
     with pytest.raises(ValueError, match="认证服务暂不可用"):
@@ -290,6 +299,20 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     )
     assert me2.status_code == 200
 
+    logout = client.post(
+        "/auth/logout", json={"refresh_token": refreshed_data["refresh_token"]}
+    )
+    assert logout.status_code == 200
+    assert logout.get_json() == {"success": True}
+    revoked = client.post(
+        "/auth/refresh", json={"refresh_token": refreshed_data["refresh_token"]}
+    )
+    assert revoked.status_code == 401
+    assert revoked.get_json() == {"error": "Unauthorized"}
+
+    missing_logout_token = client.post("/auth/logout", json={})
+    assert missing_logout_token.status_code == 400
+
     # 上游拒绝（无效 refresh）→ 401，前端据此登出
     rejected = client.post("/auth/refresh", json={"refresh_token": "garbage"})
     assert rejected.status_code == 401
@@ -317,7 +340,7 @@ def test_refresh_route_backend_without_refresh_returns_503(tmp_path):
 
 
 def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, monkeypatch):
-    import agentic.app as app_module
+    import app as app_module
 
     monkeypatch.setenv("AUTH_SERVER_URL", auth_server.base_url)
     monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", ADMIN_TOKEN)
@@ -329,12 +352,12 @@ def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, 
     assert isinstance(remote, RemoteAuthBackend)
 
     # 装配后端可用：真 HTTP 打到 fixture 起的 auth server
-    user = remote.authenticate("admin", "admin123")
-    assert user is not None and user.role == "admin"
+    result = remote.login("admin", "admin123")
+    assert result is not None and result.user.role == "admin"
 
 
 def test_build_runtime_services_requires_auth_server_url(tmp_path, monkeypatch):
-    import agentic.app as app_module
+    import app as app_module
 
     # 默认配置（未设置 AUTH_SERVER_URL）即 remote 唯一路径：缺 auth server 地址必须抛错
     monkeypatch.delenv("AUTH_SERVER_URL", raising=False)
@@ -344,7 +367,7 @@ def test_build_runtime_services_requires_auth_server_url(tmp_path, monkeypatch):
 
 
 def test_create_app_requires_auth_server_url(tmp_path, monkeypatch):
-    import agentic.app as app_module
+    import app as app_module
 
     # create_app 不打桩 build_runtime_services 时，缺 AUTH_SERVER_URL 同样抛错
     monkeypatch.delenv("AUTH_SERVER_URL", raising=False)
