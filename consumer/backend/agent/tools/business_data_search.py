@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, Optional, Set
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set
 
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.business_data.resolver import (
@@ -14,6 +14,7 @@ from agent.tools.business_data.service import (
     BusinessDataSearchRequest,
     query_business_data_stream,
 )
+from agent.tools.events import _tool_span_key
 from utils.logging import get_logger
 from ontology.ontology_catalog import get_ontology_manifest
 
@@ -75,6 +76,7 @@ def handle_business_data_search(
     workspace_id: Optional[str] = None,
     event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
     tool_call_id: Optional[str] = None,
+    provider_runtime_context: Optional[Mapping[str, Any]] = None,
 ) -> str:
     normalized_ontology_id = str(ontology_id or "").strip()
     if not normalized_ontology_id:
@@ -114,6 +116,7 @@ def handle_business_data_search(
             ontology_id=normalized_ontology_id,
             entity=normalized_entity,
             query=normalized_query,
+            provider_runtime_context=dict(provider_runtime_context or {}),
         )
         for event in query_business_data_stream(
             request,
@@ -186,6 +189,10 @@ class BusinessDataSearchTool:
             workspace_id=context.workspace_id,
             event_emitter=event_emitter,
             tool_call_id=tool_call_id,
+            provider_runtime_context=_build_provider_runtime_context(
+                context=context,
+                tool_call_id=tool_call_id,
+            ),
         )
         state_updates: Dict[str, Any] = {}
         entity_name = str(args.get("entity") or "").strip()
@@ -200,3 +207,26 @@ class BusinessDataSearchTool:
             content=content,
             state_updates=state_updates,
         )
+
+
+def _build_provider_runtime_context(
+    *,
+    context: ToolContext,
+    tool_call_id: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "run_id": context.run_id,
+        "session_id": context.session_id,
+        "turn_id": context.turn_id,
+        "parent_span_key": _tool_span_key(
+            context,
+            {
+                "tool_name": "business_data_search",
+                "tool_call_id": tool_call_id,
+            },
+        ),
+        "agent_iteration": context.agent_iteration,
+        "model_profile_id": context.model_profile_id,
+        "_observer": context.observer,
+        "_cancel_event": context.cancel_event,
+    }

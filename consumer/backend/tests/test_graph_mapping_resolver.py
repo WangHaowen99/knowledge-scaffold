@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from agentic.business_data.providers.graph.mapping import GraphMappingResolver
+from agent.tools.business_data.providers.graph.mapping import GraphMappingResolver
 
 
 def _write_ontology(tmp_path, payload=None):
@@ -68,6 +68,7 @@ def test_resolver_reads_object_data_mappings_final_template(tmp_path):
         workspace_root=str(workspace_root),
         ontology_id="demo-ontology",
         provider="neo4j",
+        schema_labels=["eco_affected_object"],
     ).resolve("eco_affected_object")
 
     assert mapping is not None
@@ -93,6 +94,17 @@ def test_resolver_returns_none_without_mapping(tmp_path):
     ).resolve("missing_entity")
 
     assert mapping is None
+
+    schema_mapping = GraphMappingResolver(
+        workspace_root=str(workspace_root),
+        ontology_id="demo-ontology",
+        provider="neo4j",
+        schema_labels=["missing_entity"],
+    ).resolve("missing_entity")
+
+    assert schema_mapping is not None
+    assert schema_mapping.label == "missing_entity"
+    assert schema_mapping.source == "graph_schema_exact_match"
 
 
 def test_resolver_reads_object_data_mappings_provider_section(tmp_path):
@@ -129,6 +141,7 @@ def test_resolver_reads_object_data_mappings_provider_section(tmp_path):
         workspace_root=str(workspace_root),
         ontology_id="demo-ontology",
         provider="neo4j",
+        schema_labels=["target_item"],
     ).resolve("target_item")
 
     assert mapping is not None
@@ -197,6 +210,7 @@ def test_resolver_reads_object_frontmatter_graph_label(tmp_path):
         workspace_root=str(workspace_root),
         ontology_id="demo-ontology",
         provider="neo4j",
+        schema_labels=["target_item"],
     ).resolve("target_item")
 
     assert mapping is not None
