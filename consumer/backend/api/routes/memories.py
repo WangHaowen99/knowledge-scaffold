@@ -28,6 +28,11 @@ def _get_orchestrator():
     return get_orchestrator()
 
 
+def _enforce_request_workspace_access() -> str:
+    from api.routes import get_request_workspace_id
+    return get_request_workspace_id()
+
+
 def _get_memory_manager():
     user = get_current_user()
     if not user:
@@ -129,6 +134,7 @@ def _find_memory_hit(memory_manager, memory_id: str):
 @require_auth()
 def list_memories():
     """List the current user's ordinary long-term memories."""
+    _enforce_request_workspace_access()
     memory_type, error = _parse_memory_type(request.args.get("memory_type"))
     if error:
         return jsonify({"error": error}), 400
@@ -167,6 +173,7 @@ def list_memories():
 @require_auth()
 def create_memory():
     """Create a current-user ordinary memory item."""
+    _enforce_request_workspace_access()
     data = request.get_json() or {}
     content = str(data.get("content") or "").strip()
     if len(content) < 8:
@@ -197,6 +204,7 @@ def create_memory():
 @require_auth()
 def update_memory(memory_id: str):
     """Update an active ordinary memory item."""
+    _enforce_request_workspace_access()
     data = request.get_json() or {}
     content = str(data.get("content") or "").strip()
     if len(content) < 8:
@@ -240,6 +248,7 @@ def update_memory(memory_id: str):
 @require_auth()
 def delete_memory(memory_id: str):
     """Archive an active ordinary memory item."""
+    _enforce_request_workspace_access()
     memory_manager = _get_memory_manager()
     if not memory_manager:
         return jsonify({"error": "Memory manager not available"}), 503

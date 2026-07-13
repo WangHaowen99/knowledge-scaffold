@@ -6,9 +6,18 @@ from agent.memory.filesystem_manager import FileSystemMemoryManager
 from api.routes import memories as memories_module
 from api.routes.memories import memories_bp
 from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace
 
 
 def _build_test_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    create_workspace(
+        "Memory Test Workspace",
+        workspace_id="memory-test",
+        owner=None,
+        set_as_default=True,
+    )
+
     app = Flask(__name__)
     app.config["TESTING"] = True
 
