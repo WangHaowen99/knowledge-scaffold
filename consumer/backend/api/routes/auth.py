@@ -17,6 +17,14 @@ from api.auth.auth import (
     require_auth,
     require_role,
 )
+from api.auth.user_deletion import (
+    UserDeletionReconciliationError,
+    UserDeletionPendingError,
+    create_identity_if_reusable,
+    delete_user_with_cleanup,
+    normalize_username,
+)
+from workspace.workspaces import WorkspaceOwnershipConflictError
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
@@ -29,14 +37,15 @@ def _auth_server_url() -> str:
     return str(getattr(config, "auth_server_url", "") or "").strip().rstrip("/")
 
 
-def _proxy_register(path: str):
+def _proxy_register(path: str, payload=None):
     base = _auth_server_url()
     if not base:
         return jsonify({"error": "注册功能未开启"}), 503
+    proxy_payload = payload if payload is not None else (request.get_json(silent=True) or {})
     try:
         upstream = requests.post(
             base + path,
-            json=request.get_json(silent=True) or {},
+            json=proxy_payload,
             # auth server 按客户端 IP 限流，转发时必须带上真实来源 IP
             headers={"X-Forwarded-For": request.remote_addr or "unknown"},
             timeout=_REGISTER_PROXY_TIMEOUT,
@@ -52,7 +61,22 @@ def _proxy_register(path: str):
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
-    return _proxy_register("/register")
+    payload = request.get_json(silent=True) or {}
+    username = normalize_username(payload.get("username"))
+    if not username:
+        return _proxy_register("/register", payload)
+    try:
+        return create_identity_if_reusable(
+            username,
+            lambda: _proxy_register("/register", payload),
+        )
+    except UserDeletionPendingError as exc:
+        return _user_deletion_pending_response(exc)
+    except UserDeletionReconciliationError:
+        return jsonify({
+            "error": "用户删除状态暂不可用，请稍后再试",
+            "code": "USER_DELETION_STATE_UNAVAILABLE",
+        }), 503
 
 
 @auth_bp.route("/login", methods=["POST"])
@@ -146,8 +170,18 @@ def create_user():
     password = str(data.get("password", ""))
     role = str(data.get("role") or "user")
     try:
-        user = auth_manager.create_user(username, password, role=role)
+        user = create_identity_if_reusable(
+            username,
+            lambda: auth_manager.create_user(username, password, role=role),
+        )
         return jsonify({"user": user.to_public_dict()}), 201
+    except UserDeletionPendingError as exc:
+        return _user_deletion_pending_response(exc)
+    except UserDeletionReconciliationError:
+        return jsonify({
+            "error": "用户删除状态暂不可用，请稍后再试",
+            "code": "USER_DELETION_STATE_UNAVAILABLE",
+        }), 503
     except PasswordPolicyError as exc:
         return jsonify({
             "error": str(exc),
@@ -164,6 +198,7 @@ def update_user(username):
     auth_manager = get_auth_manager()
     if not auth_manager:
         return jsonify({"error": "Auth not configured"}), 500
+    username = normalize_username(username)
     data = request.get_json() or {}
     password = data.get("password")
     if password is not None:
@@ -193,16 +228,48 @@ def delete_user(username):
     auth_manager = get_auth_manager()
     if not auth_manager:
         return jsonify({"error": "Auth not configured"}), 500
+    username = normalize_username(username)
     current = get_current_user()
     if current and current.username == username:
         return jsonify({"error": "不能删除自己"}), 400
     if username == "admin":
         return jsonify({"error": "不能删除 admin 管理员"}), 400
     try:
-        auth_manager.delete_user(username)
+        result = delete_user_with_cleanup(auth_manager, username)
+        if result.pending_reconciliation:
+            return jsonify({
+                "success": True,
+                "reconciliation_required": True,
+                "reconciliation_id": result.reconciliation_id,
+            }), 202
         return jsonify({"success": True})
+    except UserDeletionPendingError as exc:
+        return _user_deletion_pending_response(exc)
+    except WorkspaceOwnershipConflictError as exc:
+        return jsonify({
+            "error": str(exc),
+            "code": "WORKSPACE_OWNER_TRANSFER_REQUIRED",
+            "workspace_ids": exc.workspace_ids,
+        }), 409
+    except UserDeletionReconciliationError as exc:
+        payload = {
+            "error": str(exc),
+            "code": "USER_DELETION_RECONCILIATION_FAILED",
+        }
+        if exc.reconciliation_id:
+            payload["reconciliation_required"] = True
+            payload["reconciliation_id"] = exc.reconciliation_id
+        return jsonify(payload), 500
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+def _user_deletion_pending_response(exc: UserDeletionPendingError):
+    return jsonify({
+        "error": str(exc),
+        "code": "USER_DELETION_RECONCILIATION_PENDING",
+        "reconciliation_id": exc.reconciliation_id,
+    }), 409
 
 
 @auth_bp.route("/change-password", methods=["PUT"])

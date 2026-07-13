@@ -201,8 +201,19 @@ def _audit_pending_reconciliations(
                 )
             )
             continue
-        if str(record.get("status") or "pending") != "pending":
+        status = str(record.get("status") or "").strip()
+        if not status:
+            findings.append(
+                _finding(
+                    "<system>",
+                    "invalid_user_deletion_reconciliation",
+                    detail=f"records[{index}] has no status",
+                )
+            )
             continue
+        # Completed records are removed from this file.  Every record that is
+        # still present reserves its username, regardless of the current
+        # deletion phase (intent, unconfirmed identity delete, or cleanup).
         username = str(record.get("username") or "").strip()
         record_id = str(record.get("id") or "").strip()
         findings.append(
