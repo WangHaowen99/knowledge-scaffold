@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from app import create_app
-from api.auth.auth import get_auth_manager
+import app as app_module
+from api.auth.auth import AuthManager, get_auth_manager
+from config import AgentConfig, AppConfig
+from llm import LLMRouter, configure_llm_router
+from workspace.user_store_manager import UserStoreManager
 from workspace.workspaces import create_workspace
 
 
@@ -18,7 +21,28 @@ def _build_client(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "https://llm.example/v1")
     monkeypatch.setenv("LLM_MODEL", "unit-model")
 
-    app = create_app()
+    config = AppConfig.from_env()
+    agent_config = AgentConfig.from_env()
+    llm_router = LLMRouter(config, agent_config=agent_config)
+    configure_llm_router(llm_router)
+    runtime = {
+        "config": config,
+        "agent_config": agent_config,
+        "llm_router": llm_router,
+        "auth_manager": AuthManager(str(tmp_path / "users.json"), "test-secret"),
+        "user_store_manager": UserStoreManager(
+            config.chat_storage_dir,
+            config.execution_storage_dir,
+        ),
+    }
+    monkeypatch.setattr(
+        app_module,
+        "build_runtime_services",
+        lambda previous_llm_router=None: runtime,
+    )
+    monkeypatch.setattr(app_module, "start_runtime_warmup", lambda **_kwargs: None)
+
+    app = app_module.create_app()
     app.testing = False
     client = app.test_client()
     with app.app_context():
