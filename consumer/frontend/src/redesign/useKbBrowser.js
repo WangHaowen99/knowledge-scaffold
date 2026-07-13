@@ -27,6 +27,8 @@ export default function useKbBrowser() {
   const [versionOverride, setVersionOverride] = useState(null);
   const [opBusy, setOpBusy] = useState('');
   const [opNotice, setOpNotice] = useState('');
+  const [treeRevision, setTreeRevision] = useState(0);
+  const [importPreview, setImportPreview] = useState(null);
 
   const pkg = packages.find((p) => p.id === pkgId) || null;
   const activeVersion = pkg?.active_version || pkg?.version || '';
@@ -80,7 +82,7 @@ export default function useKbBrowser() {
       }
     }, 0);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [pkgId, workspaceId, versionOverride]);
+  }, [pkgId, workspaceId, versionOverride, treeRevision]);
 
   const selectPkg = useCallback((id) => { setPkgId(id); setVersionOverride(null); setOpNotice(''); }, []);
   const selectDir = useCallback((dirPath) => { setSel({ dir: dirPath, file: null }); }, []);
@@ -91,10 +93,16 @@ export default function useKbBrowser() {
   const selectVersion = useCallback((version) => {
     setVersionOverride(version === activeVersion ? null : version);
   }, [activeVersion]);
+  const reloadTree = useCallback(() => setTreeRevision((revision) => revision + 1), []);
 
   const importZip = useCallback(async (file) => {
+    const accepted = window.confirm(
+      '导入包可能包含脚本、映射和业务定义。系统会做路径与格式校验，但不会替你判断业务内容是否可信。确认继续导入并查看结果预览？',
+    );
+    if (!accepted) return;
     setImporting(true);
     setNotice('');
+    setImportPreview(null);
     try {
       const form = new FormData();
       form.append('file', file);
@@ -105,12 +113,13 @@ export default function useKbBrowser() {
         if (!ok) return;
         const retry = new FormData();
         retry.append('file', file);
-        retry.append('action', 'overwrite_active');
+        retry.append('action', data.conflict_type === 'version_exists' ? 'overwrite_matching' : 'overwrite_active');
         res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: retry });
         data = await res.json().catch(() => ({}));
       }
       if (res.ok) {
         setNotice(`导入成功：${data.ontology_name || data.ontology_id}（对象 ${data.objects_count ?? '-'} · 操作 ${data.operations_count ?? '-'}）`);
+        setImportPreview(data.preview || null);
         await loadPackages();
         setPkgId(data.ontology_id);
       } else {
@@ -120,6 +129,8 @@ export default function useKbBrowser() {
       setImporting(false);
     }
   }, [loadPackages]);
+
+  const clearImportPreview = useCallback(() => setImportPreview(null), []);
 
   const setPkgEnabled = useCallback(async (enabled) => {
     if (!pkgId) return;
@@ -188,6 +199,23 @@ export default function useKbBrowser() {
     }
   }, [pkgId, viewVersion, loadPackages]);
 
+  const deletePackage = useCallback(async () => {
+    if (!pkgId) return;
+    setOpBusy('deletePackage');
+    setOpNotice('');
+    try {
+      const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOpNotice(`已删除知识包 ${pkgId}`);
+        setPkgId(null);
+        await loadPackages();
+      } else setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
+    } finally {
+      setOpBusy('');
+    }
+  }, [pkgId, loadPackages]);
+
   const downloadPkg = useCallback(async () => {
     if (!pkgId) return;
     setOpBusy('download');
@@ -223,8 +251,9 @@ export default function useKbBrowser() {
   return {
     canImport, canManage: canImport, packages, pkgsLoading, pkg, pkgId, tree, treeLoading,
     sel, selectPkg, selectDir, selectFile, importZip, importing, notice,
+    importPreview, clearImportPreview, reloadTree,
     viewVersion, viewingActive, versionOverride, selectVersion,
-    setPkgEnabled, activateVersion, deleteVersion, downloadPkg, opBusy, opNotice,
+    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
   };
 }
 

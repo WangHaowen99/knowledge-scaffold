@@ -1,73 +1,107 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+
 import { authFetch } from '../utils/auth';
+import EvolutionWorkbench from './EvolutionWorkbench';
+import KnowledgeDataSources from './KnowledgeDataSources';
 import Markdown from './Markdown';
+import OntologyGraphPanel from './OntologyGraphPanel';
+import { EmptyState, Modal, ScopeTabs, StatusTag } from './ui';
 import { DIR_ICONS, DIR_LABELS, findDirEntries } from './useKbBrowser';
 
-// 知识包工作台内容区：目录树在应用侧边栏（KbSidebarTree），这里是
-// 「当前目录条目列表 + 文件内容」两栏。文件内容经 /raw-file 按相对路径读取，
-// Markdown 渲染 / 源码切换；yaml/json/py 等按源码高亮块展示。
-const EXT_LANG = { '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json', '.py': 'python', '.sql': 'sql', '.csv': 'csv', '.txt': 'text' };
+const EXT_LANG = { '.md': 'markdown', '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json', '.py': 'python', '.sql': 'sql', '.csv': 'csv', '.txt': 'text' };
+const KB_TABS = [
+  { id: 'files', label: '文件与版本' },
+  { id: 'data', label: '数据源' },
+  { id: 'graph', label: '本体图' },
+  { id: 'evolution', label: '记忆进化' },
+];
 
-export default function KnowledgeWorkbench({ kb }) {
+export default function KnowledgeWorkbench({ kb, focusRequest }) {
   const {
     pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
     canManage, viewVersion, viewingActive, versionOverride, selectVersion,
-    setPkgEnabled, activateVersion, deleteVersion, downloadPkg, opBusy, opNotice,
+    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
+    importPreview, clearImportPreview, reloadTree,
   } = kb;
+  const [activeTab, setActiveTab] = useState('files');
   const [content, setContent] = useState('');
   const [contentErr, setContentErr] = useState('');
   const [contentLoading, setContentLoading] = useState(false);
   const [view, setView] = useState('render');
   const [filter, setFilter] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [fileBusy, setFileBusy] = useState('');
+  const [fileNotice, setFileNotice] = useState('');
+  const uploadRef = useRef(null);
 
-  const entries = findDirEntries(tree, sel.dir);
-  const fileEntry = sel.file
-    ? findDirEntries(tree, sel.file.includes('/') ? sel.file.slice(0, sel.file.lastIndexOf('/')) : '')
-      .find((e) => e.path === sel.file)
-    : null;
+  const entries = useMemo(() => findDirEntries(tree, sel.dir), [tree, sel.dir]);
+  const fileEntry = useMemo(() => (
+    sel.file
+      ? findDirEntries(tree, sel.file.includes('/') ? sel.file.slice(0, sel.file.lastIndexOf('/')) : '')
+        .find((entry) => entry.path === sel.file)
+      : null
+  ), [sel.file, tree]);
 
-  // 目录切换后自动选中第一个可查看文件
+  useEffect(() => {
+    if (!focusRequest?.path) return;
+    if (focusRequest.ontologyId && focusRequest.ontologyId !== pkgId) return;
+    if (!treeContainsPath(tree, focusRequest.path)) return;
+    setActiveTab('files');
+    selectFile(focusRequest.path);
+  }, [focusRequest, pkgId, selectFile, tree]);
+
   useEffect(() => {
     if (sel.file || !entries.length) return undefined;
-    const first = entries.find((e) => e.type === 'file' && e.viewable);
+    const first = entries.find((entry) => entry.type === 'file' && entry.viewable);
     if (!first) return undefined;
-    const t = setTimeout(() => selectFile(first.path), 0);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => selectFile(first.path), 0);
+    return () => clearTimeout(timer);
   }, [sel.dir, sel.file, entries, selectFile]);
 
   useEffect(() => {
+    setEditing(false);
+    setFileNotice('');
     if (!pkgId || !sel.file) { setContent(''); setContentErr(''); return undefined; }
     let cancelled = false;
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       setContentLoading(true);
       setContentErr('');
       try {
         const params = new URLSearchParams({ path: sel.file });
         if (versionOverride !== null) params.set('version', versionOverride);
-        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/raw-file?${params.toString()}`);
-        const data = await res.json().catch(() => ({}));
+        const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/raw-file?${params.toString()}`);
+        const payload = await response.json().catch(() => ({}));
         if (cancelled) return;
-        if (res.ok) setContent(data.content || '');
-        else { setContent(''); setContentErr(data.error || `读取失败（${res.status}）`); }
+        if (response.ok) {
+          setContent(payload.content || '');
+          setEditContent(payload.content || '');
+        } else {
+          setContent('');
+          setContentErr(payload.error || `读取失败（${response.status}）`);
+        }
       } finally {
         if (!cancelled) setContentLoading(false);
       }
     }, 0);
-    return () => { cancelled = true; clearTimeout(t); };
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [pkgId, sel.file, versionOverride]);
 
-  const shown = entries.filter((e) => !filter || e.name.toLowerCase().includes(filter.toLowerCase()));
+  if (!pkg) {
+    return <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、连接、本体图和进化任务将在这里统一管理。" /></div>;
+  }
+
+  const shown = entries.filter((entry) => !filter || entry.name.toLowerCase().includes(filter.toLowerCase()));
   const ext = sel.file ? sel.file.slice(sel.file.lastIndexOf('.')).toLowerCase() : '';
   const isMd = ext === '.md';
   const crumbs = sel.dir ? sel.dir.split('/') : [];
-
-  if (!pkg) {
-    return <div className="kbx"><div className="empty" style={{ flex: 1, alignSelf: 'center' }}>
-      {treeLoading ? '加载中…' : '左侧选择或导入一个知识包'}</div></div>;
-  }
-
   const versions = [...(pkg.versions || [])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   const activeVersion = pkg.active_version || pkg.version || '';
+  const parts = sel.file?.split('/') || [];
+  const editableFolder = parts.length === 2 && ['objects', 'operations'].includes(parts[0]) ? parts[0] : '';
+  const canEditFile = canManage && viewingActive && isMd && Boolean(editableFolder);
+  const uploadFolder = ['objects', 'operations'].includes(sel.dir) ? sel.dir : '';
+
   const onToggleEnabled = () => {
     if (pkg.enabled && !window.confirm(`禁用后 Agent 将无法使用「${pkg.name || pkgId}」，确认禁用？`)) return;
     setPkgEnabled(!pkg.enabled);
@@ -76,111 +110,160 @@ export default function KnowledgeWorkbench({ kb }) {
     if (!window.confirm(`确认删除「${pkg.name || pkgId}」的版本 ${viewVersion}？该版本文件将被永久删除。`)) return;
     deleteVersion();
   };
+  const onDeletePackage = () => {
+    if (!window.confirm(`确认删除整个知识包「${pkg.name || pkgId}」及其所有版本？该操作不可撤销。`)) return;
+    deletePackage();
+  };
+
+  const saveFile = async () => {
+    if (!canEditFile) return;
+    setFileBusy('save');
+    setFileNotice('');
+    try {
+      const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/file`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: editableFolder, name: parts.at(-1), content: editContent }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setContent(editContent);
+        setEditing(false);
+        setFileNotice('文件已保存到当前激活版本');
+        reloadTree();
+      } else setFileNotice(`保存失败：${payload.error || payload.detail || response.status}`);
+    } finally {
+      setFileBusy('');
+    }
+  };
+
+  const uploadFile = async (file) => {
+    if (!uploadFolder || !file) return;
+    setFileBusy('upload');
+    setFileNotice('');
+    try {
+      const form = new FormData();
+      form.append('folder', uploadFolder);
+      form.append('file', file);
+      const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/upload`, { method: 'POST', body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setFileNotice(`${payload.existed ? '已覆盖' : '已上传'} ${payload.name || file.name}`);
+        reloadTree();
+        selectFile(`${uploadFolder}/${payload.name || file.name}`);
+      } else setFileNotice(`上传失败：${payload.error || payload.detail || response.status}`);
+    } finally {
+      setFileBusy('');
+    }
+  };
 
   return (
     <div className="kbwrap">
       <div className="kb-toolbar">
         <span className="kb-tb-name">{pkg.name || pkgId}</span>
-        <span className={`tag ${pkg.enabled ? 'tag-ok' : 'tag-off'}`}>{pkg.enabled ? '已启用' : '已禁用'}</span>
-        {activeVersion && <span className="tag tag-lang">激活版本 {activeVersion}</span>}
+        <StatusTag status={pkg.enabled ? 'enabled' : 'disabled'}>{pkg.enabled ? '已启用' : '已禁用'}</StatusTag>
+        {activeVersion && <StatusTag status="active">激活版本 {activeVersion}</StatusTag>}
         {versions.length > 0 && (
           <label className="kb-tb-ver">查看版本
-            <select value={viewVersion} onChange={(e) => selectVersion(e.target.value)}>
-              {versions.map((v) => (
-                <option key={v} value={v}>{v}{v === activeVersion ? '（激活）' : ''}</option>
-              ))}
+            <select value={viewVersion} onChange={(event) => selectVersion(event.target.value)}>
+              {versions.map((version) => <option key={version} value={version}>{version}{version === activeVersion ? '（激活）' : ''}</option>)}
             </select>
           </label>
         )}
         <span className="kb-tb-sp" />
-        <button className="btn" disabled={!!opBusy} onClick={downloadPkg}>
-          {opBusy === 'download' ? '打包中…' : '下载知识包(zip)'}
-        </button>
-        {canManage && (
-          <button className="btn" disabled={!!opBusy} onClick={onToggleEnabled}>
-            {opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用知识包' : '启用知识包'}
-          </button>
-        )}
-        {canManage && (viewingActive ? (
-          <button className="btn" disabled>已是激活版本</button>
-        ) : (
-          <button className="btn btn-p" disabled={!!opBusy} onClick={activateVersion}>
-            {opBusy === 'activate' ? '激活中…' : '设为激活版本'}
-          </button>
-        ))}
-        {canManage && (
-          <button className="btn btn-danger" disabled={!!opBusy || viewingActive || versions.length <= 1}
-            title={viewingActive ? '不能删除激活版本，请先切换查看其他版本' : versions.length <= 1 ? '仅剩一个版本，不能删除' : ''}
-            onClick={onDeleteVersion}>
-            {opBusy === 'deleteVersion' ? '删除中…' : '删除版本'}
-          </button>
-        )}
+        <button className="btn" disabled={Boolean(opBusy)} onClick={downloadPkg}>{opBusy === 'download' ? '打包中…' : '下载 ZIP'}</button>
+        {canManage && <button className="btn" disabled={Boolean(opBusy)} onClick={onToggleEnabled}>{opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用' : '启用'}</button>}
+        {canManage && !viewingActive && <button className="btn btn-p" disabled={Boolean(opBusy)} onClick={activateVersion}>{opBusy === 'activate' ? '激活中…' : '设为激活版本'}</button>}
+        {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy) || viewingActive || versions.length <= 1} onClick={onDeleteVersion}>{opBusy === 'deleteVersion' ? '删除中…' : '删除版本'}</button>}
+        {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy)} onClick={onDeletePackage}>{opBusy === 'deletePackage' ? '删除中…' : '删除知识包'}</button>}
       </div>
-      {opNotice && <div className="kb-opnotice">{opNotice}</div>}
-      <div className="kbx">
-      <div className="col2" style={{ width: 320 }}>
-        <div className="kb-crumbs">
-          <a onClick={() => selectDir('')} className={!sel.dir ? 'cur' : ''}>{pkg.name || pkgId}</a>
-          {crumbs.map((c, i) => {
-            const path = crumbs.slice(0, i + 1).join('/');
-            return <span key={path}> / <a onClick={() => selectDir(path)} className={i === crumbs.length - 1 ? 'cur' : ''}>{c}</a></span>;
-          })}
-        </div>
-        <input className="kb-search" style={{ marginBottom: 10 }} placeholder="筛选…"
-          value={filter} onChange={(e) => setFilter(e.target.value)} />
-        {treeLoading && <div className="empty">加载中…</div>}
-        {!treeLoading && !shown.length && <div className="empty">该目录暂无内容</div>}
-        {shown.map((e) => (
-          e.type === 'dir' ? (
-            <div key={e.path} className="lrow" onClick={() => selectDir(e.path)}>
-              <div className="ln">{DIR_ICONS[e.name] || '▸'} {e.name}/ <span style={{ color: 'var(--muted)', fontWeight: 400 }}>{DIR_LABELS[e.name] || ''}</span></div>
-              <div className="ld">{(e.children || []).length} 项</div>
+      {(opNotice || fileNotice) && <div className="kb-opnotice">{fileNotice || opNotice}</div>}
+      <div className="kb-tabs"><ScopeTabs items={KB_TABS} value={activeTab} onChange={setActiveTab} ariaLabel="知识包工作台页签" /></div>
+
+      {activeTab === 'files' && (
+        <div className="kbx">
+          <div className="col2" style={{ width: 320 }}>
+            <div className="kb-crumbs">
+              <button onClick={() => selectDir('')} className={!sel.dir ? 'cur' : ''}>{pkg.name || pkgId}</button>
+              {crumbs.map((crumb, index) => {
+                const path = crumbs.slice(0, index + 1).join('/');
+                return <span key={path}> / <button onClick={() => selectDir(path)} className={index === crumbs.length - 1 ? 'cur' : ''}>{crumb}</button></span>;
+              })}
             </div>
-          ) : (
-            <div key={e.path} className={`lrow ${e.path === sel.file ? 'on' : ''}`}
-              onClick={() => e.viewable !== false && selectFile(e.path)}
-              style={e.viewable === false ? { opacity: .55, cursor: 'not-allowed' } : undefined}>
-              <div className="ln">≡ {e.name}</div>
-              <div className="ld">{(e.size / 1024).toFixed(1)} KB{e.viewable === false ? ' · 不支持在线查看' : ''}</div>
+            <div className="kb-file-tools">
+              <input className="kb-search" placeholder="筛选文件…" value={filter} onChange={(event) => setFilter(event.target.value)} />
+              {canManage && viewingActive && uploadFolder && <button className="btn" disabled={Boolean(fileBusy)} onClick={() => uploadRef.current?.click()}>＋ 上传 Markdown</button>}
+              <input ref={uploadRef} hidden type="file" accept=".md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile(file); event.target.value = ''; }} />
             </div>
-          )
-        ))}
-      </div>
-      <div className="col3">
-        {!sel.file && (
-          <div className="empty" style={{ paddingTop: 80 }}>
-            选择左侧文件查看内容{sel.dir ? '' : '，或进入某个目录'}
+            {!viewingActive && <div className="ro-banner">历史版本只读。需要修改时先设为激活版本。</div>}
+            {sel.dir === 'assets' && <div className="ro-banner">Assets 支持浏览和下载，在线编辑与上传已关闭。</div>}
+            {treeLoading && <div className="empty">加载中…</div>}
+            {!treeLoading && !shown.length && <EmptyState compact title="该目录暂无内容" />}
+            {shown.map((entry) => entry.type === 'dir' ? (
+              <button type="button" key={entry.path} className="lrow" onClick={() => selectDir(entry.path)}>
+                <span className="ln">{DIR_ICONS[entry.name] || '▸'} {entry.name}/ <small>{DIR_LABELS[entry.name] || ''}</small></span>
+                <span className="ld">{(entry.children || []).length} 项</span>
+              </button>
+            ) : (
+              <button type="button" key={entry.path} className={`lrow ${entry.path === sel.file ? 'on' : ''}`}
+                onClick={() => entry.viewable !== false && selectFile(entry.path)} disabled={entry.viewable === false}>
+                <span className="ln">≡ {entry.name}</span>
+                <span className="ld">{((entry.size || 0) / 1024).toFixed(1)} KB{entry.viewable === false ? ' · 不支持在线查看' : ''}</span>
+              </button>
+            ))}
           </div>
-        )}
-        {sel.file && (
-          <>
-            <div className="doc-h">
-              ≡ {fileEntry?.name || sel.file.split('/').pop()}
-              {isMd && (
-                <span className="viewtog">
-                  <button className={view !== 'source' ? 'on' : ''} onClick={() => setView('render')}>渲染</button>
-                  <button className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button>
-                </span>
-              )}
-            </div>
-            <div className="doc-sub">{pkgId}/{sel.file}</div>
-            {contentLoading && <div className="empty">加载中…</div>}
-            {!contentLoading && contentErr && <div className="empty">{contentErr}</div>}
-            {!contentLoading && !contentErr && (
-              isMd && view !== 'source'
-                ? <div style={{ maxWidth: 860 }}><Markdown>{stripFrontmatter(content)}</Markdown></div>
-                : <pre className="srcview" data-lang={EXT_LANG[ext] || ''}>{content}</pre>
+          <div className="col3">
+            {!sel.file && <EmptyState title="选择文件查看内容" description="Objects 与 Operations 的 Markdown 文件可在激活版本中编辑。" />}
+            {sel.file && (
+              <>
+                <div className="doc-h">
+                  <span>≡ {fileEntry?.name || parts.at(-1)}</span>
+                  <span className="viewtog">
+                    {isMd && !editing && <><button className={view !== 'source' ? 'on' : ''} onClick={() => setView('render')}>渲染</button><button className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button></>}
+                    {canEditFile && !editing && <button className="btn" onClick={() => { setEditContent(content); setEditing(true); }}>编辑</button>}
+                    {editing && <><button className="btn" onClick={() => { setEditing(false); setEditContent(content); }}>取消</button><button className="btn btn-p" disabled={fileBusy === 'save'} onClick={saveFile}>{fileBusy === 'save' ? '保存中…' : '保存'}</button></>}
+                  </span>
+                </div>
+                <div className="doc-sub">{pkgId}/{sel.file}</div>
+                {contentLoading && <div className="empty">加载中…</div>}
+                {!contentLoading && contentErr && <EmptyState title="文件读取失败" description={contentErr} />}
+                {!contentLoading && !contentErr && editing && <textarea className="kb-file-editor" value={editContent} spellCheck="false" onChange={(event) => setEditContent(event.target.value)} />}
+                {!contentLoading && !contentErr && !editing && (isMd && view !== 'source'
+                  ? <div className="kb-markdown"><Markdown>{stripFrontmatter(content)}</Markdown></div>
+                  : <pre className="srcview" data-lang={EXT_LANG[ext] || ''}>{content}</pre>)}
+              </>
             )}
-          </>
-        )}
-      </div>
-      </div>
+          </div>
+        </div>
+      )}
+      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources ontologyId={pkgId} /></div>}
+      {activeTab === 'graph' && <div className="kb-scroll"><OntologyGraphPanel ontologyId={pkgId} version={viewVersion} onOpenSource={(path) => { setActiveTab('files'); selectFile(path); }} /></div>}
+      {activeTab === 'evolution' && <div className="kb-scroll"><EvolutionWorkbench ontologyId={pkgId} /></div>}
+
+      {importPreview && (
+        <Modal title="导入结果预览" description="导入已完成。请核对识别到的内容与服务端校验结果。" onClose={clearImportPreview}
+          actions={<button className="btn btn-p" onClick={clearImportPreview}>完成</button>} wide>
+          <ImportPreview preview={importPreview} />
+        </Modal>
+      )}
     </div>
   );
 }
 
-// objects/*.md 顶部有 YAML frontmatter（resource/key/title…），渲染视图里裁掉
-function stripFrontmatter(md) {
-  const m = /^---\n[\s\S]*?\n---\n?/.exec(md || '');
-  return m ? md.slice(m[0].length) : md;
+function ImportPreview({ preview }) {
+  if (typeof preview === 'string') return <pre className="srcview">{preview}</pre>;
+  const entries = Array.isArray(preview) ? preview : Object.entries(preview || {});
+  if (!entries.length) return <EmptyState compact title="服务端未返回额外预览信息" />;
+  return <div className="import-preview">{Array.isArray(preview)
+    ? preview.map((item, index) => <pre key={item.path || index}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</pre>)
+    : entries.map(([key, value]) => <div key={key}><strong>{key}</strong><pre>{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre></div>)}</div>;
+}
+
+function stripFrontmatter(markdown) {
+  const match = /^---\n[\s\S]*?\n---\n?/.exec(markdown || '');
+  return match ? markdown.slice(match[0].length) : markdown;
+}
+
+function treeContainsPath(entries, path) {
+  return (entries || []).some((entry) => entry.path === path || treeContainsPath(entry.children, path));
 }
