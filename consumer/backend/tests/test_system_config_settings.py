@@ -2,8 +2,7 @@ import json
 
 import pytest
 
-from agentic.config.settings import AgentConfig, AppConfig, LimitsConfig
-from agentic.config.system_config import SystemConfigValidationError, load_system_config
+from config.settings import AgentConfig, AppConfig, LimitsConfig
 
 
 SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
@@ -21,7 +20,7 @@ def test_limits_config_uses_current_builtin_defaults(tmp_path, monkeypatch):
 
 
 def test_resolve_default_runtime_root_handles_flat_container_layout():
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     assert system_config_module._resolve_default_runtime_root(
         system_config_module.Path("/app")
@@ -32,7 +31,7 @@ def test_resolve_default_runtime_root_handles_flat_container_layout():
 
 
 def test_config_runtime_root_can_follow_project_root_env(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     runtime_root = tmp_path / "custom-runtime"
     monkeypatch.setenv(system_config_module.PROJECT_ROOT_ENV, str(runtime_root))
@@ -41,7 +40,7 @@ def test_config_runtime_root_can_follow_project_root_env(tmp_path, monkeypatch):
 
 
 def test_system_config_migrates_legacy_backend_config_to_runtime_config(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_path = tmp_path / ".onto-runtime" / "config" / "system_config.json"
     legacy_config_path = tmp_path / "backend" / "config" / "system_config.json"
@@ -79,7 +78,7 @@ def test_system_config_migrates_legacy_backend_config_to_runtime_config(tmp_path
 
 
 def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -135,7 +134,7 @@ def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch
 
 
 def test_existing_runtime_system_config_plaintext_secrets_are_rewritten(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -147,15 +146,6 @@ def test_existing_runtime_system_config_plaintext_secrets_are_rewritten(tmp_path
     "base_url": "https://llm.example/v1",
     "model": "main-model",
     "api_key": "runtime-secret"
-  },
-  "observability": {
-    "enabled": true,
-    "mode": "langfuse",
-    "langfuse": {
-      "public_key": "pk-test",
-      "secret_key": "langfuse-secret",
-      "base_url": "https://langfuse.example"
-    }
   }
 }
 """.strip(),
@@ -169,17 +159,14 @@ def test_existing_runtime_system_config_plaintext_secrets_are_rewritten(tmp_path
     config = system_config_module.load_system_config()
 
     assert config["llm"]["api_key"] == "runtime-secret"
-    assert config["observability"]["langfuse"]["secret_key"] == "langfuse-secret"
     raw_text = config_path.read_text(encoding="utf-8")
     raw = json.loads(raw_text)
     assert "runtime-secret" not in raw_text
-    assert "langfuse-secret" not in raw_text
     assert raw["llm"]["api_key"].startswith("enc:v1:")
-    assert raw["observability"]["langfuse"]["secret_key"].startswith("enc:v1:")
 
 
 def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -202,7 +189,14 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     "timeout": 45
   },
   "storage": {
-    "project_root": "/tmp/project"
+    "chat_storage_dir": "./runtime/chats",
+    "execution_storage_dir": "./runtime/executions",
+    "project_root": "/tmp/project",
+    "auth_users_file": "./runtime/users.json"
+  },
+  "auth": {
+    "auth_secret": "auth-secret",
+    "auth_token_ttl_seconds": 999
   },
   "agent": {
     "llm_connection_max_retries": 8,
@@ -241,9 +235,11 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     assert app_config.llm.model == "main-model"
     assert app_config.task_llm.base_url == "https://task.example/v1"
     assert app_config.task_llm.timeout == 45
-    assert app_config.task_llm.max_tokens == 2048
-    assert app_config.task_llm.temperature == 0.3
-    assert app_config.project_root == "/tmp/project"
+    assert app_config.task_llm.max_tokens == 4096
+    assert app_config.task_llm.temperature == 0.7
+    assert app_config.chat_storage_dir == "./runtime/chats"
+    assert app_config.auth_secret == "auth-secret"
+    assert app_config.auth_token_ttl_seconds == 999
     assert not hasattr(app_config, "ontologies_root")
     assert not hasattr(app_config, "skills_root")
 
@@ -264,7 +260,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
 
 
 def test_saved_system_config_fields_override_environment_variables(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -291,6 +287,7 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
     monkeypatch.setenv("LLM_MODEL", "env-model")
     monkeypatch.setenv("LLM_API_KEY", "env-secret")
     monkeypatch.setenv("PROJECT_ROOT", "/env/project")
+    monkeypatch.setenv("CHAT_STORAGE_DIR", "/env/chats")
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
 
     config = system_config_module.load_system_config()
@@ -301,12 +298,13 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
     assert config["llm"]["api_key"] == "saved-secret"
     assert config["storage"]["project_root"] == "/saved/project"
     assert "ontology_search" not in config
+    assert config["storage"]["chat_storage_dir"] == "/env/chats"
     assert app_config.llm.base_url == "https://saved.example/v1"
     assert app_config.llm.model == "saved-model"
 
 
 def test_legacy_llm_config_is_exposed_as_default_model_profile(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -333,7 +331,7 @@ def test_legacy_llm_config_is_exposed_as_default_model_profile(tmp_path, monkeyp
     public_profiles = system_config_module.get_public_llm_profiles()
     app_config = AppConfig.from_env()
 
-    assert effective["llm_profiles"]["default_profile_id"] == "default"
+    assert effective["llm_profiles"]["default_main_profile_ref"] == {"scope": "global", "id": "default"}
     assert effective["llm_profiles"]["profiles"][0]["model"] == "legacy-model"
     assert public_profiles["profiles"][0]["has_api_key"] is True
     assert "api_key" not in public_profiles["profiles"][0]
@@ -345,8 +343,85 @@ def test_legacy_llm_config_is_exposed_as_default_model_profile(tmp_path, monkeyp
     assert app_config.llm.provider == "openai_compatible"
 
 
+def test_global_model_profiles_generate_missing_ids_on_save(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+
+    public_section = system_config_module.update_system_config_section(
+        "llm_profiles",
+        {
+            "profiles": [
+                {
+                    "name": "Global A",
+                    "provider": "openai_compatible",
+                    "base_url": "https://global-a.example/v1",
+                    "model": "global-a-model",
+                    "api_key": "global-a-secret",
+                    "enabled": True,
+                },
+                {
+                    "name": "Global B",
+                    "provider": "deepseek",
+                    "base_url": "https://global-b.example/v1",
+                    "model": "global-b-model",
+                    "api_key": "global-b-secret",
+                    "enabled": True,
+                },
+            ]
+        },
+    )
+
+    profile_ids = [profile["id"] for profile in public_section["profiles"]]
+    assert len(profile_ids) == 2
+    assert len(set(profile_ids)) == 2
+    assert all(profile_id.startswith("model_") for profile_id in profile_ids)
+    assert "default" not in profile_ids
+    assert public_section["default_main_profile_ref"] == {"scope": "global", "id": profile_ids[0]}
+
+    effective = system_config_module.load_system_config()
+    assert [profile["id"] for profile in effective["llm_profiles"]["profiles"]] == profile_ids
+    assert effective["llm_profiles"]["profiles"][0]["api_key"] == "global-a-secret"
+
+
+def test_global_model_profiles_reject_colon_ids_on_save(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+
+    with pytest.raises(system_config_module.SystemConfigValidationError, match="不能包含冒号"):
+        system_config_module.update_system_config_section(
+            "llm_profiles",
+            {
+                "profiles": [
+                    {
+                        "id": "vendor:model",
+                        "name": "Global A",
+                        "provider": "openai_compatible",
+                        "base_url": "https://global-a.example/v1",
+                        "model": "global-a-model",
+                        "api_key": "global-a-secret",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
+
+
 def test_empty_system_config_has_no_default_llm_profile(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -361,7 +436,7 @@ def test_empty_system_config_has_no_default_llm_profile(tmp_path, monkeypatch):
 
     assert effective["llm"]["base_url"] == ""
     assert effective["llm"]["model"] == ""
-    assert effective["llm_profiles"]["default_profile_id"] == ""
+    assert effective["llm_profiles"]["default_main_profile_ref"] is None
     assert effective["llm_profiles"]["profiles"] == []
     assert "ontology_search" not in effective
     assert public_profiles["default_profile_id"] == ""
@@ -372,7 +447,7 @@ def test_empty_system_config_has_no_default_llm_profile(tmp_path, monkeypatch):
 
 
 def test_empty_system_config_readiness_requires_model(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -390,7 +465,7 @@ def test_empty_system_config_readiness_requires_model(tmp_path, monkeypatch):
 
 
 def test_system_config_readiness_is_ready_when_model_profile_exists(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -431,7 +506,7 @@ def test_system_config_readiness_is_ready_when_model_profile_exists(tmp_path, mo
 
 
 def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -470,135 +545,82 @@ def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkey
 
     app_config = AppConfig.from_env()
 
-    assert app_config.llm.profile_id == "fast"
+    assert app_config.llm.profile_id == "global:fast"
     assert app_config.llm.model == "fast-model"
     assert app_config.llm.provider == "openai_compatible"
 
 
-def test_agent_config_ignores_removed_alias_envs(monkeypatch):
-    monkeypatch.delenv("AGENT_MAIN_LOOP_MAX_ITERATIONS", raising=False)
-    monkeypatch.delenv("AGENT_SUB_AGENT_MAX_ITERATIONS", raising=False)
-    monkeypatch.setenv("AGENT_GRAPH_RECURSION_LIMIT", "99")
-    monkeypatch.setenv("AGENT_SUB_AGENT_MAX_TOOL_ROUNDS", "77")
-
-    config = AgentConfig.from_env()
-
-    assert config.main_agent_max_iterations == 50
-    assert config.sub_agent_max_iterations == 20
-
-
-def test_agent_config_exposes_only_runtime_knobs(monkeypatch):
-    config = AgentConfig.from_env()
-    assert set(load_system_config()["agent"].keys()) == {
-        "llm_connection_max_retries",
-        "main_agent_max_iterations",
-        "sub_agent_max_iterations",
-        "sub_agent_max_concurrency",
-        "sub_agent_max_depth",
-        "parallel_default_max_workers",
-        "context_max_rounds",
-        "context_prune_tools",
-        "evolution_min_occurrences",
-        "evolution_min_applied",
-        "evolution_max_rejection",
-        "evolution_passive_reflection_enabled",
-        "evolution_patch_auto_apply",
-        "evolution_patch_cooldown_sec",
-        "evolution_sweep_interval_sec",
-        "execute_script_timeout",
-        "runtime_warmup_enabled",
-    }
-    assert config.main_agent_max_iterations == 50
-
-
-def test_import_system_config_discards_unknown_runtime_fields(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+def test_legacy_task_llm_and_default_profile_id_migrate_to_profile_refs(tmp_path, monkeypatch):
+    import json
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "system_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "base_url": "https://main.example/v1",
+                    "model": "main-model",
+                    "api_key": "main-secret",
+                },
+                "task_llm": {
+                    "base_url": "https://task.example/v1",
+                    "model": "task-model",
+                    "api_key": "task-secret",
+                    "timeout": 45,
+                },
+                "llm_profiles": {
+                    "default_profile_id": "fast",
+                    "profiles": [
+                        {
+                            "id": "fast",
+                            "name": "Fast",
+                            "provider": "openai_compatible",
+                            "base_url": "https://fast.example/v1",
+                            "model": "fast-model",
+                            "api_key": "fast-secret",
+                            "enabled": True,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
-    imported_sections, public_config = system_config_module.import_system_config(
-        {
-            "agent": {
-                "main_agent_max_iterations": 33,
-                "jiuwen_unknown_field": "discard-me",
-            },
-            "observability": {
-                "enabled": True,
-                "mode": "local",
-                "queue_size": 1024,
-                "local": {
-                    "retention_days": 3,
-                    "file_name": "discard-me.log",
-                },
-            },
-        }
-    )
+    config = system_config_module.load_system_config()
 
-    assert imported_sections == ["agent", "observability"]
-    assert public_config["agent"]["main_agent_max_iterations"] == 33
-    assert "jiuwen_unknown_field" not in public_config["agent"]
-    assert public_config["observability"]["enabled"] is True
-    assert public_config["observability"]["local"]["retention_days"] == 3
-    assert "queue_size" not in public_config["observability"]
-    assert "file_name" not in public_config["observability"]["local"]
+    # task_llm section dropped; migrated into a profile bound as default_task_profile_ref
+    assert "task_llm" not in config
+    profiles = config["llm_profiles"]["profiles"]
+    task_profile = next(p for p in profiles if p["model"] == "task-model")
+    assert task_profile["base_url"] == "https://task.example/v1"
+    assert task_profile["api_key"] == "task-secret"
+    assert config["llm_profiles"]["default_task_profile_ref"] == {"scope": "global", "id": task_profile["id"]}
+    # default_profile_id renamed to default_main_profile_ref
+    assert config["llm_profiles"]["default_main_profile_ref"] == {"scope": "global", "id": "fast"}
+    assert "default_profile_id" not in config["llm_profiles"]
 
+    # disk rewritten: task_llm gone, default_profile_id gone, api_key encrypted
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "task_llm" not in raw
+    assert "default_profile_id" not in raw["llm_profiles"]
+    raw_task = next(p for p in raw["llm_profiles"]["profiles"] if p["id"] == task_profile["id"])
+    assert raw_task["api_key"].startswith("enc:v1:")
 
-def test_agent_config_connection_check_runs_jiuwen_smoke(monkeypatch):
-    import agentic.config.system_config as system_config_module
-
-    calls = []
-
-    def fake_run_jiuwen_smoke(*, agent_config=None, agent_mode="quick"):
-        calls.append(
-            {
-                "main_agent_max_iterations": agent_config.main_agent_max_iterations,
-                "agent_mode": agent_mode,
-            }
-        )
-        return {"agent_id": "agent-1", "registered_tools": ["ontology_context"]}
-
-    monkeypatch.setattr(
-        "agentic.loop.jiuwen.smoke.run_jiuwen_smoke",
-        fake_run_jiuwen_smoke,
-    )
-
-    result = system_config_module.test_system_config_connection(
-        "agent",
-        {"main_agent_max_iterations": 7},
-    )
-
-    assert result["success"] is True
-    assert "Jiuwen" in result["message"]
-    assert calls == [{"main_agent_max_iterations": 7, "agent_mode": "quick"}]
-
-
-def test_agent_config_connection_check_reports_jiuwen_smoke_failure(monkeypatch):
-    import agentic.config.system_config as system_config_module
-
-    def fake_run_jiuwen_smoke(*, agent_config=None, agent_mode="quick"):
-        raise RuntimeError("Missing module: jsonschema_path")
-
-    monkeypatch.setattr(
-        "agentic.loop.jiuwen.smoke.run_jiuwen_smoke",
-        fake_run_jiuwen_smoke,
-    )
-
-    result = system_config_module.test_system_config_connection(
-        "agent",
-        {"main_agent_max_iterations": 7},
-    )
-
-    assert result["success"] is False
-    assert "Jiuwen" in result["message"]
-    assert "jsonschema_path" in result["message"]
+    # runtime resolution: task uses migrated task profile, main uses fast
+    app_config = AppConfig.from_env()
+    assert app_config.task_llm.model == "task-model"
+    assert app_config.llm.model == "fast-model"
 
 
 def test_system_config_exposes_memory_defaults(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -609,14 +631,13 @@ def test_system_config_exposes_memory_defaults(tmp_path, monkeypatch):
 
     config = system_config_module.load_system_config()
 
-    assert config["memory"]["mode"] == "filesystem"
     assert config["memory"]["recall_topk"] == 3
     assert config["memory"]["recall_threshold"] == ""
     assert config["memory"]["workspace_root"] == ""
 
 
-def test_system_config_exposes_observability_defaults(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+def test_system_config_does_not_expose_global_observability(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -627,26 +648,15 @@ def test_system_config_exposes_observability_defaults(tmp_path, monkeypatch):
 
     config = system_config_module.load_system_config()
     public_config = system_config_module.get_public_system_config()
+    template = system_config_module.get_system_config_template()
 
-    assert config["observability"] == {
-        "enabled": False,
-        "mode": "local",
-        "local": {
-            "retention_days": 30,
-        },
-        "langfuse": {
-            "public_key": "",
-            "secret_key": "",
-            "base_url": "",
-            "debug": False,
-        },
-    }
-    assert public_config["observability"]["langfuse"]["has_secret_key"] is False
-    assert "secret_key" not in public_config["observability"]["langfuse"]
+    assert "observability" not in config
+    assert "observability" not in public_config
+    assert "observability" not in template
 
 
 def test_system_config_does_not_expose_ops_limits(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -665,7 +675,7 @@ def test_system_config_does_not_expose_ops_limits(tmp_path, monkeypatch):
 
 
 def test_limits_config_reads_ops_config_instead_of_system_config(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -695,7 +705,6 @@ def test_limits_config_reads_ops_config_instead_of_system_config(tmp_path, monke
     "ontology_operation_max_count": 101,
     "entity_attribute_max_count": 88,
     "model_profile_max_count": 11,
-    "model_input_token_limit": 40000,
     "model_output_token_limit": 90000
   }
 }
@@ -719,13 +728,13 @@ def test_limits_config_reads_ops_config_instead_of_system_config(tmp_path, monke
     assert limits.ontology_operation_max_count == 101
     assert limits.entity_attribute_max_count == 88
     assert limits.model_profile_max_count == 11
-    assert limits.model_input_token_limit == 40000
+    assert not hasattr(limits, "model_input_token_limit")
     assert limits.model_output_token_limit == 90000
     assert agent_config.limits.run_tps == 12
 
 
 def test_limits_config_uses_env_when_ops_config_field_is_missing(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -777,12 +786,12 @@ def test_limits_config_uses_env_when_ops_config_field_is_missing(tmp_path, monke
     assert limits.ontology_operation_max_count == 102
     assert limits.entity_attribute_max_count == 77
     assert limits.model_profile_max_count == 12
-    assert limits.model_input_token_limit == 30000
+    assert not hasattr(limits, "model_input_token_limit")
     assert limits.model_output_token_limit == 80000
 
 
 def test_model_profiles_do_not_expose_or_accept_token_hard_limits(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -829,7 +838,7 @@ def test_model_profiles_do_not_expose_or_accept_token_hard_limits(tmp_path, monk
 
 
 def test_model_profile_count_is_limited_by_ops_config(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -875,27 +884,8 @@ def test_model_profile_count_is_limited_by_ops_config(tmp_path, monkeypatch):
         raise AssertionError("expected model profile count validation error")
 
 
-def test_system_config_defaults_observability_to_disabled_local_mode(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-
-    config = system_config_module.load_system_config()
-
-    assert config["observability"]["enabled"] is False
-    assert config["observability"]["mode"] == "local"
-    assert config["observability"]["local"] == {
-        "retention_days": 30,
-    }
-
-
-def test_system_config_loads_observability_from_saved_config(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+def test_system_config_ignores_saved_global_observability_section(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -924,94 +914,26 @@ def test_system_config_loads_observability_from_saved_config(tmp_path, monkeypat
     config = system_config_module.load_system_config()
     public_config = system_config_module.get_public_system_config()
 
-    assert config["observability"]["enabled"] is False
-    assert config["observability"]["mode"] == "langfuse"
-    assert config["observability"]["langfuse"]["secret_key"] == "sk-test"
-    assert public_config["observability"]["langfuse"]["has_secret_key"] is True
-    assert "secret_key" not in public_config["observability"]["langfuse"]
+    assert "observability" not in config
+    assert "observability" not in public_config
 
 
-def test_observability_connection_test_calls_langfuse_public_api(monkeypatch):
-    import agentic.config.system_config as system_config_module
+def test_system_config_connection_rejects_global_observability_section():
+    import pytest
+    import config.system_config as system_config_module
 
-    calls = []
-
-    class FakeResponse:
-        def raise_for_status(self):
-            pass
-
-    def fake_get(url, **kwargs):
-        calls.append((url, kwargs))
-        return FakeResponse()
-
-    monkeypatch.setattr(system_config_module.requests, "get", fake_get)
-
-    result = system_config_module.test_system_config_connection(
-        "observability",
-        {
-            "enabled": True,
-            "mode": "langfuse",
-            "langfuse": {
-                "public_key": "pk-test",
-                "secret_key": "sk-test",
-                "base_url": "https://langfuse.example",
-            },
-        },
-    )
-
-    assert result["success"] is True
-    assert "Langfuse 连接成功" in result["message"]
-    assert calls == [
-        (
-            "https://langfuse.example/api/public/projects",
+    with pytest.raises(system_config_module.SystemConfigValidationError, match="section 非法"):
+        system_config_module.test_system_config_connection(
+            "observability",
             {
-                "auth": ("pk-test", "sk-test"),
-                "timeout": 10,
+                "enabled": True,
+                "mode": "langfuse",
             },
         )
-    ]
-
-
-def test_observability_connection_test_reports_langfuse_http_error(monkeypatch):
-    import requests
-    import agentic.config.system_config as system_config_module
-
-    class FakeResponse:
-        status_code = 401
-        text = "Unauthorized"
-
-        def json(self):
-            return {"message": "bad credentials"}
-
-        def raise_for_status(self):
-            raise requests.exceptions.HTTPError(response=self)
-
-    monkeypatch.setattr(
-        system_config_module.requests,
-        "get",
-        lambda *args, **kwargs: FakeResponse(),
-    )
-
-    result = system_config_module.test_system_config_connection(
-        "observability",
-        {
-            "enabled": True,
-            "mode": "langfuse",
-            "langfuse": {
-                "public_key": "pk-test",
-                "secret_key": "wrong",
-                "base_url": "https://langfuse.example",
-            },
-        },
-    )
-
-    assert result["success"] is False
-    assert "Langfuse 连接失败（HTTP 401）" in result["message"]
-    assert "bad credentials" in result["message"]
 
 
 def test_web_search_connection_test_calls_tavily_search(monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     captured = {}
 
@@ -1055,8 +977,94 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
     assert captured["timeout"] == 8
 
 
+def test_skill_evolution_connection_test_probes_runs_endpoint(monkeypatch):
+    """A real (lightweight) reachability probe replaces the old fall-through
+    '配置校验通过' that reported success for an unreachable skill-evolver."""
+    import config.system_config as system_config_module
+
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self, status):
+            self.status_code = status
+
+    def fake_get(url, headers=None, timeout=None):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return FakeResponse(200)
+
+    monkeypatch.setattr(system_config_module.requests, "get", fake_get)
+
+    result = system_config_module.test_system_config_connection(
+        "skill_evolution",
+        {"enabled": True, "base_url": "http://evolver.example", "timeout_seconds": 30},
+    )
+    assert result["success"] is True
+    assert "skill-evolver 连接成功" in result["message"]
+    assert captured["url"] == "http://evolver.example/api/status"
+    assert captured["headers"]["Accept"] == "application/json"
+    # probe timeout is capped short (<=5) regardless of the configured HTTP timeout
+    assert captured["timeout"] <= 5
+
+
+def test_skill_evolution_connection_test_reports_unreachable(monkeypatch):
+    import config.system_config as system_config_module
+    import requests as real_requests
+
+    def fake_get(url, headers=None, timeout=None):
+        raise real_requests.exceptions.ConnectionError("refused")
+
+    monkeypatch.setattr(system_config_module.requests, "get", fake_get)
+
+    result = system_config_module.test_system_config_connection(
+        "skill_evolution",
+        {"enabled": True, "base_url": "http://evolver.example", "timeout_seconds": 30},
+    )
+    assert result["success"] is False
+    assert "无法连接" in result["message"]
+
+
+def test_skill_evolution_connection_test_disabled_is_success():
+    import config.system_config as system_config_module
+
+    result = system_config_module.test_system_config_connection(
+        "skill_evolution",
+        {"enabled": False, "base_url": "http://evolver.example"},
+    )
+    assert result["success"] is True
+    assert "关闭" in result["message"]
+
+
+def test_skill_evolution_connection_test_missing_base_url():
+    import config.system_config as system_config_module
+
+    result = system_config_module.test_system_config_connection(
+        "skill_evolution",
+        {"enabled": True, "base_url": ""},
+    )
+    assert result["success"] is False
+    assert "base_url" in result["message"]
+
+
+def test_system_config_defaults_auth_users_file_to_runtime_root(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    monkeypatch.delenv("AUTH_USERS_FILE", raising=False)
+
+    config = system_config_module.load_system_config()
+
+    assert config["storage"]["auth_users_file"] == str(
+        system_config_module.ONTO_RUNTIME_ROOT / "users.json"
+    )
+
+
 def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -1065,7 +1073,8 @@ def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, m
         """
 {
   "storage": {
-    "project_root": "/.onto-runtime"
+    "project_root": "/.onto-runtime",
+    "auth_users_file": "/.onto-runtime/users.json"
   }
 }
 """.strip(),
@@ -1080,37 +1089,4 @@ def test_system_config_normalizes_legacy_flat_container_runtime_root(tmp_path, m
     config = system_config_module.load_system_config()
 
     assert config["storage"]["project_root"] == "/app/.onto-runtime"
-
-
-def test_system_config_ignores_legacy_status_metadata(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "llm": {
-    "base_url": "https://legacy.example/v1",
-    "model": "legacy-model"
-  },
-  "_status": {
-    "llm": {
-      "success": true,
-      "message": "legacy status",
-      "tested_at": "2026-04-25T00:00:00Z"
-    }
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-
-    config = system_config_module.get_public_system_config()
-
-    assert config["llm"]["model"] == "legacy-model"
-    assert "_status" not in config
+    assert config["storage"]["auth_users_file"] == "/app/.onto-runtime/users.json"

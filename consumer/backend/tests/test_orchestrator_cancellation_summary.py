@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentic.orchestrator import AgenticOrchestrator
-from agentic.services.llm import configure_llm_router, reset_llm_router_for_tests
-from agentic.stores import ChatStore, ExecutionStore, RunStore
+from agent.core.orchestrator import AgenticOrchestrator
+from llm import configure_llm_router, reset_llm_router_for_tests
+from persistence.chat_store import ChatStore
+from persistence.execution_store import ExecutionStore
+from persistence.run_store import RunStore
 
 
 class _FakeRouter:

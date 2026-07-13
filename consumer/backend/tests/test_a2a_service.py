@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 from flask import Flask, current_app
 
-from agentic.a2a.models import A2ATaskState
-from agentic.a2a.service import A2ATaskService
-from agentic.stores.run_store import RunStore, RunStatus
+from api.protocols.a2a.models import A2ATaskState
+from api.protocols.a2a.service import A2ATaskService
+from persistence.run_store import RunStore, RunStatus
 
 
 class _FakeChatStore:
@@ -112,7 +112,7 @@ def test_background_task_enters_workspace_and_app_context(monkeypatch):
         entered["workspace"] = workspace_id
         yield workspace_id
 
-    monkeypatch.setattr("agentic.a2a.service.workspace_scope", fake_workspace_scope)
+    monkeypatch.setattr("api.protocols.a2a.service.workspace_scope", fake_workspace_scope)
 
     app = Flask("a2a-service-test")
 
@@ -147,7 +147,7 @@ def test_background_task_marks_failed_when_bootstrap_raises(monkeypatch):
     def fake_workspace_scope(workspace_id):
         yield workspace_id
 
-    monkeypatch.setattr("agentic.a2a.service.workspace_scope", fake_workspace_scope)
+    monkeypatch.setattr("api.protocols.a2a.service.workspace_scope", fake_workspace_scope)
 
     run_store = RunStore()
 

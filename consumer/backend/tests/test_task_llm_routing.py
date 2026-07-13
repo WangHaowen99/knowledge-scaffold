@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 from flask import Flask
 
-import agentic.routes as routes_module
-from agentic.config.settings import AppConfig, LLMConfig
-from agentic.services.auth import AuthManager
-from agentic.services.llm import LLMPurpose, LLMService, configure_llm_router, reset_llm_router_for_tests
-from agentic.stores import UserStoreManager
-from agentic.workspaces import create_workspace
+import api.routes as routes_module
+from config.settings import AppConfig, LLMConfig
+from api.auth.auth import AuthManager
+from llm import LLMPurpose, LLMService, configure_llm_router, reset_llm_router_for_tests
+from workspace.user_store_manager import UserStoreManager
+from workspace.workspaces import create_workspace
 
 
 class _FakeStreamingResponse:
@@ -51,8 +51,8 @@ class _RecordingRouter:
         return self.main_llm.call(messages, **kwargs)
 
 
-def test_app_config_loads_dedicated_task_llm_without_numeric_fallback(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+def test_task_llm_falls_back_to_main_when_unset(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
 
     for key in (
         "LLM_BASE_URL",
@@ -82,16 +82,14 @@ def test_app_config_loads_dedicated_task_llm_without_numeric_fallback(tmp_path, 
     monkeypatch.setenv("LLM_TIMEOUT", "123")
     monkeypatch.setenv("LLM_MAX_TOKENS", "2048")
     monkeypatch.setenv("LLM_TEMPERATURE", "0.4")
-    monkeypatch.setenv("TASK_LLM_MODEL", "task-model")
-    monkeypatch.setenv("TASK_LLM_API_KEY", "task-key")
 
     config = AppConfig.from_env()
 
     assert config.llm.model == "main-model"
     assert config.task_llm.base_url == "https://main.example/v1"
-    assert config.task_llm.model == "task-model"
-    assert config.task_llm.api_key == "task-key"
-    assert config.task_llm.timeout == 600
+    assert config.task_llm.model == "main-model"
+    assert config.task_llm.api_key == "main-key"
+    assert config.task_llm.timeout == 123
 
 
 def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
@@ -110,7 +108,10 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
     user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
     app.config["AUTH_MANAGER"] = auth_manager
 
-    user_store_manager = UserStoreManager()
+    user_store_manager = UserStoreManager(
+        str(tmp_path / "chats"),
+        str(tmp_path / "executions"),
+    )
     main_llm = _RecordingLLM("main-model", "不该走这里")
     task_llm = _RecordingLLM("task-model", "排产优化")
     configure_llm_router(_RecordingRouter(main_llm=main_llm, task_llm=task_llm))

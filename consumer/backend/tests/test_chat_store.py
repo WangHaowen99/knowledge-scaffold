@@ -2,8 +2,8 @@
 
 import json
 
-from agentic.stores import ChatStore
-from agentic.utils.streaming import build_agent_event
+from persistence.chat_store import ChatStore
+from utils.streaming import build_agent_event
 
 
 def test_chat_store_persists_session_metadata(tmp_path):
