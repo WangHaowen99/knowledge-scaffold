@@ -77,9 +77,11 @@ def build_agent_event(
     payload: Optional[AgentEventPayload] = None,
     session_id: Optional[str] = None,
     source: Optional[AgentEventSource] = None,
+    span_key: Optional[str] = None,
+    parent_key: Optional[str] = None,
 ) -> AgentStreamEvent:
     seq = _next_seq(run_id)
-    envelope = {
+    envelope: Dict[str, Any] = {
         "protocol": PROTOCOL,
         "event_id": "{}:{}".format(run_id, seq),
         "seq": seq,
@@ -91,6 +93,10 @@ def build_agent_event(
         "source": source or {"node": "system", "component": "workflow"},
         "payload": dict(payload or {}),
     }
+    if span_key:
+        envelope["span_key"] = span_key
+    if parent_key:
+        envelope["parent_key"] = parent_key
     return {
         "event": SSE_EVENT,
         "data": envelope,
@@ -120,6 +126,8 @@ def emit_agent_event(
     session_id: Optional[str] = None,
     source: Optional[AgentEventSource] = None,
     writer: Optional[StreamWriter] = None,
+    span_key: Optional[str] = None,
+    parent_key: Optional[str] = None,
 ) -> None:
     writer_fn = writer or try_get_stream_writer()
     if not writer_fn:
@@ -132,5 +140,7 @@ def emit_agent_event(
             payload=payload,
             session_id=session_id,
             source=source,
+            span_key=span_key,
+            parent_key=parent_key,
         )
     )
