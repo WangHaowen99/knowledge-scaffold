@@ -485,26 +485,26 @@ Phase 2 自动化结果（2026-07-13）：auth-server `34 passed`；consumer aut
 
 执行：
 
-- [ ] 保持 orchestrator 看到的 `run(state, caller, event_writer, snapshot_callback, iteration_limit, system_prompt, ...)` 接口。
-- [ ] Jiuwen LLM 配置适配本地 role-bound profile，并显式传 `workspace_id`。
-- [ ] Jiuwen ToolCard 从本地最新 `TOOL_SPECS/get_tools_schema` 生成。
-- [ ] 工具执行只调用本地最新 `execute_tool_batch`。
-- [ ] 保留本地严格 JSON schema、caller、parallel-safe/barrier、terminal batch 语义。
-- [ ] 取消信号由 orchestrator/run handle 注入，不恢复旧 `LLMRouter.get_cancel_event()`。
-- [ ] 使用本地 `agent/context.py` 的上下文窗口策略，不恢复已删除旧模块。
-- [ ] 删除 `ov_session_id`、OpenViking 和旧 token limit 路径。
-- [ ] 保留 Jiuwen content/reasoning stream、history、ontology preload、snapshot。
-- [ ] 保留 `reasoning -> reasoning_content` 兼容补丁；用 `call_index`、`batch_index` 区分同一 iteration 内多次 LLM 调用和多个 tool batch。
-- [ ] 主 Agent、SubAgent 和工具资源 ID 必须唯一，禁止跨 run 复用 Jiuwen 实例状态。
-- [ ] 保留常驻 asyncio loop、并发锁修复和 warm-up。
-- [ ] warm-up 不调用 LLM、不查询业务数据、不产生 token，不注册带假 state 的 runtime delegate；失败记录告警但不阻断服务，真实请求不复用 warm-up 实例。
+- [x] 保持 orchestrator 看到的 `run(state, caller, event_writer, snapshot_callback, iteration_limit, system_prompt, ...)` 接口。
+- [x] Jiuwen LLM 配置适配本地 role-bound profile，并显式传 `workspace_id`。
+- [x] Jiuwen ToolCard 从本地最新 `TOOL_SPECS/get_tools_schema` 生成。
+- [x] 工具执行只调用本地最新 `execute_tool_batch`。
+- [x] 保留本地严格 JSON schema、caller、parallel-safe/barrier、terminal batch 语义。
+- [x] 取消信号由 orchestrator/run handle 注入，不恢复旧 `LLMRouter.get_cancel_event()`。
+- [x] 使用本地 `agent/context.py` 的上下文窗口策略，不恢复已删除旧模块。
+- [x] 删除 `ov_session_id`、OpenViking 和旧 token limit 路径。
+- [x] 保留 Jiuwen content/reasoning stream、history、ontology preload、snapshot。
+- [x] 保留 `reasoning -> reasoning_content` 兼容补丁；用 `call_index`、`batch_index` 区分同一 iteration 内多次 LLM 调用和多个 tool batch。
+- [x] 主 Agent、SubAgent 和工具资源 ID 必须唯一，禁止跨 run 复用 Jiuwen 实例状态。
+- [x] 保留常驻 asyncio loop、并发锁修复和 warm-up。
+- [x] warm-up 不调用 LLM、不查询业务数据、不产生 token，不注册带假 state 的 runtime delegate；失败记录告警但不阻断服务，真实请求不复用 warm-up 实例。
 
 #### M3-2 主 Agent 和子 Agent 全部切换
 
-- [ ] `AgenticOrchestrator` 使用 Jiuwen engine。
-- [ ] sub-agent 使用相同 Jiuwen runtime，传播 parent workspace/profile/lineage。
-- [ ] quick/thinking/multi_agent 的工具曝光规则与本地最新一致。
-- [ ] 达到行为一致后删除 native loop 代码，不保留环境开关 fallback。
+- [x] `AgenticOrchestrator` 使用 Jiuwen engine。
+- [x] sub-agent 使用相同 Jiuwen runtime，传播 parent workspace/profile/lineage。
+- [x] quick/thinking/multi_agent 的工具曝光规则与本地最新一致。
+- [x] 达到行为一致后删除 native loop 代码，不保留环境开关 fallback。
 
 验证：
 
@@ -521,6 +521,8 @@ PYTHONPATH=backend ./venv/bin/python -m agent.core.jiuwen.smoke
 ```
 
 补充压力验证：至少 20 个并发 run、持续 500 个短 run，检查 event-loop 错误、Runner resource 增长和工具注册释放。
+
+执行结果见 `jiuwen-runtime-pressure.md`：真实 OpenJiuwen 0.1.14 与离线模型完成 500/500 次运行、20 路并发；结束后 owned tool/resource/callback/metric/checkpoint 全部归零，唯一 Jiuwen loop 无 pending task、ready handle 或 scheduled handle。
 
 建议提交：`feat(agent): port Jiuwen as the only loop on latest runtime contracts`
 
