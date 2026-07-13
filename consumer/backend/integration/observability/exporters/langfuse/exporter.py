@@ -450,7 +450,17 @@ def _status_from_event_type(event_type: str) -> str:
 
 
 def _stable_trace_id(event) -> str:
-    """Return a deterministic trace id for replaying the same logical run."""
+    """Join a validated caller trace, otherwise derive a stable local id."""
+
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        external_trace_id = str(payload.get("external_trace_id") or "").strip().lower()
+        if (
+            len(external_trace_id) == 32
+            and external_trace_id != "0" * 32
+            and all(char in "0123456789abcdef" for char in external_trace_id)
+        ):
+            return external_trace_id
     return uuid.uuid5(
         uuid.NAMESPACE_DNS,
         "{}:{}".format(event.session_id or "", event.run_id),

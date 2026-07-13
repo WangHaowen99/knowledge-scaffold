@@ -64,7 +64,7 @@ class ObservabilityBus:
                 )
                 return False
 
-    def close(self, timeout: Optional[float] = 1.0) -> None:
+    def close(self, timeout: Optional[float] = 5.0) -> None:
         with self._lock:
             if self._closed:
                 return
@@ -74,8 +74,9 @@ class ObservabilityBus:
             except queue.Full:
                 pass
         self._worker.join(timeout=timeout)
-        if not self._worker.is_alive():
-            self._close_exporter()
+        # Exporters own their final flush. Close is idempotent, so invoke it
+        # even when a daemon worker did not finish draining before shutdown.
+        self._close_exporter()
 
     def _run(self) -> None:
         try:

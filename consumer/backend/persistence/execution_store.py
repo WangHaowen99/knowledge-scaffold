@@ -393,6 +393,35 @@ class ExecutionStore:
 
             self._save_session(session_id)
 
+    def set_turn_feedback(
+        self,
+        session_id: str,
+        turn_id: int,
+        vote: str,
+    ) -> bool:
+        """Persist turn feedback independently from evolution proposal state."""
+
+        normalized = str(vote or "").strip().lower()
+        if normalized not in {"up", "down", "none"}:
+            raise ValueError("vote must be one of: down, none, up")
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if not history:
+                return False
+            for turn in history.get("turns", []):
+                if turn.get("turn_id") != turn_id:
+                    continue
+                if normalized == "none":
+                    turn.pop("feedback", None)
+                else:
+                    turn["feedback"] = {
+                        "vote": normalized,
+                        "ts": datetime.now().isoformat(),
+                    }
+                self._save_session(session_id)
+                return True
+            return False
+
     def stamp_turn_ontology_version(
         self,
         session_id: str,
@@ -485,6 +514,27 @@ class ExecutionStore:
             # Return most recent turns
             turns = history["turns"]
             return list(reversed(turns[-limit:]))
+
+    def list_turns_by_status(
+        self,
+        session_id: str,
+        status: Optional[str] = None,
+    ) -> List[TurnExecutionRecord]:
+        """List structured turns newest first, optionally filtered by status."""
+
+        with self._lock_for_session(session_id):
+            history = self._get_existing_session_unlocked(session_id)
+            if not history:
+                return []
+            turns = list(history.get("turns", []))
+            normalized_status = str(status or "").strip()
+            if normalized_status:
+                turns = [
+                    turn
+                    for turn in turns
+                    if str(turn.get("status") or "") == normalized_status
+                ]
+            return list(reversed(turns))
 
     def delete_session(self, session_id: str) -> bool:
         """

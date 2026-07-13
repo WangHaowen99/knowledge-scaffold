@@ -66,6 +66,8 @@ def emit_protocol_event(
         source=source,
         payload=scoped_payload,
         writer=writer,
+        span_key=_tool_span_key(context, scoped_payload),
+        parent_key=_tool_sse_parent_key(context),
     )
     if context.protocol_event_observer:
         context.protocol_event_observer(event_type, scoped_payload)
@@ -165,7 +167,17 @@ def _tool_span_key(context: ToolContext, payload: Dict[str, Any]) -> str:
 
 
 def _tool_batch_span_key(context: ToolContext) -> str:
-    return "tools:{}:{}".format(_caller_suffix(context), context.agent_iteration)
+    base_key = "tools:{}:{}".format(_caller_suffix(context), context.agent_iteration)
+    batch_index = getattr(context, "tool_batch_index", None)
+    if batch_index is None:
+        return base_key
+    return "{}:{}".format(base_key, int(batch_index))
+
+
+def _tool_sse_parent_key(context: ToolContext) -> str:
+    """Attach streamed tool nodes to the iteration node visible in the UI."""
+
+    return "iteration:{}:{}".format(_caller_suffix(context), context.agent_iteration)
 
 
 def _caller_suffix(context: ToolContext) -> str:

@@ -99,3 +99,22 @@ def test_pending_interaction_cannot_be_bypassed_with_plain_message(tmp_path):
             run_id="run-2",
             user_request="ignore checkpoint",
         )
+
+
+def test_turn_feedback_is_durable_and_queryable_without_evolution_store(tmp_path):
+    storage_dir = tmp_path / "executions"
+    store = ExecutionStore(str(storage_dir))
+    store.start_turn("sess-feedback", 1, "run-1", "first")
+    store.complete_turn("sess-feedback", 1, {"answer": "ok"}, "done")
+    store.start_turn("sess-feedback", 2, "run-2", "second")
+    store.fail_turn("sess-feedback", 2, "boom")
+
+    assert store.set_turn_feedback("sess-feedback", 2, "down") is True
+
+    reloaded = ExecutionStore(str(storage_dir))
+    failed = reloaded.list_turns_by_status("sess-feedback", "failed")
+    assert [turn["turn_id"] for turn in failed] == [2]
+    assert failed[0]["feedback"]["vote"] == "down"
+
+    assert reloaded.set_turn_feedback("sess-feedback", 2, "none") is True
+    assert "feedback" not in reloaded.get_turn("sess-feedback", 2)

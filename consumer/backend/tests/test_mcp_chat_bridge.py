@@ -39,8 +39,10 @@ class _FakeOrchestrator:
         self.run_rate_limiter = _PermitAllLimiter()
         self.run_store = RunStore()
         self.terminal_status = terminal_status
+        self.last_run_kwargs = None
 
     def run(self, **kwargs):
+        self.last_run_kwargs = dict(kwargs)
         run_id = kwargs["requested_run_id"]
         if self.terminal_status == "awaiting_input":
             self.run_store.await_run(
@@ -87,6 +89,7 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
         workspace_id="workspace-a",
         scopes=["mcp:chat"],
         token="mcp_secret-token",
+        traceparent="00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
     )
 
     result = execute_chat_tool(
@@ -99,6 +102,7 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     assert captured["url"] == "http://backend.test/agentic/internal/mcp/chat"
     assert captured["headers"]["Authorization"] == "Bearer mcp_secret-token"
     assert captured["headers"]["X-Workspace-Id"] == "workspace-a"
+    assert captured["headers"]["traceparent"] == scope.traceparent
     assert captured["json"]["session_id"] == "session-1"
 
 
@@ -109,7 +113,13 @@ def test_workflow_bridge_times_out_in_queue_without_bypassing_admission(monkeypa
     )
     orchestrator = _FakeOrchestrator()
     assert orchestrator.run_admission_queue.try_acquire("alice", 1) is True
-    scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
+    scope = MCPRequestScope(
+        "alice",
+        "workspace-a",
+        ["mcp:chat"],
+        token="mcp_token",
+        traceparent="00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+    )
 
     body, status_code = execute_mcp_chat_workflow(
         orchestrator=orchestrator,
@@ -134,7 +144,13 @@ def test_workflow_bridge_preserves_awaiting_input_and_run_owner(monkeypatch):
         lambda *_args, **_kwargs: {},
     )
     orchestrator = _FakeOrchestrator(terminal_status="awaiting_input")
-    scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
+    scope = MCPRequestScope(
+        "alice",
+        "workspace-a",
+        ["mcp:chat"],
+        token="mcp_token",
+        traceparent="00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+    )
 
     body, status_code = execute_mcp_chat_workflow(
         orchestrator=orchestrator,
@@ -153,3 +169,5 @@ def test_workflow_bridge_preserves_awaiting_input_and_run_owner(monkeypatch):
     run = orchestrator.run_store.get_run(body["result"]["run_id"])
     assert run.metadata["user_id"] == "alice"
     assert run.metadata["workspace_id"] == "workspace-a"
+    assert run.metadata["external_trace_id"] == "a" * 32
+    assert orchestrator.last_run_kwargs["traceparent"] == scope.traceparent

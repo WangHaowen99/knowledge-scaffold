@@ -133,7 +133,10 @@ def execute_internal_mcp_chat():
             traceparent=str(request.headers.get("traceparent") or "").strip(),
         )
     except MCPTokenAuthError as exc:
-        return jsonify(auth_error_payload(exc)), 401 if exc.code == "AUTH_TOKEN_MISSING" else 403
+        status_code = 401 if exc.code == "AUTH_TOKEN_MISSING" else 403
+        if exc.code == "INVALID_TRACEPARENT":
+            status_code = 400
+        return jsonify(auth_error_payload(exc)), status_code
 
     requested_workspace = str(request.headers.get("X-Workspace-Id") or "").strip()
     if requested_workspace and requested_workspace != scope.workspace_id:

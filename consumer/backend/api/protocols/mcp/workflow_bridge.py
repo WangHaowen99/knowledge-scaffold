@@ -75,6 +75,14 @@ def execute_mcp_chat_workflow(
         "workspace_id": scope.workspace_id,
         "admission_limit": max(1, int(concurrency_limit)),
     }
+    if scope.traceparent:
+        trace_id, parent_id, trace_flags = scope.traceparent.split("-")[1:]
+        metadata.update({
+            "traceparent": scope.traceparent,
+            "external_trace_id": trace_id,
+            "external_parent_span_id": parent_id,
+            "external_trace_flags": trace_flags,
+        })
     handle = AgenticRunHandle(
         run_id=run_id,
         user_request=query,
@@ -86,6 +94,7 @@ def execute_mcp_chat_workflow(
         orchestrator=orchestrator,
         slot_manager=admission_queue,
         slot_limit_user_id=scope.username,
+        traceparent=scope.traceparent,
     )
     registry = get_run_registry()
     admitted = threading.Event()
