@@ -14,3 +14,4 @@ class OperationSummary:
     name: str
     tag: str
     business_desc: str
+    trigger_condition: str = ""

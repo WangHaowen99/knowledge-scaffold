@@ -17,7 +17,7 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         required=True,
-        help="Path to extracted source root (contains object/logic/SKILL.md, action optional)",
+        help="Path to extracted source root (contains object/logic/SKILL.md, scripts optional; action is legacy fallback)",
     )
     parser.add_argument(
         "--target",

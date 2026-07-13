@@ -33,6 +33,28 @@
 | Trace 父子关系 | `test_graph_provider_trace_parent.py`、`test_direct_execution_trace.py`、`test_tracing.py` | 原文件名保留，import 改为 `integration.observability` 与新 agent 路径 | 6 | 纯单元 | span_key/parent_key、iteration/tool/Graph parent、lineage 通过 |
 | Trace transport/replay | `test_routes_stream.py`、`test_stream_protocol_v2.py`、`test_observability_architecture.py` | 原文件名保留 | 6 | Flask client/模拟 exporter | 实时与历史 key 一致；断线重放不重复、不换父节点 |
 
+### `test_orchestrator_runtime.py` 节点去向
+
+Phase 1 以本地 `main@31fba9db` 的 26 个节点为准，完整迁入
+`consumer/backend/tests/test_orchestrator_runtime.py`，保留测试函数名并改用
+`agent.core.orchestrator`。冻结目标中的三个额外节点处理如下：
+
+| 冻结目标节点 | 去向 | 理由 |
+|---|---|---|
+| `test_stream_agent_loop_can_use_injected_jiuwen_agent_factory` | 延后至 Phase 3 | 随 Jiuwen engine 与注入式 agent factory 一并迁移；Phase 1 不测试旧 `agentic` loop。 |
+| `test_public_workflow_error_preserves_input_token_limit_detail` | 显式退役 | M3-1 删除旧 `InputTokenLimitError` 路径；当前公共错误契约保留 LLM rate-limit 明细，并继续屏蔽普通 `ValueError`。 |
+| `test_orchestrator_memory_hooks_do_not_require_session_id` | 显式退役 | M3-1 删除 `ov_session_id`、OpenViking 与旧 memory hook；当前 orchestrator 使用 reflection、operation evolution 和新 session 状态契约。 |
+
+### `test_tool_registry.py` 节点去向
+
+Phase 1 保留本地 source 的 56 个节点，并追加冻结目标的 5 个动态 schema、移除旧工具、file tool 和 terminal outcome 节点。其余三个冻结目标节点处理如下：
+
+| 冻结目标节点 | 去向 | 理由 |
+|---|---|---|
+| `test_execute_tool_batch_accepts_internal_tool_invocation` | 延后至 Phase 3 | 与 Jiuwen adapter 的中立 `ToolInvocation` 边界一起迁移。 |
+| `test_execute_tool_batch_rejects_legacy_openai_style_tool_call_dict` | 延后至 Phase 3 | Phase 1 保留本地最新 dict tool-call 契约；Jiuwen 接入时统一转换边界。 |
+| `test_registry_loads_v01_ontology_package_resources` | 延后至 Phase 4 | v0.1 只在 package import normalization 边界兼容，运行时 registry 只消费当前 manifest/catalog。 |
+
 ## 测试函数名与场景保全规则
 
 1. 每个上表文件先用冻结基线收集 node id，再在目标新结构收集；缺失 node id 必须在迁移说明中逐项解释。
