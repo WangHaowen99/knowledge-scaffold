@@ -1,6 +1,6 @@
 import pytest
 
-from agentic.workspaces import (
+from workspace.workspaces import (
     create_workspace,
     get_workspace_runtime_config,
     update_workspace_runtime_config,
