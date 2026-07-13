@@ -44,6 +44,24 @@ def test_build_agent_event_uses_monotonic_seq_per_run():
     assert second["data"]["seq"] == 2
     assert first["data"]["event_id"] == "{}:1".format(run_id)
     assert second["data"]["event_id"] == "{}:2".format(run_id)
+    assert "span_key" not in first["data"]
+    assert "parent_key" not in first["data"]
+
+
+def test_build_agent_event_preserves_optional_trace_tree_keys():
+    event = build_agent_event(
+        run_id="run-trace-tree",
+        session_id="s-trace-tree",
+        turn_id=2,
+        event_type="iteration.completed",
+        source={"node": "jiuwen_react", "component": "iteration"},
+        payload={"status": "success"},
+        span_key="iteration:main:1",
+        parent_key="agent_loop:main",
+    )
+
+    assert event["data"]["span_key"] == "iteration:main:1"
+    assert event["data"]["parent_key"] == "agent_loop:main"
 
 
 def test_execute_tool_batch_emits_v2_regular_tool_events():
