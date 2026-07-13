@@ -170,6 +170,81 @@ def test_ontology_data_source_update_preserves_existing_secret_when_omitted(tmp_
     assert updated.created_at == stored.created_at
 
 
+def test_connection_ref_resolves_shared_connection_without_copying_secrets(tmp_path, monkeypatch):
+    from agent.tools.business_data.connections_store import (
+        create_data_connection,
+        update_data_connection,
+    )
+    from agent.tools.business_data.ontology_sources_store import (
+        OntologyDataSourceStoreError,
+        publicize_ontology_data_source,
+        set_ontology_data_source,
+    )
+    from agent.tools.business_data.resolver import resolve_business_data_source
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    create_data_connection(
+        {
+            "id": "shared-dataagent",
+            "name": "Shared DataAgent",
+            "provider": "dataagent",
+            "config": {
+                "url": "https://old-dataagent.example.com/",
+                "token": "shared-secret",
+                "timeout_seconds": 120,
+            },
+        },
+        workspace_id="demo",
+    )
+
+    source = set_ontology_data_source(
+        ontology_id="demo-ontology",
+        workspace_id="demo",
+        data={"mode": "connection_ref", "connection_id": "shared-dataagent"},
+    )
+    raw_text = (paths.workspace_dir / "ontology-data-sources.json").read_text(encoding="utf-8")
+    raw_source = json.loads(raw_text)["sources"]["demo-ontology"]
+    assert raw_source["mode"] == "connection_ref"
+    assert raw_source["connection_id"] == "shared-dataagent"
+    assert "provider" not in raw_source
+    assert "config" not in raw_source
+    assert "shared-secret" not in raw_text
+    assert publicize_ontology_data_source(source)["connection_id"] == "shared-dataagent"
+
+    resolved = resolve_business_data_source(workspace_id="demo", ontology_id="demo-ontology")
+    assert resolved.id == "shared-dataagent"
+    assert resolved.name == "Shared DataAgent"
+    assert resolved.mode == "connection_ref"
+    assert resolved.provider == "dataagent"
+    assert resolved.config["token"] == "shared-secret"
+
+    update_data_connection(
+        "shared-dataagent",
+        {
+            "config": {
+                "url": "https://new-dataagent.example.com/",
+                "timeout_seconds": 30,
+            },
+        },
+        workspace_id="demo",
+    )
+    refreshed = resolve_business_data_source(workspace_id="demo", ontology_id="demo-ontology")
+    assert refreshed.config["url"] == "https://new-dataagent.example.com"
+    assert refreshed.config["token"] == "shared-secret"
+
+    with pytest.raises(OntologyDataSourceStoreError, match="仅允许配置 connection_id"):
+        set_ontology_data_source(
+            ontology_id="demo-ontology",
+            workspace_id="demo",
+            data={
+                "mode": "connection_ref",
+                "connection_id": "shared-dataagent",
+                "config": {"token": "must-not-be-copied"},
+            },
+        )
+
+
 def test_instantiated_channel_mode_is_rejected_until_supported(tmp_path, monkeypatch):
     from agent.tools.business_data.ontology_sources_store import (
         OntologyDataSourceStoreError,
@@ -220,6 +295,8 @@ def test_delete_ontology_data_source_clears_summary(tmp_path, monkeypatch):
         "ready": True,
         "mode": "direct_provider",
         "provider": "dataagent",
+        "connection_id": "",
+        "connection_name": "",
         "updated_at": get_ontology_data_source("demo-ontology", workspace_id="demo").updated_at,
     }
 
@@ -230,11 +307,13 @@ def test_delete_ontology_data_source_clears_summary(tmp_path, monkeypatch):
         "ready": False,
         "mode": "",
         "provider": "",
+        "connection_id": "",
+        "connection_name": "",
         "updated_at": "",
     }
 
 
-def test_legacy_connection_binding_migration_copies_shared_connection_per_ontology(tmp_path, monkeypatch):
+def test_legacy_connection_binding_migration_creates_secret_free_connection_refs(tmp_path, monkeypatch):
     from agent.tools.business_data.ontology_sources_store import (
         get_ontology_data_source,
         migrate_legacy_ontology_data_sources,
@@ -267,19 +346,29 @@ def test_legacy_connection_binding_migration_copies_shared_connection_per_ontolo
         ),
         encoding="utf-8",
     )
+    connections_before_migration = (paths.workspace_dir / "data-connections.json").read_bytes()
+    legacy_payload = json.dumps(
+        {
+            "bindings": {
+                "sales-ontology": {"connection_id": "shared-dataagent"},
+                "service-ontology": {"connection_id": "shared-dataagent"},
+            }
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
     (paths.workspace_dir / "ontology-bindings.json").write_text(
-        json.dumps(
-            {
-                "bindings": {
-                    "sales-ontology": {"connection_id": "shared-dataagent"},
-                    "service-ontology": {"connection_id": "shared-dataagent"},
-                }
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+        legacy_payload,
         encoding="utf-8",
     )
+
+    preview = migrate_legacy_ontology_data_sources(workspace_id="demo", dry_run=True)
+    assert preview["migrated"] == 2
+    assert preview["dry_run"] is True
+    assert not (paths.workspace_dir / "ontology-data-sources.json").exists()
+    assert not (paths.workspace_dir / "ontology-bindings.json.pre-unified.bak").exists()
+    assert not (paths.workspace_dir / "ontology-bindings.migration-complete.json").exists()
+    assert (paths.workspace_dir / "data-connections.json").read_bytes() == connections_before_migration
 
     result = migrate_legacy_ontology_data_sources(workspace_id="demo")
 
@@ -288,18 +377,167 @@ def test_legacy_connection_binding_migration_copies_shared_connection_per_ontolo
     raw = json.loads(raw_text)
     assert "legacy-token" not in raw_text
     assert sorted(raw["sources"]) == ["sales-ontology", "service-ontology"]
-    assert raw["sources"]["sales-ontology"]["mode"] == "direct_provider"
-    assert raw["sources"]["service-ontology"]["mode"] == "direct_provider"
-    assert raw["sources"]["sales-ontology"]["config"] is not raw["sources"]["service-ontology"]["config"]
+    assert raw["sources"]["sales-ontology"]["mode"] == "connection_ref"
+    assert raw["sources"]["service-ontology"]["mode"] == "connection_ref"
+    assert raw["sources"]["sales-ontology"]["connection_id"] == "shared-dataagent"
+    assert raw["sources"]["service-ontology"]["connection_id"] == "shared-dataagent"
+    assert "provider" not in raw["sources"]["sales-ontology"]
+    assert "config" not in raw["sources"]["sales-ontology"]
 
     sales = get_ontology_data_source("sales-ontology", workspace_id="demo")
     service = get_ontology_data_source("service-ontology", workspace_id="demo")
     assert sales is not None
     assert service is not None
-    assert sales.config["token"] == "legacy-token"
-    assert service.config["token"] == "legacy-token"
+    assert sales.connection_id == "shared-dataagent"
+    assert service.connection_id == "shared-dataagent"
+    assert sales.config == {}
+    assert service.config == {}
     assert (paths.workspace_dir / "data-connections.json").exists()
     assert (paths.workspace_dir / "ontology-bindings.json").exists()
+    assert (
+        paths.workspace_dir / "ontology-bindings.json.pre-unified.bak"
+    ).read_text(encoding="utf-8") == legacy_payload
+    assert (paths.workspace_dir / "ontology-bindings.migration-complete.json").exists()
+    assert not list(paths.workspace_dir.glob("*.tmp"))
+
+    repeated = migrate_legacy_ontology_data_sources(workspace_id="demo")
+    assert repeated["migrated"] == 0
+    assert repeated["skipped"] is True
+
+
+def test_legacy_binding_migration_keeps_failed_entries_retryable(tmp_path, monkeypatch):
+    from agent.tools.business_data.connections_store import create_data_connection
+    from agent.tools.business_data.ontology_sources_store import (
+        get_ontology_data_source,
+        migrate_legacy_ontology_data_sources,
+    )
+
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    (paths.workspace_dir / "ontology-bindings.json").write_text(
+        json.dumps(
+            {"bindings": {"demo-ontology": {"connection_id": "late-connection"}}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    first = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    assert first["migrated"] == 0
+    assert len(first["errors"]) == 1
+    assert (paths.workspace_dir / "ontology-bindings.json.pre-unified.bak").is_file()
+    assert not (paths.workspace_dir / "ontology-bindings.migration-complete.json").exists()
+
+    create_data_connection(
+        {
+            "id": "late-connection",
+            "name": "Late Connection",
+            "provider": "dataagent",
+            "config": {"url": "https://dataagent.example.com"},
+        },
+        workspace_id="demo",
+    )
+    second = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    assert second["migrated"] == 1
+    assert second["errors"] == []
+    assert (paths.workspace_dir / "ontology-bindings.migration-complete.json").is_file()
+    assert get_ontology_data_source("demo-ontology", workspace_id="demo").connection_id == "late-connection"
+
+
+def test_legacy_binding_migration_does_not_mark_invalid_json_complete(tmp_path, monkeypatch):
+    from agent.tools.business_data.ontology_sources_store import migrate_legacy_ontology_data_sources
+
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    legacy_path = paths.workspace_dir / "ontology-bindings.json"
+    legacy_path.write_text("{invalid-json", encoding="utf-8")
+
+    result = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    assert result["migrated"] == 0
+    assert result["errors"] == ["旧本体绑定文件无法解析"]
+    assert (paths.workspace_dir / "ontology-bindings.json.pre-unified.bak").read_text(
+        encoding="utf-8"
+    ) == "{invalid-json"
+    assert not (paths.workspace_dir / "ontology-bindings.migration-complete.json").exists()
+
+
+def test_legacy_binding_migration_preserves_malformed_target_for_recovery(tmp_path, monkeypatch):
+    from agent.tools.business_data.ontology_sources_store import migrate_legacy_ontology_data_sources
+
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    legacy_path = paths.workspace_dir / "ontology-bindings.json"
+    legacy_path.write_text(
+        json.dumps({"bindings": {"demo-ontology": {"connection_id": "shared"}}}),
+        encoding="utf-8",
+    )
+    target_path = paths.workspace_dir / "ontology-data-sources.json"
+    target_path.write_text("{malformed-target", encoding="utf-8")
+
+    result = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    assert result["errors"] == ["本体数据源文件无法解析"]
+    assert target_path.read_text(encoding="utf-8") == "{malformed-target"
+    assert (paths.workspace_dir / "ontology-bindings.json.pre-unified.bak").is_file()
+    assert not (paths.workspace_dir / "ontology-bindings.migration-complete.json").exists()
+
+
+def test_legacy_binding_migration_does_not_mark_invalid_entry_complete(tmp_path, monkeypatch):
+    from agent.tools.business_data.ontology_sources_store import migrate_legacy_ontology_data_sources
+
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    (paths.workspace_dir / "ontology-bindings.json").write_text(
+        json.dumps({"bindings": {"demo-ontology": {"connection_id": ""}}}),
+        encoding="utf-8",
+    )
+
+    result = migrate_legacy_ontology_data_sources(workspace_id="demo")
+
+    assert result["errors"] == ["demo-ontology: connection_id 不能为空"]
+    assert not (paths.workspace_dir / "ontology-bindings.migration-complete.json").exists()
+
+
+def test_legacy_binding_migration_encrypts_preserved_direct_provider_secret(tmp_path, monkeypatch):
+    from agent.tools.business_data.ontology_sources_store import migrate_legacy_ontology_data_sources
+
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    paths = _create_workspace_with_ontology(tmp_path, monkeypatch)
+    (paths.workspace_dir / "ontology-bindings.json").write_text(
+        json.dumps({"bindings": {"demo-ontology": {"connection_id": ""}}}),
+        encoding="utf-8",
+    )
+    target_path = paths.workspace_dir / "ontology-data-sources.json"
+    target_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sources": {
+                    "demo-ontology": {
+                        "mode": "direct_provider",
+                        "provider": "dataagent",
+                        "config": {
+                            "url": "https://dataagent.example.com",
+                            "token": "preserved-secret",
+                        },
+                        "created_at": "2026-01-01T00:00:00+00:00",
+                        "updated_at": "2026-01-01T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = migrate_legacy_ontology_data_sources(workspace_id="demo")
+    raw_text = target_path.read_text(encoding="utf-8")
+
+    assert result["errors"] == []
+    assert result["preserved"] == 1
+    assert "preserved-secret" not in raw_text
+    assert json.loads(raw_text)["sources"]["demo-ontology"]["config"]["token"].startswith(
+        "enc:v1:"
+    )
+    assert (paths.workspace_dir / "ontology-bindings.migration-complete.json").is_file()
 
 
 def test_ontology_data_source_routes_manage_private_source(tmp_path, monkeypatch):

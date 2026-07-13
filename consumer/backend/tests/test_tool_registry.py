@@ -888,7 +888,7 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
-    from agent.tools.business_data.bindings_store import set_ontology_data_binding
+    from agent.tools.business_data.ontology_sources_store import set_ontology_data_binding
     from agent.tools.business_data.connections_store import create_data_connection
 
     create_data_connection(
