@@ -21,7 +21,11 @@ from persistence.run_store import RunStatus
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from utils.streaming import PROTOCOL, build_agent_event
-from workspace.workspaces import WorkspaceNotFoundError, workspace_scope
+from workspace.workspaces import (
+    WorkspaceNotFoundError,
+    enforce_workspace_access,
+    workspace_scope,
+)
 from api.routes.errors import workspace_not_found_response
 
 logger = get_logger("routes.workflows")
@@ -64,7 +68,16 @@ def _ensure_run_owner(run_id: str, user_id: str) -> bool:
     run = orchestrator.run_store.get_run(run_id)
     if not run:
         return False
-    return run.metadata.get("user_id") == user_id
+    metadata = dict(getattr(run, "metadata", {}) or {})
+    if metadata.get("user_id") != user_id:
+        return False
+    workspace_id = str(metadata.get("workspace_id") or "").strip()
+    if not workspace_id:
+        return False
+    if _get_request_workspace_id() != workspace_id:
+        return False
+    enforce_workspace_access(workspace_id)
+    return True
 
 
 _RUN_TERMINAL = object()
@@ -510,7 +523,7 @@ def list_model_profiles():
         workspace_id = _get_request_workspace_id()
     except WorkspaceNotFoundError as exc:
         return workspace_not_found_response(exc)
-    except Exception:
+    except ValueError:
         workspace_id = None
     return jsonify(get_public_llm_profiles(workspace_id=workspace_id))
 

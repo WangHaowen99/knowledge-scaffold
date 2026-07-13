@@ -14,7 +14,7 @@ from api.protocols.a2a.service import A2ATaskService
 from api.auth.auth import get_current_user, require_auth
 from utils.identifiers import validate_session_id
 from utils.logging import get_logger
-from workspace.workspaces import workspace_scope
+from workspace.workspaces import enforce_workspace_access, workspace_scope
 
 
 logger = get_logger("routes.a2a")
@@ -54,6 +54,35 @@ def _build_task_service() -> A2ATaskService:
         workspace_id=workspace_id,
         flask_app=current_app._get_current_object(),
     )
+
+
+def _task_access_matches(
+    service: A2ATaskService,
+    task_id: str,
+    *,
+    session_id: str | None = None,
+) -> bool:
+    """Bind a task lookup to its persisted owner and workspace."""
+    orchestrator = getattr(service, "orchestrator", None)
+    run_store = getattr(orchestrator, "run_store", None)
+    if run_store is None:
+        return False
+
+    run = run_store.get_run(task_id)
+    if run is None:
+        return False
+    metadata = dict(getattr(run, "metadata", {}) or {})
+    persisted_user_id = str(metadata.get("user_id") or "").strip()
+    persisted_workspace_id = str(metadata.get("workspace_id") or "").strip()
+    if not persisted_user_id or persisted_user_id != str(service.user_id or "").strip():
+        return False
+    if not persisted_workspace_id or persisted_workspace_id != str(service.workspace_id or "").strip():
+        return False
+    persisted_session_id = str(metadata.get("session_id") or "").strip()
+    if session_id and persisted_session_id != session_id:
+        return False
+    enforce_workspace_access(persisted_workspace_id)
+    return True
 
 
 def _extract_message(payload: Dict[str, Any]) -> str:
@@ -145,6 +174,8 @@ def get_task(task_id: str):
 
     if snapshot.state.value == "not_found":
         return jsonify({"task": snapshot.to_dict()}), 404
+    if not _task_access_matches(service, task_id, session_id=session_id):
+        return jsonify({"error": "Task not found"}), 404
     return jsonify({"task": snapshot.to_dict()})
 
 
@@ -152,6 +183,9 @@ def get_task(task_id: str):
 @require_auth()
 def cancel_task(task_id: str):
     service = _build_task_service()
+    snapshot = service.get_task(task_id)
+    if snapshot.state.value == "not_found" or not _task_access_matches(service, task_id):
+        return jsonify({"error": "Task not found"}), 404
     ok = service.cancel_task(task_id)
     if not ok:
         return jsonify({"error": "Task not found"}), 404
@@ -164,6 +198,9 @@ def cancel_task(task_id: str):
 def replay_task_events(task_id: str):
     """Replay persisted task events from chat session storage as A2A updates."""
     service = _build_task_service()
+    snapshot = service.get_task(task_id)
+    if snapshot.state.value == "not_found":
+        return jsonify({"error": "Task not found"}), 404
     session_id = str(request.args.get("session_id") or "").strip() or None
     if session_id:
         try:
@@ -171,12 +208,11 @@ def replay_task_events(task_id: str):
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
     if not session_id:
-        snapshot = service.get_task(task_id)
-        if snapshot.state.value == "not_found":
-            return jsonify({"error": "Task not found"}), 404
         session_id = snapshot.session_id
         if not session_id:
             return jsonify({"error": "session_id is required"}), 400
+    if not _task_access_matches(service, task_id, session_id=session_id):
+        return jsonify({"error": "Task not found"}), 404
 
     chat_store, _execution_store = _get_user_stores()
     session = chat_store.get_session(session_id)
@@ -231,6 +267,8 @@ def create_task_and_stream():
     current_user = get_current_user()
     orchestrator = _get_orchestrator()
     workspace_id = _get_request_workspace_id()
+    if task_id and orchestrator.run_store.get_run(task_id) is not None:
+        return jsonify({"error": "task_id already exists"}), 400
 
     def generate():
         try:

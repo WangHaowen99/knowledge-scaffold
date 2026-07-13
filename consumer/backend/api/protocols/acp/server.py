@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from flask import Blueprint, Response, g, jsonify, request
+from flask import Blueprint, Response, abort, g, jsonify, make_response, request
 
 from agent.core.orchestrator import AgenticOrchestrator
 from api.auth.auth import get_current_user, require_auth
@@ -20,9 +20,13 @@ from persistence.run_store import RunStatus as StoreRunStatus
 from utils.identifiers import validate_session_id
 from utils.logging import bind_log_context, get_logger
 from workspace.workspaces import (
+    enforce_workspace_access,
+    get_default_workspace_id,
     get_current_workspace_runtime_config,
+    get_workspace,
     get_workspace_runtime_config,
     resolve_workspace_id,
+    user_can_access_workspace,
     workspace_scope,
 )
 
@@ -57,6 +61,14 @@ _TERMINAL_RUN_DETAILS = {
     RunStatus.CANCELLED: "Run is already cancelled",
     RunStatus.AWAITING: "Run is awaiting input",
 }
+
+
+class _ACPAnonymousPrincipal:
+    username = None
+    role = None
+
+
+_ACP_ANONYMOUS_PRINCIPAL = _ACPAnonymousPrincipal()
 
 
 def _to_store_status(acp_status: RunStatus) -> StoreRunStatus:
@@ -103,12 +115,12 @@ def _ensure_registry_entry(run_id: str) -> Dict[str, Any] | None:
         run = orch.run_store.get_run(run_id)
         if run and run.metadata.get("source") == "acp":
             entry = {
-                "workspace_id": run.metadata.get("acp_workspace_id"),
-                "session_id": run.metadata.get("acp_session_id"),
+                "workspace_id": run.metadata.get("acp_workspace_id") or run.metadata.get("workspace_id"),
+                "session_id": run.metadata.get("acp_session_id") or run.metadata.get("session_id"),
                 "user_query": run.metadata.get("acp_user_query", ""),
                 "user_context": run.metadata.get("acp_user_context", {}),
                 "lang": run.metadata.get("acp_lang"),
-                "user_id": run.metadata.get("acp_user_id"),
+                "user_id": run.metadata.get("acp_user_id") or run.metadata.get("user_id"),
                 "status": RunStatus(run.metadata.get("acp_status", "pending")),
                 "created_at": run.created_at,
                 "updated_at": run.updated_at,
@@ -125,13 +137,20 @@ def _ensure_registry_entry(run_id: str) -> Dict[str, Any] | None:
 
 def _ensure_acp_run_owner(run_id: str) -> bool:
     current_user = get_current_user()
-    if not current_user:
-        return True
     entry = _ensure_registry_entry(run_id)
     if not entry:
         return False
-    if entry.get("user_id") != current_user.username:
+    entry_user_id = str(entry.get("user_id") or "").strip()
+    if current_user and entry_user_id != current_user.username:
         return False
+    if current_user is None and entry_user_id:
+        return False
+    workspace_id = str(entry.get("workspace_id") or "").strip()
+    if not workspace_id:
+        return False
+    if _resolve_acp_request_workspace_id() != workspace_id:
+        return False
+    _enforce_acp_workspace_access(workspace_id)
     return True
 
 
@@ -155,6 +174,9 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
                 orch.run_store.update_status(run_id, store_status)
             orch.run_store.update_metadata(run_id, {
                 "source": "acp",
+                "workspace_id": entry.get("workspace_id"),
+                "session_id": entry.get("session_id"),
+                "user_id": entry.get("user_id"),
                 "acp_workspace_id": entry.get("workspace_id"),
                 "acp_session_id": entry.get("session_id"),
                 "acp_user_query": entry.get("user_query"),
@@ -170,6 +192,9 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
                 user_request=entry.get("user_query", ""),
                 metadata={
                     "source": "acp",
+                    "workspace_id": entry.get("workspace_id"),
+                    "session_id": entry.get("session_id"),
+                    "user_id": entry.get("user_id"),
                     "acp_workspace_id": entry.get("workspace_id"),
                     "acp_session_id": entry.get("session_id"),
                     "acp_user_query": entry.get("user_query"),
@@ -233,6 +258,43 @@ def _get_orchestrator() -> AgenticOrchestrator:
             return routes_orch
         raise RuntimeError("Orchestrator not initialized")
     return _orchestrator
+
+
+def _abort_acp_workspace_access_denied() -> None:
+    abort(make_response(
+        jsonify({"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}),
+        403,
+    ))
+
+
+def _acp_workspace_access_allowed(workspace_id: str) -> bool:
+    """Check current membership, including explicit auth=none semantics."""
+    try:
+        workspace = get_workspace(workspace_id)
+        default_workspace_id = get_default_workspace_id()
+    except (KeyError, ValueError):
+        return False
+    current_user = get_current_user()
+    principal = current_user or _ACP_ANONYMOUS_PRINCIPAL
+    return user_can_access_workspace(
+        principal,
+        workspace,
+        workspace_id == default_workspace_id,
+    )
+
+
+def _enforce_acp_workspace_access(workspace_id: str) -> str:
+    """Recheck a request or persisted ACP workspace before any run operation."""
+    current_user = get_current_user()
+    if current_user is not None:
+        return enforce_workspace_access(workspace_id)
+    if not _acp_workspace_access_allowed(workspace_id):
+        _abort_acp_workspace_access_denied()
+    return workspace_id
+
+
+def _resolve_acp_request_workspace_id() -> str:
+    return _enforce_acp_workspace_access(resolve_workspace_id(request))
 
 
 # ---------------------------------------------------------------------------
@@ -459,9 +521,10 @@ def _awaiting_data_from_final_output(final_output: Any, *, run_id: str) -> Optio
 # ---------------------------------------------------------------------------
 
 @acp_bp.route("/agent", methods=["GET"])
+@require_acp_auth()
 def get_agent_detail():
     config: ACPConfig = get_config()
-    workspace_id = resolve_workspace_id(request)
+    workspace_id = _resolve_acp_request_workspace_id()
     acp_base = request.host_url.rstrip("/") + "/acp"
     auth_type = config.acp.authentication.type
 
@@ -495,7 +558,7 @@ def get_agent_detail():
 def create_run():
     """创建运行记录（异步模式：创建后通过 execute/stream 执行）。"""
     payload = request.get_json(silent=True) or {}
-    workspace_id = resolve_workspace_id(request)
+    workspace_id = _resolve_acp_request_workspace_id()
     run_id = f"run_{uuid.uuid4().hex}"
 
     user_query = _extract_text_from_messages(payload.get("messages", []))
@@ -829,7 +892,7 @@ def stream_run(run_id: str):
 def execute_stream():
     """快捷端点：创建 + 流式执行一步完成。"""
     payload = request.get_json(silent=True) or {}
-    workspace_id = resolve_workspace_id(request)
+    workspace_id = _resolve_acp_request_workspace_id()
     run_id = f"run_{uuid.uuid4().hex}"
 
     user_query = _extract_text_from_messages(payload.get("messages", []))
@@ -1101,6 +1164,7 @@ def list_runs():
     """列出当前用户的 ACP 运行记录（优先从 RunStore 读取）。"""
     current_user = get_current_user()
     current_username = current_user.username if current_user else None
+    request_workspace_id = _resolve_acp_request_workspace_id()
     runs = []
 
     # 从 RunStore 读取持久化的 ACP runs
@@ -1109,7 +1173,17 @@ def list_runs():
         store_runs = orch.run_store.list_runs(limit=200)
         for r in store_runs:
             if r.metadata.get("source") == "acp":
-                if current_username and r.metadata.get("acp_user_id") != current_username:
+                run_user_id = str(
+                    r.metadata.get("acp_user_id") or r.metadata.get("user_id") or ""
+                ).strip()
+                if current_username and run_user_id != current_username:
+                    continue
+                if current_username is None and run_user_id:
+                    continue
+                workspace_id = str(
+                    r.metadata.get("acp_workspace_id") or r.metadata.get("workspace_id") or ""
+                ).strip()
+                if workspace_id != request_workspace_id or not _acp_workspace_access_allowed(workspace_id):
                     continue
                 runs.append({
                     "run_id": r.run_id,
@@ -1126,7 +1200,13 @@ def list_runs():
         registry_snapshot = list(_ACP_RUN_REGISTRY.items())
     for run_id, entry in registry_snapshot:
         if run_id not in seen:
-            if current_username and entry.get("user_id") != current_username:
+            entry_user_id = str(entry.get("user_id") or "").strip()
+            if current_username and entry_user_id != current_username:
+                continue
+            if current_username is None and entry_user_id:
+                continue
+            workspace_id = str(entry.get("workspace_id") or "").strip()
+            if workspace_id != request_workspace_id or not _acp_workspace_access_allowed(workspace_id):
                 continue
             runs.append({
                 "run_id": run_id,
