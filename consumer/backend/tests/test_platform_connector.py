@@ -327,7 +327,11 @@ def test_platform_exporter_batches_events_with_environment_auth_headers():
             run_id="run-1",
             session_id="session-1",
             timestamp_ms=1_781_500_399_000,
-            payload={"workspace_id": "workspace-a", "user_id": "user-a"},
+            payload={
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "external_trace_id": "a" * 32,
+            },
         )
     )
     exporter.export(
@@ -364,6 +368,7 @@ def test_platform_exporter_batches_events_with_environment_auth_headers():
         "run.finished",
     ]
     assert payload["events"][0]["workspace_id"] == "workspace-a"
+    assert all(event["trace_id"] == "a" * 32 for event in payload["events"])
 
 
 def test_platform_exporter_sends_ontology_snapshot_with_environment_auth_headers(tmp_path):

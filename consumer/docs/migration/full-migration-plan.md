@@ -674,21 +674,28 @@ Phase 5 本地自动化门禁（2026-07-13）：
 
 执行：
 
-- [ ] `agent-stream.v2` envelope 增加可选 `span_key`、`parent_key`。
-- [ ] tool span 挂到对应 iteration；Graph 内部工具挂到外层 business data span。
-- [ ] sub-agent lineage 和 iteration 保持稳定。
-- [ ] 同一 iteration 中使用 `call_index`、`batch_index` 稳定区分多次 LLM 和 tool batch。
-- [ ] 保留 `GET /agentic/sessions/<session_id>/turns?status=&has_feedback=true` 结构化查询，turn feedback 独立持久化，禁止依附 evolution store。
-- [ ] 历史重建和实时流使用同一节点 key 算法。
-- [ ] 前端缺失父节点时合成父节点，旧平铺事件仍可展示。
-- [ ] 接收并严格校验 W3C `traceparent` 的长度、十六进制格式和非全零值，再传入 LLM、工具、Jiuwen、Graph、MCP chat span。
-- [ ] 性能汇总保留 `had_reasoning`、`calls_with_reasoning`、`total_reasoning_chars`、`first_reasoning_ms`。
-- [ ] observer shutdown 必须最终 flush/close。
-- [ ] 保留本地 workspace observability 和性能分析。
+- [x] `agent-stream.v2` envelope 增加可选 `span_key`、`parent_key`。
+- [x] tool span 挂到对应 iteration；Graph 内部工具挂到外层 business data span。
+- [x] sub-agent lineage 和 iteration 保持稳定。
+- [x] 同一 iteration 中使用 `call_index`、`batch_index` 稳定区分多次 LLM 和 tool batch。
+- [x] 保留 `GET /agentic/sessions/<session_id>/turns?status=&has_feedback=true` 结构化查询，turn feedback 独立持久化，禁止依附 evolution store。
+- [x] 历史重建和实时流使用同一节点 key 算法。
+- [x] 前端缺失父节点时合成父节点，旧平铺事件仍可展示。
+- [x] 接收并严格校验 W3C `traceparent` 的长度、十六进制格式和非全零值，再传入 LLM、工具、Jiuwen、Graph、MCP chat span。
+- [x] 性能汇总保留 `had_reasoning`、`calls_with_reasoning`、`total_reasoning_chars`、`first_reasoning_ms`。
+- [x] observer shutdown 必须最终 flush/close。
+- [x] 保留本地 workspace observability 和性能分析。
 
 验证：迁移 `test_graph_provider_trace_parent.py`、Trace 相关回归，并增加“断线重放后树不重复、不换父节点”测试。
 
 建议提交：`feat(trace): preserve hierarchical spans across replay and providers`
+
+Phase 6 本地自动化门禁（2026-07-13）：
+
+- W3C `traceparent`、MCP chat bridge、platform/Langfuse trace 映射、turn feedback、性能汇总和 observer shutdown 回归通过。
+- `agent-stream.v2` 实时/历史节点 key 与断线重放回归通过；前端 stream helper：10 passed。
+- OpenJiuwen 共用 invocation index 与相邻 runtime 回归通过。
+- 全后端回归：1133 passed，2 skipped；4 条 warning 均来自现有 Authlib、pytest collection 和 OpenJiuwen 依赖弃用提示。
 
 ### Phase 7：远端风格前端融合
 

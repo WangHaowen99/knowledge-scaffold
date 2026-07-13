@@ -4,12 +4,53 @@ import test from 'node:test';
 import { applyAgentV2Event, AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
 import { buildIndexedSegmentGroups } from './segmentGroups.js';
 
-const envelope = (type, payload, seq = 1) => ({
+const envelope = (type, payload, seq = 1, trace = {}) => ({
   protocol: AGENT_STREAM_PROTOCOL,
   type,
   payload,
   seq,
   ts: 1000 + seq,
+  ...trace,
+});
+
+test('replayed tool events keep one node and preserve the original parent', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+  const payload = {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-replay',
+    message: 'searching',
+  };
+
+  state = applyAgentV2Event(
+    state,
+    envelope('tool.started', payload, 1, {
+      span_key: 'tool:main:2:business_data_search:call-replay',
+      parent_key: 'iteration:main:2',
+    }),
+  );
+  state = applyAgentV2Event(
+    state,
+    envelope('tool.started', payload, 1, {
+      span_key: 'tool:main:2:business_data_search:call-replay',
+      parent_key: 'iteration:main:999',
+    }),
+  );
+  state = applyAgentV2Event(
+    state,
+    envelope('tool.finished', {
+      ...payload,
+      status: 'completed',
+      output_preview: 'done',
+    }, 2, {
+      span_key: 'tool:main:2:business_data_search:call-replay',
+      parent_key: 'iteration:main:999',
+    }),
+  );
+
+  assert.equal(state.streamSegments.length, 1);
+  assert.equal(state.streamSegments[0].spanKey, 'tool:main:2:business_data_search:call-replay');
+  assert.equal(state.streamSegments[0].parentKey, 'iteration:main:2');
+  assert.equal(state.streamSegments[0].finished, true);
 });
 
 test('nested subagent groups attach under parent subagent child', () => {

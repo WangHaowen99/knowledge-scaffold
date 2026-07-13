@@ -164,6 +164,8 @@ class PlatformExporter:
             for key in ("workspace_id", "user_id", "trace_id"):
                 if payload.get(key) is not None:
                     context[key] = payload[key]
+            if not context.get("trace_id") and payload.get("external_trace_id"):
+                context["trace_id"] = payload["external_trace_id"]
             context["tool_call_count"] = 0
             context["model_call_count"] = 0
             return

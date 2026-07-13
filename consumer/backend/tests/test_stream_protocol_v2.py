@@ -75,6 +75,7 @@ def test_execute_tool_batch_emits_v2_regular_tool_events():
         turn_id=3,
         agent_config=AgentConfig.from_env(),
         caller="main",
+        agent_iteration=4,
     )
 
     with stream_writer_context(captured.append):
@@ -96,3 +97,15 @@ def test_execute_tool_batch_emits_v2_regular_tool_events():
     seqs = [event["data"]["seq"] for event in captured]
     assert seqs == sorted(seqs)
     assert len(seqs) == len(set(seqs))
+
+    tool_events = [
+        event["data"]
+        for event in captured
+        if event["data"]["type"] in {"tool.started", "tool.finished"}
+    ]
+    assert tool_events
+    assert all(
+        event["span_key"] == "tool:main:4:business_data_search:call_1"
+        for event in tool_events
+    )
+    assert all(event["parent_key"] == "iteration:main:4" for event in tool_events)

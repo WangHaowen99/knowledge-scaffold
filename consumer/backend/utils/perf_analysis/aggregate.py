@@ -38,6 +38,7 @@ def build_run_detail(records: Iterable[dict[str, Any]], *, run_id: str) -> dict[
         if record.get("kind") == "runtime_phase" and str(record.get("event") or "") != "runtime_phase.started"
     ]
     tool_batches = [record for record in run_records if record.get("kind") == "tool_batch"]
+    reasoning_rollup = _reasoning_rollup_from_llm_calls(llm_calls)
     llm_wall_ms = _summary_llm_wall_ms(summary) or sum(_llm_call_wall_ms(record) for record in llm_calls)
     tool_ms = _metric(summary, "tool_call_total_ms") or sum(_tool_call_ms(record) for record in tools)
     runtime_phase_ms = sum(_metric(record, "duration_ms") for record in runtime_phases)
@@ -79,6 +80,7 @@ def build_run_detail(records: Iterable[dict[str, Any]], *, run_id: str) -> dict[
         "iterations": _build_iterations(run_records),
         "iteration_calls": _build_iteration_calls(run_records, llm_calls, tools),
         "llm_calls": llm_calls,
+        "reasoning": reasoning_rollup,
         "tools": tools,
         "tool_batches": tool_batches,
         "runtime_phases": runtime_phases,
@@ -382,6 +384,32 @@ def _cache_metrics_by_run(records: Iterable[dict[str, Any]]) -> dict[str, dict[s
         run_id: metrics
         for run_id, calls in calls_by_run.items()
         if (metrics := _cache_metrics_from_llm_calls(calls))
+    }
+
+
+def _reasoning_rollup_from_llm_calls(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize reasoning presence and timing without storing reasoning text."""
+
+    calls_with_reasoning = 0
+    total_reasoning_chars = 0
+    first_reasoning_ms: int | None = None
+    for record in records:
+        metrics = _metrics(record)
+        chars = _as_int(metrics.get("reasoning_chars"))
+        if chars <= 0:
+            continue
+        calls_with_reasoning += 1
+        total_reasoning_chars += chars
+        call_first = _as_optional_int(metrics.get("first_reasoning_ms"))
+        if call_first is not None and (
+            first_reasoning_ms is None or call_first < first_reasoning_ms
+        ):
+            first_reasoning_ms = call_first
+    return {
+        "had_reasoning": calls_with_reasoning > 0,
+        "calls_with_reasoning": calls_with_reasoning,
+        "total_reasoning_chars": total_reasoning_chars,
+        "first_reasoning_ms": first_reasoning_ms,
     }
 
 

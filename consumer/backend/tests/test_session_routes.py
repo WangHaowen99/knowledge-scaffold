@@ -46,6 +46,11 @@ class _FakeChatStore:
         del max_sessions
         return []
 
+    def get_session(self, session_id):
+        if self.session and self.session.id == session_id:
+            return self.session
+        return None
+
     def set_session_pinned(self, session_id, pinned):
         self.pinned_updates.append((session_id, pinned))
         if not self.session or self.session.id != session_id:
@@ -55,11 +60,19 @@ class _FakeChatStore:
 
 
 class _FakeExecutionStore:
-    def __init__(self):
+    def __init__(self, turns=None):
         self.deleted_sessions = []
+        self.turns = list(turns or [])
 
     def delete_session(self, session_id):
         self.deleted_sessions.append(session_id)
+
+    def list_turns_by_status(self, session_id, status=None):
+        del session_id
+        rows = list(reversed(self.turns))
+        if status:
+            rows = [row for row in rows if row.get("status") == status]
+        return rows
 
 
 def _build_test_client(tmp_path):
@@ -133,6 +146,31 @@ def test_update_session_pinned_state_returns_404_for_missing_session(tmp_path, m
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "Session not found"
+
+
+def test_list_session_turns_filters_status_and_feedback(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = _FakeChatStore(_FakeSession("sess-1"))
+    execution_store = _FakeExecutionStore([
+        {"turn_id": 1, "status": "success"},
+        {"turn_id": 2, "status": "failed", "feedback": {"vote": "down"}},
+        {"turn_id": 3, "status": "failed"},
+    ])
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    response = client.get(
+        "/agentic/sessions/sess-1/turns?status=failed&has_feedback=true",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "turns": [{"turn_id": 2, "status": "failed", "feedback": {"vote": "down"}}],
+        "count": 1,
+    }
 
 
 def _write_system_profiles(tmp_path, monkeypatch):

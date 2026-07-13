@@ -18,6 +18,11 @@ from config.system_config import (
 )
 from persistence.run_queue import QueuedRunAdmission, RunAdmissionQueue
 from persistence.run_store import RunStatus
+from integration.observability.trace_context import (
+    TraceParentValidationError,
+    W3CTraceParent,
+    parse_traceparent,
+)
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from utils.streaming import PROTOCOL, build_agent_event
@@ -61,6 +66,28 @@ def _reject_if_run_rate_limited(orchestrator):
             "limit": _run_tps_limit(orchestrator),
         }), 429
     return None
+
+
+def _traceparent_from_request() -> Optional[W3CTraceParent]:
+    return parse_traceparent(request.headers.get("traceparent"))
+
+
+def _invalid_traceparent_response(exc: TraceParentValidationError):
+    return jsonify({
+        "error": str(exc),
+        "error_code": "INVALID_TRACEPARENT",
+    }), 400
+
+
+def _trace_metadata(trace_context: Optional[W3CTraceParent]) -> Dict[str, str]:
+    if trace_context is None:
+        return {}
+    return {
+        "traceparent": trace_context.value,
+        "external_trace_id": trace_context.trace_id,
+        "external_parent_span_id": trace_context.parent_id,
+        "external_trace_flags": trace_context.trace_flags,
+    }
 
 
 def _ensure_run_owner(run_id: str, user_id: str) -> bool:
@@ -179,6 +206,7 @@ class AgenticRunHandle:
         orchestrator: Any,
         slot_manager: Any,
         slot_limit_user_id: str,
+        traceparent: str = "",
     ) -> None:
         self.run_id = run_id
         self.active_run_id = run_id
@@ -191,6 +219,7 @@ class AgenticRunHandle:
         self.orchestrator = orchestrator
         self.slot_manager = slot_manager
         self.slot_limit_user_id = slot_limit_user_id
+        self.traceparent = str(traceparent or "")
         self.done = threading.Event()
         self._lock = threading.RLock()
         self._subscribers: Dict[str, "queue.Queue[Any]"] = {}
@@ -280,6 +309,7 @@ class AgenticRunHandle:
                     user_id=self.user_id,
                     workspace_id=self.workspace_id,
                     requested_run_id=self.run_id,
+                    traceparent=self.traceparent,
                 ):
                     envelope = _extract_agent_envelope(event)
                     if envelope:
@@ -589,6 +619,11 @@ def start_workflow_stream():
     if not current_user:
         return jsonify({"error": "Unauthorized"}), 401
 
+    try:
+        trace_context = _traceparent_from_request()
+    except TraceParentValidationError as exc:
+        return _invalid_traceparent_response(exc)
+
     user_context = data.get("context", {})
     arguments = data.get("arguments")
     raw_session_id = data.get("session_id")
@@ -654,6 +689,7 @@ def start_workflow_stream():
         "user_id": current_user.username,
         "workspace_id": workspace_id,
         "admission_limit": limit,
+        **_trace_metadata(trace_context),
     }
     handle = AgenticRunHandle(
         run_id=run_id,
@@ -666,6 +702,7 @@ def start_workflow_stream():
         orchestrator=orchestrator,
         slot_manager=admission_queue,
         slot_limit_user_id=current_user.username,
+        traceparent=trace_context.value if trace_context is not None else "",
     )
 
     if admission_queue.try_acquire(current_user.username, limit):
@@ -856,10 +893,12 @@ def submit_run_feedback(run_id: str):
 
     orchestrator = _get_orchestrator()
     voted = orchestrator.vote_on_run_memories(run_id, vote=vote)
+    persisted = orchestrator.persist_run_feedback(run_id, vote=vote)
     return jsonify({
         "success": True,
         "vote": vote,
         "fingerprints_voted": voted,
+        "feedback_persisted": persisted,
     })
 
 
@@ -909,6 +948,11 @@ def start_workflow_sync():
     if not current_user:
         return jsonify({"error": "Unauthorized"}), 401
 
+    try:
+        trace_context = _traceparent_from_request()
+    except TraceParentValidationError as exc:
+        return _invalid_traceparent_response(exc)
+
     user_context = data.get("context", {})
     arguments = data.get("arguments")
     raw_session_id = data.get("session_id")
@@ -947,6 +991,7 @@ def start_workflow_sync():
                 session_id=session_id,
                 user_id=current_user.username,
                 workspace_id=workspace_id,
+                traceparent=trace_context.value if trace_context is not None else "",
             ):
                 event_data = event.get("data", event) if isinstance(event, dict) else event
                 if not isinstance(event_data, dict):

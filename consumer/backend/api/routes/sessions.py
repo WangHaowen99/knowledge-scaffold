@@ -333,6 +333,31 @@ def get_session_messages(session_id: str):
     })
 
 
+@sessions_bp.route("/sessions/<session_id>/turns", methods=["GET"])
+@require_auth()
+def list_session_turns(session_id: str):
+    """List durable turn records with optional status and feedback filters."""
+
+    chat_store, execution_store = _get_user_stores()
+    if not chat_store.get_session(session_id):
+        return jsonify({"error": "Session not found"}), 404
+
+    status = str(request.args.get("status") or "").strip() or None
+    turns = execution_store.list_turns_by_status(session_id, status)
+    if _is_truthy(request.args.get("has_feedback")):
+        turns = [
+            turn
+            for turn in turns
+            if isinstance(turn.get("feedback"), dict)
+            and bool(turn["feedback"].get("vote"))
+        ]
+    return jsonify({"turns": turns, "count": len(turns)})
+
+
+def _is_truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @sessions_bp.route("/sessions/<session_id>/generate-title", methods=["POST", "OPTIONS"])
 @cross_origin()
 @require_auth()

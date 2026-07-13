@@ -26,7 +26,7 @@ def get_observer():
         return _observer
 
 
-def reset_observer(timeout: float = 1.0) -> None:
+def reset_observer(timeout: float = 5.0) -> None:
     """Drop the current observer so the next run uses the latest config."""
     global _observer
     with _observer_lock:
@@ -35,7 +35,7 @@ def reset_observer(timeout: float = 1.0) -> None:
     _retire_observer(current, timeout=timeout)
 
 
-def shutdown_observer(timeout: float = 1.0) -> None:
+def shutdown_observer(timeout: float = 5.0) -> None:
     """Close the current process-scoped observer."""
     global _observer
     with _observer_lock:

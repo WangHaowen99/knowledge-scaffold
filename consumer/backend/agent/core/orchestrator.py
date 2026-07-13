@@ -34,6 +34,7 @@ from agent.memory import MemoryFactory
 from agent.state import AgenticState
 from llm import get_llm_router
 from integration.observability import RunRuntimeTrace, RuntimeStatus, get_observer
+from integration.observability.trace_context import parse_traceparent
 from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_queue import TokenBucketRateLimiter
 from persistence.run_store import RunStore
@@ -530,6 +531,7 @@ class AgenticOrchestrator:
         debug: bool = False,
         requested_run_id: Optional[str] = None,
         allow_existing_acp_run_id: bool = False,
+        traceparent: Optional[str] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         Execute the agentic workflow.
@@ -547,6 +549,7 @@ class AgenticOrchestrator:
         Yields:
             Dictionary events for SSE streaming
         """
+        trace_context = parse_traceparent(traceparent)
         chat_store, execution_store = self._get_stores(user_id, workspace_id)
         session_id = validate_session_id(session_id)
 
@@ -730,6 +733,7 @@ class AgenticOrchestrator:
 
         run_metadata = {}
         run_metadata["session_id"] = session_id
+        run_metadata["turn_id"] = current_turn_id
         if user_id:
             run_metadata["user_id"] = user_id
         if workspace_id:
@@ -738,6 +742,13 @@ class AgenticOrchestrator:
         run_metadata["model_profile_id"] = selected_profile["id"]
         run_metadata["model_profile_ref"] = selected_profile_ref
         run_metadata["model_provider"] = selected_profile.get("provider")
+        if trace_context is not None:
+            run_metadata.update({
+                "traceparent": trace_context.value,
+                "external_trace_id": trace_context.trace_id,
+                "external_parent_span_id": trace_context.parent_id,
+                "external_trace_flags": trace_context.trace_flags,
+            })
 
         execution_store.start_turn(
             session_id=session_id,
@@ -796,6 +807,10 @@ class AgenticOrchestrator:
                 "selected_ontology_id": str(context.get("selected_ontology_id") or "").strip() or None,
                 "agent_mode": resolve_agent_mode(context),
                 "llm_request_mode": str(context.get("llm_request_mode") or "").strip() or None,
+                "traceparent": trace_context.value if trace_context is not None else None,
+                "external_trace_id": trace_context.trace_id if trace_context is not None else None,
+                "external_parent_span_id": trace_context.parent_id if trace_context is not None else None,
+                "external_trace_flags": trace_context.trace_flags if trace_context is not None else None,
             },
         )
 
@@ -1458,6 +1473,27 @@ class AgenticOrchestrator:
             self.reflection_worker.submit(snapshot)
         except Exception:
             logger.warning("Failed to submit reflection for run=%s", run_id, exc_info=True)
+
+    def persist_run_feedback(self, run_id: str, *, vote: str) -> bool:
+        """Persist feedback on the execution turn regardless of memory recall."""
+
+        run = self.run_store.get_run(run_id)
+        if run is None:
+            return False
+        metadata = dict(run.metadata or {})
+        session_id = str(metadata.get("session_id") or "").strip()
+        turn_id = metadata.get("turn_id")
+        if not session_id or turn_id is None:
+            return False
+        _chat_store, execution_store = self._get_stores(
+            str(metadata.get("user_id") or "").strip() or None,
+            str(metadata.get("workspace_id") or "").strip() or None,
+        )
+        try:
+            return execution_store.set_turn_feedback(session_id, int(turn_id), vote)
+        except Exception:
+            logger.warning("persist_run_feedback failed run=%s", run_id, exc_info=True)
+            return False
 
     def vote_on_run_memories(self, run_id: str, *, vote: str) -> int:
         """Cast 👍/👎 on the proposal fingerprints injected into this run.

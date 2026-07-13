@@ -1076,8 +1076,8 @@ export const applyAgentV2Event = (current, envelope) => {
         node: sourceNode || target.node,
         meta: mergeToolMeta(target.meta, payload),
         finished: false,
-        spanKey: envelopeSpanKey || target.spanKey,
-        parentKey: envelopeParentKey || target.parentKey,
+        spanKey: target.spanKey || envelopeSpanKey || undefined,
+        parentKey: target.parentKey || envelopeParentKey || undefined,
       };
     } else {
       next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
@@ -1133,6 +1133,8 @@ export const applyAgentV2Event = (current, envelope) => {
           webSearchEvent,
         ),
         finished: targetOpenIdx !== -1 ? false : Boolean(target.finished),
+        spanKey: target.spanKey || envelopeSpanKey || undefined,
+        parentKey: target.parentKey || envelopeParentKey || undefined,
       };
     } else if (dbSearchEvent || webSearchEvent || hasToolLocator(locator)) {
       next.streamSegments = closeOpenNonToolSegment(next.streamSegments);
@@ -1150,6 +1152,8 @@ export const applyAgentV2Event = (current, envelope) => {
         ),
         finished: false,
         toolStatus: null,
+        spanKey: envelopeSpanKey || undefined,
+        parentKey: envelopeParentKey || undefined,
       });
     } else {
       next.streamSegments = appendInlineTextSegment(next.streamSegments, {
@@ -1160,6 +1164,8 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         mergeKey: 'tool_call_id',
         ts: envelope.ts || Date.now(),
+        spanKey: envelopeSpanKey || undefined,
+        parentKey: envelopeParentKey || undefined,
       });
     }
     next.status = 'running';
@@ -1190,6 +1196,8 @@ export const applyAgentV2Event = (current, envelope) => {
         text: target.text || payload.output_preview || '',
         finished: true,
         toolStatus,
+        spanKey: target.spanKey || envelopeSpanKey || undefined,
+        parentKey: target.parentKey || envelopeParentKey || undefined,
       };
     } else {
       next.streamSegments = closeOpenSegment(next.streamSegments);
@@ -1201,6 +1209,8 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         finished: true,
         toolStatus,
+        spanKey: envelopeSpanKey || undefined,
+        parentKey: envelopeParentKey || undefined,
       });
     }
 

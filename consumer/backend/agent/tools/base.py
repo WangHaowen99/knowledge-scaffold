@@ -48,6 +48,7 @@ class ToolContext:
     caller: ToolCaller
     agent_mode: Optional[str] = None
     agent_iteration: Optional[int] = None
+    tool_batch_index: Optional[int] = None
     workspace_id: Optional[str] = None
     project_root: Optional[str] = None
     event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None

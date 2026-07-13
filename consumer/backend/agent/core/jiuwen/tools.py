@@ -46,6 +46,7 @@ class CurrentRuntimeToolAdapter:
         tool_batch_failed_callback: Any = None,
         terminal_tool_batch_callback: Any = None,
         state_snapshot_callback: Any = None,
+        invocation_index_provider: Any = None,
     ) -> None:
         self.tool_name = str(tool_name or "").strip()
         if not self.tool_name:
@@ -58,7 +59,9 @@ class CurrentRuntimeToolAdapter:
         self.tool_batch_failed_callback = tool_batch_failed_callback
         self.terminal_tool_batch_callback = terminal_tool_batch_callback
         self.state_snapshot_callback = state_snapshot_callback
+        self.invocation_index_provider = invocation_index_provider
         self._invocation_index = 0
+        self._invocation_index_lock = threading.Lock()
         self._serial_execution_lock = (
             threading.Lock()
             if not _is_tool_concurrency_safe(self.tool_name)
@@ -81,8 +84,7 @@ class CurrentRuntimeToolAdapter:
             if self.terminal_tool_batch_callback is not None:
                 self.terminal_tool_batch_callback(batch_result)
             return _terminal_tool_content(self.state, batch_result)
-        self._invocation_index += 1
-        call_index = self._invocation_index
+        call_index = self._next_invocation_index()
         run_scope = (
             str(self.state.get("run_id") or "").strip()
             or str(self.state.get("session_id") or "").strip()
@@ -134,6 +136,7 @@ class CurrentRuntimeToolAdapter:
         started_at = time.perf_counter()
         started_at_ms = int(started_at * 1000)
         context = self.context_factory()
+        context.tool_batch_index = batch_index
         runtime_trace = runtime_trace_from_tool_context(context)
         iteration = tool_context_iteration(context)
         try:
@@ -215,6 +218,14 @@ class CurrentRuntimeToolAdapter:
             if self.terminal_tool_batch_callback is not None:
                 self.terminal_tool_batch_callback(batch_result)
         return first_tool_message_content(batch_result)
+
+    def _next_invocation_index(self) -> int:
+        provider = self.invocation_index_provider
+        if callable(provider):
+            return int(provider())
+        with self._invocation_index_lock:
+            self._invocation_index += 1
+            return self._invocation_index
 
     def _emit_state_snapshot(self) -> None:
         if not callable(self.state_snapshot_callback):
@@ -376,6 +387,7 @@ def register_current_runtime_tools(
     tools = []
     tool_cls = tool_module.Tool
     tool_card_cls = tool_module.ToolCard
+    invocation_index = _SharedInvocationIndex()
     for tool_info in infos:
         card = tool_card_cls(
             id=build_jiuwen_tool_resource_id(
@@ -397,6 +409,7 @@ def register_current_runtime_tools(
             tool_batch_failed_callback=tool_batch_failed_callback,
             terminal_tool_batch_callback=terminal_tool_batch_callback,
             state_snapshot_callback=state_snapshot_callback,
+            invocation_index_provider=invocation_index.next,
         )
         tool = build_jiuwen_tool_wrapper(tool_cls, card, delegate)
         cards.append(card)
@@ -416,6 +429,19 @@ def register_current_runtime_tools(
             refresh=True,
         )
     return cards
+
+
+class _SharedInvocationIndex:
+    """Allocate stable tool-batch indexes across every tool in one Jiuwen run."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._value = 0
+
+    def next(self) -> int:
+        with self._lock:
+            self._value += 1
+            return self._value
 
 
 def unregister_current_runtime_tools(

@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from workspace.workspaces import evaluate_workspace_subject_access
+from integration.observability.trace_context import (
+    TraceParentValidationError,
+    normalize_traceparent,
+)
 from .token_service import MCPTokenAuthError, verify_mcp_token
 
 
@@ -39,6 +43,10 @@ def resolve_mcp_scope_from_token(
 ) -> MCPRequestScope:
     if not str(token or "").strip():
         raise MCPTokenAuthError("AUTH_TOKEN_MISSING", "未检测到 Bearer Token")
+    try:
+        normalized_traceparent = normalize_traceparent(traceparent)
+    except TraceParentValidationError as exc:
+        raise MCPTokenAuthError("INVALID_TRACEPARENT", str(exc)) from exc
     payload = verify_mcp_token(token, required_scope=required_scope)
     decision = evaluate_workspace_subject_access(
         payload["username"],
@@ -56,7 +64,7 @@ def resolve_mcp_scope_from_token(
         scopes=list(payload["scopes"]),
         source=source,
         token=str(token or "").strip(),
-        traceparent=str(traceparent or "").strip(),
+        traceparent=normalized_traceparent,
     )
 
 

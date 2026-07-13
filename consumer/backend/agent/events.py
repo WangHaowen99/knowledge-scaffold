@@ -195,7 +195,7 @@ AgentEventPayload = Union[
 ]
 
 
-class AgentEventEnvelope(TypedDict):
+class AgentEventEnvelope(TypedDict, total=False):
     protocol: Literal["agent-stream.v2"]
     event_id: str
     seq: int
@@ -206,6 +206,8 @@ class AgentEventEnvelope(TypedDict):
     type: AgentEventType
     source: AgentEventSource
     payload: Dict[str, Any]
+    span_key: Optional[str]
+    parent_key: Optional[str]
 
 
 class AgentStreamEvent(TypedDict):
