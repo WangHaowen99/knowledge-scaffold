@@ -125,6 +125,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "parallel_default_max_workers": {"env": "AGENT_PARALLEL_DEFAULT_MAX_WORKERS", "type": "int", "default": 10},
         "context_max_rounds": {"env": "AGENT_CONTEXT_MAX_ROUNDS", "type": "int", "default": 10},
         "context_prune_tools": {"env": "AGENT_CONTEXT_PRUNE_TOOLS", "type": "str", "default": ""},
+        "runtime_warmup_enabled": {"env": "AGENT_RUNTIME_WARMUP_ENABLED", "type": "bool", "default": True},
         # Operation evolution thresholds
         "evolution_min_occurrences": {"env": "EVO_MIN_OCCURRENCES", "type": "int", "default": 3},
         "evolution_min_applied": {"env": "EVO_MIN_APPLIED", "type": "int", "default": 2},
@@ -1501,6 +1502,62 @@ def _model_readiness(config: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _agent_config_for_connection_check(effective: dict[str, Any]) -> Any:
+    from dataclasses import replace
+
+    from config.settings import AgentConfig
+
+    base = AgentConfig.from_env()
+    return replace(
+        base,
+        llm_connection_max_retries=int(effective["llm_connection_max_retries"]),
+        main_agent_max_iterations=int(effective["main_agent_max_iterations"]),
+        sub_agent_max_iterations=int(effective["sub_agent_max_iterations"]),
+        sub_agent_max_concurrency=int(effective["sub_agent_max_concurrency"]),
+        sub_agent_max_depth=int(effective["sub_agent_max_depth"]),
+        parallel_default_max_workers=int(effective["parallel_default_max_workers"]),
+        context_max_rounds=int(effective["context_max_rounds"]),
+        context_prune_tools={
+            item.strip()
+            for item in _coerce_string(effective.get("context_prune_tools")).split(",")
+            if item.strip()
+        },
+        runtime_warmup_enabled=bool(effective.get("runtime_warmup_enabled", True)),
+        execute_script_timeout=int(effective.get("execute_script_timeout") or 300),
+        evolution_min_occurrences=int(effective.get("evolution_min_occurrences", 3)),
+        evolution_min_applied=int(effective.get("evolution_min_applied", 2)),
+        evolution_max_rejection=int(effective.get("evolution_max_rejection", 0)),
+        evolution_passive_reflection_enabled=bool(
+            effective.get("evolution_passive_reflection_enabled", False)
+        ),
+        evolution_patch_auto_apply=bool(effective.get("evolution_patch_auto_apply", False)),
+        evolution_patch_cooldown_sec=int(effective.get("evolution_patch_cooldown_sec", 3600)),
+        evolution_sweep_interval_sec=int(effective.get("evolution_sweep_interval_sec", 1800)),
+    )
+
+
+def _validate_jiuwen_tools_without_runtime_delegates(
+    _agent: Any,
+    *,
+    tool_infos: list[dict[str, Any]] | None = None,
+    **_kwargs: Any,
+) -> list[Any]:
+    """Validate the runtime tool descriptors without touching Jiuwen globals."""
+    from types import SimpleNamespace
+
+    cards: list[Any] = []
+    for index, tool_info in enumerate(tool_infos or []):
+        if not isinstance(tool_info, dict):
+            raise ValueError("Jiuwen 工具描述必须是对象")
+        name = _coerce_string(tool_info.get("name"))
+        description = _coerce_string(tool_info.get("description"))
+        parameters = tool_info.get("parameters")
+        if not name or not description or not isinstance(parameters, dict):
+            raise ValueError("Jiuwen 工具描述缺少 name、description 或 parameters")
+        cards.append(SimpleNamespace(id=f"config-check-{index}", name=name))
+    return cards
+
+
 def test_system_config_connection(section: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized_section = _coerce_string(section).lower()
     if normalized_section not in SECTION_KEYS:
@@ -1573,6 +1630,28 @@ def test_system_config_connection(section: str, data: dict[str, Any] | None = No
             return {"success": False, "message": message, "tested_at": tested_at}
         except requests.exceptions.RequestException as exc:
             return {"success": False, "message": "LLM 请求失败：{}".format(str(exc)), "tested_at": tested_at}
+
+    if normalized_section == "agent":
+        try:
+            from agent.core.jiuwen.smoke import run_jiuwen_smoke
+
+            smoke_result = run_jiuwen_smoke(
+                agent_config=_agent_config_for_connection_check(effective),
+                agent_mode="quick",
+                register_tools=_validate_jiuwen_tools_without_runtime_delegates,
+            )
+            tool_count = int(smoke_result.get("registered_tool_count") or 0)
+            return {
+                "success": True,
+                "message": "Jiuwen ReAct 主链路可用，已校验 {} 个工具".format(tool_count),
+                "tested_at": tested_at,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": "Jiuwen ReAct 主链路不可用：{}".format(str(exc)),
+                "tested_at": tested_at,
+            }
 
     if normalized_section == "web_search":
         if not bool(effective.get("enabled", False)):

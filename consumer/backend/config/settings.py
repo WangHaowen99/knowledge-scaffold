@@ -251,6 +251,7 @@ class AgentConfig:
     parallel_default_max_workers: int
     context_max_rounds: int
     context_prune_tools: Set[str]
+    runtime_warmup_enabled: bool = True
     execute_script_timeout: int = 300
 
     # Operation evolution
@@ -290,6 +291,7 @@ class AgentConfig:
             parallel_default_max_workers=int(config["parallel_default_max_workers"]),
             context_max_rounds=int(config["context_max_rounds"]),
             context_prune_tools=prune_tools,
+            runtime_warmup_enabled=bool(config.get("runtime_warmup_enabled", True)),
             evolution_min_occurrences=int(config.get("evolution_min_occurrences", 3)),
             evolution_min_applied=int(config.get("evolution_min_applied", 2)),
             evolution_max_rejection=int(config.get("evolution_max_rejection", 0)),
