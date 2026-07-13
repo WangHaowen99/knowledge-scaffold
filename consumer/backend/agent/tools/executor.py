@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -12,17 +13,21 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 from agent.exceptions import WorkflowCancelledError
 from utils.logging import get_logger
 from utils.streaming import stream_writer_context, try_get_stream_writer
-from agent.tools.base import BaseTool, ToolBatchResult, ToolContext, ToolOutcome
+from agent.tools.base import BaseTool, ToolBatchResult, ToolContext, ToolInvocation, ToolOutcome
 from agent.tools.events import emit_protocol_event, emit_tool_finished, emit_tool_started
 
 logger = get_logger("tools.executor")
 
 
 def execute_tool_batch(
-    tool_calls: List[Dict[str, Any]],
+    tool_calls: Sequence[ToolInvocation],
     context: ToolContext,
 ) -> ToolBatchResult:
-    """Execute every tool call uniformly, then aggregate outcomes."""
+    """Execute normalized invocations, then aggregate outcomes.
+
+    Provider-specific payloads, including OpenAI ``tool_calls`` dictionaries,
+    must be converted by the owning adapter before reaching this boundary.
+    """
     if not tool_calls:
         return ToolBatchResult()
 
@@ -113,15 +118,20 @@ def _aggregate_outputs(outputs: List[Dict[str, Any]]) -> ToolBatchResult:
 
 
 def _build_tool_task(
-    tool_call: Dict[str, Any],
+    tool_call: ToolInvocation,
     *,
     index: int,
     context: ToolContext,
     subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
 ) -> Dict[str, Any]:
-    from agent.tools.registry import get_tool_spec, parse_tool_call
+    from agent.tools.registry import get_tool_spec
 
-    name, args, tool_call_id = parse_tool_call(tool_call)
+    if not isinstance(tool_call, ToolInvocation):
+        raise TypeError("execute_tool_batch expects ToolInvocation instances")
+
+    name = tool_call.name
+    args = dict(tool_call.arguments)
+    tool_call_id = tool_call.id
     spec = get_tool_spec(name)
     safe_name = name or "unknown_tool"
 

@@ -13,6 +13,29 @@ if TYPE_CHECKING:
 ToolCaller = Literal["main", "subagent"]
 
 
+@dataclass(frozen=True)
+class ToolInvocation:
+    """Provider-neutral tool call passed from an adapter to the executor.
+
+    Provider payloads must be normalized before they cross this boundary.  In
+    particular, ``arguments`` is already a JSON object rather than a serialized
+    OpenAI ``function.arguments`` string.
+    """
+
+    id: Optional[str]
+    name: str
+    arguments: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.id is not None and not isinstance(self.id, str):
+            raise TypeError("ToolInvocation.id must be a string or None")
+        if not isinstance(self.name, str):
+            raise TypeError("ToolInvocation.name must be a string")
+        if not isinstance(self.arguments, dict):
+            raise TypeError("ToolInvocation.arguments must be a dict")
+        object.__setattr__(self, "arguments", dict(self.arguments))
+
+
 @dataclass
 class ToolContext:
     memory_manager: Optional["MemoryManager"]
