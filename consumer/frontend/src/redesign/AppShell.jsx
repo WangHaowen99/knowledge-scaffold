@@ -26,6 +26,7 @@ export default function AppShell() {
   const [wsMenu, setWsMenu] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [kbFocus, setKbFocus] = useState(null);
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
   const kb = useKbBrowser();
@@ -42,7 +43,10 @@ export default function AppShell() {
 
   useEffect(() => {
     if (status !== 'authenticated') return undefined;
-    const t = setTimeout(() => chat.loadSessions(true), 0);
+    streamManager.stopAllStreams();
+    streamManager.clearAllCaches();
+    chat.resetSessionsState();
+    const t = setTimeout(() => chat.loadSessions(false), 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, workspaceId, chat.loadSessions]);
@@ -55,6 +59,18 @@ export default function AppShell() {
     document.addEventListener('click', onDocClick);
     return () => document.removeEventListener('click', onDocClick);
   }, []);
+
+  useEffect(() => {
+    const openKnowledgeSource = (event) => {
+      const detail = event.detail || {};
+      if (!detail.path) return;
+      if (detail.ontologyId) kb.selectPkg(detail.ontologyId);
+      setKbFocus({ ontologyId: detail.ontologyId || '', path: detail.path, token: Date.now() });
+      setSurface('kb');
+    };
+    window.addEventListener('mwr-open-kb-source', openKnowledgeSource);
+    return () => window.removeEventListener('mwr-open-kb-source', openKnowledgeSource);
+  }, [kb]);
 
   if (status === 'checking') {
     return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;
@@ -165,7 +181,7 @@ export default function AppShell() {
         <div className={surface !== 'config' ? 'content content-full' : 'content'}
           style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
           {surface === 'chat' && <div style={{ flex: 1, minHeight: 0 }}><ChatWorkspace chat={chat} streamManager={streamManager} /></div>}
-          {surface === 'kb' && <div style={{ flex: 1, minHeight: 0 }}><KnowledgeWorkbench kb={kb} /></div>}
+          {surface === 'kb' && <div style={{ flex: 1, minHeight: 0 }}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} /></div>}
           {surface === 'config' && <ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} />}
         </div>
       </div>

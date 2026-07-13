@@ -3,7 +3,7 @@ import { groupSessions, formatTime } from './chatUtils';
 
 // 侧边栏左下固定的历史对话区块：所有页面常驻，标题 + 搜索框固定，列表内部滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
-  const { sessions, currentChatId, deleteChat, loadingSessions } = chat;
+  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned } = chat;
   const [search, setSearch] = useState('');
   const groups = useMemo(() => groupSessions(sessions, search), [sessions, search]);
 
@@ -20,11 +20,25 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
             <div className="ch-group">{label}</div>
             {items.map((s) => (
               <div key={s.id} className={`ch-item ${s.id === currentChatId ? 'on' : ''}`} onClick={() => onOpen(s.id)}>
-                <div className="ch-title">{s.title || '未命名对话'}</div>
+                <div className="ch-title">
+                  {s.metadata?.pinned && <span title="已固定">★ </span>}
+                  {s.title || '未命名对话'}
+                </div>
                 <div className="ch-meta">
-                  <span>{formatTime(s.updated_at || s.created_at)}</span>
-                  <a title="删除对话"
-                    onClick={(e) => { e.stopPropagation(); if (window.confirm('删除该对话？')) deleteChat(s.id); }}>✕</a>
+                  <span>
+                    {['queued', 'running'].includes(s.active_run_status)
+                      ? `${s.active_run_status === 'queued' ? '排队中' : '运行中'} · `
+                      : ''}
+                    {formatTime(s.updated_at || s.created_at)}
+                  </span>
+                  <span className="ch-actions">
+                    <button type="button" title={s.metadata?.pinned ? '取消固定' : '固定对话'}
+                      onClick={(e) => { e.stopPropagation(); setPinned(s.id, !s.metadata?.pinned); }}>
+                      {s.metadata?.pinned ? '☆' : '★'}
+                    </button>
+                    <button type="button" title="删除对话"
+                      onClick={(e) => { e.stopPropagation(); if (window.confirm('删除该对话？')) deleteChat(s.id); }}>✕</button>
+                  </span>
                 </div>
               </div>
             ))}

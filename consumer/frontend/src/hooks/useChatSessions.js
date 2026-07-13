@@ -8,10 +8,33 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import createLogger from '../utils/logger';
-import { authFetch } from '../utils/auth';
+import { authFetch, getCurrentWorkspaceId } from '../utils/auth';
 import { buildMessagesFromEvents, historyToMessages } from '../utils/messageBuilder';
 
 const logger = createLogger('ChatSessions');
+
+const selectedSessionKey = () => `onto_agent_current_session_${getCurrentWorkspaceId() || 'default'}`;
+
+const readSelectedSession = () => {
+  try { return window.localStorage.getItem(selectedSessionKey()) || ''; } catch { return ''; }
+};
+
+const persistSelectedSession = (sessionId) => {
+  try {
+    if (sessionId) window.localStorage.setItem(selectedSessionKey(), sessionId);
+    else window.localStorage.removeItem(selectedSessionKey());
+  } catch {
+    // Browser storage can be unavailable in private/restricted contexts.
+  }
+};
+
+const sortSessions = (items) => [...items].sort((left, right) => {
+  const pinDelta = Number(Boolean(right?.metadata?.pinned)) - Number(Boolean(left?.metadata?.pinned));
+  if (pinDelta) return pinDelta;
+  return String(right?.updated_at || right?.created_at || '').localeCompare(
+    String(left?.updated_at || left?.created_at || ''),
+  );
+});
 
 const useChatSessions = (streamManager) => {
   const [sessions, setSessions] = useState([]);
@@ -77,7 +100,17 @@ const useChatSessions = (streamManager) => {
       }
 
       // Set id and messages atomically — no blank flash
+      currentChatIdRef.current = data.id;
       setCurrentSession({ id: data.id, messages: newMessages });
+      persistSelectedSession(data.id);
+      setSessions((prev) => {
+        const { events: _events, messages: _messages, history: _history, ...sessionSummary } = data;
+        const exists = prev.some((session) => session.id === data.id);
+        const next = exists
+          ? prev.map((session) => (session.id === data.id ? { ...session, ...sessionSummary } : session))
+          : [sessionSummary, ...prev];
+        return sortSessions(next);
+      });
 
       return data;
     } catch (err) {
@@ -95,12 +128,16 @@ const useChatSessions = (streamManager) => {
       const modelProfileId = typeof options?.modelProfileId === 'string'
         ? options.modelProfileId
         : undefined;
+      const agentMode = typeof options?.agentMode === 'string'
+        ? options.agentMode
+        : undefined;
       const res = await authFetch('/agentic/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...(llmRequestMode ? { llm_request_mode: llmRequestMode } : {}),
           ...(modelProfileId ? { model_profile_id: modelProfileId } : {}),
+          ...(agentMode ? { agent_mode: agentMode } : {}),
         }),
       });
       logger.api('POST', '/agentic/sessions', res.status);
@@ -109,8 +146,10 @@ const useChatSessions = (streamManager) => {
       const data = await res.json();
 
       logger.info(`Created chat: ${data.id}`);
-      setSessions((prev) => [data, ...(prev || [])]);
+      setSessions((prev) => sortSessions([data, ...(prev || [])]));
+      currentChatIdRef.current = data.id;
       setCurrentSession({ id: data.id, messages: [] });
+      persistSelectedSession(data.id);
 
       const sm = streamManagerRef.current;
       if (sm) {
@@ -140,7 +179,9 @@ const useChatSessions = (streamManager) => {
 
       setSessions((prev) => (prev || []).filter((s) => s.id !== id));
       if (currentChatId === id) {
+        currentChatIdRef.current = null;
         setCurrentSession({ id: null, messages: [] });
+        persistSelectedSession('');
       }
       if (onDeleted) onDeleted();
     } catch (err) {
@@ -161,12 +202,19 @@ const useChatSessions = (streamManager) => {
       const list = data.sessions || [];
 
       logger.debug(`Loaded ${list.length} sessions`);
-      setSessions(list);
+      setSessions(sortSessions(list));
 
       let nextId = currentChatIdRef.current;
 
       if (selectLatest && list.length > 0) {
         nextId = list[0].id;
+      } else {
+        const persistedId = readSelectedSession();
+        if (persistedId && list.some((session) => session.id === persistedId)) {
+          nextId = persistedId;
+        } else if (!nextId || !list.some((session) => session.id === nextId)) {
+          nextId = list[0]?.id || null;
+        }
       }
 
       // If no current session and no sessions exist, show new chat UI (don't create backend record)
@@ -192,6 +240,7 @@ const useChatSessions = (streamManager) => {
     logger.info('Starting new chat interface');
     currentChatIdRef.current = null;
     setCurrentSession({ id: null, messages: [] });
+    persistSelectedSession('');
   }, []);
 
   const resetSessionsState = useCallback(() => {
@@ -210,6 +259,8 @@ const useChatSessions = (streamManager) => {
     if (id === currentChatId) return;
 
     logger.info(`Selecting chat: ${id}`);
+    currentChatIdRef.current = id;
+    persistSelectedSession(id);
 
     // Check if we already have messages cached for this session
     const sm = streamManagerRef.current;
@@ -260,6 +311,26 @@ const useChatSessions = (streamManager) => {
     }
   }, []);
 
+  const setPinned = useCallback(async (sessionId, pinned) => {
+    if (!sessionId || typeof pinned !== 'boolean') return false;
+    try {
+      const res = await authFetch(`/agentic/sessions/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned }),
+      });
+      if (!res.ok) return false;
+      const updated = await res.json();
+      setSessions((prev) => sortSessions(
+        prev.map((session) => (session.id === sessionId ? { ...session, ...updated } : session)),
+      ));
+      return true;
+    } catch (err) {
+      logger.error('Failed to update session pin', { sessionId, error: err.message });
+      return false;
+    }
+  }, []);
+
   return {
     sessions,
     currentChatId,
@@ -274,6 +345,7 @@ const useChatSessions = (streamManager) => {
     resetSessionsState,
     openChat,
     generateSessionTitle,
+    setPinned,
   };
 };
 
