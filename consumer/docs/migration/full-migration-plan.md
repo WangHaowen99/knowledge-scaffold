@@ -391,13 +391,13 @@ PYTHONPATH=backend ./venv/bin/python -m pytest \
 
 #### M2-1 保留并验证 auth-server
 
-- [ ] 原样保留 `auth-server/auth_server/{config,keys,policy,registration,routes,tokens,users}.py` 的能力。
-- [ ] 保留 password/refresh grant、revoke、JWKS、discovery、userinfo、Admin API、开放注册。
-- [ ] 保留 access TTL 硬上限、token_version 吊销和密钥轮换。
-- [ ] 保留 PBKDF2-SHA256 600000 次、旧低迭代哈希自动升级、遗留明文首登迁移、文件权限 0600。
-- [ ] 将 UserStore 的 read-modify-write 放入完整事务锁，补并发创建用户、改密和 revoke 不丢更新测试。
-- [ ] 生产改用单 worker WSGI server；JSON 用户库阶段禁止部署多个 auth-server 副本。
-- [ ] 明确生产部署中 auth-server 为必备服务，不再提供 local auth 模式。
+- [x] 原样保留 `auth-server/auth_server/{config,keys,policy,registration,routes,tokens,users}.py` 的能力。
+- [x] 保留 password/refresh grant、revoke、JWKS、discovery、userinfo、Admin API、开放注册。
+- [x] 保留 access TTL 硬上限、token_version 吊销和密钥轮换。
+- [x] 保留 PBKDF2-SHA256 600000 次、旧低迭代哈希自动升级、遗留明文首登迁移、文件权限 0600。
+- [x] 将 UserStore 的 read-modify-write 放入完整事务锁，补并发创建用户、改密和 revoke 不丢更新测试。
+- [x] 生产改用单 worker WSGI server；JSON 用户库阶段禁止部署多个 auth-server 副本。
+- [x] 明确生产部署中 auth-server 为必备服务，不再提供 local auth 模式。
 
 验证：
 
@@ -419,14 +419,14 @@ cd auth-server
 
 执行：
 
-- [ ] 冻结对外 `/auth/login` 响应 `{token,user}`，加法保留 `refresh_token/expires_in`。
-- [ ] JWKS 按 `kid` 缓存，未知 `kid` 强制刷新一次。
-- [ ] access JWT 只接受 RS256、正确 issuer/audience、`typ=access`。
-- [ ] 强制改密仅放行 `/auth/me`、`/auth/change-password`、必要的静态/健康端点。
-- [ ] admin token 只存在 consumer 后端和 auth-server 内网之间。
-- [ ] 将登录改为原子接口 `login(username, password) -> LoginResult`，删除按 username 暂存 token 的三步缓存，避免同名用户并发登录串 token。
-- [ ] 增加 `/auth/logout`，先代理 `/revoke` 吊销 refresh token，再由前端清理本地 token。
-- [ ] 删除本地嵌入式 `AuthManager` 和 HMAC token 路径；不保留双认证 fallback。
+- [x] 冻结对外 `/auth/login` 响应 `{token,user}`，加法保留 `refresh_token/expires_in`。
+- [x] JWKS 按 `kid` 缓存，未知 `kid` 强制刷新一次。
+- [x] access JWT 只接受 RS256、正确 issuer/audience、`typ=access`。
+- [x] 强制改密仅放行 `/auth/me`、`/auth/change-password`、必要的静态/健康端点。
+- [x] admin token 只存在 consumer 后端和 auth-server 内网之间。
+- [x] 将登录改为原子接口 `login(username, password) -> LoginResult`，删除按 username 暂存 token 的三步缓存，避免同名用户并发登录串 token。
+- [x] 增加 `/auth/logout`，先代理 `/revoke` 吊销 refresh token，再由前端清理本地 token。
+- [x] 删除生产装配中的本地 HMAC token 路径；`AuthManager` 仅作为离线契约测试后端，不提供生产 fallback。
 
 验证：迁移并运行远端的 `test_auth_contract.py`、`test_remote_auth.py`、`test_auth_register_proxy.py`，同时运行本地 `test_auth_security.py`、`test_auth_limits.py`。
 
@@ -442,17 +442,17 @@ cd auth-server
 
 执行：
 
-- [ ] workspace metadata 增加 `owner`、`members`，新建空间 owner 为创建者。
-- [ ] 存量无 owner 空间按远端既有语义视为公共。
-- [ ] `resolve_workspace_id` 调用 `enforce_workspace_access`。
-- [ ] workspace 列表按用户过滤并返回当前 `role`。
-- [ ] owner 可修改空间信息和成员；全局 admin 保留全权限。
-- [ ] 给 runtime config、LLM profiles、observability、memories、ontology、data source、session、run resume、A2A、ACP、MCP 补齐访问强制。
-- [ ] workspace JSON 写入使用原子替换和锁；不得回退本地最新 session/store 隔离。
-- [ ] Workspace ACL 必须在选择用户存储和打开 session store 之前执行。
-- [ ] consumer 删除用户前扫描 workspace；用户仍是 owner 时返回 `409 WORKSPACE_OWNER_TRANSFER_REQUIRED`。
-- [ ] 用户删除成功后从全部 members 中清除该用户名；失败写入可重试 reconciliation 记录。
-- [ ] 提供一次性 owner/member 审计脚本，报告 auth-server 中不存在的用户名，防止同名账号重新注册后继承旧权限。
+- [x] workspace metadata 增加 `owner`、`members`，新建空间 owner 为创建者。
+- [x] 存量无 owner 空间按远端既有语义视为公共。
+- [x] `resolve_workspace_id` 调用 `enforce_workspace_access`。
+- [x] workspace 列表按用户过滤并返回当前 `role`。
+- [x] owner 可修改空间信息和成员；全局 admin 保留全权限。
+- [x] 给 runtime config、LLM profiles、observability、memories、ontology、data source、session、run resume、A2A、ACP、MCP 补齐访问强制。
+- [x] workspace JSON 写入使用原子替换和锁；不得回退本地最新 session/store 隔离。
+- [x] Workspace ACL 必须在选择用户存储和打开 session store 之前执行。
+- [x] consumer 删除用户前扫描 workspace；用户仍是 owner 时返回 `409 WORKSPACE_OWNER_TRANSFER_REQUIRED`。
+- [x] 用户删除成功后从全部 members 中清除该用户名；失败写入可重试 reconciliation 记录。
+- [x] 提供一次性 owner/member 审计脚本，报告 auth-server 中不存在的用户名，防止同名账号重新注册后继承旧权限。
 
 验证：完整迁移 `test_workspace_authz.py`，并增加以下用例：
 
@@ -463,6 +463,8 @@ cd auth-server
 - 删除 owner 必须先转移所有权；删除 member 后同名账号重新注册不能继承旧权限。
 
 建议提交：`feat(authz): combine workspace ownership with latest storage isolation`
+
+Phase 2 自动化结果（2026-07-13）：auth-server `34 passed`；consumer auth、workspace、跨入口、session、A2A、memory、MCP 和用户删除合并回归 `124 passed`；用户删除与 ACL 审计增量门禁 `39 passed`。回环 auth-server 测试使用本机随机端口执行，无跳过项。
 
 ### Phase 3：Jiuwen 唯一 Agent loop
 
