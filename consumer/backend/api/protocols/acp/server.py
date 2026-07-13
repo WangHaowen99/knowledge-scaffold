@@ -137,6 +137,7 @@ def _ensure_registry_entry(run_id: str) -> Dict[str, Any] | None:
 
 def _ensure_acp_run_owner(run_id: str) -> bool:
     current_user = get_current_user()
+    request_workspace_id = _resolve_acp_request_workspace_id()
     entry = _ensure_registry_entry(run_id)
     if not entry:
         return False
@@ -148,7 +149,7 @@ def _ensure_acp_run_owner(run_id: str) -> bool:
     workspace_id = str(entry.get("workspace_id") or "").strip()
     if not workspace_id:
         return False
-    if _resolve_acp_request_workspace_id() != workspace_id:
+    if request_workspace_id != workspace_id:
         return False
     _enforce_acp_workspace_access(workspace_id)
     return True

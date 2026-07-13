@@ -66,11 +66,21 @@ def test_workflow_run_requires_matching_request_workspace_and_current_membership
         assert workflows._ensure_run_owner("run-private", "bob") is False
 
     update_workspace("private", members=[])
+    get_run_calls = 0
+    original_get_run = run_store.get_run
+
+    def counting_get_run(run_id):
+        nonlocal get_run_calls
+        get_run_calls += 1
+        return original_get_run(run_id)
+
+    monkeypatch.setattr(run_store, "get_run", counting_get_run)
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "private"}):
         g.current_user = AuthUser(username="bob", role="user")
         with pytest.raises(HTTPException) as exc_info:
             workflows._ensure_run_owner("run-private", "bob")
         _assert_forbidden(exc_info)
+    assert get_run_calls == 0
 
 
 def test_memory_routes_resolve_workspace_before_accessing_memory(workspace_env):
@@ -99,6 +109,27 @@ def test_model_profiles_does_not_swallow_workspace_forbidden(
         with pytest.raises(HTTPException) as exc_info:
             workflows.list_model_profiles.__wrapped__()
         _assert_forbidden(exc_info)
+
+
+def test_model_profiles_does_not_fall_back_when_workspace_resolution_is_invalid(
+    workspace_env,
+    monkeypatch,
+):
+    def invalid_workspace():
+        raise ValueError("invalid workspace header")
+
+    monkeypatch.setattr(workflows, "_get_request_workspace_id", invalid_workspace)
+    monkeypatch.setattr(
+        workflows,
+        "get_public_llm_profiles",
+        lambda **_kwargs: pytest.fail("invalid workspace must not fall back to global profiles"),
+    )
+
+    with workspace_env.test_request_context():
+        response, status_code = workflows.list_model_profiles.__wrapped__()
+
+    assert status_code == 400
+    assert response.get_json() == {"detail": "invalid workspace header"}
 
 
 def test_a2a_task_access_is_fail_closed_and_rechecks_membership(workspace_env):
@@ -219,14 +250,29 @@ def test_acp_persisted_run_rechecks_owner_workspace_and_request_scope(
         assert acp_server._ensure_acp_run_owner("acp-private") is False
 
     update_workspace("private", members=[])
+    registry_lookups = 0
+    original_ensure_registry_entry = acp_server._ensure_registry_entry
+
+    def counting_ensure_registry_entry(run_id):
+        nonlocal registry_lookups
+        registry_lookups += 1
+        return original_ensure_registry_entry(run_id)
+
+    monkeypatch.setattr(
+        acp_server,
+        "_ensure_registry_entry",
+        counting_ensure_registry_entry,
+    )
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "private"}):
         g.current_user = AuthUser(username="bob", role="user")
         with pytest.raises(HTTPException) as exc_info:
             acp_server._ensure_acp_run_owner("acp-private")
         _assert_forbidden(exc_info)
+    assert registry_lookups == 0
 
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "shared"}):
         assert acp_server._ensure_acp_run_owner("acp-private") is False
+    assert registry_lookups == 1
 
 
 def test_acp_anonymous_cannot_resume_authenticated_run(workspace_env, monkeypatch):
