@@ -91,11 +91,51 @@ def _last_turn_status(events) -> str:
     return ""
 
 
-def _session_runtime_payload(session, handle=None) -> dict:
+def _handle_matches_scope(handle, *, user_id: str, workspace_id: str) -> bool:
+    return (
+        handle is not None
+        and bool(user_id)
+        and bool(workspace_id)
+        and getattr(handle, "user_id", None) == user_id
+        and getattr(handle, "workspace_id", None) == workspace_id
+    )
+
+
+def _run_matches_scope(run, *, user_id: str, workspace_id: str) -> bool:
+    metadata = dict(getattr(run, "metadata", {}) or {})
+    return (
+        run is not None
+        and bool(user_id)
+        and bool(workspace_id)
+        and metadata.get("user_id") == user_id
+        and metadata.get("workspace_id") == workspace_id
+    )
+
+
+def _session_runtime_payload(
+    session,
+    handle=None,
+    *,
+    user_id: str,
+    workspace_id: str,
+) -> dict:
     active_run_id = str(getattr(session, "active_run_id", "") or "").strip()
+    if not _handle_matches_scope(handle, user_id=user_id, workspace_id=workspace_id):
+        handle = None
     if handle is None:
         registry = _get_run_registry()
-        handle = (registry.get(active_run_id) if active_run_id else None) or registry.find_by_session(session.id)
+        active_handle = registry.get(active_run_id) if active_run_id else None
+        if not _handle_matches_scope(
+            active_handle,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        ):
+            active_handle = None
+        handle = active_handle or registry.find_by_session(
+            session.id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
     if handle is not None:
         runtime = handle.runtime_snapshot()
         status = runtime.get("status") or "running"
@@ -112,6 +152,8 @@ def _session_runtime_payload(session, handle=None) -> dict:
         except RuntimeError:
             # Session reads can run in isolated tests or maintenance contexts
             # where the process-wide orchestrator has not been initialized.
+            run = None
+        if not _run_matches_scope(run, user_id=user_id, workspace_id=workspace_id):
             run = None
         run_status = str(getattr(getattr(run, "status", None), "value", "") or "").strip()
         if run_status in {"queued", "running"}:
@@ -137,17 +179,28 @@ def _session_runtime_payload(session, handle=None) -> dict:
 @require_auth()
 def list_sessions():
     """List all chat sessions."""
+    current_user = get_current_user()
+    workspace_id = _get_request_workspace_id()
+    user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     sessions = chat_store.list_sessions()
     # One locked pass over the registry, then O(1) lookups per session —
     # avoids an O(runs) scan (and lock acquire) for every session in the list.
-    handles_by_session = _get_run_registry().snapshot_by_session()
+    handles_by_session = _get_run_registry().snapshot_by_session(
+        user_id=user_id,
+        workspace_id=workspace_id,
+    )
 
     return jsonify({
         "sessions": [
             {
                 **s.to_dict(),
-                **_session_runtime_payload(s, handles_by_session.get(s.id)),
+                **_session_runtime_payload(
+                    s,
+                    handles_by_session.get(s.id),
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                ),
             }
             for s in sessions
         ]
@@ -204,6 +257,9 @@ def create_session():
 @require_auth()
 def get_session(session_id: str):
     """Get a chat session with message history."""
+    current_user = get_current_user()
+    workspace_id = _get_request_workspace_id()
+    user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     session = chat_store.get_session(session_id)
 
@@ -217,7 +273,11 @@ def get_session(session_id: str):
 
     return jsonify({
         **session.to_dict(include_messages=True),
-        **_session_runtime_payload(session),
+        **_session_runtime_payload(
+            session,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        ),
     })
 
 

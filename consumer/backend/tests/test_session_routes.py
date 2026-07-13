@@ -7,6 +7,7 @@ from flask import Flask
 
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from api.routes.sessions import sessions_bp
+from api.routes.workflows import AgenticRunRegistry
 from api.auth.auth import AuthManager
 from persistence.chat_store import ChatStore
 from workspace.workspaces import create_workspace
@@ -296,6 +297,10 @@ def test_get_session_no_longer_exposes_delta_polling(tmp_path, monkeypatch):
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, object()),
     )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "test-workspace",
+    )
 
     response = client.get(
         "/agentic/sessions/sess-live?since=1",
@@ -316,6 +321,10 @@ def test_get_session_exposes_active_run_status_for_resume(tmp_path, monkeypatch)
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, object()),
     )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "test-workspace",
+    )
 
     response = client.get("/agentic/sessions/sess-live", headers=headers)
 
@@ -328,10 +337,22 @@ def test_get_session_exposes_active_run_status_for_resume(tmp_path, monkeypatch)
 class _FakeRunHandle:
     """Stand-in for AgenticRunHandle for list-enrichment tests."""
 
-    def __init__(self, session_id, run_id, *, status="running", done=False, last_seq=0):
+    def __init__(
+        self,
+        session_id,
+        run_id,
+        *,
+        user_id="admin",
+        workspace_id="test-workspace",
+        status="running",
+        done=False,
+        last_seq=0,
+    ):
         self.session_id = session_id
         self.run_id = run_id
         self.active_run_id = run_id
+        self.user_id = user_id
+        self.workspace_id = workspace_id
         self._status = status
         self._last_seq = last_seq
         self.done = threading.Event()
@@ -346,14 +367,27 @@ class _FakeRunRegistry:
     def __init__(self, handles):
         self._handles = list(handles)
 
-    def snapshot_by_session(self):
-        return {h.session_id: h for h in self._handles if h.session_id}
+    def snapshot_by_session(self, *, user_id, workspace_id):
+        return {
+            h.session_id: h
+            for h in self._handles
+            if h.session_id and h.user_id == user_id and h.workspace_id == workspace_id
+        }
 
     def get(self, run_id):
         return next((h for h in self._handles if h.run_id == run_id), None)
 
-    def find_by_session(self, session_id):
-        return next((h for h in self._handles if h.session_id == session_id), None)
+    def find_by_session(self, session_id, *, user_id, workspace_id):
+        return next(
+            (
+                h
+                for h in self._handles
+                if h.session_id == session_id
+                and h.user_id == user_id
+                and h.workspace_id == workspace_id
+            ),
+            None,
+        )
 
 
 def test_list_sessions_enriches_with_live_run_handle_in_one_pass(tmp_path, monkeypatch):
@@ -363,6 +397,10 @@ def test_list_sessions_enriches_with_live_run_handle_in_one_pass(tmp_path, monke
     chat_store.create_session(session_id="sess-b", title="B")
     chat_store.set_active_run("sess-a", "run-a")
     monkeypatch.setattr("api.routes.sessions._get_user_stores", lambda: (chat_store, object()))
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "test-workspace",
+    )
     live_handle = _FakeRunHandle("sess-a", "run-a", status="running", done=False, last_seq=7)
     monkeypatch.setattr("api.routes.sessions._get_run_registry", lambda: _FakeRunRegistry([live_handle]))
 
@@ -376,3 +414,34 @@ def test_list_sessions_enriches_with_live_run_handle_in_one_pass(tmp_path, monke
     assert by_id["sess-a"]["last_seq"] == 7
     # No handle and no active_run_id -> idle.
     assert by_id["sess-b"]["active_run_status"] == "idle"
+
+
+def test_list_sessions_does_not_attach_foreign_handle_with_same_session_id(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    chat_store.create_session(session_id="shared-session", title="Mine")
+    monkeypatch.setattr("api.routes.sessions._get_user_stores", lambda: (chat_store, object()))
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "my-workspace",
+    )
+
+    registry = AgenticRunRegistry()
+    foreign_handle = _FakeRunHandle(
+        "shared-session",
+        "foreign-run",
+        user_id="alice",
+        workspace_id="private-workspace",
+        last_seq=41,
+    )
+    with registry._lock:
+        registry._runs[foreign_handle.run_id] = foreign_handle
+    monkeypatch.setattr("api.routes.sessions._get_run_registry", lambda: registry)
+
+    response = client.get("/agentic/sessions", headers=headers)
+
+    assert response.status_code == 200
+    session = response.get_json()["sessions"][0]
+    assert session["active_run_id"] is None
+    assert session["active_run_status"] == "idle"
+    assert session["last_seq"] == 0

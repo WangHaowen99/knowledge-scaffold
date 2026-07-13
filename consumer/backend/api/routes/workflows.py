@@ -64,6 +64,7 @@ def _reject_if_run_rate_limited(orchestrator):
 
 
 def _ensure_run_owner(run_id: str, user_id: str) -> bool:
+    request_workspace_id = _get_request_workspace_id()
     orchestrator = _get_orchestrator()
     run = orchestrator.run_store.get_run(run_id)
     if not run:
@@ -74,7 +75,7 @@ def _ensure_run_owner(run_id: str, user_id: str) -> bool:
     workspace_id = str(metadata.get("workspace_id") or "").strip()
     if not workspace_id:
         return False
-    if _get_request_workspace_id() != workspace_id:
+    if request_workspace_id != workspace_id:
         return False
     enforce_workspace_access(workspace_id)
     return True
@@ -386,18 +387,47 @@ class AgenticRunRegistry:
                 return None
             return handle
 
-    def find_by_session(self, session_id: str) -> Optional[AgenticRunHandle]:
+    @staticmethod
+    def _matches_scope(
+        handle: AgenticRunHandle,
+        *,
+        user_id: str,
+        workspace_id: str,
+    ) -> bool:
+        return (
+            bool(user_id)
+            and bool(workspace_id)
+            and handle.user_id == user_id
+            and handle.workspace_id == workspace_id
+        )
+
+    def find_by_session(
+        self,
+        session_id: str,
+        *,
+        user_id: str,
+        workspace_id: str,
+    ) -> Optional[AgenticRunHandle]:
         clean = str(session_id or "").strip()
         if not clean:
             return None
         with self._lock:
             self._sweep_locked()
             for handle in self._runs.values():
-                if handle.session_id == clean:
+                if handle.session_id == clean and self._matches_scope(
+                    handle,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                ):
                     return handle
         return None
 
-    def snapshot_by_session(self) -> Dict[str, AgenticRunHandle]:
+    def snapshot_by_session(
+        self,
+        *,
+        user_id: str,
+        workspace_id: str,
+    ) -> Dict[str, AgenticRunHandle]:
         """Return all live handles keyed by session_id in one locked pass.
 
         Lets list_sessions enrich every session without doing an O(runs) scan
@@ -409,6 +439,11 @@ class AgenticRunRegistry:
                 handle.session_id: handle
                 for handle in self._runs.values()
                 if handle.session_id
+                and self._matches_scope(
+                    handle,
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
             }
 
     def add(self, handle: AgenticRunHandle) -> AgenticRunHandle:
@@ -523,8 +558,8 @@ def list_model_profiles():
         workspace_id = _get_request_workspace_id()
     except WorkspaceNotFoundError as exc:
         return workspace_not_found_response(exc)
-    except ValueError:
-        workspace_id = None
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     return jsonify(get_public_llm_profiles(workspace_id=workspace_id))
 
 
