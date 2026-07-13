@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic.business_data.providers.nl2sql_template import (
+from agent.tools.business_data.providers.nl2sql_template import (
     NL2SQLTemplateProvider,
     _DefaultMatcher,
 )

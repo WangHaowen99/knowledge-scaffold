@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agentic.business_data.providers.mindsdb_provider import MindsDBBusinessDataProvider
+from agent.tools.business_data.providers.mindsdb_provider import (
+    MindsDBOntologySearchProvider,
+)
 
 
 def _config() -> dict:
@@ -24,7 +26,7 @@ def _config() -> dict:
 
 
 def test_mindsdb_provider_streams_through_service_client():
-    provider = MindsDBBusinessDataProvider(_config())
+    provider = MindsDBOntologySearchProvider(_config())
     captured = {}
 
     class _FakeResponse:
@@ -75,7 +77,7 @@ def test_mindsdb_provider_streams_through_service_client():
 
 
 def test_mindsdb_provider_keeps_plain_text_sse_chunks_as_messages():
-    provider = MindsDBBusinessDataProvider(_config())
+    provider = MindsDBOntologySearchProvider(_config())
 
     class _FakeResponse:
         status_code = 200
