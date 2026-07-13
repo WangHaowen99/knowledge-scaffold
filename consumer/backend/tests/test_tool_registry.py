@@ -17,10 +17,11 @@ from agent.exceptions import WorkflowCancelledError
 from agent.evolution import ProposalBuffer
 from agent.memory.filesystem_manager import FileSystemMemoryManager
 from llm import configure_llm_router, reset_llm_router_for_tests
-from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
+from agent.tools.base import ToolCaller, ToolContext, ToolInvocation, ToolOutcome
 from agent.tools.memory import wait_for_memory_tasks
 from agent.tools.registry import (
     TOOL_SPECS,
+    _ARGUMENT_PARSE_ERROR_KEY,
     execute_tool_batch,
     get_regular_tools_schema,
     get_tools_schema,
@@ -34,15 +35,12 @@ from ontology.ontologies import OntologyRegistry
 from utils.skills import SkillRegistry
 
 
-def _build_tool_call(name: str, arguments: dict, call_id: str = "call_1") -> dict:
-    return {
-        "id": call_id,
-        "type": "function",
-        "function": {
-            "name": name,
-            "arguments": json.dumps(arguments, ensure_ascii=False),
-        },
-    }
+def _build_tool_call(
+    name: str,
+    arguments: dict,
+    call_id: str = "call_1",
+) -> ToolInvocation:
+    return ToolInvocation(id=call_id, name=name, arguments=arguments)
 
 
 class _FakeMemoryManager:
@@ -2261,20 +2259,89 @@ def test_registry_marks_status_error_payloads_as_tool_failures(monkeypatch):
 
 
 def test_registry_reports_invalid_tool_argument_json_before_required_fields():
-    malformed_call = {
-        "id": "call_bad_json",
-        "type": "function",
-        "function": {
-            "name": "spawn_sub_agent",
-            "arguments": '{"tasks": [id": "cycle_impact"}',
+    malformed_call = ToolInvocation(
+        id="call_bad_json",
+        name="spawn_sub_agent",
+        arguments={
+            _ARGUMENT_PARSE_ERROR_KEY: '{"tasks": [id": "cycle_impact"}',
         },
-    }
+    )
 
     result = execute_tool_batch([malformed_call], _make_context())
 
     content = result.messages[0]["content"]
     assert "arguments are not valid JSON" in content
     assert "missing required argument" not in content
+
+
+def test_execute_tool_batch_accepts_internal_tool_invocation(monkeypatch):
+    observed = {}
+
+    def handler(skill_id, tool_call_id=None):
+        observed["skill_id"] = skill_id
+        observed["tool_call_id"] = tool_call_id
+        return "ran {}".format(skill_id)
+
+    monkeypatch.setitem(
+        TOOL_SPECS,
+        "unit_tool",
+        _make_mock_tool(
+            "unit_tool",
+            handler,
+            schema={
+                "type": "function",
+                "function": {
+                    "name": "unit_tool",
+                    "description": "unit tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"skill_id": {"type": "string"}},
+                        "required": ["skill_id"],
+                    },
+                },
+            },
+        ),
+    )
+
+    result = execute_tool_batch(
+        [
+            ToolInvocation(
+                id="jiuwen_skill_1",
+                name="unit_tool",
+                arguments={"skill_id": "finance"},
+            )
+        ],
+        _make_context(),
+    )
+
+    assert observed == {
+        "skill_id": "finance",
+        "tool_call_id": "jiuwen_skill_1",
+    }
+    assert result.messages == [
+        {
+            "role": "tool",
+            "content": "ran finance",
+            "tool_call_id": "jiuwen_skill_1",
+            "name": "unit_tool",
+        }
+    ]
+
+
+def test_execute_tool_batch_rejects_legacy_openai_style_tool_call_dict():
+    legacy_tool_call = {
+        "id": "call_legacy",
+        "type": "function",
+        "function": {
+            "name": "spawn_sub_agent",
+            "arguments": json.dumps(
+                {"tasks": [{"id": "c1", "task": "child"}]}
+            ),
+        },
+    }
+
+    with pytest.raises(TypeError, match="ToolInvocation"):
+        execute_tool_batch([legacy_tool_call], _make_context())
 
 
 def test_registry_propagates_workflow_cancellation_from_tool(monkeypatch):
