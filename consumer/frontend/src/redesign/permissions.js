@@ -20,8 +20,10 @@ const RULES = {
   'ws.connections.write': { roles: ['admin'] },   // 数据连接增删改：后端仍 admin-only
   'ws.connections.test':  { roles: ['admin'] },   // 测试连接=写侧
   'ws.kb.write':          { roles: ['admin'] },   // 知识包导入/删除/绑定：后端仍 admin-only
+  'ws.observability.write': { roles: ['admin'] },
   // 个人层（L3）
   'self.preferences':     { self: true },
+  'self.memory':          { self: true },
 };
 
 export function can(user, perm, { workspaceId } = {}) {
