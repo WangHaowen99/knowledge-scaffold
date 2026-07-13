@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 
-from agentic.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
-from agentic.business_data.providers.graph.models import (
+from agent.tools.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
+from agent.tools.business_data.providers.graph.models import (
     GraphAgentResult,
     GraphBackendResult,
     GraphEntityMapping,
 )
-from agentic.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
-from agentic.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
+from agent.tools.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
+from agent.tools.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
 
 
 class _StaticResolver:
@@ -192,6 +192,24 @@ def test_runtime_uses_graph_agent_internal_tool_result_with_forced_scope():
         "query_digest",
     }
     assert agent.calls[0]["context"].scope.workspace_value == "workspace-a"
+    assert agent.calls[0]["context"].scope.ontology_value == "demo-ontology"
+
+
+def test_runtime_rejects_missing_workspace_scope_before_backend_access():
+    backend = _FakeBackend()
+    runtime = GraphSearchRuntime(
+        provider="neo4j",
+        provider_config={"ontology_id": "demo-ontology"},
+        backend=backend,
+        graph_agent=_StaticGraphAgent(_agent_result()),
+    )
+
+    events = list(runtime.search_stream(query="查询 TargetItem", entity="TargetItem"))
+    final = json.loads(events[-1]["content"])
+
+    assert final["success"] is False
+    assert final["error_code"] == "GRAPH_SCOPE_REQUIRED"
+    assert backend.calls == []
 
 
 def test_runtime_missing_mapping_does_not_call_graph_agent_or_backend():

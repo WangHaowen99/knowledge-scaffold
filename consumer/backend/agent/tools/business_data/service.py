@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterator
+from dataclasses import dataclass, field
+from typing import Any, Iterator, Mapping
 
 from agent.tools.business_data.providers.base import OntologySearchEvent
 from workspace.workspaces import get_workspace_paths
@@ -17,6 +17,7 @@ class BusinessDataSearchRequest:
     ontology_id: str
     entity: str
     query: str
+    provider_runtime_context: Mapping[str, Any] = field(default_factory=dict)
 
 
 def query_business_data_stream(
@@ -34,13 +35,31 @@ def query_business_data_stream(
         except Exception:
             pass
 
+    scoped_provider_config: dict[str, Any] = {
+        **dict(connection.config),
+        "_workspace_root": workspace_root,
+        "workspace_id": request.workspace_id,
+        "ontology_id": request.ontology_id,
+    }
+    if connection.provider in {"neo4j", "hugegraph"}:
+        scoped_provider_config.update({
+            key: value
+            for key, value in dict(request.provider_runtime_context or {}).items()
+            if key in {
+                "run_id",
+                "session_id",
+                "turn_id",
+                "parent_span_key",
+                "agent_iteration",
+                "model_profile_id",
+                "_observer",
+                "_cancel_event",
+            }
+        })
+
     provider_config = {
         "ontology_search": {
-            connection.provider: {
-                **dict(connection.config),
-                "_workspace_root": workspace_root,
-                "ontology_id": request.ontology_id,
-            },
+            connection.provider: scoped_provider_config,
         }
     }
     provider = spec.factory(provider_config)

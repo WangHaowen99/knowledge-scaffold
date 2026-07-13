@@ -10,6 +10,8 @@ from agent.tools.business_data.providers.dataagent_provider import DataAgentProv
 from agent.tools.business_data.providers.mindsdb_provider import MindsDBOntologySearchProvider
 from agent.tools.business_data.providers.nl2sql_http_provider import NL2SQLHttpProvider
 from agent.tools.business_data.providers.nl2sql_template import NL2SQLTemplateProvider
+from agent.tools.business_data.providers.graph.hugegraph_provider import HugeGraphSearchProvider
+from agent.tools.business_data.providers.graph.neo4j_provider import Neo4jGraphSearchProvider
 
 
 @dataclass(frozen=True)
@@ -78,12 +80,51 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
     "dataagent": BusinessDataProviderSpec(
         name="dataagent",
         label="DataAgent",
-        description="通过 DataAgent REST 服务进行自然语言数据查询与分析。",
+        description="通过 DataAgent A2A REST 服务进行自然语言数据查询与分析。",
         factory=DataAgentProvider,
         fields=[
-            ProviderField("url", "REST 服务地址", required=True),
+            ProviderField("url", "DataAgent 服务地址", required=True),
             ProviderField("token", "访问 Token", secret=True),
             ProviderField("timeout_seconds", "超时时间", type="int", default=600),
+            ProviderField("max_retries", "最大重试次数", type="int", default=3),
+        ],
+    ),
+    "neo4j": BusinessDataProviderSpec(
+        name="neo4j",
+        label="Neo4J 图查询",
+        description="通过内置图查询 Provider 查询 Neo4J 本体实例数据。",
+        factory=Neo4jGraphSearchProvider,
+        fields=[
+            ProviderField("uri", "Neo4J URI", required=True),
+            ProviderField("database", "Database", default="neo4j"),
+            ProviderField("username", "用户名", required=True),
+            ProviderField("password", "密码", secret=True, required=True),
+            ProviderField("timeout_seconds", "超时时间", type="int", default=60),
+            ProviderField("max_retries", "最大重试次数", type="int", default=2),
+            ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
+            ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
+            ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
+            ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
+        ],
+    ),
+    "hugegraph": BusinessDataProviderSpec(
+        name="hugegraph",
+        label="HugeGraph 图查询",
+        description="通过内置图查询 Provider 查询 HugeGraph 本体实例数据。",
+        factory=HugeGraphSearchProvider,
+        fields=[
+            ProviderField("url", "HugeGraph 地址", required=True),
+            ProviderField("graph", "Graph 名称", default="hugegraph"),
+            ProviderField("graph_space", "Graph Space"),
+            ProviderField("username", "用户名"),
+            ProviderField("password", "密码", secret=True),
+            ProviderField("token", "访问 Token", secret=True),
+            ProviderField("timeout_seconds", "超时时间", type="int", default=60),
+            ProviderField("max_retries", "最大重试次数", type="int", default=2),
+            ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
+            ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
+            ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
+            ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
         ],
     ),
 }
@@ -153,6 +194,12 @@ def normalize_provider_config(
         if field.secret and raw_value in {None, ""} and field.name in existing:
             raw_value = existing.get(field.name)
         value = _coerce_value(field, raw_value)
+        if field.name == "timeout_seconds" and int(value) <= 0:
+            raise BusinessDataProviderError("timeout_seconds 必须大于 0")
+        if field.name == "max_retries" and int(value) < 0:
+            raise BusinessDataProviderError("max_retries 不能小于 0")
+        if field.name in {"max_result_rows", "max_iterations"} and int(value) <= 0:
+            raise BusinessDataProviderError("{} 必须大于 0".format(field.name))
         if field.name == "url":
             value = str(value or "").rstrip("/")
         if field.required and not str(value or "").strip():
