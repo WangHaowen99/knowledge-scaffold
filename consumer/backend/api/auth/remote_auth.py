@@ -33,6 +33,7 @@ _UNAVAILABLE_MESSAGE = "认证服务暂不可用"
 
 DEFAULT_AUDIENCE = "meta-wise"
 DEFAULT_JWKS_CACHE_TTL_SECONDS = 300
+_JWKS_REFRESH_MIN_INTERVAL_SECONDS = 5.0
 
 
 class RemoteAuthBackend:
@@ -59,8 +60,10 @@ class RemoteAuthBackend:
 
         # JWKS 缓存：kid -> RSA 公钥
         self._jwks_lock = threading.Lock()
+        self._jwks_refresh_lock = threading.Lock()
         self._jwks_keys: Dict[str, Any] = {}
         self._jwks_fetched_at = 0.0
+        self._jwks_last_attempt_at = 0.0
 
     # ------------------------------------------------------------ 认证与 token
 
@@ -77,17 +80,17 @@ class RemoteAuthBackend:
                 return None
             raise ValueError(_UNAVAILABLE_MESSAGE)
         payload = self._json_or_unavailable(response)
-        access_token = str(payload.get("access_token") or "")
+        access_token, refresh_token, expires_in = self._validated_token_pair(payload)
         # token 刚从可信源拿到，但仍走本地验签同一条代码路径（顺带预热 JWKS 缓存），
         # 避免“签发即不可验”的配置错误（iss/aud 不匹配）拖到首个业务请求才暴露
         user = self._verify_access_token_locally(access_token)
         if user is None:
-            return None
+            raise ValueError(_UNAVAILABLE_MESSAGE)
         return LoginResult(
             user=user,
             access_token=access_token,
-            refresh_token=str(payload.get("refresh_token") or ""),
-            expires_in=int(payload.get("expires_in") or 0),
+            refresh_token=refresh_token,
+            expires_in=expires_in,
         )
 
     def refresh_tokens(self, refresh_token: str) -> Optional[Dict[str, Any]]:
@@ -102,10 +105,15 @@ class RemoteAuthBackend:
                 return None
             raise ValueError(_UNAVAILABLE_MESSAGE)
         payload = self._json_or_unavailable(response)
+        access_token, renewed_refresh_token, expires_in = self._validated_token_pair(
+            payload
+        )
+        if self._verify_access_token_locally(access_token) is None:
+            raise ValueError(_UNAVAILABLE_MESSAGE)
         return {
-            "access_token": str(payload.get("access_token") or ""),
-            "refresh_token": str(payload.get("refresh_token") or ""),
-            "expires_in": int(payload.get("expires_in") or 0),
+            "access_token": access_token,
+            "refresh_token": renewed_refresh_token,
+            "expires_in": expires_in,
         }
 
     def revoke_refresh_token(self, refresh_token: str) -> bool:
@@ -236,6 +244,18 @@ class RemoteAuthBackend:
         return payload if isinstance(payload, dict) else {}
 
     @staticmethod
+    def _validated_token_pair(payload: Dict[str, Any]) -> tuple[str, str, int]:
+        access_token = str(payload.get("access_token") or "").strip()
+        refresh_token = str(payload.get("refresh_token") or "").strip()
+        try:
+            expires_in = int(payload.get("expires_in"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(_UNAVAILABLE_MESSAGE) from exc
+        if not access_token or not refresh_token or expires_in <= 0:
+            raise ValueError(_UNAVAILABLE_MESSAGE)
+        return access_token, refresh_token, expires_in
+
+    @staticmethod
     def _raise_admin_error(response: requests.Response) -> None:
         try:
             payload = response.json()
@@ -306,38 +326,54 @@ class RemoteAuthBackend:
         with self._jwks_lock:
             fresh = (now - self._jwks_fetched_at) < self._jwks_cache_ttl_seconds
             key = self._jwks_keys.get(kid)
+            fetched_at_before = self._jwks_fetched_at
         if key is not None and fresh:
             return key
         # 缓存过期，或 TTL 内遇到未知 kid（可能刚轮换密钥）→ 主动刷新一次
-        self._refresh_jwks()
+        refreshed = self._refresh_jwks()
         with self._jwks_lock:
-            # 刷新失败（网络故障）时沿用旧缓存里的 key（stale 优于验不了）
-            return self._jwks_keys.get(kid) or key
+            current_key = self._jwks_keys.get(kid)
+            fetched_at_after = self._jwks_fetched_at
+        if refreshed or fetched_at_after > fetched_at_before:
+            # 成功刷新代表服务端当前 key set 是权威结果；已移除的旧 key 不再接受。
+            return current_key
+        # 网络故障时沿用旧缓存里的 key（stale 优于验不了）。
+        return current_key or key
 
-    def _refresh_jwks(self) -> None:
-        """拉取 JWKS 重建 kid→公钥映射；网络失败静默沿用旧缓存（verify 失败返回 None，不抛错）。"""
-        try:
-            response = self._session.get(
-                self._base_url + "/jwks.json", timeout=_TIMEOUT
-            )
-            if response.status_code != 200:
-                return
-            payload = response.json()
-        except (requests.RequestException, ValueError):
-            return
-        if not isinstance(payload, dict):
-            return
-        keys: Dict[str, Any] = {}
-        for jwk_data in payload.get("keys") or []:
-            if not isinstance(jwk_data, dict):
-                continue
-            kid = str(jwk_data.get("kid") or "")
-            if not kid:
-                continue
+    def _refresh_jwks(self) -> bool:
+        """Refresh the key set once; return whether a new authoritative set was loaded."""
+        with self._jwks_refresh_lock:
+            now = time.time()
+            with self._jwks_lock:
+                if (
+                    now - self._jwks_last_attempt_at
+                    < _JWKS_REFRESH_MIN_INTERVAL_SECONDS
+                ):
+                    return False
+                self._jwks_last_attempt_at = now
             try:
-                keys[kid] = jwt.PyJWK(jwk_data).key
-            except (jwt.PyJWTError, ValueError, TypeError):
-                continue
-        with self._jwks_lock:
-            self._jwks_keys = keys
-            self._jwks_fetched_at = time.time()
+                response = self._session.get(
+                    self._base_url + "/jwks.json", timeout=_TIMEOUT
+                )
+                if response.status_code != 200:
+                    return False
+                payload = response.json()
+            except (requests.RequestException, ValueError):
+                return False
+            if not isinstance(payload, dict):
+                return False
+            keys: Dict[str, Any] = {}
+            for jwk_data in payload.get("keys") or []:
+                if not isinstance(jwk_data, dict):
+                    continue
+                kid = str(jwk_data.get("kid") or "")
+                if not kid:
+                    continue
+                try:
+                    keys[kid] = jwt.PyJWK(jwk_data).key
+                except (jwt.PyJWTError, ValueError, TypeError):
+                    continue
+            with self._jwks_lock:
+                self._jwks_keys = keys
+                self._jwks_fetched_at = time.time()
+            return True

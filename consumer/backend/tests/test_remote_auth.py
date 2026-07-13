@@ -101,6 +101,29 @@ def _build_consumer_app(auth_manager):
     return app
 
 
+class _StubResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _StubSession:
+    def __init__(self, token_payload=None, jwks_payload=None):
+        self.token_payload = token_payload or {}
+        self.jwks_payload = jwks_payload or {"keys": []}
+        self.jwks_get_count = 0
+
+    def post(self, *_args, **_kwargs):
+        return _StubResponse(200, self.token_payload)
+
+    def get(self, *_args, **_kwargs):
+        self.jwks_get_count += 1
+        return _StubResponse(200, self.jwks_payload)
+
+
 # ---------------------------------------------------------- 登录 / 验签 / 刷新
 
 
@@ -150,6 +173,58 @@ def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
         assert result.refresh_token
         verified = backend.verify_token(result.access_token)
         assert verified is not None and verified.username == "admin"
+
+
+def test_token_endpoint_200_requires_complete_verified_token_pair(monkeypatch):
+    incomplete = RemoteAuthBackend(
+        "http://auth.example",
+        session=_StubSession(
+            token_payload={"refresh_token": "refresh", "expires_in": 60}
+        ),
+    )
+    with pytest.raises(ValueError, match="认证服务暂不可用"):
+        incomplete.login("admin", "password")
+
+    malformed = RemoteAuthBackend(
+        "http://auth.example",
+        session=_StubSession(
+            token_payload={
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "expires_in": 60,
+            }
+        ),
+    )
+    monkeypatch.setattr(malformed, "_verify_access_token_locally", lambda _token: None)
+    with pytest.raises(ValueError, match="认证服务暂不可用"):
+        malformed.login("admin", "password")
+    with pytest.raises(ValueError, match="认证服务暂不可用"):
+        malformed.refresh_tokens("refresh")
+
+
+def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
+    session = _StubSession(jwks_payload={"keys": []})
+    backend = RemoteAuthBackend("http://auth.example", session=session)
+
+    assert backend._signing_key("forged-a") is None
+    assert backend._signing_key("forged-b") is None
+    assert session.jwks_get_count == 1
+
+    old_key = object()
+    with backend._jwks_lock:
+        backend._jwks_keys = {"old": old_key}
+        backend._jwks_fetched_at = 0
+        backend._jwks_last_attempt_at = 0
+
+    def concurrent_successful_rotation():
+        with backend._jwks_lock:
+            backend._jwks_keys = {}
+            backend._jwks_fetched_at = 1
+        # 模拟另一线程已成功刷新，本线程因节流未再次请求。
+        return False
+
+    monkeypatch.setattr(backend, "_refresh_jwks", concurrent_successful_rotation)
+    assert backend._signing_key("old") is None
 
 
 def test_verify_token_rejects_non_access_tokens(backend):
