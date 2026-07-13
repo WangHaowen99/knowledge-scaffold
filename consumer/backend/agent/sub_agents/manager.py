@@ -34,6 +34,18 @@ class SubAgentManager:
         self.max_depth = max(1, int(max_depth))
         self._semaphore = threading.BoundedSemaphore(self.max_concurrency)
 
+    @staticmethod
+    def _raise_if_cancelled(
+        cancel_event: Optional[threading.Event],
+        run_id: Optional[str],
+    ) -> None:
+        if cancel_event is None or not cancel_event.is_set():
+            return
+        raise WorkflowCancelledError(
+            "Workflow cancelled by user",
+            details={"run_id": run_id},
+        )
+
     def execute_group(
         self,
         *,
@@ -47,7 +59,9 @@ class SubAgentManager:
         lineage: Optional[Dict[str, Any]],
         tasks: List[SubAgentTaskSpec],
         observer: Any = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
+        self._raise_if_cancelled(cancel_event, run_id)
         group_id = "group_{}".format(uuid.uuid4().hex[:10])
         lineage = dict(lineage or {})
         parent_depth = int(lineage.get("depth") or 0)
@@ -105,12 +119,19 @@ class SubAgentManager:
                 logger.warning("Failed to emit subagent_group.started", exc_info=True)
 
         def run_task(task_spec: SubAgentTaskSpec) -> Dict[str, Any]:
-            using_borrowed_slot = bool(borrowed_slot and borrowed_slot.acquire(blocking=False))
-
-            if not using_borrowed_slot:
-                self._semaphore.acquire()
+            using_borrowed_slot = False
+            main_slot_acquired = False
 
             try:
+                self._raise_if_cancelled(cancel_event, run_id)
+                using_borrowed_slot = bool(
+                    borrowed_slot and borrowed_slot.acquire(blocking=False)
+                )
+                if not using_borrowed_slot:
+                    while not main_slot_acquired:
+                        self._raise_if_cancelled(cancel_event, run_id)
+                        main_slot_acquired = self._semaphore.acquire(timeout=0.05)
+                self._raise_if_cancelled(cancel_event, run_id)
                 return self._execute_single_task(
                     run_id=run_id,
                     session_id=session_id,
@@ -126,11 +147,12 @@ class SubAgentManager:
                     task_spec=task_spec,
                     task_index=task_index_by_id.get(task_spec.id, 0),
                     observer=observer,
+                    cancel_event=cancel_event,
                 )
             finally:
                 if using_borrowed_slot and borrowed_slot:
                     borrowed_slot.release()
-                else:
+                elif main_slot_acquired:
                     self._semaphore.release()
 
         cancelled_exc: Optional[WorkflowCancelledError] = None
@@ -228,6 +250,7 @@ class SubAgentManager:
         task_spec: SubAgentTaskSpec,
         task_index: int = 0,
         observer: Any = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         key_steps: List[str] = []
 
@@ -277,6 +300,7 @@ class SubAgentManager:
             event_emitter(event_type, enriched)
 
         try:
+            self._raise_if_cancelled(cancel_event, run_id)
             sub_agent = SubAgent()
             raw_result = sub_agent.execute(
                 task_spec.task,
@@ -296,6 +320,7 @@ class SubAgentManager:
                 subagent_manager=self,
                 protocol_event_observer=protocol_event_observer,
                 observer=observer,
+                cancel_event=cancel_event,
             )
         except WorkflowCancelledError:
             raise

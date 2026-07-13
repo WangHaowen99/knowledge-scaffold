@@ -29,6 +29,7 @@ from agent.evolution import (
     parse_execution_summary,
 )
 from agent.core.engine import AgentLoopEngine
+from agent.core.shared.modes import VALID_AGENT_MODES, resolve_agent_mode
 from agent.memory import MemoryFactory
 from agent.state import AgenticState
 from llm import get_llm_router
@@ -186,6 +187,41 @@ class _WorkflowFailure:
         self.error = error
 
 
+class RunCancellationRegistry:
+    """Own the in-process cancellation signal for each active run."""
+
+    def __init__(self) -> None:
+        self._events: Dict[str, threading.Event] = {}
+        self._lock = threading.Lock()
+
+    def register(self, run_id: str, run_store: RunStore) -> threading.Event:
+        """Register a fresh event and close the cancel-before-register race."""
+        event = threading.Event()
+        with self._lock:
+            self._events[run_id] = event
+            run = run_store.get_run(run_id)
+            if run is not None and run.status == RunStatus.CANCELLED:
+                event.set()
+        return event
+
+    def signal(self, run_id: str) -> bool:
+        """Signal an active run without creating a stale registry entry."""
+        with self._lock:
+            event = self._events.get(run_id)
+            if event is None:
+                return False
+            event.set()
+            return True
+
+    def clear(self, run_id: str, event: threading.Event) -> bool:
+        """Remove a registration only when it is still the caller's event."""
+        with self._lock:
+            if self._events.get(run_id) is not event:
+                return False
+            del self._events[run_id]
+            return True
+
+
 class _StreamEventPersistenceBuffer:
     """Asynchronously persist high-frequency stream events in batches."""
 
@@ -311,6 +347,7 @@ class AgenticOrchestrator:
         user_store_manager: Optional[UserStoreManager] = None,
         agent_config: Optional[AgentConfig] = None,
         memory_factory: Optional[MemoryFactory] = None,
+        cancellation_registry: Optional[RunCancellationRegistry] = None,
     ) -> None:
         """
         Initialize the orchestrator.
@@ -321,6 +358,7 @@ class AgenticOrchestrator:
             execution_store: Optional execution store for workflow recording (created if None)
             user_store_manager: Optional user store manager for multi-user support
             agent_config: Optional agent configuration (created with defaults if None)
+            cancellation_registry: Optional shared in-process cancellation registry
         """
         self.agent_config = agent_config or AgentConfig.from_env()
         self.run_store = run_store or RunStore()
@@ -330,6 +368,11 @@ class AgenticOrchestrator:
         self.execution_store = execution_store or ExecutionStore(app_config.execution_storage_dir)
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
+        self.cancellation_registry = (
+            cancellation_registry
+            if cancellation_registry is not None
+            else RunCancellationRegistry()
+        )
         self.slot_manager = RunSlotManager()
         self.run_admission_queue = RunAdmissionQueue(self.slot_manager)
         self.run_rate_limiter = TokenBucketRateLimiter(
@@ -370,6 +413,8 @@ class AgenticOrchestrator:
     ) -> Generator[tuple[str, Any], None, None]:
         event_queue: "queue.Queue[Any]" = queue.Queue()
         done = object()
+        run_id = str(initial_state.get("run_id") or "")
+        cancel_event = self.cancellation_registry.register(run_id, self.run_store)
 
         def queue_writer(event: Dict[str, Any]) -> None:
             event_queue.put(("custom", event))
@@ -377,7 +422,6 @@ class AgenticOrchestrator:
         def worker() -> None:
             state: AgenticState = dict(initial_state or {})
             workspace_id = str(state.get("workspace_id") or "").strip() or None
-            run_id = str(state.get("run_id") or "")
             session_id = str(state.get("session_id") or "")
             turn_id = int(state.get("current_turn_id") or 0)
             try:
@@ -396,6 +440,8 @@ class AgenticOrchestrator:
                             ),
                             iteration_limit=self.agent_config.main_agent_max_iterations,
                             observer=observer,
+                            cancel_event=cancel_event,
+                            event_source_node="jiuwen_react",
                         )
             except Exception as exc:
                 logger.exception("Agent loop execution failed")
@@ -410,16 +456,22 @@ class AgenticOrchestrator:
         )
         worker_thread.start()
 
-        while True:
-            item = event_queue.get()
-            if item is done:
-                break
-            if isinstance(item, _WorkflowFailure):
-                worker_thread.join()
-                raise item.error
-            yield item
-
-        worker_thread.join()
+        worker_finished = False
+        try:
+            while True:
+                item = event_queue.get()
+                if item is done:
+                    worker_finished = True
+                    break
+                if isinstance(item, _WorkflowFailure):
+                    worker_finished = True
+                    raise item.error
+                yield item
+        finally:
+            if not worker_finished:
+                cancel_event.set()
+            worker_thread.join()
+            self.cancellation_registry.clear(run_id, cancel_event)
 
     @staticmethod
     def _infer_toolbased_ontology_version(
@@ -509,14 +561,14 @@ class AgenticOrchestrator:
         requested_model_profile_ref = context.get("model_profile_ref") or requested_model_profile_id
         requested_selected_ontology_id = str(context.get("selected_ontology_id") or "").strip()
         requested_agent_mode_raw = str(context.get("agent_mode") or "").strip().lower()
-        requested_agent_mode = AgentLoopEngine._resolve_agent_mode(context)
+        requested_agent_mode = resolve_agent_mode(context)
 
         stored_messages: List[Dict[str, Any]] = []
         session = chat_store.get_session(session_id)
         session_metadata = dict(getattr(session, "metadata", {}) or {})
         locked_selected_ontology_id = str(session_metadata.get("selected_ontology_id") or "").strip()
         locked_agent_mode = str(session_metadata.get("agent_mode") or "").strip().lower()
-        if locked_agent_mode not in AgentLoopEngine._VALID_AGENT_MODES:
+        if locked_agent_mode not in VALID_AGENT_MODES:
             locked_agent_mode = ""
         if locked_agent_mode and requested_agent_mode_raw and requested_agent_mode != locked_agent_mode:
             raise ValueError("agent_mode is locked for this session: {}".format(locked_agent_mode))
@@ -742,7 +794,7 @@ class AgenticOrchestrator:
                 "model_profile_id": selected_profile["id"],
                 "model_profile_ref": selected_profile_ref,
                 "selected_ontology_id": str(context.get("selected_ontology_id") or "").strip() or None,
-                "agent_mode": AgentLoopEngine._resolve_agent_mode(context),
+                "agent_mode": resolve_agent_mode(context),
                 "llm_request_mode": str(context.get("llm_request_mode") or "").strip() or None,
             },
         )
@@ -1507,6 +1559,7 @@ class AgenticOrchestrator:
         )
         if run is None:
             return False
+        self.cancellation_registry.signal(run_id)
         get_llm_router().cancel_run(run_id)
 
         return True

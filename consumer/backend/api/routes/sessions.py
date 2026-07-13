@@ -7,7 +7,7 @@ from api.auth.auth import require_auth, get_current_user
 from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
-from agent.core.engine import AgentLoopEngine
+from agent.core.shared.modes import resolve_agent_mode
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
@@ -222,7 +222,7 @@ def create_session():
     """
     data = request.get_json() or {}
     title = data.get("title")
-    agent_mode = AgentLoopEngine._resolve_agent_mode({"agent_mode": data.get("agent_mode")})
+    agent_mode = resolve_agent_mode({"agent_mode": data.get("agent_mode")})
     llm_request_mode = normalize_llm_request_mode(data.get("llm_request_mode"))
     model_profile_id = str(data.get("model_profile_id") or "").strip()
     workspace_id = _get_request_workspace_id()
