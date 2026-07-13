@@ -7,10 +7,10 @@ from pathlib import Path
 import yaml
 from flask import Flask
 
-from agentic.routes import ontologies as ontologies_module
-from agentic.routes.ontologies import ontologies_bp
-from agentic.services.auth import AuthManager
-from agentic.workspaces import create_workspace, get_workspace_paths
+from api.routes import ontologies as ontologies_module
+from api.routes.ontologies import ontologies_bp
+from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
@@ -173,7 +173,7 @@ def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
 
 
 def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
+    import ontology.ontologies as ontologies_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -199,18 +199,21 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
     payload = response.get_json()
     assert payload is not None
     assert payload["ontologies"] == [
-            {
-                "business_data": {
-                    "connection_id": "",
-                    "connection_name": "",
-                    "provider": "",
-                    "ready": False,
-                },
-                "description": "Demo ontology for routes",
-                "enabled": True,
-                "id": "demo-ontology",
-                "language": "zh-CN",
+        {
             "active_version": "1.0.0",
+            "business_data": {
+                "configured": False,
+                "connection_id": "",
+                "connection_name": "",
+                "mode": "",
+                "provider": "",
+                "ready": False,
+                "updated_at": "",
+            },
+            "description": "Demo ontology for routes",
+            "enabled": True,
+            "id": "demo-ontology",
+            "language": "zh-CN",
             "manifest_path": str(ontology_dir / "manifest.yaml"),
             "name": "Demo Ontology",
             "ontology_md_path": None,
@@ -273,10 +276,12 @@ def test_get_ontology_file_reads_object_markdown(tmp_path, monkeypatch):
     assert "TargetItem_ID" in payload["content"]
 
 
-def test_ontology_file_routes_reject_assets_folder(tmp_path, monkeypatch):
+def test_ontology_file_routes_list_and_read_assets_folder(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
-    (ontology_dir / "versions" / "1.0.0").mkdir(parents=True)
+    assets_dir = ontology_dir / "versions" / "1.0.0" / "assets"
+    (assets_dir / "rules").mkdir(parents=True)
+    (assets_dir / "rules" / "limits.ini").write_text("[limits]\nmax=10\n", encoding="utf-8")
     (ontology_dir / "manifest.yaml").write_text(
         (
             "kind: ontology\n"
@@ -299,16 +304,18 @@ def test_ontology_file_routes_reject_assets_folder(tmp_path, monkeypatch):
         headers=headers,
     )
 
-    assert list_response.status_code == 400
-    assert list_response.get_json()["error"] == "Invalid ontology or folder. Use 'operations' or 'objects'."
+    assert list_response.status_code == 200
+    assert [item["name"] for item in list_response.get_json()["files"]] == [
+        "rules/limits.ini"
+    ]
 
     read_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
         query_string={"folder": "assets", "name": "rules/limits.ini"},
         headers=headers,
     )
-    assert read_response.status_code == 400
-    assert read_response.get_json()["error"] == "Invalid ontology or folder. Use 'operations' or 'objects'."
+    assert read_response.status_code == 200
+    assert read_response.get_json()["content"] == "[limits]\nmax=10"
 
 
 def test_get_ontology_file_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
@@ -890,8 +897,8 @@ def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tm
 
 def test_import_ontology_zip_binds_default_data_connection_for_new_ontology(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
-    from agentic.business_data.bindings_store import get_ontology_data_binding
-    from agentic.business_data.connections_store import create_data_connection
+    from agent.tools.business_data.ontology_sources_store import get_ontology_data_binding
+    from agent.tools.business_data.connections_store import create_data_connection
 
     create_data_connection(
         {
@@ -1284,8 +1291,8 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
 
 
 def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import get_ontology_registry
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import get_ontology_registry
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"

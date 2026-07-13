@@ -99,6 +99,7 @@ def handle_ontology_context(
     if normalized_resource == "asset":
         return _build_asset_payload(
             ontology_dir=ontology_dir,
+            trusted_root=Path(ontology.manifest_path).resolve().parent,
             key=key,
         )
     return "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, or asset.".format(
@@ -139,9 +140,14 @@ def _build_markdown_payload(
 def _build_asset_payload(
     *,
     ontology_dir: Path,
+    trusted_root: Path,
     key: str,
 ) -> str:
-    path, error = find_asset_file(ontology_dir, key)
+    path, error = find_asset_file(
+        ontology_dir,
+        key,
+        trusted_root=trusted_root,
+    )
     if error:
         return error
     assert path is not None
@@ -218,7 +224,11 @@ def _build_read_record(
     elif resource == "object":
         resolved_path = ontology_dir / "objects" / "{}.md".format(key)
     elif resource == "asset":
-        resolved_path, error = find_asset_file(ontology_dir, key)
+        resolved_path, error = find_asset_file(
+            ontology_dir,
+            key,
+            trusted_root=Path(ontology.manifest_path).resolve().parent,
+        )
         if error or resolved_path is None:
             return None
     else:
