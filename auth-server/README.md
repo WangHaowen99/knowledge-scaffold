@@ -77,7 +77,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `AUTH_REFRESH_TTL_SECONDS` | `259200` | refresh TTL |
 | `AUTH_SERVER_ADMIN_TOKEN` | 未设置 | Admin API 共享密钥；未设置则 /admin/* 全部 503 |
 | `AUTH_SERVER_HOST` / `AUTH_SERVER_PORT` | `127.0.0.1` / `5056` | 监听地址与端口 |
-| `AUTH_USER_MAX_COUNT` | `10` | 用户数量上限（与 consumer `USER_MAX_COUNT` 语义一致） |
+| `AUTH_USER_MAX_COUNT` | `1000` | 用户数量上限；设为 `0` 表示不限制 |
 | `AUTH_ENABLE_REGISTRATION` | `false` | 开放注册开关（opt-in） |
 
 限流窗口（每小时 5 次）为 `registration.py` 内常量，不做 env。
