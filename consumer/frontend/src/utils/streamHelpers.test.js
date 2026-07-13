@@ -88,6 +88,46 @@ test('nested subagent groups attach under parent subagent child', () => {
   assert.equal(nestedChild.events[0].text, 'nested output');
 });
 
+test('cancelled subagent tool event remains a failed terminal event', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+
+  [
+    envelope('subagent_group.started', {
+      group_id: 'group-cancel',
+      depth: 1,
+      tasks: [{ task_id: 'cancel-task', task: 'Cancel task', task_index: 0 }],
+    }, 1),
+    envelope('subagent.started', {
+      group_id: 'group-cancel',
+      subagent_id: 'sub-cancel',
+      task_id: 'cancel-task',
+      task: 'Cancel task',
+      task_index: 0,
+    }, 2),
+    envelope('tool.started', {
+      group_id: 'group-cancel',
+      subagent_id: 'sub-cancel',
+      tool_name: 'slow_tool',
+      tool_call_id: 'call-cancel',
+    }, 3),
+    envelope('tool.finished', {
+      group_id: 'group-cancel',
+      subagent_id: 'sub-cancel',
+      tool_name: 'slow_tool',
+      tool_call_id: 'call-cancel',
+      status: 'cancelled',
+      error: 'Workflow cancelled by user',
+    }, 4),
+  ].forEach((event) => {
+    state = applyAgentV2Event(state, event);
+  });
+
+  const child = state.streamSegments[0].children['sub-cancel'];
+  assert.equal(child.events.at(-1).status, 'error');
+  assert.equal(child.events.at(-1).finished, true);
+  assert.equal(child.events.at(-1).error, 'Workflow cancelled by user');
+});
+
 test('turn finished error stores provider detail in message meta', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
   const error = '您的账户已达到速率限制，请您控制请求频率';

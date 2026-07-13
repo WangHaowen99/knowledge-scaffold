@@ -28,6 +28,7 @@ def execute_tool_batch(
     Provider-specific payloads, including OpenAI ``tool_calls`` dictionaries,
     must be converted by the owning adapter before reaching this boundary.
     """
+    _raise_if_tool_cancelled(context)
     if not tool_calls:
         return ToolBatchResult()
 
@@ -74,6 +75,7 @@ def execute_tool_batch(
     else:
         flush_safe_batch()
 
+    _raise_if_tool_cancelled(context)
     outputs.sort(key=lambda item: item["index"])
     return _aggregate_outputs(outputs)
 
@@ -242,6 +244,7 @@ def _execute_parallel_batch(
     def run_task(task: Dict[str, Any]) -> Dict[str, Any]:
         semaphore = tool_limits[task["name"]]
         with semaphore:
+            _raise_if_tool_cancelled(context)
             if captured_writer:
                 with stream_writer_context(captured_writer):
                     return _execute_single_task(task, context, subagent_event_emitter)
@@ -269,6 +272,7 @@ def _execute_single_task(
 ) -> Dict[str, Any]:
     from agent.tools.registry import validate_tool_arguments
 
+    _raise_if_tool_cancelled(context)
     name = task["name"]
     spec: BaseTool = task["spec"]
     args = task["args"]
@@ -314,17 +318,29 @@ def _execute_single_task(
                 )
 
             try:
+                _raise_if_tool_cancelled(context)
                 outcome = spec.execute(
                     args=args,
                     context=context,
                     tool_call_id=tool_call_id,
                     event_emitter=event_emitter,
                 )
+                _raise_if_tool_cancelled(context)
                 terminal_status = _resolve_outcome_status(outcome)
                 if terminal_status == "error":
                     error_message = outcome.content if outcome.content is not None else "tool error"
-            except WorkflowCancelledError:
+            except WorkflowCancelledError as exc:
                 logger.info("Tool execution cancelled for %s", name)
+                finished_at_ms = _now_monotonic_ms()
+                emit_tool_finished(
+                    context=context,
+                    tool_name=name,
+                    tool_call_id=tool_call_id,
+                    status="cancelled",
+                    raw_output="",
+                    error=exc.message,
+                    elapsed_ms=max(0, finished_at_ms - started_at_ms),
+                )
                 raise
             except Exception as exc:
                 logger.error("Tool execution failed for %s", name, exc_info=True)
@@ -332,6 +348,20 @@ def _execute_single_task(
                 terminal_status = "error"
                 error_message = str(exc)
 
+    try:
+        _raise_if_tool_cancelled(context)
+    except WorkflowCancelledError as exc:
+        finished_at_ms = _now_monotonic_ms()
+        emit_tool_finished(
+            context=context,
+            tool_name=name,
+            tool_call_id=tool_call_id,
+            status="cancelled",
+            raw_output="",
+            error=exc.message,
+            elapsed_ms=max(0, finished_at_ms - started_at_ms),
+        )
+        raise
     finished_at_ms = _now_monotonic_ms()
     elapsed_ms = max(0, finished_at_ms - started_at_ms)
     emit_tool_finished(
@@ -355,6 +385,16 @@ def _execute_single_task(
             "elapsed_ms": elapsed_ms,
         },
     }
+
+
+def _raise_if_tool_cancelled(context: ToolContext) -> None:
+    cancel_event = getattr(context, "cancel_event", None)
+    if cancel_event is None or not cancel_event.is_set():
+        return
+    raise WorkflowCancelledError(
+        "Workflow cancelled by user",
+        details={"run_id": getattr(context, "run_id", None)},
+    )
 
 
 def _build_skipped_outputs(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

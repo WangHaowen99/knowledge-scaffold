@@ -14,9 +14,15 @@ logger = get_logger("observability.traces.agent")
 
 
 class _LLMCallTrace:
-    def __init__(self, runtime_trace: "AgentRuntimeTrace", iteration: int) -> None:
+    def __init__(
+        self,
+        runtime_trace: "AgentRuntimeTrace",
+        iteration: int,
+        call_index: Optional[int] = None,
+    ) -> None:
         self._runtime_trace = runtime_trace
         self._iteration = iteration
+        self._call_index = call_index
 
     def finish(
         self,
@@ -60,6 +66,7 @@ class _LLMCallTrace:
             model=model,
             model_provider=model_provider,
             tool_names=tool_names,
+            call_index=self._call_index,
         )
 
 
@@ -142,6 +149,8 @@ class AgentRuntimeTrace:
         tools: Optional[List[Any]],
         model: str,
         api_params: Optional[Dict[str, Any]] = None,
+        call_index: Optional[int] = None,
+        request_label: Optional[str] = None,
     ) -> Iterator[_LLMCallTrace]:
         self.llm_started(
             iteration=iteration,
@@ -149,8 +158,10 @@ class AgentRuntimeTrace:
             tools=tools,
             model=model,
             api_params=api_params,
+            call_index=call_index,
+            request_label=request_label,
         )
-        trace = _LLMCallTrace(self, iteration)
+        trace = _LLMCallTrace(self, iteration, call_index=call_index)
         try:
             yield trace
         except WorkflowCancelledError:
@@ -159,6 +170,7 @@ class AgentRuntimeTrace:
                 status=RuntimeStatus.CANCELLED,
                 error_type="WorkflowCancelledError",
                 error_message="Workflow cancelled by user",
+                call_index=call_index,
             )
             raise
         except Exception as exc:
@@ -166,6 +178,7 @@ class AgentRuntimeTrace:
                 iteration=iteration,
                 error_type=type(exc).__name__,
                 error_message=str(exc),
+                call_index=call_index,
             )
             raise
 
@@ -322,8 +335,10 @@ class AgentRuntimeTrace:
         tools: Optional[List[Any]],
         model: str,
         api_params: Optional[Dict[str, Any]] = None,
+        call_index: Optional[int] = None,
+        request_label: Optional[str] = None,
     ) -> str:
-        span_key = self.llm_span_key(iteration)
+        span_key = self.llm_span_key(iteration, call_index=call_index)
         if not self.enabled:
             return span_key
         latest_input = _latest_user_input(messages)
@@ -334,6 +349,8 @@ class AgentRuntimeTrace:
             payload={
                 "caller": self.caller,
                 "iteration": iteration,
+                **({"call_index": call_index} if call_index is not None else {}),
+                **({"request_label": request_label} if request_label else {}),
                 "total_messages": len(messages),
                 "messages_preview": _messages_preview(messages),
                 "latest_input": latest_input,
@@ -373,6 +390,7 @@ class AgentRuntimeTrace:
         model: Optional[str] = None,
         model_provider: Optional[str] = None,
         tool_names: Optional[List[str]] = None,
+        call_index: Optional[int] = None,
     ) -> None:
         if not self.enabled:
             return
@@ -380,11 +398,12 @@ class AgentRuntimeTrace:
         resolved_reasoning = _resolve_lazy_value(reasoning_text)
         self._emit(
             RuntimeEventType.LLM_FINISHED,
-            span_key=self.llm_span_key(iteration),
+            span_key=self.llm_span_key(iteration, call_index=call_index),
             payload={
                 "status": RuntimeStatus.SUCCESS,
                 "caller": self.caller,
                 "iteration": iteration,
+                **({"call_index": call_index} if call_index is not None else {}),
                 "request_label": request_label,
                 "model": model,
                 "model_provider": model_provider,
@@ -421,30 +440,39 @@ class AgentRuntimeTrace:
         status: str = RuntimeStatus.ERROR,
         error_type: Optional[str] = None,
         error_message: Optional[str] = None,
+        call_index: Optional[int] = None,
     ) -> None:
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.LLM_FAILED,
-            span_key=self.llm_span_key(iteration),
+            span_key=self.llm_span_key(iteration, call_index=call_index),
             payload={
                 "status": status,
+                "iteration": iteration,
+                **({"call_index": call_index} if call_index is not None else {}),
                 "error_type": error_type,
                 "error_message": str(error_message or "")[:1000],
             },
         )
 
-    def tool_batch_started(self, *, iteration: int) -> None:
+    def tool_batch_started(
+        self,
+        *,
+        iteration: int,
+        batch_index: Optional[int] = None,
+    ) -> None:
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.TOOL_BATCH_STARTED,
-            span_key=self.tool_batch_span_key(iteration),
+            span_key=self.tool_batch_span_key(iteration, batch_index=batch_index),
             parent_key=self.loop_span_key,
             payload={
                 "caller": self.caller,
                 "caller_suffix": self._caller_suffix(),
                 "iteration": iteration,
+                **({"batch_index": batch_index} if batch_index is not None else {}),
                 **self.lineage,
             },
         )
@@ -456,39 +484,58 @@ class AgentRuntimeTrace:
         tool_calls_count: int,
         tool_names: List[str],
         duration_ms: int,
+        batch_index: Optional[int] = None,
     ) -> None:
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.TOOL_BATCH_FINISHED,
-            span_key=self.tool_batch_span_key(iteration),
+            span_key=self.tool_batch_span_key(iteration, batch_index=batch_index),
             payload={
                 "status": RuntimeStatus.SUCCESS,
                 "caller": self.caller,
                 "iteration": iteration,
+                **({"batch_index": batch_index} if batch_index is not None else {}),
                 "tool_calls_count": tool_calls_count,
                 "tool_names": tool_names,
                 "duration_ms": duration_ms,
             },
         )
 
-    def tool_batch_failed(self, *, iteration: int, status: str = RuntimeStatus.ERROR) -> None:
+    def tool_batch_failed(
+        self,
+        *,
+        iteration: int,
+        status: str = RuntimeStatus.ERROR,
+        batch_index: Optional[int] = None,
+    ) -> None:
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.TOOL_BATCH_FAILED,
-            span_key=self.tool_batch_span_key(iteration),
-            payload={"status": status, "caller": self.caller, "iteration": iteration},
+            span_key=self.tool_batch_span_key(iteration, batch_index=batch_index),
+            payload={
+                "status": status,
+                "caller": self.caller,
+                "iteration": iteration,
+                **({"batch_index": batch_index} if batch_index is not None else {}),
+            },
         )
 
-    def llm_span_key(self, iteration: int) -> str:
-        return "llm:{}:{}".format(self._caller_suffix(), iteration)
+    def llm_span_key(self, iteration: int, call_index: Optional[int] = None) -> str:
+        base_key = "llm:{}:{}".format(self._caller_suffix(), iteration)
+        if call_index is None:
+            return base_key
+        return "{}:{}".format(base_key, int(call_index))
 
     def iteration_span_key(self, iteration: int) -> str:
         return "iteration:{}:{}".format(self._caller_suffix(), iteration)
 
-    def tool_batch_span_key(self, iteration: int) -> str:
-        return "tools:{}:{}".format(self._caller_suffix(), iteration)
+    def tool_batch_span_key(self, iteration: int, batch_index: Optional[int] = None) -> str:
+        base_key = "tools:{}:{}".format(self._caller_suffix(), iteration)
+        if batch_index is None:
+            return base_key
+        return "{}:{}".format(base_key, int(batch_index))
 
     def _emit(
         self,

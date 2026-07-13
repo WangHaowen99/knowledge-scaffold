@@ -4,26 +4,26 @@ from __future__ import annotations
 
 import importlib.util
 
-from agentic.tools.base import ToolBatchResult
+from agent.tools.base import ToolBatchResult
 
 
 def test_shared_loop_modules_are_available():
     for module_name in (
-        "agentic.loop.shared",
-        "agentic.loop.shared.events",
-        "agentic.loop.shared.messages",
-        "agentic.loop.shared.modes",
-        "agentic.loop.shared.ontology_context",
-        "agentic.loop.shared.prompting",
-        "agentic.loop.shared.state_updates",
-        "agentic.loop.shared.timing",
-        "agentic.loop.shared.tool_context",
+        "agent.core.shared",
+        "agent.core.shared.events",
+        "agent.core.shared.messages",
+        "agent.core.shared.modes",
+        "agent.core.shared.ontology_context",
+        "agent.core.shared.prompting",
+        "agent.core.shared.state_updates",
+        "agent.core.shared.timing",
+        "agent.core.shared.tool_context",
     ):
         assert importlib.util.find_spec(module_name) is not None
 
 
 def test_resolve_agent_mode_normalizes_supported_modes():
-    from agentic.loop.shared.modes import resolve_agent_mode
+    from agent.core.shared.modes import resolve_agent_mode
 
     assert resolve_agent_mode({"agent_mode": "thinking"}) == "thinking"
     assert resolve_agent_mode({"agent_mode": "MULTI_AGENT"}) == "multi_agent"
@@ -32,7 +32,7 @@ def test_resolve_agent_mode_normalizes_supported_modes():
 
 
 def test_apply_tool_batch_result_to_state_merges_runtime_fields():
-    from agentic.loop.shared.state_updates import apply_tool_batch_result_to_state
+    from agent.core.shared.state_updates import apply_tool_batch_result_to_state
 
     state = {
         "messages": [{"role": "user", "content": "hello"}],
@@ -78,7 +78,7 @@ def test_apply_tool_batch_result_to_state_merges_runtime_fields():
 
 
 def test_build_tool_timing_metrics_computes_overlap_and_parallel_execution():
-    from agentic.loop.shared.timing import build_tool_timing_metrics
+    from agent.core.shared.timing import build_tool_timing_metrics
 
     metrics = build_tool_timing_metrics(
         [
@@ -100,7 +100,7 @@ def test_build_tool_timing_metrics_computes_overlap_and_parallel_execution():
 
 
 def test_iteration_event_can_override_main_source_node():
-    from agentic.loop.shared.events import emit_iteration_completed_event
+    from agent.core.shared.events import emit_iteration_completed_event
 
     events = []
     emit_iteration_completed_event(
