@@ -18,6 +18,7 @@ AUTH_TAR_REL="$(manifest_get auth_server_image_tar)"
 [ -n "${TARGET_VERSION}" ] || die "app_version is missing in manifest.json"
 [ -n "${BACKEND_IMAGE}" ] || die "backend_image is missing in manifest.json"
 [ -n "${FRONTEND_IMAGE}" ] || die "frontend_image is missing in manifest.json"
+[ -n "${AUTH_IMAGE}" ] || die "auth_server_image is missing in manifest.json"
 
 "${SCRIPT_DIR}/preflight.sh"
 load_state
@@ -32,12 +33,6 @@ log "Starting ${MODE} for version ${TARGET_VERSION}"
 ensure_runtime_layout
 ensure_env_files
 
-BACKUP_DIR=""
-if [ "${MODE}" = "upgrade" ]; then
-    BACKUP_DIR="$("${SCRIPT_DIR}/backup.sh" "${TARGET_VERSION}" "${CURRENT_VERSION}")"
-    log "Backup created at ${BACKUP_DIR}"
-fi
-
 log "Loading release images"
 docker_load_image "${BACKEND_TAR}"
 docker_load_image "${FRONTEND_TAR}"
@@ -45,21 +40,34 @@ docker_load_image "${FRONTEND_TAR}"
 [ -n "${AUTH_TAR_REL}" ] || die "auth_server_image_tar is missing in manifest.json"
 docker_load_image "${BUNDLE_ROOT}/${AUTH_TAR_REL}"
 
-log "Applying migration step"
-"${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}"
+log "Validating migration plan without changing data"
+"${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --dry-run
 
 if [ "${MODE}" = "upgrade" ]; then
-    log "Stopping previous release containers"
+    log "Stopping previous release writes before backup and migration"
     compose_down "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_AUTH_IMAGE:-}"
 fi
 
-log "Starting release containers"
+BACKUP_DIR=""
+if [ "${MODE}" = "upgrade" ]; then
+    BACKUP_DIR="$("${SCRIPT_DIR}/backup.sh" "${TARGET_VERSION}" "${CURRENT_VERSION}")"
+    log "Backup created after writes stopped: ${BACKUP_DIR}"
+fi
+
+log "Applying migration after writes stopped"
+"${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped
+
+log "Starting auth-server before the consumer runtime"
+compose_up_auth "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
+wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
+verify_auth_contract
+
+log "Starting backend, MCP, and frontend"
 compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy"
 wait_for_container "onto-agent-mcp" 180 || die "MCP container did not become healthy"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy"
-wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
 
 write_state \
     "${TARGET_VERSION}" \

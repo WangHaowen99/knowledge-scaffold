@@ -107,6 +107,15 @@ ensure_env_files() {
     fi
 }
 
+dotenv_get() {
+    local file_path="$1"
+    local key="$2"
+    local value
+    value="$([ -f "${file_path}" ] && grep -E "^${key}=" "${file_path}" | tail -n 1 | cut -d= -f2- || true)"
+    value="${value%$'\r'}"
+    printf '%s' "${value}" | sed -E "s/[[:space:]]+#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//; s/^\"(.*)\"$/\1/; s/^'(.*)'$/\1/"
+}
+
 detect_host_arch() {
     local arch
     arch="$(uname -m)"
@@ -169,6 +178,47 @@ compose_up() {
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         up -d
+}
+
+compose_up_auth() {
+    local compose_cmd
+    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+
+    # shellcheck disable=SC2086
+    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="$3" ${compose_cmd} \
+        -f "${COMPOSE_FILE}" \
+        --project-directory "${BUNDLE_ROOT}" \
+        up -d auth-server
+}
+
+verify_auth_contract() {
+    local env_file="${BUNDLE_ROOT}/backend/.env"
+    local expected_issuer
+    local expected_audience
+    expected_issuer="$(dotenv_get "${env_file}" AUTH_SERVER_ISSUER)"
+    expected_audience="$(dotenv_get "${env_file}" AUTH_SERVER_AUDIENCE)"
+    [ -n "${expected_issuer}" ] || die "AUTH_SERVER_ISSUER is required"
+    [ -n "${expected_audience}" ] || die "AUTH_SERVER_AUDIENCE is required"
+
+    docker exec onto-agent-auth-server python -c '
+import json, sys, urllib.request
+issuer, audience = sys.argv[1], sys.argv[2]
+base = "http://127.0.0.1:5056"
+with urllib.request.urlopen(base + "/.well-known/openid-configuration", timeout=3) as response:
+    discovery = json.load(response)
+with urllib.request.urlopen(base + "/jwks.json", timeout=3) as response:
+    jwks = json.load(response)
+if discovery.get("issuer") != issuer:
+    raise SystemExit("issuer mismatch")
+if discovery.get("audience") != audience:
+    raise SystemExit("audience mismatch")
+keys = jwks.get("keys") if isinstance(jwks, dict) else None
+if not isinstance(keys, list) or not keys:
+    raise SystemExit("JWKS has no signing keys")
+if any(key.get("alg") != "RS256" for key in keys if isinstance(key, dict)):
+    raise SystemExit("JWKS contains a non-RS256 key")
+' "${expected_issuer}" "${expected_audience}" >/dev/null || die "auth-server JWKS/issuer/audience verification failed"
+    log "auth-server JWKS/issuer/audience verified"
 }
 
 compose_down() {
