@@ -5,6 +5,7 @@ from flask_cors import CORS
 
 from config import AgentConfig, AppConfig
 from agent.tools.business_data.ontology_sources_store import migrate_legacy_ontology_data_sources_for_all_workspaces
+from agent.core.warmup import start_runtime_warmup
 from integration.observability import reset_observer
 from integration.observability.migration import migrate_global_observability_to_workspaces
 from integration.platform.manager import reset_platform_observer, start_platform_observer_if_enabled
@@ -122,6 +123,7 @@ def create_app() -> Flask:
         runtime["user_store_manager"],
         agent_config=runtime["agent_config"],
     )
+    start_runtime_warmup(agent_config=runtime["agent_config"])
     start_platform_observer_if_enabled()
 
     @app.route("/health", methods=["GET"])
