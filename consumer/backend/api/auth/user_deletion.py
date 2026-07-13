@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator
 
-from agentic.mcp.token_service import revoke_all_mcp_tokens_for_user
+from integration.mcp.token_service import revoke_all_mcp_tokens_for_user
 from config.system_config import load_system_config
 from utils.identifiers import safe_user_storage_key
 from workspace.workspaces import (

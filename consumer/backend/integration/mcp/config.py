@@ -6,7 +6,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..config import AppConfig
+from config import AppConfig
+
+
+class MCPConfigurationError(RuntimeError):
+    """Raised when the standalone MCP runtime is configured unsafely."""
 
 
 def _read_env(name: str, default: str = "") -> str:
@@ -69,20 +73,30 @@ def load_mcp_runtime_config() -> MCPRuntimeConfig:
     _load_local_dotenv()
     app_config = AppConfig.from_env()
     runtime_root = Path(app_config.project_root).resolve()
-    token_secret_default = _read_env("AUTH_SECRET", "") or "dev-mcp-secret-change"
+    token_secret = _read_env("MCP_TOKEN_SECRET", "")
+    if not token_secret:
+        raise MCPConfigurationError("MCP_TOKEN_SECRET 必须独立配置")
+    token_algorithm = _read_env("MCP_TOKEN_ALGORITHM", "HS256").upper()
+    if token_algorithm != "HS256":
+        raise MCPConfigurationError("MCP_TOKEN_ALGORITHM 仅支持 HS256")
+    transport = _read_env("MCP_TRANSPORT", "both").lower()
+    if transport == "http":
+        transport = "streamable-http"
+    if transport not in {"both", "streamable-http", "sse", "stdio"}:
+        raise MCPConfigurationError("MCP_TRANSPORT 必须是 both、streamable-http、sse 或 stdio")
     return MCPRuntimeConfig(
         server_host=_read_env("MCP_SERVER_HOST", "0.0.0.0"),
         server_port=_read_int_env("MCP_SERVER_PORT", 7488),
         public_base_url=_read_env("MCP_PUBLIC_BASE_URL", ""),
         agentic_base_url=_read_env("MCP_AGENTIC_BASE_URL", "http://127.0.0.1:5055").rstrip("/"),
-        token_secret=_read_env("MCP_TOKEN_SECRET", token_secret_default),
-        token_algorithm=_read_env("MCP_TOKEN_ALGORITHM", "HS256").upper(),
+        token_secret=token_secret,
+        token_algorithm=token_algorithm,
         token_issuer=_read_env("MCP_TOKEN_ISSUER", "meta-wise"),
         token_audience=_read_env("MCP_TOKEN_AUDIENCE", "meta-wise-mcp"),
         token_ttl_seconds=max(60, _read_int_env("MCP_TOKEN_TTL_SECONDS", 24 * 3600)),
         token_max_ttl_seconds=max(60, _read_int_env("MCP_TOKEN_MAX_TTL_SECONDS", 30 * 24 * 3600)),
         http_timeout_seconds=max(1, _read_int_env("MCP_HTTP_TIMEOUT_SECONDS", 600)),
-        transport=_read_env("MCP_TRANSPORT", "streamable-http").lower(),
+        transport=transport,
         token_store_path=Path(
             _read_env("MCP_TOKEN_STORE_PATH", str(runtime_root / "mcp-tokens.json"))
         ).resolve(),

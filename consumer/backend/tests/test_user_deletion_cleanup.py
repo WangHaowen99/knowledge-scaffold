@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 from flask import Flask
 
-from agentic.mcp.config import MCPRuntimeConfig
-from agentic.mcp.token_service import (
+from integration.mcp.config import MCPRuntimeConfig
+from integration.mcp.token_service import (
     MCPTokenAuthError,
     create_mcp_token,
     verify_mcp_token,

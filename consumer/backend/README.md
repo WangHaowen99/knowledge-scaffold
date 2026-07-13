@@ -167,10 +167,10 @@ Notes:
 The MCP service runs as a separate FastMCP process. Start it from `consumer/backend` after installing dependencies:
 
 ```bash
-PYTHONPATH=. python -m agentic.mcp.server --transport streamable-http --host 0.0.0.0 --port 7488
+PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The Flask app exposes MCP management APIs under `/agentic/mcp/*`; the standalone MCP process exposes only the protocol selected by `MCP_TRANSPORT`: `streamable-http` exposes `/search/mcp` and `/chat/mcp`, while `sse` exposes `/search/sse` and `/chat/sse`. Search tools require an explicit `ontology_id` argument and execute graph tools without LLM calls. Chat uses the current Agent orchestrator directly with the MCP token subject/workspace.
+Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The Flask app exposes MCP management APIs under `/agentic/mcp/*`; the standalone process exposes `/search/mcp`, `/chat/mcp`, `/search/sse`, and `/chat/sse` by default. Search tools require an explicit `ontology_id` and execute graph tools without LLM calls. Chat revalidates the MCP token in the backend and enters the canonical Jiuwen workflow and admission queue.
 
 ## Tests
 
@@ -214,9 +214,9 @@ Important variables:
 | `MCP_SERVER_HOST` | Standalone MCP server host; Docker Compose overrides this to `mcp` in the Flask container for internal probing and to `0.0.0.0` in the MCP container for binding | `0.0.0.0` |
 | `MCP_SERVER_PORT` | Standalone MCP server port; Docker Compose maps host `${MCP_SERVER_PORT:-7488}` to container `7488` | `7488` |
 | `MCP_PUBLIC_BASE_URL` | Externally reachable base URL shown in the console MCP page and copied client configs; set this explicitly to the server IP or domain in Docker deployments | derived from host/port |
-| `MCP_TRANSPORT` | Standalone MCP server transport, `streamable-http` exposes `/search/mcp` and `/chat/mcp`; `sse` exposes `/search/sse` and `/chat/sse` | `streamable-http` |
+| `MCP_TRANSPORT` | `both` exposes Streamable HTTP and SSE; a single transport may be selected explicitly | `both` |
 | `MCP_SERVICES_CONFIG_FILE` | Optional YAML service catalog path; relative paths resolve from `consumer/backend` | `config/mcp_services.yaml` when present |
-| `MCP_TOKEN_SECRET` | MCP JWT signing secret | falls back to `AUTH_SECRET` or dev fallback |
+| `MCP_TOKEN_SECRET` | Required independent MCP JWT signing secret | no default |
 | `MCP_TOKEN_ISSUER` | MCP JWT `iss` claim | `meta-wise` |
 | `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
 | `MCP_TOKEN_TTL_SECONDS` | Default MCP token TTL | `86400` |

@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from .tool_contracts import CHAT_TOOL_DESCRIPTION, list_search_tools
+from api.protocols.mcp.tool_contracts import CHAT_TOOL_DESCRIPTION, list_search_tools
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -158,22 +158,26 @@ def _normalize_tags(value: Any) -> list[str]:
 
 def list_mcp_service_cards(config: Any) -> list[dict[str, Any]]:
     base_url = config.effective_public_base_url()
-    transport = _normalize_transport(getattr(config, "transport", "streamable-http"))
-    sse_enabled = transport == "sse"
+    transport = _normalize_transport(getattr(config, "transport", "both"))
+    streamable_enabled = transport in {"both", "streamable-http"}
+    sse_enabled = transport in {"both", "sse"}
     tools = {
         "search": list_search_tools(),
         "chat": [{"name": "chat", "description": CHAT_TOOL_DESCRIPTION}],
     }
     cards = []
     for item in load_mcp_service_catalog():
-        if transport == "sse":
-            active_url = "{}{}/sse".format(base_url, item.endpoint_prefix)
-            streamable_http_url = ""
-            sse_url = active_url
-        else:
-            active_url = "{}{}/mcp".format(base_url, item.endpoint_prefix)
-            streamable_http_url = active_url
-            sse_url = ""
+        streamable_http_url = (
+            "{}{}/mcp".format(base_url, item.endpoint_prefix)
+            if streamable_enabled
+            else ""
+        )
+        sse_url = (
+            "{}{}/sse".format(base_url, item.endpoint_prefix)
+            if sse_enabled
+            else ""
+        )
+        active_url = streamable_http_url or sse_url
         cards.append({
             "id": item.service_id,
             "toolset": item.toolset,
@@ -183,7 +187,7 @@ def list_mcp_service_cards(config: Any) -> list[dict[str, Any]]:
             "icon": item.icon,
             "tags": list(item.tags),
             "transport": transport,
-            "client_config_type": "sse" if transport == "sse" else "http",
+            "client_config_type": "http" if streamable_enabled else "sse",
             "sse_enabled": sse_enabled,
             "url": active_url,
             "active_url": active_url,
@@ -197,9 +201,9 @@ def list_mcp_service_cards(config: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_transport(value: Any) -> str:
-    transport = str(value or "streamable-http").strip().lower()
+    transport = str(value or "both").strip().lower()
     if transport == "http":
         return "streamable-http"
-    if transport == "sse":
-        return "sse"
-    return "streamable-http"
+    if transport in {"both", "streamable-http", "sse"}:
+        return transport
+    return "both"

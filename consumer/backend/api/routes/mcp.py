@@ -7,17 +7,24 @@ import socket
 
 from flask import Blueprint, jsonify, request
 
-from ..mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
-from ..mcp.service_catalog import list_mcp_service_cards
-from ..mcp.token_service import (
+from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
+from integration.mcp.service_catalog import list_mcp_service_cards
+from integration.mcp.token_service import (
     MCPTokenServiceError,
     create_mcp_token,
     list_mcp_tokens,
     normalize_scopes,
     revoke_mcp_token,
 )
-from ..services.auth import get_current_user, require_auth
-from ..workspaces import resolve_workspace_id, workspace_scope
+from api.auth.auth import get_auth_manager, get_current_user, require_auth
+from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow
+from integration.mcp.scope import (
+    auth_error_payload,
+    extract_bearer_token,
+    resolve_mcp_scope_from_token,
+)
+from integration.mcp.token_service import MCPTokenAuthError
+from workspace.workspaces import resolve_workspace_id, workspace_scope
 
 
 mcp_bp = Blueprint("mcp", __name__, url_prefix="/agentic/mcp")
@@ -113,6 +120,61 @@ def revoke_token_api(token_id: str):
     if not revoked:
         return jsonify({"detail": "Token 不存在或已吊销"}), 404
     return jsonify({"ok": True, "token_id": token_id})
+
+
+@mcp_bp.route("/internal/chat", methods=["POST"])
+def execute_internal_mcp_chat():
+    """Revalidate an MCP credential and enter the canonical Jiuwen workflow."""
+    token = extract_bearer_token(request.headers)
+    try:
+        scope = resolve_mcp_scope_from_token(
+            token,
+            required_scope="mcp:chat",
+            traceparent=str(request.headers.get("traceparent") or "").strip(),
+        )
+    except MCPTokenAuthError as exc:
+        return jsonify(auth_error_payload(exc)), 401 if exc.code == "AUTH_TOKEN_MISSING" else 403
+
+    requested_workspace = str(request.headers.get("X-Workspace-Id") or "").strip()
+    if requested_workspace and requested_workspace != scope.workspace_id:
+        return jsonify({
+            "ok": False,
+            "error": {
+                "type": "auth_error",
+                "error_code": "MCP_WORKSPACE_SCOPE_MISMATCH",
+                "detail": "请求 workspace 与 MCP Token scope 不一致",
+                "retriable": False,
+            },
+        }), 403
+
+    auth_backend = get_auth_manager()
+    user = auth_backend.get_user(scope.username) if auth_backend is not None else None
+    if user is None:
+        return jsonify({
+            "ok": False,
+            "error": {
+                "type": "auth_error",
+                "error_code": "MCP_SUBJECT_NOT_FOUND",
+                "detail": "MCP Token subject 当前不存在",
+                "retriable": False,
+            },
+        }), 403
+
+    cfg = load_mcp_runtime_config()
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"detail": "JSON body 必须是对象"}), 400
+    from api.routes import get_orchestrator
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=get_orchestrator(),
+        scope=scope,
+        payload=payload,
+        concurrency_limit=100 if str(user.role or "") == "admin" else 1,
+        queue_wait_seconds=min(30, max(1, int(cfg.http_timeout_seconds))),
+        execution_timeout_seconds=max(1, int(cfg.http_timeout_seconds)),
+    )
+    return jsonify(body), status_code
 
 
 def _probe_mcp_runtime_status(cfg: MCPRuntimeConfig) -> dict[str, object]:

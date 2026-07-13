@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
-from ..workspaces import evaluate_workspace_subject_access
+from workspace.workspaces import evaluate_workspace_subject_access
 from .token_service import MCPTokenAuthError, verify_mcp_token
 
 
@@ -15,6 +15,8 @@ class MCPRequestScope:
     workspace_id: str
     scopes: list[str]
     source: str = "bearer_header"
+    token: str = field(default="", repr=False, compare=False)
+    traceparent: str = ""
 
 
 def extract_bearer_token(headers: Mapping[str, str] | None) -> str:
@@ -28,7 +30,13 @@ def extract_bearer_token(headers: Mapping[str, str] | None) -> str:
     return token.strip()
 
 
-def resolve_mcp_scope_from_token(token: str, *, required_scope: str | None = None, source: str = "bearer_header") -> MCPRequestScope:
+def resolve_mcp_scope_from_token(
+    token: str,
+    *,
+    required_scope: str | None = None,
+    source: str = "bearer_header",
+    traceparent: str = "",
+) -> MCPRequestScope:
     if not str(token or "").strip():
         raise MCPTokenAuthError("AUTH_TOKEN_MISSING", "未检测到 Bearer Token")
     payload = verify_mcp_token(token, required_scope=required_scope)
@@ -47,6 +55,8 @@ def resolve_mcp_scope_from_token(token: str, *, required_scope: str | None = Non
         workspace_id=payload["workspace_id"],
         scopes=list(payload["scopes"]),
         source=source,
+        token=str(token or "").strip(),
+        traceparent=str(traceparent or "").strip(),
     )
 
 

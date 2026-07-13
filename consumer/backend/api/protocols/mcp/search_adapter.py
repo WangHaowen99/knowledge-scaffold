@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ..business_data.resolver import BusinessDataConnectionError, resolve_business_data_connection
-from ..business_data.providers.graph.backends.hugegraph import HugeGraphBackend
-from ..business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
-from ..business_data.providers.graph.mapping import GraphMappingResolver
-from ..business_data.providers.graph.models import GraphEntityMapping, GraphSearchRuntimeContext
-from ..business_data.providers.graph.scope import GraphScopeError, build_graph_scope
-from ..business_data.providers.graph.tools.executor import GraphToolExecutor, GraphToolInputError
-from ..workspaces import get_workspace, get_workspace_paths, workspace_scope
+from agent.tools.business_data.resolver import BusinessDataConnectionError, resolve_business_data_source
+from agent.tools.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
+from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
+from agent.tools.business_data.providers.graph.mapping import GraphMappingResolver
+from agent.tools.business_data.providers.graph.models import GraphEntityMapping, GraphSearchRuntimeContext
+from agent.tools.business_data.providers.graph.scope import GraphScopeError, build_graph_scope
+from agent.tools.business_data.providers.graph.tools.executor import GraphToolExecutor, GraphToolInputError
+from workspace.workspaces import get_workspace, get_workspace_paths, workspace_scope
 from .schemas import error_result
-from .scope import MCPRequestScope
+from integration.mcp.scope import MCPRequestScope
 from .tool_contracts import SEARCH_TOOL_NAMES, list_search_tools, normalize_search_tool_args, ToolInputIssue
 
 UNSUPPORTED_TOOLS: set[str] = set()
@@ -125,7 +125,7 @@ class _SearchRuntimeBundle:
 
 
 def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, query: str) -> _SearchRuntimeBundle:
-    connection = resolve_business_data_connection(
+    connection = resolve_business_data_source(
         workspace_id=scope.workspace_id,
         ontology_id=ontology_id,
     )
