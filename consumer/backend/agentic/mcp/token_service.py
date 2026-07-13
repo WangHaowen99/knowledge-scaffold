@@ -112,6 +112,15 @@ def revoke_mcp_token(*, username: str, workspace_id: str, token_id: str, store: 
     return (store or MCPTokenStore()).revoke_token(username=username, workspace_id=workspace_id, token_id=token_id)
 
 
+def revoke_all_mcp_tokens_for_user(
+    *,
+    username: str,
+    store: MCPTokenStore | None = None,
+) -> int:
+    """Revoke all MCP credentials for a deleted identity."""
+    return (store or MCPTokenStore()).revoke_user_tokens(username=username)
+
+
 def verify_mcp_token(token: str, *, required_scope: str | None = None, config: MCPRuntimeConfig | None = None) -> dict[str, Any]:
     cfg = config or load_mcp_runtime_config()
     try:

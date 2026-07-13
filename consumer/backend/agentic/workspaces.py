@@ -52,6 +52,19 @@ class WorkspacePaths:
     users_runtime_dir: Path
 
 
+@dataclass(frozen=True)
+class WorkspaceSubjectAccessDecision:
+    """ACL decision for callers that only have a persisted username.
+
+    The standalone MCP process cannot safely resolve the user's current global
+    role.  Its request-time check therefore uses the minimum shared policy:
+    owner, member, default workspace, or ownerless workspace.
+    """
+
+    allowed: bool
+    reason: str
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -242,6 +255,112 @@ def user_can_access_workspace(user: Any, meta_raw: Dict[str, str], is_default: b
     if username and isinstance(members, list) and username in members:
         return True
     return False
+
+
+def evaluate_workspace_subject_access(
+    username: str,
+    workspace_id: str,
+) -> WorkspaceSubjectAccessDecision:
+    """Re-read workspace ACL metadata and decide access for ``username``.
+
+    This is intentionally independent from Flask's request user.  It is used
+    by the standalone MCP process, where the signed token supplies only a
+    subject and workspace id.  ACL-critical metadata is validated strictly so
+    a missing, malformed, or directory/id-mismatched document never becomes a
+    public workspace by accident.
+    """
+
+    subject = str(username or "").strip()
+    if not subject:
+        return WorkspaceSubjectAccessDecision(False, "subject_invalid")
+
+    claimed_workspace_id = str(workspace_id or "").strip()
+    try:
+        resolved_workspace_id = validate_workspace_id(claimed_workspace_id)
+    except (TypeError, ValueError):
+        return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
+    if resolved_workspace_id != claimed_workspace_id:
+        return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
+
+    paths = get_workspace_paths(resolved_workspace_id)
+    with _workspace_metadata_lock:
+        if not paths.metadata_path.is_file():
+            return WorkspaceSubjectAccessDecision(False, "workspace_not_found")
+        try:
+            metadata = _read_workspace_metadata_raw(paths.metadata_path)
+            owner, members = _validate_workspace_acl_metadata(
+                resolved_workspace_id,
+                metadata,
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
+            return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
+
+        default_workspace_id = _read_default_workspace_id_for_acl()
+
+    if owner is None:
+        return WorkspaceSubjectAccessDecision(True, "ownerless")
+    if resolved_workspace_id == default_workspace_id:
+        return WorkspaceSubjectAccessDecision(True, "default")
+    if subject == owner:
+        return WorkspaceSubjectAccessDecision(True, "owner")
+    if subject in members:
+        return WorkspaceSubjectAccessDecision(True, "member")
+    return WorkspaceSubjectAccessDecision(False, "access_revoked")
+
+
+def _validate_workspace_acl_metadata(
+    expected_workspace_id: str,
+    metadata: Any,
+) -> tuple[Optional[str], List[str]]:
+    if not isinstance(metadata, dict):
+        raise ValueError("workspace metadata must be an object")
+
+    actual_workspace_id = metadata.get("id")
+    if not isinstance(actual_workspace_id, str) or actual_workspace_id != expected_workspace_id:
+        raise ValueError("workspace metadata id mismatch")
+
+    owner = metadata.get("owner")
+    if owner is not None:
+        if not isinstance(owner, str) or not owner.strip() or owner != owner.strip():
+            raise ValueError("workspace owner is invalid")
+
+    raw_members = metadata.get("members", [])
+    if not isinstance(raw_members, list):
+        raise ValueError("workspace members must be an array")
+    members: List[str] = []
+    seen: set[str] = set()
+    for member in raw_members:
+        if not isinstance(member, str) or not member.strip() or member != member.strip():
+            raise ValueError("workspace member is invalid")
+        if member in seen:
+            raise ValueError("workspace members contain duplicates")
+        seen.add(member)
+        members.append(member)
+    if len(members) > _WORKSPACE_MEMBERS_MAX_COUNT:
+        raise ValueError("workspace members exceed the configured limit")
+    return owner, members
+
+
+def _read_default_workspace_id_for_acl() -> Optional[str]:
+    """Read the default id without migration or fail-open repair behavior."""
+
+    settings_path = get_workspace_settings_path()
+    if not settings_path.is_file():
+        return None
+    try:
+        with settings_path.open("r", encoding="utf-8") as f:
+            settings = json.load(f)
+        if not isinstance(settings, dict):
+            return None
+        raw_default = settings.get("default_workspace_id")
+        if not isinstance(raw_default, str) or not raw_default.strip():
+            return None
+        resolved_default = validate_workspace_id(raw_default)
+        if resolved_default != raw_default:
+            return None
+        return resolved_default
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _init_workspace_layout(
