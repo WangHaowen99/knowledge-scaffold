@@ -339,11 +339,11 @@ auth-server 能力冻结清单：
 
 来源：本地 `main@31fba9db`。
 
-- [ ] 将本地 `backend` 的分层包、测试、SDK 相关契约迁到 `consumer`。
-- [ ] 保留远端独有代码引用，不在此阶段尝试把 `agentic/` 作为兼容包运行。
-- [ ] 合并 requirements：本地依赖为底，追加 `openjiuwen==0.1.14`、`neo4j>=5.0.0`、`PyJWT>=2.8.0`、`fastmcp>=2.0.0`、`uvicorn>=0.30.0`、`jsonschema-path>=0.3.4`。
-- [ ] 保留远端 `auth-server` 的 Authlib/cryptography 独立 requirements。
-- [ ] 将本地 `.onto-runtime`、workspace、ops/system config 约定作为 consumer 运行时约定。
+- [x] 将本地 `backend` 的分层包、测试、SDK 相关契约迁到 `consumer`。
+- [x] 保留远端独有代码引用，不在此阶段尝试把 `agentic/` 作为兼容包运行。
+- [x] 合并 requirements：本地依赖为底，追加 `openjiuwen==0.1.14`、`neo4j>=5.0.0`、`PyJWT>=2.8.0`、`fastmcp>=2.0.0`、`uvicorn>=0.30.0`、`jsonschema-path>=0.3.4`。
+- [x] 保留远端 `auth-server` 的 Authlib/cryptography 独立 requirements。
+- [x] 将本地 `.onto-runtime`、workspace、ops/system config 约定作为 consumer 运行时约定。
 
 验证：
 
@@ -362,12 +362,12 @@ PYTHONPATH=backend ./venv/bin/python -m pytest \
 
 #### M1-2 迁移本地最新运行能力
 
-- [ ] 保留 `RunAdmissionQueue`、token bucket、run handle 和 replay buffer。
-- [ ] 保留 `/agentic/runs/<run_id>/events`、`Last-Event-ID`、status/cancel。
-- [ ] 保留 strict interaction checkpoint、响应校验和一次性消费。
-- [ ] 保留 session storage boundary、workspace-private model、role-bound refs。
-- [ ] 保留当前 tool registry、memory、operation evolution、skill evolution。
-- [ ] 保留 A2A/ACP、Web Search、onto-platform、ontology/skill/script parser、assets、ops 配额和日志保留策略。
+- [x] 保留 `RunAdmissionQueue`、token bucket、run handle 和 replay buffer。
+- [x] 保留 `/agentic/runs/<run_id>/events`、`Last-Event-ID`、status/cancel。
+- [x] 保留 strict interaction checkpoint、响应校验和一次性消费。
+- [x] 保留 session storage boundary、workspace-private model、role-bound refs。
+- [x] 保留当前 tool registry、memory、operation evolution、skill evolution。
+- [x] 保留 A2A/ACP、Web Search、onto-platform、ontology/skill/script parser、assets、ops 配额和日志保留策略。
 
 验证：
 

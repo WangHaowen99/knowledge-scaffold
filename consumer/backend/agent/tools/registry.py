@@ -16,6 +16,7 @@ from agent.tools.request_user_interaction import RequestUserInteractionTool
 from agent.tools.skill import SkillTool
 from agent.tools.spawn_sub_agent import SpawnSubAgentTool
 from agent.tools.web_search_tool import WebSearchTool
+from utils.skills import get_skill_registry
 
 # Re-export execute_tool_batch for backward compatibility
 from agent.tools.executor import execute_tool_batch  # noqa: F401
@@ -58,16 +59,19 @@ def get_all_tools_schema() -> List[Dict[str, Any]]:
     return [spec.schema for spec in TOOL_SPECS.values()]
 
 
-def get_tools_schema(
+def get_tool_specs_for_caller(
     caller: ToolCaller,
     *,
     include_memory: bool = True,
     include_orchestration: bool = True,
     include_web_search: bool = False,
-) -> List[Dict[str, Any]]:
-    schemas: List[Dict[str, Any]] = []
+) -> List[BaseTool]:
+    specs: List[BaseTool] = []
+    has_skills = _has_registered_skills()
     for spec in TOOL_SPECS.values():
         if caller not in spec.allowed_callers:
+            continue
+        if spec.name == "skill" and not has_skills:
             continue
         if not include_memory and spec.category == "memory":
             continue
@@ -75,8 +79,26 @@ def get_tools_schema(
             continue
         if not include_web_search and spec.category == "web_search":
             continue
-        schemas.append(spec.schema)
-    return schemas
+        specs.append(spec)
+    return specs
+
+
+def get_tools_schema(
+    caller: ToolCaller,
+    *,
+    include_memory: bool = True,
+    include_orchestration: bool = True,
+    include_web_search: bool = False,
+) -> List[Dict[str, Any]]:
+    return [
+        spec.schema
+        for spec in get_tool_specs_for_caller(
+            caller,
+            include_memory=include_memory,
+            include_orchestration=include_orchestration,
+            include_web_search=include_web_search,
+        )
+    ]
 
 
 def get_regular_tools_schema(
@@ -85,8 +107,11 @@ def get_regular_tools_schema(
     include_web_search: bool = False,
 ) -> List[Dict[str, Any]]:
     schemas = []
+    has_skills = _has_registered_skills()
     for spec in TOOL_SPECS.values():
         if spec.category not in {"regular", "business_data_search", "web_search"}:
+            continue
+        if spec.name == "skill" and not has_skills:
             continue
         if spec.category == "web_search" and not include_web_search:
             continue
@@ -106,6 +131,17 @@ def get_universal_tools_schema(
         include_memory=include_memory,
         include_web_search=include_web_search,
     )
+
+
+def _has_registered_skills() -> bool:
+    try:
+        return bool(get_skill_registry().list_skills())
+    except Exception:
+        logger.warning("Failed to inspect skill registry while building tool schemas", exc_info=True)
+        # Schema generation can run before a default workspace is established.
+        # Preserve the base registry in that indeterminate state; an explicitly
+        # loaded empty registry still hides the skill tool.
+        return True
 
 
 # ============================================================================
