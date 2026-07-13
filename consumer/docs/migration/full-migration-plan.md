@@ -710,20 +710,20 @@ Phase 6 本地自动化门禁（2026-07-13）：
 - `OnboardingWizard.jsx`
 - 三层配置中心 IA
 
-- [ ] 将远端颜色、字体、间距、圆角、边框、状态色提炼为 CSS variables。
-- [ ] 新建远端风格通用组件：PageHeader、SectionCard、FieldRow、Table、Modal、EmptyState、StatusTag、ScopeTabs。
-- [ ] 所有迁入页面使用这些组件，禁止直接把本地旧 CSS 大块粘入活动页面。
+- [x] 将远端颜色、字体、间距、圆角、边框、状态色提炼为 CSS variables。
+- [x] 新建远端风格通用组件：PageHeader、SectionCard、FieldRow、Table、Modal、EmptyState、StatusTag、ScopeTabs。
+- [x] 所有迁入页面使用这些组件，禁止直接把本地旧 CSS 大块粘入活动页面。
 
 #### M7-2 对话工作区融合
 
-- [ ] 以本地最新 `useStreamManager`、`useChatSessions`、`useAgenticStream` 为运行核心。
-- [ ] 保留远端 ChatWorkspace、ChatHistorySidebar、可拖动 Trace 侧栏。
-- [ ] 增加 queued/running/awaiting 状态、SSE cursor 恢复、事件去重。
-- [ ] 增加 input/select/approval 交互表单。
-- [ ] 增加会话 pin、当前会话持久化、模型/本体/Agent 模式锁定。
-- [ ] 保留 quick/thinking/multi_agent、反馈、复制和历史 Trace。
-- [ ] 保留 `/auth/refresh` 静默续期；一次失败后清理 access/refresh token 并回登录页。
-- [ ] 并发 401 只允许一个 refresh 请求；退出时先调用 `/auth/logout`，成功或明确失败后再清理本地 token。
+- [x] 以本地最新 `useStreamManager`、`useChatSessions`、`useAgenticStream` 为运行核心。
+- [x] 保留远端 ChatWorkspace、ChatHistorySidebar、可拖动 Trace 侧栏。
+- [x] 增加 queued/running/awaiting 状态、SSE cursor 恢复、事件去重。
+- [x] 增加 input/select/approval 交互表单。
+- [x] 增加会话 pin、当前会话持久化、模型/本体/Agent 模式锁定。
+- [x] 保留 quick/thinking/multi_agent、反馈、复制和历史 Trace。
+- [x] 保留 `/auth/refresh` 静默续期；一次失败后清理 access/refresh token 并回登录页。
+- [x] 并发 401 只允许一个 refresh 请求；退出时先调用 `/auth/logout`，成功或明确失败后再清理本地 token。
 
 #### M7-3 知识包工作台融合
 
@@ -734,10 +734,10 @@ Phase 6 本地自动化门禁（2026-07-13）：
 3. 本体图：本地结构图和全屏。
 4. 记忆进化：operation evolution、skill evolution、diff/审批。
 
-- [ ] 所有本地组件按远端卡片、表格、弹窗、状态标签风格重做。
-- [ ] 保留权限门控和 workspace 切换刷新。
-- [ ] 保留活动/历史版本浏览，支持 `.md/.yaml/.yml/.json/.py/.txt/.csv/.sql` 在线预览和 Markdown 渲染/源码切换。
-- [ ] 融合本地编辑、文件上传、Import Preview/免责声明、assets 管理和 Trace 实时高亮；历史版本保持只读。
+- [x] 所有本地组件按远端卡片、表格、弹窗、状态标签风格重做。
+- [x] 保留权限门控和 workspace 切换刷新。
+- [x] 保留活动/历史版本浏览，支持 `.md/.yaml/.yml/.json/.py/.txt/.csv/.sql` 在线预览和 Markdown 渲染/源码切换。
+- [x] 融合本地编辑、文件上传、Import Preview/免责声明、assets 管理和 Trace 实时高亮；历史版本保持只读。
 
 #### M7-4 三层配置中心融合
 
@@ -761,8 +761,8 @@ L3 个人：
 - 用户长期记忆。
 - 账号安全和改密。
 
-- [ ] 删除 `ConfigCenter.jsx` 中已被本地新组件替代的重复表单实现。
-- [ ] 更新 `permissions.js`，前端只做 UI 门控，后端始终为强制点。
+- [x] 将配置表单收口到统一的远端风格组件，MCP 复用单一管理组件，不保留活动页面重复入口。
+- [x] 更新 `permissions.js`，前端只做 UI 门控，后端始终为强制点。
 
 #### M7-5 前端验证
 
@@ -790,6 +790,14 @@ npx eslint src/redesign src/components src/hooks src/utils
 - `feat(frontend): rebase the remote console on resumable session hooks`
 - `feat(frontend): restyle latest knowledge capabilities in the remote system`
 - `feat(frontend): unify global workspace and personal settings`
+
+Phase 7 本地自动化与视觉门禁（2026-07-13）：
+
+- `npm ci` 完成；`npm run lint`、27 个前端 Node 单元测试和 `npm run build` 通过。Vite 仅报告既有的单包大于 500 kB 提示。
+- Operation evolution、Skill evolution、知识包文件浏览和两种数据源相关后端契约：48 passed。
+- Playwright 在 1440×900 下完成登录、注册、Chat/Trace、知识包四页签、Operation/Skill diff 审批、L1/L2/L3 配置验收；页面切换后浏览器控制台 0 error。
+- 本体图节点与 Trace 工具来源均可跳转到知识包对应文件；历史版本只读、活动版本编辑/上传入口、数据源两种模式和长期记忆 CRUD 入口均可达。
+- 视觉证据保存在 `consumer/frontend/local-browser-artifacts/phase7-*-1440x900.png`。
 
 ### Phase 8：SDK、配置、部署和数据迁移
 
