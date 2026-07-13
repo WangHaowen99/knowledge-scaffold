@@ -1,10 +1,112 @@
 import { useEffect, useRef, useState } from 'react';
-import { PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { Activity, ArrowUpRight, BrainCircuit, Check, ChevronDown, Circle, GitBranch, PanelRightClose, PanelRightOpen, Sparkles, Wrench, X } from 'lucide-react';
 import useAgenticStream from '../hooks/useAgenticStream';
 import { authFetch } from '../utils/auth';
+import { getWorkspaceAgentMode, normalizeAgentMode } from '../utils/workspacePreferences';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
 import { formatTime, truncate } from './chatUtils';
+
+const STARTER_PROMPTS = [
+  '总结当前知识包的核心业务对象与关系',
+  '分析一个典型业务变更的影响范围',
+  '列出当前知识包可以回答的典型问题',
+];
+
+const AGENT_MODE_META = {
+  quick: { label: '快速思考', description: '响应更快，适合直接问答', Icon: Sparkles },
+  thinking: { label: '深度思考', description: '加强推理，适合复杂分析', Icon: BrainCircuit },
+  multi_agent: { label: '多智能体', description: '拆分任务并协同处理', Icon: GitBranch },
+};
+
+function AgentModePicker({ value, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const current = AGENT_MODE_META[value] || AGENT_MODE_META.quick;
+  const CurrentIcon = current.Icon;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  const toggle = () => {
+    if (disabled) return;
+    setOpen((wasOpen) => {
+      const nextOpen = !wasOpen;
+      if (nextOpen) {
+        requestAnimationFrame(() => rootRef.current?.querySelector('[aria-checked="true"]')?.focus());
+      }
+      return nextOpen;
+    });
+  };
+
+  const handleOptionKeyDown = (event) => {
+    const options = [...(rootRef.current?.querySelectorAll('.mode-option') || [])];
+    const index = options.indexOf(event.currentTarget);
+    let nextIndex = index;
+    if (event.key === 'ArrowDown') nextIndex = (index + 1) % options.length;
+    else if (event.key === 'ArrowUp') nextIndex = (index - 1 + options.length) % options.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = options.length - 1;
+    else return;
+    event.preventDefault();
+    options[nextIndex]?.focus();
+  };
+
+  return (
+    <div className="mode-dropdown" ref={rootRef}>
+      <button ref={triggerRef} type="button" className="mode-picker"
+        aria-label={`对话模式：${current.label}`} aria-haspopup="menu" aria-expanded={open}
+        title="选择对话模式" disabled={disabled} onClick={toggle}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            if (!open) toggle();
+          }
+        }}>
+        <CurrentIcon className="mode-icon" size={14} strokeWidth={2} aria-hidden="true" />
+        <span className="mode-label">{current.label}</span>
+        <ChevronDown className={`mode-chevron ${open ? 'open' : ''}`} size={13} strokeWidth={2} aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="mode-menu" role="menu" aria-label="选择对话模式">
+          <div className="mode-menu-title">对话模式</div>
+          {Object.entries(AGENT_MODE_META).map(([mode, meta]) => {
+            const OptionIcon = meta.Icon;
+            const selected = mode === value;
+            return (
+              <button key={mode} type="button" className={`mode-option ${selected ? 'selected' : ''}`}
+                role="menuitemradio" aria-checked={selected} onKeyDown={handleOptionKeyDown}
+                onClick={() => { onChange(mode); setOpen(false); triggerRef.current?.focus(); }}>
+                <span className="mode-option-icon"><OptionIcon size={15} strokeWidth={1.9} /></span>
+                <span className="mode-option-copy">
+                  <span className="mode-option-label">{meta.label}</span>
+                  <span className="mode-option-desc">{meta.description}</span>
+                </span>
+                {selected && <Check className="mode-option-check" size={15} strokeWidth={2.2} aria-hidden="true" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
@@ -14,17 +116,23 @@ export default function ChatWorkspace({ chat, streamManager }) {
   const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle } = chat;
   const { sendAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
   const [input, setInput] = useState('');
-  const [traceOpen, setTraceOpen] = useState(true);
+  const inputRef = useRef(null);
+  const [traceOpen, setTraceOpen] = useState(() => {
+    try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
+  });
   // Agent 模式：quick(快速) / thinking(深度思考) / multi_agent(多智能体)。
   // 按 workspace 持久化到 localStorage，默认 quick。
   const agentModeKey = `mw_ws_agentmode_${workspaceId}`;
-  const normalizeAgentMode = (mode) => (mode === 'standard' ? 'thinking' : mode);
-  const [agentMode, setAgentMode] = useState(
-    () => normalizeAgentMode(localStorage.getItem(agentModeKey)) || 'quick'
-  );
+  const [agentModePreference, setAgentModePreference] = useState(() => ({
+    key: agentModeKey,
+    mode: getWorkspaceAgentMode(localStorage, workspaceId),
+  }));
+  const agentMode = agentModePreference.key === agentModeKey
+    ? agentModePreference.mode
+    : getWorkspaceAgentMode(localStorage, workspaceId);
   const changeAgentMode = (mode) => {
     const nextMode = normalizeAgentMode(mode);
-    setAgentMode(nextMode);
+    setAgentModePreference({ key: agentModeKey, mode: nextMode });
     try { localStorage.setItem(agentModeKey, nextMode); } catch { /* ignore */ }
   };
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
@@ -56,8 +164,22 @@ export default function ChatWorkspace({ chat, streamManager }) {
     window.addEventListener('mouseup', onUp);
   };
   const traceWidthRef = useRef(traceWidth);
-  traceWidthRef.current = traceWidth;
   const bodyRef = useRef(null);
+
+  useEffect(() => {
+    traceWidthRef.current = traceWidth;
+  }, [traceWidth]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      const maxWidth = Math.max(TRACE_MIN_W, entry.contentRect.width - 360);
+      setTraceWidth((currentWidth) => Math.min(Math.max(TRACE_MIN_W, currentWidth), maxWidth));
+    });
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -66,19 +188,23 @@ export default function ChatWorkspace({ chat, streamManager }) {
 
   const send = async () => {
     const text = input.trim();
-    if (!text) return;
-    setInput('');
+    if (!text || streamState.isLoading) return;
     let sessionId = currentChatId;
     let isNew = false;
-    if (!sessionId) {
-      const modelProfileId = localStorage.getItem(`mw_ws_model_${workspaceId}`) || undefined;
-      const session = await createChat({ llmRequestMode: 'stream', modelProfileId });
-      if (!session) return;
-      sessionId = session.id;
-      isNew = true;
+    try {
+      if (!sessionId) {
+        const modelProfileId = localStorage.getItem(`mw_ws_model_${workspaceId}`) || undefined;
+        const session = await createChat({ llmRequestMode: 'stream', modelProfileId });
+        if (!session) return;
+        sessionId = session.id;
+        isNew = true;
+      }
+      sendAgentic(text, sessionId, { agentMode });
+      setInput('');
+      if (isNew) generateSessionTitle(sessionId, text);
+    } catch {
+      setInput(text);
     }
-    sendAgentic(text, sessionId, { agentMode });
-    if (isNew) generateSessionTitle(sessionId, text);
   };
 
   const current = sessions.find((s) => s.id === currentChatId);
@@ -98,34 +224,45 @@ export default function ChatWorkspace({ chat, streamManager }) {
         <div className="th-body" ref={bodyRef}>
           {messages.map((m) => <MessageBubble key={m.id} msg={m} />)}
           {!messages.length && (
-            <div className="empty" style={{ paddingTop: 80 }}>
-              开始新对话——向知识包提问，例如：“分析一下某个 CHANGE_ORDER 的综合影响、成本和周期”
+            <div className="chat-empty">
+              <div className="chat-empty-visual" aria-hidden="true">
+                <span className="orbit orbit-a" /><span className="orbit orbit-b" />
+                <img src="/brand-mark.png" alt="" />
+              </div>
+              <div className="chat-empty-kicker"><Sparkles size={13} />知识与数据已就绪</div>
+              <h2>从一个业务问题开始</h2>
+              <p>我会结合当前工作空间的知识包、数据连接和运行工具给出可追溯的回答。</p>
+              <div className="chat-starters">
+                {STARTER_PROMPTS.map((prompt) => (
+                  <button key={prompt} type="button" onClick={() => { setInput(prompt); inputRef.current?.focus(); }}>
+                    <span>{prompt}</span><ArrowUpRight size={14} />
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
         <div className="th-input">
           <div className="ti-box">
-            <select className="mode-select" value={agentMode}
-              title="对话模式：快速最快；深度思考启用推理链；多智能体可派生子任务"
-              onChange={(e) => changeAgentMode(e.target.value)}
-              disabled={streamState.isLoading}>
-              <option value="quick">快速</option>
-              <option value="thinking">深度思考</option>
-              <option value="multi_agent">多智能体</option>
-            </select>
-            <input value={input} placeholder="输入问题，Enter 发送…"
+            <input className="ti-input" ref={inputRef} value={input} aria-label="对话内容"
+              placeholder="输入问题，Enter 发送…"
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
-            {streamState.isLoading
-              ? <button className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
-              : <button className="btn btn-p" onClick={send}>发送</button>}
+            <div className="ti-actions">
+              <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={streamState.isLoading} />
+              {streamState.isLoading
+                ? <button type="button" className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
+                : <button type="button" className="btn btn-p" disabled={!input.trim()} onClick={send}>发送</button>}
+            </div>
           </div>
         </div>
       </div>
       {traceOpen && (
         <>
+          <button className="trace-backdrop" type="button" aria-label="关闭运行轨迹"
+            onClick={() => setTraceOpen(false)} />
           <div className="trace-resizer" onMouseDown={startResize} title="拖拽调整 Trace 宽度" />
-          <TracePanel messages={messages} width={traceWidth} />
+          <TracePanel messages={messages} width={traceWidth} onClose={() => setTraceOpen(false)} />
         </>
       )}
     </div>
@@ -134,11 +271,17 @@ export default function ChatWorkspace({ chat, streamManager }) {
 
 /* ---------------- Trace 竖栏（树形层级：轮次 → 思考/工具/子任务，可展开明细） ---------------- */
 
-function TracePanel({ messages, width }) {
+function TracePanel({ messages, width, onClose }) {
   const turns = messages.filter((m) => m.role === 'assistant');
   return (
     <div className="trace" style={width ? { width } : undefined}>
-      <div className="tr-head">运行轨迹 · Trace</div>
+      <div className="tr-head">
+        <span className="trace-title"><Activity size={14} />运行轨迹</span>
+        <span className="trace-caption">Trace</span>
+        <button className="iconbtn trace-close" type="button" aria-label="关闭运行轨迹" onClick={onClose}>
+          <X size={16} />
+        </button>
+      </div>
       <div className="tr-body">
         {!turns.length && <div className="ch-empty" style={{ padding: '30px 12px' }}>发起对话后，这里按轮次展示模型思考、工具调用与状态明细，可逐层展开</div>}
         {turns.map((m, i) => (
@@ -236,7 +379,7 @@ function TraceNode({ seg }) {
   if (seg.type === 'group' && seg.synthetic) {
     return (
       <div className="trn-plain trn-group" title={seg.label}>
-        <span className="tr-ic">◇</span>
+        <span className="tr-ic"><GitBranch size={11} /></span>
         <span className="tr-lb">{seg.label}</span>
       </div>
     );
@@ -246,15 +389,15 @@ function TraceNode({ seg }) {
   const reasoningSummary = seg.type === 'reasoning'
     ? String(meta.reasoning_summary || '').trim()
     : '';
-  let icon = '·';
+  let Icon = Circle;
   let label = '';
-  if (seg.type === 'tool') { icon = '⚙'; label = meta.tool_name || '工具调用'; }
+  if (seg.type === 'tool') { Icon = Wrench; label = meta.tool_name || '工具调用'; }
   else if (seg.type === 'reasoning') {
-    icon = '🧠';
+    Icon = BrainCircuit;
     // 有摘要时用摘要做标签（一等公民：一眼看到「想了什么」），否则回退通用文案
     label = reasoningSummary ? `思考：${truncate(reasoningSummary, 60)}` : '模型思考';
   }
-  else if (seg.type === 'subagent' || seg.type === 'subagent_group') { icon = '⑂'; label = meta.title || '子任务'; }
+  else if (seg.type === 'subagent' || seg.type === 'subagent_group') { Icon = GitBranch; label = meta.title || '子任务'; }
   else { label = seg.type; }
   const elapsed = meta.elapsed_ms ? `${(meta.elapsed_ms / 1000).toFixed(1)}s` : '';
   const stateMark = elapsed || (done ? '✓' : '⋯');
@@ -282,7 +425,7 @@ function TraceNode({ seg }) {
   if (!detailBlocks.length) {
     return (
       <div className="trn-plain" title={label}>
-        <span className="tr-ic">{icon}</span>
+        <span className="tr-ic"><Icon size={11} /></span>
         <span className="tr-lb">{label}</span>
         <span className="tr-st">{stateMark}</span>
       </div>
@@ -292,7 +435,7 @@ function TraceNode({ seg }) {
     <details className="trn">
       <summary>
         <span className="car">▶</span>
-        <span className="tr-ic">{icon}</span>
+        <span className="tr-ic"><Icon size={11} /></span>
         <span className={`tr-lb ${hasError ? 'err' : ''}`}>{label}</span>
         <span className="tr-st">{stateMark}</span>
       </summary>
@@ -343,7 +486,7 @@ function AssistantBubble({ msg }) {
         <div className={`bub ${isError ? 'err' : ''}`}>
           {toolNames.length > 0 && (
             <div className="refchips">
-              {toolNames.map((t) => <span key={t} className="refchip">⚙ {t}</span>)}
+              {toolNames.map((t) => <span key={t} className="refchip"><Wrench size={11} />{t}</span>)}
             </div>
           )}
           {stepSegs.length > 0 && (
@@ -389,7 +532,7 @@ function StepRow({ seg }) {
   else label = truncate(seg.text || seg.type, 120);
   return (
     <div className={`step${isReasoning ? ' step-reasoning' : ''}`}>
-      <span className="ok">{isReasoning ? '🧠' : (done ? '✓' : '…')}</span>
+      <span className="ok">{isReasoning ? <BrainCircuit size={13} /> : (done ? <Check size={13} /> : '…')}</span>
       <span>{label}</span>
     </div>
   );

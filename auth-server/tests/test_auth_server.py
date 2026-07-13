@@ -376,6 +376,11 @@ def test_health(client):
     assert resp.get_json() == {"status": "ok"}
 
 
+def test_capabilities_reflect_registration_setting(client, reg_client):
+    assert client.get("/capabilities").get_json() == {"registration_enabled": False}
+    assert reg_client.get("/capabilities").get_json() == {"registration_enabled": True}
+
+
 # ------------------------------------------------------------------ Admin 鉴权
 
 
