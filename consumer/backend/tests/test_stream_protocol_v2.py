@@ -1,18 +1,21 @@
 """Tests for the agent-stream.v2 protocol and registry event emission paths."""
 
-from agentic.config import AgentConfig
-from agentic.tools.base import ToolInvocation
-from agentic.tools.registry import ToolContext, execute_tool_batch
-from agentic.utils.streaming import build_agent_event, clear_run_sequence
-from agentic.utils.streaming import stream_writer_context
+import json
+
+from config import AgentConfig
+from agent.tools.registry import ToolContext, execute_tool_batch
+from utils.streaming import build_agent_event, clear_run_sequence
+from utils.streaming import stream_writer_context
 
 
-def _build_tool_call(name: str, arguments: dict, call_id: str = "call_1") -> ToolInvocation:
-    return ToolInvocation(
-        name=name,
-        args=arguments,
-        tool_call_id=call_id,
-    )
+def _build_tool_call(name: str, arguments: dict, call_id: str = "call_1") -> dict:
+    return {
+        "id": call_id,
+        "function": {
+            "name": name,
+            "arguments": json.dumps(arguments),
+        },
+    }
 
 
 def test_build_agent_event_uses_monotonic_seq_per_run():
@@ -55,7 +58,6 @@ def test_execute_tool_batch_emits_v2_regular_tool_events():
         run_id="run-tool-v2",
         session_id="sess-v2",
         turn_id=3,
-        ov_session_id=None,
         agent_config=AgentConfig.from_env(),
         caller="main",
     )

@@ -102,6 +102,7 @@ Before executing in any mode, ensure every required input the chosen path needs 
 
 ## Tool Usage Rules
 - Follow each tool's schema description for tool-specific requirements.
+- Use `skill` only for names listed in `<Available-Skills>`; use ontology ids only with ontology tools.
 - When multiple tool calls have known inputs and no dependency on each other's outputs, batch them in the same response. If a tool call depends on another tool's output, wait for that result and call it in a later response.
 - If a required input for the chosen tool or execution path is missing during manual ontology execution, call `request_user_interaction` with `type="input"` instead of guessing.
 - If the operation lists choices and requires the user to choose exactly one, call `request_user_interaction` with `type="single_choice"` and pass those choices as options.
