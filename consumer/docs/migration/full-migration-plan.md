@@ -1,6 +1,6 @@
 # Meta-Wise Consumer 全量能力保全迁移方案
 
-> 状态：执行中
+> 状态：本地合并阶段完成；真实外部服务和生产切换等待 U2/U5
 > 编制日期：2026-07-13
 > 目标仓库：`https://gitcode.com/how2win/meta-wise.git`
 > 目标分支基线：本地 `develop@1d07c1ee4905b89843b5158e5bbedd91fa3b9537`
@@ -803,40 +803,48 @@ Phase 7 本地自动化与视觉门禁（2026-07-13）：
 
 #### M8-1 SDK 和 API 文档
 
-- [ ] SDK 保留 `X-Workspace-Id`、session/run 续传能力。
-- [ ] 增加 refresh token 使用说明，不把 refresh token 暴露给非浏览器 SDK，除非其明确需要。
-- [ ] 记录 MCP 服务地址、Token scope、Graph provider 配置。
-- [ ] 更新 API 文档中的 auth、workspace、runs、data source、MCP、Trace schema。
+- [x] SDK 保留 `X-Workspace-Id`、session/run 续传能力。
+- [x] 增加 refresh token 使用说明，不把 refresh token 暴露给非浏览器 SDK，除非其明确需要。
+- [x] 记录 MCP 服务地址、Token scope、Graph provider 配置。
+- [x] 更新 API 文档中的 auth、workspace、runs、data source、MCP、Trace schema。
 
 #### M8-2 部署
 
-- [ ] consumer compose 中 auth-server 为必备 healthy dependency，不发布宿主端口。
-- [ ] 合并本地最新 backend/frontend build 与远端 auth/MCP 端口、镜像和 volume；MCP 作为 7488 独立进程默认启动并共享必需的 runtime volume。
-- [ ] 发布包同时包含 backend、frontend、auth-server 镜像。
-- [ ] backup/rollback 覆盖 `.onto-runtime`、`.onto-auth`、MCP token store、配置、Graph migration 状态。
-- [ ] 首次迁移仅在 `.onto-auth/users.json` 不存在时复制旧 users.json，保留原文件备份并设 0600。
-- [ ] 备份 auth-server `keys/`；丢失私钥会使所有 access/refresh token 立即失效。
-- [ ] preflight 检查 auth health、issuer/audience、admin token、MCP 7488 health/secret、Neo4j/HugeGraph 配置。
-- [ ] 根 `deploy/` 取消 auth-server “可选”表述，与 consumer 当前必备语义对齐。
-- [ ] 统一 `AUTH_USER_MAX_COUNT` 与本地 `USER_MAX_COUNT`，或在 compose 中显式映射，禁止静默采用不同默认值。
+- [x] consumer compose 中 auth-server 为必备 healthy dependency，不发布宿主端口。
+- [x] 合并本地最新 backend/frontend build 与远端 auth/MCP 端口、镜像和 volume；MCP 作为 7488 独立进程默认启动并共享必需的 runtime volume。
+- [x] 发布包同时包含 backend、frontend、auth-server 镜像。
+- [x] backup/rollback 覆盖 `.onto-runtime`、`.onto-auth`、MCP token store、配置、Graph migration 状态。
+- [x] 首次迁移仅在 `.onto-auth/users.json` 不存在时复制旧 users.json，保留原文件备份并设 0600。
+- [x] 备份 auth-server `keys/`；丢失私钥会使所有 access/refresh token 立即失效。
+- [x] preflight 检查 auth health、issuer/audience、admin token、MCP 7488 health/secret、Neo4j/HugeGraph 配置。
+- [x] 根 `deploy/` 取消 auth-server “可选”表述，与 consumer 当前必备语义对齐。
+- [x] 统一 `AUTH_USER_MAX_COUNT` 与本地 `USER_MAX_COUNT`，或在 compose 中显式映射，禁止静默采用不同默认值。
 
 #### M8-3 认证与 workspace 数据迁移
 
-必须按以下顺序执行，禁止复用远端当前“先复制、后停写”的迁移窗口：
+以下顺序已固化到发布和升级脚本，并由 dry-run、幂等与失败关闭测试验证。生产环境执行仍受 U5 维护窗口约束：
 
-1. [ ] 停止旧 backend 对 users/workspace 的写入。
-2. [ ] 同时备份 `.onto-runtime/users.json`、`.onto-runtime/workspaces`、`.onto-auth/users.json` 和 `.onto-auth/keys/`。
-3. [ ] 若仅存在本地 users 文件，复制到 `.onto-auth/users.json`；若仅存在远端 auth 文件，直接使用远端文件。
-4. [ ] 两份 users 文件同时存在且内容不同时立即失败，生成字段级差异报告，禁止静默覆盖任一侧。
-5. [ ] 校验 username、role、密码哈希、强制改密和 `token_version`；缺失 `token_version` 按 1 兼容。
-6. [ ] 启动 auth-server，验证 JWKS、issuer、audience，再启动 consumer backend。
-7. [ ] 旧 HMAC access token 不再接受，用户重新登录；保持 `sub=username`，本地 session 路径无需搬迁。
-8. [ ] 存量无 owner workspace 不自动私有化，输出公共空间审计报告供管理员处理。
-9. [ ] 运行 owner/member 孤儿关系审计和 reconciliation，确认无同名账号权限继承风险。
+1. [x] 停止旧 backend 对 users/workspace 的写入。
+2. [x] 同时备份 `.onto-runtime/users.json`、`.onto-runtime/workspaces`、`.onto-auth/users.json` 和 `.onto-auth/keys/`。
+3. [x] 若仅存在本地 users 文件，复制到 `.onto-auth/users.json`；若仅存在远端 auth 文件，直接使用远端文件。
+4. [x] 两份 users 文件同时存在且内容不同时立即失败，生成字段级差异报告，禁止静默覆盖任一侧。
+5. [x] 校验 username、role、密码哈希、强制改密和 `token_version`；缺失 `token_version` 按 1 兼容。
+6. [x] 启动 auth-server，验证 JWKS、issuer、audience，再启动 consumer backend。
+7. [x] 旧 HMAC access token 不再接受，用户重新登录；保持 `sub=username`，本地 session 路径无需搬迁。
+8. [x] 存量无 owner workspace 不自动私有化，输出公共空间审计报告供管理员处理。
+9. [x] 运行 owner/member 孤儿关系审计和 reconciliation，确认无同名账号权限继承风险。
 
 完成条件：原有账号可用原密码登录、私钥重启后保持、workspace 可见性不扩大、迁移脚本 `--dry-run` 与重复执行结果一致。
 
 建议提交：`chore(deploy): ship auth Graph MCP and the latest consumer together`
+
+Phase 8 本地自动化门禁（2026-07-14）：
+
+- Python SDK 续跑测试 2 passed；TypeScript SDK build/typecheck 通过。
+- auth-server 35 passed；认证签名私钥重启持久化、issuer/audience 和 token 失效契约均有覆盖。
+- 部署迁移与 preflight 11 passed，覆盖 dry-run、幂等复制、0600、脱敏差异、ACL 孤儿审计、Graph scope 与加密 secret。
+- consumer 与 release Compose 均通过配置解析；部署 shell 全部通过语法检查。
+- 当前机器 Docker daemon 未运行，容器 health、真实升级和回滚演练保留为 U5 生产切换门禁，不在本地结果中虚报通过。
 
 ## 7. Agent 执行批次与串行文件
 
@@ -869,8 +877,11 @@ MCP 依赖 A+B+C；前端功能接线依赖 A、Trace、Data API 契约。部署
 ### 8.1 静态门禁
 
 ```bash
+TARGET_SHA=1d07c1ee4905b89843b5158e5bbedd91fa3b9537
 ! rg -n "from agentic|import agentic" consumer/backend
-! rg -n "LocalAuthBackend|AUTH_MODE=local|dev-mcp-secret-change" consumer auth-server
+! rg -n "LocalAuthBackend|AUTH_MODE=local|dev-mcp-secret-change" \
+  consumer/backend consumer/deploy consumer/docker-compose.yml \
+  consumer/backend/.env.example auth-server
 git diff --exit-code "$TARGET_SHA" -- modeling evaluation common examples
 git diff --check
 ```
@@ -897,6 +908,14 @@ npm run build
 npm run lint
 ```
 
+最终本地自动化门禁（2026-07-14）：
+
+- 静态门禁通过：无 `agentic` import、local auth 运行路径、默认 MCP secret、冲突标记或空白错误。
+- `modeling/`、`evaluation/`、`common/`、`examples/` 相对冻结的本地 `develop` 无改动。
+- consumer backend：1127 passed，2 个 optional ontology doc fixture 用例跳过；auth-server：35 passed。
+- frontend：27 个 Node 单元测试、lint、production build 通过；仅保留 Vite 既有的单 chunk 大于 500 kB 提示。
+- Python SDK：2 passed；TypeScript SDK build 通过；部署迁移/preflight：11 passed。
+
 ### 8.3 必须完成的真实链路
 
 1. 浏览器登录 → access 过期 → refresh → 原请求只重试一次并成功。
@@ -911,6 +930,10 @@ npm run lint
 10. 发布、升级、备份、回滚后 auth 用户、签名密钥、MCP token、runtime 数据完整。
 11. DataAgent 的重试、artifact fallback、自然语言与 SQL 结果归一化在真实/模拟服务上通过。
 12. A2A、ACP 的发现、运行、取消、续跑都进入同一 Jiuwen orchestrator，并执行 workspace 授权。
+
+### 8.4 真实环境门禁状态
+
+本地代码、mock/in-process 集成、浏览器视觉流程和部署脚本已完成。8.3 中需要真实 Neo4j、HugeGraph、DataAgent、MindsDB、LLM、Web Search、Langfuse、onto-platform 或发布环境数据的链路，必须在 U2/U5 提供环境和维护窗口后执行。当前机器 Docker daemon 未运行，无法完成容器级 health、发布、升级、备份和回滚演练；该限制不影响本地合并提交，但在 U2/U5 完成前不能声明生产验收完成。
 
 ## 9. 回滚策略
 
