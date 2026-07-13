@@ -107,6 +107,19 @@ ensure_env_files() {
     fi
 }
 
+require_mcp_token_secret() {
+    local env_file="${BUNDLE_ROOT}/backend/.env"
+    local secret
+    require_file "${env_file}"
+    secret="$(sed -n 's/^[[:space:]]*MCP_TOKEN_SECRET[[:space:]]*=[[:space:]]*//p' "${env_file}" | tail -n 1)"
+    secret="${secret%\"}"
+    secret="${secret#\"}"
+    secret="${secret%\'}"
+    secret="${secret#\'}"
+    [ "${#secret}" -ge 32 ] || die \
+        "Set MCP_TOKEN_SECRET to an independent random value of at least 32 characters in ${env_file}"
+}
+
 detect_host_arch() {
     local arch
     arch="$(uname -m)"

@@ -70,7 +70,17 @@ class _FakeResponse:
 
 def _install_hugegraph_http(monkeypatch, *, include_competing_path=False):
     vertices = [
-        _vertex("v-m1", "TargetItem", {"TargetItemCode": "M-001", "MaterialCost": 450}),
+        _vertex(
+            "v-m1",
+            "TargetItem",
+            {
+                "TargetItemCode": "M-001",
+                "MaterialCost": 450,
+                "logic_blocks": json.dumps([
+                    {"title": "推荐规则", "content": "命中后推荐"}
+                ], ensure_ascii=False),
+            },
+        ),
         _vertex("v-e1", "SourceItemVersion", {"SourceItemVersionID": "VERSION0001", "SourceItemCode": "101000-001", "SourceItemVersion": "A"}),
         _vertex("v-other", "TargetItem", {"TargetItemCode": "M-999"}, workspace="workspace-b"),
     ]
@@ -257,3 +267,46 @@ def test_hugegraph_backend_pattern_search_projects_return_vars_and_properties(mo
     assert record["nodes"][0]["labels"] == ["TargetItem"]
     assert record["nodes"][0]["properties"] == {"TargetItemCode": "M-001"}
     assert record["selected"] == {"target_item": record["nodes"][0]}
+
+
+def test_hugegraph_backend_runs_extra_mcp_graph_tools(monkeypatch):
+    _install_hugegraph_http(monkeypatch)
+    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+
+    hop = backend.hop_search(
+        entity_instance_id="v-e1",
+        hop_num=1,
+        accurate_flag=False,
+        scope=_scope(),
+    )
+    shortest = backend.shortest_path_search(
+        start_label="SourceItemVersion",
+        start_props={"SourceItemVersionID": "VERSION0001"},
+        end_label="TargetItem",
+        end_props={"TargetItemCode": "M-001"},
+        max_depth=3,
+        directed=True,
+        scope=_scope(),
+    )
+    titles = backend.list_logic_titles(scope=_scope())
+    content = backend.get_logic_content(
+        entity_instance_ids=["v-m1"],
+        logic_titles=["推荐规则"],
+        scope=_scope(),
+    )
+
+    assert hop.records[0]["node_count"] == 2
+    assert hop.records[0]["edge_count"] == 1
+    assert shortest.total == 1
+    assert shortest.records[0]["relationships"][0]["relation_type"] == "PROCESS_TO"
+    assert titles.records == [
+        {"entity_instance_id": "v-m1", "entity_type": "TargetItem", "logic_title": "推荐规则"}
+    ]
+    assert content.records == [
+        {
+            "entity_instance_id": "v-m1",
+            "entity_type": "TargetItem",
+            "logic_title": "推荐规则",
+            "logic_content": "命中后推荐",
+        }
+    ]

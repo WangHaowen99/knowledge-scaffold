@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import json
@@ -435,6 +435,190 @@ class HugeGraphBackend:
 
         return GraphBackendResult(records=records, total=len(records), truncated=len(records) >= normalized_limit)
 
+    def hop_search(
+        self,
+        *,
+        entity_instance_id: str,
+        hop_num: int,
+        accurate_flag: bool,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        normalized_start = _text(entity_instance_id)
+        if not normalized_start:
+            raise GraphBackendUnsupportedError("entity_instance_id 不能为空")
+        depth_limit = max(1, min(int(hop_num or 1), 5))
+        snapshot = self._load_snapshot(scope=scope)
+        if normalized_start not in snapshot.nodes_by_id:
+            payload = _hop_payload([], [], normalized_start, depth_limit, accurate_flag)
+            return GraphBackendResult(records=[payload], total=0, truncated=False, payload={"result": payload})
+
+        distance = self._shortest_distance_map(snapshot, normalized_start, depth_limit)
+        if accurate_flag:
+            selected_nodes, selected_edges = self._select_exact_hop_subgraph(snapshot, distance, depth_limit)
+        else:
+            selected_nodes = {node_id for node_id, dist in distance.items() if dist <= depth_limit}
+            selected_edges = {
+                edge.relation_instance_id
+                for edge in snapshot.edges
+                if edge.source_entity_instance_id in selected_nodes and edge.target_entity_instance_id in selected_nodes
+            }
+
+        node_payloads = [
+            _node_payload(snapshot.nodes_by_id[node_id], scope=scope)
+            for node_id in sorted(selected_nodes)
+            if node_id in snapshot.nodes_by_id
+        ]
+        edge_payloads = [
+            _edge_payload_with_compat(edge, scope=scope)
+            for edge in sorted(snapshot.edges, key=lambda row: row.relation_instance_id)
+            if edge.relation_instance_id in selected_edges
+        ]
+        payload = _hop_payload(node_payloads, edge_payloads, normalized_start, depth_limit, accurate_flag)
+        return GraphBackendResult(records=[payload], total=len(node_payloads), truncated=False, payload={"result": payload})
+
+    def shortest_path_search(
+        self,
+        *,
+        start_label: str,
+        start_props: dict[str, Any],
+        end_label: str,
+        end_props: dict[str, Any],
+        max_depth: int,
+        directed: bool,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        start_token = _text(start_label)
+        end_token = _text(end_label)
+        if not start_token:
+            raise GraphBackendUnsupportedError("start_label 不能为空")
+        if not end_token:
+            raise GraphBackendUnsupportedError("end_label 不能为空")
+        if not isinstance(start_props, Mapping):
+            raise GraphBackendUnsupportedError("start_props 必须是对象")
+        if not isinstance(end_props, Mapping):
+            raise GraphBackendUnsupportedError("end_props 必须是对象")
+
+        depth_limit = max(1, min(int(max_depth or 15), 15))
+        snapshot = self._load_snapshot(scope=scope)
+        start_nodes = [
+            node
+            for node in snapshot.nodes
+            if start_token in node.labels and _match_filter_dict(node.properties, start_props or {})
+        ]
+        end_nodes = [
+            node
+            for node in snapshot.nodes
+            if end_token in node.labels and _match_filter_dict(node.properties, end_props or {})
+        ]
+        if not start_nodes or not end_nodes:
+            return GraphBackendResult(records=[], total=0, truncated=False)
+
+        records: list[dict[str, Any]] = []
+        seen_path_signatures: set[tuple[str, ...]] = set()
+        for start_node in sorted(start_nodes, key=lambda row: row.entity_instance_id):
+            for end_node in sorted(end_nodes, key=lambda row: row.entity_instance_id):
+                if start_node.entity_instance_id == end_node.entity_instance_id:
+                    continue
+                found_path = self._find_shortest_path(
+                    snapshot=snapshot,
+                    start_id=start_node.entity_instance_id,
+                    end_id=end_node.entity_instance_id,
+                    directed=directed,
+                    max_depth=depth_limit,
+                )
+                if found_path is None:
+                    continue
+                node_ids, edge_ids = found_path
+                signature = tuple(node_ids + edge_ids)
+                if signature in seen_path_signatures:
+                    continue
+                seen_path_signatures.add(signature)
+                relationships: list[dict[str, Any]] = []
+                for edge_id in edge_ids:
+                    edge_record = self._find_edge(snapshot, edge_id)
+                    if edge_record is not None:
+                        relationships.append(_edge_payload_with_compat(edge_record, scope=scope))
+                records.append({
+                    "nodes": [_node_payload(snapshot.nodes_by_id[node_id], scope=scope) for node_id in node_ids],
+                    "edges": relationships,
+                    "relationships": relationships,
+                })
+                if len(records) >= 5:
+                    return GraphBackendResult(records=records, total=len(records), truncated=False)
+            if len(records) >= 5:
+                break
+        return GraphBackendResult(records=records, total=len(records), truncated=False)
+
+    def list_logic_titles(
+        self,
+        *,
+        entity_type: str = "",
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        normalized_entity_type = _text(entity_type)
+        snapshot = self._load_snapshot(scope=scope)
+        items: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for node in snapshot.nodes:
+            if _is_logic_element(node.properties):
+                continue
+            entity_type_value = _pick_business_label(node.labels, node.properties.get("entity_type"))
+            if normalized_entity_type and entity_type_value != normalized_entity_type:
+                continue
+            for block in _normalize_logic_blocks(node.properties.get("logic_blocks")):
+                title = _text(block.get("logic_title"))
+                content = _text(block.get("logic_content"))
+                if not title:
+                    continue
+                dedup_key = (entity_type_value.casefold(), title.casefold(), content.casefold())
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                items.append({
+                    "entity_instance_id": node.entity_instance_id,
+                    "entity_type": entity_type_value,
+                    "logic_title": title,
+                })
+        return GraphBackendResult(records=items, total=len(items), truncated=False)
+
+    def get_logic_content(
+        self,
+        *,
+        entity_instance_ids: list[str],
+        logic_titles: list[str] | None,
+        scope: GraphScope,
+    ) -> GraphBackendResult:
+        normalized_entity_ids = _normalize_text_list(entity_instance_ids)
+        if not normalized_entity_ids:
+            raise GraphBackendUnsupportedError("entity_instance_ids 不能为空")
+        normalized_titles = {item.casefold() for item in _normalize_text_list(logic_titles)}
+        snapshot = self._load_snapshot(scope=scope)
+        items: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for entity_id in normalized_entity_ids:
+            node = snapshot.nodes_by_id.get(entity_id)
+            if node is None or _is_logic_element(node.properties):
+                continue
+            entity_type_value = _pick_business_label(node.labels, node.properties.get("entity_type"))
+            for block in _normalize_logic_blocks(node.properties.get("logic_blocks")):
+                title = _text(block.get("logic_title"))
+                content = _text(block.get("logic_content"))
+                if normalized_titles and title.casefold() not in normalized_titles:
+                    continue
+                if not title or not content:
+                    continue
+                dedup_key = (entity_type_value.casefold(), title.casefold(), content.casefold())
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                items.append({
+                    "entity_instance_id": node.entity_instance_id,
+                    "entity_type": entity_type_value,
+                    "logic_title": title,
+                    "logic_content": content,
+                })
+        return GraphBackendResult(records=items, total=len(items), truncated=False)
+
     def get_element_info(
         self,
         *,
@@ -468,6 +652,124 @@ class HugeGraphBackend:
         return {"found": False, "element_id": normalized_id, "element_instance_id": normalized_id}
 
     def close(self) -> None:
+        return None
+
+    def _shortest_distance_map(
+        self,
+        snapshot: _GraphSnapshot,
+        start_node_id: str,
+        max_depth: int,
+    ) -> dict[str, int]:
+        distance: dict[str, int] = {start_node_id: 0}
+        queue: deque[str] = deque([start_node_id])
+        while queue:
+            current = queue.popleft()
+            current_depth = distance[current]
+            if current_depth >= max_depth:
+                continue
+            for _edge, neighbor_id in _iter_neighbors(snapshot, current, directed=False):
+                if neighbor_id in distance:
+                    continue
+                distance[neighbor_id] = current_depth + 1
+                queue.append(neighbor_id)
+        return distance
+
+    def _select_exact_hop_subgraph(
+        self,
+        snapshot: _GraphSnapshot,
+        distance: dict[str, int],
+        hop_num: int,
+    ) -> tuple[set[str], set[str]]:
+        target_nodes = {node_id for node_id, dist in distance.items() if dist == hop_num}
+        if not target_nodes:
+            return set(), set()
+
+        reverse_distance: dict[str, int] = {node_id: 0 for node_id in target_nodes}
+        queue: deque[str] = deque(target_nodes)
+        while queue:
+            current = queue.popleft()
+            current_depth = reverse_distance[current]
+            if current_depth >= hop_num:
+                continue
+            for _edge, neighbor_id in _iter_neighbors(snapshot, current, directed=False):
+                if neighbor_id in reverse_distance:
+                    continue
+                reverse_distance[neighbor_id] = current_depth + 1
+                queue.append(neighbor_id)
+
+        selected_nodes = {
+            node_id
+            for node_id, dist_start in distance.items()
+            if node_id in reverse_distance and dist_start + reverse_distance[node_id] == hop_num
+        }
+        selected_edges: set[str] = set()
+        for edge in snapshot.edges:
+            source = edge.source_entity_instance_id
+            target = edge.target_entity_instance_id
+            if source not in selected_nodes or target not in selected_nodes:
+                continue
+            source_depth = distance.get(source)
+            target_depth = distance.get(target)
+            if source_depth is None or target_depth is None:
+                continue
+            if abs(source_depth - target_depth) != 1:
+                continue
+            selected_edges.add(edge.relation_instance_id)
+        return selected_nodes, selected_edges
+
+    def _find_shortest_path(
+        self,
+        *,
+        snapshot: _GraphSnapshot,
+        start_id: str,
+        end_id: str,
+        directed: bool,
+        max_depth: int,
+    ) -> tuple[list[str], list[str]] | None:
+        queue: deque[str] = deque([start_id])
+        visited: set[str] = {start_id}
+        depth: dict[str, int] = {start_id: 0}
+        previous_node: dict[str, str] = {}
+        previous_edge: dict[str, str] = {}
+
+        while queue:
+            current = queue.popleft()
+            current_depth = depth[current]
+            if current == end_id:
+                break
+            if current_depth >= max_depth:
+                continue
+            for edge, neighbor_id in _iter_neighbors(snapshot, current, directed=directed):
+                if neighbor_id in visited:
+                    continue
+                visited.add(neighbor_id)
+                depth[neighbor_id] = current_depth + 1
+                previous_node[neighbor_id] = current
+                previous_edge[neighbor_id] = edge.relation_instance_id
+                queue.append(neighbor_id)
+
+        if end_id not in visited:
+            return None
+
+        node_ids: list[str] = [end_id]
+        edge_ids: list[str] = []
+        cursor = end_id
+        while cursor != start_id:
+            parent = previous_node.get(cursor)
+            edge_id = previous_edge.get(cursor)
+            if parent is None or edge_id is None:
+                return None
+            edge_ids.append(edge_id)
+            node_ids.append(parent)
+            cursor = parent
+        node_ids.reverse()
+        edge_ids.reverse()
+        return node_ids, edge_ids
+
+    def _find_edge(self, snapshot: _GraphSnapshot, edge_id: str) -> _EdgeRecord | None:
+        for edge in snapshot.edges:
+            if edge.relation_instance_id == edge_id:
+                return edge
         return None
 
     def _select_elements(
@@ -840,6 +1142,37 @@ def _edge_payload(
             return_properties=return_properties,
             hidden_properties=_hidden_properties(scope),
         ),
+    }
+
+
+def _edge_payload_with_compat(
+    edge: _EdgeRecord,
+    *,
+    scope: GraphScope,
+    return_properties: list[str] | None = None,
+) -> dict[str, Any]:
+    payload = _edge_payload(edge, scope=scope, return_properties=return_properties)
+    payload.setdefault("relation_physical_type", payload.get("type") or "")
+    return payload
+
+
+def _hop_payload(
+    nodes: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    center_id: str,
+    hop_num: int,
+    accurate_flag: bool,
+) -> dict[str, Any]:
+    return {
+        "nodes": nodes,
+        "edges": relationships,
+        "relationships": relationships,
+        "node_count": len(nodes),
+        "edge_count": len(relationships),
+        "relationship_count": len(relationships),
+        "center_id": center_id,
+        "hop_num": hop_num,
+        "accurate_flag": bool(accurate_flag),
     }
 
 
@@ -1420,6 +1753,50 @@ def _json_object(value: Any) -> dict[str, Any]:
     except Exception:
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def _normalize_text_list(value: list[str] | None = None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value or []:
+        text = _text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _normalize_logic_blocks(value: Any) -> list[dict[str, str]]:
+    raw_items: Any = value
+    if isinstance(value, str):
+        raw_text = value.strip()
+        if not raw_text:
+            return []
+        try:
+            raw_items = json.loads(raw_text)
+        except Exception:
+            return []
+    if isinstance(raw_items, Mapping):
+        raw_items = [raw_items]
+    if not isinstance(raw_items, list):
+        return []
+
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        title = _text(item.get("title") or item.get("logic_title"))
+        content = _text(item.get("content") or item.get("logic_content"))
+        if not title or not content:
+            continue
+        dedup_key = (title.casefold(), content.casefold())
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+        result.append({"logic_title": title, "logic_content": content})
+    return result
 
 
 def _text(value: Any) -> str:

@@ -162,6 +162,16 @@ Notes:
 - Skills are resolved per workspace under `<consumer>/.onto-runtime/workspaces/<workspace_id>/skills`, then fall back to `<consumer>/.onto-runtime/system/skills`.
 - Server host/port/debug flags live in [`server_config.py`](server_config.py).
 
+### MCP server
+
+The MCP service runs as a separate FastMCP process. Start it from `consumer/backend` after installing dependencies:
+
+```bash
+PYTHONPATH=. python -m agentic.mcp.server --transport streamable-http --host 0.0.0.0 --port 7488
+```
+
+Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The Flask app exposes MCP management APIs under `/agentic/mcp/*`; the standalone MCP process exposes only the protocol selected by `MCP_TRANSPORT`: `streamable-http` exposes `/search/mcp` and `/chat/mcp`, while `sse` exposes `/search/sse` and `/chat/sse`. Search tools require an explicit `ontology_id` argument and execute graph tools without LLM calls. Chat uses the current Agent orchestrator directly with the MCP token subject/workspace.
+
 ## Tests
 
 ```bash
@@ -198,6 +208,19 @@ Important variables:
 | `AUTH_SERVER_ADMIN_TOKEN` | Shared admin token for the auth-server Admin API (required for user management) | empty |
 | `AUTH_SERVER_AUDIENCE` | Expected JWT audience for local token verification | `meta-wise` |
 | `AUTH_SERVER_ISSUER` | Expected JWT issuer; empty means `AUTH_SERVER_URL` is used | empty |
+| `AUTH_USERS_FILE` | User credential file | `<consumer>/.onto-runtime/users.json` |
+| `AUTH_SECRET` | JWT signing secret | `dev-secret-change` fallback if unset |
+| `AUTH_TOKEN_TTL` | JWT TTL in seconds | `43200` |
+| `MCP_SERVER_HOST` | Standalone MCP server host; Docker Compose overrides this to `mcp` in the Flask container for internal probing and to `0.0.0.0` in the MCP container for binding | `0.0.0.0` |
+| `MCP_SERVER_PORT` | Standalone MCP server port; Docker Compose maps host `${MCP_SERVER_PORT:-7488}` to container `7488` | `7488` |
+| `MCP_PUBLIC_BASE_URL` | Externally reachable base URL shown in the console MCP page and copied client configs; set this explicitly to the server IP or domain in Docker deployments | derived from host/port |
+| `MCP_TRANSPORT` | Standalone MCP server transport, `streamable-http` exposes `/search/mcp` and `/chat/mcp`; `sse` exposes `/search/sse` and `/chat/sse` | `streamable-http` |
+| `MCP_SERVICES_CONFIG_FILE` | Optional YAML service catalog path; relative paths resolve from `consumer/backend` | `config/mcp_services.yaml` when present |
+| `MCP_TOKEN_SECRET` | MCP JWT signing secret (required, at least 32 characters; do not reuse another service secret) | no default |
+| `MCP_TOKEN_ISSUER` | MCP JWT `iss` claim | `meta-wise` |
+| `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
+| `MCP_TOKEN_TTL_SECONDS` | Default MCP token TTL | `86400` |
+| `MCP_TOKEN_STORE_PATH` | MCP revocation registry file | `<PROJECT_ROOT>/mcp-tokens.json` |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | Max main-loop iterations | `50` |
 | `AGENT_SUB_AGENT_MAX_ITERATIONS` | Max sub-agent iterations | `20` |
 | `AGENT_SUB_AGENT_MAX_CONCURRENCY` | Max concurrent sub-agents per run | `6` |

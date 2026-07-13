@@ -1,0 +1,241 @@
+"""MCP search adapter backed by GraphToolExecutor."""
+
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from ..business_data.resolver import BusinessDataConnectionError, resolve_business_data_connection
+from ..business_data.providers.graph.backends.hugegraph import HugeGraphBackend
+from ..business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
+from ..business_data.providers.graph.mapping import GraphMappingResolver
+from ..business_data.providers.graph.models import GraphEntityMapping, GraphSearchRuntimeContext
+from ..business_data.providers.graph.scope import GraphScopeError, build_graph_scope
+from ..business_data.providers.graph.tools.executor import GraphToolExecutor, GraphToolInputError
+from ..workspaces import get_workspace, get_workspace_paths, workspace_scope
+from .schemas import error_result
+from .scope import MCPRequestScope
+from .tool_contracts import SEARCH_TOOL_NAMES, list_search_tools, normalize_search_tool_args, ToolInputIssue
+
+UNSUPPORTED_TOOLS: set[str] = set()
+
+
+def execute_search_tool(tool_name: str, args: Mapping[str, Any] | None, *, scope: MCPRequestScope) -> dict[str, Any]:
+    name = str(tool_name or "").strip()
+    if name in UNSUPPORTED_TOOLS:
+        return error_result(
+            error_type="unsupported_tool",
+            error_code="UNSUPPORTED_TOOL",
+            detail="P0 暂不支持 MCP search 工具: {}".format(name),
+            retriable=False,
+        )
+    if name not in SEARCH_TOOL_NAMES:
+        return error_result(
+            error_type="tool_input_error",
+            error_code="UNKNOWN_TOOL",
+            detail="未知 MCP search 工具: {}".format(name or "<empty>"),
+            retriable=False,
+        )
+
+    raw_args = dict(args or {})
+    ontology_id = str(raw_args.pop("ontology_id", "") or "").strip()
+    entity = str(raw_args.pop("entity", "") or "").strip()
+    query = str(raw_args.pop("query", "") or "").strip()
+    if not ontology_id:
+        return _tool_input_error(
+            ToolInputIssue(
+                field="ontology_id",
+                detail="ontology_id 不能为空",
+                hint="请在每个 search 工具参数中显式传入 ontology_id。",
+            )
+        )
+    normalized_args, input_issue = normalize_search_tool_args(name, raw_args)
+    if input_issue:
+        return _tool_input_error(input_issue)
+
+    try:
+        with workspace_scope(scope.workspace_id):
+            runtime = _build_runtime(scope=scope, ontology_id=ontology_id, entity=entity, query=query)
+            try:
+                result = _execute_with_runtime(name, normalized_args or {}, runtime)
+            finally:
+                runtime.close()
+    except (BusinessDataConnectionError, GraphScopeError) as exc:
+        return error_result(
+            error_type="configuration_error",
+            error_code="MCP_SEARCH_CONFIGURATION_ERROR",
+            detail=str(exc),
+            retriable=False,
+        )
+    except GraphToolInputError as exc:
+        return error_result(
+            error_type="tool_input_error",
+            error_code=getattr(exc, "error_code", "GRAPH_TOOL_INPUT_ERROR"),
+            detail=str(exc),
+            retriable=getattr(exc, "retryable", True),
+        )
+    except Exception as exc:
+        return error_result(
+            error_type="backend_error",
+            error_code="MCP_SEARCH_UNEXPECTED_ERROR",
+            detail=str(exc),
+            retriable=True,
+        )
+
+    payload = _public_tool_payload(
+        result,
+        scope=scope,
+        provider=runtime.provider,
+        ontology_id=ontology_id,
+    )
+    return payload
+
+
+def _tool_input_error(issue: ToolInputIssue) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "type": "tool_input_error",
+            "error_code": issue.error_code,
+            "field": issue.field,
+            "detail": issue.detail,
+            "hint": issue.hint,
+            "retriable": True,
+        },
+    }
+
+
+class _SearchRuntimeBundle:
+    def __init__(
+        self,
+        *,
+        provider: str,
+        backend: Any,
+        context: GraphSearchRuntimeContext,
+        mapping: GraphEntityMapping,
+    ) -> None:
+        self.provider = provider
+        self.backend = backend
+        self.context = context
+        self.mapping = mapping
+
+    def close(self) -> None:
+        close = getattr(self.backend, "close", None)
+        if callable(close):
+            close()
+
+
+def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, query: str) -> _SearchRuntimeBundle:
+    connection = resolve_business_data_connection(
+        workspace_id=scope.workspace_id,
+        ontology_id=ontology_id,
+    )
+    provider = str(connection.provider or "").strip().lower()
+    if provider not in {"neo4j", "hugegraph"}:
+        raise BusinessDataConnectionError("/search/mcp 仅支持 neo4j 或 hugegraph provider")
+    workspace_paths = get_workspace_paths(scope.workspace_id)
+    workspace_name = ""
+    try:
+        workspace_name = str(get_workspace(scope.workspace_id).get("name") or "").strip()
+    except Exception:
+        workspace_name = ""
+    provider_config = {
+        **dict(connection.config),
+        "_workspace_root": str(workspace_paths.ontologies_dir),
+        "workspace_id": scope.workspace_id,
+        "workspace_name": workspace_name,
+        "ontology_id": ontology_id,
+    }
+    backend = Neo4jGraphBackend(provider_config) if provider == "neo4j" else HugeGraphBackend(provider_config)
+    graph_scope = build_graph_scope(provider_config)
+    mapping = _resolve_mapping(
+        workspace_root=str(workspace_paths.ontologies_dir),
+        ontology_id=ontology_id,
+        provider=provider,
+        entity=entity,
+    )
+    context = GraphSearchRuntimeContext(
+        provider=provider,
+        workspace_id=scope.workspace_id,
+        ontology_id=ontology_id,
+        workspace_root=str(workspace_paths.ontologies_dir),
+        entity=entity,
+        query=query,
+        timeout_seconds=int(provider_config.get("timeout_seconds") or 60),
+        max_result_rows=int(provider_config.get("max_result_rows") or 100),
+        scope=graph_scope,
+        mapping=mapping,
+        provider_config=provider_config,
+        schema_context={},
+    )
+    return _SearchRuntimeBundle(provider=provider, backend=backend, context=context, mapping=mapping)
+
+
+def _resolve_mapping(*, workspace_root: str, ontology_id: str, provider: str, entity: str) -> GraphEntityMapping:
+    if entity:
+        resolver = GraphMappingResolver(
+            workspace_root=workspace_root,
+            ontology_id=ontology_id,
+            provider=provider,
+        )
+        mapping = resolver.resolve(entity)
+        if mapping is not None:
+            return mapping
+    return GraphEntityMapping(
+        entity=entity or "_mcp_explicit_tool_args",
+        kind="node",
+        source="mcp_explicit_tool_args",
+        label=entity,
+    )
+
+
+def _execute_with_runtime(tool_name: str, args: dict[str, Any], runtime: _SearchRuntimeBundle):
+    executor = GraphToolExecutor(
+        backend=runtime.backend,
+        context=runtime.context,
+        mapping=runtime.mapping,
+    )
+    if tool_name == "get_object_types":
+        execution = executor.execute("get_nodes_schema", {})
+        result = dict(execution.payload.get("result") or {})
+        labels = result.get("labels") if isinstance(result, dict) else []
+        execution.payload["result"] = {"items": labels or [], "total": len(labels or [])}
+        execution.tool_args["mcp_alias"] = "get_object_types"
+        return execution
+    if tool_name == "get_relation_types":
+        execution = executor.execute("get_edges_schema", {})
+        result = dict(execution.payload.get("result") or {})
+        relation_types = result.get("relationship_types") if isinstance(result, dict) else []
+        execution.payload["result"] = {"items": relation_types or [], "total": len(relation_types or [])}
+        execution.tool_args["mcp_alias"] = "get_relation_types"
+        return execution
+    return executor.execute(tool_name, args)
+
+
+def _public_tool_payload(execution, *, scope: MCPRequestScope, provider: str, ontology_id: str) -> dict[str, Any]:
+    payload = dict(execution.payload or {})
+    result = payload.get("result")
+    response = {
+        "ok": bool(payload.get("success", True)),
+        "result": result,
+        "message": payload.get("message") or {"description": "查询成功"},
+        "scope": {
+            "username": scope.username,
+            "workspace_id": scope.workspace_id,
+        },
+        "upstream": {
+            "provider": provider,
+            "ontology_id": ontology_id,
+        },
+        "tool": execution.tool_name,
+    }
+    if "warnings" in payload:
+        response["warnings"] = payload["warnings"]
+    backend_result = execution.backend_result
+    if backend_result is not None:
+        response["record_count"] = (
+            backend_result.total
+            if backend_result.total is not None
+            else len(backend_result.records or [])
+        )
+        response["truncated"] = bool(backend_result.truncated)
+    return response

@@ -24,8 +24,8 @@ COPY . .
 
 # .onto-runtime directory is volume-mounted at runtime; no local data/logs dirs needed
 
-# Expose the port the app runs on
-EXPOSE 5055
+# Expose Flask and standalone MCP ports
+EXPOSE 5055 7488
 
 # Set environment variables
 ENV FLASK_APP=run.py
