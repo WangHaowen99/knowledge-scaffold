@@ -1,10 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PanelRightClose, PanelRightOpen } from 'lucide-react';
 import useAgenticStream from '../hooks/useAgenticStream';
 import { authFetch } from '../utils/auth';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
 import { formatTime, truncate } from './chatUtils';
+import { EmptyState, StatusTag } from './ui';
+
+const safeLocalGet = (key) => {
+  try { return localStorage.getItem(key) || ''; } catch { return ''; }
+};
+
+const safeLocalSet = (key, value) => {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch {
+    // Storage is an optional convenience; runtime state remains authoritative.
+  }
+};
 
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
@@ -12,7 +26,7 @@ import { formatTime, truncate } from './chatUtils';
 export default function ChatWorkspace({ chat, streamManager }) {
   const { workspaceId } = useAuthContext();
   const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle } = chat;
-  const { sendAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
+  const { sendAgentic, resumeAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
   const [input, setInput] = useState('');
   const [traceOpen, setTraceOpen] = useState(true);
   // Agent 模式：quick(快速) / thinking(深度思考) / multi_agent(多智能体)。
@@ -20,13 +34,18 @@ export default function ChatWorkspace({ chat, streamManager }) {
   const agentModeKey = `mw_ws_agentmode_${workspaceId}`;
   const normalizeAgentMode = (mode) => (mode === 'standard' ? 'thinking' : mode);
   const [agentMode, setAgentMode] = useState(
-    () => normalizeAgentMode(localStorage.getItem(agentModeKey)) || 'quick'
+    () => normalizeAgentMode(safeLocalGet(agentModeKey)) || 'quick'
   );
   const changeAgentMode = (mode) => {
     const nextMode = normalizeAgentMode(mode);
     setAgentMode(nextMode);
-    try { localStorage.setItem(agentModeKey, nextMode); } catch { /* ignore */ }
+    safeLocalSet(agentModeKey, nextMode);
   };
+  const [modelProfiles, setModelProfiles] = useState([]);
+  const [defaultModelProfileId, setDefaultModelProfileId] = useState('');
+  const [modelProfileId, setModelProfileId] = useState('');
+  const [ontologies, setOntologies] = useState([]);
+  const [selectedOntologyId, setSelectedOntologyId] = useState('');
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
   const TRACE_MIN_W = 300;
   const [traceWidth, setTraceWidth] = useState(
@@ -56,13 +75,90 @@ export default function ChatWorkspace({ chat, streamManager }) {
     window.addEventListener('mouseup', onUp);
   };
   const traceWidthRef = useRef(traceWidth);
-  traceWidthRef.current = traceWidth;
   const bodyRef = useRef(null);
+  const resumedRunsRef = useRef(new Set());
+
+  useEffect(() => {
+    traceWidthRef.current = traceWidth;
+  }, [traceWidth]);
 
   useEffect(() => {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  const current = sessions.find((session) => session.id === currentChatId);
+  const sessionLocked = Boolean(currentChatId);
+  const pendingInteraction = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message?.role === 'assistant'
+        && ['awaiting', 'awaiting_input'].includes(message.status)
+        && message.interaction?.id
+      ) return message.interaction;
+    }
+    return null;
+  }, [messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadOptions = async () => {
+      try {
+        const [modelsResponse, ontologiesResponse] = await Promise.all([
+          authFetch('/agentic/model-profiles'),
+          authFetch('/agentic/ontologies'),
+        ]);
+        const modelsPayload = await modelsResponse.json().catch(() => ({}));
+        const ontologiesPayload = await ontologiesResponse.json().catch(() => ({}));
+        if (cancelled) return;
+        const profiles = modelsResponse.ok && Array.isArray(modelsPayload.profiles) ? modelsPayload.profiles : [];
+        const availableOntologies = ontologiesResponse.ok && Array.isArray(ontologiesPayload.ontologies)
+          ? ontologiesPayload.ontologies.filter((ontology) => ontology.enabled !== false)
+          : [];
+        setModelProfiles(profiles);
+        setDefaultModelProfileId(modelsPayload.default_profile_id || profiles[0]?.id || '');
+        setOntologies(availableOntologies);
+      } catch {
+        if (!cancelled) {
+          setModelProfiles([]);
+          setDefaultModelProfileId('');
+          setOntologies([]);
+        }
+      }
+    };
+    const timer = setTimeout(loadOptions, 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [workspaceId]);
+
+  useEffect(() => {
+    const metadata = current?.metadata || {};
+    const timer = setTimeout(() => {
+      setAgentMode(normalizeAgentMode(metadata.agent_mode) || normalizeAgentMode(safeLocalGet(agentModeKey)) || 'quick');
+      setModelProfileId(metadata.model_profile_id || safeLocalGet(`mw_ws_model_${workspaceId}`) || defaultModelProfileId);
+      setSelectedOntologyId(currentChatId
+        ? safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`)
+        : '');
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [agentModeKey, current?.metadata, currentChatId, defaultModelProfileId, workspaceId]);
+
+  useEffect(() => {
+    const runId = String(current?.active_run_id || '').trim();
+    const status = String(current?.active_run_status || '').trim();
+    if (!runId || !['queued', 'running'].includes(status)) return;
+    const resumeKey = `${currentChatId}:${runId}`;
+    if (resumedRunsRef.current.has(resumeKey)) return;
+    resumedRunsRef.current.add(resumeKey);
+    void resumeAgentic({
+      runId,
+      targetSessionId: currentChatId,
+      afterSequence: current?.last_seq || 0,
+      status,
+    }).then((resumed) => {
+      if (!resumed) resumedRunsRef.current.delete(resumeKey);
+    });
+  }, [current?.active_run_id, current?.active_run_status, current?.last_seq, currentChatId, resumeAgentic]);
 
   const send = async () => {
     const text = input.trim();
@@ -71,18 +167,41 @@ export default function ChatWorkspace({ chat, streamManager }) {
     let sessionId = currentChatId;
     let isNew = false;
     if (!sessionId) {
-      const modelProfileId = localStorage.getItem(`mw_ws_model_${workspaceId}`) || undefined;
-      const session = await createChat({ llmRequestMode: 'stream', modelProfileId });
+      const session = await createChat({ llmRequestMode: 'stream', modelProfileId, agentMode });
       if (!session) return;
       sessionId = session.id;
       isNew = true;
+      if (selectedOntologyId) {
+        safeLocalSet(`mw_session_ontology_${workspaceId}_${sessionId}`, selectedOntologyId);
+      }
     }
-    sendAgentic(text, sessionId, { agentMode });
+    sendAgentic(text, sessionId, { agentMode, modelProfileId, selectedOntologyId });
     if (isNew) generateSessionTitle(sessionId, text);
   };
-
-  const current = sessions.find((s) => s.id === currentChatId);
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const streamStatusLabel = {
+    queued: `排队中${streamState.queue?.position ? ` · 第 ${streamState.queue.position} 位` : ''}`,
+    reconnecting: '连接恢复中',
+    streaming: '运行中',
+    finalizing: '收尾中',
+    awaiting: '等待输入',
+    cancelled: '已停止',
+    error: '连接异常',
+  }[streamState.status] || '';
+  const submitInteraction = (displayText, response) => {
+    if (!pendingInteraction?.id || !currentChatId) return;
+    sendAgentic(String(displayText || response?.value || ''), currentChatId, {
+      agentMode,
+      modelProfileId,
+      selectedOntologyId,
+      interactionResponse: {
+        interaction_id: pendingInteraction.id,
+        type: response?.type || pendingInteraction.type || 'input',
+        value: response?.value ?? displayText,
+        option_id: response?.option_id,
+      },
+    });
+  };
 
   return (
     <div className="chatwrap" ref={wrapRef}>
@@ -90,6 +209,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
         <div className="th-head">
           <span className="tt">{current?.title || '新对话'}</span>
           {current && <span className="tm">{formatTime(current.updated_at || current.created_at)}</span>}
+          {streamStatusLabel && <StatusTag status={streamState.status}>{streamStatusLabel}</StatusTag>}
           <button className="iconbtn" style={{ marginLeft: 'auto' }} title={traceOpen ? '收起 Trace' : '展开 Trace'}
             onClick={() => setTraceOpen((v) => !v)}>
             {traceOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
@@ -98,28 +218,49 @@ export default function ChatWorkspace({ chat, streamManager }) {
         <div className="th-body" ref={bodyRef}>
           {messages.map((m) => <MessageBubble key={m.id} msg={m} />)}
           {!messages.length && (
-            <div className="empty" style={{ paddingTop: 80 }}>
-              开始新对话——向知识包提问，例如：“分析一下某个 CHANGE_ORDER 的综合影响、成本和周期”
-            </div>
+            <EmptyState title="开始新对话"
+              description="向知识包提问，例如：分析某个 CHANGE_ORDER 的综合影响、成本和周期。" />
           )}
         </div>
         <div className="th-input">
-          <div className="ti-box">
+          <div className="chat-config-locks">
             <select className="mode-select" value={agentMode}
               title="对话模式：快速最快；深度思考启用推理链；多智能体可派生子任务"
               onChange={(e) => changeAgentMode(e.target.value)}
-              disabled={streamState.isLoading}>
+              disabled={sessionLocked || streamState.isLoading}>
               <option value="quick">快速</option>
               <option value="thinking">深度思考</option>
               <option value="multi_agent">多智能体</option>
             </select>
-            <input value={input} placeholder="输入问题，Enter 发送…"
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
-            {streamState.isLoading
-              ? <button className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
-              : <button className="btn btn-p" onClick={send}>发送</button>}
+            <select value={modelProfileId} title="模型在会话创建后锁定"
+              disabled={sessionLocked || streamState.isLoading || !modelProfiles.length}
+              onChange={(event) => {
+                setModelProfileId(event.target.value);
+                safeLocalSet(`mw_ws_model_${workspaceId}`, event.target.value);
+              }}>
+              {!modelProfiles.length && <option value="">暂无可用模型</option>}
+              {modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
+            </select>
+            <select value={selectedOntologyId} title="知识包在会话创建后锁定"
+              disabled={sessionLocked || streamState.isLoading}
+              onChange={(event) => setSelectedOntologyId(event.target.value)}>
+              <option value="">自动选择知识包</option>
+              {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{ontology.name || ontology.id}</option>)}
+            </select>
+            {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
           </div>
+          {pendingInteraction ? (
+            <InteractionComposer interaction={pendingInteraction} disabled={streamState.isLoading} onSubmit={submitInteraction} />
+          ) : (
+            <div className="ti-box">
+              <input value={input} placeholder="输入问题，Enter 发送…"
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
+              {streamState.isLoading
+                ? <button className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
+                : <button className="btn btn-p" disabled={!modelProfileId} onClick={send}>发送</button>}
+            </div>
+          )}
         </div>
       </div>
       {traceOpen && (
@@ -259,6 +400,16 @@ function TraceNode({ seg }) {
   const elapsed = meta.elapsed_ms ? `${(meta.elapsed_ms / 1000).toFixed(1)}s` : '';
   const stateMark = elapsed || (done ? '✓' : '⋯');
   const hasError = meta.error || meta.status === 'error';
+  const sourcePath = meta.source_path || meta.file_path || meta.source_file || meta.source || meta.path;
+  const sourceOntologyId = meta.ontology_id || meta.ontologyId || '';
+  const canOpenSource = typeof sourcePath === 'string' && /^(objects|operations|assets)\//.test(sourcePath);
+  const openSource = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    window.dispatchEvent(new CustomEvent('mwr-open-kb-source', {
+      detail: { ontologyId: sourceOntologyId, path: sourcePath },
+    }));
+  };
 
   // 可展开的明细：工具的输入参数 / 输出预览 / 错误，思考与子任务的文本
   const detailBlocks = [];
@@ -284,6 +435,7 @@ function TraceNode({ seg }) {
       <div className="trn-plain" title={label}>
         <span className="tr-ic">{icon}</span>
         <span className="tr-lb">{label}</span>
+        {canOpenSource && <button type="button" className="tr-source-link" onClick={openSource}>打开来源</button>}
         <span className="tr-st">{stateMark}</span>
       </div>
     );
@@ -303,6 +455,7 @@ function TraceNode({ seg }) {
             <pre className="trn-pre">{truncate(text, 800)}</pre>
           </div>
         ))}
+        {canOpenSource && <button type="button" className="btn tr-source-link" onClick={openSource}>在知识包中打开 {sourcePath}</button>}
       </div>
     </details>
   );
@@ -310,6 +463,68 @@ function TraceNode({ seg }) {
 
 function safeJson(v) {
   try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+function InteractionComposer({ interaction, disabled, onSubmit }) {
+  const [draft, setDraft] = useState('');
+  const type = String(interaction?.type || 'input');
+  const prompt = String(interaction?.prompt || interaction?.text || '请补充信息后继续。');
+  let options = Array.isArray(interaction?.options) ? interaction.options : [];
+  if (type === 'approval' && options.length === 0) {
+    options = [
+      { id: 'approve', label: '批准', value: 'approve' },
+      { id: 'reject', label: '拒绝', value: 'reject' },
+    ];
+  }
+  const normalizedOptions = options.map((option, index) => (
+    typeof option === 'object'
+      ? {
+          id: option.id || option.option_id || `option-${index}`,
+          label: option.label || option.text || option.value || `选项 ${index + 1}`,
+          description: option.description || '',
+          value: option.value ?? option.id ?? option.label,
+        }
+      : { id: `option-${index}`, label: String(option), description: '', value: option }
+  ));
+  const isInput = type === 'input' || normalizedOptions.length === 0;
+
+  return (
+    <div className="mwr-interaction" role="region" aria-label="等待用户交互">
+      <div className="mwr-interaction-head">
+        <StatusTag status="awaiting">等待{type === 'approval' ? '确认' : type === 'single_choice' ? '选择' : '输入'}</StatusTag>
+        <strong>{prompt}</strong>
+      </div>
+      {interaction?.executed_summary && <p><b>已执行：</b>{interaction.executed_summary}</p>}
+      {interaction?.next_plan && <p><b>下一步：</b>{interaction.next_plan}</p>}
+      {isInput ? (
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          const value = draft.trim();
+          if (!value) return;
+          onSubmit(value, { type, value });
+          setDraft('');
+        }}>
+          <input value={draft} disabled={disabled} autoFocus placeholder="补充信息…"
+            onChange={(event) => setDraft(event.target.value)} />
+          <button type="submit" className="btn btn-p" disabled={disabled || !draft.trim()}>继续</button>
+        </form>
+      ) : (
+        <div className="mwr-interaction-options">
+          {normalizedOptions.map((option) => (
+            <button key={option.id} type="button" className="btn" disabled={disabled}
+              onClick={() => onSubmit(option.label, {
+                type,
+                value: option.value,
+                option_id: option.id,
+              })}>
+              <strong>{option.label}</strong>
+              {option.description && <span>{option.description}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ---------------- 富消息渲染 ---------------- */
@@ -349,7 +564,7 @@ function AssistantBubble({ msg }) {
           {stepSegs.length > 0 && (
             <details className="steps" open={running}>
               <summary><span className="car">▶</span>执行过程 · {stepSegs.length} 步{running ? ' · 进行中' : ''}</summary>
-              {stepSegs.map((seg, i) => <StepRow key={i} seg={seg} />)}
+              {stepSegs.map((seg, i) => <StepRow key={seg.spanKey || `${seg.type}-${i}`} seg={seg} />)}
             </details>
           )}
           {content
@@ -361,9 +576,9 @@ function AssistantBubble({ msg }) {
               </span>
             )}
           {isError && !content && <span>回答生成失败，请重试。</span>}
-          {!running && (msg.status === 'finished' || isError || msg.status === 'cancelled') && (
+          {!running && (msg.status === 'finished' || isError || msg.status === 'cancelled' || msg.status === 'aborted' || msg.status === 'awaiting') && (
             <div className="statusline">
-              {isError ? '✗ 出错' : msg.status === 'cancelled' ? '⏹ 已停止' : '✓ 已完成'}
+              {isError ? '✗ 出错' : ['cancelled', 'aborted'].includes(msg.status) ? '⏹ 已停止' : msg.status === 'awaiting' ? '⏸ 等待输入' : '✓ 已完成'}
               {toolNames.length > 0 && ` · 调用 ${toolNames.length} 个工具`}
               {msg.runId && <FeedbackBar runId={msg.runId} content={content} />}
             </div>
