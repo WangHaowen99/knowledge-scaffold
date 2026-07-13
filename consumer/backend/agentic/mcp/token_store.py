@@ -62,6 +62,25 @@ class MCPTokenStore:
                     break
         return revoked
 
+    def revoke_user_tokens(self, *, username: str) -> int:
+        """Idempotently revoke every active token owned by one deleted user."""
+        normalized_username = str(username or "").strip()
+        if not normalized_username:
+            raise ValueError("username 不能为空")
+        now = utc_now_iso()
+        revoked_count = 0
+        with self._locked_document(mutating=True) as document:
+            for item in document["tokens"]:
+                if (
+                    item.get("username") == normalized_username
+                    and item.get("status") != "revoked"
+                    and not item.get("revoked_at")
+                ):
+                    item["status"] = "revoked"
+                    item["revoked_at"] = now
+                    revoked_count += 1
+        return revoked_count
+
     def verify_active_token(self, *, jti: str, token_hash: str, update_last_used: bool = True) -> tuple[bool, str, dict[str, Any] | None]:
         now = utc_now_iso()
         with self._locked_document(mutating=update_last_used) as document:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
+from ..workspaces import evaluate_workspace_subject_access
 from .token_service import MCPTokenAuthError, verify_mcp_token
 
 
@@ -31,11 +32,45 @@ def resolve_mcp_scope_from_token(token: str, *, required_scope: str | None = Non
     if not str(token or "").strip():
         raise MCPTokenAuthError("AUTH_TOKEN_MISSING", "未检测到 Bearer Token")
     payload = verify_mcp_token(token, required_scope=required_scope)
+    decision = evaluate_workspace_subject_access(
+        payload["username"],
+        payload["workspace_id"],
+    )
+    if not decision.allowed:
+        raise _workspace_access_error(
+            decision.reason,
+            username=payload["username"],
+            workspace_id=payload["workspace_id"],
+        )
     return MCPRequestScope(
         username=payload["username"],
         workspace_id=payload["workspace_id"],
         scopes=list(payload["scopes"]),
         source=source,
+    )
+
+
+def _workspace_access_error(
+    reason: str,
+    *,
+    username: str,
+    workspace_id: str,
+) -> MCPTokenAuthError:
+    if reason == "workspace_not_found":
+        return MCPTokenAuthError(
+            "MCP_WORKSPACE_NOT_FOUND",
+            "Token 绑定的工作空间不存在: {}".format(workspace_id),
+        )
+    if reason == "workspace_metadata_invalid":
+        return MCPTokenAuthError(
+            "MCP_WORKSPACE_METADATA_INVALID",
+            "Token 绑定的工作空间元数据无效: {}".format(workspace_id),
+        )
+    if reason == "subject_invalid":
+        return MCPTokenAuthError("INVALID_MCP_TOKEN", "Token subject 无效")
+    return MCPTokenAuthError(
+        "MCP_WORKSPACE_ACCESS_REVOKED",
+        "用户 {} 当前无权访问工作空间 {}".format(username, workspace_id),
     )
 
 

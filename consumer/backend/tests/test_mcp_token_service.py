@@ -9,6 +9,7 @@ from agentic.mcp.token_service import (
     create_mcp_token,
     list_mcp_tokens,
     revoke_mcp_token,
+    revoke_all_mcp_tokens_for_user,
     verify_mcp_token,
 )
 
@@ -78,3 +79,34 @@ def test_revoked_mcp_token_is_rejected(tmp_path):
     assert items[0]["token"] == ""
     with pytest.raises(MCPTokenAuthError):
         verify_mcp_token(created["token"], required_scope="mcp:search", config=cfg)
+
+
+def test_revoke_all_user_tokens_is_idempotent_and_scoped(tmp_path):
+    cfg = _config(tmp_path / "tokens.json")
+    store = MCPTokenStore(cfg.token_store_path)
+    alice_tokens = [
+        create_mcp_token(
+            username="alice",
+            workspace_id=workspace_id,
+            scopes=["mcp:search"],
+            expires_in=3600,
+            config=cfg,
+            store=store,
+        )["token"]
+        for workspace_id in ("workspace-a", "workspace-b")
+    ]
+    bob_token = create_mcp_token(
+        username="bob",
+        workspace_id="workspace-a",
+        scopes=["mcp:search"],
+        expires_in=3600,
+        config=cfg,
+        store=store,
+    )["token"]
+
+    assert revoke_all_mcp_tokens_for_user(username="alice", store=store) == 2
+    assert revoke_all_mcp_tokens_for_user(username="alice", store=store) == 0
+    for token in alice_tokens:
+        with pytest.raises(MCPTokenAuthError):
+            verify_mcp_token(token, config=cfg)
+    assert verify_mcp_token(bob_token, config=cfg)["username"] == "bob"
