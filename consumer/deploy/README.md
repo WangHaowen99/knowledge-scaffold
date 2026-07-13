@@ -75,19 +75,21 @@ cd /opt
 tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
-3. 进入安装目录，执行部署：
+3. 进入安装目录，从示例创建 `backend/.env`，填入互不相同的 `AUTH_SERVER_ADMIN_TOKEN` 与 `MCP_TOKEN_SECRET`，确认 issuer/audience 和两个用户上限一致，再执行部署：
 
 ```bash
 cd /opt/onto-agent
+cp backend/.env.example backend/.env
+# 编辑 backend/.env
 ./deploy/deploy.sh
 ```
 
 部署脚本会自动完成：
 
-- 部署前检查（Docker、架构匹配、Flask/MCP/前端端口占用）
+- 部署前检查（Docker、架构、auth/JWKS 配置、用户上限、MCP 7488/secret、Graph provider）
 - 运行目录初始化（自动创建所需目录，自动从 `backend/.env.example` 复制 `backend/.env`）
 - 镜像导入
-- 容器启动（`backend`、`mcp`、`frontend`）
+- 容器启动（先 `auth-server` 并验证 JWKS/issuer/audience，再启动 `backend`、`mcp`、`frontend`）
 - 部署后健康检查
 
 部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。若需要对外提供 MCP 客户端接入，请在 `backend/.env` 中设置 `MCP_PUBLIC_BASE_URL` 为服务器 IP 或域名，例如 `http://192.0.2.20:7488`。
@@ -117,7 +119,7 @@ tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 
 `upgrade.sh` 会自动完成以下操作：
 
-- **解压前备份**：将当前配置、业务数据、日志和 `.onto-runtime` 备份到 `deploy/backups/pre-extract-<timestamp>/`
+- **解压前备份**：保留覆盖前快照；正式一致性备份仍由 `deploy.sh` 在停止旧写入后创建
 - **覆盖新文件**：将新版本的镜像、脚本等文件覆盖到安装目录
 - **恢复保护文件**：从备份中恢复配置、数据和运行时文件，防止被覆盖
 - **执行部署**：调用 `deploy.sh` 完成升级（镜像加载、迁移、容器更新、健康检查）
@@ -134,7 +136,7 @@ cd /opt/onto-agent
 回滚脚本会自动完成：
 
 - 先备份当前失败现场
-- 恢复上一次成功版本的配置、数据、日志和 `.onto-runtime`
+- 恢复上一次成功版本的配置、数据、日志、`.onto-runtime` 与 `.onto-auth`
 - 如备份中包含旧镜像，则恢复旧镜像
 - 重新启动上一版本
 - 再次执行健康检查
@@ -182,16 +184,29 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 - `upgrade.sh`：升级覆盖文件时列入保护清单，不会被新发布包覆盖
 - `rollback.sh`：回滚时随镜像一并恢复（备份不含该目录则跳过）
 
-### 存量用户迁移导入
+### 存量用户与 workspace 迁移
 
-首次部署时，`migrate.sh` 会检测：若 `.onto-auth/users.json` 不存在
-且 `.onto-runtime/users.json`（consumer 内嵌认证的存量用户）存在，则自动复制导入
-（0600 权限）。用户密码哈希自包含，导入后无需重设密码。`.onto-auth/users.json`
-已存在时跳过，不会覆盖。
+`deploy.sh` 固定按以下顺序执行：migration dry-run → 停止旧容器写入 → 同时备份 runtime users/workspaces 与 auth users/keys → 校验用户字段和 workspace ACL → 必要时原子复制 → 启动 auth-server。
 
-> **升级提示**：从旧的内置认证（原 `AUTH_MODE=local`）部署升级前，务必先执行
-> `migrate.sh` 将 `.onto-runtime/users.json` 导入到 `.onto-auth/`；且内置 HMAC 认证
-> 回退已移除，升级后在线用户会被强制重新登录（与 ADR consequences 一致）。
+- 只有 `.onto-runtime/users.json` 时，原样复制密码哈希到 `.onto-auth/users.json`，目标权限为 `0600`。
+- 只有 auth users 时直接使用。
+- 两份同时存在时做字段级语义比较；缺失 `token_version` 按 `1`。任一字段不同立即失败，差异报告不会泄露密码哈希。
+- 无 owner 的存量 workspace 继续作为公共空间，报告列出但不自动私有化。
+- 未知 owner/member、重复成员或未完成用户删除 reconciliation 会阻止启动，避免同名账号继承旧权限。
+
+可在停机前读取检查：
+
+```bash
+./deploy/migrate.sh <旧版本> <新版本> --dry-run
+```
+
+正式 apply 只允许在确认停写后执行：
+
+```bash
+./deploy/migrate.sh <旧版本> <新版本> --confirm-writes-stopped
+```
+
+报告写入 `deploy/state/migration-report.json`。旧 HMAC access token 升级后不再接受，用户需重新登录；JWT `sub` 仍等于 username，因此 session 路径无需迁移。
 
 ## 运行目录
 
@@ -205,10 +220,10 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 ## MCP 服务
 
-发布部署会额外启动 `onto-agent-mcp` 容器，复用后端镜像和 `.onto-runtime`：
+发布部署默认启动 `onto-agent-mcp` 容器，复用后端镜像和 `.onto-runtime`：
 
 - Flask 管理接口：`/agentic/mcp/*`
-- MCP endpoint 按 `MCP_TRANSPORT` 只暴露一种协议：
+- MCP endpoint 按 `MCP_TRANSPORT` 暴露相应协议；默认 `both` 同时提供：
   - `streamable-http`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/mcp`、`/chat/mcp`
   - `sse`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/sse`、`/chat/sse`
 - 健康检查：`http://127.0.0.1:7488/health`

@@ -106,7 +106,9 @@ docker save -o "${IMAGES_DIR}/onto-agent-auth-server-${VERSION}.tar" "onto-agent
 cp "${PROJECT_ROOT}/backend/.env.example" "${BUNDLE_DIR}/backend/.env.example"
 cp "${PROJECT_ROOT}/frontend/.env.example" "${BUNDLE_DIR}/frontend/.env.example"
 cp -r "${PROJECT_ROOT}/deploy/"* "${BUNDLE_DIR}/deploy/"
-rm -rf "${BUNDLE_DIR}/deploy/state" "${BUNDLE_DIR}/deploy/backups"
+rm -rf "${BUNDLE_DIR}/deploy/state" "${BUNDLE_DIR}/deploy/backups" "${BUNDLE_DIR}/deploy/tests"
+find "${BUNDLE_DIR}/deploy" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "${BUNDLE_DIR}/deploy" -type f -name '*.pyc' -delete
 find "${BUNDLE_DIR}/deploy" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 chmod +x "${BUNDLE_DIR}/deploy/"*.sh
 
@@ -114,6 +116,7 @@ mkdir -p \
     "${BUNDLE_DIR}/backend/config" \
     "${BUNDLE_DIR}/backend/logs" \
     "${BUNDLE_DIR}/.onto-runtime/config" \
+    "${BUNDLE_DIR}/.onto-auth" \
     "${BUNDLE_DIR}/frontend/logs/nginx" \
     "${BUNDLE_DIR}/deploy/backups"
 
