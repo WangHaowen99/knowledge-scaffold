@@ -72,7 +72,7 @@ services:
     container_name: onto-agent-frontend-${TAG:-latest}
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-6600}:80"
+      - "${FRONTEND_PORT:-8888}:80"
     volumes:
       - ./frontend/logs/nginx:/var/log/nginx
     depends_on:

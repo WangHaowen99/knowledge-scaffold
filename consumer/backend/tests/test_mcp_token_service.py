@@ -19,7 +19,7 @@ def _config(path: Path) -> MCPRuntimeConfig:
         server_port=7488,
         public_base_url="",
         agentic_base_url="",
-        token_secret="test-secret",
+        token_secret="test-secret-at-least-32-characters-long",
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",
@@ -51,7 +51,7 @@ def test_mcp_token_uses_oauth_style_scope_and_registry(tmp_path):
     assert verified["scopes"] == ["mcp:search"]
 
     items = list_mcp_tokens(username="admin", workspace_id="test_project", store=MCPTokenStore(cfg.token_store_path))
-    assert items[0]["token"] == created["token"]
+    assert "token" not in items[0]
     assert items[0]["status"] == "active"
 
 
@@ -75,6 +75,18 @@ def test_revoked_mcp_token_is_rejected(tmp_path):
     )
     items = list_mcp_tokens(username="admin", workspace_id="test_project", store=store)
     assert items[0]["status"] == "revoked"
-    assert items[0]["token"] == ""
+    assert "token" not in items[0]
     with pytest.raises(MCPTokenAuthError):
         verify_mcp_token(created["token"], required_scope="mcp:search", config=cfg)
+
+
+def test_mcp_token_rejects_missing_or_weak_signing_secret(tmp_path):
+    cfg = MCPRuntimeConfig(**{**_config(tmp_path / "tokens.json").__dict__, "token_secret": "weak"})
+
+    with pytest.raises(ValueError, match="MCP_TOKEN_SECRET"):
+        create_mcp_token(
+            username="admin",
+            workspace_id="test_project",
+            scopes=["mcp:search"],
+            config=cfg,
+        )

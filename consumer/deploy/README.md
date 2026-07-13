@@ -207,6 +207,8 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 发布部署会额外启动 `onto-agent-mcp` 容器，复用后端镜像和 `.onto-runtime`：
 
+启用前必须在 `backend/.env` 中配置独立的 `MCP_TOKEN_SECRET`（至少 32 个字符）。Token 明文仅在创建响应中返回一次，运行目录中只保存哈希；请在生成后立即复制并妥善保管。
+
 - Flask 管理接口：`/agentic/mcp/*`
 - MCP endpoint 按 `MCP_TRANSPORT` 只暴露一种协议：
   - `streamable-http`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/mcp`、`/chat/mcp`

@@ -62,9 +62,24 @@ ensure_env() {
     fi
 }
 
+require_mcp_token_secret() {
+    local env_file="$1"
+    local secret
+    secret="$(sed -n 's/^[[:space:]]*MCP_TOKEN_SECRET[[:space:]]*=[[:space:]]*//p' "$env_file" | tail -n 1)"
+    secret="${secret%\"}"
+    secret="${secret#\"}"
+    secret="${secret%\'}"
+    secret="${secret#\'}"
+    if [ "${#secret}" -lt 32 ]; then
+        echo "Error: set MCP_TOKEN_SECRET to an independent random value of at least 32 characters in $env_file"
+        exit 1
+    fi
+}
+
 case "$TARGET" in
     all)
         ensure_env "$SCRIPT_DIR/backend/.env" "$SCRIPT_DIR/backend/.env.example"
+        require_mcp_token_secret "$SCRIPT_DIR/backend/.env"
         ensure_dir_exists "$SCRIPT_DIR/backend/config"
         ensure_dir_writable "$SCRIPT_DIR/.onto-runtime/config"
         ensure_dir_writable "$SCRIPT_DIR/backend/logs"
@@ -73,6 +88,7 @@ case "$TARGET" in
         ;;
     backend)
         ensure_env "$SCRIPT_DIR/backend/.env" "$SCRIPT_DIR/backend/.env.example"
+        require_mcp_token_secret "$SCRIPT_DIR/backend/.env"
         ensure_dir_exists "$SCRIPT_DIR/backend/config"
         ensure_dir_writable "$SCRIPT_DIR/.onto-runtime/config"
         ensure_dir_writable "$SCRIPT_DIR/backend/logs"

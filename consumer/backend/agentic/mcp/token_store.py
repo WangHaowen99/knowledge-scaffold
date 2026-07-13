@@ -32,7 +32,9 @@ class MCPTokenStore:
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
 
     def list_tokens(self, *, username: str, workspace_id: str) -> list[dict[str, Any]]:
-        with self._locked_document() as document:
+        # Write the sanitized document back so legacy plaintext token fields are
+        # removed as soon as the registry is accessed after an upgrade.
+        with self._locked_document(mutating=True) as document:
             items = [
                 self._public_item(item)
                 for item in document["tokens"]
@@ -114,7 +116,15 @@ class MCPTokenStore:
         tokens = payload.get("tokens")
         if not isinstance(tokens, list):
             tokens = []
-        return {"version": 1, "tokens": [item for item in tokens if isinstance(item, dict)]}
+        sanitized_tokens = []
+        for item in tokens:
+            if not isinstance(item, dict):
+                continue
+            sanitized = dict(item)
+            sanitized.pop("token", None)
+            sanitized.pop("token_value", None)
+            sanitized_tokens.append(sanitized)
+        return {"version": 1, "tokens": sanitized_tokens}
 
     def _write_document(self, payload: dict[str, Any]) -> None:
         tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
@@ -131,14 +141,9 @@ class MCPTokenStore:
         elif expires_at and _is_expired(expires_at):
             status = "expired"
 
-        token_value = ""
-        if status == "active":
-            token_value = str(item.get("token_value") or item.get("token") or "").strip()
-
         return {
             "token_id": str(item.get("token_id") or ""),
             "name": str(item.get("name") or ""),
-            "token": token_value,
             "token_masked": str(item.get("token_masked") or ""),
             "username": str(item.get("username") or ""),
             "workspace_id": str(item.get("workspace_id") or ""),

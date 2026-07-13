@@ -9,6 +9,9 @@ from pathlib import Path
 from ..config import AppConfig
 
 
+MIN_MCP_TOKEN_SECRET_LENGTH = 32
+
+
 def _read_env(name: str, default: str = "") -> str:
     value = os.getenv(name)
     if value is None:
@@ -69,13 +72,12 @@ def load_mcp_runtime_config() -> MCPRuntimeConfig:
     _load_local_dotenv()
     app_config = AppConfig.from_env()
     runtime_root = Path(app_config.project_root).resolve()
-    token_secret_default = _read_env("AUTH_SECRET", "") or "dev-mcp-secret-change"
     return MCPRuntimeConfig(
         server_host=_read_env("MCP_SERVER_HOST", "0.0.0.0"),
         server_port=_read_int_env("MCP_SERVER_PORT", 7488),
         public_base_url=_read_env("MCP_PUBLIC_BASE_URL", ""),
         agentic_base_url=_read_env("MCP_AGENTIC_BASE_URL", "http://127.0.0.1:5055").rstrip("/"),
-        token_secret=_read_env("MCP_TOKEN_SECRET", token_secret_default),
+        token_secret=_read_env("MCP_TOKEN_SECRET", ""),
         token_algorithm=_read_env("MCP_TOKEN_ALGORITHM", "HS256").upper(),
         token_issuer=_read_env("MCP_TOKEN_ISSUER", "meta-wise"),
         token_audience=_read_env("MCP_TOKEN_AUDIENCE", "meta-wise-mcp"),
@@ -87,3 +89,15 @@ def load_mcp_runtime_config() -> MCPRuntimeConfig:
             _read_env("MCP_TOKEN_STORE_PATH", str(runtime_root / "mcp-tokens.json"))
         ).resolve(),
     )
+
+
+def validate_mcp_runtime_config(config: MCPRuntimeConfig) -> None:
+    """Reject unsafe token signing configuration before issuing or accepting tokens."""
+    if len(config.token_secret) < MIN_MCP_TOKEN_SECRET_LENGTH:
+        raise ValueError(
+            "MCP_TOKEN_SECRET 必须显式配置，且长度不能少于 {} 个字符".format(
+                MIN_MCP_TOKEN_SECRET_LENGTH
+            )
+        )
+    if config.token_algorithm != "HS256":
+        raise ValueError("MCP_TOKEN_ALGORITHM 目前仅支持 HS256")

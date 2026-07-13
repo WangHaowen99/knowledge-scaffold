@@ -14,7 +14,7 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
         server_port=7488,
         public_base_url="http://mcp.example",
         agentic_base_url="",
-        token_secret="test-secret",
+        token_secret="test-secret-at-least-32-characters-long",
         token_algorithm="HS256",
         token_issuer="meta-wise",
         token_audience="meta-wise-mcp",

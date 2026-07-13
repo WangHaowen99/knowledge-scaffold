@@ -12,7 +12,7 @@ from typing import Annotated, Any, Callable, Mapping
 from pydantic import Field
 
 from .chat_adapter import execute_chat_tool
-from .config import MCPRuntimeConfig, load_mcp_runtime_config
+from .config import MCPRuntimeConfig, load_mcp_runtime_config, validate_mcp_runtime_config
 from .scope import MCPRequestScope, auth_error_payload, extract_bearer_token, resolve_mcp_scope_from_token
 from .search_adapter import execute_search_tool
 from .service_catalog import load_mcp_service_catalog
@@ -24,8 +24,9 @@ PathPatternInput = list[Any] | str
 
 
 def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = "search") -> Any:
-    FastMCP = _load_fastmcp()
     cfg = config or load_mcp_runtime_config()
+    validate_mcp_runtime_config(cfg)
+    FastMCP = _load_fastmcp()
     normalized_toolset = _normalize_toolset(toolset)
     mcp = FastMCP("meta-wise-{}".format(normalized_toolset))
 
