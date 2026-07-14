@@ -28,12 +28,15 @@ const persistSelectedSession = (sessionId) => {
   }
 };
 
-const sortSessions = (items) => [...items].sort((left, right) => {
+const getSessionTime = (session) => {
+  const timestamp = Date.parse(session?.updated_at || session?.created_at || '');
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+const sortSessions = (items) => [...(items || [])].sort((left, right) => {
   const pinDelta = Number(Boolean(right?.metadata?.pinned)) - Number(Boolean(left?.metadata?.pinned));
   if (pinDelta) return pinDelta;
-  return String(right?.updated_at || right?.created_at || '').localeCompare(
-    String(left?.updated_at || left?.created_at || ''),
-  );
+  return getSessionTime(right) - getSessionTime(left);
 });
 
 const useChatSessions = (streamManager) => {
@@ -73,6 +76,15 @@ const useChatSessions = (streamManager) => {
       sm.setMessagesForSession(targetSessionId, updater);
     }
   }, [currentChatId]);
+
+  const touchSession = useCallback((sessionId, timestamp = new Date().toISOString()) => {
+    if (!sessionId) return;
+    setSessions((prev) =>
+      sortSessions(
+        (prev || []).map((s) => (s.id === sessionId ? { ...s, updated_at: timestamp } : s))
+      )
+    );
+  }, []);
 
   const openChat = useCallback(async (id) => {
     logger.info(`Opening chat: ${id}`);
@@ -303,8 +315,11 @@ const useChatSessions = (streamManager) => {
       logger.info(`Generated title: ${newTitle}`);
 
       // Update session title in local state
+      const updatedAt = data.updated_at || new Date().toISOString();
       setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s))
+        sortSessions(
+          prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle, updated_at: updatedAt } : s))
+        )
       );
     } catch (err) {
       logger.error('Failed to generate session title', { error: err.message });
@@ -346,6 +361,7 @@ const useChatSessions = (streamManager) => {
     openChat,
     generateSessionTitle,
     setPinned,
+    touchSession,
   };
 };
 

@@ -310,7 +310,7 @@ const useAgenticStream = ({
     };
   }, [clearRunTracking, rebindRunTracking, upsertTurnBubble]);
 
-  const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle) => ({
+  const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle, onSessionUpdated = null) => ({
     onEvent: createEventDispatcher(runId, targetSessionId, runLifecycle),
     onComplete: () => {
       const trackedRunId = runLifecycle.activeRunId || runId;
@@ -324,15 +324,18 @@ const useAgenticStream = ({
         currentSegmentType: null,
       }), targetSessionId, { immediate: true });
       clearRunTracking(trackedRunId);
+      onSessionUpdated?.();
     },
     onError: (error, isAbort) => {
       const trackedRunId = runLifecycle.activeRunId || runId;
       if (isAbort) {
         finalizeCancelledRun(trackedRunId, 'Workflow cancelled by user', targetSessionId);
+        onSessionUpdated?.();
         return;
       }
       logger.error('Agentic stream error', { error: error.message });
       finalizeErroredRun(trackedRunId, error.message || 'Unknown stream error', targetSessionId);
+      onSessionUpdated?.();
     },
   }), [
     clearRunTracking,
@@ -360,6 +363,9 @@ const useAgenticStream = ({
       : '';
     const interactionResponse = options?.interactionResponse && typeof options.interactionResponse === 'object'
       ? options.interactionResponse
+      : null;
+    const onSessionUpdated = typeof options?.onSessionUpdated === 'function'
+      ? options.onSessionUpdated
       : null;
 
     queueMessageUpdate((prev) => {
@@ -399,7 +405,12 @@ const useAgenticStream = ({
 
     upsertTurnBubble(runId, { status: 'running', isLoading: true }, activeSessionId, { immediate: true });
 
-    const streamCallbacks = createStreamCallbacks(runId, activeSessionId, runLifecycle);
+    const streamCallbacks = createStreamCallbacks(
+      runId,
+      activeSessionId,
+      runLifecycle,
+      onSessionUpdated,
+    );
 
     await streamManager.startStreamForSession(
       activeSessionId,

@@ -127,7 +127,7 @@ function AgentModePicker({ value, onChange, disabled }) {
 // useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
 export default function ChatWorkspace({ chat, streamManager }) {
   const { workspaceId } = useAuthContext();
-  const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle } = chat;
+  const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle, touchSession } = chat;
   const { sendAgentic, resumeAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
   const [input, setInput] = useState('');
   const inputRef = useRef(null);
@@ -290,7 +290,14 @@ export default function ChatWorkspace({ chat, streamManager }) {
           safeLocalSet(`mw_session_ontology_${workspaceId}_${sessionId}`, selectedOntologyId);
         }
       }
-      sendAgentic(text, sessionId, { agentMode, modelProfileId, selectedOntologyId });
+      const refreshSessionTime = () => touchSession?.(sessionId);
+      refreshSessionTime();
+      sendAgentic(text, sessionId, {
+        agentMode,
+        modelProfileId,
+        selectedOntologyId,
+        onSessionUpdated: refreshSessionTime,
+      });
       setInput('');
       if (isNew) generateSessionTitle(sessionId, text);
     } catch {
@@ -309,10 +316,13 @@ export default function ChatWorkspace({ chat, streamManager }) {
   }[streamState.status] || '';
   const submitInteraction = (displayText, response) => {
     if (!pendingInteraction?.id || !currentChatId) return;
+    const refreshSessionTime = () => touchSession?.(currentChatId);
+    refreshSessionTime();
     sendAgentic(String(displayText || response?.value || ''), currentChatId, {
       agentMode,
       modelProfileId,
       selectedOntologyId,
+      onSessionUpdated: refreshSessionTime,
       interactionResponse: {
         interaction_id: pendingInteraction.id,
         type: response?.type || pendingInteraction.type || 'input',
@@ -426,21 +436,102 @@ function TracePanel({ messages, width, onClose }) {
   );
 }
 
+function normalizeMs(value) {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function formatDuration(ms) {
+  const numeric = normalizeMs(ms);
+  if (numeric == null) return '';
+  if (numeric < 1000) return `${Math.max(0, Math.round(numeric))}ms`;
+  if (numeric < 10000) return `${(numeric / 1000).toFixed(2)}s`;
+  return `${(numeric / 1000).toFixed(1)}s`;
+}
+
+function elapsedFromRange(startTs, endTs, fallbackEndTs = Date.now()) {
+  const start = normalizeMs(startTs);
+  if (start == null) return null;
+  const end = normalizeMs(endTs) ?? normalizeMs(fallbackEndTs);
+  if (end == null) return null;
+  return Math.max(0, end - start);
+}
+
+function segmentElapsedMs(seg) {
+  const meta = seg?.meta || {};
+  const metaElapsed = normalizeMs(meta.elapsed_ms ?? meta.total_elapsed_ms);
+  const rangeElapsed = elapsedFromRange(seg?.startTs, seg?.endTs);
+  if (metaElapsed != null && metaElapsed > 0) return metaElapsed;
+  if (rangeElapsed != null && rangeElapsed > 0) return rangeElapsed;
+  return metaElapsed;
+}
+
+function messageElapsedMs(msg) {
+  const direct = elapsedFromRange(msg?.startTs, msg?.endTs, msg?.isLoading ? Date.now() : msg?.endTs);
+  if (direct != null && direct > 0) return direct;
+
+  const ranges = (msg?.streamSegments || [])
+    .map((seg) => ({
+      start: normalizeMs(seg?.startTs),
+      end: normalizeMs(seg?.endTs),
+    }))
+    .filter((item) => item.start != null || item.end != null);
+  if (!ranges.length) return null;
+
+  const starts = ranges.map((item) => item.start).filter((value) => value != null);
+  const ends = ranges.map((item) => item.end).filter((value) => value != null);
+  if (!starts.length || !ends.length) return null;
+  return Math.max(0, Math.max(...ends) - Math.min(...starts));
+}
+
 // 从 parentKey（形如 iteration:main:3）解析出人类可读的分组标签。
-function synthLabelForKey(key) {
+function iterationNumberFromKey(key) {
   const m = /^iteration:(?:[^:]+:)*(\d+)$/.exec(String(key || ''));
-  if (m) return `迭代 ${m[1]}`;
+  return m ? Number(m[1]) : null;
+}
+
+function synthLabelForKey(key) {
+  const iteration = iterationNumberFromKey(key);
+  if (iteration != null) return `迭代 ${iteration}`;
   if (String(key || '').startsWith('agent_loop')) return '主循环';
   return '分组';
+}
+
+function buildIterationMetricMap(iterationMetrics = []) {
+  const metricMap = new Map();
+  if (!Array.isArray(iterationMetrics)) return metricMap;
+  iterationMetrics.forEach((metric) => {
+    const iteration = normalizeMs(metric?.iteration);
+    if (iteration != null && iteration > 0) {
+      metricMap.set(Math.floor(iteration), metric);
+    }
+  });
+  return metricMap;
+}
+
+function buildSyntheticGroupSegment(parentKey, iterationMetricMap) {
+  const iteration = iterationNumberFromKey(parentKey);
+  const metric = iteration != null ? iterationMetricMap.get(iteration) : null;
+  const totalElapsedMs = normalizeMs(metric?.totalElapsedMs);
+  const ts = normalizeMs(metric?.ts);
+  return {
+    type: 'group',
+    synthetic: true,
+    spanKey: parentKey,
+    label: synthLabelForKey(parentKey),
+    meta: totalElapsedMs != null ? { total_elapsed_ms: totalElapsedMs } : {},
+    ...(totalElapsedMs != null && ts != null ? { startTs: ts - totalElapsedMs, endTs: ts } : {}),
+  };
 }
 
 // 把带 spanKey/parentKey 的 segment 组织成父子树。
 // 若 parentKey 指向的父 span 本身没有对应 segment（如 iteration 不单独成段），
 // 则合成一个分组父节点把子节点挂进去，从而形成「迭代 N → 工具」的层级；
 // 完全没有 spanKey 时降级为平铺列表。
-function buildTraceTree(segs) {
+function buildTraceTree(segs, iterationMetrics = []) {
   const hasSpan = segs.some((s) => s.spanKey);
   if (!hasSpan) return segs.map((seg) => ({ seg, children: [] }));
+  const iterationMetricMap = buildIterationMetricMap(iterationMetrics);
 
   const bySpan = new Map();
   const nodes = segs.map((seg) => {
@@ -454,7 +545,7 @@ function buildTraceTree(segs) {
   const ensureSynthParent = (parentKey) => {
     if (synthByKey.has(parentKey)) return synthByKey.get(parentKey);
     const synth = {
-      seg: { type: 'group', synthetic: true, spanKey: parentKey, label: synthLabelForKey(parentKey) },
+      seg: buildSyntheticGroupSegment(parentKey, iterationMetricMap),
       children: [],
     };
     synthByKey.set(parentKey, synth);
@@ -490,14 +581,15 @@ function TraceTurn({ msg, index, defaultOpen }) {
   const status = running ? 'running' : (msg.status || 'finished');
   const statusText = { running: '进行中', finished: '成功', error: '出错', cancelled: '已停止', awaiting: '等待输入' }[status] || status;
   const toolCount = segs.filter((s) => s.type === 'tool').length;
-  const tree = buildTraceTree(segs);
+  const tree = buildTraceTree(segs, msg.iterationMetrics);
+  const elapsed = formatDuration(messageElapsedMs(msg));
   return (
     <details className="trt" open={defaultOpen}>
       <summary>
         <span className="car">▶</span>
         <span className={`tr-dot ${status}`} />
         <span className="trt-t">第 {index} 轮</span>
-        <span className="trt-s">{statusText}{toolCount ? ` · ${toolCount} 次工具` : ''}{msg.ts ? ` · ${formatTime(msg.ts)}` : ''}</span>
+        <span className="trt-s">{statusText}{toolCount ? ` · ${toolCount} 次工具` : ''}{elapsed ? ` · 总耗时 ${elapsed}` : ''}{msg.ts ? ` · ${formatTime(msg.ts)}` : ''}</span>
       </summary>
       <div className="trt-kids">
         {!segs.length && <div className="trn-plain">直接回答，未调用工具</div>}
@@ -509,12 +601,14 @@ function TraceTurn({ msg, index, defaultOpen }) {
 }
 
 function TraceNode({ seg }) {
+  const elapsed = formatDuration(segmentElapsedMs(seg));
   // 合成的分组节点（如「迭代 N」）：只作层级标题，无明细
   if (seg.type === 'group' && seg.synthetic) {
     return (
       <div className="trn-plain trn-group" title={seg.label}>
         <span className="tr-ic"><GitBranch size={11} /></span>
         <span className="tr-lb">{seg.label}</span>
+        {elapsed && <span className="tr-st">{elapsed}</span>}
       </div>
     );
   }
@@ -526,6 +620,10 @@ function TraceNode({ seg }) {
   let Icon = Circle;
   let label = '';
   if (seg.type === 'tool') { Icon = Wrench; label = meta.tool_name || '工具调用'; }
+  else if (seg.type === 'iteration') {
+    Icon = GitBranch;
+    label = meta.iteration ? `迭代 ${meta.iteration}` : (seg.text || '迭代');
+  }
   else if (seg.type === 'reasoning') {
     Icon = BrainCircuit;
     // 有摘要时用摘要做标签（一等公民：一眼看到「想了什么」），否则回退通用文案
@@ -533,7 +631,6 @@ function TraceNode({ seg }) {
   }
   else if (seg.type === 'subagent' || seg.type === 'subagent_group') { Icon = GitBranch; label = meta.title || '子任务'; }
   else { label = seg.type; }
-  const elapsed = meta.elapsed_ms ? `${(meta.elapsed_ms / 1000).toFixed(1)}s` : '';
   const stateMark = elapsed || (done ? '✓' : '⋯');
   const hasError = meta.error || meta.status === 'error';
   const sourcePath = meta.source_path || meta.file_path || meta.source_file || meta.source || meta.path;
@@ -553,8 +650,13 @@ function TraceNode({ seg }) {
     if (meta.input && Object.keys(meta.input).length) {
       detailBlocks.push(['输入', safeJson(meta.input)]);
     }
-    if (meta.output_preview) {
-      detailBlocks.push([`输出${meta.output_truncated ? '（截断）' : ''}`, String(meta.output_preview)]);
+    const outputText = meta.output_full || meta.output_preview;
+    if (outputText) {
+      const hasFullOutput = typeof meta.output_full === 'string';
+      detailBlocks.push([
+        hasFullOutput || !meta.output_truncated ? '输出' : '输出（历史记录仅有截断预览）',
+        String(outputText),
+      ]);
     }
     if (meta.error) detailBlocks.push(['错误', String(meta.error)]);
     if (!detailBlocks.length && seg.text) detailBlocks.push(['进度', String(seg.text)]);
@@ -562,6 +664,8 @@ function TraceNode({ seg }) {
     // reasoning 一等公民：摘要在前，完整思考链在后，二者都可见
     if (reasoningSummary) detailBlocks.push(['思考摘要', reasoningSummary]);
     if (seg.text) detailBlocks.push(['完整思考过程', String(seg.text)]);
+  } else if (seg.type === 'iteration') {
+    // 兼容热更新前已在内存中的旧节点：迭代只作标题，不展开“内容 迭代 X”。
   } else if (seg.text) {
     detailBlocks.push(['内容', String(seg.text)]);
   }
@@ -588,7 +692,7 @@ function TraceNode({ seg }) {
         {detailBlocks.map(([title, text]) => (
           <div key={title} className="trn-block">
             <div className="trn-bt">{title}</div>
-            <pre className="trn-pre">{truncate(text, 800)}</pre>
+            <pre className="trn-pre">{text}</pre>
           </div>
         ))}
         {canOpenSource && <button type="button" className="btn tr-source-link" onClick={openSource}>在知识包中打开 {sourcePath}</button>}
@@ -686,6 +790,7 @@ function AssistantBubble({ msg }) {
   const running = !!msg.isLoading;
   const isError = msg.status === 'error';
   const content = msg.content || '';
+  const totalElapsed = formatDuration(messageElapsedMs(msg));
 
   return (
     <div className="msg a">
@@ -716,6 +821,7 @@ function AssistantBubble({ msg }) {
             <div className="statusline">
               {isError ? '✗ 出错' : ['cancelled', 'aborted'].includes(msg.status) ? '⏹ 已停止' : msg.status === 'awaiting' ? '⏸ 等待输入' : '✓ 已完成'}
               {toolNames.length > 0 && ` · 调用 ${toolNames.length} 个工具`}
+              {totalElapsed && ` · 总耗时 ${totalElapsed}`}
               {msg.runId && <FeedbackBar runId={msg.runId} content={content} />}
             </div>
           )}
@@ -729,6 +835,7 @@ function AssistantBubble({ msg }) {
 function StepRow({ seg }) {
   const done = seg.finished || seg.state === 'done' || seg.state === 'final';
   const isReasoning = seg.type === 'reasoning';
+  const elapsed = formatDuration(segmentElapsedMs(seg));
   let label = '';
   if (seg.type === 'tool') label = `${seg.meta?.tool_name ? `工具 ${seg.meta.tool_name}` : '工具调用'}${seg.text ? ` — ${truncate(seg.text, 120)}` : ''}`;
   else if (isReasoning) {
@@ -741,7 +848,8 @@ function StepRow({ seg }) {
   return (
     <div className={`step${isReasoning ? ' step-reasoning' : ''}`}>
       <span className="ok">{isReasoning ? <BrainCircuit size={13} /> : (done ? <Check size={13} /> : '…')}</span>
-      <span>{label}</span>
+      <span className="step-label">{label}</span>
+      {elapsed && <span className="step-time">{elapsed}</span>}
     </div>
   );
 }
