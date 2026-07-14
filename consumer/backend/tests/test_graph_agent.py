@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from types import SimpleNamespace
 
 import pytest
 
-from agent.exceptions import WorkflowCancelledError
 from agent.tools.business_data.providers.graph.agent import (
     GraphAgentTimeoutError,
     _GRAPH_TOOL_SCHEMAS,
@@ -797,28 +795,3 @@ def test_graph_private_registration_passes_explicit_tools_to_current_jiuwen_boun
     )
     assert len(result.messages) == 1
     assert '"success": true' in result.messages[0]["content"]
-
-
-def test_graph_agent_cancellation_waits_for_owned_worker_to_exit():
-    finished = threading.Event()
-
-    def slow_invoker(_payload):
-        time.sleep(0.02)
-        finished.set()
-        return ""
-
-    context = _context()
-    cancel_event = threading.Event()
-    cancel_event.set()
-    context.provider_config["_cancel_event"] = cancel_event
-    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
-
-    with pytest.raises(WorkflowCancelledError):
-        JiuwenGraphQueryAgent(invoker=slow_invoker).run(
-            context=context,
-            mapping=mapping,
-            tool_executor=_executor(_Backend(), context, mapping),
-        )
-
-    assert finished.is_set()
-    assert "_graph_cancel_event" not in context.provider_config

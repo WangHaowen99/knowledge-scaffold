@@ -94,15 +94,11 @@ def update_runtime_dependencies(
     """Refresh shared runtime dependencies after config changes."""
     global _orchestrator, _user_store_manager
     previous_run_store = _orchestrator.run_store if _orchestrator is not None else None
-    previous_cancellation_registry = (
-        _orchestrator.cancellation_registry if _orchestrator is not None else None
-    )
     _user_store_manager = user_store_manager
     _orchestrator = AgenticOrchestrator(
         user_store_manager=user_store_manager,
         agent_config=agent_config,
         run_store=previous_run_store,
-        cancellation_registry=previous_cancellation_registry,
     )
     acp_set_orchestrator(_orchestrator)
 

@@ -2,7 +2,6 @@
 
 from contextlib import contextmanager
 import json
-import threading
 from types import SimpleNamespace
 
 import httpx
@@ -11,7 +10,6 @@ import pytest
 
 from agent.core.orchestrator import (
     AgenticOrchestrator,
-    RunCancellationRegistry,
     _public_workflow_error_message,
 )
 from config import AgentConfig, AppConfig
@@ -264,82 +262,10 @@ def test_submit_reflection_logs_when_ontology_missing(caplog):
     assert "reason=missing_ontology_id" in caplog.text
 
 
-def test_run_cancellation_registry_closes_register_race_and_clears_by_identity():
-    run_store = RunStore()
-    run_store.create_run("run-cancelled-before-register", "hello")
-    run_store.cancel_run("run-cancelled-before-register")
-    registry = RunCancellationRegistry()
-
-    event = registry.register("run-cancelled-before-register", run_store)
-
-    assert event.is_set()
-    assert registry.clear("run-cancelled-before-register", threading.Event()) is False
-    assert registry.signal("run-cancelled-before-register") is True
-    assert registry.clear("run-cancelled-before-register", event) is True
-    assert registry.signal("run-cancelled-before-register") is False
-
-
-def test_stream_agent_loop_closes_worker_and_registration_when_generator_closes(monkeypatch):
-    registry = RunCancellationRegistry()
-    orchestrator = AgenticOrchestrator(
-        memory_factory=_FakeMemoryFactory(),
-        cancellation_registry=registry,
-    )
-    engine_exited = threading.Event()
-    captured = {}
-
-    class _BlockingEngine:
-        def __init__(self, *, memory_manager=None, agent_config=None):
-            del memory_manager, agent_config
-
-        def run(
-            self,
-            state,
-            *,
-            caller,
-            event_writer=None,
-            snapshot_callback=None,
-            iteration_limit=None,
-            observer=None,
-            cancel_event=None,
-            event_source_node=None,
-        ):
-            del state, caller, snapshot_callback, iteration_limit, observer
-            captured["cancel_event"] = cancel_event
-            captured["event_source_node"] = event_source_node
-            event_writer({"event": "ready"})
-            assert cancel_event.wait(timeout=2)
-            engine_exited.set()
-
-    monkeypatch.setattr("agent.core.orchestrator.AgentLoopEngine", _BlockingEngine)
-    stream = orchestrator._stream_agent_loop(
-        {
-            "run_id": "run-generator-close",
-            "session_id": "sess-generator-close",
-            "current_turn_id": 1,
-            "messages": [],
-        },
-        memory_manager=None,
-    )
-
-    assert next(stream) == ("custom", {"event": "ready"})
-    stream.close()
-
-    assert captured["event_source_node"] == "jiuwen_react"
-    assert captured["cancel_event"].is_set()
-    assert engine_exited.is_set()
-    assert registry.signal("run-generator-close") is False
-
-
-def test_cancel_run_persists_before_runtime_and_router_signals(monkeypatch):
+def test_cancel_run_persists_before_router_signal(monkeypatch):
     run_store = RunStore()
     run_store.create_run("run-cancel-order", "hello")
     observed = []
-
-    class _Registry(RunCancellationRegistry):
-        def signal(self, run_id):
-            observed.append(("registry", run_store.get_run(run_id).status))
-            return False
 
     class _Router:
         def cancel_run(self, run_id):
@@ -348,15 +274,11 @@ def test_cancel_run_persists_before_runtime_and_router_signals(monkeypatch):
     orchestrator = AgenticOrchestrator(
         run_store=run_store,
         memory_factory=_FakeMemoryFactory(),
-        cancellation_registry=_Registry(),
     )
     monkeypatch.setattr("agent.core.orchestrator.get_llm_router", lambda: _Router())
 
     assert orchestrator.cancel_run("run-cancel-order", reason="user_stop") is True
-    assert observed == [
-        ("registry", RunStatus.CANCELLED),
-        ("router", RunStatus.CANCELLED),
-    ]
+    assert observed == [("router", RunStatus.CANCELLED)]
 
 
 def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
@@ -377,10 +299,9 @@ def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
             snapshot_callback=None,
             iteration_limit=None,
             observer=None,
-            cancel_event=None,
             event_source_node=None,
         ):
-            del caller, iteration_limit, observer, cancel_event, event_source_node
+            del caller, iteration_limit, observer, event_source_node
             emit_agent_event(
                 run_id=state["run_id"],
                 session_id=state["session_id"],
@@ -411,7 +332,6 @@ def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
     assert [event[0] for event in events] == ["custom", "values"]
     assert events[0][1]["data"]["type"] == "tool.progress"
     assert events[1][1]["messages"][-1]["content"] == "done"
-    assert orchestrator.cancellation_registry.signal("run-runtime-order") is False
 
 
 def test_stream_agent_loop_runs_engine_inside_workspace_scope(monkeypatch):
@@ -439,10 +359,9 @@ def test_stream_agent_loop_runs_engine_inside_workspace_scope(monkeypatch):
             snapshot_callback=None,
             iteration_limit=None,
             observer=None,
-            cancel_event=None,
             event_source_node=None,
         ):
-            del caller, event_writer, iteration_limit, observer, cancel_event, event_source_node
+            del caller, event_writer, iteration_limit, observer, event_source_node
             observed_scopes.append(tuple(active_workspaces))
             state["messages"].append({"role": "assistant", "content": "done"})
             snapshot_callback(state)
@@ -495,10 +414,9 @@ def test_stream_agent_loop_does_not_deepcopy_engine_snapshots(monkeypatch):
             snapshot_callback=None,
             iteration_limit=None,
             observer=None,
-            cancel_event=None,
             event_source_node=None,
         ):
-            del caller, event_writer, iteration_limit, observer, cancel_event, event_source_node
+            del caller, event_writer, iteration_limit, observer, event_source_node
             state["messages"].append({"role": "assistant", "content": "done"})
             snapshot_callback(_Snapshot({"messages": list(state["messages"])}))
             return state
@@ -548,7 +466,6 @@ def test_stream_agent_loop_propagates_engine_errors(monkeypatch):
                 memory_manager=None,
             )
         )
-    assert orchestrator.cancellation_registry.signal("run-runtime-error") is False
 
 
 def test_orchestrator_uses_requested_run_id(monkeypatch, tmp_path):

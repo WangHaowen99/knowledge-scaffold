@@ -53,7 +53,6 @@ def query_business_data_stream(
                 "agent_iteration",
                 "model_profile_id",
                 "_observer",
-                "_cancel_event",
             }
         })
 

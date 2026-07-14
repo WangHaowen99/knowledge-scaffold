@@ -228,5 +228,4 @@ def _build_provider_runtime_context(
         "agent_iteration": context.agent_iteration,
         "model_profile_id": context.model_profile_id,
         "_observer": context.observer,
-        "_cancel_event": context.cancel_event,
     }
