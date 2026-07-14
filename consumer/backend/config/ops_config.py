@@ -38,7 +38,7 @@ def _resolve_config_runtime_root() -> Path:
     return ONTO_RUNTIME_ROOT
 
 
-def _resolve_ops_config_path() -> Path:
+def resolve_ops_config_path() -> Path:
     configured_path = os.getenv(OPS_CONFIG_PATH_ENV)
     if configured_path:
         return Path(configured_path).expanduser()
@@ -47,7 +47,7 @@ def _resolve_ops_config_path() -> Path:
 
 _CONFIG_LOCK = Lock()
 
-OPS_SECTION_KEYS = ("limits",)
+OPS_SECTION_KEYS = ("limits", "logging")
 _SECTION_FIELDS: dict[str, dict[str, Any]] = {
     "limits": {
         "run_tps": {"env": "AGENT_RUN_TPS", "type": "int", "default": 50},
@@ -64,6 +64,9 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "operation_max_chars": {"env": "ONTOLOGY_OPERATION_MAX_CHARS", "type": "int", "default": 15000},
         "agent_log_retention_days": {"env": "AGENT_LOG_RETENTION_DAYS", "type": "int", "default": 180},
         "agent_log_compress_old": {"env": "AGENT_LOG_COMPRESS_OLD", "type": "bool", "default": True},
+    },
+    "logging": {
+        "level": {"env": None, "type": "str", "default": ""},
     },
 }
 
@@ -139,7 +142,7 @@ def _process_section(
 
 def load_ops_config() -> dict[str, dict[str, Any]]:
     with _CONFIG_LOCK:
-        document = _read_json_document(_resolve_ops_config_path())
+        document = _read_json_document(resolve_ops_config_path())
         return {
             section: _process_section(
                 _SECTION_FIELDS[section],
