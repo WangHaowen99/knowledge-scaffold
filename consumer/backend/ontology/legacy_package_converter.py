@@ -211,7 +211,9 @@ def _convert_script_catalog(root: Path, markdown: str) -> tuple[list[str], list[
             descriptor,
             script_key=script_key,
             operation_key=operation_key,
-            entrypoint=script_path.relative_to(root / "scripts").as_posix(),
+            entrypoint=script_path.relative_to(
+                (root / "scripts").resolve(strict=True)
+            ).as_posix(),
             parameters=entry.get("parameters") or [],
         )
         generated.append(descriptor.relative_to(root).as_posix())
