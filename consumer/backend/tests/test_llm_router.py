@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from agentic.config import AgentConfig, AppConfig, LLMConfig
-from agentic.services.llm import LLMPurpose, LLMRouter
-from agentic.services.llm.service import LLMService
+from config import AgentConfig, AppConfig, LLMConfig
+from config.workspace_llm_profiles import update_workspace_llm_profiles
+from llm import LLMPurpose, LLMRouter
+from llm.service import LLMService
+from workspace.workspaces import create_workspace
 
 
 def _agent_config() -> AgentConfig:
@@ -24,7 +26,7 @@ def _agent_config() -> AgentConfig:
 
 
 def _write_system_config(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -76,7 +78,7 @@ def test_main_uses_requested_profile(tmp_path, monkeypatch):
 
     config = router.get_config(LLMPurpose.MAIN, profile_id="accurate")
 
-    assert config.profile_id == "accurate"
+    assert config.profile_id == "global:accurate"
     assert config.provider == "deepseek"
     assert config.model == "accurate-model"
 
@@ -89,9 +91,102 @@ def test_task_and_summary_use_task_config_memory_uses_main_fast_config(tmp_path,
     memory_config = router.get_config(LLMPurpose.MEMORY)
 
     assert task_config.model == "task-model"
-    assert router.get_config(LLMPurpose.SUMMARY) is task_config
-    assert memory_config.profile_id == "fast"
+    assert router.get_config(LLMPurpose.SUMMARY).model == task_config.model
+    assert memory_config.profile_id == "global:fast"
     assert memory_config.model == "fast-model"
+
+
+def test_main_can_use_workspace_private_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    _write_system_config(tmp_path, monkeypatch)
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_llm_profiles(
+        "alpha",
+        {
+            "profiles": [
+                {
+                    "id": "private",
+                    "name": "Private Model",
+                    "provider": "openai_compatible",
+                    "base_url": "https://private.example/v1",
+                    "model": "private-model",
+                    "api_key": "private-secret",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    router = LLMRouter(AppConfig.from_env(), agent_config=_agent_config())
+
+    config = router.get_config(LLMPurpose.MAIN, profile_id="workspace:private", workspace_id="alpha")
+
+    assert config.profile_id == "workspace:private"
+    assert config.profile_name == "Private Model"
+    assert config.model == "private-model"
+    assert config.api_key == "private-secret"
+
+
+def test_main_without_profile_uses_workspace_default_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    _write_system_config(tmp_path, monkeypatch)
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_llm_profiles(
+        "alpha",
+        {
+            "profiles": [
+                {
+                    "id": "private",
+                    "name": "Private Model",
+                    "provider": "openai_compatible",
+                    "base_url": "https://private.example/v1",
+                    "model": "private-model",
+                    "api_key": "private-secret",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    from workspace.workspaces import update_workspace_runtime_config
+
+    update_workspace_runtime_config(
+        "alpha",
+        {"llm": {"default_main_profile_ref": {"scope": "workspace", "id": "private"}}},
+    )
+    router = LLMRouter(AppConfig.from_env(), agent_config=_agent_config())
+
+    config = router.get_config(LLMPurpose.MAIN, workspace_id="alpha")
+
+    assert config.profile_id == "workspace:private"
+    assert config.model == "private-model"
+    assert config.api_key == "private-secret"
+
+
+def test_task_ignores_workspace_private_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    _write_system_config(tmp_path, monkeypatch)
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_llm_profiles(
+        "alpha",
+        {
+            "profiles": [
+                {
+                    "id": "private",
+                    "name": "Private Model",
+                    "provider": "openai_compatible",
+                    "base_url": "https://private.example/v1",
+                    "model": "private-model",
+                    "api_key": "private-secret",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+    router = LLMRouter(AppConfig.from_env(), agent_config=_agent_config())
+
+    task_config = router.get_config(LLMPurpose.TASK, profile_id="workspace:private", workspace_id="alpha")
+
+    assert task_config.profile_id.startswith("global:model_")
+    assert task_config.model == "task-model"
 
 
 def test_router_caches_services_by_config(tmp_path, monkeypatch):
@@ -146,4 +241,6 @@ def test_refreshed_router_shares_cancellation_state(tmp_path, monkeypatch):
     first.cancel_run("run-shared")
     service = second.get_service(LLMPurpose.MAIN)
 
-    assert service._get_cancel_event("run-shared").is_set()
+    event = second.get_cancel_event("run-shared")
+    assert event is service._get_cancel_event("run-shared")
+    assert event.is_set()

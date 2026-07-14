@@ -5,7 +5,9 @@
 系统支持两类 ZIP：
 
 - **源格式包（推荐）**：包含 `object/` 和 `logic/` 目录，系统会自动转换为运行时本体结构。
-- **已转换本体包**：包含 `manifest.yaml`，并包含 `objects/`、`operations/`、`objects-list.md`、`operations-list.md` 中至少一类内容。
+- **v0.1 本体包**：包含 `kind: ontology-package`、`schema_version: 0.1` 的 `manifest.yaml`，并使用各目录的 `index.md`。
+
+迁移期上传的旧格式包会在导入边界一次性转换成 v0.1。安装目录和运行时不会保留或读取 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`。
 
 ## 通用限制
 
@@ -62,7 +64,7 @@ description: 描述该本体覆盖的业务范围、适用场景和关键对象�
 
 ### object/实体A.md 模板
 
-每个对象一个 Markdown 文件，文件名就是实体名。系统读取 `对象描述`、`对象别名`、`对象属性清单`，并生成 `objects-list.md` 与 `objects/<实体名>.md`。
+每个对象一个 Markdown 文件，文件名就是实体名。系统读取 `对象描述`、`对象别名`、`对象属性清单`，并生成 `objects/index.md` 与 `objects/<实体名>.md`。
 
 ```markdown
 # 对象描述
@@ -86,13 +88,13 @@ EntityA
 
 转换规则：
 
-- `objects-list.md` 生成列：`中文名称`、`别名`、`业务定义`、`领域分类`。
+- `objects/index.md` 生成列：`中文名称`、`别名`、`业务定义`、`领域分类`。
 - `objects/<实体名>.md` 生成列：`中文名称`、`英文名称`、`描述`、`属性别名`。
 - `主键`、`类型`、`属性规则` 当前不进入运行时对象文件。
 
 ### logic/操作A.md 模板
 
-每个操作一个 Markdown 文件，文件名就是操作名。系统生成 `operations-list.md` 与 `operations/<操作名>.md`。
+每个操作一个 Markdown 文件，文件名就是操作名。系统生成 `operations/index.md` 与 `operations/<操作名>.md`。
 
 ````markdown
 # 业务描述
@@ -129,7 +131,7 @@ EntityA
 
 - 如果文件顶部存在 `#工具流程` 标记，目标 operation 的 `管理标签` 生成为 `工具流程`。
 - 如果没有 `#工具流程` 标记，系统读取 `# 与logic的关联` 中的 `被流程使用`：有具体上游流程时生成 `子流程`，为 `无` 或未填写时生成 `主流程`。
-- `# 业务描述` 进入 `operations-list.md` 的 `业务描述` 列。
+- `# 业务描述` 进入 `operations/index.md` 的 `业务描述` 列。
 - `# 输入` 转换为 `参数名称`、`描述`、`输入源` 三列；如果源表没有 `输入源`，主流程默认 `用户输入`，子流程和工具流程默认 `父流程传递`。
 - `# 输出` 转换为 `参数名称`、`描述` 两列。
 - `# 逻辑描述` 原样进入 operation 文件。
@@ -137,7 +139,7 @@ EntityA
 
 ### action/script_a.py 模板
 
-`action/` 是可选目录。导入时系统会复制所有 `action/**/*.py` 以及 `.env` / `*.env` 文件到目标 `scripts/`，并根据 Python 脚本生成 `scripts-list.md`。脚本文件名可以保持英文；如果脚本对应某个 `logic/<操作名>.md`，在脚本顶部用注释声明对应的工具流程。
+`action/` 是可选目录。导入时系统会复制所有 `action/**/*.py` 以及 `.env` / `*.env` 文件到目标 `scripts/`，并为绑定操作的脚本生成 `scripts/<key>.md` 和 `scripts/index.md`。脚本文件名可以保持英文；如果脚本对应某个 `logic/<操作名>.md`，在脚本顶部用注释声明对应的工具流程。
 
 ```python
 # 工具流程: 操作A
@@ -151,28 +153,28 @@ EntityA
 print("script output")
 ```
 
-生成后的 `scripts-list.md` 优先使用脚本顶部 `工具流程` 注释作为 key，路径仍指向原脚本文件名：
+生成后的脚本描述使用脚本文件名作为 key，`bound_operation` 来自顶部 `工具流程` 注释，`entrypoint` 指向原脚本文件名：
 
 ```markdown
-# 工具流程脚本清单
+---
+resource: script
+key: script_a
+title: script_a
+bound_operation: 操作A
+runtime: python
+entrypoint: script_a.py
+---
 
-当工具流程已在此清单中维护对应脚本时，优先调用 `execute_script`，不要先读 operation markdown 再手工复刻逻辑。
-
-## 脚本映射
-- `操作A` -> `scripts/script_a.py`
-  `parameters`: `[{"name":"实体编号","flag":"--entity-code","description":"实体编号","required":true,"type":"string","aliases":["entity_code"]}]`
+| 参数 key | CLI 参数 | 类型 | 必填 | 是否多值 | 说明 | 别名 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 实体编号 | --entity-code | string | 是 | 否 | 实体编号 | entity_code |
 ```
 
-如果没有 `工具流程` 注释，系统会退回使用脚本文件名去掉 `.py` 后的名称作为 key，适合那些直接按脚本名调用、没有对应 `logic/*.md` 的脚本。下划线开头的 helper 脚本和 `.env` 文件会被复制到 `scripts/`，但不会写入 `scripts-list.md`。
+没有绑定到 `logic/*.md` 的脚本、下划线开头的 helper 脚本和 `.env` 文件会复制到 `scripts/`，但不会注册为可由 `execute_script` 调用的操作。
 
 脚本参数生成分两层：优先读取脚本顶部 `parameters` / `params` / `参数` 注释，支持 JSON 单行或 YAML 注释块；如果没有声明，则静态解析脚本中的 `argparse.add_argument(...)`，提取 `flag`、`required`、`type`、`multiple` 和别名。不会执行脚本本身。
 
-也可以在已转换本体包中直接维护结构化参数：
-
-```markdown
-- `操作A` -> `scripts/script_a.py`
-  `parameters`: `[{"name":"entity_code","flag":"--entity-code","description":"实体编号","required":true,"type":"string"}]`
-```
+也可以在 v0.1 本体包的 `scripts/<key>.md` 中直接维护同样的参数表。
 
 ### asset/common.conf 模板
 
@@ -206,16 +208,23 @@ key format: pass the shown file key to ontology_context(resource="asset", key=..
 my-ontology.zip
 └── my-ontology/
     ├── manifest.yaml
-    ├── ONTOLOGY.md              # 可选
-    ├── objects-list.md
-    ├── operations-list.md
+    ├── index.md
     ├── objects/
+    │   ├── index.md
     │   └── 实体A.md
     ├── operations/
+    │   ├── index.md
     │   └── 操作A.md
-    ├── scripts-list.md          # 可选
-    ├── scripts/                 # 可选
+    ├── rules/
+    │   └── index.md
+    ├── metrics/
+    │   └── index.md
+    ├── scripts/
+    │   ├── index.md
+    │   ├── script_a.md
     │   └── script_a.py
+    ├── mappings/
+    │   └── object-data-mappings.json
     └── assets/                  # 可选
         └── common.conf
 ```
@@ -223,7 +232,8 @@ my-ontology.zip
 ### manifest.yaml 模板
 
 ```yaml
-kind: ontology
+kind: ontology-package
+schema_version: 0.1
 id: my-ontology
 name: 我的业务本体
 description: 描述该本体覆盖的业务范围、适用场景和关键对象。
@@ -232,7 +242,7 @@ language: zh-CN
 scope: []
 ```
 
-### objects-list.md 模板
+### objects/index.md 模板
 
 ```markdown
 # 实体清单
@@ -252,7 +262,7 @@ scope: []
 | 实体A编号 | entity_a_code | 实体A的唯一编号。 | A编号、编码 |
 ```
 
-### operations-list.md 模板
+### operations/index.md 模板
 
 ```markdown
 # Operations 逻辑清单

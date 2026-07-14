@@ -1,29 +1,24 @@
-"""Regression tests for B2: graph provider tool spans must attach to the
-parent tool_batch span (parent_key) and carry the agent iteration.
-
-Before the fix, GraphProviderTrace emitted TOOL_STARTED/TOOL_FINISHED events
-with no parent_key and no iteration, so graph tool spans appeared as orphans
-and were not grouped under any iteration in local perf analysis.
-"""
+"""Graph runtime spans must remain children of business_data_search."""
 
 from __future__ import annotations
 
-from typing import List
+from types import SimpleNamespace
 
-from agentic.observability.events import RuntimeEvent, RuntimeEventType
-from agentic.business_data.providers.graph.models import GraphSearchRuntimeContext
-from agentic.business_data.providers.graph.scope import build_graph_scope
-from agentic.business_data.providers.graph.trace import GraphProviderTrace
-from agentic.tools.business_data_search import _tool_batch_parent_span_key
+from agent.tools.business_data.providers.graph.models import GraphSearchRuntimeContext
+from agent.tools.business_data.providers.graph.scope import build_graph_scope
+from agent.tools.business_data.providers.graph.trace import (
+    GraphToolTraceSink,
+    build_graph_agent_runtime_trace,
+)
+from agent.tools.business_data_search import _build_provider_runtime_context
+from integration.observability.events import RuntimeEvent, RuntimeEventType
 
 
 class _CapturingObserver:
-    """Fake observer that records every emitted RuntimeEvent."""
-
     enabled = True
 
     def __init__(self) -> None:
-        self.events: List[RuntimeEvent] = []
+        self.events: list[RuntimeEvent] = []
 
     def emit(self, event: RuntimeEvent) -> bool:
         self.events.append(event)
@@ -31,6 +26,11 @@ class _CapturingObserver:
 
 
 def _make_context(provider_config: dict) -> GraphSearchRuntimeContext:
+    scoped_config = {
+        "workspace_id": "ws-1",
+        "ontology_id": "onto-1",
+        **provider_config,
+    }
     return GraphSearchRuntimeContext(
         provider="neo4j",
         workspace_id="ws-1",
@@ -40,86 +40,110 @@ def _make_context(provider_config: dict) -> GraphSearchRuntimeContext:
         query="q",
         timeout_seconds=60,
         max_result_rows=100,
-        scope=build_graph_scope(provider_config),
+        scope=build_graph_scope(scoped_config),
         mapping=None,
-        provider_config=provider_config,
+        provider_config=scoped_config,
     )
 
 
-def test_parent_span_key_rebuild_matches_agent_trace_rules():
-    # main caller
-    assert _tool_batch_parent_span_key("main", None, 3) == "tools:main:3"
-    # subagent with id
-    assert _tool_batch_parent_span_key("subagent", {"subagent_id": "sa1"}, 2) == "tools:subagent:sa1:2"
-    # subagent without id
-    assert _tool_batch_parent_span_key("subagent", None, 2) == "tools:subagent:2"
-    # default / empty caller
-    assert _tool_batch_parent_span_key(None, None, 0) == "tools:main:0"
-
-
-def test_graph_tool_spans_carry_parent_key_and_iteration():
+def test_business_data_runtime_context_uses_outer_tool_span_as_parent():
     observer = _CapturingObserver()
-    provider_config = {
-        "run_id": "run-1",
-        "session_id": "sess-1",
-        "turn_id": 7,
-        "parent_span_key": "tools:main:3",
-        "agent_iteration": 3,
-        "workspace_id": "ws-1",
-    }
-    trace = GraphProviderTrace(_make_context(provider_config), observer=observer)
-    assert trace.enabled is True
-
-    span_key, started = trace.tool_started(tool_name="property_filter", tool_args={"a": 1})
-    trace.tool_finished(
-        span_key=span_key,
-        started=started,
-        tool_name="property_filter",
-        backend_result=None,
-        payload={"result": {"count": 0}},
+    tool_context = SimpleNamespace(
+        run_id="run-1",
+        session_id="session-1",
+        turn_id=7,
+        caller="main",
+        agent_iteration=3,
+        subagent_lineage=None,
+        model_profile_id="workspace:graph",
+        observer=observer,
     )
+
+    runtime = _build_provider_runtime_context(
+        context=tool_context,
+        tool_call_id="call-1",
+    )
+
+    assert runtime["parent_span_key"] == "tool:main:3:business_data_search:call-1"
+    assert runtime["model_profile_id"] == "workspace:graph"
+    assert runtime["_observer"] is observer
+
+
+def test_graph_tool_spans_attach_to_outer_business_data_span():
+    observer = _CapturingObserver()
+    parent_key = "tool:main:3:business_data_search:call-1"
+    sink = GraphToolTraceSink(
+        _make_context({
+            "run_id": "run-1",
+            "session_id": "session-1",
+            "turn_id": 7,
+            "agent_iteration": 3,
+            "parent_span_key": parent_key,
+            "_observer": observer,
+        })
+    )
+
+    sink({"type": "start", "content": "开始执行图工具: property_filter"})
+    sink({"type": "intermediate", "content": "图工具执行完成: property_filter"})
+
+    assert [event.type for event in observer.events] == [
+        RuntimeEventType.TOOL_STARTED,
+        RuntimeEventType.TOOL_FINISHED,
+    ]
+    assert all(event.parent_key == parent_key for event in observer.events)
+    assert all(event.payload["iteration"] == 3 for event in observer.events)
+    assert observer.events[0].span_key == observer.events[1].span_key
+    assert observer.events[0].span_key.startswith("tool:graph:property_filter:")
+
+
+def test_graph_tool_failure_closes_same_child_span():
+    observer = _CapturingObserver()
+    sink = GraphToolTraceSink(
+        _make_context({
+            "run_id": "run-1",
+            "parent_span_key": "tool:main:1:business_data_search:call-2",
+            "_observer": observer,
+        })
+    )
+
+    sink({"type": "start", "content": "开始执行图工具: count_search"})
+    sink({"type": "error", "content": "图工具执行失败: count_search"})
 
     assert len(observer.events) == 2
-    for event in observer.events:
-        assert event.parent_key == "tools:main:3", "graph tool span must attach to parent tool_batch"
-        assert event.payload.get("iteration") == 3, "graph tool span payload must carry iteration"
-        assert event.span_key and event.span_key.startswith("tool:graph:"), "span_key format preserved"
-
-    assert observer.events[0].type == RuntimeEventType.TOOL_STARTED
-    assert observer.events[1].type == RuntimeEventType.TOOL_FINISHED
+    assert observer.events[1].payload["status"] == "error"
+    assert observer.events[0].span_key == observer.events[1].span_key
 
 
-def test_graph_tool_failed_span_also_carries_parent_key():
+def test_graph_model_trace_uses_outer_tool_span_as_parent():
+    parent_key = "tool:main:2:business_data_search:call-3"
     observer = _CapturingObserver()
-    provider_config = {
-        "run_id": "run-1",
-        "parent_span_key": "tools:subagent:sa1:2",
-        "agent_iteration": 2,
-        "workspace_id": "ws-1",
-    }
-    trace = GraphProviderTrace(_make_context(provider_config), observer=observer)
-
-    span_key, started = trace.tool_started(tool_name="count_search", tool_args={})
-    trace.tool_failed(
-        span_key=span_key,
-        started=started,
-        tool_name="count_search",
-        error=ValueError("boom"),
+    runtime_trace = build_graph_agent_runtime_trace(
+        _make_context({
+            "run_id": "run-1",
+            "parent_span_key": parent_key,
+            "_observer": observer,
+        })
     )
 
-    assert len(observer.events) == 2
-    for event in observer.events:
-        assert event.parent_key == "tools:subagent:sa1:2"
-        assert event.payload.get("iteration") == 2
+    assert runtime_trace.loop_span_key == parent_key
+    runtime_trace.llm_started(
+        iteration=1,
+        call_index=1,
+        messages=[{"role": "user", "content": "q"}],
+        tools=[],
+        model="graph-model",
+        request_label="jiuwen_react_model_call",
+    )
+    assert observer.events[0].type == RuntimeEventType.LLM_STARTED
+    assert observer.events[0].parent_key == parent_key
+    assert observer.events[0].span_key.startswith("llm:graph:")
 
 
-def test_missing_parent_config_degrades_gracefully():
-    """Without parent_span_key/iteration, spans still emit (no crash), just no linkage."""
+def test_missing_trace_metadata_degrades_without_emitting():
     observer = _CapturingObserver()
-    provider_config = {"run_id": "run-1", "workspace_id": "ws-1"}
-    trace = GraphProviderTrace(_make_context(provider_config), observer=observer)
+    sink = GraphToolTraceSink(_make_context({}), observer=observer)
 
-    span_key, started = trace.tool_started(tool_name="property_filter", tool_args={})
-    assert len(observer.events) == 1
-    assert observer.events[0].parent_key is None
-    assert "iteration" not in observer.events[0].payload
+    sink({"type": "start", "content": "开始执行图工具: property_filter"})
+    sink({"type": "intermediate", "content": "图工具执行完成: property_filter"})
+
+    assert observer.events == []

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic.prompts.universal import build_universal_system_prompt
+from agent.prompts.universal import build_universal_system_prompt
 
 
 def test_universal_prompt_contains_top_level_sections_and_language_policy():
@@ -41,7 +41,7 @@ def test_universal_prompt_omits_planning_tool_usage_guidance():
 def test_subagent_prompt_omits_planning_tool_guidance():
     subagent_source = (
         Path(__file__).resolve().parents[1]
-        / "agentic"
+        / "agent"
         / "sub_agents"
         / "base.py"
     ).read_text(encoding="utf-8")
@@ -52,7 +52,7 @@ def test_subagent_prompt_omits_planning_tool_guidance():
 def test_subagent_prompt_inherits_main_parallel_batching_rules_without_tool_rule_duplication():
     subagent_source = (
         Path(__file__).resolve().parents[1]
-        / "agentic"
+        / "agent"
         / "sub_agents"
         / "base.py"
     ).read_text(encoding="utf-8")
@@ -126,6 +126,27 @@ def test_universal_prompt_prefers_script_backed_execution():
     assert "execute_python_script" not in prompt
 
 
+def test_main_and_subagent_prompts_follow_v01_ontology_loading_flow():
+    prompt = build_universal_system_prompt()
+    assert "operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog`" in prompt
+    assert 'ontology_context(resource="operation", key=<operation_key>)' in prompt
+    assert "dependency/uses/entity association section" in prompt
+    assert "load the referenced `rule` and `metric` specs" in prompt
+
+    subagent_source = (
+        Path(__file__).resolve().parents[1]
+        / "agent"
+        / "sub_agents"
+        / "base.py"
+    ).read_text(encoding="utf-8")
+    assert 'Call `ontology_context(resource="root")`' in subagent_source
+    assert 'ontology_context(resource="operation", key=context.operation_key)' in subagent_source
+    assert 'ontology_context(resource="object")' in subagent_source
+    assert 'ontology_context(resource="rule")' in subagent_source
+    assert 'ontology_context(resource="metric")' in subagent_source
+    assert "root `script_catalog`" in subagent_source
+
+
 def test_universal_prompt_appends_memory_context_without_memory_tool_rules():
     prompt = build_universal_system_prompt(
         memory_context="## Relevant Long-Term Memory\n- [preference] 默认使用中文回答。",
@@ -176,7 +197,7 @@ def test_ontology_optional_doc_no_longer_mentions_removed_hitl_tool():
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
-        / "ONTOLOGY.md"
+        / "index.md"
     )
 
     if not ontology_doc_path.exists():
@@ -187,29 +208,30 @@ def test_ontology_optional_doc_no_longer_mentions_removed_hitl_tool():
     assert removed_tool not in content
 
 
-def test_ontology_doc_and_scripts_list_document_script_first_tool_flows():
+def test_ontology_indexes_document_script_first_tool_flows():
     ontology_doc_path = (
         Path(__file__).resolve().parents[2]
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
-        / "ONTOLOGY.md"
+        / "index.md"
     )
-    scripts_list_path = (
+    scripts_index_path = (
         Path(__file__).resolve().parents[2]
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
-        / "scripts-list.md"
+        / "scripts"
+        / "index.md"
     )
 
-    if not ontology_doc_path.exists() or not scripts_list_path.exists():
+    if not ontology_doc_path.exists() or not scripts_index_path.exists():
         pytest.skip("Optional ontology doc fixture is not present")
 
     ontology_doc_content = ontology_doc_path.read_text(encoding="utf-8")
-    scripts_list_content = scripts_list_path.read_text(encoding="utf-8")
+    scripts_index_content = scripts_index_path.read_text(encoding="utf-8")
     assert "脚本优先规则" in ontology_doc_content
-    assert "scripts-list.md" in ontology_doc_content
+    assert "scripts/index.md" in ontology_doc_content
     assert "优先调用 `execute_script`" in ontology_doc_content
     assert "ontologies/example-domain-operations-manual/scripts/get_in_progress_flights.py" not in ontology_doc_content
-    assert "scripts/get_in_progress_flights.py" in scripts_list_content
+    assert "get_in_progress_flights" in scripts_index_content

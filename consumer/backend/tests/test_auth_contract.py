@@ -11,11 +11,11 @@ from types import SimpleNamespace
 import pytest
 from flask import jsonify
 
-from agentic.services.auth import AuthManager, require_auth
+from api.auth.auth import AuthManager, require_auth
 
 
 def _build_app(auth_manager):
-    import agentic.app as app_module
+    import app as app_module
 
     runtime = {
         "config": SimpleNamespace(),
@@ -42,7 +42,12 @@ def auth_manager(tmp_path):
 
 
 @pytest.fixture()
-def app(auth_manager):
+def app(auth_manager, tmp_path, monkeypatch):
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setenv("MEMORY_WORKSPACE_ROOT", str(runtime_root / "memory"))
+    monkeypatch.setenv("MCP_TOKEN_STORE_PATH", str(runtime_root / "mcp-tokens.json"))
+    monkeypatch.setenv("MCP_TOKEN_SECRET", "test-mcp-secret")
     return _build_app(auth_manager)
 
 
@@ -219,8 +224,26 @@ def test_delete_protections_chinese_messages(client, auth_manager):
     assert self_delete.status_code == 400
     assert self_delete.get_json() == {"error": "不能删除自己"}
 
+    whitespace_self_delete = client.delete(
+        "/auth/users/%20admin%20",
+        headers=headers,
+    )
+    assert whitespace_self_delete.status_code == 400
+    assert whitespace_self_delete.get_json() == {"error": "不能删除自己"}
+    assert auth_manager.get_user("admin") is not None
+
     reset_self = client.put("/auth/users/admin", headers=headers, json={"password": "SelfReset#123"})
     assert reset_self.status_code == 400
     assert reset_self.get_json() == {
+        "error": "不能通过用户管理重置当前登录用户密码，请使用修改密码入口",
+    }
+
+    whitespace_reset_self = client.put(
+        "/auth/users/%20admin%20",
+        headers=headers,
+        json={"password": "SelfReset#123"},
+    )
+    assert whitespace_reset_self.status_code == 400
+    assert whitespace_reset_self.get_json() == {
         "error": "不能通过用户管理重置当前登录用户密码，请使用修改密码入口",
     }

@@ -310,6 +310,38 @@ const useAgenticStream = ({
     };
   }, [clearRunTracking, rebindRunTracking, upsertTurnBubble]);
 
+  const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle) => ({
+    onEvent: createEventDispatcher(runId, targetSessionId, runLifecycle),
+    onComplete: () => {
+      const trackedRunId = runLifecycle.activeRunId || runId;
+      upsertTurnBubble(trackedRunId, (current) => ({
+        ...current,
+        status: current.status === 'running' || current.status === 'queued'
+          ? 'finished'
+          : (current.status || 'finished'),
+        isLoading: false,
+        streamSegments: closeOpenSegment(current.streamSegments || []),
+        currentSegmentType: null,
+      }), targetSessionId, { immediate: true });
+      clearRunTracking(trackedRunId);
+    },
+    onError: (error, isAbort) => {
+      const trackedRunId = runLifecycle.activeRunId || runId;
+      if (isAbort) {
+        finalizeCancelledRun(trackedRunId, 'Workflow cancelled by user', targetSessionId);
+        return;
+      }
+      logger.error('Agentic stream error', { error: error.message });
+      finalizeErroredRun(trackedRunId, error.message || 'Unknown stream error', targetSessionId);
+    },
+  }), [
+    clearRunTracking,
+    createEventDispatcher,
+    finalizeCancelledRun,
+    finalizeErroredRun,
+    upsertTurnBubble,
+  ]);
+
   const sendAgentic = useCallback(async (message, existingSessionId = null, options = {}) => {
     if (!message.trim()) return;
 
@@ -341,7 +373,6 @@ const useAgenticStream = ({
 
     logger.info('Starting agentic workflow', { runId, sessionId: activeSessionId });
 
-    const handleEvent = createEventDispatcher(runId, activeSessionId, runLifecycle);
     const streamUrl = AGENTIC_CONFIG.endpoint;
     const contextPayload = {};
     if (selectedOntologyId) {
@@ -368,29 +399,7 @@ const useAgenticStream = ({
 
     upsertTurnBubble(runId, { status: 'running', isLoading: true }, activeSessionId, { immediate: true });
 
-    const streamCallbacks = {
-      onEvent: handleEvent,
-      onComplete: () => {
-        const trackedRunId = runLifecycle.activeRunId || runId;
-        upsertTurnBubble(trackedRunId, (current) => ({
-          ...current,
-          status: current.status === 'running' ? 'finished' : (current.status || 'finished'),
-          isLoading: false,
-          streamSegments: closeOpenSegment(current.streamSegments || []),
-          currentSegmentType: null,
-        }), activeSessionId, { immediate: true });
-        clearRunTracking(trackedRunId);
-      },
-      onError: (error, isAbort) => {
-        const trackedRunId = runLifecycle.activeRunId || runId;
-        if (isAbort) {
-          finalizeCancelledRun(trackedRunId, 'Workflow cancelled by user', activeSessionId);
-          return;
-        }
-        logger.error('Agentic stream error', { error: error.message });
-        finalizeErroredRun(trackedRunId, error.message || 'Unknown stream error', activeSessionId);
-      },
-    };
+    const streamCallbacks = createStreamCallbacks(runId, activeSessionId, runLifecycle);
 
     await streamManager.startStreamForSession(
       activeSessionId,
@@ -399,18 +408,44 @@ const useAgenticStream = ({
       streamCallbacks
     );
   }, [
-    clearRunTracking,
-    createEventDispatcher,
-    finalizeCancelledRun,
-    finalizeErroredRun,
+    createStreamCallbacks,
     queueMessageUpdate,
     sessionId,
     streamManager,
     upsertTurnBubble,
   ]);
 
+  const resumeAgentic = useCallback(async ({
+    runId,
+    targetSessionId = null,
+    afterSequence = 0,
+    status = 'running',
+  }) => {
+    const activeSessionId = targetSessionId || sessionId;
+    const normalizedRunId = String(runId || '').trim();
+    if (!activeSessionId || !normalizedRunId || !streamManager?.resumeRunForSession) return false;
+
+    const runLifecycle = { activeRunId: normalizedRunId };
+    currentRunIdRef.current = normalizedRunId;
+    upsertTurnBubble(normalizedRunId, (current) => ({
+      ...current,
+      status: status === 'queued' ? 'queued' : 'running',
+      isLoading: true,
+    }), activeSessionId, { immediate: true });
+    return streamManager.resumeRunForSession(
+      activeSessionId,
+      normalizedRunId,
+      afterSequence,
+      {
+        ...createStreamCallbacks(normalizedRunId, activeSessionId, runLifecycle),
+        status,
+      },
+    );
+  }, [createStreamCallbacks, sessionId, streamManager, upsertTurnBubble]);
+
   return {
     sendAgentic,
+    resumeAgentic,
   };
 };
 

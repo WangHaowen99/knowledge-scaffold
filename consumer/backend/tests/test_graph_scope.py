@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from agentic.business_data.providers.graph.scope import (
+from agent.tools.business_data.providers.graph.models import GraphScope
+from agent.tools.business_data.providers.graph.scope import (
     GraphScopeError,
     build_graph_scope,
     sanitize_labels,
@@ -18,7 +19,6 @@ def test_build_graph_scope_uses_runtime_workspace_id():
         "workspace_id": "workspace-a",
         "ontology_id": "demo-ontology",
         "workspace_property": "d2o_workspace_id",
-        "ontology_property": "d2o_ontology_id",
     })
 
     assert scope.workspace_property == "d2o_workspace_id"
@@ -27,28 +27,37 @@ def test_build_graph_scope_uses_runtime_workspace_id():
     assert scope.ontology_value == "demo-ontology"
 
 
-def test_build_graph_scope_uses_workspace_name_when_property_is_workspace_name():
+def test_build_graph_scope_always_uses_workspace_id_as_scope_value():
     scope = build_graph_scope({
         "workspace_id": "workspace-a",
+        "ontology_id": "demo-ontology",
         "workspace_name": "示例工程变更空间",
         "workspace_property": "workspace_name",
     })
 
     assert scope.workspace_property == "workspace_name"
-    assert scope.workspace_value == "示例工程变更空间"
+    assert scope.workspace_value == "workspace-a"
+    assert scope.ontology_property == "d2o_ontology_id"
+    assert scope.ontology_value == "demo-ontology"
 
 
-def test_build_graph_scope_requires_workspace_name_for_workspace_name_property():
-    with pytest.raises(GraphScopeError, match="workspace_name"):
+def test_build_graph_scope_requires_ontology_id():
+    with pytest.raises(GraphScopeError, match="ontology_id"):
         build_graph_scope({
             "workspace_id": "workspace-a",
-            "workspace_property": "workspace_name",
         })
+    with pytest.raises(ValueError, match="workspace and ontology scope"):
+        GraphScope(
+            workspace_property="d2o_workspace_id",
+            workspace_value="workspace-a",
+            ontology_property="",
+            ontology_value="",
+        )
 
 
 def test_build_graph_scope_requires_workspace_id():
-    with pytest.raises(GraphScopeError):
-        build_graph_scope({"workspace_property": "d2o_workspace_id"})
+    with pytest.raises(GraphScopeError, match="workspace_id"):
+        build_graph_scope({"ontology_id": "demo-ontology"})
 
 
 def test_validate_graph_identifier_allows_chinese_but_rejects_unsafe_names():

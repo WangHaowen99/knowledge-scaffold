@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Monitor, Moon, Settings2, Sun } from 'lucide-react';
 import { authFetch } from '../utils/auth';
-import { friendlyRequestError } from '../utils/requestErrors';
 import McpManagement from '../components/McpManagement';
 import { useAuthContext } from './useAuthContext';
-import { APPEARANCES, THEMES, applyAppearance, applyTheme, getAppearance, getTheme } from './theme';
-import { ConfirmDialog, InputDialog, SkeletonState, ToastNotice } from './UiFeedback';
+import { THEMES, applyTheme, getTheme } from './theme';
+import { FieldRow as Field, ScopeTabs, SectionCard } from './ui';
 
 // 配置中心：三层作用域（L1 全局 / L2 工作空间 / L3 个人）。
 const SCOPES = {
@@ -15,6 +13,7 @@ const SCOPES = {
     sections: [
       { id: 'llm', name: '模型池' },
       { id: 'web_search', name: '联网搜索' },
+      { id: 'platform', name: '平台接入' },
       { id: 'observability', name: '观测打点' },
       { id: 'agent', name: 'Agent 全局参数' },
       { id: 'wsmgmt', name: '工作空间管理' },
@@ -31,6 +30,7 @@ const SCOPES = {
       { id: 'conn', name: '数据连接' },
       { id: 'bind', name: '知识与数据绑定' },
       { id: 'runtime', name: '空间运行参数' },
+      { id: 'wsobs', name: '空间观测' },
       { id: 'mcp', name: 'MCP 接入' },
     ],
   },
@@ -39,6 +39,7 @@ const SCOPES = {
     hint: '仅对你自己生效的个人偏好，随账号同步',
     sections: [
       { id: 'prefs', name: '偏好' },
+      { id: 'memory', name: '长期记忆' },
       { id: 'account', name: '账号安全' },
     ],
   },
@@ -50,23 +51,17 @@ export default function ConfigCenter({ scope, section, onNavigate }) {
   const active = sections.find((s) => s.id === section) || sections[0];
 
   return (
-    <div className="config-page">
-      <div className="cfg-page-head">
-        <div className="cfg-page-icon"><Settings2 size={20} /></div>
-        <div>
-          <div className="cfg-page-eyebrow">平台设置</div>
-          <h1>配置中心</h1>
-          <p>按全局、工作空间和个人三个层级管理平台能力与运行偏好。</p>
-        </div>
-      </div>
-      <div className="scope-tabs">
-        {Object.entries(SCOPES).map(([key, v]) => (
-          <button key={key} className={key === scope ? 'on' : ''}
-            onClick={() => onNavigate({ scope: key, sec: SCOPES[key].sections[0].id })}>
-            <span className={`scope-badge ${v.badge}`}>{v.lv}</span>{v.label}
-          </button>
-        ))}
-      </div>
+    <div>
+      <ScopeTabs
+        value={scope}
+        onChange={(key) => onNavigate({ scope: key, sec: SCOPES[key].sections[0].id })}
+        items={Object.entries(SCOPES).map(([key, value]) => ({
+          id: key,
+          label: value.label,
+          badge: value.lv,
+          badgeClass: value.badge,
+        }))}
+      />
       <div className="scope-hint">{sc.hint}</div>
       <div className="cfg">
         <div className="subnav">
@@ -89,20 +84,12 @@ function ReadOnlyBanner({ who }) {
   );
 }
 
-function Field({ label, hint, children }) {
-  return (
-    <div className="fieldrow">
-      <div className="fl"><div className="n">{label}</div>{hint && <div className="h">{hint}</div>}</div>
-      {children}
-    </div>
-  );
-}
-
 function SectionBody({ scope, section }) {
   const { workspaceId } = useAuthContext();
   if (scope === 'global') {
     if (section === 'wsmgmt') return <WorkspaceMgmt />;
     if (section === 'users') return <UserMgmt />;
+    if (section === 'platform') return <PlatformAccess />;
     return <SystemConfigSection section={section} />;
   }
   if (scope === 'workspace') {
@@ -113,10 +100,12 @@ function SectionBody({ scope, section }) {
     if (section === 'conn') return <DataConnections />;
     if (section === 'bind') return <KnowledgeBinding />;
     if (section === 'runtime') return <WorkspaceRuntime />;
+    if (section === 'wsobs') return <WorkspaceObservability />;
     if (section === 'mcp') return <WorkspaceMcp />;
   }
   if (scope === 'personal') {
     if (section === 'prefs') return <PersonalPrefs />;
+    if (section === 'memory') return <PersonalMemory />;
     if (section === 'account') return <AccountSecurity />;
   }
   return null;
@@ -139,26 +128,18 @@ function SystemConfigSection({ section }) {
   const [draft, setDraft] = useState({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoadError('');
-    try {
-      const res = await authFetch('/api/system-config');
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || `请求失败（${res.status}）`);
-      }
+    const res = await authFetch('/api/system-config');
+    if (res.ok) {
       const data = await res.json();
       setConfig(data);
       setDraft({});
-    } catch (error) {
-      setLoadError(friendlyRequestError(error, '配置加载失败'));
     }
   }, []);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
 
-  if (!config) return <LoadState error={loadError} onRetry={load} />;
+  if (!config) return <SectionCard><div className="empty">加载中…</div></SectionCard>;
   const secData = config[section === 'llm' ? 'llm_profiles' : section] || {};
 
   const save = async (data) => {
@@ -173,10 +154,6 @@ function SystemConfigSection({ section }) {
       const payload = await res.json().catch(() => ({}));
       setMsg(res.ok ? '已保存' : `保存失败：${payload.detail || payload.error || res.status}`);
       if (res.ok) await load();
-      return res.ok;
-    } catch {
-      setMsg('保存失败：网络异常，请稍后重试');
-      return false;
     } finally {
       setBusy(false);
     }
@@ -186,9 +163,7 @@ function SystemConfigSection({ section }) {
   const val = (k, fallback = '') => (draft[k] !== undefined ? draft[k] : (secData[k] ?? fallback));
 
   return (
-    <div className="card" data-wiz={meta.wiz}>
-      <h3>{meta.title}</h3>
-      <div className="cd">{meta.desc}</div>
+    <SectionCard title={meta.title} description={meta.desc} data-wiz={meta.wiz}>
       {!canEdit && <ReadOnlyBanner who="平台管理员" />}
       {section === 'llm' && <LlmProfiles data={secData} canEdit={canEdit} onSave={save} busy={busy} />}
       {section === 'web_search' && (
@@ -199,13 +174,8 @@ function SystemConfigSection({ section }) {
               {['basic', 'fast', 'ultra-fast', 'advanced'].map((o) => <option key={o}>{o}</option>)}
             </select>
           </Field>
-          <details className="config-advanced">
-            <summary>高级域名策略</summary>
-            <div className="config-advanced-body">
-              <Field label="允许域名" hint="逗号分隔，空为不限"><input type="text" disabled={!canEdit} value={val('allowed_domains')} onChange={(e) => set('allowed_domains', e.target.value)} /></Field>
-              <Field label="屏蔽域名" hint="逗号分隔"><input type="text" disabled={!canEdit} value={val('blocked_domains')} onChange={(e) => set('blocked_domains', e.target.value)} /></Field>
-            </div>
-          </details>
+          <Field label="允许域名" hint="逗号分隔，空为不限"><input type="text" disabled={!canEdit} value={val('allowed_domains')} onChange={(e) => set('allowed_domains', e.target.value)} /></Field>
+          <Field label="屏蔽域名" hint="逗号分隔"><input type="text" disabled={!canEdit} value={val('blocked_domains')} onChange={(e) => set('blocked_domains', e.target.value)} /></Field>
         </>
       )}
       {section === 'observability' && (
@@ -222,47 +192,46 @@ function SystemConfigSection({ section }) {
       )}
       {section === 'agent' && (
         <>
-          {[['main_agent_max_iterations', '主智能体最大轮次'], ['context_max_rounds', '上下文保留轮次'],
-            ['llm_connection_max_retries', 'LLM 连接重试次数']].map(([k, label]) => (
+          {[['main_agent_max_iterations', '主智能体最大轮次'], ['sub_agent_max_iterations', '子智能体最大轮次'],
+            ['sub_agent_max_concurrency', '子智能体最大并发'], ['sub_agent_max_depth', '子智能体最大深度'],
+            ['context_max_rounds', '上下文保留轮次'], ['llm_connection_max_retries', 'LLM 连接重试次数']].map(([k, label]) => (
               <Field key={k} label={label}>
                 <input type="number" disabled={!canEdit} value={val(k, '')} onChange={(e) => set(k, Number(e.target.value))} />
               </Field>
             ))}
-          <details className="config-advanced">
-            <summary>高级多智能体参数</summary>
-            <div className="config-advanced-body">
-              {[['sub_agent_max_iterations', '子智能体最大轮次'], ['sub_agent_max_concurrency', '子智能体最大并发'],
-                ['sub_agent_max_depth', '子智能体最大深度']].map(([k, label]) => (
-                  <Field key={k} label={label}>
-                    <input type="number" disabled={!canEdit} value={val(k, '')} onChange={(e) => set(k, Number(e.target.value))} />
-                  </Field>
-                ))}
-            </div>
-          </details>
         </>
       )}
       {section !== 'llm' && canEdit && (
         <div className="foot">
-          <span className="who">{Object.keys(draft).length ? '有未保存的修改' : '配置已同步'}</span>
+          <span className="who">{msg}</span>
           <button className="btn" disabled={busy} onClick={() => setDraft({})}>重置</button>
           <button className="btn btn-p" disabled={busy || !Object.keys(draft).length} onClick={() => save(draft)}>保存修改</button>
         </div>
       )}
-      <ToastNotice message={msg} />
-    </div>
+      {section === 'llm' && msg && <div className="foot"><span className="who">{msg}</span></div>}
+    </SectionCard>
   );
 }
 
 function LlmProfiles({ data, canEdit, onSave, busy }) {
   const profiles = data.profiles || [];
+  const defaultMainId = data.default_main_profile_ref?.id || '';
+  const defaultTaskId = data.default_task_profile_ref?.id || '';
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null); // 正在编辑的模型（null=未编辑）
   const colSpan = canEdit ? 7 : 6;
   return (
     <>
-      <Field label="默认模型" hint="工作空间未单独指定时使用此模型">
-        <select disabled={!canEdit || busy} value={data.default_profile_id || ''}
-          onChange={(e) => onSave({ default_profile_id: e.target.value })}>
+      <Field label="主 Agent 默认模型" hint="工作空间未单独指定 main 引用时使用">
+        <select disabled={!canEdit || busy} value={defaultMainId}
+          onChange={(e) => onSave({ default_main_profile_ref: { scope: 'global', id: e.target.value } })}>
+          {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}（{p.model}）</option>)}
+        </select>
+      </Field>
+      <Field label="任务 Agent 默认模型" hint="留空时回退到主 Agent 模型">
+        <select disabled={!canEdit || busy} value={defaultTaskId}
+          onChange={(e) => onSave({ default_task_profile_ref: e.target.value ? { scope: 'global', id: e.target.value } : null })}>
+          <option value="">跟随主 Agent</option>
           {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}（{p.model}）</option>)}
         </select>
       </Field>
@@ -273,17 +242,11 @@ function LlmProfiles({ data, canEdit, onSave, busy }) {
       )}
       {(creating || editing) && (
         <LlmProfileForm
-          key={editing?.id || 'create'}
           initial={editing}
           existing={profiles}
-          defaultProfileId={data.default_profile_id || ''}
+          defaultProfileId={defaultMainId}
           busy={busy}
-          onSubmit={async (payload) => {
-            if (await onSave(payload)) {
-              setCreating(false);
-              setEditing(null);
-            }
-          }}
+          onSubmit={async (payload) => { await onSave(payload); setCreating(false); setEditing(null); }}
           onCancel={() => { setCreating(false); setEditing(null); }}
         />
       )}
@@ -299,8 +262,7 @@ function LlmProfiles({ data, canEdit, onSave, busy }) {
               <td>{p.has_api_key ? <span className="tag tag-ok">已配置</span> : <span className="tag tag-draft">未配置</span>}</td>
               <td>{p.enabled ? '启用' : '停用'}</td>
               {canEdit && (
-                <td><button className="btn" style={btnS} disabled={busy || creating || !!editing}
-                  onClick={() => { setEditing(p); setCreating(false); }}>编辑</button></td>
+                <td><button className="btn" style={btnS} onClick={() => { setEditing(p); setCreating(false); }}>编辑</button></td>
               )}
             </tr>
           ))}
@@ -363,7 +325,7 @@ function LlmProfileForm({ initial, existing, defaultProfileId, busy, onSubmit, o
       ? existing.map((p) => (p.id === id ? edited : { id: p.id }))
       : [...existing.map((p) => ({ id: p.id })), edited];
     const payload = { profiles };
-    if (asDefault) payload.default_profile_id = id;
+    if (asDefault) payload.default_main_profile_ref = { scope: 'global', id };
     await onSubmit(payload);
   };
 
@@ -399,6 +361,46 @@ function LlmProfileForm({ initial, existing, defaultProfileId, busy, onSubmit, o
   );
 }
 
+function PlatformAccess() {
+  const { can } = useAuthContext();
+  const canEdit = can('system_config.write');
+  const [config, setConfig] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [msg, setMsg] = useState('');
+  const effective = { ...(config || {}), ...draft };
+  const load = useCallback(async () => {
+    const response = await authFetch('/api/platform-config');
+    if (response.ok) { setConfig(await response.json()); setDraft({}); }
+  }, []);
+  useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
+  const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+  const request = async (path) => {
+    const payload = { ...draft };
+    if (!payload.api_key) delete payload.api_key;
+    const response = await authFetch(path, {
+      method: path.endsWith('/test') ? 'POST' : 'PATCH',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    setMsg(response.ok ? (data.message || '已保存') : `操作失败：${data.detail || data.error || response.status}`);
+    if (response.ok && !path.endsWith('/test')) await load();
+  };
+  if (!config) return <SectionCard><div className="empty">加载中…</div></SectionCard>;
+  return (
+    <SectionCard title="onto-platform 接入" description="统一配置运行实例注册、策略快照和 Trace 上报目标。">
+      {!canEdit && <ReadOnlyBanner who="平台管理员" />}
+      <Field label="启用平台接入"><Toggle on={Boolean(effective.enabled)} disabled={!canEdit} onChange={(value) => set('enabled', value)} /></Field>
+      <Field label="平台地址"><input disabled={!canEdit} value={effective.base_url || ''} onChange={(event) => set('base_url', event.target.value)} /></Field>
+      <Field label="环境标识"><input disabled={!canEdit} value={effective.environment_id || ''} onChange={(event) => set('environment_id', event.target.value)} /></Field>
+      <Field label="实例标识" hint="留空时启用后自动生成"><input disabled={!canEdit} value={effective.instance_id || ''} onChange={(event) => set('instance_id', event.target.value)} /></Field>
+      <Field label="组织标识"><input disabled={!canEdit} value={effective.organization_id || ''} onChange={(event) => set('organization_id', event.target.value)} /></Field>
+      <Field label="环境 Key" hint={config.has_api_key ? '已配置，留空保留' : '尚未配置'}><input type="password" disabled={!canEdit} value={draft.api_key || ''} onChange={(event) => set('api_key', event.target.value)} /></Field>
+      <Field label="批量上报条数"><input type="number" disabled={!canEdit} value={effective.batch_size || 20} onChange={(event) => set('batch_size', Number(event.target.value))} /></Field>
+      <div className="foot"><span className="who">{msg}</span>{canEdit && <><button className="btn" onClick={() => request('/api/platform-config/test')}>测试连接</button><button className="btn btn-p" disabled={!Object.keys(draft).length} onClick={() => request('/api/platform-config')}>保存</button></>}</div>
+    </SectionCard>
+  );
+}
+
 /* ---------------- L1 · 工作空间管理 / 用户与授权 ---------------- */
 
 function WorkspaceMgmt() {
@@ -407,43 +409,25 @@ function WorkspaceMgmt() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ id: '', name: '', description: '' });
   const [msg, setMsg] = useState('');
-  const [deleteId, setDeleteId] = useState('');
-  const [busyAction, setBusyAction] = useState('');
 
   const create = async () => {
     if (!form.name) { setMsg('名称必填'); return; }
-    setBusyAction('create');
-    try {
-      const res = await authFetch('/agentic/workspaces', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
-      });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? '已创建' : `创建失败：${data.detail || res.status}`);
-      if (res.ok) { setCreating(false); setForm({ id: '', name: '', description: '' }); reloadWorkspaces(); }
-    } catch (error) {
-      setMsg(friendlyRequestError(error, '创建失败'));
-    } finally { setBusyAction(''); }
+    const res = await authFetch('/agentic/workspaces', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+    });
+    const data = await res.json().catch(() => ({}));
+    setMsg(res.ok ? '已创建' : `创建失败：${data.detail || res.status}`);
+    if (res.ok) { setCreating(false); setForm({ id: '', name: '', description: '' }); reloadWorkspaces(); }
   };
   const setDefault = async (id) => {
-    setBusyAction(`default:${id}`);
-    try {
-      const res = await authFetch(`/agentic/workspaces/${encodeURIComponent(id)}/default`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? '已设为默认工作空间' : `设置失败：${data.detail || data.error || res.status}`);
-      if (res.ok) reloadWorkspaces();
-    } catch (error) { setMsg(friendlyRequestError(error, '设置失败')); }
-    finally { setBusyAction(''); }
+    await authFetch(`/agentic/workspaces/${encodeURIComponent(id)}/default`, { method: 'POST' });
+    reloadWorkspaces();
   };
   const remove = async (id) => {
-    setBusyAction(`delete:${id}`);
-    try {
-      const res = await authFetch(`/agentic/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (!res.ok) { const d = await res.json().catch(() => ({})); setMsg(`删除失败：${d.detail || res.status}`); }
-      else setMsg('工作空间已删除');
-      setDeleteId('');
-      reloadWorkspaces();
-    } catch (error) { setMsg(friendlyRequestError(error, '删除失败')); }
-    finally { setBusyAction(''); }
+    if (!window.confirm(`确定删除工作空间「${id}」？此操作不可撤销。`)) return;
+    const res = await authFetch(`/agentic/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); setMsg(`删除失败：${d.detail || res.status}`); }
+    reloadWorkspaces();
   };
 
   return (
@@ -460,12 +444,13 @@ function WorkspaceMgmt() {
                 <input type="text" placeholder="ID（可选）" style={inputS(120)} value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} />
                 <input type="text" placeholder="名称（必填）" style={inputS(160)} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
                 <input type="text" placeholder="描述" style={inputS(220)} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-                <button className="btn btn-p" disabled={!!busyAction} onClick={create}>{busyAction === 'create' ? '创建中…' : '创建'}</button>
+                <button className="btn btn-p" onClick={create}>创建</button>
                 <button className="btn" onClick={() => setCreating(false)}>取消</button>
               </div>
             )}
         </div>
       )}
+      {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
       <table className="dt">
         <thead><tr><th>空间</th><th>描述</th><th>默认</th>{canManage && <th style={{ width: 160 }}>操作</th>}</tr></thead>
         <tbody>
@@ -478,8 +463,8 @@ function WorkspaceMgmt() {
                 <td>
                   {!(w.is_default || w.id === defaultWorkspaceId) && (
                     <>
-                      <button className="btn" disabled={!!busyAction} style={{ padding: '3px 10px', fontSize: 12, marginRight: 6 }} onClick={() => setDefault(w.id)}>设为默认</button>
-                      <button className="btn" disabled={!!busyAction} style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => setDeleteId(w.id)}>删除</button>
+                      <button className="btn" style={{ padding: '3px 10px', fontSize: 12, marginRight: 6 }} onClick={() => setDefault(w.id)}>设为默认</button>
+                      <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => remove(w.id)}>删除</button>
                     </>
                   )}
                 </td>
@@ -488,9 +473,6 @@ function WorkspaceMgmt() {
           ))}
         </tbody>
       </table>
-      <ConfirmDialog open={Boolean(deleteId)} title="删除工作空间" description={`将删除工作空间「${deleteId}」及其运行数据，此操作无法撤销。`}
-        confirmLabel="删除工作空间" danger busy={busyAction === `delete:${deleteId}`} onConfirm={() => remove(deleteId)} onCancel={() => setDeleteId('')} />
-      <ToastNotice message={msg} />
     </div>
   );
 }
@@ -501,21 +483,11 @@ function UserMgmt() {
   const [users, setUsers] = useState([]);
   const [form, setForm] = useState({ username: '', password: '' });
   const [msg, setMsg] = useState('');
-  const [deleteUsername, setDeleteUsername] = useState('');
-  const [resetUsername, setResetUsername] = useState('');
-  const [resetPassword, setResetPassword] = useState('');
-  const [loadError, setLoadError] = useState('');
-  const [busyAction, setBusyAction] = useState('');
 
   const load = useCallback(async () => {
     if (!canManage) return;
-    setLoadError('');
-    try {
-      const res = await authFetch('/auth/users');
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `用户列表加载失败（${res.status}）`);
-      setUsers(data.users || []);
-    } catch (error) { setLoadError(friendlyRequestError(error, '用户列表加载失败')); }
+    const res = await authFetch('/auth/users');
+    if (res.ok) setUsers((await res.json()).users || []);
   }, [canManage]);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load]);
 
@@ -530,40 +502,28 @@ function UserMgmt() {
   }
 
   const create = async () => {
-    setBusyAction('create');
-    try {
-      const res = await authFetch('/auth/users', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
-      });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? `已创建 ${form.username}` : `失败：${data.error || res.status}`);
-      if (res.ok) { setForm({ username: '', password: '' }); load(); }
-    } catch (error) { setMsg(friendlyRequestError(error, '创建失败')); }
-    finally { setBusyAction(''); }
+    const res = await authFetch('/auth/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+    });
+    const data = await res.json().catch(() => ({}));
+    setMsg(res.ok ? `已创建 ${form.username}` : `失败：${data.error || res.status}`);
+    if (res.ok) { setForm({ username: '', password: '' }); load(); }
   };
-  const resetPw = async () => {
-    if (!resetUsername || !resetPassword) return;
-    setBusyAction(`reset:${resetUsername}`);
-    try {
-      const res = await authFetch(`/auth/users/${encodeURIComponent(resetUsername)}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: resetPassword }),
-      });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? '已重置' : `失败：${data.error || res.status}`);
-      if (res.ok) { setResetUsername(''); setResetPassword(''); }
-    } catch (error) { setMsg(friendlyRequestError(error, '重置失败')); }
-    finally { setBusyAction(''); }
+  const resetPw = async (username) => {
+    const pw = window.prompt(`为 ${username} 设置新密码：`);
+    if (!pw) return;
+    const res = await authFetch(`/auth/users/${encodeURIComponent(username)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setMsg(res.ok ? '已重置' : `失败：${data.error || res.status}`);
   };
   const remove = async (username) => {
-    setBusyAction(`delete:${username}`);
-    try {
-      const res = await authFetch(`/auth/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? '已删除' : `失败：${data.error || res.status}`);
-      setDeleteUsername('');
-      load();
-    } catch (error) { setMsg(friendlyRequestError(error, '删除失败')); }
-    finally { setBusyAction(''); }
+    if (!window.confirm(`确定删除用户 ${username}？`)) return;
+    const res = await authFetch(`/auth/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    setMsg(res.ok ? '已删除' : `失败：${data.error || res.status}`);
+    load();
   };
 
   return (
@@ -573,9 +533,9 @@ function UserMgmt() {
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
         <input type="text" placeholder="用户名" style={inputS(140)} value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
         <input type="password" placeholder="初始密码" style={inputS(160)} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
-        <button className="btn btn-p" disabled={!form.username || !form.password || !!busyAction} onClick={create}>{busyAction === 'create' ? '创建中…' : '＋ 新建用户'}</button>
+        <button className="btn btn-p" disabled={!form.username || !form.password} onClick={create}>＋ 新建用户</button>
+        <span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>{msg}</span>
       </div>
-      {loadError && <div className="inline-load-error"><span>{loadError}</span><button className="btn" type="button" onClick={load}>重试</button></div>}
       <table className="dt">
         <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th style={{ width: 180 }}>操作</th></tr></thead>
         <tbody>
@@ -587,8 +547,8 @@ function UserMgmt() {
               <td>
                 {u.username !== user?.username && (
                   <>
-                    <button className="btn" style={{ padding: '3px 10px', fontSize: 12, marginRight: 6 }} onClick={() => { setResetUsername(u.username); setResetPassword(''); }}>重置密码</button>
-                    {u.role !== 'admin' && <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => setDeleteUsername(u.username)}>删除</button>}
+                    <button className="btn" style={{ padding: '3px 10px', fontSize: 12, marginRight: 6 }} onClick={() => resetPw(u.username)}>重置密码</button>
+                    {u.role !== 'admin' && <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => remove(u.username)}>删除</button>}
                   </>
                 )}
               </td>
@@ -596,12 +556,6 @@ function UserMgmt() {
           ))}
         </tbody>
       </table>
-      <ConfirmDialog open={Boolean(deleteUsername)} title="删除用户" description={`删除用户「${deleteUsername}」后，该账号将无法登录。`}
-        confirmLabel="删除用户" danger busy={busyAction === `delete:${deleteUsername}`} onConfirm={() => remove(deleteUsername)} onCancel={() => setDeleteUsername('')} />
-      <InputDialog open={Boolean(resetUsername)} title="重置用户密码" description={`为用户「${resetUsername}」设置新的初始密码。`}
-        value={resetPassword} onChange={setResetPassword} placeholder="输入符合安全策略的新密码" confirmLabel="重置密码" busy={busyAction === `reset:${resetUsername}`}
-        onConfirm={resetPw} onCancel={() => { setResetUsername(''); setResetPassword(''); }} />
-      <ToastNotice message={msg} />
     </div>
   );
 }
@@ -705,6 +659,7 @@ function WorkspaceMembers() {
           <button className="btn btn-p" disabled={!newName.trim()} onClick={add}>＋ 添加成员</button>
         </div>
       )}
+      {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
       <table className="dt">
         <thead><tr><th>成员</th>{canEdit && <th style={{ width: 100 }}>操作</th>}</tr></thead>
         <tbody>
@@ -721,7 +676,6 @@ function WorkspaceMembers() {
           {!members.length && <tr><td colSpan={canEdit ? 2 : 1} className="empty">暂无成员{ws?.owner ? '（仅空间负责人与管理员可访问）' : ''}</td></tr>}
         </tbody>
       </table>
-      <ToastNotice message={msg} />
       {canEdit && (
         <div className="foot">
           <button className="btn" disabled={!draft} onClick={() => setDraft(null)}>重置</button>
@@ -733,56 +687,136 @@ function WorkspaceMembers() {
 }
 
 function WorkspaceModel() {
-  const { workspaceId } = useAuthContext();
+  const { can, workspaceId } = useAuthContext();
+  const canEdit = can('ws.config.write');
   const [profiles, setProfiles] = useState([]);
-  const [defaultId, setDefaultId] = useState('');
-  const [loadError, setLoadError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
-  const storageKey = `mw_ws_model_${workspaceId}`;
-  const [selected, setSelected] = useState(() => localStorage.getItem(storageKey) || '');
+  const [privateProfiles, setPrivateProfiles] = useState([]);
+  const [mainRef, setMainRef] = useState('');
+  const [taskRef, setTaskRef] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [msg, setMsg] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setLoadError('');
-      try {
-        const res = await authFetch('/agentic/model-profiles');
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || data.error || `模型列表加载失败（${res.status}）`);
-        if (!cancelled) {
-          setProfiles((data.profiles || []).filter((p) => p.enabled));
-          setDefaultId(data.default_profile_id || '');
-        }
-      } catch (error) {
-        if (!cancelled) setLoadError(friendlyRequestError(error, '模型列表加载失败'));
-      }
-    }, 0);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [reloadKey]);
-  useEffect(() => {
-    const t = setTimeout(() => setSelected(localStorage.getItem(`mw_ws_model_${workspaceId}`) || ''), 0);
-    return () => clearTimeout(t);
+  const load = useCallback(async () => {
+    const [availableResponse, privateResponse, runtimeResponse] = await Promise.all([
+      authFetch('/agentic/model-profiles'),
+      authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/llm-profiles`),
+      authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/runtime-config`),
+    ]);
+    const available = await availableResponse.json().catch(() => ({}));
+    const privatePayload = await privateResponse.json().catch(() => ({}));
+    const runtime = await runtimeResponse.json().catch(() => ({}));
+    setProfiles((available.profiles || []).filter((profile) => profile.enabled !== false));
+    setPrivateProfiles(privatePayload.profiles || []);
+    const refToId = (ref) => (ref?.scope && ref?.id ? `${ref.scope}:${ref.id}` : '');
+    setMainRef(refToId(runtime.llm?.default_main_profile_ref));
+    setTaskRef(refToId(runtime.llm?.default_task_profile_ref));
   }, [workspaceId]);
+  useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
 
-  const pick = (v) => {
-    setSelected(v);
-    if (v) localStorage.setItem(storageKey, v); else localStorage.removeItem(storageKey);
+  const saveRoleRefs = async (nextMain = mainRef, nextTask = taskRef) => {
+    const response = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/runtime-config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        llm: {
+          default_main_profile_ref: nextMain || null,
+          default_task_profile_ref: nextTask || null,
+        },
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    setMsg(response.ok ? '角色模型引用已保存' : `保存失败：${payload.detail || payload.error || response.status}`);
+    if (response.ok) await load();
+  };
+
+  const savePrivateProfile = async (profile) => {
+    const exists = privateProfiles.some((item) => item.id === profile.id);
+    const nextProfiles = exists
+      ? privateProfiles.map((item) => (item.id === profile.id ? profile : { id: item.id }))
+      : [...privateProfiles.map((item) => ({ id: item.id })), profile];
+    const response = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/llm-profiles`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profiles: nextProfiles }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    setMsg(response.ok ? '空间私有模型已保存' : `保存失败：${payload.detail || payload.error || response.status}`);
+    if (response.ok) { setEditing(null); await load(); }
+  };
+
+  const removePrivateProfile = async (profileId) => {
+    if (!window.confirm(`删除空间私有模型「${profileId}」？`)) return;
+    const response = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/llm-profiles`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profiles: privateProfiles.filter((item) => item.id !== profileId).map((item) => ({ id: item.id })) }),
+    });
+    setMsg(response.ok ? '空间私有模型已删除' : '删除失败');
+    if (response.ok) await load();
   };
 
   return (
-    <div className="card">
-      <h3>模型选用</h3>
-      <div className="cd">选择本空间对话默认使用的模型，可在会话中临时切换。</div>
-      {loadError && <div className="inline-load-error"><span>{loadError}</span><button className="btn" type="button" onClick={() => setReloadKey((value) => value + 1)}>重试</button></div>}
-      <Field label="本空间默认模型" hint="留空则跟随全局默认">
-        <select value={selected} onChange={(e) => pick(e.target.value)}>
-          <option value="">跟随全局{defaultId ? `（${profiles.find((p) => p.id === defaultId)?.name || defaultId}）` : ''}</option>
-          {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}（{p.model}）</option>)}
+    <SectionCard title="模型选用" description="管理工作空间私有模型，并分别绑定主 Agent 与任务 Agent。">
+      {!canEdit && <ReadOnlyBanner who="平台管理员" />}
+      <Field label="主 Agent 模型" hint="留空时跟随全局 main 默认引用">
+        <select disabled={!canEdit} value={mainRef} onChange={(event) => { setMainRef(event.target.value); saveRoleRefs(event.target.value, taskRef); }}>
+          <option value="">跟随全局</option>
+          {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}（{profile.scope === 'workspace' ? '空间' : '全局'}）</option>)}
         </select>
       </Field>
-      <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
-        该选择保存在当前浏览器，新建会话时生效。
-      </div>
+      <Field label="任务 Agent 模型" hint="留空时跟随主 Agent">
+        <select disabled={!canEdit} value={taskRef} onChange={(event) => { setTaskRef(event.target.value); saveRoleRefs(mainRef, event.target.value); }}>
+          <option value="">跟随主 Agent</option>
+          {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}（{profile.scope === 'workspace' ? '空间' : '全局'}）</option>)}
+        </select>
+      </Field>
+      {canEdit && !editing && <button className="btn btn-p" style={{ margin: '12px 0' }} onClick={() => setEditing({})}>＋ 新增空间私有模型</button>}
+      {editing && <WorkspaceModelForm initial={editing.id ? editing : null} onCancel={() => setEditing(null)} onSave={savePrivateProfile} />}
+      <table className="dt">
+        <thead><tr><th>私有模型</th><th>模型</th><th>状态</th>{canEdit && <th>操作</th>}</tr></thead>
+        <tbody>
+          {privateProfiles.map((profile) => (
+            <tr key={profile.id}>
+              <td><b>{profile.name}</b><div style={{ color: 'var(--muted)', fontSize: 11 }}>{profile.id}</div></td>
+              <td>{profile.provider} · {profile.model}</td>
+              <td>{profile.enabled ? '启用' : '停用'}</td>
+              {canEdit && <td><button className="btn" style={btnS} onClick={() => setEditing(profile)}>编辑</button><button className="btn btn-danger" style={btnS} onClick={() => removePrivateProfile(profile.id)}>删除</button></td>}
+            </tr>
+          ))}
+          {!privateProfiles.length && <tr><td className="empty" colSpan={4}>当前空间暂无私有模型</td></tr>}
+        </tbody>
+      </table>
+      {msg && <div className="who" style={{ marginTop: 10 }}>{msg}</div>}
+    </SectionCard>
+  );
+}
+
+function WorkspaceModelForm({ initial, onSave, onCancel }) {
+  const [form, setForm] = useState(() => ({
+    id: initial?.id || '', name: initial?.name || '', provider: initial?.provider || 'openai_compatible',
+    model: initial?.model || '', base_url: initial?.base_url || '', api_key: '',
+    timeout: initial?.timeout || 60, max_tokens: initial?.max_tokens || 4096,
+    temperature: initial?.temperature ?? 0.7, enabled: initial?.enabled !== false,
+  }));
+  const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = () => {
+    if (!form.name.trim() || !form.model.trim()) return;
+    const profile = {
+      ...form,
+      id: form.id.trim() || `workspace-model-${Date.now().toString(36)}`,
+      name: form.name.trim(), model: form.model.trim(), base_url: form.base_url.trim(),
+      timeout: Number(form.timeout), max_tokens: Number(form.max_tokens), temperature: Number(form.temperature),
+    };
+    if (!profile.api_key) delete profile.api_key;
+    onSave(profile);
+  };
+  return (
+    <div className="ui-inline-form">
+      <Field label="标识" hint="创建后不可修改"><input disabled={Boolean(initial)} value={form.id} onChange={(event) => set('id', event.target.value)} /></Field>
+      <Field label="显示名称"><input value={form.name} onChange={(event) => set('name', event.target.value)} /></Field>
+      <Field label="Provider"><select value={form.provider} onChange={(event) => set('provider', event.target.value)}>{Object.entries(PROVIDER_PRESETS).map(([id, item]) => <option key={id} value={id}>{item.label}</option>)}</select></Field>
+      <Field label="模型名称"><input value={form.model} onChange={(event) => set('model', event.target.value)} /></Field>
+      <Field label="接口地址"><input value={form.base_url} onChange={(event) => set('base_url', event.target.value)} /></Field>
+      <Field label="API 密钥" hint={initial?.has_api_key ? '已配置，留空保留' : '加密存储'}><input type="password" value={form.api_key} onChange={(event) => set('api_key', event.target.value)} /></Field>
+      <Field label="启用"><Toggle on={form.enabled} onChange={(value) => set('enabled', value)} /></Field>
+      <div className="foot"><button className="btn" onClick={onCancel}>取消</button><button className="btn btn-p" onClick={submit}>保存</button></div>
     </div>
   );
 }
@@ -795,53 +829,33 @@ function DataConnections() {
   const [msg, setMsg] = useState('');
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(null); // 正在编辑的连接（null=未编辑）
-  const [deleteId, setDeleteId] = useState('');
-  const [loadError, setLoadError] = useState('');
-  const [busyAction, setBusyAction] = useState('');
 
   const load = useCallback(async () => {
-    setLoadError('');
-    try {
-      const res = await authFetch('/agentic/data-connections');
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || data.error || `数据连接加载失败（${res.status}）`);
+    const res = await authFetch('/agentic/data-connections');
+    if (res.ok) {
+      const data = await res.json();
       setConns(data.connections || []);
       setDefaultId(data.default_connection_id || '');
-    } catch (error) { setLoadError(friendlyRequestError(error, '数据连接加载失败')); }
+    }
   }, []);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load, workspaceId]);
 
   const test = async (id) => {
-    setBusyAction(`test:${id}`);
     setMsg(`测试 ${id}…`);
-    try {
-      const res = await authFetch(`/agentic/data-connections/${encodeURIComponent(id)}/test`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? `${id}: ${data.success ? '✓ 可用' : '✗ 不可用'}${data.message ? ` · ${data.message}` : ''}` : `测试失败：${data.detail || res.status}`);
-    } catch (error) { setMsg(friendlyRequestError(error, '测试失败')); }
-    finally { setBusyAction(''); }
+    const res = await authFetch(`/agentic/data-connections/${encodeURIComponent(id)}/test`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    setMsg(res.ok ? `${id}: ${data.success ? '✓ 可用' : '✗ 不可用'}${data.message ? ` · ${data.message}` : ''}` : `测试失败：${data.detail || res.status}`);
   };
   const setDefault = async (id) => {
-    setBusyAction(`default:${id}`);
-    try {
-      const res = await authFetch(`/agentic/data-connections/${encodeURIComponent(id)}/default`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? `已将 ${id} 设为默认连接` : `设置失败：${data.detail || data.error || res.status}`);
-      if (res.ok) load();
-    } catch (error) { setMsg(friendlyRequestError(error, '设置失败')); }
-    finally { setBusyAction(''); }
+    await authFetch(`/agentic/data-connections/${encodeURIComponent(id)}/default`, { method: 'POST' });
+    load();
   };
   const remove = async (id) => {
-    setBusyAction(`delete:${id}`);
-    try {
-      const res = await authFetch(`/agentic/data-connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) setMsg(data.bound_ontologies ? `无法删除：已被知识包绑定（${data.bound_ontologies.join(', ')}）` : `删除失败：${data.detail || res.status}`);
-      else setMsg('数据连接已删除');
-      setDeleteId('');
-      load();
-    } catch (error) { setMsg(friendlyRequestError(error, '删除失败')); }
-    finally { setBusyAction(''); }
+    if (!window.confirm(`确定删除连接「${id}」？`)) return;
+    const res = await authFetch(`/agentic/data-connections/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) setMsg(data.bound_ontologies ? `无法删除：已被知识包绑定（${data.bound_ontologies.join(', ')}）` : `删除失败：${data.detail || res.status}`);
+    load();
   };
 
   return (
@@ -856,13 +870,11 @@ function DataConnections() {
       )}
       {(creating || editing) && (
         <ConnectionForm
-          key={editing?.id || 'create'}
           initial={editing}
           onDone={(text) => { setCreating(false); setEditing(null); if (text) setMsg(text); load(); }}
           onCancel={() => { setCreating(false); setEditing(null); }}
         />
       )}
-      {loadError && <div className="inline-load-error"><span>{loadError}</span><button className="btn" type="button" onClick={load}>重试</button></div>}
       {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
       <table className="dt">
         <thead><tr><th>连接</th><th>类型</th><th>默认</th>{canEdit && <th style={{ width: 260 }}>操作</th>}</tr></thead>
@@ -874,11 +886,10 @@ function DataConnections() {
               <td>{c.id === defaultId ? '★ 默认' : ''}</td>
               {canEdit && (
                 <td>
-                  <button className="btn" style={btnS} disabled={creating || !!editing || !!busyAction}
-                    onClick={() => { setEditing(c); setCreating(false); }}>编辑</button>
-                  <button className="btn" disabled={!!busyAction} style={btnS} onClick={() => test(c.id)}>测试</button>
-                  {c.id !== defaultId && <button className="btn" disabled={!!busyAction} style={btnS} onClick={() => setDefault(c.id)}>设默认</button>}
-                  <button className="btn" disabled={!!busyAction} style={btnS} onClick={() => setDeleteId(c.id)}>删除</button>
+                  <button className="btn" style={btnS} onClick={() => { setEditing(c); setCreating(false); }}>编辑</button>
+                  <button className="btn" style={btnS} onClick={() => test(c.id)}>测试</button>
+                  {c.id !== defaultId && <button className="btn" style={btnS} onClick={() => setDefault(c.id)}>设默认</button>}
+                  <button className="btn" style={btnS} onClick={() => remove(c.id)}>删除</button>
                 </td>
               )}
             </tr>
@@ -886,9 +897,6 @@ function DataConnections() {
           {!conns.length && <tr><td colSpan={4} className="empty">当前空间暂无数据连接</td></tr>}
         </tbody>
       </table>
-      <ConfirmDialog open={Boolean(deleteId)} title="删除数据连接" description={`将删除连接「${deleteId}」。已绑定知识包的连接不会被删除。`}
-        confirmLabel="删除连接" danger busy={busyAction === `delete:${deleteId}`} onConfirm={() => remove(deleteId)} onCancel={() => setDeleteId('')} />
-      <ToastNotice message={msg} />
     </div>
   );
 }
@@ -904,7 +912,6 @@ function ConnectionForm({ initial, onDone, onCancel }) {
   const [asDefault, setAsDefault] = useState(false);
   const [config, setConfig] = useState({});
   const [err, setErr] = useState('');
-  const [schemaError, setSchemaError] = useState('');
   const [busy, setBusy] = useState(false);
 
   // 从连接的已有配置回填非密钥字段（密钥不回显，留空即保留）
@@ -918,13 +925,10 @@ function ConnectionForm({ initial, onDone, onCancel }) {
 
   useEffect(() => {
     const t = setTimeout(async () => {
-      setSchemaError('');
-      try {
-        const res = await authFetch('/agentic/business-data/provider-schemas');
-        if (!res.ok) throw new Error(`连接类型加载失败（${res.status}）`);
+      const res = await authFetch('/agentic/business-data/provider-schemas');
+      if (res.ok) {
         const data = await res.json();
         const list = data.providers || [];
-        if (!list.length) throw new Error('没有可用的数据连接类型');
         setProviders(list);
         const initName = isEdit ? initial.provider : (list[0]?.name || '');
         setProvider((prev) => prev || initName);
@@ -936,8 +940,6 @@ function ConnectionForm({ initial, onDone, onCancel }) {
           (initSchema?.fields || []).forEach((f) => { if (f.default !== undefined && f.default !== null) defaults[f.name] = f.default; });
           setConfig(defaults);
         }
-      } catch (error) {
-        setSchemaError(friendlyRequestError(error, '连接类型加载失败'));
       }
     }, 0);
     return () => clearTimeout(t);
@@ -1011,12 +1013,11 @@ function ConnectionForm({ initial, onDone, onCancel }) {
           )}
         </Field>
       ))}
-      {schemaError && <div className="lerr" style={{ marginTop: 10 }}>{schemaError}</div>}
       {!isEdit && <Field label="设为默认连接"><Toggle on={asDefault} onChange={setAsDefault} /></Field>}
       {err && <div style={{ fontSize: 12.5, color: 'var(--crit)', margin: '8px 0' }}>{err}</div>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 10 }}>
         <button className="btn" disabled={busy} onClick={onCancel}>取消</button>
-        <button className="btn btn-p" disabled={busy || !provider || !!schemaError} onClick={submit}>{busy ? '保存中…' : (isEdit ? '保存修改' : '创建连接')}</button>
+        <button className="btn btn-p" disabled={busy || !provider} onClick={submit}>{busy ? '保存中…' : (isEdit ? '保存修改' : '创建连接')}</button>
       </div>
     </div>
   );
@@ -1028,38 +1029,25 @@ function KnowledgeBinding() {
   const [pkgs, setPkgs] = useState([]);
   const [conns, setConns] = useState([]);
   const [msg, setMsg] = useState('');
-  const [loadError, setLoadError] = useState('');
-  const [bindingId, setBindingId] = useState('');
 
   const load = useCallback(async () => {
-    setLoadError('');
-    try {
-      const [or, cr] = await Promise.all([
-        authFetch('/agentic/ontologies'),
-        authFetch('/agentic/data-connections'),
-      ]);
-      const [ontologyData, connectionData] = await Promise.all([
-        or.json().catch(() => ({})), cr.json().catch(() => ({})),
-      ]);
-      if (!or.ok || !cr.ok) throw new Error(ontologyData.detail || ontologyData.error || connectionData.detail || connectionData.error || '绑定数据加载失败');
-      setPkgs(ontologyData.ontologies || []);
-      setConns(connectionData.connections || []);
-    } catch (error) { setLoadError(friendlyRequestError(error, '绑定数据加载失败')); }
+    const [or, cr] = await Promise.all([
+      authFetch('/agentic/ontologies'),
+      authFetch('/agentic/data-connections'),
+    ]);
+    if (or.ok) setPkgs((await or.json()).ontologies || []);
+    if (cr.ok) setConns((await cr.json()).connections || []);
   }, []);
   useEffect(() => { const t = setTimeout(load, 0); return () => clearTimeout(t); }, [load, workspaceId]);
 
   const bind = async (ontologyId, connectionId) => {
-    setBindingId(ontologyId);
     const url = `/agentic/ontologies/${encodeURIComponent(ontologyId)}/data-binding`;
-    try {
-      const res = connectionId
-        ? await authFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ connection_id: connectionId }) })
-        : await authFetch(url, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      setMsg(res.ok ? '已更新绑定' : `失败：${data.detail || data.error || res.status}`);
-      if (res.ok) load();
-    } catch (error) { setMsg(friendlyRequestError(error, '绑定失败')); }
-    finally { setBindingId(''); }
+    const res = connectionId
+      ? await authFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ connection_id: connectionId }) })
+      : await authFetch(url, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    setMsg(res.ok ? '已更新绑定' : `失败：${data.detail || data.error || res.status}`);
+    load();
   };
 
   return (
@@ -1067,11 +1055,10 @@ function KnowledgeBinding() {
       <h3>知识与数据绑定</h3>
       <div className="cd">为每个知识包指定要查询的数据连接，让它能读到真实业务数据</div>
       {!canEdit && <ReadOnlyBanner who="空间管理员" />}
-      {loadError && <div className="inline-load-error"><span>{loadError}</span><button className="btn" type="button" onClick={load}>重试</button></div>}
       {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
       {pkgs.map((p) => (
         <Field key={p.id} label={p.name || p.id} hint={p.id}>
-          <select disabled={!canEdit || bindingId === p.id} value={p.business_data?.connection_id || ''} onChange={(e) => bind(p.id, e.target.value)}>
+          <select disabled={!canEdit} value={p.business_data?.connection_id || ''} onChange={(e) => bind(p.id, e.target.value)}>
             <option value="">（不绑定）</option>
             {conns.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.provider}）</option>)}
           </select>
@@ -1085,35 +1072,18 @@ function KnowledgeBinding() {
 function WorkspaceRuntime() {
   const { can, workspaceId } = useAuthContext();
   const canEdit = can('ws.config.write');
-  const [cfgState, setCfgState] = useState(null);
-  const cfg = cfgState?.wsId === workspaceId ? cfgState.data : null;
-  const [draftState, setDraftState] = useState(null);
-  const draft = draftState?.wsId === workspaceId ? draftState.data : null;
-  const setDraft = (data) => setDraftState(data === null ? null : { wsId: workspaceId, data });
+  const [cfg, setCfg] = useState(null);
+  const [draft, setDraft] = useState(null);
   const [msg, setMsg] = useState('');
-  const [loadErrorState, setLoadErrorState] = useState(null);
-  const loadError = loadErrorState?.wsId === workspaceId ? loadErrorState.message : '';
-  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    if (!workspaceId) return undefined;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      setLoadErrorState({ wsId: workspaceId, message: '' });
-      try {
-        const res = await authFetch('/agentic/workspaces/current/runtime-config');
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || data.error || `请求失败（${res.status}）`);
-        if (!cancelled) setCfgState({ wsId: workspaceId, data });
-      } catch (error) {
-        if (!cancelled) setLoadErrorState({ wsId: workspaceId, message: friendlyRequestError(error, '空间运行参数加载失败') });
-      }
-    }, 0);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [workspaceId, reloadKey]);
+    (async () => {
+      const res = await authFetch('/agentic/workspaces/current/runtime-config');
+      if (res.ok) setCfg(await res.json());
+    })();
+  }, [workspaceId]);
 
-  if (!workspaceId) return <div className="card"><div className="empty">请先选择工作空间</div></div>;
-  if (!cfg) return <LoadState error={loadError} onRetry={() => setReloadKey((key) => key + 1)} />;
+  if (!cfg) return <div className="card"><div className="empty">加载中…</div></div>;
   const current = draft ?? {
     lang: { enabled: !!cfg.lang?.enabled, default: cfg.lang?.default || 'zh' },
     acp_suppress_script_patterns: Array.isArray(cfg.acp_suppress_script_patterns)
@@ -1129,7 +1099,7 @@ function WorkspaceRuntime() {
     });
     const data = await res.json().catch(() => ({}));
     setMsg(res.ok ? '已保存' : `失败：${data.detail || res.status}`);
-    if (res.ok) { setCfgState({ wsId: workspaceId, data }); setDraft(null); }
+    if (res.ok) { setCfg(data); setDraft(null); }
   };
 
   return (
@@ -1160,6 +1130,62 @@ function WorkspaceRuntime() {
   );
 }
 
+function WorkspaceObservability() {
+  const { can, workspaceId } = useAuthContext();
+  const canEdit = can('ws.observability.write');
+  const [config, setConfig] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [msg, setMsg] = useState('');
+  const effective = {
+    ...(config || {}),
+    ...draft,
+    local: { ...(config?.local || {}), ...(draft.local || {}) },
+    langfuse: { ...(config?.langfuse || {}), ...(draft.langfuse || {}) },
+  };
+  const load = useCallback(async () => {
+    const response = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/observability-config`);
+    if (response.ok) { setConfig(await response.json()); setDraft({}); }
+  }, [workspaceId]);
+  useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load]);
+  const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+  const setNested = (section, key, value) => setDraft((current) => ({
+    ...current,
+    [section]: { ...(current[section] || {}), [key]: value },
+  }));
+  const submit = async (testOnly = false) => {
+    const payload = { ...draft };
+    if (payload.langfuse && !payload.langfuse.secret_key) {
+      payload.langfuse = { ...payload.langfuse };
+      delete payload.langfuse.secret_key;
+    }
+    const suffix = testOnly ? '/test' : '';
+    const response = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/observability-config${suffix}`, {
+      method: testOnly ? 'POST' : 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    setMsg(response.ok ? (data.message || '已保存') : `操作失败：${data.detail || data.error || response.status}`);
+    if (response.ok && !testOnly) await load();
+  };
+  if (!config) return <SectionCard><div className="empty">加载中…</div></SectionCard>;
+  return (
+    <SectionCard title="工作空间观测" description="为当前空间选择本地日志或独立 Langfuse 项目。">
+      {!canEdit && <ReadOnlyBanner who="平台管理员" />}
+      <Field label="启用观测"><Toggle on={Boolean(effective.enabled)} disabled={!canEdit} onChange={(value) => set('enabled', value)} /></Field>
+      <Field label="观测模式"><select disabled={!canEdit} value={effective.mode || 'local'} onChange={(event) => set('mode', event.target.value)}><option value="local">本地日志</option><option value="langfuse">Langfuse</option></select></Field>
+      {effective.mode === 'local' ? (
+        <Field label="日志保留天数"><input type="number" disabled={!canEdit} value={effective.local.retention_days || 30} onChange={(event) => setNested('local', 'retention_days', Number(event.target.value))} /></Field>
+      ) : (
+        <>
+          <Field label="Langfuse 地址"><input disabled={!canEdit} value={effective.langfuse.base_url || ''} onChange={(event) => setNested('langfuse', 'base_url', event.target.value)} /></Field>
+          <Field label="Public Key"><input disabled={!canEdit} value={effective.langfuse.public_key || ''} onChange={(event) => setNested('langfuse', 'public_key', event.target.value)} /></Field>
+          <Field label="Secret Key" hint={config.langfuse?.has_secret_key ? '已配置，留空保留' : '尚未配置'}><input type="password" disabled={!canEdit} value={draft.langfuse?.secret_key || ''} onChange={(event) => setNested('langfuse', 'secret_key', event.target.value)} /></Field>
+        </>
+      )}
+      <div className="foot"><span className="who">{msg}</span>{canEdit && <><button className="btn" onClick={() => submit(true)}>测试</button><button className="btn btn-p" disabled={!Object.keys(draft).length} onClick={() => submit(false)}>保存</button></>}</div>
+    </SectionCard>
+  );
+}
+
 function WorkspaceMcp() {
   const { user, workspaceId, workspaces } = useAuthContext();
   const ws = workspaces.find((w) => w.id === workspaceId);
@@ -1178,11 +1204,8 @@ function PersonalPrefs() {
   const { workspaces, workspaceId, switchWorkspace } = useAuthContext();
   const [lang, setLang] = useState(() => localStorage.getItem('mw_pref_reply_lang') || '');
   const [theme, setTheme] = useState(() => getTheme());
-  const [appearance, setAppearance] = useState(() => getAppearance());
 
   const pickTheme = (id) => setTheme(applyTheme(id));
-  const pickAppearance = (id) => setAppearance(applyAppearance(id));
-  const appearanceIcons = { system: Monitor, light: Sun, dark: Moon };
 
   return (
     <div className="card" data-wiz="cfg-prefs">
@@ -1199,26 +1222,82 @@ function PersonalPrefs() {
         </select>
       </Field>
       <Field label="主题配色" hint="即时生效，全站应用">
-        <div className="theme-options">
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {THEMES.map((t) => (
             <button key={t.id} type="button" onClick={() => pickTheme(t.id)} title={t.label}
-              className={`theme-choice ${theme === t.id ? 'on' : ''}`}
-              style={{ '--choice-color': t.color }}>
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '6px 13px', borderRadius: 99,
+                border: theme === t.id ? `2px solid ${t.color}` : '1px solid var(--hair)',
+                background: '#fff', fontSize: 12.5, fontWeight: 600,
+                color: theme === t.id ? t.color : 'var(--ink2)',
+              }}>
               <span style={{ width: 14, height: 14, borderRadius: '50%', background: t.color, flex: 'none' }} />
               {t.label}
             </button>
           ))}
         </div>
       </Field>
-      <Field label="明暗外观" hint="深色模式适合低光环境；跟随系统会自动切换">
-        <div className="appearance-options">
-          {APPEARANCES.map((item) => {
-            const Icon = appearanceIcons[item.id];
-            return <button key={item.id} type="button" className={appearance === item.id ? 'on' : ''} onClick={() => pickAppearance(item.id)}><Icon size={14} />{item.label}</button>;
-          })}
-        </div>
-      </Field>
     </div>
+  );
+}
+
+function PersonalMemory() {
+  const { workspaceId } = useAuthContext();
+  const [memories, setMemories] = useState([]);
+  const [enabled, setEnabled] = useState(true);
+  const [draft, setDraft] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [msg, setMsg] = useState('');
+  const load = useCallback(async () => {
+    const response = await authFetch('/agentic/memories?limit=200');
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok) {
+      setMemories(payload.memories || []);
+      setEnabled(payload.memory_enabled !== false);
+    } else setMsg(payload.error || `加载失败：${response.status}`);
+  }, []);
+  useEffect(() => { const timer = setTimeout(load, 0); return () => clearTimeout(timer); }, [load, workspaceId]);
+  const save = async () => {
+    const content = draft.trim();
+    if (content.length < 8) { setMsg('记忆内容至少 8 个字'); return; }
+    const response = await authFetch(editing ? `/agentic/memories/${editing.id}` : '/agentic/memories', {
+      method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    setMsg(response.ok ? '记忆已保存' : `保存失败：${payload.error || response.status}`);
+    if (response.ok) { setDraft(''); setEditing(null); await load(); }
+  };
+  const remove = async (memory) => {
+    if (!window.confirm('删除这条长期记忆？')) return;
+    const response = await authFetch(`/agentic/memories/${memory.id}`, { method: 'DELETE' });
+    setMsg(response.ok ? '记忆已删除' : '删除失败');
+    if (response.ok) await load();
+  };
+  return (
+    <SectionCard title="长期记忆" description="查看、补充和修订当前账号的偏好与画像记忆。">
+      {!enabled && <div className="ro-banner">当前运行环境未启用长期记忆。</div>}
+      {enabled && (
+        <div className="memory-editor">
+          <textarea rows={3} value={draft} placeholder="例如：我偏好用中文输出，并把风险项放在结论前。" onChange={(event) => setDraft(event.target.value)} />
+          <div><button className="btn" disabled={!editing} onClick={() => { setEditing(null); setDraft(''); }}>取消编辑</button><button className="btn btn-p" disabled={draft.trim().length < 8} onClick={save}>{editing ? '保存修改' : '新增记忆'}</button></div>
+        </div>
+      )}
+      <table className="dt">
+        <thead><tr><th>类型</th><th>记忆内容</th><th>置信度</th><th>操作</th></tr></thead>
+        <tbody>
+          {memories.map((memory) => (
+            <tr key={memory.id}>
+              <td><span className="tag tag-lang">{memory.memory_type || 'preference'}</span></td>
+              <td>{memory.content}</td>
+              <td>{memory.confidence !== undefined ? Number(memory.confidence).toFixed(2) : '—'}</td>
+              <td><button className="btn" style={btnS} onClick={() => { setEditing(memory); setDraft(memory.content || ''); }}>编辑</button><button className="btn btn-danger" style={btnS} onClick={() => remove(memory)}>删除</button></td>
+            </tr>
+          ))}
+          {!memories.length && <tr><td className="empty" colSpan={4}>暂无长期记忆</td></tr>}
+        </tbody>
+      </table>
+      {msg && <div className="who" style={{ marginTop: 10 }}>{msg}</div>}
+    </SectionCard>
   );
 }
 
@@ -1267,18 +1346,6 @@ function Toggle({ on, disabled, onChange }) {
         borderRadius: '50%', background: '#fff', transition: 'left .15s',
       }} />
     </button>
-  );
-}
-
-function LoadState({ error, onRetry }) {
-  if (!error) return <div className="card"><SkeletonState rows={6} label="正在加载配置" /></div>;
-  return (
-    <div className="card">
-      <div className="empty">
-        <div>{error}</div>
-        <button className="btn" style={{ marginTop: 12 }} onClick={onRetry}>重试</button>
-      </div>
-    </div>
   );
 }
 

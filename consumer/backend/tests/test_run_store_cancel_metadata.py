@@ -1,6 +1,6 @@
 """Tests for run cancel metadata behavior."""
 
-from agentic.stores.run_store import RunStore
+from persistence.run_store import RunStore
 
 
 def test_cancel_run_merges_metadata():

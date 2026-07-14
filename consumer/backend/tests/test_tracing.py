@@ -4,7 +4,7 @@ import builtins
 import importlib
 from unittest.mock import MagicMock
 
-import agentic.observability.exporters.langfuse.client as langfuse_client
+import integration.observability.exporters.langfuse.client as langfuse_client
 
 
 def test_langfuse_client_module_does_not_import_langfuse_during_module_load(monkeypatch):

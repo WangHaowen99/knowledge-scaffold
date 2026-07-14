@@ -2,15 +2,15 @@
 
 from types import SimpleNamespace
 
-from agentic.services.llm import LLMPurpose
-from agentic.acp import server as acp_server
-from agentic.utils import lang as lang_module
-from agentic.acp.models import RunStatus
-from agentic.acp.server import _claim_acp_run, _map_orch_event_to_acp_sse
-from agentic.orchestrator import _resolve_run_id
-from agentic.stores.run_store import RunStore
-from agentic.stores.run_store import RunStatus as StoreRunStatus
-from agentic.utils.lang import _detect_language_via_llm, detect_language, translate_text
+from llm import LLMPurpose
+from api.protocols.acp import server as acp_server
+import utils.lang as lang_module
+from api.protocols.acp.models import RunStatus
+from api.protocols.acp.server import _claim_acp_run, _map_orch_event_to_acp_sse
+from agent.core.orchestrator import _resolve_run_id
+from persistence.run_store import RunStore
+from persistence.run_store import RunStatus as StoreRunStatus
+from utils.lang import _detect_language_via_llm, detect_language, translate_text
 
 
 def test_acp_stream_does_not_emit_answer_for_token_delta():

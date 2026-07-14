@@ -8,13 +8,20 @@ import httpx
 from openai import APIStatusError
 import pytest
 
-from agentic.orchestrator import AgenticOrchestrator, _public_workflow_error_message
-from agentic.config import AgentConfig, AppConfig
-from agentic.exceptions import InputTokenLimitError
-from agentic.services.llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
-from agentic.stores import ChatStore, ExecutionStore, RunStore, RunStatus
-from agentic.utils.read_docs import build_read_document_record, merge_read_documents_registry
-from agentic.utils.streaming import build_agent_event, emit_agent_event
+from agent.core.orchestrator import (
+    AgenticOrchestrator,
+    _public_workflow_error_message,
+)
+from config import AgentConfig, AppConfig
+from config.workspace_llm_profiles import update_workspace_llm_profiles
+from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
+from persistence.chat_store import ChatStore
+from persistence.execution_store import ExecutionStore
+from persistence.run_store import RunStore
+from persistence.run_store import RunStatus
+from utils.read_docs import build_read_document_record, merge_read_documents_registry
+from utils.streaming import build_agent_event, emit_agent_event
+from workspace.workspaces import create_workspace
 
 
 def test_public_workflow_error_preserves_llm_rate_limit_detail():
@@ -32,13 +39,6 @@ def test_public_workflow_error_preserves_llm_rate_limit_detail():
     )
 
 
-def test_public_workflow_error_preserves_input_token_limit_detail():
-    assert (
-        _public_workflow_error_message(InputTokenLimitError(50001, 50000))
-        == "输入 Token 长度超过上限: 50001 / 50000"
-    )
-
-
 def test_public_workflow_error_does_not_expose_generic_value_error_by_prefix():
     assert (
         _public_workflow_error_message(ValueError("输入 Token 长度超过上限: internal"))
@@ -48,15 +48,16 @@ def test_public_workflow_error_does_not_expose_generic_value_error_by_prefix():
 
 @pytest.fixture(autouse=True)
 def _configure_runtime_llm(monkeypatch, tmp_path):
-    import agentic.config.system_config as system_config_module
-    import agentic.utils.ontologies as ontologies_module
-    import agentic.utils.skills as skills_module
-    from agentic.workspaces import create_workspace
+    import config.system_config as system_config_module
+    from integration.observability.provider import reset_observer
 
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setenv("ONTO_PLATFORM_ENABLED", "false")
+    monkeypatch.setenv("ONTO_PLATFORM_CONFIG_PATH", str(runtime_root / "config" / "platform_config.json"))
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / "system_config.json"
-    runtime_root = tmp_path / ".onto-runtime"
     config_path.write_text(
         """
 {
@@ -81,18 +82,17 @@ def _configure_runtime_llm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
-    monkeypatch.setattr(skills_module, "_global_registry", None)
-    create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
+    create_workspace("Test Workspace", workspace_id="test-workspace", set_as_default=True)
     configure_llm_router(
         LLMRouter(
             AppConfig.from_env(),
             agent_config=AgentConfig.from_env(),
         )
     )
+    reset_observer(timeout=0)
     yield
     reset_llm_router_for_tests()
+    reset_observer(timeout=0)
 
 
 class _FakeLLM:
@@ -118,25 +118,9 @@ class _ConfigurableFakeLLM(_FakeLLM):
 
 class _FakeMemoryFactory:
     class _Manager:
-        def ensure_session(self, app_session_id: str, existing_session_id=None) -> str:
-            del app_session_id
-            return existing_session_id or "ov-session-1"
-
-        def append_session_message(self, **kwargs) -> None:
-            del kwargs
-            return
-
-        def build_memory_context(self, query: str, ov_session_id: str) -> str:
-            del query, ov_session_id
+        def build_memory_context(self, query: str) -> str:
+            del query
             return ""
-
-        def append_turn_summary(self, **kwargs) -> None:
-            del kwargs
-            return
-
-        def commit_session(self, ov_session_id: str) -> None:
-            del ov_session_id
-            return
 
     def __init__(self) -> None:
         self.manager = self._Manager()
@@ -144,17 +128,6 @@ class _FakeMemoryFactory:
     def for_user(self, user_id):
         del user_id
         return self.manager
-
-
-class _FakeJiuwenAgent:
-    def __init__(self, result):
-        self.result = result
-        self.inputs = None
-
-    async def invoke(self, inputs, session=None):
-        del session
-        self.inputs = inputs
-        return self.result
 
 
 def test_submit_reflection_does_not_depend_on_memory_manager():
@@ -205,8 +178,8 @@ def test_reflection_worker_and_patcher_do_not_receive_llm_params(monkeypatch):
         captured["patcher_config"] = config
         return object()
 
-    monkeypatch.setattr("agentic.orchestrator.ReflectionWorker", _ReflectionRecorder)
-    monkeypatch.setattr("agentic.orchestrator.init_operation_patcher", fake_init_operation_patcher)
+    monkeypatch.setattr("agent.core.orchestrator.ReflectionWorker", _ReflectionRecorder)
+    monkeypatch.setattr("agent.core.orchestrator.init_operation_patcher", fake_init_operation_patcher)
 
     AgenticOrchestrator(
         memory_factory=_FakeMemoryFactory(),
@@ -289,6 +262,25 @@ def test_submit_reflection_logs_when_ontology_missing(caplog):
     assert "reason=missing_ontology_id" in caplog.text
 
 
+def test_cancel_run_persists_before_router_signal(monkeypatch):
+    run_store = RunStore()
+    run_store.create_run("run-cancel-order", "hello")
+    observed = []
+
+    class _Router:
+        def cancel_run(self, run_id):
+            observed.append(("router", run_store.get_run(run_id).status))
+
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+    monkeypatch.setattr("agent.core.orchestrator.get_llm_router", lambda: _Router())
+
+    assert orchestrator.cancel_run("run-cancel-order", reason="user_stop") is True
+    assert observed == [("router", RunStatus.CANCELLED)]
+
+
 def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
     orchestrator = AgenticOrchestrator(
         memory_factory=_FakeMemoryFactory(),
@@ -323,7 +315,7 @@ def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
             snapshot_callback(state)
             return state
 
-    monkeypatch.setattr("agentic.orchestrator.JiuwenReactLoopEngine", lambda **_kwargs: _FakeEngine())
+    monkeypatch.setattr("agent.core.orchestrator.AgentLoopEngine", _FakeEngine)
 
     events = list(
         orchestrator._stream_agent_loop(
@@ -340,42 +332,6 @@ def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
     assert [event[0] for event in events] == ["custom", "values"]
     assert events[0][1]["data"]["type"] == "tool.progress"
     assert events[1][1]["messages"][-1]["content"] == "done"
-
-
-def test_stream_agent_loop_can_use_injected_jiuwen_agent_factory(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-
-    config = AgentConfig.from_env()
-    fake_agent = _FakeJiuwenAgent({"output": "jiuwen orchestrator answer"})
-    orchestrator = AgenticOrchestrator(
-        memory_factory=_FakeMemoryFactory(),
-        agent_config=config,
-        jiuwen_agent_factory=lambda: fake_agent,
-    )
-
-    events = list(
-        orchestrator._stream_agent_loop(
-            {
-                "run_id": "run-jiuwen-orchestrator",
-                "session_id": "sess-jiuwen-orchestrator",
-                "current_turn_id": 2,
-                "user_request": "hello jiuwen",
-                "messages": [],
-                "results": {},
-            },
-            memory_manager=None,
-        )
-    )
-
-    values = [event[1] for event in events if event[0] == "values"]
-    custom = [event[1]["data"] for event in events if event[0] == "custom"]
-    assert fake_agent.inputs["query"].startswith("hello jiuwen\n\n<system-reminder>")
-    assert "# currentDate" in fake_agent.inputs["query"]
-    assert values[-1]["final_output"] == "jiuwen orchestrator answer"
-    assert values[-1]["messages"][0]["role"] == "system"
-    assert values[-1]["messages"][1] == {"role": "user", "content": "hello jiuwen"}
-    assert custom[-1]["type"] == "iteration.completed"
-    assert custom[-1]["source"] == {"node": "jiuwen_react", "component": "iteration"}
 
 
 def test_stream_agent_loop_runs_engine_inside_workspace_scope(monkeypatch):
@@ -411,8 +367,8 @@ def test_stream_agent_loop_runs_engine_inside_workspace_scope(monkeypatch):
             snapshot_callback(state)
             return state
 
-    monkeypatch.setattr("agentic.orchestrator.workspace_scope", fake_workspace_scope)
-    monkeypatch.setattr("agentic.orchestrator.JiuwenReactLoopEngine", lambda **_kwargs: _FakeEngine())
+    monkeypatch.setattr("agent.core.orchestrator.workspace_scope", fake_workspace_scope)
+    monkeypatch.setattr("agent.core.orchestrator.AgentLoopEngine", _FakeEngine)
 
     orchestrator = AgenticOrchestrator(
         memory_factory=_FakeMemoryFactory(),
@@ -465,7 +421,7 @@ def test_stream_agent_loop_does_not_deepcopy_engine_snapshots(monkeypatch):
             snapshot_callback(_Snapshot({"messages": list(state["messages"])}))
             return state
 
-    monkeypatch.setattr("agentic.orchestrator.JiuwenReactLoopEngine", lambda **_kwargs: _FakeEngine())
+    monkeypatch.setattr("agent.core.orchestrator.AgentLoopEngine", _FakeEngine)
 
     events = list(
         orchestrator._stream_agent_loop(
@@ -496,7 +452,7 @@ def test_stream_agent_loop_propagates_engine_errors(monkeypatch):
             del state, kwargs
             raise RuntimeError("boom")
 
-    monkeypatch.setattr("agentic.orchestrator.JiuwenReactLoopEngine", lambda **_kwargs: _FailingEngine())
+    monkeypatch.setattr("agent.core.orchestrator.AgentLoopEngine", _FailingEngine)
 
     with pytest.raises(RuntimeError, match="boom"):
         list(
@@ -657,7 +613,7 @@ def test_orchestrator_buffers_custom_events_until_flush(monkeypatch, tmp_path):
 
 
 def test_orchestrator_emits_run_finished_before_final_event_is_yielded(monkeypatch, tmp_path):
-    from agentic.observability import RuntimeEventType
+    from integration.observability import RuntimeEventType
 
     run_store = RunStore()
     chat_store = ChatStore(str(tmp_path / "chats"))
@@ -686,7 +642,7 @@ def test_orchestrator_emits_run_finished_before_final_event_is_yielded(monkeypat
         yield ("values", state)
 
     monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
-    monkeypatch.setattr("agentic.orchestrator.get_observer", lambda: RecordingObserver())
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: RecordingObserver())
 
     orchestrator = AgenticOrchestrator(
         run_store=run_store,
@@ -710,7 +666,7 @@ def test_orchestrator_emits_run_finished_before_final_event_is_yielded(monkeypat
 
 
 def test_orchestrator_does_not_mark_trace_success_before_final_event_persists(monkeypatch, tmp_path):
-    from agentic.observability import RuntimeEventType
+    from integration.observability import RuntimeEventType
 
     class FailingFinalEventChatStore(ChatStore):
         def append_event(self, session_id, event):
@@ -747,7 +703,7 @@ def test_orchestrator_does_not_mark_trace_success_before_final_event_persists(mo
         yield ("values", state)
 
     monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
-    monkeypatch.setattr("agentic.orchestrator.get_observer", lambda: RecordingObserver())
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: RecordingObserver())
 
     orchestrator = AgenticOrchestrator(
         run_store=run_store,
@@ -769,7 +725,7 @@ def test_orchestrator_does_not_mark_trace_success_before_final_event_persists(mo
 
 
 def test_orchestrator_clears_run_scoped_subagent_manager(monkeypatch, tmp_path):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
     run_store = RunStore()
@@ -833,7 +789,7 @@ def test_orchestrator_run_trace_includes_agent_mode(monkeypatch, tmp_path):
             return True
 
     monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
-    monkeypatch.setattr("agentic.orchestrator.get_observer", lambda: RecordingObserver())
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: RecordingObserver())
 
     orchestrator = AgenticOrchestrator(
         run_store=run_store,
@@ -904,7 +860,7 @@ def test_orchestrator_restores_read_documents_between_new_session_turns(monkeypa
 
 
 def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -958,7 +914,7 @@ def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
             LLMPurpose.MAIN,
             profile_id=initial_state["user_context"]["model_profile_id"],
         )
-        assert selected_config.profile_id == "accurate"
+        assert selected_config.profile_id == "global:accurate"
         assert selected_config.provider == "deepseek"
         state = dict(initial_state)
         state["messages"] = [
@@ -988,8 +944,250 @@ def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
     )
 
     run = run_store.get_run("run-model-profile")
-    assert run.metadata["model_profile_id"] == "accurate"
+    assert run.metadata["model_profile_id"] == "global:accurate"
     assert run.metadata["model_provider"] == "deepseek"
+
+
+def test_orchestrator_uses_workspace_private_model_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_llm_profiles(
+        "alpha",
+        {
+            "profiles": [
+                {
+                    "id": "private",
+                    "name": "Private Model",
+                    "provider": "openai_compatible",
+                    "base_url": "https://private.example/v1",
+                    "model": "private-model",
+                    "api_key": "private-secret",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del self, memory_manager, observer
+        selected_config = get_llm_router().get_config(
+            LLMPurpose.MAIN,
+            profile_id=initial_state["user_context"]["model_profile_id"],
+            workspace_id=initial_state["workspace_id"],
+        )
+        assert selected_config.profile_id == "workspace:private"
+        assert selected_config.model == "private-model"
+        state = dict(initial_state)
+        state["messages"] = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": state.get("user_request", "")},
+            {"role": "assistant", "content": "done"},
+        ]
+        state["final_output"] = {"message": "done"}
+        yield ("values", state)
+
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    list(
+        orchestrator.run(
+            user_request="hello",
+            session_id="sess-private-model",
+            user_context={"model_profile_id": "workspace:private"},
+            requested_run_id="run-private-model",
+            workspace_id="alpha",
+        )
+    )
+
+    run = run_store.get_run("run-private-model")
+    assert run.metadata["model_profile_id"] == "workspace:private"
+    assert run.metadata["model_profile_ref"] == {"scope": "workspace", "id": "private"}
+
+
+def test_orchestrator_locks_selected_ontology_for_session(monkeypatch, tmp_path):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    observed_contexts = []
+
+    class _Registry:
+        blocked = False
+
+        def get_ontology(self, ontology_id):
+            if self.blocked:
+                raise AssertionError("locked ontology should not be reloaded from registry")
+            if ontology_id in {"quality-analysis", "other-ontology"}:
+                return SimpleNamespace(
+                    id=ontology_id,
+                    name="Quality Analysis" if ontology_id == "quality-analysis" else "Other Ontology",
+                    enabled=True,
+                )
+            return None
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del self, memory_manager, observer
+        observed_contexts.append(dict(initial_state.get("user_context") or {}))
+        state = dict(initial_state)
+        state["messages"] = list(state.get("messages") or [])
+        state["messages"].append({"role": "assistant", "content": "done"})
+        state["final_output"] = "done"
+        yield ("values", state)
+
+    registry = _Registry()
+    monkeypatch.setattr("agent.core.orchestrator.get_ontology_registry", lambda: registry)
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    list(
+        orchestrator.run(
+            user_request="first",
+            session_id="sess-ontology-lock",
+            user_context={"selected_ontology_id": "quality-analysis"},
+        )
+    )
+
+    session = chat_store.get_session("sess-ontology-lock")
+    assert session.metadata["selected_ontology_id"] == "quality-analysis"
+    assert session.metadata["selected_ontology_name"] == "Quality Analysis"
+    assert session.messages[0].metadata["selected_ontology_id"] == "quality-analysis"
+    assert session.messages[0].metadata["selected_ontology_name"] == "Quality Analysis"
+
+    registry.blocked = True
+    list(
+        orchestrator.run(
+            user_request="second",
+            session_id="sess-ontology-lock",
+            user_context={},
+        )
+    )
+    assert observed_contexts[-1]["selected_ontology_id"] == "quality-analysis"
+
+    with pytest.raises(ValueError, match="selected_ontology_id is locked"):
+        list(
+            orchestrator.run(
+                user_request="third",
+                session_id="sess-ontology-lock",
+                user_context={"selected_ontology_id": "other-ontology"},
+            )
+        )
+
+
+def test_orchestrator_rejects_selected_ontology_after_unselected_first_turn(monkeypatch, tmp_path):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del self, memory_manager, observer
+        state = dict(initial_state)
+        state["messages"] = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": state.get("user_request", "")},
+            {"role": "assistant", "content": "done"},
+        ]
+        state["final_output"] = "done"
+        yield ("values", state)
+
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    list(
+        orchestrator.run(
+            user_request="first",
+            session_id="sess-no-ontology-lock",
+            user_context={},
+        )
+    )
+
+    with pytest.raises(ValueError, match="selected_ontology_id can only be set before the first user turn"):
+        list(
+            orchestrator.run(
+                user_request="second",
+                session_id="sess-no-ontology-lock",
+                user_context={"selected_ontology_id": "quality-analysis"},
+            )
+        )
+
+
+def test_orchestrator_locks_agent_mode_for_session(monkeypatch, tmp_path):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    observed_contexts = []
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del self, memory_manager, observer
+        observed_contexts.append(dict(initial_state.get("user_context") or {}))
+        state = dict(initial_state)
+        state["messages"] = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": state.get("user_request", "")},
+            {"role": "assistant", "content": "done"},
+        ]
+        state["final_output"] = "done"
+        yield ("values", state)
+
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    list(
+        orchestrator.run(
+            user_request="first",
+            session_id="sess-agent-mode-lock",
+            requested_run_id="run-agent-mode-lock-first",
+            user_context={"agent_mode": "multi_agent"},
+        )
+    )
+
+    session = chat_store.get_session("sess-agent-mode-lock")
+    assert session.metadata["agent_mode"] == "multi_agent"
+    assert run_store.get_run("run-agent-mode-lock-first").metadata["agent_mode"] == "multi_agent"
+
+    list(
+        orchestrator.run(
+            user_request="second",
+            session_id="sess-agent-mode-lock",
+            user_context={},
+        )
+    )
+    assert observed_contexts[-1]["agent_mode"] == "multi_agent"
+
+    with pytest.raises(ValueError, match="agent_mode is locked"):
+        list(
+            orchestrator.run(
+                user_request="third",
+                session_id="sess-agent-mode-lock",
+                user_context={"agent_mode": "quick"},
+            )
+        )
 
 
 def test_orchestrator_rejects_invalid_selected_ontology_id(tmp_path):
@@ -1111,6 +1309,23 @@ def test_orchestrator_injects_interaction_response_into_resume_message(monkeypat
             },
         ],
     )
+    interaction = {
+        "id": "interaction_call_user",
+        "type": "single_choice",
+        "prompt": "请选择处理方式",
+        "options": [{"id": "a", "label": "方案A", "value": "A"}],
+    }
+    execution_store.start_turn(
+        session_id="sess-resume",
+        turn_id=1,
+        run_id="run-await",
+        user_request="请选择",
+    )
+    execution_store.await_turn(
+        session_id="sess-resume",
+        turn_id=1,
+        final_output={"type": "user_interaction", "interaction": interaction},
+    )
     captured = {}
 
     def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
@@ -1150,73 +1365,8 @@ def test_orchestrator_injects_interaction_response_into_resume_message(monkeypat
     assert "<user-interaction-response>" in captured["user_message"]
     assert '"interaction_id": "interaction_call_user"' in captured["user_message"]
     assert '"option_id": "a"' in captured["user_message"]
-
-
-def test_orchestrator_memory_hooks_do_not_require_session_id(tmp_path):
-    orchestrator = AgenticOrchestrator(
-        run_store=RunStore(),
-        chat_store=ChatStore(str(tmp_path / "chats")),
-        execution_store=ExecutionStore(str(tmp_path / "executions")),
-        memory_factory=_FakeMemoryFactory(),
-    )
-
-    class _Manager:
-        def __init__(self) -> None:
-            self.session_messages = []
-            self.turn_summaries = []
-
-        def append_session_message(self, **kwargs) -> None:
-            self.session_messages.append(kwargs)
-
-        def append_turn_summary(self, **kwargs) -> None:
-            self.turn_summaries.append(kwargs)
-
-        def build_memory_context(self, query: str, ov_session_id: str | None) -> str:
-            return "## Relevant Long-Term Memory\n- [{}] {}".format(
-                ov_session_id,
-                query,
-            )
-
-    manager = _Manager()
-
-    orchestrator._append_memory_session_message(
-        manager,
-        ov_session_id=None,
-        role="user",
-        content="remember this",
-        metadata={"scope": "user"},
-    )
-    orchestrator._append_memory_turn_summary(
-        manager,
-        ov_session_id=None,
-        user_request="remember this",
-        final_output={"status": "ok"},
-        status="completed",
-    )
-    memory_context = orchestrator._build_memory_context(
-        manager,
-        query="remember this",
-        ov_session_id=None,
-        allow_injection=True,
-    )
-
-    assert manager.session_messages == [
-        {
-            "ov_session_id": None,
-            "role": "user",
-            "content": "remember this",
-            "metadata": {"scope": "user"},
-        }
-    ]
-    assert manager.turn_summaries == [
-        {
-            "ov_session_id": None,
-            "user_request": "remember this",
-            "final_output": {"status": "ok"},
-            "status": "completed",
-        }
-    ]
-    assert memory_context == "## Relevant Long-Term Memory\n- [None] remember this"
+    history = execution_store.get_session_history("sess-resume")
+    assert history["turns"][0]["interaction_consumed_at"]
 
 
 def test_orchestrator_records_evolution_recall_outcomes(monkeypatch, tmp_path):
@@ -1235,7 +1385,7 @@ def test_orchestrator_records_evolution_recall_outcomes(monkeypatch, tmp_path):
             self.calls.append((list(fingerprints), kwargs))
 
     buffer = _Buffer()
-    monkeypatch.setattr("agentic.orchestrator.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.core.orchestrator.get_proposal_buffer", lambda: buffer)
 
     orchestrator._record_evolution_recall_outcomes(
         {

@@ -5,13 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 import json
 
-from agentic.perf_analysis.aggregate import (
+from utils.perf_analysis.aggregate import (
     build_global_overview,
     build_run_detail,
     build_session_analysis,
 )
-from agentic.perf_analysis.reader import LocalPerfLogReader
-from agentic.perf_analysis.service import check_session_availability
+from utils.perf_analysis.reader import LocalPerfLogReader
+from utils.perf_analysis.service import check_session_availability
 
 
 def _ts_ms(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> int:
@@ -219,8 +219,8 @@ def test_check_session_availability_reads_only_run_summaries(tmp_path, monkeypat
         ],
     )
     monkeypatch.setattr(
-        "agentic.perf_analysis.service._reader",
-        lambda: LocalPerfLogReader(log_dir=tmp_path),
+        "utils.perf_analysis.service._reader",
+        lambda workspace_id=None: LocalPerfLogReader(log_dir=tmp_path),
     )
 
     result = check_session_availability(
@@ -257,6 +257,39 @@ def test_build_run_detail_splits_iterations_llm_tools_and_phases():
     assert detail["llm_calls"][0]["metrics"]["wall_duration_ms"] == 800
     assert detail["tools"][0]["labels"]["tool_name"] == "ontology_context"
     assert detail["runtime_phases"][0]["labels"]["phase_name"] == "chat_session_compact"
+
+
+def test_build_run_detail_preserves_reasoning_rollup_fields():
+    records = [
+        _record(
+            "run-reasoning",
+            ts_ms=_ts_ms(2026, 5, 22, 12),
+            metrics={"total_duration_ms": 1000},
+        ),
+        _record(
+            "run-reasoning",
+            ts_ms=_ts_ms(2026, 5, 22, 12, 1),
+            kind="llm_call",
+            event="llm.finished",
+            metrics={"reasoning_chars": 120, "first_reasoning_ms": 80},
+        ),
+        _record(
+            "run-reasoning",
+            ts_ms=_ts_ms(2026, 5, 22, 12, 2),
+            kind="llm_call",
+            event="llm.finished",
+            metrics={"reasoning_chars": 30, "first_reasoning_ms": 120},
+        ),
+    ]
+
+    detail = build_run_detail(records, run_id="run-reasoning")
+
+    assert detail["reasoning"] == {
+        "had_reasoning": True,
+        "calls_with_reasoning": 2,
+        "total_reasoning_chars": 150,
+        "first_reasoning_ms": 80,
+    }
 
 
 def test_build_run_detail_groups_llm_and_tools_by_iteration_call_chain():

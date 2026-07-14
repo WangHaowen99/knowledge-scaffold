@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from agentic.business_data.providers.graph.backends.base import GraphBackendTimeoutError
-from agentic.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
-from agentic.business_data.providers.graph.models import GraphScope
+from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
+from agent.tools.business_data.providers.graph.backends.neo4j import Neo4jGraphBackend
+from agent.tools.business_data.providers.graph.models import GraphScope
 
 
 class _FakeNode:
@@ -282,7 +282,7 @@ def test_neo4j_get_element_info_forces_scope_and_sanitizes_node(monkeypatch):
 
     result = backend.get_element_info(
         element_instance_id="node-1",
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=_scope(),
     )
 
     query, params = calls[1]
@@ -316,7 +316,7 @@ def test_neo4j_pattern_search_supports_mapping_dict_segments(monkeypatch):
         ],
         return_vars=["eco", "rel", "version"],
         limit=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=_scope(),
     )
 
     query, params = calls[1]
@@ -341,7 +341,7 @@ def test_neo4j_pattern_search_supports_jiutian_array_segments(monkeypatch):
         ],
         return_vars=["a", "r1", "b"],
         limit=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=_scope(),
     )
 
     query, params = calls[1]
@@ -367,7 +367,7 @@ def test_neo4j_pattern_search_projects_return_vars_and_properties(monkeypatch):
         return_vars=["version"],
         return_properties={"version": ["SourceItemVersionID"]},
         limit=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=_scope(),
     )
 
     record = result.records[0]
@@ -445,7 +445,7 @@ def test_neo4j_timeout_maps_to_backend_timeout_error(monkeypatch):
             return_properties=[],
             limit=10,
             offset=0,
-            scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+            scope=_scope(),
         )
 
     query, _params = calls[1]

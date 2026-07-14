@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 
-from agentic.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
-from agentic.business_data.providers.graph.models import (
+from agent.tools.business_data.providers.graph.agent import GraphAgentError, GraphAgentTimeoutError
+from agent.tools.business_data.providers.graph.models import (
     GraphAgentResult,
     GraphBackendResult,
     GraphEntityMapping,
 )
-from agentic.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
-from agentic.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
+from agent.tools.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
+from agent.tools.business_data.providers.graph.runtime import GraphSearchRuntime, _make_graph_query_agent
 
 
 class _StaticResolver:
@@ -107,7 +107,8 @@ def _write_runtime_ontology(tmp_path):
     ontology_root.mkdir(parents=True, exist_ok=True)
     (ontology_root / "manifest.yaml").write_text(
         "\n".join([
-            "kind: ontology",
+            "kind: ontology-package",
+            "schema_version: 0.1",
             "id: demo-ontology",
             "name: Demo",
             "description: Demo",
@@ -120,7 +121,7 @@ def _write_runtime_ontology(tmp_path):
         ]),
         encoding="utf-8",
     )
-    (version_dir / "operations-list.md").write_text(
+    (version_dir / "operations" / "index.md").write_text(
         "| 名称 | 业务描述 |\n| --- | --- |\n| TargetItem成本计算 | 使用 TargetItem 计算成本 |",
         encoding="utf-8",
     )
@@ -132,8 +133,11 @@ def _write_runtime_ontology(tmp_path):
         "# TargetItem成本规则\n\nTargetItem 成本只能使用 MaterialCost 字段。",
         encoding="utf-8",
     )
-    (version_dir / "scripts-list.md").write_text(
-        "- `TargetItem成本计算` -> `scripts/target_item_cost.py`",
+    (version_dir / "rules" / "index.md").write_text("# 规则目录\n", encoding="utf-8")
+    (version_dir / "scripts" / "index.md").write_text("# 脚本目录\n", encoding="utf-8")
+    (version_dir / "scripts" / "target_item_cost.md").write_text(
+        "---\nresource: script\nkey: target_item_cost\ntitle: TargetItem成本计算\n"
+        "bound_operation: TargetItem成本计算\nentrypoint: target_item_cost.py\n---\n",
         encoding="utf-8",
     )
     (version_dir / "scripts" / "target_item_cost.py").write_text(
@@ -192,6 +196,24 @@ def test_runtime_uses_graph_agent_internal_tool_result_with_forced_scope():
         "query_digest",
     }
     assert agent.calls[0]["context"].scope.workspace_value == "workspace-a"
+    assert agent.calls[0]["context"].scope.ontology_value == "demo-ontology"
+
+
+def test_runtime_rejects_missing_workspace_scope_before_backend_access():
+    backend = _FakeBackend()
+    runtime = GraphSearchRuntime(
+        provider="neo4j",
+        provider_config={"ontology_id": "demo-ontology"},
+        backend=backend,
+        graph_agent=_StaticGraphAgent(_agent_result()),
+    )
+
+    events = list(runtime.search_stream(query="查询 TargetItem", entity="TargetItem"))
+    final = json.loads(events[-1]["content"])
+
+    assert final["success"] is False
+    assert final["error_code"] == "GRAPH_SCOPE_REQUIRED"
+    assert backend.calls == []
 
 
 def test_runtime_missing_mapping_does_not_call_graph_agent_or_backend():
@@ -300,7 +322,7 @@ def test_runtime_loads_operation_rule_script_context(tmp_path):
     schema_context = agent.calls[0]["context"].schema_context
 
     assert final["success"] is True
-    assert business_context["catalogs"][0]["path"] == "operations-list.md"
+    assert business_context["catalogs"][0]["path"] == "operations/index.md"
     assert business_context["operations"][0]["path"] == "operations/TargetItem成本计算.md"
     assert "MaterialCost" in business_context["rules"][0]["content"]
     assert business_context["scripts"][0]["path"] == "scripts/target_item_cost.py"

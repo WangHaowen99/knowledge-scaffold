@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import json
+import threading
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
 
-from agentic.business_data.provider_registry import (
+from agent.tools.business_data.provider_registry import (
     PROVIDER_SPECS,
+    BusinessDataProviderError,
     get_provider_spec,
     list_provider_schemas,
     normalize_provider_config,
     publicize_provider_config,
 )
-from agentic.business_data.providers.dataagent_provider import DataAgentProvider
-from agentic.services.dataagent import (
+from agent.tools.business_data.providers.dataagent_provider import DataAgentProvider
+from agent.tools.business_data.providers.clients.dataagent import (
+    _create_session,
     _extract_fields,
     _normalize_rows,
     _parse_a2a_response,
@@ -31,6 +35,37 @@ def test_dataagent_provider_is_registered():
     assert spec.name == "dataagent"
     assert spec.label == "DataAgent"
     assert spec.factory is DataAgentProvider
+
+
+@pytest.mark.parametrize(
+    "config, message",
+    (
+        (
+            {"url": "https://dataagent.test", "timeout_seconds": 0},
+            "timeout_seconds 必须大于 0",
+        ),
+        (
+            {"url": "https://dataagent.test", "max_retries": -1},
+            "max_retries 不能小于 0",
+        ),
+    ),
+)
+def test_dataagent_provider_rejects_invalid_retry_and_timeout_bounds(config, message):
+    with pytest.raises(BusinessDataProviderError, match=message):
+        normalize_provider_config("dataagent", config)
+
+
+@pytest.mark.parametrize("timeout", (0, -1))
+def test_call_query_returns_failure_for_invalid_timeout_without_requesting(monkeypatch, timeout):
+    monkeypatch.setattr(
+        "requests.Session.post",
+        lambda *args, **kwargs: pytest.fail("request must not be attempted"),
+    )
+
+    result = call_query("https://dataagent.test", "", "query", timeout=timeout)
+
+    assert result["success"] is False
+    assert result["error"] == "timeout_seconds 必须大于 0"
 
 
 def test_dataagent_provider_schema_fields():
@@ -104,7 +139,7 @@ def test_provider_search_stream_yields_formatted_events(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "agentic.business_data.providers.dataagent_provider.call_query",
+        "agent.tools.business_data.providers.dataagent_provider.call_query",
         fake_call_query,
     )
     provider = _make_provider(
@@ -137,7 +172,7 @@ def test_provider_search_stream_yields_formatted_events(monkeypatch):
 
 def test_provider_search_stream_formats_failure(monkeypatch):
     monkeypatch.setattr(
-        "agentic.business_data.providers.dataagent_provider.call_query",
+        "agent.tools.business_data.providers.dataagent_provider.call_query",
         lambda *args, **kwargs: {
             "success": False,
             "data": None,
@@ -220,6 +255,152 @@ def test_call_query_returns_error_on_http_failure(monkeypatch):
     assert "server error" in result["error"]
 
 
+def test_call_query_returns_normalized_error_for_invalid_json(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        text = "not-json"
+
+        def json(self):
+            raise ValueError("invalid json")
+
+    monkeypatch.setattr("requests.Session.post", lambda *args, **kwargs: FakeResponse())
+
+    result = call_query("https://dataagent.test", "", "query")
+
+    assert result == {
+        "success": False,
+        "data": None,
+        "sql": None,
+        "row_count": 0,
+        "confidence": None,
+        "error": "Invalid JSON response",
+        "raw": {"ok": False, "error": "Invalid JSON response"},
+    }
+
+
+def test_call_query_redacts_token_from_errors_and_logs(monkeypatch, caplog):
+    token = "secret/token"
+
+    class FakeResponse:
+        status_code = 500
+        text = ""
+
+        def json(self):
+            return {"error": {"message": "authorization failed for {}".format(token)}}
+
+    monkeypatch.setattr("requests.Session.post", lambda *args, **kwargs: FakeResponse())
+
+    result = call_query("https://dataagent.test", token, "query")
+
+    assert result["success"] is False
+    assert token not in result["error"]
+    assert "[REDACTED]" in result["error"]
+    assert token not in caplog.text
+
+
+def test_call_query_recursively_redacts_token_from_completed_result(monkeypatch):
+    token = "secret/token"
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "task": {
+                    "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "message": {
+                            "parts": [
+                                {
+                                    "data": {
+                                        "success": True,
+                                        "answer": "authorized with {}".format(token),
+                                        "rows": [{"credential": token}],
+                                    }
+                                }
+                            ]
+                        },
+                    },
+                    "artifacts": [{"parts": [{"text": "nested {}".format(token)}]}],
+                }
+            }
+
+    monkeypatch.setattr("requests.Session.post", lambda *args, **kwargs: FakeResponse())
+
+    result = call_query("https://dataagent.test", token, "query")
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["success"] is True
+    assert token not in serialized
+    assert serialized.count("[REDACTED]") >= 2
+
+
+def test_dataagent_session_configures_post_status_retries_and_backoff():
+    session = _create_session(4)
+    try:
+        retry = session.get_adapter("https://").max_retries
+        assert retry.total == 4
+        assert retry.backoff_factor == 0.5
+        assert retry.status_forcelist == (500, 502, 503, 504)
+        assert retry.allowed_methods == frozenset({"POST"})
+        assert retry.raise_on_status is False
+    finally:
+        session.close()
+
+
+def test_dataagent_retries_post_until_configured_limit(monkeypatch):
+    class RetryHandler(BaseHTTPRequestHandler):
+        attempts = 0
+
+        def do_POST(self):
+            content_length = int(self.headers.get("Content-Length") or 0)
+            if content_length:
+                self.rfile.read(content_length)
+            type(self).attempts += 1
+            if type(self).attempts < 3:
+                self.send_response(503)
+                payload = b'{"error":{"message":"retry"}}'
+            else:
+                self.send_response(200)
+                payload = json.dumps(
+                    {
+                        "task": {
+                            "status": {
+                                "state": "completed",
+                                "message": {"parts": [{"text": "retry succeeded"}]},
+                            }
+                        }
+                    }
+                ).encode("utf-8")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            del format, args
+
+    monkeypatch.setattr("urllib3.util.retry.Retry.sleep", lambda *args, **kwargs: None)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RetryHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = call_query(
+            "http://127.0.0.1:{}".format(server.server_port),
+            "",
+            "query",
+            max_retries=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert RetryHandler.attempts == 3
+    assert result["success"] is True
+    assert result["answer"] == "retry succeeded"
+
+
 def test_parse_response_extracts_structured_result():
     body = {
         "task": {
@@ -262,6 +443,57 @@ def test_parse_response_accepts_lowercase_completed_state_and_artifact_text():
     assert result["sql"] is None
     assert result["row_count"] == 0
     assert "销售额增长了15%" in result["answer"]
+
+
+def test_parse_response_normalizes_json_data_rows():
+    body = {
+        "task": {
+            "status": {
+                "state": "completed",
+                "message": {
+                    "parts": [
+                        {
+                            "data": {
+                                "success": True,
+                                "sql": "SELECT id, amount FROM sales",
+                                "rows": [
+                                    {"id": 1, "amount": 12.5},
+                                    {"id": 2, "amount": 20},
+                                ],
+                            }
+                        }
+                    ]
+                },
+            }
+        }
+    }
+
+    result = _parse_a2a_response(body)
+
+    assert result["success"] is True
+    assert result["sql"] == "SELECT id, amount FROM sales"
+    assert result["data"] == {
+        "columns": ["id", "amount"],
+        "rows": [[1, 12.5], [2, 20]],
+    }
+    assert result["row_count"] == 2
+
+
+def test_parse_response_treats_empty_rows_as_successful_result():
+    result = _parse_a2a_response(
+        {
+            "task": {
+                "status": {
+                    "state": "completed",
+                    "message": {"parts": [{"data": {"rows": []}}]},
+                }
+            }
+        }
+    )
+
+    assert result["success"] is True
+    assert result["data"] is None
+    assert result["row_count"] == 0
 
 
 def test_parse_response_handles_failed_state_and_inner_error():

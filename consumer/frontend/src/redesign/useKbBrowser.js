@@ -10,6 +10,7 @@ import { useAuthContext } from './useAuthContext';
 export const DIR_LABELS = {
   objects: '业务对象', operations: '操作', scripts: '脚本', mappings: '数据映射',
 };
+export const DIR_ICONS = { objects: '▤', operations: '⚙', scripts: '𝑓', mappings: '⇄' };
 
 export default function useKbBrowser() {
   const { can, workspaceId, status } = useAuthContext();
@@ -31,6 +32,7 @@ export default function useKbBrowser() {
   const [versionOverride, setVersionOverride] = useState(null);
   const [opBusy, setOpBusy] = useState('');
   const [opNotice, setOpNotice] = useState('');
+  const [importPreview, setImportPreview] = useState(null);
 
   const pkg = packages.find((p) => p.id === pkgId) || null;
   const activeVersion = pkg?.active_version || pkg?.version || '';
@@ -113,10 +115,12 @@ export default function useKbBrowser() {
   const selectVersion = useCallback((version) => {
     setVersionOverride(version === activeVersion ? null : version);
   }, [activeVersion]);
+  const reloadTree = useCallback(() => setTreeReloadKey((value) => value + 1), []);
 
   const finishImport = useCallback(async (res, data) => {
     if (res.ok) {
       setNotice(`导入成功：${data.ontology_name || data.ontology_id}（对象 ${data.objects_count ?? '-'} · 操作 ${data.operations_count ?? '-'}）`);
+      setImportPreview(data.preview || null);
       await loadPackages();
       setPkgId(data.ontology_id);
     } else {
@@ -137,15 +141,24 @@ export default function useKbBrowser() {
       setNotice('导入失败：所选 ZIP 文件为空');
       return;
     }
+    const accepted = window.confirm(
+      '导入包可能包含脚本、映射和业务定义。系统会做路径与格式校验，但不会替你判断业务内容是否可信。确认继续导入并查看结果预览？',
+    );
+    if (!accepted) return;
     setImporting(true);
     setNotice(`正在上传并解析：${file.name}`);
+    setImportPreview(null);
     try {
       const form = new FormData();
       form.append('file', file);
       let res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: form });
       let data = await res.json().catch(() => ({}));
       if (res.status === 409 && data.requires_confirmation) {
-        setPendingOverwrite({ file, name: data.ontology_name || data.ontology_id });
+        setPendingOverwrite({
+          file,
+          name: data.ontology_name || data.ontology_id,
+          action: data.conflict_type === 'version_exists' ? 'overwrite_matching' : 'overwrite_active',
+        });
         setNotice(`检测到同名知识包「${data.ontology_name || data.ontology_id}」，请确认是否覆盖`);
         return;
       }
@@ -159,14 +172,14 @@ export default function useKbBrowser() {
 
   const confirmOverwrite = useCallback(async () => {
     if (!pendingOverwrite) return;
-    const { file } = pendingOverwrite;
+    const { file, action } = pendingOverwrite;
     setPendingOverwrite(null);
     setImporting(true);
     setNotice(`正在覆盖并解析：${file.name}`);
     try {
       const retry = new FormData();
       retry.append('file', file);
-      retry.append('action', 'overwrite_active');
+      retry.append('action', action || 'overwrite_active');
       const res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: retry });
       const data = await res.json().catch(() => ({}));
       await finishImport(res, data);
@@ -176,6 +189,8 @@ export default function useKbBrowser() {
       setImporting(false);
     }
   }, [finishImport, pendingOverwrite]);
+
+  const clearImportPreview = useCallback(() => setImportPreview(null), []);
 
   const setPkgEnabled = useCallback(async (enabled) => {
     if (!pkgId) return;
@@ -244,6 +259,23 @@ export default function useKbBrowser() {
     }
   }, [pkgId, viewVersion, loadPackages]);
 
+  const deletePackage = useCallback(async () => {
+    if (!pkgId) return;
+    setOpBusy('deletePackage');
+    setOpNotice('');
+    try {
+      const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setOpNotice(`已删除知识包 ${pkgId}`);
+        setPkgId(null);
+        await loadPackages();
+      } else setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
+    } finally {
+      setOpBusy('');
+    }
+  }, [pkgId, loadPackages]);
+
   const downloadPkg = useCallback(async () => {
     if (!pkgId) return;
     setOpBusy('download');
@@ -282,8 +314,9 @@ export default function useKbBrowser() {
     sel, selectPkg, selectDir, selectFile, importZip, importing, notice,
     pendingOverwrite, confirmOverwrite, cancelOverwrite: () => { setPendingOverwrite(null); setNotice('已取消覆盖知识包'); },
     cancelImportSelection: () => setNotice('已取消选择知识包文件'),
+    importPreview, clearImportPreview, reloadTree,
     viewVersion, viewingActive, versionOverride, selectVersion,
-    setPkgEnabled, activateVersion, deleteVersion, downloadPkg, opBusy, opNotice,
+    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
   };
 }
 

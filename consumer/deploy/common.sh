@@ -90,7 +90,6 @@ write_state() {
 ensure_runtime_layout() {
     # auth-server 为必备组件，其数据目录 .onto-auth 始终创建
     mkdir -p \
-        "${BUNDLE_ROOT}/backend/config" \
         "${BUNDLE_ROOT}/backend/logs" \
         "${BUNDLE_ROOT}/.onto-runtime/config" \
         "${BUNDLE_ROOT}/frontend/logs/nginx" \

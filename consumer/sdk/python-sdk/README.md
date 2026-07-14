@@ -70,6 +70,29 @@ with OntoAgentClient(
             print(event.kind, event.payload)
 ```
 
+`workspace_id` 会编码后写入每个请求的 `X-Workspace-Id`。`token` 必须是 access token。登录响应里的 refresh token 由浏览器/BFF 保存并通过 `/auth/refresh` 轮换；Python SDK 不读取、不持久化 refresh token。
+
+## 会话与运行续传
+
+会话内容可用 `client.agentic.sessions.get(session_id)` 或 `messages(session_id)` 重新载入。网络中断后保存最后一个事件的 `sequence`，再连接同一 run：
+
+```python
+last_seq = 0
+with client.agentic.runs.resume("run-123", after_seq=last_seq) as stream:
+    for event in stream:
+        if event.sequence is not None:
+            last_seq = event.sequence
+        print(event.kind, event.event_id)
+```
+
+排队中的 run 会返回 `409`，应先轮询 `runs.status()`；内存回放窗口已经释放时返回 `410`，此时改读 session 历史。`resume()` 同时发送 `after_seq` 和 `Last-Event-ID`，服务端只回放游标之后的事件。
+
+## MCP 与 Graph
+
+MCP 是独立服务，默认地址为 `http://<host>:7488/search/mcp` 和 `http://<host>:7488/chat/mcp`。MCP token 需在当前 workspace 下通过 `/agentic/mcp/tokens` 创建，搜索端点要求 `mcp:search`，聊天端点要求 `mcp:chat`；不要传 consumer access token。
+
+Graph 连接通过 workspace 数据连接 API 配置。Neo4j 使用 `uri/database/username/password`，HugeGraph 使用 `url/graph/graph_space` 以及可选的 `username/password/token`；随后用 ontology data-binding API 显式绑定，SDK 不从环境变量推断 Graph 连接。
+
 ## 运行模式
 
 后端运行模式通过 `context.agent_mode` 传入：

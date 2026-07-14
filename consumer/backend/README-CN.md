@@ -121,17 +121,17 @@ http://localhost:5055
 MCP 服务作为独立 FastMCP 进程运行。安装依赖后在 `consumer/backend` 目录启动：
 
 ```bash
-PYTHONPATH=. python -m agentic.mcp.server --transport streamable-http --host 0.0.0.0 --port 7488
+PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose 部署会自动启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。Flask 主服务提供 `/agentic/mcp/*` 管理 API；独立 MCP 进程只暴露 `MCP_TRANSPORT` 指定的协议：`streamable-http` 暴露 `/search/mcp`、`/chat/mcp`，`sse` 暴露 `/search/sse`、`/chat/sse`。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具，不调用 LLM；Chat 入口用 MCP token 中的用户和 workspace 直接调用当前 Agent Orchestrator。
+Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。Flask 主服务提供 `/agentic/mcp/*` 管理 API；独立进程默认同时暴露 `/search/mcp`、`/chat/mcp`、`/search/sse`、`/chat/sse`。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会在 backend 重新校验 MCP Token，并进入统一 Jiuwen workflow 和 admission queue。
 
 说明：
 
 - 认证统一由独立 auth-server 提供：必须配置 `AUTH_SERVER_URL`（Docker 中为 `http://auth-server:5056`，本地运行 auth-server 时如 `http://localhost:5056`），未配置时后端启动直接报错。
 - `PROJECT_ROOT` 默认指向 `consumer/.onto-runtime`，这是运行时根目录。
-- `system_config.json` 默认保存在 `<consumer>/.onto-runtime/config/system_config.json`；旧的 `<consumer>/backend/config/system_config.json` 会在新文件不存在时自动迁移。
-- 运维规格配置默认读取 `<consumer>/.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
+- `system_config.json` 只从 `<consumer>/.onto-runtime/config/system_config.json` 读取；文件不存在时使用环境变量和内置默认值，首次保存配置时创建该文件。
+- 运维规格和日志级别配置默认读取 `<consumer>/.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。`logging.level` 缺省时为 `INFO`；运行时修改后，由下一次日志调用触发重读，无需重启。
 - 本体资源优先按工作区解析：`<consumer>/.onto-runtime/workspaces/<workspace_id>/ontologies`。
 - 技能资源优先按工作区解析：`<consumer>/.onto-runtime/workspaces/<workspace_id>/skills`，然后回退到 `<consumer>/.onto-runtime/system/skills`。
 - 服务器 host、port 和 debug 配置在 [`server_config.py`](server_config.py)。
@@ -166,11 +166,23 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 先读已保存的 system_config.json；某个字段没有保存值时再读环境变量；最后用内置默认值
 ```
 
-消费智能体规格限制使用独立运维配置，读取优先级为：
+消费智能体规格限制和运行时日志级别使用独立运维配置，读取优先级为：
 
 ```text
 先读 ops_config.json；某个字段没有保存值时再读环境变量；最后用内置默认值
 ```
+
+日志级别配置示例：
+
+```json
+{
+  "logging": {
+    "level": "DEBUG"
+  }
+}
+```
+
+后端和 MCP 进程会在下一次日志级别检查时分别检查文件是否变化，变化后才重新解析。无效 JSON 或无效级别会保留上一次有效值。建议通过“写临时文件后原子替换”的方式更新该文件。
 
 重要变量：
 
@@ -201,7 +213,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `MCP_SERVER_HOST` | 独立 MCP Server 监听地址；Docker Compose 中 Flask 容器会覆盖为 `mcp` 用于内部探测，MCP 容器会覆盖为 `0.0.0.0` 用于监听 | `0.0.0.0` |
 | `MCP_SERVER_PORT` | 独立 MCP Server 端口；Docker Compose 默认将宿主机 `${MCP_SERVER_PORT:-7488}` 映射到容器 `7488` | `7488` |
 | `MCP_PUBLIC_BASE_URL` | 前端 MCP 页面展示和客户端配置复制使用的外部可访问地址，Docker 部署建议显式配置为服务器 IP 或域名 | 根据 host/port 推导 |
-| `MCP_TRANSPORT` | 独立 MCP Server transport；`streamable-http` 暴露 `/search/mcp`、`/chat/mcp`，`sse` 暴露 `/search/sse`、`/chat/sse` | `streamable-http` |
+| `MCP_TRANSPORT` | `both` 同时暴露 Streamable HTTP 和 SSE，也可显式选择单一 transport | `both` |
 | `MCP_SERVICES_CONFIG_FILE` | 可选 YAML 服务目录路径；相对路径按 `consumer/backend` 解析 | 存在时使用 `config/mcp_services.yaml` |
 | `MCP_TOKEN_SECRET` | MCP JWT 签名密钥（必填，至少 32 个字符；不要与其他服务共用） | 无默认值 |
 | `MCP_TOKEN_ISSUER` | MCP JWT `iss` claim | `meta-wise` |
@@ -236,7 +248,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `MEMORY_WORKSPACE_ROOT` | 文件系统记忆工作区根目录 | 空 |
 | `AGENT_MEMORY_RECALL_TOPK` | 记忆召回条数 | `3` |
 | `AGENT_MEMORY_RECALL_THRESHOLD` | 记忆召回阈值 | 空 |
-| `LOG_LEVEL` | 运行日志级别 | 应用默认 |
+| `LOG_LEVEL` | 进程启动日志级别；`ops_config.json` 的 `logging.level` 可覆盖 | `INFO` |
 | `LOG_CONSOLE` | 是否启用控制台日志 | 关闭 |
 
 说明：

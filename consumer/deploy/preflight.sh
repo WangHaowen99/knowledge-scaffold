@@ -17,6 +17,13 @@ ensure_runtime_layout
 ensure_env_files
 require_mcp_token_secret
 
+command -v python3 >/dev/null 2>&1 || die "Python 3 is required for deployment validation"
+python3 "${SCRIPT_DIR}/preflight_config.py" \
+    --env-file "${BUNDLE_ROOT}/backend/.env" \
+    --runtime-root "${BUNDLE_ROOT}/.onto-runtime" \
+    --report "${STATE_DIR}/preflight-config.json" \
+    || die "Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
+
 host_arch="$(detect_host_arch)"
 release_arch="$(manifest_get release_arch)"
 [ -n "${release_arch}" ] || die "release_arch is missing in manifest.json"
@@ -53,6 +60,21 @@ case "${auth_health}" in
         ;;
     *)
         warn "auth-server 容器健康状态: ${auth_health}（部署会重建该容器）"
+        ;;
+esac
+
+mcp_health="$(docker inspect --format '{{.State.Health.Status}}' onto-agent-mcp 2>/dev/null || true)"
+case "${mcp_health}" in
+    "" | "<no value>")
+        log "MCP 容器尚未创建（首次部署属正常，部署后监听 7488）"
+        ;;
+    healthy)
+        curl -fsS --max-time 3 "http://127.0.0.1:${MCP_SERVER_PORT:-7488}/health" >/dev/null \
+            || die "MCP container is healthy but host health endpoint is unreachable"
+        log "MCP 7488 health verified"
+        ;;
+    *)
+        warn "MCP 容器健康状态: ${mcp_health}（部署会重建该容器）"
         ;;
 esac
 

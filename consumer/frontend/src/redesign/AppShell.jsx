@@ -35,6 +35,7 @@ export default function AppShell() {
   const [sideCollapsed, setSideCollapsed] = useState(() => {
     try { return localStorage.getItem('mw_sidebar_collapsed') === '1'; } catch { return false; }
   });
+  const [kbFocus, setKbFocus] = useState(null);
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
   const kb = useKbBrowser();
@@ -57,7 +58,10 @@ export default function AppShell() {
 
   useEffect(() => {
     if (status !== 'authenticated') return undefined;
-    const t = setTimeout(() => chat.loadSessions(true), 0);
+    streamManager.stopAllStreams();
+    streamManager.clearAllCaches();
+    chat.resetSessionsState();
+    const t = setTimeout(() => chat.loadSessions(false), 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, workspaceId, chat.loadSessions]);
@@ -70,6 +74,18 @@ export default function AppShell() {
     document.addEventListener('click', onDocClick);
     return () => document.removeEventListener('click', onDocClick);
   }, []);
+
+  useEffect(() => {
+    const openKnowledgeSource = (event) => {
+      const detail = event.detail || {};
+      if (!detail.path) return;
+      if (detail.ontologyId) kb.selectPkg(detail.ontologyId);
+      setKbFocus({ ontologyId: detail.ontologyId || '', path: detail.path, token: Date.now() });
+      setSurface('kb');
+    };
+    window.addEventListener('mwr-open-kb-source', openKnowledgeSource);
+    return () => window.removeEventListener('mwr-open-kb-source', openKnowledgeSource);
+  }, [kb]);
 
   if (status === 'checking') {
     return <div className="mwr" style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', color: '#898781' }}>加载中…</div>;
@@ -208,7 +224,7 @@ export default function AppShell() {
           style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
           <div key={surface} className={`surface-stage surface-${surface}`}>
             {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager} />}
-            {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} /></Suspense>}
+            {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} /></Suspense>}
             {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
           </div>
         </div>

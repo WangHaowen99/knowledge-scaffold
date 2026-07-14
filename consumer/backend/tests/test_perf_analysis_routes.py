@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from flask import Flask
 
-from agentic.routes.performance import performance_bp
-from agentic.services.auth import AuthManager
+from api.routes.performance import performance_bp
+from api.auth.auth import AuthManager
 
 
 class _FakeChatStore:
@@ -52,7 +52,7 @@ def _build_test_client(tmp_path, *, role="admin"):
 def test_session_performance_requires_existing_current_workspace_session(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, role="user")
     monkeypatch.setattr(
-        "agentic.routes.performance.get_request_stores",
+        "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore(), object()),
     )
 
@@ -65,15 +65,16 @@ def test_session_performance_returns_current_session_analysis(tmp_path, monkeypa
     client, headers = _build_test_client(tmp_path, role="user")
     captured = {}
     monkeypatch.setattr(
-        "agentic.routes.performance.get_request_stores",
+        "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore({"sess-a"}), object()),
     )
     monkeypatch.setattr(
-        "agentic.routes.performance.analyze_session",
+        "api.routes.performance.analyze_session",
         lambda session_id, **kwargs: captured.update(kwargs) or {"session_id": session_id, "summary": {"run_count": 1}},
     )
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
     monkeypatch.setattr(
-        "agentic.perf_analysis.service.current_epoch_ms",
+        "utils.perf_analysis.service.current_epoch_ms",
         lambda: 1_000_000_000,
     )
 
@@ -83,22 +84,24 @@ def test_session_performance_returns_current_session_analysis(tmp_path, monkeypa
     assert response.get_json()["summary"]["run_count"] == 1
     assert captured["end_ms"] == 1_000_000_000
     assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
+    assert captured["workspace_id"] == "ws-a"
 
 
 def test_session_performance_availability_uses_lightweight_probe(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, role="user")
     captured = {}
     monkeypatch.setattr(
-        "agentic.routes.performance.get_request_stores",
+        "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore({"sess-a"}), object()),
     )
     monkeypatch.setattr(
-        "agentic.routes.performance.check_session_availability",
+        "api.routes.performance.check_session_availability",
         lambda session_id, **kwargs: captured.update(kwargs)
         or {"session_id": session_id, "available": True},
     )
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
     monkeypatch.setattr(
-        "agentic.perf_analysis.service.current_epoch_ms",
+        "utils.perf_analysis.service.current_epoch_ms",
         lambda: 1_000_000_000,
     )
 
@@ -108,12 +111,13 @@ def test_session_performance_availability_uses_lightweight_probe(tmp_path, monke
     assert response.get_json()["available"] is True
     assert captured["end_ms"] == 1_000_000_000
     assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
+    assert captured["workspace_id"] == "ws-a"
 
 
 def test_session_performance_availability_requires_existing_session(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, role="user")
     monkeypatch.setattr(
-        "agentic.routes.performance.get_request_stores",
+        "api.routes.performance.get_request_stores",
         lambda: (_FakeChatStore(), object()),
     )
 
@@ -126,18 +130,19 @@ def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatc
     client, headers = _build_test_client(tmp_path, role="user")
     captured = {}
     monkeypatch.setattr(
-        "agentic.routes.performance.get_request_stores",
+        "api.routes.performance.get_request_stores",
         lambda: (
             _FakeChatStore({"sess-a"}),
             _FakeExecutionStore({"sess-a": {"run-a"}}),
         ),
     )
     monkeypatch.setattr(
-        "agentic.routes.performance.analyze_run_detail",
+        "api.routes.performance.analyze_run_detail",
         lambda run_id, **kwargs: captured.update(kwargs) or {"run": {"run_id": run_id}, "timeline": [{"event": "run.finished"}]},
     )
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
     monkeypatch.setattr(
-        "agentic.perf_analysis.service.current_epoch_ms",
+        "utils.perf_analysis.service.current_epoch_ms",
         lambda: 1_000_000_000,
     )
 
@@ -151,6 +156,7 @@ def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatc
     assert owned.status_code == 200
     assert owned.get_json()["run"]["run_id"] == "run-a"
     assert captured["start_ms"] == 1_000_000_000 - (7 * 24 * 60 * 60 * 1000)
+    assert captured["workspace_id"] == "ws-a"
 
 
 def test_local_observability_overview_requires_admin(tmp_path):
@@ -165,7 +171,7 @@ def test_local_observability_overview_passes_workspace_filter(tmp_path, monkeypa
     client, headers = _build_test_client(tmp_path)
     captured = {}
     monkeypatch.setattr(
-        "agentic.routes.performance.analyze_global_overview",
+        "api.routes.performance.analyze_global_overview",
         lambda **kwargs: captured.update(kwargs) or {"summary": {"run_count": 0}},
     )
 

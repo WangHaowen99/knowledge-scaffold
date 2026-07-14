@@ -45,6 +45,21 @@ class AgenticRunsApi:
     def status(self, run_id: str) -> JsonDict:
         return self._http.get("/agentic/runs/{}/status".format(_path(run_id)))
 
+    def events(self, run_id: str, *, after_seq: int = 0) -> EventStream:
+        """Attach or reattach to an admitted run after the last consumed sequence."""
+        cursor = max(0, int(after_seq or 0))
+        response = self._http.get(
+            "/agentic/runs/{}/events".format(_path(run_id)),
+            params={"after_seq": cursor},
+            headers={"Last-Event-ID": str(cursor)} if cursor else None,
+            stream=True,
+        )
+        return EventStream(response, normalize_agentic_sse_event)
+
+    def resume(self, run_id: str, *, after_seq: int = 0) -> EventStream:
+        """Alias for :meth:`events`, kept as the explicit reconnect entry point."""
+        return self.events(run_id, after_seq=after_seq)
+
     def cancel(self, run_id: str, *, reason: Optional[str] = None) -> JsonDict:
         return self._http.post(
             "/agentic/runs/{}/cancel".format(_path(run_id)),
