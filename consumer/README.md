@@ -160,7 +160,7 @@ docker compose up --build
 ```
 
 后端通过 `PROJECT_ROOT` 指向运行时根目录。默认值会优先使用 `consumer/.onto-runtime`，容器中映射到 `/app/.onto-runtime`。
-系统配置默认保存在 `.onto-runtime/config/system_config.json`；旧的 `backend/config/system_config.json` 会在新文件不存在时自动迁移。运维规格配置默认读取 `.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
+系统配置只从 `.onto-runtime/config/system_config.json` 读取；文件不存在时使用环境变量和内置默认值，首次保存配置时创建该文件。运维规格配置默认读取 `.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
 
 ## 用户本体上传格式
 

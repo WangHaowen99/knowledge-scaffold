@@ -130,7 +130,7 @@ Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runti
 
 - 认证统一由独立 auth-server 提供：必须配置 `AUTH_SERVER_URL`（Docker 中为 `http://auth-server:5056`，本地运行 auth-server 时如 `http://localhost:5056`），未配置时后端启动直接报错。
 - `PROJECT_ROOT` 默认指向 `consumer/.onto-runtime`，这是运行时根目录。
-- `system_config.json` 默认保存在 `<consumer>/.onto-runtime/config/system_config.json`；旧的 `<consumer>/backend/config/system_config.json` 会在新文件不存在时自动迁移。
+- `system_config.json` 只从 `<consumer>/.onto-runtime/config/system_config.json` 读取；文件不存在时使用环境变量和内置默认值，首次保存配置时创建该文件。
 - 运维规格配置默认读取 `<consumer>/.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
 - 本体资源优先按工作区解析：`<consumer>/.onto-runtime/workspaces/<workspace_id>/ontologies`。
 - 技能资源优先按工作区解析：`<consumer>/.onto-runtime/workspaces/<workspace_id>/skills`，然后回退到 `<consumer>/.onto-runtime/system/skills`。

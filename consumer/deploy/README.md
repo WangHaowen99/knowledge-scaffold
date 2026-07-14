@@ -213,7 +213,6 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 发布包保持与当前项目一致的挂载目录：
 
 - `./.onto-runtime`（包含 `config/system_config.json`）
-- `./backend/config`（只读旧配置迁移源）
 - `./backend/logs`
 - `./frontend/logs/nginx`
 - `./.onto-auth`（始终创建，auth-server 用户数据）

@@ -25,7 +25,6 @@ backup_path_if_present() {
 }
 
 backup_path_if_present "${BUNDLE_ROOT}/backend/.env" "backend-env.tar.gz"
-backup_path_if_present "${BUNDLE_ROOT}/backend/config" "backend-config.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/backend/logs" "backend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/frontend/logs" "frontend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
