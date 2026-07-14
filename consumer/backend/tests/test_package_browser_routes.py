@@ -30,7 +30,8 @@ def _build_client(tmp_path, monkeypatch):
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: demo-ontology",
                 "name: Demo Ontology",
                 "description: Package browser route tests",
@@ -285,18 +286,20 @@ bound_operation: QueryPart
 
     ontology_dir = get_workspace_paths("demo").ontologies_dir / "legacy-example"
     manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
-    assert manifest["kind"] == "ontology"
+    assert manifest["kind"] == "ontology-package"
+    assert str(manifest["schema_version"]) == "0.1"
     assert manifest["active_version"] == "0.1.0"
     assert manifest["language"] == "zh-CN"
-    assert "schema_version" not in manifest
     assert "status" not in manifest
     version_dir = ontology_dir / "versions" / "0.1.0"
-    assert (version_dir / "ONTOLOGY.md").read_text(encoding="utf-8") == "# Legacy Example\n"
-    assert (version_dir / "objects-list.md").is_file()
-    assert (version_dir / "operations-list.md").is_file()
-    assert "`QueryPart` -> `scripts/query_part.py`" in (
-        version_dir / "scripts-list.md"
+    assert "# Legacy Example" in (version_dir / "index.md").read_text(encoding="utf-8")
+    assert (version_dir / "objects" / "index.md").is_file()
+    assert (version_dir / "operations" / "index.md").is_file()
+    assert "bound_operation: QueryPart" in (
+        version_dir / "scripts" / "query_part.md"
     ).read_text(encoding="utf-8")
+    assert not list(version_dir.glob("*-list.md"))
+    assert not (version_dir / "ONTOLOGY.md").exists()
 
     raw_response = client.get(
         "/agentic/ontologies/legacy-example/raw-file",
@@ -322,7 +325,8 @@ def test_import_zip_rejects_absolute_and_noncanonical_member_paths(
     unsafe_name,
 ):
     client, headers, _version1 = _build_client(tmp_path, monkeypatch)
-    archive = _zip_from_entries([(unsafe_name, "kind: ontology\n")])
+    archive = _zip_from_entries([(unsafe_name, "kind: ontology-package\n"
+            "schema_version: 0.1\n")])
 
     response = client.post(
         "/agentic/ontologies/import-zip",
@@ -471,5 +475,6 @@ def test_import_v01_defaults_recommended_language(tmp_path, monkeypatch):
     assert response.status_code == 201
     ontology_dir = get_workspace_paths("demo").ontologies_dir / "language-default"
     manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
-    assert manifest["kind"] == "ontology"
+    assert manifest["kind"] == "ontology-package"
+    assert str(manifest["schema_version"]) == "0.1"
     assert manifest["language"] == "zh-CN"

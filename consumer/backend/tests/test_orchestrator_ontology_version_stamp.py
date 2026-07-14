@@ -99,7 +99,8 @@ def _write_ontology_manifest(workspace_id: str, ontology_id: str, active_version
     version_dir = onto_dir / "versions" / active_version / "operations"
     version_dir.mkdir(parents=True, exist_ok=True)
     (onto_dir / "manifest.yaml").write_text(
-        "kind: ontology\n"
+        "kind: ontology-package\n"
+            "schema_version: 0.1\n"
         "id: {}\n"
         "name: 测试本体\n"
         "description: test\n"

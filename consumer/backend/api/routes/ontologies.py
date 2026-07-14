@@ -43,6 +43,7 @@ from ontology.package_browser import (
 )
 from ontology.package_import import (
     SUPPORTED_IMPORT_MANIFEST_KINDS,
+    has_importable_package_layout,
     inspect_importable_package,
     normalize_imported_package,
 )
@@ -98,6 +99,7 @@ ONTOLOGY_IMPORT_PREVIEW_TEXT_EXTENSIONS = {
 ONTOLOGY_VERSIONED_SKIP_NAMES = {"manifest.yaml", "versions"}
 ONTOLOGY_INTERNAL_MANIFEST_FIELDS = {
     "kind",
+    "schema_version",
     "id",
     "name",
     "description",
@@ -453,7 +455,7 @@ def list_ontologies():
                     "language": ontology.language,
                     "enabled": ontology.enabled,
                     "manifest_path": ontology.manifest_path,
-                    "ontology_md_path": ontology.ontology_md_path,
+                    "index_path": ontology.index_path,
                     "business_data": build_ontology_business_data_summary(
                         ontology.id,
                         workspace_id=workspace_id,
@@ -1174,12 +1176,7 @@ def _find_skill_source_root(extract_root: Path) -> Optional[Path]:
 
 
 def _has_converted_ontology_structure(candidate_root: Path) -> bool:
-    return any([
-        (candidate_root / "objects").is_dir(),
-        (candidate_root / "operations").is_dir(),
-        (candidate_root / "objects-list.md").is_file(),
-        (candidate_root / "operations-list.md").is_file(),
-    ])
+    return has_importable_package_layout(candidate_root)
 
 
 def _find_converted_ontology_root(
@@ -1506,24 +1503,36 @@ def _write_default_ontology_meta(
     version: str,
 ) -> None:
     manifest_path = ontology_dir / "manifest.yaml"
-    ontology_md_path = ontology_dir / "ONTOLOGY.md"
+    index_path = ontology_dir / "index.md"
 
     if not manifest_path.exists():
-        manifest_content = "\n".join([
-            "kind: ontology",
-            f"id: {ontology_id}",
-            f"name: {ontology_name}",
-            f"description: {description}",
-            f"version: {version}",
-            "language: zh-CN",
-            "enabled: true",
-            "scope: []",
-            "",
-        ])
-        manifest_path.write_text(manifest_content, encoding="utf-8")
+        manifest_path.write_text(
+            yaml.safe_dump(
+                {
+                    "kind": "ontology-package",
+                    "schema_version": 0.1,
+                    "id": ontology_id,
+                    "name": ontology_name,
+                    "description": description,
+                    "version": version,
+                    "language": "zh-CN",
+                    "enabled": True,
+                    "scope": [],
+                },
+                allow_unicode=True,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
 
-    if not ontology_md_path.exists():
-        ontology_md_content = "\n".join([
+    if not index_path.exists():
+        index_content = "\n".join([
+            "---",
+            "resource: root",
+            "key: root",
+            f"title: {ontology_name}",
+            "---",
+            "",
             f"# {ontology_name}",
             "",
             "## 领域范围",
@@ -1531,16 +1540,17 @@ def _write_default_ontology_meta(
             "",
             "## 目录结构",
             "- 基础元数据：`manifest.yaml`",
-            "- 操作清单：`operations-list.md`",
+            "- 操作目录：`operations/index.md`",
             "- 操作文件：`operations/<操作名>.md`",
-            "- 实体清单：`objects-list.md`",
+            "- 实体目录：`objects/index.md`",
             "- 实体定义：`objects/<实体名>.md`",
-            "- 脚本清单：`scripts-list.md`",
+            "- 脚本目录：`scripts/index.md`",
+            "- 脚本描述：`scripts/<脚本名>.md`",
             "- 脚本文件：`scripts/<脚本名>.py`",
             "- 关系图：`graph/nodes.json`、`graph/edges.json`",
             "",
         ])
-        ontology_md_path.write_text(ontology_md_content, encoding="utf-8")
+        index_path.write_text(index_content, encoding="utf-8")
 
 
 def _set_ontology_enabled(ontology_dir: Path, enabled: bool):
@@ -1571,7 +1581,7 @@ def _count_markdown_files(folder_path: Path) -> int:
     return sum(
         1
         for child in folder_path.iterdir()
-        if child.is_file() and child.suffix.lower() == ".md"
+        if child.is_file() and child.suffix.lower() == ".md" and child.name.lower() != "index.md"
     )
 
 
@@ -1684,7 +1694,8 @@ def _prepare_shared_manifest(
         else:
             manifest = {}
         manifest.update({
-            "kind": "ontology",
+            "kind": "ontology-package",
+            "schema_version": 0.1,
             "id": ontology_id,
             "name": ontology_name,
             "description": ontology_description,
@@ -1693,6 +1704,8 @@ def _prepare_shared_manifest(
         manifest.setdefault("enabled", True)
         manifest.setdefault("scope", [])
 
+    manifest["kind"] = "ontology-package"
+    manifest["schema_version"] = 0.1
     versions = [
         str(item).strip()
         for item in (manifest.get("versions") or [])
@@ -1705,7 +1718,15 @@ def _prepare_shared_manifest(
     manifest["versions"] = versions
     if "enabled" not in manifest:
         manifest["enabled"] = True
-    return manifest
+    return {
+        "kind": "ontology-package",
+        "schema_version": 0.1,
+        **{
+            key: value
+            for key, value in manifest.items()
+            if key not in {"kind", "schema_version"}
+        },
+    }
 
 
 def _install_ontology_version_package(
@@ -1737,20 +1758,6 @@ def _install_ontology_version_package(
 
 def _optional_path_str(path: Path) -> Optional[str]:
     return str(path) if path.exists() else None
-
-
-def _copy_optional_source_scripts(source_root: Path, target_root: Path) -> None:
-    scripts_source_dir = source_root / "scripts"
-    scripts_target_dir = target_root / "scripts"
-    if scripts_source_dir.is_dir():
-        if scripts_target_dir.exists():
-            shutil.rmtree(scripts_target_dir)
-        shutil.copytree(scripts_source_dir, scripts_target_dir)
-
-    scripts_list_source_path = source_root / "scripts-list.md"
-    scripts_list_target_path = target_root / "scripts-list.md"
-    if scripts_list_source_path.is_file():
-        shutil.copy2(scripts_list_source_path, scripts_list_target_path)
 
 
 def _remove_path_if_exists(path: Path) -> None:
@@ -1860,11 +1867,11 @@ def import_ontology_zip_with_auto_create():
                 return jsonify({"error": extraction_error}), 400
 
             import_mode = "converted"
-            package_format = "current"
+            package_format = "v0.1"
             normalization_warnings: list[str] = []
             warnings = {
                 "objects": [],
-                "objects_list": [],
+                "objects_index": [],
                 "operations": [],
             }
 
@@ -2036,8 +2043,8 @@ def import_ontology_zip_with_auto_create():
                         )
                     objects_count = _count_markdown_files(version_dir / "objects")
                     operations_count = _count_markdown_files(version_dir / "operations")
-                    objects_list_path = _optional_path_str(version_dir / "objects-list.md")
-                    operations_list_path = _optional_path_str(version_dir / "operations-list.md")
+                    objects_index_path = _optional_path_str(version_dir / "objects" / "index.md")
+                    operations_index_path = _optional_path_str(version_dir / "operations" / "index.md")
                 else:
                     with tempfile.TemporaryDirectory(prefix=".ontology-import-", dir=str(ontologies_dir)) as temp_dir:
                         staged_dir = Path(temp_dir) / ontology_id
@@ -2065,11 +2072,11 @@ def import_ontology_zip_with_auto_create():
 
                     objects_count = result.get("objects_trimmed", {}).get("count", 0)
                     operations_count = result.get("operations_count", 0)
-                    objects_list_path = _optional_path_str(version_dir / "objects-list.md")
-                    operations_list_path = _optional_path_str(version_dir / "operations-list.md")
+                    objects_index_path = _optional_path_str(version_dir / "objects" / "index.md")
+                    operations_index_path = _optional_path_str(version_dir / "operations" / "index.md")
                     warnings = {
                         "objects": result.get("objects_trimmed", {}).get("warnings", []),
-                        "objects_list": result.get("objects_list", {}).get("warnings", []),
+                        "objects_index": result.get("objects_index", {}).get("warnings", []),
                         "operations": result.get("operations_trimmed", {}).get("warnings", []),
                     }
             except Exception:
@@ -2118,8 +2125,8 @@ def import_ontology_zip_with_auto_create():
             "source_root": str(source_root),
             "objects_count": objects_count,
             "operations_count": operations_count,
-            "objects_list_path": objects_list_path,
-            "operations_list_path": operations_list_path,
+            "objects_index_path": objects_index_path,
+            "operations_index_path": operations_index_path,
             "business_data_configured": bool(business_data_summary.get("configured")),
             "business_data_binding": business_data_binding,
             "warnings": warnings,

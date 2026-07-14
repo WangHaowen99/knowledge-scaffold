@@ -1,18 +1,21 @@
 import json
-import re
 from pathlib import Path
 
+from ontology.ontology_catalog import find_script_entry, load_script_catalog
 from skill_parser.modeling_template import rewrite_business_data_client_imports
 from skill_parser.skill_ontology_parser import build_file_mapping, run
 
 
-def _script_parameters(scripts_list: str, operation_key: str) -> list[dict]:
-    match = re.search(
-        r"- `{}` -> `[^`]+`\n  `parameters`: `([^`]+)`".format(re.escape(operation_key)),
-        scripts_list,
-    )
-    assert match is not None
-    return json.loads(match.group(1))
+def _script_parameters(target_root: Path, operation_key: str) -> list[dict]:
+    entry = find_script_entry(load_script_catalog(target_root), operation_key)
+    assert entry is not None
+    parameters = []
+    for raw in entry.get("parameters") or []:
+        parameter = dict(raw)
+        if not parameter.get("multiple"):
+            parameter.pop("multiple", None)
+        parameters.append(parameter)
+    return parameters
 
 
 def _write_object(
@@ -169,7 +172,7 @@ def test_build_file_mapping_falls_back_to_legacy_action_layout(tmp_path):
     mapping = build_file_mapping(source_root, target_root)
 
     assert mapping["scripts"] == [{"source": "action/supplier_lookup.py", "target": "scripts/supplier_lookup.py"}]
-    assert mapping["scripts_list"]["generator"] == "from action/**/*.py"
+    assert mapping["scripts_index"]["generator"] == "from action/**/*.py"
 
 
 def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
@@ -200,22 +203,23 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
 
     result = run(source_root=source_root, target_root=target_root)
 
-    objects_list = (target_root / "objects-list.md").read_text(encoding="utf-8")
-    assert "| 中文名称 | 英文名称 | 别名 | 业务定义 | 领域分类 |" in objects_list
-    assert "| 物料 | Material | 物料号、零件 | 物料对象描述 |  |" in objects_list
-    assert result["objects_list"]["columns"] == ["中文名称", "英文名称", "别名", "业务定义", "领域分类"]
+    objects_index = (target_root / "objects" / "index.md").read_text(encoding="utf-8")
+    assert "| 中文名称 | 英文名称 | 别名 | 业务定义 | 领域分类 |" in objects_index
+    assert "| 物料 | Material | 物料号、零件 | 物料对象描述 |  |" in objects_index
+    assert result["objects_index"]["columns"] == ["中文名称", "英文名称", "别名", "业务定义", "领域分类"]
 
     object_doc = (target_root / "objects" / "物料.md").read_text(encoding="utf-8")
-    assert object_doc.startswith("# 实体属性清单")
+    assert "resource: object" in object_doc
+    assert "# 实体属性清单" in object_doc
     assert "| 中文名称 | 英文名称 | 描述 | 属性别名 |" in object_doc
     assert "| 物料编号 | material_code | 物料唯一编号 | 料号 |" in object_doc
     assert "主键" not in object_doc
     assert "属性规则" not in object_doc
 
-    operations_list = (target_root / "operations-list.md").read_text(encoding="utf-8")
-    assert "| 名称 | 标签 | 业务描述 | 触发条件 |" in operations_list
-    assert "| 供应商查询 | 工具流程 | 根据物料查询供应商 | 用户需要查询物料供应商时触发 |" in operations_list
-    assert "| 子流程A | 子流程 | 子流程描述 | 用户需要查询物料供应商时触发 |" in operations_list
+    operations_index = (target_root / "operations" / "index.md").read_text(encoding="utf-8")
+    assert "| 名称 | 标签 | 业务描述 | 触发条件 |" in operations_index
+    assert "| 供应商查询 | 工具流程 | 根据物料查询供应商 | 用户需要查询物料供应商时触发 |" in operations_index
+    assert "| 子流程A | 子流程 | 子流程描述 | 用户需要查询物料供应商时触发 |" in operations_index
 
     operation_doc = (target_root / "operations" / "供应商查询.md").read_text(encoding="utf-8")
     assert "# 管理标签\n#工具流程" in operation_doc
@@ -228,10 +232,11 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
     sub_operation_doc = (target_root / "operations" / "子流程A.md").read_text(encoding="utf-8")
     assert "| 物料编号 | 需要查询的物料编号 | 父流程传递 |" in sub_operation_doc
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `供应商查询` -> `scripts/tools/supplier_lookup.py`" in scripts_list
-    assert "`cleanup`" not in scripts_list
-    assert "`parameters`" not in scripts_list
+    scripts_index = (target_root / "scripts" / "index.md").read_text(encoding="utf-8")
+    script_descriptor = (target_root / "scripts" / "supplier_lookup.md").read_text(encoding="utf-8")
+    assert "| supplier_lookup | supplier_lookup | 供应商查询 | tools/supplier_lookup.py |" in scripts_index
+    assert "bound_operation: 供应商查询" in script_descriptor
+    assert "cleanup" not in scripts_index
     assert "关联logic：供应商查询" in (
         target_root / "scripts" / "tools" / "supplier_lookup.py"
     ).read_text(encoding="utf-8")
@@ -241,6 +246,11 @@ def test_run_generates_agent_ontology_from_new_modeling_template(tmp_path):
     assert not (target_root / "operations" / "supplier_lookup.md").exists()
     assert (target_root / "assets" / "common.conf").read_text(encoding="utf-8") == "threshold=3\n"
     assert (target_root / "assets" / "rules" / "limits.ini").read_text(encoding="utf-8") == "[limits]\nmax=10\n"
+    assert (target_root / "rules" / "index.md").is_file()
+    assert (target_root / "metrics" / "index.md").is_file()
+    assert (target_root / "mappings" / "object-data-mappings.json").is_file()
+    assert not list(target_root.glob("*-list.md"))
+    assert not (target_root / "ONTOLOGY.md").exists()
 
     assert result["objects_trimmed"]["count"] == 2
     assert result["operations_count"] == 2
@@ -276,8 +286,8 @@ def test_run_reads_compatible_entity_titles_for_object_summary(tmp_path):
 
     result = run(source_root=source_root, target_root=target_root)
 
-    objects_list = (target_root / "objects-list.md").read_text(encoding="utf-8")
-    assert "| 物料 | Material | 物料号、零件 | 实体标题下的描述 |  |" in objects_list
+    objects_index = (target_root / "objects" / "index.md").read_text(encoding="utf-8")
+    assert "| 物料 | Material | 物料号、零件 | 实体标题下的描述 |  |" in objects_index
     object_doc = (target_root / "objects" / "物料.md").read_text(encoding="utf-8")
     assert "| 物料编号 | material_code | 物料唯一编号 | 料号 |" in object_doc
     assert "未找到对象属性清单" not in "\n".join(result["objects_trimmed"]["warnings"])
@@ -305,11 +315,11 @@ def test_run_infers_operation_tags_from_new_modeling_template_markers(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    operations_list = (target_root / "operations-list.md").read_text(encoding="utf-8")
-    assert "| 主流程 | 主流程 | 主流程描述 | 用户需要查询物料供应商时触发 |" in operations_list
-    assert "| 子流程 | 子流程 | 子流程描述 | 用户需要查询物料供应商时触发 |" in operations_list
-    assert "| 查数工具 | 主流程 | 查数工具描述 | 用户需要查询物料供应商时触发 |" in operations_list
-    assert "| 说明主流程 | 主流程 | 带说明的主流程描述 | 用户需要查询物料供应商时触发 |" in operations_list
+    operations_index = (target_root / "operations" / "index.md").read_text(encoding="utf-8")
+    assert "| 主流程 | 主流程 | 主流程描述 | 用户需要查询物料供应商时触发 |" in operations_index
+    assert "| 子流程 | 子流程 | 子流程描述 | 用户需要查询物料供应商时触发 |" in operations_index
+    assert "| 查数工具 | 主流程 | 查数工具描述 | 用户需要查询物料供应商时触发 |" in operations_index
+    assert "| 说明主流程 | 主流程 | 带说明的主流程描述 | 用户需要查询物料供应商时触发 |" in operations_index
 
     main_doc = (target_root / "operations" / "主流程.md").read_text(encoding="utf-8")
     sub_doc = (target_root / "operations" / "子流程.md").read_text(encoding="utf-8")
@@ -375,10 +385,9 @@ def test_run_uses_script_docstring_relation_and_skips_private_helpers(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `供应商查询` -> `scripts/supplier_lookup.py`" in scripts_list
-    assert "`supplier_lookup`" not in scripts_list
-    assert "`_script_common`" not in scripts_list
+    scripts_index = (target_root / "scripts" / "index.md").read_text(encoding="utf-8")
+    assert "| supplier_lookup | supplier_lookup | 供应商查询 | supplier_lookup.py |" in scripts_index
+    assert "_script_common" not in scripts_index
     assert "关联logic：供应商查询" in (target_root / "scripts" / "supplier_lookup.py").read_text(encoding="utf-8")
     assert (target_root / "scripts" / "_script_common.py").exists()
 
@@ -494,9 +503,9 @@ def test_run_copies_script_env_files_without_registering_them(tmp_path):
 
     result = run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `供应商查询` -> `scripts/supplier_lookup.py`" in scripts_list
-    assert ".env" not in scripts_list
+    scripts_index = (target_root / "scripts" / "index.md").read_text(encoding="utf-8")
+    assert "| supplier_lookup | supplier_lookup | 供应商查询 | supplier_lookup.py |" in scripts_index
+    assert ".env" not in scripts_index
     assert (target_root / "scripts" / ".env").read_text(encoding="utf-8") == "API_TOKEN=demo-token\n"
     assert str(target_root / "scripts" / ".env") in result["scripts"]["files"]
 
@@ -513,9 +522,9 @@ def test_run_does_not_register_docstring_only_input_parameters(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `供应商查询` -> `scripts/supplier_lookup.py`" in scripts_list
-    assert "`parameters`" not in scripts_list
+    script_descriptor = (target_root / "scripts" / "supplier_lookup.md").read_text(encoding="utf-8")
+    assert "bound_operation: 供应商查询" in script_descriptor
+    assert "| 物料编号 |" not in script_descriptor
 
 
 def test_run_merges_docstring_business_names_with_cli_flags(tmp_path):
@@ -558,8 +567,7 @@ def test_run_merges_docstring_business_names_with_cli_flags(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert _script_parameters(scripts_list, "故障报修闭环") == [
+    assert _script_parameters(target_root, "故障报修闭环") == [
         {
             "name": "报修渠道",
             "flag": "--report_source",
@@ -614,8 +622,7 @@ def test_run_reads_docstring_usage_parameter_flags_without_argparse(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert _script_parameters(scripts_list, "故障派单") == [
+    assert _script_parameters(target_root, "故障派单") == [
         {
             "name": "报修单号",
             "flag": "--ticket-id",
@@ -647,7 +654,8 @@ def test_run_ignores_script_without_related_logic_for_catalog(tmp_path):
 
     result = run(source_root=source_root, target_root=target_root)
 
-    assert not (target_root / "scripts-list.md").exists()
+    assert (target_root / "scripts" / "index.md").is_file()
+    assert not (target_root / "scripts" / "supplier_lookup.md").exists()
     assert result["scripts"]["warnings"] == []
 
 
@@ -682,8 +690,7 @@ def test_run_falls_back_to_argparse_parameters(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert _script_parameters(scripts_list, "安装判断") == [
+    assert _script_parameters(target_root, "安装判断") == [
         {
             "name": "TargetItem编码",
             "flag": "--target_item-code",
@@ -741,10 +748,9 @@ def test_run_uses_script_mapping_comment_and_skips_private_helpers(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `供应商查询` -> `scripts/supplier_lookup.py`" in scripts_list
-    assert "`supplier_lookup`" not in scripts_list
-    assert "`_script_common`" not in scripts_list
+    scripts_index = (target_root / "scripts" / "index.md").read_text(encoding="utf-8")
+    assert "| supplier_lookup | supplier_lookup | 供应商查询 | supplier_lookup.py |" in scripts_index
+    assert "_script_common" not in scripts_index
     assert (target_root / "scripts" / "supplier_lookup.py").read_text(
         encoding="utf-8"
     ).startswith("# 工具流程: 供应商查询")
@@ -769,9 +775,9 @@ def test_run_copies_action_env_files_without_registering_them(tmp_path):
 
     result = run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `供应商查询` -> `scripts/supplier_lookup.py`" in scripts_list
-    assert ".env" not in scripts_list
+    scripts_index = (target_root / "scripts" / "index.md").read_text(encoding="utf-8")
+    assert "| supplier_lookup | supplier_lookup | 供应商查询 | supplier_lookup.py |" in scripts_index
+    assert ".env" not in scripts_index
     assert (target_root / "scripts" / ".env").read_text(encoding="utf-8") == "API_TOKEN=demo-token\n"
     assert str(target_root / "scripts" / ".env") in result["scripts"]["files"]
 
@@ -799,8 +805,7 @@ def test_run_uses_structured_script_parameter_comment(tmp_path):
 
     run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
-    assert _script_parameters(scripts_list, "供应商查询") == [
+    assert _script_parameters(target_root, "供应商查询") == [
         {
             "name": "物料编号",
             "flag": "--material-code",
@@ -841,9 +846,8 @@ def test_run_uses_yaml_script_parameter_comment_block(tmp_path):
 
     result = run(source_root=source_root, target_root=target_root)
 
-    scripts_list = (target_root / "scripts-list.md").read_text(encoding="utf-8")
     assert result["scripts"]["warnings"] == []
-    assert _script_parameters(scripts_list, "供应商查询") == [
+    assert _script_parameters(target_root, "供应商查询") == [
         {
             "name": "物料编号",
             "flag": "--material-code",

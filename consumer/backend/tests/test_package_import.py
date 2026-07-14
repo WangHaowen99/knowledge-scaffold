@@ -1,12 +1,13 @@
-"""Tests for ontology package import-boundary normalization."""
+"""Tests for the v0.1-only ontology import boundary."""
 
 from __future__ import annotations
 
 import os
 
 import pytest
+import yaml
 
-from ontology.ontology_catalog import find_script_entry, parse_script_catalog
+from ontology.ontology_catalog import find_script_entry, load_script_catalog
 from ontology.package_import import inspect_importable_package, normalize_imported_package
 
 
@@ -15,7 +16,7 @@ kind: ontology-package
 schema_version: 0.1
 id: example-demo
 name: Example Demo
-description: Legacy package for import tests
+description: Package for import tests
 version: 1.2.3
 language: zh-CN
 """
@@ -56,11 +57,31 @@ bound_operation: QueryPart
     )
 
 
-def test_inspect_importable_package_accepts_v01_without_relaxing_runtime_manifest(tmp_path):
+def _write_legacy_package(root):
+    (root / "objects").mkdir(parents=True)
+    (root / "operations").mkdir()
+    (root / "scripts").mkdir()
+    (root / "manifest.yaml").write_text(
+        V01_MANIFEST.replace("kind: ontology-package\nschema_version: 0.1\n", "kind: ontology\n"),
+        encoding="utf-8",
+    )
+    (root / "ONTOLOGY.md").write_text("# Legacy Example\n", encoding="utf-8")
+    (root / "objects-list.md").write_text("| key | title |\n| --- | --- |\n| Part | Part |\n", encoding="utf-8")
+    (root / "operations-list.md").write_text(
+        "| key | title |\n| --- | --- |\n| QueryPart | Query part |\n",
+        encoding="utf-8",
+    )
+    (root / "scripts" / "query_part.py").write_text("print('ok')\n", encoding="utf-8")
+    (root / "scripts-list.md").write_text(
+        "- `QueryPart` -> `scripts/query_part.py`\n"
+        "  `parameters`: `[{\"name\":\"part_code\",\"flag\":\"--part-code\",\"required\":true,\"type\":\"string\"}]`\n",
+        encoding="utf-8",
+    )
+
+
+def test_inspect_importable_package_accepts_v01(tmp_path):
     _write_v01_package(tmp_path)
-
     package = inspect_importable_package(tmp_path)
-
     assert package is not None
     assert package.ontology_id == "example-demo"
     assert package.version == "1.2.3"
@@ -76,7 +97,6 @@ def test_inspect_importable_package_rejects_unsupported_v01_schema(tmp_path, sch
     else:
         manifest = manifest.replace("schema_version: 0.1", "schema_version: {}".format(schema_version))
     (tmp_path / "manifest.yaml").write_text(manifest, encoding="utf-8")
-
     assert inspect_importable_package(tmp_path) is None
 
 
@@ -86,36 +106,56 @@ def test_inspect_importable_package_accepts_v01_without_recommended_language(tmp
         V01_MANIFEST.replace("language: zh-CN\n", ""),
         encoding="utf-8",
     )
-
     package = inspect_importable_package(tmp_path)
-
     assert package is not None
     assert package.source_format == "v0.1"
 
 
-def test_normalize_v01_package_generates_current_catalogs_and_script_mapping(tmp_path):
+def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"
     _write_v01_package(source)
+    (source / "objects-list.md").write_text("must disappear\n", encoding="utf-8")
 
     result = normalize_imported_package(source, target)
 
-    assert result.generated_files == (
-        "objects-list.md",
-        "operations-list.md",
-        "ONTOLOGY.md",
-        "scripts-list.md",
-    )
     assert result.warnings == ()
-    assert (target / "ONTOLOGY.md").read_text(encoding="utf-8") == "# Example domain\n"
-    assert (target / "objects-list.md").read_text(encoding="utf-8").startswith("| object key")
-    assert (target / "operations-list.md").read_text(encoding="utf-8").startswith("| operation key")
+    assert not list(target.glob("*-list.md"))
+    assert not (target / "ONTOLOGY.md").exists()
+    for relative in (
+        "index.md",
+        "objects/index.md",
+        "operations/index.md",
+        "rules/index.md",
+        "metrics/index.md",
+        "scripts/index.md",
+        "mappings/object-data-mappings.json",
+    ):
+        assert (target / relative).is_file()
 
-    catalog = parse_script_catalog(
-        (target / "scripts-list.md").read_text(encoding="utf-8"),
-        ontology_dir=target,
-    )
-    entry = find_script_entry(catalog, "QueryPart")
+    entry = find_script_entry(load_script_catalog(target), "QueryPart")
+    assert entry is not None
+    assert entry["_script_path"] == "scripts/query_part.py"
+    assert entry["parameters"][0]["name"] == "part_code"
+
+
+def test_normalize_legacy_package_converts_lists_and_script_mapping_once(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_legacy_package(source)
+
+    result = normalize_imported_package(source, target)
+
+    assert result.warnings == ()
+    manifest = yaml.safe_load((target / "manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["kind"] == "ontology-package"
+    assert str(manifest["schema_version"]) == "0.1"
+    assert "Legacy Example" in (target / "index.md").read_text(encoding="utf-8")
+    assert "QueryPart" in (target / "operations" / "index.md").read_text(encoding="utf-8")
+    assert not list(target.glob("*-list.md"))
+    assert not (target / "ONTOLOGY.md").exists()
+
+    entry = find_script_entry(load_script_catalog(target), "QueryPart")
     assert entry is not None
     assert entry["_script_path"] == "scripts/query_part.py"
     assert entry["parameters"] == [
@@ -125,45 +165,24 @@ def test_normalize_v01_package_generates_current_catalogs_and_script_mapping(tmp
             "required": True,
             "type": "string",
             "multiple": False,
-            "description": "Part code",
-            "aliases": ["code", "part"],
         }
     ]
 
 
-def test_normalize_current_package_preserves_existing_catalogs(tmp_path):
+def test_normalize_legacy_package_warns_for_unsafe_script_path(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"
-    source.mkdir()
-    (source / "manifest.yaml").write_text(
-        V01_MANIFEST.replace("ontology-package", "ontology"),
-        encoding="utf-8",
-    )
-    (source / "objects-list.md").write_text("custom objects\n", encoding="utf-8")
-    (source / "operations-list.md").write_text("custom operations\n", encoding="utf-8")
-    (source / "scripts-list.md").write_text("custom scripts\n", encoding="utf-8")
-
-    result = normalize_imported_package(source, target)
-
-    assert result.generated_files == ()
-    assert (target / "objects-list.md").read_text(encoding="utf-8") == "custom objects\n"
-    assert (target / "operations-list.md").read_text(encoding="utf-8") == "custom operations\n"
-    assert (target / "scripts-list.md").read_text(encoding="utf-8") == "custom scripts\n"
-
-
-def test_normalize_rejects_unsafe_script_entrypoint(tmp_path):
-    source = tmp_path / "source"
-    target = tmp_path / "normalized"
-    _write_v01_package(source)
-    (source / "scripts" / "query_part.md").write_text(
-        "---\nbound_operation: QueryPart\nentrypoint: ../secret.py\n---\n",
+    _write_legacy_package(source)
+    (source / "scripts-list.md").write_text(
+        "- `QueryPart` -> `../secret.py`\n",
         encoding="utf-8",
     )
 
     result = normalize_imported_package(source, target)
 
-    assert not (target / "scripts-list.md").exists()
-    assert result.warnings == ("Rejected unsafe script entrypoint in 'query_part.md'",)
+    assert result.warnings == ("Skipped unsafe or missing legacy script: ../secret.py",)
+    assert not (target / "scripts" / "query_part.md").exists()
+    assert (target / "scripts" / "index.md").is_file()
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlink unavailable")
@@ -172,6 +191,5 @@ def test_normalize_rejects_symbolic_links(tmp_path):
     target = tmp_path / "normalized"
     _write_v01_package(source)
     (source / "linked.py").symlink_to(source / "scripts" / "query_part.py")
-
     with pytest.raises(ValueError, match="symbolic links"):
         normalize_imported_package(source, target)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -35,11 +34,6 @@ ASSET_TEXT_EXTENSIONS = {
 }
 ASSET_TEXT_FILENAMES = {".env"}
 ASSET_MAX_READ_BYTES = 512_000
-
-_SCRIPT_ENTRY_PATTERN = re.compile(r"^-\s*`([^`]+)`\s*->\s*`([^`]+)`\s*$")
-_SCRIPT_ARGS_PATTERN = re.compile(r"`args`\s*:\s*`([^`]+)`")
-_SCRIPT_PARAMETERS_PATTERN = re.compile(r"`(?:parameters|params)`\s*:\s*`([^`]+)`")
-
 
 def split_markdown_frontmatter(markdown: str) -> Tuple[Dict[str, Any], str]:
     text = str(markdown or "")
@@ -207,57 +201,10 @@ def parse_markdown_table(markdown: str) -> List[Dict[str, str]]:
     return rows
 
 
-def parse_script_catalog(markdown: str, *, ontology_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
-    catalog: List[Dict[str, Any]] = []
-    pending: Optional[Dict[str, Any]] = None
-    for raw_line in str(markdown or "").splitlines():
-        line = raw_line.strip()
-        entry_match = _SCRIPT_ENTRY_PATTERN.match(line)
-        if entry_match:
-            raw_path = entry_match.group(2).strip()
-            pending = {
-                "operation_key": entry_match.group(1).strip(),
-                "arguments": [],
-                "parameters": [],
-                "_script_path": raw_path,
-                "_is_bound_operation": True,
-            }
-            if ontology_dir is not None:
-                pending["_resolved_script_path"] = str((ontology_dir / raw_path).resolve())
-            catalog.append(pending)
-            continue
-
-        if pending is None:
-            continue
-
-        parameters_match = _SCRIPT_PARAMETERS_PATTERN.search(line)
-        args_match = _SCRIPT_ARGS_PATTERN.search(line)
-        if not parameters_match and not args_match:
-            continue
-
-        raw_args = (parameters_match or args_match).group(1).strip()
-        try:
-            parsed = json.loads(raw_args)
-        except json.JSONDecodeError:
-            pending["arguments"] = []
-            pending["parameters"] = []
-            pending = None
-            continue
-
-        if parameters_match:
-            pending["parameters"] = _normalize_script_parameters(parsed)
-        elif isinstance(parsed, list):
-            pending["arguments"] = [str(item) for item in parsed if item is not None]
-            pending["parameters"] = _legacy_args_to_parameters(pending["arguments"])
-        pending = None
-    return catalog
-
-
 def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
-    """Load v0.1 script descriptors first, then fill gaps from scripts-list.md."""
+    """Load executable script metadata from v0.1 ``scripts/*.md`` descriptors."""
     catalog: List[Dict[str, Any]] = []
     seen: Set[str] = set()
-    bound_operations: Set[str] = set()
 
     scripts_dir = ontology_dir / "scripts"
     if scripts_dir.is_dir():
@@ -272,24 +219,6 @@ def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
                 continue
             seen.add(key)
             catalog.append(entry)
-            if entry.get("_is_bound_operation"):
-                operation_key = str(entry.get("operation_key") or "").strip()
-                if operation_key:
-                    bound_operations.add(operation_key)
-
-    legacy_entries = parse_script_catalog(
-        read_optional_text(ontology_dir / "scripts-list.md"),
-        ontology_dir=ontology_dir,
-    )
-    for entry in legacy_entries:
-        operation_key = str(entry.get("operation_key") or "").strip()
-        if operation_key and operation_key in bound_operations:
-            continue
-        key = _script_entry_dedupe_key(entry)
-        if key in seen:
-            continue
-        seen.add(key)
-        catalog.append(entry)
 
     return catalog
 
@@ -447,33 +376,6 @@ def _normalize_script_parameters(value: Any) -> List[Dict[str, Any]]:
     return parameters
 
 
-def _legacy_args_to_parameters(args: List[str]) -> List[Dict[str, Any]]:
-    parameters: List[Dict[str, Any]] = []
-    index = 0
-    while index < len(args):
-        item = str(args[index] or "").strip()
-        if not item.startswith("--"):
-            index += 1
-            continue
-
-        placeholder = str(args[index + 1] or "").strip() if index + 1 < len(args) else ""
-        name = _placeholder_name(placeholder) or _name_from_flag(item) or "arg_{}".format(
-            len(parameters) + 1
-        )
-        parameter: Dict[str, Any] = {
-            "name": name,
-            "flag": item,
-            "required": bool(_placeholder_name(placeholder)),
-            "type": "string",
-            "multiple": False,
-        }
-        if _placeholder_name(placeholder):
-            parameter["description"] = _placeholder_name(placeholder)
-        parameters.append(parameter)
-        index += 2 if placeholder and not placeholder.startswith("--") else 1
-    return parameters
-
-
 def _public_script_parameters(parameters: Any) -> List[Dict[str, Any]]:
     public: List[Dict[str, Any]] = []
     if not isinstance(parameters, list):
@@ -504,13 +406,6 @@ def _public_script_parameters(parameters: Any) -> List[Dict[str, Any]]:
                 parameter["aliases"] = clean_aliases
         public.append(parameter)
     return public
-
-
-def _placeholder_name(value: str) -> str:
-    text = str(value or "").strip()
-    if text.startswith("<") and text.endswith(">"):
-        return text[1:-1].strip()
-    return ""
 
 
 def _name_from_flag(value: str) -> str:
@@ -544,12 +439,8 @@ def find_script_entry(catalog: List[Dict[str, Any]], operation_key: str) -> Opti
 
 def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dict[str, Any]:
     root_index_text = read_optional_text(ontology_dir / "index.md")
-    operations_text = read_optional_text(ontology_dir / "operations" / "index.md") or read_optional_text(
-        ontology_dir / "operations-list.md"
-    )
-    objects_text = read_optional_text(ontology_dir / "objects" / "index.md") or read_optional_text(
-        ontology_dir / "objects-list.md"
-    )
+    operations_text = read_optional_text(ontology_dir / "operations" / "index.md")
+    objects_text = read_optional_text(ontology_dir / "objects" / "index.md")
     rules_text = read_optional_text(ontology_dir / "rules" / "index.md")
     metrics_text = read_optional_text(ontology_dir / "metrics" / "index.md")
     script_catalog = load_script_catalog(ontology_dir)
@@ -727,17 +618,20 @@ def find_markdown_file(directory: Path, key: str, resource_name: str) -> Tuple[O
         candidate.relative_to(directory.resolve())
     except ValueError:
         return None, "Error: Invalid {} key.".format(resource_name)
-    if candidate.exists() and candidate.is_file():
+    if candidate.name.lower() != "index.md" and candidate.exists() and candidate.is_file():
         return candidate, None
 
     if directory.is_dir():
         for path in sorted(directory.glob("*.md"), key=lambda item: item.name.lower()):
+            if path.name.lower() == "index.md":
+                continue
             frontmatter = read_markdown_frontmatter(path)
             candidates = {
                 str(frontmatter.get("key") or "").strip(),
                 str(frontmatter.get("canonical_key") or "").strip(),
                 str(frontmatter.get("title") or "").strip(),
                 path.stem,
+                path.name,
             }
             aliases = frontmatter.get("aliases")
             if isinstance(aliases, list):
@@ -745,7 +639,11 @@ def find_markdown_file(directory: Path, key: str, resource_name: str) -> Tuple[O
             if normalized_key in {candidate for candidate in candidates if candidate}:
                 return path, None
 
-    available = sorted(_markdown_available_key(path) for path in directory.glob("*.md") if path.is_file())
+    available = sorted(
+        _markdown_available_key(path)
+        for path in directory.glob("*.md")
+        if path.is_file() and path.name.lower() != "index.md"
+    )
     suffix = " Available keys: {}.".format(", ".join(available[:30])) if available else ""
     return None, "Error: {} '{}' not found.{}".format(resource_name, normalized_key, suffix)
 

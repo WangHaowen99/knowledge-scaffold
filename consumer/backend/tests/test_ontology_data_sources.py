@@ -25,7 +25,8 @@ def _create_workspace_with_ontology(tmp_path, monkeypatch, *, ontology_id: str =
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 f"id: {ontology_id}",
                 "name: Demo Ontology",
                 "description: Demo ontology for data source storage",
@@ -45,7 +46,8 @@ def _create_ontology(paths, ontology_id: str) -> None:
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 f"id: {ontology_id}",
                 f"name: {ontology_id}",
                 "description: migrated ontology",

@@ -197,7 +197,7 @@ def test_ontology_optional_doc_no_longer_mentions_removed_hitl_tool():
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
-        / "ONTOLOGY.md"
+        / "index.md"
     )
 
     if not ontology_doc_path.exists():
@@ -208,29 +208,30 @@ def test_ontology_optional_doc_no_longer_mentions_removed_hitl_tool():
     assert removed_tool not in content
 
 
-def test_ontology_doc_and_scripts_list_document_script_first_tool_flows():
+def test_ontology_indexes_document_script_first_tool_flows():
     ontology_doc_path = (
         Path(__file__).resolve().parents[2]
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
-        / "ONTOLOGY.md"
+        / "index.md"
     )
-    scripts_list_path = (
+    scripts_index_path = (
         Path(__file__).resolve().parents[2]
         / ".onto-runtime"
         / "ontologies"
         / "example-domain-operations-manual"
-        / "scripts-list.md"
+        / "scripts"
+        / "index.md"
     )
 
-    if not ontology_doc_path.exists() or not scripts_list_path.exists():
+    if not ontology_doc_path.exists() or not scripts_index_path.exists():
         pytest.skip("Optional ontology doc fixture is not present")
 
     ontology_doc_content = ontology_doc_path.read_text(encoding="utf-8")
-    scripts_list_content = scripts_list_path.read_text(encoding="utf-8")
+    scripts_index_content = scripts_index_path.read_text(encoding="utf-8")
     assert "脚本优先规则" in ontology_doc_content
-    assert "scripts-list.md" in ontology_doc_content
+    assert "scripts/index.md" in ontology_doc_content
     assert "优先调用 `execute_script`" in ontology_doc_content
     assert "ontologies/example-domain-operations-manual/scripts/get_in_progress_flights.py" not in ontology_doc_content
-    assert "scripts/get_in_progress_flights.py" in scripts_list_content
+    assert "get_in_progress_flights" in scripts_index_content

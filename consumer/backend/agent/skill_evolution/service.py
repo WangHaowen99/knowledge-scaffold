@@ -182,11 +182,8 @@ def _strip_archive_root(path: str) -> str:
 
 
 def _collect_ops_files(version_dir: Path) -> Dict[str, str]:
-    """Read operations-list.md + operations/*.md under a version dir (for diff)."""
+    """Read operations/index.md + operation documents under a version dir."""
     out: Dict[str, str] = {}
-    ops_list = version_dir / "operations-list.md"
-    if ops_list.exists():
-        out["operations-list.md"] = ops_list.read_text(encoding="utf-8")
     ops_dir = version_dir / "operations"
     if ops_dir.is_dir():
         for f in sorted(ops_dir.glob("*.md")):
@@ -226,7 +223,7 @@ def _collect_version_files(version_dir: Path) -> Dict[str, bytes]:
 def _locate_evolved_root(extract_dir: Path) -> Path:
     """Find the ontology root inside the extracted artifact (has operations/)."""
     def has_ops(d: Path) -> bool:
-        return (d / "operations-list.md").exists() or (d / "operations").is_dir()
+        return (d / "operations" / "index.md").is_file()
 
     if has_ops(extract_dir):
         return extract_dir
@@ -732,7 +729,7 @@ class SkillEvolutionService:
         if baseline_path.exists():
             for member_path, content in _read_zip_members(baseline_path.read_bytes()).items():
                 rel = _strip_archive_root(member_path)
-                if rel == "operations-list.md" or rel.startswith(_EVOLVED_OPS_RELPREFIX):
+                if rel.startswith(_EVOLVED_OPS_RELPREFIX):
                     baseline_files[rel] = content
 
         temp_dir = self._store.temp_path(record.workspace_id, record.task_id)

@@ -1590,9 +1590,9 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
         "agent.core.shared.ontology_context.build_selected_ontology_preload_records",
         lambda *args, **kwargs: [
             {
-                "path": "ontologies/demo/objects-list.md",
-                "normalized_path": "ontologies/demo/objects-list.md",
-                "doc_type": "objects_list",
+                "path": "ontologies/demo/objects/index.md",
+                "normalized_path": "ontologies/demo/objects/index.md",
+                "doc_type": "objects_index",
                 "ontology_id": "demo",
                 "source": "preload",
                 "turn_id": 12,
@@ -1681,9 +1681,9 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
 
     final_state = engine.run(state, caller="main")
 
-    assert final_state["read_documents"]["by_path"]["ontologies/demo/objects-list.md"]["source"] == "preload"
-    assert final_state["read_documents"]["recent_paths"] == ["ontologies/demo/objects-list.md"]
-    assert observed["tool_context_read_documents"]["by_path"]["ontologies/demo/objects-list.md"]["source"] == "preload"
+    assert final_state["read_documents"]["by_path"]["ontologies/demo/objects/index.md"]["source"] == "preload"
+    assert final_state["read_documents"]["recent_paths"] == ["ontologies/demo/objects/index.md"]
+    assert observed["tool_context_read_documents"]["by_path"]["ontologies/demo/objects/index.md"]["source"] == "preload"
     assert final_state["final_output"] == "done"
 
 

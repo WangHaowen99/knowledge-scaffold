@@ -13,7 +13,8 @@ def _write_ontology(tmp_path, payload=None):
     (version_dir / "mappings").mkdir(parents=True)
     (workspace_root / "demo-ontology" / "manifest.yaml").write_text(
         "\n".join([
-            "kind: ontology",
+            "kind: ontology-package",
+            "schema_version: 0.1",
             "id: demo-ontology",
             "name: Demo Ontology",
             "description: Demo",
