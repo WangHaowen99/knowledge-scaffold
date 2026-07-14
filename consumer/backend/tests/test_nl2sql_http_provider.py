@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from agentic.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
-from agentic.business_data.providers.nl2sql_http_provider import NL2SQLHttpProvider
-from agentic.services.data_provider_client import DataProviderClient
-from agentic.services.nl2sql import NL2SQLClient, NL2SQLError
+from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
+from agent.tools.business_data.providers.nl2sql_http_provider import NL2SQLHttpProvider
+from agent.tools.business_data.providers.clients.data_provider_client import DataProviderClient
+from agent.tools.business_data.providers.clients.nl2sql import NL2SQLClient, NL2SQLError
 
 
 def _config() -> dict:
@@ -189,10 +189,10 @@ def test_nl2sql_client_requires_script_injected_connection(monkeypatch):
         pytest.fail("legacy system_config fallback was used")
 
     monkeypatch.setattr(
-        "agentic.services.nl2sql.load_system_config",
+        "agent.tools.business_data.providers.clients.nl2sql.load_system_config",
         _fail_on_legacy_system_config,
         raising=False,
     )
 
-    with pytest.raises(NL2SQLError, match="business data connection"):
+    with pytest.raises(NL2SQLError, match="business data source"):
         NL2SQLClient()

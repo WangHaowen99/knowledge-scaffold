@@ -17,6 +17,10 @@ CURRENT_FAILED_VERSION="${CURRENT_VERSION:-unknown}"
 FAILED_BACKEND_IMAGE="${CURRENT_BACKEND_IMAGE:-}"
 FAILED_FRONTEND_IMAGE="${CURRENT_FRONTEND_IMAGE:-}"
 FAILED_AUTH_IMAGE="${CURRENT_AUTH_IMAGE:-}"
+
+log "Stopping failed release writes before failsafe backup and restore"
+compose_down "${FAILED_BACKEND_IMAGE}" "${FAILED_FRONTEND_IMAGE}" "${FAILED_AUTH_IMAGE}"
+
 FAILSAFE_BACKUP="$("${SCRIPT_DIR}/backup.sh" "rollback-${PREVIOUS_VERSION}" "${CURRENT_FAILED_VERSION}")"
 log "Captured current state before rollback at ${FAILSAFE_BACKUP}"
 
@@ -29,9 +33,15 @@ restore_archive_if_present() {
 
 restore_archive_if_present "${LAST_BACKUP_DIR}/backend-env.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/frontend-env.tar.gz"
-restore_archive_if_present "${LAST_BACKUP_DIR}/backend-data.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/backend-logs.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/frontend-logs.tar.gz"
+
+if [ -f "${LAST_BACKUP_DIR}/onto-runtime.tar.gz" ]; then
+    rm -rf "${BUNDLE_ROOT}/.onto-runtime"
+fi
+if [ -f "${LAST_BACKUP_DIR}/onto-auth.tar.gz" ]; then
+    rm -rf "${BUNDLE_ROOT}/.onto-auth"
+fi
 restore_archive_if_present "${LAST_BACKUP_DIR}/onto-runtime.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/onto-auth.tar.gz"
 

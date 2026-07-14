@@ -7,12 +7,15 @@ owner/members 管理端点权限、以及无 owner 字段旧数据的兼容性�
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask
+import pytest
 
-from agentic.routes.skills import skills_bp
-from agentic.routes.workspaces import workspaces_bp
-from agentic.services.auth import AuthManager
+from api.auth.auth import AuthManager, AuthUser
+from api.routes.skills import skills_bp
+from api.routes.workspaces import workspaces_bp
 
 
 FORBIDDEN_BODY = {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
@@ -22,7 +25,7 @@ def _build_env(tmp_path, monkeypatch):
     """构造带 admin/alice/bob 三个用户的测试 app（workspaces + skills 蓝图）。"""
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
 
-    from agentic.utils import skills as skills_module
+    from utils import skills as skills_module
 
     monkeypatch.setattr(skills_module, "_global_registry", None)
 
@@ -461,6 +464,59 @@ def test_put_members_on_missing_workspace_404(tmp_path, monkeypatch):
         headers=headers["admin"],
     )
     assert response.status_code == 404
+
+
+def test_owner_transfer_and_former_owner_update_are_one_serializable_transaction(
+    tmp_path,
+    monkeypatch,
+):
+    """Owner transfer wins the lock first; the former owner must re-read and fail."""
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    import workspace.workspaces as workspace_module
+
+    entered_transfer = threading.Event()
+    release_transfer = threading.Event()
+    original_update_locked = workspace_module._update_workspace_locked
+
+    def blocking_update_locked(workspace_id, **fields):
+        if fields.get("owner") == "carol":
+            entered_transfer.set()
+            assert release_transfer.wait(timeout=5)
+        return original_update_locked(workspace_id, **fields)
+
+    monkeypatch.setattr(
+        workspace_module,
+        "_update_workspace_locked",
+        blocking_update_locked,
+    )
+    admin = AuthUser(username="admin", role="admin")
+    alice = AuthUser(username="alice", role="user")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        transfer_future = executor.submit(
+            workspace_module.update_workspace_authorized,
+            "alice-ws",
+            admin,
+            owner="carol",
+        )
+        assert entered_transfer.wait(timeout=5)
+        former_owner_future = executor.submit(
+            workspace_module.update_workspace_authorized,
+            "alice-ws",
+            alice,
+            name="stale-owner-write",
+        )
+        assert not former_owner_future.done()
+        release_transfer.set()
+        assert transfer_future.result(timeout=5)["owner"] == "carol"
+        with pytest.raises(workspace_module.WorkspaceAuthorizationError):
+            former_owner_future.result(timeout=5)
+
+    workspace = workspace_module.get_workspace("alice-ws")
+    assert workspace["owner"] == "carol"
+    assert workspace["name"] == "Alice WS"
 
 
 def test_runtime_config_get_enforces_access(tmp_path, monkeypatch):

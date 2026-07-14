@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentic.config import AgentConfig
-from agentic.exceptions import WorkflowCancelledError
-from agentic.tools.base import ToolContext
-from agentic.tools.spawn_sub_agent import SpawnSubAgentTool
-from agentic.workspaces import create_workspace, get_workspace_paths
+from agent.exceptions import WorkflowCancelledError
+from agent.tools.base import ToolContext
+from agent.tools.spawn_sub_agent import SpawnSubAgentTool
+from config import AgentConfig
+from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _agent_config(**overrides):
@@ -38,7 +38,6 @@ def _make_context(**overrides) -> ToolContext:
         run_id="run-subagents",
         session_id="sess-subagents",
         turn_id=1,
-        ov_session_id=None,
         agent_config=_agent_config(),
         caller="main",
         project_root=None,
@@ -69,7 +68,7 @@ class _FakeSubAgent:
 
 
 def _patch_subagent(monkeypatch, handler):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     def factory():
         return _FakeSubAgent(handler)
@@ -78,7 +77,7 @@ def _patch_subagent(monkeypatch, handler):
 
 
 def test_spawn_sub_agent_batch_returns_group_payload(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
 
@@ -114,7 +113,7 @@ def test_spawn_sub_agent_batch_returns_group_payload(monkeypatch):
 
 
 def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
     captured_kwargs = {}
@@ -137,7 +136,10 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
                 {"id": "t1", "task": "delegate nested fan-out"},
             ]
         },
-        context=_make_context(agent_mode="multi_agent", model_profile_id="accurate"),
+        context=_make_context(
+            agent_mode="multi_agent",
+            model_profile_id="accurate",
+        ),
         tool_call_id="call_spawn_mode",
     )
 
@@ -147,13 +149,16 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
     assert captured_kwargs["parent_model_profile_id"] == "accurate"
 
 
-def test_sub_agent_uses_jiuwen_loop_engine_directly(monkeypatch):
-    from agentic.sub_agents.base import SubAgent
+def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
+    from agent.sub_agents.base import SubAgent
 
     agent_config = _agent_config()
     calls = {}
 
     class FakeLoopEngine:
+        def __init__(self, **kwargs):
+            calls["engine_kwargs"] = kwargs
+
         def run(self, state, **kwargs):
             calls["state"] = state
             calls["run_kwargs"] = kwargs
@@ -163,20 +168,13 @@ def test_sub_agent_uses_jiuwen_loop_engine_directly(monkeypatch):
                 "messages": [{"role": "assistant", "content": "child result"}],
             }
 
-    class FakeJiuwenLoopEngine:
-        def __init__(self, **kwargs):
-            calls["engine_kwargs"] = kwargs
-
-        def run(self, state, **kwargs):
-            return FakeLoopEngine().run(state, **kwargs)
-
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.JiuwenReactLoopEngine", FakeJiuwenLoopEngine)
+    monkeypatch.setattr("agent.core.engine.AgentLoopEngine", FakeLoopEngine)
     monkeypatch.setattr(
-        "agentic.sub_agents.base.get_llm_router",
+        "agent.sub_agents.base.get_llm_router",
         lambda: SimpleNamespace(agent_config=agent_config),
     )
-    monkeypatch.setattr("agentic.sub_agents.base.build_ontologies_section", lambda: "")
-    monkeypatch.setattr("agentic.sub_agents.base.build_skills_section", lambda: "")
+    monkeypatch.setattr("agent.sub_agents.base.build_ontologies_section", lambda: "")
+    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda: "")
 
     result = SubAgent().execute(
         "child task",
@@ -191,6 +189,7 @@ def test_sub_agent_uses_jiuwen_loop_engine_directly(monkeypatch):
     assert result["output"] == "child result"
     assert calls["engine_kwargs"] == {"agent_config": agent_config}
     assert calls["run_kwargs"]["caller"] == "subagent"
+    assert calls["state"]["subagent_id"].startswith("sub_")
     assert calls["state"]["user_context"] == {
         "agent_mode": "thinking",
         "model_profile_id": "accurate",
@@ -198,8 +197,8 @@ def test_sub_agent_uses_jiuwen_loop_engine_directly(monkeypatch):
 
 
 def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_path):
-    from agentic.sub_agents import manager as manager_module
-    from agentic.utils import ontologies as ontologies_module
+    from agent.sub_agents import manager as manager_module
+    from ontology import ontologies as ontologies_module
 
     manager_module.clear_subagent_manager_registry()
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, workspace_id="spawnctx")
@@ -209,7 +208,8 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
     (ontology_dir / "scripts").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for spawn-sub-agent tests\n"
@@ -218,22 +218,28 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "operations-list.md").write_text("- demo-tool\n- child-tool\n", encoding="utf-8")
-    (ontology_dir / "objects-list.md").write_text("- demo-object\n", encoding="utf-8")
-    (ontology_dir / "scripts-list.md").write_text(
-        "\n".join(
-            [
-                "## 脚本映射",
-                "- `demo-tool` -> `scripts/demo_tool.py`",
-                "  `args`: `[\"--demo-id\", \"<Demo编号>\"]`",
-                "- `child-tool` -> `scripts/child_tool.py`",
-                "  `args`: `[\"--child-id\", \"<Child编号>\"]`",
-                "- `shared-helper` -> `scripts/shared_helper.py`",
-                "  `args`: `[\"--helper-id\", \"<Helper编号>\"]`",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    (ontology_dir / "operations" / "index.md").write_text("- demo-tool\n- child-tool\n", encoding="utf-8")
+    (ontology_dir / "objects" / "index.md").write_text("- demo-object\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    for key, operation_key, argument in (
+        ("demo_tool", "demo-tool", "Demo编号"),
+        ("child_tool", "child-tool", "Child编号"),
+        ("shared_helper", "shared-helper", "Helper编号"),
+    ):
+        (ontology_dir / "scripts" / "{}.md".format(key)).write_text(
+            "---\nresource: script\nkey: {}\nbound_operation: {}\nentrypoint: {}.py\n---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| {} | --{}-id | string | 是 | {} |\n".format(
+                key,
+                operation_key,
+                key,
+                argument,
+                key.split("_")[0],
+                argument,
+            ),
+            encoding="utf-8",
+        )
     (ontology_dir / "operations" / "demo-tool.md").write_text(
         "# 管理标签\n#工具流程\n",
         encoding="utf-8",
@@ -287,7 +293,7 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
 
 
 def test_spawn_sub_agent_rejects_missing_tasks(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
     _patch_subagent(monkeypatch, lambda task, context, **kwargs: {})
@@ -304,7 +310,7 @@ def test_spawn_sub_agent_rejects_missing_tasks(monkeypatch):
 
 
 def test_spawn_sub_agent_batch_respects_global_concurrency_cap(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
 
@@ -350,7 +356,7 @@ def test_spawn_sub_agent_batch_respects_global_concurrency_cap(monkeypatch):
 
 
 def test_spawn_sub_agent_depth_limit_is_enforced(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
     _patch_subagent(monkeypatch, lambda task, context, **kwargs: {})
@@ -376,7 +382,7 @@ def test_spawn_sub_agent_depth_limit_is_enforced(monkeypatch):
 
 
 def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
     nested_config = _agent_config(sub_agent_max_concurrency=1)
@@ -434,9 +440,8 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     assert max_running == 1
 
 
-
 def test_spawn_sub_agent_propagates_workflow_cancellation(monkeypatch):
-    from agentic.sub_agents import manager as manager_module
+    from agent.sub_agents import manager as manager_module
 
     manager_module.clear_subagent_manager_registry()
 
@@ -449,11 +454,19 @@ def test_spawn_sub_agent_propagates_workflow_cancellation(monkeypatch):
 
     _patch_subagent(monkeypatch, handler)
 
+    events = []
     tool = SpawnSubAgentTool()
 
     with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
         tool.execute(
             args={"tasks": [{"id": "cancelled-task", "task": "stop now"}]},
-            context=_make_context(),
+            context=_make_context(
+                event_emitter=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                )
+            ),
             tool_call_id="call_spawn_cancelled",
         )
+
+    assert events[-1][0] == "subagent_group.finished"
+    assert events[-1][1]["status"] == "cancelled"

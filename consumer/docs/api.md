@@ -19,6 +19,9 @@ Base URL: `http://localhost:5055`
 以下端点为**公开接口**：
 
 - `POST /auth/login`
+- `POST /auth/register`（仅开启注册时）
+- `POST /auth/refresh`
+- `POST /auth/logout`
 - `GET /health`
 - `GET /.well-known/a2a/agent-card.json`
 - `GET /acp/agent`
@@ -43,7 +46,8 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
   - `POST /agentic/ontologies/{ontology_id}/upload`
   - `POST /agentic/ontologies/import-zip`
   - `POST /agentic/workspaces`
-  - `PATCH /agentic/workspaces/{workspace_id}`
+  - `PATCH /agentic/workspaces/{workspace_id}`（全局 admin 可转移 owner；workspace owner 可改名称和描述）
+  - `PUT /agentic/workspaces/{workspace_id}/members`（全局 admin 或 workspace owner）
   - `DELETE /agentic/workspaces/{workspace_id}`
   - `POST /agentic/workspaces/{workspace_id}/default`
   - `PATCH /agentic/workspaces/{workspace_id}/runtime-config`
@@ -143,7 +147,7 @@ X-Accel-Buffering: no
 
 ### 2.1 `POST /auth/login`
 
-使用用户名密码换取 token。
+使用用户名密码换取 RS256 access/refresh token 对。
 
 请求示例：
 
@@ -159,6 +163,8 @@ X-Accel-Buffering: no
 ```json
 {
   "token": "<signed-token>",
+  "refresh_token": "<refresh-token>",
+  "expires_in": 900,
   "user": {
     "username": "admin",
     "role": "admin",
@@ -175,9 +181,36 @@ X-Accel-Buffering: no
 
 说明：
 
-- 如果用户文件不存在，系统会自动生成默认开发用户：
-  - `admin / <REDACTED_INITIAL_PASSWORD>`
-- 默认 admin 首次登录后必须修改密码
+- `token` 是短期 access token，用于 `Authorization: Bearer`。
+- `refresh_token` 仅提交给 `/auth/refresh` 或 `/auth/logout`。浏览器应在受保护存储中保存并在 401 时做单次刷新，禁止写入日志或 URL。
+- 通用 Python/TypeScript SDK 只接收 access token，不持有 refresh token。
+- 首次空用户库会生成开发账号 `admin / <REDACTED_INITIAL_PASSWORD>`，该账号必须立即改密。
+
+### 2.1.1 `POST /auth/refresh`
+
+用 refresh token 轮换一对新 token。成功后必须丢弃旧 refresh token。
+
+```json
+{ "refresh_token": "<refresh-token>" }
+```
+
+响应 `200`：
+
+```json
+{ "token": "<new-access-token>", "refresh_token": "<new-refresh-token>", "expires_in": 900 }
+```
+
+过期、吊销或用户 `token_version` 已变化时返回 `401`。客户端应清除登录态并重新登录。
+
+### 2.1.2 `POST /auth/logout`
+
+吊销 refresh token，并使该用户此前签发的 token 版本失效：
+
+```json
+{ "refresh_token": "<refresh-token>" }
+```
+
+响应 `200`：`{ "success": true }`。
 
 ### 2.2 `GET /auth/me`
 
@@ -417,6 +450,7 @@ data: { ...agent-stream.v2 envelope... }
 - 如果提供的 `run_id` 已存在，系统**不会报错**，而是自动回退为一个新的 UUID
 - 未传 `agent_mode`、传空值或传未知值时，默认为 `quick`
 - 默认模式下 `llm_request_mode = stream`
+- 若并发槽已满，返回 `202 application/json`，包含 `run_id`、排队位置和 `status/events/cancel` 链接；客户端先轮询 status，再连接 events。
 
 响应 `400`：
 
@@ -443,7 +477,22 @@ data: { ...agent-stream.v2 envelope... }
 }
 ```
 
-### 3.2 `GET /agentic/runs/{run_id}/status`
+### 3.2 `GET /agentic/runs/{run_id}/events`
+
+连接或重连一个已进入执行态的 run。游标可通过任一形式传入；同时存在时优先使用 `Last-Event-ID`：
+
+```http
+GET /agentic/runs/run-123/events?after_seq=42
+Last-Event-ID: 42
+```
+
+响应为 `agent.v2` SSE，只回放 `seq > 42` 的事件，并继续推送后续事件。客户端必须在消费成功后保存 envelope 的 `seq`。
+
+- run 仍在队列中：`409`，响应包含 queue 和 links。
+- run 不属于当前用户/workspace：`404`。
+- 运行时内存回放窗口已释放：`410`；最终消息仍可从 session 读取。
+
+### 3.3 `GET /agentic/runs/{run_id}/status`
 
 查询 run 状态。
 
@@ -471,7 +520,7 @@ data: { ...agent-stream.v2 envelope... }
 
 - 仅 run 所属用户本人可查询
 
-### 3.3 `POST /agentic/runs/{run_id}/cancel`
+### 3.4 `POST /agentic/runs/{run_id}/cancel`
 
 取消一个运行中的 run。
 
@@ -503,7 +552,7 @@ data: { ...agent-stream.v2 envelope... }
 { "error": "Run not found" }
 ```
 
-### 3.4 `POST /agentic/runs/sync`
+### 3.5 `POST /agentic/runs/sync`
 
 同步（非流式）执行 agent 工作流，等待全部迭代完成后返回最终结果。
 
@@ -792,6 +841,29 @@ TPS 超限 `429`：
 
 本组接口只读取当前机器上由 `observability.mode=local` 写出的新 local perf JSONL schema。默认扫描最近 24 小时，最大扫描窗口为 7 天；当本地观测关闭、当前模式为 Langfuse、日志过期或日志文件被删除时，返回结果可能为空。
 
+底层 Trace 记录使用以下稳定 schema；`span_key`/`parent_key` 表达 run 内层级关系，回放和 local/Langfuse exporter 都保留该关系：
+
+```json
+{
+  "schema_version": 1,
+  "kind": "tool_call",
+  "event": "tool.finished",
+  "ts_ms": 1700000000000,
+  "run_id": "run-123",
+  "session_id": "session-123",
+  "turn_id": 1,
+  "span_key": "tool:call-1",
+  "parent_key": "tools:main:1",
+  "status": "success",
+  "caller": "main",
+  "iteration": 1,
+  "metrics": { "elapsed_ms": 35 },
+  "labels": { "tool_name": "business_data_search", "tool_call_id": "call-1" }
+}
+```
+
+请求可携带 W3C `traceparent: 00-<32 hex trace id>-<16 hex parent span id>-<flags>`。非法值返回 `400 INVALID_TRACEPARENT`；合法 trace id 用于关联外部 Trace，内部 span 仍以 `span_key`/`parent_key` 建树。
+
 #### `GET /agentic/sessions/{session_id}/performance`
 
 返回当前已认证用户可见会话的性能摘要、轮次趋势、run 列表和读取诊断。
@@ -954,7 +1026,7 @@ Ontologies 也按工作空间隔离。
       "version": "1.0.0",
       "language": "zh-CN",
       "manifest_path": "/abs/path/.../manifest.yaml",
-      "ontology_md_path": "/abs/path/.../ONTOLOGY.md",
+      "index_path": "/abs/path/.../index.md",
       "business_data": {
         "connection_id": "example-nl2sql",
         "connection_name": "示例制造 NL2SQL",
@@ -1168,9 +1240,10 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 - 仅支持 `.zip`
 - 支持两类上传包：
   - 源格式包：需能识别出有效源目录（包含 `object` 与 `logic`），服务端会自动转换成 ontology 格式
-  - 已转换 ontology 包：需包含有效 `manifest.yaml`，并带有 `objects/`、`operations/`、`objects-list.md`、`operations-list.md` 中的任意部分
+  - v0.1 ontology 包：`manifest.yaml` 声明 `kind: ontology-package`、`schema_version: 0.1`，目录清单使用各目录的 `index.md`
 - 源格式包会优先从 `SKILL.md` frontmatter 读取 `id` / `name` / `description`
-- 源格式包如果额外包含 `action/` 目录，会复制其中 Python 脚本和 `.env` 文件到目标 `scripts/` 目录，并根据 Python 脚本生成 `scripts-list.md`；脚本顶部可用 `# 工具流程: <操作名>` 声明对应的 `logic/<操作名>.md`，未声明时退回使用脚本名作为 key；脚本参数优先读取顶部 `parameters` / `参数` 注释，未声明时静态解析 `argparse.add_argument(...)`；下划线开头的 helper 和 `.env` 只复制不注册
+- 源格式包如果额外包含 `action/` 目录，会复制其中 Python 脚本和 `.env` 文件到目标 `scripts/`，并生成 `scripts/index.md` 与 `scripts/<key>.md` 描述文件；脚本顶部可用 `# 工具流程: <操作名>` 声明对应的 `logic/<操作名>.md`
+- 迁移期旧格式包会在导入边界一次性转换；安装目录不生成或保留 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`
 - 已转换 ontology 包会直接使用 `manifest.yaml` 中的元数据
 - 如果目标 ontology 已存在且未传 `overwrite=true`，会返回确认型冲突
 - 传 `overwrite=true` 时，不论是源格式包还是已转换包，都会以新导入结果整体替换目标 ontology 目录，不保留旧残留文件
@@ -1199,8 +1272,8 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "source_root": "/tmp/.../unzipped/project",
   "objects_count": 12,
   "operations_count": 18,
-  "objects_list_path": "/abs/path/.../objects-list.md",
-  "operations_list_path": "/abs/path/.../operations-list.md",
+  "objects_index_path": "/abs/path/.../objects/index.md",
+  "operations_index_path": "/abs/path/.../operations/index.md",
   "business_data_binding": {
     "ontology_id": "example-domain-operations-manual",
     "connection_id": "example-nl2sql",
@@ -1208,7 +1281,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   },
   "warnings": {
     "objects": [],
-    "objects_list": [],
+    "objects_index": [],
     "operations": []
   }
 }
@@ -1235,7 +1308,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "description": "示例工作空间",
   "created_at": "2026-04-16T04:00:00+00:00",
   "updated_at": "2026-04-16T04:00:00+00:00",
-  "is_default": true
+  "is_default": true,
+  "owner": "admin",
+  "members": ["analyst"]
 }
 ```
 
@@ -1304,9 +1379,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 { "detail": "工作空间 'demo-workspace' 不存在" }
 ```
 
-### 7.5 `PATCH /agentic/workspaces/{workspace_id}` (`admin`)
+### 7.5 `PATCH /agentic/workspaces/{workspace_id}`
 
-更新工作空间名称或描述。
+全局 admin 或该 workspace owner 可更新名称和描述；只有全局 admin 可通过 `owner` 转移所有权。
 
 请求体：
 
@@ -1318,6 +1393,16 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 ```
 
 响应 `200`：返回更新后的 workspace 对象。
+
+#### `PUT /agentic/workspaces/{workspace_id}/members`
+
+全量替换成员列表。全局 admin 或 workspace owner 可调用；成员用户名必须已存在且不得重复。
+
+```json
+{ "members": ["analyst", "operator"] }
+```
+
+无 owner 的存量 workspace 保持公共可见，服务不会在迁移时自动私有化；管理员应根据审计报告显式设置 owner 和 members。
 
 ### 7.6 `DELETE /agentic/workspaces/{workspace_id}` (`admin`)
 
@@ -1399,6 +1484,15 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 ### 7.9 工作区业务数据连接与本体绑定
 
 业务数据连接按 workspace 隔离。运行时不会从全局配置隐式继承 provider；`business_data_search` 会解析当前 workspace 下当前 ontology 的显式绑定。
+
+Graph provider 配置：
+
+| Provider | 必填配置 | 可选配置 | 隔离要求 |
+| --- | --- | --- | --- |
+| `neo4j` | `uri`、`username`、`password` | `database=neo4j`、超时/重试/结果上限 | `workspace_property=d2o_workspace_id`，建议显式配置 `ontology_property=d2o_ontology_id` |
+| `hugegraph` | `url` | `graph=hugegraph`、`graph_space`、`username/password/token`、超时/重试/结果上限 | 同样配置 workspace/ontology 属性 |
+
+密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。创建连接后先调用 test，再通过 data-binding 绑定 ontology；MCP search 只接受已绑定的 `neo4j` 或 `hugegraph`。
 
 新增业务数据 provider 的开发步骤见 [`docs/business-data-provider-extension.md`](business-data-provider-extension.md)。
 
@@ -1945,6 +2039,49 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `recall_topk` | int | 召回条数 |
 | `recall_threshold` | string | 可选召回阈值 |
 | `workspace_root` | string | 文件系统记忆工作区根目录 |
+
+### 8.8 MCP 管理与独立服务
+
+MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspace-Id`；MCP 工具调用走独立服务 `7488`，要求专用 MCP token。
+
+#### `GET /agentic/mcp/runtime/status`
+
+返回独立进程的连通状态、transport、外部地址和 search/chat 服务卡片。外部地址来自 `MCP_PUBLIC_BASE_URL`，部署时应设置为客户端实际可达的域名或 IP。
+
+#### `GET /agentic/mcp/tokens`
+
+列出当前用户、当前 workspace 的 token 元数据。响应不包含明文 token。
+
+#### `POST /agentic/mcp/tokens`
+
+```json
+{
+  "name": "automation",
+  "scopes": ["mcp:search"],
+  "expires_in": 86400
+}
+```
+
+允许的 scope：
+
+| scope | 允许的服务 |
+| --- | --- |
+| `mcp:search` | `/search/mcp`、`/search/sse`，只执行原子图查询，不调用 LLM |
+| `mcp:chat` | `/chat/mcp`、`/chat/sse`，进入标准 workflow 和 run admission queue |
+
+未传 scopes 时默认同时授予两项。响应 `201` 只在创建时返回一次 `token` 明文；token 固定绑定 `sub` 和 `workspace_id`，不能用请求头切换到其他 workspace。
+
+#### `DELETE /agentic/mcp/tokens/{token_id}`
+
+吊销当前用户、当前 workspace 下的 token。MCP token 注册表默认位于 `.onto-runtime/mcp-tokens.json`，备份和恢复必须与 workspace 数据同步完成。
+
+独立服务默认地址：
+
+- Streamable HTTP：`http://<host>:7488/search/mcp`、`http://<host>:7488/chat/mcp`
+- SSE：`http://<host>:7488/search/sse`、`http://<host>:7488/chat/sse`
+- 健康检查：`http://<host>:7488/health`
+
+search 服务要求 ontology 已绑定 `neo4j` 或 `hugegraph` 数据连接。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
 
 ---
 

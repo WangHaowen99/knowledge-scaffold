@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agentic.evolution.reflection_worker import (
+from agent.evolution.reflection_worker import (
     ReflectionOutput,
     ReflectionSnapshot,
     ReflectionWorker,
 )
-from agentic.services.llm import LLMPurpose
+from llm import LLMPurpose
 
 
 class _TaskLLM:
@@ -50,11 +50,11 @@ def test_reflection_worker_persists_ontology_lessons_to_evolution_buffer(monkeyp
             return task_llm
 
     monkeypatch.setattr(
-        "agentic.evolution.reflection_worker.get_proposal_buffer",
+        "agent.evolution.reflection_worker.get_proposal_buffer",
         lambda: buffer,
     )
     monkeypatch.setattr(
-        "agentic.evolution.reflection_worker.get_llm_router",
+        "agent.evolution.reflection_worker.get_llm_router",
         lambda: _Router(),
     )
     worker = ReflectionWorker(max_workers=1)

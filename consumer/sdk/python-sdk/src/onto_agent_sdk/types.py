@@ -21,6 +21,7 @@ NormalizedEventKind: TypeAlias = Literal[
     "subagent_group.started",
     "subagent_group.finished",
     "run.completed",
+    "run.awaiting",
     "run.failed",
     "run.cancelled",
     "raw",
@@ -47,6 +48,8 @@ class NormalizedStreamEvent:
     task_id: Optional[str] = None
     session_id: Optional[str] = None
     turn_id: Optional[int] = None
+    sequence: Optional[int] = None
+    event_id: Optional[str] = None
     timestamp: Optional[int] = None
     source: JsonDict = field(default_factory=dict)
 
@@ -72,6 +75,8 @@ def _as_dict(value: Any) -> JsonDict:
 
 def _normalize_turn_finished_kind(payload: JsonDict) -> NormalizedEventKind:
     status = payload.get("status")
+    if status == "awaiting_input":
+        return "run.awaiting"
     if status == "error":
         return "run.failed"
     if status == "cancelled":
@@ -108,6 +113,8 @@ def normalize_agentic_envelope(envelope: JsonDict) -> NormalizedStreamEvent:
         run_id=_optional_str(envelope.get("run_id")),
         session_id=_optional_str(envelope.get("session_id")),
         turn_id=_optional_int(envelope.get("turn_id")),
+        sequence=_optional_int(envelope.get("seq")),
+        event_id=_optional_str(envelope.get("event_id")),
         timestamp=_optional_int(envelope.get("ts")),
         source=_as_dict(envelope.get("source")),
     )
@@ -133,13 +140,17 @@ def normalize_a2a_update(update: JsonDict) -> NormalizedStreamEvent:
 
 def normalize_agentic_sse_event(event: SseEvent) -> NormalizedStreamEvent:
     if event.event == "agent.v2" and isinstance(event.json_data, dict):
-        return normalize_agentic_envelope(event.json_data)
+        normalized = normalize_agentic_envelope(event.json_data)
+        if normalized.event_id is None:
+            normalized.event_id = event.id
+        return normalized
     return NormalizedStreamEvent(
         kind="raw",
         protocol="agentic",
         event_name=event.event,
         payload={},
         raw=event,
+        event_id=event.id,
     )
 
 

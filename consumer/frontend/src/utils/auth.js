@@ -1,6 +1,7 @@
 const TOKEN_KEY = 'onto_agent_token';
 const REFRESH_TOKEN_KEY = 'onto_agent_refresh_token';
 const WORKSPACE_KEY = 'onto_agent_workspace_id';
+export const AUTH_CLEARED_EVENT = 'onto-auth-cleared';
 export const DEFAULT_WORKSPACE_ID = '';
 
 export const getAuthToken = () => {
@@ -34,6 +35,7 @@ export const clearAuthToken = () => {
   try {
     window.localStorage.removeItem(TOKEN_KEY);
     window.localStorage.removeItem(REFRESH_TOKEN_KEY);
+    window.dispatchEvent(new Event(AUTH_CLEARED_EVENT));
   } catch {
     // ignore storage errors
   }

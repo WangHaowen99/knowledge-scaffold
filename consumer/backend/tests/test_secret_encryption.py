@@ -9,7 +9,7 @@ def _test_key() -> str:
 def test_secret_codec_encrypts_with_envelope_and_decrypts_plaintext(monkeypatch):
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", _test_key())
 
-    from agentic.security.secrets import (
+    from utils.security.secrets import (
         decrypt_secret,
         encrypt_secret,
         is_encrypted_secret,
@@ -25,7 +25,7 @@ def test_secret_codec_encrypts_with_envelope_and_decrypts_plaintext(monkeypatch)
 
 
 def test_key_file_first_create_is_atomic_under_concurrency(tmp_path, monkeypatch):
-    import agentic.security.secrets as secrets_module
+    import utils.security.secrets as secrets_module
 
     monkeypatch.delenv(secrets_module.SECRET_ENCRYPTION_KEY_ENV, raising=False)
     monkeypatch.setenv(secrets_module.PROJECT_ROOT_ENV, str(tmp_path))

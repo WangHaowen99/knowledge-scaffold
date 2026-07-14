@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic.evolution import ProposalBuffer, compute_fingerprint
+from agent.evolution import ProposalBuffer, compute_fingerprint
 
 
 @pytest.fixture

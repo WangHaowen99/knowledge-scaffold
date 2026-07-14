@@ -5,7 +5,7 @@ import { ConfirmDialog, SkeletonState } from './UiFeedback';
 
 // 侧边栏左下固定的历史对话区块：所有页面常驻，标题 + 搜索框固定，列表内部滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
-  const { sessions, currentChatId, deleteChat, loadingSessions } = chat;
+  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned } = chat;
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState('');
   const groups = useMemo(() => groupSessions(sessions, search), [sessions, search]);
@@ -24,9 +24,20 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
             {items.map((s) => (
               <div key={s.id} className={`ch-item-wrap ${s.id === currentChatId ? 'on' : ''}`}>
                 <button type="button" className="ch-item" onClick={() => onOpen(s.id)}>
-                  <span className="ch-title">{s.title || '未命名对话'}</span>
-                  <span className="ch-meta">{formatTime(s.updated_at || s.created_at)}</span>
+                  <span className="ch-title">
+                    {s.metadata?.pinned && <span title="已固定">★ </span>}
+                    {s.title || '未命名对话'}
+                  </span>
+                  <span className="ch-meta">
+                    {['queued', 'running'].includes(s.active_run_status)
+                      ? `${s.active_run_status === 'queued' ? '排队中' : '运行中'} · `
+                      : ''}
+                    {formatTime(s.updated_at || s.created_at)}
+                  </span>
                 </button>
+                <button type="button" className="ch-pin" title={s.metadata?.pinned ? '取消固定' : '固定对话'}
+                  aria-label={`${s.metadata?.pinned ? '取消固定' : '固定对话'} ${s.title || '未命名对话'}`}
+                  onClick={() => setPinned(s.id, !s.metadata?.pinned)}>{s.metadata?.pinned ? '☆' : '★'}</button>
                 <button type="button" className="ch-delete" title="删除对话" aria-label={`删除对话 ${s.title || '未命名对话'}`}
                   onClick={() => setDeleteId(s.id)}><Trash2 size={12} /></button>
               </div>

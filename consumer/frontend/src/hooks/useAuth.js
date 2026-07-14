@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authFetch, clearAuthToken, getAuthToken, setAuthToken } from '../utils/auth';
+import {
+  AUTH_CLEARED_EVENT,
+  authFetch,
+  clearAuthToken,
+  getAuthToken,
+  getRefreshToken,
+  setAuthToken,
+} from '../utils/auth';
 import createLogger from '../utils/logger';
 
 const logger = createLogger('Auth');
@@ -52,6 +59,15 @@ const useAuth = () => {
     return () => window.clearTimeout(timeoutId);
   }, [verify]);
 
+  useEffect(() => {
+    const handleCleared = () => {
+      setUser(null);
+      setStatus('unauthenticated');
+    };
+    window.addEventListener(AUTH_CLEARED_EVENT, handleCleared);
+    return () => window.removeEventListener(AUTH_CLEARED_EVENT, handleCleared);
+  }, []);
+
   const login = useCallback(async (username, password) => {
     setError(null);
     try {
@@ -103,10 +119,23 @@ const useAuth = () => {
     }
   }, []);
 
-  const logout = useCallback(() => {
-    clearAuthToken();
-    setUser(null);
-    setStatus('unauthenticated');
+  const logout = useCallback(async () => {
+    const refreshToken = getRefreshToken();
+    try {
+      if (refreshToken) {
+        await fetch('/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+      }
+    } catch (err) {
+      logger.warn('Logout revoke request failed', { error: err.message });
+    } finally {
+      clearAuthToken();
+      setUser(null);
+      setStatus('unauthenticated');
+    }
   }, []);
 
   return {

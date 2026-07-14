@@ -160,7 +160,7 @@ docker compose up --build
 ```
 
 后端通过 `PROJECT_ROOT` 指向运行时根目录。默认值会优先使用 `consumer/.onto-runtime`，容器中映射到 `/app/.onto-runtime`。
-系统配置默认保存在 `.onto-runtime/config/system_config.json`；旧的 `backend/config/system_config.json` 会在新文件不存在时自动迁移。运维规格配置默认读取 `.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
+系统配置只从 `.onto-runtime/config/system_config.json` 读取；文件不存在时使用环境变量和内置默认值，首次保存配置时创建该文件。运维规格配置默认读取 `.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
 
 ## 用户本体上传格式
 
@@ -183,9 +183,9 @@ my-ontology.zip
 - `SKILL.md` 需要包含 `id`、`name`、`description` frontmatter。
 - `object/` 放实体对象定义，每个实体一个 `.md` 文件。
 - `logic/` 放业务操作逻辑，每个操作一个 `.md` 文件。
-- `action/` 可选，放 Python 脚本及脚本运行所需 `.env` 文件；导入后会复制到 `scripts/` 并根据 Python 脚本生成 `scripts-list.md`。脚本顶部可用 `# 工具流程: <操作名>` 绑定对应 `logic/<操作名>.md`，未声明时退回使用脚本名作为 key；脚本参数优先读取顶部 `parameters` / `参数` 注释，未声明时静态解析 `argparse.add_argument(...)`；下划线开头的 helper 和 `.env` 只复制不注册。
+- `action/` 可选，放 Python 脚本及脚本运行所需 `.env` 文件；导入后会复制到 `scripts/`，为可执行脚本生成 `scripts/<key>.md` 描述文件，并更新 `scripts/index.md`。脚本顶部可用 `# 工具流程: <操作名>` 绑定对应 `logic/<操作名>.md`；脚本参数优先读取顶部 `parameters` / `参数` 注释，未声明时静态解析 `argparse.add_argument(...)`；下划线开头的 helper 和 `.env` 只复制不注册。
 
-- 也支持上传已转换本体包：包含 `manifest.yaml`，并包含 `objects/`、`operations/`、`objects-list.md`、`operations-list.md` 中至少一类内容。
+- 已转换本体包使用 `kind: ontology-package`、`schema_version: 0.1`，目录清单位于各目录的 `index.md`。迁移期仍接受旧包，导入边界会一次性转换；安装目录不会保留 `ONTOLOGY.md` 或 `*-list.md`。
 
 完整模板和字段说明见 [`docs/ontology-upload-template.md`](docs/ontology-upload-template.md)。
 
@@ -303,11 +303,23 @@ data: { ... }
 先读已保存的 system_config.json；某个字段没有保存值时再读环境变量；最后用内置默认值
 ```
 
-消费智能体规格限制使用独立运维配置，读取优先级为：
+消费智能体规格限制和运行时日志级别使用独立运维配置，读取优先级为：
 
 ```text
 先读 ops_config.json；某个字段没有保存值时再读环境变量；最后用内置默认值
 ```
+
+运行时日志级别写在 `ops_config.json` 的 `logging.level`：
+
+```json
+{
+  "logging": {
+    "level": "DEBUG"
+  }
+}
+```
+
+默认级别为 `INFO`。修改文件后，后端和 MCP 进程会在下一次日志级别检查时分别触发重读，无需重启；无效 JSON 或无效级别会保留上一次有效值。建议通过“写临时文件后原子替换”的方式更新该文件。
 
 常用后端变量：
 

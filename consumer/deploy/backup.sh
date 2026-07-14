@@ -25,11 +25,21 @@ backup_path_if_present() {
 }
 
 backup_path_if_present "${BUNDLE_ROOT}/backend/.env" "backend-env.tar.gz"
-backup_path_if_present "${BUNDLE_ROOT}/backend/config" "backend-config.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/backend/logs" "backend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/frontend/logs" "frontend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
+
+{
+    printf '%s\n' \
+        '.onto-runtime/users.json' \
+        '.onto-runtime/workspaces/' \
+        '.onto-runtime/config/' \
+        '.onto-runtime/mcp-tokens.json' \
+        '.onto-runtime/**/graph*migration*' \
+        '.onto-auth/users.json' \
+        '.onto-auth/keys/'
+} > "${BACKUP_DIR}/data-inventory.txt"
 
 if [ -n "${CURRENT_BACKEND_IMAGE:-}" ] && docker image inspect "${CURRENT_BACKEND_IMAGE}" >/dev/null 2>&1; then
     docker save -o "${BACKUP_DIR}/backend-image.tar" "${CURRENT_BACKEND_IMAGE}"
@@ -51,5 +61,11 @@ fi
     printf 'CURRENT_FRONTEND_IMAGE=%q\n' "${CURRENT_FRONTEND_IMAGE:-}"
     printf 'CURRENT_AUTH_IMAGE=%q\n' "${CURRENT_AUTH_IMAGE:-}"
 } > "${BACKUP_DIR}/metadata.env"
+
+if command -v sha256sum >/dev/null 2>&1; then
+    (cd "${BACKUP_DIR}" && sha256sum ./*.tar ./*.tar.gz 2>/dev/null || true) > "${BACKUP_DIR}/checksums.sha256"
+elif command -v shasum >/dev/null 2>&1; then
+    (cd "${BACKUP_DIR}" && shasum -a 256 ./*.tar ./*.tar.gz 2>/dev/null || true) > "${BACKUP_DIR}/checksums.sha256"
+fi
 
 printf '%s\n' "${BACKUP_DIR}"

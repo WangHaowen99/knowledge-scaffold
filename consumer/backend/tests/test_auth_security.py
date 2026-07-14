@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from flask import Flask, jsonify
 
-from agentic.services.auth import AuthManager, require_auth
+from api.auth.auth import AuthManager, require_auth
 
 
 STRONG_PASSWORD = "Abc123!@"
@@ -108,7 +108,7 @@ def test_require_auth_blocks_regular_routes_until_password_is_changed(tmp_path):
 
 
 def test_change_password_route_requires_relogin_after_success(tmp_path):
-    import agentic.app as app_module
+    import app as app_module
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "admin123")
@@ -154,7 +154,7 @@ def test_change_password_route_requires_relogin_after_success(tmp_path):
 
 
 def test_admin_self_password_reset_route_is_rejected(tmp_path):
-    import agentic.app as app_module
+    import app as app_module
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     auth_manager.change_password("admin", "admin123", "InitialStrongPass123!")

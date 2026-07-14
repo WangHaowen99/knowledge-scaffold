@@ -4,9 +4,13 @@ export function groupSessions(sessions, search) {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const yesterday = today - 86400000;
-  const buckets = { 今天: [], 昨天: [], 更早: [] };
+  const buckets = { 已固定: [], 今天: [], 昨天: [], 更早: [] };
   for (const s of sessions) {
     if (search && !(s.title || '').toLowerCase().includes(search.toLowerCase())) continue;
+    if (s?.metadata?.pinned) {
+      buckets['已固定'].push(s);
+      continue;
+    }
     const ts = Date.parse(s.updated_at || s.created_at || '') || 0;
     if (ts >= today) buckets['今天'].push(s);
     else if (ts >= yesterday) buckets['昨天'].push(s);
