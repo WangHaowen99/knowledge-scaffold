@@ -131,7 +131,7 @@ Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runti
 - 认证统一由独立 auth-server 提供：必须配置 `AUTH_SERVER_URL`（Docker 中为 `http://auth-server:5056`，本地运行 auth-server 时如 `http://localhost:5056`），未配置时后端启动直接报错。
 - `PROJECT_ROOT` 默认指向 `consumer/.onto-runtime`，这是运行时根目录。
 - `system_config.json` 只从 `<consumer>/.onto-runtime/config/system_config.json` 读取；文件不存在时使用环境变量和内置默认值，首次保存配置时创建该文件。
-- 运维规格配置默认读取 `<consumer>/.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。
+- 运维规格和日志级别配置默认读取 `<consumer>/.onto-runtime/config/ops_config.json`，也可通过 `OPS_CONFIG_PATH` 指定。`logging.level` 缺省时为 `INFO`；运行时修改后，由下一次日志调用触发重读，无需重启。
 - 本体资源优先按工作区解析：`<consumer>/.onto-runtime/workspaces/<workspace_id>/ontologies`。
 - 技能资源优先按工作区解析：`<consumer>/.onto-runtime/workspaces/<workspace_id>/skills`，然后回退到 `<consumer>/.onto-runtime/system/skills`。
 - 服务器 host、port 和 debug 配置在 [`server_config.py`](server_config.py)。
@@ -166,11 +166,23 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 先读已保存的 system_config.json；某个字段没有保存值时再读环境变量；最后用内置默认值
 ```
 
-消费智能体规格限制使用独立运维配置，读取优先级为：
+消费智能体规格限制和运行时日志级别使用独立运维配置，读取优先级为：
 
 ```text
 先读 ops_config.json；某个字段没有保存值时再读环境变量；最后用内置默认值
 ```
+
+日志级别配置示例：
+
+```json
+{
+  "logging": {
+    "level": "DEBUG"
+  }
+}
+```
+
+后端和 MCP 进程会在下一次日志级别检查时分别检查文件是否变化，变化后才重新解析。无效 JSON 或无效级别会保留上一次有效值。建议通过“写临时文件后原子替换”的方式更新该文件。
 
 重要变量：
 
@@ -236,7 +248,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `MEMORY_WORKSPACE_ROOT` | 文件系统记忆工作区根目录 | 空 |
 | `AGENT_MEMORY_RECALL_TOPK` | 记忆召回条数 | `3` |
 | `AGENT_MEMORY_RECALL_THRESHOLD` | 记忆召回阈值 | 空 |
-| `LOG_LEVEL` | 运行日志级别 | 应用默认 |
+| `LOG_LEVEL` | 进程启动日志级别；`ops_config.json` 的 `logging.level` 可覆盖 | `INFO` |
 | `LOG_CONSOLE` | 是否启用控制台日志 | 关闭 |
 
 说明：

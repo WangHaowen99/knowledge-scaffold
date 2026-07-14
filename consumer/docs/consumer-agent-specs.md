@@ -22,6 +22,7 @@
 | 输出 Token 长度 | 100000 | `ops_config.limits.model_output_token_limit` / `MODEL_OUTPUT_TOKEN_LIMIT` | 发送给模型前把请求 `max_tokens` 裁剪到平台硬上限 |
 | 普通日志保留 | 180 天 | `ops_config.limits.agent_log_retention_days` / `AGENT_LOG_RETENTION_DAYS` | `agent-YYYY-MM-DD.log` 按日期分区、大小轮转，超过保留期删除 |
 | 普通日志压缩 | 开启 | `ops_config.limits.agent_log_compress_old` / `AGENT_LOG_COMPRESS_OLD` | 非当天普通日志自动 gzip 压缩 |
+| 普通日志级别 | `INFO` | `ops_config.logging.level` | 文件变更后，由下一次日志级别检查触发重读；后端和 MCP 进程分别生效，无需重启 |
 
 ## 运维配置示例
 
@@ -43,6 +44,9 @@
     "operation_max_chars": 15000,
     "agent_log_retention_days": 180,
     "agent_log_compress_old": true
+  },
+  "logging": {
+    "level": "INFO"
   }
 }
 ```
@@ -52,5 +56,6 @@
 - 当前 TPS 是后端进程内限制，不是跨多进程/多副本的分布式限流。
 - `direct_execution` 暂不单独拆限流，仍共用全局 TPS 和现有并发槽。
 - `agent_perf` 性能分析日志不跟随普通日志 180 天策略，继续由 `observability.local.retention_days` 独立控制，并保持可直接读取分析。
+- `logging.level` 支持 `DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL` 和 `NOTSET`。字段缺失时使用进程启动级别，启动级别未配置时为 `INFO`。运行时修改建议先写临时文件，再原子替换 `ops_config.json`；读取到无效 JSON 或无效级别时继续使用上一次有效值。
 - 上下文压缩策略不在本文实现范围内，需要单独评估。
 - 机器规格为部署建议：消费智能体建议 4U / 8G / 200G，可按实际负载调整；代码不在运行时强制校验 CPU、内存或磁盘容量。

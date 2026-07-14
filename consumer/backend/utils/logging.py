@@ -10,9 +10,7 @@ import json
 import logging
 import logging.handlers
 import os
-from pathlib import Path
 import re
-import runpy
 import shutil
 import threading
 import time
@@ -23,7 +21,6 @@ LOG_DIR = "logs"
 LOG_FILE = "agent.log"
 DEFAULT_FORMAT = "%(asctime)s %(levelname)s %(name)s:%(lineno)d [P%(process)d|T%(thread)d] %(message)s"
 DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-LOG_LEVEL_SETTING = "LOG_LEVEL"
 LOG_LEVEL_ENV = "LOG_LEVEL"
 LOG_STRUCTURED_ENV = "LOG_STRUCTURED"
 LOG_CONSOLE_ENV = "LOG_CONSOLE"
@@ -31,10 +28,6 @@ LOG_REQUEST_BODY_ENV = "LOG_REQUEST_BODY"
 LOG_RESPONSE_BODY_ENV = "LOG_RESPONSE_BODY"
 LOG_MAX_BYTES_ENV = "LOG_MAX_BYTES"
 LOG_BACKUP_COUNT_ENV = "LOG_BACKUP_COUNT"
-DEFAULT_LOG_LEVEL_CONFIG_PATH = str(
-    Path(__file__).resolve().parents[3] / "config" / "backend" / "server.py"
-)
-
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5MB
 DEFAULT_BACKUP_COUNT = 5
 DEFAULT_AGENT_LOG_RETENTION_DAYS = 180
@@ -43,9 +36,8 @@ DEFAULT_AGENT_LOG_COMPRESS_OLD = True
 _LOGGING_CONFIGURED = False
 _CONFIGURED_LOG_LEVEL = logging.INFO
 _CURRENT_RUNTIME_LOG_LEVEL: Optional[int] = None
-_LOG_LEVEL_CONFIG_PATH = DEFAULT_LOG_LEVEL_CONFIG_PATH
-_LOG_LEVEL_CONFIG_MTIME: Optional[float] = None
-_LOG_LEVEL_FROM_CONFIG: Optional[int] = None
+_OPS_CONFIG_SIGNATURE: Optional[tuple[str, bool, int, int, int]] = None
+_LOG_LEVEL_FROM_OPS_CONFIG: Optional[int] = None
 _LOG_LEVEL_LOCK = threading.RLock()
 _T = TypeVar("_T", bound=Callable[..., Any])
 _LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("agentic_log_context", default={})
@@ -196,38 +188,43 @@ def _enrich_record_with_log_context(record: logging.LogRecord) -> dict[str, Any]
     return record_context
 
 
-def _load_log_level_from_config(config_path: str, *, force_reload: bool = False) -> Optional[int]:
-    global _LOG_LEVEL_CONFIG_MTIME, _LOG_LEVEL_CONFIG_PATH, _LOG_LEVEL_FROM_CONFIG
+def _get_ops_config_signature() -> tuple[str, bool, int, int, int]:
+    from config.ops_config import resolve_ops_config_path
 
+    config_path = resolve_ops_config_path()
     try:
-        current_mtime = os.path.getmtime(config_path)
+        stat = config_path.stat()
     except OSError:
-        _LOG_LEVEL_CONFIG_PATH = config_path
-        _LOG_LEVEL_CONFIG_MTIME = None
-        _LOG_LEVEL_FROM_CONFIG = None
-        return None
+        return str(config_path), False, 0, 0, 0
+    return str(config_path), True, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
-    if (
-        not force_reload
-        and config_path == _LOG_LEVEL_CONFIG_PATH
-        and current_mtime == _LOG_LEVEL_CONFIG_MTIME
-    ):
-        return _LOG_LEVEL_FROM_CONFIG
 
-    previous_value = _LOG_LEVEL_FROM_CONFIG if config_path == _LOG_LEVEL_CONFIG_PATH else None
-    resolved_level: Optional[int] = None
+def _load_log_level_from_ops_config(*, force_reload: bool = False) -> Optional[int]:
+    global _LOG_LEVEL_FROM_OPS_CONFIG, _OPS_CONFIG_SIGNATURE
+
+    current_signature = _get_ops_config_signature()
+
+    if not force_reload and current_signature == _OPS_CONFIG_SIGNATURE:
+        return _LOG_LEVEL_FROM_OPS_CONFIG
+
+    previous_value = _LOG_LEVEL_FROM_OPS_CONFIG
 
     try:
-        config_values = runpy.run_path(config_path)
-        raw_level = config_values.get(LOG_LEVEL_SETTING)
-        if raw_level is not None:
-            resolved_level = _coerce_level(raw_level)
+        from config.ops_config import load_ops_config
+
+        raw_level = load_ops_config()["logging"]["level"]
+        normalized_level = str(raw_level or "").strip().upper()
+        if not normalized_level:
+            resolved_level = None
+        else:
+            resolved_level = getattr(logging, normalized_level, None)
+            if not isinstance(resolved_level, int):
+                raise ValueError("invalid logging.level: {}".format(raw_level))
     except Exception:
         resolved_level = previous_value
 
-    _LOG_LEVEL_CONFIG_PATH = config_path
-    _LOG_LEVEL_CONFIG_MTIME = current_mtime
-    _LOG_LEVEL_FROM_CONFIG = resolved_level
+    _OPS_CONFIG_SIGNATURE = current_signature
+    _LOG_LEVEL_FROM_OPS_CONFIG = resolved_level
     return resolved_level
 
 
@@ -239,17 +236,17 @@ def _apply_log_level(level: int) -> None:
 
 
 def refresh_log_level(*, force: bool = False) -> int:
-    """Refresh the effective log level from the current process environment."""
+    """Refresh the effective log level when ops_config.json changes."""
     global _CURRENT_RUNTIME_LOG_LEVEL
 
-    resolved_level = _load_log_level_from_config(_LOG_LEVEL_CONFIG_PATH, force_reload=force)
+    resolved_level = _load_log_level_from_ops_config(force_reload=force)
     if resolved_level is None:
         resolved_level = _CONFIGURED_LOG_LEVEL
     if not force and resolved_level == _CURRENT_RUNTIME_LOG_LEVEL:
         return resolved_level
 
     with _LOG_LEVEL_LOCK:
-        resolved_level = _load_log_level_from_config(_LOG_LEVEL_CONFIG_PATH, force_reload=force)
+        resolved_level = _load_log_level_from_ops_config(force_reload=force)
         if resolved_level is None:
             resolved_level = _CONFIGURED_LOG_LEVEL
         if force or resolved_level != _CURRENT_RUNTIME_LOG_LEVEL:
@@ -457,7 +454,6 @@ def configure_logging(
     level: Optional[int | str] = None,
     log_dir: Optional[str] = None,
     log_file: Optional[str] = None,
-    level_config_path: Optional[str] = None,
     structured: Optional[bool] = None,
     console: Optional[bool] = None,
     max_bytes: Optional[int] = None,
@@ -468,19 +464,19 @@ def configure_logging(
 ) -> None:
     """Configure root logging handlers and formatting."""
     global _CONFIGURED_LOG_LEVEL, _CURRENT_RUNTIME_LOG_LEVEL, _LOGGING_CONFIGURED
-    global _LOG_LEVEL_CONFIG_MTIME, _LOG_LEVEL_CONFIG_PATH, _LOG_LEVEL_FROM_CONFIG
+    global _LOG_LEVEL_FROM_OPS_CONFIG, _OPS_CONFIG_SIGNATURE
     if _LOGGING_CONFIGURED and not force:
         return
 
-    _LOG_LEVEL_CONFIG_PATH = os.path.abspath(level_config_path or DEFAULT_LOG_LEVEL_CONFIG_PATH)
-    _LOG_LEVEL_CONFIG_MTIME = None
-    _LOG_LEVEL_FROM_CONFIG = None
+    _OPS_CONFIG_SIGNATURE = None
+    _LOG_LEVEL_FROM_OPS_CONFIG = None
 
-    resolved_level = _coerce_level(level or os.getenv(LOG_LEVEL_ENV))
-    config_level = _load_log_level_from_config(_LOG_LEVEL_CONFIG_PATH, force_reload=True)
+    base_level = level if level is not None else os.getenv(LOG_LEVEL_ENV)
+    resolved_level = _coerce_level(base_level)
+    _CONFIGURED_LOG_LEVEL = resolved_level
+    config_level = _load_log_level_from_ops_config(force_reload=True)
     if config_level is not None:
         resolved_level = config_level
-    _CONFIGURED_LOG_LEVEL = resolved_level
     _CURRENT_RUNTIME_LOG_LEVEL = None
     resolved_structured = structured if structured is not None else _parse_bool(os.getenv(LOG_STRUCTURED_ENV), False)
     resolved_console = console if console is not None else _parse_bool(os.getenv(LOG_CONSOLE_ENV), False)

@@ -229,11 +229,12 @@ Important variables:
 | `AGENT_CONTEXT_MAX_ROUNDS` | Sliding context rounds kept | `10` |
 | `AGENT_CONTEXT_PRUNE_TOOLS` | Comma-separated tools to prune earlier | empty |
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM HTTP retry count for connection-style failures | `3` |
-| `LOG_LEVEL` | Runtime log level | app default |
+| `LOG_LEVEL` | Process startup log level; overridden by `ops_config.json` `logging.level` | `INFO` |
 | `LOG_CONSOLE` | Enable console logging when set | off |
 
 Notes:
 
+- Runtime log-level changes use `<consumer>/.onto-runtime/config/ops_config.json` (or `OPS_CONFIG_PATH`): `{"logging":{"level":"DEBUG"}}`. Each backend and MCP process checks the file metadata on the next logging call and reloads it only after a change; no restart is required. Invalid JSON or levels preserve the last valid value. Use an atomic file replacement when possible.
 - The backend no longer ships with a built-in default LLM endpoint or model id. You must configure `LLM_BASE_URL` and `LLM_MODEL`, or save an enabled model profile in system config before chat can run.
 - The main ReAct loop runs on openJiuwen. Install the backend dependencies from `backend/requirements.txt`.
 - `business_data_search` uses workspace-local data connections and explicit ontology bindings. Create a MindsDB or NL2SQL HTTP connection through `/agentic/data-connections`, then bind each ontology through `/agentic/ontologies/{ontology_id}/data-binding`.
