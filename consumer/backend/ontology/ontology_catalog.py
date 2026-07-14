@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import yaml
 
 from ontology.ontologies import OntologyManifest, get_ontology_registry
 from ontology.package_browser import (
@@ -37,6 +39,34 @@ ASSET_MAX_READ_BYTES = 512_000
 _SCRIPT_ENTRY_PATTERN = re.compile(r"^-\s*`([^`]+)`\s*->\s*`([^`]+)`\s*$")
 _SCRIPT_ARGS_PATTERN = re.compile(r"`args`\s*:\s*`([^`]+)`")
 _SCRIPT_PARAMETERS_PATTERN = re.compile(r"`(?:parameters|params)`\s*:\s*`([^`]+)`")
+
+
+def split_markdown_frontmatter(markdown: str) -> Tuple[Dict[str, Any], str]:
+    text = str(markdown or "")
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}, text
+    raw_frontmatter = text[3:end].strip()
+    body = text[end + 4 :].lstrip("\r\n")
+    try:
+        parsed = yaml.safe_load(raw_frontmatter) or {}
+    except Exception:
+        return {}, body
+    return (parsed if isinstance(parsed, dict) else {}), body
+
+
+def read_markdown_frontmatter(path: Path) -> Dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        frontmatter, _body = split_markdown_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return frontmatter
+
+
 def get_ontology_manifest(ontology_id: str) -> Tuple[Optional[OntologyManifest], Optional[str]]:
     normalized_id = str(ontology_id or "").strip()
     if not normalized_id:
@@ -190,6 +220,7 @@ def parse_script_catalog(markdown: str, *, ontology_dir: Optional[Path] = None) 
                 "arguments": [],
                 "parameters": [],
                 "_script_path": raw_path,
+                "_is_bound_operation": True,
             }
             if ontology_dir is not None:
                 pending["_resolved_script_path"] = str((ontology_dir / raw_path).resolve())
@@ -222,14 +253,162 @@ def parse_script_catalog(markdown: str, *, ontology_dir: Optional[Path] = None) 
     return catalog
 
 
+def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
+    """Load v0.1 script descriptors first, then fill gaps from scripts-list.md."""
+    catalog: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    bound_operations: Set[str] = set()
+
+    scripts_dir = ontology_dir / "scripts"
+    if scripts_dir.is_dir():
+        for script_doc in sorted(scripts_dir.glob("*.md"), key=lambda item: item.name.lower()):
+            if script_doc.name == "index.md":
+                continue
+            entry = _script_entry_from_markdown(script_doc, ontology_dir=ontology_dir)
+            if not entry:
+                continue
+            key = _script_entry_dedupe_key(entry)
+            if key in seen:
+                continue
+            seen.add(key)
+            catalog.append(entry)
+            if entry.get("_is_bound_operation"):
+                operation_key = str(entry.get("operation_key") or "").strip()
+                if operation_key:
+                    bound_operations.add(operation_key)
+
+    legacy_entries = parse_script_catalog(
+        read_optional_text(ontology_dir / "scripts-list.md"),
+        ontology_dir=ontology_dir,
+    )
+    for entry in legacy_entries:
+        operation_key = str(entry.get("operation_key") or "").strip()
+        if operation_key and operation_key in bound_operations:
+            continue
+        key = _script_entry_dedupe_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        catalog.append(entry)
+
+    return catalog
+
+
 def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [
-        {
+        _drop_empty_values({
             "operation_key": str(entry.get("operation_key") or ""),
+            "script_key": str(entry.get("script_key") or ""),
+            "title": str(entry.get("title") or ""),
             "parameters": _public_script_parameters(entry.get("parameters") or []),
-        }
+        })
         for entry in catalog
-        if str(entry.get("operation_key") or "").strip()
+        if entry.get("_is_bound_operation")
+        and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
+    ]
+
+
+def _drop_empty_values(value: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, item in value.items():
+        if item in ("", None, []):
+            continue
+        result[key] = item
+    return result
+
+
+def _script_entry_dedupe_key(entry: Dict[str, Any]) -> str:
+    operation_key = str(entry.get("operation_key") or "").strip()
+    script_key = str(entry.get("script_key") or "").strip()
+    return "{}\n{}".format(operation_key, script_key)
+
+
+def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[Dict[str, Any]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    frontmatter, body = split_markdown_frontmatter(text)
+
+    script_key = str(frontmatter.get("key") or path.stem).strip()
+    if not script_key:
+        return None
+    operation_key = str(frontmatter.get("bound_operation") or frontmatter.get("operation_key") or "").strip()
+    is_bound_operation = bool(operation_key)
+    entrypoint = str(frontmatter.get("entrypoint") or frontmatter.get("path") or "").strip()
+    if not entrypoint:
+        return None
+
+    entrypoint_path = Path(entrypoint)
+    if entrypoint_path.is_absolute() or ".." in entrypoint_path.parts:
+        return None
+    raw_path = entrypoint
+    if not raw_path.replace("\\", "/").startswith("scripts/"):
+        raw_path = "scripts/{}".format(raw_path.replace("\\", "/").lstrip("/"))
+
+    parameters = _parse_script_parameters_from_markdown(body)
+    entry: Dict[str, Any] = {
+        "operation_key": operation_key or script_key,
+        "script_key": script_key,
+        "title": str(frontmatter.get("title") or script_key).strip(),
+        "arguments": [],
+        "parameters": parameters,
+        "_script_path": raw_path,
+        "_script_doc_path": str(path.resolve()),
+        "_resolved_script_path": str((ontology_dir / raw_path).resolve()),
+        "_is_bound_operation": is_bound_operation,
+    }
+    return entry
+
+
+def _parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]]:
+    rows = parse_markdown_table(markdown)
+    parameters: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        name = _first_row_value(row, "参数 key", "参数key", "参数名称", "name", "Name")
+        flag = _first_row_value(row, "CLI 参数", "CLI参数", "flag", "Flag")
+        description = _first_row_value(row, "说明", "描述", "description", "Description")
+        param_type = _first_row_value(row, "类型", "type", "Type") or "string"
+        required_text = _first_row_value(row, "必填", "required", "Required")
+        aliases_text = _first_row_value(row, "别名", "aliases", "Aliases")
+        if not name and not flag:
+            continue
+        parameter = {
+            "name": name or _name_from_flag(flag) or "arg_{}".format(index + 1),
+            "flag": flag,
+            "required": _as_bool(required_text, default=True),
+            "type": param_type,
+            "multiple": _as_bool(_first_row_value(row, "multiple", "是否多值"), default=False),
+        }
+        if description:
+            parameter["description"] = description
+        aliases = _split_aliases(aliases_text)
+        if aliases:
+            parameter["aliases"] = aliases
+        parameters.append(parameter)
+    return _normalize_script_parameters(parameters)
+
+
+def _first_row_value(row: Dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return str(value or "").strip()
+    normalized = {str(k).strip().lower().replace(" ", ""): v for k, v in row.items()}
+    for key in keys:
+        lookup = key.strip().lower().replace(" ", "")
+        if lookup in normalized:
+            return str(normalized[lookup] or "").strip()
+    return ""
+
+
+def _split_aliases(value: str) -> List[str]:
+    if not value:
+        return []
+    return [
+        item.strip()
+        for item in re.split(r"[,，、;/；]+", str(value))
+        if item.strip()
     ]
 
 
@@ -346,9 +525,9 @@ def _as_bool(value: Any, *, default: bool) -> bool:
         return default
     if isinstance(value, str):
         text = value.strip().lower()
-        if text in {"true", "1", "yes", "y"}:
+        if text in {"true", "1", "yes", "y", "是", "必填", "需要", "required"}:
             return True
-        if text in {"false", "0", "no", "n"}:
+        if text in {"false", "0", "no", "n", "否", "可选", "不需要", "optional"}:
             return False
     return bool(value)
 
@@ -358,28 +537,40 @@ def find_script_entry(catalog: List[Dict[str, Any]], operation_key: str) -> Opti
     for entry in catalog:
         if str(entry.get("operation_key") or "").strip() == normalized_key:
             return dict(entry)
+        if str(entry.get("script_key") or "").strip() == normalized_key:
+            return dict(entry)
     return None
 
 
 def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dict[str, Any]:
-    operations_text = read_optional_text(ontology_dir / "operations-list.md")
-    objects_text = read_optional_text(ontology_dir / "objects-list.md")
-    scripts_text = read_optional_text(ontology_dir / "scripts-list.md")
-    script_catalog = parse_script_catalog(scripts_text, ontology_dir=ontology_dir)
+    root_index_text = read_optional_text(ontology_dir / "index.md")
+    operations_text = read_optional_text(ontology_dir / "operations" / "index.md") or read_optional_text(
+        ontology_dir / "operations-list.md"
+    )
+    objects_text = read_optional_text(ontology_dir / "objects" / "index.md") or read_optional_text(
+        ontology_dir / "objects-list.md"
+    )
+    rules_text = read_optional_text(ontology_dir / "rules" / "index.md")
+    metrics_text = read_optional_text(ontology_dir / "metrics" / "index.md")
+    script_catalog = load_script_catalog(ontology_dir)
 
     return {
         "ontology": {
             "name": ontology.name,
             "description": ontology.description,
         },
+        "root_index": _compact_markdown_body(root_index_text),
         "operations_catalog": parse_markdown_table(operations_text) or operations_text,
         "objects_catalog": parse_markdown_table(objects_text) or objects_text,
+        "rules_catalog": parse_markdown_table(rules_text) or rules_text,
+        "metrics_catalog": parse_markdown_table(metrics_text) or metrics_text,
         "script_catalog": public_script_catalog(script_catalog),
-        "assets_catalog": build_asset_catalog(
-            ontology_dir,
-            trusted_root=Path(ontology.manifest_path).resolve().parent,
-        ),
     }
+
+
+def _compact_markdown_body(markdown: str) -> str:
+    _frontmatter, body = split_markdown_frontmatter(markdown)
+    return body.strip()
 
 
 def format_root_payload_compact(
@@ -396,6 +587,7 @@ def format_root_payload_compact(
         "ontology: {}".format(
             " - ".join(part for part in [ontology_name, ontology_description] if part) or "(unnamed)"
         ),
+        *_format_optional_block("root_index", root_payload.get("root_index")),
         "",
         "operations_catalog:",
         *_format_catalog(root_payload.get("operations_catalog")),
@@ -403,12 +595,22 @@ def format_root_payload_compact(
         "objects_catalog:",
         *_format_catalog(root_payload.get("objects_catalog")),
         "",
+        "rules_catalog:",
+        *_format_catalog(root_payload.get("rules_catalog")),
+        "",
+        "metrics_catalog:",
+        *_format_catalog(root_payload.get("metrics_catalog")),
+        "",
         "script_catalog:",
         *_format_script_catalog(root_payload.get("script_catalog")),
-        "",
-        "assets_catalog:",
-        *_format_asset_catalog(root_payload.get("assets_catalog")),
     ]
+
+
+def _format_optional_block(label: str, value: Any) -> List[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return ["", "{}:".format(label), *[line.rstrip() for line in text.splitlines() if line.strip()]]
 
 
 def format_markdown_payload_compact(
@@ -468,6 +670,8 @@ def _format_script_catalog(catalog: Any) -> List[str]:
         operation_key = _compact_inline_text(entry.get("operation_key"))
         if not operation_key:
             continue
+        title = _compact_inline_text(entry.get("title"))
+        label = "{} - {}".format(operation_key, title) if title and title != operation_key else operation_key
         parameters = entry.get("parameters") or []
         if isinstance(parameters, list) and parameters:
             params_text = "; ".join(
@@ -475,57 +679,10 @@ def _format_script_catalog(catalog: Any) -> List[str]:
                 for parameter in parameters
                 if isinstance(parameter, dict)
             )
-            lines.append("- {} (parameters: {})".format(operation_key, params_text))
+            lines.append("- {} (parameters: {})".format(label, params_text))
         else:
-            lines.append("- {} (parameters: none)".format(operation_key))
+            lines.append("- {} (parameters: none)".format(label))
     return lines or ["- none"]
-
-
-def _format_asset_catalog(catalog: Any) -> List[str]:
-    if not catalog:
-        return ["- none"]
-    if not isinstance(catalog, list):
-        return _format_catalog(catalog)
-
-    keys = sorted(
-        {
-            str(item or "").strip().replace("\\", "/").strip("/")
-            for item in catalog
-            if str(item or "").strip()
-        }
-    )
-    if not keys:
-        return ["- none"]
-
-    tree: Dict[str, Any] = {}
-    for key in keys:
-        node = tree
-        parts = [part for part in key.split("/") if part]
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node[parts[-1]] = None
-
-    lines = [
-        "supported formats: {}".format(supported_asset_formats_text()),
-        "key format: pass the shown file key to ontology_context(resource=\"asset\", key=...).",
-    ]
-    lines.extend(_format_asset_tree(tree, prefix="", parent_key=""))
-    return lines
-
-
-def _format_asset_tree(tree: Dict[str, Any], *, prefix: str, parent_key: str) -> List[str]:
-    lines: List[str] = []
-    for name in sorted(tree):
-        value = tree[name]
-        key = "{}/{}".format(parent_key, name).strip("/")
-        if isinstance(value, dict):
-            lines.append("{}- {}/".format(prefix, name))
-            lines.extend(_format_asset_tree(value, prefix=prefix + "  ", parent_key=key))
-        elif key == name:
-            lines.append("{}- {}".format(prefix, name))
-        else:
-            lines.append("{}- {} (key: {})".format(prefix, name, key))
-    return lines
 
 
 def _format_script_parameter(parameter: Dict[str, Any]) -> str:
@@ -573,6 +730,26 @@ def find_markdown_file(directory: Path, key: str, resource_name: str) -> Tuple[O
     if candidate.exists() and candidate.is_file():
         return candidate, None
 
-    available = sorted(path.stem for path in directory.glob("*.md") if path.is_file())
+    if directory.is_dir():
+        for path in sorted(directory.glob("*.md"), key=lambda item: item.name.lower()):
+            frontmatter = read_markdown_frontmatter(path)
+            candidates = {
+                str(frontmatter.get("key") or "").strip(),
+                str(frontmatter.get("canonical_key") or "").strip(),
+                str(frontmatter.get("title") or "").strip(),
+                path.stem,
+            }
+            aliases = frontmatter.get("aliases")
+            if isinstance(aliases, list):
+                candidates.update(str(alias or "").strip() for alias in aliases)
+            if normalized_key in {candidate for candidate in candidates if candidate}:
+                return path, None
+
+    available = sorted(_markdown_available_key(path) for path in directory.glob("*.md") if path.is_file())
     suffix = " Available keys: {}.".format(", ".join(available[:30])) if available else ""
     return None, "Error: {} '{}' not found.{}".format(resource_name, normalized_key, suffix)
+
+
+def _markdown_available_key(path: Path) -> str:
+    frontmatter = read_markdown_frontmatter(path)
+    return str(frontmatter.get("key") or path.stem).strip() or path.stem

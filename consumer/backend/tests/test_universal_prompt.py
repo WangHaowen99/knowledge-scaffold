@@ -118,13 +118,33 @@ def test_universal_prompt_includes_skill_rules():
 def test_universal_prompt_prefers_script_backed_execution():
     prompt = build_universal_system_prompt()
     # Script-backed routing is stated exactly once, in Step 4(a).
-    assert "Script-backed operation" in prompt
+    assert "Script-backed (工具流程)" in prompt
     assert "script_catalog" in prompt
-    assert "only source of truth for script-backed execution" in prompt
     assert "invoke `execute_script`" in prompt
     # Old duplicated phrasings are gone.
     assert "If `scripts-list.md` exists" not in prompt
-    assert "Script-backed (工具流程)" not in prompt
+    assert "execute_python_script" not in prompt
+
+
+def test_main_and_subagent_prompts_follow_v01_ontology_loading_flow():
+    prompt = build_universal_system_prompt()
+    assert "operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog`" in prompt
+    assert 'ontology_context(resource="operation", key=<operation_key>)' in prompt
+    assert "dependency/uses/entity association section" in prompt
+    assert "load the referenced `rule` and `metric` specs" in prompt
+
+    subagent_source = (
+        Path(__file__).resolve().parents[1]
+        / "agent"
+        / "sub_agents"
+        / "base.py"
+    ).read_text(encoding="utf-8")
+    assert 'Call `ontology_context(resource="root")`' in subagent_source
+    assert 'ontology_context(resource="operation", key=context.operation_key)' in subagent_source
+    assert 'ontology_context(resource="object")' in subagent_source
+    assert 'ontology_context(resource="rule")' in subagent_source
+    assert 'ontology_context(resource="metric")' in subagent_source
+    assert "root `script_catalog`" in subagent_source
 
 
 def test_universal_prompt_appends_memory_context_without_memory_tool_rules():

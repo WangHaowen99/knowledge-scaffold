@@ -15,8 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils.logging import get_logger
 from ontology.ontology_catalog import (
     get_ontology_manifest,
-    parse_script_catalog,
-    read_optional_text,
+    load_script_catalog,
 )
 
 logger = get_logger("direct_execution.matcher")
@@ -50,11 +49,14 @@ def _get_script_catalog(
         return None, error or "Ontology not found"
 
     ontology_dir = Path(ontology.ontology_dir).resolve()
-    scripts_text = read_optional_text(ontology_dir / "scripts-list.md")
-    if not scripts_text:
-        return None, "No scripts-list.md found for ontology '{}'".format(ontology_id)
-
-    catalog = parse_script_catalog(scripts_text, ontology_dir=ontology_dir)
+    catalog = [
+        entry
+        for entry in load_script_catalog(ontology_dir)
+        if entry.get("_is_bound_operation")
+        and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
+    ]
+    if not catalog:
+        return None, "No script catalog found for ontology '{}'".format(ontology_id)
     return catalog, None
 
 
@@ -116,6 +118,53 @@ def _calc_confidence(
     return min(1.0, coverage)
 
 
+def _normalized_phrase(text: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z一-鿿]+", "", str(text or "").lower())
+
+
+def _title_core(text: str) -> str:
+    normalized = _normalized_phrase(text)
+    for suffix in ("脚本", "查询", "分析", "计算", "流程"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+    return normalized
+
+
+def _calc_entry_confidence(
+    *,
+    entry: Dict[str, Any],
+    user_tokens: set[str],
+    user_request: str,
+) -> float:
+    operation_key = str(entry.get("operation_key") or "").strip()
+    best = _calc_confidence(user_tokens, operation_key, _tokenize(operation_key), user_request=user_request)
+
+    normalized_request = _normalized_phrase(user_request)
+    candidates = [
+        str(entry.get("title") or "").strip(),
+        str(entry.get("script_key") or "").strip(),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        core = _title_core(candidate)
+        if core and len(core) >= 6 and core in normalized_request:
+            best = max(best, 1.0)
+            continue
+        candidate_tokens = _tokenize(candidate)
+        if candidate_tokens:
+            best = max(
+                best,
+                _calc_confidence(
+                    user_tokens,
+                    candidate,
+                    candidate_tokens,
+                    user_request=user_request,
+                ),
+            )
+    return best
+
+
 def find_best_script_operation(
     user_request: str,
     ontology_id: str,
@@ -149,8 +198,11 @@ def find_best_script_operation(
         if not op_key:
             continue
 
-        op_tokens = _tokenize(op_key)
-        score = _calc_confidence(user_tokens, op_key, op_tokens, user_request=user_request)
+        score = _calc_entry_confidence(
+            entry=entry,
+            user_tokens=user_tokens,
+            user_request=user_request,
+        )
 
         if best_key is None or score > best_score or (score == best_score and len(op_key) > len(best_key)):
             best_score = score
