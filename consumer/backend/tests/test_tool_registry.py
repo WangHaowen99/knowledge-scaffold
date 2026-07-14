@@ -334,6 +334,172 @@ def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="
     return ontology_dir
 
 
+def _write_v01_ontology_package(tmp_path):
+    ontology_dir = tmp_path / "ontologies" / "demo-v01"
+    for directory in ("operations", "objects", "rules", "metrics", "scripts", "mappings"):
+        (ontology_dir / directory).mkdir(parents=True, exist_ok=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        "\n".join(
+            [
+                "kind: ontology-package",
+                "schema_version: 0.1",
+                "id: demo-v01",
+                "name: Demo v0.1",
+                "description: Demo ontology package",
+                "version: 0.1.0",
+                "language: zh-CN",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "index.md").write_text(
+        "---\nresource: root\nkey: root\n---\n\n# Demo Root\n",
+        encoding="utf-8",
+    )
+    (ontology_dir / "operations" / "index.md").write_text(
+        (
+            "---\nresource: operation_index\n---\n\n"
+            "| operation key | 标题 | 输入 |\n"
+            "| --- | --- | --- |\n"
+            "| 分析影响 | 影响分析 | eco_id |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "operations-list.md").write_text("- legacy-operation\n", encoding="utf-8")
+    (ontology_dir / "operations" / "impact.md").write_text(
+        (
+            "---\n"
+            "resource: operation\n"
+            "key: 分析影响\n"
+            "canonical_key: impact_analysis\n"
+            "title: 影响分析\n"
+            "aliases:\n"
+            "  - 影响评估\n"
+            "uses:\n"
+            "  objects:\n"
+            "    - 物料\n"
+            "  rules:\n"
+            "    - 生效规则\n"
+            "  metrics:\n"
+            "    - 处理成本\n"
+            "---\n\n"
+            "# 影响分析\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "objects" / "index.md").write_text(
+        (
+            "| object key | 标题 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| 物料 | TargetItem | 制造物料 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "objects-list.md").write_text("- legacy-object\n", encoding="utf-8")
+    (ontology_dir / "objects" / "material_doc.md").write_text(
+        (
+            "---\n"
+            "resource: object\n"
+            "key: 物料\n"
+            "canonical_key: target_item\n"
+            "title: 制造物料\n"
+            "aliases:\n"
+            "  - TargetItem\n"
+            "---\n\n"
+            "# 物料\n字段定义\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "rules" / "index.md").write_text(
+        (
+            "| rule key | 标题 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| 生效规则 | 变更生效 | 判断生效批次 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "rules" / "effectivity.md").write_text(
+        (
+            "---\n"
+            "resource: rule\n"
+            "key: 生效规则\n"
+            "canonical_key: effectivity_rule\n"
+            "title: 变更生效规则\n"
+            "aliases:\n"
+            "  - 生效判定\n"
+            "---\n\n"
+            "# 生效规则\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "metrics" / "index.md").write_text(
+        (
+            "| metric key | 标题 | 说明 |\n"
+            "| --- | --- | --- |\n"
+            "| 处理成本 | 库存处理成本 | 数量乘单价 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "metrics" / "handling_cost.md").write_text(
+        (
+            "---\n"
+            "resource: metric\n"
+            "key: 处理成本\n"
+            "canonical_key: handling_cost_metric\n"
+            "title: 库存处理成本\n"
+            "aliases:\n"
+            "  - 库存处理成本\n"
+            "---\n\n"
+            "# 处理成本\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "index.md").write_text(
+        (
+            "| script key | 绑定 operation | 入口 |\n"
+            "| --- | --- | --- |\n"
+            "| 影响脚本 | 分析影响 | impact.py |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "script_doc.md").write_text(
+        (
+            "---\n"
+            "resource: script\n"
+            "key: 影响脚本\n"
+            "canonical_key: impact_script\n"
+            "title: 影响分析脚本\n"
+            "aliases:\n"
+            "  - 影响执行脚本\n"
+            "bound_operation: 分析影响\n"
+            "entrypoint: impact.py\n"
+            "---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| eco_id | --eco-id | string | 是 | CHANGE_ORDER编号 |\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "impact.py").write_text(
+        (
+            "import json\n"
+            "import sys\n"
+            "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
+        ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "scripts" / "legacy.py").write_text("print('legacy')\n", encoding="utf-8")
+    (ontology_dir / "scripts-list.md").write_text(
+        "- `分析影响` -> `scripts/legacy.py`\n",
+        encoding="utf-8",
+    )
+    (ontology_dir / "mappings" / "object-data-mappings.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    return ontology_dir
+
+
 def _patch_test_ontology_registry(monkeypatch, tmp_path):
     registry = OntologyRegistry(ontology_dirs=[tmp_path / "ontologies"])
     registry.discover_ontologies()
@@ -428,12 +594,7 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
         "parameter format: name=description required|optional type; type[] means pass an array value.\n"
         "- 流程A (parameters: none)"
     ) in root_content
-    assert "assets_catalog:\n" in root_content
-    assert "supported formats: " in root_content
-    assert "- common.conf" in root_content
-    assert "- rules/" in root_content
-    assert "  - limits.ini (key: rules/limits.ini)" in root_content
-    assert "- binary.bin" in root_content
+    assert "assets_catalog" not in root_content
 
     object_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "object", "key": "TargetItem"})],
@@ -442,18 +603,115 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     assert object_result.messages[0]["content"] == "object_key: TargetItem\n\ncontent:\n# TargetItem\n字段"
     assert object_result.state_updates["read_document_records"][0]["doc_type"] == "object_doc"
 
-    asset_result = execute_tool_batch(
+    unsupported_resource_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "rules/limits.ini"})],
         _make_context(project_root=str(tmp_path)),
     )
-    assert asset_result.messages[0]["content"] == "asset_key: rules/limits.ini\n\ncontent:\n[limits]\nmax=10"
-    assert asset_result.state_updates["read_document_records"][0]["path"].endswith("assets/rules/limits.ini")
+    assert "arguments.resource must be one of" in unsupported_resource_result.messages[0]["content"]
 
-    unsupported_asset_result = execute_tool_batch(
-        [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "binary.bin"})],
-        _make_context(project_root=str(tmp_path)),
+
+def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
+    from agent.direct_execution.matcher import find_best_script_operation
+
+    _write_v01_ontology_package(tmp_path)
+    _patch_test_ontology_registry(monkeypatch, tmp_path)
+    context = _make_context(project_root=str(tmp_path))
+
+    root_result = execute_tool_batch(
+        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "root"})],
+        context,
     )
-    assert "Unsupported asset format" in unsupported_asset_result.messages[0]["content"]
+    root_content = root_result.messages[0]["content"]
+    assert "id: demo-v01" in root_content
+    assert "root_index:\n# Demo Root" in root_content
+    assert (
+        "operations_catalog:\n"
+        "columns: operation key | 标题 | 输入\n"
+        "- 分析影响 | 影响分析 | eco_id"
+    ) in root_content
+    assert (
+        "objects_catalog:\n"
+        "columns: object key | 标题 | 说明\n"
+        "- 物料 | TargetItem | 制造物料"
+    ) in root_content
+    assert (
+        "rules_catalog:\n"
+        "columns: rule key | 标题 | 说明\n"
+        "- 生效规则 | 变更生效 | 判断生效批次"
+    ) in root_content
+    assert (
+        "metrics_catalog:\n"
+        "columns: metric key | 标题 | 说明\n"
+        "- 处理成本 | 库存处理成本 | 数量乘单价"
+    ) in root_content
+    assert "- 分析影响 - 影响分析脚本 (parameters: eco_id=CHANGE_ORDER编号 required string)" in root_content
+    assert "assets_catalog" not in root_content
+    assert "legacy-operation" not in root_content
+    assert "legacy-object" not in root_content
+    assert "- 分析影响 (parameters: none)" not in root_content
+    root_record = root_result.state_updates["read_document_records"][0]
+    assert root_record["path"].endswith("ontologies/demo-v01/manifest.yaml")
+    assert root_record["ontology_version"] == "0.1.0"
+
+    resource_cases = {
+        "operation": {
+            "keys": ["分析影响", "impact_analysis", "影响分析", "影响评估", "impact"],
+            "filename": "impact.md",
+            "content": "# 影响分析",
+        },
+        "object": {
+            "keys": ["物料", "target_item", "制造物料", "TargetItem", "material_doc"],
+            "filename": "material_doc.md",
+            "content": "# 物料",
+        },
+        "rule": {
+            "keys": ["生效规则", "effectivity_rule", "变更生效规则", "生效判定", "effectivity"],
+            "filename": "effectivity.md",
+            "content": "# 生效规则",
+        },
+        "metric": {
+            "keys": ["处理成本", "handling_cost_metric", "库存处理成本", "库存处理成本", "handling_cost"],
+            "filename": "handling_cost.md",
+            "content": "# 处理成本",
+        },
+        "script": {
+            "keys": ["影响脚本", "impact_script", "影响分析脚本", "影响执行脚本", "script_doc"],
+            "filename": "script_doc.md",
+            "content": "CLI 参数",
+        },
+    }
+    for resource, case in resource_cases.items():
+        for key in case["keys"]:
+            result = execute_tool_batch(
+                [
+                    _build_tool_call(
+                        "ontology_context",
+                        {"ontology_id": "demo-v01", "resource": resource, "key": key},
+                    )
+                ],
+                context,
+            )
+            assert case["content"] in result.messages[0]["content"]
+            record = result.state_updates["read_document_records"][0]
+            assert record["path"].endswith("/{}/{}".format("{}s".format(resource), case["filename"]))
+            assert record["ontology_version"] == "0.1.0"
+
+    script_result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "execute_script",
+                {"ontology_id": "demo-v01", "operation_key": "分析影响", "arguments": {"eco_id": "CHANGE_ORDER-001"}},
+            )
+        ],
+        context,
+    )
+    assert json.loads(script_result.messages[0]["content"]) == ["--eco-id", "CHANGE_ORDER-001"]
+
+    matched_entry, matched_key, confidence = find_best_script_operation("分析影响", "demo-v01")
+    assert matched_entry is not None
+    assert matched_entry["_script_path"] == "scripts/impact.py"
+    assert matched_key == "分析影响"
+    assert confidence == 1.0
 
 
 def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):
@@ -2289,7 +2547,17 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
     assert "root returns ontology metadata and catalogs" in ontology_resource_description
     assert "operation returns operation content by key" in ontology_resource_description
     assert "object returns object/entity definition by key" in ontology_resource_description
-    assert "asset returns a shared text/config file by key" in ontology_resource_description
+    assert "rule returns rule content by key" in ontology_resource_description
+    assert "metric returns metric content by key" in ontology_resource_description
+    assert "script returns registered script description by key" in ontology_resource_description
+    assert ontology_schema["parameters"]["properties"]["resource"]["enum"] == [
+        "root",
+        "operation",
+        "object",
+        "rule",
+        "metric",
+        "script",
+    ]
     assert "resource='root'" not in ontology_description
     assert "semantic keys" not in ontology_description
     assert "file paths" not in ontology_description

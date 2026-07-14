@@ -351,3 +351,70 @@ def test_registry_preload_uses_active_ontology_version(tmp_path, monkeypatch):
     assert "active-op" in context
     assert "active-object" in context
     assert "old-op" not in context
+
+
+def test_v01_preload_records_include_active_version_indexes(tmp_path, monkeypatch):
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import (
+        build_selected_ontology_preload_context,
+        build_selected_ontology_preload_records,
+        get_ontology_registry,
+    )
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, workspace_id="v01-versioned-preload")
+    ontology_dir = workspace_paths.ontologies_dir / "demo-v01"
+    version1 = ontology_dir / "versions" / "1.0.0"
+    version2 = ontology_dir / "versions" / "2.0.0"
+    for version_dir in (version1, version2):
+        for directory in ("objects", "operations", "rules", "metrics", "scripts"):
+            (version_dir / directory).mkdir(parents=True, exist_ok=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: demo-v01\n"
+            "name: Demo v0.1\n"
+            "description: Versioned v0.1 ontology\n"
+            "version: 2.0.0\n"
+            "active_version: 2.0.0\n"
+            "versions:\n"
+            "  - 1.0.0\n"
+            "  - 2.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    for version_dir, marker in ((version1, "old"), (version2, "active")):
+        (version_dir / "index.md").write_text("# {} root\n".format(marker), encoding="utf-8")
+        for directory in ("objects", "operations", "rules", "metrics", "scripts"):
+            (version_dir / directory / "index.md").write_text(
+                "| key | title |\n| --- | --- |\n| {}-{} | {} |\n".format(marker, directory, marker),
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    ontology = get_ontology_registry().get_ontology("demo-v01")
+    assert ontology is not None
+    assert ontology.kind == "ontology-package"
+    assert ontology.active_version == "2.0.0"
+    assert Path(ontology.ontology_dir) == version2
+
+    context = build_selected_ontology_preload_context("demo-v01")
+    assert "active root" in context
+    assert "active-operations" in context
+    assert "old root" not in context
+
+    records = build_selected_ontology_preload_records("demo-v01", turn_id=3)
+    record_paths = {record["path"] for record in records}
+    assert any(path.endswith("ontologies/demo-v01/manifest.yaml") for path in record_paths)
+    for relative_path in (
+        "index.md",
+        "objects/index.md",
+        "operations/index.md",
+        "rules/index.md",
+        "metrics/index.md",
+        "scripts/index.md",
+    ):
+        assert any(path.endswith("ontologies/demo-v01/versions/2.0.0/{}".format(relative_path)) for path in record_paths)
+    assert not any("/versions/1.0.0/" in path for path in record_paths)
+    assert {record["ontology_version"] for record in records} == {"2.0.0"}
