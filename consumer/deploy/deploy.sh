@@ -57,17 +57,13 @@ fi
 log "Applying migration after writes stopped"
 "${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped
 
-log "Starting auth-server before the consumer runtime"
-compose_up_auth "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
-wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
-verify_auth_contract
-
-log "Starting backend, MCP, and frontend"
+log "Starting release containers"
 compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"
 
 wait_for_container "onto-agent-backend" 180 || die "Backend container did not become healthy"
 wait_for_container "onto-agent-mcp" 180 || die "MCP container did not become healthy"
 wait_for_container "onto-agent-frontend" 180 || die "Frontend container did not become healthy"
+wait_for_container "onto-agent-auth-server" 180 || die "Auth server container did not become healthy"
 
 write_state \
     "${TARGET_VERSION}" \
