@@ -4354,9 +4354,9 @@ def test_create_default_jiuwen_agent_lazy_loads_react_agent(monkeypatch):
         "api_base": "https://llm.example/v1",
         "timeout": 33.0,
         "max_retries": 3,
-        "verify_ssl": True,
+        "verify_ssl": False,
     }
-    assert created["model_client_config"]["verify_ssl"] is True
+    assert created["model_client_config"]["verify_ssl"] is False
     assert created["model_request_config"]["model"] == "model-a"
     assert created["model_request_config"]["temperature"] == 0.2
     assert created["model_request_config"]["max_tokens"] == 2048
