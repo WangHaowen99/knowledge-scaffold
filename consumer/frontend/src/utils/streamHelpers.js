@@ -993,11 +993,12 @@ export const applyAgentV2Event = (current, envelope) => {
   }
 
   if (type === 'iteration.completed') {
+    const eventTs = envelope.ts || Date.now();
     next.streamSegments = closeOpenSegment(next.streamSegments);
     next.iterationMetrics = upsertIterationMetric(
       current?.iterationMetrics,
       payload,
-      envelope.ts || Date.now(),
+      eventTs,
     );
     next.currentSegmentType = null;
     return next;
@@ -1076,6 +1077,8 @@ export const applyAgentV2Event = (current, envelope) => {
         node: sourceNode || target.node,
         meta: mergeToolMeta(target.meta, payload),
         finished: false,
+        startTs: target.startTs || envelope.ts || Date.now(),
+        endTs: envelope.ts || Date.now(),
         spanKey: target.spanKey || envelopeSpanKey || undefined,
         parentKey: target.parentKey || envelopeParentKey || undefined,
       };
@@ -1089,6 +1092,8 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         finished: false,
         toolStatus: null,
+        startTs: envelope.ts || Date.now(),
+        endTs: envelope.ts || Date.now(),
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });
@@ -1133,6 +1138,7 @@ export const applyAgentV2Event = (current, envelope) => {
           webSearchEvent,
         ),
         finished: targetOpenIdx !== -1 ? false : Boolean(target.finished),
+        endTs: envelope.ts || Date.now(),
         spanKey: target.spanKey || envelopeSpanKey || undefined,
         parentKey: target.parentKey || envelopeParentKey || undefined,
       };
@@ -1152,6 +1158,8 @@ export const applyAgentV2Event = (current, envelope) => {
         ),
         finished: false,
         toolStatus: null,
+        startTs: envelope.ts || Date.now(),
+        endTs: envelope.ts || Date.now(),
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });
@@ -1189,6 +1197,8 @@ export const applyAgentV2Event = (current, envelope) => {
 
     if (targetIdx !== -1) {
       const target = next.streamSegments[targetIdx];
+      const elapsedMs = normalizeNonNegativeNumber(payload?.elapsed_ms);
+      const endTs = envelope.ts || Date.now();
       next.streamSegments[targetIdx] = {
         ...target,
         meta: mergeToolMeta(target.meta, payload),
@@ -1196,10 +1206,14 @@ export const applyAgentV2Event = (current, envelope) => {
         text: target.text || payload.output_preview || '',
         finished: true,
         toolStatus,
+        startTs: target.startTs || (elapsedMs != null ? endTs - elapsedMs : endTs),
+        endTs,
         spanKey: target.spanKey || envelopeSpanKey || undefined,
         parentKey: target.parentKey || envelopeParentKey || undefined,
       };
     } else {
+      const elapsedMs = normalizeNonNegativeNumber(payload?.elapsed_ms);
+      const endTs = envelope.ts || Date.now();
       next.streamSegments = closeOpenSegment(next.streamSegments);
       next.streamSegments.push({
         type: 'tool',
@@ -1209,6 +1223,8 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         finished: true,
         toolStatus,
+        startTs: elapsedMs != null ? endTs - elapsedMs : endTs,
+        endTs,
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });

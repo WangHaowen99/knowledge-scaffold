@@ -27,7 +27,8 @@ export function formatTime(ts) {
   const sameDay = d.toDateString() === now.toDateString();
   const hh = `${d.getHours()}`.padStart(2, '0');
   const mm = `${d.getMinutes()}`.padStart(2, '0');
-  return sameDay ? `${hh}:${mm}` : `${d.getMonth() + 1}-${d.getDate()} ${hh}:${mm}`;
+  const ss = `${d.getSeconds()}`.padStart(2, '0');
+  return sameDay ? `${hh}:${mm}:${ss}` : `${d.getMonth() + 1}-${d.getDate()} ${hh}:${mm}:${ss}`;
 }
 
 export function truncate(s, n) {
