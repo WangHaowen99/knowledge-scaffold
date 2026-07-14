@@ -1026,7 +1026,7 @@ Ontologies 也按工作空间隔离。
       "version": "1.0.0",
       "language": "zh-CN",
       "manifest_path": "/abs/path/.../manifest.yaml",
-      "ontology_md_path": "/abs/path/.../ONTOLOGY.md",
+      "index_path": "/abs/path/.../index.md",
       "business_data": {
         "connection_id": "example-nl2sql",
         "connection_name": "示例制造 NL2SQL",
@@ -1240,9 +1240,10 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 - 仅支持 `.zip`
 - 支持两类上传包：
   - 源格式包：需能识别出有效源目录（包含 `object` 与 `logic`），服务端会自动转换成 ontology 格式
-  - 已转换 ontology 包：需包含有效 `manifest.yaml`，并带有 `objects/`、`operations/`、`objects-list.md`、`operations-list.md` 中的任意部分
+  - v0.1 ontology 包：`manifest.yaml` 声明 `kind: ontology-package`、`schema_version: 0.1`，目录清单使用各目录的 `index.md`
 - 源格式包会优先从 `SKILL.md` frontmatter 读取 `id` / `name` / `description`
-- 源格式包如果额外包含 `action/` 目录，会复制其中 Python 脚本和 `.env` 文件到目标 `scripts/` 目录，并根据 Python 脚本生成 `scripts-list.md`；脚本顶部可用 `# 工具流程: <操作名>` 声明对应的 `logic/<操作名>.md`，未声明时退回使用脚本名作为 key；脚本参数优先读取顶部 `parameters` / `参数` 注释，未声明时静态解析 `argparse.add_argument(...)`；下划线开头的 helper 和 `.env` 只复制不注册
+- 源格式包如果额外包含 `action/` 目录，会复制其中 Python 脚本和 `.env` 文件到目标 `scripts/`，并生成 `scripts/index.md` 与 `scripts/<key>.md` 描述文件；脚本顶部可用 `# 工具流程: <操作名>` 声明对应的 `logic/<操作名>.md`
+- 迁移期旧格式包会在导入边界一次性转换；安装目录不生成或保留 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`
 - 已转换 ontology 包会直接使用 `manifest.yaml` 中的元数据
 - 如果目标 ontology 已存在且未传 `overwrite=true`，会返回确认型冲突
 - 传 `overwrite=true` 时，不论是源格式包还是已转换包，都会以新导入结果整体替换目标 ontology 目录，不保留旧残留文件
@@ -1271,8 +1272,8 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "source_root": "/tmp/.../unzipped/project",
   "objects_count": 12,
   "operations_count": 18,
-  "objects_list_path": "/abs/path/.../objects-list.md",
-  "operations_list_path": "/abs/path/.../operations-list.md",
+  "objects_index_path": "/abs/path/.../objects/index.md",
+  "operations_index_path": "/abs/path/.../operations/index.md",
   "business_data_binding": {
     "ontology_id": "example-domain-operations-manual",
     "connection_id": "example-nl2sql",
@@ -1280,7 +1281,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   },
   "warnings": {
     "objects": [],
-    "objects_list": [],
+    "objects_index": [],
     "operations": []
   }
 }

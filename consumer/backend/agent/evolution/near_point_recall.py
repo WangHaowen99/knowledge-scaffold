@@ -33,7 +33,7 @@ def parse_ontology_doc_path(file_path: str) -> Optional[Tuple[str, str, str]]:
     """Return (ontology_id, kind, key) if ``file_path`` is an ontology op/object doc.
 
     ``kind`` is ``"operations"`` or ``"objects"``.  ``key`` is the filename stem.
-    Returns None for list pages like ``operations-list.md``.
+    Returns None for directory pages like ``operations/index.md``.
     """
     if not file_path:
         return None
@@ -46,7 +46,7 @@ def parse_ontology_doc_path(file_path: str) -> Optional[Tuple[str, str, str]]:
     raw_name = PurePosixPath(normalized).stem
     if not ontology_id or not raw_name:
         return None
-    if raw_name.endswith("-list"):
+    if raw_name.lower() == "index":
         return None
     return ontology_id, kind, raw_name
 

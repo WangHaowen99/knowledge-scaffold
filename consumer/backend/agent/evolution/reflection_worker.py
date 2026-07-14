@@ -51,14 +51,14 @@ _REFLECTION_MAX_OUTPUT_TOKENS = 1500
 
 
 class ReflectionSchemaEntry(BaseModel):
-    entity_key: str = Field(..., description="Entity name from objects-list.md")
+    entity_key: str = Field(..., description="Entity key from objects/index.md")
     content: str = Field(..., description="Concrete schema facts (actual field names, value formats).")
 
 
 class ReflectionOutput(BaseModel):
     operation_executed: Optional[str] = Field(
         None,
-        description="Canonical operation name from operations-list.md, or null if none.",
+        description="Canonical operation key from operations/index.md, or null if none.",
     )
     compliance_score: float = Field(0.0, ge=0.0, le=1.0)
     efficiency_score: float = Field(0.0, ge=0.0, le=1.0)
@@ -239,7 +239,7 @@ tool calls, fewer iterations).
 Rules:
 - Only output knowledge that is concrete, reusable, and grounded in this turn.
 - `operation_executed` must be the canonical operation name from
-  operations-list.md when identifiable.
+  operations/index.md when identifiable.
 - `new_procedure` captures a successful, repeatable pattern (e.g., "this op is
   script-backed — call execute_script with args X").
 - `new_procedure` MUST be a string or null. Do not use an array for this field.

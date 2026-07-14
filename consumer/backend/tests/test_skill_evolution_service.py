@@ -40,11 +40,12 @@ def _write_ontology(onto_dir: Path, ops: Dict[str, str], active_version: str = "
         (vdir / "operations").mkdir(parents=True, exist_ok=True)
         for name, content in ops.items():
             (vdir / "operations" / name).write_text(content, encoding="utf-8")
-        (vdir / "operations-list.md").write_text(
+        (vdir / "operations" / "index.md").write_text(
             "\n".join("- {}".format(Path(n).stem) for n in ops) + "\n", encoding="utf-8"
         )
     manifest = (
-        "kind: ontology\n"
+        "kind: ontology-package\n"
+            "schema_version: 0.1\n"
         "id: onto1\n"
         "name: 测试本体\n"
         "description: test\n"
@@ -58,11 +59,14 @@ def _write_ontology(onto_dir: Path, ops: Dict[str, str], active_version: str = "
     return onto_dir / "versions" / active_version
 
 
-def _build_ontology_zip(root_name: str, ops: Dict[str, str], ops_list: str) -> bytes:
+def _build_ontology_zip(root_name: str, ops: Dict[str, str], operations_index: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("{}/manifest.yaml".format(root_name), "kind: ontology\nid: onto1\n")
-        zf.writestr("{}/operations-list.md".format(root_name), ops_list)
+        zf.writestr(
+            "{}/manifest.yaml".format(root_name),
+            "kind: ontology-package\nschema_version: 0.1\nid: onto1\n",
+        )
+        zf.writestr("{}/operations/index.md".format(root_name), operations_index)
         for name, content in ops.items():
             zf.writestr("{}/operations/{}".format(root_name, name), content)
     return buf.getvalue()
@@ -165,8 +169,10 @@ def test_read_zip_members():
 def test_locate_evolved_root(tmp_path):
     root = tmp_path / "extract"
     (root / "onto1" / "operations").mkdir(parents=True)
+    (root / "onto1" / "operations" / "index.md").write_text("# operations\n")
     assert _locate_evolved_root(root).name == "onto1"
     (root / "operations").mkdir(parents=True, exist_ok=True)
+    (root / "operations" / "index.md").write_text("# operations\n")
     # top-level has operations now
     assert _locate_evolved_root(root) == root
 
@@ -187,7 +193,7 @@ def test_compute_diff_modified_added_deleted(tmp_path):
     (evolved_dir / "operations").mkdir(parents=True)
     (evolved_dir / "operations" / "foo.md").write_text("# foo\nstep1\nstep2\n")
     (evolved_dir / "operations" / "bar.md").write_text("# bar")
-    (evolved_dir / "operations-list.md").write_text("- foo\n- bar\n")
+    (evolved_dir / "operations" / "index.md").write_text("- foo\n- bar\n")
 
     diff = service.compute_diff(rec)
     assert not diff.is_empty
@@ -205,7 +211,7 @@ def test_compute_diff_empty_when_identical(tmp_path):
     evolved_dir = store.ensure_temp_dir("ws1", "t1") / "onto1"
     (evolved_dir / "operations").mkdir(parents=True)
     (evolved_dir / "operations" / "foo.md").write_text("# foo")
-    (evolved_dir / "operations-list.md").write_text("- foo\n")
+    (evolved_dir / "operations" / "index.md").write_text("- foo\n")
     diff = service.compute_diff(rec)
     assert diff.is_empty
 
@@ -227,12 +233,12 @@ def test_compute_diff_normalizes_crlf_vs_lf(tmp_path):
     evolved_dir = store.ensure_temp_dir("ws1", "t1") / "onto1"
     (evolved_dir / "operations").mkdir(parents=True)
     (evolved_dir / "operations" / "foo.md").write_text("# foo\nstep1\nstep2\nstep3\n")
-    (evolved_dir / "operations-list.md").write_text("- foo\n")
+    (evolved_dir / "operations" / "index.md").write_text("- foo\n")
 
     diff = service.compute_diff(rec)
-    # operations-list.md differs only by CRLF vs LF → must be skipped.
+    # operations/index.md differs only by CRLF vs LF → must be skipped.
     by_path = {f.path: f for f in diff.files}
-    assert "operations-list.md" not in by_path
+    assert "operations/index.md" not in by_path
     # foo.md has one real added line → +1 -1, content normalized to LF.
     assert "operations/foo.md" in by_path
     foo = by_path["operations/foo.md"]

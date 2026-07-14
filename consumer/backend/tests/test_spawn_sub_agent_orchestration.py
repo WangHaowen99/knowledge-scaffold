@@ -208,7 +208,8 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
     (ontology_dir / "scripts").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for spawn-sub-agent tests\n"
@@ -217,22 +218,28 @@ def test_spawn_sub_agent_preserves_semantic_ontology_context(monkeypatch, tmp_pa
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "operations-list.md").write_text("- demo-tool\n- child-tool\n", encoding="utf-8")
-    (ontology_dir / "objects-list.md").write_text("- demo-object\n", encoding="utf-8")
-    (ontology_dir / "scripts-list.md").write_text(
-        "\n".join(
-            [
-                "## 脚本映射",
-                "- `demo-tool` -> `scripts/demo_tool.py`",
-                "  `args`: `[\"--demo-id\", \"<Demo编号>\"]`",
-                "- `child-tool` -> `scripts/child_tool.py`",
-                "  `args`: `[\"--child-id\", \"<Child编号>\"]`",
-                "- `shared-helper` -> `scripts/shared_helper.py`",
-                "  `args`: `[\"--helper-id\", \"<Helper编号>\"]`",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    (ontology_dir / "operations" / "index.md").write_text("- demo-tool\n- child-tool\n", encoding="utf-8")
+    (ontology_dir / "objects" / "index.md").write_text("- demo-object\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    for key, operation_key, argument in (
+        ("demo_tool", "demo-tool", "Demo编号"),
+        ("child_tool", "child-tool", "Child编号"),
+        ("shared_helper", "shared-helper", "Helper编号"),
+    ):
+        (ontology_dir / "scripts" / "{}.md".format(key)).write_text(
+            "---\nresource: script\nkey: {}\nbound_operation: {}\nentrypoint: {}.py\n---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| {} | --{}-id | string | 是 | {} |\n".format(
+                key,
+                operation_key,
+                key,
+                argument,
+                key.split("_")[0],
+                argument,
+            ),
+            encoding="utf-8",
+        )
     (ontology_dir / "operations" / "demo-tool.md").write_text(
         "# 管理标签\n#工具流程\n",
         encoding="utf-8",

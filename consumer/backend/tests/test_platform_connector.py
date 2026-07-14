@@ -224,11 +224,12 @@ def test_platform_event_mapper_builds_ontology_snapshot_event(tmp_path):
     ontology_dir = ontology_root / "sales"
     version_dir = ontology_dir / "versions" / "v2"
     version_dir.mkdir(parents=True)
-    (version_dir / "ONTOLOGY.md").write_text("# Sales Ontology\n", encoding="utf-8")
+    (version_dir / "index.md").write_text("# Sales Ontology\n", encoding="utf-8")
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: sales",
                 "name: Sales Ontology",
                 "description: Sales domain ontology",
@@ -379,11 +380,12 @@ def test_platform_exporter_sends_ontology_snapshot_with_environment_auth_headers
     ontology_dir = ontology_root / "sales"
     version_dir = ontology_dir / "versions" / "v1"
     version_dir.mkdir(parents=True)
-    (version_dir / "ONTOLOGY.md").write_text("# Sales Ontology\n", encoding="utf-8")
+    (version_dir / "index.md").write_text("# Sales Ontology\n", encoding="utf-8")
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: sales",
                 "name: Sales Ontology",
                 "description: Sales domain ontology",

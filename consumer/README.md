@@ -183,9 +183,9 @@ my-ontology.zip
 - `SKILL.md` 需要包含 `id`、`name`、`description` frontmatter。
 - `object/` 放实体对象定义，每个实体一个 `.md` 文件。
 - `logic/` 放业务操作逻辑，每个操作一个 `.md` 文件。
-- `action/` 可选，放 Python 脚本及脚本运行所需 `.env` 文件；导入后会复制到 `scripts/` 并根据 Python 脚本生成 `scripts-list.md`。脚本顶部可用 `# 工具流程: <操作名>` 绑定对应 `logic/<操作名>.md`，未声明时退回使用脚本名作为 key；脚本参数优先读取顶部 `parameters` / `参数` 注释，未声明时静态解析 `argparse.add_argument(...)`；下划线开头的 helper 和 `.env` 只复制不注册。
+- `action/` 可选，放 Python 脚本及脚本运行所需 `.env` 文件；导入后会复制到 `scripts/`，为可执行脚本生成 `scripts/<key>.md` 描述文件，并更新 `scripts/index.md`。脚本顶部可用 `# 工具流程: <操作名>` 绑定对应 `logic/<操作名>.md`；脚本参数优先读取顶部 `parameters` / `参数` 注释，未声明时静态解析 `argparse.add_argument(...)`；下划线开头的 helper 和 `.env` 只复制不注册。
 
-- 也支持上传已转换本体包：包含 `manifest.yaml`，并包含 `objects/`、`operations/`、`objects-list.md`、`operations-list.md` 中至少一类内容。
+- 已转换本体包使用 `kind: ontology-package`、`schema_version: 0.1`，目录清单位于各目录的 `index.md`。迁移期仍接受旧包，导入边界会一次性转换；安装目录不会保留 `ONTOLOGY.md` 或 `*-list.md`。
 
 完整模板和字段说明见 [`docs/ontology-upload-template.md`](docs/ontology-upload-template.md)。
 

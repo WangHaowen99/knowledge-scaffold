@@ -40,6 +40,7 @@ class OntologyManifest(BaseModel):
     """Represents a discovered ontology manifest."""
 
     kind: str = Field(..., description="Manifest type identifier")
+    schema_version: str = Field(..., description="Ontology package schema version")
     id: str = Field(..., description="Ontology identifier")
     name: str = Field(..., description="Ontology display name")
     description: str = Field(..., description="Ontology summary")
@@ -51,7 +52,7 @@ class OntologyManifest(BaseModel):
     scope: List[str] = Field(default_factory=list, description="Supported business scope")
     manifest_path: str = Field(..., description="Path to manifest.yaml")
     ontology_dir: str = Field(..., description="Ontology directory path")
-    ontology_md_path: Optional[str] = Field(None, description="Optional ONTOLOGY.md path")
+    index_path: Optional[str] = Field(None, description="Optional package index.md path")
 
 
 class OntologyLoader:
@@ -89,8 +90,12 @@ class OntologyLoader:
             return None
 
         kind = str(raw.get("kind")).strip()
-        if kind not in {"ontology", "ontology-package"}:
-            logger.error("Ontology manifest kind must be 'ontology' or 'ontology-package': %s", manifest_path)
+        schema_version = str(raw.get("schema_version") or "").strip()
+        if kind != "ontology-package" or schema_version != "0.1":
+            logger.error(
+                "Ontology manifest must declare kind=ontology-package and schema_version=0.1: %s",
+                manifest_path,
+            )
             return None
 
         try:
@@ -103,9 +108,10 @@ class OntologyLoader:
                 )
                 return None
 
-            ontology_md_path = active_dir / "ONTOLOGY.md"
+            index_path = active_dir / "index.md"
             return OntologyManifest(
                 kind=kind,
+                schema_version=schema_version,
                 id=str(raw.get("id")).strip(),
                 name=str(raw.get("name")).strip(),
                 description=str(raw.get("description")).strip(),
@@ -117,9 +123,9 @@ class OntologyLoader:
                 scope=[str(item).strip() for item in (raw.get("scope") or []) if str(item).strip()],
                 manifest_path=str(manifest_path),
                 ontology_dir=str(active_dir),
-                ontology_md_path=(
-                    str(ontology_md_path)
-                    if ontology_md_path.exists()
+                index_path=(
+                    str(index_path)
+                    if index_path.exists()
                     else None
                 ),
             )
@@ -500,9 +506,6 @@ def _resolve_selected_ontology_root_docs(ontology: OntologyManifest) -> List[tup
         ("rules/index.md", (ontology_dir / "rules" / "index.md").resolve(), False),
         ("metrics/index.md", (ontology_dir / "metrics" / "index.md").resolve(), False),
         ("scripts/index.md", (ontology_dir / "scripts" / "index.md").resolve(), False),
-        ("operations-list.md", (ontology_dir / "operations-list.md").resolve(), True),
-        ("objects-list.md", (ontology_dir / "objects-list.md").resolve(), True),
-        ("scripts-list.md", (ontology_dir / "scripts-list.md").resolve(), False),
     ]
 
 

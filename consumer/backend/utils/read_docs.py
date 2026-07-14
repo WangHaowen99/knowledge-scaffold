@@ -215,14 +215,16 @@ def _infer_document_identity(file_path: str) -> Tuple[str, Optional[str], Option
 
     if filename == "manifest.yaml":
         return "manifest", ontology_id, None, None
-    if filename == "operations-list.md":
-        return "operations_list", ontology_id, None, None
-    if filename == "objects-list.md":
-        return "objects_list", ontology_id, None, None
-    if filename == "scripts-list.md":
-        return "scripts_list", ontology_id, None, None
-    if filename == "ONTOLOGY.md":
-        return "ontology_doc", ontology_id, None, None
+    if filename == "index.md":
+        parent = path_obj.parent.name.lower()
+        index_types = {
+            "objects": "objects_index",
+            "operations": "operations_index",
+            "rules": "rules_index",
+            "metrics": "metrics_index",
+            "scripts": "scripts_index",
+        }
+        return index_types.get(parent, "ontology_index"), ontology_id, None, None
     if suffix == ".md" and "objects" in parts:
         entity_name = path_obj.stem
         return "object_doc", ontology_id, entity_name, None

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from ontology.ontologies import OntologyManifest
-from ontology.ontology_catalog import parse_markdown_table, read_optional_text
+from ontology.ontology_catalog import parse_markdown_table, read_markdown_frontmatter, read_optional_text
 
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
@@ -23,11 +23,11 @@ def build_ontology_graph(
 
     root = ontology_dir.resolve()
     operation_catalog = _catalog_by_key(
-        read_optional_text(root / "operations-list.md"),
+        read_optional_text(root / "operations" / "index.md"),
         key_fields=("名称", "operation", "operation_key", "逻辑", "name"),
     )
     object_catalog = _catalog_by_key(
-        read_optional_text(root / "objects-list.md"),
+        read_optional_text(root / "objects" / "index.md"),
         key_fields=("中文名称", "object", "object_key", "实体", "name"),
     )
 
@@ -119,7 +119,10 @@ def _add_markdown_nodes(
     if not directory.is_dir():
         return
     for path in sorted(directory.glob("*.md"), key=lambda item: item.stem):
-        key = path.stem
+        if path.name.lower() == "index.md":
+            continue
+        frontmatter = read_markdown_frontmatter(path)
+        key = str(frontmatter.get("key") or path.stem).strip()
         row = catalog.get(key, {})
         _add_node(
             nodes_by_id,
@@ -128,7 +131,7 @@ def _add_markdown_nodes(
                 "id": f"{node_type}:{key}",
                 "type": node_type,
                 "key": key,
-                "label": key,
+                "label": str(frontmatter.get("title") or key).strip(),
                 "description": _description_from_catalog(row),
                 "source": f"{source_prefix}/{path.name}",
             },
@@ -306,7 +309,9 @@ def _add_generated_operation_edges(
     if not operations_dir.is_dir():
         return
     for path in sorted(operations_dir.glob("*.md"), key=lambda item: item.stem):
-        source_id = operation_ids.get(path.stem)
+        if path.name.lower() == "index.md":
+            continue
+        source_id = operation_ids.get(_resource_key(path))
         if not source_id:
             continue
         content = _read_text(path)
@@ -359,7 +364,9 @@ def _add_generated_object_edges(
     if not objects_dir.is_dir():
         return
     for path in sorted(objects_dir.glob("*.md"), key=lambda item: item.stem):
-        source_id = object_ids.get(path.stem)
+        if path.name.lower() == "index.md":
+            continue
+        source_id = object_ids.get(_resource_key(path))
         if not source_id:
             continue
         content = _read_text(path)
@@ -385,6 +392,10 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except Exception:
         return ""
+
+
+def _resource_key(path: Path) -> str:
+    return str(read_markdown_frontmatter(path).get("key") or path.stem).strip()
 
 
 def _contains_key(content: str, key: str) -> bool:

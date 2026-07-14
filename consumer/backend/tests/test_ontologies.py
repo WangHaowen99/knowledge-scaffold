@@ -24,7 +24,7 @@ def _write_example_manifest(workspace_paths):
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
             "schema_version: 0.1\n"
             f"id: {EXAMPLE_ONTOLOGY_ID}\n"
             f"name: {EXAMPLE_ONTOLOGY_ID}\n"
@@ -78,7 +78,8 @@ def test_ontology_registry_uses_project_root_env(tmp_path, monkeypatch):
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for tests\n"
@@ -116,7 +117,8 @@ def test_disabled_ontology_is_not_exposed_to_model_context(tmp_path, monkeypatch
     disabled_dir.mkdir(parents=True)
     (enabled_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: enabled-ontology\n"
             "name: Enabled Ontology\n"
             "description: Enabled ontology for tests\n"
@@ -128,7 +130,8 @@ def test_disabled_ontology_is_not_exposed_to_model_context(tmp_path, monkeypatch
     )
     (disabled_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: disabled-ontology\n"
             "name: Disabled Ontology\n"
             "description: Disabled ontology for tests\n"
@@ -166,6 +169,21 @@ def test_build_ontologies_section_keeps_empty_block_for_empty_workspace(tmp_path
 
     assert registry.ontologies == {}
     assert section == "<Available-Ontologies>\n</Available-Ontologies>"
+
+
+def test_runtime_loader_rejects_legacy_manifest(tmp_path):
+    from ontology.ontologies import OntologyLoader
+
+    ontology_dir = tmp_path / "legacy"
+    ontology_dir.mkdir()
+    (ontology_dir / "manifest.yaml").write_text(
+        "kind: ontology\nid: legacy\nname: Legacy\ndescription: Legacy package\n"
+        "version: 1.0.0\nlanguage: zh-CN\n",
+        encoding="utf-8",
+    )
+    (ontology_dir / "index.md").write_text("# Legacy\n", encoding="utf-8")
+
+    assert OntologyLoader.load_ontology(ontology_dir) is None
 
 
 def test_example_ontology_manifest_contains_expected_metadata():
@@ -216,7 +234,8 @@ def test_build_selected_ontology_preload_context_includes_root_docs(tmp_path, mo
     (ontology_dir / "objects").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for preload tests\n"
@@ -225,8 +244,8 @@ def test_build_selected_ontology_preload_context_includes_root_docs(tmp_path, mo
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "operations-list.md").write_text("- demo-op", encoding="utf-8")
-    (ontology_dir / "objects-list.md").write_text("- demo-object", encoding="utf-8")
+    (ontology_dir / "operations" / "index.md").write_text("- demo-op", encoding="utf-8")
+    (ontology_dir / "objects" / "index.md").write_text("- demo-object", encoding="utf-8")
 
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
 
@@ -259,7 +278,8 @@ def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_
     (ontology_dir / "objects").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for compact preload tests\n"
@@ -268,21 +288,25 @@ def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "operations-list.md").write_text(
+    (ontology_dir / "operations" / "index.md").write_text(
         "| 名称 | 标签 | 业务描述 |\n"
         "| --- | --- | --- |\n"
         "| demo-op | 工具流程 | compact operation |\n",
         encoding="utf-8",
     )
-    (ontology_dir / "objects-list.md").write_text(
+    (ontology_dir / "objects" / "index.md").write_text(
         "| 中文名称 | 别名 | 业务定义 |\n"
         "| --- | --- | --- |\n"
         "| DemoObject | demo | compact object |\n",
         encoding="utf-8",
     )
-    (ontology_dir / "scripts-list.md").write_text(
-        "- `demo-op` -> `scripts/demo.py`\n"
-        "  `args`: `[\"--code\", \"<编码>\"]`\n",
+    (ontology_dir / "scripts").mkdir(parents=True)
+    (ontology_dir / "scripts" / "index.md").write_text("# 脚本目录\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "demo.md").write_text(
+        "---\nresource: script\nkey: demo\ntitle: demo-op\nbound_operation: demo-op\nentrypoint: demo.py\n---\n\n"
+        "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 编码 | --code | string | 是 | 编码 |\n",
         encoding="utf-8",
     )
 
@@ -322,9 +346,13 @@ def test_registry_preload_uses_active_ontology_version(tmp_path, monkeypatch):
     version2 = ontology_dir / "versions" / "2.0.0"
     version1.mkdir(parents=True)
     version2.mkdir(parents=True)
+    for version_dir in (version1, version2):
+        (version_dir / "operations").mkdir()
+        (version_dir / "objects").mkdir()
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for active version tests\n"
@@ -337,10 +365,10 @@ def test_registry_preload_uses_active_ontology_version(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    (version1 / "operations-list.md").write_text("- old-op\n", encoding="utf-8")
-    (version1 / "objects-list.md").write_text("- old-object\n", encoding="utf-8")
-    (version2 / "operations-list.md").write_text("- active-op\n", encoding="utf-8")
-    (version2 / "objects-list.md").write_text("- active-object\n", encoding="utf-8")
+    (version1 / "operations" / "index.md").write_text("- old-op\n", encoding="utf-8")
+    (version1 / "objects" / "index.md").write_text("- old-object\n", encoding="utf-8")
+    (version2 / "operations" / "index.md").write_text("- active-op\n", encoding="utf-8")
+    (version2 / "objects" / "index.md").write_text("- active-object\n", encoding="utf-8")
 
     monkeypatch.setattr(ontologies_module, "_global_registry", None)
     ontology = get_ontology_registry().get_ontology("demo-ontology")
@@ -418,3 +446,12 @@ def test_v01_preload_records_include_active_version_indexes(tmp_path, monkeypatc
         assert any(path.endswith("ontologies/demo-v01/versions/2.0.0/{}".format(relative_path)) for path in record_paths)
     assert not any("/versions/1.0.0/" in path for path in record_paths)
     assert {record["ontology_version"] for record in records} == {"2.0.0"}
+    assert {record["doc_type"] for record in records} >= {
+        "manifest",
+        "ontology_index",
+        "objects_index",
+        "operations_index",
+        "rules_index",
+        "metrics_index",
+        "scripts_index",
+    }

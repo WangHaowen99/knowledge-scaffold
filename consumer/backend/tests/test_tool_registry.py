@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -210,7 +211,8 @@ def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: demo",
                 "name: Demo",
                 "description: Demo ontology",
@@ -220,11 +222,40 @@ def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "scripts-list.md").write_text(
-        "- `{}` -> `scripts/{}`\n".format(operation_key, script_name),
-        encoding="utf-8",
+    (ontology_dir / "index.md").write_text("# Demo\n", encoding="utf-8")
+    for folder in ("operations", "objects", "rules", "metrics"):
+        (ontology_dir / folder).mkdir(exist_ok=True)
+        (ontology_dir / folder / "index.md").write_text("# {}\n".format(folder), encoding="utf-8")
+    (ontology_dir / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    _write_script_descriptor(
+        ontology_dir,
+        operation_key=operation_key,
+        script_name=script_name,
     )
     return ontology_dir
+
+
+def _write_script_descriptor(
+    ontology_dir,
+    *,
+    operation_key="流程A",
+    script_name="hello.py",
+    body="",
+):
+    descriptor = ontology_dir / "scripts" / "{}.md".format(Path(script_name).stem)
+    descriptor.write_text(
+        (
+            "---\n"
+            "resource: script\n"
+            "key: {}\n"
+            "title: {}\n"
+            "bound_operation: {}\n"
+            "entrypoint: {}\n"
+            "---\n\n{}"
+        ).format(Path(script_name).stem, operation_key, operation_key, script_name, body),
+        encoding="utf-8",
+    )
+    return descriptor
 
 
 def _write_v01_ontology_package(tmp_path):
@@ -258,7 +289,6 @@ def _write_v01_ontology_package(tmp_path):
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "operations-list.md").write_text("- legacy-operation\n", encoding="utf-8")
     (ontology_dir / "operations" / "impact.md").write_text(
         (
             "---\n"
@@ -288,7 +318,6 @@ def _write_v01_ontology_package(tmp_path):
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "objects-list.md").write_text("- legacy-object\n", encoding="utf-8")
     (ontology_dir / "objects" / "material_doc.md").write_text(
         (
             "---\n"
@@ -382,10 +411,6 @@ def _write_v01_ontology_package(tmp_path):
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "legacy.py").write_text("print('legacy')\n", encoding="utf-8")
-    (ontology_dir / "scripts-list.md").write_text(
-        "- `分析影响` -> `scripts/legacy.py`\n",
-        encoding="utf-8",
-    )
     (ontology_dir / "mappings" / "object-data-mappings.json").write_text(
         "{}\n",
         encoding="utf-8",
@@ -448,11 +473,11 @@ def _patch_empty_skill_registry(monkeypatch, tmp_path):
 
 def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     ontology_dir = _write_scripted_ontology(tmp_path)
-    (ontology_dir / "operations-list.md").write_text(
+    (ontology_dir / "operations" / "index.md").write_text(
         "| 名称 | 标签 | 业务描述 |\n| --- | --- | --- |\n| 流程A | 工具流程 | demo |\n",
         encoding="utf-8",
     )
-    (ontology_dir / "objects-list.md").write_text(
+    (ontology_dir / "objects" / "index.md").write_text(
         "| 中文名称 | 别名 | 业务定义 |\n| --- | --- | --- |\n| TargetItem | 物料 | demo object |\n",
         encoding="utf-8",
     )
@@ -548,27 +573,27 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
 
     resource_cases = {
         "operation": {
-            "keys": ["分析影响", "impact_analysis", "影响分析", "影响评估", "impact"],
+            "keys": ["分析影响", "impact_analysis", "影响分析", "影响评估", "impact", "impact.md"],
             "filename": "impact.md",
             "content": "# 影响分析",
         },
         "object": {
-            "keys": ["物料", "target_item", "制造物料", "TargetItem", "material_doc"],
+            "keys": ["物料", "target_item", "制造物料", "TargetItem", "material_doc", "material_doc.md"],
             "filename": "material_doc.md",
             "content": "# 物料",
         },
         "rule": {
-            "keys": ["生效规则", "effectivity_rule", "变更生效规则", "生效判定", "effectivity"],
+            "keys": ["生效规则", "effectivity_rule", "变更生效规则", "生效判定", "effectivity", "effectivity.md"],
             "filename": "effectivity.md",
             "content": "# 生效规则",
         },
         "metric": {
-            "keys": ["处理成本", "handling_cost_metric", "库存处理成本", "库存处理成本", "handling_cost"],
+            "keys": ["处理成本", "handling_cost_metric", "库存处理成本", "库存处理成本", "handling_cost", "handling_cost.md"],
             "filename": "handling_cost.md",
             "content": "# 处理成本",
         },
         "script": {
-            "keys": ["影响脚本", "impact_script", "影响分析脚本", "影响执行脚本", "script_doc"],
+            "keys": ["影响脚本", "impact_script", "影响分析脚本", "影响执行脚本", "script_doc", "script_doc.md"],
             "filename": "script_doc.md",
             "content": "CLI 参数",
         },
@@ -616,7 +641,8 @@ def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: demo",
                 "name: Demo",
                 "description: Demo ontology",
@@ -630,9 +656,11 @@ def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    (version1 / "scripts-list.md").write_text("- `流程A` -> `scripts/hello.py`\n", encoding="utf-8")
+    (version1 / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    _write_script_descriptor(version1, operation_key="流程A", script_name="hello.py")
     (version1 / "scripts" / "hello.py").write_text('print("v1")\n', encoding="utf-8")
-    (version2 / "scripts-list.md").write_text("- `流程A` -> `scripts/hello.py`\n", encoding="utf-8")
+    (version2 / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    _write_script_descriptor(version2, operation_key="流程A", script_name="hello.py")
     (version2 / "scripts" / "hello.py").write_text('print("v2")\n', encoding="utf-8")
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
@@ -879,16 +907,15 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
             "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
         ),
     )
-    scripts_list = tmp_path / "ontologies" / "demo" / "scripts-list.md"
-    scripts_list.write_text(
+    script_descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
+    script_descriptor.write_text(
         (
-            "- `流程A` -> `scripts/hello.py`\n"
-            "  `parameters`: `[{\"name\":\"target_item_code\",\"flag\":\"--target_item-code\","
-            "\"required\":true,\"type\":\"string\",\"description\":\"TargetItem编码\"},"
-            "{\"name\":\"equipment_model\",\"flag\":\"--equipment-model\",\"required\":false,"
-            "\"type\":\"string\",\"description\":\"设备型号\"},"
-            "{\"name\":\"batch_codes\",\"flag\":\"--batch-code\",\"required\":true,"
-            "\"type\":\"string\",\"multiple\":true,\"description\":\"设备批次\"}]`\n"
+            "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| target_item_code | --target_item-code | string | 是 | TargetItem编码 | 否 |\n"
+            "| equipment_model | --equipment-model | string | 否 | 设备型号 | 否 |\n"
+            "| batch_codes | --batch-code | string | 是 | 设备批次 | 是 |\n"
         ),
         encoding="utf-8",
     )
@@ -963,14 +990,14 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
 
 def test_execute_script_validates_structured_parameters(tmp_path, monkeypatch):
     _write_scripted_ontology(tmp_path)
-    scripts_list = tmp_path / "ontologies" / "demo" / "scripts-list.md"
-    scripts_list.write_text(
+    script_descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
+    script_descriptor.write_text(
         (
-            "- `流程A` -> `scripts/hello.py`\n"
-            "  `parameters`: `[{\"name\":\"quantity\",\"flag\":\"--quantity\","
-            "\"required\":true,\"type\":\"integer\",\"description\":\"数量\"},"
-            "{\"name\":\"batch_codes\",\"flag\":\"--batch-code\",\"required\":false,"
-            "\"type\":\"string\",\"multiple\":true,\"description\":\"设备批次\"}]`\n"
+            "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| quantity | --quantity | integer | 是 | 数量 | 否 |\n"
+            "| batch_codes | --batch-code | string | 否 | 设备批次 | 是 |\n"
         ),
         encoding="utf-8",
     )
@@ -1442,7 +1469,7 @@ def test_registry_allows_business_data_search_without_matching_object_definition
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- TargetItem",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- TargetItem",
                 },
             ]
         ),
@@ -1576,7 +1603,7 @@ def test_registry_allows_explicit_entity_query_after_matching_object_definition(
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list_miwu",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- 迷雾\n- 快艇",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- 迷雾\n- 快艇",
                 }
             ],
             read_documents=merge_read_documents_registry(
@@ -1728,7 +1755,7 @@ def test_registry_allows_chinese_business_data_search_without_matching_object_de
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list_cn",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- CHANGE_ORDER受影响对象",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- CHANGE_ORDER受影响对象",
                 },
             ]
         ),
@@ -1810,7 +1837,7 @@ def test_registry_allows_explicit_entity_query_with_objects_list_only(monkeypatc
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list_miwu",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- 迷雾\n- 快艇",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- 迷雾\n- 快艇",
                 },
             ]
         ),

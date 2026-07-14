@@ -411,7 +411,8 @@ def test_default_matcher_resolves_versioned_scripts_dir(tmp_path):
     (ontology_root / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: my-ontology",
                 "name: My Ontology",
                 "description: Demo",
@@ -444,7 +445,8 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
     (ontology_root / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: test-ontology",
                 "name: Test Ontology",
                 "description: Demo",

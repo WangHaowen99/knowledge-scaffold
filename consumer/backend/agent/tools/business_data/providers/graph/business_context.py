@@ -128,8 +128,8 @@ def _split_keyword_value(value: Any) -> list[str]:
 
 def _load_catalogs(version_dir: Path) -> list[dict[str, str]]:
     catalogs: list[dict[str, str]] = []
-    for name in ("operations-list.md", "rules-list.md", "scripts-list.md"):
-        path = version_dir / name
+    for name in ("operations/index.md", "rules/index.md", "scripts/index.md"):
+        path = version_dir / Path(name)
         if not path.is_file():
             continue
         text = _read_limited(path, _MAX_CATALOG_CHARS)

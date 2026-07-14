@@ -81,17 +81,6 @@ DATA_PROVIDER_CLIENT_MODULE = "agent.tools.business_data.providers.clients.data_
 MINDSDB_CLIENT_NAME = "MindsDBClient"
 DATA_PROVIDER_CLIENT_NAME = "DataProviderClient"
 
-SCRIPT_LIST_HEADER = "\n".join(
-    [
-        "# 工具流程脚本清单",
-        "",
-        "当工具流程已在此清单中维护对应脚本时，优先调用 `execute_script`，不要先读 operation markdown 再手工复刻逻辑。",
-        "",
-        "## 脚本映射",
-    ]
-)
-
-
 def compile_modeling_template(
     *,
     source_root: Path,
@@ -114,9 +103,9 @@ def compile_modeling_template(
         if str(item.get("operation_key") or "").strip()
     }
     objects_result = generate_objects(source_root / OBJECT_SOURCE_DIR, target_root / OBJECTS_TARGET_DIR)
-    objects_list_result = generate_objects_list(
+    objects_index_result = generate_objects_index(
         source_root / OBJECT_SOURCE_DIR,
-        target_root / "objects-list.md",
+        target_root / OBJECTS_TARGET_DIR / "index.md",
     )
     operations_result = generate_operations(
         source_root / LOGIC_SOURCE_DIR,
@@ -140,6 +129,7 @@ def compile_modeling_template(
         source_root / ASSET_SOURCE_DIR,
         target_root=target_root,
     )
+    support_files = ensure_v01_support_files(target_root)
 
     output: Dict[str, object] = {
         "mapping": mapping,
@@ -151,10 +141,10 @@ def compile_modeling_template(
             "output_title": OBJECT_ATTRIBUTES_TARGET_TITLE,
             "columns": ["中文名称", "英文名称", "描述", "属性别名"],
         },
-        "objects_list": {
-            "path": objects_list_result["path"],
-            "count": objects_list_result["count"],
-            "warnings": objects_list_result["warnings"],
+        "objects_index": {
+            "path": objects_index_result["path"],
+            "count": objects_index_result["count"],
+            "warnings": objects_index_result["warnings"],
             "title": "实体清单",
             "columns": ["中文名称", "英文名称", "别名", "业务定义", "领域分类"],
             "alias_section_title": OBJECT_ALIAS_TITLE,
@@ -176,11 +166,12 @@ def compile_modeling_template(
             },
         },
         "operations_count": operations_result["count"],
-        "operations_list_path": operations_result["operations_list_path"],
-        "objects_list_path": objects_list_result["path"],
+        "operations_index_path": operations_result["operations_index_path"],
+        "objects_index_path": objects_index_result["path"],
         "scripts": scripts_result,
         "graph": graph_result,
         "assets": assets_result,
+        "support_files": support_files,
     }
 
     if write_mapping_json:
@@ -245,23 +236,23 @@ def build_file_mapping(source_root: Path, target_root: Path) -> Dict[str, object
             }
             for path in asset_files
         ],
-        "objects_list": {
+        "objects_index": {
             "source": None,
-            "target": "objects-list.md",
+            "target": "objects/index.md",
             "generator": "from object/**/*.md",
         },
         "skill_mapping": {
             "source": relative_path(skill_path, source_root) if skill_path.exists() else None,
-            "targets": ["manifest.yaml", "ONTOLOGY.md"],
+            "targets": ["manifest.yaml", "index.md"],
         },
-        "operations_list": {
+        "operations_index": {
             "source": None,
-            "target": "operations-list.md",
+            "target": "operations/index.md",
             "generator": "from logic/**/*.md",
         },
-        "scripts_list": {
+        "scripts_index": {
             "source": None,
-            "target": "scripts-list.md",
+            "target": "scripts/index.md",
             "generator": "from {}/**/*.py".format(script_dir.name),
         },
         "warnings": warnings,
@@ -342,7 +333,17 @@ def generate_objects(source_objects_dir: Path, target_objects_dir: Path) -> Dict
     for source_file in collect_md_files(source_objects_dir, recursive=True):
         markdown, file_warnings = render_object_file(source_file.read_text(encoding="utf-8"))
         target_file = target_objects_dir / source_file.name
-        target_file.write_text(markdown, encoding="utf-8")
+        aliases = extract_object_alias(source_file.read_text(encoding="utf-8"))
+        target_file.write_text(
+            add_resource_frontmatter(
+                markdown,
+                resource="object",
+                key=source_file.stem,
+                title=source_file.stem,
+                aliases=split_alias_values(aliases),
+            ),
+            encoding="utf-8",
+        )
         files.append(str(target_file))
         warnings.extend("{}: {}".format(source_file.name, warning) for warning in file_warnings)
 
@@ -365,7 +366,7 @@ def render_object_file(source_markdown: str) -> Tuple[str, List[str]]:
     return "# {}\n\n{}\n".format(OBJECT_ATTRIBUTES_TARGET_TITLE, markdown), warnings
 
 
-def generate_objects_list(source_objects_dir: Path, target_objects_list_path: Path) -> Dict[str, object]:
+def generate_objects_index(source_objects_dir: Path, target_objects_index_path: Path) -> Dict[str, object]:
     rows: List[List[str]] = []
     warnings: List[str] = []
     for source_file in collect_md_files(source_objects_dir, recursive=True):
@@ -381,12 +382,20 @@ def generate_objects_list(source_objects_dir: Path, target_objects_list_path: Pa
     if not rows:
         warnings.append("object目录下未找到任何.md文件")
 
-    target_objects_list_path.parent.mkdir(parents=True, exist_ok=True)
+    target_objects_index_path.parent.mkdir(parents=True, exist_ok=True)
     markdown = "# 实体清单\n\n{}\n".format(
         build_md_table(["中文名称", "英文名称", "别名", "业务定义", "领域分类"], rows)
     )
-    target_objects_list_path.write_text(markdown, encoding="utf-8")
-    return {"path": str(target_objects_list_path), "count": len(rows), "warnings": warnings}
+    target_objects_index_path.write_text(
+        add_resource_frontmatter(
+            markdown,
+            resource="object_index",
+            key="objects",
+            title="对象目录",
+        ),
+        encoding="utf-8",
+    )
+    return {"path": str(target_objects_index_path), "count": len(rows), "warnings": warnings}
 
 
 def generate_operations(
@@ -409,19 +418,35 @@ def generate_operations(
             script_backed=source_file.stem in script_operation_keys,
         )
         target_file = target_operations_dir / source_file.name
-        target_file.write_text(rendered, encoding="utf-8")
+        target_file.write_text(
+            add_resource_frontmatter(
+                rendered,
+                resource="operation",
+                key=source_file.stem,
+                title=source_file.stem,
+            ),
+            encoding="utf-8",
+        )
         files.append(str(target_file))
         summaries.append(summary)
         operation_tags[summary.name] = summary.tag
         warnings.extend("{}: {}".format(source_file.name, warning) for warning in file_warnings)
 
-    operations_list_path = target_operations_dir.parent / "operations-list.md"
-    operations_list_path.write_text(render_operations_list(summaries), encoding="utf-8")
+    operations_index_path = target_operations_dir / "index.md"
+    operations_index_path.write_text(
+        add_resource_frontmatter(
+            render_operations_index(summaries),
+            resource="operation_index",
+            key="operations",
+            title="操作目录",
+        ),
+        encoding="utf-8",
+    )
     return {
         "count": len(files),
         "files": files,
         "warnings": warnings,
-        "operations_list_path": str(operations_list_path),
+        "operations_index_path": str(operations_index_path),
         "operation_tags": operation_tags,
     }
 
@@ -460,7 +485,7 @@ def render_operation_file(
     ), warnings
 
 
-def render_operations_list(operations: Sequence[OperationSummary]) -> str:
+def render_operations_index(operations: Sequence[OperationSummary]) -> str:
     ordered = sorted(operations, key=lambda item: (TAG_PRIORITY.get(item.tag, 99), item.name))
     rows = [[item.name, item.tag, item.business_desc, item.trigger_condition] for item in ordered]
     return "# Operations 逻辑清单\n\n{}\n".format(
@@ -538,30 +563,171 @@ def generate_scripts(
             shutil.copy2(source_file, target_file)
         generated.append(str(target_file))
 
-    scripts_list_path = target_root / "scripts-list.md"
-    if mappings:
-        rows: List[str] = []
-        for item in mappings:
-            operation_key = str(item.get("operation_key") or "").strip()
-            script_path = str(item.get("script_path") or item.get("script_name") or "").strip()
-            parameters = item.get("parameters") or []
-            if not operation_key or not script_path:
-                continue
-            rows.append("- `{}` -> `scripts/{}`".format(operation_key, script_path))
-            if parameters:
-                rows.append(
-                    "  `parameters`: `{}`".format(
-                        json.dumps(parameters, ensure_ascii=False, separators=(",", ":"))
-                    )
-                )
-        scripts_list_path.write_text("{}\n{}\n".format(SCRIPT_LIST_HEADER, "\n".join(rows)), encoding="utf-8")
+    descriptor_files, scripts_index_path = generate_script_descriptors(
+        target_scripts_dir,
+        mappings or [],
+    )
+    generated.extend(descriptor_files)
 
     return {
         "count": len(payload_files),
         "files": generated,
         "warnings": warnings,
-        "scripts_list_path": str(scripts_list_path) if mappings else None,
+        "scripts_index_path": str(scripts_index_path),
     }
+
+
+def generate_script_descriptors(
+    target_scripts_dir: Path,
+    mappings: Sequence[Dict[str, object]],
+) -> Tuple[List[str], Path]:
+    target_scripts_dir.mkdir(parents=True, exist_ok=True)
+    generated: List[str] = []
+    rows: List[List[str]] = []
+    used_keys: set[str] = set()
+    for item in mappings:
+        operation_key = str(item.get("operation_key") or "").strip()
+        script_path = str(item.get("script_path") or item.get("script_name") or "").strip()
+        if not operation_key or not script_path:
+            continue
+        script_key = unique_script_key(Path(script_path).stem, used_keys)
+        used_keys.add(script_key)
+        parameters = item.get("parameters") or []
+        descriptor_path = target_scripts_dir / "{}.md".format(script_key)
+        descriptor_path.write_text(
+            render_script_descriptor(
+                script_key=script_key,
+                operation_key=operation_key,
+                entrypoint=script_path,
+                parameters=parameters if isinstance(parameters, list) else [],
+            ),
+            encoding="utf-8",
+        )
+        generated.append(str(descriptor_path))
+        rows.append([script_key, script_key, operation_key, script_path])
+
+    index_path = target_scripts_dir / "index.md"
+    index_markdown = "# 脚本目录\n\n{}\n".format(
+        build_md_table(["script key", "标题", "绑定 operation", "入口"], rows)
+    )
+    index_path.write_text(
+        add_resource_frontmatter(
+            index_markdown,
+            resource="script_index",
+            key="scripts",
+            title="脚本目录",
+        ),
+        encoding="utf-8",
+    )
+    generated.append(str(index_path))
+    return generated, index_path
+
+
+def render_script_descriptor(
+    *,
+    script_key: str,
+    operation_key: str,
+    entrypoint: str,
+    parameters: Sequence[Dict[str, Any]],
+) -> str:
+    rows: List[List[str]] = []
+    for parameter in parameters:
+        aliases = parameter.get("aliases") or []
+        rows.append([
+            str(parameter.get("name") or ""),
+            str(parameter.get("flag") or ""),
+            str(parameter.get("type") or "string"),
+            "是" if parameter.get("required", True) else "否",
+            "是" if parameter.get("multiple", False) else "否",
+            str(parameter.get("description") or ""),
+            "，".join(str(alias) for alias in aliases) if isinstance(aliases, list) else "",
+        ])
+    body = "# 输入参数\n\n{}\n".format(
+        build_md_table(["参数 key", "CLI 参数", "类型", "必填", "是否多值", "说明", "别名"], rows)
+    )
+    return add_resource_frontmatter(
+        body,
+        resource="script",
+        key=script_key,
+        title=script_key,
+        extra={
+            "bound_operation": operation_key,
+            "runtime": "python",
+            "entrypoint": entrypoint,
+        },
+    )
+
+
+def unique_script_key(candidate: str, used: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(candidate or "script")).strip("_.-") or "script"
+    key = base
+    index = 2
+    while key in used:
+        key = "{}_{}".format(base, index)
+        index += 1
+    return key
+
+
+def ensure_v01_support_files(target_root: Path) -> List[str]:
+    generated: List[str] = []
+    for folder, resource, key, title in (
+        ("rules", "rule_index", "rules", "规则目录"),
+        ("metrics", "metric_index", "metrics", "指标目录"),
+    ):
+        index_path = target_root / folder / "index.md"
+        if index_path.is_file():
+            continue
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(
+            add_resource_frontmatter(
+                "# {}\n".format(title),
+                resource=resource,
+                key=key,
+                title=title,
+            ),
+            encoding="utf-8",
+        )
+        generated.append(str(index_path))
+
+    mapping_path = target_root / "mappings" / "object-data-mappings.json"
+    if not mapping_path.is_file():
+        mapping_path.parent.mkdir(parents=True, exist_ok=True)
+        mapping_path.write_text(
+            json.dumps({"schema_version": "0.1", "objects": {}}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        generated.append(str(mapping_path))
+    return generated
+
+
+def add_resource_frontmatter(
+    markdown: str,
+    *,
+    resource: str,
+    key: str,
+    title: str,
+    aliases: Optional[Sequence[str]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    metadata: Dict[str, Any] = {
+        "resource": resource,
+        "key": key,
+        "title": title,
+    }
+    if aliases:
+        metadata["aliases"] = list(aliases)
+    if extra:
+        metadata.update(extra)
+    frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+    return "---\n{}\n---\n\n{}\n".format(frontmatter, str(markdown or "").strip())
+
+
+def split_alias_values(value: str) -> List[str]:
+    return [
+        item.strip()
+        for item in re.split(r"[,，、;/；]+", str(value or ""))
+        if item.strip()
+    ]
 
 
 def generate_assets(source_asset_dir: Path, *, target_root: Path) -> Dict[str, object]:
