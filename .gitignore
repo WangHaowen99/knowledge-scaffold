@@ -56,3 +56,6 @@ auth-server/data/
 
 # auth-server 数据目录（bind mount）
 consumer/.onto-auth/**
+
+# Local isolated worktrees
+/.worktrees/
