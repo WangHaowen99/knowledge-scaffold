@@ -130,10 +130,11 @@ def validate_config(env_file: Path, runtime_root: Path) -> dict[str, Any]:
     admin_token = env.get("AUTH_SERVER_ADMIN_TOKEN", "")
     if not _valid_http_url(auth_url):
         errors.append({"type": "invalid_auth_server_url"})
-    if not _valid_http_url(issuer):
+    # Keep issuer/audience optional for compatibility with the original
+    # develop auth-server contract. RemoteAuthBackend falls back to the
+    # auth-server URL and the default audience when these are unset.
+    if issuer and not _valid_http_url(issuer):
         errors.append({"type": "invalid_auth_server_issuer"})
-    if not audience:
-        errors.append({"type": "missing_auth_server_audience"})
     if len(admin_token) < 16:
         errors.append({"type": "weak_or_missing_auth_admin_token", "minimum_length": 16})
 

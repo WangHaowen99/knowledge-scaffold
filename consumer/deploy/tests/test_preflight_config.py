@@ -14,8 +14,6 @@ from preflight_config import validate_config  # noqa: E402
 
 VALID_ENV = """\
 AUTH_SERVER_URL=http://auth-server:5056
-AUTH_SERVER_ISSUER=http://auth-server:5056
-AUTH_SERVER_AUDIENCE=meta-wise
 AUTH_SERVER_ADMIN_TOKEN=auth-admin-token-that-is-long
 MCP_SERVER_PORT=7488
 MCP_TOKEN_SECRET=mcp-signing-secret-that-is-independent-and-long
@@ -41,6 +39,8 @@ class PreflightConfigTests(unittest.TestCase):
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["graph_connection_count"], 0)
+        self.assertEqual(report["auth"]["issuer"], "")
+        self.assertEqual(report["auth"]["audience"], "")
 
     def test_rejects_divergent_limits_and_reused_secret(self) -> None:
         shared = "shared-secret-that-is-long-enough-for-both"

@@ -75,7 +75,7 @@ cd /opt
 tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
-3. 进入安装目录，从示例创建 `backend/.env`，填入互不相同的 `AUTH_SERVER_ADMIN_TOKEN` 与 `MCP_TOKEN_SECRET`，确认 issuer/audience 和两个用户上限一致，再执行部署：
+3. 进入安装目录，从示例创建 `backend/.env`，填入互不相同的 `AUTH_SERVER_ADMIN_TOKEN` 与 `MCP_TOKEN_SECRET`，确认两个用户上限一致，再执行部署：
 
 ```bash
 cd /opt/onto-agent
@@ -86,10 +86,10 @@ cp backend/.env.example backend/.env
 
 部署脚本会自动完成：
 
-- 部署前检查（Docker、架构、auth/JWKS 配置、用户上限、MCP 7488/secret、Graph provider）
+- 部署前检查（Docker、架构、auth 配置、用户上限、MCP 7488/secret、Graph provider）
 - 运行目录初始化（自动创建所需目录，自动从 `backend/.env.example` 复制 `backend/.env`）
 - 镜像导入
-- 容器启动（先 `auth-server` 并验证 JWKS/issuer/audience，再启动 `backend`、`mcp`、`frontend`）
+- 容器启动（`backend`、`mcp`、`frontend`、`auth-server`）
 - 部署后健康检查
 
 部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。若需要对外提供 MCP 客户端接入，请在 `backend/.env` 中设置 `MCP_PUBLIC_BASE_URL` 为服务器 IP 或域名，例如 `http://192.0.2.20:7488`。
