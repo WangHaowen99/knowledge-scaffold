@@ -1365,7 +1365,7 @@ def create_default_jiuwen_agent(
         api_base=str(getattr(llm_config, "base_url", "") or ""),
         timeout=float(getattr(llm_config, "timeout", 60) or 60),
         max_retries=3,
-        verify_ssl=True,
+        verify_ssl=False,
     )
     reasoning_extra_body = get_provider_adapter(
         getattr(llm_config, "provider", None)
