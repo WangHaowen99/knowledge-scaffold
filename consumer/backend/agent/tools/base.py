@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Protocol
 
@@ -60,7 +59,6 @@ class ToolContext:
     selected_ontology_id: Optional[str] = None
     model_profile_id: Optional[str] = None
     observer: Any = None
-    cancel_event: Optional[threading.Event] = None
 
 
 @dataclass

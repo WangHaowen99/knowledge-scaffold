@@ -129,7 +129,6 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
 
     _patch_subagent(monkeypatch, handler)
 
-    cancel_event = threading.Event()
     tool = SpawnSubAgentTool()
     outcome = tool.execute(
         args={
@@ -140,7 +139,6 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
         context=_make_context(
             agent_mode="multi_agent",
             model_profile_id="accurate",
-            cancel_event=cancel_event,
         ),
         tool_call_id="call_spawn_mode",
     )
@@ -149,7 +147,6 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
     assert payload["status"] == "completed"
     assert captured_kwargs["parent_agent_mode"] == "multi_agent"
     assert captured_kwargs["parent_model_profile_id"] == "accurate"
-    assert captured_kwargs["cancel_event"] is cancel_event
 
 
 def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
@@ -179,7 +176,6 @@ def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
     monkeypatch.setattr("agent.sub_agents.base.build_ontologies_section", lambda: "")
     monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda: "")
 
-    cancel_event = threading.Event()
     result = SubAgent().execute(
         "child task",
         {"ontology_id": "demo"},
@@ -187,14 +183,12 @@ def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
         session_id="sess-child",
         parent_agent_mode="thinking",
         parent_model_profile_id="accurate",
-        cancel_event=cancel_event,
     )
 
     assert result["_success"] is True
     assert result["output"] == "child result"
     assert calls["engine_kwargs"] == {"agent_config": agent_config}
     assert calls["run_kwargs"]["caller"] == "subagent"
-    assert calls["run_kwargs"]["cancel_event"] is cancel_event
     assert calls["state"]["subagent_id"].startswith("sub_")
     assert calls["state"]["user_context"] == {
         "agent_mode": "thinking",
@@ -437,141 +431,6 @@ def test_spawn_sub_agent_nested_batch_reuses_parent_slot_without_deadlock(monkey
     assert payload["status"] == "completed"
     assert [item["id"] for item in payload["tasks"]] == ["nested-1", "nested-2"]
     assert max_running == 1
-
-
-def test_nested_spawn_sub_agent_preserves_cancel_event_identity(monkeypatch):
-    from agent.sub_agents import manager as manager_module
-
-    manager_module.clear_subagent_manager_registry()
-    cancel_event = threading.Event()
-    seen_events = []
-    tool = SpawnSubAgentTool()
-
-    def handler(task, context, **kwargs):
-        del context
-        seen_events.append(kwargs["cancel_event"])
-        if task == "outer":
-            nested_outcome = tool.execute(
-                args={"tasks": [{"id": "nested", "task": "inner"}]},
-                context=_make_context(
-                    caller="subagent",
-                    cancel_event=kwargs["cancel_event"],
-                    subagent_manager=kwargs["subagent_manager"],
-                    subagent_lineage={
-                        "subagent_id": "sub_outer",
-                        "depth": kwargs["depth"],
-                        "root_tool_call_id": "call_root",
-                    },
-                ),
-                tool_call_id="call_nested",
-            )
-            assert json.loads(nested_outcome.content)["status"] == "completed"
-        return {
-            "output": task,
-            "_success": True,
-            "_key_steps": ["dispatch started", "produced final result"],
-        }
-
-    _patch_subagent(monkeypatch, handler)
-
-    outcome = tool.execute(
-        args={"tasks": [{"id": "outer", "task": "outer"}]},
-        context=_make_context(cancel_event=cancel_event),
-        tool_call_id="call_outer",
-    )
-
-    assert json.loads(outcome.content)["status"] == "completed"
-    assert seen_events == [cancel_event, cancel_event]
-
-
-def test_spawn_sub_agent_pre_cancel_does_not_start_child(monkeypatch):
-    from agent.sub_agents import manager as manager_module
-
-    manager_module.clear_subagent_manager_registry()
-    started_tasks = []
-
-    def handler(task, context, **kwargs):
-        del context, kwargs
-        started_tasks.append(task)
-        return {"output": task, "_success": True}
-
-    _patch_subagent(monkeypatch, handler)
-    cancel_event = threading.Event()
-    cancel_event.set()
-
-    with pytest.raises(WorkflowCancelledError, match="Workflow cancelled by user"):
-        SpawnSubAgentTool().execute(
-            args={"tasks": [{"id": "never-started", "task": "do not start"}]},
-            context=_make_context(cancel_event=cancel_event),
-            tool_call_id="call_pre_cancelled",
-        )
-
-    assert started_tasks == []
-
-
-def test_spawn_sub_agent_cancel_while_waiting_for_capacity(monkeypatch):
-    from agent.sub_agents import manager as manager_module
-
-    manager = manager_module.SubAgentManager(max_concurrency=1, max_depth=2)
-    inner_semaphore = threading.BoundedSemaphore(1)
-    inner_semaphore.acquire()
-    waiting_for_capacity = threading.Event()
-
-    class RecordingSemaphore:
-        def acquire(self, blocking=True, timeout=None):
-            waiting_for_capacity.set()
-            return inner_semaphore.acquire(blocking=blocking, timeout=timeout)
-
-        def release(self):
-            inner_semaphore.release()
-
-    manager._semaphore = RecordingSemaphore()
-    cancel_event = threading.Event()
-    completed = threading.Event()
-    errors = []
-    started_tasks = []
-
-    def handler(task, context, **kwargs):
-        del context, kwargs
-        started_tasks.append(task)
-        return {"output": task, "_success": True}
-
-    _patch_subagent(monkeypatch, handler)
-
-    def execute_group():
-        try:
-            manager.execute_group(
-                run_id="run-waiting-capacity",
-                session_id="sess-waiting-capacity",
-                parent_tool_call_id=None,
-                parent_agent_mode=None,
-                parent_model_profile_id=None,
-                parent_workspace_id=None,
-                event_emitter=None,
-                lineage=None,
-                tasks=[manager_module.SubAgentTaskSpec(id="waiting", task="wait", context={})],
-                cancel_event=cancel_event,
-            )
-        except BaseException as exc:
-            errors.append(exc)
-        finally:
-            completed.set()
-
-    worker = threading.Thread(target=execute_group, daemon=True)
-    worker.start()
-    assert waiting_for_capacity.wait(timeout=1)
-
-    cancel_event.set()
-    try:
-        assert completed.wait(timeout=1)
-    finally:
-        inner_semaphore.release()
-        worker.join(timeout=1)
-
-    assert not worker.is_alive()
-    assert len(errors) == 1
-    assert isinstance(errors[0], WorkflowCancelledError)
-    assert started_tasks == []
 
 
 def test_spawn_sub_agent_propagates_workflow_cancellation(monkeypatch):

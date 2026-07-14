@@ -190,7 +190,6 @@ class JiuwenReactLoopEngine:
         snapshot_callback: Optional[Any] = None,
         iteration_limit: Optional[int] = None,
         system_prompt: Optional[str] = None,
-        cancel_event: Optional[threading.Event] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         with bind_log_context(
@@ -207,7 +206,6 @@ class JiuwenReactLoopEngine:
                 snapshot_callback=snapshot_callback,
                 iteration_limit=iteration_limit,
                 system_prompt=system_prompt,
-                cancel_event=cancel_event,
                 **kwargs,
             )
 
@@ -220,7 +218,6 @@ class JiuwenReactLoopEngine:
         snapshot_callback: Optional[Any] = None,
         iteration_limit: Optional[int] = None,
         system_prompt: Optional[str] = None,
-        cancel_event: Optional[threading.Event] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         resolved_workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
@@ -256,6 +253,7 @@ class JiuwenReactLoopEngine:
             "last_completed_at": started_at,
             "prompt_elapsed_ms": prompt_elapsed_ms,
         }
+        cancel_event = _get_jiuwen_cancel_event(state)
         _run_jiuwen_setup_step(runtime_trace, _raise_if_jiuwen_cancelled, cancel_event, state)
         max_iterations = _run_jiuwen_setup_step(
             runtime_trace,
@@ -589,7 +587,6 @@ class JiuwenReactLoopEngine:
                         subagent_lineage=kwargs.get("subagent_lineage"),
                         observer=runtime_observer,
                         agent_iteration=current_iteration(),
-                        cancel_event=cancel_event,
                     ),
                     tool_infos=tool_infos,
                     iteration_event_callback=emit_tool_iteration_completed,
@@ -1214,7 +1211,6 @@ class JiuwenReactLoopEngine:
         subagent_lineage: Optional[Dict[str, Any]],
         observer: Any,
         agent_iteration: int,
-        cancel_event: Optional[threading.Event] = None,
     ) -> ToolContext:
         workspace_id = str(state.get("workspace_id") or "").strip() or _resolve_current_workspace_id()
         return build_tool_context(
@@ -1230,7 +1226,6 @@ class JiuwenReactLoopEngine:
             subagent_lineage=subagent_lineage,
             protocol_event_observer=protocol_event_observer,
             observer=observer or NOOP_OBSERVER,
-            cancel_event=cancel_event,
         )
 
     def _tools_schema_for_state(self, state: Mapping[str, Any], *, caller: str) -> list[Mapping[str, Any]]:
@@ -2094,6 +2089,20 @@ def _raise_if_jiuwen_cancelled(
         "Workflow cancelled by user",
         details={"run_id": run_id},
     )
+
+
+def _get_jiuwen_cancel_event(state: Mapping[str, Any]) -> Optional[threading.Event]:
+    run_id = str((state or {}).get("run_id") or "").strip()
+    if not run_id:
+        return None
+    try:
+        router = get_llm_router()
+    except RuntimeError:
+        return None
+    get_cancel_event = getattr(router, "get_cancel_event", None)
+    if not callable(get_cancel_event):
+        return None
+    return get_cancel_event(run_id)
 
 
 def _run_jiuwen_setup_step(runtime_trace: AgentRuntimeTrace, step: Any, *args: Any, **kwargs: Any) -> Any:

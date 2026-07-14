@@ -156,6 +156,16 @@ class LLMRouter:
                 self._cancel_events[run_id] = event
             event.set()
 
+    def get_cancel_event(self, run_id: str) -> Optional[threading.Event]:
+        if not run_id:
+            return None
+        with self._cancel_lock:
+            event = self._cancel_events.get(run_id)
+            if not event:
+                event = threading.Event()
+                self._cancel_events[run_id] = event
+            return event
+
     def clear_run(self, run_id: str) -> None:
         if not run_id:
             return

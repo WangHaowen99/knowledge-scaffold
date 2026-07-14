@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.exceptions import WorkflowCancelledError
@@ -137,7 +136,6 @@ class SubAgent:
         subagent_manager: Any = None,
         protocol_event_observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         observer: Any = None,
-        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         logger.info("Sub-agent executing task: %s...", task[:100])
         subagent_id = "sub_{}".format(uuid.uuid4().hex[:10])
@@ -242,7 +240,6 @@ class SubAgent:
                 subagent_manager=subagent_manager,
                 subagent_lineage=runtime_lineage,
                 observer=observer,
-                cancel_event=cancel_event,
             )
             emit("subagent.progress", {**common, "status": "running", "step": "llm_call_finished", "meta": {}})
 

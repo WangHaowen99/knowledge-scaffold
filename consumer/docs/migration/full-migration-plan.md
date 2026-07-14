@@ -490,7 +490,7 @@ Phase 2 自动化结果（2026-07-13）：auth-server `34 passed`；consumer aut
 - [x] Jiuwen ToolCard 从本地最新 `TOOL_SPECS/get_tools_schema` 生成。
 - [x] 工具执行只调用本地最新 `execute_tool_batch`。
 - [x] 保留本地严格 JSON schema、caller、parallel-safe/barrier、terminal batch 语义。
-- [x] 取消信号由 orchestrator/run handle 注入，不恢复旧 `LLMRouter.get_cancel_event()`。
+- [x] 取消信号继续由 `LLMRouter.get_cancel_event(run_id)` 提供给 Jiuwen 调用边界；不向 `ToolContext`、SubAgent manager 和具体工具透传 run 级取消事件。
 - [x] 使用本地 `agent/context.py` 的上下文窗口策略，不恢复已删除旧模块。
 - [x] 删除 `ov_session_id`、OpenViking 和旧 token limit 路径。
 - [x] 保留 Jiuwen content/reasoning stream、history、ontology preload、snapshot。

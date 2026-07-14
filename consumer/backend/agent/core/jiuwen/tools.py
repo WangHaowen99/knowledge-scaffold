@@ -140,7 +140,6 @@ class CurrentRuntimeToolAdapter:
         runtime_trace = runtime_trace_from_tool_context(context)
         iteration = tool_context_iteration(context)
         try:
-            _raise_if_runtime_tool_cancelled(context)
             if self.tool_batch_started_callback is not None:
                 self.tool_batch_started_callback(
                     context,
@@ -153,12 +152,8 @@ class CurrentRuntimeToolAdapter:
                 self.tool_batch_executor,
                 [tool_call],
                 context,
-                cancel_event=getattr(context, "cancel_event", None),
-                run_id=getattr(context, "run_id", None),
             )
-            _raise_if_runtime_tool_cancelled(context)
             with JIUWEN_STATE_MESSAGES_LOCK:
-                _raise_if_runtime_tool_cancelled(context)
                 apply_tool_batch_result_to_state(self.state, batch_result)
         except (WorkflowCancelledError, asyncio.CancelledError):
             self._rollback_cancelled_tool_call(tool_call.id)
@@ -285,8 +280,6 @@ async def _acquire_thread_lock_async(lock: threading.Lock) -> None:
 async def _run_sync_in_tool_thread(
     func: Any,
     *args: Any,
-    cancel_event: Optional[threading.Event] = None,
-    run_id: Optional[str] = None,
 ) -> Any:
     future: Future[Any] = Future()
     context = copy_context()
@@ -313,30 +306,8 @@ async def _run_sync_in_tool_thread(
                 await asyncio.sleep(0.001)
             except asyncio.CancelledError:
                 continue
-        _raise_if_runtime_cancelled(cancel_event, run_id=run_id)
         raise
-    _raise_if_runtime_cancelled(cancel_event, run_id=run_id)
     return future.result()
-
-
-def _raise_if_runtime_tool_cancelled(context: Any) -> None:
-    _raise_if_runtime_cancelled(
-        getattr(context, "cancel_event", None),
-        run_id=getattr(context, "run_id", None),
-    )
-
-
-def _raise_if_runtime_cancelled(
-    cancel_event: Optional[threading.Event],
-    *,
-    run_id: Optional[str],
-) -> None:
-    if cancel_event is None or not cancel_event.is_set():
-        return
-    raise WorkflowCancelledError(
-        "Workflow cancelled by user",
-        details={"run_id": str(run_id or "").strip() or None},
-    )
 
 
 def runtime_trace_from_tool_context(context: Any) -> AgentRuntimeTrace:

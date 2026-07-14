@@ -85,7 +85,6 @@ class JiuwenGraphQueryAgent:
         )
         timeout_cancel_event = threading.Event()
         context.provider_config["_graph_cancel_event"] = timeout_cancel_event
-        external_cancel_event = context.provider_config.get("_cancel_event")
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jiuwen-graph-query-agent")
         future = executor.submit(
             self._run_without_timeout,
@@ -102,13 +101,6 @@ class JiuwenGraphQueryAgent:
                     _wait_for_graph_worker(future)
                     raise GraphAgentTimeoutError(
                         "GraphQueryAgent 调用超时（{}s）".format(_format_timeout(timeout_seconds))
-                    )
-                if external_cancel_event is not None and external_cancel_event.is_set():
-                    timeout_cancel_event.set()
-                    _wait_for_graph_worker(future)
-                    raise WorkflowCancelledError(
-                        "Workflow cancelled by user",
-                        details={"run_id": context.provider_config.get("run_id")},
                     )
                 try:
                     return future.result(timeout=min(0.05, remaining))
@@ -528,10 +520,6 @@ def register_graph_runtime_tools(
         caller="graph",
         subagent_lineage=None,
         agent_iteration=1,
-        cancel_event=(
-            context.provider_config.get("_graph_cancel_event")
-            or context.provider_config.get("_cancel_event")
-        ),
     )
     with _JIUWEN_GRAPH_TOOL_REGISTRATION_LOCK:
         return register_current_runtime_tools(

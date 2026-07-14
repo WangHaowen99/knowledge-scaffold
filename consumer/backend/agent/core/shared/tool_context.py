@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import threading
 from typing import Any, Optional
 
 from integration.observability import NOOP_OBSERVER
@@ -27,7 +26,6 @@ def build_tool_context(
     subagent_lineage: Any = None,
     parent_tool_call_id: Any = None,
     observer: Any = None,
-    cancel_event: Optional[threading.Event] = None,
 ) -> ToolContext:
     user_context = dict(state.get("user_context") or {}) if isinstance(state, Mapping) else {}
     context_kwargs = dict(
@@ -52,6 +50,4 @@ def build_tool_context(
         model_profile_id=str(user_context.get("model_profile_id") or "").strip() or None,
         observer=observer or NOOP_OBSERVER,
     )
-    if "cancel_event" in getattr(ToolContext, "__dataclass_fields__", {}):
-        context_kwargs["cancel_event"] = cancel_event
     return ToolContext(**context_kwargs)

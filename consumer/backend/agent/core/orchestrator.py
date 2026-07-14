@@ -188,41 +188,6 @@ class _WorkflowFailure:
         self.error = error
 
 
-class RunCancellationRegistry:
-    """Own the in-process cancellation signal for each active run."""
-
-    def __init__(self) -> None:
-        self._events: Dict[str, threading.Event] = {}
-        self._lock = threading.Lock()
-
-    def register(self, run_id: str, run_store: RunStore) -> threading.Event:
-        """Register a fresh event and close the cancel-before-register race."""
-        event = threading.Event()
-        with self._lock:
-            self._events[run_id] = event
-            run = run_store.get_run(run_id)
-            if run is not None and run.status == RunStatus.CANCELLED:
-                event.set()
-        return event
-
-    def signal(self, run_id: str) -> bool:
-        """Signal an active run without creating a stale registry entry."""
-        with self._lock:
-            event = self._events.get(run_id)
-            if event is None:
-                return False
-            event.set()
-            return True
-
-    def clear(self, run_id: str, event: threading.Event) -> bool:
-        """Remove a registration only when it is still the caller's event."""
-        with self._lock:
-            if self._events.get(run_id) is not event:
-                return False
-            del self._events[run_id]
-            return True
-
-
 class _StreamEventPersistenceBuffer:
     """Asynchronously persist high-frequency stream events in batches."""
 
@@ -348,7 +313,6 @@ class AgenticOrchestrator:
         user_store_manager: Optional[UserStoreManager] = None,
         agent_config: Optional[AgentConfig] = None,
         memory_factory: Optional[MemoryFactory] = None,
-        cancellation_registry: Optional[RunCancellationRegistry] = None,
     ) -> None:
         """
         Initialize the orchestrator.
@@ -359,7 +323,6 @@ class AgenticOrchestrator:
             execution_store: Optional execution store for workflow recording (created if None)
             user_store_manager: Optional user store manager for multi-user support
             agent_config: Optional agent configuration (created with defaults if None)
-            cancellation_registry: Optional shared in-process cancellation registry
         """
         self.agent_config = agent_config or AgentConfig.from_env()
         self.run_store = run_store or RunStore()
@@ -369,11 +332,6 @@ class AgenticOrchestrator:
         self.execution_store = execution_store or ExecutionStore(app_config.execution_storage_dir)
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
-        self.cancellation_registry = (
-            cancellation_registry
-            if cancellation_registry is not None
-            else RunCancellationRegistry()
-        )
         self.slot_manager = RunSlotManager()
         self.run_admission_queue = RunAdmissionQueue(self.slot_manager)
         self.run_rate_limiter = TokenBucketRateLimiter(
@@ -414,8 +372,6 @@ class AgenticOrchestrator:
     ) -> Generator[tuple[str, Any], None, None]:
         event_queue: "queue.Queue[Any]" = queue.Queue()
         done = object()
-        run_id = str(initial_state.get("run_id") or "")
-        cancel_event = self.cancellation_registry.register(run_id, self.run_store)
 
         def queue_writer(event: Dict[str, Any]) -> None:
             event_queue.put(("custom", event))
@@ -441,7 +397,6 @@ class AgenticOrchestrator:
                             ),
                             iteration_limit=self.agent_config.main_agent_max_iterations,
                             observer=observer,
-                            cancel_event=cancel_event,
                             event_source_node="jiuwen_react",
                         )
             except Exception as exc:
@@ -457,22 +412,16 @@ class AgenticOrchestrator:
         )
         worker_thread.start()
 
-        worker_finished = False
-        try:
-            while True:
-                item = event_queue.get()
-                if item is done:
-                    worker_finished = True
-                    break
-                if isinstance(item, _WorkflowFailure):
-                    worker_finished = True
-                    raise item.error
-                yield item
-        finally:
-            if not worker_finished:
-                cancel_event.set()
-            worker_thread.join()
-            self.cancellation_registry.clear(run_id, cancel_event)
+        while True:
+            item = event_queue.get()
+            if item is done:
+                break
+            if isinstance(item, _WorkflowFailure):
+                worker_thread.join()
+                raise item.error
+            yield item
+
+        worker_thread.join()
 
     @staticmethod
     def _infer_toolbased_ontology_version(
@@ -1595,7 +1544,6 @@ class AgenticOrchestrator:
         )
         if run is None:
             return False
-        self.cancellation_registry.signal(run_id)
         get_llm_router().cancel_run(run_id)
 
         return True

@@ -57,7 +57,6 @@ def test_business_data_runtime_context_uses_outer_tool_span_as_parent():
         subagent_lineage=None,
         model_profile_id="workspace:graph",
         observer=observer,
-        cancel_event=None,
     )
 
     runtime = _build_provider_runtime_context(

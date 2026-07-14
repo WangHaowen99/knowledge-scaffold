@@ -1,7 +1,6 @@
 """Tool for synchronous sub-agent task-group orchestration."""
 
 import json
-import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -139,7 +138,6 @@ def handle_spawn_sub_agent(
     parent_model_profile_id: Optional[str] = None,
     parent_workspace_id: Optional[str] = None,
     observer: Any = None,
-    cancel_event: Optional[threading.Event] = None,
 ) -> str:
     tasks, validation_error = normalize_spawn_sub_agent_args(args)
     if validation_error:
@@ -162,7 +160,6 @@ def handle_spawn_sub_agent(
             lineage=lineage,
             tasks=tasks or [],
             observer=observer,
-            cancel_event=cancel_event,
         )
         return json.dumps(result, ensure_ascii=False)
     except WorkflowCancelledError:
@@ -210,6 +207,5 @@ class SpawnSubAgentTool:
                 parent_model_profile_id=context.model_profile_id,
                 parent_workspace_id=context.workspace_id,
                 observer=context.observer,
-                cancel_event=context.cancel_event,
             ),
         )
