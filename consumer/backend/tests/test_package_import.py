@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 import yaml
@@ -167,6 +168,28 @@ def test_normalize_legacy_package_converts_lists_and_script_mapping_once(tmp_pat
             "multiple": False,
         }
     ]
+
+
+@pytest.mark.skipif(
+    not Path("/var").is_symlink() or not Path("/private/var").is_dir(),
+    reason="requires the macOS /var -> /private/var alias",
+)
+def test_normalize_legacy_package_handles_macos_var_alias(tmp_path):
+    source = tmp_path / "source"
+    _write_legacy_package(source)
+
+    try:
+        relative_tmp_path = tmp_path.resolve().relative_to(Path("/private/var"))
+    except ValueError:
+        pytest.skip("pytest temporary directory is outside /private/var")
+    target = Path("/var") / relative_tmp_path / "normalized"
+
+    result = normalize_imported_package(source, target)
+
+    assert result.warnings == ()
+    entry = find_script_entry(load_script_catalog(target), "QueryPart")
+    assert entry is not None
+    assert entry["_script_path"] == "scripts/query_part.py"
 
 
 def test_normalize_legacy_package_warns_for_unsafe_script_path(tmp_path):
