@@ -32,7 +32,6 @@ restore_archive_if_present() {
 }
 
 restore_archive_if_present "${LAST_BACKUP_DIR}/backend-env.tar.gz"
-restore_archive_if_present "${LAST_BACKUP_DIR}/backend-config.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/frontend-env.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/backend-logs.tar.gz"
 restore_archive_if_present "${LAST_BACKUP_DIR}/frontend-logs.tar.gz"

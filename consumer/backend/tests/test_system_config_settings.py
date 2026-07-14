@@ -39,7 +39,7 @@ def test_config_runtime_root_can_follow_project_root_env(tmp_path, monkeypatch):
     assert system_config_module._resolve_config_runtime_root() == runtime_root
 
 
-def test_system_config_migrates_legacy_backend_config_to_runtime_config(tmp_path, monkeypatch):
+def test_system_config_ignores_legacy_backend_config_when_new_config_is_missing(tmp_path, monkeypatch):
     import config.system_config as system_config_module
 
     config_path = tmp_path / ".onto-runtime" / "config" / "system_config.json"
@@ -59,22 +59,17 @@ def test_system_config_migrates_legacy_backend_config_to_runtime_config(tmp_path
     )
 
     monkeypatch.delenv(system_config_module.SYSTEM_CONFIG_PATH_ENV, raising=False)
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.setattr(system_config_module, "DEFAULT_CONFIG_PATH", config_path)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_path.parent)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setattr(system_config_module, "LEGACY_CONFIG_PATH", legacy_config_path)
 
     config = system_config_module.load_system_config()
 
-    assert config["llm"]["base_url"] == "https://legacy.example/v1"
-    assert config["llm"]["model"] == "legacy-model"
-    assert config["llm"]["api_key"] == "legacy-secret"
-    assert config_path.exists()
-    raw_text = config_path.read_text(encoding="utf-8")
-    raw = json.loads(raw_text)
-    assert "legacy-secret" not in raw_text
-    assert raw["llm"]["api_key"].startswith("enc:v1:")
+    assert config["llm"]["base_url"] == ""
+    assert config["llm"]["model"] == ""
+    assert config["llm"]["api_key"] == ""
+    assert not config_path.exists()
 
 
 def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch):

@@ -52,7 +52,6 @@ def _resolve_config_runtime_root() -> Path:
 
 DEFAULT_CONFIG_DIR = _resolve_config_runtime_root() / "config"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "system_config.json"
-LEGACY_CONFIG_PATH = BACKEND_ROOT / "config" / "system_config.json"
 
 
 def _resolve_config_path() -> Path:
@@ -257,26 +256,6 @@ def _read_json_document(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _should_migrate_legacy_config() -> bool:
-    if os.getenv(SYSTEM_CONFIG_PATH_ENV):
-        return False
-    return (
-        CONFIG_PATH == DEFAULT_CONFIG_PATH
-        and LEGACY_CONFIG_PATH != CONFIG_PATH
-        and LEGACY_CONFIG_PATH.exists()
-    )
-
-
-def _migrate_legacy_config_unlocked() -> dict[str, Any]:
-    document = _read_json_document(LEGACY_CONFIG_PATH)
-    raw_config = {
-        section_key: dict(document.get(section_key) or {})
-        for section_key in SECTION_KEYS
-    }
-    _write_config_document_unlocked(raw_config)
-    return _read_json_document(CONFIG_PATH)
-
-
 def _is_plaintext_secret_value(value: Any) -> bool:
     secret_value = _coerce_string(value)
     return bool(secret_value) and not is_encrypted_secret(secret_value)
@@ -417,8 +396,6 @@ def _read_config_document_unlocked() -> dict[str, Any]:
             _write_config_document_unlocked(raw_config)
             return _read_json_document(CONFIG_PATH)
         return document
-    if _should_migrate_legacy_config():
-        return _migrate_legacy_config_unlocked()
     return {}
 
 

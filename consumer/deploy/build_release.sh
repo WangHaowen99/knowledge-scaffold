@@ -113,7 +113,6 @@ find "${BUNDLE_DIR}/deploy" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 chmod +x "${BUNDLE_DIR}/deploy/"*.sh
 
 mkdir -p \
-    "${BUNDLE_DIR}/backend/config" \
     "${BUNDLE_DIR}/backend/logs" \
     "${BUNDLE_DIR}/.onto-runtime/config" \
     "${BUNDLE_DIR}/.onto-auth" \

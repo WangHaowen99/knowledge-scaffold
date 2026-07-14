@@ -157,7 +157,7 @@ Notes:
 
 - Authentication is provided solely by the standalone auth-server. `AUTH_SERVER_URL` is required (for example `http://auth-server:5056` in Docker, or `http://localhost:5056` for a local auth-server); the backend fails to start when it is unset.
 - `PROJECT_ROOT` defaults to `<consumer>/.onto-runtime`, which is now the runtime root containing `system/` and `workspaces/`.
-- `system_config.json` defaults to `<consumer>/.onto-runtime/config/system_config.json`; legacy `<consumer>/backend/config/system_config.json` is migrated when the new file does not exist.
+- `system_config.json` is read only from `<consumer>/.onto-runtime/config/system_config.json`; when absent, environment variables and built-in defaults apply until the first save creates it.
 - Ontologies are resolved per workspace under `<consumer>/.onto-runtime/workspaces/<workspace_id>/ontologies`.
 - Skills are resolved per workspace under `<consumer>/.onto-runtime/workspaces/<workspace_id>/skills`, then fall back to `<consumer>/.onto-runtime/system/skills`.
 - Server host/port/debug flags live in [`server_config.py`](server_config.py).
