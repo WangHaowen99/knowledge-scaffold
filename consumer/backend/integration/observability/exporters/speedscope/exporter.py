@@ -21,6 +21,8 @@ logger = get_logger("observability.exporters.speedscope")
 
 SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
 DEFAULT_RETENTION_DAYS = 30
+DEFAULT_PENDING_DROP_LIMIT = 10000
+DEFAULT_PENDING_DROP_TTL_SECONDS = 3600.0
 
 _START_EVENTS = {
     RuntimeEventType.RUN_STARTED: "run",
@@ -97,6 +99,20 @@ class _RunTrace:
     terminal_seen_at: float = 0.0
 
 
+@dataclass
+class _PendingDrop:
+    run_id: str
+    session_id: str
+    turn_id: Optional[int]
+    first_ts_ms: int
+    last_ts_ms: int
+    dropped_count: int = 0
+    terminal: bool = False
+    terminal_status: str = ""
+    terminal_seen_at: float = 0.0
+    updated_at: float = field(default_factory=time.monotonic)
+
+
 class SpeedscopeExporter:
     """Build valid Speedscope files without persisting rich runtime payloads."""
 
@@ -105,11 +121,18 @@ class SpeedscopeExporter:
         *,
         output_dir: str | Path | None = None,
         retention_days: int = DEFAULT_RETENTION_DAYS,
+        pending_drop_limit: int = DEFAULT_PENDING_DROP_LIMIT,
+        pending_drop_ttl_seconds: float = DEFAULT_PENDING_DROP_TTL_SECONDS,
     ) -> None:
         self.output_dir = Path(output_dir or Path(LOG_DIR) / "speedscope")
         self.retention_days = max(1, int(retention_days or DEFAULT_RETENTION_DAYS))
+        self.pending_drop_limit = max(1, int(pending_drop_limit or DEFAULT_PENDING_DROP_LIMIT))
+        self.pending_drop_ttl_seconds = max(
+            1.0,
+            float(pending_drop_ttl_seconds or DEFAULT_PENDING_DROP_TTL_SECONDS),
+        )
         self._runs: Dict[str, _RunTrace] = {}
-        self._pending_drops: Dict[str, tuple[str, Optional[int], int]] = {}
+        self._pending_drops: Dict[str, _PendingDrop] = {}
         self._lock = threading.RLock()
         self._last_prune_day = ""
 
@@ -149,40 +172,114 @@ class SpeedscopeExporter:
         if not run_id or not session_id:
             return
         with self._lock:
+            timestamp_ms = int(getattr(event, "timestamp_ms", 0) or time.time() * 1000)
+            terminal = event.type in _RUN_TERMINAL_EVENTS
+            now = time.monotonic()
             run = self._runs.get(run_id)
             if run is not None:
                 run.dropped_count += 1
+                run.last_ts_ms = max(run.last_ts_ms, timestamp_ms)
+                if terminal:
+                    run.terminal = True
+                    run.terminal_status = _normalized_status(event)
+                    run.terminal_seen_at = now
                 return
-            previous = self._pending_drops.get(run_id)
-            count = int(previous[2] if previous else 0) + 1
-            self._pending_drops[run_id] = (
-                session_id,
-                _optional_int(getattr(event, "turn_id", None)),
-                count,
-            )
+            pending = self._pending_drops.get(run_id)
+            if pending is None:
+                pending = _PendingDrop(
+                    run_id=run_id,
+                    session_id=session_id,
+                    turn_id=_optional_int(getattr(event, "turn_id", None)),
+                    first_ts_ms=timestamp_ms,
+                    last_ts_ms=timestamp_ms,
+                )
+                self._pending_drops[run_id] = pending
+            pending.session_id = pending.session_id or session_id
+            if pending.turn_id is None:
+                pending.turn_id = _optional_int(getattr(event, "turn_id", None))
+            pending.first_ts_ms = min(pending.first_ts_ms, timestamp_ms)
+            pending.last_ts_ms = max(pending.last_ts_ms, timestamp_ms)
+            pending.dropped_count += 1
+            pending.updated_at = now
+            if terminal:
+                pending.terminal = True
+                pending.terminal_status = _normalized_status(event)
+                pending.terminal_seen_at = now
+            self._discard_pending_drops(now)
 
     def flush(self) -> None:
         with self._lock:
+            now = time.monotonic()
+            self._discard_pending_drops(now)
             for run in self._runs.values():
                 if run.terminal:
                     self._write_run(run)
+            pending_terminal_runs = [
+                self._run_from_pending_drop(pending)
+                for pending in self._pending_drops.values()
+                if pending.terminal
+            ]
+            for run in pending_terminal_runs:
+                self._write_run(run)
+                self._pending_drops.pop(run.run_id, None)
             self._discard_settled_runs()
 
     def close(self) -> None:
         self.flush()
+
+    def _run_from_pending_drop(self, pending: _PendingDrop) -> _RunTrace:
+        return _RunTrace(
+            run_id=pending.run_id,
+            session_id=pending.session_id,
+            turn_id=pending.turn_id,
+            first_ts_ms=pending.first_ts_ms,
+            last_ts_ms=max(pending.first_ts_ms, pending.last_ts_ms),
+            terminal=True,
+            terminal_status=pending.terminal_status,
+            dropped_count=pending.dropped_count,
+            terminal_seen_at=pending.terminal_seen_at or time.monotonic(),
+        )
+
+    def _discard_pending_drops(self, now: float) -> None:
+        expired = [
+            run_id
+            for run_id, pending in self._pending_drops.items()
+            if not pending.terminal and now - pending.updated_at >= self.pending_drop_ttl_seconds
+        ]
+        for run_id in expired:
+            self._pending_drops.pop(run_id, None)
+
+        while len(self._pending_drops) > self.pending_drop_limit:
+            victim = min(
+                self._pending_drops.values(),
+                key=lambda pending: (
+                    1 if pending.terminal else 0,
+                    pending.updated_at,
+                    pending.run_id,
+                ),
+            )
+            self._pending_drops.pop(victim.run_id, None)
 
     def _ensure_run(self, event: RuntimeEvent) -> _RunTrace:
         run = self._runs.get(event.run_id)
         if run is not None:
             return run
         pending = self._pending_drops.pop(event.run_id, None)
+        event_ts_ms = int(event.timestamp_ms)
         run = _RunTrace(
             run_id=event.run_id,
-            session_id=str(event.session_id or pending[0] if pending else event.session_id or ""),
-            turn_id=_optional_int(event.turn_id) if event.turn_id is not None else (pending[1] if pending else None),
-            first_ts_ms=int(event.timestamp_ms),
-            last_ts_ms=int(event.timestamp_ms),
-            dropped_count=int(pending[2] if pending else 0),
+            session_id=str(event.session_id or (pending.session_id if pending else "") or ""),
+            turn_id=(
+                _optional_int(event.turn_id)
+                if event.turn_id is not None
+                else (pending.turn_id if pending else None)
+            ),
+            first_ts_ms=min(event_ts_ms, pending.first_ts_ms) if pending else event_ts_ms,
+            last_ts_ms=max(event_ts_ms, pending.last_ts_ms) if pending else event_ts_ms,
+            terminal=bool(pending.terminal) if pending else False,
+            terminal_status=pending.terminal_status if pending else "",
+            dropped_count=int(pending.dropped_count if pending else 0),
+            terminal_seen_at=pending.terminal_seen_at if pending and pending.terminal else 0.0,
         )
         self._runs[event.run_id] = run
         return run
