@@ -15,6 +15,7 @@ from agent.core.orchestrator import (
 from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
+from integration.observability import stack_profiler as stack_profiler_module
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
 from persistence.run_store import RunStore
@@ -128,6 +129,119 @@ class _FakeMemoryFactory:
     def for_user(self, user_id):
         del user_id
         return self.manager
+
+
+class _EnabledObserver:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+        return True
+
+
+def _reset_stack_profiler_state():
+    stack_profiler_module._release_process_samples(stack_profiler_module._PROCESS_SAMPLE_COUNT)
+    with stack_profiler_module._LOCK:
+        stack_profiler_module._RUNS.clear()
+    with stack_profiler_module._THREAD_RUN_COUNTS_LOCK:
+        stack_profiler_module._THREAD_RUN_COUNTS.clear()
+    stack_profiler_module._CONTEXT_BINDINGS.set(())
+
+
+def _assert_stack_profile_released(run_id, profile):
+    assert run_id not in stack_profiler_module._RUNS
+    assert stack_profiler_module._THREAD_RUN_COUNTS == {}
+    assert stack_profiler_module._PROCESS_SAMPLE_COUNT == 0
+    assert profile.sampler_thread is not None
+    assert not profile.sampler_thread.is_alive()
+
+
+def test_run_trace_resources_close_when_generator_closed_after_start(monkeypatch, tmp_path):
+    _reset_stack_profiler_state()
+    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
+    monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
+    monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: _EnabledObserver())
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    generator = orchestrator.run(
+        user_request="hello",
+        session_id="sess-generator-close",
+        requested_run_id="run-generator-close",
+    )
+
+    try:
+        first_event = next(generator)
+        assert first_event["data"]["type"] == "turn.started"
+        profile = stack_profiler_module._RUNS["run-generator-close"]
+        stack_profiler_module._sample_profile(profile)
+        assert stack_profiler_module._PROCESS_SAMPLE_COUNT >= 1
+
+        generator.close()
+
+        _assert_stack_profile_released("run-generator-close", profile)
+    finally:
+        generator.close()
+        _reset_stack_profiler_state()
+
+
+def test_run_trace_resources_close_on_pre_agent_loop_exception(monkeypatch, tmp_path):
+    _reset_stack_profiler_state()
+    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
+    monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
+    monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: _EnabledObserver())
+    config = AgentConfig.from_env()
+    config.direct_execution.enabled = True
+
+    def _raise_router(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("router initialization failed")
+
+    monkeypatch.setattr("agent.core.orchestrator.OperationDirectRouter", _raise_router)
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        agent_config=config,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    generator = orchestrator.run(
+        user_request="hello",
+        session_id="sess-pre-loop-error",
+        requested_run_id="run-pre-loop-error",
+    )
+
+    try:
+        first_event = next(generator)
+        assert first_event["data"]["type"] == "turn.started"
+        profile = stack_profiler_module._RUNS["run-pre-loop-error"]
+        stack_profiler_module._sample_profile(profile)
+
+        with pytest.raises(RuntimeError, match="router initialization failed"):
+            next(generator)
+
+        _assert_stack_profile_released("run-pre-loop-error", profile)
+    finally:
+        generator.close()
+        _reset_stack_profiler_state()
 
 
 def test_submit_reflection_does_not_depend_on_memory_manager():

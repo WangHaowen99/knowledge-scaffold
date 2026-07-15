@@ -7,6 +7,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability import stack_profiler as stack_profiler_module
 from integration.observability.bus import ObservabilityBus
@@ -225,7 +227,7 @@ def test_run_trace_close_cleans_started_profile_after_pre_loop_exception(tmp_pat
     _reset_stack_profiler_state()
     monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
     monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
-    monkeypatch.setattr(stack_profiler_module, "LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
     monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
     trace = RunRuntimeTrace(
         observer=_CapturingObserver(),
@@ -467,6 +469,55 @@ def test_speedscope_pending_drops_are_bounded_and_expire(tmp_path):
     )
 
     assert "run-pending-1" not in exporter._pending_drops
+
+
+@pytest.mark.parametrize("use_log_dir", [True, False])
+def test_speedscope_writers_share_runtime_output_dir(tmp_path, monkeypatch, use_log_dir):
+    _reset_stack_profiler_state()
+    runtime_root = tmp_path / ".onto-runtime"
+    log_dir = tmp_path / "custom-logs"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    if use_log_dir:
+        monkeypatch.setenv("LOG_DIR", str(log_dir))
+        output_dir = log_dir / "speedscope"
+        unexpected_dir = runtime_root / "logs" / "speedscope"
+    else:
+        monkeypatch.delenv("LOG_DIR", raising=False)
+        output_dir = runtime_root / "logs" / "speedscope"
+        unexpected_dir = log_dir / "speedscope"
+    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
+    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
+    session_id = "session-runtime-output-dir"
+
+    try:
+        exporter = SpeedscopeExporter()
+        _emit_minimal_run(
+            exporter,
+            run_id="run-evented-output-dir",
+            session_id=session_id,
+            turn_id=1,
+        )
+
+        stack_profiler_module.start_run_stack_profile(
+            run_id="run-sampled-output-dir",
+            session_id=session_id,
+            turn_id=2,
+        )
+        profile = stack_profiler_module._RUNS["run-sampled-output-dir"]
+        stack_profiler_module._sample_profile(profile)
+        stack_profiler_module.stop_run_stack_profile(
+            "run-sampled-output-dir",
+            status=RuntimeStatus.SUCCESS,
+        )
+
+        document = _load_single_speedscope_document(output_dir)
+        profile_names = [profile["name"] for profile in document["profiles"]]
+
+        assert any("Run run-evented-output-dir" in name for name in profile_names)
+        assert any("Run run-sampled-output-dir" in name for name in profile_names)
+        assert list(unexpected_dir.glob("*.speedscope.json")) == []
+    finally:
+        _reset_stack_profiler_state()
 
 
 def test_speedscope_session_file_lock_preserves_profiles_across_processes(tmp_path):
