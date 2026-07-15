@@ -17,8 +17,8 @@ import time
 from types import FrameType
 from typing import Any, Iterator, Optional
 
-from utils.logging import LOG_DIR, get_logger
-from .speedscope_io import speedscope_file_lock
+from utils.logging import get_logger
+from .speedscope_io import resolve_speedscope_output_dir, speedscope_file_lock
 
 logger = get_logger("observability.stack_profiler")
 
@@ -162,7 +162,7 @@ def start_run_stack_profile(
                 session_id=normalized_session_id,
                 turn_id=turn_id,
                 start_ns=time.perf_counter_ns(),
-                output_dir=Path(LOG_DIR) / "speedscope",
+                output_dir=resolve_speedscope_output_dir(),
                 max_samples=max_samples,
                 process_max_samples=_process_max_samples(),
                 sample_interval_ms=_sample_interval_ms(),

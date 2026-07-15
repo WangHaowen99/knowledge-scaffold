@@ -13,9 +13,9 @@ import threading
 import time
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from utils.logging import LOG_DIR, get_logger
+from utils.logging import get_logger
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
-from integration.observability.speedscope_io import speedscope_file_lock
+from integration.observability.speedscope_io import resolve_speedscope_output_dir, speedscope_file_lock
 
 logger = get_logger("observability.exporters.speedscope")
 
@@ -124,7 +124,7 @@ class SpeedscopeExporter:
         pending_drop_limit: int = DEFAULT_PENDING_DROP_LIMIT,
         pending_drop_ttl_seconds: float = DEFAULT_PENDING_DROP_TTL_SECONDS,
     ) -> None:
-        self.output_dir = Path(output_dir or Path(LOG_DIR) / "speedscope")
+        self.output_dir = resolve_speedscope_output_dir(output_dir)
         self.retention_days = max(1, int(retention_days or DEFAULT_RETENTION_DAYS))
         self.pending_drop_limit = max(1, int(pending_drop_limit or DEFAULT_PENDING_DROP_LIMIT))
         self.pending_drop_ttl_seconds = max(
