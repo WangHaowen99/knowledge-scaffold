@@ -240,7 +240,7 @@ class SpeedscopeExporter:
     def _write_run(self, run: _RunTrace) -> None:
         spans, incomplete = _materialize_spans(run)
         path = self.output_dir / _session_file_name(run.session_id)
-        with speedscope_file_lock():
+        with speedscope_file_lock(path):
             document = _load_session_document(path, run.session_id)
             active_profile_name = _active_profile_name(document)
             run_prefix = _run_profile_prefix(run)

@@ -404,7 +404,7 @@ def _classify_thread_state(frame: FrameType) -> str:
 
 def _write_stack_profile(profile: _RunStackProfile, *, status: str) -> None:
     path = profile.output_dir / _session_file_name(profile.session_id)
-    with speedscope_file_lock():
+    with speedscope_file_lock(path):
         document = _load_session_document(path, profile.session_id)
         code_prefix = _code_profile_prefix(profile)
         document["profiles"] = [

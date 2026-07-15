@@ -1,5 +1,8 @@
 from contextvars import Context
 import json
+import multiprocessing
+from pathlib import Path
+import queue
 import sys
 import threading
 
@@ -303,6 +306,59 @@ def test_speedscope_bus_marks_trace_incomplete_when_queue_drops_event(tmp_path):
     assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
 
 
+def test_speedscope_session_file_lock_preserves_profiles_across_processes(tmp_path):
+    context_name = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
+    process_context = multiprocessing.get_context(context_name)
+    errors = process_context.Queue()
+    session_id = "session-cross-process-lock"
+    run_ids = []
+
+    for iteration in range(5):
+        start_event = process_context.Event()
+        iteration_run_ids = [
+            "run-cross-process-{}-a".format(iteration),
+            "run-cross-process-{}-b".format(iteration),
+        ]
+        processes = [
+            process_context.Process(
+                target=_write_run_profiles_in_process,
+                args=(str(tmp_path), session_id, run_id, index + 1, start_event, errors),
+            )
+            for index, run_id in enumerate(iteration_run_ids)
+        ]
+        for process in processes:
+            process.start()
+        start_event.set()
+        for process in processes:
+            process.join(timeout=10.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2.0)
+                raise AssertionError("child process timed out")
+            assert process.exitcode == 0
+        run_ids.extend(iteration_run_ids)
+
+    child_errors = []
+    while True:
+        try:
+            child_errors.append(errors.get_nowait())
+        except queue.Empty:
+            break
+    assert child_errors == []
+
+    document = _load_single_speedscope_document(tmp_path)
+    profile_names = [profile["name"] for profile in document["profiles"]]
+    for run_id in run_ids:
+        assert any(
+            name.startswith("Turn") and "Run {}".format(run_id) in name
+            for name in profile_names
+        )
+        assert any(
+            name.startswith("Code Lines") and "Run {}".format(run_id) in name
+            for name in profile_names
+        )
+
+
 def _emit_minimal_run(
     exporter: SpeedscopeExporter,
     *,
@@ -421,6 +477,28 @@ def _load_single_speedscope_document(output_dir):
 
 def _active_profile(document):
     return document["profiles"][document["activeProfileIndex"]]
+
+
+def _write_run_profiles_in_process(output_dir, session_id, run_id, turn_id, start_event, errors):
+    try:
+        if not start_event.wait(timeout=5.0):
+            raise TimeoutError("timed out waiting to start child writer")
+        exporter = SpeedscopeExporter(output_dir=output_dir)
+        _emit_minimal_run(
+            exporter,
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        _write_sampled_code_profile(
+            output_dir=Path(output_dir),
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+    except BaseException as exc:
+        errors.put("{}: {}".format(type(exc).__name__, exc))
+        raise
 
 
 class _CapturingObserver:
