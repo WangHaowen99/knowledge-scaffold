@@ -306,6 +306,115 @@ def test_speedscope_bus_marks_trace_incomplete_when_queue_drops_event(tmp_path):
     assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
 
 
+def test_speedscope_bus_writes_incomplete_trace_when_terminal_event_drops(tmp_path):
+    exporter = _BlockingSpeedscopeExporter(tmp_path)
+    bus = ObservabilityBus(exporter, queue_size=1, flush_interval_seconds=60.0)
+    common = {"run_id": "run-terminal-drop", "session_id": "session-terminal-drop", "turn_id": 1}
+
+    try:
+        assert bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_STARTED,
+                span_key="run:run-terminal-drop",
+                timestamp_ms=1000,
+                payload={},
+                **common,
+            )
+        )
+        assert exporter.export_started.wait(timeout=2.0)
+        assert bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.LLM_STARTED,
+                span_key="llm:queued",
+                parent_key="run:run-terminal-drop",
+                timestamp_ms=1010,
+                payload={},
+                **common,
+            )
+        )
+        assert not bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_FINISHED,
+                span_key="run:run-terminal-drop",
+                timestamp_ms=1020,
+                payload={"status": RuntimeStatus.SUCCESS, "duration_ms": 20},
+                **common,
+            )
+        )
+    finally:
+        exporter.release_export.set()
+        bus.close(timeout=2.0)
+
+    document = _load_single_speedscope_document(tmp_path)
+    profile_names = [profile["name"] for profile in document["profiles"]]
+    frame_names = [frame["name"] for frame in document["shared"]["frames"]]
+
+    assert any("Run run-terminal-drop" in name and "[INCOMPLETE]" in name for name in profile_names)
+    assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
+
+
+def test_speedscope_flush_writes_terminal_pending_drop_without_run_event(tmp_path):
+    exporter = SpeedscopeExporter(output_dir=tmp_path)
+    exporter.record_drop(
+        RuntimeEvent(
+            type=RuntimeEventType.RUN_FAILED,
+            run_id="run-terminal-only-drop",
+            session_id="session-terminal-only-drop",
+            turn_id=1,
+            span_key="run:run-terminal-only-drop",
+            timestamp_ms=2000,
+            payload={"status": RuntimeStatus.ERROR, "duration_ms": 10},
+        )
+    )
+
+    exporter.flush()
+
+    document = _load_single_speedscope_document(tmp_path)
+    profile_names = [profile["name"] for profile in document["profiles"]]
+    frame_names = [frame["name"] for frame in document["shared"]["frames"]]
+
+    assert exporter._pending_drops == {}
+    assert any("Run run-terminal-only-drop" in name and "[INCOMPLETE]" in name for name in profile_names)
+    assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
+
+
+def test_speedscope_pending_drops_are_bounded_and_expire(tmp_path):
+    exporter = SpeedscopeExporter(
+        output_dir=tmp_path,
+        pending_drop_limit=2,
+        pending_drop_ttl_seconds=1.0,
+    )
+
+    for index in range(3):
+        exporter.record_drop(
+            RuntimeEvent(
+                type=RuntimeEventType.LLM_STARTED,
+                run_id="run-pending-{}".format(index),
+                session_id="session-pending",
+                turn_id=1,
+                timestamp_ms=1000 + index,
+                payload={},
+            )
+        )
+
+    assert len(exporter._pending_drops) == 2
+    assert "run-pending-0" not in exporter._pending_drops
+
+    exporter._pending_drops["run-pending-1"].updated_at -= 10.0
+    exporter.record_drop(
+        RuntimeEvent(
+            type=RuntimeEventType.LLM_STARTED,
+            run_id="run-pending-new",
+            session_id="session-pending",
+            turn_id=1,
+            timestamp_ms=2000,
+            payload={},
+        )
+    )
+
+    assert "run-pending-1" not in exporter._pending_drops
+
+
 def test_speedscope_session_file_lock_preserves_profiles_across_processes(tmp_path):
     context_name = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
     process_context = multiprocessing.get_context(context_name)
