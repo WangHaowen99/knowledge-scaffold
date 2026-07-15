@@ -5,6 +5,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+import time
 
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability import stack_profiler as stack_profiler_module
@@ -353,6 +354,59 @@ def test_speedscope_bus_writes_incomplete_trace_when_terminal_event_drops(tmp_pa
     assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
 
 
+def test_observability_bus_drop_notice_does_not_wait_for_exporter_lock(tmp_path):
+    exporter = _LockHoldingSpeedscopeExporter(tmp_path)
+    bus = ObservabilityBus(exporter, queue_size=1, flush_interval_seconds=60.0)
+    common = {"run_id": "run-nonblocking-drop", "session_id": "session-nonblocking-drop", "turn_id": 1}
+
+    try:
+        assert bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_STARTED,
+                span_key="run:run-nonblocking-drop",
+                timestamp_ms=1000,
+                payload={},
+                **common,
+            )
+        )
+        assert exporter.export_started.wait(timeout=2.0)
+        assert bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.LLM_STARTED,
+                span_key="llm:queued",
+                parent_key="run:run-nonblocking-drop",
+                timestamp_ms=1010,
+                payload={},
+                **common,
+            )
+        )
+
+        started_at = time.perf_counter()
+        emitted = bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_FINISHED,
+                span_key="run:run-nonblocking-drop",
+                timestamp_ms=1020,
+                payload={"status": RuntimeStatus.SUCCESS, "duration_ms": 20},
+                **common,
+            )
+        )
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+
+        assert emitted is False
+        assert elapsed_ms < 100
+    finally:
+        exporter.release_export.set()
+        bus.close(timeout=2.0)
+
+    document = _load_single_speedscope_document(tmp_path)
+    profile_names = [profile["name"] for profile in document["profiles"]]
+    frame_names = [frame["name"] for frame in document["shared"]["frames"]]
+
+    assert any("Run run-nonblocking-drop" in name and "[INCOMPLETE]" in name for name in profile_names)
+    assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
+
+
 def test_speedscope_flush_writes_terminal_pending_drop_without_run_event(tmp_path):
     exporter = SpeedscopeExporter(output_dir=tmp_path)
     exporter.record_drop(
@@ -632,6 +686,33 @@ class _BlockingSpeedscopeExporter:
         if not self.export_started.is_set():
             self.export_started.set()
             self.release_export.wait(timeout=2.0)
+        self.delegate.export(event)
+
+    def record_drop(self, event):
+        self.delegate.record_drop(event)
+
+    def flush(self):
+        self.delegate.flush()
+
+    def close(self):
+        self.delegate.close()
+
+
+class _LockHoldingSpeedscopeExporter:
+    available = True
+
+    def __init__(self, output_dir):
+        self.delegate = SpeedscopeExporter(output_dir=output_dir)
+        self.export_started = threading.Event()
+        self.release_export = threading.Event()
+
+    def export(self, event):
+        if not self.export_started.is_set():
+            with self.delegate._lock:
+                self.export_started.set()
+                self.release_export.wait(timeout=2.0)
+                self.delegate.export(event)
+            return
         self.delegate.export(event)
 
     def record_drop(self, event):
