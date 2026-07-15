@@ -1,9 +1,9 @@
 ---
-name: "标准 Issue"
-about: "按照统一的优先级、类别和正文结构提交 Issue"
-title: "[P0-P3][类别] "
+name: 通用 Issue 模板
+about: 按照统一的优先级、类别和正文结构提交 Issue
+title: [P0-P3][类别]
 labels: []
-assignees: ""
+assignees:
 ---
 
 <!--
