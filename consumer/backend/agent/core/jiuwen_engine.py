@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from ..exceptions import WorkflowCancelledError
 from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER, RuntimeStatus
 from integration.observability import bind_observability_context
+from integration.observability.stack_profiler import profile_current_thread
 from llm import LLMPurpose, get_llm_router
 from llm.provider_adapters import get_provider_adapter
 from ..tools.executor import execute_tool_batch
@@ -2022,14 +2023,15 @@ async def _with_observability_context(
     downstream synchronous reads (e.g. reasoning-summary scheduling in the LLM
     service), preventing them from silently falling back to NOOP_OBSERVER.
     """
-    with bind_observability_context(
-        observer=observer,
-        run_id=run_id,
-        session_id=session_id,
-        turn_id=turn_id,
-        parent_key=parent_key,
-    ):
-        return await awaitable
+    with profile_current_thread(run_id):
+        with bind_observability_context(
+            observer=observer,
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            parent_key=parent_key,
+        ):
+            return await awaitable
 
 
 def _run_awaitable(

@@ -97,7 +97,7 @@ class JiuwenModelTraceBridge:
         inputs = read_field(ctx, "inputs")
         messages = jiuwen_messages_to_dicts(read_field(inputs, "messages") or [])
         tools = jiuwen_tools_to_dicts(read_field(inputs, "tools") or [])
-        model_name = jiuwen_model_name_from_context(ctx)
+        model_name = self._model_name_from_context(ctx)
         started_at = time.perf_counter()
         self._active_calls[id(ctx)] = {
             "iteration": iteration,
@@ -139,7 +139,7 @@ class JiuwenModelTraceBridge:
                 reasoning_content=str(read_field(response, "reasoning_content") or ""),
             )
         elapsed_ms = elapsed_ms_since(record.get("started_at"))
-        model_name = str(record.get("model") or jiuwen_model_name_from_context(ctx))
+        model_name = resolved_jiuwen_model_name(ctx, self.llm_config, preferred=record.get("model"))
         self.runtime_trace.llm_finished(
             iteration=int(record["iteration"]),
             call_index=int(record["call_index"]),
@@ -207,6 +207,9 @@ class JiuwenModelTraceBridge:
                 params[key] = value
         return params
 
+    def _model_name_from_context(self, ctx: Any) -> str:
+        return resolved_jiuwen_model_name(ctx, self.llm_config)
+
     def _start_missing_record(self, ctx: Any) -> Dict[str, Any]:
         iteration = self._current_iteration()
         call_index = self._next_call_index(iteration)
@@ -215,7 +218,7 @@ class JiuwenModelTraceBridge:
             "iteration": iteration,
             "call_index": call_index,
             "started_at": time.perf_counter(),
-            "model": jiuwen_model_name_from_context(ctx),
+            "model": self._model_name_from_context(ctx),
             "messages": jiuwen_messages_to_dicts(read_field(inputs, "messages") or []),
             "tools": jiuwen_tools_to_dicts(read_field(inputs, "tools") or []),
         }
@@ -327,6 +330,21 @@ def jiuwen_model_name_from_context(ctx: Any) -> str:
         or read_field(config, "model")
         or "unknown"
     )
+
+
+def resolved_jiuwen_model_name(ctx: Any, llm_config: Any = None, *, preferred: Any = None) -> str:
+    for candidate in (
+        preferred,
+        jiuwen_model_name_from_context(ctx),
+        read_field(llm_config, "model_name"),
+        read_field(llm_config, "model"),
+        read_field(llm_config, "deployment"),
+        read_field(llm_config, "model_id"),
+    ):
+        value = str(candidate or "").strip()
+        if value and value.lower() != "unknown":
+            return value
+    return "unknown"
 
 
 def tool_names_from_calls_or_infos(
