@@ -231,6 +231,7 @@ Important variables:
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM HTTP retry count for connection-style failures | `3` |
 | `LOG_LEVEL` | Process startup log level; overridden by `ops_config.json` `logging.level` | `INFO` |
 | `LOG_CONSOLE` | Enable console logging when set | off |
+| `SPEEDSCOPE_TRACE_ENABLED` | Generate developer-only, session-scoped Speedscope timing files | `false` |
 
 Notes:
 
@@ -241,6 +242,8 @@ Notes:
 - `web_search` is optional and disabled by default. Configure `web_search` through system settings or `WEB_SEARCH_*` environment variables before the tool is exposed to the model.
 - Observability output is configured through `/api/system-config` or the system settings UI. `observability.enabled` controls whether events are exported and `observability.mode` selects local performance JSONL or Langfuse; the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
 - With `observability.mode=local`, the chat UI can analyze the current session and admins can open the global local-observability dashboard. Those views read only the current machine's retained new-schema local perf JSONL files; they do not read Langfuse data or old direct perf logger records.
+- With `SPEEDSCOPE_TRACE_ENABLED=true`, the knowledge-QA backend writes standard session-scoped `.speedscope.json` files under `<PROJECT_ROOT>/logs/speedscope/`, retained for 30 days. Runs and parallel execution lanes become evented profiles that can be opened directly in [Speedscope](https://www.speedscope.app/). This environment switch is independent of system observability: normal `agent.log` output remains enabled, while `agent_perf` is still controlled only by `observability.mode=local`.
+- Speedscope traces contain stage names, status, and timing only. They exclude user questions, prompts, reasoning, answers, tool arguments, SQL parameters, and tool output. The standalone MCP container explicitly disables this switch.
 - If you use GLM directly, the recommended endpoint example is `https://open.bigmodel.cn/api/paas/v4`.
 
 ## HTTP surface

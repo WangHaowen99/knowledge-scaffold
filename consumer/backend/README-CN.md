@@ -250,6 +250,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AGENT_MEMORY_RECALL_THRESHOLD` | 记忆召回阈值 | 空 |
 | `LOG_LEVEL` | 进程启动日志级别；`ops_config.json` 的 `logging.level` 可覆盖 | `INFO` |
 | `LOG_CONSOLE` | 是否启用控制台日志 | 关闭 |
+| `SPEEDSCOPE_TRACE_ENABLED` | 是否生成面向开发者的会话级 Speedscope 耗时文件 | `false` |
 
 说明：
 
@@ -258,7 +259,9 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - `business_data_search` 使用 workspace 本地的数据连接与 ontology 绑定。请通过 `/agentic/data-connections` 创建 MindsDB 或 NL2SQL HTTP 连接，再通过 `/agentic/ontologies/{ontology_id}/data-binding` 为本体绑定连接。
 - `web_search` 是可选联网搜索工具，通过系统设置 UI 或 `web_search` 配置 section 开启；默认关闭，未开启时不会暴露给模型。
 - 观测输出通过 `/api/system-config` 或系统设置 UI 配置。`observability.enabled` 控制是否导出事件，`observability.mode` 选择本地性能 JSONL 或 Langfuse；旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量不再作为运行时配置入口读取。
-- `observability.mode=local` 时，前端会话性能页和管理员本地观测页只读取当前机器保留的新 schema 本地 perf JSONL，不读取 Langfuse 数据，也不读取旧 direct perf logger 记录。
+- `observability.mode=local` 是系统观测 exporter，产出 `agent_perf-*.log` JSONL，供前端会话性能页和管理员本地观测页读取；它不生成 Speedscope 文件，不读取 Langfuse 数据，也不读取旧 direct perf logger 记录。
+- `SPEEDSCOPE_TRACE_ENABLED=true` 是独立的开发诊断开关，知识问答 backend 会在 `<PROJECT_ROOT>/logs/speedscope/` 下按会话直接生成标准 `.speedscope.json`。每轮 run 与并行执行通道分别映射为 evented profile，代码栈采样映射为 sampled profile；文件默认保留 30 天，可直接拖入 [Speedscope](https://www.speedscope.app/) 查看，不被前端本地观测页消费。代码栈采样默认 10ms 间隔、单 run 最多 20,000 个样本、进程内活跃样本最多 50,000 个，可通过 `SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS`、`SPEEDSCOPE_STACK_PROFILE_MAX_EVENTS` 和 `SPEEDSCOPE_STACK_PROFILE_PROCESS_MAX_EVENTS` 调整。普通 `agent.log` 始终保留，`agent_perf` 仍只由 `observability.mode=local` 控制。
+- Speedscope 文件只保存阶段名称、状态、时间关系以及代码帧标签（模块、函数、文件和行号），不保存源码文本、用户问题、Prompt、reasoning、回答、工具参数、SQL 参数或工具输出。独立 MCP 容器固定关闭该开关，避免外部 MCP 请求写入知识问答会话 trace。
 - 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`agent_perf` 仍由 `observability.local.retention_days` 独立控制。
 - 如果直接接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 

@@ -361,6 +361,7 @@ data: { ... }
 | `ONTOLOGY_OPERATION_MAX_CHARS` | 单个最终 operation markdown 字符上限，默认 `15000` |
 | `AGENT_LOG_RETENTION_DAYS` | 普通 agent 日志保留天数，默认 `180` |
 | `AGENT_LOG_COMPRESS_OLD` | 是否压缩历史普通日志，默认 `true` |
+| `SPEEDSCOPE_TRACE_ENABLED` | 是否生成开发者会话级 Speedscope 耗时文件，默认 `false` |
 
 说明：
 
@@ -368,6 +369,7 @@ data: { ... }
 - 业务数据检索连接按 workspace 存储在运行时目录中，并通过 ontology 绑定选择；系统配置页不再提供全局本体检索 provider。
 - 观测输出通过系统设置页 / `.onto-runtime/config/system_config.json` 管理，`observability.enabled` 控制开关，`observability.mode` 选择本地性能日志或 Langfuse；不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
 - `observability.mode=local` 时，聊天页的当前会话可打开“性能分析”；管理员可在用户菜单打开“本地观测分析”查看当前机器保留窗口内的整体趋势、慢运行、慢工具和慢运行阶段。该分析只读取新 local perf JSONL，不读取 Langfuse 或旧 direct perf logger 数据。
+- `SPEEDSCOPE_TRACE_ENABLED=true` 时，仅知识问答 backend 在 `.onto-runtime/logs/speedscope/` 下按会话直接生成标准 `.speedscope.json`，默认保留 30 天；独立 MCP 容器固定关闭。文件只含阶段名称、状态和耗时，不含问题、Prompt、reasoning、回答、工具参数或工具输出，可直接使用 [Speedscope](https://www.speedscope.app/) 打开。
 - 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`agent_perf` 仍由 `observability.local.retention_days` 独立控制。
 - 内置默认值只用于超时、重试、temperature、存储路径等运行参数；模型和业务数据源这类外部能力必须显式配置。
 - 如果接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
