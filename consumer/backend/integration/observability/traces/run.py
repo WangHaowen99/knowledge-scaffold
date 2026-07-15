@@ -6,6 +6,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 import uuid
+import weakref
 
 from agent.exceptions import WorkflowCancelledError
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
@@ -33,6 +34,9 @@ class RunRuntimeTrace:
         self.session_id = session_id
         self.turn_id = turn_id
         self.root_span_key = "run:{}".format(self.run_id)
+        self._profile_started = False
+        self._terminal = False
+        self._profile_finalizer: Optional[weakref.finalize] = None
 
     @property
     def enabled(self) -> bool:
@@ -55,6 +59,13 @@ class RunRuntimeTrace:
             session_id=self.session_id,
             turn_id=self.turn_id,
         )
+        self._profile_started = True
+        self._profile_finalizer = weakref.finalize(
+            self,
+            stop_run_stack_profile,
+            self.run_id,
+            status=RuntimeStatus.ERROR,
+        )
         self._emit(
             RuntimeEventType.RUN_STARTED,
             span_key=self.root_span_key,
@@ -74,9 +85,9 @@ class RunRuntimeTrace:
         final_answer: Any,
         duration_ms: Optional[int] = None,
     ) -> None:
+        self.close(status=RuntimeStatus.SUCCESS)
         if not self.enabled:
             return
-        stop_run_stack_profile(self.run_id, status=RuntimeStatus.SUCCESS)
         self._emit(
             RuntimeEventType.RUN_FINISHED,
             span_key=self.root_span_key,
@@ -96,9 +107,9 @@ class RunRuntimeTrace:
         error_type: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> None:
+        self.close(status=RuntimeStatus.CANCELLED)
         if not self.enabled:
             return
-        stop_run_stack_profile(self.run_id, status=RuntimeStatus.CANCELLED)
         self._emit(
             RuntimeEventType.RUN_CANCELLED,
             span_key=self.root_span_key,
@@ -120,9 +131,9 @@ class RunRuntimeTrace:
         error_message: str,
         duration_ms: Optional[int] = None,
     ) -> None:
+        self.close(status=RuntimeStatus.ERROR)
         if not self.enabled:
             return
-        stop_run_stack_profile(self.run_id, status=RuntimeStatus.ERROR)
         self._emit(
             RuntimeEventType.RUN_FAILED,
             span_key=self.root_span_key,
@@ -211,6 +222,19 @@ class RunRuntimeTrace:
                 duration_ms=int((time.perf_counter() - started_at) * 1000),
                 metrics=phase_metrics,
             )
+
+    def close(self, *, status: str = RuntimeStatus.ERROR) -> None:
+        """Idempotently stop resources started for this run trace."""
+        if self._terminal:
+            return
+        self._terminal = True
+        finalizer = self._profile_finalizer
+        self._profile_finalizer = None
+        if finalizer is not None and finalizer.alive:
+            finalizer.detach()
+        if self._profile_started:
+            stop_run_stack_profile(self.run_id, status=status)
+            self._profile_started = False
 
     def _emit_phase(
         self,

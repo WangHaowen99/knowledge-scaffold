@@ -62,6 +62,7 @@ class ObservabilityBus:
                     event.type,
                     event.run_id,
                 )
+                self._record_drop(event)
                 return False
 
     def close(self, timeout: Optional[float] = 5.0) -> None:
@@ -129,6 +130,15 @@ class ObservabilityBus:
             flush()
         except Exception:
             logger.warning("Observability exporter flush failed", exc_info=True)
+
+    def _record_drop(self, event: RuntimeEvent) -> None:
+        record_drop = getattr(self._exporter, "record_drop", None)
+        if not callable(record_drop):
+            return
+        try:
+            record_drop(event)
+        except Exception:
+            logger.warning("Observability exporter failed to record dropped event", exc_info=True)
 
     def _close_exporter(self) -> None:
         with self._exporter_close_lock:

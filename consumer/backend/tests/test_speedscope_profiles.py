@@ -1,10 +1,13 @@
 from contextvars import Context
 import json
 import sys
+import threading
 
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability import stack_profiler as stack_profiler_module
+from integration.observability.bus import ObservabilityBus
 from integration.observability.exporters.speedscope.exporter import SpeedscopeExporter
+from integration.observability.traces.run import RunRuntimeTrace
 from integration.observability.stack_profiler import _RunStackProfile, _write_stack_profile
 
 
@@ -214,6 +217,92 @@ def test_process_sample_budget_limits_concurrent_runs(tmp_path, monkeypatch):
         _reset_stack_profiler_state()
 
 
+def test_run_trace_close_cleans_started_profile_after_pre_loop_exception(tmp_path, monkeypatch):
+    _reset_stack_profiler_state()
+    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
+    monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
+    monkeypatch.setattr(stack_profiler_module, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
+    trace = RunRuntimeTrace(
+        observer=_CapturingObserver(),
+        run_id="run-pre-loop-error",
+        session_id="session-pre-loop-error",
+        turn_id=1,
+    )
+
+    try:
+        trace.started(
+            user_id="user",
+            user_query="query",
+            workspace_id="workspace",
+        )
+        profile = stack_profiler_module._RUNS["run-pre-loop-error"]
+        stack_profiler_module._sample_profile(profile)
+        assert stack_profiler_module._PROCESS_SAMPLE_COUNT >= 1
+
+        try:
+            raise RuntimeError("before agent loop")
+        except RuntimeError:
+            trace.close(status=RuntimeStatus.ERROR)
+
+        assert "run-pre-loop-error" not in stack_profiler_module._RUNS
+        assert stack_profiler_module._PROCESS_SAMPLE_COUNT == 0
+        assert profile.sampler_thread is not None
+        assert not profile.sampler_thread.is_alive()
+
+        trace.close(status=RuntimeStatus.ERROR)
+        assert stack_profiler_module._PROCESS_SAMPLE_COUNT == 0
+    finally:
+        _reset_stack_profiler_state()
+
+
+def test_speedscope_bus_marks_trace_incomplete_when_queue_drops_event(tmp_path):
+    exporter = _BlockingSpeedscopeExporter(tmp_path)
+    bus = ObservabilityBus(exporter, queue_size=1, flush_interval_seconds=60.0)
+    common = {"run_id": "run-drop", "session_id": "session-drop", "turn_id": 1}
+
+    try:
+        assert bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_STARTED,
+                span_key="run:run-drop",
+                timestamp_ms=1000,
+                payload={},
+                **common,
+            )
+        )
+        assert exporter.export_started.wait(timeout=2.0)
+        assert bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_FINISHED,
+                span_key="run:run-drop",
+                timestamp_ms=1020,
+                payload={"status": RuntimeStatus.SUCCESS, "duration_ms": 20},
+                **common,
+            )
+        )
+        assert not bus.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.LLM_STARTED,
+                span_key="llm:dropped",
+                parent_key="run:run-drop",
+                timestamp_ms=1010,
+                payload={},
+                **common,
+            )
+        )
+    finally:
+        exporter.release_export.set()
+        bus.close(timeout=2.0)
+
+    document = _load_single_speedscope_document(tmp_path)
+    profile_names = [profile["name"] for profile in document["profiles"]]
+    frame_names = [frame["name"] for frame in document["shared"]["frames"]]
+
+    assert any("[INCOMPLETE]" in name for name in profile_names)
+    assert any("INCOMPLETE: dropped 1" in name for name in frame_names)
+
+
 def _emit_minimal_run(
     exporter: SpeedscopeExporter,
     *,
@@ -332,3 +421,37 @@ def _load_single_speedscope_document(output_dir):
 
 def _active_profile(document):
     return document["profiles"][document["activeProfileIndex"]]
+
+
+class _CapturingObserver:
+    enabled = True
+
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+
+
+class _BlockingSpeedscopeExporter:
+    available = True
+
+    def __init__(self, output_dir):
+        self.delegate = SpeedscopeExporter(output_dir=output_dir)
+        self.export_started = threading.Event()
+        self.release_export = threading.Event()
+
+    def export(self, event):
+        if not self.export_started.is_set():
+            self.export_started.set()
+            self.release_export.wait(timeout=2.0)
+        self.delegate.export(event)
+
+    def record_drop(self, event):
+        self.delegate.record_drop(event)
+
+    def flush(self):
+        self.delegate.flush()
+
+    def close(self):
+        self.delegate.close()
