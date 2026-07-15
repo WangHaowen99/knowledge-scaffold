@@ -856,6 +856,7 @@ class AgenticOrchestrator:
                         "error_message": str(exc)[:300],
                     },
                 )
+                run_trace.close(status=RuntimeStatus.ERROR)
                 raise
 
             run_trace.record_phase(
@@ -1280,6 +1281,7 @@ class AgenticOrchestrator:
             get_llm_router().clear_run(run_id)
             clear_subagent_manager(run_id)
             clear_run_sequence(run_id)
+            run_trace.close(status=RuntimeStatus.ERROR)
 
     def _get_stores(
         self,
