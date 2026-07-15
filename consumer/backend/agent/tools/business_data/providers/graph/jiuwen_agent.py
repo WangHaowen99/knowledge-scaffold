@@ -572,7 +572,17 @@ def _resolve_graph_jiuwen_llm_config(
         raise GraphAgentUnavailableError(
             "GraphQueryAgent LLM router 未配置: {}".format(_safe_exception_detail(exc))
         ) from exc
-    max_tokens = _positive_int(provider_config.get("graph_agent_max_tokens"), default=1600)
+    configured_max_tokens = _positive_int(
+        provider_config.get("graph_agent_max_tokens"),
+        default=1600,
+    )
+    max_tokens = min(
+        configured_max_tokens,
+        _positive_int(
+            getattr(llm_config, "max_tokens", None),
+            default=configured_max_tokens,
+        ),
+    )
     temperature = _optional_float(provider_config.get("graph_agent_temperature"), default=0.0)
     return _clone_llm_config(llm_config, max_tokens=max_tokens, temperature=temperature)
 
