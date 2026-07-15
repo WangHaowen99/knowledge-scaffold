@@ -217,7 +217,7 @@ def build_context(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def build_config_snapshots(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
-    from agentic.config.system_config import get_public_system_config, load_system_config
+    from config.system_config import get_public_system_config, load_system_config
 
     private_config = json.loads(json.dumps(load_system_config(), ensure_ascii=False))
     public_config = json.loads(json.dumps(get_public_system_config(), ensure_ascii=False))
@@ -310,9 +310,9 @@ def run_worker(run_dir: str) -> int:
         _patch_system_config_path(spec["private_config_path"])
         _configure_run_logging(artifact_dir)
 
-        from agentic.app import build_runtime_services
-        from agentic.orchestrator import AgenticOrchestrator
-        from agentic.workspaces import workspace_scope
+        from app import build_runtime_services
+        from agent.core.orchestrator import AgenticOrchestrator
+        from workspace.workspaces import workspace_scope
 
         runtime = build_runtime_services()
         orchestrator = AgenticOrchestrator(
@@ -427,13 +427,13 @@ def print_logs(run_dir: str, *, tail: int = 0) -> int:
 
 
 def _patch_system_config_path(path: str) -> None:
-    import agentic.config.system_config as system_config
+    import config.system_config as system_config
 
     system_config.CONFIG_PATH = Path(path).resolve()
 
 
 def _configure_run_logging(run_dir: Path) -> None:
-    from agentic.utils.logging import configure_logging
+    from utils.logging import configure_logging
 
     configure_logging(log_dir=str(run_dir / "logs"), log_file="agent.log", console=False, force=True)
 
@@ -442,7 +442,7 @@ def _resolve_run_dir(output_dir: str | None, run_id: str) -> Path:
     if output_dir:
         path = Path(output_dir).expanduser()
         return path.resolve() if path.name == run_id else (path / run_id).resolve()
-    from agentic.config.system_config import load_system_config
+    from config.system_config import load_system_config
 
     project_root = Path(load_system_config()["storage"]["project_root"])
     return (project_root / ARTIFACT_ROOT_NAME / run_id).resolve()

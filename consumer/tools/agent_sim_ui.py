@@ -178,7 +178,7 @@ def start_simulations(payload: dict[str, Any], *, question: str) -> dict[str, An
 
 
 def simulation_root() -> Path:
-    from agentic.config.system_config import load_system_config
+    from config.system_config import load_system_config
 
     return (Path(load_system_config()["storage"]["project_root"]) / runner.ARTIFACT_ROOT_NAME).resolve()
 
