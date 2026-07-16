@@ -84,6 +84,7 @@ bash "${REPO_ROOT}/consumer/build.sh" "${VERSION}" "${ARCH}"
 }
 
 tar -C "${STAGE_ROOT}" -xzf "${CONSUMER_PACKAGE}"
+rm -f "${CONSUMER_PACKAGE}"
 cp "${BUNDLE_DIR}/deploy/deploy.sh" "${BUNDLE_DIR}/deploy/deploy-consumer.sh"
 
 RELEASE_BUNDLE_DIR="${BUNDLE_DIR}" \
