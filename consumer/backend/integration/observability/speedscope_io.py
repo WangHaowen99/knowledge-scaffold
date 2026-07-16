@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - Linux deployments use fcntl.
 _FILE_LOCK = threading.RLock()
 LOG_DIR_ENV = "LOG_DIR"
 PROJECT_ROOT_ENV = "PROJECT_ROOT"
+DIRECTORY_LOCK_FILE = ".speedscope.write.lock"
 
 
 def resolve_speedscope_output_dir(output_dir: Optional[str | Path] = None) -> Path:
@@ -33,6 +34,15 @@ def resolve_speedscope_output_dir(output_dir: Optional[str | Path] = None) -> Pa
     return Path(LOG_DIR) / "speedscope"
 
 
+def speedscope_directory_lock_path(path: str | Path) -> Path:
+    return Path(path).parent / DIRECTORY_LOCK_FILE
+
+
+def speedscope_session_lock_path(path: str | Path) -> Path:
+    target = Path(path)
+    return target.with_name("{}.lock".format(target.name))
+
+
 @contextmanager
 def speedscope_file_lock(path: Optional[str | Path] = None) -> Iterator[None]:
     """Serialize read-merge-write cycles for session Speedscope documents."""
@@ -41,7 +51,7 @@ def speedscope_file_lock(path: Optional[str | Path] = None) -> Iterator[None]:
             yield
             return
 
-        lock_path = Path(path).with_name("{}.lock".format(Path(path).name))
+        lock_path = speedscope_directory_lock_path(path)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+b") as lock_file:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
