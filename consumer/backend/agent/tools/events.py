@@ -17,6 +17,8 @@ _SUBAGENT_LINEAGE_FIELDS = (
     "root_tool_call_id",
 )
 
+_FULL_TRACE_OUTPUT_TOOLS = {"ontology_context", "business_data_search"}
+
 
 def _inject_subagent_lineage(context: ToolContext, payload: Dict[str, Any]) -> Dict[str, Any]:
     enriched = dict(payload or {})
@@ -113,19 +115,22 @@ def emit_tool_finished(
         normalized_status = "error"
     else:
         normalized_status = "completed"
+    payload = {
+        "tool_call_id": tool_call_id,
+        "tool_name": tool_name,
+        "status": normalized_status,
+        "output_preview": preview,
+        "output_truncated": truncated,
+        "error": error,
+        "elapsed_ms": elapsed_ms,
+    }
+    if tool_name in _FULL_TRACE_OUTPUT_TOOLS:
+        payload["output_full"] = raw_output
     emit_protocol_event(
         context=context,
         event_type="tool.finished",
         source={"node": "agent_loop", "component": "tool"},
-        payload={
-            "tool_call_id": tool_call_id,
-            "tool_name": tool_name,
-            "status": normalized_status,
-            "output_preview": preview,
-            "output_truncated": truncated,
-            "error": error,
-            "elapsed_ms": elapsed_ms,
-        },
+        payload=payload,
     )
 
 

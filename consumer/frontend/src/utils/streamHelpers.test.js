@@ -51,6 +51,29 @@ test('replayed tool events keep one node and preserve the original parent', () =
   assert.equal(state.streamSegments[0].spanKey, 'tool:main:2:business_data_search:call-replay');
   assert.equal(state.streamSegments[0].parentKey, 'iteration:main:2');
   assert.equal(state.streamSegments[0].finished, true);
+  assert.equal(state.streamSegments[0].startTs, 1001);
+  assert.equal(state.streamSegments[0].endTs, 1002);
+});
+
+test('tool finish without a start event derives its timing from elapsed_ms', () => {
+  const state = applyAgentV2Event(
+    { streamSegments: [], status: 'running', isLoading: true },
+    envelope('tool.finished', {
+      tool_name: 'ontology_context',
+      tool_call_id: 'call-late',
+      status: 'completed',
+      elapsed_ms: 250,
+      output_preview: 'done',
+    }, 5, {
+      span_key: 'tool:main:1:ontology_context:call-late',
+      parent_key: 'iteration:main:1',
+    }),
+  );
+
+  assert.equal(state.streamSegments[0].startTs, 755);
+  assert.equal(state.streamSegments[0].endTs, 1005);
+  assert.equal(state.streamSegments[0].spanKey, 'tool:main:1:ontology_context:call-late');
+  assert.equal(state.streamSegments[0].parentKey, 'iteration:main:1');
 });
 
 test('nested subagent groups attach under parent subagent child', () => {

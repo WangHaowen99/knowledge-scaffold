@@ -1056,10 +1056,14 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
         tmp_path,
         script_body=(
             "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient\n"
+            "from agent.tools.business_data.script_env import load_script_business_data_connection\n"
             "client = MindsDBClient()\n"
+            "connection = load_script_business_data_connection()\n"
             "try:\n"
             "    print(client.base_url)\n"
             "    print(client.config.default_database)\n"
+            "    print(connection['config'].get('workspace_id'))\n"
+            "    print(connection['config'].get('ontology_id'))\n"
             "finally:\n"
             "    client.close()\n"
         ),
@@ -1096,6 +1100,8 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
     assert result.messages[0]["name"] == "execute_script"
     assert "https://mindsdb.example.com" in result.messages[0]["content"]
     assert "analytics" in result.messages[0]["content"]
+    assert "demo-ws" in result.messages[0]["content"]
+    assert "demo" in result.messages[0]["content"]
 
 
 def test_execute_script_forces_utf8_child_output(tmp_path, monkeypatch):

@@ -1548,32 +1548,48 @@ def _resolve_jiuwen_llm_config(
         or _resolve_current_workspace_id()
     )
     purpose = LLMPurpose.MAIN if str(caller or "").strip() in {"main", "acp"} else LLMPurpose.SUBAGENT
-    if profile_id:
-        return _clamp_jiuwen_llm_config_output_tokens(
-            get_llm_router().get_config(
-                purpose,
-                profile_id=profile_id,
-                workspace_id=workspace_id,
-            ),
-            agent_config,
-        )
     try:
-        return _clamp_jiuwen_llm_config_output_tokens(
-            get_llm_router().get_config(purpose, workspace_id=workspace_id),
-            agent_config,
-        )
+        router = get_llm_router()
     except RuntimeError:
+        if profile_id:
+            raise
         from config import AppConfig
 
         app_config = AppConfig.from_env()
         fallback = app_config.llm if purpose == LLMPurpose.MAIN else app_config.task_llm
         return _clamp_jiuwen_llm_config_output_tokens(fallback, agent_config)
 
+    resolved_agent_config = agent_config or getattr(router, "agent_config", None)
+    if profile_id:
+        return _clamp_jiuwen_llm_config_output_tokens(
+            router.get_config(
+                purpose,
+                profile_id=profile_id,
+                workspace_id=workspace_id,
+            ),
+            resolved_agent_config,
+        )
+    try:
+        return _clamp_jiuwen_llm_config_output_tokens(
+            router.get_config(purpose, workspace_id=workspace_id),
+            resolved_agent_config,
+        )
+    except RuntimeError:
+        from config import AppConfig
+
+        app_config = AppConfig.from_env()
+        fallback = app_config.llm if purpose == LLMPurpose.MAIN else app_config.task_llm
+        return _clamp_jiuwen_llm_config_output_tokens(fallback, resolved_agent_config)
+
 
 def _clamp_jiuwen_llm_config_output_tokens(llm_config: Any, agent_config: Any) -> Any:
-    limits = getattr(agent_config, "limits", None)
+    raw_limit = getattr(
+        getattr(agent_config, "limits", None),
+        "model_output_token_limit",
+        None,
+    )
     try:
-        output_limit = max(1, int(getattr(limits, "model_output_token_limit")))
+        output_limit = max(1, int(raw_limit))
     except (TypeError, ValueError):
         return llm_config
     try:

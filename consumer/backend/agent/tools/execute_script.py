@@ -325,12 +325,15 @@ def _build_script_env_overrides(
         )
     except BusinessDataConnectionError:
         return {}
+    connection_config = dict(connection.config)
+    connection_config["workspace_id"] = str(workspace_id or "").strip()
+    connection_config["ontology_id"] = str(ontology_id or "").strip()
     return {
         SCRIPT_BUSINESS_DATA_CONNECTION_ENV: serialize_script_business_data_connection(
             connection_id=connection.ontology_id,
             name=connection.ontology_id,
             provider=connection.provider,
-            config=connection.config,
+            config=connection_config,
         )
     }
 
