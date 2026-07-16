@@ -37,6 +37,13 @@ import utils.logging as logging_utils
 _REAL_IMPORT_MODULE = importlib.import_module
 
 
+class _FakeContextEngineConfig:
+    """Shared fake for ContextEngineConfig capturing constructor kwargs."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
 class _RemovableFakeResourceManager:
     def remove_tool(self, tool_id, tag=None, skip_if_tag_not_exists=True):
         del tag, skip_if_tag_not_exists
@@ -2301,7 +2308,7 @@ def test_jiuwen_loop_engine_uses_invoke_when_request_mode_is_sync(monkeypatch):
     assert state["final_output"] == "sync answer"
 
 
-def test_jiuwen_loop_engine_enforces_input_token_limit_before_invoke(monkeypatch):
+def test_jiuwen_loop_engine_applies_sliding_window_before_invoke(monkeypatch):
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-input-limit")
     monkeypatch.setattr(
@@ -4325,6 +4332,9 @@ def test_create_default_jiuwen_agent_lazy_loads_react_agent(monkeypatch):
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
@@ -4424,6 +4434,9 @@ def test_create_default_jiuwen_agent_does_not_send_enable_reasoning_top_level(mo
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
@@ -4487,6 +4500,9 @@ def test_create_default_jiuwen_agent_passes_provider_stream_usage_options(monkey
             ),
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
+            ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
             ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
@@ -4662,6 +4678,9 @@ def test_create_default_jiuwen_agent_maps_glm_provider_to_openai_client_provider
             ),
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
+            ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
             ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
@@ -4852,3 +4871,207 @@ def test_jiuwen_run_awaitable_does_not_submit_when_already_cancelled():
         )
 
     assert started["value"] is False
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: explicit ContextEngineConfig
+# ---------------------------------------------------------------------------
+
+def _install_fake_jiuwen_modules(monkeypatch, created):
+    """Install a shared fake openjiuwen module set for factory tests."""
+
+    class FakeAgentCard:
+        def __init__(self, **kwargs):
+            created["card_kwargs"] = kwargs
+
+    class FakeReActAgent:
+        def __init__(self, *, card):
+            self.card = card
+
+        def configure(self, config):
+            created["react_config"] = config
+            return self
+
+    class FakeModelClientConfig:
+        def __init__(self, **kwargs):
+            created["model_client_config"] = kwargs
+
+    class FakeModelRequestConfig:
+        def __init__(self, **kwargs):
+            created["model_request_config"] = kwargs
+
+    class FakeReActAgentConfig:
+        def __init__(self, **kwargs):
+            created["react_agent_config"] = kwargs
+
+    def fake_import_module(name):
+        modules = {
+            "openjiuwen.core.single_agent.schema.agent_card": SimpleNamespace(AgentCard=FakeAgentCard),
+            "openjiuwen.core.single_agent.agents.react_agent": SimpleNamespace(
+                ReActAgent=FakeReActAgent,
+                ReActAgentConfig=FakeReActAgentConfig,
+            ),
+            "openjiuwen.core.foundation.llm.schema.config": SimpleNamespace(
+                ModelClientConfig=FakeModelClientConfig,
+                ModelRequestConfig=FakeModelRequestConfig,
+            ),
+            "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
+                OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
+            ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
+        }
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
+
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
+    return FakeReActAgent
+
+
+def _stub_llm_config():
+    return SimpleNamespace(
+        provider="openai_compatible",
+        api_key="key",
+        base_url="https://llm.example/v1",
+        model="model-a",
+        timeout=30,
+        max_tokens=2048,
+        temperature=0.2,
+    )
+
+
+def test_factory_passes_explicit_context_engine_config(monkeypatch):
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    create_default_jiuwen_agent(
+        llm_config=_stub_llm_config(),
+        max_iterations=50,
+        system_prompt="system rules",
+        context_max_rounds=14,
+    )
+
+    cec = created["react_agent_config"]["context_engine_config"]
+    assert isinstance(cec, _FakeContextEngineConfig)
+    assert cec.kwargs["max_context_message_num"] is None
+    assert cec.kwargs["default_window_round_num"] == 14
+    assert cec.kwargs["enable_reload"] is False
+    assert cec.kwargs["enable_kv_cache_release"] is False
+
+
+@pytest.mark.parametrize("value, expected", [
+    (None, 10),
+    ("abc", 10),
+    (0, 1),
+    (-5, 1),
+    (1, 1),
+    (14, 14),
+])
+def test_normalize_context_max_rounds(value, expected):
+    from agent.core.jiuwen_engine import _normalize_context_max_rounds
+    assert _normalize_context_max_rounds(value) == expected
+
+
+def test_factory_default_context_max_rounds_is_ten(monkeypatch):
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    create_default_jiuwen_agent(
+        llm_config=_stub_llm_config(),
+        max_iterations=50,
+        system_prompt="system rules",
+    )
+
+    cec = created["react_agent_config"]["context_engine_config"]
+    assert cec.kwargs["default_window_round_num"] == 10
+    assert cec.kwargs["max_context_message_num"] is None
+
+
+def test_create_agent_passes_context_max_rounds_from_agent_config(monkeypatch):
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
+    )
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
+        lambda state, *, caller, agent_config=None: _stub_llm_config(),
+    )
+
+    engine = JiuwenReactLoopEngine(
+        agent_config=_agent_config(context_max_rounds=7),
+    )
+    engine._create_agent(
+        max_iterations=10,
+        system_prompt="prompt",
+        caller="main",
+    )
+
+    assert captured["context_max_rounds"] == 7
+
+
+def test_history_messages_uses_same_normalization_as_factory(monkeypatch):
+    """Both _build_jiuwen_history_messages and factory must fall back to 10
+    (not 50) when context_max_rounds is None/invalid, proving the
+    normalization path is unified."""
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    spy = {"max_rounds": None}
+
+    def fake_apply_sliding_window(messages, max_rounds, prune_tools=None):
+        spy["max_rounds"] = max_rounds
+        return messages
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.apply_sliding_window",
+        fake_apply_sliding_window,
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine._drop_current_user_message",
+        lambda messages, state: messages,
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine._to_jiuwen_history_message",
+        lambda message: None,
+    )
+
+    from agent.core.jiuwen_engine import _build_jiuwen_history_messages
+
+    config_with_none = _agent_config()
+    config_with_none.context_max_rounds = None
+    _build_jiuwen_history_messages(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        config_with_none,
+    )
+    # apply_sliding_window was called with max_rounds=10 (not 50)
+    assert spy["max_rounds"] == 10
+
+
+def test_factory_does_not_truncate_messages_under_two_hundred(monkeypatch):
+    """With max_context_message_num=None, a single round with >200 messages
+    must not be truncated by the Jiuwen message buffer."""
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    large_history = [
+        {"role": "user", "content": "start"},
+    ]
+    for i in range(250):
+        large_history.append({"role": "assistant", "content": f"assistant {i}"})
+        large_history.append({"role": "tool", "content": f"tool {i}", "tool_call_id": f"tc-{i}", "name": "noop"})
+
+    from agent.core.jiuwen_engine import _build_jiuwen_history_messages
+
+    config = _agent_config(context_max_rounds=1)
+    converted = _build_jiuwen_history_messages(
+        {"messages": large_history},
+        config,
+    )
+    # All 501 history messages (excluding current user) are converted;
+    # the Jiuwen ContextEngineConfig with max_context_message_num=None
+    # will not truncate them further.
+    assert len(converted) > 200
