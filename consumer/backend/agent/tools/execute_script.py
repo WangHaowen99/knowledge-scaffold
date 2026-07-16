@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
@@ -22,12 +22,17 @@ from agent.tools.business_data.script_env import (
     SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
     serialize_script_business_data_connection,
 )
+from agent.tools.business_data.effective_connection import build_effective_connection
 from utils.logging import get_logger
 from ontology.ontology_catalog import (
     find_script_entry,
     get_ontology_manifest,
     load_script_catalog,
 )
+from integration.sandbox.executor import SandboxScriptExecutor
+from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
+from integration.sandbox.config import load_sandbox_config
+from integration.sandbox.alerts import log_sandbox_security_fallback
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 
 logger = get_logger("tools.execute_script")
@@ -44,6 +49,10 @@ _MAX_ARG_SAFE_TOTAL = 1_500_000
 # Windows CreateProcess command-line limit is 32,767 characters.
 # When CLI args alone exceed this, also use the tempfile path.
 _MAX_CLI_ARGS_SIZE = 25_000
+
+_SCRIPT_EXECUTION_INTERNAL_ERROR = (
+    "Error: Script execution failed due to an internal error."
+)
 
 SCRIPT_LIVE_LOG_ENABLED = (
     os.getenv("SCRIPT_LIVE_LOG_ENABLED", "false").strip().lower()
@@ -110,6 +119,29 @@ def _format_call_context(
     if turn_id is not None:
         parts.append("turn_id={}".format(turn_id))
     return " ".join(parts) if parts else "tool_call_id=n/a"
+
+
+def _fallback_or_error(
+    *,
+    fallback_local: bool,
+    reason: str,
+    blocked_message: str,
+    call_context: str,
+    script_path: str,
+    run_id: Optional[str],
+    error: Any = None,
+) -> Optional[str]:
+    """Authorize one explicit transition from sandbox to local execution."""
+    if not fallback_local:
+        return blocked_message
+    log_sandbox_security_fallback(
+        reason=reason,
+        call_context=call_context,
+        script_path=script_path,
+        run_id=run_id,
+        error=error,
+    )
+    return None
 
 
 def _preview_cli_args(args: Sequence[str], limit: int = LOG_ARG_PREVIEW_LIMIT) -> str:
@@ -328,12 +360,18 @@ def _build_script_env_overrides(
     connection_config = dict(connection.config)
     connection_config["workspace_id"] = str(workspace_id or "").strip()
     connection_config["ontology_id"] = str(ontology_id or "").strip()
+    effective_connection = build_effective_connection(connection)
+    effective_connection = replace(
+        effective_connection,
+        options={
+            **effective_connection.options,
+            "workspace_id": connection_config["workspace_id"],
+            "ontology_id": connection_config["ontology_id"],
+        },
+    )
     return {
         SCRIPT_BUSINESS_DATA_CONNECTION_ENV: serialize_script_business_data_connection(
-            connection_id=connection.ontology_id,
-            name=connection.ontology_id,
-            provider=connection.provider,
-            config=connection_config,
+            connection=effective_connection,
         )
     }
 
@@ -350,6 +388,9 @@ def handle_execute_script_path(
     turn_id: Optional[int] = None,
     extra_pythonpath_dirs: Optional[Sequence[Path]] = None,
     env_overrides: Optional[Mapping[str, str]] = None,
+    workspace_id: Optional[str] = None,
+    ontology_id: Optional[str] = None,
+    ontology_dir: Optional[Path] = None,
 ) -> str:
     """Run a Python script relative to project root and return its output.
 
@@ -479,39 +520,130 @@ def handle_execute_script_path(
         # CLI args alone — catches cases where env is small but args are huge
         # (e.g., native Windows with 32 KB cmdline limit)
         cli_args_size = _estimate_cmdline_size({}, *cli_args)
-        if total_size > _MAX_ARG_SAFE_TOTAL or cli_args_size > _MAX_CLI_ARGS_SIZE:
-            completed = _spawn_with_args_file(
-                resolved_path=resolved_path,
-                cli_args=cli_args,
-                env=child_env,
-                cwd=str(base_resolved),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=max(1, int(timeout_seconds)),
-                check=False,
+        oversize_args = (
+            total_size > _MAX_ARG_SAFE_TOTAL or cli_args_size > _MAX_CLI_ARGS_SIZE
+        )
+
+        completed: Optional[subprocess.CompletedProcess[str]] = None
+        sandbox_config = load_sandbox_config()
+        run_locally = not sandbox_config.enabled
+        fallback_reason: Optional[str] = None
+        fallback_error: Any = None
+        fallback_blocked_message = ""
+
+        if sandbox_config.enabled:
+            if sys.platform != "linux":
+                fallback_reason = "unsupported_platform"
+                fallback_blocked_message = (
+                    "Error: Sandbox unavailable: sandbox execution requires Linux "
+                    "(current platform: {})".format(sys.platform)
+                )
+            elif not run_id:
+                fallback_reason = "missing_run_id"
+                fallback_blocked_message = (
+                    "Error: Sandbox unavailable: run_id is required for sandbox execution"
+                )
+            elif oversize_args:
+                fallback_reason = "oversize_args"
+                fallback_blocked_message = (
+                    "Error: Sandbox unavailable: oversized script arguments are not "
+                    "supported by sandbox execution"
+                )
+            else:
+                try:
+                    completed = SandboxScriptExecutor().run_script(
+                        script_path=script_path.replace("\\", "/"),
+                        cli_args=cli_args,
+                        project_root=base_resolved,
+                        ontology_dir=ontology_dir,
+                        run_id=str(run_id),
+                        workspace_id=workspace_id,
+                        ontology_id=ontology_id,
+                        timeout_seconds=max(1, int(timeout_seconds)),
+                    )
+                except SandboxUnavailableError as exc:
+                    fallback_reason = "sandbox_unavailable"
+                    fallback_error = exc
+                    fallback_blocked_message = "Error: Sandbox unavailable: {}".format(exc)
+                except SandboxExecError as exc:
+                    if "timed out" in str(exc).lower():
+                        return "Error: Script execution timed out after {} seconds.".format(
+                            timeout_seconds
+                        )
+                    fallback_reason = "sandbox_exec_failed"
+                    fallback_error = exc
+                    fallback_blocked_message = (
+                        "Error: Sandbox execution failed: {}".format(exc)
+                    )
+                except Exception as exc:
+                    fallback_reason = "sandbox_execution_error"
+                    fallback_error = exc
+                    fallback_blocked_message = (
+                        "Error: Sandbox execution failed: {}".format(exc)
+                    )
+
+            if completed is None:
+                if fallback_reason is None:
+                    logger.error(
+                        "Sandbox executor returned no process result (%s): script_path=%s",
+                        call_context,
+                        script_path,
+                    )
+                    return _SCRIPT_EXECUTION_INTERNAL_ERROR
+                blocked = _fallback_or_error(
+                    fallback_local=sandbox_config.fallback_local,
+                    reason=fallback_reason,
+                    blocked_message=fallback_blocked_message,
+                    call_context=call_context,
+                    script_path=script_path,
+                    run_id=run_id,
+                    error=fallback_error,
+                )
+                if blocked is not None:
+                    return blocked
+                run_locally = True
+
+        if completed is None and run_locally:
+            if oversize_args:
+                completed = _spawn_with_args_file(
+                    resolved_path=resolved_path,
+                    cli_args=cli_args,
+                    env=child_env,
+                    cwd=str(base_resolved),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=max(1, int(timeout_seconds)),
+                    check=False,
+                )
+            elif SCRIPT_LIVE_LOG_ENABLED:
+                completed = _run_with_live_logging(
+                    [sys.executable, "-u", str(resolved_path), *cli_args],
+                    cwd=str(base_resolved),
+                    env=child_env,
+                    timeout_seconds=max(1, int(timeout_seconds)),
+                    script_name=resolved_path.name,
+                )
+            else:
+                completed = subprocess.run(
+                    [sys.executable, str(resolved_path), *cli_args],
+                    cwd=str(base_resolved),
+                    env=child_env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=max(1, int(timeout_seconds)),
+                    check=False,
+                )
+
+        if completed is None:
+            logger.error(
+                "Script execution reached result stage without a process result (%s)",
+                call_context,
             )
-        elif SCRIPT_LIVE_LOG_ENABLED:
-            completed = _run_with_live_logging(
-                [sys.executable, "-u", str(resolved_path), *cli_args],
-                cwd=str(base_resolved),
-                env=child_env,
-                timeout_seconds=max(1, int(timeout_seconds)),
-                script_name=resolved_path.name,
-            )
-        else:
-            completed = subprocess.run(
-                [sys.executable, str(resolved_path), *cli_args],
-                cwd=str(base_resolved),
-                env=child_env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=max(1, int(timeout_seconds)),
-                check=False,
-            )
+            return _SCRIPT_EXECUTION_INTERNAL_ERROR
 
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
@@ -667,6 +799,9 @@ def handle_execute_script(
             workspace_id=workspace_id,
             ontology_id=ontology_id,
         ),
+        workspace_id=workspace_id,
+        ontology_id=ontology_id,
+        ontology_dir=ontology_dir,
     )
 
 

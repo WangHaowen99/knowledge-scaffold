@@ -18,6 +18,7 @@ from agent.tools.business_data.provider_registry import (
     normalize_provider_config,
     publicize_provider_config,
 )
+from agent.tools.business_data.adapters.dataagent_search import DataAgentSearchAdapter
 from agent.tools.business_data.providers.dataagent_provider import DataAgentProvider
 from agent.tools.business_data.providers.clients.dataagent import (
     _create_session,
@@ -34,7 +35,7 @@ def test_dataagent_provider_is_registered():
     spec = get_provider_spec("dataagent")
     assert spec.name == "dataagent"
     assert spec.label == "DataAgent"
-    assert spec.factory is DataAgentProvider
+    assert spec.factory is DataAgentSearchAdapter
 
 
 @pytest.mark.parametrize(

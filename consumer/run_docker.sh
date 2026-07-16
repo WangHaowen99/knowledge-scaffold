@@ -78,6 +78,7 @@ require_mcp_token_secret() {
 
 case "$TARGET" in
     all)
+        bash "${SCRIPT_DIR}/deploy/build_jiuwenbox.sh" "onto-agent-jiuwenbox:${TAG}"
         ensure_env "$SCRIPT_DIR/backend/.env" "$SCRIPT_DIR/backend/.env.example"
         require_mcp_token_secret "$SCRIPT_DIR/backend/.env"
         ensure_dir_exists "$SCRIPT_DIR/backend/config"
@@ -87,6 +88,7 @@ case "$TARGET" in
         $COMPOSE_CMD -f "$SCRIPT_DIR/docker-compose.yml" --project-directory "$SCRIPT_DIR" up -d --build
         ;;
     backend)
+        bash "${SCRIPT_DIR}/deploy/build_jiuwenbox.sh" "onto-agent-jiuwenbox:${TAG}"
         ensure_env "$SCRIPT_DIR/backend/.env" "$SCRIPT_DIR/backend/.env.example"
         require_mcp_token_secret "$SCRIPT_DIR/backend/.env"
         ensure_dir_exists "$SCRIPT_DIR/backend/config"

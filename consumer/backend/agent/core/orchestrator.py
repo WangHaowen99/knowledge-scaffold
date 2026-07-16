@@ -51,6 +51,7 @@ from ontology.ontologies import get_ontology_registry
 from utils.streaming import build_agent_event, clear_run_sequence, stream_writer_context
 from workspace.workspaces import workspace_scope
 from agent.exceptions import WorkflowCancelledError
+from integration.sandbox.registry import release_run_sandbox
 
 logger = get_logger("orchestrator")
 
@@ -1319,6 +1320,7 @@ class AgenticOrchestrator:
                 get_llm_router().clear_run(run_id)
                 clear_subagent_manager(run_id)
                 clear_run_sequence(run_id)
+                release_run_sandbox(run_id)
 
         finally:
             run_trace.close(status=RuntimeStatus.ERROR)
@@ -1587,6 +1589,7 @@ class AgenticOrchestrator:
         if run is None:
             return False
         get_llm_router().cancel_run(run_id)
+        release_run_sandbox(run_id)
 
         return True
 

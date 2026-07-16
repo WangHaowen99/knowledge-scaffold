@@ -1,0 +1,17 @@
+version: 1
+name: "onto-agent-jiuwenbox"
+
+# Keep this policy non-proxy-only so jiuwenbox still starts the sandbox manager.
+# Per-run sandbox policies are sent by backend with policy_mode=override.
+filesystem_policy: {}
+
+inference_privacy_proxies:
+  listen_host: "0.0.0.0"
+  listen_port: 8322
+  routes:
+    # Bootstrap route so jiuwenbox initializes the global proxy listener.
+    # Dynamic per-run routes are added by backend via /api/v1/proxies.
+    - path_prefix: "/onto-bootstrap"
+      target_endpoint: "http://127.0.0.1:1"
+      api_key: ""
+
