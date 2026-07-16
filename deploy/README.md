@@ -40,6 +40,8 @@
 
 C 与 D 可叠加：`up --with-auth --with-eval`。
 
+自动化流水线入口：构建使用仓库根目录的 `./deploy/build.sh <version> [amd|arm]`，部署使用解压后的发布包内 `./deploy/deploy.sh`。该入口会直接调用各服务自己的脚本：consumer 使用 `consumer/build.sh` / `consumer/deploy/deploy.sh`，modeling 使用 `modeling/build.sh` / `modeling/deploy/deploy.sh`。`deploy-stack.sh` 仍保留为源码环境下带 `--with-eval` 等选项的手动编排入口。
+
 ## 2. 前置条件
 
 - Linux / macOS，Docker ≥ 20.10，Docker Compose v2（`docker compose`）或 v1 ≥ 1.28（`docker-compose`；本方案使用 compose profiles，更旧的 v1 会失败，preflight 会检查）；
@@ -197,7 +199,7 @@ docker exec mw-eval-mysql mysqladmin ping -uroot -p<REDACTED> 2>/dev/null
 ## 8. 运维：升级 / 备份 / 停止
 
 - **升级（源码部署）**：`git pull` 后重跑 `./deploy/deploy-stack.sh up <原参数>`——compose 会重建镜像，数据卷与 `.onto-runtime/` 保留。
-- **升级（生产发布包，仅 consumer）**：consumer 支持离线发布包（`consumer/build.sh <version>` 构建，含 deploy/upgrade/rollback/backup 脚本与健康门禁），见 [consumer/deploy/README.md](../consumer/deploy/README.md)。**注意：发布包不含 modeling**，建模工作台按本手册源码部署。
+- **升级（生产发布包，全栈）**：在仓库根目录执行 `./deploy/build.sh <version>` 构建离线发布包，包内 `deploy/deploy.sh` 会依次调用 consumer 与 modeling 的服务部署脚本，包含 backend / frontend / auth-server / modeling 镜像与健康门禁。consumer 单服务发布包见 [consumer/deploy/README.md](../consumer/deploy/README.md)。
 - **备份**：
   ```bash
   # consumer 运行时（宿主目录，直接归档）
@@ -226,7 +228,7 @@ docker exec mw-eval-mysql mysqladmin ping -uroot -p<REDACTED> 2>/dev/null
 
 ## 10. 已知边界
 
-- consumer 发布包（`build_release.sh`）只含 backend / frontend / auth-server 三镜像，**不含 modeling**；离线环境部署 modeling 需在可联网机器 `docker build -t mw-modeling modeling/` 后 `docker save/load`。
+- 根部全栈发布包包含 backend / frontend / auth-server / modeling 镜像；`consumer/build.sh` 仍只构建 consumer 单服务发布包，适用于不部署建模工作台的场景。
 - NL2SQL 桥接服务（`modeling/scripts/nl2sql-service.ts`）暂无容器化，作为宿主进程运行。
 - modeling 的 `AUTH_VERIFY_MODE` 仅支持 `introspect`；`jwks` 为预留项未实现。
 - 建模上传的文档正文存于 SQLite（卷 `mw-modeling_modeling-data`），不落宿主文件系统。
