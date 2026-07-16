@@ -7,6 +7,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+import requests
 from flask import Flask
 
 from api.auth.auth import AuthManager
@@ -177,11 +178,11 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
         def json(self):
             return {"success": True}
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(_session, url, headers=None, json=None, timeout=None):
         calls.append({"url": url, "headers": headers or {}, "json": json, "timeout": timeout})
         return FakeResponse()
 
-    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr(requests.Session, "post", fake_post)
     response = _test_candidate(
         client,
         headers,
@@ -217,11 +218,11 @@ def test_data_source_test_route_probes_mindsdb_anonymous_service(tmp_path, monke
         def json(self):
             return [{"name": "my_agent", "project_id": 1}]
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(_session, url, headers=None, timeout=None):
         calls.append({"url": url, "headers": headers or {}, "timeout": timeout})
         return FakeResponse()
 
-    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     response = _test_candidate(
         client,
         headers,
@@ -258,16 +259,16 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
         def json(self):
             return self._payload
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(_session, url, headers=None, json=None, timeout=None):
         post_calls.append({"url": url, "headers": headers or {}, "json": json, "timeout": timeout})
         return FakeResponse({"token": "jwt-token"})
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(_session, url, headers=None, timeout=None):
         get_calls.append({"url": url, "headers": headers or {}, "timeout": timeout})
         return FakeResponse([{"name": "my_agent", "project_id": 1}])
 
-    monkeypatch.setattr("requests.post", fake_post)
-    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     response = _test_candidate(
         client,
         headers,
@@ -303,7 +304,7 @@ def test_data_source_test_route_rejects_missing_mindsdb_agent(tmp_path, monkeypa
         def json(self):
             return [{"name": "available_agent", "project_id": 1}]
 
-    monkeypatch.setattr("requests.get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(requests.Session, "get", lambda *args, **kwargs: FakeResponse())
     response = _test_candidate(
         client,
         headers,
@@ -336,7 +337,7 @@ def test_data_source_test_route_rejects_missing_mindsdb_project(tmp_path, monkey
         def json(self):
             return {}
 
-    monkeypatch.setattr("requests.get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(requests.Session, "get", lambda *args, **kwargs: FakeResponse())
     response = _test_candidate(
         client,
         headers,
@@ -373,13 +374,13 @@ def test_data_source_test_route_probes_dataagent_and_legacy_agent_card(tmp_path,
         def json(self):
             return self._payload
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(_session, url, headers=None, timeout=None):
         calls.append({"url": url, "headers": headers or {}, "timeout": timeout})
         if url.endswith("/.well-known/agent-card.json"):
             return FakeResponse(404, {"detail": "not found"})
         return FakeResponse(200, {"name": "DataAgent"})
 
-    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     response = _test_candidate(
         client,
         headers,

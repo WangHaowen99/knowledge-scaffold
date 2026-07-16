@@ -77,7 +77,7 @@ SCRIPT_PARAMETERS_COMMENT_RE = re.compile(
     re.IGNORECASE,
 )
 MINDSDB_CLIENT_MODULE = "agent.tools.business_data.providers.clients.mindsdb"
-DATA_PROVIDER_CLIENT_MODULE = "agent.tools.business_data.providers.clients.data_provider_client"
+DATA_PROVIDER_CLIENT_MODULE = "shared_capabilities.ontology_script_sdk"
 MINDSDB_CLIENT_NAME = "MindsDBClient"
 DATA_PROVIDER_CLIENT_NAME = "DataProviderClient"
 
@@ -828,7 +828,34 @@ def extract_logic_object_semantic_edges(logic_name: str, source_markdown: str) -
 
 def render_script_source(source_file: Path) -> str:
     source = source_file.read_text(encoding="utf-8")
-    return rewrite_business_data_client_imports(source)
+    rendered = rewrite_business_data_client_imports(source)
+    validate_script_business_data_imports(rendered)
+    return rendered
+
+
+def validate_script_business_data_imports(source: str) -> None:
+    """Reject direct Provider-core imports from generated production scripts."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    forbidden = "shared_capabilities.business_data"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = str(node.module or "")
+            if module == forbidden or module.startswith(forbidden + "."):
+                raise ValueError(
+                    "ontology scripts must import DataProviderClient from "
+                    "shared_capabilities.ontology_script_sdk"
+                )
+        elif isinstance(node, ast.Import):
+            if any(
+                alias.name == forbidden or alias.name.startswith(forbidden + ".")
+                for alias in node.names
+            ):
+                raise ValueError(
+                    "ontology scripts must not import shared business_data directly"
+                )
 
 
 def extract_script_docstring_metadata(source_file: Path) -> Dict[str, object]:
@@ -1110,43 +1137,59 @@ def rewrite_business_data_client_imports(source: str) -> str:
     text = str(source or "")
     if not text:
         return text
-
+    replace_client_name = bool(
+        re.search(
+            r"^\s*from\s+"
+            + re.escape(MINDSDB_CLIENT_MODULE)
+            + r"\s+import\s+"
+            + re.escape(MINDSDB_CLIENT_NAME)
+            + r"\s*(?:$|#)",
+            text,
+            flags=re.MULTILINE,
+        )
+    )
+    mindsdb_pattern = re.compile(
+        r"(^\s*from\s+)"
+        + re.escape(MINDSDB_CLIENT_MODULE)
+        + r"(\s+import\s+)"
+        + re.escape(MINDSDB_CLIENT_NAME)
+        + r"(?P<alias>\s+as\s+[A-Za-z_]\w*)?",
+        flags=re.MULTILINE,
+    )
+    text = mindsdb_pattern.sub(
+        lambda match: "{}{}{}{}{}".format(
+            match.group(1),
+            DATA_PROVIDER_CLIENT_MODULE,
+            match.group(2),
+            DATA_PROVIDER_CLIENT_NAME,
+            match.group("alias") or "",
+        ),
+        text,
+    )
+    legacy_client_pattern = re.compile(
+        r"(^\s*from\s+)"
+        r"agent\.tools\.business_data\.providers\.clients\.data_provider_client"
+        r"(\s+import\s+DataProviderClient(?:\s+as\s+[A-Za-z_]\w*)?)",
+        flags=re.MULTILINE,
+    )
+    text = legacy_client_pattern.sub(
+        lambda match: "{}{}{}".format(
+            match.group(1), DATA_PROVIDER_CLIENT_MODULE, match.group(2)
+        ),
+        text,
+    )
+    if not replace_client_name:
+        return text
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
     except tokenize.TokenError:
         return text
-
-    module_tail_indices = set()
-    has_mindsdb_client_import = False
-    for index, item in enumerate(tokens):
-        if item.type != tokenize.NAME or item.string != "from":
-            continue
-        import_index, module_tail_index = _find_from_import_module(tokens, index)
-        if import_index is None or module_tail_index is None:
-            continue
-        statement_end = _find_statement_end(tokens, import_index)
-        imports_mindsdb_client = any(
-            token.type == tokenize.NAME and token.string == MINDSDB_CLIENT_NAME
-            for token in tokens[import_index + 1:statement_end]
-        )
-        if not imports_mindsdb_client:
-            continue
-        has_mindsdb_client_import = True
-        module_tail_indices.add(module_tail_index)
-
-    if not has_mindsdb_client_import:
-        return text
-
-    rewritten_tokens = []
-    for index, item in enumerate(tokens):
-        if index in module_tail_indices:
-            rewritten_tokens.append(item._replace(string="data_provider_client"))
-            continue
-        if item.type == tokenize.NAME and item.string == MINDSDB_CLIENT_NAME:
-            rewritten_tokens.append(item._replace(string=DATA_PROVIDER_CLIENT_NAME))
-            continue
-        rewritten_tokens.append(item)
-    return tokenize.untokenize(rewritten_tokens)
+    return tokenize.untokenize(
+        token._replace(string=DATA_PROVIDER_CLIENT_NAME)
+        if token.type == tokenize.NAME and token.string == MINDSDB_CLIENT_NAME
+        else token
+        for token in tokens
+    )
 
 
 def _find_from_import_module(

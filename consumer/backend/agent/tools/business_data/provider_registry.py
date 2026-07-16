@@ -5,11 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Type
 
-from agent.tools.business_data.providers.base import OntologySearchProvider
-from agent.tools.business_data.providers.dataagent_provider import DataAgentProvider
-from agent.tools.business_data.providers.mindsdb_provider import MindsDBOntologySearchProvider
-from agent.tools.business_data.providers.nl2sql_http_provider import NL2SQLHttpProvider
-from agent.tools.business_data.providers.nl2sql_template import NL2SQLTemplateProvider
+from agent.tools.business_data.adapters.dataagent_search import DataAgentSearchAdapter
+from agent.tools.business_data.adapters.mindsdb_search import MindsDBSearchAdapter
+from agent.tools.business_data.adapters.nl2sql_http_search import NL2SQLHttpSearchAdapter
+from agent.tools.business_data.adapters.nl2sql_template_search import NL2SQLTemplateSearchAdapter
 from agent.tools.business_data.providers.graph.hugegraph_provider import HugeGraphSearchProvider
 from agent.tools.business_data.providers.graph.neo4j_provider import Neo4jGraphSearchProvider
 
@@ -29,7 +28,7 @@ class BusinessDataProviderSpec:
     name: str
     label: str
     description: str
-    factory: Type[OntologySearchProvider]
+    factory: Type[Any]
     fields: List[ProviderField]
 
 
@@ -38,7 +37,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         name="nl2sql_http",
         label="NL2SQL HTTP",
         description="通过 NL2SQL HTTP 查询服务检索本体业务数据。",
-        factory=NL2SQLHttpProvider,
+        factory=NL2SQLHttpSearchAdapter,
         fields=[
             ProviderField("url", "服务地址", required=True),
             ProviderField("token", "访问 Token", secret=True),
@@ -51,7 +50,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         name="nl2sql_template",
         label="NL2SQL Template",
         description="通过预定义模板映射自然语言查询到 SQL，支持 NL2SQL 服务查询本体业务数据。",
-        factory=NL2SQLTemplateProvider,
+        factory=NL2SQLTemplateSearchAdapter,
         fields=[
             ProviderField("url", "服务地址", required=True),
             ProviderField("token", "访问 Token", required=True, secret=True),
@@ -64,7 +63,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         name="mindsdb",
         label="MindsDB",
         description="通过 MindsDB Agent 流式接口检索本体业务数据。",
-        factory=MindsDBOntologySearchProvider,
+        factory=MindsDBSearchAdapter,
         fields=[
             ProviderField("url", "服务地址", required=True),
             ProviderField("login", "登录名", default="mindsdb"),
@@ -81,7 +80,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         name="dataagent",
         label="DataAgent",
         description="通过 DataAgent A2A REST 服务进行自然语言数据查询与分析。",
-        factory=DataAgentProvider,
+        factory=DataAgentSearchAdapter,
         fields=[
             ProviderField("url", "DataAgent 服务地址", required=True),
             ProviderField("token", "访问 Token", secret=True),

@@ -147,10 +147,12 @@ def run_direct_script(
 
         # --- Resolve ontology directory for script imports ---
         ontology_pythonpath: List[Path] = []
+        ontology_dir: Optional[Path] = None
         if ontology_id:
             onto_manifest, onto_error = get_ontology_manifest(ontology_id)
             if onto_manifest and not onto_error:
-                ontology_pythonpath.append(Path(onto_manifest.ontology_dir).resolve())
+                ontology_dir = Path(onto_manifest.ontology_dir).resolve()
+                ontology_pythonpath.append(ontology_dir)
 
         # --- Build env overrides from the ontology-scoped business data source ---
         env_overrides = _build_script_env_overrides(
@@ -177,6 +179,9 @@ def run_direct_script(
                     run_id=run_id,
                     session_id=session_id,
                     turn_id=turn_id,
+                    workspace_id=runtime_context.workspace_id,
+                    ontology_id=ontology_id,
+                    ontology_dir=ontology_dir,
                     extra_pythonpath_dirs=ontology_pythonpath or None,
                     env_overrides=env_overrides or None,
                 )

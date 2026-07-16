@@ -422,7 +422,7 @@ def test_run_rewrites_generated_scripts_to_provider_aware_client(tmp_path):
     run(source_root=source_root, target_root=target_root)
 
     generated_script = (target_root / "scripts" / "supplier_lookup.py").read_text(encoding="utf-8")
-    assert "from agent.tools.business_data.providers.clients.data_provider_client import DataProviderClient" in generated_script
+    assert "from shared_capabilities.ontology_script_sdk import DataProviderClient" in generated_script
     assert "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient" not in generated_script
     assert "client = DataProviderClient()" in generated_script
 
@@ -447,7 +447,7 @@ def test_rewrite_business_data_client_imports_handles_python_code_tokens():
 
     rewritten = rewrite_business_data_client_imports(source)
 
-    assert "from agent.tools.business_data.providers.clients.data_provider_client import DataProviderClient" in rewritten
+    assert "from shared_capabilities.ontology_script_sdk import DataProviderClient" in rewritten
     assert "client = DataProviderClient()" in rewritten
     assert "def use_client(value: DataProviderClient) -> DataProviderClient:" in rewritten
     assert "isinstance(client, DataProviderClient)" in rewritten
@@ -468,7 +468,7 @@ def test_rewrite_business_data_client_imports_preserves_alias_imports():
 
     rewritten = rewrite_business_data_client_imports(source)
 
-    assert "from agent.tools.business_data.providers.clients.data_provider_client import DataProviderClient as MDB" in rewritten
+    assert "from shared_capabilities.ontology_script_sdk import DataProviderClient as MDB" in rewritten
     assert "client = MDB()" in rewritten
 
 

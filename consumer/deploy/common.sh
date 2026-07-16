@@ -55,11 +55,15 @@ load_state() {
         PREVIOUS_FRONTEND_IMAGE=""
         CURRENT_AUTH_IMAGE=""
         PREVIOUS_AUTH_IMAGE=""
+        CURRENT_JIUWENBOX_IMAGE=""
+        PREVIOUS_JIUWENBOX_IMAGE=""
     fi
 
     # 旧版本发布包写出的 state 文件没有 auth 镜像字段，升级时补默认值
     CURRENT_AUTH_IMAGE="${CURRENT_AUTH_IMAGE:-}"
     PREVIOUS_AUTH_IMAGE="${PREVIOUS_AUTH_IMAGE:-}"
+    CURRENT_JIUWENBOX_IMAGE="${CURRENT_JIUWENBOX_IMAGE:-}"
+    PREVIOUS_JIUWENBOX_IMAGE="${PREVIOUS_JIUWENBOX_IMAGE:-}"
 }
 
 write_state() {
@@ -72,6 +76,8 @@ write_state() {
     local previous_frontend_image="$7"
     local current_auth_image="${8:-}"
     local previous_auth_image="${9:-}"
+    local current_jiuwenbox_image="${10:-}"
+    local previous_jiuwenbox_image="${11:-}"
 
     mkdir -p "${STATE_DIR}"
     {
@@ -84,6 +90,8 @@ write_state() {
         printf 'PREVIOUS_FRONTEND_IMAGE=%q\n' "${previous_frontend_image}"
         printf 'CURRENT_AUTH_IMAGE=%q\n' "${current_auth_image}"
         printf 'PREVIOUS_AUTH_IMAGE=%q\n' "${previous_auth_image}"
+        printf 'CURRENT_JIUWENBOX_IMAGE=%q\n' "${current_jiuwenbox_image}"
+        printf 'PREVIOUS_JIUWENBOX_IMAGE=%q\n' "${previous_jiuwenbox_image}"
     } > "${STATE_FILE}"
 }
 
@@ -177,7 +185,7 @@ compose_up() {
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
 
     # shellcheck disable=SC2086
-    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" ${compose_cmd} \
+    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         up -d
@@ -188,7 +196,7 @@ compose_down() {
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
 
     # shellcheck disable=SC2086
-    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" ${compose_cmd} \
+    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         down

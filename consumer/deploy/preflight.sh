@@ -15,10 +15,12 @@ fi
 
 require_file "${MANIFEST_FILE}"
 require_file "${COMPOSE_FILE}"
+require_file "${SCRIPT_DIR}/jiuwenbox-policy.yaml"
 
 command -v docker >/dev/null 2>&1 || die "Docker is required but not installed"
 docker info >/dev/null 2>&1 || die "Docker daemon is not reachable"
 docker_compose_cmd >/dev/null 2>&1 || die "Docker Compose is required but not available"
+[ "$(uname -s)" = "Linux" ] || die "JiuwenBox sandbox deployment requires Linux"
 
 ensure_runtime_layout
 ensure_env_files
@@ -42,12 +44,15 @@ fi
 
 backend_tar="$(manifest_get backend_image_tar)"
 frontend_tar="$(manifest_get frontend_image_tar)"
+jiuwenbox_tar="$(manifest_get jiuwenbox_image_tar)"
 
 [ -n "${backend_tar}" ] || die "backend_image_tar is missing in manifest.json"
 [ -n "${frontend_tar}" ] || die "frontend_image_tar is missing in manifest.json"
+[ -n "${jiuwenbox_tar}" ] || die "jiuwenbox_image_tar is missing in manifest.json"
 
 require_file "${BUNDLE_ROOT}/${backend_tar}"
 require_file "${BUNDLE_ROOT}/${frontend_tar}"
+require_file "${BUNDLE_ROOT}/${jiuwenbox_tar}"
 
 check_port_available "${BACKEND_PORT:-5055}"
 check_port_available "${MCP_SERVER_PORT:-7488}"
