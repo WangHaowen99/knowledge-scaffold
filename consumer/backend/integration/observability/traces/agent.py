@@ -118,6 +118,7 @@ class AgentRuntimeTrace:
         self.loop_span_key = "agent_loop:{}".format(self._caller_suffix())
         self._loop_finished = False
         self._phase_stack: List[str] = []
+        self._prepared_iterations: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -341,6 +342,7 @@ class AgentRuntimeTrace:
         llm_input_chars: Any,
         tools_count: int,
     ) -> None:
+        self._prepared_iterations.add(str(iteration))
         if not self.enabled:
             return
         self._emit(
@@ -416,7 +418,7 @@ class AgentRuntimeTrace:
         self._emit(
             RuntimeEventType.LLM_STARTED,
             span_key=span_key,
-            parent_key=self.iteration_span_key(iteration),
+            parent_key=self._iteration_parent_key(iteration),
             payload={
                 "caller": self.caller,
                 "iteration": iteration,
@@ -538,7 +540,7 @@ class AgentRuntimeTrace:
         self._emit(
             RuntimeEventType.TOOL_BATCH_STARTED,
             span_key=self.tool_batch_span_key(iteration, batch_index=batch_index),
-            parent_key=self.iteration_span_key(iteration),
+            parent_key=self._iteration_parent_key(iteration),
             payload={
                 "caller": self.caller,
                 "caller_suffix": self._caller_suffix(),
@@ -648,6 +650,11 @@ class AgentRuntimeTrace:
 
     def _current_phase_parent_key(self) -> Optional[str]:
         return self._phase_stack[-1] if self._phase_stack else None
+
+    def _iteration_parent_key(self, iteration: int) -> str:
+        if str(iteration) in self._prepared_iterations:
+            return self.iteration_span_key(iteration)
+        return self._current_phase_parent_key() or self.loop_span_key
 
     def _pop_phase_span(self, span_key: str) -> None:
         if not self._phase_stack:
