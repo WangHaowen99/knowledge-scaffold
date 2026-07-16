@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { generateKeyPair, exportJWK, SignJWT, type CryptoKey } from 'jose';
+import { neo4jInput } from './helpers/data-source-fixtures.js';
 
 // 路由层状态码映射的集成测试：真实 registerRoutes + app.inject，上游用假 auth-server。
 // config 在 import 时读 process.env，因此先起假服务、设好 env，再动态 import routes。
@@ -19,6 +20,9 @@ let app: FastifyInstance;
 
 // status: -1 表示直接掐断连接（模拟网络错）
 const routes = new Map<string, { status: number; body?: string; contentType?: string }>();
+const consumerRequests: string[] = [];
+const testedDataSources: unknown[] = [];
+const syncedDataSources: any[] = [];
 
 before(async () => {
   const pair = await generateKeyPair('RS256');
@@ -30,6 +34,7 @@ before(async () => {
   });
 
   upstream = createServer((req, res) => {
+    if (req.url?.startsWith('/agentic/')) consumerRequests.push(`${req.method} ${req.url}`);
     req.on('data', () => {});
     req.on('end', () => {
       const route = routes.get(`${req.method} ${req.url}`);
@@ -49,11 +54,21 @@ before(async () => {
   process.env.AUTH_ISSUER_URL = `http://127.0.0.1:${addr.port}`;
   process.env.AUTH_JWT_ISSUER = ISS;
   process.env.AUTH_JWT_AUDIENCE = AUD;
+  process.env.CONSUMER_API_URL = `http://127.0.0.1:${addr.port}`;
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'mtool-route-test-'));
 
   const { registerRoutes } = await import('../src/routes.js');
   app = Fastify({ logger: false });
-  await app.register(registerRoutes);
+  await app.register(registerRoutes, {
+    dataSourceConnectionTester: async (source: unknown) => { testedDataSources.push(source); },
+    dataSourceConsumerSync: async (options: any) => {
+      syncedDataSources.push(options);
+      return {
+        workspaceId: options.workspaceId,
+        ontologyId: options.ontologyId,
+      };
+    },
+  });
   await app.ready();
 });
 
@@ -177,4 +192,79 @@ test('/api/me：合法 token → 200；typ=refresh 的 token → 401；无 token
 
   res = await app.inject({ method: 'GET', url: '/api/me' });
   assert.equal(res.statusCode, 401);
+});
+
+test('项目数据源 API：保存脱敏配置并通过注入依赖推进阶段', async () => {
+  consumerRequests.length = 0;
+  testedDataSources.length = 0;
+  syncedDataSources.length = 0;
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: 'Neo4j 数据源项目' },
+  });
+  assert.equal(created.statusCode, 201);
+  const projectId = created.json().project.id;
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'ontology-001', name: 'Neo4j 数据源项目', description: 'Neo4j 数据源项目', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'graph', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+  const saved = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/data-source`, headers,
+    payload: neo4jInput({ database: 'domain' }),
+  });
+  assert.equal(saved.statusCode, 200, saved.body);
+  const dataSource = saved.json().dataSource;
+  assert.equal(dataSource.provider, 'neo4j');
+  assert.equal(dataSource.config.has_password, true);
+  assert.equal('password' in dataSource.config, false);
+  assert.equal(dataSource.workspaceId, 'test');
+  assert.equal(dataSource.ontologyId, 'ontology-001');
+  assert.equal(testedDataSources.length, 1);
+  assert.equal(syncedDataSources.length, 1);
+  assert.deepEqual(
+    {
+      projectId: syncedDataSources[0].projectId,
+      workspaceId: syncedDataSources[0].workspaceId,
+      ontologyId: syncedDataSources[0].ontologyId,
+    },
+    { projectId, workspaceId: 'test', ontologyId: 'ontology-001' },
+  );
+  assert.equal(syncedDataSources[0].token, token);
+  assert.equal(syncedDataSources[0].source.config.password, 'secret');
+  assert.equal(consumerRequests.length, 0, `测试注入后不应真实访问 consumer：${consumerRequests.join(', ')}`);
+  const project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'data_source');
+  assert.deepEqual(project.json().dataSource, dataSource);
+});
+
+test('评测用例 API：手工新增和修改均推进项目阶段', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '手工评测用例项目' },
+  });
+  const projectId = created.json().project.id;
+  const { setStage } = await import('../src/projects/repo.js');
+  setStage(projectId, 'data_source');
+  const added = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/testcases`, headers,
+    payload: { question: '问题', groundTruth: '' },
+  });
+  assert.equal(added.statusCode, 200, added.body);
+  let project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'testcases');
+  setStage(projectId, 'data_source');
+  const updated = await app.inject({
+    method: 'PATCH',
+    url: `/api/projects/${projectId}/testcases/${added.json().testcase.id}`,
+    headers,
+    payload: { groundTruth: '答案' },
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+  project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'testcases');
 });

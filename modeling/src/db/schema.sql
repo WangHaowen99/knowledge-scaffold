@@ -94,6 +94,18 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at    TEXT NOT NULL
 );
 
+-- 项目级评测数据源。由 modeling 持久化公开配置；密钥不落库。
+CREATE TABLE IF NOT EXISTS project_data_sources (
+  project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  mode              TEXT NOT NULL,          -- connection | none
+  provider          TEXT,
+  workspace_id      TEXT NOT NULL,
+  ontology_id       TEXT,
+  public_config_json TEXT NOT NULL DEFAULT '{}',
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
 -- ---- M3：评测用例 / 轮次 / 结果 ----
 CREATE TABLE IF NOT EXISTS testcases (
   id            TEXT PRIMARY KEY,

@@ -302,7 +302,7 @@ function Stat({ v, k }) {
 
 /* ================= 节点 6 · 知识包完善（查看 / 编辑 / 导出；右栏为修缮对话） ================= */
 
-export function ReviewPanel({ projectId }) {
+export function ReviewPanel({ projectId, onAdvance }) {
   const [pkg, setPkg] = useState(null);
   const [err, setErr] = useState('');
   const [path, setPath] = useState(null);
@@ -414,6 +414,9 @@ export function ReviewPanel({ projectId }) {
           ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown></div>
           : <pre className="srcview">{content}</pre>}
       </div>
+    </div>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+      <button className="btn btn-p" onClick={onAdvance}>进入数据源配置 →</button>
     </div>
     </div>
   );

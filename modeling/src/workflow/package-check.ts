@@ -2,7 +2,14 @@ import { Type } from '@earendil-works/pi-ai';
 import { getDb, nowIso } from '../db/index.js';
 import { buildLlm } from '../llm/provider.js';
 import { makeAgent, runAgent } from './agent.js';
+import { findObjectDataMappingProblems } from './data-mapping.js';
 import { validateKey } from './keys.js';
+import {
+  mappingFieldName,
+  mappingObjectName,
+  mappingPrimaryNames,
+} from './mapping-contract.js';
+import { parseObjectIndex } from './object-index.js';
 import type { PackageFiles } from './package-render.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
 
@@ -36,14 +43,20 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
   const objKeys = new Set(spec.objects.map((o) => o.key));
   const ruleKeys = new Set((spec.rules ?? []).map((r) => r.key));
   const metricKeys = new Set((spec.metrics ?? []).map((m) => m.key));
-  const tableNames = new Set(tables.map((t) => t.name));
+
+  for (const problem of findObjectDataMappingProblems(spec, tables)) {
+    add(
+      '错误',
+      '数据映射失效',
+      problem.objectKey,
+      problem.message,
+      `修正对象 ${problem.objectKey} 的来源表、字段或主键映射`,
+    );
+  }
 
   for (const o of spec.objects) {
     if (!o.fields?.length) add('错误', '对象不完整', o.key, `对象「${o.title || o.key}」没有任何字段`, `为对象 ${o.key} 补充字段清单`);
     if ((o.description ?? '').trim().length < 10) add('提示', '描述过简', o.key, `对象「${o.title || o.key}」描述过短，可能造成消费歧义`, `为对象 ${o.key} 补充业务描述（用途、口径、边界）`);
-    if (o.sourceTable && tableNames.size && !tableNames.has(o.sourceTable)) {
-      add('警告', '数据映射失效', o.key, `对象「${o.title || o.key}」的来源表 ${o.sourceTable} 不在数据字典中（资料可能已变更）`, `修正对象 ${o.key} 的来源表映射`);
-    }
     for (const pk of o.primaryKey ?? []) {
       if (!o.fields?.some((f) => f.key === pk)) add('警告', '主键失配', o.key, `对象「${o.title || o.key}」主键 ${pk} 不在字段清单中`);
     }
@@ -218,6 +231,20 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
     }
   }
 
+  const objectIndex = files['objects/index.md'];
+  if (objectIndex?.trim()) {
+    try {
+      const entries = parseObjectIndex(objectIndex);
+      for (const object of spec.objects ?? []) {
+        if (!entries.has(object.key)) {
+          add('错误', '对象索引非法', 'objects/index.md', `objects/index.md 缺少对象 ${object.key} 及其来源 Sheet`);
+        }
+      }
+    } catch (error) {
+      add('错误', '对象索引非法', 'objects/index.md', error instanceof Error ? error.message : String(error));
+    }
+  }
+
   // 5) mappings JSON 结构合法（规范 §18）
   const mp = files['mappings/object-data-mappings.json'];
   if (mp !== undefined) {
@@ -228,12 +255,53 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
       if (!j.objects || typeof j.objects !== 'object' || Array.isArray(j.objects)) {
         add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'mapping 缺少 objects 映射（以 object key 为键）');
       } else {
-        for (const [k, v] of Object.entries<any>(j.objects)) {
-          if (!v || typeof v !== 'object') { add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 不是对象`); continue; }
-          if (!v.provider_alias) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 缺少 provider_alias`);
-          if (!v.resource) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 缺少 resource`);
-          if (!Array.isArray(v.primary_key)) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 的 primary_key 必须是数组`);
-          if (!v.fields || typeof v.fields !== 'object') add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${k} 缺少 fields`);
+        const specObjects = new Map((spec.objects ?? []).map((object) => [mappingObjectName(object), object]));
+        for (const object of spec.objects ?? []) {
+          const objectKey = mappingObjectName(object);
+          if (object.sourceTable && !Object.hasOwn(j.objects, objectKey)) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 声明了 sourceTable「${object.sourceTable}」，但最终 mapping 中缺少 object key ${objectKey}`);
+          }
+        }
+        for (const [objectKey, v] of Object.entries<any>(j.objects)) {
+          if (!v || typeof v !== 'object') { add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${objectKey} 不是对象`); continue; }
+          if (!v.provider_alias) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${objectKey} 缺少 provider_alias`);
+          if (!v.resource) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${objectKey} 缺少 resource`);
+          if (!Array.isArray(v.primary_key)) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${objectKey} 的 primary_key 必须是数组`);
+          if (!v.fields || typeof v.fields !== 'object') add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `mapping 的 objects.${objectKey} 缺少 fields`);
+
+          const object = specObjects.get(objectKey);
+          if (!object) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `最终 mapping 声明了规格中不存在的 object key ${objectKey}`);
+            continue;
+          }
+          if (!object.sourceTable) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 没有 sourceTable，属于概念实体，不得声明数据 mapping`);
+            continue;
+          }
+          if (v.resource && v.resource !== object.key) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping resource 应为 ${object.key}（当前：${v.resource}）`);
+          }
+
+          const expectedPrimary = mappingPrimaryNames(object);
+          if (Array.isArray(v.primary_key) && JSON.stringify(v.primary_key) !== JSON.stringify(expectedPrimary)) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 primary_key 与字段 key 不一致`);
+          }
+          if (v.fields && typeof v.fields === 'object' && !Array.isArray(v.fields)) {
+            const expectedFields = new Map((object.fields ?? []).map((field) => [mappingFieldName(field), field.key]));
+            for (const [fieldName, fieldKey] of expectedFields) {
+              const fieldMapping = v.fields[fieldName];
+              if (!fieldMapping || typeof fieldMapping !== 'object') {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping 缺少字段 key ${fieldName}`);
+              } else if (fieldMapping.source !== fieldKey) {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 字段 ${fieldName} 的 mapping source 应为 ${fieldKey}（当前：${fieldMapping.source ?? '缺失'}）`);
+              }
+            }
+            for (const fieldName of Object.keys(v.fields)) {
+              if (!expectedFields.has(fieldName)) {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping 包含对象规格未声明的字段 key ${fieldName}`);
+              }
+            }
+          }
         }
       }
     } catch {

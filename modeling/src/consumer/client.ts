@@ -49,7 +49,7 @@ export async function testConsumerConnectivity(token: string, urlOverride?: stri
   return out;
 }
 
-// 统一的 consumer 请求封装：透传专家 token + 可选影子工作区头（M3 评测使用）。
+// 统一的 consumer 请求封装：透传专家 token + 可选评测工作空间头（M3 评测使用）。
 export async function consumerFetch(token: string, path: string, options: RequestInit & { workspaceId?: string } = {}): Promise<Response> {
   const { workspaceId, ...init } = options;
   const headers: Record<string, string> = {
