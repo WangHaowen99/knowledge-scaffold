@@ -99,7 +99,7 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     )
 
     assert result["ok"] is True
-    assert captured["url"] == "http://backend.test/agentic/internal/mcp/chat"
+    assert captured["url"] == "http://backend.test/agentic/mcp/internal/chat"
     assert captured["headers"]["Authorization"] == "Bearer mcp_secret-token"
     assert captured["headers"]["X-Workspace-Id"] == "workspace-a"
     assert captured["headers"]["traceparent"] == scope.traceparent

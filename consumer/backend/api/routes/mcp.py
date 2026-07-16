@@ -7,6 +7,7 @@ import socket
 
 from flask import Blueprint, jsonify, request
 
+from api.protocols.mcp.paths import MCP_API_PREFIX, MCP_INTERNAL_CHAT_ROUTE
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
 from integration.mcp.service_catalog import list_mcp_service_cards
 from integration.mcp.token_service import (
@@ -27,7 +28,7 @@ from integration.mcp.token_service import MCPTokenAuthError
 from workspace.workspaces import resolve_workspace_id, workspace_scope
 
 
-mcp_bp = Blueprint("mcp", __name__, url_prefix="/agentic/mcp")
+mcp_bp = Blueprint("mcp", __name__, url_prefix=MCP_API_PREFIX)
 
 
 def _resolve_workspace_or_response():
@@ -122,7 +123,7 @@ def revoke_token_api(token_id: str):
     return jsonify({"ok": True, "token_id": token_id})
 
 
-@mcp_bp.route("/internal/chat", methods=["POST"])
+@mcp_bp.route(MCP_INTERNAL_CHAT_ROUTE, methods=["POST"])
 def execute_internal_mcp_chat():
     """Revalidate an MCP credential and enter the canonical Jiuwen workflow."""
     token = extract_bearer_token(request.headers)
