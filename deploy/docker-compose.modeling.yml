@@ -28,8 +28,9 @@ services:
       - MODELING_TASK_LLM_MODEL=${MODELING_TASK_LLM_MODEL:-}
       - MODELING_TASK_LLM_API_KEY=${MODELING_TASK_LLM_API_KEY:-}
       # 登录/评测都走 consumer；backend 是 consumer compose 里的服务名
-      - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://backend:5055}
-      - AUTH_VERIFY_MODE=introspect
+      - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://auth-server:5056}
+      - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}
+      - AUTH_JWT_AUDIENCE=${AUTH_JWT_AUDIENCE:-meta-wise}
       - CONSUMER_API_URL=${CONSUMER_API_URL:-http://backend:5055}
       # 评测库：启用 eval profile 时设为 mysql://root:<密码>@eval-mysql:3306；留空则跳过落库
       - EVAL_DB_URL=${EVAL_DB_URL:-}
