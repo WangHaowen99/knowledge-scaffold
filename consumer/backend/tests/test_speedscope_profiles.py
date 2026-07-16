@@ -1,6 +1,7 @@
 from contextvars import Context
 import json
 import multiprocessing
+import os
 from pathlib import Path
 import queue
 import sys
@@ -13,6 +14,7 @@ from integration.observability.events import RuntimeEvent, RuntimeEventType, Run
 from integration.observability import stack_profiler as stack_profiler_module
 from integration.observability.bus import ObservabilityBus
 from integration.observability.exporters.speedscope.exporter import SpeedscopeExporter
+from integration.observability.speedscope_io import speedscope_session_lock_path
 from integration.observability.traces.run import RunRuntimeTrace
 from integration.observability.stack_profiler import _RunStackProfile, _write_stack_profile
 
@@ -518,6 +520,28 @@ def test_speedscope_writers_share_runtime_output_dir(tmp_path, monkeypatch, use_
         assert list(unexpected_dir.glob("*.speedscope.json")) == []
     finally:
         _reset_stack_profiler_state()
+
+
+def test_speedscope_prune_removes_expired_json_and_session_lock(tmp_path):
+    exporter = SpeedscopeExporter(output_dir=tmp_path, retention_days=30)
+    stale_path = tmp_path / "session-stale-aaaaaaaaaaaa.speedscope.json"
+    stale_lock = speedscope_session_lock_path(stale_path)
+    current_path = tmp_path / "session-current-bbbbbbbbbbbb.speedscope.json"
+    current_lock = speedscope_session_lock_path(current_path)
+    stale_path.write_text("{}", encoding="utf-8")
+    stale_lock.write_text("", encoding="utf-8")
+    current_path.write_text("{}", encoding="utf-8")
+    current_lock.write_text("", encoding="utf-8")
+    stale_timestamp = time.time() - 31 * 24 * 60 * 60
+    os.utime(stale_path, (stale_timestamp, stale_timestamp))
+    os.utime(stale_lock, (stale_timestamp, stale_timestamp))
+
+    exporter._prune_old_files(current_path)
+
+    assert not stale_path.exists()
+    assert not stale_lock.exists()
+    assert current_path.exists()
+    assert current_lock.exists()
 
 
 def test_speedscope_session_file_lock_preserves_profiles_across_processes(tmp_path):

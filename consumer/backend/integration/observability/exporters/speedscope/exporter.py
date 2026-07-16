@@ -15,7 +15,11 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from utils.logging import get_logger
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
-from integration.observability.speedscope_io import resolve_speedscope_output_dir, speedscope_file_lock
+from integration.observability.speedscope_io import (
+    resolve_speedscope_output_dir,
+    speedscope_file_lock,
+    speedscope_session_lock_path,
+)
 
 logger = get_logger("observability.exporters.speedscope")
 
@@ -379,6 +383,7 @@ class SpeedscopeExporter:
             try:
                 if path.stat().st_mtime < cutoff:
                     path.unlink()
+                    _unlink_speedscope_lock(path)
             except OSError:
                 logger.warning("Failed to prune Speedscope trace %s", path, exc_info=True)
 
@@ -396,6 +401,13 @@ class SpeedscopeExporter:
 def create_speedscope_exporter(config: Mapping[str, Any] | None = None) -> SpeedscopeExporter:
     del config
     return SpeedscopeExporter()
+
+
+def _unlink_speedscope_lock(path: Path) -> None:
+    try:
+        speedscope_session_lock_path(path).unlink()
+    except FileNotFoundError:
+        return
 
 
 def _span_from_event(
