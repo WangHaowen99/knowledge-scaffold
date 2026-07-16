@@ -1861,6 +1861,42 @@ def test_tool_protocol_events_emit_runtime_tool_events():
     assert emitted[0].payload["subagent_id"] == "sub-1"
 
 
+def test_tool_finished_keeps_full_output_only_for_trace_tools(monkeypatch):
+    from agent.tools import events as tool_events
+
+    emitted = []
+    monkeypatch.setattr(
+        tool_events,
+        "emit_protocol_event",
+        lambda **kwargs: emitted.append(kwargs),
+    )
+
+    tool_events.emit_tool_finished(
+        context=object(),
+        tool_name="business_data_search",
+        tool_call_id="call-search",
+        status="completed",
+        raw_output="full search output",
+        error=None,
+        elapsed_ms=15,
+    )
+    tool_events.emit_tool_finished(
+        context=object(),
+        tool_name="read_file",
+        tool_call_id="call-read",
+        status="cancelled",
+        raw_output="file output",
+        error="cancelled",
+        elapsed_ms=20,
+    )
+
+    search_payload = emitted[0]["payload"]
+    read_payload = emitted[1]["payload"]
+    assert search_payload["output_full"] == "full search output"
+    assert "output_full" not in read_payload
+    assert read_payload["status"] == "cancelled"
+
+
 def test_langfuse_exporter_maps_tool_batch_failed_to_error_by_default():
     from integration.observability import RuntimeEvent, RuntimeEventType
     from integration.observability.exporters.langfuse import LangfuseExporter

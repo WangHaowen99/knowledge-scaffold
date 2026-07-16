@@ -51,7 +51,7 @@ export default function ConfigCenter({ scope, section, onNavigate }) {
   const active = sections.find((s) => s.id === section) || sections[0];
 
   return (
-    <div>
+    <div className="config-page">
       <ScopeTabs
         value={scope}
         onChange={(key) => onNavigate({ scope: key, sec: SCOPES[key].sections[0].id })}

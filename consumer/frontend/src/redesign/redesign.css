@@ -331,10 +331,9 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .force-password-form .password-rule-list { margin: 2px 0 12px; }
 
 /* ---- 配置中心 ---- */
-.mwr .config-page { width: min(1180px, 100%); margin: 0 auto; }
+.mwr .config-page { width: 100%; margin: 0; }
 .mwr .cfg-page-head { display: flex; align-items: center; gap: 14px; margin: 0 0 24px; }
 .mwr .cfg-page-icon { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: var(--blue-d); background: var(--blue-ll); border: 1px solid color-mix(in srgb, var(--color-primary) 12%, transparent); }
-.mwr .cfg-page-eyebrow { color: var(--blue-d); font-size: 11px; font-weight: 720; letter-spacing: 1.4px; margin-bottom: 2px; }
 .mwr .cfg-page-head h1 { font-size: 24px; line-height: 1.2; letter-spacing: -.4px; margin: 0 0 5px; }
 .mwr .cfg-page-head p { margin: 0; font-size: 13px; color: var(--muted); }
 .mwr .scope-tabs { display: flex; gap: 6px; background: #e7eaf0; border-radius: 12px; padding: 4px; width: fit-content; margin-bottom: 6px; }
@@ -569,6 +568,8 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .steps[open] summary .car { transform: rotate(90deg); }
 .mwr .step { display: flex; gap: 9px; padding: 7px 14px; border-top: 1px dashed #efeee6; font-size: 12.5px; color: var(--ink2); align-items: flex-start; }
 .mwr .step .ok { color: var(--good); flex: none; display: inline-flex; align-items: center; min-height: 18px; }
+.mwr .step .step-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.mwr .step .step-time { flex: none; margin-left: auto; color: var(--muted); font-size: 10.5px; font-family: ui-monospace, monospace; white-space: nowrap; }
 /* reasoning 一等公民：思考步骤用弱背景 + 左强调条与工具步骤视觉分隔 */
 .mwr .step-reasoning { background: #faf9f4; border-left: 2px solid #d9d4c2; color: #6b6858; font-style: italic; }
 .mwr .step-reasoning .ok { color: inherit; }

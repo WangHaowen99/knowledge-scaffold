@@ -741,6 +741,67 @@ def test_graph_agent_reuses_current_jiuwen_workspace_profile_resolution(monkeypa
     assert config.temperature == 0.1
 
 
+def test_graph_agent_inherits_router_output_limit(monkeypatch):
+    calls = []
+
+    class FakeRouter:
+        agent_config = SimpleNamespace(
+            limits=SimpleNamespace(model_output_token_limit=900),
+        )
+
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            calls.append((purpose, profile_id, workspace_id))
+            return SimpleNamespace(
+                provider="openai",
+                model="graph-model",
+                max_tokens=8192,
+                temperature=0.9,
+            )
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_llm_router",
+        lambda: FakeRouter(),
+    )
+
+    config = _resolve_graph_jiuwen_llm_config(
+        {
+            "model_profile_id": "workspace:graph",
+            "graph_agent_max_tokens": 1200,
+            "graph_agent_temperature": 0.1,
+        },
+        workspace_id="workspace-a",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1:] == ("workspace:graph", "workspace-a")
+    assert config.max_tokens == 900
+    assert config.temperature == 0.1
+
+
+def test_graph_agent_accepts_router_without_agent_config(monkeypatch):
+    class FakeRouter:
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            del purpose, profile_id, workspace_id
+            return SimpleNamespace(
+                provider="openai",
+                model="graph-model",
+                max_tokens=8192,
+                temperature=0.9,
+            )
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_llm_router",
+        lambda: FakeRouter(),
+    )
+
+    config = _resolve_graph_jiuwen_llm_config(
+        {"graph_agent_max_tokens": 1200},
+        workspace_id="workspace-a",
+    )
+
+    assert config.max_tokens == 1200
+
+
 def test_graph_private_registration_passes_explicit_tools_to_current_jiuwen_boundary(monkeypatch):
     captured = {}
 
