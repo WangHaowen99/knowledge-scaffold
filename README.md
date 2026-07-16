@@ -217,16 +217,14 @@ cd frontend && npm run build
 构建与部署（两条独立路径）：
 
 ```bash
-# 路径一：源码 compose 启动（开发/体验）
-cd consumer
-./run_docker.sh latest all
+# 路径一：源码 compose 启动（开发/体验，consumer + modeling）
+./deploy/deploy-stack.sh up
 
-# 路径二：构建离线发布包（生产交付，含 deploy/upgrade/rollback 脚本）
-cd consumer
-./build.sh <version>
+# 路径二：构建全栈离线发布包（生产交付，含 consumer + modeling）
+./deploy/build.sh <version>
 ```
 
-全栈部署（含建模工作台）见 [deploy/README.md](deploy/README.md)，consumer 发布包细节见 [consumer/deploy/README.md](consumer/deploy/README.md)。
+全栈部署（含建模工作台）见 [deploy/README.md](deploy/README.md)，consumer 单服务发布包细节见 [consumer/deploy/README.md](consumer/deploy/README.md)。
 
 文档地图：
 

@@ -175,6 +175,10 @@ Current commands for the consumer application:
 - Run backend tests: `cd consumer && PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests`
 - Run frontend lint/build: `cd consumer/frontend && npm run lint && npm run build`
 - Run full-stack Docker Compose: `cd consumer && docker compose up --build`
+- Build full release package: `./deploy/build.sh <version> [amd|arm]`
+- Deploy full stack from extracted release package: `./deploy/deploy.sh`
+- Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
+- Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 
 After initializing the project, Claude must update this section with real commands.
 
