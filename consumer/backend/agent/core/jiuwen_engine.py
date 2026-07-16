@@ -771,6 +771,7 @@ class JiuwenReactLoopEngine:
             max_iterations=max_iterations,
             system_prompt=system_prompt,
             agent_id=_build_jiuwen_agent_resource_id(state, caller=caller),
+            context_max_rounds=getattr(self.agent_config, "context_max_rounds", 10),
             enable_reasoning=enable_reasoning,
             stream_enabled=stream_enabled,
         )
@@ -1333,6 +1334,7 @@ def create_default_jiuwen_agent(
     max_iterations: Optional[int] = None,
     system_prompt: Optional[str] = None,
     agent_id: Optional[str] = None,
+    context_max_rounds: Optional[int] = None,
     enable_reasoning: bool = False,
     stream_enabled: bool = True,
 ) -> Any:
@@ -1341,6 +1343,7 @@ def create_default_jiuwen_agent(
         agent_card_module = importlib.import_module("openjiuwen.core.single_agent.schema.agent_card")
         react_agent_module = importlib.import_module("openjiuwen.core.single_agent.agents.react_agent")
         model_config_module = importlib.import_module("openjiuwen.core.foundation.llm.schema.config")
+        context_engine_module = importlib.import_module("openjiuwen.core.context_engine")
     except ImportError as exc:
         raise JiuwenBackendUnavailable(
             _format_jiuwen_import_error(exc)
@@ -1383,6 +1386,13 @@ def create_default_jiuwen_agent(
         )
     )
     model_request_config = model_request_config_cls(**model_request_kwargs)
+    context_engine_config_cls = context_engine_module.ContextEngineConfig
+    context_engine_config = context_engine_config_cls(
+        max_context_message_num=None,
+        default_window_round_num=_normalize_context_max_rounds(context_max_rounds),
+        enable_reload=False,
+        enable_kv_cache_release=False,
+    )
     react_config = react_agent_config_cls(
         model_client_config=model_client_config,
         model_config_obj=model_request_config,
@@ -1394,6 +1404,7 @@ def create_default_jiuwen_agent(
             if str(system_prompt or "").strip()
             else []
         ),
+        context_engine_config=context_engine_config,
     )
     agent = react_agent_cls(
         card=agent_card_cls(
@@ -1516,6 +1527,13 @@ def _normalize_max_iterations(value: Optional[Any]) -> int:
     return max(1, normalized)
 
 
+def _normalize_context_max_rounds(value: Optional[Any]) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 10
+
+
 def _resolve_jiuwen_llm_config(
     state: Optional[Mapping[str, Any]],
     *,
@@ -1598,7 +1616,7 @@ def _build_jiuwen_history_messages(state: Mapping[str, Any], agent_config: Any) 
     if not messages:
         return []
 
-    max_rounds = _normalize_max_iterations(getattr(agent_config, "context_max_rounds", None))
+    max_rounds = _normalize_context_max_rounds(getattr(agent_config, "context_max_rounds", None))
     prune_tools = getattr(agent_config, "context_prune_tools", None) or None
     windowed_messages = apply_sliding_window(messages, max_rounds, prune_tools)
     history_messages = _drop_current_user_message(windowed_messages, state)
@@ -1622,7 +1640,7 @@ def _build_jiuwen_context_messages(
         for message in list(state.get("messages") or [])
         if isinstance(message, Mapping)
     ]
-    max_rounds = _normalize_max_iterations(getattr(agent_config, "context_max_rounds", None))
+    max_rounds = _normalize_context_max_rounds(getattr(agent_config, "context_max_rounds", None))
     prune_tools = getattr(agent_config, "context_prune_tools", None) or None
     windowed_messages = apply_sliding_window(messages, max_rounds, prune_tools) if messages else []
     estimated_messages = [
