@@ -6,7 +6,7 @@ import {
   listVersions, exportVersionUrl, authFetch,
 } from './api.js';
 
-/* ================= 节点 10 · 优化建议与应用 ================= */
+/* ================= 节点 11 · 优化建议与应用 ================= */
 
 const KIND_LABEL = {
   add_operation: '新增操作', modify_operation: '修改操作',

@@ -96,12 +96,14 @@ export const getPackageFile = (id, path) => api(`${P(id)}/package/file?path=${en
 export const exportPackageUrl = (id) => `${P(id)}/package/export`;
 
 // ---- M3 评测 ----
+export const getDataSource = (id) => api(`${P(id)}/data-source`);
+export const saveDataSource = (id, input) => api(`${P(id)}/data-source`, { method: 'PUT', body: JSON.stringify(input) });
 export const listTestcases = (id) => api(`${P(id)}/testcases`);
 export const addTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases`, { method: 'POST', body: JSON.stringify({ question, groundTruth }) });
 export const prefillTestcases = (id) => api(`${P(id)}/testcases/prefill`, { method: 'POST', body: '{}' });
 export const updateTestcase = (id, tcId, patch) => api(`${P(id)}/testcases/${encodeURIComponent(tcId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
 export const deleteTestcase = (id, tcId) => api(`${P(id)}/testcases/${encodeURIComponent(tcId)}`, { method: 'DELETE' });
-export const startEvaluate = (id, binding) => api(`${P(id)}/evaluate`, { method: 'POST', body: JSON.stringify(binding ? { binding } : {}) });
+export const startEvaluate = (id) => api(`${P(id)}/evaluate`, { method: 'POST', body: '{}' });
 export const listRounds = (id) => api(`${P(id)}/rounds`);
 export const getRound = (id, roundId) => api(`${P(id)}/rounds/${encodeURIComponent(roundId)}`);
 export const overrideVerdict = (id, resultId, verdict) => api(`${P(id)}/results/${encodeURIComponent(resultId)}`, { method: 'PATCH', body: JSON.stringify({ verdict }) });

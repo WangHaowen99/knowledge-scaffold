@@ -40,7 +40,11 @@ const SPEC: PackageSpec = {
         { key: 'affected_object_id', cnName: '受影响对象ID', type: 'string' },
       ],
     },
-    { key: 'CHANGE_ORDER变更单', title: 'CHANGE_ORDER变更单', description: '工程变更单主对象。', fields: [{ key: 'eco_id', type: 'string' }] },
+    {
+      key: 'CHANGE_ORDER变更单', title: 'CHANGE_ORDER变更单', description: '工程变更单主对象。',
+      sourceTable: 'CHANGE_ORDER_AFFECTED_OBJECT', primaryKey: ['eco_id'],
+      fields: [{ key: 'eco_id', type: 'string', sourceColumn: 'CHANGE_ORDER_ID' }],
+    },
   ],
   operations: [
     {
@@ -77,7 +81,7 @@ const SPEC: PackageSpec = {
   }],
 };
 
-// 旧数据形态（库里存量 spec：无任何新字段）——兼容性：渲染零报错、缺省回落
+// 旧数据形态（库里存量 spec：无任何新字段）——兼容性：仍可渲染，但来源体检不再放行
 const LEGACY: PackageSpec = {
   id: 'legacy-agent', name: 'legacy', description: '旧版规格', version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'domain',
   objects: [{ key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: '制造物料清单', fields: [{ key: 'ID' }] }],
@@ -129,13 +133,13 @@ function main() {
   const objMd = files['objects/CHANGE_ORDER受影响对象.md'];
   const mapping = JSON.parse(files['mappings/object-data-mappings.json']);
   ok(fm('objects/CHANGE_ORDER受影响对象.md').includes('mapping:'), '对象 frontmatter 含 mapping 块');
-  ok(fm('objects/CHANGE_ORDER受影响对象.md').includes('  provider_alias: domain') && fm('objects/CHANGE_ORDER受影响对象.md').includes('  resource: CHANGE_ORDER_AFFECTED_OBJECT'), 'mapping 块含 provider_alias/resource');
-  ok(mapping.objects['CHANGE_ORDER受影响对象'].provider_alias === 'domain' && mapping.objects['CHANGE_ORDER受影响对象'].resource === 'CHANGE_ORDER_AFFECTED_OBJECT', '两处 provider_alias/resource 一致（同源生成）');
+  ok(fm('objects/CHANGE_ORDER受影响对象.md').includes('  provider_alias: domain') && fm('objects/CHANGE_ORDER受影响对象.md').includes('  resource: CHANGE_ORDER受影响对象'), 'mapping 块含 provider_alias/resource');
+  ok(mapping.objects['CHANGE_ORDER受影响对象'].provider_alias === 'domain' && mapping.objects['CHANGE_ORDER受影响对象'].resource === 'CHANGE_ORDER受影响对象', '两处 provider_alias/resource 一致（同源生成）');
 
-  // ---- M1 fields.source 用真实列名 sourceColumn，缺省回落 key ----
-  console.log('· M1 mapping source');
-  ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.eco_id.source === 'CHANGE_ORDER_ID', 'sourceColumn 生效：source=CHANGE_ORDER_ID（真实列名）');
-  ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.affected_object_id.source === 'affected_object_id', '无 sourceColumn 时回落字段 key');
+  // ---- M1 fields 的 key/source 均使用字段 key ----
+  console.log('· M1 semantic mapping source');
+  ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.eco_id.source === 'eco_id', '字段 key/source 一致：eco_id -> eco_id');
+  ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.affected_object_id.source === 'affected_object_id', '字段 key/source 一致：affected_object_id -> affected_object_id');
 
   // ---- M2 mapping policy 块 ----
   console.log('· M2 mapping policy');
@@ -148,7 +152,7 @@ function main() {
   const withOverride = (path: string, content: string) => ({ ...files, [path]: content });
   const cats = (fs2: ReturnType<typeof runFormatChecks>) => fs2.map((f) => f.category);
   ok(cats(runFormatChecks(SPEC, withOverride('objects/CHANGE_ORDER受影响对象.md', '# 被人工改坏：没有 frontmatter\n'))).includes('frontmatter 缺失'), '拦截：override 删掉 frontmatter');
-  ok(cats(runFormatChecks(SPEC, withOverride('objects/index.md', files['objects/index.md'] + '| ghost_obj | 幽灵 | 索引声明但详情不存在 |\n'))).includes('索引与详情不一致'), '拦截：索引声明了不存在的详情文件');
+  ok(cats(runFormatChecks(SPEC, withOverride('objects/index.md', files['objects/index.md'] + '| ghost_obj | 幽灵 | 索引声明但详情不存在 | CHANGE_ORDER_AFFECTED_OBJECT |\n'))).includes('索引与详情不一致'), '拦截：索引声明了不存在的详情文件');
   ok(cats(runFormatChecks(SPEC, withOverride('manifest.yaml', 'kind: something-else\n'))).includes('manifest 非法'), '拦截：manifest kind/必选字段被改坏');
   ok(cats(runFormatChecks(SPEC, withOverride('mappings/object-data-mappings.json', '{ broken'))).includes('mapping 非法'), '拦截：mappings JSON 不可解析');
   ok(cats(runFormatChecks(SPEC, withOverride('objects/CHANGE_ORDER受影响对象.md', objMd.replace('key: CHANGE_ORDER受影响对象', 'key: ../evil')))).includes('key 非法'), '拦截：frontmatter key 被改成路径穿越');
@@ -158,8 +162,8 @@ function main() {
 
   // ---- M4 索引表格列数 ----
   console.log('· M4 索引列数');
-  ok(files['objects/index.md'].includes('| object key | 标题 | 说明 |'), 'objects 索引三列（object key|标题|说明）');
-  ok(files['objects/index.md'].includes('| CHANGE_ORDER受影响对象 | CHANGE_ORDER受影响对象 | 记录一个 CHANGE_ORDER 变更影响到的设计对象、变更前后版本和处理意见。 |'), 'objects 索引行含标题列');
+  ok(files['objects/index.md'].includes('| object key | 标题 | 说明 | 来源Sheet |'), 'objects 索引四列（object key|标题|说明|来源Sheet）');
+  ok(files['objects/index.md'].includes('| CHANGE_ORDER受影响对象 | CHANGE_ORDER受影响对象 | 记录一个 CHANGE_ORDER 变更影响到的设计对象、变更前后版本和处理意见。 | CHANGE_ORDER_AFFECTED_OBJECT |'), 'objects 索引行含标题与来源 Sheet 列');
   ok(files['operations/index.md'].includes('| operation key | 标题 | 输入 | 输出 |'), 'operations 索引四列（operation key|标题|输入|输出）');
   ok(files['operations/index.md'].includes('| eco_change_impact | CHANGE_ORDER变更影响分析 | eco_id | affected_items |'), 'operations 索引行含输入/输出摘要');
 
@@ -197,7 +201,7 @@ function main() {
   ok(files['index.md'].includes('查询真实数据前必须先加载相关 object；判断类问题优先加载相关 rule，没有规则目录时回到 operation 的业务说明；计算类问题优先加载相关 metric，没有指标目录时不得编造指标口径。'), '消费边界为规范原文表述');
   const legacyFiles = renderPackage(LEGACY);
   ok(!('rules/index.md' in legacyFiles) && !('metrics/index.md' in legacyFiles), '无规则/指标时不生成可选目录（旧数据零报错）');
-  ok(runFormatChecks(LEGACY, legacyFiles).length === 0, '旧数据渲染产物同样通过体检');
+  ok(runFormatChecks(LEGACY, legacyFiles).some((f) => f.category === '对象索引非法'), '旧数据仍可渲染，但缺少来源 Sheet 时体检明确报错');
   // 体检覆盖：规则/指标悬空引用与必需正文
   const badRef: PackageSpec = { ...LEGACY, operations: [{ ...LEGACY.operations[0], usesRules: ['ghost_rule'], usesMetrics: ['ghost_metric'] }], rules: [{ key: 'r1', title: 'r1', content: '' }], metrics: [{ key: 'm1', title: 'm1', caliber: '', boundaries: [] }] };
   const findings = runRuleChecks(badRef, [], []);

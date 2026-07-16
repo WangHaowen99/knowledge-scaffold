@@ -6,7 +6,7 @@ export interface AuthUser {
 }
 
 // ---- workflow ----
-// 固定主干 10 节点 + 4 类动态节点（见 docs/design.md §3）。
+// 固定主干 11 节点 + 4 类动态节点（见 docs/design.md §3）。
 export type NodeType =
   | 'project_setup' // 1 项目创建
   | 'ingest' // 2 资料上传与解析
@@ -15,9 +15,10 @@ export type NodeType =
   | 'competency' // 5 胜任力问题
   | 'generate' // 6 知识包生成
   | 'review' // 7 包评审
-  | 'testcases' // 8 评测用例录入
-  | 'evaluate' // 9 评测运行
-  | 'optimize' // 10 优化建议与应用
+  | 'data_source' // 8 数据源配置
+  | 'testcases' // 9 评测用例录入
+  | 'evaluate' // 10 评测运行
+  | 'optimize' // 11 优化建议与应用
   // 动态节点（agent 在 3~6 间按需插入，类型封闭）
   | 'dyn_followup' // 追问访谈
   | 'dyn_deepread' // 深读文档
@@ -33,7 +34,7 @@ export type NodeStatus =
 
 export const FIXED_TRUNK: NodeType[] = [
   'project_setup', 'ingest', 'analyze', 'interview',
-  'competency', 'generate', 'review', 'testcases', 'evaluate', 'optimize',
+  'competency', 'generate', 'review', 'data_source', 'testcases', 'evaluate', 'optimize',
 ];
 
 export const DYNAMIC_NODE_TYPES: NodeType[] = [
@@ -147,7 +148,7 @@ export interface SpecField {
   required?: boolean;
   note?: string;
   alias?: string;
-  sourceColumn?: string; // 数据字典中的真实列名（mapping 的 source；缺省回落 key）
+  sourceColumn?: string; // Excel 图导入使用的真实列名；缺省回落字段 key
 }
 export interface SpecRelation {
   relation: string; // 关系名（如 belongs_to / references）
@@ -162,7 +163,7 @@ export interface SpecObject {
   aliases?: string[];        // 自然语言别名（frontmatter aliases，规范 §5.1）
   queryBoundary?: string;
   relations?: SpecRelation[]; // 「# 关系」表（规范 §9，推荐）
-  sourceTable?: string; // 对应数据字典的表名（用于 mapping）
+  sourceTable?: string; // 新生成对象必填：对应数据字典的真实 Sheet 名；可选仅为兼容存量 spec
   primaryKey?: string[];
 }
 export interface SpecOperation {

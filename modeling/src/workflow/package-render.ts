@@ -1,11 +1,22 @@
-import type { PackageSpec, SpecObject, SpecOperation, SpecRule, SpecMetric } from '../types.js';
+import type {
+  PackageSpec,
+  SpecObject,
+  SpecOperation,
+  SpecRule,
+  SpecMetric,
+} from '../types.js';
 import { validateSpecKeys } from './keys.js';
+import {
+  mappingFieldName,
+  mappingObjectName,
+  mappingPrimaryNames,
+} from './mapping-contract.js';
 
 // PackageSpec → 标准知识包文件集（严格对照 examples/corporate-marketing-eval/
 // ontology-package-final-design.md v0.2，保证 consumer 可导入）。
 // 返回 { path: content } 映射，供落盘或打 zip。
-// 兼容性：库里存量 spec 没有后加字段（sourceColumn/relations/rules/metrics/status…），
-// 渲染对缺省一律回落，不得报错。
+// 兼容性：库里存量 spec 没有后加字段（sourceColumn/relations/rules/metrics/status…）。
+// 新规格要求每个对象声明 sourceTable；旧规格缺失时仍可渲染，但不会生成数据 mapping。
 export type PackageFiles = Record<string, string>;
 
 // YAML 标量转义：含特殊字符 / 首尾空白 / 空串时用 JSON 双引号形式（JSON 字符串是合法 YAML 标量）。
@@ -49,13 +60,17 @@ const cell = (s: string | undefined) => (s ?? '').replace(/\|/g, '\\|').replace(
 function objectMapping(spec: PackageSpec, o: SpecObject) {
   const fields: Record<string, unknown> = {};
   for (const f of o.fields) {
-    // source = 真实列名（sourceColumn），缺省回落字段 key（规范 §18「业务字段到真实字段」）
-    fields[f.key] = { source: f.sourceColumn || f.key, type: f.type || 'string', required: !!f.required, readable: true };
+    fields[mappingFieldName(f)] = {
+      source: f.key,
+      type: f.type || 'string',
+      required: !!f.required,
+      readable: true,
+    };
   }
   return {
     provider_alias: spec.defaultProviderAlias,
-    resource: o.sourceTable || o.key,
-    primary_key: o.primaryKey && o.primaryKey.length ? o.primaryKey : [o.fields[0]?.key].filter(Boolean),
+    resource: o.key,
+    primary_key: mappingPrimaryNames(o),
     fields,
     // policy（规范 §18 4.6）。规范未给默认值，取保守默认：只读、上限 1000 行；
     // require_user_filter 规范类型为字符串数组，「无必须过滤条件」用空数组表达。
@@ -64,13 +79,13 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
 }
 
 function objectMd(spec: PackageSpec, o: SpecObject): string {
-  const m = objectMapping(spec, o);
+  const m = o.sourceTable ? objectMapping(spec, o) : undefined;
   const fm = frontmatter({
     resource: 'object', key: o.key, title: o.title, description: o.description,
     aliases: o.aliases,
-    // 本工具恒启用业务数据查询（mappings 恒生成），按规范 §9 对象需声明 mapping；
+    // 新规格均绑定真实来源表；条件分支仅用于兼容尚未声明 sourceTable 的旧规格。
     // 与 mappings/object-data-mappings.json 同源（objectMapping），两处一致。
-    mapping: { provider_alias: m.provider_alias, resource: m.resource },
+    mapping: m ? { provider_alias: m.provider_alias, resource: m.resource } : undefined,
   });
   const rows = o.fields.map((f) =>
     `| ${cell(f.key)} | ${cell(f.cnName)} | ${cell(f.type ?? '未声明')} | ${f.required == null ? '未声明' : f.required ? '是' : '否'} | ${cell(f.note)} | ${cell(f.alias)} |`);
@@ -132,8 +147,8 @@ function objectsIndex(objects: SpecObject[]): string {
   return [
     frontmatter({ resource: 'object_index', key: 'objects', title: '对象目录' }),
     '# 对象目录', '',
-    '| object key | 标题 | 说明 |', '| --- | --- | --- |',
-    ...objects.map((o) => `| ${cell(o.key)} | ${cell(o.title)} | ${cell(o.description)} |`), '',
+    '| object key | 标题 | 说明 | 来源Sheet |', '| --- | --- | --- | --- |',
+    ...objects.map((o) => `| ${cell(o.key)} | ${cell(o.title)} | ${cell(o.description)} | ${cell(o.sourceTable)} |`), '',
   ].join('\n');
 }
 
@@ -263,7 +278,9 @@ function manifest(spec: PackageSpec): string {
 
 function mappingsJson(spec: PackageSpec): string {
   const objects: Record<string, unknown> = {};
-  for (const o of spec.objects) objects[o.key] = objectMapping(spec, o);
+  for (const o of spec.objects) {
+    if (o.sourceTable) objects[mappingObjectName(o)] = objectMapping(spec, o);
+  }
   return JSON.stringify({
     schema_version: '0.1',
     default_provider_alias: spec.defaultProviderAlias,

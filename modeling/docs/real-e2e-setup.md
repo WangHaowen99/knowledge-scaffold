@@ -71,7 +71,7 @@ npx tsx --env-file=.env src/server.ts
 | MySQL | `docker exec mw-eval-mysql mysqladmin ping -uroot -p<REDACTED>` | alive |
 | NL2SQL | `POST :5600/api/v1/query {"question":"AO工序AO_OP0001的执行工位是什么？","scene":"example_domain"}` | data 含 `STATION01-工位1` |
 | consumer 就绪 | `GET :5055/api/system-config/readiness` | `ready:true` |
-| consumer 全链路 | 导入示例本体 zip → 建 `nl2sql_template` 连接（url=`http://localhost:5600`）→ 绑定 → `runs/sync` 同上问题 | final_answer 含 `STATION01-工位1` |
+| consumer 全链路 | 导入示例本体 zip → 为该本体配置 `nl2sql_template` 数据源（url=`http://localhost:5600`）→ `runs/sync` 同上问题 | final_answer 含 `STATION01-工位1` |
 | modeling→consumer | `POST :5100/api/settings/consumer/test` | `reachable/authOk/modelReady` 全 true |
 
 （`business-query-testcases.json` 13 条业务推理题 + `data-query-testcases.json` 26 条数据查询题，

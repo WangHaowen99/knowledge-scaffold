@@ -17,12 +17,21 @@ import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
 import { evalSchemaName } from './evaluation/eval-db.js';
+import { getProjectDataSource } from './evaluation/data-source-repo.js';
+import { configureProjectDataSource } from './evaluation/data-source-service.js';
+import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
+import type { DataSourceConsumerSync } from './evaluation/data-source-consumer-sync.js';
 import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
 
-export async function registerRoutes(app: FastifyInstance) {
+export interface RegisterRoutesOptions {
+  dataSourceConnectionTester?: DataSourceConnectionTester;
+  dataSourceConsumerSync?: DataSourceConsumerSync;
+}
+
+export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
   app.get('/health', async () => ({ status: 'ok' }));
 
   // ---- 认证：登录/刷新/注册转发给 issuer ----
@@ -173,6 +182,7 @@ export async function registerRoutes(app: FastifyInstance) {
       return {
         project: p, documents: listDocuments(p.id), nodes: listNodes(p.id),
         competency: { total: cqs.length, selected: cqs.filter((q) => q.selected).length },
+        dataSource: getProjectDataSource(p.id),
       };
     });
 
@@ -411,7 +421,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const { message, history, plan } = (req.body ?? {}) as any;
       if (!plan?.changes?.length) return reply.code(400).send({ error: 'plan 必填（先调用 chat 获取修缮计划）' });
       try {
-        return await packageChatApply(c.p, history ?? [], String(message ?? ''), plan);
+        return await packageChatApply(c.p, history ?? [], String(message ?? ''), plan, c.ctx.tables);
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
@@ -473,7 +483,37 @@ export async function registerRoutes(app: FastifyInstance) {
       return reply.send(Buffer.from(zip));
     });
 
-    // ---- 节点 8 评测用例录入 ----
+    // ---- 节点 8 数据源配置 ----
+    r.get('/api/projects/:id/data-source', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { dataSource: getProjectDataSource(c.p.id) };
+    });
+    r.put('/api/projects/:id/data-source', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const token = (req.headers.authorization ?? '').slice(7);
+      const input = { ...((req.body ?? {}) as any) };
+      if (input.mode !== 'none' && ['nl2sql_template', 'nl2sql_http'].includes(String(input.provider ?? '').toLowerCase())) {
+        input.config = { ...(input.config ?? {}) };
+        if (!String(input.config.scene ?? '').trim()) input.config.scene = evalSchemaName(c.p.id);
+      }
+      try {
+        const dataSource = await configureProjectDataSource({
+          projectId: c.p.id,
+          token,
+          input,
+          testConnection: options.dataSourceConnectionTester,
+          syncConnection: options.dataSourceConsumerSync,
+        });
+        setProjectStage(c.p.id, 'data_source');
+        return { dataSource };
+      } catch (e) {
+        return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    });
+
+    // ---- 节点 9 评测用例录入 ----
     r.get('/api/projects/:id/testcases', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -484,7 +524,9 @@ export async function registerRoutes(app: FastifyInstance) {
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const { question, groundTruth } = (req.body ?? {}) as any;
       if (!question) return reply.code(400).send({ error: 'question 必填' });
-      return { testcase: m3repo.addTestcase(c.p.id, question, groundTruth ?? '') };
+      const testcase = m3repo.addTestcase(c.p.id, question, groundTruth ?? '');
+      setProjectStage(c.p.id, 'testcases');
+      return { testcase };
     });
     r.post('/api/projects/:id/testcases/prefill', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -498,6 +540,7 @@ export async function registerRoutes(app: FastifyInstance) {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       m3repo.updateTestcase((req.params as any).tcId, (req.body ?? {}) as any);
+      setProjectStage(c.p.id, 'testcases');
       return { testcases: m3repo.listTestcases(c.p.id) };
     });
     r.delete('/api/projects/:id/testcases/:tcId', async (req, reply) => {
@@ -507,16 +550,13 @@ export async function registerRoutes(app: FastifyInstance) {
       return { testcases: m3repo.listTestcases(c.p.id) };
     });
 
-    // ---- 节点 9 评测运行 ----
+    // ---- 节点 10 评测运行 ----
     r.post('/api/projects/:id/evaluate', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const token = (req.headers.authorization ?? '').slice(7);
-      const { binding } = (req.body ?? {}) as any;
-      // scene 缺省 = 本项目评测库 schema（Excel 全量行自动落库的那个）
-      if (binding?.config && !binding.config.scene) binding.config.scene = evalSchemaName(c.p.id);
       try {
-        const { roundId } = startEvaluation({ projectId: c.p.id, token, tables: c.ctx.tables, binding });
+        const { roundId } = startEvaluation({ projectId: c.p.id, token, tables: c.ctx.tables });
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {
@@ -544,7 +584,7 @@ export async function registerRoutes(app: FastifyInstance) {
       return { result: res };
     });
 
-    // ---- 节点 10 优化建议与应用 ----
+    // ---- 节点 11 优化建议与应用 ----
     r.post('/api/projects/:id/optimize/propose', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });

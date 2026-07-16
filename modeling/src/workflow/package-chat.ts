@@ -2,9 +2,10 @@ import { Type } from '@earendil-works/pi-ai';
 import { getDb, nowIso } from '../db/index.js';
 import { buildLlm } from '../llm/provider.js';
 import { makeAgent, runAgent } from './agent.js';
+import { assertObjectDataMappings } from './data-mapping.js';
 import { checkCoverage } from './m2.js';
 import * as repo from './m2-repo.js';
-import type { PackageSpec, Project } from '../types.js';
+import type { DataDictTable, PackageSpec, Project } from '../types.js';
 
 // 知识包完善右栏的修缮 agent —— 两段式（采用 update-impact → user-confirm → update-apply）：
 // ① plan：只分析影响面（改哪些对象/操作、怎么改、风险），返回结构化计划等专家确认；咨询类直接文字回答；
@@ -81,7 +82,13 @@ export async function packageChatPlan(project: Project, history: ChatTurn[], mes
 }
 
 // ---- 阶段二：确认后应用 ----
-export async function packageChatApply(project: Project, history: ChatTurn[], message: string, plan: ChangePlan): Promise<ChatApplyResult> {
+export async function packageChatApply(
+  project: Project,
+  history: ChatTurn[],
+  message: string,
+  plan: ChangePlan,
+  tables: DataDictTable[],
+): Promise<ChatApplyResult> {
   const latest = repo.latestPackageVersion(project.id);
   if (!latest) throw new Error('尚未生成知识包');
 
@@ -104,6 +111,7 @@ export async function packageChatApply(project: Project, history: ChatTurn[], me
     '你是知识包修缮助手（package_chat_apply）。专家已确认修缮计划，请把计划逐条落实到规格上，',
     '用 submit_revised_spec 提交完整规格：未涉及的对象与操作原样保留，不得丢失；',
     'add 新增、modify 就地修改、remove 移除计划中指名的条目。',
+    '每个对象都必须声明 sourceTable，且只能逐字使用已上传 Excel 数据字典中的真实 Sheet 名；同一 Sheet 可以对应多个对象，每个对象字段必须通过 sourceColumn（缺省为字段 key）对应到该 Sheet 的真实列。',
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
 
@@ -146,6 +154,7 @@ export async function packageChatApply(project: Project, history: ChatTurn[], me
 
   const version = `1.${repo.listPackageVersions(project.id).length}.0`;
   const newSpec: PackageSpec = { ...spec, version, objects: cap.revised.objects, operations: cap.revised.operations };
+  assertObjectDataMappings(newSpec, tables);
   const selected = repo.listCompetency(project.id).filter((q) => q.selected).map((q) => q.question);
   repo.insertPackageVersion(project.id, version, newSpec, checkCoverage(newSpec, selected), `包修缮对话：${plan.summary.slice(0, 60)}`);
   const note = (cap as any).partialNote ? `\n${(cap as any).partialNote}` : '';
