@@ -9,6 +9,7 @@ import requests
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
 from integration.mcp.scope import MCPRequestScope
 
+from .paths import MCP_INTERNAL_CHAT_PATH
 from .schemas import error_result
 
 
@@ -57,7 +58,10 @@ def execute_chat_tool(
 
     try:
         response = requests.post(
-            "{}/agentic/internal/mcp/chat".format(cfg.agentic_base_url.rstrip("/")),
+            "{}{}".format(
+                cfg.agentic_base_url.rstrip("/"),
+                MCP_INTERNAL_CHAT_PATH,
+            ),
             headers=headers,
             json=request_payload,
             timeout=max(1, int(cfg.http_timeout_seconds)),
