@@ -509,6 +509,10 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, _FakeExecutionStore()),
     )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "test-workspace",
+    )
 
     response = client.get(
         "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(
@@ -528,6 +532,35 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
     assert response.headers["X-Tool-Output-Ref"] == artifact["output_ref"]
 
 
+def test_get_tool_output_rejects_invalid_workspace_before_store_lookup(
+    tmp_path,
+    monkeypatch,
+):
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    create_workspace("Demo", workspace_id="demo", set_as_default=True)
+    client, headers = _build_test_client(tmp_path)
+
+    def unexpected_store_lookup():
+        raise AssertionError("invalid workspace must be rejected before store lookup")
+
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        unexpected_store_lookup,
+    )
+    response = client.get(
+        "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(
+            "a" * 32
+        ),
+        headers={**headers, "X-Workspace-Id": "../invalid"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "detail": "工作空间 ID 格式非法：必须以英文小写字母开头，只能包含英文、数字、下划线(_)或中划线(-)",
+    }
+
+
 def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path)
     owner_store = ChatStore(str(tmp_path / "workspace-alpha"))
@@ -545,6 +578,10 @@ def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monk
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (foreign_workspace_store, _FakeExecutionStore()),
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "test-workspace",
     )
     foreign_response = client.get(
         "/agentic/sessions/shared-session/runs/owner-run/tool-outputs/{}".format(
