@@ -331,7 +331,7 @@ def test_chat_store_enforces_session_byte_and_count_quotas(tmp_path):
     assert count_limited.store_tool_output(count_session.id, "run-2", "call-2", "two") is None
 
 
-def test_chat_store_tool_output_follows_run_and_session_deletion_lifecycle(tmp_path):
+def test_chat_store_tool_output_follows_session_deletion_lifecycle(tmp_path):
     storage_dir = tmp_path / "chats"
     store = ChatStore(str(storage_dir))
     first = store.create_session(session_id="first-session")
@@ -341,7 +341,8 @@ def test_chat_store_tool_output_follows_run_and_session_deletion_lifecycle(tmp_p
     assert first_artifact is not None
     assert second_artifact is not None
 
-    assert store.delete_tool_outputs_for_run(first.id, "run-1") is True
+    assert store.delete_session(first.id) is True
+    assert not (storage_dir / first.id).exists()
     assert store.get_tool_output(first.id, "run-1", first_artifact["output_ref"]) is None
     assert store.get_tool_output(second.id, "run-2", second_artifact["output_ref"]) is not None
 

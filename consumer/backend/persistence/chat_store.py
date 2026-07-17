@@ -902,16 +902,6 @@ class _AppendOnlyChatStore:
             "response_content_type": response_content_type,
         }
 
-    def delete_tool_outputs_for_run(self, session_id: str, run_id: str) -> bool:
-        """Delete one run's outputs without affecting the rest of the session."""
-        normalized_session_id = validate_session_id(session_id)
-        with self._lock_for_session(normalized_session_id):
-            run_dir = self._tool_output_run_dir(normalized_session_id, run_id)
-            if not run_dir.is_dir():
-                return False
-            shutil.rmtree(run_dir)
-            return True
-
     def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get stored session history (TurnSummary list) for a session."""
         with self._lock_for_session(session_id):
@@ -1271,10 +1261,6 @@ class ChatStore:
     ) -> Optional[Dict[str, Any]]:
         """Return metadata and a path suitable for a streamed response."""
         return self._store.get_tool_output_file(session_id, run_id, output_ref)
-
-    def delete_tool_outputs_for_run(self, session_id: str, run_id: str) -> bool:
-        """Delete complete outputs for one run."""
-        return self._store.delete_tool_outputs_for_run(session_id, run_id)
 
     def compact_session(self, session_id: str) -> bool:
         """Fold append-only events into the compact snapshot."""
