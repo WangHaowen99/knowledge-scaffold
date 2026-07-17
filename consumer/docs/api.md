@@ -1701,7 +1701,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - `llm`
 - `llm_profiles`
-- `task_llm`
 - `storage`
 - `auth`
 - `agent`
@@ -1735,14 +1734,9 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "temperature": 0.7
   },
   "llm_profiles": {
-    "default_profile_id": "",
+    "default_main_profile_ref": null,
+    "default_task_profile_ref": null,
     "profiles": []
-  },
-  "task_llm": {
-    "base_url": "",
-    "model": "",
-    "has_api_key": false,
-    "timeout": 600
   },
   "storage": {
     "project_root": ".../.onto-runtime"
@@ -1777,6 +1771,22 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 }
 ```
 
+若持久化配置仍包含旧模型字段、明文 secret，或密文无法使用当前密钥和 context 解密，读取不会改写文件或回退到其他配置，而是返回 `409`：
+
+```json
+{
+  "code": "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED",
+  "detail": "系统配置包含明文 secret，需要先完成安全迁移"
+}
+```
+
+`code` 可能为：
+
+- `SYSTEM_CONFIG_MODEL_MIGRATION_REQUIRED`
+- `SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED`
+- `SYSTEM_CONFIG_SECRET_UNSAFE`
+- `SYSTEM_CONFIG_INVALID`
+
 ### 8.2 `GET /api/system-config/readiness`
 
 返回系统运行前置配置是否就绪。所有已认证用户都可查看。
@@ -1803,6 +1813,8 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `ready` | bool | 模型配置是否满足运行前置条件 |
 | `model.ready` | bool | 是否存在可用模型 profile |
 | `model.missing_fields` | array | 模型侧缺失字段 |
+
+持久化配置不可安全读取时，本接口返回与 `GET /api/system-config` 相同的 `409` 错误契约。
 
 ### 8.3 `GET /api/system-config/template` (`admin`)
 
@@ -1848,11 +1860,10 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 说明：
 
-- `section` 仅支持：`llm | llm_profiles | task_llm | storage | auth | agent | memory | web_search`
+- `section` 仅支持：`llm | llm_profiles | storage | auth | agent | memory | web_search | direct_execution | skill_evolution`
 - `data` 必须为对象
 - secret 清空不能直接传空字符串，需使用对应清除字段：
   - `llm.clear_api_key`
-  - `task_llm.clear_api_key`
   - `web_search.clear_api_key`
 - 配置保存后会尝试刷新运行时依赖；若保存成功但刷新失败，会返回 `500`
 - `llm_profiles` 为多模型配置 section，对话时实际优先使用它，而不是旧版单模型 `llm`
@@ -1893,7 +1904,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - 至少需要包含一个合法 section
 - 不支持未知 section
-- 导入时可包含旧版 `llm` section；运行时会内部兼容迁移，但不会对外暴露兼容模型概念
+- 导入时可包含 `llm` section；`task_llm` 与 `llm_profiles.default_profile_id` 不属于可写入格式
 
 ### 8.6 `POST /api/system-config/test` (`admin`)
 
@@ -1925,7 +1936,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 测试行为：
 
-- `llm` / `task_llm`：测试 OpenAI 兼容 `chat/completions`
+- `llm`：测试 OpenAI 兼容 `chat/completions`
 - `llm_profiles`：测试指定模型 profile（若请求里带 `profile_id`）或默认模型 profile
 - `storage` / `auth` / `agent`：仅做配置校验，返回 `配置校验通过`
 
@@ -1948,7 +1959,8 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `default_profile_id` | string | 默认模型 profile id；为空表示尚未配置默认模型 |
+| `default_main_profile_ref` | object \| null | 默认主模型引用，格式为 `{ "scope": "global", "id": "..." }` |
+| `default_task_profile_ref` | object \| null | 默认轻量模型引用；为空时沿用主模型 |
 | `profiles` | array | 多模型配置列表 |
 
 `profiles[]` 字段：
@@ -1965,15 +1977,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `max_tokens` | int | 默认最大 tokens |
 | `temperature` | float | 采样温度 |
 | `enabled` | bool | 是否启用 |
-
-#### `task_llm`
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `base_url` | string | 轻量任务模型 API 基地址 |
-| `model` | string | 轻量任务模型名称 |
-| `api_key` | secret | 密钥 |
-| `timeout` | int | 超时秒数 |
 
 #### `storage`
 

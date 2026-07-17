@@ -7,8 +7,8 @@ saved system config > environment variables > built-in defaults.
 from __future__ import annotations
 
 import json
-import logging
 import os
+import stat
 import uuid
 from pathlib import Path
 from threading import Lock
@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 import requests
 
 from config.ops_config import load_ops_config
-from utils.security.secrets import decrypt_secret, encrypt_secret, is_encrypted_secret
+from utils.security.secrets import (
+    SecretEncryptionError,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted_secret,
+)
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +195,14 @@ class SystemConfigValidationError(ValueError):
     """Raised when system configuration payload is invalid."""
 
 
+class SystemConfigReadError(RuntimeError):
+    """Sanitized persisted-config error that must never trigger fallback."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(detail)
+
+
 def _coerce_string(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
@@ -250,9 +263,34 @@ def _coerce_llm_provider(value: Any) -> str:
 
 
 def _read_json_document(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        raw = json.load(f)
-    return raw if isinstance(raw, dict) else {}
+    if path.is_symlink():
+        raise SystemConfigReadError(
+            "SYSTEM_CONFIG_INVALID",
+            "系统配置文件无效，请修复配置后重试",
+        )
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("system config is not a regular file")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = None
+            raw = json.load(stream)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemConfigReadError(
+            "SYSTEM_CONFIG_INVALID",
+            "系统配置文件无效，请修复配置后重试",
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if not isinstance(raw, dict):
+        raise SystemConfigReadError(
+            "SYSTEM_CONFIG_INVALID",
+            "系统配置文件必须是 JSON object",
+        )
+    return raw
 
 
 def _is_plaintext_secret_value(value: Any) -> bool:
@@ -302,9 +340,7 @@ def _document_has_plaintext_secrets(document: dict[str, Any]) -> bool:
 
 
 def _document_has_legacy_model_fields(document: dict[str, Any]) -> bool:
-    """DEPRECATED: detect pre-unification model config fields slated for removal."""
-    task_section = document.get("task_llm")
-    if isinstance(task_section, dict) and _is_llm_configured(task_section):
+    if "task_llm" in document:
         return True
     profiles_section = document.get(_LLM_PROFILES_SECTION)
     if isinstance(profiles_section, dict) and "default_profile_id" in profiles_section:
@@ -312,92 +348,175 @@ def _document_has_legacy_model_fields(document: dict[str, Any]) -> bool:
     return False
 
 
-def _migrate_legacy_model_fields_unlocked(document: dict[str, Any]) -> None:
-    """DEPRECATED: migrate legacy task_llm section / default_profile_id to profile refs.
+def _validate_persisted_field_type(field_spec: dict[str, Any], value: Any) -> bool:
+    field_type = field_spec.get("type")
+    if field_type in {"str", "secret"}:
+        return isinstance(value, str)
+    if field_type == "bool":
+        return isinstance(value, bool)
+    if field_type == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if field_type == "float":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
 
-    Planned for removal next release. Runs once on read; the rewritten document drops
-    task_llm (no longer in SECTION_KEYS) and renames default_profile_id to default_main_profile_ref.
-    task_llm with real connection becomes a global profile bound as default_task_profile_ref.
-    """
-    from config.model_profile_refs import ModelProfileRef, model_profile_ref_to_dict
 
-    llm_profiles_section = dict(document.get(_LLM_PROFILES_SECTION) or {})
-    profiles = list(llm_profiles_section.get("profiles") or [])
-
-    main_llm = document.get("llm")
-    if isinstance(main_llm, dict) and _is_llm_configured(main_llm) and not profiles:
-        main_llm_plain = dict(main_llm)
-        main_llm_plain["api_key"] = decrypt_secret(
-            _coerce_string(main_llm.get("api_key")), context="llm.api_key"
-        )
-        main_profile = _legacy_llm_profile(main_llm_plain)
-        profiles.append(main_profile)
-        if not llm_profiles_section.get("default_main_profile_ref"):
-            llm_profiles_section["default_main_profile_ref"] = model_profile_ref_to_dict(
-                ModelProfileRef(scope="global", id=main_profile["id"])
+def _validate_persisted_fields(
+    specs: dict[str, Any],
+    values: dict[str, Any],
+) -> None:
+    for field_name, field_spec in specs.items():
+        if field_name not in values:
+            continue
+        value = values[field_name]
+        if isinstance(field_spec, dict) and "type" not in field_spec:
+            if not isinstance(value, dict):
+                raise SystemConfigReadError(
+                    "SYSTEM_CONFIG_INVALID",
+                    "系统配置字段类型无效",
+                )
+            _validate_persisted_fields(field_spec, value)
+            continue
+        if not _validate_persisted_field_type(field_spec, value):
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "系统配置字段类型无效",
             )
 
-    task_section = document.get("task_llm")
-    if isinstance(task_section, dict) and _is_llm_configured(task_section):
-        task_profile = dict(_LLM_PROFILE_DEFAULTS)
-        task_profile.update(
-            {
-                "id": _generate_profile_id("model"),
-                "name": "轻量模型",
-                "provider": "openai_compatible",
-                "base_url": _coerce_string(task_section.get("base_url")),
-                "model": _coerce_string(task_section.get("model")),
-                "api_key": decrypt_secret(
-                    _coerce_string(task_section.get("api_key")), context="task_llm.api_key"
-                ),
-                "timeout": int(task_section.get("timeout") or _LLM_PROFILE_DEFAULTS["timeout"]),
-                "max_tokens": _LLM_PROFILE_DEFAULTS["max_tokens"],
-                "temperature": _LLM_PROFILE_DEFAULTS["temperature"],
-                "enabled": True,
-            }
-        )
-        if not any(profile.get("id") == task_profile["id"] for profile in profiles):
-            profiles.append(task_profile)
-        llm_profiles_section["default_task_profile_ref"] = model_profile_ref_to_dict(
-            ModelProfileRef(scope="global", id=task_profile["id"])
-        )
 
-    old_default_id = _coerce_string(llm_profiles_section.get("default_profile_id"))
-    if old_default_id:
-        llm_profiles_section["default_main_profile_ref"] = model_profile_ref_to_dict(
-            ModelProfileRef(scope="global", id=old_default_id)
-        )
-    llm_profiles_section.pop("default_profile_id", None)
-    llm_profiles_section["profiles"] = profiles
+def _validate_persisted_profiles(section: dict[str, Any]) -> None:
+    from config.model_profile_refs import parse_model_profile_ref
 
-    raw_config = {
-        section_key: dict(document.get(section_key) or {})
-        for section_key in SECTION_KEYS
-    }
-    raw_config[_LLM_PROFILES_SECTION] = llm_profiles_section
-    _write_config_document_unlocked(
-        raw_config,
-        source_document=document,
-        drop_top_level_keys={"task_llm"},
-    )
-    logging.getLogger(__name__).warning(
-        "Migrated legacy task_llm / default_profile_id to unified profile refs"
-    )
+    profiles = section.get("profiles", [])
+    if not isinstance(profiles, list):
+        raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profiles 必须是数组")
+    profile_ids: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile 必须是 object")
+        profile_id = profile.get("id")
+        if not isinstance(profile_id, str) or not profile_id.strip():
+            raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile id 无效")
+        normalized_id = profile_id.strip()
+        if normalized_id in profile_ids:
+            raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile id 重复")
+        profile_ids.add(normalized_id)
+        for field_name, default in _LLM_PROFILE_DEFAULTS.items():
+            if field_name not in profile:
+                continue
+            value = profile[field_name]
+            if isinstance(default, bool):
+                valid = isinstance(value, bool)
+            elif isinstance(default, int):
+                valid = isinstance(value, int) and not isinstance(value, bool)
+            elif isinstance(default, float):
+                valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+            else:
+                valid = isinstance(value, str)
+            if not valid:
+                raise SystemConfigReadError(
+                    "SYSTEM_CONFIG_INVALID",
+                    "模型 profile 字段类型无效",
+                )
+    for field_name in ("default_main_profile_ref", "default_task_profile_ref"):
+        if field_name not in section or section[field_name] is None:
+            continue
+        value = section[field_name]
+        if not isinstance(value, dict):
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "模型 profile ref 必须是 object",
+            )
+        try:
+            parsed = parse_model_profile_ref(value)
+        except ValueError as exc:
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "模型 profile ref 无效",
+            ) from exc
+        if parsed is None or parsed.scope != "global" or parsed.id not in profile_ids:
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "模型 profile ref 指向的目标无效",
+            )
+
+
+def _validate_persisted_document(document: dict[str, Any]) -> None:
+    for section in SECTION_KEYS:
+        if section not in document:
+            continue
+        section_value = document[section]
+        if not isinstance(section_value, dict):
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "系统配置 section 必须是 object",
+            )
+        if section == _LLM_PROFILES_SECTION:
+            _validate_persisted_profiles(section_value)
+        else:
+            _validate_persisted_fields(_SECTION_FIELDS[section], section_value)
+
+
+def _validate_encrypted_secrets(document: dict[str, Any]) -> None:
+    def validate_recursive(
+        specs: dict[str, Any],
+        values: dict[str, Any],
+        path: list[str],
+    ) -> None:
+        for field_name, field_spec in specs.items():
+            if field_name not in values:
+                continue
+            current_path = [*path, field_name]
+            value = values[field_name]
+            if isinstance(field_spec, dict) and "type" not in field_spec:
+                validate_recursive(field_spec, value, current_path)
+                continue
+            if field_spec.get("type") != "secret" or not value:
+                continue
+            decrypt_secret(
+                value,
+                context=_secret_context(current_path),
+                allow_key_creation=False,
+            )
+
+    try:
+        for section in SECTION_KEYS:
+            section_value = document.get(section)
+            if not isinstance(section_value, dict):
+                continue
+            if section == _LLM_PROFILES_SECTION:
+                for profile in section_value.get("profiles", []):
+                    value = profile.get("api_key", "")
+                    if value:
+                        decrypt_secret(
+                            value,
+                            context="llm_profiles.profiles.api_key",
+                            allow_key_creation=False,
+                        )
+                continue
+            validate_recursive(_SECTION_FIELDS[section], section_value, [section])
+    except SecretEncryptionError as exc:
+        raise SystemConfigReadError(
+            "SYSTEM_CONFIG_SECRET_UNSAFE",
+            "系统配置 secret 不安全或无法解密，请检查加密密钥",
+        ) from exc
 
 
 def _read_config_document_unlocked() -> dict[str, Any]:
-    if CONFIG_PATH.exists():
+    if CONFIG_PATH.exists() or CONFIG_PATH.is_symlink():
         document = _read_json_document(CONFIG_PATH)
+        _validate_persisted_document(document)
         if _document_has_legacy_model_fields(document):
-            _migrate_legacy_model_fields_unlocked(document)
-            document = _read_json_document(CONFIG_PATH)
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_MODEL_MIGRATION_REQUIRED",
+                "系统模型配置需要先完成迁移",
+            )
         if _document_has_plaintext_secrets(document):
-            raw_config = {
-                section_key: dict(document.get(section_key) or {})
-                for section_key in SECTION_KEYS
-            }
-            _write_config_document_unlocked(raw_config, source_document=document)
-            return _read_json_document(CONFIG_PATH)
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED",
+                "系统配置包含明文 secret，需要先完成安全迁移",
+            )
+        _validate_encrypted_secrets(document)
         return document
     return {}
 
@@ -431,7 +550,11 @@ def _secret_context(path: list[str]) -> str:
 
 
 def _coerce_secret_value(value: Any, *, path: list[str]) -> str:
-    return decrypt_secret(_coerce_string(value), context=_secret_context(path))
+    return decrypt_secret(
+        _coerce_string(value),
+        context=_secret_context(path),
+        allow_key_creation=False,
+    )
 
 
 def _coerce_section_value(
@@ -708,9 +831,6 @@ def _normalize_llm_profiles_section(
                 raise SystemConfigValidationError("llm_profiles.profiles 中存在重复 id: {}".format(profile["id"]))
             seen_ids.add(profile["id"])
             profiles.append(profile)
-        if not profiles:
-            raise SystemConfigValidationError("llm_profiles.profiles 至少需要一个模型")
-
     profile_ids = {profile["id"] for profile in profiles}
     max_profiles = max(1, int(load_ops_config()["limits"]["model_profile_max_count"]))
     if len(profiles) > max_profiles:

@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from flask import Flask
 
 from api.routes.system_config import system_config_bp
@@ -56,6 +59,59 @@ def test_get_system_config_hides_secrets(tmp_path, monkeypatch):
     assert payload["web_search"]["provider"] == "tavily"
     assert payload["web_search"]["has_api_key"] is False
     assert "api_key" not in payload["web_search"]
+
+
+def test_get_readiness_and_template_leave_config_tree_unchanged(tmp_path, monkeypatch):
+    client, headers = _build_client(tmp_path, monkeypatch)
+    response = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm",
+            "data": {
+                "base_url": "https://example.com/v1",
+                "model": "test-model",
+                "api_key": "read-only-api-secret",
+            },
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(tmp_path.rglob("*"))
+            if path.is_file()
+        }
+
+    before = snapshot()
+    assert client.get("/api/system-config", headers=headers).status_code == 200
+    assert client.get("/api/system-config/readiness", headers=headers).status_code == 200
+    assert client.get("/api/system-config/template", headers=headers).status_code == 200
+    assert snapshot() == before
+
+
+def test_get_system_config_returns_sanitized_migration_required_error(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_client(tmp_path, monkeypatch)
+    config_path = tmp_path / "config" / "system_config.json"
+    config_path.write_text(
+        json.dumps({"llm": {"api_key": "plaintext-api-secret"}}),
+        encoding="utf-8",
+    )
+    original = config_path.read_bytes()
+
+    response = client.get("/api/system-config", headers=headers)
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "code": "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED",
+        "detail": "系统配置包含明文 secret，需要先完成安全迁移",
+    }
+    assert "plaintext-api-secret" not in response.get_data(as_text=True)
+    assert config_path.read_bytes() == original
 
 
 def test_get_system_config_readiness_is_available_to_authenticated_users(tmp_path, monkeypatch):
