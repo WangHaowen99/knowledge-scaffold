@@ -194,6 +194,29 @@ test('business data exposes progress and parsed structured output', () => {
   assert.deepEqual(structured.parsedOutput, { columns: ['cost'], rows: [[3000]], total: 1 });
 });
 
+test('business data progress omits empty entries and keeps provider errors', () => {
+  const block = buildConversationViewModel([{
+    ...assistantMessage,
+    streamSegments: [{
+      ...assistantMessage.streamSegments[1],
+      state: 'completed',
+      meta: {
+        ...assistantMessage.streamSegments[1].meta,
+        output_preview: '',
+        db_events: [
+          { type: 'start', content: '', seq: 1, ts: 1200 },
+          { type: 'error', content: 'MindsDB request failed', seq: 2, ts: 1210 },
+        ],
+      },
+    }],
+  }]).turns[0].blocks[0];
+
+  assert.equal(block.status, 'error');
+  assert.equal(block.error, 'MindsDB request failed');
+  assert.deepEqual(block.progress.map((event) => event.type), ['error']);
+  assert.equal(block.progress[0].text, 'MindsDB request failed');
+});
+
 test('raw envelopes hydrate into the same ordered conversation model', () => {
   const envelope = (type, payload, seq, ts) => ({
     protocol: AGENT_STREAM_PROTOCOL,
