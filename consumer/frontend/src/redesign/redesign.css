@@ -926,6 +926,9 @@ html[data-mwr-mode='dark'] .mwr {
   --text-primary: #edf1f7; --text-secondary: #b9c2cf; --text-tertiary: #8f9aaa;
   --border-default: #303947; --border-subtle: #252e3a;
   --color-primary-soft: color-mix(in srgb, var(--color-primary) 24%, #151b24);
+  --status-success-bg: color-mix(in srgb, #16845b 18%, var(--surface-card)); --status-success-fg: #73d7ae;
+  --status-warning-bg: color-mix(in srgb, #b77909 18%, var(--surface-card)); --status-warning-fg: #e7c36c;
+  --status-error-bg: color-mix(in srgb, #c53d4b 18%, var(--surface-card)); --status-error-fg: #ff9daa;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .25); --shadow-md: 0 16px 40px rgba(0, 0, 0, .34);
   color-scheme: dark;
 }

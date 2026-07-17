@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { Children, cloneElement, isValidElement, useEffect, useId, useRef } from 'react';
 
 export function PageHeader({ title, description, actions, eyebrow }) {
   return (
@@ -31,13 +31,26 @@ export function SectionCard({ title, description, actions, children, className =
 }
 
 export function FieldRow({ label, hint, children, className = '' }) {
+  const labelId = useId();
+  const hintId = useId();
+  const labelledChildren = Children.map(children, (child) => {
+    if (!isValidElement(child) || child.props['aria-label'] || child.props['aria-labelledby']) return child;
+    const isNativeControl = typeof child.type === 'string'
+      && ['input', 'select', 'textarea', 'button'].includes(child.type);
+    const isCustomControl = typeof child.type === 'function';
+    if (!isNativeControl && !isCustomControl) return child;
+    return cloneElement(child, {
+      'aria-labelledby': labelId,
+      ...(hint ? { 'aria-describedby': hintId } : {}),
+    });
+  });
   return (
     <div className={`fieldrow ${className}`.trim()}>
       <div className="fl">
-        <div className="n">{label}</div>
-        {hint && <div className="h">{hint}</div>}
+        <div className="n" id={labelId}>{label}</div>
+        {hint && <div className="h" id={hintId}>{hint}</div>}
       </div>
-      {children}
+      {labelledChildren}
     </div>
   );
 }

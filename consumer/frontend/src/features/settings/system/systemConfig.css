@@ -1,0 +1,280 @@
+.mwr .system-config-transfer-actions,
+.mwr .system-config-module-actions,
+.mwr .system-config-module-actions > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mwr .system-settings-panel {
+  min-width: 0;
+}
+
+.mwr .system-settings-section-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  margin: 2px 0 16px;
+  padding: 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-subtle);
+  scrollbar-width: thin;
+}
+
+.mwr .system-settings-section-tabs button {
+  flex: none;
+  min-height: 34px;
+  padding: 6px 11px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.mwr .system-settings-section-tabs button:hover {
+  color: var(--ink);
+  background: var(--surface-card);
+}
+
+.mwr .system-settings-section-tabs button.on {
+  color: var(--blue-d);
+  background: var(--surface-card);
+  border-color: color-mix(in srgb, var(--blue) 34%, var(--border-default));
+  box-shadow: var(--shadow-sm);
+}
+
+.mwr .system-config-fields .fieldrow input[type='text'],
+.mwr .system-config-fields .fieldrow input[type='password'],
+.mwr .system-config-fields .fieldrow input[type='number'],
+.mwr .system-config-fields .fieldrow select {
+  width: 100%;
+  max-width: 520px;
+  color: var(--ink);
+  background: var(--surface-card);
+  border-color: var(--border-default);
+}
+
+.mwr .system-config-fields .fieldrow input:disabled,
+.mwr .system-config-fields .fieldrow select:disabled {
+  color: var(--muted);
+  background: var(--surface-subtle);
+}
+
+.mwr .system-config-input-wrap {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.mwr .system-config-input-wrap > input {
+  flex: 1;
+}
+
+.mwr .system-config-toggle,
+.mwr .system-config-clear-secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink2);
+  font-size: 12.5px;
+}
+
+.mwr .system-config-toggle input,
+.mwr .system-config-clear-secret input {
+  accent-color: var(--blue);
+}
+
+.mwr .system-config-clear-secret {
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.mwr .system-config-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--crit);
+  font-size: 13px;
+}
+
+.mwr .system-config-file-input {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mwr .system-config-transfer-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.mwr .system-config-readonly {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  color: color-mix(in srgb, var(--warn) 72%, var(--ink));
+  background: color-mix(in srgb, var(--warn) 9%, var(--surface-card));
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border-default));
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+}
+
+.mwr .system-config-feedback {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--ink2);
+  background: var(--surface-subtle);
+  font-size: 12.5px;
+}
+
+.mwr .system-config-feedback.success {
+  color: color-mix(in srgb, var(--good) 74%, var(--ink));
+  border-color: color-mix(in srgb, var(--good) 34%, var(--border-default));
+  background: color-mix(in srgb, var(--good) 9%, var(--surface-card));
+}
+
+.mwr .system-config-feedback.error {
+  color: color-mix(in srgb, var(--crit) 78%, var(--ink));
+  border-color: color-mix(in srgb, var(--crit) 34%, var(--border-default));
+  background: color-mix(in srgb, var(--crit) 8%, var(--surface-card));
+}
+
+.mwr .system-config-feedback time {
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.mwr .system-config-module-actions {
+  justify-content: space-between;
+  margin: 18px -24px -22px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-card) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.mwr .system-config-dirty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mwr .system-config-import-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 12px;
+  color: var(--ink2);
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--border-default));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface-card));
+}
+
+.mwr .system-config-import-summary strong {
+  color: var(--ink);
+}
+
+.mwr .system-config-import-note {
+  margin-top: 9px;
+  padding: 8px 10px;
+  color: var(--muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  font-size: 12px;
+}
+
+.mwr .system-config-overwrite-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 16px 0 12px;
+  color: var(--ink2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mwr .system-config-overwrite-confirm input {
+  flex: none;
+  margin-top: 3px;
+  accent-color: var(--blue);
+}
+
+.mwr .system-config-json-preview {
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.mwr .system-config-json-preview summary {
+  padding: 9px 11px;
+  color: var(--ink2);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.mwr .system-config-json-preview pre {
+  max-height: min(380px, 42vh);
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  color: var(--ink2);
+  background: var(--surface-card);
+  border-top: 1px solid var(--border-subtle);
+  font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .mwr .system-config-transfer .ui-section-head,
+  .mwr .system-config-module-actions,
+  .mwr .system-config-feedback {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mwr .system-config-transfer-actions,
+  .mwr .system-config-module-actions > div {
+    width: 100%;
+  }
+
+  .mwr .system-config-transfer-actions .btn,
+  .mwr .system-config-module-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .mwr .system-config-input-wrap,
+  .mwr .system-config-load-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mwr .system-config-clear-secret {
+    align-self: flex-start;
+  }
+}
