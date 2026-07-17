@@ -173,10 +173,19 @@ Current commands for the consumer application:
 - Install frontend dependencies: `cd consumer/frontend && npm install`
 - Start frontend development server: `cd consumer/frontend && npm run dev`
 - Run backend tests: `cd consumer && PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests`
-- Run frontend lint/build: `cd consumer/frontend && npm run lint && npm run build`
+- Run frontend checks: `cd consumer/frontend && npm run lint && npm test && npm run build`
+- Check the frontend entry dependency baseline: `cd consumer/frontend && npm run check:entry`
 - Run full-stack Docker Compose: `cd consumer && docker compose up --build`
 
 After initializing the project, Claude must update this section with real commands.
+
+### 8.1 Consumer 前端收敛约束
+
+- `consumer/frontend/src/main.jsx` 是唯一生产入口。
+- `consumer/frontend/src/App.jsx` 及其专属页面已冻结，不再增加功能或修复。
+- 旧能力迁入当前入口时，替代实现、测试和对应旧文件删除必须在同一变更中完成。
+- 不得通过注释、环境变量或手工切换 import 保留第二套生产前端。
+- 新增生产 JS/JSX 文件必须进入 `main.jsx` 可达依赖树，或同步登记到入口基线并说明迁移责任。
 
 ## 9. Dependency Rules
 

@@ -3,6 +3,11 @@ import { Activity, ArrowUpRight, BrainCircuit, Check, ChevronDown, Circle, GitBr
 import useAgenticStream from '../hooks/useAgenticStream';
 import { authFetch } from '../utils/auth';
 import { getWorkspaceAgentMode, normalizeAgentMode } from '../utils/workspacePreferences';
+import {
+  isSessionResumableStatus,
+  isSessionWaitingForUserStatus,
+  resolveSessionPreferences,
+} from '../utils/sessionModel';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
 import { formatTime, truncate } from './chatUtils';
@@ -209,7 +214,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
       const message = messages[index];
       if (
         message?.role === 'assistant'
-        && ['awaiting', 'awaiting_input'].includes(message.status)
+        && isSessionWaitingForUserStatus(message.status)
         && message.interaction?.id
       ) return message.interaction;
     }
@@ -249,11 +254,18 @@ export default function ChatWorkspace({ chat, streamManager }) {
   useEffect(() => {
     const metadata = current?.metadata || {};
     const timer = setTimeout(() => {
-      setAgentMode(normalizeAgentMode(metadata.agent_mode || safeLocalGet(agentModeKey) || 'quick'));
-      setModelProfileId(metadata.model_profile_id || safeLocalGet(`mw_ws_model_${workspaceId}`) || defaultModelProfileId);
-      setSelectedOntologyId(currentChatId
-        ? safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`)
-        : '');
+      const preferences = resolveSessionPreferences({
+        metadata,
+        storedAgentMode: safeLocalGet(agentModeKey),
+        storedModelProfileId: safeLocalGet(`mw_ws_model_${workspaceId}`),
+        storedOntologyId: currentChatId
+          ? safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`)
+          : '',
+        defaultModelProfileId,
+      });
+      setAgentMode(preferences.agentMode);
+      setModelProfileId(preferences.modelProfileId);
+      setSelectedOntologyId(preferences.selectedOntologyId);
     }, 0);
     return () => clearTimeout(timer);
   }, [agentModeKey, current?.metadata, currentChatId, defaultModelProfileId, workspaceId]);
@@ -261,7 +273,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
   useEffect(() => {
     const runId = String(current?.active_run_id || '').trim();
     const status = String(current?.active_run_status || '').trim();
-    if (!runId || !['queued', 'running'].includes(status)) return;
+    if (!runId || !isSessionResumableStatus(status)) return;
     const resumeKey = `${currentChatId}:${runId}`;
     if (resumedRunsRef.current.has(resumeKey)) return;
     resumedRunsRef.current.add(resumeKey);
@@ -274,6 +286,10 @@ export default function ChatWorkspace({ chat, streamManager }) {
       if (!resumed) resumedRunsRef.current.delete(resumeKey);
     });
   }, [current?.active_run_id, current?.active_run_status, current?.last_seq, currentChatId, resumeAgentic]);
+
+  useEffect(() => {
+    resumedRunsRef.current = new Set();
+  }, [workspaceId]);
 
   const send = async () => {
     const text = input.trim();

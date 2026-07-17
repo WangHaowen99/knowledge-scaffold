@@ -18,6 +18,12 @@ import {
   classifyEnvelope,
   normalizeSequence,
 } from '../utils/streamResume';
+import {
+  streamStatusForAdmission,
+  streamStatusForConnection,
+  streamStatusForError,
+  streamStatusForTerminal,
+} from '../utils/streamLifecycle';
 
 const logger = createLogger('StreamManager');
 const QUEUE_POLL_INTERVAL_MS = 600;
@@ -45,13 +51,6 @@ const waitForDelay = (delayMs, signal) => new Promise((resolve, reject) => {
   }, delayMs);
   signal?.addEventListener('abort', onAbort, { once: true });
 });
-
-const terminalStreamStatus = (status) => {
-  if (status === 'awaiting_input') return 'awaiting';
-  if (status === 'cancelled') return 'cancelled';
-  if (status === 'error' || status === 'failed') return 'error';
-  return 'finished';
-};
 
 /**
  * Parse SSE message from raw text chunk.
@@ -382,7 +381,7 @@ const useStreamManager = () => {
 
       updateStreamState(sessionId, {
         isLoading: true,
-        status: reconnectAttempts ? 'reconnecting' : 'streaming',
+        status: streamStatusForConnection(reconnectAttempts),
         runId: meta.runId,
         cursor: meta.lastSeq,
         queue: null,
@@ -492,7 +491,7 @@ const useStreamManager = () => {
         streamMetaRef.current.set(sessionId, meta);
         updateStreamState(sessionId, {
           isLoading: true,
-          status: meta.runStatus === 'queued' ? 'queued' : 'reconnecting',
+          status: streamStatusForAdmission(meta.runStatus),
           runId: meta.runId,
           queue: meta.queue,
         });
@@ -510,7 +509,7 @@ const useStreamManager = () => {
 
       if (result.superseded) return;
       if (onComplete) onComplete();
-      cleanupStream(sessionId, streamToken, terminalStreamStatus(result.terminalStatus));
+      cleanupStream(sessionId, streamToken, streamStatusForTerminal(result.terminalStatus));
     } catch (error) {
       if (error.name === 'AbortError') {
         logger.info('Stream aborted by user', { sessionId });
@@ -519,7 +518,7 @@ const useStreamManager = () => {
         logger.error('Stream error', { sessionId, error: error.message });
         if (onError) onError(error, false);
       }
-      cleanupStream(sessionId, streamToken, error.name === 'AbortError' ? 'cancelled' : 'error');
+      cleanupStream(sessionId, streamToken, streamStatusForError(error));
     }
   }, [cleanupStream, followRun, processStream, updateStreamState]);
 
@@ -556,14 +555,14 @@ const useStreamManager = () => {
       runId,
       cursor,
       isLoading: true,
-      status: status === 'queued' ? 'queued' : 'reconnecting',
+      status: streamStatusForAdmission(status),
     });
 
     try {
       const result = await followRun(sessionId, streamToken, onEvent);
       if (result.superseded) return true;
       if (onComplete) onComplete();
-      cleanupStream(sessionId, streamToken, terminalStreamStatus(result.terminalStatus));
+      cleanupStream(sessionId, streamToken, streamStatusForTerminal(result.terminalStatus));
       return true;
     } catch (error) {
       if (error.name === 'AbortError') {
@@ -572,7 +571,7 @@ const useStreamManager = () => {
         logger.error('Failed to resume run event stream', { sessionId, runId, error: error.message });
         if (onError) onError(error, false);
       }
-      cleanupStream(sessionId, streamToken, error.name === 'AbortError' ? 'cancelled' : 'error');
+      cleanupStream(sessionId, streamToken, streamStatusForError(error));
       return false;
     }
   }, [cleanupStream, followRun, updateStreamState]);

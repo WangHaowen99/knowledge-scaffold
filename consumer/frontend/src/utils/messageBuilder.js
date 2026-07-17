@@ -2,13 +2,13 @@
  * Utility for building chat messages from stored events.
  */
 
-import createLogger from './logger';
+import createLogger from './logger.js';
 import {
   AGENT_STREAM_EVENT,
   applyAgentV2Event,
   closeOpenSegment,
   isAgentV2Envelope,
-} from './streamHelpers';
+} from './streamHelpers.js';
 
 const logger = createLogger('MessageBuilder');
 
@@ -113,6 +113,7 @@ export const historyToMessages = (history = []) => {
       id: item?.id || `hist-${idx}`,
       role: item?.role,
       content: item?.content,
+      metadata,
       ...(runId ? { runId } : {}),
       ...(status ? { status } : {}),
     };
