@@ -315,11 +315,8 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
             scope_events.append(("exit", workspace_id))
 
     class FakeRegistry:
-        refresh_count = 0
-
         def refresh(self):
-            assert active_workspaces == ["alpha"]
-            self.refresh_count += 1
+            raise AssertionError("session creation must use the maintained registry cache")
 
         def get_ontology(self, ontology_id):
             assert active_workspaces == ["alpha"]
@@ -340,7 +337,6 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
     assert response.status_code == 201
     assert response.get_json()["metadata"]["selected_ontology_id"] == "demo-ontology"
     assert chat_store.created_sessions[0]["metadata"]["selected_ontology_id"] == "demo-ontology"
-    assert registry.refresh_count == 1
     assert scope_events == [("enter", "alpha"), ("exit", "alpha")]
 
 

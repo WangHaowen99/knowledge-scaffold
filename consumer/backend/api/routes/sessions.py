@@ -59,7 +59,6 @@ def _resolve_selected_ontology_id(value, *, workspace_id: str):
 
     with workspace_scope(workspace_id):
         registry = get_ontology_registry()
-        registry.refresh()
         ontology = registry.get_ontology(selected_ontology_id)
 
     if ontology is None:
