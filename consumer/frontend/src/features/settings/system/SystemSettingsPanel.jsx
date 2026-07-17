@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { FieldRow, SectionCard } from '../../../redesign/ui';
+import { FieldRow, SectionCard } from '../../../shared/ui/primitives';
 import { loadSystemConfig } from './api';
 import {
   buildSystemConfigSectionPayload,

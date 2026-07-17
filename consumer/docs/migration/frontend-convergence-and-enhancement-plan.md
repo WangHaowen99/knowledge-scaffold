@@ -8,17 +8,17 @@
 - 目标分支基线：`develop@4f327be096376eb73c99c254994a9fd7c0d9a640`
 - 对照仓库：`onto-agent`
 - 对照分支基线：`origin/main@d1b6683ce3ea4246b6776f26d4680ab9b2d4888e`
-- 文档状态：执行方案
-- 更新日期：2026-07-15
+- 文档状态：阶段 0—5 实施、自动门禁、受控本地浏览器功能/UI 与写路径、页面加载性能复测已完成；真实外部模型、业务数据库及 Evolution 成功链路待联调环境验收
+- 更新日期：2026-07-16
 
-## 2. 背景
+## 2. 实施前背景
 
-Consumer 前端当前存在两套页面实现：
+阶段 0 启动时，Consumer 前端存在两套页面实现：
 
 - `consumer/frontend/src/App.jsx` 及 `src/components/**` 组成的历史前端。
 - `consumer/frontend/src/redesign/**` 组成的当前运行前端。
 
-`consumer/frontend/src/main.jsx` 只挂载 `RedesignApp`，历史 `App.jsx` 不参与默认运行。当前运行前端仍复用部分历史目录中的 hooks、utils 和组件，例如：
+当时 `consumer/frontend/src/main.jsx` 只挂载 `RedesignApp`，历史 `App.jsx` 不参与默认运行。运行前端仍复用部分历史目录中的 hooks、utils 和组件，例如：
 
 - `src/hooks/useAuth.js`
 - `src/hooks/useChatSessions.js`
@@ -27,9 +27,11 @@ Consumer 前端当前存在两套页面实现：
 - `src/components/ForceChangePasswordPage.jsx`
 - `src/components/McpManagement.jsx`
 
-初步静态入口扫描发现，当前 `src` 下有 34 个非测试 JS/JSX 文件不在 `main.jsx` 的运行依赖链中。其中既有可直接删除的重复实现，也有本地观测、会话性能、专业化消息展示、Evolution 等仍需迁移的能力。
+阶段 0 静态入口扫描发现，当时 `src` 下有 34 个非测试 JS/JSX 文件不在 `main.jsx` 的运行依赖链中。其中既有可直接删除的重复实现，也有本地观测、会话性能、专业化消息展示、Evolution 等仍需迁移的能力。
 
 因此，本次工作不能按目录批量删除，也不能继续让两套前端长期并行维护。采用“按能力迁移、同 PR 删除对应旧实现”的方式逐步完成收敛。
+
+本节和后续能力台账中的“当前”均指阶段 0 的实施前基线；最终落地状态以阶段 5 验收记录为准。
 
 ## 3. 决策
 
@@ -83,7 +85,7 @@ Consumer 前端当前存在两套页面实现：
 
 ## 5. 目标目录
 
-最终建议结构：
+最终落地结构：
 
 ```text
 consumer/frontend/src/
@@ -91,8 +93,9 @@ consumer/frontend/src/
 ├── app/
 │   ├── App.jsx
 │   ├── AppShell.jsx
+│   ├── appMeta.js
 │   ├── providers/
-│   └── navigation/
+│   └── onboarding/
 ├── features/
 │   ├── auth/
 │   ├── chat/
@@ -102,7 +105,6 @@ consumer/frontend/src/
 │   └── observability/
 └── shared/
     ├── api/
-    ├── hooks/
     ├── lib/
     ├── ui/
     └── styles/
@@ -113,7 +115,6 @@ consumer/frontend/src/
 - `app/`：唯一应用壳、Provider、导航和顶层页面编排。
 - `features/`：按业务能力组织页面、组件、状态和领域逻辑。
 - `shared/api/`：认证请求、错误规范化和 API 基础能力。
-- `shared/hooks/`：确实跨 feature 使用的 hooks。
 - `shared/lib/`：无 React 依赖的纯函数、协议解析和状态转换。
 - `shared/ui/`：通用 UI 原语，不包含业务 API 调用。
 - `shared/styles/`：设计变量、全局基础样式和少量跨 feature 样式。
@@ -387,7 +388,7 @@ Onto Agent 的页面布局和样式不能覆盖这些能力。
 - 不存在 `redesign`、`legacy`、`old` 等生产历史目录。
 - 入口依赖检查不存在未批准的生产孤儿模块。
 - 同一页面和业务能力只有一个实现。
-- fork Issue #3 的全部验收项完成。
+- fork Issue #3 中可由本仓库和受控本地环境验收的前端项完成；依赖真实外部服务的成功链路单独留痕。
 
 ## 9. PR 拆分建议
 
@@ -459,20 +460,27 @@ npm run build
 - 长会话不得因每个 token 对全量消息做高成本重新计算。
 - Workspace 和会话切换不得出现明显空白闪烁或旧数据短暂回显。
 
+2026-07-16 最终复测结果：入口 JS 540.57 kB、gzip 170.13 kB，相对阶段 4 基线分别增长 2.86% 和 2.93%；三次页面导航的 `responseStart`、`DOMContentLoaded`、`load` 中位数分别为 41.9 ms、89.7 ms、90.6 ms，相对阶段 0 基线分别变化 -1.2%、-15.3%、-16.0%，均满足 10% 门槛。
+
 ## 11. 完成标准
 
-- [ ] `main.jsx` 只挂载正式 `app/App`。
-- [ ] 历史 `src/App.jsx` 已删除。
-- [ ] `src/redesign` 已迁移并删除。
-- [ ] 历史聊天、知识、进化、配置、管理和观测页面已删除。
-- [ ] 当前运行使用的 hooks、utils、MCP 和改密组件已迁入正式目录。
-- [ ] 入口依赖扫描不存在未批准的生产孤儿模块。
-- [ ] 同一页面和业务能力不存在两套生产实现。
-- [ ] Onto Agent 选定能力已在 Meta-wise 设计中完成迁移。
-- [ ] `npm run lint`、`npm test`、`npm run build` 通过。
-- [ ] 自动测试、人工功能验收、UI 验收和性能门槛通过。
-- [ ] 开发文档不再指导切换旧入口。
-- [ ] 回退方案只依赖 Git/发布版本，不依赖残留代码。
+- [x] `main.jsx` 只挂载正式 `app/App`。
+- [x] 历史 `src/App.jsx` 已删除。
+- [x] `src/redesign` 已迁移并删除。
+- [x] 历史聊天、知识、进化、配置、管理和观测页面已删除。
+- [x] 当前运行使用的 hooks、utils、MCP 和改密组件已迁入正式目录。
+- [x] 入口依赖扫描不存在未批准的生产孤儿模块。
+- [x] 同一页面和业务能力不存在两套生产实现。
+- [x] Onto Agent 选定的前端行为、状态语义和回归测试已在 Meta-wise 设计中完成迁移。
+- [x] `npm run lint`、`npm test`、`npm run build` 和 Bundle 体积门槛通过。
+- [x] GitCode workflow 已接入前端 lint、测试、架构门禁和构建。
+- [x] 真实 Chromium 中的功能/UI、确定性写路径、三档响应式与控制台验收已完成，详见[阶段 5 验收记录](./frontend-stage5-final-convergence.md#62-本地启动与浏览器验收)。
+- [x] 关键页面加载时间已在本地真实 Chromium 环境复测，未超过 10% 退化门槛。
+- [ ] 真实外部模型对话、多会话运行与等待输入成功链路，需可用模型凭据和服务环境。
+- [ ] NL2SQL/真实业务数据库查询成功链路，需可用数据库连接与业务数据。
+- [ ] Operation/Skill Evolution 的真实生成、审批和落盘成功链路，需可用模型与任务运行环境。
+- [x] 开发文档不再指导切换旧入口。
+- [x] 回退方案只依赖 Git/发布版本，不依赖残留代码。
 
 ## 12. 风险与控制
 

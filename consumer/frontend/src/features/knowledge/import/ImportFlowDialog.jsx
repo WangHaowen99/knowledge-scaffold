@@ -1,4 +1,4 @@
-import { Modal } from '../../../redesign/ui';
+import { Modal } from '../../../shared/ui/primitives';
 import {
   IMPORT_ACTION,
   IMPORT_PHASE,

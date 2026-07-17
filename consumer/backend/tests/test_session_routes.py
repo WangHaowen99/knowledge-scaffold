@@ -677,6 +677,57 @@ def test_list_sessions_enriches_with_live_run_handle_in_one_pass(tmp_path, monke
     assert by_id["sess-b"]["active_run_status"] == "idle"
 
 
+def test_list_sessions_reports_missing_workspace_as_bad_request(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+
+    def raise_missing_workspace():
+        raise ValueError("当前不存在任何工作空间")
+
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        raise_missing_workspace,
+    )
+
+    response = client.get("/agentic/sessions", headers=headers)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"detail": "当前不存在任何工作空间"}
+
+
+def test_create_session_reports_missing_workspace_as_bad_request(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+
+    def raise_missing_workspace():
+        raise ValueError("当前不存在任何工作空间")
+
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        raise_missing_workspace,
+    )
+
+    response = client.post("/agentic/sessions", json={}, headers=headers)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"detail": "当前不存在任何工作空间"}
+
+
+def test_get_session_reports_missing_workspace_as_bad_request(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+
+    def raise_missing_workspace():
+        raise ValueError("当前不存在任何工作空间")
+
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        raise_missing_workspace,
+    )
+
+    response = client.get("/agentic/sessions/session-1", headers=headers)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"detail": "当前不存在任何工作空间"}
+
+
 def test_list_sessions_does_not_attach_foreign_handle_with_same_session_id(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path)
     chat_store = ChatStore(str(tmp_path / "chats"))

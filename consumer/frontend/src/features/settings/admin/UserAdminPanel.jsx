@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import PasswordRuleList from '../../auth/PasswordRuleList';
-import { passwordFormState } from '../../auth/passwordPolicy';
-import { Modal } from '../../../redesign/ui';
+import { PasswordRuleList, passwordFormState } from '../../auth';
+import { Modal } from '../../../shared/ui/primitives';
 import { authFetch } from '../../../shared/api/auth';
 import {
   buildCreateUserPayload,

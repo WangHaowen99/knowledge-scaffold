@@ -200,7 +200,10 @@ def _session_runtime_payload(
 def list_sessions():
     """List all chat sessions."""
     current_user = get_current_user()
-    workspace_id = _get_request_workspace_id()
+    try:
+        workspace_id = _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     sessions = chat_store.list_sessions()
@@ -246,7 +249,10 @@ def create_session():
     agent_mode = resolve_agent_mode({"agent_mode": data.get("agent_mode")})
     llm_request_mode = normalize_llm_request_mode(data.get("llm_request_mode"))
     model_profile_id = str(data.get("model_profile_id") or "").strip()
-    workspace_id = _get_request_workspace_id()
+    try:
+        workspace_id = _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     try:
         selected_ontology_id = _resolve_selected_ontology_id(
             data.get("selected_ontology_id"),
@@ -289,7 +295,10 @@ def create_session():
 def get_session(session_id: str):
     """Get a chat session with message history."""
     current_user = get_current_user()
-    workspace_id = _get_request_workspace_id()
+    try:
+        workspace_id = _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     session = chat_store.get_session(session_id)

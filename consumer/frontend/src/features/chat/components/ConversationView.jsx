@@ -3,9 +3,8 @@ import {
   Globe2, Loader2, Search, Wrench,
 } from 'lucide-react';
 
-import Markdown from '../../../redesign/Markdown';
-import { formatTime } from '../../../redesign/chatUtils';
-import { formatDurationMs } from '../lib/chatPresentation';
+import Markdown from '../../../shared/ui/Markdown';
+import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import { CopyButton, RunFeedback } from './RunActions';
 import ToolOutput from './ToolOutput';
 

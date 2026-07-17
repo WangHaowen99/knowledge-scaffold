@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Modal } from '../../../redesign/ui';
+import { Modal } from '../../../shared/ui/primitives';
 import { authFetch } from '../../../shared/api/auth';
 import {
   canEditWorkspace,
@@ -45,7 +45,7 @@ function WorkspaceDialog({ dialog, draft, setDraft, busy, onClose, onSubmit }) {
             <input
               autoFocus
               required
-              pattern="[a-z0-9][a-z0-9_-]*"
+              pattern="[a-z0-9](?:[a-z0-9_]|-)*"
               maxLength={64}
               placeholder="例如：manufacturing"
               value={draft.id}
@@ -269,7 +269,7 @@ export default function WorkspaceAdminPanel({
   };
 
   return (
-    <section className="settings-admin-panel" aria-labelledby="workspace-admin-title">
+    <section className="settings-admin-panel" aria-labelledby="workspace-admin-title" data-wiz="cfg-wsmgmt">
       <div className="settings-admin-heading">
         <div>
           <h3 id="workspace-admin-title">工作空间</h3>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '../../../shared/api/auth.js';
-import { EmptyState, FieldRow, Modal, SectionCard, StatusTag, Table } from '../../../redesign/ui.jsx';
+import { EmptyState, FieldRow, Modal, SectionCard, StatusTag, Table } from '../../../shared/ui/primitives.jsx';
 import {
   loadGlobalModels,
   loadWorkspaceModels,

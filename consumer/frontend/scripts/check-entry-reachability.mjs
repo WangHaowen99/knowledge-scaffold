@@ -6,7 +6,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectDir = resolve(scriptDir, '..');
 const sourceDir = join(projectDir, 'src');
 const baselinePath = join(scriptDir, 'entry-reachability-baseline.json');
-const CODE_EXTENSIONS = ['.js', '.jsx'];
+const MODULE_EXTENSIONS = ['.js', '.jsx', '.css'];
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.(?:js|jsx)$/;
 
 const toProjectPath = (absolutePath) => relative(projectDir, absolutePath).split(sep).join('/');
@@ -15,7 +15,7 @@ const walk = (directory) => readdirSync(directory, { withFileTypes: true }).flat
   const absolutePath = join(directory, entry.name);
   if (entry.isDirectory()) return walk(absolutePath);
   if (!entry.isFile()) return [];
-  if (!CODE_EXTENSIONS.includes(extname(entry.name)) || TEST_FILE_PATTERN.test(entry.name)) return [];
+  if (!MODULE_EXTENSIONS.includes(extname(entry.name)) || TEST_FILE_PATTERN.test(entry.name)) return [];
   return [absolutePath];
 });
 
@@ -33,12 +33,27 @@ const extractRelativeImports = (source) => {
   return [...specifiers];
 };
 
+const extractRelativeCssImports = (source) => {
+  const specifiers = new Set();
+  const uncommentedSource = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  const cssImport = /@import\s+(?:url\(\s*(?:(['"])(.*?)\1|([^)'"\s]+))\s*\)|(['"])(.*?)\4)/gi;
+  let match;
+  while ((match = cssImport.exec(uncommentedSource)) !== null) {
+    const specifier = match[2] ?? match[3] ?? match[5];
+    if (specifier.startsWith('.')) specifiers.add(specifier);
+  }
+  return [...specifiers];
+};
+
 const resolveImport = (importer, specifier) => {
-  const basePath = resolve(dirname(importer), specifier);
+  const isStylesheet = extname(importer) === '.css';
+  const normalizedSpecifier = isStylesheet ? specifier.split(/[?#]/, 1)[0] : specifier;
+  const extensions = isStylesheet ? ['.css'] : MODULE_EXTENSIONS;
+  const basePath = resolve(dirname(importer), normalizedSpecifier);
   const candidates = [
     basePath,
-    ...CODE_EXTENSIONS.map((extension) => `${basePath}${extension}`),
-    ...CODE_EXTENSIONS.map((extension) => join(basePath, `index${extension}`)),
+    ...extensions.map((extension) => `${basePath}${extension}`),
+    ...extensions.map((extension) => join(basePath, `index${extension}`)),
   ];
   return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile()) || null;
 };
@@ -53,7 +68,10 @@ const unresolvedImports = [];
 for (const file of productionFiles) {
   const dependencies = [];
   const source = readFileSync(file, 'utf8');
-  for (const specifier of extractRelativeImports(source)) {
+  const imports = extname(file) === '.css'
+    ? extractRelativeCssImports(source)
+    : extractRelativeImports(source);
+  for (const specifier of imports) {
     const resolved = resolveImport(file, specifier);
     if (!resolved) {
       unresolvedImports.push({ importer: toProjectPath(file), specifier });
