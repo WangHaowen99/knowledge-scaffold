@@ -47,6 +47,24 @@ def _finite_number(value: Any) -> Optional[Any]:
     return value if math.isfinite(float(value)) else None
 
 
+def _web_search_url_key(parsed_url: Any) -> Optional[tuple]:
+    scheme = str(parsed_url.scheme or "").lower()
+    hostname = str(parsed_url.hostname or "").lower()
+    try:
+        port = parsed_url.port
+    except ValueError:
+        return None
+    if (scheme, port) in {("http", 80), ("https", 443)}:
+        port = None
+    return (
+        scheme,
+        hostname,
+        port,
+        parsed_url.path or "/",
+        parsed_url.query or "",
+    )
+
+
 def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
     try:
         parsed = json.loads(raw_output)
@@ -56,6 +74,7 @@ def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
         return None
 
     results = []
+    seen_urls = set()
     for item in parsed["results"][:_WEB_SEARCH_SCAN_LIMIT]:
         if len(results) >= _WEB_SEARCH_RESULT_LIMIT:
             break
@@ -70,6 +89,10 @@ def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
             continue
         if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.hostname:
             continue
+        url_key = _web_search_url_key(parsed_url)
+        if url_key is None or url_key in seen_urls:
+            continue
+        seen_urls.add(url_key)
         domain = _bounded_text(item.get("domain"), 160)
         if not domain:
             domain = _bounded_text(parsed_url.hostname, 160)

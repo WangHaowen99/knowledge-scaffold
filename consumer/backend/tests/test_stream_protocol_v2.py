@@ -195,6 +195,37 @@ def test_web_search_projection_replaces_non_finite_response_time():
         json.dumps(payload, allow_nan=False)
 
 
+def test_web_search_projection_deduplicates_normalized_urls():
+    raw_output = json.dumps({
+        "ok": True,
+        "query": "deduplicate",
+        "provider": "tavily",
+        "results": [
+            {"title": "First", "url": "https://EXAMPLE.com:443/article#summary"},
+            {"title": "Duplicate", "url": "https://example.com/article#details"},
+            {"title": "Different query", "url": "https://example.com/article?page=2"},
+            {"title": "Different path", "url": "https://example.com/article/"},
+        ],
+    })
+
+    payload = build_tool_finished_payload(
+        tool_name="web_search",
+        tool_call_id="call-web-deduplicate",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=10,
+    )
+
+    projected = payload["output_projection"]["results"]
+    assert [result["title"] for result in projected] == [
+        "First",
+        "Different query",
+        "Different path",
+    ]
+    assert projected[0]["url"] == "https://EXAMPLE.com:443/article#summary"
+
+
 def test_execute_tool_batch_emits_v2_regular_tool_events():
     captured = []
 
