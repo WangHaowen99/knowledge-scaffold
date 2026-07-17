@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '../shared/api/auth';
+import ImportFlowDialog from '../features/knowledge/import/ImportFlowDialog';
 import { friendlyRequestError } from '../utils/requestErrors';
 import EvolutionWorkbench from './EvolutionWorkbench';
 import KnowledgeDataSources from './KnowledgeDataSources';
@@ -8,6 +9,7 @@ import Markdown from './Markdown';
 import OntologyGraphPanel from './OntologyGraphPanel';
 import { EmptyState, Modal, ScopeTabs, StatusTag } from './ui';
 import { DIR_ICONS, DIR_LABELS, findDirEntries } from './useKbBrowser';
+import { useAuthContext } from './useAuthContext';
 
 const EXT_LANG = { '.md': 'markdown', '.yaml': 'yaml', '.yml': 'yaml', '.json': 'json', '.py': 'python', '.sql': 'sql', '.csv': 'csv', '.txt': 'text' };
 const KB_TABS = [
@@ -17,12 +19,15 @@ const KB_TABS = [
   { id: 'evolution', label: '记忆进化' },
 ];
 
-export default function KnowledgeWorkbench({ kb, focusRequest }) {
+export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [], traceMetadata = {} }) {
+  const { workspaceId } = useAuthContext();
   const {
     pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
     canManage, viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
-    importPreview, clearImportPreview, reloadTree,
+    importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge,
+    importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
+    resolveImportConflict, retryImport, reopenImportConflict, cancelImport,
   } = kb;
   const [activeTab, setActiveTab] = useState('files');
   const [content, setContent] = useState('');
@@ -35,8 +40,15 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
   const [fileBusy, setFileBusy] = useState('');
   const [fileNotice, setFileNotice] = useState('');
   const uploadRef = useRef(null);
+  const fileAbortRef = useRef(null);
+  const fileScopeRef = useRef('');
+  fileScopeRef.current = `${workspaceId || ''}:${pkgId || ''}:${sel.file || ''}:${versionOverride || ''}`;
 
   const entries = useMemo(() => findDirEntries(tree, sel.dir), [tree, sel.dir]);
+  const traceInput = useMemo(
+    () => ({ messages: traceMessages, metadata: traceMetadata }),
+    [traceMessages, traceMetadata],
+  );
   const fileEntry = useMemo(() => (
     sel.file
       ? findDirEntries(tree, sel.file.includes('/') ? sel.file.slice(0, sel.file.lastIndexOf('/')) : '')
@@ -61,19 +73,33 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
   }, [sel.dir, sel.file, entries, selectFile]);
 
   useEffect(() => {
+    fileAbortRef.current?.abort();
+    fileAbortRef.current = null;
     setEditing(false);
-    setFileNotice('');
-    if (!pkgId || !sel.file) { setContent(''); setContentErr(''); return undefined; }
-    let cancelled = false;
+    setFileBusy('');
+    if (!pkgId || !sel.file) {
+      setContent('');
+      setEditContent('');
+      setContentErr('');
+      setContentLoading(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    fileAbortRef.current = controller;
+    const requestScope = fileScopeRef.current;
     const timer = setTimeout(async () => {
       setContentLoading(true);
+      setContent('');
+      setEditContent('');
       setContentErr('');
       try {
         const params = new URLSearchParams({ path: sel.file });
         if (versionOverride !== null) params.set('version', versionOverride);
-        const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/raw-file?${params.toString()}`);
+        const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/raw-file?${params.toString()}`, {
+          signal: controller.signal,
+        });
         const payload = await response.json().catch(() => ({}));
-        if (cancelled) return;
+        if (controller.signal.aborted || requestScope !== fileScopeRef.current) return;
         if (response.ok) {
           setContent(payload.content || '');
           setEditContent(payload.content || '');
@@ -82,19 +108,36 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
           setContentErr(payload.error || `读取失败（${response.status}）`);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!controller.signal.aborted && requestScope === fileScopeRef.current && error?.name !== 'AbortError') {
           setContent('');
           setContentErr(friendlyRequestError(error, '文件读取失败'));
         }
       } finally {
-        if (!cancelled) setContentLoading(false);
+        if (!controller.signal.aborted && requestScope === fileScopeRef.current) setContentLoading(false);
+        if (fileAbortRef.current === controller) fileAbortRef.current = null;
       }
     }, 0);
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [pkgId, sel.file, versionOverride]);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [knowledgeRevision, pkgId, sel.file, versionOverride, workspaceId]);
+
+  useEffect(() => {
+    setFileNotice('');
+  }, [pkgId, versionOverride, workspaceId]);
+
+  const importDialog = (
+    <ImportFlowDialog state={importFlow} onAcknowledge={setImportAcknowledged}
+      onConfirmSafety={confirmImportSafety} onNewVersionChange={setImportNewVersion}
+      onResolveConflict={resolveImportConflict} onRetry={retryImport}
+      onReopenConflict={reopenImportConflict} onCancel={cancelImport} />
+  );
 
   if (!pkg) {
-    return <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、连接、本体图和进化任务将在这里统一管理。" /></div>;
+    return (
+      <>
+        <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、连接、本体图和进化任务将在这里统一管理。" /></div>
+        {importDialog}
+      </>
+    );
   }
 
   const shown = entries.filter((entry) => !filter || entry.name.toLowerCase().includes(filter.toLowerCase()));
@@ -123,6 +166,10 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
 
   const saveFile = async () => {
     if (!canEditFile) return;
+    fileAbortRef.current?.abort();
+    const controller = new AbortController();
+    fileAbortRef.current = controller;
+    const requestScope = fileScopeRef.current;
     setFileBusy('save');
     setFileNotice('');
     try {
@@ -130,36 +177,58 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ folder: editableFolder, name: parts.at(-1), content: editContent }),
+        signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
+      if (requestScope !== fileScopeRef.current) return;
       if (response.ok) {
         setContent(editContent);
         setEditing(false);
         setFileNotice('文件已保存到当前激活版本');
         reloadTree();
       } else setFileNotice(`保存失败：${payload.error || payload.detail || response.status}`);
+    } catch (error) {
+      if (!controller.signal.aborted && requestScope === fileScopeRef.current && error?.name !== 'AbortError') {
+        setFileNotice(friendlyRequestError(error, '文件保存失败'));
+      }
     } finally {
-      setFileBusy('');
+      if (!controller.signal.aborted && requestScope === fileScopeRef.current) setFileBusy('');
+      if (fileAbortRef.current === controller) fileAbortRef.current = null;
     }
   };
 
   const uploadFile = async (file) => {
     if (!uploadFolder || !file) return;
+    fileAbortRef.current?.abort();
+    const controller = new AbortController();
+    fileAbortRef.current = controller;
+    const requestScope = fileScopeRef.current;
     setFileBusy('upload');
     setFileNotice('');
     try {
       const form = new FormData();
       form.append('folder', uploadFolder);
       form.append('file', file);
-      const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/upload`, { method: 'POST', body: form });
+      const response = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/upload`, {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      });
       const payload = await response.json().catch(() => ({}));
+      if (requestScope !== fileScopeRef.current) return;
       if (response.ok) {
+        const uploadedPath = `${uploadFolder}/${payload.name || file.name}`;
         setFileNotice(`${payload.existed ? '已覆盖' : '已上传'} ${payload.name || file.name}`);
-        reloadTree();
-        selectFile(`${uploadFolder}/${payload.name || file.name}`);
+        const refreshed = await refreshKnowledge({ ontologyId: pkgId });
+        if (refreshed && requestScope === fileScopeRef.current) selectFile(uploadedPath);
       } else setFileNotice(`上传失败：${payload.error || payload.detail || response.status}`);
+    } catch (error) {
+      if (!controller.signal.aborted && requestScope === fileScopeRef.current && error?.name !== 'AbortError') {
+        setFileNotice(friendlyRequestError(error, '文件上传失败'));
+      }
     } finally {
-      setFileBusy('');
+      if (!controller.signal.aborted && requestScope === fileScopeRef.current) setFileBusy('');
+      if (fileAbortRef.current === controller) fileAbortRef.current = null;
     }
   };
 
@@ -242,9 +311,12 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
           </div>
         </div>
       )}
-      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources ontologyId={pkgId} /></div>}
-      {activeTab === 'graph' && <div className="kb-scroll"><OntologyGraphPanel ontologyId={pkgId} version={viewVersion} onOpenSource={(path) => { setActiveTab('files'); selectFile(path); }} /></div>}
-      {activeTab === 'evolution' && <div className="kb-scroll"><EvolutionWorkbench ontologyId={pkgId} /></div>}
+      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources key={`${workspaceId}:${pkgId}`} ontologyId={pkgId} /></div>}
+      {activeTab === 'graph' && <div className="kb-scroll"><OntologyGraphPanel ontologyId={pkgId} version={viewVersion}
+        traceMessages={traceInput} onOpenSource={(path) => { setActiveTab('files'); selectFile(path); }} /></div>}
+      {activeTab === 'evolution' && <div className="kb-scroll"><EvolutionWorkbench ontologyId={pkgId}
+        onKnowledgeChanged={refreshKnowledge} readOnly={!viewingActive}
+        viewVersion={viewVersion} activeVersion={activeVersion} /></div>}
 
       {importPreview && (
         <Modal title="导入结果预览" description="导入已完成。请核对识别到的内容与服务端校验结果。" onClose={clearImportPreview}
@@ -252,6 +324,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
           <ImportPreview preview={importPreview} />
         </Modal>
       )}
+      {importDialog}
     </div>
   );
 }

@@ -15,7 +15,7 @@ import ChatWorkspace from './ChatWorkspace';
 import ChatHistorySidebar from './ChatHistorySidebar';
 import KbSidebarTree from './KbSidebarTree';
 import useKbBrowser from './useKbBrowser';
-import { ConfirmDialog, SkeletonState, ToastNotice } from './UiFeedback';
+import { SkeletonState, ToastNotice } from './UiFeedback';
 import { clearWorkspaceRuntime } from '../app/providers/workspaceRuntime';
 
 const KnowledgeWorkbench = lazy(() => import('./KnowledgeWorkbench'));
@@ -23,6 +23,7 @@ const ConfigCenter = lazy(() => import('./ConfigCenter'));
 const ObservabilityFeature = lazy(() => import('../features/observability/index.jsx'));
 
 const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心', observability: '可观测性' };
+const EMPTY_TRACE_METADATA = Object.freeze({});
 
 export default function AppShell() {
   const auth = useAuthContext();
@@ -42,6 +43,8 @@ export default function AppShell() {
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
   const kb = useKbBrowser();
+  const currentTraceMetadata = chat.sessions.find((session) => session.id === chat.currentChatId)?.metadata
+    || EMPTY_TRACE_METADATA;
   const wsMenuRef = useRef(null);
   const userMenuRef = useRef(null);
   const kbImportRef = useRef(null);
@@ -198,9 +201,9 @@ export default function AppShell() {
           </div>
           {surface === 'kb' && kb.canImport && (
             <>
-              <button className="btn btn-p" data-wiz="kb-import" disabled={kb.importing}
+              <button className="btn btn-p" data-wiz="kb-import" disabled={kb.importLocked}
                 onClick={() => kbImportRef.current?.click()}>
-                <Upload size={14} />{kb.importing ? '导入中…' : '导入知识包'}
+                <Upload size={14} />{kb.importing ? '导入中…' : kb.importReconciling ? '核对结果中…' : '导入知识包'}
               </button>
               <input ref={kbImportRef} type="file" accept=".zip" style={{ display: 'none' }}
                 onCancel={kb.cancelImportSelection}
@@ -237,7 +240,7 @@ export default function AppShell() {
           style={isFullSurface ? { display: 'flex', flexDirection: 'column' } : undefined}>
           <div key={surface} className={`surface-stage surface-${surface}`}>
             {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager} onOpenObservability={openObservability} />}
-            {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} /></Suspense>}
+            {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} traceMessages={chat.messages} traceMetadata={currentTraceMetadata} /></Suspense>}
             {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
             {surface === 'observability' && (
               <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>
@@ -250,10 +253,7 @@ export default function AppShell() {
       </div>
       {wizardOpen && <OnboardingWizard onNavigate={navigate} onOpenNavigation={openMobileNavigation}
         onClose={() => setWizardOpen(false)} />}
-      <ConfirmDialog open={Boolean(kb.pendingOverwrite)} title="覆盖当前知识包版本"
-        description={`知识包「${kb.pendingOverwrite?.name || ''}」已存在。继续后将覆盖当前激活版本。`}
-        confirmLabel="确认覆盖" danger busy={kb.importing} onConfirm={kb.confirmOverwrite} onCancel={kb.cancelOverwrite} />
-      <ToastNotice message={kb.notice} tone={kb.importing || kb.pendingOverwrite ? 'info' : undefined}
+      <ToastNotice message={kb.notice} tone={kb.importLocked ? 'info' : undefined}
         duration={kb.importing ? 0 : 5200} />
       <ToastNotice message={workspacesError} tone="error" duration={0} actionLabel="重新加载" onAction={reloadWorkspaces} />
     </div>

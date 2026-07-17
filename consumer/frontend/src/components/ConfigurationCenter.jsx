@@ -1,6 +1,5 @@
 import {
   ArrowLeft,
-  Boxes,
   Database,
   FolderCog,
   KeyRound,
@@ -10,7 +9,6 @@ import {
 
 import DataConnectionManagement from './DataConnectionManagement';
 import McpManagement from './McpManagement';
-import OntologyManagement from './OntologyManagement';
 import SystemSettings from './SystemSettings';
 import WorkspaceManagement from './WorkspaceManagement';
 import WorkspaceRuntimeConfig from './WorkspaceRuntimeConfig';
@@ -36,11 +34,6 @@ const WORKSPACE_SECTIONS = [
     id: 'workspace-connections',
     label: '数据连接',
     icon: Database,
-  },
-  {
-    id: 'ontology',
-    label: '本体',
-    icon: Boxes,
   },
   {
     id: 'ontology-bindings',
@@ -69,16 +62,12 @@ function ConfigurationCenter({
   onOntologiesRefresh,
   onWorkspaceChange,
   currentUser,
-  ontologyId,
-  ontologyOptions = [],
-  onOntologyIdChange,
 }) {
   const currentTopSection = activeSection === 'system' ? 'system' : 'workspace';
   const currentWorkspaceSection = WORKSPACE_SECTIONS.some((item) => item.id === activeSection)
     ? activeSection
     : 'workspace';
   const currentWorkspace = workspaces.find((workspace) => workspace.id === currentWorkspaceId) || null;
-  const isOntologySection = currentTopSection === 'workspace' && currentWorkspaceSection === 'ontology';
   const isOntologyBindingSection = currentTopSection === 'workspace' && currentWorkspaceSection === 'ontology-bindings';
   const isWorkspaceRuntimeSection = currentTopSection === 'workspace' && currentWorkspaceSection === 'workspace-runtime';
   const isMcpSection = currentTopSection === 'workspace' && currentWorkspaceSection === 'mcp';
@@ -193,26 +182,6 @@ function ConfigurationCenter({
                   onOntologiesChange={onOntologiesRefresh}
                 />
               </section>
-            )}
-
-            {isOntologySection && (
-              <div className="configuration-ontology-layout">
-                <section className="configuration-ontology-files-panel">
-                  <div className="configuration-section-title">
-                    <h3>本体文件</h3>
-                    <p>维护当前工作空间下本体的实体、逻辑和导入导出。</p>
-                  </div>
-                  <OntologyManagement
-                    currentUser={currentUser}
-                    ontologyId={ontologyId}
-                    ontologyOptions={ontologyOptions}
-                    onOntologyIdChange={onOntologyIdChange}
-                    currentWorkspaceId={currentWorkspaceId}
-                    onNavigateToWorkspace={() => onSectionChange?.('workspace')}
-                    onOntologiesChange={onOntologiesRefresh}
-                  />
-                </section>
-              </div>
             )}
 
             {isOntologyBindingSection && (

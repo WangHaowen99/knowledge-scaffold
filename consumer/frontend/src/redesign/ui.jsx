@@ -1,3 +1,5 @@
+import { useEffect, useId, useRef } from 'react';
+
 export function PageHeader({ title, description, actions, eyebrow }) {
   return (
     <header className="ui-page-header">
@@ -45,15 +47,65 @@ export function Table({ children, className = '', ...props }) {
 }
 
 export function Modal({ title, description, children, actions, onClose, wide = false }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement;
+    const dialog = dialogRef.current;
+    const focusable = () => Array.from(dialog?.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    ) || []);
+    (focusable()[0] || dialog)?.focus();
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeRef.current?.();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      if (!items.length) {
+        event.preventDefault();
+        dialog?.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items.at(-1);
+      if (!dialog?.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) previouslyFocused.focus();
+    };
+  }, []);
+
   return (
     <div className="ui-modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose?.();
     }}>
-      <section className={`ui-modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <section ref={dialogRef} className={`ui-modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true"
+        aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1}>
         <header>
           <div>
-            <h3>{title}</h3>
-            {description && <p>{description}</p>}
+            <h3 id={titleId}>{title}</h3>
+            {description && <p id={descriptionId}>{description}</p>}
           </div>
           <button type="button" className="iconbtn" aria-label="关闭" onClick={onClose}>✕</button>
         </header>

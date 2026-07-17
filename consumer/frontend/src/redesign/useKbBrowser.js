@@ -1,6 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { authFetch } from '../shared/api/auth';
 import { friendlyRequestError } from '../utils/requestErrors';
+import {
+  IMPORT_PHASE,
+  createImportFlowState,
+  importFlowNotice,
+  importRequestFields,
+  reduceImportFlow,
+} from '../features/knowledge/import/importFlow';
+import {
+  nextKnowledgeRevision,
+  reconcileTreeSelection,
+  resolveKnowledgeVersionOverride,
+} from '../features/knowledge/import/knowledgeRefresh';
 import { useAuthContext } from './useAuthContext';
 
 // 知识包浏览的共享状态：侧边栏目录树（AppShell 内）与工作台内容区共用。
@@ -23,52 +35,102 @@ export default function useKbBrowser() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState('');
   const [treeReloadKey, setTreeReloadKey] = useState(0);
+  const [knowledgeRevision, setKnowledgeRevision] = useState(0);
   // sel.dir = 当前目录相对路径（'' 为包根）；sel.file = 当前文件相对路径或 null
   const [sel, setSel] = useState({ dir: 'objects', file: null });
-  const [importing, setImporting] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [pendingOverwrite, setPendingOverwrite] = useState(null);
+  const [importFlow, setImportFlow] = useState(createImportFlowState);
   // versionOverride = null 表示跟随激活版本；字符串表示浏览指定历史版本
   const [versionOverride, setVersionOverride] = useState(null);
   const [opBusy, setOpBusy] = useState('');
   const [opNotice, setOpNotice] = useState('');
-  const [importPreview, setImportPreview] = useState(null);
+  const packageRequestRef = useRef(0);
+  const treeRequestRef = useRef(0);
+  const selectionEpochRef = useRef(0);
+  const importRequestRef = useRef(0);
+  const importAbortRef = useRef(null);
+  const importReconcileTimerRef = useRef(null);
+  const scopeKey = `${status}:${workspaceId || ''}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
 
   const pkg = packages.find((p) => p.id === pkgId) || null;
   const activeVersion = pkg?.active_version || pkg?.version || '';
   const viewVersion = versionOverride ?? activeVersion;
   const viewingActive = versionOverride === null || versionOverride === activeVersion;
 
-  const loadPackages = useCallback(async () => {
+  const loadPackages = useCallback(async ({ signal } = {}) => {
+    const requestId = ++packageRequestRef.current;
+    const requestScope = `${status}:${workspaceId || ''}`;
+    const isCurrent = () => (
+      !signal?.aborted
+      && requestId === packageRequestRef.current
+      && requestScope === scopeRef.current
+    );
     if (status !== 'authenticated') {
-      setPackages([]);
-      setPkgId(null);
-      setTree([]);
-      setPkgsLoading(false);
-      setPackagesError('');
+      if (isCurrent()) {
+        setPackages([]);
+        setPkgId(null);
+        setTree([]);
+        setPkgsLoading(false);
+        setPackagesError('');
+      }
       return;
     }
     setPkgsLoading(true);
     setPackagesError('');
     try {
-      const res = await authFetch('/agentic/ontologies');
+      const res = await authFetch('/agentic/ontologies', { signal });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || data.detail || `知识包列表加载失败（${res.status}）`);
+      if (!isCurrent()) return;
       const list = data.ontologies || [];
       setPackages(list);
       setPkgId((prev) => (prev && list.some((p) => p.id === prev) ? prev : list[0]?.id || null));
     } catch (error) {
+      if (!isCurrent() || error?.name === 'AbortError') return;
       setPackages([]);
       setPackagesError(friendlyRequestError(error, '知识包列表加载失败'));
     } finally {
-      setPkgsLoading(false);
+      if (isCurrent()) setPkgsLoading(false);
     }
-  }, [status]);
+  }, [status, workspaceId]);
 
   useEffect(() => {
-    const t = setTimeout(loadPackages, 0);
-    return () => clearTimeout(t);
-  }, [loadPackages, workspaceId]);
+    const controller = new AbortController();
+    setPackages([]);
+    setPkgId(null);
+    setTree([]);
+    setTreeLoading(false);
+    setPackagesError('');
+    setTreeError('');
+    setVersionOverride(null);
+    setSel({ dir: 'objects', file: null });
+    setOpBusy('');
+    setOpNotice('');
+    setPkgsLoading(status === 'authenticated');
+    const timer = setTimeout(() => loadPackages({ signal: controller.signal }), 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadPackages, status]);
+
+  useEffect(() => {
+    if (importReconcileTimerRef.current) {
+      window.clearTimeout(importReconcileTimerRef.current);
+      importReconcileTimerRef.current = null;
+    }
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
+    importRequestRef.current += 1;
+    setImportFlow(createImportFlowState());
+    return () => {
+      if (importReconcileTimerRef.current) {
+        window.clearTimeout(importReconcileTimerRef.current);
+        importReconcileTimerRef.current = null;
+      }
+    };
+  }, [scopeKey]);
 
   // 浏览中的版本从包里消失时（如刚被删除）回落到激活版本
   useEffect(() => {
@@ -78,35 +140,53 @@ export default function useKbBrowser() {
   }, [pkg, versionOverride]);
 
   useEffect(() => {
-    if (status !== 'authenticated' || !pkgId) { setTree([]); return undefined; }
-    let cancelled = false;
+    if (status !== 'authenticated' || !pkgId) {
+      setTree([]);
+      setTreeLoading(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    const requestId = ++treeRequestRef.current;
+    const requestScope = scopeRef.current;
+    const isCurrent = () => (
+      !controller.signal.aborted
+      && requestId === treeRequestRef.current
+      && requestScope === scopeRef.current
+    );
     const t = setTimeout(async () => {
       setTreeLoading(true);
       setTreeError('');
       try {
         const q = versionOverride !== null ? `?version=${encodeURIComponent(versionOverride)}` : '';
-        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/tree${q}`);
+        const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/tree${q}`, {
+          signal: controller.signal,
+        });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || data.detail || `知识包目录加载失败（${res.status}）`);
-        if (cancelled) return;
+        if (!isCurrent()) return;
         const entries = data.entries || [];
         setTree(entries);
         const firstDir = entries.find((e) => e.type === 'dir' && e.name === 'objects')
           || entries.find((e) => e.type === 'dir');
-        setSel({ dir: firstDir ? firstDir.path : '', file: null });
+        setSel((previous) => reconcileTreeSelection(entries, previous, firstDir?.path || ''));
       } catch (error) {
-        if (!cancelled) {
+        if (isCurrent() && error?.name !== 'AbortError') {
           setTree([]);
           setTreeError(friendlyRequestError(error, '知识包目录加载失败'));
         }
       } finally {
-        if (!cancelled) setTreeLoading(false);
+        if (isCurrent()) setTreeLoading(false);
       }
     }, 0);
-    return () => { cancelled = true; clearTimeout(t); };
+    return () => { controller.abort(); clearTimeout(t); };
   }, [pkgId, workspaceId, versionOverride, status, treeReloadKey]);
 
-  const selectPkg = useCallback((id) => { setPkgId(id); setVersionOverride(null); setOpNotice(''); }, []);
+  const selectPkg = useCallback((id) => {
+    selectionEpochRef.current += 1;
+    setPkgId(id);
+    setVersionOverride(null);
+    setOpNotice('');
+  }, []);
   const selectDir = useCallback((dirPath) => { setSel({ dir: dirPath, file: null }); }, []);
   const selectFile = useCallback((filePath) => {
     const parent = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
@@ -117,83 +197,141 @@ export default function useKbBrowser() {
   }, [activeVersion]);
   const reloadTree = useCallback(() => setTreeReloadKey((value) => value + 1), []);
 
-  const finishImport = useCallback(async (res, data) => {
-    if (res.ok) {
-      setNotice(`导入成功：${data.ontology_name || data.ontology_id}（对象 ${data.objects_count ?? '-'} · 操作 ${data.operations_count ?? '-'}）`);
-      setImportPreview(data.preview || null);
-      await loadPackages();
-      setPkgId(data.ontology_id);
-    } else {
-      setNotice(`导入失败：${data.error || data.detail || res.status}`);
+  // 所有会改变知识包文件内容的入口共用这一刷新边界。revision 让已选中的
+  // raw-file 即使路径未变也会重新读取；treeReloadKey 刷新目录与文件元数据。
+  const refreshKnowledge = useCallback(async ({
+    ontologyId = pkgId,
+    refreshPackages = true,
+    followActive = false,
+    selectTarget = false,
+  } = {}) => {
+    const requestScope = scopeRef.current;
+    const requestSelectionEpoch = selectionEpochRef.current;
+    if (refreshPackages) await loadPackages();
+    if (
+      requestScope !== scopeRef.current
+      || (!selectTarget && requestSelectionEpoch !== selectionEpochRef.current)
+    ) return false;
+    if (selectTarget && ontologyId) {
+      selectionEpochRef.current += 1;
+      setPkgId(ontologyId);
     }
-  }, [loadPackages]);
+    setVersionOverride((current) => resolveKnowledgeVersionOverride(current, followActive));
+    setTreeReloadKey((value) => value + 1);
+    setKnowledgeRevision(nextKnowledgeRevision);
+    return true;
+  }, [loadPackages, pkgId]);
 
-  const importZip = useCallback(async (file) => {
-    if (!file) {
-      setNotice('未选择知识包文件');
-      return;
-    }
-    if (!file.name?.toLowerCase().endsWith('.zip')) {
-      setNotice('导入失败：仅支持 .zip 知识包');
-      return;
-    }
-    if (!file.size) {
-      setNotice('导入失败：所选 ZIP 文件为空');
-      return;
-    }
-    const accepted = window.confirm(
-      '导入包可能包含脚本、映射和业务定义。系统会做路径与格式校验，但不会替你判断业务内容是否可信。确认继续导入并查看结果预览？',
+  const executeImport = useCallback(async (flowState) => {
+    if (!flowState?.file || flowState.phase !== IMPORT_PHASE.UPLOADING) return;
+    importAbortRef.current?.abort();
+    const controller = new AbortController();
+    importAbortRef.current = controller;
+    const requestId = ++importRequestRef.current;
+    const requestScope = scopeRef.current;
+    const isCurrent = () => (
+      !controller.signal.aborted
+      && requestId === importRequestRef.current
+      && requestScope === scopeRef.current
     );
-    if (!accepted) return;
-    setImporting(true);
-    setNotice(`正在上传并解析：${file.name}`);
-    setImportPreview(null);
     try {
       const form = new FormData();
-      form.append('file', file);
-      let res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: form });
-      let data = await res.json().catch(() => ({}));
+      form.append('file', flowState.file);
+      Object.entries(importRequestFields(flowState.request)).forEach(([key, value]) => form.append(key, value));
+      const res = await authFetch('/agentic/ontologies/import-zip', {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!isCurrent()) return;
       if (res.status === 409 && data.requires_confirmation) {
-        setPendingOverwrite({
-          file,
-          name: data.ontology_name || data.ontology_id,
-          action: data.conflict_type === 'version_exists' ? 'overwrite_matching' : 'overwrite_active',
-        });
-        setNotice(`检测到同名知识包「${data.ontology_name || data.ontology_id}」，请确认是否覆盖`);
+        setImportFlow((current) => reduceImportFlow(current, { type: 'CONFLICT', payload: data }));
         return;
       }
-      await finishImport(res, data);
+      if (!res.ok) {
+        setImportFlow((current) => reduceImportFlow(current, {
+          type: 'FAILURE',
+          error: data.error || data.detail || `请求失败（${res.status}）`,
+        }));
+        return;
+      }
+      setImportFlow((current) => reduceImportFlow(current, { type: 'SUCCESS', payload: data }));
+      await refreshKnowledge({
+        ontologyId: data.ontology_id || flowState.conflict?.ontologyId || pkgId,
+        followActive: true,
+        selectTarget: true,
+      });
     } catch (error) {
-      setNotice(`导入失败：${error?.message === 'Failed to fetch' ? '网络异常或后端服务不可用' : (error?.message || '请求异常，请稍后重试')}`);
+      if (!isCurrent() || error?.name === 'AbortError') return;
+      setImportFlow((current) => reduceImportFlow(current, {
+        type: 'FAILURE',
+        error: friendlyRequestError(error, '知识包导入失败'),
+      }));
     } finally {
-      setImporting(false);
+      if (importAbortRef.current === controller) importAbortRef.current = null;
     }
-  }, [finishImport]);
+  }, [pkgId, refreshKnowledge]);
 
-  const confirmOverwrite = useCallback(async () => {
-    if (!pendingOverwrite) return;
-    const { file, action } = pendingOverwrite;
-    setPendingOverwrite(null);
-    setImporting(true);
-    setNotice(`正在覆盖并解析：${file.name}`);
-    try {
-      const retry = new FormData();
-      retry.append('file', file);
-      retry.append('action', action || 'overwrite_active');
-      const res = await authFetch('/agentic/ontologies/import-zip', { method: 'POST', body: retry });
-      const data = await res.json().catch(() => ({}));
-      await finishImport(res, data);
-    } catch (error) {
-      setNotice(`覆盖失败：${error?.message === 'Failed to fetch' ? '网络异常或后端服务不可用' : (error?.message || '请求异常，请稍后重试')}`);
-    } finally {
-      setImporting(false);
-    }
-  }, [finishImport, pendingOverwrite]);
+  const importZip = useCallback((file) => {
+    setImportFlow((current) => reduceImportFlow(current, { type: 'SELECT_FILE', file }));
+  }, []);
 
-  const clearImportPreview = useCallback(() => setImportPreview(null), []);
+  const setImportAcknowledged = useCallback((value) => {
+    setImportFlow((current) => reduceImportFlow(current, { type: 'SET_ACKNOWLEDGED', value }));
+  }, []);
+
+  const confirmImportSafety = useCallback(() => {
+    const next = reduceImportFlow(importFlow, { type: 'START_UPLOAD' });
+    setImportFlow(next);
+    if (next.phase === IMPORT_PHASE.UPLOADING) executeImport(next);
+  }, [executeImport, importFlow]);
+
+  const setImportNewVersion = useCallback((value) => {
+    setImportFlow((current) => reduceImportFlow(current, { type: 'SET_NEW_VERSION', value }));
+  }, []);
+
+  const resolveImportConflict = useCallback((action) => {
+    const next = reduceImportFlow(importFlow, { type: 'RESOLVE_CONFLICT', action });
+    setImportFlow(next);
+    if (next.phase === IMPORT_PHASE.UPLOADING) executeImport(next);
+  }, [executeImport, importFlow]);
+
+  const retryImport = useCallback(() => {
+    const next = reduceImportFlow(importFlow, { type: 'RETRY' });
+    setImportFlow(next);
+    if (next.phase === IMPORT_PHASE.UPLOADING) executeImport(next);
+  }, [executeImport, importFlow]);
+
+  const cancelImport = useCallback(() => {
+    const stoppedWaiting = importFlow.phase === IMPORT_PHASE.UPLOADING;
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
+    importRequestRef.current += 1;
+    setImportFlow(reduceImportFlow(importFlow, { type: 'CANCEL' }));
+    if (!stoppedWaiting) return;
+
+    if (importReconcileTimerRef.current) window.clearTimeout(importReconcileTimerRef.current);
+    const requestScope = scopeRef.current;
+    importReconcileTimerRef.current = window.setTimeout(async () => {
+      try {
+        await refreshKnowledge({ followActive: true });
+      } finally {
+        importReconcileTimerRef.current = null;
+        if (requestScope === scopeRef.current) {
+          setImportFlow((current) => reduceImportFlow(current, { type: 'RECONCILED' }));
+        }
+      }
+    }, 2500);
+  }, [importFlow, refreshKnowledge]);
+
+  const clearImportPreview = useCallback(() => {
+    setImportFlow((current) => reduceImportFlow(current, { type: 'CLEAR_PREVIEW' }));
+  }, []);
 
   const setPkgEnabled = useCallback(async (enabled) => {
     if (!pkgId) return;
+    const requestScope = scopeRef.current;
     setOpBusy('status');
     setOpNotice('');
     try {
@@ -203,19 +341,23 @@ export default function useKbBrowser() {
         body: JSON.stringify({ enabled }),
       });
       const data = await res.json().catch(() => ({}));
+      if (requestScope !== scopeRef.current) return;
       if (res.ok) {
         setOpNotice(enabled ? '知识包已启用' : '知识包已禁用，Agent 将不再使用该知识包');
         await loadPackages();
       } else {
         setOpNotice(`操作失败：${data.error || data.detail || res.status}`);
       }
+    } catch (error) {
+      if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '知识包状态更新失败'));
     } finally {
-      setOpBusy('');
+      if (requestScope === scopeRef.current) setOpBusy('');
     }
   }, [pkgId, loadPackages]);
 
   const activateVersion = useCallback(async () => {
     if (!pkgId || !viewVersion) return;
+    const requestScope = scopeRef.current;
     setOpBusy('activate');
     setOpNotice('');
     try {
@@ -225,6 +367,7 @@ export default function useKbBrowser() {
         body: JSON.stringify({ version: viewVersion }),
       });
       const data = await res.json().catch(() => ({}));
+      if (requestScope !== scopeRef.current) return;
       if (res.ok) {
         setOpNotice(`已激活版本 ${viewVersion}`);
         setVersionOverride(null);
@@ -232,13 +375,16 @@ export default function useKbBrowser() {
       } else {
         setOpNotice(`激活失败：${data.error || data.detail || res.status}`);
       }
+    } catch (error) {
+      if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '版本激活失败'));
     } finally {
-      setOpBusy('');
+      if (requestScope === scopeRef.current) setOpBusy('');
     }
   }, [pkgId, viewVersion, loadPackages]);
 
   const deleteVersion = useCallback(async () => {
     if (!pkgId || !viewVersion) return;
+    const requestScope = scopeRef.current;
     setOpBusy('deleteVersion');
     setOpNotice('');
     try {
@@ -247,6 +393,7 @@ export default function useKbBrowser() {
         { method: 'DELETE' },
       );
       const data = await res.json().catch(() => ({}));
+      if (requestScope !== scopeRef.current) return;
       if (res.ok) {
         setOpNotice(`已删除版本 ${viewVersion}`);
         setVersionOverride(null);
@@ -254,41 +401,50 @@ export default function useKbBrowser() {
       } else {
         setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
       }
+    } catch (error) {
+      if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '版本删除失败'));
     } finally {
-      setOpBusy('');
+      if (requestScope === scopeRef.current) setOpBusy('');
     }
   }, [pkgId, viewVersion, loadPackages]);
 
   const deletePackage = useCallback(async () => {
     if (!pkgId) return;
+    const requestScope = scopeRef.current;
     setOpBusy('deletePackage');
     setOpNotice('');
     try {
       const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}`, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
+      if (requestScope !== scopeRef.current) return;
       if (res.ok) {
         setOpNotice(`已删除知识包 ${pkgId}`);
         setPkgId(null);
         await loadPackages();
       } else setOpNotice(`删除失败：${data.error || data.detail || res.status}`);
+    } catch (error) {
+      if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '知识包删除失败'));
     } finally {
-      setOpBusy('');
+      if (requestScope === scopeRef.current) setOpBusy('');
     }
   }, [pkgId, loadPackages]);
 
   const downloadPkg = useCallback(async () => {
     if (!pkgId) return;
+    const requestScope = scopeRef.current;
     setOpBusy('download');
     setOpNotice('');
     try {
       const q = viewVersion ? `?version=${encodeURIComponent(viewVersion)}` : '';
       const res = await authFetch(`/agentic/ontologies/${encodeURIComponent(pkgId)}/download${q}`);
+      if (requestScope !== scopeRef.current) return;
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setOpNotice(`下载失败：${data.error || data.detail || res.status}`);
         return;
       }
       const blob = await res.blob();
+      if (requestScope !== scopeRef.current) return;
       const disposition = res.headers.get('Content-Disposition') || '';
       const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
       const fileName = match
@@ -303,18 +459,29 @@ export default function useKbBrowser() {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(objectUrl);
       setOpNotice(`已下载：${fileName}`);
+    } catch (error) {
+      if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '知识包下载失败'));
     } finally {
-      setOpBusy('');
+      if (requestScope === scopeRef.current) setOpBusy('');
     }
   }, [pkgId, viewVersion]);
 
   return {
     canImport, canManage: canImport, packages, pkgsLoading, packagesError, retryPackages: loadPackages,
     pkg, pkgId, tree, treeLoading, treeError, retryTree: () => setTreeReloadKey((value) => value + 1),
-    sel, selectPkg, selectDir, selectFile, importZip, importing, notice,
-    pendingOverwrite, confirmOverwrite, cancelOverwrite: () => { setPendingOverwrite(null); setNotice('已取消覆盖知识包'); },
-    cancelImportSelection: () => setNotice('已取消选择知识包文件'),
-    importPreview, clearImportPreview, reloadTree,
+    sel, selectPkg, selectDir, selectFile, importZip,
+    importing: importFlow.phase === IMPORT_PHASE.UPLOADING,
+    importReconciling: Boolean(importFlow.reconciliationPending),
+    importLocked: [IMPORT_PHASE.CONFIRMING, IMPORT_PHASE.UPLOADING, IMPORT_PHASE.CONFLICT].includes(importFlow.phase)
+      || Boolean(importFlow.reconciliationPending),
+    notice: importFlowNotice(importFlow),
+    importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
+    resolveImportConflict, retryImport,
+    reopenImportConflict: () => setImportFlow((current) => reduceImportFlow(current, { type: 'REOPEN_CONFLICT' })),
+    cancelImport,
+    cancelImportSelection: cancelImport,
+    importPreview: importFlow.result?.preview || null, clearImportPreview, reloadTree,
+    knowledgeRevision, refreshKnowledge,
     viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
   };
