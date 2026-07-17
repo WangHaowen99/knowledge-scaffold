@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import { EmptyState, SectionCard, StatusTag } from './ui';
 
 const NODE_W = 210;

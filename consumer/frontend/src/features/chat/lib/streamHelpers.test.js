@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { applyAgentV2Event, AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
-import { buildIndexedSegmentGroups } from './segmentGroups.js';
+import { buildIndexedSegmentGroups } from '../../../utils/segmentGroups.js';
 
 const envelope = (type, payload, seq = 1, trace = {}) => ({
   protocol: AGENT_STREAM_PROTOCOL,

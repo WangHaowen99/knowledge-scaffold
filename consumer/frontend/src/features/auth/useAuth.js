@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AUTH_CLEARED_EVENT,
   authFetch,
@@ -6,8 +6,8 @@ import {
   getAuthToken,
   getRefreshToken,
   setAuthToken,
-} from '../utils/auth';
-import createLogger from '../utils/logger';
+} from '../../shared/api/auth';
+import createLogger from '../../shared/lib/logger';
 
 const logger = createLogger('Auth');
 
@@ -15,6 +15,7 @@ const useAuth = () => {
   const [status, setStatus] = useState('checking');
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
+  const authOperationEpochRef = useRef(0);
 
   const applyAuthPayload = useCallback((data) => {
     if (!data.token) {
@@ -28,10 +29,13 @@ const useAuth = () => {
   }, []);
 
   const verify = useCallback(async () => {
+    const operationEpoch = authOperationEpochRef.current;
     const token = getAuthToken();
     if (!token) {
-      setStatus('unauthenticated');
-      setUser(null);
+      if (authOperationEpochRef.current === operationEpoch) {
+        setStatus('unauthenticated');
+        setUser(null);
+      }
       return;
     }
 
@@ -41,10 +45,12 @@ const useAuth = () => {
         throw new Error(`Auth check failed: ${res.status}`);
       }
       const data = await res.json();
+      if (authOperationEpochRef.current !== operationEpoch) return;
       setUser(data.user || null);
       setStatus('authenticated');
       setError(null);
     } catch (err) {
+      if (authOperationEpochRef.current !== operationEpoch) return;
       logger.warn('Auth check failed', { error: err.message });
       clearAuthToken();
       setUser(null);
@@ -61,6 +67,7 @@ const useAuth = () => {
 
   useEffect(() => {
     const handleCleared = () => {
+      authOperationEpochRef.current += 1;
       setUser(null);
       setStatus('unauthenticated');
     };
@@ -69,6 +76,8 @@ const useAuth = () => {
   }, []);
 
   const login = useCallback(async (username, password) => {
+    const operationEpoch = authOperationEpochRef.current + 1;
+    authOperationEpochRef.current = operationEpoch;
     setError(null);
     try {
       const res = await fetch('/auth/login', {
@@ -78,6 +87,7 @@ const useAuth = () => {
       });
 
       const data = await res.json().catch(() => ({}));
+      if (authOperationEpochRef.current !== operationEpoch) return { success: false, stale: true };
 
       if (!res.ok) {
         throw new Error(data.error || '登录失败');
@@ -86,6 +96,7 @@ const useAuth = () => {
       applyAuthPayload(data);
       return { success: true };
     } catch (err) {
+      if (authOperationEpochRef.current !== operationEpoch) return { success: false, stale: true };
       logger.warn('Login failed', { error: err.message });
       setError(err.message || '登录失败');
       setStatus('unauthenticated');
@@ -121,6 +132,10 @@ const useAuth = () => {
 
   const logout = useCallback(async () => {
     const refreshToken = getRefreshToken();
+    authOperationEpochRef.current += 1;
+    clearAuthToken();
+    setUser(null);
+    setStatus('unauthenticated');
     try {
       if (refreshToken) {
         await fetch('/auth/logout', {
@@ -131,10 +146,6 @@ const useAuth = () => {
       }
     } catch (err) {
       logger.warn('Logout revoke request failed', { error: err.message });
-    } finally {
-      clearAuthToken();
-      setUser(null);
-      setStatus('unauthenticated');
     }
   }, []);
 

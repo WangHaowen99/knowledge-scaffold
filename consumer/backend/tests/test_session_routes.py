@@ -2,6 +2,8 @@
 
 import json
 import threading
+from contextlib import contextmanager
+from types import SimpleNamespace
 
 from flask import Flask
 
@@ -274,6 +276,147 @@ def test_create_session_rejects_empty_scoped_profile_as_bad_request(tmp_path, mo
 
     assert response.status_code == 400
     assert "不能为空" in response.get_json()["error"]
+
+
+def _stub_session_create_dependencies(monkeypatch, chat_store, *, workspace_id="alpha"):
+    execution_store = _FakeExecutionStore()
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: workspace_id,
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions.resolve_effective_llm_profile_config",
+        lambda *args, **kwargs: {
+            "id": "fast",
+            "model_profile_ref": {"scope": "global", "id": "fast"},
+        },
+    )
+
+
+def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = _FakeChatStore()
+    _stub_session_create_dependencies(monkeypatch, chat_store, workspace_id="alpha")
+    active_workspaces = []
+    scope_events = []
+
+    @contextmanager
+    def fake_workspace_scope(workspace_id):
+        scope_events.append(("enter", workspace_id))
+        active_workspaces.append(workspace_id)
+        try:
+            yield workspace_id
+        finally:
+            active_workspaces.pop()
+            scope_events.append(("exit", workspace_id))
+
+    class FakeRegistry:
+        refresh_count = 0
+
+        def refresh(self):
+            assert active_workspaces == ["alpha"]
+            self.refresh_count += 1
+
+        def get_ontology(self, ontology_id):
+            assert active_workspaces == ["alpha"]
+            if ontology_id == "demo-ontology":
+                return SimpleNamespace(id="demo-ontology", enabled=True)
+            return None
+
+    registry = FakeRegistry()
+    monkeypatch.setattr("api.routes.sessions.workspace_scope", fake_workspace_scope)
+    monkeypatch.setattr("api.routes.sessions.get_ontology_registry", lambda: registry)
+
+    response = client.post(
+        "/agentic/sessions",
+        json={"selected_ontology_id": "  demo-ontology  "},
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["metadata"]["selected_ontology_id"] == "demo-ontology"
+    assert chat_store.created_sessions[0]["metadata"]["selected_ontology_id"] == "demo-ontology"
+    assert registry.refresh_count == 1
+    assert scope_events == [("enter", "alpha"), ("exit", "alpha")]
+
+
+def test_create_session_omits_empty_selected_ontology_metadata(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = _FakeChatStore()
+    _stub_session_create_dependencies(monkeypatch, chat_store)
+    monkeypatch.setattr(
+        "api.routes.sessions.get_ontology_registry",
+        lambda: (_ for _ in ()).throw(AssertionError("empty selection must not load registry")),
+    )
+
+    for selected_ontology_id in (None, "", "   "):
+        response = client.post(
+            "/agentic/sessions",
+            json={"selected_ontology_id": selected_ontology_id},
+            headers=headers,
+        )
+        assert response.status_code == 201
+        assert "selected_ontology_id" not in response.get_json()["metadata"]
+
+    assert all(
+        "selected_ontology_id" not in item["metadata"]
+        for item in chat_store.created_sessions
+    )
+
+
+def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = _FakeChatStore()
+    _stub_session_create_dependencies(monkeypatch, chat_store, workspace_id="alpha")
+
+    class EmptyRegistry:
+        def refresh(self):
+            return 0
+
+        def get_ontology(self, ontology_id):
+            del ontology_id
+            return None
+
+    monkeypatch.setattr("api.routes.sessions.get_ontology_registry", lambda: EmptyRegistry())
+
+    response = client.post(
+        "/agentic/sessions",
+        json={"selected_ontology_id": "beta-only"},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "知识包不存在: beta-only"
+    assert chat_store.created_sessions == []
+
+
+def test_create_session_rejects_disabled_selected_ontology(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = _FakeChatStore()
+    _stub_session_create_dependencies(monkeypatch, chat_store)
+
+    class DisabledRegistry:
+        def refresh(self):
+            return 1
+
+        def get_ontology(self, ontology_id):
+            return SimpleNamespace(id=ontology_id, enabled=False)
+
+    monkeypatch.setattr("api.routes.sessions.get_ontology_registry", lambda: DisabledRegistry())
+
+    response = client.post(
+        "/agentic/sessions",
+        json={"selected_ontology_id": "disabled-ontology"},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "知识包已禁用: disabled-ontology"
+    assert chat_store.created_sessions == []
 
 
 def test_get_session_no_longer_exposes_delta_polling(tmp_path, monkeypatch):

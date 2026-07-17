@@ -15,7 +15,7 @@ import {
   Layers,
   FileText,
 } from 'lucide-react';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import OntologySelector from './OntologySelector';
 
 function safeFileSegment(value) {

@@ -11,7 +11,7 @@ import { Activity, FolderPlus, Info, Send } from 'lucide-react';
 import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
 import SessionPerformanceAnalysis from './SessionPerformanceAnalysis';
-import useAgenticStream from '../hooks/useAgenticStream';
+import useAgenticStream from '../features/chat/hooks/useAgenticStream';
 import { buildConversationTurns } from '../utils/conversationTurns';
 import { buildIndexedSegmentGroups } from '../utils/segmentGroups';
 import { parseSlashOntologyCommand } from '../utils/ontologyCommand';
@@ -20,7 +20,7 @@ import {
   getSessionPerformanceEntryState,
   getUnknownLocalObservabilityRuntime,
 } from '../utils/observabilityStatus';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 
 const DRAFT_SESSION_KEY = '__draft__';
 const DEFAULT_AGENT_MODE = 'quick';

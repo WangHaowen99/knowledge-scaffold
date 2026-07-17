@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Info, KeyRound, Loader2, Plus, RefreshCw, Server, Trash2, X } from 'lucide-react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import { friendlyRequestError } from '../utils/requestErrors';
 
 const DEFAULT_SCOPES = ['mcp:search', 'mcp:chat'];

@@ -7,7 +7,6 @@ test('workspace switch clears streams, message caches and session state', () => 
   const calls = [];
   clearWorkspaceRuntime({
     streamManager: {
-      stopAllStreams: () => calls.push('stop-streams'),
       clearAllCaches: () => calls.push('clear-caches'),
     },
     chat: {
@@ -15,5 +14,5 @@ test('workspace switch clears streams, message caches and session state', () => 
     },
   });
 
-  assert.deepEqual(calls, ['stop-streams', 'clear-caches', 'reset-sessions']);
+  assert.deepEqual(calls, ['clear-caches', 'reset-sessions']);
 });

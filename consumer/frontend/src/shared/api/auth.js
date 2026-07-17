@@ -3,6 +3,7 @@ const REFRESH_TOKEN_KEY = 'onto_agent_refresh_token';
 const WORKSPACE_KEY = 'onto_agent_workspace_id';
 export const AUTH_CLEARED_EVENT = 'onto-auth-cleared';
 export const DEFAULT_WORKSPACE_ID = '';
+let credentialEpoch = 0;
 
 export const getAuthToken = () => {
   try {
@@ -21,10 +22,13 @@ export const getRefreshToken = () => {
 };
 
 export const setAuthToken = (token, refreshToken) => {
+  credentialEpoch += 1;
   try {
     window.localStorage.setItem(TOKEN_KEY, token);
     if (refreshToken) {
       window.localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+    } else {
+      window.localStorage.removeItem(REFRESH_TOKEN_KEY);
     }
   } catch {
     // ignore storage errors
@@ -32,6 +36,7 @@ export const setAuthToken = (token, refreshToken) => {
 };
 
 export const clearAuthToken = () => {
+  credentialEpoch += 1;
   try {
     window.localStorage.removeItem(TOKEN_KEY);
     window.localStorage.removeItem(REFRESH_TOKEN_KEY);
@@ -61,9 +66,8 @@ export const setCurrentWorkspaceId = (workspaceId) => {
   }
 };
 
-const doAuthFetch = (url, options = {}) => {
+const doAuthFetch = (url, options = {}, workspaceId = getCurrentWorkspaceId()) => {
   const token = getAuthToken();
-  const workspaceId = getCurrentWorkspaceId();
   const headers = new Headers(options.headers || {});
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
@@ -80,20 +84,30 @@ let refreshInFlight = null;
 
 const refreshAuthToken = () => {
   if (!refreshInFlight) {
-    refreshInFlight = (async () => {
+    const refreshToken = getRefreshToken();
+    const requestEpoch = credentialEpoch;
+    const refreshRequest = {
+      epoch: requestEpoch,
+      promise: null,
+    };
+    refreshRequest.promise = (async () => {
       const res = await fetch('/auth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: getRefreshToken() }),
+        body: JSON.stringify({ refresh_token: refreshToken }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.token) {
         throw new Error('刷新登录令牌失败');
       }
+      if (credentialEpoch !== requestEpoch || getRefreshToken() !== refreshToken) {
+        throw new Error('登录状态已变化，忽略过期的令牌刷新结果');
+      }
       setAuthToken(data.token, data.refresh_token);
     })().finally(() => {
-      refreshInFlight = null;
+      if (refreshInFlight === refreshRequest) refreshInFlight = null;
     });
+    refreshInFlight = refreshRequest;
   }
   return refreshInFlight;
 };
@@ -102,7 +116,9 @@ const refreshAuthToken = () => {
 const REFRESH_EXEMPT_PATHS = ['/auth/refresh', '/auth/login'];
 
 export const authFetch = async (url, options = {}) => {
-  const res = await doAuthFetch(url, options);
+  const workspaceId = getCurrentWorkspaceId();
+  const requestCredentialEpoch = credentialEpoch;
+  const res = await doAuthFetch(url, options, workspaceId);
   if (
     res.status !== 401
     || !getRefreshToken()
@@ -110,12 +126,17 @@ export const authFetch = async (url, options = {}) => {
   ) {
     return res;
   }
+  const refreshRequest = refreshAuthToken();
   try {
-    await refreshAuthToken();
+    await refreshRequest.promise;
   } catch {
-    // 续期失败：清除全部凭据，把原 401 交还调用方走现有登出路径
-    clearAuthToken();
+    // 只有与本次请求同一代的 refresh 才能清理它看到的凭据。新登录请求即使
+    // 短暂加入旧 refresh，也不会被旧请求失败结果清空。
+    if (
+      refreshRequest.epoch === requestCredentialEpoch
+      && credentialEpoch === requestCredentialEpoch
+    ) clearAuthToken();
     return res;
   }
-  return doAuthFetch(url, options);
+  return doAuthFetch(url, options, workspaceId);
 };

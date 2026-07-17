@@ -5,9 +5,11 @@ import { ConfirmDialog, SkeletonState } from './UiFeedback';
 
 // 侧边栏左下固定的历史对话区块：所有页面常驻，标题 + 搜索框固定，列表内部滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
-  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned } = chat;
+  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned, activeSessionIds } = chat;
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const groups = useMemo(() => groupSessions(sessions, search), [sessions, search]);
 
   return (
@@ -29,7 +31,7 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
                     {s.title || '未命名对话'}
                   </span>
                   <span className="ch-meta">
-                    {['queued', 'running'].includes(s.active_run_status)
+                    {(activeSessionIds.includes(s.id) || ['queued', 'running'].includes(s.active_run_status))
                       ? `${s.active_run_status === 'queued' ? '排队中' : '运行中'} · `
                       : ''}
                     {formatTime(s.updated_at || s.created_at)}
@@ -45,8 +47,18 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
           </div>
         ))}
       </div>
+      {deleteError && <div className="form-error" role="alert">{deleteError}</div>}
       <ConfirmDialog open={Boolean(deleteId)} title="删除对话" description="删除后将无法恢复这条对话及其运行记录。"
-        confirmLabel="删除对话" danger onConfirm={() => { deleteChat(deleteId); setDeleteId(''); }} onCancel={() => setDeleteId('')} />
+        confirmLabel="删除对话" danger busy={deleting}
+        onConfirm={async () => {
+          setDeleting(true);
+          setDeleteError('');
+          const deleted = await deleteChat(deleteId);
+          setDeleting(false);
+          if (deleted) setDeleteId('');
+          else setDeleteError('删除失败，会话和运行状态已保留，请重试。');
+        }}
+        onCancel={() => { if (!deleting) setDeleteId(''); }} />
     </div>
   );
 }

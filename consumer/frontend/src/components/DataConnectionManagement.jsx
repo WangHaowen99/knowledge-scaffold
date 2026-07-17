@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle, Database, Loader2, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 
 const EMPTY_FORM = {
   id: '',

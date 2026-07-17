@@ -8,9 +8,11 @@ from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
 from agent.core.shared.modes import resolve_agent_mode
+from ontology.ontologies import get_ontology_registry
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
+from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
 
@@ -47,6 +49,24 @@ def _get_request_workspace_id():
 def _get_run_registry():
     from api.routes.workflows import get_run_registry
     return get_run_registry()
+
+
+def _resolve_selected_ontology_id(value, *, workspace_id: str):
+    """Validate and canonicalize the optional session ontology selection."""
+    selected_ontology_id = str(value or "").strip()
+    if not selected_ontology_id:
+        return None
+
+    with workspace_scope(workspace_id):
+        registry = get_ontology_registry()
+        registry.refresh()
+        ontology = registry.get_ontology(selected_ontology_id)
+
+    if ontology is None:
+        raise ValueError("知识包不存在: {}".format(selected_ontology_id))
+    if not bool(getattr(ontology, "enabled", False)):
+        raise ValueError("知识包已禁用: {}".format(selected_ontology_id))
+    return str(getattr(ontology, "id", selected_ontology_id) or selected_ontology_id)
 
 
 def _coerce_seq(value) -> int:
@@ -217,7 +237,8 @@ def create_session():
         {
             "title": "Optional session title",
             "agent_mode": "quick|thinking|multi_agent",
-            "llm_request_mode": "stream|sync"
+            "llm_request_mode": "stream|sync",
+            "selected_ontology_id": "Optional enabled ontology id"
         }
     """
     data = request.get_json() or {}
@@ -226,6 +247,13 @@ def create_session():
     llm_request_mode = normalize_llm_request_mode(data.get("llm_request_mode"))
     model_profile_id = str(data.get("model_profile_id") or "").strip()
     workspace_id = _get_request_workspace_id()
+    try:
+        selected_ontology_id = _resolve_selected_ontology_id(
+            data.get("selected_ontology_id"),
+            workspace_id=workspace_id,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     try:
         selected_profile = resolve_effective_llm_profile_config(
             model_profile_id or None,
@@ -236,14 +264,17 @@ def create_session():
         return jsonify({"error": str(exc)}), 400
 
     chat_store, execution_store = _get_user_stores()
+    metadata = {
+        "agent_mode": agent_mode,
+        "llm_request_mode": llm_request_mode,
+        "model_profile_id": selected_profile["id"],
+        "model_profile_ref": selected_profile.get("model_profile_ref"),
+    }
+    if selected_ontology_id:
+        metadata["selected_ontology_id"] = selected_ontology_id
     session = chat_store.create_session(
         title=title,
-        metadata={
-            "agent_mode": agent_mode,
-            "llm_request_mode": llm_request_mode,
-            "model_profile_id": selected_profile["id"],
-            "model_profile_ref": selected_profile.get("model_profile_ref"),
-        },
+        metadata=metadata,
     )
     for deleted_session_id in chat_store.prune_old_sessions(
         LimitsConfig.from_env().session_max_per_user_workspace

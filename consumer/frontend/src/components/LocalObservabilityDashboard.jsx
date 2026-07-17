@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Filter, RefreshCw } from 'lucide-react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import PerformanceRunDetail from './PerformanceRunDetail';
 import {
   DistributionBars,

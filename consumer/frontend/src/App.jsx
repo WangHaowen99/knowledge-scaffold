@@ -10,11 +10,11 @@ import ForceChangePasswordPage from './components/ForceChangePasswordPage';
 import ConfigurationCenter from './components/ConfigurationCenter';
 import UserManagement from './components/UserManagement';
 import LocalObservabilityDashboard from './components/LocalObservabilityDashboard';
-import useChatSessions from './hooks/useChatSessions';
-import useStreamManager from './hooks/useStreamManager';
-import useAuth from './hooks/useAuth';
-import createLogger from './utils/logger';
-import { authFetch, getCurrentWorkspaceId, setCurrentWorkspaceId } from './utils/auth';
+import useChatSessions from './features/chat/hooks/useChatSessions';
+import useStreamManager from './features/chat/hooks/useStreamManager';
+import useAuth from './features/auth/useAuth';
+import createLogger from './shared/lib/logger';
+import { authFetch, getCurrentWorkspaceId, setCurrentWorkspaceId } from './shared/api/auth';
 import './index.css';
 
 const logger = createLogger('App');

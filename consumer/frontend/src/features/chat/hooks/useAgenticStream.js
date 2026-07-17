@@ -2,14 +2,16 @@
  * Hook for handling agent-stream.v2 SSE streams.
  */
 
-import { useRef, useCallback, useEffect } from 'react';
-import createLogger from '../utils/logger';
+import { useRef, useCallback, useLayoutEffect } from 'react';
+import createLogger from '../../../shared/lib/logger';
 import {
   AGENT_STREAM_EVENT,
   applyAgentV2Event,
   closeOpenSegment,
   isAgentV2Envelope,
-} from '../utils/streamHelpers';
+} from '../lib/streamHelpers';
+import { messageStatusForTerminalRun } from '../lib/streamLifecycle';
+import { isMessageUpdateScopeCurrent } from '../lib/streamUpdateScope';
 
 const logger = createLogger('AgenticStream');
 
@@ -59,11 +61,30 @@ const useAgenticStream = ({
   sessionId,
   setMessages,
   streamManager,
+  scopeKey = '',
 }) => {
   const currentRunIdRef = useRef(null);
   const turnMessageIdsRef = useRef(new Map());
   const queuedMessageUpdatesRef = useRef(new Map());
   const scheduledFlushRef = useRef(null);
+  const scopeEpochRef = useRef(0);
+
+  const resetPendingUpdates = useCallback(() => {
+    cancelScheduledFrame(scheduledFlushRef.current);
+    scheduledFlushRef.current = null;
+    queuedMessageUpdatesRef.current = new Map();
+    turnMessageIdsRef.current = new Map();
+    currentRunIdRef.current = null;
+  }, []);
+
+  useLayoutEffect(() => {
+    scopeEpochRef.current += 1;
+    resetPendingUpdates();
+    return () => {
+      scopeEpochRef.current += 1;
+      resetPendingUpdates();
+    };
+  }, [resetPendingUpdates, scopeKey]);
 
   const resolveTargetSessionId = useCallback((targetSessionId = null) => {
     return targetSessionId || sessionId || null;
@@ -81,7 +102,10 @@ const useAgenticStream = ({
     const resolvedSessionId = resolveTargetSessionId(targetSessionId);
     if (!resolvedSessionId) return;
 
-    const queued = queuedMessageUpdatesRef.current.get(resolvedSessionId) || [];
+    const entry = queuedMessageUpdatesRef.current.get(resolvedSessionId);
+    const queued = entry && isMessageUpdateScopeCurrent(entry.epoch, scopeEpochRef.current)
+      ? entry.updaters
+      : [];
     if (queued.length === 0 && !immediateUpdater) {
       cancelScheduledFlushIfIdle();
       return;
@@ -103,11 +127,16 @@ const useAgenticStream = ({
       return;
     }
     queuedMessageUpdatesRef.current = new Map();
-    entries.forEach(([targetSessionId, updaters]) => {
-      if (!targetSessionId || !Array.isArray(updaters) || updaters.length === 0) {
+    entries.forEach(([targetSessionId, entry]) => {
+      if (
+        !targetSessionId
+        || !isMessageUpdateScopeCurrent(entry?.epoch, scopeEpochRef.current)
+        || !Array.isArray(entry?.updaters)
+        || entry.updaters.length === 0
+      ) {
         return;
       }
-      setMessages((prev) => applyMessageUpdaters(prev, updaters), targetSessionId);
+      setMessages((prev) => applyMessageUpdaters(prev, entry.updaters), targetSessionId);
     });
   }, [setMessages]);
 
@@ -121,6 +150,8 @@ const useAgenticStream = ({
   const queueMessageUpdate = useCallback((updater, targetSessionId = null, options = {}) => {
     const resolvedSessionId = resolveTargetSessionId(targetSessionId);
     if (!resolvedSessionId) return;
+    const updateEpoch = options.scopeEpoch ?? scopeEpochRef.current;
+    if (!isMessageUpdateScopeCurrent(updateEpoch, scopeEpochRef.current)) return;
 
     if (options.immediate) {
       flushQueuedMessageUpdates(resolvedSessionId, updater);
@@ -128,19 +159,17 @@ const useAgenticStream = ({
     }
 
     const nextQueued = new Map(queuedMessageUpdatesRef.current);
-    const existing = nextQueued.get(resolvedSessionId) || [];
-    nextQueued.set(resolvedSessionId, [...existing, updater]);
+    const existing = nextQueued.get(resolvedSessionId);
+    const existingUpdaters = existing && isMessageUpdateScopeCurrent(existing.epoch, updateEpoch)
+      ? existing.updaters
+      : [];
+    nextQueued.set(resolvedSessionId, {
+      epoch: updateEpoch,
+      updaters: [...existingUpdaters, updater],
+    });
     queuedMessageUpdatesRef.current = nextQueued;
     ensureScheduledFlush();
   }, [ensureScheduledFlush, flushQueuedMessageUpdates, resolveTargetSessionId]);
-
-  useEffect(() => {
-    return () => {
-      cancelScheduledFrame(scheduledFlushRef.current);
-      scheduledFlushRef.current = null;
-      queuedMessageUpdatesRef.current = new Map();
-    };
-  }, []);
 
   const clearRunTracking = useCallback((runId) => {
     if (!runId) return;
@@ -149,6 +178,10 @@ const useAgenticStream = ({
 
   const rebindRunTracking = useCallback((fromRunId, toRunId, targetSessionId = null, options = {}) => {
     if (!fromRunId || !toRunId || fromRunId === toRunId) return;
+    if (
+      options.scopeEpoch !== undefined
+      && !isMessageUpdateScopeCurrent(options.scopeEpoch, scopeEpochRef.current)
+    ) return;
 
     const trackedId = turnMessageIdsRef.current.get(fromRunId);
     if (trackedId) {
@@ -231,7 +264,7 @@ const useAgenticStream = ({
     }, targetSessionId, options);
   }, [queueMessageUpdate]);
 
-  const finalizeErroredRun = useCallback((runId, errorText, targetSessionId = null) => {
+  const finalizeErroredRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null) => {
     upsertTurnBubble(runId, (current) => {
       const next = applyAgentV2Event(current, {
         protocol: 'agent-stream.v2',
@@ -246,11 +279,11 @@ const useAgenticStream = ({
         ...next,
         streamSegments: closeOpenSegment(next.streamSegments || []),
       };
-    }, targetSessionId, { immediate: true });
+    }, targetSessionId, { immediate: true, scopeEpoch });
     clearRunTracking(runId);
   }, [clearRunTracking, upsertTurnBubble]);
 
-  const finalizeCancelledRun = useCallback((runId, errorText, targetSessionId = null) => {
+  const finalizeCancelledRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null) => {
     upsertTurnBubble(runId, (current) => {
       const next = applyAgentV2Event(current, {
         protocol: 'agent-stream.v2',
@@ -266,12 +299,16 @@ const useAgenticStream = ({
         ...next,
         streamSegments: closeOpenSegment(next.streamSegments || []),
       };
-    }, targetSessionId, { immediate: true });
+    }, targetSessionId, { immediate: true, scopeEpoch });
     clearRunTracking(runId);
   }, [clearRunTracking, upsertTurnBubble]);
 
   const createEventDispatcher = useCallback((runId, targetSessionId = null, runLifecycle = null) => {
     return (eventLabel, data) => {
+      if (
+        runLifecycle?.scopeEpoch !== undefined
+        && !isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)
+      ) return false;
       let envelope = null;
       if (eventLabel === AGENT_STREAM_EVENT && isAgentV2Envelope(data)) {
         envelope = data;
@@ -288,7 +325,10 @@ const useAgenticStream = ({
       const eventRunId = envelope.run_id || activeRunId;
       const isTerminalEnvelope = envelope.type === 'turn.finished';
       if (envelope.run_id && envelope.run_id !== activeRunId) {
-        rebindRunTracking(activeRunId, envelope.run_id, targetSessionId, { immediate: isTerminalEnvelope });
+        rebindRunTracking(activeRunId, envelope.run_id, targetSessionId, {
+          immediate: isTerminalEnvelope,
+          scopeEpoch: runLifecycle?.scopeEpoch,
+        });
       }
 
       if (runLifecycle) {
@@ -299,7 +339,7 @@ const useAgenticStream = ({
         eventRunId,
         (current) => applyAgentV2Event(current, envelope),
         targetSessionId,
-        { immediate: isTerminalEnvelope },
+        { immediate: isTerminalEnvelope, scopeEpoch: runLifecycle?.scopeEpoch },
       );
 
       if (isTerminalEnvelope) {
@@ -312,27 +352,39 @@ const useAgenticStream = ({
 
   const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle) => ({
     onEvent: createEventDispatcher(runId, targetSessionId, runLifecycle),
-    onComplete: () => {
+    onComplete: (terminalStatus = 'success') => {
+      if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
       const trackedRunId = runLifecycle.activeRunId || runId;
       upsertTurnBubble(trackedRunId, (current) => ({
         ...current,
         status: current.status === 'running' || current.status === 'queued'
-          ? 'finished'
+          ? messageStatusForTerminalRun(terminalStatus)
           : (current.status || 'finished'),
         isLoading: false,
         streamSegments: closeOpenSegment(current.streamSegments || []),
         currentSegmentType: null,
-      }), targetSessionId, { immediate: true });
+      }), targetSessionId, { immediate: true, scopeEpoch: runLifecycle.scopeEpoch });
       clearRunTracking(trackedRunId);
     },
     onError: (error, isAbort) => {
+      if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
       const trackedRunId = runLifecycle.activeRunId || runId;
       if (isAbort) {
-        finalizeCancelledRun(trackedRunId, 'Workflow cancelled by user', targetSessionId);
+        finalizeCancelledRun(
+          trackedRunId,
+          'Workflow cancelled by user',
+          targetSessionId,
+          runLifecycle.scopeEpoch,
+        );
         return;
       }
       logger.error('Agentic stream error', { error: error.message });
-      finalizeErroredRun(trackedRunId, error.message || 'Unknown stream error', targetSessionId);
+      finalizeErroredRun(
+        trackedRunId,
+        error.message || 'Unknown stream error',
+        targetSessionId,
+        runLifecycle.scopeEpoch,
+      );
     },
   }), [
     clearRunTracking,
@@ -347,7 +399,7 @@ const useAgenticStream = ({
 
     const activeSessionId = existingSessionId || sessionId;
     const runId = `agentic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const runLifecycle = { activeRunId: runId };
+    const runLifecycle = { activeRunId: runId, scopeEpoch: scopeEpochRef.current };
     currentRunIdRef.current = runId;
     const agentMode = typeof options?.agentMode === 'string'
       ? options.agentMode.trim()
@@ -425,7 +477,7 @@ const useAgenticStream = ({
     const normalizedRunId = String(runId || '').trim();
     if (!activeSessionId || !normalizedRunId || !streamManager?.resumeRunForSession) return false;
 
-    const runLifecycle = { activeRunId: normalizedRunId };
+    const runLifecycle = { activeRunId: normalizedRunId, scopeEpoch: scopeEpochRef.current };
     currentRunIdRef.current = normalizedRunId;
     upsertTurnBubble(normalizedRunId, (current) => ({
       ...current,

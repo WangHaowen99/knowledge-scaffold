@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowUpRight, BrainCircuit, Check, ChevronDown, Circle, GitBranch, PanelRightClose, PanelRightOpen, Sparkles, Wrench, X } from 'lucide-react';
-import useAgenticStream from '../hooks/useAgenticStream';
-import { authFetch } from '../utils/auth';
-import { getWorkspaceAgentMode, normalizeAgentMode } from '../utils/workspacePreferences';
+import useAgenticStream from '../features/chat/hooks/useAgenticStream';
+import { authFetch } from '../shared/api/auth';
+import { getWorkspaceAgentMode, normalizeAgentMode } from '../features/chat/lib/workspacePreferences';
 import {
-  isSessionResumableStatus,
   isSessionWaitingForUserStatus,
   resolveSessionPreferences,
-} from '../utils/sessionModel';
+} from '../features/chat/lib/sessionModel';
+import { listResumableSessions } from '../features/chat/lib/sessionScope';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
 import { formatTime, truncate } from './chatUtils';
@@ -132,8 +132,21 @@ function AgentModePicker({ value, onChange, disabled }) {
 // useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
 export default function ChatWorkspace({ chat, streamManager }) {
   const { workspaceId } = useAuthContext();
-  const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle } = chat;
-  const { sendAgentic, resumeAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
+  const {
+    sessions,
+    currentChatId,
+    messages,
+    setMessages,
+    createChat,
+    hydrateChat,
+    generateSessionTitle,
+  } = chat;
+  const { sendAgentic, resumeAgentic } = useAgenticStream({
+    sessionId: currentChatId,
+    setMessages,
+    streamManager,
+    scopeKey: workspaceId,
+  });
   const [input, setInput] = useState('');
   const inputRef = useRef(null);
   const [traceOpen, setTraceOpen] = useState(() => {
@@ -271,21 +284,28 @@ export default function ChatWorkspace({ chat, streamManager }) {
   }, [agentModeKey, current?.metadata, currentChatId, defaultModelProfileId, workspaceId]);
 
   useEffect(() => {
-    const runId = String(current?.active_run_id || '').trim();
-    const status = String(current?.active_run_status || '').trim();
-    if (!runId || !isSessionResumableStatus(status)) return;
-    const resumeKey = `${currentChatId}:${runId}`;
-    if (resumedRunsRef.current.has(resumeKey)) return;
-    resumedRunsRef.current.add(resumeKey);
-    void resumeAgentic({
-      runId,
-      targetSessionId: currentChatId,
-      afterSequence: current?.last_seq || 0,
-      status,
-    }).then((resumed) => {
-      if (!resumed) resumedRunsRef.current.delete(resumeKey);
-    });
-  }, [current?.active_run_id, current?.active_run_status, current?.last_seq, currentChatId, resumeAgentic]);
+    let cancelled = false;
+    for (const resumable of listResumableSessions(sessions)) {
+      const resumeKey = `${resumable.sessionId}:${resumable.runId}`;
+      if (resumedRunsRef.current.has(resumeKey)) continue;
+      resumedRunsRef.current.add(resumeKey);
+      void hydrateChat(resumable.sessionId).then((data) => {
+        if (cancelled || !data) {
+          resumedRunsRef.current.delete(resumeKey);
+          return false;
+        }
+        return resumeAgentic({
+          runId: String(data.active_run_id || resumable.runId),
+          targetSessionId: resumable.sessionId,
+          afterSequence: data.last_seq ?? resumable.afterSequence,
+          status: String(data.active_run_status || resumable.status),
+        });
+      }).then((resumed) => {
+        if (!resumed) resumedRunsRef.current.delete(resumeKey);
+      });
+    }
+    return () => { cancelled = true; };
+  }, [hydrateChat, resumeAgentic, sessions]);
 
   useEffect(() => {
     resumedRunsRef.current = new Set();
@@ -298,13 +318,15 @@ export default function ChatWorkspace({ chat, streamManager }) {
     let isNew = false;
     try {
       if (!sessionId) {
-        const session = await createChat({ llmRequestMode: 'stream', modelProfileId, agentMode });
+        const session = await createChat({
+          llmRequestMode: 'stream',
+          modelProfileId,
+          agentMode,
+          selectedOntologyId,
+        });
         if (!session) return;
         sessionId = session.id;
         isNew = true;
-        if (selectedOntologyId) {
-          safeLocalSet(`mw_session_ontology_${workspaceId}_${sessionId}`, selectedOntologyId);
-        }
       }
       sendAgentic(text, sessionId, { agentMode, modelProfileId, selectedOntologyId });
       setInput('');
@@ -321,6 +343,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
     finalizing: '收尾中',
     awaiting: '等待输入',
     cancelled: '已停止',
+    cancel_error: streamState.error || '停止失败，运行仍在继续',
     error: '连接异常',
   }[streamState.status] || '';
   const submitInteraction = (displayText, response) => {

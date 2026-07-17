@@ -1,5 +1,8 @@
 # Consumer 前端阶段 0 基线与迁移台账
 
+> 本文保留阶段 0 快照。阶段 1 的正式路径、状态所有权和验收结果见
+> [frontend-stage1-chat-runtime.md](frontend-stage1-chat-runtime.md)。
+
 ## 1. 基线信息
 
 - 记录日期：2026-07-15

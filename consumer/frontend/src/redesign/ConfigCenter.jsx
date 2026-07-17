@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import McpManagement from '../components/McpManagement';
 import { useAuthContext } from './useAuthContext';
 import { THEMES, applyTheme, getTheme } from './theme';

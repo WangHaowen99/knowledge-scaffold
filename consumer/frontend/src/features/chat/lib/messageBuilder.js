@@ -2,7 +2,7 @@
  * Utility for building chat messages from stored events.
  */
 
-import createLogger from './logger.js';
+import createLogger from '../../../shared/lib/logger.js';
 import {
   AGENT_STREAM_EVENT,
   applyAgentV2Event,
