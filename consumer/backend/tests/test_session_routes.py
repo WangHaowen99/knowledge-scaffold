@@ -519,11 +519,13 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
 
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
-    payload = response.get_json()
-    assert payload["output"] == complete_output
-    assert payload["output_size"] == len(complete_output.encode("utf-8"))
-    assert payload["tool_call_id"] == "call-output"
-    assert payload["run_id"] == "run-output"
+    assert response.mimetype == "text/plain"
+    assert response.get_data(as_text=True) == complete_output
+    assert response.headers["X-Tool-Output-Size"] == str(
+        len(complete_output.encode("utf-8"))
+    )
+    assert response.headers["X-Tool-Call-Id"] == "call-output"
+    assert response.headers["X-Tool-Output-Ref"] == artifact["output_ref"]
 
 
 def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monkeypatch):

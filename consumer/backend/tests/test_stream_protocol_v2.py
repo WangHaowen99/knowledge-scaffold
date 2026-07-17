@@ -100,6 +100,28 @@ def test_tool_finished_keeps_sse_preview_bounded_and_exposes_artifact_reference(
     assert "output" not in payload
 
 
+def test_tool_finished_does_not_persist_output_that_fits_in_preview():
+    persisted = []
+
+    def write_artifact(tool_call_id, output):
+        persisted.append((tool_call_id, output))
+        return {"output_ref": "a" * 32, "output_size": len(output.encode("utf-8"))}
+
+    with tool_output_artifact_writer_context(write_artifact):
+        payload = build_tool_finished_payload(
+            tool_name="execute_script",
+            tool_call_id="call-short",
+            status="completed",
+            raw_output="short output",
+            error=None,
+            elapsed_ms=3,
+        )
+
+    assert persisted == []
+    assert payload["output_truncated"] is False
+    assert "output_ref" not in payload
+
+
 def test_web_search_finished_keeps_bounded_structured_projection_when_preview_is_truncated():
     raw_output = json.dumps({
         "ok": True,
