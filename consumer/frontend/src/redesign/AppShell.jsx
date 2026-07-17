@@ -16,6 +16,7 @@ import ChatHistorySidebar from './ChatHistorySidebar';
 import KbSidebarTree from './KbSidebarTree';
 import useKbBrowser from './useKbBrowser';
 import { ConfirmDialog, SkeletonState, ToastNotice } from './UiFeedback';
+import { clearWorkspaceRuntime } from '../utils/workspaceRuntime';
 
 const KnowledgeWorkbench = lazy(() => import('./KnowledgeWorkbench'));
 const ConfigCenter = lazy(() => import('./ConfigCenter'));
@@ -58,9 +59,7 @@ export default function AppShell() {
 
   useEffect(() => {
     if (status !== 'authenticated') return undefined;
-    streamManager.stopAllStreams();
-    streamManager.clearAllCaches();
-    chat.resetSessionsState();
+    clearWorkspaceRuntime({ streamManager, chat });
     const t = setTimeout(() => chat.loadSessions(false), 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps

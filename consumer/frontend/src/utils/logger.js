@@ -10,7 +10,7 @@ const LOG_LEVELS = {
   error: 3,
 };
 
-const currentLevel = LOG_LEVELS[import.meta.env.VITE_LOG_LEVEL] ?? LOG_LEVELS.info;
+const currentLevel = LOG_LEVELS[import.meta.env?.VITE_LOG_LEVEL] ?? LOG_LEVELS.info;
 
 const formatMessage = (level, context, message, data) => {
   const timestamp = new Date().toISOString();

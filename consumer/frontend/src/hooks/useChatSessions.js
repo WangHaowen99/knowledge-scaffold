@@ -10,6 +10,12 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import createLogger from '../utils/logger';
 import { authFetch, getCurrentWorkspaceId } from '../utils/auth';
 import { buildMessagesFromEvents, historyToMessages } from '../utils/messageBuilder';
+import {
+  beginSessionPinUpdate,
+  commitSessionPinUpdate,
+  rollbackSessionPinUpdate,
+  sortSessions,
+} from '../utils/sessionModel';
 
 const logger = createLogger('ChatSessions');
 
@@ -28,16 +34,17 @@ const persistSelectedSession = (sessionId) => {
   }
 };
 
-const sortSessions = (items) => [...items].sort((left, right) => {
-  const pinDelta = Number(Boolean(right?.metadata?.pinned)) - Number(Boolean(left?.metadata?.pinned));
-  if (pinDelta) return pinDelta;
-  return String(right?.updated_at || right?.created_at || '').localeCompare(
-    String(left?.updated_at || left?.created_at || ''),
-  );
-});
-
 const useChatSessions = (streamManager) => {
-  const [sessions, setSessions] = useState([]);
+  const [sessions, setSessionsState] = useState([]);
+  const sessionsRef = useRef([]);
+  const pinTransactionsRef = useRef(new Map());
+  const setSessions = useCallback((updater) => {
+    setSessionsState((previous) => {
+      const next = typeof updater === 'function' ? updater(previous) : updater;
+      sessionsRef.current = next;
+      return next;
+    });
+  }, []);
   // currentSession holds both id and messages atomically to avoid blank-flash on switch
   const [currentSession, setCurrentSession] = useState({ id: null, messages: [] });
   const currentChatId = currentSession.id;
@@ -117,7 +124,7 @@ const useChatSessions = (streamManager) => {
       logger.error('Failed to open chat', { id, error: err.message });
       return null;
     }
-  }, []);
+  }, [setSessions]);
 
   const createChat = useCallback(async (options = {}) => {
     logger.info('Creating new chat');
@@ -161,7 +168,7 @@ const useChatSessions = (streamManager) => {
       logger.error('Failed to create chat', { error: err.message });
       return null;
     }
-  }, []);
+  }, [setSessions]);
 
   const deleteChat = useCallback(async (id, onDeleted) => {
     logger.info(`Deleting chat: ${id}`);
@@ -187,7 +194,7 @@ const useChatSessions = (streamManager) => {
     } catch (err) {
       logger.error('Failed to delete chat', { id, error: err.message });
     }
-  }, [currentChatId]);
+  }, [currentChatId, setSessions]);
 
   const loadSessions = useCallback(async (selectLatest = false) => {
     logger.info('Loading chat sessions', { selectLatest });
@@ -200,20 +207,21 @@ const useChatSessions = (streamManager) => {
       if (!res.ok) throw new Error('Failed to load chats');
       const data = await res.json();
       const list = data.sessions || [];
+      const sortedList = sortSessions(list);
 
       logger.debug(`Loaded ${list.length} sessions`);
-      setSessions(sortSessions(list));
+      setSessions(sortedList);
 
       let nextId = currentChatIdRef.current;
 
-      if (selectLatest && list.length > 0) {
-        nextId = list[0].id;
+      if (selectLatest && sortedList.length > 0) {
+        nextId = sortedList[0].id;
       } else {
         const persistedId = readSelectedSession();
-        if (persistedId && list.some((session) => session.id === persistedId)) {
+        if (persistedId && sortedList.some((session) => session.id === persistedId)) {
           nextId = persistedId;
-        } else if (!nextId || !list.some((session) => session.id === nextId)) {
-          nextId = list[0]?.id || null;
+        } else if (!nextId || !sortedList.some((session) => session.id === nextId)) {
+          nextId = sortedList[0]?.id || null;
         }
       }
 
@@ -230,7 +238,7 @@ const useChatSessions = (streamManager) => {
     } finally {
       setLoadingSessions(false);
     }
-  }, [openChat]);
+  }, [openChat, setSessions]);
 
   /**
    * Start a new chat interface without creating backend record.
@@ -248,7 +256,7 @@ const useChatSessions = (streamManager) => {
     currentChatIdRef.current = null;
     setSessions([]);
     setCurrentSession({ id: null, messages: [] });
-  }, []);
+  }, [setSessions]);
 
   /**
    * Select a chat session.
@@ -309,27 +317,39 @@ const useChatSessions = (streamManager) => {
     } catch (err) {
       logger.error('Failed to generate session title', { error: err.message });
     }
-  }, []);
+  }, [setSessions]);
 
   const setPinned = useCallback(async (sessionId, pinned) => {
     if (!sessionId || typeof pinned !== 'boolean') return false;
+
+    const transactionId = Symbol(sessionId);
+    const transaction = beginSessionPinUpdate(sessionsRef.current, sessionId, pinned);
+    pinTransactionsRef.current.set(sessionId, { transactionId, transaction });
+    setSessions(transaction.optimistic);
+
     try {
       const res = await authFetch(`/agentic/sessions/${sessionId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pinned }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) throw new Error(`Failed to update session pin (${res.status})`);
       const updated = await res.json();
-      setSessions((prev) => sortSessions(
-        prev.map((session) => (session.id === sessionId ? { ...session, ...updated } : session)),
-      ));
+
+      if (pinTransactionsRef.current.get(sessionId)?.transactionId === transactionId) {
+        setSessions((prev) => commitSessionPinUpdate(prev, sessionId, updated));
+        pinTransactionsRef.current.delete(sessionId);
+      }
       return true;
     } catch (err) {
       logger.error('Failed to update session pin', { sessionId, error: err.message });
+      if (pinTransactionsRef.current.get(sessionId)?.transactionId === transactionId) {
+        setSessions((prev) => rollbackSessionPinUpdate(prev, transaction));
+        pinTransactionsRef.current.delete(sessionId);
+      }
       return false;
     }
-  }, []);
+  }, [setSessions]);
 
   return {
     sessions,
