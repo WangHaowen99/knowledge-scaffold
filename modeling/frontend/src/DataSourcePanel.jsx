@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getDataSource, getSettings, saveDataSource } from './api.js';
 import {
   PROVIDER_OPTIONS,
@@ -7,6 +7,8 @@ import {
   dataSourceToForm,
   providerLabel,
 } from './data-source-form.js';
+import { runGraphImportContextRequest } from './graph-import-form.js';
+import GraphImportPanel from './GraphImportPanel.jsx';
 
 const gridStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' };
 
@@ -67,18 +69,34 @@ function pairText(property, value) {
 
 export default function DataSourcePanel({ projectId, onAdvance }) {
   const [form, setForm] = useState(null);
+  const [saved, setSaved] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [message, setMessage] = useState('');
+  const projectContextRef = useRef(projectId);
+  projectContextRef.current = projectId;
 
   useEffect(() => {
-    setForm(null); setErr(''); setMessage('');
-    Promise.all([getDataSource(projectId), getSettings().catch(() => ({ evalBinding: {} }))])
-      .then(([source, settings]) => {
-        const dataSource = source.dataSource || null;
-        setForm(dataSourceToForm(dataSource, settings.evalBinding || {}));
-      })
-      .catch((e) => setErr(e.message));
+    let active = true;
+    const contextKey = projectId;
+    setForm(null); setSaved(null); setBusy(false); setErr(''); setMessage('');
+    void runGraphImportContextRequest({
+      contextKey,
+      isCurrent: (key) => active && projectContextRef.current === key,
+      request: () => Promise.all([
+        getDataSource(contextKey),
+        getSettings().catch(() => ({ evalBinding: {} })),
+      ]),
+    }).then((outcome) => {
+      if (outcome.kind !== 'current') return;
+      const [source, settings] = outcome.value;
+      const dataSource = source.dataSource || null;
+      setSaved(dataSource);
+      setForm(dataSourceToForm(dataSource, settings.evalBinding || {}));
+    }).catch((e) => {
+      if (active && projectContextRef.current === contextKey) setErr(e.message);
+    });
+    return () => { active = false; };
   }, [projectId]);
 
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
@@ -88,16 +106,27 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       setErr(validationError);
       return;
     }
+    const contextKey = projectContextRef.current;
+    const submittedForm = form;
     setBusy(true); setErr(''); setMessage('');
     try {
-      const result = await saveDataSource(projectId, dataSourceFormPayload(form));
+      const outcome = await runGraphImportContextRequest({
+        contextKey,
+        isCurrent: (key) => projectContextRef.current === key,
+        request: () => saveDataSource(contextKey, dataSourceFormPayload(submittedForm)),
+      });
+      if (outcome.kind === 'stale') return;
+      const result = outcome.value;
+      setSaved(result.dataSource);
       setForm(dataSourceToForm(result.dataSource));
-      setMessage(form.mode === 'none' ? '配置已保存' : '连接测试通过，评测连接已同步，配置已保存');
-      onAdvance?.(result.dataSource);
+      setMessage(submittedForm.mode === 'none' ? '配置已保存' : '连接测试通过，评测连接已同步，配置已保存');
+      if (result.dataSource.mode !== 'connection' || result.dataSource.provider !== 'neo4j') {
+        onAdvance?.(result.dataSource);
+      }
     } catch (e) {
-      setErr(e.message);
+      if (projectContextRef.current === contextKey) setErr(e.message);
     } finally {
-      setBusy(false);
+      if (projectContextRef.current === contextKey) setBusy(false);
     }
   };
 
@@ -162,6 +191,15 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
         </button>
       </div>
 
+      {saved?.mode === 'connection' && saved.provider === 'neo4j' && (
+        <>
+          <GraphImportPanel projectId={projectId} dataSource={saved} />
+          <div className="gi-continue">
+            <span>图数据可现在导入，也可以稍后回到本步骤继续导入。</span>
+            <button className="btn btn-p" onClick={() => onAdvance?.(saved)}>进入评测用例录入 →</button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

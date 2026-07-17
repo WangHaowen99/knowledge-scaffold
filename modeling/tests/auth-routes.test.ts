@@ -5,8 +5,14 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
+import multipart from '@fastify/multipart';
 import { generateKeyPair, exportJWK, SignJWT, type CryptoKey } from 'jose';
 import { neo4jInput } from './helpers/data-source-fixtures.js';
+import {
+  graphMapping,
+  graphPackageSpec,
+  workbookBuffer,
+} from './helpers/graph-import-fixtures.js';
 
 // 路由层状态码映射的集成测试：真实 registerRoutes + app.inject，上游用假 auth-server。
 // config 在 import 时读 process.env，因此先起假服务、设好 env，再动态 import routes。
@@ -23,6 +29,7 @@ const routes = new Map<string, { status: number; body?: string; contentType?: st
 const consumerRequests: string[] = [];
 const testedDataSources: unknown[] = [];
 const syncedDataSources: any[] = [];
+const graphImportTasks: Array<() => Promise<void>> = [];
 
 before(async () => {
   const pair = await generateKeyPair('RS256');
@@ -59,6 +66,7 @@ before(async () => {
 
   const { registerRoutes } = await import('../src/routes.js');
   app = Fastify({ logger: false });
+  await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
   await app.register(registerRoutes, {
     dataSourceConnectionTester: async (source: unknown) => { testedDataSources.push(source); },
     dataSourceConsumerSync: async (options: any) => {
@@ -67,6 +75,14 @@ before(async () => {
         workspaceId: options.workspaceId,
         ontologyId: options.ontologyId,
       };
+    },
+    graphImportExecutionDependencies: {
+      inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+      schedule: (task: () => Promise<void>) => { graphImportTasks.push(task); },
+      writer: async (plan: any) => ({
+        nodeCount: plan.nodeCount,
+        relationshipCount: plan.relationshipCount,
+      }),
     },
   });
   await app.ready();
@@ -86,6 +102,18 @@ function signToken(claims: Record<string, unknown> = {}) {
     .setSubject('alice')
     .setExpirationTime('15m')
     .sign(privateKey);
+}
+
+function multipartExcel(filename: string, buffer: Buffer) {
+  const boundary = `----modeling-${Date.now()}`;
+  return {
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    payload: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name=file; filename=${filename}\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`),
+      buffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]),
+  };
 }
 
 // ---------------- /auth/login ----------------
@@ -267,4 +295,89 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   assert.equal(updated.statusCode, 200, updated.body);
   project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
   assert.equal(project.json().project.stage, 'testcases');
+});
+test('图导入 API：覆盖上传、校验、密码错误与后台状态映射', async () => {
+  graphImportTasks.length = 0;
+  const token = await signToken();
+  const authorization = `Bearer ${token}`;
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers: { authorization },
+    payload: { name: '图导入 API 项目' },
+  });
+  const projectId = created.json().project.id;
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  const { saveProjectDataSource } = await import('../src/evaluation/data-source-repo.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    ...graphPackageSpec,
+    id: 'graph-api',
+    objects: graphPackageSpec.objects.map((object) => object.key === 'Part'
+      ? { ...object, relations: [{ relation: 'contains', target: 'BOMItem' }] }
+      : object),
+  }, { covered: [], uncovered: [] });
+  saveProjectDataSource({
+    projectId, mode: 'connection', provider: 'neo4j', workspaceId: 'shadow', ontologyId: 'ontology-001',
+    config: {
+      uri: 'bolt://neo4j:7687', username: 'neo4j', database: 'domain', has_password: true,
+      workspace_property: 'd2o_workspace_id', workspace_value: 'workspace-001',
+      ontology_property: 'd2o_ontology_id', ontology_value: 'ontology-001',
+    },
+  });
+  const graphBuffer = workbookBuffer({
+    Part: [['part_id', 'relation_code', 'name'], ['P-1', 'R-1', '零件']],
+    BOMItem: [['item_id', 'parent_code', 'name'], ['I-1', 'R-1', 'BOM 行']],
+  });
+  const form = multipartExcel('graph.xlsx', graphBuffer);
+  const uploaded = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/uploads`,
+    headers: { authorization, ...form.headers },
+    payload: form.payload,
+  });
+  assert.equal(uploaded.statusCode, 201, uploaded.body);
+  const upload = uploaded.json().upload;
+  assert.deepEqual(upload.sheets.map((sheet: any) => sheet.name), ['Part', 'BOMItem']);
+  assert.equal(upload.schema.relations[0].relationName, 'contains');
+  assert.equal('storedPath' in upload, false);
+  const validated = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/validate`,
+    headers: { authorization },
+    payload: { mapping: graphMapping },
+  });
+  assert.equal(validated.statusCode, 200, validated.body);
+  assert.deepEqual(validated.json().validation.counts, {
+    nodeCount: 2,
+    relationshipCount: 1,
+    skippedCount: 0,
+    skippedBlankCount: 0,
+    skippedUnmatchedCount: 0,
+  });
+
+  const noPassword = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/execute`,
+    headers: { authorization },
+    payload: { mapping: graphMapping, password: '' },
+  });
+  assert.equal(noPassword.statusCode, 400);
+  assert.match(noPassword.json().error, /Password/);
+  const started = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/execute`,
+    headers: { authorization },
+    payload: { mapping: graphMapping, password: 'one-time-secret' },
+  });
+  assert.equal(started.statusCode, 202, started.body);
+  assert.equal(started.json().run.status, 'running');
+  assert.equal(graphImportTasks.length, 1);
+
+  const runningHistory = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/graph-imports`, headers: { authorization },
+  });
+  assert.equal(runningHistory.json().imports[0].status, 'running');
+  await graphImportTasks.shift()!();
+  const finishedHistory = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/graph-imports`, headers: { authorization },
+  });
+  assert.equal(finishedHistory.json().imports[0].status, 'done');
 });

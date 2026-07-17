@@ -21,6 +21,16 @@ import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
 import type { DataSourceConsumerSync } from './evaluation/data-source-consumer-sync.js';
+import {
+  cancelGraphImportUpload,
+  executeGraphImport,
+  GraphImportAlreadyRunningError,
+  getGraphImportHistory,
+  uploadGraphImportExcel,
+  validateGraphImportUpload,
+  type GraphImportExecutionDependencies,
+} from './graph-import/service.js';
+import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
 import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
@@ -29,6 +39,7 @@ import type { DataDictTable } from './types.js';
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
   dataSourceConsumerSync?: DataSourceConsumerSync;
+  graphImportExecutionDependencies?: GraphImportExecutionDependencies;
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
@@ -511,6 +522,97 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       } catch (e) {
         return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
       }
+    });
+
+
+    // Neo4j 图数据导入：Excel 仅短期暂存，Password 只存在于本次后台任务的进程内存中。
+    r.post('/api/projects/:id/graph-import/uploads', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      try {
+        const file = await (req as any).file();
+        if (!file) return reply.code(400).send({ error: '缺少 Excel 文件' });
+        const upload = uploadGraphImportExcel({
+          projectId: c.p.id,
+          owner: req.user!.username,
+          filename: file.filename,
+          buffer: await file.toBuffer(),
+        });
+        return reply.code(201).send({ upload });
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    r.post('/api/projects/:id/graph-import/uploads/:uploadId/validate', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { mapping } = (req.body ?? {}) as any;
+      if (!mapping) return reply.code(400).send({ error: 'mapping 必填' });
+      try {
+        const validation = validateGraphImportUpload({
+          projectId: c.p.id,
+          owner: req.user!.username,
+          uploadId: (req.params as any).uploadId,
+          mapping,
+        });
+        return { validation };
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    r.post('/api/projects/:id/graph-import/uploads/:uploadId/execute', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { mapping, password, replaceExisting } = (req.body ?? {}) as any;
+      if (!mapping) return reply.code(400).send({ error: 'mapping 必填' });
+      return withLock(`${c.p.id}:graph-import`, reply, async () => {
+        try {
+          const started = await executeGraphImport({
+            projectId: c.p.id,
+            owner: req.user!.username,
+            uploadId: (req.params as any).uploadId,
+            mapping,
+            password: String(password ?? ''),
+            replaceExisting: replaceExisting === true,
+          }, options.graphImportExecutionDependencies);
+          return reply.code(202).send(started);
+        } catch (error) {
+          if (error instanceof GraphIsolationDataExistsError) {
+            return reply.code(409).send({
+              code: error.code,
+              error: error.message,
+              existing: error.existing,
+            });
+          }
+          if (error instanceof GraphImportAlreadyRunningError) {
+            return reply.code(409).send({
+              code: error.code,
+              error: error.message,
+              run: error.run,
+            });
+          }
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    });
+
+    r.delete('/api/projects/:id/graph-import/uploads/:uploadId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      cancelGraphImportUpload({
+        projectId: c.p.id,
+        owner: req.user!.username,
+        uploadId: (req.params as any).uploadId,
+      });
+      return { ok: true };
+    });
+
+    r.get('/api/projects/:id/graph-imports', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { imports: getGraphImportHistory(c.p.id) };
     });
 
     // ---- 节点 9 评测用例录入 ----

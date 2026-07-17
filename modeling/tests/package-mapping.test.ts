@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { extractGraphImportSchema } from '../src/graph-import/package-schema.js';
 import { assertObjectDataMappings, findObjectDataMappingProblems } from '../src/workflow/data-mapping.js';
 import { runFormatChecks } from '../src/workflow/package-check.js';
 import { renderPackage } from '../src/workflow/package-render.js';
@@ -97,6 +98,11 @@ test('package mapping：同一来源 Sheet 可以支持多个实体，并写入�
   assert.match(files['objects/index.md'], /\| DataObject \| 数据实体 \| .* \| DataSheet \|/);
   assert.match(files['objects/index.md'], /\| ConceptObject \| 概念实体 \| .* \| DataSheet \|/);
 
+  const graphSchema = extractGraphImportSchema(spec, files);
+  assert.deepEqual(
+    graphSchema.objects.map((object) => [object.key, object.defaultSheet]),
+    [['DataObject', 'DataSheet'], ['ConceptObject', 'DataSheet']],
+  );
 });
 
 test('package mapping format：纯渲染产物符合语义 mapping 契约', () => {

@@ -9,12 +9,16 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { getDb } from './db/index.js';
 import { registerRoutes } from './routes.js';
+import { cleanupExpiredGraphImportUploads } from './graph-import/upload-store.js';
+import { failRunningGraphImportRuns } from './graph-import/repo.js';
 
 async function main() {
   getDb(); // 初始化 schema
-  const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
+  failRunningGraphImportRuns('modeling 服务已重启，后台图数据导入已中断，请重新上传 Excel 并重试');
+  cleanupExpiredGraphImportUploads();
+  const app = Fastify({ logger: true, bodyLimit: 55 * 1024 * 1024 });
   await app.register(cors, { origin: true });
-  await app.register(multipart, { limits: { fileSize: 30 * 1024 * 1024 } });
+  await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
   await registerRoutes(app);
   await registerFrontend(app);
   await app.listen({ port: config.port, host: '0.0.0.0' });
