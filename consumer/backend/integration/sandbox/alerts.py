@@ -41,4 +41,3 @@ def log_sandbox_security_fallback(
             "script_path": script_path or "",
         },
     )
-

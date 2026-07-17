@@ -45,4 +45,3 @@ def sanitize_public_text(text: object, *sensitive_values: object) -> str:
         if secret:
             sanitized = sanitized.replace(secret, "[REDACTED]")
     return sanitized
-

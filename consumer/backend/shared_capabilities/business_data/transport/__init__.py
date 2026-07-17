@@ -9,4 +9,3 @@ __all__ = [
     "iter_sse_data",
     "sanitize_public_text",
 ]
-

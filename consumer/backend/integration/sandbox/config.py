@@ -104,4 +104,3 @@ def load_sandbox_config() -> SandboxConfig:
                 raw, default, rstrip_slash=field.name in _PATH_FIELDS
             )
     return SandboxConfig(**values)
-

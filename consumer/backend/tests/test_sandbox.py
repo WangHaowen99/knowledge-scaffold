@@ -725,4 +725,3 @@ class _FakeResponse:
 
     def close(self):
         self.closed = True
-

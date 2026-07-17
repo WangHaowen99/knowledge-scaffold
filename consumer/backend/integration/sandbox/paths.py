@@ -25,4 +25,3 @@ def to_sandbox_script_path(
     """Convert a validated project-relative script path to a sandbox path."""
     normalized = normalize_project_relative(project_relative)
     return posix_path_string((project_root.resolve() / normalized).resolve())
-

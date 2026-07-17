@@ -11,4 +11,3 @@ __all__ = [
     "NL2SQLHttpSearchAdapter",
     "NL2SQLTemplateSearchAdapter",
 ]
-

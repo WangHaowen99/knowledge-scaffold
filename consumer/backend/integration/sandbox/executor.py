@@ -147,4 +147,3 @@ class SandboxScriptExecutor:
             stdout=result.stdout,
             stderr=result.stderr,
         )
-

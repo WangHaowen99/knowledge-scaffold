@@ -177,4 +177,3 @@ def _response_detail(response: httpx.Response) -> str:
     if isinstance(payload, dict):
         return str(payload.get("error") or payload.get("detail") or payload)
     return str(payload)
-

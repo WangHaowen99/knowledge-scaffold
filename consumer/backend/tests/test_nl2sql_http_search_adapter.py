@@ -51,4 +51,3 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
         "message": "查询成功，返回 1 行数据",
     }
     assert events[3] == {"type": "done", "content": "查询流程结束"}
-

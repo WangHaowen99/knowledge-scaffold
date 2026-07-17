@@ -19,4 +19,3 @@ COPY runtime/ /app/sandbox-runtime/python/
 
 RUN PYTHONPATH=/app/sandbox-runtime/python \
     /usr/bin/python3 -c "import requests; from shared_capabilities.business_data import ProviderResult; from shared_capabilities.ontology_script_sdk import DataProviderClient"
-

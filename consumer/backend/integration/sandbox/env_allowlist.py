@@ -35,4 +35,3 @@ def build_script_env(
                 continue
             env[name] = str(value)
     return env
-

@@ -446,4 +446,3 @@ def test_builtin_registry_constructs_all_agent_providers():
         provider = create_provider_client(_connection(name))
         assert provider is not None
         provider.close()
-

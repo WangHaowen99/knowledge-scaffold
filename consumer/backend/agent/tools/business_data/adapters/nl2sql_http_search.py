@@ -56,4 +56,3 @@ def _format_output(result) -> dict:
     else:
         output["message"] = "查询失败: {}".format(result.error or "未知错误")
     return output
-

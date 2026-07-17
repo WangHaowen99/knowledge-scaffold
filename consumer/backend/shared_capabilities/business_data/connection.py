@@ -81,5 +81,3 @@ class EffectiveConnection:
             "auth": self.auth.to_dict(),
             "options": dict(self.options),
         }
-
-

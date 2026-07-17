@@ -219,4 +219,3 @@ def _coerce(v):
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     return str(v)
-

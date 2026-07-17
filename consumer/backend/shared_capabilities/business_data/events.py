@@ -22,5 +22,3 @@ def iter_query_events(provider: QueryProvider, question: str) -> Iterator[Provid
     else:
         yield ProviderEvent(type="error", content=result.error, result=result)
     yield ProviderEvent(type="done")
-
-

@@ -34,5 +34,3 @@ def build_effective_connection(
         auth=auth,
         options=config,
     )
-
-
