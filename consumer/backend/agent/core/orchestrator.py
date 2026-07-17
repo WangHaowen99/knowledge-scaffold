@@ -39,10 +39,11 @@ from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_queue import TokenBucketRateLimiter
 from persistence.run_store import RunStore
 from persistence.run_store import RunStatus
-from persistence.chat_store import ChatStore
+from persistence.chat_store import ChatStore, ToolOutputLimits
 from persistence.execution_store import ExecutionStore
 from workspace.user_store_manager import UserStoreManager
 from agent.sub_agents.manager import clear_subagent_manager
+from agent.tools.events import tool_output_artifact_writer_context
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
@@ -54,6 +55,22 @@ from agent.exceptions import WorkflowCancelledError
 logger = get_logger("orchestrator")
 
 _PUBLIC_LLM_ERROR_DETAIL_MAX_LENGTH = 800
+
+
+def _build_tool_output_artifact_writer(chat_store, *, session_id: str, run_id: str):
+    store_tool_output = getattr(chat_store, "store_tool_output", None)
+    if not callable(store_tool_output):
+        return None
+
+    def write(tool_call_id: Optional[str], output: str):
+        return store_tool_output(
+            session_id=session_id,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            output=output,
+        )
+
+    return write
 
 
 def _public_workflow_error_message(exc: Exception) -> str:
@@ -328,7 +345,10 @@ class AgenticOrchestrator:
         self.run_store = run_store or RunStore()
         if chat_store is None or execution_store is None:
             app_config = AppConfig.from_env()
-        self.chat_store = chat_store or ChatStore(app_config.chat_storage_dir)
+        self.chat_store = chat_store or ChatStore(
+            app_config.chat_storage_dir,
+            tool_output_limits=ToolOutputLimits.from_config(self.agent_config.limits),
+        )
         self.execution_store = execution_store or ExecutionStore(app_config.execution_storage_dir)
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
@@ -380,9 +400,21 @@ class AgenticOrchestrator:
             state: AgenticState = dict(initial_state or {})
             workspace_id = str(state.get("workspace_id") or "").strip() or None
             session_id = str(state.get("session_id") or "")
+            run_id = str(state.get("run_id") or "")
             turn_id = int(state.get("current_turn_id") or 0)
             try:
-                with workspace_scope(workspace_id):
+                artifact_chat_store, _artifact_execution_store = self._get_stores(
+                    str(state.get("user_id") or "").strip() or None,
+                    workspace_id,
+                )
+                artifact_writer = _build_tool_output_artifact_writer(
+                    artifact_chat_store,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                with workspace_scope(workspace_id), tool_output_artifact_writer_context(
+                    artifact_writer
+                ):
                     engine = AgentLoopEngine(
                         memory_manager=memory_manager,
                         agent_config=self.agent_config,
@@ -878,13 +910,19 @@ class AgenticOrchestrator:
                     from config.system_config import load_system_config
                     sys_config = load_system_config()
                     project_root = str(sys_config["storage"]["project_root"])
-                    sse_events, exec_result = run_direct_script(
-                        decision=decision,
-                        runtime_context=runtime_ctx,
-                        project_root=project_root,
-                        timeout_seconds=self.agent_config.execute_script_timeout,
-                        observer=observer,
+                    artifact_writer = _build_tool_output_artifact_writer(
+                        chat_store,
+                        session_id=session_id,
+                        run_id=run_id,
                     )
+                    with tool_output_artifact_writer_context(artifact_writer):
+                        sse_events, exec_result = run_direct_script(
+                            decision=decision,
+                            runtime_context=runtime_ctx,
+                            project_root=project_root,
+                            timeout_seconds=self.agent_config.execute_script_timeout,
+                            observer=observer,
+                        )
                     chat_store.append_events(session_id, sse_events)
                     for event in sse_events:
                         yield event

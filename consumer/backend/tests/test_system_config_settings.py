@@ -769,6 +769,11 @@ def test_limits_config_uses_env_when_ops_config_field_is_missing(tmp_path, monke
     monkeypatch.setenv("MODEL_PROFILE_MAX_COUNT", "12")
     monkeypatch.setenv("MODEL_INPUT_TOKEN_LIMIT", "30000")
     monkeypatch.setenv("MODEL_OUTPUT_TOKEN_LIMIT", "80000")
+    monkeypatch.setenv("TOOL_OUTPUT_MAX_BYTES", "1234")
+    monkeypatch.setenv("TOOL_OUTPUT_RUN_MAX_BYTES", "5678")
+    monkeypatch.setenv("TOOL_OUTPUT_SESSION_MAX_BYTES", "9012")
+    monkeypatch.setenv("TOOL_OUTPUT_RUN_MAX_COUNT", "13")
+    monkeypatch.setenv("TOOL_OUTPUT_SESSION_MAX_COUNT", "14")
 
     limits = LimitsConfig.from_env()
 
@@ -783,6 +788,11 @@ def test_limits_config_uses_env_when_ops_config_field_is_missing(tmp_path, monke
     assert limits.model_profile_max_count == 12
     assert not hasattr(limits, "model_input_token_limit")
     assert limits.model_output_token_limit == 80000
+    assert limits.tool_output_max_bytes == 1234
+    assert limits.tool_output_run_max_bytes == 5678
+    assert limits.tool_output_session_max_bytes == 9012
+    assert limits.tool_output_run_max_count == 13
+    assert limits.tool_output_session_max_count == 14
 
 
 def test_model_profiles_do_not_expose_or_accept_token_hard_limits(tmp_path, monkeypatch):

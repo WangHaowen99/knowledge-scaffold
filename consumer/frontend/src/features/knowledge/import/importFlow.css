@@ -1,0 +1,102 @@
+.kb-import-dialog {
+  display: grid;
+  gap: 14px;
+}
+
+.kb-import-dialog p {
+  margin: 0;
+  color: var(--ink2);
+  line-height: 1.65;
+}
+
+.kb-import-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  cursor: pointer;
+}
+
+.kb-import-ack input {
+  margin-top: 3px;
+}
+
+.kb-import-error {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--crit) 28%, transparent);
+  border-radius: 7px;
+  color: var(--crit);
+  background: color-mix(in srgb, var(--crit) 7%, transparent);
+}
+
+.kb-import-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.kb-import-progress > .spin {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 2px solid color-mix(in srgb, var(--blue) 24%, transparent);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+}
+
+.kb-import-progress strong { display: block; }
+.kb-import-progress p { margin-top: 3px; }
+
+.kb-import-choice {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.kb-import-choice > div {
+  display: grid;
+  gap: 4px;
+}
+
+.kb-import-choice span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kb-import-choice label {
+  grid-column: 1;
+}
+
+.kb-import-choice input {
+  width: min(240px, 100%);
+}
+
+.kb-import-versions {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .kb-import-choice {
+    grid-template-columns: 1fr;
+  }
+
+  .kb-import-choice label {
+    grid-column: auto;
+  }
+
+  .kb-import-choice .btn {
+    justify-self: start;
+  }
+}

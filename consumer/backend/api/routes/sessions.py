@@ -1,6 +1,6 @@
 """Chat session endpoints: CRUD, messages, title generation."""
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 from flask_cors import cross_origin
 
 from api.auth.auth import require_auth, get_current_user
@@ -8,9 +8,11 @@ from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
 from agent.core.shared.modes import resolve_agent_mode
+from ontology.ontologies import get_ontology_registry
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
+from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
 
@@ -47,6 +49,23 @@ def _get_request_workspace_id():
 def _get_run_registry():
     from api.routes.workflows import get_run_registry
     return get_run_registry()
+
+
+def _resolve_selected_ontology_id(value, *, workspace_id: str):
+    """Validate and canonicalize the optional session ontology selection."""
+    selected_ontology_id = str(value or "").strip()
+    if not selected_ontology_id:
+        return None
+
+    with workspace_scope(workspace_id):
+        registry = get_ontology_registry()
+        ontology = registry.get_ontology(selected_ontology_id)
+
+    if ontology is None:
+        raise ValueError("知识包不存在: {}".format(selected_ontology_id))
+    if not bool(getattr(ontology, "enabled", False)):
+        raise ValueError("知识包已禁用: {}".format(selected_ontology_id))
+    return str(getattr(ontology, "id", selected_ontology_id) or selected_ontology_id)
 
 
 def _coerce_seq(value) -> int:
@@ -180,7 +199,10 @@ def _session_runtime_payload(
 def list_sessions():
     """List all chat sessions."""
     current_user = get_current_user()
-    workspace_id = _get_request_workspace_id()
+    try:
+        workspace_id = _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     sessions = chat_store.list_sessions()
@@ -217,7 +239,8 @@ def create_session():
         {
             "title": "Optional session title",
             "agent_mode": "quick|thinking|multi_agent",
-            "llm_request_mode": "stream|sync"
+            "llm_request_mode": "stream|sync",
+            "selected_ontology_id": "Optional enabled ontology id"
         }
     """
     data = request.get_json() or {}
@@ -225,7 +248,17 @@ def create_session():
     agent_mode = resolve_agent_mode({"agent_mode": data.get("agent_mode")})
     llm_request_mode = normalize_llm_request_mode(data.get("llm_request_mode"))
     model_profile_id = str(data.get("model_profile_id") or "").strip()
-    workspace_id = _get_request_workspace_id()
+    try:
+        workspace_id = _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
+    try:
+        selected_ontology_id = _resolve_selected_ontology_id(
+            data.get("selected_ontology_id"),
+            workspace_id=workspace_id,
+        )
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     try:
         selected_profile = resolve_effective_llm_profile_config(
             model_profile_id or None,
@@ -233,17 +266,20 @@ def create_session():
             workspace_id=workspace_id,
         )
     except SystemConfigValidationError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"detail": str(exc)}), 400
 
     chat_store, execution_store = _get_user_stores()
+    metadata = {
+        "agent_mode": agent_mode,
+        "llm_request_mode": llm_request_mode,
+        "model_profile_id": selected_profile["id"],
+        "model_profile_ref": selected_profile.get("model_profile_ref"),
+    }
+    if selected_ontology_id:
+        metadata["selected_ontology_id"] = selected_ontology_id
     session = chat_store.create_session(
         title=title,
-        metadata={
-            "agent_mode": agent_mode,
-            "llm_request_mode": llm_request_mode,
-            "model_profile_id": selected_profile["id"],
-            "model_profile_ref": selected_profile.get("model_profile_ref"),
-        },
+        metadata=metadata,
     )
     for deleted_session_id in chat_store.prune_old_sessions(
         LimitsConfig.from_env().session_max_per_user_workspace
@@ -258,7 +294,10 @@ def create_session():
 def get_session(session_id: str):
     """Get a chat session with message history."""
     current_user = get_current_user()
-    workspace_id = _get_request_workspace_id()
+    try:
+        workspace_id = _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     session = chat_store.get_session(session_id)
@@ -279,6 +318,43 @@ def get_session(session_id: str):
             workspace_id=workspace_id,
         ),
     })
+
+
+@sessions_bp.route(
+    "/sessions/<session_id>/runs/<run_id>/tool-outputs/<output_ref>",
+    methods=["GET"],
+)
+@require_auth()
+def get_tool_output(session_id: str, run_id: str, output_ref: str):
+    """Read a complete tool output within the authenticated session scope."""
+    try:
+        _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
+    chat_store, _execution_store = _get_user_stores()
+    if not chat_store.get_session(session_id):
+        return jsonify({"error": "Session not found"}), 404
+
+    try:
+        artifact = chat_store.get_tool_output_file(session_id, run_id, output_ref)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not artifact:
+        return jsonify({"error": "Tool output not found"}), 404
+
+    response = send_file(
+        artifact["artifact_path"],
+        mimetype=artifact["response_content_type"],
+        as_attachment=False,
+        conditional=False,
+        etag=False,
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Tool-Output-Ref"] = artifact["output_ref"]
+    response.headers["X-Tool-Call-Id"] = artifact.get("tool_call_id") or ""
+    response.headers["X-Tool-Output-Size"] = str(artifact["output_size"])
+    return response
 
 
 @sessions_bp.route("/sessions/<session_id>", methods=["PATCH"])

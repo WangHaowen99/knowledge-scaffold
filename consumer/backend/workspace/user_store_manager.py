@@ -6,16 +6,23 @@ import threading
 from pathlib import Path
 from typing import Dict, Tuple
 
-from persistence.chat_store import ChatStore
+from persistence.chat_store import ChatStore, ToolOutputLimits
 from persistence.execution_store import ExecutionStore
 from utils.identifiers import safe_user_storage_key
 from workspace.workspaces import get_workspace_paths
 
 
 class UserStoreManager:
-    def __init__(self, chat_base_dir: str, execution_base_dir: str) -> None:
+    def __init__(
+        self,
+        chat_base_dir: str,
+        execution_base_dir: str,
+        *,
+        tool_output_limits: ToolOutputLimits | None = None,
+    ) -> None:
         self._chat_base_dir = Path(chat_base_dir)
         self._execution_base_dir = Path(execution_base_dir)
+        self._tool_output_limits = tool_output_limits
         self._chat_stores: Dict[Tuple[str, str], ChatStore] = {}
         self._execution_stores: Dict[Tuple[str, str], ExecutionStore] = {}
         self._lock = threading.Lock()
@@ -32,7 +39,7 @@ class UserStoreManager:
             if store is None:
                 paths = get_workspace_paths(workspace_id)
                 path = paths.users_runtime_dir / safe_user / "chats"
-                store = ChatStore(str(path))
+                store = ChatStore(str(path), tool_output_limits=self._tool_output_limits)
                 self._chat_stores[key] = store
             return store
 

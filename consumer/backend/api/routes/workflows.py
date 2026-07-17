@@ -1,6 +1,7 @@
 """Workflow run endpoints: start/stream, status, cancel, sync."""
 
 import json
+import math
 import os
 import queue
 import threading
@@ -127,10 +128,24 @@ def _extract_agent_envelope(event: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _json_safe_sse_value(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe_sse_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_sse_value(item) for item in value]
+    return value
+
+
 def _encode_agent_sse(envelope: Dict[str, Any]) -> str:
     return "id: {}\nevent: agent.v2\ndata: {}\n\n".format(
         _coerce_seq(envelope.get("seq")),
-        json.dumps(envelope, ensure_ascii=False),
+        json.dumps(
+            _json_safe_sse_value(envelope),
+            ensure_ascii=False,
+            allow_nan=False,
+        ),
     )
 
 

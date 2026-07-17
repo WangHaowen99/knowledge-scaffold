@@ -166,6 +166,11 @@ class LimitsConfig:
     model_output_token_limit: int = 100000
     session_max_per_user_workspace: int = 100
     operation_max_chars: int = 15000
+    tool_output_max_bytes: int = 8 * 1024 * 1024
+    tool_output_run_max_bytes: int = 64 * 1024 * 1024
+    tool_output_session_max_bytes: int = 256 * 1024 * 1024
+    tool_output_run_max_count: int = 64
+    tool_output_session_max_count: int = 256
     agent_log_retention_days: int = 180
     agent_log_compress_old: bool = True
 
@@ -185,6 +190,11 @@ class LimitsConfig:
             model_output_token_limit=max(1, int(config["model_output_token_limit"])),
             session_max_per_user_workspace=max(1, int(config["session_max_per_user_workspace"])),
             operation_max_chars=max(1, int(config["operation_max_chars"])),
+            tool_output_max_bytes=max(1, int(config["tool_output_max_bytes"])),
+            tool_output_run_max_bytes=max(1, int(config["tool_output_run_max_bytes"])),
+            tool_output_session_max_bytes=max(1, int(config["tool_output_session_max_bytes"])),
+            tool_output_run_max_count=max(1, int(config["tool_output_run_max_count"])),
+            tool_output_session_max_count=max(1, int(config["tool_output_session_max_count"])),
             agent_log_retention_days=max(1, int(config["agent_log_retention_days"])),
             agent_log_compress_old=bool(config["agent_log_compress_old"]),
         )

@@ -1,0 +1,99 @@
+/* ---- 应用外壳（左侧导航 + 顶栏） ---- */
+.mwr.shell { display: flex; height: 100vh; height: 100dvh; background: var(--surface-page); }
+.mwr .side { width: 232px; flex: none; background: rgba(255, 255, 255, .94); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(16, 24, 40, .025); }
+.mwr .logo { height: var(--shell-header-height); min-height: var(--shell-header-height); padding: 10px 16px; font-size: 16px; font-weight: 760; letter-spacing: -.2px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-subtle); }
+.mwr .logo .mk { width: 36px; height: 36px; display: block; object-fit: contain; flex: none; filter: var(--brand-logo-filter) drop-shadow(0 4px 9px rgba(20, 80, 150, .18)); transition: filter var(--motion-normal); }
+.mwr .mobile-menu-btn, .mwr .mobile-side-close, .mwr .side-backdrop { display: none; }
+.mwr .nav { padding: 8px 12px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.mwr .nav > button, .mwr .nav .grp { flex: none; }
+.mwr .nav .grp { font-size: 11px; color: var(--muted); letter-spacing: 1.5px; padding: 14px 10px 6px; font-weight: 600; }
+.mwr .nav button { position: relative; display: flex; width: 100%; align-items: center; gap: 10px; min-height: 38px; padding: 9px 11px; border-radius: 10px; color: var(--ink2); border: none; background: none; font-size: 13.5px; font-weight: 560; margin-bottom: 3px; text-align: left; }
+.mwr .nav button:hover { background: var(--surface-subtle); color: var(--ink); }
+.mwr .nav button.on { background: var(--blue-ll); color: var(--blue-dd); font-weight: 680; }
+.mwr .nav button.on::before { content: ''; position: absolute; left: -12px; width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: var(--blue); }
+.mwr .nav-icon { flex: none; }
+.mwr .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.mwr .topbar { height: var(--shell-header-height); flex: none; background: rgba(255, 255, 255, .92); border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; padding: 0 26px; gap: 12px; box-shadow: var(--shadow-sm); position: relative; z-index: 40; backdrop-filter: blur(14px); }
+.mwr .topbar .crumb { font-size: 14px; font-weight: 650; }
+.mwr .content { flex: 1; overflow: auto; padding: 28px 32px; }
+.mwr .content-full { padding: 0; overflow: hidden; }
+.mwr .content-full .chatwrap, .mwr .content-full .kbx { border: none; border-radius: 0; }
+.mwr .wswrap { margin-left: auto; position: relative; }
+.mwr .wschip { min-height: 36px; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink2); border: 1px solid var(--hair); border-radius: 10px; padding: 6px 11px; background: var(--surface-card); cursor: pointer; }
+.mwr .wschip:hover { border-color: #b9c2ce; box-shadow: var(--shadow-sm); }
+.mwr .wschip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .wsmenu { position: absolute; top: 42px; right: 0; width: 250px; background: var(--surface-raised); border: 1px solid var(--border-default); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: 7px; z-index: 50; }
+.mwr .wsmenu .wm-h { font-size: 11px; color: var(--muted); letter-spacing: 1px; padding: 8px 11px 4px; font-weight: 600; }
+.mwr .wsmenu button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-radius: 8px; font-size: 13px; color: var(--ink); border: none; background: none; }
+.mwr .wsmenu button:hover { background: #f4f5f7; }
+.mwr .wsmenu .cur { color: var(--blue-d); font-weight: 700; }
+.mwr .wsmenu .default-flag { font-size: 11px; color: var(--muted); }
+.mwr .wsmenu .div { height: 1px; background: #efeee9; margin: 6px 4px; }
+.mwr .wsmenu .new { color: var(--blue-d); font-weight: 650; }
+.mwr .uwrap .wsmenu > button { justify-content: flex-start; }
+.mwr .uwrap .wsmenu .menu-danger { color: var(--crit); }
+.mwr .iconbtn { border: 1px solid var(--hair); background: var(--surface-card); border-radius: 10px; width: 34px; height: 34px; padding: 0; font-size: 14px; display: flex; align-items: center; justify-content: center; color: var(--ink2); }
+.mwr .iconbtn:hover { border-color: #b9c2ce; color: var(--blue-d); background: var(--surface-subtle); box-shadow: var(--shadow-sm); }
+.mwr .iconbtn.mobile-menu-btn { display: none; }
+.mwr .uwrap { position: relative; }
+.mwr .uwrap .wsmenu { top: 40px; }
+.mwr .uchip { min-height: 36px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--hair); background: var(--surface-card); border-radius: 99px; padding: 3px 10px 3px 4px; font-size: 13px; font-weight: 600; color: var(--ink); }
+.mwr .uchip:hover { border-color: #c9c8c1; }
+.mwr .uav { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--blue-dd)); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 750; flex: none; }
+.mwr .user-chevron { color: var(--muted); }
+.mwr .vercard { margin: 12px; padding: 10px 13px; border-top: 1px solid #efeee9; }
+.mwr .vercard .vn { font-size: 12px; font-weight: 650; color: var(--ink2); }
+.mwr .vercard .vv { font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
+/* ---- 二、三阶段：反馈、空状态、折叠导航与页面动效 ---- */
+.mwr .surface-stage { min-width: 0; animation: surface-enter var(--motion-normal) both; }
+.mwr .surface-loading { width: min(900px, 100%); margin: 20px auto; padding: 24px; background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+.mwr .workspace-empty-state { display: grid; place-items: center; align-content: center; width: min(900px, calc(100% - 40px)); margin: 20px auto; padding: 48px 24px; background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+.mwr .content-full .surface-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mwr .content-full .surface-stage > * { flex: 1; min-height: 0; }
+@keyframes surface-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+.mwr .desktop-sidebar-toggle { display: flex; }
+@media (min-width: 901px) {
+  .mwr .side { transition: width var(--motion-normal); }
+  .mwr.shell.side-collapsed .side { width: 72px; }
+  .mwr.shell.side-collapsed .logo { justify-content: center; padding-inline: 10px; }
+  .mwr.shell.side-collapsed .logo-title,
+  .mwr.shell.side-collapsed .nav-label,
+  .mwr.shell.side-collapsed .nav .grp,
+  .mwr.shell.side-collapsed .kbtree,
+  .mwr.shell.side-collapsed .side-hist,
+  .mwr.shell.side-collapsed .vercard { display: none; }
+  .mwr.shell.side-collapsed .nav { padding: 14px 10px; }
+  .mwr.shell.side-collapsed .nav button { justify-content: center; padding-inline: 0; }
+  .mwr.shell.side-collapsed .nav button.on::before { left: -10px; }
+}
+
+/* ---- 响应式布局：窄屏改为抽屉导航，内容区保持可操作 ---- */
+@media (max-width: 900px) {
+  .mwr { --shell-header-height: 56px; }
+  .mwr.shell { position: relative; }
+  .mwr .side { position: fixed; inset: 0 auto 0 0; width: 280px; max-width: calc(100vw - 44px); z-index: 90;
+    transform: translateX(-100%); visibility: hidden; pointer-events: none;
+    transition: transform .2s ease, visibility 0s linear .2s; box-shadow: 12px 0 32px rgba(15, 25, 40, .18); }
+  .mwr .side.side-open { transform: translateX(0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
+  .mwr .iconbtn.mobile-menu-btn { display: flex; }
+  .mwr .desktop-sidebar-toggle { display: none; }
+  .mwr .mobile-side-close { display: flex; margin-left: auto; width: 30px; height: 30px; align-items: center; justify-content: center;
+    border: none; border-radius: 8px; color: var(--ink2); background: transparent; }
+  .mwr .side-backdrop { display: block; position: fixed; inset: 0; z-index: 80; border: none; background: rgba(15, 25, 40, .36); }
+  .mwr .main { width: 100%; }
+  .mwr .topbar { padding: 0 14px; gap: 9px; }
+  .mwr .topbar .crumb { white-space: nowrap; }
+  .mwr .wswrap { margin-left: auto; min-width: 0; }
+  .mwr .wschip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mwr .content { padding: 20px; }
+}
+
+@media (max-width: 600px) {
+  .mwr .topbar { padding: 0 10px; gap: 7px; }
+  .mwr .topbar .crumb { display: none; }
+  .mwr .wschip { max-width: 150px; padding: 6px 9px; }
+  .mwr .uchip { padding-right: 5px; }
+  .mwr .uchip .uname, .mwr .uchip > span:last-child { display: none; }
+  .mwr .content { padding: 12px; }
+}

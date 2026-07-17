@@ -1,7 +1,13 @@
 """Tests for the agent-stream.v2 protocol and registry event emission paths."""
 
+import json
+
 from config import AgentConfig
 from agent.tools.base import ToolInvocation
+from agent.tools.events import (
+    build_tool_finished_payload,
+    tool_output_artifact_writer_context,
+)
 from agent.tools.registry import ToolContext, execute_tool_batch
 from utils.streaming import build_agent_event, clear_run_sequence
 from utils.streaming import stream_writer_context
@@ -62,6 +68,162 @@ def test_build_agent_event_preserves_optional_trace_tree_keys():
 
     assert event["data"]["span_key"] == "iteration:main:1"
     assert event["data"]["parent_key"] == "agent_loop:main"
+
+
+def test_tool_finished_keeps_sse_preview_bounded_and_exposes_artifact_reference():
+    complete_output = "工具输出🙂" * 1200
+    persisted = []
+
+    def write_artifact(tool_call_id, output):
+        persisted.append((tool_call_id, output))
+        return {
+            "output_ref": "a" * 32,
+            "output_size": len(output.encode("utf-8")),
+        }
+
+    with tool_output_artifact_writer_context(write_artifact):
+        payload = build_tool_finished_payload(
+            tool_name="execute_script",
+            tool_call_id="call-long",
+            status="completed",
+            raw_output=complete_output,
+            error=None,
+            elapsed_ms=17,
+        )
+
+    assert persisted == [("call-long", complete_output)]
+    assert payload["output_preview"] == complete_output[:4096]
+    assert len(payload["output_preview"]) == 4096
+    assert payload["output_truncated"] is True
+    assert payload["output_ref"] == "a" * 32
+    assert payload["output_size"] == len(complete_output.encode("utf-8"))
+    assert "output" not in payload
+
+
+def test_tool_finished_does_not_persist_output_that_fits_in_preview():
+    persisted = []
+
+    def write_artifact(tool_call_id, output):
+        persisted.append((tool_call_id, output))
+        return {"output_ref": "a" * 32, "output_size": len(output.encode("utf-8"))}
+
+    with tool_output_artifact_writer_context(write_artifact):
+        payload = build_tool_finished_payload(
+            tool_name="execute_script",
+            tool_call_id="call-short",
+            status="completed",
+            raw_output="short output",
+            error=None,
+            elapsed_ms=3,
+        )
+
+    assert persisted == []
+    assert payload["output_truncated"] is False
+    assert "output_ref" not in payload
+
+
+def test_web_search_finished_keeps_bounded_structured_projection_when_preview_is_truncated():
+    raw_output = json.dumps({
+        "ok": True,
+        "query": "long result query",
+        "provider": "tavily",
+        "response_time": 0.42,
+        "results": [
+            {
+                "title": "Unsafe data URL",
+                "url": "data:text/html,<script>alert(1)</script>",
+                "snippet": "must be omitted",
+            },
+            {
+                "title": "Unsafe file URL",
+                "url": "file:///etc/passwd",
+                "snippet": "must be omitted",
+            },
+        ] + [
+            {
+                "title": "Result {}".format(index),
+                "url": "https://example.com/{}/article".format(index),
+                "snippet": "摘要" * 900,
+            }
+            for index in range(8)
+        ],
+    }, ensure_ascii=False)
+
+    payload = build_tool_finished_payload(
+        tool_name="web_search",
+        tool_call_id="call-web-long",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=420,
+    )
+
+    assert payload["output_truncated"] is True
+    assert len(payload["output_preview"]) == 4096
+    assert payload["output_projection"]["provider"] == "tavily"
+    assert payload["output_projection"]["response_time"] == 0.42
+    assert payload["output_projection"]["result_count"] == 10
+    assert len(payload["output_projection"]["results"]) == 8
+    assert all(
+        result["url"].startswith("https://")
+        for result in payload["output_projection"]["results"]
+    )
+    assert payload["output_projection"]["results"][0]["domain"] == "example.com"
+    assert len(payload["output_projection"]["results"][0]["snippet"]) == 320
+
+
+def test_web_search_projection_replaces_non_finite_response_time():
+    for response_time in (float("nan"), float("inf"), float("-inf")):
+        raw_output = json.dumps({
+            "ok": True,
+            "query": "safe json",
+            "provider": "tavily",
+            "response_time": response_time,
+            "results": [],
+        })
+
+        payload = build_tool_finished_payload(
+            tool_name="web_search",
+            tool_call_id="call-web-non-finite",
+            status="completed",
+            raw_output=raw_output,
+            error=None,
+            elapsed_ms=10,
+        )
+
+        assert payload["output_projection"]["response_time"] is None
+        json.dumps(payload, allow_nan=False)
+
+
+def test_web_search_projection_deduplicates_normalized_urls():
+    raw_output = json.dumps({
+        "ok": True,
+        "query": "deduplicate",
+        "provider": "tavily",
+        "results": [
+            {"title": "First", "url": "https://EXAMPLE.com:443/article#summary"},
+            {"title": "Duplicate", "url": "https://example.com/article#details"},
+            {"title": "Different query", "url": "https://example.com/article?page=2"},
+            {"title": "Different path", "url": "https://example.com/article/"},
+        ],
+    })
+
+    payload = build_tool_finished_payload(
+        tool_name="web_search",
+        tool_call_id="call-web-deduplicate",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=10,
+    )
+
+    projected = payload["output_projection"]["results"]
+    assert [result["title"] for result in projected] == [
+        "First",
+        "Different query",
+        "Different path",
+    ]
+    assert projected[0]["url"] == "https://EXAMPLE.com:443/article#summary"
 
 
 def test_execute_tool_batch_emits_v2_regular_tool_events():

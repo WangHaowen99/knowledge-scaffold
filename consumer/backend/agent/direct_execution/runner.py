@@ -13,6 +13,7 @@ from utils.streaming import build_agent_event
 from integration.observability.traces import DirectExecutionRuntimeTrace
 from agent.direct_execution.arguments import build_direct_cli_args
 from agent.direct_execution.models import DirectExecutionResult, RouteDecision, RuntimeContext
+from agent.tools.events import build_tool_finished_payload
 
 logger = get_logger("direct_execution.runner")
 
@@ -65,15 +66,20 @@ def run_direct_script(
                 elapsed_ms=0,
                 error="script_path_missing",
             )
-            events.append(_build_event(run_id, session_id, turn_id, "tool.finished", {
-                "tool_call_id": "direct",
-                "tool_name": "execute_script",
-                "status": "error",
-                "output_preview": result.output,
-                "output_truncated": False,
-                "error": result.output,
-                "elapsed_ms": 0,
-            }))
+            events.append(_build_event(
+                run_id,
+                session_id,
+                turn_id,
+                "tool.finished",
+                build_tool_finished_payload(
+                    tool_call_id="direct",
+                    tool_name="execute_script",
+                    status="error",
+                    raw_output=result.output,
+                    error=result.output,
+                    elapsed_ms=0,
+                ),
+            ))
             tracer.mark_failed()
             return events, result
 
@@ -94,15 +100,20 @@ def run_direct_script(
                 elapsed_ms=0,
                 error="runtime_context_incomplete",
             )
-            events.append(_build_event(run_id, session_id, turn_id, "tool.finished", {
-                "tool_call_id": "direct",
-                "tool_name": "execute_script",
-                "status": "error",
-                "output_preview": system_error,
-                "output_truncated": False,
-                "error": system_error,
-                "elapsed_ms": 0,
-            }))
+            events.append(_build_event(
+                run_id,
+                session_id,
+                turn_id,
+                "tool.finished",
+                build_tool_finished_payload(
+                    tool_call_id="direct",
+                    tool_name="execute_script",
+                    status="error",
+                    raw_output=system_error,
+                    error=system_error,
+                    elapsed_ms=0,
+                ),
+            ))
             tracer.mark_failed()
             return events, result
 
@@ -179,15 +190,20 @@ def run_direct_script(
                     error=script_output if is_error else None,
                 )
                 prefixed_output = "[Direct Execution] {}".format(script_output)
-                events.append(_build_event(run_id, session_id, turn_id, "tool.finished", {
-                    "tool_call_id": "direct",
-                    "tool_name": "execute_script",
-                    "status": status,
-                    "output_preview": prefixed_output[:4096],
-                    "output_truncated": len(prefixed_output) > 4096,
-                    "error": script_output if is_error else None,
-                    "elapsed_ms": elapsed_ms,
-                }))
+                events.append(_build_event(
+                    run_id,
+                    session_id,
+                    turn_id,
+                    "tool.finished",
+                    build_tool_finished_payload(
+                        tool_call_id="direct",
+                        tool_name="execute_script",
+                        status=status,
+                        raw_output=prefixed_output,
+                        error=script_output if is_error else None,
+                        elapsed_ms=elapsed_ms,
+                    ),
+                ))
                 script_trace.record_result(
                     output=script_output,
                     is_error=is_error,
@@ -209,15 +225,20 @@ def run_direct_script(
                     elapsed_ms=elapsed_ms,
                     error=str(exc),
                 )
-                events.append(_build_event(run_id, session_id, turn_id, "tool.finished", {
-                    "tool_call_id": "direct",
-                    "tool_name": "execute_script",
-                    "status": "error",
-                    "output_preview": error_msg[:4096],
-                    "output_truncated": False,
-                    "error": error_msg,
-                    "elapsed_ms": elapsed_ms,
-                }))
+                events.append(_build_event(
+                    run_id,
+                    session_id,
+                    turn_id,
+                    "tool.finished",
+                    build_tool_finished_payload(
+                        tool_call_id="direct",
+                        tool_name="execute_script",
+                        status="error",
+                        raw_output=error_msg,
+                        error=error_msg,
+                        elapsed_ms=elapsed_ms,
+                    ),
+                ))
                 script_trace.record_result(
                     output=error_msg,
                     is_error=True,
