@@ -631,6 +631,7 @@ function SkillEvolution({ ontologyId, onKnowledgeChanged, readOnly }) {
   const [tasks, setTasks] = useState([]);
   const [loadedScopeKey, setLoadedScopeKey] = useState('');
   const [selectedId, setSelectedId] = useState('');
+  const [diffRefreshRevision, setDiffRefreshRevision] = useState(0);
   const [diffTaskId, setDiffTaskId] = useState('');
   const [diff, setDiff] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -667,6 +668,9 @@ function SkillEvolution({ ontologyId, onKnowledgeChanged, readOnly }) {
     loading: diffLoading,
     error: diffError,
   });
+  const refreshSelectedDiff = () => {
+    setDiffRefreshRevision((current) => current + 1);
+  };
 
   const loadTasks = useCallback(async ({ clear = false, background = false } = {}) => {
     tasksRequestRef.current?.abort();
@@ -777,7 +781,7 @@ function SkillEvolution({ ontologyId, onKnowledgeChanged, readOnly }) {
       clearTimeout(timer);
       diffRequestRef.current?.abort();
     };
-  }, [scopeKey, selectedCanLoadDiff, selectedStatus, selectedTaskId]);
+  }, [diffRefreshRevision, scopeKey, selectedCanLoadDiff, selectedStatus, selectedTaskId]);
 
   const act = async (action, body) => {
     if (!canWriteEvolution || !selected) return;
@@ -802,7 +806,10 @@ function SkillEvolution({ ontologyId, onKnowledgeChanged, readOnly }) {
         },
       );
       const payload = await responsePayload(response);
-      if (!response.ok) throw new Error(errorMessage(response, payload));
+      if (!response.ok) {
+        if (action === 'approve' && response.status === 409) refreshSelectedDiff();
+        throw new Error(errorMessage(response, payload));
+      }
       if (!accepted()) return;
       setTasks((current) => current.map((task) => task.task_id === taskId ? payload : task));
       const labels = {
@@ -858,7 +865,10 @@ function SkillEvolution({ ontologyId, onKnowledgeChanged, readOnly }) {
     <div className="evolution-grid">
       <SectionCard title="Skill 进化任务" description="按本体分组；运行中任务每 5 秒刷新，切换 Workspace 会立即清空旧结果。">
         <div className="evo-toolbar">
-          <button className="btn" type="button" disabled={loading} onClick={() => loadTasks()}>{loading ? '刷新中…' : '刷新'}</button>
+          <button className="btn" type="button" disabled={loading} onClick={() => {
+            refreshSelectedDiff();
+            loadTasks();
+          }}>{loading ? '刷新中…' : '刷新'}</button>
           {hasActive && <StatusTag status="active">自动刷新中</StatusTag>}
         </div>
         {scopeReady && loadError && <div className="evo-notice error" role="alert">{loadError}</div>}
