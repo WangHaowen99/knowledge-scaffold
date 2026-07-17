@@ -27,4 +27,3 @@ class ProviderProtocolError(BusinessDataProviderError):
 
 class ProviderInternalError(BusinessDataProviderError):
     """Raised for unexpected internal failures."""
-

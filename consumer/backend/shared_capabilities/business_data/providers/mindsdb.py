@@ -531,4 +531,3 @@ def _extract_final_content(content: str) -> str:
     if marker in content:
         return content.split(marker, 1)[1].strip()
     return content.strip()
-

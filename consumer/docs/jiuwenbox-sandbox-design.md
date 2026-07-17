@@ -1084,5 +1084,3 @@ neo4j -> run_cypher(statement, parameters)
 - 不把真实 username/password 或 Basic header 放入 sandbox；
 - 不放宽 sandbox egress 直连 Neo4j；
 - 不允许失败后自动本地执行绕过生产隔离。
-
-

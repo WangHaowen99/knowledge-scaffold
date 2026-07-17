@@ -39,5 +39,3 @@ class QueryProvider(Protocol):
 
 class NativeStreamingProvider(QueryProvider, Protocol):
     def _iter_native_query_events(self, question: str) -> Iterator[ProviderEvent]: ...
-
-

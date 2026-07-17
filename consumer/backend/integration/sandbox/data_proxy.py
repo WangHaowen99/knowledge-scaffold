@@ -441,4 +441,3 @@ def _validate_secret_transport(
     raise SandboxUnavailableError(
         "business data secret injection requires TLS unless plain HTTP is enabled globally"
     )
-

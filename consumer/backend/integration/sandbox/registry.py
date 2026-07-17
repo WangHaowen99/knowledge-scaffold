@@ -169,4 +169,3 @@ def release_run_sandbox(run_id: str | None) -> None:
         get_data_connection_secret_manager().release(run_id)
     except Exception as exc:
         logger.warning("release sandbox data proxy failed for run_id=%s: %s", run_id, exc)
-

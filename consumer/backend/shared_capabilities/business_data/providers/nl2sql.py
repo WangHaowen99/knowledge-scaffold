@@ -115,4 +115,3 @@ class NL2SQLProvider:
             self.connection.auth.token,
             self.connection.auth.password,
         )
-

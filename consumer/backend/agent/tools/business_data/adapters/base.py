@@ -26,4 +26,3 @@ def normalize_event(event: Dict[str, Any]) -> BusinessDataSearchEvent:
         "type": str(event.get("type") or "").strip(),
         "content": str(event.get("content") or "").strip(),
     }
-

@@ -24,5 +24,3 @@ def load_effective_connection() -> EffectiveConnection:
     except json.JSONDecodeError as exc:
         raise ConnectionEnvelopeError("connection envelope is not valid JSON") from exc
     return EffectiveConnection.from_dict(payload)
-
-

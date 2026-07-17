@@ -17,4 +17,3 @@ class SandboxCreateError(SandboxError):
 
 class SandboxExecError(SandboxError):
     """Failed to execute a command inside the sandbox."""
-

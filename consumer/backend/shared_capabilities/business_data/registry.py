@@ -26,5 +26,3 @@ def create_provider_client(connection: EffectiveConnection) -> Any:
             "unsupported data provider '{}'".format(connection.provider)
         )
     return factory(connection)
-
-

@@ -302,4 +302,3 @@ def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeyp
     )
 
     assert result == "Error: Sandbox unavailable: jiuwenbox is down"
-

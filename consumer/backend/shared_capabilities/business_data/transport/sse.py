@@ -52,5 +52,3 @@ def _decode(data_lines: list[str]) -> Any:
     if not isinstance(payload, (dict, str)):
         raise ProviderProtocolError("invalid SSE payload type")
     return payload
-
-

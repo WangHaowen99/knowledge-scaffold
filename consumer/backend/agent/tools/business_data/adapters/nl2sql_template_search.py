@@ -264,4 +264,3 @@ def _format_output(result: dict, show_sql: bool = False) -> dict:
     else:
         output["message"] = "查询失败: {}".format(result.get("error", "未知错误"))
     return output
-

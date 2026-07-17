@@ -122,4 +122,3 @@ ${BUILD_CMD} \
     "${OVERLAY_ROOT}"
 
 echo "Built ${TARGET_IMAGE} from JiuwenSwarm commit ${JIUWENSWARM_COMMIT}"
-
