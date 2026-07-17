@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { applyAgentV2Event, AGENT_STREAM_PROTOCOL } from './streamHelpers.js';
-import { buildIndexedSegmentGroups } from '../../../utils/segmentGroups.js';
+import { buildTraceViewModel } from './traceModel.js';
 
 const envelope = (type, payload, seq = 1, trace = {}) => ({
   protocol: AGENT_STREAM_PROTOCOL,
@@ -127,9 +127,11 @@ test('nested subagent groups attach under parent subagent child', () => {
   assert.equal(nestedChild.status, 'completed');
   assert.equal(nestedChild.events[0].kind, 'token');
   assert.equal(nestedChild.events[0].text, 'nested output');
+  assert.equal(nestedChild.events[0].finished, true);
+  assert.equal(nestedChild.events[0].status, 'completed');
 });
 
-test('cancelled subagent tool event remains a failed terminal event', () => {
+test('cancelled subagent tool event remains a distinct cancelled terminal event', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
 
   [
@@ -158,15 +160,21 @@ test('cancelled subagent tool event remains a failed terminal event', () => {
       tool_call_id: 'call-cancel',
       status: 'cancelled',
       error: 'Workflow cancelled by user',
+      output_ref: '/agentic/sessions/s1/runs/r1/tool-outputs/call-cancel',
+      output_size: 1024,
+      output_truncated: true,
     }, 4),
   ].forEach((event) => {
     state = applyAgentV2Event(state, event);
   });
 
   const child = state.streamSegments[0].children['sub-cancel'];
-  assert.equal(child.events.at(-1).status, 'error');
+  assert.equal(child.events.at(-1).status, 'cancelled');
   assert.equal(child.events.at(-1).finished, true);
   assert.equal(child.events.at(-1).error, 'Workflow cancelled by user');
+  assert.equal(child.events.at(-1).outputRef, '/agentic/sessions/s1/runs/r1/tool-outputs/call-cancel');
+  assert.equal(child.events.at(-1).outputSize, 1024);
+  assert.equal(child.events.at(-1).outputTruncated, true);
 });
 
 test('turn finished error stores provider detail in message meta', () => {
@@ -223,7 +231,7 @@ test('standalone whitespace token deltas do not create empty stream segments', (
   assert.equal(state.streamSegments[0].text, '实际内容');
 });
 
-test('cancelled turn freezes unfinished business data search as terminal error', () => {
+test('cancelled turn freezes unfinished business data search as cancelled', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
 
   state = applyAgentV2Event(state, envelope('tool.started', {
@@ -251,9 +259,123 @@ test('cancelled turn freezes unfinished business data search as terminal error',
   assert.equal(state.isLoading, false);
   assert.equal(state.streamSegments.length, 1);
   assert.equal(state.streamSegments[0].finished, true);
-  assert.equal(state.streamSegments[0].state, 'error');
-  assert.equal(state.streamSegments[0].toolStatus, 'error');
+  assert.equal(state.streamSegments[0].state, 'cancelled');
+  assert.equal(state.streamSegments[0].toolStatus, 'cancelled');
   assert.equal(state.streamSegments[0].endTs, 1010);
+});
+
+test('nested groups split surrounding subagent token events without reordering them', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+  const simultaneousEnvelope = (type, payload, seq) => envelope(type, payload, seq, { ts: 1000 });
+  [
+    simultaneousEnvelope('subagent_group.started', {
+      group_id: 'outer', tasks: [{ task_id: 'outer-task', task: 'Outer', task_index: 0 }],
+    }, 1),
+    simultaneousEnvelope('subagent.started', {
+      group_id: 'outer', subagent_id: 'outer-agent', task_id: 'outer-task', task: 'Outer',
+    }, 2),
+    simultaneousEnvelope('token.delta', {
+      group_id: 'outer', subagent_id: 'outer-agent', channel: 'content', text: 'before',
+    }, 3),
+    simultaneousEnvelope('subagent_group.started', {
+      group_id: 'inner', parent_subagent_id: 'outer-agent', tasks: [],
+    }, 4),
+    simultaneousEnvelope('subagent_group.finished', {
+      group_id: 'inner', status: 'completed', task_count: 0, completed_count: 0, error_count: 0,
+    }, 5),
+    simultaneousEnvelope('token.delta', {
+      group_id: 'outer', subagent_id: 'outer-agent', channel: 'content', text: 'after',
+    }, 6),
+  ].forEach((event) => { state = applyAgentV2Event(state, event); });
+  const child = state.streamSegments[0].children['outer-agent'];
+
+  assert.deepEqual(child.events.map((event) => event.text), ['before', 'after']);
+  assert.deepEqual(child.events.map((event) => event.sourceOrder), [3, 6]);
+  assert.deepEqual(child.events.map((event) => event.startTs), [1000, 1000]);
+  assert.equal(child.childGroups[0].sourceOrder, 4);
+  assert.equal(child.childGroups[0].startTs, 1000);
+});
+
+test('cancelled turns recursively close unfinished subagent tools as cancelled', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+  [
+    envelope('subagent_group.started', {
+      group_id: 'cancel-group',
+      tasks: [{ task_id: 'cancel-task', task: 'Slow task', task_index: 0 }],
+    }, 1),
+    envelope('subagent.started', {
+      group_id: 'cancel-group', subagent_id: 'cancel-agent', task_id: 'cancel-task', task: 'Slow task',
+    }, 2),
+    envelope('tool.started', {
+      group_id: 'cancel-group', subagent_id: 'cancel-agent', task_id: 'cancel-task',
+      tool_name: 'slow_tool', tool_call_id: 'slow-call',
+    }, 3),
+    envelope('subagent.finished', {
+      group_id: 'cancel-group', subagent_id: 'cancel-agent', task_id: 'cancel-task',
+      status: 'cancelled', error: 'Workflow cancelled by user',
+    }, 4),
+    envelope('subagent_group.finished', {
+      group_id: 'cancel-group', status: 'cancelled', task_count: 1,
+      completed_count: 0, error_count: 1,
+    }, 5),
+    envelope('turn.finished', {
+      status: 'cancelled', error: 'Workflow cancelled by user', cancel_reason: 'user_stop',
+    }, 6),
+  ].forEach((event) => { state = applyAgentV2Event(state, event); });
+
+  const group = state.streamSegments[0];
+  const child = group.children['cancel-agent'];
+  const tool = child.events[0];
+  assert.equal(state.status, 'aborted');
+  assert.equal(group.status, 'cancelled');
+  assert.equal(group.finished, true);
+  assert.equal(child.status, 'cancelled');
+  assert.equal(tool.status, 'cancelled');
+  assert.equal(tool.finished, true);
+  assert.equal(tool.endTs, 1004);
+  const trace = buildTraceViewModel([{
+    id: 'cancelled-trace', role: 'assistant', status: state.status,
+    streamSegments: state.streamSegments,
+  }]);
+  const eventNodes = trace.turns[0].nodes[0].children[0].children[0].children;
+  assert.equal(eventNodes.every((node) => node.terminal && node.status !== 'running'), true);
+});
+
+test('successful subagent completion closes token events before Trace rendering', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+  [
+    envelope('subagent_group.started', {
+      group_id: 'success-group',
+      tasks: [{ task_id: 'success-task', task: 'Complete task', task_index: 0 }],
+    }, 1),
+    envelope('subagent.started', {
+      group_id: 'success-group', subagent_id: 'success-agent', task_id: 'success-task', task: 'Complete task',
+    }, 2),
+    envelope('token.delta', {
+      group_id: 'success-group', subagent_id: 'success-agent', channel: 'reasoning', text: 'reason',
+    }, 3),
+    envelope('token.delta', {
+      group_id: 'success-group', subagent_id: 'success-agent', channel: 'content', text: 'answer',
+    }, 4),
+    envelope('subagent.finished', {
+      group_id: 'success-group', subagent_id: 'success-agent', task_id: 'success-task', status: 'completed',
+    }, 5),
+    envelope('subagent_group.finished', {
+      group_id: 'success-group', status: 'completed', task_count: 1, completed_count: 1, error_count: 0,
+    }, 6),
+    envelope('turn.finished', { status: 'success', final_output: 'done' }, 7),
+  ].forEach((event) => { state = applyAgentV2Event(state, event); });
+
+  const child = state.streamSegments[0].children['success-agent'];
+  assert.deepEqual(child.events.map((event) => event.status), ['completed', 'completed']);
+  assert.equal(child.events.every((event) => event.finished), true);
+  const trace = buildTraceViewModel([{
+    id: 'success-trace', role: 'assistant', status: state.status,
+    streamSegments: state.streamSegments,
+  }]);
+  const eventNodes = trace.turns[0].nodes[0].children[0].children[0].children;
+  assert.deepEqual(eventNodes.map((node) => node.type), ['reasoning', 'content']);
+  assert.equal(eventNodes.every((node) => node.terminal && node.status === 'finished'), true);
 });
 
 test('web search progress events are accumulated on the tool segment', () => {
@@ -317,24 +439,8 @@ test('turn finished appends final output after tool-only stream segments', () =>
     final_output: '最终处理成本为 3000 元。',
   }, 3));
 
-  const { completedGroups } = buildIndexedSegmentGroups(state.streamSegments);
-
   assert.equal(state.status, 'finished');
-  assert.equal(completedGroups.length, 1);
-  assert.equal(completedGroups[0].processSegs.length, 1);
-  assert.equal(completedGroups[0].contentSegs[0].text, '最终处理成本为 3000 元。');
-});
-
-test('segment grouping skips whitespace-only content groups', () => {
-  const { completedGroups, liveProcessSegs } = buildIndexedSegmentGroups([
-    { type: 'tool', text: '加载本体', finished: true },
-    { type: 'content', text: '\n\n', finished: true },
-    { type: 'content', text: '有效内容', finished: true },
-  ]);
-
-  assert.equal(completedGroups.length, 1);
-  assert.equal(completedGroups[0].contentSegs.length, 1);
-  assert.equal(completedGroups[0].contentSegs[0].text, '有效内容');
-  assert.equal(completedGroups[0].processSegs.length, 1);
-  assert.equal(liveProcessSegs.length, 0);
+  assert.deepEqual(state.streamSegments.map((segment) => segment.type), ['tool', 'content']);
+  assert.equal(state.streamSegments[0].meta.output_preview, '查询完成');
+  assert.equal(state.streamSegments[1].text, '最终处理成本为 3000 元。');
 });

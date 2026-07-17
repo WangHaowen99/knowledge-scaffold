@@ -101,3 +101,5 @@ PYTHONPATH=. venv/bin/python -m pytest tests/test_session_routes.py tests/test_a
 ## 7. 阶段结论
 
 阶段 1 退出条件已满足。当前生产入口只使用一套 auth/session/stream runtime；阶段 2 可以在该状态模型上实施消息、Trace 和观测能力。
+
+下一阶段：[阶段 2：聊天、Trace 与观测](./frontend-stage2-chat-observability.md)。

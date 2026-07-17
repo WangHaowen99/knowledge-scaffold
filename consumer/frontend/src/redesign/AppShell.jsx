@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ChevronDown, Compass, FolderKanban, LogOut, Menu, MessageSquarePlus,
-  PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings2, SlidersHorizontal, Upload, X,
+  Gauge, PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings2, SlidersHorizontal, Upload, X,
 } from 'lucide-react';
 import useStreamManager from '../features/chat/hooks/useStreamManager';
 import useChatSessions from '../features/chat/hooks/useChatSessions';
@@ -20,8 +20,9 @@ import { clearWorkspaceRuntime } from '../app/providers/workspaceRuntime';
 
 const KnowledgeWorkbench = lazy(() => import('./KnowledgeWorkbench'));
 const ConfigCenter = lazy(() => import('./ConfigCenter'));
+const ObservabilityFeature = lazy(() => import('../features/observability/index.jsx'));
 
-const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心' };
+const SURFACES = { chat: '新建对话', kb: '知识包工作台', config: '配置中心', observability: '可观测性' };
 
 export default function AppShell() {
   const auth = useAuthContext();
@@ -29,6 +30,7 @@ export default function AppShell() {
   const [surface, setSurface] = useState('chat');
   const [cfgScope, setCfgScope] = useState('global');
   const [cfgSec, setCfgSec] = useState('llm');
+  const [observabilityView, setObservabilityView] = useState('session');
   const [wsMenu, setWsMenu] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -107,6 +109,12 @@ export default function AppShell() {
       <Icon className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">{label}</span>
     </button>
   );
+  const openObservability = (view = 'session') => {
+    setObservabilityView(view === 'global' ? 'global' : 'session');
+    setSurface('observability');
+    setMobileNavOpen(false);
+  };
+  const isFullSurface = surface === 'chat' || surface === 'kb';
 
   return (
     <div className={`mwr shell ${sideCollapsed ? 'side-collapsed' : ''}`}>
@@ -129,6 +137,12 @@ export default function AppShell() {
           {surface === 'kb' && <KbSidebarTree kb={kb} />}
           <div className="grp">管理</div>
           {navBtn('config', Settings2, '配置中心', 'nav-config')}
+          {can('observability.global') && (
+            <button className={surface === 'observability' && observabilityView === 'global' ? 'on' : ''}
+              title="全局可观测性" onClick={() => openObservability('global')}>
+              <Gauge className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">运行观测</span>
+            </button>
+          )}
         </div>
         <ChatHistorySidebar chat={chat} onOpen={(id) => { setSurface('chat'); chat.selectChat(id); }} />
         <div className="vercard">
@@ -219,12 +233,18 @@ export default function AppShell() {
             )}
           </div>
         </div>
-        <div className={surface !== 'config' ? 'content content-full' : 'content'}
-          style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
+        <div className={isFullSurface ? 'content content-full' : 'content'}
+          style={isFullSurface ? { display: 'flex', flexDirection: 'column' } : undefined}>
           <div key={surface} className={`surface-stage surface-${surface}`}>
-            {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager} />}
+            {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager} onOpenObservability={openObservability} />}
             {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} /></Suspense>}
             {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
+            {surface === 'observability' && (
+              <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>
+                <ObservabilityFeature view={observabilityView} sessionId={chat.currentChatId} user={user}
+                  can={can} workspaces={workspaces} onBack={() => setSurface('chat')} />
+              </Suspense>
+            )}
           </div>
         </div>
       </div>

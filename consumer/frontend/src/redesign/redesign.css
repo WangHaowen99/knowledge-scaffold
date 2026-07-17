@@ -693,6 +693,81 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .trace-caption { margin-left: 7px; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
 .mwr .trace .trt-kids { position: relative; border-left-color: color-mix(in srgb, var(--color-primary) 24%, var(--border-default)); }
 
+/* ---- 阶段 2：统一消息、Trace 与运行反馈 ---- */
+.mwr .thread { position: relative; }
+.mwr .conversation-view { width: 100%; }
+.mwr .assistant-turn-body { display: flex; flex-direction: column; gap: 10px; }
+.mwr .assistant-turn-body.status-error { background: color-mix(in srgb, var(--crit) 5%, var(--surface-card)); border-color: color-mix(in srgb, var(--crit) 22%, var(--border-default)); }
+.mwr .agent-content { min-width: 0; }
+.mwr .agent-content + .agent-content { padding-top: 7px; border-top: 1px solid var(--border-subtle); }
+.mwr .assistant-thinking { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
+.mwr .conversation-process { overflow: hidden; border: 1px solid var(--border-default); border-radius: 10px; background: var(--surface-card); }
+.mwr .conversation-process > summary { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 8px 11px; cursor: pointer; list-style: none; color: var(--ink2); font-size: 12.5px; font-weight: 650; }
+.mwr .conversation-process > summary::-webkit-details-marker { display: none; }
+.mwr .conversation-process > summary > svg { flex: none; color: var(--blue); }
+.mwr .reasoning-process > summary > svg { color: #817b65; }
+.mwr .business-data-process > summary > svg { color: var(--good); }
+.mwr .web-search-process > summary > svg { color: #6c57c8; }
+.mwr .conversation-process-body { padding: 10px 12px 12px; border-top: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--surface-subtle) 55%, var(--surface-card)); }
+.mwr .reasoning-process .conversation-process-body { color: var(--ink2); font-size: 12.5px; }
+.mwr .conversation-block-meta { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10.5px; font-weight: 550; }
+.mwr .conversation-block-meta.status-error { color: var(--crit); }
+.mwr .conversation-block-meta.status-cancelled { color: var(--warn); }
+.mwr .conversation-block-meta.status-finished { color: var(--good); }
+.mwr .tool-input { margin-bottom: 9px; }
+.mwr .tool-input strong { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; }
+.mwr .tool-input pre, .mwr .tool-output pre, .mwr .subagent-event pre { max-height: 340px; overflow: auto; margin: 0; padding: 9px 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--surface-page) 70%, var(--surface-card)); color: var(--ink2); font: 11.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mwr .tool-output { min-width: 0; }
+.mwr .tool-output-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.mwr .tool-output-head > span:first-child { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10.5px; font-weight: 650; }
+.mwr .tool-output-actions { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.mwr .tool-output button, .mwr .chat-copy-action > button, .mwr .chat-run-feedback > button { min-height: 25px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 10.5px; }
+.mwr .tool-output button:hover, .mwr .chat-copy-action > button:hover, .mwr .chat-run-feedback > button:hover { color: var(--ink); background: var(--surface-subtle); }
+.mwr .tool-output details > summary { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 5px; cursor: pointer; list-style: none; color: var(--blue-d); font-size: 11px; }
+.mwr .tool-output details > summary::-webkit-details-marker { display: none; }
+.mwr .tool-output-warning, .mwr .conversation-error { display: flex; align-items: flex-start; gap: 6px; margin-top: 7px; padding: 7px 8px; border-radius: 7px; color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, transparent); font-size: 11.5px; line-height: 1.5; }
+.mwr .tool-progress-list { margin: 0 0 9px; padding: 0; list-style: none; }
+.mwr .tool-progress-list li { position: relative; display: flex; align-items: flex-start; gap: 6px; padding: 4px 0 4px 15px; color: var(--ink2); font-size: 11.5px; }
+.mwr .tool-progress-list li::before { content: ''; position: absolute; left: 3px; top: 9px; width: 5px; height: 5px; border-radius: 50%; background: var(--blue-l); }
+.mwr .web-source-list { display: grid; gap: 6px; margin-bottom: 9px; }
+.mwr .web-source-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 9px; color: var(--ink2); text-decoration: none; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-card); }
+.mwr a.web-source-card:hover { border-color: var(--blue-l); }
+.mwr .web-source-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.mwr .web-source-list span { color: var(--muted); font-size: 10px; }
+.mwr .web-source-list p { grid-column: 1 / -1; margin: 2px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+.mwr .subagent-task-list, .mwr .subagent-events { display: grid; gap: 7px; }
+.mwr .subagent-task { overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-card); }
+.mwr .subagent-task > summary { display: flex; align-items: center; gap: 7px; padding: 7px 9px; cursor: pointer; list-style: none; font-size: 11.5px; font-weight: 650; }
+.mwr .subagent-task > summary::-webkit-details-marker { display: none; }
+.mwr .subagent-events { padding: 8px; border-top: 1px solid var(--border-subtle); }
+.mwr .subagent-event { min-width: 0; padding: 7px; border-radius: 7px; background: var(--surface-subtle); }
+.mwr .subagent-event strong { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10.5px; }
+.mwr .conversation-state-block { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11.5px; }
+.mwr .run-status { min-width: 0; flex-wrap: wrap; padding-top: 9px; border-top: 1px solid var(--border-subtle); }
+.mwr .run-status-summary { display: inline-flex; align-items: center; gap: 5px; }
+.mwr .run-status.status-error { color: var(--crit); }
+.mwr .run-status.status-awaiting { color: var(--warn); }
+.mwr .run-status-detail { width: 100%; color: inherit; overflow-wrap: anywhere; }
+.mwr .run-status-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.mwr .chat-run-feedback, .mwr .chat-copy-action { display: inline-flex; align-items: center; gap: 3px; }
+.mwr .chat-run-feedback > button.active.positive { color: var(--good); background: color-mix(in srgb, var(--good) 10%, transparent); }
+.mwr .chat-run-feedback > button.active.negative { color: var(--crit); background: color-mix(in srgb, var(--crit) 9%, transparent); }
+.mwr .chat-action-error { display: inline-flex; align-items: center; gap: 4px; color: var(--crit); font-size: 10.5px; }
+.mwr .chat-action-error button { display: inline-flex; align-items: center; gap: 3px; border: 0; background: none; color: inherit; font-size: inherit; text-decoration: underline; }
+.mwr .chat-return-bottom { position: absolute; z-index: 9; left: 50%; bottom: 138px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; color: var(--blue-d); background: color-mix(in srgb, var(--surface-raised) 94%, transparent); border: 1px solid var(--blue-l); border-radius: 99px; box-shadow: var(--shadow-sm); font-size: 11.5px; font-weight: 650; backdrop-filter: blur(8px); }
+.mwr .chat-return-bottom:hover { transform: translateX(-50%) translateY(-1px); box-shadow: var(--shadow-md); }
+.mwr .trace-empty { padding: 30px 12px; }
+.mwr .trace-iterations { display: grid; gap: 4px; margin-bottom: 8px; }
+.mwr .trace-iteration-group { border-radius: 6px; color: var(--muted); background: var(--surface-subtle); font-size: 10.5px; }
+.mwr .trace-iteration-group > summary { display: flex; align-items: center; gap: 5px; padding: 5px 7px; }
+.mwr .trace-iteration-group strong { margin-left: auto; color: var(--ink2); }
+.mwr .trace-iteration-children { padding: 0 6px 6px 15px; border-left: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--border-default)); }
+.mwr .trace-node-children { margin: 7px 0 0 8px; padding-left: 8px; border-left: 1px solid var(--border-default); }
+.mwr .trace .trn-pre { max-height: 420px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mwr .trace .tool-output-head { align-items: flex-start; flex-direction: column; }
+.mwr .trace .tool-output-actions { margin-left: 0; }
+.mwr .trace .tr-run { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .mwr .ui-skeleton { width: 100%; padding: 10px 2px; display: flex; flex-direction: column; gap: 11px; }
 .mwr .ui-skeleton.compact { padding: 8px; gap: 8px; }
 .mwr .ui-skeleton-title, .mwr .ui-skeleton-row { display: block; height: 12px; border-radius: 99px; background: linear-gradient(90deg, var(--border-subtle) 20%, var(--surface-subtle) 45%, var(--border-subtle) 70%); background-size: 240% 100%; animation: skeleton-flow 1.35s ease-in-out infinite; }
@@ -827,6 +902,11 @@ html[data-mwr-theme='graphite'] .mwr {
   .mwr .ti-box .ti-input { min-width: 0; }
   .mwr .mode-picker { min-width: 112px; }
   .mwr .msg .bubwrap, .mwr .msg.u .bubwrap { max-width: 88%; }
+  .mwr .assistant-turn-body { padding: 11px 12px !important; }
+  .mwr .conversation-process > summary { align-items: flex-start; flex-wrap: wrap; }
+  .mwr .conversation-block-meta { width: 100%; margin-left: 22px; }
+  .mwr .run-status-actions { width: 100%; margin-left: 0; }
+  .mwr .chat-return-bottom { bottom: 122px; }
   .mwr .chat-empty { justify-content: flex-start; padding: 34px 4px 26px; }
   .mwr .chat-empty-visual { width: 76px; height: 76px; margin-bottom: 12px; }
   .mwr .chat-empty-visual img { width: 46px; height: 46px; }

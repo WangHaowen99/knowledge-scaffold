@@ -92,6 +92,9 @@ class ToolFinishedPayload(TypedDict, total=False):
     status: Literal["completed", "error", "cancelled"]
     output_preview: str
     output_truncated: bool
+    output_ref: str
+    output_size: int
+    output_projection: Dict[str, Any]
     error: str
     elapsed_ms: int
 

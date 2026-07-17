@@ -312,6 +312,36 @@ def get_session(session_id: str):
     })
 
 
+@sessions_bp.route(
+    "/sessions/<session_id>/runs/<run_id>/tool-outputs/<output_ref>",
+    methods=["GET"],
+)
+@require_auth()
+def get_tool_output(session_id: str, run_id: str, output_ref: str):
+    """Read a complete tool output within the authenticated session scope."""
+    chat_store, _execution_store = _get_user_stores()
+    if not chat_store.get_session(session_id):
+        return jsonify({"error": "Session not found"}), 404
+
+    try:
+        artifact = chat_store.get_tool_output(session_id, run_id, output_ref)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not artifact:
+        return jsonify({"error": "Tool output not found"}), 404
+
+    response = jsonify({
+        "output_ref": artifact["output_ref"],
+        "run_id": artifact["run_id"],
+        "tool_call_id": artifact.get("tool_call_id"),
+        "content_type": artifact.get("content_type") or "text/plain; charset=utf-8",
+        "output_size": artifact["output_size"],
+        "output": artifact.get("output") or "",
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @sessions_bp.route("/sessions/<session_id>", methods=["PATCH"])
 @require_auth()
 def update_session(session_id: str):
