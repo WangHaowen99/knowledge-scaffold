@@ -21,7 +21,6 @@ def _agent_config() -> AgentConfig:
         sub_agent_max_depth=2,
         parallel_default_max_workers=2,
         context_max_rounds=5,
-        context_prune_tools=set(),
     )
 
 

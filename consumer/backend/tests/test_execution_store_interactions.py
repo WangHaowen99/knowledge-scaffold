@@ -27,8 +27,9 @@ def _seed_choice_checkpoint(store: ExecutionStore, session_id: str = "sess-choic
     return interaction
 
 
-def test_interaction_response_is_validated_and_consumed_with_next_turn(tmp_path):
-    store = ExecutionStore(str(tmp_path / "executions"))
+def test_interaction_response_survives_backend_process_reload_and_is_consumed(tmp_path):
+    storage_dir = tmp_path / "executions"
+    store = ExecutionStore(str(storage_dir))
     interaction = _seed_choice_checkpoint(store)
     response = {
         "interaction_id": interaction["id"],
@@ -37,10 +38,14 @@ def test_interaction_response_is_validated_and_consumed_with_next_turn(tmp_path)
         "value": "A",
     }
 
-    canonical = store.validate_interaction_response("sess-choice", response)
+    # The ContextEngine cutover does not change ExecutionStore's on-disk
+    # contract. A fresh instance models the old-backend process reopening the
+    # same current runtime after a code-only rollback.
+    reloaded_store = ExecutionStore(str(storage_dir))
+    canonical = reloaded_store.validate_interaction_response("sess-choice", response)
     assert canonical == response
 
-    store.start_turn(
+    reloaded_store.start_turn(
         session_id="sess-choice",
         turn_id=2,
         run_id="run-2",
@@ -48,13 +53,13 @@ def test_interaction_response_is_validated_and_consumed_with_next_turn(tmp_path)
         interaction_response=response,
     )
 
-    history = store.get_session_history("sess-choice")
+    history = reloaded_store.get_session_history("sess-choice")
     assert history["turns"][0]["interaction_response"] == response
     assert history["turns"][0]["interaction_consumed_at"]
     assert history["turns"][1]["status"] == "running"
 
     with pytest.raises(InteractionCheckpointError, match="no pending interaction"):
-        store.validate_interaction_response("sess-choice", response)
+        reloaded_store.validate_interaction_response("sess-choice", response)
 
 
 @pytest.mark.parametrize(

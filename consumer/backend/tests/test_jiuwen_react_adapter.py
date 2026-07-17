@@ -577,6 +577,7 @@ def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
         llm_config=None,
         stream_enabled=True,
         enable_reasoning=True,
+        sliding_window_applied=True,
     )
     ctx = SimpleNamespace(
         agent=SimpleNamespace(_config=SimpleNamespace(model_name="compat-model")),
@@ -647,6 +648,7 @@ def test_jiuwen_model_trace_normalizes_openai_compatible_cache_usage():
         model_provider="openai_compatible",
         stream_enabled=True,
         enable_reasoning=False,
+        sliding_window_applied=True,
     )
     ctx = SimpleNamespace(
         agent=SimpleNamespace(_config=SimpleNamespace(model_name="compat-model")),
@@ -719,6 +721,7 @@ def test_jiuwen_model_trace_normalizes_usage_metadata_cache_tokens():
         model_provider="deepseek",
         stream_enabled=True,
         enable_reasoning=False,
+        sliding_window_applied=True,
     )
     ctx = SimpleNamespace(
         agent=SimpleNamespace(_config=SimpleNamespace(model_name="deepseek-v4-pro")),
@@ -1016,11 +1019,12 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
         observer=observer,
     )
 
-    prepared_iterations = [
-        event.payload["iteration"]
+    prepared_events = [
+        event
         for event in observer.events
         if event.type == RuntimeEventType.AGENT_ITERATION_PREPARED
     ]
+    prepared_iterations = [event.payload["iteration"] for event in prepared_events]
     finished_iterations = [
         event.payload["iteration"]
         for event in observer.events
@@ -1028,6 +1032,8 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
     ]
     assert prepared_iterations == [1, 2, 3]
     assert finished_iterations == [1, 2, 3]
+    assert len({event.payload["llm_message_count"] for event in prepared_events}) == 1
+    assert len({event.payload["llm_input_chars"] for event in prepared_events}) == 1
 
 
 def test_jiuwen_loop_engine_streams_llm_output_as_token_delta(monkeypatch):
@@ -1339,9 +1345,12 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
             return {"output": "from restored history", "result_type": "answer"}
 
     fake_agent = FakeHistoryJiuwenAgent()
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
+        lambda **_kwargs: fake_agent,
+    )
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(context_max_rounds=4),
-        agent_factory=lambda: fake_agent,
     )
     state = {
         "run_id": "run-jiuwen-restored-history",
@@ -1380,8 +1389,10 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
     engine.run(state, caller="main")
 
     assert fake_agent.session is not None
-    assert fake_agent.session.get_session_id() == "sess-jiuwen-restored-history"
-    assert fake_agent.session.pre_run_inputs["conversation_id"] == "sess-jiuwen-restored-history"
+    owned_session_id = fake_agent.session.get_session_id()
+    assert owned_session_id.startswith("history-agent.session.")
+    assert owned_session_id != "sess-jiuwen-restored-history"
+    assert fake_agent.session.pre_run_inputs["conversation_id"] == owned_session_id
     assert fake_agent.session.closed is True
     assert fake_agent.session.committed is True
     assert len(fake_agent.context_engine.calls) == 1
@@ -1482,9 +1493,12 @@ def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
             )
 
     fake_agent = FakeStreamHistoryAgent()
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
+        lambda **_kwargs: fake_agent,
+    )
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(context_max_rounds=4),
-        agent_factory=lambda: fake_agent,
     )
     state = {
         "run_id": "run-jiuwen-stream-history",
@@ -2308,7 +2322,7 @@ def test_jiuwen_loop_engine_uses_invoke_when_request_mode_is_sync(monkeypatch):
     assert state["final_output"] == "sync answer"
 
 
-def test_jiuwen_loop_engine_applies_sliding_window_before_invoke(monkeypatch):
+def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-input-limit")
     monkeypatch.setattr(
@@ -2324,26 +2338,26 @@ def test_jiuwen_loop_engine_applies_sliding_window_before_invoke(monkeypatch):
 
     sliding_window_calls = []
 
-    def recording_apply_sliding_window(messages, max_rounds, prune_tools=None):
-        windowed = apply_sliding_window(messages, max_rounds, prune_tools)
-        sliding_window_calls.append(
-            {
-                "messages": messages,
-                "max_rounds": max_rounds,
-                "prune_tools": prune_tools,
-                "windowed": windowed,
-            }
+    def fail_if_called_apply_sliding_window(messages, max_rounds):
+        sliding_window_calls.append((messages, max_rounds))
+        raise AssertionError(
+            "apply_sliding_window must not be invoked by the engine; "
+            "ContextEngine is responsible for windowing."
         )
-        return windowed
 
+    # Patch the source module so that, if the engine ever re-imports
+    # apply_sliding_window, the test fails loudly.
     monkeypatch.setattr(
-        "agent.core.jiuwen_engine.apply_sliding_window",
-        recording_apply_sliding_window,
+        "agent.context.apply_sliding_window",
+        fail_if_called_apply_sliding_window,
     )
 
-    fake_agent = _FakeJiuwenAgent({"output": "invoked after sliding window"})
+    fake_agent = _FakeJiuwenAgent({"output": "invoked with full history"})
+    create_calls = []
 
-    def fake_create_default_jiuwen_agent(*, llm_config, max_iterations, system_prompt=None, agent_id=None, **_kwargs):
+    def fake_create_default_jiuwen_agent(*, llm_config, max_iterations, system_prompt=None, agent_id=None,
+                                         context_max_rounds=None, **_kwargs):
+        create_calls.append({"context_max_rounds": context_max_rounds})
         del llm_config, max_iterations, system_prompt, agent_id
         return fake_agent
 
@@ -2373,12 +2387,11 @@ def test_jiuwen_loop_engine_applies_sliding_window_before_invoke(monkeypatch):
 
     engine.run(state, caller="main")
 
-    assert sliding_window_calls
-    assert all(call["max_rounds"] == 1 for call in sliding_window_calls)
-    assert any(call["windowed"] == [current_message] for call in sliding_window_calls)
+    assert sliding_window_calls == []
+    assert create_calls and create_calls[-1]["context_max_rounds"] == 1
     assert fake_agent.inputs["query"].startswith(current_message["content"])
     assert state["messages"][:3] == persisted_messages
-    assert state["final_output"] == "invoked after sliding window"
+    assert state["final_output"] == "invoked with full history"
 
 
 def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
@@ -4822,7 +4835,6 @@ def _agent_config(**overrides):
         "sub_agent_max_depth": 2,
         "parallel_default_max_workers": 10,
         "context_max_rounds": 10,
-        "context_prune_tools": set(),
     }
     config.update(overrides)
     return AgentConfig(**config)
@@ -5020,35 +5032,45 @@ def test_history_messages_uses_same_normalization_as_factory(monkeypatch):
     (not 50) when context_max_rounds is None/invalid, proving the
     normalization path is unified."""
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
-    spy = {"max_rounds": None}
+    captured: dict = {}
 
-    def fake_apply_sliding_window(messages, max_rounds, prune_tools=None):
-        spy["max_rounds"] = max_rounds
-        return messages
+    def fake_factory(*, llm_config, max_iterations, system_prompt=None, agent_id=None,
+                     context_max_rounds=None, **_kwargs):
+        captured["context_max_rounds"] = context_max_rounds
+        del llm_config, max_iterations, system_prompt, agent_id
+        return SimpleNamespace()
 
     monkeypatch.setattr(
-        "agent.core.jiuwen_engine.apply_sliding_window",
-        fake_apply_sliding_window,
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
     )
     monkeypatch.setattr(
-        "agent.core.jiuwen_engine._drop_current_user_message",
-        lambda messages, state: messages,
-    )
-    monkeypatch.setattr(
-        "agent.core.jiuwen_engine._to_jiuwen_history_message",
-        lambda message: None,
+        "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
+        lambda state, *, caller, agent_config=None: _stub_llm_config(),
     )
 
     from agent.core.jiuwen_engine import _build_jiuwen_history_messages
 
     config_with_none = _agent_config()
     config_with_none.context_max_rounds = None
-    _build_jiuwen_history_messages(
+
+    # _build_jiuwen_history_messages no longer applies sliding window; verify
+    # it simply forwards full history without depending on max_rounds.
+    messages_out = _build_jiuwen_history_messages(
         {"messages": [{"role": "user", "content": "hi"}]},
         config_with_none,
     )
-    # apply_sliding_window was called with max_rounds=10 (not 50)
-    assert spy["max_rounds"] == 10
+    assert messages_out == []
+
+    # Normalization is now exercised through _create_agent ?
+    # create_default_jiuwen_agent(context_max_rounds=...).
+    engine = JiuwenReactLoopEngine(agent_config=config_with_none)
+    engine._create_agent(
+        max_iterations=10,
+        system_prompt="prompt",
+        caller="main",
+    )
+    # context_max_rounds falls back to 10 (not 50) when None
+    assert captured["context_max_rounds"] == 10
 
 
 def test_factory_does_not_truncate_messages_under_two_hundred(monkeypatch):

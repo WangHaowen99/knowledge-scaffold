@@ -10,8 +10,8 @@ import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
 import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
+import { findPendingInteraction } from './lib/pendingInteraction';
 import {
-  isSessionWaitingForUserStatus,
   resolveSessionPreferences,
 } from './lib/sessionModel';
 import { listResumableSessions } from './lib/sessionScope';
@@ -241,17 +241,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     scrollToBottom,
   } = useSmartScroll(messages, `${workspaceId}:${currentChatId || 'new'}`);
   const sessionLocked = Boolean(currentChatId);
-  const pendingInteraction = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (
-        message?.role === 'assistant'
-        && isSessionWaitingForUserStatus(message.status)
-        && message.interaction?.id
-      ) return message.interaction;
-    }
-    return null;
-  }, [messages]);
+  const pendingInteraction = useMemo(() => findPendingInteraction(messages), [messages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -520,6 +510,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
 
 function InteractionComposer({ interaction, disabled, onSubmit }) {
   const [draft, setDraft] = useState('');
+  const [submitted, setSubmitted] = useState(false);
   const type = String(interaction?.type || 'input');
   const prompt = String(interaction?.prompt || interaction?.text || '请补充信息后继续。');
   let options = Array.isArray(interaction?.options) ? interaction.options : [];
@@ -540,6 +531,13 @@ function InteractionComposer({ interaction, disabled, onSubmit }) {
       : { id: `option-${index}`, label: String(option), description: '', value: option }
   ));
   const isInput = type === 'input' || normalizedOptions.length === 0;
+  const interactionDisabled = disabled || submitted;
+
+  useEffect(() => {
+    if (disabled) return undefined;
+    const resetTimer = window.setTimeout(() => setSubmitted(false), 0);
+    return () => window.clearTimeout(resetTimer);
+  }, [disabled, interaction?.id]);
 
   return (
     <div className="mwr-interaction" role="region" aria-label="等待用户交互">
@@ -553,23 +551,28 @@ function InteractionComposer({ interaction, disabled, onSubmit }) {
         <form onSubmit={(event) => {
           event.preventDefault();
           const value = draft.trim();
-          if (!value) return;
+          if (!value || interactionDisabled) return;
+          setSubmitted(true);
           onSubmit(value, { type, value });
           setDraft('');
         }}>
-          <input value={draft} disabled={disabled} autoFocus placeholder="补充信息…"
+          <input value={draft} disabled={interactionDisabled} autoFocus placeholder="补充信息…"
             onChange={(event) => setDraft(event.target.value)} />
-          <button type="submit" className="btn btn-p" disabled={disabled || !draft.trim()}>继续</button>
+          <button type="submit" className="btn btn-p" disabled={interactionDisabled || !draft.trim()}>继续</button>
         </form>
       ) : (
         <div className="mwr-interaction-options">
           {normalizedOptions.map((option) => (
-            <button key={option.id} type="button" className="btn" disabled={disabled}
-              onClick={() => onSubmit(option.label, {
-                type,
-                value: option.value,
-                option_id: option.id,
-              })}>
+            <button key={option.id} type="button" className="btn" disabled={interactionDisabled}
+              onClick={() => {
+                if (interactionDisabled) return;
+                setSubmitted(true);
+                onSubmit(option.label, {
+                  type,
+                  value: option.value,
+                  option_id: option.id,
+                });
+              }}>
               <strong>{option.label}</strong>
               {option.description && <span>{option.description}</span>}
             </button>

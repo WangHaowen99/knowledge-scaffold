@@ -356,6 +356,9 @@ def _llm_finished_metrics(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _iteration_metrics(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # ``sliding_window_applied`` is a legacy schema key.  It now carries the
+    # static "Jiuwen ContextEngine window configured" signal, not evidence
+    # that the project layer trimmed messages before the model call.
     return _copy_metric_fields(
         payload,
         "prompt_build_ms",

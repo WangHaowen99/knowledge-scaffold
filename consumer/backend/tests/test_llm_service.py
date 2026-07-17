@@ -762,7 +762,6 @@ def test_llm_with_config_refreshes_transport_agent_config():
         sub_agent_max_depth=10,
         parallel_default_max_workers=10,
         context_max_rounds=10,
-        context_prune_tools=set(),
     )
     new_agent_config = AgentConfig(
         llm_connection_max_retries=9,
@@ -772,7 +771,6 @@ def test_llm_with_config_refreshes_transport_agent_config():
         sub_agent_max_depth=10,
         parallel_default_max_workers=10,
         context_max_rounds=10,
-        context_prune_tools=set(),
     )
     old_config = LLMConfig(
         base_url="http://old.test",
