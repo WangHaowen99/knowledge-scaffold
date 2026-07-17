@@ -2,14 +2,14 @@
 
 ## Context
 
-当前项目已经有 workspace 级业务数据连接体系，`business_data_search` 的运行链路是：
+当前项目为每个 ontology 保存一份 workspace 本地业务数据源，`business_data_search` 的运行链路是：
 
 ```text
 business_data_search
-  -> resolve_business_data_connection(workspace_id, ontology_id)
-  -> query_business_data_stream(request, connection)
-  -> provider_registry.get_provider_spec(connection.provider)
-  -> spec.factory({"ontology_search": {provider_name: connection.config}})
+  -> resolve_business_data_source(workspace_id, ontology_id)
+  -> query_business_data_stream(request, source)
+  -> provider_registry.get_provider_spec(source.provider)
+  -> spec.factory({"ontology_search": {provider_name: source.config}})
   -> provider.search_stream(query=query, entity=entity)
 ```
 
@@ -23,7 +23,7 @@ business_data_search
 
 ## Decision
 
-在当前项目新增一个 workspace 数据连接 provider：
+在当前项目新增一个 ontology 数据源 provider：
 
 ```text
 provider id: dataagent
@@ -55,7 +55,7 @@ DataAgentProvider.search_stream()
 flowchart LR
   User["用户问题"] --> Agent["onto-agent"]
   Agent --> Tool["business_data_search"]
-  Tool --> Resolver["workspace + ontology binding resolver"]
+  Tool --> Resolver["workspace + ontology data-source resolver"]
   Resolver --> Registry["provider_registry: dataagent"]
   Registry --> Provider["DataAgentProvider"]
   Provider --> Client["DataAgent A2A REST client"]
@@ -63,13 +63,12 @@ flowchart LR
   DataAgent --> Source["DataAgent YAML 中配置的数据源 / NL2SQL 能力"]
 ```
 
-本体包和 workspace 连接的职责分离：
+本体包和 workspace 运行时数据源的职责分离：
 
 | 层 | 职责 |
 | --- | --- |
 | 本体包 `mappings/object-data-mappings.json` | 说明 object 对应哪个 provider alias、resource、字段口径 |
-| workspace data binding | 把 ontology 绑定到具体 connection |
-| data connection | 保存 `provider=dataagent` 和 DataAgent 服务地址、token、超时等配置 |
+| ontology data source | 保存 `provider=dataagent` 和当前 ontology 专属的 DataAgent 服务地址、token、超时等配置 |
 | DataAgentProvider | 把 `business_data_search` 请求转换成 A2A REST message |
 | DataAgent 服务 | 根据自身 YAML / NL2SQL / 数据源配置执行数据分析 |
 
@@ -229,9 +228,9 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`。后续如果要
 | `backend/agentic/business_data/provider_registry.py` | 注册 `dataagent` schema |
 | `backend/agentic/business_data/connection_tester.py` | 增加 DataAgent AgentCard 探测 |
 | `backend/tests/test_dataagent_provider.py` | 覆盖 provider schema、请求构造、响应解析、输出归一化 |
-| `backend/tests/test_business_data_connections.py` | 覆盖连接创建、secret 脱敏、测试连接 |
+| `backend/tests/test_business_data_connections.py` | 覆盖数据源保存、secret 脱敏和连接测试 |
 
-通常不需要改 `frontend/src/components/DataConnectionManagement.jsx`。前端表单由后端 provider schema 动态渲染，`url`、`token` 字段也已经会按整行字段处理。
+通常不需要改 `frontend/src/redesign/KnowledgeDataSources.jsx`。前端表单由后端 provider schema 动态渲染。
 
 ## Implementation Notes
 
@@ -248,7 +247,7 @@ SQL 默认不放入 `final.content`，只保留 `has_sql=true`。后续如果要
 | 直接导入 DataAgent SDK | 会把 DataAgent 的 Python 依赖、配置、workspace、模型环境耦合进当前后端进程 |
 | JSON-RPC | RESTful `message:send` 已满足首版同步查询，协议面更小 |
 | 自定义 `/query` HTTP API | A2A REST 已提供标准消息入口，另造协议会增加两边维护成本 |
-| 把 DataAgent 做成新 Agent 工具 | 会绕开现有 `business_data_search`、ontology binding 和 workspace connection 治理 |
+| 把 DataAgent 做成新 Agent 工具 | 会绕开现有 `business_data_search` 和 ontology 私有数据源治理 |
 
 ## Error Handling
 
@@ -301,7 +300,7 @@ git diff --check
 1. 后端先新增 DataAgent client 和 provider，并注册 schema。
 2. 增加连接测试分支，确保 DataAgent 服务地址、鉴权、AgentCard 可达。
 3. 补齐 provider 单测和连接 API 单测。
-4. 用一个 workspace 创建 `provider=dataagent` 的数据连接，并绑定到目标 ontology。
+4. 在目标 ontology 的 data-source API 中直接保存 `provider=dataagent` 的独立配置。
 5. 使用现有 `business_data_search` 触发真实查询，观察 final JSON 是否稳定。
 6. 再考虑 provider client 复用、并发限制、Runtime Facts/evidence 记录等生产化增强。
 

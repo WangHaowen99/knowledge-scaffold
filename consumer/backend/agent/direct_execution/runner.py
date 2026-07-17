@@ -141,7 +141,7 @@ def run_direct_script(
             if onto_manifest and not onto_error:
                 ontology_pythonpath.append(Path(onto_manifest.ontology_dir).resolve())
 
-        # --- Build env overrides for business data connection ---
+        # --- Build env overrides from the ontology-scoped business data source ---
         env_overrides = _build_script_env_overrides(
             workspace_id=runtime_context.workspace_id,
             ontology_id=ontology_id,

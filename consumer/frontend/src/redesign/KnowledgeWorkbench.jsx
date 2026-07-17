@@ -23,6 +23,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
     canManage, viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
     importPreview, clearImportPreview, reloadTree,
+    retryPackages,
   } = kb;
   const [activeTab, setActiveTab] = useState('files');
   const [content, setContent] = useState('');
@@ -45,6 +46,9 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
   ), [sel.file, tree]);
 
   useEffect(() => {
+    if (focusRequest?.tab && KB_TABS.some((item) => item.id === focusRequest.tab)) {
+      setActiveTab(focusRequest.tab);
+    }
     if (!focusRequest?.path) return;
     if (focusRequest.ontologyId && focusRequest.ontologyId !== pkgId) return;
     if (!treeContainsPath(tree, focusRequest.path)) return;
@@ -94,7 +98,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
   }, [pkgId, sel.file, versionOverride]);
 
   if (!pkg) {
-    return <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、连接、本体图和进化任务将在这里统一管理。" /></div>;
+    return <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、数据源、本体图和进化任务将在这里统一管理。" /></div>;
   }
 
   const shown = entries.filter((entry) => !filter || entry.name.toLowerCase().includes(filter.toLowerCase()));
@@ -242,7 +246,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest }) {
           </div>
         </div>
       )}
-      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources ontologyId={pkgId} /></div>}
+      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources ontologyId={pkgId} onDataSourceChanged={retryPackages} /></div>}
       {activeTab === 'graph' && <div className="kb-scroll"><OntologyGraphPanel ontologyId={pkgId} version={viewVersion} onOpenSource={(path) => { setActiveTab('files'); selectFile(path); }} /></div>}
       {activeTab === 'evolution' && <div className="kb-scroll"><EvolutionWorkbench ontologyId={pkgId} /></div>}
 

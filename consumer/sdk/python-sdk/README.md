@@ -91,7 +91,7 @@ with client.agentic.runs.resume("run-123", after_seq=last_seq) as stream:
 
 MCP 是独立服务，默认地址为 `http://<host>:7488/search/mcp` 和 `http://<host>:7488/chat/mcp`。MCP token 需在当前 workspace 下通过 `/agentic/mcp/tokens` 创建，搜索端点要求 `mcp:search`，聊天端点要求 `mcp:chat`；不要传 consumer access token。
 
-Graph 连接通过 workspace 数据连接 API 配置。Neo4j 使用 `uri/database/username/password`，HugeGraph 使用 `url/graph/graph_space` 以及可选的 `username/password/token`；随后用 ontology data-binding API 显式绑定，SDK 不从环境变量推断 Graph 连接。
+Graph 数据源通过 ontology data-source API 直接配置。Neo4j 使用 `uri/database/username/password`，HugeGraph 使用 `url/graph/graph_space` 以及可选的 `username/password/token`；每个 ontology 保存一份独立配置，SDK 不从环境变量推断 Graph 连接。
 
 ## 运行模式
 

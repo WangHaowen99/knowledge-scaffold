@@ -6,6 +6,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
+PREFLIGHT_ARGS=()
+if [ "${1:-}" = "--pre-migration" ]; then
+    PREFLIGHT_ARGS+=(--pre-migration)
+    shift
+fi
+[ "$#" -eq 0 ] || die "Usage: preflight.sh [--pre-migration]"
+
 require_file "${MANIFEST_FILE}"
 require_file "${COMPOSE_FILE}"
 
@@ -22,6 +29,7 @@ python3 "${SCRIPT_DIR}/preflight_config.py" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \
     --runtime-root "${BUNDLE_ROOT}/.onto-runtime" \
     --report "${STATE_DIR}/preflight-config.json" \
+    "${PREFLIGHT_ARGS[@]}" \
     || die "Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
 
 host_arch="$(detect_host_arch)"

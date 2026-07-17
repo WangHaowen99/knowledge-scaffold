@@ -6,7 +6,7 @@ React + Vite client for the refactored agent runtime. It renders authenticated c
 
 - Chat workspace with incremental assistant/tool streaming
 - Session sidebar with background-stream indicators
-- Configuration center for system settings, workspaces, workspace runtime config, data connections, and ontology bindings
+- Configuration center for system settings, workspaces, and workspace runtime config, plus ontology-scoped data-source editing in the knowledge workbench
 - Ontology management and operation evolution review
 - Task process sidebar built from streamed run/tool/sub-agent events
 - Session performance and admin local-observability dashboards
@@ -137,8 +137,9 @@ The configuration center and related panels use:
 - `GET/PATCH/POST /api/system-config...`
 - `GET/POST/PATCH/DELETE /agentic/workspaces...`
 - `GET/PATCH /agentic/workspaces/:id/runtime-config`
-- `GET/POST/PATCH/DELETE /agentic/data-connections...`
-- `GET/PUT/DELETE /agentic/ontologies/:id/data-binding`
+- `GET/PUT/DELETE /agentic/ontologies/:id/data-source`
+- `POST /agentic/ontologies/:id/data-source/test`
+- `GET /agentic/business-data/provider-schemas`
 
 ### Tool activity
 

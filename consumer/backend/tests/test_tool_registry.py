@@ -1070,13 +1070,13 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
-    from agent.tools.business_data.ontology_sources_store import set_ontology_data_binding
-    from agent.tools.business_data.connections_store import create_data_connection
+    from agent.tools.business_data.ontology_sources_store import set_ontology_data_source
 
-    create_data_connection(
-        {
-            "id": "mindsdb-main",
-            "name": "MindsDB Main",
+    set_ontology_data_source(
+        ontology_id="demo",
+        workspace_id="demo-ws",
+        data={
+            "mode": "direct_provider",
             "provider": "mindsdb",
             "config": {
                 "url": "https://mindsdb.example.com/",
@@ -1084,12 +1084,6 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
                 "timeout_seconds": 120,
             },
         },
-        workspace_id="demo-ws",
-    )
-    set_ontology_data_binding(
-        ontology_id="demo",
-        connection_id="mindsdb-main",
-        workspace_id="demo-ws",
     )
 
     result = execute_tool_batch(

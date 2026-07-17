@@ -3,7 +3,7 @@ import type { DataDictTable } from '../types.js';
 
 // Excel → 评测 MySQL 落库（design.md 决策 5 第三段）：
 // 每个项目一个独立 schema（mw_proj_<id>），自动 DDL + 灌数。
-// 外部 NL2SQL / MindsDB 服务指向该库后，consumer 的数据连接即可查到评测数据。
+// 外部 NL2SQL / MindsDB 服务指向该库后，consumer 的知识包数据源即可查到评测数据。
 // best-effort：EVAL_DB_URL 未配置或不可达时返回说明而不阻断评测。
 const TYPE_MAP: Record<string, string> = {
   number: 'DOUBLE', boolean: 'TINYINT(1)', date: 'DATETIME', string: 'VARCHAR(512)', unknown: 'VARCHAR(512)',

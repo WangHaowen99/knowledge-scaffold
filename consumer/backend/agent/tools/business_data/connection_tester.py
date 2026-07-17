@@ -35,21 +35,70 @@ def _error_detail(response: requests.Response | None) -> str:
     return _coerce_string(getattr(response, "text", ""))
 
 
-def _post_mindsdb_sql_probe(
+def _get_mindsdb_agents(
     url: str,
-    database: str,
+    project_name: str,
     headers: Dict[str, str],
     timeout: int,
 ) -> requests.Response:
-    return requests.post(
-        "{}/api/sql/query".format(url),
+    return requests.get(
+        "{}/api/projects/{}/agents".format(url, quote(project_name, safe="")),
         headers=headers,
-        json={
-            "query": "SELECT 1",
-            "context": {"db": database, "show_secrets": False},
-        },
         timeout=timeout,
     )
+
+
+def _mindsdb_agent_names(response: requests.Response) -> list[str] | None:
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return None
+    rows = payload
+    if isinstance(payload, dict):
+        if "agents" in payload:
+            rows = payload.get("agents")
+        elif "data" in payload:
+            rows = payload.get("data")
+        else:
+            rows = None
+    if not isinstance(rows, list):
+        return None
+
+    names: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized = {str(key).strip().lower(): value for key, value in row.items()}
+        name = _coerce_string(normalized.get("name") or normalized.get("agent_name"))
+        if name:
+            names.append(name)
+    return names
+
+
+def _validate_mindsdb_agent(
+    response: requests.Response,
+    *,
+    project_name: str,
+    agent_name: str,
+    tested_at: str,
+) -> Dict[str, Any] | None:
+    names = _mindsdb_agent_names(response)
+    if names is None:
+        return {
+            "success": False,
+            "message": "MindsDB Agent 列表响应格式无效",
+            "tested_at": tested_at,
+        }
+    if agent_name in names:
+        return None
+    return {
+        "success": False,
+        "message": "MindsDB 连接成功，但 Project '{}' 中不存在 Agent '{}'".format(
+            project_name,
+            agent_name,
+        ),
+        "tested_at": tested_at,
+    }
 
 
 def test_business_data_connection(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
@@ -65,7 +114,7 @@ def test_business_data_connection(connection: ResolvedBusinessDataSource) -> Dic
         return _test_hugegraph(connection)
     return {
         "success": False,
-        "message": "不支持的数据连接 Provider: {}".format(connection.provider),
+        "message": "不支持的数据源 Provider: {}".format(connection.provider),
         "tested_at": _utc_now(),
     }
 
@@ -81,9 +130,13 @@ def _test_mindsdb(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
     requires_auth = bool(config.get("requires_auth"))
     login = _coerce_string(config.get("login")) or "mindsdb"
     password = _coerce_string(config.get("password"))
-    database = _coerce_string(config.get("default_database")) or "mindsdb"
+    project_name = _coerce_string(config.get("project_name")) or "mindsdb"
+    agent_name = _coerce_string(
+        config.get("default_agent_name") or config.get("agent_name")
+    ) or "my_agent"
 
     try:
+        headers = {"Content-Type": "application/json"}
         if requires_auth:
             if not password:
                 return {"success": False, "message": "已启用鉴权，但密码未配置", "tested_at": tested_at}
@@ -93,7 +146,16 @@ def _test_mindsdb(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
                 timeout=timeout,
             )
             response.raise_for_status()
-            result = response.json()
+            try:
+                result = response.json()
+            except (TypeError, ValueError):
+                result = None
+            if not isinstance(result, dict):
+                return {
+                    "success": False,
+                    "message": "MindsDB 登录响应格式无效",
+                    "tested_at": tested_at,
+                }
             token = _coerce_string(result.get("token") or result.get("access_token"))
             if not token:
                 return {
@@ -101,31 +163,36 @@ def _test_mindsdb(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
                     "message": "MindsDB 登录返回成功，但未返回 token",
                     "tested_at": tested_at,
                 }
-            response = _post_mindsdb_sql_probe(
-                url,
-                database,
-                {
-                    "Content-Type": "application/json",
-                    "Authorization": "Bearer {}".format(token),
-                },
-                timeout,
-            )
-            response.raise_for_status()
-            return {
-                "success": True,
-                "message": "MindsDB 连接成功，鉴权与查询接口可用",
-                "tested_at": tested_at,
-            }
+            headers["Authorization"] = "Bearer {}".format(token)
 
-        response = _post_mindsdb_sql_probe(url, database, {"Content-Type": "application/json"}, timeout)
+        response = _get_mindsdb_agents(url, project_name, headers, timeout)
         if response.status_code == 401:
             return {
                 "success": False,
                 "message": "MindsDB 要求鉴权，请启用鉴权并配置用户名密码",
                 "tested_at": tested_at,
             }
+        if response.status_code == 404:
+            return {
+                "success": False,
+                "message": "MindsDB Project '{}' 不存在或 Agent 列表接口不可用".format(project_name),
+                "tested_at": tested_at,
+            }
         response.raise_for_status()
-        return {"success": True, "message": "MindsDB 连接成功，匿名访问可用", "tested_at": tested_at}
+        invalid_agent = _validate_mindsdb_agent(
+            response,
+            project_name=project_name,
+            agent_name=agent_name,
+            tested_at=tested_at,
+        )
+        if invalid_agent is not None:
+            return invalid_agent
+        message = (
+            "MindsDB 连接成功，鉴权与 Agent 配置可用"
+            if requires_auth
+            else "MindsDB 连接成功，匿名访问与 Agent 配置可用"
+        )
+        return {"success": True, "message": message, "tested_at": tested_at}
     except requests.exceptions.HTTPError as exc:
         response = exc.response
         status_code = response.status_code if response is not None else "unknown"

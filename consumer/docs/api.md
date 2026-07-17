@@ -5,7 +5,7 @@ Base URL: `http://localhost:5055`
 本文档以当前代码实现为准，覆盖以下路由前缀：
 
 - `/auth/*`：认证与用户管理接口
-- `/agentic/*`：主业务接口（runs / sessions / skills / ontologies / workspaces / data connections / operations / performance）
+- `/agentic/*`：主业务接口（runs / sessions / skills / ontologies / workspaces / ontology data sources / operations / performance）
 - `/api/*`：系统配置与本地观测接口
 - `/.well-known/a2a/*` 与 `/a2a/*`：A2A 适配层接口
 - `/acp/*`：ACP 适配层接口
@@ -51,13 +51,9 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
   - `DELETE /agentic/workspaces/{workspace_id}`
   - `POST /agentic/workspaces/{workspace_id}/default`
   - `PATCH /agentic/workspaces/{workspace_id}/runtime-config`
-  - `POST /agentic/data-connections`
-  - `PATCH /agentic/data-connections/{connection_id}`
-  - `DELETE /agentic/data-connections/{connection_id}`
-  - `POST /agentic/data-connections/{connection_id}/default`
-  - `POST /agentic/data-connections/{connection_id}/test`
-  - `PUT /agentic/ontologies/{ontology_id}/data-binding`
-  - `DELETE /agentic/ontologies/{ontology_id}/data-binding`
+  - `PUT /agentic/ontologies/{ontology_id}/data-source`
+  - `DELETE /agentic/ontologies/{ontology_id}/data-source`
+  - `POST /agentic/ontologies/{ontology_id}/data-source/test`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/apply`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/reject`
   - `GET /auth/users`
@@ -446,7 +442,7 @@ data: { ...agent-stream.v2 envelope... }
 
 - 普通用户最多 **1** 个活跃 run
 - 管理员最多 **100** 个活跃 run
-- 启动前必须已有可用模型配置；如果选定 ontology 需要查询业务数据，还必须先为该 ontology 绑定工作区数据连接
+- 启动前必须已有可用模型配置；如果选定 ontology 需要查询业务数据，还必须先配置该 ontology 的私有数据源
 - 如果提供的 `run_id` 已存在，系统**不会报错**，而是自动回退为一个新的 UUID
 - 未传 `agent_mode`、传空值或传未知值时，默认为 `quick`
 - 默认模式下 `llm_request_mode = stream`
@@ -457,7 +453,7 @@ data: { ...agent-stream.v2 envelope... }
 - 缺少 `request`
 - 缺少 `session_id`
 - 模型配置不存在或未启用
-- 已选 ontology 未绑定业务数据连接时，运行中的 `business_data_search` 会返回工具错误
+- 已选 ontology 未配置业务数据源时，运行中的 `business_data_search` 会返回工具错误
 
 响应 `429`：
 
@@ -610,7 +606,7 @@ Last-Event-ID: 42
 其他 `400` 场景：
 
 - 模型配置不存在或未启用
-- 已选 ontology 未绑定业务数据连接时，运行中的 `business_data_search` 会返回工具错误
+- 已选 ontology 未配置业务数据源时，运行中的 `business_data_search` 会返回工具错误
 
 TPS 超限 `429`：
 
@@ -1028,10 +1024,11 @@ Ontologies 也按工作空间隔离。
       "manifest_path": "/abs/path/.../manifest.yaml",
       "index_path": "/abs/path/.../index.md",
       "business_data": {
-        "connection_id": "example-nl2sql",
-        "connection_name": "示例制造 NL2SQL",
+        "configured": true,
+        "ready": true,
+        "mode": "direct_provider",
         "provider": "nl2sql_http",
-        "ready": true
+        "updated_at": "2026-07-15T10:00:00+00:00"
       }
     }
   ]
@@ -1274,11 +1271,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "operations_count": 18,
   "objects_index_path": "/abs/path/.../objects/index.md",
   "operations_index_path": "/abs/path/.../operations/index.md",
-  "business_data_binding": {
-    "ontology_id": "example-domain-operations-manual",
-    "connection_id": "example-nl2sql",
-    "updated_at": "2026-05-10T10:00:00+00:00"
-  },
+  "business_data_configured": false,
   "warnings": {
     "objects": [],
     "objects_index": [],
@@ -1291,7 +1284,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 - `import_mode=source`：表示上传的是源格式包，服务端已执行格式转换
 - `import_mode=converted`：表示上传的是已转换完成的 ontology 包，服务端直接导入目录内容
-- `business_data_binding` 仅在新导入 ontology 且当前 workspace 已设置默认数据连接时返回，否则为 `null`
+- 新导入 ontology 不继承默认连接，`business_data_configured` 初始为 `false`；需要在导入后显式配置该 ontology 的数据源
 
 ---
 
@@ -1481,9 +1474,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 按当前请求的 `X-Workspace-Id` 或默认工作区读取运行配置。
 
-### 7.9 工作区业务数据连接与本体绑定
+### 7.9 本体业务数据源
 
-业务数据连接按 workspace 隔离。运行时不会从全局配置隐式继承 provider；`business_data_search` 会解析当前 workspace 下当前 ontology 的显式绑定。
+每个 ontology 在当前 workspace 下拥有一份私有业务数据源。运行时不会从全局配置、默认连接或其他 ontology 隐式继承 provider；`business_data_search` 只解析当前 `workspace_id + ontology_id` 对应的数据源。
 
 Graph provider 配置：
 
@@ -1492,13 +1485,13 @@ Graph provider 配置：
 | `neo4j` | `uri`、`username`、`password` | `database=neo4j`、超时/重试/结果上限 | `workspace_property=d2o_workspace_id`，建议显式配置 `ontology_property=d2o_ontology_id` |
 | `hugegraph` | `url` | `graph=hugegraph`、`graph_space`、`username/password/token`、超时/重试/结果上限 | 同样配置 workspace/ontology 属性 |
 
-密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。创建连接后先调用 test，再通过 data-binding 绑定 ontology；MCP search 只接受已绑定的 `neo4j` 或 `hugegraph`。
+密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。可先用候选配置调用 test，确认可用后再保存；MCP search 只接受已配置的 `neo4j` 或 `hugegraph` 数据源。
 
 新增业务数据 provider 的开发步骤见 [`docs/business-data-provider-extension.md`](business-data-provider-extension.md)。
 
 #### `GET /agentic/business-data/provider-schemas`
 
-返回当前支持的数据连接 provider 表单 schema。所有已认证用户可访问。
+返回当前支持的数据源 provider 表单 schema。所有已认证用户可访问。
 
 响应 `200`：
 
@@ -1518,46 +1511,42 @@ Graph provider 配置：
 }
 ```
 
-#### `GET /agentic/data-connections`
+#### `GET /agentic/ontologies/{ontology_id}/data-source`
 
-列出当前 workspace 的业务数据连接。secret 字段只返回 `has_*` 标记。
+读取当前 workspace 下某个 ontology 的私有数据源。secret 字段只返回 `has_*` 标记。
 
 响应 `200`：
 
 ```json
 {
-  "default_connection_id": "example-nl2sql",
-  "connections": [
-    {
-      "id": "example-nl2sql",
-      "name": "示例制造 NL2SQL",
-      "provider": "nl2sql_http",
-      "config": {
-        "url": "https://nl2sql.example.com",
-        "has_token": true,
-        "scene": "example",
-        "timeout_seconds": 600,
-        "max_retries": 3
-      },
-      "created_at": "2026-05-10T10:00:00+00:00",
-      "updated_at": "2026-05-10T10:00:00+00:00"
-    }
-  ]
+  "ontology_id": "example-domain-operations-manual",
+  "configured": true,
+  "source": {
+    "mode": "direct_provider",
+    "provider": "nl2sql_http",
+    "config": {
+      "url": "https://nl2sql.example.com",
+      "has_token": true,
+      "scene": "example",
+      "timeout_seconds": 600,
+      "max_retries": 3
+    },
+    "created_at": "2026-05-10T10:00:00+00:00",
+    "updated_at": "2026-07-15T10:00:00+00:00"
+  }
 }
 ```
 
-#### `POST /agentic/data-connections` (`admin`)
+尚未配置时返回 `configured=false`、`source=null`。
 
-创建当前 workspace 的业务数据连接。
+#### `PUT /agentic/ontologies/{ontology_id}/data-source` (`admin`)
 
-请求体：
+创建或覆盖 ontology 的私有数据源。当前只接受 `mode=direct_provider`；同一 provider 更新时，secret 字段留空或省略会保留原值。
 
 ```json
 {
-  "id": "example-nl2sql",
-  "name": "示例制造 NL2SQL",
+  "mode": "direct_provider",
   "provider": "nl2sql_http",
-  "set_as_default": true,
   "config": {
     "url": "https://nl2sql.example.com",
     "token": "secret-token",
@@ -1566,85 +1555,33 @@ Graph provider 配置：
 }
 ```
 
-响应 `201`：
+响应结构与 GET 相同，`configured=true`。
+
+#### `DELETE /agentic/ontologies/{ontology_id}/data-source` (`admin`)
+
+清除 ontology 的私有数据源。重复删除仍返回 `200`：
 
 ```json
 {
-  "connection": { "...": "同 GET /agentic/data-connections 中的单个 connection" },
-  "default_connection_id": "example-nl2sql"
+  "success": true,
+  "ontology_id": "example-domain-operations-manual",
+  "configured": false
 }
 ```
 
-#### `PATCH /agentic/data-connections/{connection_id}` (`admin`)
+#### `POST /agentic/ontologies/{ontology_id}/data-source/test` (`admin`)
 
-更新连接名称、provider 或配置。secret 字段留空时保留原值。
-
-#### `DELETE /agentic/data-connections/{connection_id}` (`admin`)
-
-删除连接。若仍有 ontology 绑定该连接，返回 `409`。
-
-```json
-{
-  "detail": "该连接仍被本体绑定，不能删除",
-  "bound_ontologies": ["example-domain-operations-manual"]
-}
-```
-
-#### `POST /agentic/data-connections/{connection_id}/default` (`admin`)
-
-设置当前 workspace 新导入 ontology 的默认连接。导入新 ontology 时如果尚无绑定，会自动创建绑定；运行时仍以 ontology 显式绑定为准。
-
-#### `POST /agentic/data-connections/{connection_id}/test` (`admin`)
-
-测试连接服务可达性。MindsDB 会执行轻量 SQL 探测；启用鉴权时会先登录再带 token 探测查询接口。NL2SQL HTTP / NL2SQL Template 会请求 `/api/v1/query`，携带轻量 `question` 与配置的 `scene`，验证服务地址、网络和鉴权头是否可用。
+测试数据源服务可达性。请求体可传入与 PUT 相同的候选配置；请求体为空时测试已保存配置。测试不会保存候选配置。MindsDB 会请求 Project 范围内的 Agent 列表，并校验 `project_name + default_agent_name`；NL2SQL HTTP / NL2SQL Template 会请求 `/api/v1/query`，验证服务地址、网络和鉴权头。
 
 ```json
 {
   "success": true,
   "message": "NL2SQL 服务连接正常",
-  "tested_at": "2026-05-10T10:00:00+00:00",
-  "connection": {
-    "id": "example-nl2sql",
-    "name": "示例制造 NL2SQL",
-    "provider": "nl2sql_http",
-    "config": {
-      "url": "https://nl2sql.example.com",
-      "has_token": true,
-      "scene": "example",
-      "timeout_seconds": 600,
-      "max_retries": 3
-    }
-  }
+  "tested_at": "2026-07-15T10:00:00+00:00"
 }
 ```
 
-#### `GET /agentic/ontologies/{ontology_id}/data-binding`
-
-读取某个 ontology 的业务数据连接绑定。
-
-```json
-{
-  "ontology_id": "example-domain-operations-manual",
-  "binding": {
-    "connection_id": "example-nl2sql",
-    "updated_at": "2026-05-10T10:00:00+00:00"
-  }
-}
-```
-
-#### `PUT /agentic/ontologies/{ontology_id}/data-binding` (`admin`)
-
-绑定或切换 ontology 的业务数据连接。
-
-```json
-{
-  "connection_id": "example-nl2sql"
-}
-```
-
-#### `DELETE /agentic/ontologies/{ontology_id}/data-binding` (`admin`)
-
-删除 ontology 的业务数据连接绑定。
+旧 `/agentic/data-connections*` 与 `/agentic/ontologies/{ontology_id}/data-binding` 路由在一个兼容版本内保留，但统一返回 `410 Gone` 和新接口地址，不再写入共享连接或绑定。
 
 ### 7.10 Operation Evolution API
 
@@ -1679,7 +1616,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 说明：
 
 - 模型属于外部运行必需能力，不提供可运行的内置默认值。
-- 业务数据连接不属于全局系统配置，按 workspace 存储并由 ontology 绑定选择。
+- 业务数据源不属于全局系统配置，按 `workspace_id + ontology_id` 独立存储。
 - 内置默认值主要用于超时、重试、temperature、存储路径等运行参数。
 - 可通过 `SYSTEM_CONFIG_PATH` 指定其他保存位置。
 
@@ -1707,7 +1644,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - 当前版本后端不再内建默认 LLM 地址与模型 ID
 - 若系统尚未配置模型，则 `llm.base_url` / `llm.model` 以及 `llm_profiles.profiles` 可能为空
-- 业务数据连接请使用 `/agentic/data-connections` 与 `/agentic/ontologies/{ontology_id}/data-binding`
+- 业务数据源请使用 `/agentic/ontologies/{ontology_id}/data-source`
 
 响应 `200`：
 
@@ -2081,7 +2018,7 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 - SSE：`http://<host>:7488/search/sse`、`http://<host>:7488/chat/sse`
 - 健康检查：`http://<host>:7488/health`
 
-search 服务要求 ontology 已绑定 `neo4j` 或 `hugegraph` 数据连接。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
+search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
 
 ---
 

@@ -14,7 +14,6 @@
 | 单本体实体数 | 200 个 | `ops_config.limits.ontology_object_max_count` / `ONTOLOGY_OBJECT_MAX_COUNT` | 导入 converted/source 两类包及编辑器新增对象文件时，按最终 `objects/*.md` 数量校验 |
 | 单本体流程数 | 100 个 | `ops_config.limits.ontology_operation_max_count` / `ONTOLOGY_OPERATION_MAX_COUNT` | 导入 converted/source 两类包及编辑器新增流程文件时，按最终 `operations/*.md` 数量校验 |
 | 单实体属性数 | 100 个 | `ops_config.limits.entity_attribute_max_count` / `ENTITY_ATTRIBUTE_MAX_COUNT` | 导入本体、编辑器新增或更新对象文件时，按对象 Markdown 的首个属性表行数校验 |
-| 数据连接配置数 | 每 workspace 10 个 | `ops_config.limits.data_connection_configs_max_per_workspace` / `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | workspace 级别限制新增数据连接配置记录，不限制底层数据库物理连接数 |
 | 模型数量 | 10 个 | `ops_config.limits.model_profile_max_count` / `MODEL_PROFILE_MAX_COUNT` | 保存 `llm_profiles` 时限制模型 profile 数量 |
 | 历史会话数 | 每 workspace 下每用户 100 条 | `ops_config.limits.session_max_per_user_workspace` / `SESSION_MAX_PER_USER_WORKSPACE` | 创建新会话后保留最新 100 条，老会话及对应 execution 记录自动老化；不删除长期记忆 |
 | 单个逻辑长度 | 15000 字符 | `ops_config.limits.operation_max_chars` / `ONTOLOGY_OPERATION_MAX_CHARS` | 对最终 `operations/*.md` 按字符数限制，不再按行数限制 |
@@ -36,7 +35,6 @@
     "ontology_object_max_count": 200,
     "ontology_operation_max_count": 100,
     "entity_attribute_max_count": 100,
-    "data_connection_configs_max_per_workspace": 10,
     "model_profile_max_count": 10,
     "model_input_token_limit": 50000,
     "model_output_token_limit": 100000,

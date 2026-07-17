@@ -102,7 +102,7 @@ export function EvaluatePanel({ projectId }) {
   const [bind, setBind] = useState({ provider: 'nl2sql_template', url: '', token: '', scene: '' });
   const pollRef = useRef(null);
 
-  // 配置中心的评测连接默认值自动预填（配了 url 就默认勾选绑定）
+  // 配置中心的评测数据源默认值自动预填（配了 url 就默认启用）
   useEffect(() => {
     getSettings().then((d) => {
       const b = d.evalBinding || {};
@@ -164,7 +164,7 @@ export function EvaluatePanel({ projectId }) {
       <div className="ev-launch">
         <label className="ev-bind-toggle">
           <input type="checkbox" checked={bindOn} onChange={(e) => setBindOn(e.target.checked)} />
-          绑定数据连接<span style={{ color: 'var(--muted)' }}>（查询类用例需要）</span>
+          配置评测数据源<span style={{ color: 'var(--muted)' }}>（查询类用例需要）</span>
         </label>
         {bindOn && (
           <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>

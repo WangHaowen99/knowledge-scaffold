@@ -11,7 +11,7 @@ import { judge } from './judge.js';
 import * as repo from '../workflow/m3-repo.js';
 import type { DataDictTable } from '../types.js';
 
-// 评测引擎（M3 核心）：影子工作区 → 导入包 → （可选）建连接+绑定 →
+// 评测引擎（M3 核心）：影子工作区 → 导入包 → （可选）配置数据源 →
 // 逐用例 runs/sync（串行 + 退避）→ Judge → 落轮次结果。
 // 后台执行：startEvaluation 立即返回 roundId，前端轮询 GET round。
 export function shadowWorkspaceId(projectId: string): string {
@@ -28,7 +28,7 @@ interface RunOptions {
   projectId: string;
   token: string; // 专家 token 透传
   tables: DataDictTable[];
-  binding?: BindingConfig; // 可选：影子工作区数据连接配置（provider+config）
+  binding?: BindingConfig; // 可选：影子工作区数据源配置（provider+config）
 }
 
 const active = new Set<string>(); // projectId 级互斥，防并发评测
@@ -100,24 +100,15 @@ async function runRound(
     log(`⚠ 激活版本请求异常：${e instanceof Error ? e.message : e}`);
   }
 
-  // 4. 可选：数据连接 + 绑定
+  // 4. 可选：为本次导入的知识包覆盖评测数据源
   if (binding?.provider) {
-    const connId = `mw-eval-${projectId.slice(-8)}`.toLowerCase();
-    const conns = await cjson(consumerFetch(token, '/agentic/data-connections', { workspaceId: ws }));
-    const connExists = (conns.connections ?? []).some((c: any) => c.id === connId);
-    if (!connExists) {
-      await cjson(consumerFetch(token, '/agentic/data-connections', {
-        method: 'POST', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: connId, name: binding.name || '评测数据连接', provider: binding.provider, config: binding.config, set_as_default: true }),
-      }), '创建数据连接');
-    }
-    await cjson(consumerFetch(token, `/agentic/ontologies/${encodeURIComponent(importResult.ontology_id)}/data-binding`, {
+    await cjson(consumerFetch(token, `/agentic/ontologies/${encodeURIComponent(importResult.ontology_id)}/data-source`, {
       method: 'PUT', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ connection_id: connId }),
-    }), '绑定知识包与数据连接');
-    log(`已绑定数据连接：${connId}（${binding.provider}）`);
+      body: JSON.stringify({ mode: 'direct_provider', provider: binding.provider, config: binding.config }),
+    }), '配置知识包评测数据源');
+    log(`已配置评测数据源：${binding.provider}`);
   } else {
-    log('未提供数据连接配置，跳过绑定（判断类问题仍可评测）');
+    log('未提供数据源配置，跳过配置（判断类问题仍可评测）');
   }
 
   // 5. 逐用例串行运行 + judge
