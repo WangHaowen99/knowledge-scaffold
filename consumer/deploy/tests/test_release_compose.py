@@ -12,6 +12,18 @@ def test_release_compose_has_no_legacy_config_mount_or_environment():
     assert "LEGACY_SYSTEM_CONFIG_PATH" not in compose_text
 
 
+def test_release_compose_loads_sandbox_settings_from_backend_env_file():
+    compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    assert "env_file:\n      - ./backend/.env" in compose_text
+    for env_name in (
+        "SANDBOX_ENABLED",
+        "SANDBOX_FALLBACK_LOCAL",
+        "SANDBOX_SECRET_ALLOW_PLAIN_HTTP",
+    ):
+        assert env_name not in compose_text
+
+
 def test_release_scripts_have_no_legacy_config_directory_plumbing():
     for script_name in (
         "backup.sh",

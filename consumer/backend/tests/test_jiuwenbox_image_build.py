@@ -62,18 +62,15 @@ def test_backend_and_compose_do_not_package_or_mount_sandbox_runtime():
     )
 
 
-def test_compose_defaults_match_source_sandbox_defaults():
+def test_sandbox_settings_come_from_backend_env_file_in_supported_compose_files():
     compose_files = [
         _read("docker-compose.yml"),
         _read("deploy/docker-compose.release.yml"),
     ]
 
-    assert all(
-        "SANDBOX_ENABLED=${SANDBOX_ENABLED:-false}" in compose
-        for compose in compose_files
-    )
-    assert all(
-        "SANDBOX_FALLBACK_LOCAL=${SANDBOX_FALLBACK_LOCAL:-true}" in compose
-        for compose in compose_files
-    )
+    for compose in compose_files:
+        assert "env_file:\n      - ./backend/.env" in compose
+        assert "SANDBOX_ENABLED" not in compose
+        assert "SANDBOX_FALLBACK_LOCAL" not in compose
+        assert "SANDBOX_SECRET_ALLOW_PLAIN_HTTP" not in compose
 

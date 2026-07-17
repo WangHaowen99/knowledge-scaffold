@@ -26,9 +26,6 @@ services:
       - MCP_SERVER_PORT=7488
       - SPEEDSCOPE_TRACE_ENABLED=${SPEEDSCOPE_TRACE_ENABLED:-false}
       - AUTH_SERVER_URL=${AUTH_SERVER_URL:-http://auth-server:5056}
-      - SANDBOX_ENABLED=${SANDBOX_ENABLED:-false}
-      - SANDBOX_FALLBACK_LOCAL=${SANDBOX_FALLBACK_LOCAL:-true}
-      - SANDBOX_SECRET_ALLOW_PLAIN_HTTP=${SANDBOX_SECRET_ALLOW_PLAIN_HTTP:-true}
     depends_on:
       auth-server:
         condition: service_healthy
