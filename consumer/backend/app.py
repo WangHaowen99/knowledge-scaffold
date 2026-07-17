@@ -13,6 +13,7 @@ from api.routes.auth import auth_bp
 from api.auth.remote_auth import RemoteAuthBackend
 from llm import LLMRouter, configure_llm_router
 from workspace.user_store_manager import UserStoreManager
+from persistence.chat_store import ToolOutputLimits
 
 
 def build_runtime_services(previous_llm_router=None):
@@ -36,6 +37,7 @@ def build_runtime_services(previous_llm_router=None):
     user_store_manager = UserStoreManager(
         config.chat_storage_dir,
         config.execution_storage_dir,
+        tool_output_limits=ToolOutputLimits.from_config(agent_config.limits),
     )
     return {
         "config": config,

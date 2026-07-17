@@ -1861,27 +1861,50 @@ def test_tool_protocol_events_emit_runtime_tool_events():
     assert emitted[0].payload["subagent_id"] == "sub-1"
 
 
-def test_tool_finished_keeps_full_output_only_for_trace_tools(monkeypatch):
+def test_tool_finished_keeps_full_output_only_in_trace_observer(monkeypatch):
+    from types import SimpleNamespace
+
     from agent.tools import events as tool_events
 
-    emitted = []
+    protocol_events = []
+    runtime_events = []
     monkeypatch.setattr(
         tool_events,
-        "emit_protocol_event",
-        lambda **kwargs: emitted.append(kwargs),
+        "emit_agent_event",
+        lambda **kwargs: protocol_events.append(kwargs),
     )
 
+    class FakeObserver:
+        enabled = True
+
+        def emit(self, event):
+            runtime_events.append(event)
+            return True
+
+    context = SimpleNamespace(
+        run_id="run-trace-output",
+        session_id="session-trace-output",
+        turn_id=1,
+        caller="main",
+        agent_iteration=2,
+        subagent_lineage=None,
+        protocol_event_observer=None,
+        observer=FakeObserver(),
+        tool_batch_index=None,
+    )
+    full_search_output = "full search output" * 400
+
     tool_events.emit_tool_finished(
-        context=object(),
+        context=context,
         tool_name="business_data_search",
         tool_call_id="call-search",
         status="completed",
-        raw_output="full search output",
+        raw_output=full_search_output,
         error=None,
         elapsed_ms=15,
     )
     tool_events.emit_tool_finished(
-        context=object(),
+        context=context,
         tool_name="read_file",
         tool_call_id="call-read",
         status="cancelled",
@@ -1890,11 +1913,19 @@ def test_tool_finished_keeps_full_output_only_for_trace_tools(monkeypatch):
         elapsed_ms=20,
     )
 
-    search_payload = emitted[0]["payload"]
-    read_payload = emitted[1]["payload"]
-    assert search_payload["output_full"] == "full search output"
-    assert "output_full" not in read_payload
-    assert read_payload["status"] == "cancelled"
+    search_protocol_payload = protocol_events[0]["payload"]
+    read_protocol_payload = protocol_events[1]["payload"]
+    search_trace_payload = runtime_events[0].payload
+    read_trace_payload = runtime_events[1].payload
+
+    assert len(search_protocol_payload["output_preview"]) == 4096
+    assert search_protocol_payload["output_truncated"] is True
+    assert search_protocol_payload["output_size"] == len(full_search_output.encode("utf-8"))
+    assert "output_full" not in search_protocol_payload
+    assert "output_full" not in read_protocol_payload
+    assert search_trace_payload["output_full"] == full_search_output
+    assert "output_full" not in read_trace_payload
+    assert read_protocol_payload["status"] == "cancelled"
 
 
 def test_langfuse_exporter_maps_tool_batch_failed_to_error_by_default():

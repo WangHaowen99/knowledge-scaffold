@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import re
 import shutil
 import threading
 import time
@@ -29,9 +31,60 @@ logger = get_logger("stores.chat")
 
 _SNAPSHOT_FILENAME = "snapshot.json"
 _EVENT_LOG_FILENAME = "events.jsonl"
+_TOOL_OUTPUTS_DIRNAME = "tool-outputs"
+_TOOL_OUTPUT_REF_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_TOOL_OUTPUT_METADATA_MAX_BYTES = 64 * 1024
 _LEGACY_MIGRATED_SUFFIX = ".migrated"
 _STORAGE_VERSION = "append-only-v1"
 _SUPPORTED_EVENT_NAMES = {"chat_message", "agent.v2"}
+
+
+@dataclass(frozen=True)
+class ToolOutputLimits:
+    """Storage quotas for durable, truncated tool outputs."""
+
+    max_output_bytes: int = 8 * 1024 * 1024
+    max_run_bytes: int = 64 * 1024 * 1024
+    max_session_bytes: int = 256 * 1024 * 1024
+    max_run_count: int = 64
+    max_session_count: int = 256
+
+    @classmethod
+    def from_config(cls, config: Any) -> "ToolOutputLimits":
+        return cls(
+            max_output_bytes=max(
+                1,
+                int(getattr(config, "tool_output_max_bytes", cls.max_output_bytes)),
+            ),
+            max_run_bytes=max(
+                1,
+                int(getattr(config, "tool_output_run_max_bytes", cls.max_run_bytes)),
+            ),
+            max_session_bytes=max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "tool_output_session_max_bytes",
+                        cls.max_session_bytes,
+                    )
+                ),
+            ),
+            max_run_count=max(
+                1,
+                int(getattr(config, "tool_output_run_max_count", cls.max_run_count)),
+            ),
+            max_session_count=max(
+                1,
+                int(
+                    getattr(
+                        config,
+                        "tool_output_session_max_count",
+                        cls.max_session_count,
+                    )
+                ),
+            ),
+        )
 
 
 # ============================================================================
@@ -89,8 +142,14 @@ class _AppendOnlyChatStore:
     - {storage_dir}/{session_id}/events.jsonl
     """
 
-    def __init__(self, storage_dir: str) -> None:
+    def __init__(
+        self,
+        storage_dir: str,
+        *,
+        tool_output_limits: Optional[ToolOutputLimits] = None,
+    ) -> None:
         self._storage_dir = str(Path(storage_dir).resolve())
+        self._tool_output_limits = tool_output_limits or ToolOutputLimits()
         self._lock = threading.Lock()
         self._session_locks: Dict[str, threading.Lock] = {}
         self._ensure_storage_dir()
@@ -114,6 +173,125 @@ class _AppendOnlyChatStore:
 
     def _event_log_path(self, session_id: str) -> str:
         return os.path.join(self._session_dir(session_id), _EVENT_LOG_FILENAME)
+
+    def _tool_output_run_dir(self, session_id: str, run_id: str) -> Path:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        session_dir = Path(self._session_dir(session_id)).resolve()
+        run_key = hashlib.sha256(normalized_run_id.encode("utf-8")).hexdigest()
+        candidate = (session_dir / _TOOL_OUTPUTS_DIRNAME / run_key).resolve()
+        candidate.relative_to(session_dir)
+        return candidate
+
+    def _tool_output_path(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Path:
+        normalized_ref = str(output_ref or "").strip().lower()
+        if not _TOOL_OUTPUT_REF_PATTERN.fullmatch(normalized_ref):
+            raise ValueError("output_ref is invalid")
+        return self._tool_output_run_dir(session_id, run_id) / "{}.json".format(
+            normalized_ref
+        )
+
+    def _tool_output_content_path(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Path:
+        return self._tool_output_path(session_id, run_id, output_ref).with_suffix(".txt")
+
+    @staticmethod
+    def _artifact_storage_size(metadata_path: Path) -> int:
+        size = metadata_path.stat().st_size
+        content_path = metadata_path.with_suffix(".txt")
+        if content_path.is_file():
+            size += content_path.stat().st_size
+        return size
+
+    def _artifact_usage_unlocked(self, session_id: str, run_id: str) -> Dict[str, int]:
+        session_root = Path(self._session_dir(session_id)) / _TOOL_OUTPUTS_DIRNAME
+        run_dir = self._tool_output_run_dir(session_id, run_id)
+        usage = {
+            "run_bytes": 0,
+            "run_count": 0,
+            "session_bytes": 0,
+            "session_count": 0,
+        }
+        if not session_root.is_dir():
+            return usage
+        for metadata_path in session_root.glob("*/*.json"):
+            if not metadata_path.is_file():
+                continue
+            try:
+                artifact_size = self._artifact_storage_size(metadata_path)
+            except OSError:
+                continue
+            usage["session_bytes"] += artifact_size
+            usage["session_count"] += 1
+            if metadata_path.parent == run_dir:
+                usage["run_bytes"] += artifact_size
+                usage["run_count"] += 1
+        return usage
+
+    def _load_tool_output_metadata_unlocked(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        path = self._tool_output_path(session_id, run_id, output_ref)
+        if not path.is_file():
+            return None
+        try:
+            file_size = path.stat().st_size
+            max_legacy_bytes = (
+                self._tool_output_limits.max_output_bytes * 6
+                + _TOOL_OUTPUT_METADATA_MAX_BYTES
+            )
+            if file_size > max_legacy_bytes:
+                logger.warning(
+                    "Rejected oversized tool output artifact session=%s run=%s ref=%s",
+                    session_id,
+                    run_id,
+                    output_ref,
+                )
+                return None
+            with open(path, "r", encoding="utf-8") as f:
+                record = json.load(f)
+        except (IOError, OSError, json.JSONDecodeError):
+            logger.warning(
+                "Failed to read tool output artifact session=%s run=%s ref=%s",
+                session_id,
+                run_id,
+                output_ref,
+            )
+            return None
+        if not isinstance(record, dict):
+            return None
+        if (
+            record.get("session_id") != session_id
+            or record.get("run_id") != run_id
+            or record.get("output_ref") != str(output_ref or "").strip().lower()
+        ):
+            logger.warning(
+                "Rejected mismatched tool output artifact session=%s run=%s ref=%s",
+                session_id,
+                run_id,
+                output_ref,
+            )
+            return None
+        try:
+            output_size = int(record.get("output_size"))
+        except (TypeError, ValueError):
+            return None
+        if output_size < 0 or output_size > self._tool_output_limits.max_output_bytes:
+            return None
+        return record
 
     def _legacy_session_path(self, session_id: str) -> str:
         normalized = validate_session_id(session_id)
@@ -533,6 +711,197 @@ class _AppendOnlyChatStore:
         """Append a streamed event to a chat session."""
         return self.append_events(session_id, [event])
 
+    def store_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        tool_call_id: Optional[str],
+        output: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a bounded tool output for the lifetime of its chat session."""
+        normalized_session_id = validate_session_id(session_id)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        text = str(output or "")
+        output_bytes = text.encode("utf-8")
+        output_size = len(output_bytes)
+        if output_size > self._tool_output_limits.max_output_bytes:
+            logger.warning(
+                "Skipped tool output artifact above single-output quota session=%s run=%s bytes=%s limit=%s",
+                normalized_session_id,
+                normalized_run_id,
+                output_size,
+                self._tool_output_limits.max_output_bytes,
+            )
+            return None
+        output_ref = uuid.uuid4().hex
+        record = {
+            "version": 2,
+            "output_ref": output_ref,
+            "session_id": normalized_session_id,
+            "run_id": normalized_run_id,
+            "tool_call_id": str(tool_call_id or "").strip() or None,
+            "content_type": "text/plain; charset=utf-8",
+            "output_size": output_size,
+            "output_file": "{}.txt".format(output_ref),
+            "created_at": self._now_iso(),
+        }
+        metadata_bytes = json.dumps(
+            record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        projected_size = len(metadata_bytes) + output_size
+
+        with self._lock_for_session(normalized_session_id):
+            if not self._read_snapshot_unlocked(normalized_session_id):
+                return None
+            usage = self._artifact_usage_unlocked(
+                normalized_session_id,
+                normalized_run_id,
+            )
+            if (
+                usage["run_count"] >= self._tool_output_limits.max_run_count
+                or usage["run_bytes"] + projected_size
+                > self._tool_output_limits.max_run_bytes
+                or usage["session_count"] >= self._tool_output_limits.max_session_count
+                or usage["session_bytes"] + projected_size
+                > self._tool_output_limits.max_session_bytes
+            ):
+                logger.warning(
+                    "Skipped tool output artifact above run/session quota session=%s run=%s",
+                    normalized_session_id,
+                    normalized_run_id,
+                )
+                return None
+            path = self._tool_output_path(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            content_path = path.with_suffix(".txt")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(".json.tmp")
+            tmp_content_path = content_path.with_suffix(".txt.tmp")
+            try:
+                with open(tmp_content_path, "wb") as f:
+                    f.write(output_bytes)
+                with open(tmp_path, "wb") as f:
+                    f.write(metadata_bytes)
+                os.replace(tmp_content_path, content_path)
+                os.replace(tmp_path, path)
+            except OSError:
+                for candidate in (tmp_path, tmp_content_path, path, content_path):
+                    try:
+                        candidate.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise
+
+        return {
+            "output_ref": output_ref,
+            "output_size": record["output_size"],
+        }
+
+    def get_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Load one bounded output after validating its session and run scope."""
+        normalized_session_id = validate_session_id(session_id)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        with self._lock_for_session(normalized_session_id):
+            if not self._read_snapshot_unlocked(normalized_session_id):
+                return None
+            record = self._load_tool_output_metadata_unlocked(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            if record is None:
+                return None
+            if int(record.get("version") or 1) == 1:
+                output = record.get("output")
+            else:
+                content_path = self._tool_output_content_path(
+                    normalized_session_id,
+                    normalized_run_id,
+                    output_ref,
+                )
+                try:
+                    if content_path.stat().st_size != record["output_size"]:
+                        return None
+                    with open(content_path, "rb") as f:
+                        raw_output = f.read(self._tool_output_limits.max_output_bytes + 1)
+                    output = raw_output.decode("utf-8")
+                except (IOError, OSError, UnicodeDecodeError):
+                    output = None
+        if not isinstance(output, str) or record["output_size"] != len(output.encode("utf-8")):
+            logger.warning(
+                "Rejected corrupt tool output artifact session=%s run=%s ref=%s",
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            return None
+        return {**record, "output": output}
+
+    def get_tool_output_file(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return validated metadata and a bounded file path for streaming."""
+        normalized_session_id = validate_session_id(session_id)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        with self._lock_for_session(normalized_session_id):
+            if not self._read_snapshot_unlocked(normalized_session_id):
+                return None
+            record = self._load_tool_output_metadata_unlocked(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            if record is None:
+                return None
+            metadata_path = self._tool_output_path(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            if int(record.get("version") or 1) == 1:
+                output = record.get("output")
+                if (
+                    not isinstance(output, str)
+                    or len(output.encode("utf-8")) != record["output_size"]
+                ):
+                    return None
+                artifact_path = metadata_path
+                response_content_type = "application/json; charset=utf-8"
+            else:
+                artifact_path = metadata_path.with_suffix(".txt")
+                try:
+                    if artifact_path.stat().st_size != record["output_size"]:
+                        return None
+                except OSError:
+                    return None
+                response_content_type = (
+                    record.get("content_type") or "text/plain; charset=utf-8"
+                )
+        return {
+            **record,
+            "artifact_path": str(artifact_path),
+            "response_content_type": response_content_type,
+        }
+
     def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get stored session history (TurnSummary list) for a session."""
         with self._lock_for_session(session_id):
@@ -733,8 +1102,16 @@ class ChatStore:
     Uses a compact snapshot plus JSONL event log per session.
     """
 
-    def __init__(self, storage_dir: str) -> None:
-        self._store = _AppendOnlyChatStore(storage_dir)
+    def __init__(
+        self,
+        storage_dir: str,
+        *,
+        tool_output_limits: Optional[ToolOutputLimits] = None,
+    ) -> None:
+        self._store = _AppendOnlyChatStore(
+            storage_dir,
+            tool_output_limits=tool_output_limits,
+        )
 
     def create_session(
         self,
@@ -851,6 +1228,39 @@ class ChatStore:
             return True
         session = self._store.append_events(session_id, event_list)
         return session is not None
+
+    def store_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        tool_call_id: Optional[str],
+        output: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist complete output while stream events retain only a preview."""
+        return self._store.store_tool_output(
+            session_id,
+            run_id,
+            tool_call_id,
+            output,
+        )
+
+    def get_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a complete output scoped to this store, session, and run."""
+        return self._store.get_tool_output(session_id, run_id, output_ref)
+
+    def get_tool_output_file(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return metadata and a path suitable for a streamed response."""
+        return self._store.get_tool_output_file(session_id, run_id, output_ref)
 
     def compact_session(self, session_id: str) -> bool:
         """Fold append-only events into the compact snapshot."""

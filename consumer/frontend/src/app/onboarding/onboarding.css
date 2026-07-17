@@ -1,0 +1,23 @@
+/* ---- 操作向导（蒙版聚光灯） ---- */
+.mwr-wiz-mask { position: fixed; inset: 0; z-index: 1000; }
+.mwr-wiz-hole { position: fixed; border-radius: 14px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(15, 17, 22, .58); outline: 2px solid var(--blue-l); outline-offset: 2px; transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease; }
+.mwr-wiz-ov { position: fixed; inset: 0; background: rgba(15, 17, 22, .58); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.mwr-wizc { width: 420px; background: #fff; border-radius: 16px; box-shadow: 0 20px 56px rgba(0, 0, 0, .3); padding: 16px 20px; z-index: 1001; font-family: system-ui, -apple-system, "PingFang SC", sans-serif; }
+.mwr-wizc .wzc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.mwr-wizc .wz-step { font-size: 12px; color: #898781; font-weight: 600; letter-spacing: .5px; }
+.mwr-wizc .wz-skip { border: none; background: none; font-size: 12.5px; color: #898781; text-decoration: underline; cursor: pointer; }
+.mwr-wizc .wzc-t { font-size: 16.5px; font-weight: 730; margin-bottom: 8px; display: flex; align-items: center; gap: 9px; }
+.mwr-wizc .wzc-icon { width: 30px; height: 30px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; color: var(--blue-d, #1c5cab); background: var(--blue-ll, #e8f1fd); }
+.mwr-wizc .wzc-d { font-size: 13.5px; color: #52514e; line-height: 1.75; }
+.mwr-wizc .wzc-d b { color: #0b0b0b; }
+.mwr-wizc .wz-dots { display: flex; gap: 6px; padding: 14px 0 12px; }
+.mwr-wizc .wz-dots span { width: 6px; height: 6px; border-radius: 50%; background: #dcdbd4; }
+.mwr-wizc .wz-dots span.on { background: var(--blue, #2a78d6); width: 18px; border-radius: 4px; }
+.mwr-wizc .wzc-foot { display: flex; justify-content: space-between; align-items: center; }
+.mwr-wizc .btn { border: 1px solid #e1e0d9; background: #fff; border-radius: 8px; padding: 7px 15px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.mwr-wizc .btn-p { background: var(--blue, #2a78d6); border-color: var(--blue, #2a78d6); color: #fff; }
+.mwr-wizc .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+@media (max-width: 600px) {
+  .mwr-wizc { width: calc(100vw - 24px); padding: 14px 16px; }
+}
