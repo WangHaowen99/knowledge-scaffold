@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, Info, KeyRound, Plus, RefreshCw, Trash2 } from 'lucide-react';
 
 import { authFetch } from '../../../shared/api/auth';
-import { Modal } from '../../../redesign/ui';
+import { Modal } from '../../../shared/ui/primitives';
 import { copyMcpText } from './clipboard';
 import {
   MCP_SCOPES,

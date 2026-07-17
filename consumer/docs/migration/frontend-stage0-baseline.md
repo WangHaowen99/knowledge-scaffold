@@ -2,6 +2,10 @@
 
 > 本文保留阶段 0 快照。阶段 1 的正式路径、状态所有权和验收结果见
 > [frontend-stage1-chat-runtime.md](frontend-stage1-chat-runtime.md)。
+>
+> 2026-07-15 最终状态：台账中的 `shared-active`、`migrate`、`covered` 和 `delete`
+> 项均已在阶段 1—5 完成替代、验证和删除；最终闭环见
+> [frontend-stage5-final-convergence.md](frontend-stage5-final-convergence.md)。下文继续保留初始快照作为迁移证据。
 
 ## 1. 基线信息
 

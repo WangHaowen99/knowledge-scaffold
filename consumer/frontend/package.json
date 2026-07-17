@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test && node scripts/check-entry-reachability.mjs",
+    "test": "node --test && npm run check:architecture",
+    "check:architecture": "node scripts/check-import-boundaries.mjs && node scripts/check-css-selectors.mjs && node scripts/check-entry-reachability.mjs",
     "check:entry": "node scripts/check-entry-reachability.mjs",
     "preview": "vite preview"
   },

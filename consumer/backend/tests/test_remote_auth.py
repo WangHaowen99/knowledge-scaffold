@@ -419,6 +419,8 @@ def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, 
 
     monkeypatch.setenv("AUTH_SERVER_URL", auth_server.base_url)
     monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", ADMIN_TOKEN)
+    monkeypatch.setenv("AUTH_SERVER_ISSUER", auth_server.base_url)
+    monkeypatch.setenv("AUTH_SERVER_AUDIENCE", "meta-wise")
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "project"))
 
     # remote 是唯一路径：无需 AUTH_MODE，装配即得 RemoteAuthBackend

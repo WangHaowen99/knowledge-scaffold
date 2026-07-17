@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 
-import { Modal, SectionCard } from '../../../redesign/ui';
+import { Modal, SectionCard } from '../../../shared/ui/primitives';
 import { fetchSystemConfigTemplate, importSystemConfig } from './api';
 import { parseSystemConfigImport, SYSTEM_CONFIG_SECTION_LABELS } from './model';
 import { SystemConfigReadOnlyNotice } from './SystemConfigModule';

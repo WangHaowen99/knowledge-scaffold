@@ -1,4 +1,4 @@
-import { SectionCard } from '../../../redesign/ui';
+import { SectionCard } from '../../../shared/ui/primitives';
 import { formatSystemConfigTestTime, SYSTEM_CONFIG_SECTION_LABELS } from './model';
 import { useSystemConfigModule } from './useSystemConfigModule';
 import './systemConfig.css';

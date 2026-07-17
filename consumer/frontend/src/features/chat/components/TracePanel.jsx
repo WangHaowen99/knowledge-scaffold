@@ -1,7 +1,6 @@
 import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench, X } from 'lucide-react';
 
-import { formatTime } from '../../../redesign/chatUtils';
-import { formatDurationMs } from '../lib/chatPresentation';
+import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import ToolOutput from './ToolOutput';
 
 const TRACE_NODE_ICONS = {

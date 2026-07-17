@@ -1,0 +1,33 @@
+name: Consumer Frontend CI
+
+on:
+  push:
+    branches:
+      - develop
+      - frontend-unify
+      - 'codex/frontend-*'
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  repository: read
+
+jobs:
+  frontend-checks:
+    runs-on: {ubuntu-24,x64,small}
+    steps:
+      - name: Checkout source code
+        uses: checkout
+      - name: Set up Node.js
+        uses: setup-node
+        with:
+          node-version: '22'
+      - name: Install frontend dependencies
+        run: cd consumer/frontend && npm ci
+      - name: Lint frontend
+        run: cd consumer/frontend && npm run lint
+      - name: Test frontend and architecture gates
+        run: cd consumer/frontend && npm test
+      - name: Build frontend
+        run: cd consumer/frontend && npm run build

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import { Modal } from '../../redesign/ui';
+import { Modal } from '../../shared/ui/primitives';
 import PasswordRuleList from './PasswordRuleList';
 import { passwordFormState } from './passwordPolicy';
 import './authSettings.css';

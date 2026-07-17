@@ -1,0 +1,24 @@
+/* 应用侧栏中的知识包目录树。 */
+.mwr .kbtree { margin: 2px 0 6px; padding-left: 6px; flex: 1 1 auto; min-height: 0; overflow: auto; }
+.mwr .kbtree .kbt-empty { font-size: 12px; color: var(--muted); padding: 6px 10px; }
+.mwr .kbtree .kbt-error { margin: 5px 6px; padding: 8px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, transparent); border-radius: 8px; font-size: 11px; line-height: 1.45; }
+.mwr .kbtree .kbt-error > svg { flex: none; margin-top: 1px; }
+.mwr .kbtree .kbt-error > span { flex: 1; min-width: 0; }
+.mwr .kbtree .kbt-error button { min-height: 0; width: auto; margin: 0 0 0 19px; padding: 3px 7px; display: inline-flex; gap: 4px; color: var(--crit); border: 1px solid color-mix(in srgb, var(--crit) 24%, transparent); border-radius: 6px; background: var(--surface-card); font-size: 10.5px; }
+.mwr .kbtree .kbt-pkg { display: flex; width: 100%; align-items: center; gap: 6px; border: none; background: none;
+  padding: 6px 8px; border-radius: 8px; font-size: 12.5px; font-weight: 650; color: var(--ink); text-align: left; }
+.mwr .kbtree .kbt-pkg:hover { background: #f4f5f7; }
+.mwr .kbtree .kbt-pkg.on { color: var(--blue-dd); }
+.mwr .kbtree .kbt-pkg .caret { font-size: 9px; color: var(--muted); width: 10px; flex: none; }
+.mwr .kbtree .kbt-icon { flex: none; color: var(--blue-d); }
+.mwr .kbtree .kbt-pkg .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .kbtree .kbt-kids { padding-left: 14px; }
+.mwr .kbtree .kbt-row { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 6px;
+  border: none; background: none; padding: 5px 8px; border-radius: 7px; font-size: 12px; color: var(--ink2); text-align: left; }
+.mwr .kbtree .kbt-row:hover { background: #f4f5f7; }
+.mwr .kbtree .kbt-row.on { background: var(--blue-ll); color: var(--blue-dd); font-weight: 650; }
+.mwr .kbtree .kbt-row .lb { color: var(--muted); font-weight: 400; }
+.mwr .kbtree .kbt-row .cnt { font-size: 10.5px; color: var(--muted); flex: none; }
+.mwr .kbtree .kbt-label { min-width: 0; display: flex; align-items: center; gap: 5px; }
+.mwr .kbtree .kbt-label > svg { flex: none; color: var(--muted); }
+.mwr .kbtree .kbt-meta { font-size: 10.5px; color: var(--muted); padding: 5px 8px 8px; line-height: 1.6; }
