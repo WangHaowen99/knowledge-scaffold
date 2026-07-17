@@ -12,9 +12,9 @@ from agent.tools.business_data.service import (
 
 
 class _CapturingProvider:
-    configs: list[dict] = []
+    configs: list[object] = []
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: object) -> None:
         self.configs.append(config)
 
     def search_stream(self, *, query: str, entity: str):
@@ -90,8 +90,8 @@ def test_service_does_not_forward_graph_trace_metadata_to_other_providers(monkey
     )
 
     list(query_business_data_stream(request, connection=connection))
-    config = _CapturingProvider.configs[0]["ontology_search"]["dataagent"]
-    assert config["workspace_id"] == "workspace-a"
-    assert config["ontology_id"] == "ontology-a"
-    assert "run_id" not in config
-    assert "parent_span_key" not in config
+    effective_connection = _CapturingProvider.configs[0]
+    assert effective_connection.provider == "dataagent"
+    assert effective_connection.endpoint == "https://dataagent.example"
+    assert "run_id" not in effective_connection.options
+    assert "parent_span_key" not in effective_connection.options
