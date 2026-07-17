@@ -328,6 +328,10 @@ def get_session(session_id: str):
 @require_auth()
 def get_tool_output(session_id: str, run_id: str, output_ref: str):
     """Read a complete tool output within the authenticated session scope."""
+    try:
+        _get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
     chat_store, _execution_store = _get_user_stores()
     if not chat_store.get_session(session_id):
         return jsonify({"error": "Session not found"}), 404
