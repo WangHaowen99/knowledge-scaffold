@@ -5,8 +5,8 @@ import {
 } from 'lucide-react';
 import useStreamManager from '../features/chat/hooks/useStreamManager';
 import useChatSessions from '../features/chat/hooks/useChatSessions';
+import { ForceChangePassword } from '../features/auth';
 import { APP_VERSION } from './version';
-import ForceChangePasswordPage from '../components/ForceChangePasswordPage';
 import { useAuthContext } from './useAuthContext';
 import LoginPage from './LoginPage';
 import OnboardingWizard from './OnboardingWizard';
@@ -96,7 +96,7 @@ export default function AppShell() {
   }
   if (status !== 'authenticated') return <LoginPage />;
   if (user?.password_change_required) {
-    return <ForceChangePasswordPage user={user} onChangePassword={changePassword} onLogout={logout} />;
+    return <ForceChangePassword user={user} onChangePassword={changePassword} onLogout={logout} />;
   }
 
   const navigate = ({ surface: sf, scope, sec }) => {
