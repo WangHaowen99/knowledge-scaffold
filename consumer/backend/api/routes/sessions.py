@@ -1,6 +1,6 @@
 """Chat session endpoints: CRUD, messages, title generation."""
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_file
 from flask_cors import cross_origin
 
 from api.auth.auth import require_auth, get_current_user
@@ -333,21 +333,24 @@ def get_tool_output(session_id: str, run_id: str, output_ref: str):
         return jsonify({"error": "Session not found"}), 404
 
     try:
-        artifact = chat_store.get_tool_output(session_id, run_id, output_ref)
+        artifact = chat_store.get_tool_output_file(session_id, run_id, output_ref)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     if not artifact:
         return jsonify({"error": "Tool output not found"}), 404
 
-    response = jsonify({
-        "output_ref": artifact["output_ref"],
-        "run_id": artifact["run_id"],
-        "tool_call_id": artifact.get("tool_call_id"),
-        "content_type": artifact.get("content_type") or "text/plain; charset=utf-8",
-        "output_size": artifact["output_size"],
-        "output": artifact.get("output") or "",
-    })
+    response = send_file(
+        artifact["artifact_path"],
+        mimetype=artifact["response_content_type"],
+        as_attachment=False,
+        conditional=False,
+        etag=False,
+        max_age=0,
+    )
     response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Tool-Output-Ref"] = artifact["output_ref"]
+    response.headers["X-Tool-Call-Id"] = artifact.get("tool_call_id") or ""
+    response.headers["X-Tool-Output-Size"] = str(artifact["output_size"])
     return response
 
 

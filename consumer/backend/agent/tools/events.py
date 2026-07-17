@@ -264,7 +264,7 @@ def build_tool_finished_payload(
         payload["output_projection"] = output_projection
 
     artifact_writer = _tool_output_artifact_writer_var.get()
-    if artifact_writer is not None:
+    if truncated and artifact_writer is not None:
         try:
             artifact = artifact_writer(tool_call_id, text)
         except Exception:

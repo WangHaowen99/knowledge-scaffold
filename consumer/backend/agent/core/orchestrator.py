@@ -39,7 +39,7 @@ from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_queue import TokenBucketRateLimiter
 from persistence.run_store import RunStore
 from persistence.run_store import RunStatus
-from persistence.chat_store import ChatStore
+from persistence.chat_store import ChatStore, ToolOutputLimits
 from persistence.execution_store import ExecutionStore
 from workspace.user_store_manager import UserStoreManager
 from agent.sub_agents.manager import clear_subagent_manager
@@ -345,7 +345,10 @@ class AgenticOrchestrator:
         self.run_store = run_store or RunStore()
         if chat_store is None or execution_store is None:
             app_config = AppConfig.from_env()
-        self.chat_store = chat_store or ChatStore(app_config.chat_storage_dir)
+        self.chat_store = chat_store or ChatStore(
+            app_config.chat_storage_dir,
+            tool_output_limits=ToolOutputLimits.from_config(self.agent_config.limits),
+        )
         self.execution_store = execution_store or ExecutionStore(app_config.execution_storage_dir)
         self.user_store_manager = user_store_manager
         self.memory_factory = memory_factory or MemoryFactory()
