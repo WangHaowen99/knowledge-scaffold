@@ -12,11 +12,6 @@ from shared_capabilities.business_data import create_provider_client
 from agent.tools.business_data.effective_connection import build_effective_connection
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 
-_NL2SQL_CONNECTION_PROBE_QUESTION = "连接测试"
-_DATAAGENT_AGENT_CARD_PATH = "/.well-known/agent-card.json"
-_DATAAGENT_LEGACY_AGENT_CARD_PATH = "/.well-known/agent.json"
-
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -86,93 +81,6 @@ def _test_shared_provider(connection: ResolvedBusinessDataSource) -> Dict[str, A
         or ("{} 服务连接失败：{}".format(label, result.error or "未知错误")),
         "tested_at": tested_at,
     }
-
-
-def _test_nl2sql(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
-    tested_at = _utc_now()
-    config = dict(connection.config or {})
-    url = _coerce_string(config.get("url")).rstrip("/")
-    label = "NL2SQL Template" if connection.provider == "nl2sql_template" else "NL2SQL HTTP"
-    if not url:
-        return {"success": False, "message": "{} URL 未配置".format(label), "tested_at": tested_at}
-
-    timeout = min(int(config.get("timeout_seconds") or 10), 10)
-    token = _coerce_string(config.get("token"))
-    scene = _coerce_string(config.get("scene"))
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = "Bearer {}".format(token)
-    body: Dict[str, Any] = {"question": _NL2SQL_CONNECTION_PROBE_QUESTION}
-    if scene:
-        body["scene"] = scene
-
-    try:
-        response = requests.post(
-            "{}/api/v1/query".format(url),
-            headers=headers,
-            json=body,
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return {"success": True, "message": "{} 服务连接正常".format(label), "tested_at": tested_at}
-    except requests.exceptions.HTTPError as exc:
-        response = exc.response
-        status_code = response.status_code if response is not None else "unknown"
-        detail = _error_detail(response)
-        message = "{} 服务连接失败（HTTP {}）".format(label, status_code)
-        if detail:
-            message = "{}：{}".format(message, detail[:200])
-        return {"success": False, "message": message, "tested_at": tested_at}
-    except requests.exceptions.RequestException as exc:
-        return {"success": False, "message": "{} 服务请求失败：{}".format(label, str(exc)), "tested_at": tested_at}
-
-
-def _test_dataagent(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
-    tested_at = _utc_now()
-    config = dict(connection.config or {})
-    url = _coerce_string(config.get("url")).rstrip("/")
-    if not url:
-        return {"success": False, "message": "DataAgent 服务地址未配置", "tested_at": tested_at}
-
-    timeout = min(int(config.get("timeout_seconds") or 10), 10)
-    token = _coerce_string(config.get("token"))
-    headers: Dict[str, str] = {}
-    if token:
-        headers["Authorization"] = "Bearer {}".format(token)
-
-    try:
-        response = requests.get(
-            "{}{}".format(url, _DATAAGENT_AGENT_CARD_PATH),
-            headers=headers,
-            timeout=timeout,
-        )
-        if response.status_code == 404:
-            response = requests.get(
-                "{}{}".format(url, _DATAAGENT_LEGACY_AGENT_CARD_PATH),
-                headers=headers,
-                timeout=timeout,
-            )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict) or not _coerce_string(payload.get("name")):
-            return {"success": False, "message": "DataAgent AgentCard 响应格式无效", "tested_at": tested_at}
-        return {"success": True, "message": "DataAgent REST 服务连接正常", "tested_at": tested_at}
-    except requests.exceptions.HTTPError as exc:
-        response = exc.response
-        status_code = response.status_code if response is not None else "unknown"
-        detail = _sanitize_secret_text(_error_detail(response), [token])
-        message = "DataAgent REST 连接失败（HTTP {}）".format(status_code)
-        if detail:
-            message = "{}：{}".format(message, detail[:200])
-        return {"success": False, "message": message, "tested_at": tested_at}
-    except requests.exceptions.RequestException as exc:
-        return {
-            "success": False,
-            "message": "DataAgent REST 请求失败：{}".format(_sanitize_secret_text(str(exc), [token])),
-            "tested_at": tested_at,
-        }
-    except ValueError:
-        return {"success": False, "message": "DataAgent AgentCard 返回非 JSON 响应", "tested_at": tested_at}
 
 
 def _test_neo4j(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
