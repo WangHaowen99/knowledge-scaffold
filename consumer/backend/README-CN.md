@@ -258,11 +258,11 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - 主 ReAct 循环运行在 openJiuwen 上。后端依赖统一通过 `backend/requirements.txt` 安装。
 - `business_data_search` 根据 `workspace_id + ontology_id` 读取本体私有数据源。通过 `/agentic/ontologies/{ontology_id}/data-source` 保存 `provider + config`；配置存于 workspace 运行目录，不进入本体包。
 - `web_search` 是可选联网搜索工具，通过系统设置 UI 或 `web_search` 配置 section 开启；默认关闭，未开启时不会暴露给模型。
-- 观测输出通过 `/api/system-config` 或系统设置 UI 配置。`observability.enabled` 控制是否导出事件，`observability.mode` 选择本地性能 JSONL 或 Langfuse；旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量不再作为运行时配置入口读取。
-- `observability.mode=local` 是系统观测 exporter，产出 `agent_perf-*.log` JSONL，供前端会话性能页和管理员本地观测页读取；它不生成 Speedscope 文件，不读取 Langfuse 数据，也不读取旧 direct perf logger 记录。
-- `SPEEDSCOPE_TRACE_ENABLED=true` 是独立的开发诊断开关，知识问答 backend 会在 `<PROJECT_ROOT>/logs/speedscope/` 下按会话直接生成标准 `.speedscope.json`。每轮 run 与并行执行通道分别映射为 evented profile，代码栈采样映射为 sampled profile；文件默认保留 30 天，可直接拖入 [Speedscope](https://www.speedscope.app/) 查看，不被前端本地观测页消费。代码栈采样默认 10ms 间隔、单 run 最多 20,000 个样本、进程内活跃样本最多 50,000 个，可通过 `SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS`、`SPEEDSCOPE_STACK_PROFILE_MAX_EVENTS` 和 `SPEEDSCOPE_STACK_PROFILE_PROCESS_MAX_EVENTS` 调整。普通 `agent.log` 始终保留，`agent_perf` 仍只由 `observability.mode=local` 控制。
+- 观测输出按工作空间配置，通过 `/agentic/workspaces/<workspace_id>/observability-config` 或配置中心的“空间观测”管理；每个工作空间可独立选择本地性能 JSONL 或 Langfuse。全局系统配置不再提供 `observability` section，旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量也不再作为运行时配置入口读取。
+- 工作空间观测配置为 `mode=local` 时，前端会话性能页读取当前工作空间的新 schema 本地 perf JSONL；管理员本地观测页可以跨工作空间聚合和筛选，但只是分析视图，不是全局观测配置。两者都不读取 Langfuse 数据或旧 direct perf logger 记录。
+- `SPEEDSCOPE_TRACE_ENABLED=true` 是独立于工作空间观测配置的开发诊断开关。知识问答 backend 会在 `<PROJECT_ROOT>/logs/speedscope/` 下按会话直接生成标准 `.speedscope.json`；每轮 run 与并行执行通道分别映射为 evented profile，代码栈采样映射为 sampled profile。文件默认保留 30 天，可直接拖入 [Speedscope](https://www.speedscope.app/) 查看，不被前端本地观测页消费。代码栈采样默认 10ms 间隔、单 run 最多 20,000 个样本、进程内活跃样本最多 50,000 个，可通过 `SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS`、`SPEEDSCOPE_STACK_PROFILE_MAX_EVENTS` 和 `SPEEDSCOPE_STACK_PROFILE_PROCESS_MAX_EVENTS` 调整。普通 `agent.log` 始终保留；只有配置为 `mode=local` 的工作空间会生成 `agent_perf`。
 - Speedscope 文件只保存阶段名称、状态、时间关系以及代码帧标签（模块、函数、文件和行号），不保存源码文本、用户问题、Prompt、reasoning、回答、工具参数、SQL 参数或工具输出。独立 MCP 容器固定关闭该开关，避免外部 MCP 请求写入知识问答会话 trace。
-- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`agent_perf` 仍由 `observability.local.retention_days` 独立控制。
+- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，各工作空间的 `agent_perf` 由其观测模式和 `local.retention_days` 独立控制。
 - 如果直接接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 
 ## HTTP 接口
@@ -288,6 +288,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - `GET/POST/PATCH /agentic/operations...`
 - `GET/POST/PATCH/DELETE /agentic/workspaces...`
 - `GET/PATCH /agentic/workspaces/<workspace_id>/runtime-config`
+- `GET/PATCH/POST /agentic/workspaces/<workspace_id>/observability-config...`
 - `GET/PATCH/POST /api/system-config...`
 - `GET/POST/DELETE /a2a/tasks...`
 - `GET /.well-known/a2a/agent-card.json`

@@ -376,7 +376,11 @@ def _migrate_legacy_model_fields_unlocked(document: dict[str, Any]) -> None:
         for section_key in SECTION_KEYS
     }
     raw_config[_LLM_PROFILES_SECTION] = llm_profiles_section
-    _write_config_document_unlocked(raw_config)
+    _write_config_document_unlocked(
+        raw_config,
+        source_document=document,
+        drop_top_level_keys={"task_llm"},
+    )
     logging.getLogger(__name__).warning(
         "Migrated legacy task_llm / default_profile_id to unified profile refs"
     )
@@ -393,7 +397,7 @@ def _read_config_document_unlocked() -> dict[str, Any]:
                 section_key: dict(document.get(section_key) or {})
                 for section_key in SECTION_KEYS
             }
-            _write_config_document_unlocked(raw_config)
+            _write_config_document_unlocked(raw_config, source_document=document)
             return _read_json_document(CONFIG_PATH)
         return document
     return {}
@@ -999,9 +1003,24 @@ def _encrypt_config_document(config: dict[str, dict[str, Any]]) -> dict[str, dic
 
 def _write_config_document_unlocked(
     config: dict[str, dict[str, Any]],
+    *,
+    source_document: dict[str, Any],
+    drop_top_level_keys: set[str] | None = None,
 ) -> None:
-    # 现在的 config 已经是嵌套好的，直接按 SECTION_KEYS 过滤保存即可
-    document = _encrypt_config_document(config)
+    """Write owned sections without deleting unrelated migration sources.
+
+    A section writer is not authorized to discard top-level data that it does
+    not own.  Concrete migrations explicitly remove their own legacy source;
+    callers may name other keys that the current operation intentionally
+    retires.
+    """
+    removed = set(drop_top_level_keys or ())
+    document = {
+        key: value
+        for key, value in source_document.items()
+        if key not in SECTION_KEYS and key not in removed
+    }
+    document.update(_encrypt_config_document(config))
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1085,7 +1104,7 @@ def update_system_config_section(section: str, data: dict[str, Any]) -> dict[str
                 raw_config[normalized_section],
                 effective[normalized_section],
             )
-        _write_config_document_unlocked(raw_config)
+        _write_config_document_unlocked(raw_config, source_document=document)
 
     return _public_section(normalized_section, load_system_config())
 
@@ -1122,7 +1141,7 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
                     raw_config[section],
                     effective[section],
                 )
-        _write_config_document_unlocked(raw_config)
+        _write_config_document_unlocked(raw_config, source_document=document)
 
     return imported_sections, get_public_system_config()
 

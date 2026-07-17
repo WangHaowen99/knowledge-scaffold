@@ -9,7 +9,6 @@ const RULES = {
   'system_config.write':  { roles: ['admin'] },
   'workspace.manage':     { roles: ['admin'] },            // 空间集合的增删/设默认
   'users.manage':         { roles: ['admin'] },
-  'observability.global': { roles: ['admin'] },
   // 空间层（L2）——wsRoles 仅用于后端已放开 owner 通道的权限点，
   // 避免 owner 看到可写 UI 但后端 admin-only 必 403；其余待后端放开后再补 wsRoles。
   'ws.config.read':       { roles: ['admin', 'user'] },
