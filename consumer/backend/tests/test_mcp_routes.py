@@ -4,6 +4,7 @@ from flask import Flask
 
 import api.routes as routes_module
 import api.routes.mcp as mcp_routes
+from api.protocols.mcp.paths import MCP_INTERNAL_CHAT_PATH
 from integration.mcp.scope import MCPRequestScope
 
 
@@ -11,6 +12,12 @@ def _app():
     app = Flask(__name__)
     app.register_blueprint(mcp_routes.mcp_bp)
     return app
+
+
+def test_internal_chat_bridge_path_is_registered():
+    rules = {rule.rule for rule in _app().url_map.iter_rules()}
+
+    assert MCP_INTERNAL_CHAT_PATH in rules
 
 
 def test_internal_chat_revalidates_mcp_scope_and_preserves_owner(monkeypatch):
