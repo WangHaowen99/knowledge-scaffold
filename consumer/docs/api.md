@@ -51,6 +51,8 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
   - `DELETE /agentic/workspaces/{workspace_id}`
   - `POST /agentic/workspaces/{workspace_id}/default`
   - `PATCH /agentic/workspaces/{workspace_id}/runtime-config`
+  - `PATCH /agentic/workspaces/{workspace_id}/observability-config`
+  - `POST /agentic/workspaces/{workspace_id}/observability-config/test`
   - `PUT /agentic/ontologies/{ontology_id}/data-source`
   - `DELETE /agentic/ontologies/{ontology_id}/data-source`
   - `POST /agentic/ontologies/{ontology_id}/data-source/test`
@@ -835,7 +837,7 @@ TPS 超限 `429`：
 
 ### 4.7 本地性能分析
 
-本组接口只读取当前机器上由 `observability.mode=local` 写出的新 local perf JSONL schema。默认扫描最近 24 小时，最大扫描窗口为 7 天；当本地观测关闭、当前模式为 Langfuse、日志过期或日志文件被删除时，返回结果可能为空。
+本组接口只读取当前机器上由工作空间观测配置 `mode=local` 写出的新 local perf JSONL schema。默认扫描最近 24 小时，最大扫描窗口为 7 天；当对应工作空间的本地观测关闭、当前模式为 Langfuse、日志过期或日志文件被删除时，返回结果可能为空。
 
 底层 Trace 记录使用以下稳定 schema；`span_key`/`parent_key` 表达 run 内层级关系，回放和 local/Langfuse exporter 都保留该关系：
 
@@ -877,7 +879,7 @@ TPS 超限 `429`：
 返回单次运行的耗时拆分、iteration、LLM、工具、runtime phase 和事件时间线。
 
 - 普通用户必须同时传 `session_id`，且该 session 的执行记录必须能关联该 `run_id`。
-- 管理员可从全局本地观测页直接按 run 下钻。
+- 管理员可从跨工作空间聚合的本地观测页直接按 run 下钻；该页面是分析视图，不是全局观测配置。
 - 支持与会话分析相同的 `from` / `to` 窗口参数。
 
 #### `GET /api/local-observability/overview` (`admin`)
@@ -1583,7 +1585,81 @@ Graph provider 配置：
 
 旧 `/agentic/data-connections*` 与 `/agentic/ontologies/{ontology_id}/data-binding` 路由在一个兼容版本内保留，但统一返回 `410 Gone` 和新接口地址，不再写入共享连接或绑定。
 
-### 7.10 Operation Evolution API
+### 7.10 工作区观测配置
+
+本地性能日志和 Langfuse 连接按 workspace 隔离，配置保存在：
+
+```text
+.onto-runtime/workspaces/{workspace_id}/observability_config.json
+```
+
+全局 `/api/system-config` 不提供 `observability` section。管理员跨工作空间查看本地观测数据时使用的是聚合分析接口，不会产生或修改一份全局观测配置。
+
+#### `GET /agentic/workspaces/{workspace_id}/observability-config`
+
+读取指定工作空间的观测配置。所有已认证且可访问该工作空间的用户均可读取；secret 不返回明文，只返回 `has_secret_key`。
+
+响应 `200`：
+
+```json
+{
+  "enabled": true,
+  "mode": "local",
+  "local": {
+    "retention_days": 30
+  },
+  "langfuse": {
+    "public_key": "",
+    "has_secret_key": false,
+    "base_url": "",
+    "debug": false
+  }
+}
+```
+
+如果持久化文件仍是旧结构、JSON 损坏、字段不完整或 secret 无法解密，读取路径不会改写文件或回退到旧格式，而是返回 `409`：
+
+```json
+{
+  "code": "WORKSPACE_OBSERVABILITY_MIGRATION_REQUIRED",
+  "detail": "工作空间 'demo' 的观测配置不是规范格式，需要先完成迁移或人工修复",
+  "workspace_id": "demo"
+}
+```
+
+#### `PATCH /agentic/workspaces/{workspace_id}/observability-config` (`admin`)
+
+增量更新指定工作空间的观测配置。保存后只影响后续运行；本地模式写入该工作空间的 runtime 目录，Langfuse 模式使用该工作空间自己的项目凭据。
+
+请求示例：
+
+```json
+{
+  "enabled": true,
+  "mode": "langfuse",
+  "local": {
+    "retention_days": 30
+  },
+  "langfuse": {
+    "public_key": "pk-example",
+    "secret_key": "sk-example",
+    "base_url": "https://langfuse.example.com",
+    "debug": false
+  }
+}
+```
+
+更新时省略 `langfuse.secret_key` 会保留已保存的密钥；显式传空字符串会清空密钥。
+
+#### `POST /agentic/workspaces/{workspace_id}/observability-config/test` (`admin`)
+
+使用请求中的增量配置和已保存配置测试当前工作空间的观测目标，不写入配置：
+
+- `enabled=false`：返回工作空间观测已关闭。
+- `mode=local`：校验本地观测配置可用。
+- `mode=langfuse`：校验 `public_key`、`secret_key`、`base_url` 并请求 Langfuse 项目接口。
+
+### 7.11 Operation Evolution API
 
 Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/运行时积累的 operation 改进建议，并在管理员确认后把 staged patch 应用到 ontology 的 operation Markdown 文件。
 
@@ -1617,6 +1693,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - 模型属于外部运行必需能力，不提供可运行的内置默认值。
 - 业务数据源不属于全局系统配置，按 `workspace_id + ontology_id` 独立存储。
+- 观测不属于全局系统配置，按 workspace 通过 `/agentic/workspaces/{workspace_id}/observability-config` 管理。
 - 内置默认值主要用于超时、重试、temperature、存储路径等运行参数。
 - 可通过 `SYSTEM_CONFIG_PATH` 指定其他保存位置。
 
@@ -1629,10 +1706,9 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 - `auth`
 - `agent`
 - `memory`
-- `observability`
 - `web_search`
 
-说明：观测配置只从 `.onto-runtime/config/system_config.json` / 系统设置页读取，不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
+说明：旧全局 `observability` 只作为启动兼容迁移的输入；迁移后由各工作空间独立保存和使用。旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量不再作为运行时配置入口。
 
 ### 8.1 `GET /api/system-config`
 
@@ -1686,19 +1762,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "parallel_default_max_workers": 10,
     "context_max_rounds": 10,
     "context_prune_tools": ""
-  },
-  "observability": {
-    "enabled": true,
-    "mode": "local",
-    "local": {
-      "retention_days": 30
-    },
-    "langfuse": {
-      "public_key": "",
-      "has_secret_key": false,
-      "base_url": "",
-      "debug": false
-    }
   },
   "web_search": {
     "enabled": false,
@@ -1786,12 +1849,11 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 说明：
 
-- `section` 仅支持：`llm | llm_profiles | task_llm | storage | auth | agent | memory | observability | web_search`
+- `section` 仅支持：`llm | llm_profiles | task_llm | storage | auth | agent | memory | web_search`
 - `data` 必须为对象
 - secret 清空不能直接传空字符串，需使用对应清除字段：
   - `llm.clear_api_key`
   - `task_llm.clear_api_key`
-  - `observability.clear_langfuse_secret_key`
   - `web_search.clear_api_key`
 - 配置保存后会尝试刷新运行时依赖；若保存成功但刷新失败，会返回 `500`
 - `llm_profiles` 为多模型配置 section，对话时实际优先使用它，而不是旧版单模型 `llm`
@@ -1866,8 +1928,9 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - `llm` / `task_llm`：测试 OpenAI 兼容 `chat/completions`
 - `llm_profiles`：测试指定模型 profile（若请求里带 `profile_id`）或默认模型 profile
-- `observability`：`enabled=false` 返回 `观测已关闭`，启用后 `mode=local` 返回本地性能日志已启用，`mode=langfuse` 时校验 `public_key` / `secret_key` / `base_url` 是否已配置
 - `storage` / `auth` / `agent`：仅做配置校验，返回 `配置校验通过`
+
+工作空间观测连接测试使用 `POST /agentic/workspaces/{workspace_id}/observability-config/test`，不通过本接口处理。
 
 ### 8.7 配置字段清单
 
@@ -1940,18 +2003,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `parallel_default_max_workers` | int | 默认并行 worker 数 |
 | `context_max_rounds` | int | 上下文保留轮数 |
 | `context_prune_tools` | string | 上下文裁剪工具列表 |
-
-#### `observability`
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `enabled` | bool | 是否启用运行时观测输出 |
-| `mode` | string | 启用后使用的观测 exporter，支持 `local \| langfuse` |
-| `local.retention_days` | int | 本地性能日志保留天数 |
-| `langfuse.public_key` | string | Langfuse public key |
-| `langfuse.secret_key` | secret | Langfuse secret key |
-| `langfuse.base_url` | string | Langfuse 服务地址 |
-| `langfuse.debug` | bool | 是否启用 Langfuse SDK debug |
 
 #### `web_search`
 

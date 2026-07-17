@@ -261,6 +261,7 @@ AgenticOrchestrator.run()
 | `GET` / `DELETE` | `/agentic/sessions/<session_id>` | 获取或删除会话 |
 | `GET` | `/agentic/sessions/<session_id>/performance` | 查看当前会话本地性能分析 |
 | `GET` | `/api/local-observability/overview` | 管理员查看本机本地观测总览 |
+| `GET` / `PATCH` / `POST` | `/agentic/workspaces/<workspace_id>/observability-config...` | 读取、保存或测试工作空间观测配置 |
 | `GET` / `PUT` / `DELETE` | `/agentic/ontologies/<ontology_id>/data-source` | 本体私有业务数据源配置 |
 | `POST` | `/agentic/ontologies/<ontology_id>/data-source/test` | 测试已保存或候选数据源配置 |
 | `GET` | `/agentic/business-data/provider-schemas` | 数据源 Provider 表单元数据 |
@@ -369,10 +370,10 @@ data: { ... }
 
 - 当前版本后端不再内建默认 LLM 地址和模型 ID。首次启动后如果尚未配置模型，聊天页会提示先完成模型配置。
 - 业务数据源按 `workspace_id + ontology_id` 存储在运行时目录中；系统配置页不再提供全局本体检索 provider。
-- 观测输出通过系统设置页 / `.onto-runtime/config/system_config.json` 管理，`observability.enabled` 控制开关，`observability.mode` 选择本地性能日志或 Langfuse；不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
-- `observability.mode=local` 时，聊天页的当前会话可打开“性能分析”；管理员可在用户菜单打开“本地观测分析”查看当前机器保留窗口内的整体趋势、慢运行、慢工具和慢运行阶段。该分析只读取新 local perf JSONL，不读取 Langfuse 或旧 direct perf logger 数据。
-- `SPEEDSCOPE_TRACE_ENABLED=true` 时，仅知识问答 backend 在 `.onto-runtime/logs/speedscope/` 下按会话直接生成标准 `.speedscope.json`，默认保留 30 天；独立 MCP 容器固定关闭。文件只含阶段名称、状态和耗时，不含问题、Prompt、reasoning、回答、工具参数或工具输出，可直接使用 [Speedscope](https://www.speedscope.app/) 打开。
-- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`agent_perf` 仍由 `observability.local.retention_days` 独立控制。
+- 观测输出按工作空间配置，通过配置中心的“空间观测”或 `/agentic/workspaces/<workspace_id>/observability-config` 管理；每个工作空间可独立关闭观测，或选择本地性能日志和独立 Langfuse 项目。全局系统配置不再提供 `observability` section，也不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
+- 工作空间观测配置为 `mode=local` 时，聊天页的当前会话可打开“性能分析”；管理员可在用户菜单打开“本地观测分析”，跨工作空间聚合当前机器保留窗口内的整体趋势，并按工作空间筛选。该页面是聚合分析视图，不是全局观测配置；它只读取新的 workspace local perf JSONL，不读取 Langfuse 或旧 direct perf logger 数据。
+- `SPEEDSCOPE_TRACE_ENABLED=true` 是独立于工作空间观测配置的开发诊断开关。仅知识问答 backend 会在 `.onto-runtime/logs/speedscope/` 下按会话生成标准 `.speedscope.json`，默认保留 30 天；独立 MCP 容器固定关闭。文件不包含问题、Prompt、reasoning、回答、工具参数或工具输出，可直接使用 [Speedscope](https://www.speedscope.app/) 打开，也不会被“本地观测分析”页面消费。
+- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，各工作空间的 `agent_perf` 由其观测模式和 `local.retention_days` 独立控制。
 - 内置默认值只用于超时、重试、temperature、存储路径等运行参数；模型和业务数据源这类外部能力必须显式配置。
 - 如果接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 

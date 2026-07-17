@@ -53,7 +53,7 @@
 
 - 当前 TPS 是后端进程内限制，不是跨多进程/多副本的分布式限流。
 - `direct_execution` 暂不单独拆限流，仍共用全局 TPS 和现有并发槽。
-- `agent_perf` 性能分析日志不跟随普通日志 180 天策略，继续由 `observability.local.retention_days` 独立控制，并保持可直接读取分析。
+- `agent_perf` 性能分析日志不跟随普通日志 180 天策略，由各工作空间观测配置中的 `local.retention_days` 独立控制，并保持可直接读取分析。
 - `logging.level` 支持 `DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL` 和 `NOTSET`。字段缺失时使用进程启动级别，启动级别未配置时为 `INFO`。运行时修改建议先写临时文件，再原子替换 `ops_config.json`；读取到无效 JSON 或无效级别时继续使用上一次有效值。
 - 上下文压缩策略不在本文实现范围内，需要单独评估。
 - 机器规格为部署建议：消费智能体建议 4U / 8G / 200G，可按实际负载调整；代码不在运行时强制校验 CPU、内存或磁盘容量。

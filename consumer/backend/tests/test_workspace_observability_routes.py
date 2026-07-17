@@ -44,6 +44,26 @@ def test_get_workspace_observability_config_masks_secret(tmp_path, monkeypatch):
     assert "secret_key" not in payload["langfuse"]
 
 
+def test_get_workspace_observability_config_reports_migration_required_without_writing(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_client(tmp_path, monkeypatch, role="user")
+    raw_path = tmp_path / ".onto-runtime" / "workspaces" / "demo" / "observability_config.json"
+    raw_path.write_text("{broken", encoding="utf-8")
+    before = raw_path.read_bytes()
+
+    response = client.get("/agentic/workspaces/demo/observability-config", headers=headers)
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "code": "WORKSPACE_OBSERVABILITY_MIGRATION_REQUIRED",
+        "detail": "工作空间 'demo' 的观测配置不是规范格式，需要先完成迁移或人工修复",
+        "workspace_id": "demo",
+    }
+    assert raw_path.read_bytes() == before
+
+
 def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_path, monkeypatch):
     client, headers = _build_client(tmp_path, monkeypatch)
     reset_calls = []

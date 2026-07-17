@@ -1,8 +1,10 @@
-"""Tests for the central, fail-closed startup migration runner."""
+"""Tests for the central phase- and failure-policy-aware migration runner."""
 
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 
 import pytest
@@ -56,11 +58,36 @@ def _write_legacy_connection(workspace_dir, *, connection_id="shared-dataagent")
     )
 
 
-def test_shared_runner_only_registers_data_source_migration():
-    from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID
-    from migrations.runner import REGISTERED_MIGRATIONS
+def _run_startup_in_process(runtime_root, secret_key):
+    os.environ["PROJECT_ROOT"] = str(runtime_root)
+    os.environ["SECRET_ENCRYPTION_KEY"] = secret_key
+    os.environ["LOG_DIR"] = str(runtime_root / "legacy-logs")
+    from migrations.runner import run_startup_migrations
 
-    assert [migration.migration_id for migration in REGISTERED_MIGRATIONS] == [MIGRATION_ID]
+    return run_startup_migrations(runtime_root)
+
+
+def test_shared_runner_registers_explicit_phase_and_failure_policy():
+    from migrations.observability_workspace_config_v1 import MIGRATION_ID as OBSERVABILITY_ID
+    from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID as DATA_SOURCE_ID
+    from migrations.runner import (
+        REGISTERED_MIGRATIONS,
+        MigrationFailurePolicy,
+        MigrationPhase,
+    )
+
+    assert [migration.migration_id for migration in REGISTERED_MIGRATIONS] == [
+        DATA_SOURCE_ID,
+        OBSERVABILITY_ID,
+    ]
+    assert [migration.phase for migration in REGISTERED_MIGRATIONS] == [
+        MigrationPhase.STARTUP,
+        MigrationPhase.STARTUP,
+    ]
+    assert [migration.failure_policy for migration in REGISTERED_MIGRATIONS] == [
+        MigrationFailurePolicy.BLOCKING,
+        MigrationFailurePolicy.NON_BLOCKING,
+    ]
 
 
 def test_shared_runner_is_noop_when_registry_is_empty(tmp_path, monkeypatch):
@@ -93,7 +120,7 @@ def test_startup_runner_wraps_lock_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner_module, "_migration_lock", broken_lock)
 
-    with pytest.raises(runner_module.StartupMigrationError, match="lock denied"):
+    with pytest.raises(runner_module.StartupMigrationError, match="OSError"):
         runner_module.run_startup_migrations(tmp_path / ".onto-runtime")
 
 
@@ -154,7 +181,7 @@ def test_startup_runner_blocks_startup_when_legacy_reference_is_invalid(tmp_path
     workspace_dir = _workspace_dir(runtime_root)
     _write_legacy_binding(workspace_dir, connection_id="missing")
 
-    with pytest.raises(StartupMigrationError, match="业务数据连接不存在"):
+    with pytest.raises(StartupMigrationError, match="ontology-data-sources-direct-v2"):
         run_startup_migrations(runtime_root)
 
     assert not (workspace_dir / "ontology-data-sources.json").exists()
@@ -178,11 +205,6 @@ def test_create_app_runs_critical_startup_migrations_before_other_startup_work(m
         }
 
     monkeypatch.setattr(app_module, "run_startup_migrations", lambda: order.append("startup"))
-    monkeypatch.setattr(
-        app_module,
-        "_run_startup_observability_migration",
-        lambda: order.append("observability"),
-    )
     monkeypatch.setattr(app_module, "build_runtime_services", fake_runtime)
     monkeypatch.setattr(app_module, "register_routes", lambda *args, **kwargs: order.append("routes"))
     monkeypatch.setattr(app_module, "start_runtime_warmup", lambda **kwargs: order.append("warmup"))
@@ -194,7 +216,7 @@ def test_create_app_runs_critical_startup_migrations_before_other_startup_work(m
 
     app_module.create_app()
 
-    assert order == ["startup", "observability", "build", "routes", "warmup", "platform"]
+    assert order == ["startup", "build", "routes", "warmup", "platform"]
 
 
 def test_create_app_does_not_build_runtime_when_critical_migration_fails(monkeypatch):
@@ -213,3 +235,147 @@ def test_create_app_does_not_build_runtime_when_critical_migration_fails(monkeyp
 
     with pytest.raises(StartupMigrationError, match="data source migration failed"):
         app_module.create_app()
+
+
+def test_non_blocking_failure_is_reported_and_later_blocking_migrations_continue(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import migrations.runner as runner_module
+
+    non_blocking = runner_module.RegisteredMigration(
+        migration_id="optional",
+        module="tests.optional",
+        phase=runner_module.MigrationPhase.STARTUP,
+        failure_policy=runner_module.MigrationFailurePolicy.NON_BLOCKING,
+    )
+    blocking = runner_module.RegisteredMigration(
+        migration_id="required",
+        module="tests.required",
+        phase=runner_module.MigrationPhase.STARTUP,
+        failure_policy=runner_module.MigrationFailurePolicy.BLOCKING,
+    )
+    calls = []
+
+    def load_executor(migration):
+        if migration.migration_id == "optional":
+            return lambda *_args, **_kwargs: (
+                2,
+                {
+                    "migration_id": "optional",
+                    "ok": False,
+                    "errors": ["sanitized failure"],
+                    "error_codes": ["OPTIONAL_PENDING"],
+                },
+            )
+
+        def execute_required(*_args, **_kwargs):
+            calls.append("required")
+            return 0, {"migration_id": "required", "ok": True, "errors": []}
+
+        return execute_required
+
+    monkeypatch.setattr(runner_module, "REGISTERED_MIGRATIONS", (non_blocking, blocking))
+    monkeypatch.setattr(runner_module, "_load_executor", load_executor)
+
+    with caplog.at_level("WARNING"):
+        report = runner_module.run_startup_migrations(tmp_path / ".onto-runtime")
+
+    assert report["ok"] is True
+    assert report["errors"] == []
+    assert report["warnings"] == ["optional：OPTIONAL_PENDING"]
+    assert calls == ["required"]
+    assert "optional：OPTIONAL_PENDING" in caplog.text
+
+
+def test_run_context_excludes_deployment_and_external_admin_from_app_startup(
+    tmp_path,
+    monkeypatch,
+):
+    import migrations.runner as runner_module
+
+    registrations = tuple(
+        runner_module.RegisteredMigration(
+            migration_id=phase.value,
+            module=f"tests.{phase.value}",
+            phase=phase,
+            failure_policy=runner_module.MigrationFailurePolicy.BLOCKING,
+        )
+        for phase in runner_module.MigrationPhase
+    )
+
+    def load_executor(migration):
+        return lambda *_args, **_kwargs: (
+            0,
+            {"migration_id": migration.migration_id, "ok": True, "errors": []},
+        )
+
+    monkeypatch.setattr(runner_module, "REGISTERED_MIGRATIONS", registrations)
+    monkeypatch.setattr(runner_module, "_load_executor", load_executor)
+
+    startup = runner_module.run_startup_migrations(tmp_path / ".onto-runtime")
+    deployment_code, deployment = runner_module.execute_registered_migrations(
+        tmp_path / ".onto-runtime",
+        dry_run=True,
+        writes_stopped=False,
+    )
+    external_code, external = runner_module.execute_registered_migrations(
+        tmp_path / ".onto-runtime",
+        dry_run=True,
+        writes_stopped=False,
+        run_context=runner_module.MigrationRunContext.EXTERNAL_ADMIN,
+    )
+
+    assert [item["migration_id"] for item in startup["migrations"]] == ["startup"]
+    assert deployment_code == 0
+    assert [item["migration_id"] for item in deployment["migrations"]] == [
+        "startup",
+        "deployment",
+    ]
+    assert external_code == 0
+    assert [item["migration_id"] for item in external["migrations"]] == [
+        "external-admin"
+    ]
+
+
+def test_concurrent_process_startup_is_serialized_and_idempotent(tmp_path):
+    from migrations.observability_workspace_config_v1 import MARKER_RELATIVE_PATH
+
+    runtime_root = tmp_path / ".onto-runtime"
+    for workspace_id in ("alpha", "beta"):
+        workspace_dir = _workspace_dir(runtime_root, workspace_id)
+        (workspace_dir / "workspace.json").write_text(
+            json.dumps({"id": workspace_id, "name": workspace_id.title()}),
+            encoding="utf-8",
+        )
+    config_path = runtime_root / "config" / "system_config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "observability": {
+                    "enabled": True,
+                    "mode": "local",
+                    "local": {"retention_days": 8},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    secret_key = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_run_startup_in_process, runtime_root, secret_key)
+            for _ in range(2)
+        ]
+        reports = [future.result(timeout=20) for future in futures]
+
+    assert all(report["ok"] for report in reports)
+    assert "observability" not in json.loads(config_path.read_text(encoding="utf-8"))
+    marker = json.loads((runtime_root / MARKER_RELATIVE_PATH).read_text(encoding="utf-8"))
+    assert marker["status"] == "completed"
+    for workspace_id in ("alpha", "beta"):
+        target = runtime_root / "workspaces" / workspace_id / "observability_config.json"
+        assert json.loads(target.read_text(encoding="utf-8"))["local"]["retention_days"] == 8

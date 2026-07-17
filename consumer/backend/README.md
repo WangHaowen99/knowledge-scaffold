@@ -240,9 +240,9 @@ Notes:
 - The main ReAct loop runs on openJiuwen. Install the backend dependencies from `backend/requirements.txt`.
 - `business_data_search` resolves one private source by `workspace_id + ontology_id`. Save `provider + config` through `/agentic/ontologies/{ontology_id}/data-source`; credentials remain in workspace runtime storage, outside the ontology package.
 - `web_search` is optional and disabled by default. Configure `web_search` through system settings or `WEB_SEARCH_*` environment variables before the tool is exposed to the model.
-- Observability output is configured through `/api/system-config` or the system settings UI. `observability.enabled` controls whether events are exported and `observability.mode` selects local performance JSONL or Langfuse; the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
-- With `observability.mode=local`, the chat UI can analyze the current session and admins can open the global local-observability dashboard. Those views read only the current machine's retained new-schema local perf JSONL files; they do not read Langfuse data or old direct perf logger records.
-- With `SPEEDSCOPE_TRACE_ENABLED=true`, the knowledge-QA backend writes standard session-scoped `.speedscope.json` files under `<PROJECT_ROOT>/logs/speedscope/`, retained for 30 days. Runs and parallel execution lanes become evented profiles that can be opened directly in [Speedscope](https://www.speedscope.app/). This environment switch is independent of system observability: normal `agent.log` output remains enabled, while `agent_perf` is still controlled only by `observability.mode=local`.
+- Observability output is configured per workspace through `/agentic/workspaces/<workspace_id>/observability-config` or the configuration center's workspace observability section. Each workspace can independently select local performance JSONL or its own Langfuse project. Global system config no longer exposes an `observability` section, and the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
+- When a workspace uses `mode=local`, the chat UI can analyze that workspace's current session. Admins can also aggregate and filter local observations across workspaces, but that dashboard is an analysis view rather than global observability configuration. Neither view reads Langfuse data or old direct perf logger records.
+- `SPEEDSCOPE_TRACE_ENABLED=true` is a developer diagnostic switch independent of workspace observability configuration. The knowledge-QA backend writes standard session-scoped `.speedscope.json` files under `<PROJECT_ROOT>/logs/speedscope/`, retained for 30 days. Runs and parallel execution lanes become evented profiles that can be opened directly in [Speedscope](https://www.speedscope.app/); these files are not consumed by the local-observability UI. Normal `agent.log` output remains enabled, while `agent_perf` is produced only for workspaces configured with `mode=local` and follows each workspace's retention setting.
 - Speedscope traces contain stage names, status, and timing only. They exclude user questions, prompts, reasoning, answers, tool arguments, SQL parameters, and tool output. The standalone MCP container explicitly disables this switch.
 - If you use GLM directly, the recommended endpoint example is `https://open.bigmodel.cn/api/paas/v4`.
 
@@ -269,6 +269,7 @@ Main route groups:
 - `GET/POST/PATCH /agentic/operations...`
 - `GET/POST/DELETE /agentic/workspaces...`
 - `GET/PATCH /agentic/workspaces/<workspace_id>/runtime-config`
+- `GET/PATCH/POST /agentic/workspaces/<workspace_id>/observability-config...`
 - `GET/PATCH/POST /api/system-config...`
 - `GET /.well-known/a2a/agent-card.json`
 - `GET/POST/DELETE /a2a/tasks...` (Agent-to-Agent protocol)

@@ -1,47 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '../utils/auth';
 import McpManagement from '../components/McpManagement';
+import { CONFIG_CENTER_SCOPES as SCOPES } from './configCenterScopes';
 import { useAuthContext } from './useAuthContext';
 import { THEMES, applyTheme, getTheme } from './theme';
 import { FieldRow as Field, ScopeTabs, SectionCard } from './ui';
-
-// 配置中心：三层作用域（L1 全局 / L2 工作空间 / L3 个人）。
-const SCOPES = {
-  global: {
-    lv: 'L1', badge: 'sb-l1', label: '全局配置',
-    hint: '平台级配置，影响所有工作空间；仅平台管理员可修改，其他人可查看',
-    sections: [
-      { id: 'llm', name: '模型池' },
-      { id: 'web_search', name: '联网搜索' },
-      { id: 'platform', name: '平台接入' },
-      { id: 'observability', name: '观测打点' },
-      { id: 'agent', name: 'Agent 全局参数' },
-      { id: 'wsmgmt', name: '工作空间管理' },
-      { id: 'users', name: '用户与授权' },
-    ],
-  },
-  workspace: {
-    lv: 'L2', badge: 'sb-l2', label: '工作空间',
-    hint: '当前工作空间的资源与运行设置；空间管理员可修改，成员可查看',
-    sections: [
-      { id: 'info', name: '空间信息' },
-      { id: 'members', name: '成员' },
-      { id: 'model', name: '模型选用' },
-      { id: 'runtime', name: '空间运行参数' },
-      { id: 'wsobs', name: '空间观测' },
-      { id: 'mcp', name: 'MCP 接入' },
-    ],
-  },
-  personal: {
-    lv: 'L3', badge: 'sb-l3', label: '个人设置',
-    hint: '仅对你自己生效的个人偏好，随账号同步',
-    sections: [
-      { id: 'prefs', name: '偏好' },
-      { id: 'memory', name: '长期记忆' },
-      { id: 'account', name: '账号安全' },
-    ],
-  },
-};
 
 export default function ConfigCenter({ scope, section, onNavigate }) {
   const sc = SCOPES[scope] || SCOPES.global;
@@ -112,7 +75,6 @@ function SectionBody({ scope, section }) {
 const GLOBAL_SECTION_META = {
   llm: { title: '模型池', desc: '集中管理可用的大模型；密钥加密存储，各工作空间在“模型选用”里引用', wiz: 'cfg-llm' },
   web_search: { title: '联网搜索', desc: '联网搜索的域名白/黑名单，仅在此处统一设置' },
-  observability: { title: '观测打点', desc: '运行链路追踪：本地日志或 Langfuse' },
   agent: { title: 'Agent 全局参数', desc: '智能体运行上限：对话轮次、子任务并发与深度、上下文长度' },
 };
 
@@ -172,18 +134,6 @@ function SystemConfigSection({ section }) {
           </Field>
           <Field label="允许域名" hint="逗号分隔，空为不限"><input type="text" disabled={!canEdit} value={val('allowed_domains')} onChange={(e) => set('allowed_domains', e.target.value)} /></Field>
           <Field label="屏蔽域名" hint="逗号分隔"><input type="text" disabled={!canEdit} value={val('blocked_domains')} onChange={(e) => set('blocked_domains', e.target.value)} /></Field>
-        </>
-      )}
-      {section === 'observability' && (
-        <>
-          <Field label="启用观测日志"><Toggle on={!!val('enabled', false)} disabled={!canEdit} onChange={(v) => set('enabled', v)} /></Field>
-          <Field label="模式">
-            <select disabled={!canEdit} value={val('mode', 'local')} onChange={(e) => set('mode', e.target.value)}>
-              <option value="local">local（本地日志）</option>
-              <option value="langfuse">langfuse</option>
-            </select>
-          </Field>
-          <Field label="本地日志保留天数"><input type="number" disabled={!canEdit} value={val('local', {}).retention_days ?? ''} onChange={(e) => set('local', { retention_days: Number(e.target.value) })} /></Field>
         </>
       )}
       {section === 'agent' && (

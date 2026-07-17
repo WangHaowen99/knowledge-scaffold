@@ -57,3 +57,23 @@ def test_data_source_compatibility_migration_uses_central_startup_runner_not_run
     assert "ontology_data_sources_direct_v2" in runner_text
     assert "ontology_data_sources_direct_v2" not in deploy_text
     assert "ontology_data_sources_direct_v2" not in migrate_text
+
+
+def test_observability_compatibility_migration_has_no_entrypoint_or_deploy_coupling():
+    app_text = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
+    runner_text = (BACKEND_ROOT / "migrations" / "runner.py").read_text(encoding="utf-8")
+    deploy_text = (DEPLOY_ROOT / "deploy.sh").read_text(encoding="utf-8")
+    migrate_text = (DEPLOY_ROOT / "migrate.sh").read_text(encoding="utf-8")
+
+    assert app_text.count("run_startup_migrations()") == 1
+    assert "observability_workspace_config_v1" not in app_text
+    assert "migrate_global_observability_to_workspaces" not in app_text
+    assert "observability_workspace_config_v1" in runner_text
+    assert "MigrationFailurePolicy.NON_BLOCKING" in runner_text
+    assert "observability-workspace-config-v1" not in deploy_text
+    assert "observability-workspace-config-v1" not in migrate_text
+    assert "observability_workspace_config_v1" not in deploy_text
+    assert "observability_workspace_config_v1" not in migrate_text
+    assert not (
+        BACKEND_ROOT / "integration" / "observability" / "migration.py"
+    ).exists()
