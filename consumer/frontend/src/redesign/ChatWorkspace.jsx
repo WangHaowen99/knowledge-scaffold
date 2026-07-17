@@ -5,6 +5,7 @@ import { authFetch } from '../utils/auth';
 import { getWorkspaceAgentMode, normalizeAgentMode } from '../utils/workspacePreferences';
 import { useAuthContext } from './useAuthContext';
 import Markdown from './Markdown';
+import { getChatDataSourceStatus } from './chatDataSourceStatus';
 import { formatTime, truncate } from './chatUtils';
 import { StatusTag } from './ui';
 
@@ -125,7 +126,7 @@ function AgentModePicker({ value, onChange, disabled }) {
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
 // useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
-export default function ChatWorkspace({ chat, streamManager }) {
+export default function ChatWorkspace({ chat, streamManager, onConfigureDataSource }) {
   const { workspaceId } = useAuthContext();
   const { sessions, currentChatId, messages, setMessages, createChat, generateSessionTitle, touchSession } = chat;
   const { sendAgentic, resumeAgentic } = useAgenticStream({ sessionId: currentChatId, setMessages, streamManager });
@@ -204,6 +205,14 @@ export default function ChatWorkspace({ chat, streamManager }) {
 
   const current = sessions.find((session) => session.id === currentChatId);
   const sessionLocked = Boolean(currentChatId);
+  const selectedOntology = useMemo(
+    () => ontologies.find((ontology) => ontology.id === selectedOntologyId) || null,
+    [ontologies, selectedOntologyId],
+  );
+  const emptyState = useMemo(
+    () => getChatDataSourceStatus(selectedOntology),
+    [selectedOntology],
+  );
   const pendingInteraction = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -352,9 +361,17 @@ export default function ChatWorkspace({ chat, streamManager }) {
                 <span className="orbit orbit-a" /><span className="orbit orbit-b" />
                 <img src="/brand-mark.png" alt="" />
               </div>
-              <div className="chat-empty-kicker"><Sparkles size={13} />知识与数据已就绪</div>
-              <h2>从一个业务问题开始</h2>
-              <p>我会结合当前工作空间的知识包、数据源和运行工具给出可追溯的回答。</p>
+              <div className={`chat-empty-kicker ${emptyState.kind}`}>
+                <Sparkles size={13} />{emptyState.kicker}
+              </div>
+              <h2>{emptyState.title}</h2>
+              <p>{emptyState.description}</p>
+              {emptyState.actionLabel && selectedOntology && (
+                <button className="btn chat-empty-data-action" type="button"
+                  onClick={() => onConfigureDataSource?.(selectedOntology.id)}>
+                  {emptyState.actionLabel}<ArrowUpRight size={14} />
+                </button>
+              )}
               <div className="chat-starters">
                 {STARTER_PROMPTS.map((prompt) => (
                   <button key={prompt} type="button" onClick={() => { setInput(prompt); inputRef.current?.focus(); }}>
