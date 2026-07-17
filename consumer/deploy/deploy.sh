@@ -20,7 +20,7 @@ AUTH_TAR_REL="$(manifest_get auth_server_image_tar)"
 [ -n "${FRONTEND_IMAGE}" ] || die "frontend_image is missing in manifest.json"
 [ -n "${AUTH_IMAGE}" ] || die "auth_server_image is missing in manifest.json"
 
-"${SCRIPT_DIR}/preflight.sh"
+"${SCRIPT_DIR}/preflight.sh" --pre-migration
 load_state
 
 MODE="install"
@@ -56,6 +56,9 @@ fi
 
 log "Applying migration after writes stopped"
 "${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped
+
+log "Validating canonical configuration after migration"
+"${SCRIPT_DIR}/preflight.sh"
 
 log "Starting release containers"
 compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}"

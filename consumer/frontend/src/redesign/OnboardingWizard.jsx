@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { BrainCircuit, Link2, MessageSquarePlus, PackageOpen, PlugZap, Settings2, Sparkles } from 'lucide-react';
+import { BrainCircuit, MessageSquarePlus, PackageOpen, PlugZap, Settings2, Sparkles } from 'lucide-react';
 import { clampSpotlightRect, getOnboardingTipStyle } from '../utils/onboardingLayout';
 import { useAuthContext } from './useAuthContext';
 import { markWizardSeen } from './wizardState';
@@ -9,11 +9,10 @@ import { markWizardSeen } from './wizardState';
 
 function stepsFor(isAdmin) {
   return isAdmin ? [
-    { ic: Sparkles, t: '欢迎使用知识工程工具', d: <>接下来用几步蒙版引导带你完成平台初始化：<b>配置模型 → 连接数据 → 导入知识包 → 绑定数据</b>。可随时跳过，之后从顶栏向导按钮重新打开。</> },
+    { ic: Sparkles, t: '欢迎使用知识工程工具', d: <>接下来用几步蒙版引导带你完成平台初始化：<b>配置模型 → 导入知识包 → 配置数据源</b>。可随时跳过，之后从顶栏向导按钮重新打开。</> },
     { ic: BrainCircuit, t: '第 1 步 · 配置模型', d: <>高亮处是<b>全局模型池</b>：添加模型 profile、设置全局默认。密钥只保存在全局层，各工作空间通过“模型选用”引用。</>, nav: { surface: 'config', scope: 'global', sec: 'llm' }, target: 'cfg-llm' },
-    { ic: PlugZap, t: '第 2 步 · 连接数据', d: <>高亮处是当前工作空间的<b>数据连接</b>：新建业务数据库连接，知识包将通过它查询真实业务数据。</>, nav: { surface: 'config', scope: 'workspace', sec: 'conn' }, target: 'cfg-conn' },
-    { ic: PackageOpen, t: '第 3 步 · 导入知识包', d: <>点高亮的按钮导入 .zip 知识包，左侧树会出现包内的<b>业务对象 / 操作</b>，右侧可逐个查看内容。</>, nav: { surface: 'kb' }, target: 'kb-import' },
-    { ic: Link2, t: '第 4 步 · 知识与数据绑定', d: <>高亮处把<b>知识包映射到数据连接</b>——绑定后，知识包中的业务对象才能查询真实业务数据。</>, nav: { surface: 'config', scope: 'workspace', sec: 'bind' }, target: 'cfg-bind' },
+    { ic: PackageOpen, t: '第 2 步 · 导入知识包', d: <>点高亮的按钮导入 .zip 知识包，左侧树会出现包内的<b>业务对象 / 操作</b>，右侧可逐个查看内容。</>, nav: { surface: 'kb' }, target: 'kb-import' },
+    { ic: PlugZap, t: '第 3 步 · 配置数据源', d: <>在知识包的<b>数据源</b>页签填写 Provider 与连接参数；配置只属于当前知识包，保存时覆盖原配置。</>, nav: { surface: 'kb', tab: 'data' }, target: 'kb-data-source' },
     { ic: MessageSquarePlus, t: '一切就绪', d: <>从高亮的入口<b>新建对话</b>，试试知识包的典型问题。</>, target: 'nav-chat' },
   ] : [
     { ic: Sparkles, t: '欢迎使用知识工程工具', d: <>用几步蒙版引导快速了解三个区域：<b>新建对话、知识包工作台、配置中心</b>（对你只读开放）。可随时跳过。</> },

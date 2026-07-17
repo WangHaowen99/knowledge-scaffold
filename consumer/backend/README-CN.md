@@ -33,7 +33,7 @@
 - 支持统一 `memory` 工具，用于显式记忆沉淀，并在后台路由到普通记忆或 operation evolution
 - 支持 `spawn_sub_agent` 批量子任务分解、并发执行和嵌套深度限制
 - 支持技能 CRUD、本体文件管理、本体导入、工作区管理、工作区运行配置和系统配置管理
-- 支持 workspace 级业务数据连接、provider schema 查询，以及本体与数据连接绑定
+- 支持 provider schema 查询，以及每个本体独立的 workspace 本地业务数据源配置
 - 提供 A2A 和 ACP 适配接口，便于外部系统按协议调用同一个编排器和运行时
 - 支持本地性能分析，以及通过系统配置启用的观测导出
 
@@ -49,7 +49,7 @@ agentic/
 │   └── shared/               # Jiuwen 运行时复用的 loop helper
 ├── a2a/                      # A2A 协议适配、模型与 service
 ├── acp/                      # ACP 协议适配与配置
-├── business_data/            # 工作区数据连接、绑定与 provider 适配器
+├── business_data/            # 本体私有数据源与 provider 适配器
 ├── direct_execution/         # 脚本直连执行保护与作用域
 ├── evolution/                # operation evolution 提案与审核
 ├── observability/            # RuntimeEvent 总线与 exporter
@@ -60,7 +60,7 @@ agentic/
 │   ├── ontologies.py         # /agentic/ontologies/*
 │   ├── skills.py             # /agentic/skills/*
 │   ├── workspaces.py         # /agentic/workspaces/*
-│   ├── business_data.py      # /agentic/data-connections* 与 data-binding
+│   ├── business_data.py      # 本体 data-source API 与旧接口退役提示
 │   ├── operations.py         # /agentic/operations/*
 │   ├── performance.py        # /agentic/*/performance 与 /api/local-observability/*
 │   ├── system_config.py      # /api/system-config*
@@ -220,7 +220,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
 | `MCP_TOKEN_TTL_SECONDS` | MCP token 默认有效期，单位秒 | `86400` |
 | `MCP_TOKEN_STORE_PATH` | MCP 可吊销 token 注册表文件 | `<PROJECT_ROOT>/mcp-tokens.json` |
-| `SECRET_ENCRYPTION_KEY` | API key / 业务数据连接 secret 落盘加密根密钥，base64 编码 32 字节 | 未设置时本地生成 `<PROJECT_ROOT>/config/secret.key` |
+| `SECRET_ENCRYPTION_KEY` | API key / 业务数据源 secret 落盘加密根密钥，base64 编码 32 字节 | 未设置时本地生成 `<PROJECT_ROOT>/config/secret.key` |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | 主 Agent 最大迭代次数 | `50` |
 | `AGENT_SUB_AGENT_MAX_ITERATIONS` | 子 Agent 最大迭代次数 | `20` |
 | `AGENT_SUB_AGENT_MAX_CONCURRENCY` | 单次运行最大并发子 Agent 数 | `6` |
@@ -236,7 +236,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `ONTOLOGY_OBJECT_MAX_COUNT` | 单本体最大实体数量 | `200` |
 | `ONTOLOGY_OPERATION_MAX_COUNT` | 单本体最大流程数量 | `100` |
 | `ENTITY_ATTRIBUTE_MAX_COUNT` | 单实体最大属性数量 | `100` |
-| `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | 每个 workspace 最大数据连接配置数量 | `10` |
+| `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | 旧版数据连接数量上限兼容字段，本体私有数据源不使用 | `10` |
 | `MODEL_PROFILE_MAX_COUNT` | 最大模型 profile 数量 | `10` |
 | `MODEL_INPUT_TOKEN_LIMIT` | 平台输入 token 硬上限 | `50000` |
 | `MODEL_OUTPUT_TOKEN_LIMIT` | 平台输出 token 硬上限 | `100000` |
@@ -256,7 +256,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 
 - 后端已不再内建默认 LLM 地址和模型 ID。要让对话可用，需要显式配置 `LLM_BASE_URL` 与 `LLM_MODEL`，或先在系统配置中保存至少一个启用的模型。
 - 主 ReAct 循环运行在 openJiuwen 上。后端依赖统一通过 `backend/requirements.txt` 安装。
-- `business_data_search` 使用 workspace 本地的数据连接与 ontology 绑定。请通过 `/agentic/data-connections` 创建 MindsDB 或 NL2SQL HTTP 连接，再通过 `/agentic/ontologies/{ontology_id}/data-binding` 为本体绑定连接。
+- `business_data_search` 根据 `workspace_id + ontology_id` 读取本体私有数据源。通过 `/agentic/ontologies/{ontology_id}/data-source` 保存 `provider + config`；配置存于 workspace 运行目录，不进入本体包。
 - `web_search` 是可选联网搜索工具，通过系统设置 UI 或 `web_search` 配置 section 开启；默认关闭，未开启时不会暴露给模型。
 - 观测输出通过 `/api/system-config` 或系统设置 UI 配置。`observability.enabled` 控制是否导出事件，`observability.mode` 选择本地性能 JSONL 或 Langfuse；旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量不再作为运行时配置入口读取。
 - `observability.mode=local` 是系统观测 exporter，产出 `agent_perf-*.log` JSONL，供前端会话性能页和管理员本地观测页读取；它不生成 Speedscope 文件，不读取 Langfuse 数据，也不读取旧 direct perf logger 记录。
@@ -282,8 +282,9 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - `GET /api/local-observability/runs`（`admin`）
 - `GET/POST/DELETE /agentic/skills...`
 - `GET/PUT/POST/DELETE /agentic/ontologies...`
-- `GET/PUT/DELETE /agentic/ontologies/<ontology_id>/data-binding`
-- `GET/POST/PATCH/DELETE /agentic/data-connections...`
+- `GET/PUT/DELETE /agentic/ontologies/<ontology_id>/data-source`
+- `POST /agentic/ontologies/<ontology_id>/data-source/test`
+- `GET /agentic/business-data/provider-schemas`
 - `GET/POST/PATCH /agentic/operations...`
 - `GET/POST/PATCH/DELETE /agentic/workspaces...`
 - `GET/PATCH /agentic/workspaces/<workspace_id>/runtime-config`

@@ -1,8 +1,8 @@
 /**
  * M3 冒烟：评测闭环端到端（stub consumer + faux judge）。
- * stub consumer 实现：workspaces / import-zip（首次 409 再覆盖）/ data-connections /
- * data-binding / runs·sync（含一次 429 限流验证退避）。
- * 验证：影子工作区创建、包导入、绑定、逐用例出分、judge 判定、轮次进度与日志。
+ * stub consumer 实现：workspaces / import-zip（首次 409 再覆盖）/ data-source /
+ * runs·sync（含一次 429 限流验证退避）。
+ * 验证：影子工作区创建、包导入、数据源配置、逐用例出分、judge 判定、轮次进度与日志。
  */
 import { createServer } from 'node:http';
 import { createProject } from '../src/projects/repo.js';
@@ -16,7 +16,7 @@ import type { PackageSpec } from '../src/types.js';
 const ok = (c: boolean, m: string) => { console.log(`  ${c ? '✓' : '✗ FAIL'}  ${m}`); if (!c) process.exitCode = 1; };
 
 // ---- stub consumer ----
-const seen = { wsCreated: false, imported: 0, bound: false, connCreated: false, runs: 0, rateLimited: false };
+const seen = { wsCreated: false, imported: 0, dataSourceConfigured: false, runs: 0, rateLimited: false };
 function startStubConsumer(port: number) {
   const srv = createServer(async (req, res) => {
     const url = req.url ?? '';
@@ -35,9 +35,11 @@ function startStubConsumer(port: number) {
       if (seen.imported === 1) return send(409, { requires_confirmation: true, conflict_type: 'version_exists', ontology_id: 'x' });
       return send(201, { success: true, ontology_id: 'demo-agent', objects_count: 2, operations_count: 5 });
     }
-    if (url === '/agentic/data-connections' && req.method === 'GET') return send(200, { connections: [], default_connection_id: '' });
-    if (url === '/agentic/data-connections' && req.method === 'POST') { seen.connCreated = true; return send(201, { connection: JSON.parse(body) }); }
-    if (url.includes('/data-binding') && req.method === 'PUT') { seen.bound = true; return send(200, { binding: {} }); }
+    if (url === '/agentic/ontologies/demo-agent/data-source' && req.method === 'PUT') {
+      const source = JSON.parse(body);
+      seen.dataSourceConfigured = source.mode === 'direct_provider' && source.provider === 'nl2sql_template';
+      return send(200, { configured: true, source });
+    }
     if (url === '/agentic/runs/sync') {
       seen.runs++;
       if (seen.runs === 1 && !seen.rateLimited) { seen.rateLimited = true; return send(429, { error: '限流' }); }
@@ -98,7 +100,7 @@ async function main() {
   ok(round.status === 'done', `轮次状态=${round.status}`);
   ok(seen.wsCreated, `影子工作区已创建（${shadowWorkspaceId(project.id)}）`);
   ok(seen.imported === 2, `import-zip 409 冲突后以 overwrite_active 重试（调用 ${seen.imported} 次）`);
-  ok(seen.connCreated && seen.bound, '数据连接已创建并完成绑定');
+  ok(seen.dataSourceConfigured, '知识包评测数据源已直接配置');
   ok(seen.rateLimited && seen.runs === 3, `runs/sync 经历一次 429 退避重试（共 ${seen.runs} 次调用）`);
   ok(results.length === 2, `产出 ${results.length} 条结果`);
   const passed = results.filter((r) => r.verdict === 'pass').length;

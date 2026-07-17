@@ -38,7 +38,7 @@ class PreflightConfigTests(unittest.TestCase):
         report = validate_config(self.env_file, self.root / ".onto-runtime")
 
         self.assertTrue(report["ok"])
-        self.assertEqual(report["graph_connection_count"], 0)
+        self.assertEqual(report["graph_data_source_count"], 0)
         self.assertEqual(report["auth"]["issuer"], "")
         self.assertEqual(report["auth"]["audience"], "")
 
@@ -60,19 +60,20 @@ class PreflightConfigTests(unittest.TestCase):
 
     def test_graph_config_requires_scope_and_encrypted_secret(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        path = self.root / ".onto-runtime" / "workspaces" / "demo" / "data-connections.json"
+        path = self.root / ".onto-runtime" / "workspaces" / "demo" / "ontology-data-sources.json"
         path.parent.mkdir(parents=True)
         path.write_text(
             json.dumps({
-                "connections": [{
-                    "id": "graph",
+                "version": 2,
+                "sources": {"demo-ontology": {
+                    "mode": "direct_provider",
                     "provider": "neo4j",
                     "config": {
                         "uri": "bolt://neo4j:7687",
                         "username": "neo4j",
                         "password": "plaintext",
                     },
-                }],
+                }},
             }),
             encoding="utf-8",
         )
@@ -83,6 +84,55 @@ class PreflightConfigTests(unittest.TestCase):
         error_types = {item["type"] for item in report["errors"]}
         self.assertEqual(error_types, {"plaintext_graph_secret", "missing_graph_scope_field"})
         self.assertEqual(report["warnings"][0]["field"], "ontology_property")
+
+    def test_pre_migration_defers_persisted_data_validation_to_migration_runner(self) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        path = self.root / ".onto-runtime" / "workspaces" / "demo" / "ontology-data-sources.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({
+                "version": 1,
+                "sources": {
+                    "legacy": {
+                        "mode": "connection_ref",
+                        "connection_id": "shared-graph",
+                    },
+                    "direct": {
+                        "mode": "direct_provider",
+                        "provider": "neo4j",
+                        "config": {
+                            "uri": "bolt://neo4j:7687",
+                            "username": "neo4j",
+                            "password": "plaintext",
+                        },
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            pre_migration=True,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["phase"], "pre_migration")
+        self.assertEqual(report["persisted_data_validation"], "deferred")
+        self.assertIsNone(report["graph_data_source_count"])
+
+        strict = validate_config(self.env_file, self.root / ".onto-runtime")
+        self.assertFalse(strict["ok"])
+        error_types = {item["type"] for item in strict["errors"]}
+        self.assertEqual(
+            error_types,
+            {
+                "legacy_data_source_mode",
+                "plaintext_graph_secret",
+                "missing_graph_scope_field",
+            },
+        )
 
 
 if __name__ == "__main__":

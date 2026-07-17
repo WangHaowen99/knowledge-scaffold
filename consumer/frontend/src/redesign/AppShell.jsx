@@ -95,10 +95,11 @@ export default function AppShell() {
     return <ForceChangePasswordPage user={user} onChangePassword={changePassword} onLogout={logout} />;
   }
 
-  const navigate = ({ surface: sf, scope, sec }) => {
+  const navigate = ({ surface: sf, scope, sec, tab }) => {
     if (sf) setSurface(sf);
     if (scope) setCfgScope(scope);
     if (sec) setCfgSec(sec);
+    if (sf === 'kb' && tab) setKbFocus({ ontologyId: kb.pkgId || '', tab, token: Date.now() });
     setMobileNavOpen(false);
   };
 

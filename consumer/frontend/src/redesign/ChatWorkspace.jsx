@@ -354,7 +354,7 @@ export default function ChatWorkspace({ chat, streamManager }) {
               </div>
               <div className="chat-empty-kicker"><Sparkles size={13} />知识与数据已就绪</div>
               <h2>从一个业务问题开始</h2>
-              <p>我会结合当前工作空间的知识包、数据连接和运行工具给出可追溯的回答。</p>
+              <p>我会结合当前工作空间的知识包、数据源和运行工具给出可追溯的回答。</p>
               <div className="chat-starters">
                 {STARTER_PROMPTS.map((prompt) => (
                   <button key={prompt} type="button" onClick={() => { setInput(prompt); inputRef.current?.focus(); }}>
