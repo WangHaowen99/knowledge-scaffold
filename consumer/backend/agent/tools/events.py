@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
+import math
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlsplit
 
@@ -38,6 +39,12 @@ _FULL_TRACE_OUTPUT_TOOLS = {"ontology_context", "business_data_search"}
 
 def _bounded_text(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _finite_number(value: Any) -> Optional[Any]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(float(value)) else None
 
 
 def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
@@ -84,7 +91,7 @@ def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
         "ok": parsed.get("ok") is True,
         "query": _bounded_text(parsed.get("query"), 500),
         "provider": _bounded_text(parsed.get("provider"), 100),
-        "response_time": parsed.get("response_time"),
+        "response_time": _finite_number(parsed.get("response_time")),
         "result_count": len(parsed["results"]),
         "results": results,
     }

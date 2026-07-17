@@ -5,7 +5,7 @@ from flask import Flask
 import pytest
 
 from config.workspace_llm_profiles import update_workspace_llm_profiles
-from api.routes.workflows import workflows_bp
+from api.routes.workflows import _encode_agent_sse, workflows_bp
 from api.auth.auth import AuthManager
 from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_store import RunStatus, RunStore
@@ -183,6 +183,25 @@ def test_run_stream_forwards_requested_run_id(monkeypatch, tmp_path):
     response_text = response.get_data(as_text=True)
     assert captured["requested_run_id"] == "client-run-123"
     assert "id: 1\nevent: agent.v2" in response_text
+
+
+def test_agent_sse_replaces_non_finite_numbers_with_json_null():
+    encoded = _encode_agent_sse({
+        "seq": 7,
+        "payload": {
+            "response_time": float("nan"),
+            "nested": [float("inf"), float("-inf")],
+        },
+    })
+    data_line = next(line for line in encoded.splitlines() if line.startswith("data: "))
+    payload = json.loads(data_line.removeprefix("data: "))
+
+    assert payload["payload"] == {
+        "response_time": None,
+        "nested": [None, None],
+    }
+    assert "NaN" not in encoded
+    assert "Infinity" not in encoded
 
 
 def test_queued_run_returns_json_until_slot_is_admitted(monkeypatch, tmp_path):

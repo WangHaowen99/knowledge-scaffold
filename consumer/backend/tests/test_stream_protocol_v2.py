@@ -161,6 +161,7 @@ def test_web_search_finished_keeps_bounded_structured_projection_when_preview_is
     assert payload["output_truncated"] is True
     assert len(payload["output_preview"]) == 4096
     assert payload["output_projection"]["provider"] == "tavily"
+    assert payload["output_projection"]["response_time"] == 0.42
     assert payload["output_projection"]["result_count"] == 10
     assert len(payload["output_projection"]["results"]) == 8
     assert all(
@@ -169,6 +170,29 @@ def test_web_search_finished_keeps_bounded_structured_projection_when_preview_is
     )
     assert payload["output_projection"]["results"][0]["domain"] == "example.com"
     assert len(payload["output_projection"]["results"][0]["snippet"]) == 320
+
+
+def test_web_search_projection_replaces_non_finite_response_time():
+    for response_time in (float("nan"), float("inf"), float("-inf")):
+        raw_output = json.dumps({
+            "ok": True,
+            "query": "safe json",
+            "provider": "tavily",
+            "response_time": response_time,
+            "results": [],
+        })
+
+        payload = build_tool_finished_payload(
+            tool_name="web_search",
+            tool_call_id="call-web-non-finite",
+            status="completed",
+            raw_output=raw_output,
+            error=None,
+            elapsed_ms=10,
+        )
+
+        assert payload["output_projection"]["response_time"] is None
+        json.dumps(payload, allow_nan=False)
 
 
 def test_execute_tool_batch_emits_v2_regular_tool_events():
