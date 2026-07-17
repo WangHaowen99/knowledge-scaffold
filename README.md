@@ -26,14 +26,14 @@ Meta Wise 面向的是回答必须遵循**领域语义与既定计算口径**、
     + 知识包内容可在控制台在线浏览（objects / operations / scripts / mappings，Markdown 渲染）。
 - ✅ **统一业务数据入口**
     + 业务对象经 `mappings/object-data-mappings.json` 映射到真实数据源的表与字段，查询不推测表名或字段。
-    + 可插拔 provider：NL2SQL HTTP、NL2SQL 模板、MindsDB、DataAgent、Neo4j、HugeGraph，按工作区绑定。
+    + 可插拔 provider：NL2SQL HTTP、NL2SQL 模板、MindsDB、DataAgent、Neo4j、HugeGraph，按工作空间与本体独立配置。
 - ✅ **多 Agent 编排**
     + ReAct 主循环组织模型推理、工具调用、结果写回与终止判断；复杂任务可拆分为独立子任务并发 fan-out/fan-in 后汇总。
     + 全程 SSE 流式输出（`agent-stream.v2`）：模型思考、工具调用、子任务进度实时呈现，配套 Trace 运行轨迹面板。
 - ✅ **长期记忆与知识演化**
     + 用户级记忆注入与显式记忆沉淀；智能体在运行中提出知识操作演化建议，**经人工评审通过后方可落库**。
 - ✅ **分层配置与访问控制**
-    + 三层配置作用域：**全局**（模型池、联网搜索、观测、Agent 限额）→ **工作空间**（数据连接、知识与数据绑定、运行参数）→ **个人**（偏好、主题）。
+    + 三层配置作用域：**全局**（模型池、联网搜索、平台接入、Agent 参数）→ **工作空间**（模型选用、本体私有数据源、运行参数、观测、MCP）→ **个人**（偏好、主题）。
     + 模型密钥仅存全局层；工作空间只引用模型 profile，不接触 API Key。
     + 认证统一由独立鉴权服务提供（`auth-server/`，OAuth2/OIDC 子集）：consumer 与 modeling 共用同一账号体系，后端必填 `AUTH_SERVER_URL` 对接，支持开放注册（一步建号，无邮箱验证码）。
 - ✅ **协议与 SDK 扩展**
@@ -161,10 +161,9 @@ Windows 用户如果遇到 Python 依赖安装路径过长，可以先启用系�
 
 1. **登录** — 首次启动会创建管理员账号，首次登录需修改初始密码。登录后的蒙版式操作向导会一步步带你完成初始化（可跳过，顶栏可随时重新打开）。
 2. **配置模型** — 配置中心 → 全局配置 → 模型池：添加模型（密钥加密存储、仅存全局层）并设置默认。
-3. **连接数据** — 配置中心 → 工作空间 → 数据连接：按表单新建业务数据库连接并测试连通性。
-4. **导入知识包** — 知识包工作台 → 导入（.zip）。示例知识包源文件见 [examples/](examples/)，打包为 .zip 后导入。
-5. **知识与数据绑定** — 配置中心 → 工作空间 → 知识与数据绑定：把知识包和数据连接对应起来。业务数据查询只会使用当前工作区下已绑定的连接。
-6. **提问** — 新建对话，尝试知识包的典型问题，例如"TargetItem M-3021 对应哪些 SourceItem 版本？"，并可在右侧 Trace 面板查看每一步工具调用明细。
+3. **导入知识包** — 知识包工作台 → 导入（.zip）。示例知识包源文件见 [examples/](examples/)，打包为 .zip 后导入。
+4. **配置数据源** — 在知识包工作台选择已导入的知识包，打开“数据源”页签，选择 provider、填写配置并测试后保存。数据源只属于当前工作空间下的这个知识包。
+5. **提问** — 新建对话，尝试知识包的典型问题，例如"TargetItem M-3021 对应哪些 SourceItem 版本？"，并可在右侧 Trace 面板查看每一步工具调用明细。
 
 ## 构建知识包（设计期）
 
@@ -217,16 +216,14 @@ cd frontend && npm run build
 构建与部署（两条独立路径）：
 
 ```bash
-# 路径一：源码 compose 启动（开发/体验）
-cd consumer
-./run_docker.sh latest all
+# 路径一：源码 compose 启动（开发/体验，consumer + modeling）
+./deploy/deploy-stack.sh up
 
-# 路径二：构建离线发布包（生产交付，含 deploy/upgrade/rollback 脚本）
-cd consumer
-./build.sh <version>
+# 路径二：构建全栈离线发布包（生产交付，含 consumer + modeling）
+./deploy/build.sh <version>
 ```
 
-全栈部署（含建模工作台）见 [deploy/README.md](deploy/README.md)，consumer 发布包细节见 [consumer/deploy/README.md](consumer/deploy/README.md)。
+全栈部署（含建模工作台）见 [deploy/README.md](deploy/README.md)，consumer 单服务发布包细节见 [consumer/deploy/README.md](consumer/deploy/README.md)。
 
 文档地图：
 
@@ -250,7 +247,7 @@ cd consumer
 # ❓ FAQ
 
 - **控制台能打开但对话失败** — 检查模型是否已配置（配置中心 → 全局配置 → 模型池：确认已添加模型、密钥显示"已配置"且默认模型已选），以及通过 `.env` 启动时 `LLM_*` 变量是否设置。
-- **业务数据查询没有结果** — 知识包只会查询*当前工作区*已绑定的连接；到 配置中心 → 工作空间 → 知识与数据绑定 核对绑定关系。
+- **业务数据查询没有结果** — 知识包只会查询*当前工作空间 + 当前知识包*的数据源；在知识包工作台选择对应知识包，打开“数据源”页签检查配置并重新测试。
 - **建模工作台登录失败** — 建模工具的登录经 consumer 转发（`AUTH_ISSUER_URL`），确认 consumer 已启动且地址配置正确；账号就是 consumer 的账号。
 - **建模评测一直失败** — 到建模工具 配置中心 → consumer 服务 做连通性测试（服务可达 / 认证通过 / 模型就绪三项都要绿）；查询类用例还需要配置评测数据连接。
 - **Windows 安装依赖报路径错误** — 启用系统长路径支持，详见 [consumer/README.md](consumer/README.md)。

@@ -54,9 +54,6 @@ function startStubConsumer(port: number) {
       }
       return send(201, { success: true, ontology_id: 'demo-agent', objects_count: 1, operations_count: Object.keys(importedPkgText).length });
     }
-    if (url === '/agentic/data-connections' && req.method === 'GET') return send(200, { connections: [] });
-    if (url === '/agentic/data-connections' && req.method === 'POST') return send(201, {});
-    if (url.includes('/data-binding')) return send(200, { binding: {} });
     if (url === '/agentic/runs/sync') {
       const q = (JSON.parse(body.toString()).request ?? '') as string;
       const qf = frags(q);

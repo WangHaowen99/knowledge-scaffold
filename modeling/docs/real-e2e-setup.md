@@ -4,7 +4,7 @@
 
 ```
 modeling (:5100)
-  │  登录转发 / 影子工作区 / import-zip / data-binding / runs·sync
+  │  登录转发 / 影子工作区 / import-zip / data-source / runs·sync
   ▼
 consumer (:5055，Flask，真实 LLM)
   │  agentic run → business_data_search → nl2sql_template provider

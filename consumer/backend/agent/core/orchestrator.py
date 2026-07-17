@@ -772,549 +772,553 @@ class AgenticOrchestrator:
             session_id=session_id,
             turn_id=current_turn_id,
         )
-        run_trace.started(
-            user_id=user_id,
-            user_query=user_request,
-            workspace_id=workspace_id,
-            model=selected_profile.get("model"),
-            model_provider=selected_profile.get("provider"),
-            metadata={
-                "turn_id": current_turn_id,
-                "model_profile_id": selected_profile["id"],
-                "model_profile_ref": selected_profile_ref,
-                "selected_ontology_id": str(context.get("selected_ontology_id") or "").strip() or None,
-                "agent_mode": resolve_agent_mode(context),
-                "llm_request_mode": str(context.get("llm_request_mode") or "").strip() or None,
-                "traceparent": trace_context.value if trace_context is not None else None,
-                "external_trace_id": trace_context.trace_id if trace_context is not None else None,
-                "external_parent_span_id": trace_context.parent_id if trace_context is not None else None,
-                "external_trace_flags": trace_context.trace_flags if trace_context is not None else None,
-            },
-        )
-
-        # Helper to emit and persist protocol event
-        def emit_and_persist(event_type: str, payload: Dict[str, Any], source: Dict[str, str]):
-            event = build_agent_event(
-                run_id=run_id,
-                session_id=session_id,
-                turn_id=current_turn_id,
-                event_type=event_type,
-                source=source,
-                payload=payload,
-            )
-            chat_store.append_event(session_id, event)
-            return event
-
-        def compact_chat_session() -> None:
-            compact_session = getattr(chat_store, "compact_session", None)
-            if not callable(compact_session):
-                return
-
-            try:
-                with run_trace.phase_scope(
-                    phase_name="chat_session_compact",
-                    component="persistence",
-                ):
-                    if not compact_session(session_id):
-                        logger.warning(
-                            "Chat session compaction skipped for missing session: session_id=%s run_id=%s",
-                            session_id,
-                            run_id,
-                        )
-            except Exception:
-                logger.warning(
-                    "Failed to compact chat session event log: session_id=%s run_id=%s",
-                    session_id,
-                    run_id,
-                    exc_info=True,
-                )
-
-        # Emit start event
-        start_payload: Dict[str, Any] = {
-            "user_preview": user_request[:200],
-        }
-        if arguments:
-            start_payload["arguments"] = arguments
-
-        yield emit_and_persist(
-            "turn.started",
-            start_payload,
-            {"node": "orchestrator", "component": "workflow"},
-        )
-
-        # =====================================================================
-        # Direct Execution Branch — bypass AgentLoopEngine for clear-cut
-        # script-type ontology operations.
-        # =====================================================================
-        direct_config = self.agent_config.direct_execution
-        logger.info(
-            "Direct execution 开关: enabled=%s, selected_ontology_only=%s, confidence_threshold=%.2f (run_id=%s)",
-            direct_config.enabled,
-            direct_config.selected_ontology_only,
-            direct_config.confidence_threshold,
-            run_id,
-        )
-        if direct_config.enabled:
-            runtime_ctx = RuntimeContext(
-                session_id=session_id,
-                run_id=run_id,
-                turn_id=current_turn_id,
+        try:
+            run_trace.started(
                 user_id=user_id,
-                workspace_id=workspace_id or None,
-                selected_ontology_id=selected_ontology_id or None,
-            )
-            router = OperationDirectRouter(
-                config=direct_config,
-            )
-            route_started_at = time.perf_counter()
-            try:
-                decision = router.route(
-                    user_request=original_user_request,
-                    context=context,
-                    runtime_context=runtime_ctx,
-                    arguments=arguments,
-                )
-            except Exception as exc:
-                run_trace.record_phase(
-                    phase_name="direct_execution_route",
-                    component="direct_execution",
-                    status=RuntimeStatus.ERROR,
-                    duration_ms=int((time.perf_counter() - route_started_at) * 1000),
-                    metrics={
-                        "error_type": type(exc).__name__,
-                        "error_message": str(exc)[:300],
-                    },
-                )
-                raise
-
-            run_trace.record_phase(
-                phase_name="direct_execution_route",
-                component="direct_execution",
-                duration_ms=int((time.perf_counter() - route_started_at) * 1000),
-                metrics={
-                    "route": decision.route,
-                    "reason": decision.reason,
-                    "confidence": decision.confidence,
-                    "ontology_id": decision.ontology_id or "",
-                    "operation_key": decision.operation_key or "",
-                    "missing_business_arguments": list(decision.missing_business_arguments or []),
-                    "runtime_requirements": list(decision.runtime_requirements or []),
+                user_query=user_request,
+                workspace_id=workspace_id,
+                model=selected_profile.get("model"),
+                model_provider=selected_profile.get("provider"),
+                metadata={
+                    "turn_id": current_turn_id,
+                    "model_profile_id": selected_profile["id"],
+                    "model_profile_ref": selected_profile_ref,
+                    "selected_ontology_id": str(context.get("selected_ontology_id") or "").strip() or None,
+                    "agent_mode": resolve_agent_mode(context),
+                    "llm_request_mode": str(context.get("llm_request_mode") or "").strip() or None,
+                    "traceparent": trace_context.value if trace_context is not None else None,
+                    "external_trace_id": trace_context.trace_id if trace_context is not None else None,
+                    "external_parent_span_id": trace_context.parent_id if trace_context is not None else None,
+                    "external_trace_flags": trace_context.trace_flags if trace_context is not None else None,
                 },
             )
 
-            if decision.route == "direct_script":
-                from config.system_config import load_system_config
-                sys_config = load_system_config()
-                project_root = str(sys_config["storage"]["project_root"])
-                artifact_writer = _build_tool_output_artifact_writer(
-                    chat_store,
+            # Helper to emit and persist protocol event
+            def emit_and_persist(event_type: str, payload: Dict[str, Any], source: Dict[str, str]):
+                event = build_agent_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    turn_id=current_turn_id,
+                    event_type=event_type,
+                    source=source,
+                    payload=payload,
+                )
+                chat_store.append_event(session_id, event)
+                return event
+
+            def compact_chat_session() -> None:
+                compact_session = getattr(chat_store, "compact_session", None)
+                if not callable(compact_session):
+                    return
+
+                try:
+                    with run_trace.phase_scope(
+                        phase_name="chat_session_compact",
+                        component="persistence",
+                    ):
+                        if not compact_session(session_id):
+                            logger.warning(
+                                "Chat session compaction skipped for missing session: session_id=%s run_id=%s",
+                                session_id,
+                                run_id,
+                            )
+                except Exception:
+                    logger.warning(
+                        "Failed to compact chat session event log: session_id=%s run_id=%s",
+                        session_id,
+                        run_id,
+                        exc_info=True,
+                    )
+
+            # Emit start event
+            start_payload: Dict[str, Any] = {
+                "user_preview": user_request[:200],
+            }
+            if arguments:
+                start_payload["arguments"] = arguments
+
+            yield emit_and_persist(
+                "turn.started",
+                start_payload,
+                {"node": "orchestrator", "component": "workflow"},
+            )
+
+            # =====================================================================
+            # Direct Execution Branch — bypass AgentLoopEngine for clear-cut
+            # script-type ontology operations.
+            # =====================================================================
+            direct_config = self.agent_config.direct_execution
+            logger.info(
+                "Direct execution 开关: enabled=%s, selected_ontology_only=%s, confidence_threshold=%.2f (run_id=%s)",
+                direct_config.enabled,
+                direct_config.selected_ontology_only,
+                direct_config.confidence_threshold,
+                run_id,
+            )
+            if direct_config.enabled:
+                runtime_ctx = RuntimeContext(
                     session_id=session_id,
                     run_id=run_id,
+                    turn_id=current_turn_id,
+                    user_id=user_id,
+                    workspace_id=workspace_id or None,
+                    selected_ontology_id=selected_ontology_id or None,
                 )
-                with tool_output_artifact_writer_context(artifact_writer):
-                    sse_events, exec_result = run_direct_script(
-                        decision=decision,
+                router = OperationDirectRouter(
+                    config=direct_config,
+                )
+                route_started_at = time.perf_counter()
+                try:
+                    decision = router.route(
+                        user_request=original_user_request,
+                        context=context,
                         runtime_context=runtime_ctx,
-                        project_root=project_root,
-                        timeout_seconds=self.agent_config.execute_script_timeout,
-                        observer=observer,
+                        arguments=arguments,
                     )
-                chat_store.append_events(session_id, sse_events)
-                for event in sse_events:
-                    yield event
-
-                final_output = exec_result.output
-                is_error = exec_result.status == "error"
-                turn_status = "error" if is_error else "success"
-
-                result = {
-                    "direct_execution": True,
-                    "status": exec_result.status,
-                    "output": exec_result.output,
-                    "elapsed_ms": exec_result.elapsed_ms,
-                }
-                if is_error:
-                    result["error"] = exec_result.error
-
-                execution_store.complete_turn(
-                    session_id=session_id,
-                    turn_id=current_turn_id,
-                    final_output=final_output,
-                    summary=None,
-                )
-                execution_store.append_to_llm_context(
-                    session_id, {"role": "user", "content": original_user_request},
-                )
-                execution_store.append_to_llm_context(
-                    session_id, {"role": "assistant", "content": final_output},
-                )
-
-                if is_error:
-                    self.run_store.fail_run(run_id, exec_result.error or "Direct execution failed")
-                else:
-                    self.run_store.complete_run(run_id, result)
-
-                logger.info(
-                    "Direct execution completed: run_id=%s ontology=%s operation=%s status=%s",
-                    run_id,
-                    decision.ontology_id,
-                    decision.operation_key,
-                    exec_result.status,
-                )
-                turn_finished_event = emit_and_persist(
-                    "turn.finished",
-                    {"status": turn_status, "final_output": final_output},
-                    {"node": "direct_execution", "component": "service"},
-                )
-                if is_error:
-                    run_trace.failed(
-                        final_answer=final_output,
-                        error_type="DirectExecutionError",
-                        error_message=exec_result.error or final_output,
-                        duration_ms=int((time.perf_counter() - workflow_started_at) * 1000),
+                except Exception as exc:
+                    run_trace.record_phase(
+                        phase_name="direct_execution_route",
+                        component="direct_execution",
+                        status=RuntimeStatus.ERROR,
+                        duration_ms=int((time.perf_counter() - route_started_at) * 1000),
+                        metrics={
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc)[:300],
+                        },
                     )
-                else:
-                    run_trace.finished(
-                        final_answer=final_output,
-                        duration_ms=int((time.perf_counter() - workflow_started_at) * 1000),
+                    raise
+
+                run_trace.record_phase(
+                    phase_name="direct_execution_route",
+                    component="direct_execution",
+                    duration_ms=int((time.perf_counter() - route_started_at) * 1000),
+                    metrics={
+                        "route": decision.route,
+                        "reason": decision.reason,
+                        "confidence": decision.confidence,
+                        "ontology_id": decision.ontology_id or "",
+                        "operation_key": decision.operation_key or "",
+                        "missing_business_arguments": list(decision.missing_business_arguments or []),
+                        "runtime_requirements": list(decision.runtime_requirements or []),
+                    },
+                )
+
+                if decision.route == "direct_script":
+                    from config.system_config import load_system_config
+                    sys_config = load_system_config()
+                    project_root = str(sys_config["storage"]["project_root"])
+                    artifact_writer = _build_tool_output_artifact_writer(
+                        chat_store,
+                        session_id=session_id,
+                        run_id=run_id,
                     )
-                yield turn_finished_event
-                compact_chat_session()
-                return
+                    with tool_output_artifact_writer_context(artifact_writer):
+                        sse_events, exec_result = run_direct_script(
+                            decision=decision,
+                            runtime_context=runtime_ctx,
+                            project_root=project_root,
+                            timeout_seconds=self.agent_config.execute_script_timeout,
+                            observer=observer,
+                        )
+                    chat_store.append_events(session_id, sse_events)
+                    for event in sse_events:
+                        yield event
 
-            if decision.route == "missing_args":
-                param_names = ", ".join(
-                    "- {}".format(arg)
-                    for arg in decision.missing_business_arguments
-                )
-                final_output = (
-                    "当前 " + str(decision.operation_key or "") + " 流程需要以下参数：\n"
-                    + param_names + "\n\n请补充后我再执行。"
-                )
-                result = {
-                    "direct_execution": True,
-                    "status": "missing_args",
-                    "missing_arguments": decision.missing_business_arguments,
-                }
-                execution_store.complete_turn(
-                    session_id=session_id,
-                    turn_id=current_turn_id,
-                    final_output=final_output,
-                    summary=None,
-                )
-                execution_store.append_to_llm_context(
-                    session_id, {"role": "user", "content": original_user_request},
-                )
-                execution_store.append_to_llm_context(
-                    session_id, {"role": "assistant", "content": final_output},
-                )
-                self.run_store.complete_run(run_id, result)
-                turn_finished_event = emit_and_persist(
-                    "turn.finished",
-                    {"status": "success", "final_output": final_output},
-                    {"node": "direct_execution", "component": "service"},
-                )
-                run_trace.finished(
-                    final_answer=final_output,
-                    duration_ms=int((time.perf_counter() - workflow_started_at) * 1000),
-                )
-                yield turn_finished_event
-                compact_chat_session()
-                return
+                    final_output = exec_result.output
+                    is_error = exec_result.status == "error"
+                    turn_status = "error" if is_error else "success"
 
-            # decision.route == "fallback_agent_loop" → continue below
+                    result = {
+                        "direct_execution": True,
+                        "status": exec_result.status,
+                        "output": exec_result.output,
+                        "elapsed_ms": exec_result.elapsed_ms,
+                    }
+                    if is_error:
+                        result["error"] = exec_result.error
 
-        # =====================================================================
-        # Build initial state (agent loop path)
-        # =====================================================================
-        initial_state: AgenticState = {
-            "run_id": run_id,
-            "session_id": session_id,
-            "user_id": user_id,
-            "workspace_id": workspace_id,
-            "user_request": model_user_request,
-            "user_context": context,
-            "user_lang": context.get("lang"),
-            "memory_context": memory_context or None,
-            "results": {},
-            "completed_ids": [],
-            "failed_ids": [],
-            "errors": [],
-            "messages": initial_messages,
-            "read_documents": stored_read_documents,
-            "evolution_recall_records": [],
-            "debug": debug,
-            "final_output": None,
-            "current_turn_id": current_turn_id,
-        }
-
-        main_agent_started_at = time.perf_counter()
-        # =====================================================================
-        # Stream graph execution (shared for both paths)
-        # =====================================================================
-        event_persistence = _StreamEventPersistenceBuffer(
-            chat_store=chat_store,
-            session_id=session_id,
-            run_id=run_id,
-            turn_id=current_turn_id,
-            observer=observer,
-        )
-        try:
-            last_state = initial_state
-            for event in self._stream_agent_loop(
-                initial_state,
-                memory_manager=memory_manager,
-                observer=observer,
-            ):
-                run = self.run_store.get_run(run_id)
-                if run and run.status == RunStatus.CANCELLED:
-                    raise WorkflowCancelledError(
-                        "Workflow cancelled by user",
-                        details={"run_id": run_id},
-                    )
-                if isinstance(event, tuple):
-                    mode, payload = event
-                    if mode == "custom":
-                        event_persistence.add(payload)
-                        yield payload
-                    elif mode == "values":
-                        last_state = payload
-
-            event_persistence.close()
-
-            # =================================================================
-            # Finalize turn: persist messages and complete records
-            # =================================================================
-            final_output = last_state.get("final_output")
-            result = {
-                "completed_tasks": last_state.get("completed_ids", []),
-                "failed_tasks": last_state.get("failed_ids", []),
-                "results": last_state.get("results", {}),
-                "errors": last_state.get("errors", []),
-            }
-
-            # Persist full message history for next turn
-            final_messages = list(last_state.get("messages", []))
-            final_read_documents = last_state.get("read_documents")
-            with run_trace.phase_scope(
-                phase_name="llm_context_save",
-                component="persistence",
-                metrics={"message_count": len(final_messages)},
-            ):
-                execution_store.set_llm_context(session_id, final_messages)
-                execution_store.set_read_documents_context(session_id, final_read_documents)
-                # Re-stamp from read_documents at turn completion. Tool-based
-                # sessions have no start_turn stamp; UI-selected sessions
-                # overwrite the start_turn stamp with the version actually read
-                # (avoids a false block when active switched mid-turn). When
-                # records disagree (a cross-version turn) infer returns None and
-                # the start_turn stamp is preserved, so gate 3 blocks correctly.
-                tool_version = self._infer_toolbased_ontology_version(workspace_id, final_read_documents)
-                if tool_version:
-                    execution_store.stamp_turn_ontology_version(session_id, current_turn_id, tool_version)
-
-            pending_interaction = last_state.get("pending_user_interaction")
-            if isinstance(pending_interaction, dict) and pending_interaction:
-                final_output = _build_awaiting_final_output(final_output, pending_interaction)
-                awaiting_result = {
-                    **result,
-                    "status": "awaiting_input",
-                    "pending_user_interaction": pending_interaction,
-                }
-                with run_trace.phase_scope(
-                    phase_name="turn_awaiting_input",
-                    component="persistence",
-                    metrics={"final_output_chars": len(str(final_output or ""))},
-                ):
-                    execution_store.await_turn(
+                    execution_store.complete_turn(
                         session_id=session_id,
                         turn_id=current_turn_id,
                         final_output=final_output,
                         summary=None,
                     )
-                    self.run_store.await_run(
-                        run_id,
-                        awaiting_result,
-                        metadata={"pending_user_interaction": pending_interaction},
+                    execution_store.append_to_llm_context(
+                        session_id, {"role": "user", "content": original_user_request},
+                    )
+                    execution_store.append_to_llm_context(
+                        session_id, {"role": "assistant", "content": final_output},
                     )
 
-                turn_finished_event = emit_and_persist(
-                    "turn.finished",
-                    {"status": "awaiting_input", "final_output": final_output},
-                    {"node": "orchestrator", "component": "workflow"},
+                    if is_error:
+                        self.run_store.fail_run(run_id, exec_result.error or "Direct execution failed")
+                    else:
+                        self.run_store.complete_run(run_id, result)
+
+                    logger.info(
+                        "Direct execution completed: run_id=%s ontology=%s operation=%s status=%s",
+                        run_id,
+                        decision.ontology_id,
+                        decision.operation_key,
+                        exec_result.status,
+                    )
+                    turn_finished_event = emit_and_persist(
+                        "turn.finished",
+                        {"status": turn_status, "final_output": final_output},
+                        {"node": "direct_execution", "component": "service"},
+                    )
+                    if is_error:
+                        run_trace.failed(
+                            final_answer=final_output,
+                            error_type="DirectExecutionError",
+                            error_message=exec_result.error or final_output,
+                            duration_ms=int((time.perf_counter() - workflow_started_at) * 1000),
+                        )
+                    else:
+                        run_trace.finished(
+                            final_answer=final_output,
+                            duration_ms=int((time.perf_counter() - workflow_started_at) * 1000),
+                        )
+                    yield turn_finished_event
+                    compact_chat_session()
+                    return
+
+                if decision.route == "missing_args":
+                    param_names = ", ".join(
+                        "- {}".format(arg)
+                        for arg in decision.missing_business_arguments
+                    )
+                    final_output = (
+                        "当前 " + str(decision.operation_key or "") + " 流程需要以下参数：\n"
+                        + param_names + "\n\n请补充后我再执行。"
+                    )
+                    result = {
+                        "direct_execution": True,
+                        "status": "missing_args",
+                        "missing_arguments": decision.missing_business_arguments,
+                    }
+                    execution_store.complete_turn(
+                        session_id=session_id,
+                        turn_id=current_turn_id,
+                        final_output=final_output,
+                        summary=None,
+                    )
+                    execution_store.append_to_llm_context(
+                        session_id, {"role": "user", "content": original_user_request},
+                    )
+                    execution_store.append_to_llm_context(
+                        session_id, {"role": "assistant", "content": final_output},
+                    )
+                    self.run_store.complete_run(run_id, result)
+                    turn_finished_event = emit_and_persist(
+                        "turn.finished",
+                        {"status": "success", "final_output": final_output},
+                        {"node": "direct_execution", "component": "service"},
+                    )
+                    run_trace.finished(
+                        final_answer=final_output,
+                        duration_ms=int((time.perf_counter() - workflow_started_at) * 1000),
+                    )
+                    yield turn_finished_event
+                    compact_chat_session()
+                    return
+
+                # decision.route == "fallback_agent_loop" → continue below
+
+            # =====================================================================
+            # Build initial state (agent loop path)
+            # =====================================================================
+            initial_state: AgenticState = {
+                "run_id": run_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "user_request": model_user_request,
+                "user_context": context,
+                "user_lang": context.get("lang"),
+                "memory_context": memory_context or None,
+                "results": {},
+                "completed_ids": [],
+                "failed_ids": [],
+                "errors": [],
+                "messages": initial_messages,
+                "read_documents": stored_read_documents,
+                "evolution_recall_records": [],
+                "debug": debug,
+                "final_output": None,
+                "current_turn_id": current_turn_id,
+            }
+
+            main_agent_started_at = time.perf_counter()
+            # =====================================================================
+            # Stream graph execution (shared for both paths)
+            # =====================================================================
+            event_persistence = _StreamEventPersistenceBuffer(
+                chat_store=chat_store,
+                session_id=session_id,
+                run_id=run_id,
+                turn_id=current_turn_id,
+                observer=observer,
+            )
+            try:
+                last_state = initial_state
+                for event in self._stream_agent_loop(
+                    initial_state,
+                    memory_manager=memory_manager,
+                    observer=observer,
+                ):
+                    run = self.run_store.get_run(run_id)
+                    if run and run.status == RunStatus.CANCELLED:
+                        raise WorkflowCancelledError(
+                            "Workflow cancelled by user",
+                            details={"run_id": run_id},
+                        )
+                    if isinstance(event, tuple):
+                        mode, payload = event
+                        if mode == "custom":
+                            event_persistence.add(payload)
+                            yield payload
+                        elif mode == "values":
+                            last_state = payload
+
+                event_persistence.close()
+
+                # =================================================================
+                # Finalize turn: persist messages and complete records
+                # =================================================================
+                final_output = last_state.get("final_output")
+                result = {
+                    "completed_tasks": last_state.get("completed_ids", []),
+                    "failed_tasks": last_state.get("failed_ids", []),
+                    "results": last_state.get("results", {}),
+                    "errors": last_state.get("errors", []),
+                }
+
+                # Persist full message history for next turn
+                final_messages = list(last_state.get("messages", []))
+                final_read_documents = last_state.get("read_documents")
+                with run_trace.phase_scope(
+                    phase_name="llm_context_save",
+                    component="persistence",
+                    metrics={"message_count": len(final_messages)},
+                ):
+                    execution_store.set_llm_context(session_id, final_messages)
+                    execution_store.set_read_documents_context(session_id, final_read_documents)
+                    # Re-stamp from read_documents at turn completion. Tool-based
+                    # sessions have no start_turn stamp; UI-selected sessions
+                    # overwrite the start_turn stamp with the version actually read
+                    # (avoids a false block when active switched mid-turn). When
+                    # records disagree (a cross-version turn) infer returns None and
+                    # the start_turn stamp is preserved, so gate 3 blocks correctly.
+                    tool_version = self._infer_toolbased_ontology_version(workspace_id, final_read_documents)
+                    if tool_version:
+                        execution_store.stamp_turn_ontology_version(session_id, current_turn_id, tool_version)
+
+                pending_interaction = last_state.get("pending_user_interaction")
+                if isinstance(pending_interaction, dict) and pending_interaction:
+                    final_output = _build_awaiting_final_output(final_output, pending_interaction)
+                    awaiting_result = {
+                        **result,
+                        "status": "awaiting_input",
+                        "pending_user_interaction": pending_interaction,
+                    }
+                    with run_trace.phase_scope(
+                        phase_name="turn_awaiting_input",
+                        component="persistence",
+                        metrics={"final_output_chars": len(str(final_output or ""))},
+                    ):
+                        execution_store.await_turn(
+                            session_id=session_id,
+                            turn_id=current_turn_id,
+                            final_output=final_output,
+                            summary=None,
+                        )
+                        self.run_store.await_run(
+                            run_id,
+                            awaiting_result,
+                            metadata={"pending_user_interaction": pending_interaction},
+                        )
+
+                    turn_finished_event = emit_and_persist(
+                        "turn.finished",
+                        {"status": "awaiting_input", "final_output": final_output},
+                        {"node": "orchestrator", "component": "workflow"},
+                    )
+                    run_trace.finished(
+                        final_answer=(
+                            final_output.get("text")
+                            if isinstance(final_output, dict)
+                            else final_output
+                        ),
+                        duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
+                    )
+                    yield turn_finished_event
+                    return
+
+                self._record_evolution_recall_outcomes(last_state)
+
+                parsed_summary = parse_execution_summary(
+                    final_output if isinstance(final_output, str) else None
                 )
+                with run_trace.phase_scope(
+                    phase_name="turn_complete",
+                    component="persistence",
+                    metrics={"final_output_chars": len(str(final_output or ""))},
+                ):
+                    execution_store.complete_turn(
+                        session_id=session_id,
+                        turn_id=current_turn_id,
+                        final_output=final_output,
+                        summary=(
+                            json.dumps(parsed_summary, ensure_ascii=False)
+                            if parsed_summary
+                            else None
+                        ),
+                    )
+
+                # Persist recalled fingerprints so /runs/<id>/feedback can vote
+                # on the same operation-evolution records injected this turn.
+                evo_records = list(last_state.get("evolution_recall_records") or [])
+                with run_trace.phase_scope(
+                    phase_name="run_complete",
+                    component="persistence",
+                    metrics={"evolution_recall_count": len(evo_records)},
+                ):
+                    if evo_records:
+                        self.run_store.update_metadata(
+                            run_id,
+                            {"evolution_recall_records": evo_records},
+                        )
+                    self.run_store.complete_run(run_id, result)
+                logger.info("Workflow run %s completed successfully", run_id)
+
+                with run_trace.phase_scope(
+                    phase_name="turn_finished_emit",
+                    component="workflow",
+                    metrics={"final_output_chars": len(str(final_output or ""))},
+                ):
+                    turn_finished_event = emit_and_persist(
+                        "turn.finished",
+                        {"status": "success", "final_output": final_output},
+                        {"node": "orchestrator", "component": "workflow"},
+                    )
                 run_trace.finished(
-                    final_answer=(
-                        final_output.get("text")
-                        if isinstance(final_output, dict)
-                        else final_output
-                    ),
+                    final_answer=final_output,
                     duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
                 )
                 yield turn_finished_event
-                return
 
-            self._record_evolution_recall_outcomes(last_state)
-
-            parsed_summary = parse_execution_summary(
-                final_output if isinstance(final_output, str) else None
-            )
-            with run_trace.phase_scope(
-                phase_name="turn_complete",
-                component="persistence",
-                metrics={"final_output_chars": len(str(final_output or ""))},
-            ):
-                execution_store.complete_turn(
+                self._submit_reflection(
+                    run_id=run_id,
                     session_id=session_id,
                     turn_id=current_turn_id,
+                    user_id=str(user_id or "anonymous"),
+                    workspace_id=workspace_id,
+                    ontology_id=str(context.get("selected_ontology_id") or "").strip() or None,
+                    status="success",
+                    user_request=original_user_request,
                     final_output=final_output,
-                    summary=(
-                        json.dumps(parsed_summary, ensure_ascii=False)
-                        if parsed_summary
-                        else None
-                    ),
+                    messages=last_state.get("messages", []),
+                    duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
                 )
 
-            # Persist recalled fingerprints so /runs/<id>/feedback can vote
-            # on the same operation-evolution records injected this turn.
-            evo_records = list(last_state.get("evolution_recall_records") or [])
-            with run_trace.phase_scope(
-                phase_name="run_complete",
-                component="persistence",
-                metrics={"evolution_recall_count": len(evo_records)},
-            ):
-                if evo_records:
-                    self.run_store.update_metadata(
-                        run_id,
-                        {"evolution_recall_records": evo_records},
-                    )
-                self.run_store.complete_run(run_id, result)
-            logger.info("Workflow run %s completed successfully", run_id)
+            except WorkflowCancelledError as exc:
+                event_persistence.close()
+                logger.info("Workflow run %s cancelled: %s", run_id, exc.message)
+                cancel_reason = "unspecified"
+                current_run = self.run_store.get_run(run_id)
+                if current_run:
+                    run_cancel_reason = current_run.metadata.get("cancel_reason")
+                    if isinstance(run_cancel_reason, str) and run_cancel_reason.strip():
+                        cancel_reason = run_cancel_reason
+                self.run_store.cancel_run(run_id, metadata={"cancel_reason": cancel_reason})
 
-            with run_trace.phase_scope(
-                phase_name="turn_finished_emit",
-                component="workflow",
-                metrics={"final_output_chars": len(str(final_output or ""))},
-            ):
-                turn_finished_event = emit_and_persist(
+                # Persist partial messages for user_stop so next turn has context
+                if cancel_reason == "user_stop":
+                    final_messages = list(last_state.get("messages", []))
+                    execution_store.set_llm_context(session_id, final_messages)
+                    execution_store.set_read_documents_context(session_id, last_state.get("read_documents"))
+                    tool_version = self._infer_toolbased_ontology_version(workspace_id, last_state.get("read_documents"))
+                    if tool_version:
+                        execution_store.stamp_turn_ontology_version(session_id, current_turn_id, tool_version)
+                cancelled_output = {
+                    "cancel_reason": cancel_reason,
+                    "message": exc.message,
+                    "partial_output": last_state.get("final_output"),
+                    "completed_tasks": last_state.get("completed_ids", []),
+                    "failed_tasks": last_state.get("failed_ids", []),
+                }
+                execution_store.cancel_turn(
+                    session_id=session_id,
+                    turn_id=current_turn_id,
+                    reason=cancel_reason,
+                    final_output=cancelled_output,
+                    summary=None,
+                )
+
+                run_trace.cancelled(
+                    final_answer=last_state.get("final_output"),
+                    cancel_reason=cancel_reason,
+                    duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
+                    error_type=type(exc).__name__,
+                    error_message=exc.message,
+                )
+
+                yield emit_and_persist(
                     "turn.finished",
-                    {"status": "success", "final_output": final_output},
+                    {
+                        "status": "cancelled",
+                        "error": exc.message,
+                        "cancel_reason": cancel_reason,
+                    },
                     {"node": "orchestrator", "component": "workflow"},
                 )
-            run_trace.finished(
-                final_answer=final_output,
-                duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
-            )
-            yield turn_finished_event
 
-            self._submit_reflection(
-                run_id=run_id,
-                session_id=session_id,
-                turn_id=current_turn_id,
-                user_id=str(user_id or "anonymous"),
-                workspace_id=workspace_id,
-                ontology_id=str(context.get("selected_ontology_id") or "").strip() or None,
-                status="success",
-                user_request=original_user_request,
-                final_output=final_output,
-                messages=last_state.get("messages", []),
-                duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
-            )
+                # 用户手动终止的 turn 不触发 reflection：中断的轨迹缺少收敛证据，
+                # 提炼出的 procedure/pitfall 往往是错的，会污染记忆。
 
-        except WorkflowCancelledError as exc:
-            event_persistence.close()
-            logger.info("Workflow run %s cancelled: %s", run_id, exc.message)
-            cancel_reason = "unspecified"
-            current_run = self.run_store.get_run(run_id)
-            if current_run:
-                run_cancel_reason = current_run.metadata.get("cancel_reason")
-                if isinstance(run_cancel_reason, str) and run_cancel_reason.strip():
-                    cancel_reason = run_cancel_reason
-            self.run_store.cancel_run(run_id, metadata={"cancel_reason": cancel_reason})
+            except Exception as exc:
+                event_persistence.close()
+                logger.exception("Workflow run %s failed: %s", run_id, exc)
+                public_message = _public_workflow_error_message(exc)
+                self.run_store.fail_run(run_id, public_message)
 
-            # Persist partial messages for user_stop so next turn has context
-            if cancel_reason == "user_stop":
-                final_messages = list(last_state.get("messages", []))
-                execution_store.set_llm_context(session_id, final_messages)
-                execution_store.set_read_documents_context(session_id, last_state.get("read_documents"))
-                tool_version = self._infer_toolbased_ontology_version(workspace_id, last_state.get("read_documents"))
-                if tool_version:
-                    execution_store.stamp_turn_ontology_version(session_id, current_turn_id, tool_version)
-            cancelled_output = {
-                "cancel_reason": cancel_reason,
-                "message": exc.message,
-                "partial_output": last_state.get("final_output"),
-                "completed_tasks": last_state.get("completed_ids", []),
-                "failed_tasks": last_state.get("failed_ids", []),
-            }
-            execution_store.cancel_turn(
-                session_id=session_id,
-                turn_id=current_turn_id,
-                reason=cancel_reason,
-                final_output=cancelled_output,
-                summary=None,
-            )
+                execution_store.fail_turn(
+                    session_id=session_id,
+                    turn_id=current_turn_id,
+                    error=public_message,
+                )
+                # Stamp turn version from read_documents (same as success/cancel paths).
+                # Defensive: last_state may not be set if the exception was early.
+                try:
+                    tool_version = self._infer_toolbased_ontology_version(workspace_id, last_state.get("read_documents"))
+                    if tool_version:
+                        execution_store.stamp_turn_ontology_version(session_id, current_turn_id, tool_version)
+                except Exception:
+                    pass
 
-            run_trace.cancelled(
-                final_answer=last_state.get("final_output"),
-                cancel_reason=cancel_reason,
-                duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
-                error_type=type(exc).__name__,
-                error_message=exc.message,
-            )
+                run_trace.failed(
+                    final_answer=public_message,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
+                )
 
-            yield emit_and_persist(
-                "turn.finished",
-                {
-                    "status": "cancelled",
-                    "error": exc.message,
-                    "cancel_reason": cancel_reason,
-                },
-                {"node": "orchestrator", "component": "workflow"},
-            )
+                yield emit_and_persist(
+                    "turn.finished",
+                    {"status": "error", "error": public_message},
+                    {"node": "orchestrator", "component": "workflow"},
+                )
 
-            # 用户手动终止的 turn 不触发 reflection：中断的轨迹缺少收敛证据，
-            # 提炼出的 procedure/pitfall 往往是错的，会污染记忆。
-
-        except Exception as exc:
-            event_persistence.close()
-            logger.exception("Workflow run %s failed: %s", run_id, exc)
-            public_message = _public_workflow_error_message(exc)
-            self.run_store.fail_run(run_id, public_message)
-
-            execution_store.fail_turn(
-                session_id=session_id,
-                turn_id=current_turn_id,
-                error=public_message,
-            )
-            # Stamp turn version from read_documents (same as success/cancel paths).
-            # Defensive: last_state may not be set if the exception was early.
-            try:
-                tool_version = self._infer_toolbased_ontology_version(workspace_id, last_state.get("read_documents"))
-                if tool_version:
-                    execution_store.stamp_turn_ontology_version(session_id, current_turn_id, tool_version)
-            except Exception:
-                pass
-
-            run_trace.failed(
-                final_answer=public_message,
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-                duration_ms=int((time.perf_counter() - main_agent_started_at) * 1000),
-            )
-
-            yield emit_and_persist(
-                "turn.finished",
-                {"status": "error", "error": public_message},
-                {"node": "orchestrator", "component": "workflow"},
-            )
+            finally:
+                event_persistence.close()
+                compact_chat_session()
+                get_llm_router().clear_run(run_id)
+                clear_subagent_manager(run_id)
+                clear_run_sequence(run_id)
 
         finally:
-            event_persistence.close()
-            compact_chat_session()
-            get_llm_router().clear_run(run_id)
-            clear_subagent_manager(run_id)
-            clear_run_sequence(run_id)
+            run_trace.close(status=RuntimeStatus.ERROR)
 
     def _get_stores(
         self,

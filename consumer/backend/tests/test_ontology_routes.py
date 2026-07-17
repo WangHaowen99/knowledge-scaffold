@@ -1,6 +1,7 @@
 """Tests for ontology management routes."""
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -205,8 +206,6 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
             "active_version": "1.0.0",
             "business_data": {
                 "configured": False,
-                "connection_id": "",
-                "connection_name": "",
                 "mode": "",
                 "provider": "",
                 "ready": False,
@@ -939,20 +938,21 @@ def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tm
     assert "单本体实体数量已达上限" in response.get_json()["error"]
 
 
-def test_import_ontology_zip_binds_default_data_connection_for_new_ontology(tmp_path, monkeypatch):
-    _create_demo_workspace(tmp_path, monkeypatch)
-    from agent.tools.business_data.ontology_sources_store import get_ontology_data_binding
-    from agent.tools.business_data.connections_store import create_data_connection
+def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    from agent.tools.business_data.ontology_sources_store import get_ontology_data_source
 
-    create_data_connection(
-        {
-            "id": "default-nl2sql",
-            "name": "Default NL2SQL",
-            "provider": "nl2sql_http",
-            "set_as_default": True,
-            "config": {"url": "https://nl2sql.example.com"},
-        },
-        workspace_id="demo",
+    (workspace_paths.workspace_dir / "data-connections.json").write_text(
+        json.dumps({
+            "default_connection_id": "default-nl2sql",
+            "connections": [{
+                "id": "default-nl2sql",
+                "name": "Default NL2SQL",
+                "provider": "nl2sql_http",
+                "config": {"url": "https://nl2sql.example.com"},
+            }],
+        }),
+        encoding="utf-8",
     )
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
     zip_buffer = _build_zip_file({
@@ -961,7 +961,7 @@ def test_import_ontology_zip_binds_default_data_connection_for_new_ontology(tmp_
             "schema_version: 0.1\n"
             "id: bound-demo\n"
             "name: Bound Demo\n"
-            "description: Imported with default binding\n"
+            "description: Imported without implicit data source\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
@@ -978,9 +978,9 @@ def test_import_ontology_zip_binds_default_data_connection_for_new_ontology(tmp_
 
     assert response.status_code == 201
     payload = response.get_json()
-    assert payload["business_data_binding"]["connection_id"] == "default-nl2sql"
-    binding = get_ontology_data_binding("bound-demo", workspace_id="demo")
-    assert binding["connection_id"] == "default-nl2sql"
+    assert payload["business_data_configured"] is False
+    assert "business_data_binding" not in payload
+    assert get_ontology_data_source("bound-demo", workspace_id="demo") is None
 
 
 def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_path, monkeypatch):

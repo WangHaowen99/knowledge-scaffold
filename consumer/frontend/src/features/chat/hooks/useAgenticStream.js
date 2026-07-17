@@ -350,7 +350,7 @@ const useAgenticStream = ({
     };
   }, [clearRunTracking, rebindRunTracking, upsertTurnBubble]);
 
-  const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle) => ({
+  const createStreamCallbacks = useCallback((runId, targetSessionId, runLifecycle, onSessionUpdated = null) => ({
     onEvent: createEventDispatcher(runId, targetSessionId, runLifecycle),
     onComplete: (terminalStatus = 'success') => {
       if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
@@ -365,6 +365,7 @@ const useAgenticStream = ({
         currentSegmentType: null,
       }), targetSessionId, { immediate: true, scopeEpoch: runLifecycle.scopeEpoch });
       clearRunTracking(trackedRunId);
+      onSessionUpdated?.();
     },
     onError: (error, isAbort) => {
       if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
@@ -376,6 +377,7 @@ const useAgenticStream = ({
           targetSessionId,
           runLifecycle.scopeEpoch,
         );
+        onSessionUpdated?.();
         return;
       }
       logger.error('Agentic stream error', { error: error.message });
@@ -385,6 +387,7 @@ const useAgenticStream = ({
         targetSessionId,
         runLifecycle.scopeEpoch,
       );
+      onSessionUpdated?.();
     },
   }), [
     clearRunTracking,
@@ -412,6 +415,9 @@ const useAgenticStream = ({
       : '';
     const interactionResponse = options?.interactionResponse && typeof options.interactionResponse === 'object'
       ? options.interactionResponse
+      : null;
+    const onSessionUpdated = typeof options?.onSessionUpdated === 'function'
+      ? options.onSessionUpdated
       : null;
 
     queueMessageUpdate((prev) => {
@@ -451,7 +457,12 @@ const useAgenticStream = ({
 
     upsertTurnBubble(runId, { status: 'running', isLoading: true }, activeSessionId, { immediate: true });
 
-    const streamCallbacks = createStreamCallbacks(runId, activeSessionId, runLifecycle);
+    const streamCallbacks = createStreamCallbacks(
+      runId,
+      activeSessionId,
+      runLifecycle,
+      onSessionUpdated,
+    );
 
     await streamManager.startStreamForSession(
       activeSessionId,

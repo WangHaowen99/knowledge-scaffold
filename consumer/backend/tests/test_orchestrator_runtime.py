@@ -13,10 +13,11 @@ from agent.core.orchestrator import (
     _public_workflow_error_message,
 )
 from agent.tools.base import ToolContext
-from agent.tools.events import emit_tool_finished
+from agent.tools.events import build_tool_finished_payload, emit_tool_finished
 from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
+from integration.observability import stack_profiler as stack_profiler_module
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
 from persistence.run_store import RunStore
@@ -130,6 +131,119 @@ class _FakeMemoryFactory:
     def for_user(self, user_id):
         del user_id
         return self.manager
+
+
+class _EnabledObserver:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+        return True
+
+
+def _reset_stack_profiler_state():
+    stack_profiler_module._release_process_samples(stack_profiler_module._PROCESS_SAMPLE_COUNT)
+    with stack_profiler_module._LOCK:
+        stack_profiler_module._RUNS.clear()
+    with stack_profiler_module._THREAD_RUN_COUNTS_LOCK:
+        stack_profiler_module._THREAD_RUN_COUNTS.clear()
+    stack_profiler_module._CONTEXT_BINDINGS.set(())
+
+
+def _assert_stack_profile_released(run_id, profile):
+    assert run_id not in stack_profiler_module._RUNS
+    assert stack_profiler_module._THREAD_RUN_COUNTS == {}
+    assert stack_profiler_module._PROCESS_SAMPLE_COUNT == 0
+    assert profile.sampler_thread is not None
+    assert not profile.sampler_thread.is_alive()
+
+
+def test_run_trace_resources_close_when_generator_closed_after_start(monkeypatch, tmp_path):
+    _reset_stack_profiler_state()
+    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
+    monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
+    monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: _EnabledObserver())
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    generator = orchestrator.run(
+        user_request="hello",
+        session_id="sess-generator-close",
+        requested_run_id="run-generator-close",
+    )
+
+    try:
+        first_event = next(generator)
+        assert first_event["data"]["type"] == "turn.started"
+        profile = stack_profiler_module._RUNS["run-generator-close"]
+        stack_profiler_module._sample_profile(profile)
+        assert stack_profiler_module._PROCESS_SAMPLE_COUNT >= 1
+
+        generator.close()
+
+        _assert_stack_profile_released("run-generator-close", profile)
+    finally:
+        generator.close()
+        _reset_stack_profiler_state()
+
+
+def test_run_trace_resources_close_on_pre_agent_loop_exception(monkeypatch, tmp_path):
+    _reset_stack_profiler_state()
+    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
+    monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
+    monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
+    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: _EnabledObserver())
+    config = AgentConfig.from_env()
+    config.direct_execution.enabled = True
+
+    def _raise_router(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("router initialization failed")
+
+    monkeypatch.setattr("agent.core.orchestrator.OperationDirectRouter", _raise_router)
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        agent_config=config,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    generator = orchestrator.run(
+        user_request="hello",
+        session_id="sess-pre-loop-error",
+        requested_run_id="run-pre-loop-error",
+    )
+
+    try:
+        first_event = next(generator)
+        assert first_event["data"]["type"] == "turn.started"
+        profile = stack_profiler_module._RUNS["run-pre-loop-error"]
+        stack_profiler_module._sample_profile(profile)
+
+        with pytest.raises(RuntimeError, match="router initialization failed"):
+            next(generator)
+
+        _assert_stack_profile_released("run-pre-loop-error", profile)
+    finally:
+        generator.close()
+        _reset_stack_profiler_state()
 
 
 def test_submit_reflection_does_not_depend_on_memory_manager():
@@ -410,6 +524,91 @@ def test_stream_agent_loop_persists_complete_tool_output_before_emitting_referen
     )
     assert payload["output_size"] == len(complete_output.encode("utf-8"))
     assert payload["output_truncated"] is True
+    assert artifact is not None
+    assert artifact["output"] == complete_output
+
+
+def test_direct_execution_persists_complete_tool_output_before_emitting_reference(
+    tmp_path,
+    monkeypatch,
+):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "direct-artifact-chats"))
+    execution_store = ExecutionStore(str(tmp_path / "direct-artifact-executions"))
+    config = AgentConfig.from_env()
+    config.direct_execution.enabled = True
+    complete_output = "direct-output-🙂" * 600
+
+    class _FakeRouter:
+        def __init__(self, *, config):
+            del config
+
+        def route(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(
+                route="direct_script",
+                reason="unit test",
+                confidence=1.0,
+                ontology_id="demo-ontology",
+                operation_key="demo-operation",
+                missing_business_arguments=[],
+                runtime_requirements=[],
+            )
+
+    def _run_direct_script(*, decision, runtime_context, project_root, timeout_seconds, observer):
+        del decision, project_root, timeout_seconds, observer
+        payload = build_tool_finished_payload(
+            tool_call_id="direct",
+            tool_name="execute_script",
+            status="completed",
+            raw_output=complete_output,
+            error=None,
+            elapsed_ms=17,
+        )
+        event = build_agent_event(
+            run_id=runtime_context.run_id,
+            session_id=runtime_context.session_id,
+            turn_id=runtime_context.turn_id,
+            event_type="tool.finished",
+            source={"node": "direct_execution", "component": "service"},
+            payload=payload,
+        )
+        result = SimpleNamespace(
+            status="success",
+            output=complete_output,
+            elapsed_ms=17,
+            error=None,
+        )
+        return [event], result
+
+    monkeypatch.setattr("agent.core.orchestrator.OperationDirectRouter", _FakeRouter)
+    monkeypatch.setattr("agent.core.orchestrator.run_direct_script", _run_direct_script)
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        agent_config=config,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    events = list(
+        orchestrator.run(
+            user_request="run direct operation",
+            session_id="direct-artifact-session",
+            requested_run_id="direct-artifact-run",
+        )
+    )
+
+    tool_event = next(event for event in events if event["data"]["type"] == "tool.finished")
+    payload = tool_event["data"]["payload"]
+    artifact = chat_store.get_tool_output(
+        "direct-artifact-session",
+        "direct-artifact-run",
+        payload["output_ref"],
+    )
+    assert payload["output_size"] == len(complete_output.encode("utf-8"))
+    assert payload["output_truncated"] is True
+    assert "output_full" not in payload
     assert artifact is not None
     assert artifact["output"] == complete_output
 

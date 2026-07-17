@@ -26,6 +26,7 @@ test('groupSessions keeps pinned sessions separate and applies title search', ()
 
 test('chat presentation formatters normalize empty and compact values', () => {
   assert.equal(formatTime('not-a-date'), '');
+  assert.match(formatTime('2020-01-01T00:00:07.000Z'), /\d{2}:\d{2}:\d{2}$/);
   assert.equal(truncate('  多行\n  文本  ', 20), '多行 文本');
   assert.equal(truncate('abcdef', 3), 'abc…');
   assert.equal(formatDurationMs(999), '999 ms');

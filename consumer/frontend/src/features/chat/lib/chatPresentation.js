@@ -27,9 +27,10 @@ export function formatTime(timestamp) {
   const sameDay = date.toDateString() === now.toDateString();
   const hours = `${date.getHours()}`.padStart(2, '0');
   const minutes = `${date.getMinutes()}`.padStart(2, '0');
+  const seconds = `${date.getSeconds()}`.padStart(2, '0');
   return sameDay
-    ? `${hours}:${minutes}`
-    : `${date.getMonth() + 1}-${date.getDate()} ${hours}:${minutes}`;
+    ? `${hours}:${minutes}:${seconds}`
+    : `${date.getMonth() + 1}-${date.getDate()} ${hours}:${minutes}:${seconds}`;
 }
 
 export function truncate(value, length) {

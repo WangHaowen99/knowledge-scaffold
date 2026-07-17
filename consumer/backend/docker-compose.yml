@@ -23,6 +23,7 @@ services:
       - PROJECT_ROOT=/app/.onto-runtime
       - MCP_SERVER_HOST=mcp
       - MCP_SERVER_PORT=7488
+      - SPEEDSCOPE_TRACE_ENABLED=${SPEEDSCOPE_TRACE_ENABLED:-false}
     depends_on:
       auth-server:
         condition: service_healthy
@@ -71,6 +72,7 @@ services:
       - MCP_SERVER_PORT=7488
       - MCP_TRANSPORT=both
       - MCP_AGENTIC_BASE_URL=http://backend:5055
+      - SPEEDSCOPE_TRACE_ENABLED=false
     depends_on:
       - backend
     healthcheck:

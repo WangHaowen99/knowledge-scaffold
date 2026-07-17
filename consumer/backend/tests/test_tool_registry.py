@@ -1056,23 +1056,27 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
         tmp_path,
         script_body=(
             "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient\n"
+            "from agent.tools.business_data.script_env import load_script_business_data_connection\n"
             "client = MindsDBClient()\n"
+            "connection = load_script_business_data_connection()\n"
             "try:\n"
             "    print(client.base_url)\n"
             "    print(client.config.default_database)\n"
+            "    print(connection['config'].get('workspace_id'))\n"
+            "    print(connection['config'].get('ontology_id'))\n"
             "finally:\n"
             "    client.close()\n"
         ),
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
-    from agent.tools.business_data.ontology_sources_store import set_ontology_data_binding
-    from agent.tools.business_data.connections_store import create_data_connection
+    from agent.tools.business_data.ontology_sources_store import set_ontology_data_source
 
-    create_data_connection(
-        {
-            "id": "mindsdb-main",
-            "name": "MindsDB Main",
+    set_ontology_data_source(
+        ontology_id="demo",
+        workspace_id="demo-ws",
+        data={
+            "mode": "direct_provider",
             "provider": "mindsdb",
             "config": {
                 "url": "https://mindsdb.example.com/",
@@ -1080,12 +1084,6 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
                 "timeout_seconds": 120,
             },
         },
-        workspace_id="demo-ws",
-    )
-    set_ontology_data_binding(
-        ontology_id="demo",
-        connection_id="mindsdb-main",
-        workspace_id="demo-ws",
     )
 
     result = execute_tool_batch(
@@ -1096,6 +1094,8 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
     assert result.messages[0]["name"] == "execute_script"
     assert "https://mindsdb.example.com" in result.messages[0]["content"]
     assert "analytics" in result.messages[0]["content"]
+    assert "demo-ws" in result.messages[0]["content"]
+    assert "demo" in result.messages[0]["content"]
 
 
 def test_execute_script_forces_utf8_child_output(tmp_path, monkeypatch):

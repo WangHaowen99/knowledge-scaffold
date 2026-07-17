@@ -175,6 +175,7 @@ class DirectExecutionRuntimeTrace:
         self._emit(
             RuntimeEventType.AGENT_LOOP_STARTED,
             span_key=self.loop_span_key,
+            parent_key="run:{}".format(self.run_id),
             payload={
                 "caller": "direct",
                 "agent_mode": "direct",

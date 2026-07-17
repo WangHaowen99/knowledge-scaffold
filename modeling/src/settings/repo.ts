@@ -39,7 +39,7 @@ export function getEvalDbUrl(): string {
   return (getSetting('eval_db_url') || config.evalDbUrl || '').trim();
 }
 
-// 评测数据连接默认值（评测运行面板预填，减少每轮手输）。
+// 评测数据源默认值（评测运行面板预填，减少每轮手输）。
 export interface EvalBindingDefaults { provider: string; url: string; token: string; scene: string; }
 export function getEvalBindingDefaults(): EvalBindingDefaults {
   return {

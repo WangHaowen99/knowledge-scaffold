@@ -23,6 +23,9 @@ const DYNAMIC_CLASSES = new Set([
 // Bare interpolations such as `${row.type}` cannot be inferred safely from syntax.
 // Record only the combinations that the relevant runtime value can actually emit.
 const DYNAMIC_CLASS_GROUPS = [
+  ['chat-empty-kicker', 'not-configured'],
+  ['chat-empty-kicker', 'not-ready'],
+  ['chat-empty-kicker', 'unknown'],
   ['evo-diff-row', 'added'],
   ['evo-diff-row', 'changed'],
   ['evo-diff-row', 'removed'],

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -115,6 +117,8 @@ class AgentRuntimeTrace:
         self.lineage = dict(lineage or {})
         self.loop_span_key = "agent_loop:{}".format(self._caller_suffix())
         self._loop_finished = False
+        self._phase_stack: List[str] = []
+        self._prepared_iterations: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -212,6 +216,73 @@ class AgentRuntimeTrace:
             raise
 
     @contextmanager
+    def phase_scope(
+        self,
+        *,
+        phase_name: str,
+        component: str,
+        parent_key: Optional[str] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+    ) -> Iterator[str]:
+        started_at = time.perf_counter()
+        phase_metrics = dict(metrics or {})
+        span_key = self._phase_span_key(phase_name, component)
+        resolved_parent_key = parent_key or self._current_phase_parent_key() or self.loop_span_key
+        self._emit_phase(
+            RuntimeEventType.RUNTIME_PHASE_STARTED,
+            span_key=span_key,
+            parent_key=resolved_parent_key,
+            phase_name=phase_name,
+            component=component,
+            metrics=phase_metrics,
+        )
+        self._phase_stack.append(span_key)
+        try:
+            yield span_key
+        except WorkflowCancelledError:
+            self._pop_phase_span(span_key)
+            self._emit_phase(
+                RuntimeEventType.RUNTIME_PHASE_FAILED,
+                span_key=span_key,
+                parent_key=resolved_parent_key,
+                phase_name=phase_name,
+                component=component,
+                status=RuntimeStatus.CANCELLED,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                metrics=phase_metrics,
+            )
+            raise
+        except Exception as exc:
+            self._pop_phase_span(span_key)
+            self._emit_phase(
+                RuntimeEventType.RUNTIME_PHASE_FAILED,
+                span_key=span_key,
+                parent_key=resolved_parent_key,
+                phase_name=phase_name,
+                component=component,
+                status=RuntimeStatus.ERROR,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                metrics={
+                    **phase_metrics,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc)[:300],
+                },
+            )
+            raise
+        else:
+            self._pop_phase_span(span_key)
+            self._emit_phase(
+                RuntimeEventType.RUNTIME_PHASE_FINISHED,
+                span_key=span_key,
+                parent_key=resolved_parent_key,
+                phase_name=phase_name,
+                component=component,
+                status=RuntimeStatus.SUCCESS,
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+                metrics=phase_metrics,
+            )
+
+    @contextmanager
     def _tool_batch_completion_scope(
         self,
         *,
@@ -236,6 +307,7 @@ class AgentRuntimeTrace:
         self._emit(
             RuntimeEventType.AGENT_LOOP_STARTED,
             span_key=self.loop_span_key,
+            parent_key="run:{}".format(self.run_id),
             payload={
                 "caller": self.caller,
                 "run_id": self.run_id,
@@ -270,12 +342,13 @@ class AgentRuntimeTrace:
         llm_input_chars: Any,
         tools_count: int,
     ) -> None:
+        self._prepared_iterations.add(str(iteration))
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.AGENT_ITERATION_PREPARED,
             span_key=self.iteration_span_key(iteration),
-            parent_key=self.loop_span_key,
+            parent_key=self._current_phase_parent_key() or self.loop_span_key,
             payload={
                 "caller": self.caller,
                 "iteration": iteration,
@@ -345,7 +418,7 @@ class AgentRuntimeTrace:
         self._emit(
             RuntimeEventType.LLM_STARTED,
             span_key=span_key,
-            parent_key=self.loop_span_key,
+            parent_key=self._iteration_parent_key(iteration),
             payload={
                 "caller": self.caller,
                 "iteration": iteration,
@@ -467,7 +540,7 @@ class AgentRuntimeTrace:
         self._emit(
             RuntimeEventType.TOOL_BATCH_STARTED,
             span_key=self.tool_batch_span_key(iteration, batch_index=batch_index),
-            parent_key=self.loop_span_key,
+            parent_key=self._iteration_parent_key(iteration),
             payload={
                 "caller": self.caller,
                 "caller_suffix": self._caller_suffix(),
@@ -522,6 +595,36 @@ class AgentRuntimeTrace:
             },
         )
 
+    def _emit_phase(
+        self,
+        event_type: str,
+        *,
+        span_key: str,
+        parent_key: str,
+        phase_name: str,
+        component: str,
+        metrics: Dict[str, Any],
+        status: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+    ) -> None:
+        payload = {
+            "phase_name": phase_name,
+            "component": component,
+            "caller": self.caller,
+            **metrics,
+            **self.lineage,
+        }
+        if status is not None:
+            payload["status"] = status
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        self._emit(
+            event_type,
+            span_key=span_key,
+            parent_key=parent_key,
+            payload=payload,
+        )
+
     def llm_span_key(self, iteration: int, call_index: Optional[int] = None) -> str:
         base_key = "llm:{}:{}".format(self._caller_suffix(), iteration)
         if call_index is None:
@@ -536,6 +639,33 @@ class AgentRuntimeTrace:
         if batch_index is None:
             return base_key
         return "{}:{}".format(base_key, int(batch_index))
+
+    def _phase_span_key(self, phase_name: str, component: str) -> str:
+        return "phase:{}:{}:{}:{}".format(
+            self._caller_suffix(),
+            _safe_span_token(component),
+            _safe_span_token(phase_name),
+            uuid.uuid4().hex[:12],
+        )
+
+    def _current_phase_parent_key(self) -> Optional[str]:
+        return self._phase_stack[-1] if self._phase_stack else None
+
+    def _iteration_parent_key(self, iteration: int) -> str:
+        if str(iteration) in self._prepared_iterations:
+            return self.iteration_span_key(iteration)
+        return self._current_phase_parent_key() or self.loop_span_key
+
+    def _pop_phase_span(self, span_key: str) -> None:
+        if not self._phase_stack:
+            return
+        if self._phase_stack[-1] == span_key:
+            self._phase_stack.pop()
+            return
+        try:
+            self._phase_stack.remove(span_key)
+        except ValueError:
+            return
 
     def _emit(
         self,
@@ -597,3 +727,8 @@ def _resolve_lazy_value(value: Any) -> Any:
     except Exception:
         logger.warning("Failed to build observability payload", exc_info=True)
         return ""
+
+
+def _safe_span_token(value: Any) -> str:
+    token = str(value or "unknown").strip().replace(" ", "_")
+    return token or "unknown"

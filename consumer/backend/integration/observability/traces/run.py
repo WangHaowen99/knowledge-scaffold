@@ -5,10 +5,13 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
+import uuid
+import weakref
 
 from agent.exceptions import WorkflowCancelledError
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.observer import NOOP_OBSERVER
+from integration.observability.stack_profiler import start_run_stack_profile, stop_run_stack_profile
 
 
 class RunRuntimeTrace:
@@ -30,6 +33,10 @@ class RunRuntimeTrace:
         self.run_id = str(run_id or "")
         self.session_id = session_id
         self.turn_id = turn_id
+        self.root_span_key = "run:{}".format(self.run_id)
+        self._profile_started = False
+        self._terminal = False
+        self._profile_finalizer: Optional[weakref.finalize] = None
 
     @property
     def enabled(self) -> bool:
@@ -47,8 +54,21 @@ class RunRuntimeTrace:
     ) -> None:
         if not self.enabled:
             return
+        start_run_stack_profile(
+            run_id=self.run_id,
+            session_id=self.session_id,
+            turn_id=self.turn_id,
+        )
+        self._profile_started = True
+        self._profile_finalizer = weakref.finalize(
+            self,
+            stop_run_stack_profile,
+            self.run_id,
+            status=RuntimeStatus.ERROR,
+        )
         self._emit(
             RuntimeEventType.RUN_STARTED,
+            span_key=self.root_span_key,
             payload={
                 "user_id": user_id,
                 "user_query": user_query,
@@ -65,10 +85,12 @@ class RunRuntimeTrace:
         final_answer: Any,
         duration_ms: Optional[int] = None,
     ) -> None:
+        self.close(status=RuntimeStatus.SUCCESS)
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.RUN_FINISHED,
+            span_key=self.root_span_key,
             payload={
                 "final_answer": _short_output(final_answer),
                 "status": RuntimeStatus.SUCCESS,
@@ -85,10 +107,12 @@ class RunRuntimeTrace:
         error_type: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> None:
+        self.close(status=RuntimeStatus.CANCELLED)
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.RUN_CANCELLED,
+            span_key=self.root_span_key,
             payload={
                 "final_answer": _short_output(final_answer),
                 "status": RuntimeStatus.CANCELLED,
@@ -107,10 +131,12 @@ class RunRuntimeTrace:
         error_message: str,
         duration_ms: Optional[int] = None,
     ) -> None:
+        self.close(status=RuntimeStatus.ERROR)
         if not self.enabled:
             return
         self._emit(
             RuntimeEventType.RUN_FAILED,
+            span_key=self.root_span_key,
             payload={
                 "final_answer": _short_output(final_answer),
                 "status": RuntimeStatus.ERROR,
@@ -129,8 +155,10 @@ class RunRuntimeTrace:
         duration_ms: Optional[int] = None,
         metrics: Optional[Dict[str, Any]] = None,
     ) -> None:
+        span_key = self._phase_span_key(phase_name, component)
         self._emit_phase(
             RuntimeEventType.RUNTIME_PHASE_FINISHED,
+            span_key=span_key,
             phase_name=phase_name,
             component=component,
             status=status,
@@ -148,8 +176,10 @@ class RunRuntimeTrace:
     ) -> Iterator[None]:
         started_at = time.perf_counter()
         phase_metrics = dict(metrics or {})
+        span_key = self._phase_span_key(phase_name, component)
         self._emit_phase(
             RuntimeEventType.RUNTIME_PHASE_STARTED,
+            span_key=span_key,
             phase_name=phase_name,
             component=component,
             metrics=phase_metrics,
@@ -159,6 +189,7 @@ class RunRuntimeTrace:
         except WorkflowCancelledError:
             self._emit_phase(
                 RuntimeEventType.RUNTIME_PHASE_FAILED,
+                span_key=span_key,
                 phase_name=phase_name,
                 component=component,
                 status=RuntimeStatus.CANCELLED,
@@ -169,6 +200,7 @@ class RunRuntimeTrace:
         except Exception as exc:
             self._emit_phase(
                 RuntimeEventType.RUNTIME_PHASE_FAILED,
+                span_key=span_key,
                 phase_name=phase_name,
                 component=component,
                 status=RuntimeStatus.ERROR,
@@ -183,6 +215,7 @@ class RunRuntimeTrace:
         else:
             self._emit_phase(
                 RuntimeEventType.RUNTIME_PHASE_FINISHED,
+                span_key=span_key,
                 phase_name=phase_name,
                 component=component,
                 status=RuntimeStatus.SUCCESS,
@@ -190,10 +223,24 @@ class RunRuntimeTrace:
                 metrics=phase_metrics,
             )
 
+    def close(self, *, status: str = RuntimeStatus.ERROR) -> None:
+        """Idempotently stop resources started for this run trace."""
+        if self._terminal:
+            return
+        self._terminal = True
+        finalizer = self._profile_finalizer
+        self._profile_finalizer = None
+        if finalizer is not None and finalizer.alive:
+            finalizer.detach()
+        if self._profile_started:
+            stop_run_stack_profile(self.run_id, status=status)
+            self._profile_started = False
+
     def _emit_phase(
         self,
         event_type: str,
         *,
+        span_key: str,
         phase_name: str,
         component: str,
         metrics: Dict[str, Any],
@@ -211,9 +258,21 @@ class RunRuntimeTrace:
             payload["status"] = status
         if duration_ms is not None:
             payload["duration_ms"] = duration_ms
-        self._emit(event_type, payload=payload)
+        self._emit(
+            event_type,
+            span_key=span_key,
+            parent_key=self.root_span_key,
+            payload=payload,
+        )
 
-    def _emit(self, event_type: str, *, payload: dict) -> None:
+    def _emit(
+        self,
+        event_type: str,
+        *,
+        payload: dict,
+        span_key: Optional[str] = None,
+        parent_key: Optional[str] = None,
+    ) -> None:
         if not self.run_id or not self.enabled:
             return
         self.observer.emit(
@@ -222,10 +281,24 @@ class RunRuntimeTrace:
                 run_id=self.run_id,
                 session_id=self.session_id,
                 turn_id=self.turn_id,
+                span_key=span_key,
+                parent_key=parent_key,
                 payload=payload,
             )
+        )
+
+    def _phase_span_key(self, phase_name: str, component: str) -> str:
+        return "phase:{}:{}:{}".format(
+            _safe_span_token(component),
+            _safe_span_token(phase_name),
+            uuid.uuid4().hex[:12],
         )
 
 
 def _short_output(value: Any) -> str:
     return str(value or "")[:2000]
+
+
+def _safe_span_token(value: Any) -> str:
+    token = str(value or "unknown").strip().replace(" ", "_")
+    return token or "unknown"

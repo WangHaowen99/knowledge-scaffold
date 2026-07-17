@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate auth, MCP, user limits, and persisted graph connection settings."""
+"""Validate deployment config, deferring persisted state only before migrations."""
 
 from __future__ import annotations
 
@@ -41,41 +41,52 @@ def _positive_int(value: str) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _graph_connection_findings(runtime_root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+def _graph_data_source_findings(
+    runtime_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     count = 0
     workspaces = runtime_root / "workspaces"
     if not workspaces.exists():
         return errors, warnings, count
-    for path in sorted(workspaces.glob("*/data-connections.json")):
+    for path in sorted(workspaces.glob("*/ontology-data-sources.json")):
         workspace_id = path.parent.name
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             errors.append({
                 "workspace_id": workspace_id,
-                "type": "invalid_data_connections",
+                "type": "invalid_ontology_data_sources",
                 "detail": str(exc),
             })
             continue
-        connections = payload.get("connections") if isinstance(payload, dict) else None
-        if not isinstance(connections, list):
-            errors.append({"workspace_id": workspace_id, "type": "invalid_data_connections"})
+        sources = payload.get("sources") if isinstance(payload, dict) else None
+        if not isinstance(sources, dict):
+            errors.append({"workspace_id": workspace_id, "type": "invalid_ontology_data_sources"})
             continue
-        for connection in connections:
-            if not isinstance(connection, dict):
+        for ontology_id, source in sources.items():
+            if not isinstance(source, dict):
                 continue
-            provider = str(connection.get("provider") or "").strip().lower()
+            mode = str(source.get("mode") or "direct_provider").strip()
+            if mode != "direct_provider":
+                errors.append({
+                    "workspace_id": workspace_id,
+                    "ontology_id": str(ontology_id),
+                    "type": "legacy_data_source_mode",
+                    "mode": mode,
+                })
+                continue
+            provider = str(source.get("provider") or "").strip().lower()
             if provider not in {"neo4j", "hugegraph"}:
                 continue
             count += 1
-            connection_id = str(connection.get("id") or "<missing>")
-            config = connection.get("config")
+            resolved_ontology_id = str(ontology_id or "<missing>")
+            config = source.get("config")
             if not isinstance(config, dict):
                 errors.append({
                     "workspace_id": workspace_id,
-                    "connection_id": connection_id,
+                    "ontology_id": resolved_ontology_id,
                     "type": "invalid_graph_config",
                 })
                 continue
@@ -84,7 +95,7 @@ def _graph_connection_findings(runtime_root: Path) -> tuple[list[dict[str, Any]]
                 if not str(config.get(field) or "").strip():
                     errors.append({
                         "workspace_id": workspace_id,
-                        "connection_id": connection_id,
+                        "ontology_id": resolved_ontology_id,
                         "provider": provider,
                         "type": "missing_graph_field",
                         "field": field,
@@ -95,7 +106,7 @@ def _graph_connection_findings(runtime_root: Path) -> tuple[list[dict[str, Any]]
                 if secret and not secret.startswith("enc:v1:"):
                     errors.append({
                         "workspace_id": workspace_id,
-                        "connection_id": connection_id,
+                        "ontology_id": resolved_ontology_id,
                         "provider": provider,
                         "type": "plaintext_graph_secret",
                         "field": field,
@@ -103,7 +114,7 @@ def _graph_connection_findings(runtime_root: Path) -> tuple[list[dict[str, Any]]
             if not str(config.get("workspace_property") or "").strip():
                 errors.append({
                     "workspace_id": workspace_id,
-                    "connection_id": connection_id,
+                    "ontology_id": resolved_ontology_id,
                     "provider": provider,
                     "type": "missing_graph_scope_field",
                     "field": "workspace_property",
@@ -111,7 +122,7 @@ def _graph_connection_findings(runtime_root: Path) -> tuple[list[dict[str, Any]]
             if not str(config.get("ontology_property") or "").strip():
                 warnings.append({
                     "workspace_id": workspace_id,
-                    "connection_id": connection_id,
+                    "ontology_id": resolved_ontology_id,
                     "provider": provider,
                     "type": "missing_optional_graph_scope_field",
                     "field": "ontology_property",
@@ -119,7 +130,12 @@ def _graph_connection_findings(runtime_root: Path) -> tuple[list[dict[str, Any]]
     return errors, warnings, count
 
 
-def validate_config(env_file: Path, runtime_root: Path) -> dict[str, Any]:
+def validate_config(
+    env_file: Path,
+    runtime_root: Path,
+    *,
+    pre_migration: bool = False,
+) -> dict[str, Any]:
     env = read_env(env_file)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -160,12 +176,19 @@ def validate_config(env_file: Path, runtime_root: Path) -> dict[str, Any]:
             "auth_user_max_count": auth_user_limit,
         })
 
-    graph_errors, graph_warnings, graph_count = _graph_connection_findings(runtime_root)
+    if pre_migration:
+        graph_errors: list[dict[str, Any]] = []
+        graph_warnings: list[dict[str, Any]] = []
+        graph_count: int | None = None
+    else:
+        graph_errors, graph_warnings, graph_count = _graph_data_source_findings(runtime_root)
     errors.extend(graph_errors)
     warnings.extend(graph_warnings)
     return {
         "schema_version": 1,
         "ok": not errors,
+        "phase": "pre_migration" if pre_migration else "strict",
+        "persisted_data_validation": "deferred" if pre_migration else "strict",
         "auth": {
             "url": auth_url,
             "issuer": issuer,
@@ -180,7 +203,7 @@ def validate_config(env_file: Path, runtime_root: Path) -> dict[str, Any]:
             "user_max_count": user_limit,
             "auth_user_max_count": auth_user_limit,
         },
-        "graph_connection_count": graph_count,
+        "graph_data_source_count": graph_count,
         "errors": errors,
         "warnings": warnings,
     }
@@ -191,12 +214,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--pre-migration", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    report = validate_config(args.env_file, args.runtime_root)
+    report = validate_config(
+        args.env_file,
+        args.runtime_root,
+        pre_migration=args.pre_migration,
+    )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

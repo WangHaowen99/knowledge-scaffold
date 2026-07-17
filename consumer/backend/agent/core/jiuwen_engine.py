@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 from ..exceptions import WorkflowCancelledError
 from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER, RuntimeStatus
 from integration.observability import bind_observability_context
+from integration.observability.stack_profiler import profile_current_thread
 from llm import LLMPurpose, get_llm_router
 from llm.provider_adapters import get_provider_adapter
 from ..tools.executor import execute_tool_batch
@@ -771,6 +772,7 @@ class JiuwenReactLoopEngine:
             max_iterations=max_iterations,
             system_prompt=system_prompt,
             agent_id=_build_jiuwen_agent_resource_id(state, caller=caller),
+            context_max_rounds=getattr(self.agent_config, "context_max_rounds", 10),
             enable_reasoning=enable_reasoning,
             stream_enabled=stream_enabled,
         )
@@ -1333,6 +1335,7 @@ def create_default_jiuwen_agent(
     max_iterations: Optional[int] = None,
     system_prompt: Optional[str] = None,
     agent_id: Optional[str] = None,
+    context_max_rounds: Optional[int] = None,
     enable_reasoning: bool = False,
     stream_enabled: bool = True,
 ) -> Any:
@@ -1341,6 +1344,7 @@ def create_default_jiuwen_agent(
         agent_card_module = importlib.import_module("openjiuwen.core.single_agent.schema.agent_card")
         react_agent_module = importlib.import_module("openjiuwen.core.single_agent.agents.react_agent")
         model_config_module = importlib.import_module("openjiuwen.core.foundation.llm.schema.config")
+        context_engine_module = importlib.import_module("openjiuwen.core.context_engine")
     except ImportError as exc:
         raise JiuwenBackendUnavailable(
             _format_jiuwen_import_error(exc)
@@ -1383,6 +1387,13 @@ def create_default_jiuwen_agent(
         )
     )
     model_request_config = model_request_config_cls(**model_request_kwargs)
+    context_engine_config_cls = context_engine_module.ContextEngineConfig
+    context_engine_config = context_engine_config_cls(
+        max_context_message_num=None,
+        default_window_round_num=_normalize_context_max_rounds(context_max_rounds),
+        enable_reload=False,
+        enable_kv_cache_release=False,
+    )
     react_config = react_agent_config_cls(
         model_client_config=model_client_config,
         model_config_obj=model_request_config,
@@ -1394,6 +1405,7 @@ def create_default_jiuwen_agent(
             if str(system_prompt or "").strip()
             else []
         ),
+        context_engine_config=context_engine_config,
     )
     agent = react_agent_cls(
         card=agent_card_cls(
@@ -1516,6 +1528,13 @@ def _normalize_max_iterations(value: Optional[Any]) -> int:
     return max(1, normalized)
 
 
+def _normalize_context_max_rounds(value: Optional[Any]) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 10
+
+
 def _resolve_jiuwen_llm_config(
     state: Optional[Mapping[str, Any]],
     *,
@@ -1529,32 +1548,48 @@ def _resolve_jiuwen_llm_config(
         or _resolve_current_workspace_id()
     )
     purpose = LLMPurpose.MAIN if str(caller or "").strip() in {"main", "acp"} else LLMPurpose.SUBAGENT
-    if profile_id:
-        return _clamp_jiuwen_llm_config_output_tokens(
-            get_llm_router().get_config(
-                purpose,
-                profile_id=profile_id,
-                workspace_id=workspace_id,
-            ),
-            agent_config,
-        )
     try:
-        return _clamp_jiuwen_llm_config_output_tokens(
-            get_llm_router().get_config(purpose, workspace_id=workspace_id),
-            agent_config,
-        )
+        router = get_llm_router()
     except RuntimeError:
+        if profile_id:
+            raise
         from config import AppConfig
 
         app_config = AppConfig.from_env()
         fallback = app_config.llm if purpose == LLMPurpose.MAIN else app_config.task_llm
         return _clamp_jiuwen_llm_config_output_tokens(fallback, agent_config)
 
+    resolved_agent_config = agent_config or getattr(router, "agent_config", None)
+    if profile_id:
+        return _clamp_jiuwen_llm_config_output_tokens(
+            router.get_config(
+                purpose,
+                profile_id=profile_id,
+                workspace_id=workspace_id,
+            ),
+            resolved_agent_config,
+        )
+    try:
+        return _clamp_jiuwen_llm_config_output_tokens(
+            router.get_config(purpose, workspace_id=workspace_id),
+            resolved_agent_config,
+        )
+    except RuntimeError:
+        from config import AppConfig
+
+        app_config = AppConfig.from_env()
+        fallback = app_config.llm if purpose == LLMPurpose.MAIN else app_config.task_llm
+        return _clamp_jiuwen_llm_config_output_tokens(fallback, resolved_agent_config)
+
 
 def _clamp_jiuwen_llm_config_output_tokens(llm_config: Any, agent_config: Any) -> Any:
-    limits = getattr(agent_config, "limits", None)
+    raw_limit = getattr(
+        getattr(agent_config, "limits", None),
+        "model_output_token_limit",
+        None,
+    )
     try:
-        output_limit = max(1, int(getattr(limits, "model_output_token_limit")))
+        output_limit = max(1, int(raw_limit))
     except (TypeError, ValueError):
         return llm_config
     try:
@@ -1598,7 +1633,7 @@ def _build_jiuwen_history_messages(state: Mapping[str, Any], agent_config: Any) 
     if not messages:
         return []
 
-    max_rounds = _normalize_max_iterations(getattr(agent_config, "context_max_rounds", None))
+    max_rounds = _normalize_context_max_rounds(getattr(agent_config, "context_max_rounds", None))
     prune_tools = getattr(agent_config, "context_prune_tools", None) or None
     windowed_messages = apply_sliding_window(messages, max_rounds, prune_tools)
     history_messages = _drop_current_user_message(windowed_messages, state)
@@ -1622,7 +1657,7 @@ def _build_jiuwen_context_messages(
         for message in list(state.get("messages") or [])
         if isinstance(message, Mapping)
     ]
-    max_rounds = _normalize_max_iterations(getattr(agent_config, "context_max_rounds", None))
+    max_rounds = _normalize_context_max_rounds(getattr(agent_config, "context_max_rounds", None))
     prune_tools = getattr(agent_config, "context_prune_tools", None) or None
     windowed_messages = apply_sliding_window(messages, max_rounds, prune_tools) if messages else []
     estimated_messages = [
@@ -2022,14 +2057,15 @@ async def _with_observability_context(
     downstream synchronous reads (e.g. reasoning-summary scheduling in the LLM
     service), preventing them from silently falling back to NOOP_OBSERVER.
     """
-    with bind_observability_context(
-        observer=observer,
-        run_id=run_id,
-        session_id=session_id,
-        turn_id=turn_id,
-        parent_key=parent_key,
-    ):
-        return await awaitable
+    with profile_current_thread(run_id):
+        with bind_observability_context(
+            observer=observer,
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            parent_key=parent_key,
+        ):
+            return await awaitable
 
 
 def _run_awaitable(

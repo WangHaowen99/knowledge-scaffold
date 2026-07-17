@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from ...exceptions import WorkflowCancelledError
 from integration.observability import AgentRuntimeTrace, RuntimeStatus
+from integration.observability.stack_profiler import profile_current_thread
 from ...tools.base import ToolBatchResult, ToolInvocation
 from ...tools.executor import execute_tool_batch
 from utils.json_utils import _loads_json_object_loose
@@ -283,10 +284,12 @@ async def _run_sync_in_tool_thread(
 ) -> Any:
     future: Future[Any] = Future()
     context = copy_context()
+    run_id = _run_id_from_tool_thread_args(args)
 
     def runner() -> None:
         try:
-            result = context.run(func, *args)
+            with profile_current_thread(run_id):
+                result = context.run(func, *args)
         except BaseException as exc:
             future.set_exception(exc)
         else:
@@ -308,6 +311,14 @@ async def _run_sync_in_tool_thread(
                 continue
         raise
     return future.result()
+
+
+def _run_id_from_tool_thread_args(args: tuple[Any, ...]) -> Optional[str]:
+    for arg in args:
+        run_id = str(getattr(arg, "run_id", "") or "").strip()
+        if run_id:
+            return run_id
+    return None
 
 
 def runtime_trace_from_tool_context(context: Any) -> AgentRuntimeTrace:

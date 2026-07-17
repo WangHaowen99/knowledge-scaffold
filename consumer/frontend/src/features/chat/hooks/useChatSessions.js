@@ -406,6 +406,14 @@ const useChatSessions = (streamManager) => {
     return openChat(id);
   }, [openChat]);
 
+  const touchSession = useCallback((sessionId, timestamp = new Date().toISOString()) => {
+    if (!sessionId) return;
+    noteSessionMutation(sessionId);
+    setSessions((previous) => sortSessions(previous.map((session) => (
+      session.id === sessionId ? { ...session, updated_at: timestamp } : session
+    ))));
+  }, [noteSessionMutation, setSessions]);
+
   const generateSessionTitle = useCallback(async (sessionId, message) => {
     if (!sessionId || !message) return false;
     const scope = captureScope();
@@ -419,9 +427,12 @@ const useChatSessions = (streamManager) => {
       if (!response.ok) throw await responseError(response, 'Failed to generate title');
       const data = await response.json();
       noteSessionMutation(sessionId);
-      setSessions((previous) => previous.map((session) => (
-        session.id === sessionId ? { ...session, title: data.title } : session
-      )));
+      const updatedAt = data.updated_at || new Date().toISOString();
+      setSessions((previous) => sortSessions(previous.map((session) => (
+        session.id === sessionId
+          ? { ...session, title: data.title, updated_at: updatedAt }
+          : session
+      ))));
       return true;
     } catch (error) {
       if (error?.name !== 'AbortError') logger.error('Failed to generate session title', { error: error.message });
@@ -480,6 +491,7 @@ const useChatSessions = (streamManager) => {
     hydrateChat,
     generateSessionTitle,
     setPinned,
+    touchSession,
   };
 };
 

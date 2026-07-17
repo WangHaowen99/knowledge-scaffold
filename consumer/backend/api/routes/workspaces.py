@@ -12,6 +12,7 @@ from config.workspace_llm_profiles import (
 )
 from integration.observability import reset_observer
 from integration.observability.workspace_config import (
+    WorkspaceObservabilityMigrationRequiredError,
     get_public_workspace_observability_config,
     test_workspace_observability_connection,
     update_workspace_observability_config,
@@ -215,6 +216,8 @@ def get_observability_config_api(workspace_id: str):
         return jsonify(get_public_workspace_observability_config(workspace_id))
     except KeyError as exc:
         return not_found_response(exc)
+    except WorkspaceObservabilityMigrationRequiredError as exc:
+        return jsonify(exc.to_dict()), 409
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
 
@@ -231,6 +234,8 @@ def update_observability_config_api(workspace_id: str):
         return jsonify(get_public_workspace_observability_config(workspace_id))
     except KeyError as exc:
         return not_found_response(exc)
+    except WorkspaceObservabilityMigrationRequiredError as exc:
+        return jsonify(exc.to_dict()), 409
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
 
@@ -243,6 +248,8 @@ def test_observability_config_api(workspace_id: str):
         return jsonify(test_workspace_observability_connection(workspace_id, payload))
     except KeyError as exc:
         return not_found_response(exc)
+    except WorkspaceObservabilityMigrationRequiredError as exc:
+        return jsonify(exc.to_dict()), 409
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
 

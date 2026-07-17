@@ -1,4 +1,4 @@
-"""Tests for business_data_search runtime connection resolution."""
+"""Tests for business_data_search runtime data source resolution."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ def _fake_ontology(ontology_id):
     return object(), None
 
 
-def _install_search_fakes(monkeypatch, *, mode: str):
+def _install_search_fakes(monkeypatch):
     captured = {"events": []}
 
     def fake_resolve_business_data_source(*, workspace_id, ontology_id):
@@ -19,9 +19,7 @@ def _install_search_fakes(monkeypatch, *, mode: str):
         captured["ontology_id"] = ontology_id
         return ResolvedBusinessDataSource(
             ontology_id=ontology_id,
-            mode=mode,
-            id="example-nl2sql" if mode == "connection_ref" else ontology_id,
-            name="示例制造 NL2SQL" if mode == "connection_ref" else ontology_id,
+            mode="direct_provider",
             provider="nl2sql_http",
             config={
                 "url": "https://nl2sql.equipment.local",
@@ -52,7 +50,7 @@ def _install_search_fakes(monkeypatch, *, mode: str):
 
 
 def test_business_data_search_uses_workspace_direct_provider(monkeypatch):
-    captured = _install_search_fakes(monkeypatch, mode="direct_provider")
+    captured = _install_search_fakes(monkeypatch)
 
     result = handle_business_data_search(
         ontology_id="demo-ontology",
@@ -74,8 +72,8 @@ def test_business_data_search_uses_workspace_direct_provider(monkeypatch):
     assert [event["type"] for event in captured["events"]] == ["start", "final", "done"]
 
 
-def test_business_data_search_uses_resolved_connection_ref(monkeypatch):
-    captured = _install_search_fakes(monkeypatch, mode="connection_ref")
+def test_business_data_search_uses_ontology_identity_for_resolved_source(monkeypatch):
+    captured = _install_search_fakes(monkeypatch)
 
     result = handle_business_data_search(
         ontology_id="demo-ontology",
@@ -85,8 +83,9 @@ def test_business_data_search_uses_resolved_connection_ref(monkeypatch):
     )
 
     assert result == "查询结果"
-    assert captured["connection"].id == "example-nl2sql"
-    assert captured["connection"].mode == "connection_ref"
+    assert captured["connection"].id == "demo-ontology"
+    assert captured["connection"].name == "demo-ontology"
+    assert captured["connection"].mode == "direct_provider"
     assert captured["connection"].provider == "nl2sql_http"
     assert captured["connection"].config["token"] == "secret-token"
 
@@ -98,7 +97,7 @@ def test_business_data_search_reports_missing_data_source(monkeypatch):
 
     def fake_resolve_business_data_source(*, workspace_id, ontology_id):
         del workspace_id, ontology_id
-        raise BusinessDataConnectionError("本体 'demo-ontology' 未配置/未绑定业务数据源")
+        raise BusinessDataConnectionError("本体 'demo-ontology' 未配置业务数据源")
 
     monkeypatch.setattr(
         "agent.tools.business_data_search.resolve_business_data_source",
@@ -112,4 +111,4 @@ def test_business_data_search_reports_missing_data_source(monkeypatch):
         workspace_id="demo-workspace",
     )
 
-    assert result == "Error: 本体 'demo-ontology' 未配置/未绑定业务数据源"
+    assert result == "Error: 本体 'demo-ontology' 未配置业务数据源"
