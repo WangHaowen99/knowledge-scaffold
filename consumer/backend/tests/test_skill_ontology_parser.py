@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 from ontology.ontology_catalog import find_script_entry, load_script_catalog
-from skill_parser.modeling_template import rewrite_business_data_client_imports
 from skill_parser.skill_ontology_parser import build_file_mapping, run
 
 
@@ -392,7 +391,7 @@ def test_run_uses_script_docstring_relation_and_skips_private_helpers(tmp_path):
     assert (target_root / "scripts" / "_script_common.py").exists()
 
 
-def test_run_rewrites_generated_scripts_to_provider_aware_client(tmp_path):
+def test_run_preserves_provider_aware_client_import(tmp_path):
     source_root = tmp_path / "source"
     target_root = tmp_path / "target"
     _write_object(source_root / "object" / "物料.md")
@@ -410,9 +409,9 @@ def test_run_rewrites_generated_scripts_to_provider_aware_client(tmp_path):
                 "输入参数：",
                 "    物料编号    字符串    必填，待查询的物料编号",
                 '"""',
-                "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient",
+                "from shared_capabilities.ontology_script_sdk import DataProviderClient",
                 "",
-                "client = MindsDBClient()",
+                "client = DataProviderClient()",
                 "print(client.query_sql('SELECT 1'))",
             ]
         ),
@@ -423,66 +422,7 @@ def test_run_rewrites_generated_scripts_to_provider_aware_client(tmp_path):
 
     generated_script = (target_root / "scripts" / "supplier_lookup.py").read_text(encoding="utf-8")
     assert "from shared_capabilities.ontology_script_sdk import DataProviderClient" in generated_script
-    assert "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient" not in generated_script
     assert "client = DataProviderClient()" in generated_script
-
-
-def test_rewrite_business_data_client_imports_handles_python_code_tokens():
-    source = "\n".join(
-        [
-            "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient",
-            "",
-            "client = MindsDBClient()",
-            "def use_client(value: MindsDBClient) -> MindsDBClient:",
-            "    return value",
-            "if isinstance(client, MindsDBClient):",
-            "    pass",
-            "class WrappedClient(MindsDBClient):",
-            "    pass",
-            "# client = MindsDBClient()",
-            "text = 'MindsDBClient() in docs'",
-            "",
-        ]
-    )
-
-    rewritten = rewrite_business_data_client_imports(source)
-
-    assert "from shared_capabilities.ontology_script_sdk import DataProviderClient" in rewritten
-    assert "client = DataProviderClient()" in rewritten
-    assert "def use_client(value: DataProviderClient) -> DataProviderClient:" in rewritten
-    assert "isinstance(client, DataProviderClient)" in rewritten
-    assert "class WrappedClient(DataProviderClient):" in rewritten
-    assert "# client = MindsDBClient()" in rewritten
-    assert "text = 'MindsDBClient() in docs'" in rewritten
-
-
-def test_rewrite_business_data_client_imports_preserves_alias_imports():
-    source = "\n".join(
-        [
-            "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient as MDB",
-            "",
-            "client = MDB()",
-            "",
-        ]
-    )
-
-    rewritten = rewrite_business_data_client_imports(source)
-
-    assert "from shared_capabilities.ontology_script_sdk import DataProviderClient as MDB" in rewritten
-    assert "client = MDB()" in rewritten
-
-
-def test_rewrite_business_data_client_imports_ignores_text_without_import():
-    source = "\n".join(
-        [
-            "# client = MindsDBClient()",
-            "text = 'MindsDBClient() in docs'",
-            "client = MindsDBClient()",
-            "",
-        ]
-    )
-
-    assert rewrite_business_data_client_imports(source) == source
 
 
 def test_run_copies_script_env_files_without_registering_them(tmp_path):

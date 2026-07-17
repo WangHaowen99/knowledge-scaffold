@@ -1050,22 +1050,18 @@ def test_execute_script_rejects_arguments_when_no_parameters_declared(tmp_path, 
     assert "declares no parameters" in result.messages[0]["content"]
 
 
-def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
+def test_execute_script_injects_versioned_mindsdb_connection(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     _write_scripted_ontology(
         tmp_path,
         script_body=(
-            "from agent.tools.business_data.providers.clients.mindsdb import MindsDBClient\n"
-            "from agent.tools.business_data.script_env import load_script_business_data_connection\n"
-            "client = MindsDBClient()\n"
-            "connection = load_script_business_data_connection()\n"
-            "try:\n"
-            "    print(client.base_url)\n"
-            "    print(client.config.default_database)\n"
-            "    print(connection['config'].get('workspace_id'))\n"
-            "    print(connection['config'].get('ontology_id'))\n"
-            "finally:\n"
-            "    client.close()\n"
+            "from shared_capabilities.ontology_script_sdk.connection_env import "
+            "load_effective_connection\n"
+            "connection = load_effective_connection()\n"
+            "print(connection.endpoint)\n"
+            "print(connection.options.get('default_database'))\n"
+            "print(connection.options.get('workspace_id'))\n"
+            "print(connection.options.get('ontology_id'))\n"
         ),
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
