@@ -106,6 +106,38 @@ CREATE TABLE IF NOT EXISTS project_data_sources (
   updated_at        TEXT NOT NULL
 );
 
+-- Neo4j Excel 图导入临时文件；执行、取消或过期后删除文件与记录。
+CREATE TABLE IF NOT EXISTS graph_import_uploads (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  owner         TEXT NOT NULL,
+  filename      TEXT NOT NULL,
+  stored_path   TEXT NOT NULL,
+  file_hash     TEXT NOT NULL,
+  size_bytes    INTEGER NOT NULL,
+  expires_at    TEXT NOT NULL,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_graph_upload_project ON graph_import_uploads(project_id, created_at);
+
+-- 图导入审计；只保存脱敏映射与统计，不保存 Excel 和 Neo4j 密码。
+CREATE TABLE IF NOT EXISTS graph_import_runs (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  filename           TEXT NOT NULL,
+  file_hash          TEXT NOT NULL,
+  package_version    TEXT NOT NULL,
+  mapping_json       TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'running',
+  node_count         INTEGER NOT NULL DEFAULT 0,
+  relationship_count INTEGER NOT NULL DEFAULT 0,
+  skipped_count      INTEGER NOT NULL DEFAULT 0,
+  error              TEXT,
+  created_at         TEXT NOT NULL,
+  finished_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_graph_run_project ON graph_import_runs(project_id, created_at);
+
 -- ---- M3：评测用例 / 轮次 / 结果 ----
 CREATE TABLE IF NOT EXISTS testcases (
   id            TEXT PRIMARY KEY,
