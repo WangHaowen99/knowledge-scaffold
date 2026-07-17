@@ -1826,7 +1826,6 @@ def test_tool_protocol_events_emit_runtime_tool_events():
             sub_agent_max_depth=2,
             parallel_default_max_workers=2,
             context_max_rounds=5,
-            context_prune_tools=set(),
         ),
         caller="subagent",
         agent_iteration=3,

@@ -152,7 +152,6 @@ def _offline_agent_config():
         main_agent_max_iterations=1,
         sub_agent_max_iterations=1,
         context_max_rounds=10,
-        context_prune_tools=set(),
         web_search=SimpleNamespace(enabled=False),
         limits=SimpleNamespace(model_output_token_limit=4096),
     )

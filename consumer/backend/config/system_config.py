@@ -123,7 +123,6 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default":10},
         "parallel_default_max_workers": {"env": "AGENT_PARALLEL_DEFAULT_MAX_WORKERS", "type": "int", "default": 10},
         "context_max_rounds": {"env": "AGENT_CONTEXT_MAX_ROUNDS", "type": "int", "default": 10},
-        "context_prune_tools": {"env": "AGENT_CONTEXT_PRUNE_TOOLS", "type": "str", "default": ""},
         "runtime_warmup_enabled": {"env": "AGENT_RUNTIME_WARMUP_ENABLED", "type": "bool", "default": True},
         # Operation evolution thresholds
         "evolution_min_occurrences": {"env": "EVO_MIN_OCCURRENCES", "type": "int", "default": 3},
@@ -1513,11 +1512,6 @@ def _agent_config_for_connection_check(effective: dict[str, Any]) -> Any:
         sub_agent_max_depth=int(effective["sub_agent_max_depth"]),
         parallel_default_max_workers=int(effective["parallel_default_max_workers"]),
         context_max_rounds=int(effective["context_max_rounds"]),
-        context_prune_tools={
-            item.strip()
-            for item in _coerce_string(effective.get("context_prune_tools")).split(",")
-            if item.strip()
-        },
         runtime_warmup_enabled=bool(effective.get("runtime_warmup_enabled", True)),
         execute_script_timeout=int(effective.get("execute_script_timeout") or 300),
         evolution_min_occurrences=int(effective.get("evolution_min_occurrences", 3)),

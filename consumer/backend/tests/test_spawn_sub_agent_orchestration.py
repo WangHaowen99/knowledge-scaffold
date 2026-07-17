@@ -25,7 +25,6 @@ def _agent_config(**overrides):
         "sub_agent_max_depth": 2,
         "parallel_default_max_workers": 10,
         "context_max_rounds": 10,
-        "context_prune_tools": set(),
     }
     config.update(overrides)
     return AgentConfig(**config)

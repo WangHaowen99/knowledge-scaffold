@@ -28,7 +28,6 @@ from llm import LLMPurpose, get_llm_router
 from llm.provider_adapters import get_provider_adapter
 from ..tools.executor import execute_tool_batch
 from ..tools.base import ToolContext
-from ..context import apply_sliding_window
 from llm.llm_request_mode import is_llm_streaming_enabled
 from utils.logging import bind_log_context, get_logger
 from workspace.workspaces import (
@@ -270,6 +269,31 @@ class JiuwenReactLoopEngine:
             state,
             system_prompt=system_prompt_for_agent,
         )
+        interaction_response = dict(state.get("user_context") or {}).get(
+            "interaction_response"
+        )
+        history_source_messages = _run_jiuwen_setup_step(
+            runtime_trace,
+            _build_jiuwen_history_source_messages,
+            state,
+        )
+        effective_context_max_rounds: Optional[int] = None
+        if self._agent_factory is not None:
+            _run_jiuwen_setup_step(
+                runtime_trace,
+                _reject_factory_agent_with_history,
+                state,
+                history_source_messages=history_source_messages,
+                interaction_response=interaction_response,
+            )
+        else:
+            configured_rounds = _normalize_context_max_rounds(
+                getattr(self.agent_config, "context_max_rounds", 10)
+            )
+            effective_context_max_rounds = _resolve_effective_context_max_rounds(
+                configured_rounds,
+                state,
+            )
         if caller == "main":
             _run_jiuwen_setup_step(
                 runtime_trace,
@@ -289,7 +313,7 @@ class JiuwenReactLoopEngine:
             caller=caller,
         )
         inputs = _run_jiuwen_setup_step(runtime_trace, self._build_inputs, state)
-        trace_messages = _run_jiuwen_setup_step(
+        run_input_snapshot = _run_jiuwen_setup_step(
             runtime_trace,
             _build_jiuwen_context_messages,
             state,
@@ -315,6 +339,8 @@ class JiuwenReactLoopEngine:
         trace_iteration = 1
         prepared_iterations: set[int] = set()
         model_name = str(getattr(llm_config_for_agent, "model", "") or "jiuwen_agent_factory")
+        owns_jiuwen_runtime = self._agent_factory is None
+        context_engine_managed_window = owns_jiuwen_runtime
 
         def prepare_iteration(iteration: int) -> None:
             normalized_iteration = max(1, int(iteration or 1))
@@ -327,9 +353,9 @@ class JiuwenReactLoopEngine:
                 agent_mode=agent_mode,
                 prompt_build_ms=prompt_elapsed_ms,
                 system_prompt_chars=len(str(system_prompt_for_agent or "")),
-                sliding_window_applied=True,
-                llm_message_count=len(trace_messages),
-                llm_input_chars=lambda: _estimate_jiuwen_messages_chars(trace_messages),
+                sliding_window_applied=context_engine_managed_window,
+                llm_message_count=len(run_input_snapshot),
+                llm_input_chars=lambda: _estimate_jiuwen_messages_chars(run_input_snapshot),
                 tools_count=len(tool_infos or []),
             )
 
@@ -344,8 +370,8 @@ class JiuwenReactLoopEngine:
             enable_reasoning=reasoning_enabled,
             llm_config=llm_config_for_agent,
             stream_enabled=stream_enabled,
+            context_max_rounds=effective_context_max_rounds,
         )
-        owns_jiuwen_runtime = self._agent_factory is None
         owned_jiuwen_session_id: Optional[str] = None
         if owns_jiuwen_runtime:
             owned_jiuwen_session_id = _build_owned_jiuwen_session_id(agent)
@@ -566,7 +592,7 @@ class JiuwenReactLoopEngine:
             enable_reasoning=reasoning_enabled,
             prompt_build_ms=prompt_elapsed_ms,
             system_prompt_chars=len(str(system_prompt_for_agent or "")),
-            sliding_window_applied=True,
+            sliding_window_applied=context_engine_managed_window,
         )
         terminal_force_finish_bridge = _JiuwenTerminalForceFinishBridge(
             terminal_result,
@@ -604,6 +630,7 @@ class JiuwenReactLoopEngine:
                         agent,
                         inputs,
                         state=state,
+                        history_source_messages=history_source_messages,
                         caller=caller,
                         event_writer=event_writer,
                         iteration_provider=start_llm_iteration,
@@ -758,9 +785,19 @@ class JiuwenReactLoopEngine:
         enable_reasoning: bool = False,
         llm_config: Any = None,
         stream_enabled: bool = True,
+        context_max_rounds: Optional[int] = None,
     ) -> Any:
         if self._agent_factory is not None:
+            # _run validates the factory capability contract once, before any
+            # factory-backed agent can reach this creation point.
             return self._agent_factory()
+
+        effective_rounds = context_max_rounds
+        if effective_rounds is None:
+            configured_rounds = _normalize_context_max_rounds(
+                getattr(self.agent_config, "context_max_rounds", 10)
+            )
+            effective_rounds = _resolve_effective_context_max_rounds(configured_rounds, state)
 
         return create_default_jiuwen_agent(
             llm_config=llm_config
@@ -772,7 +809,7 @@ class JiuwenReactLoopEngine:
             max_iterations=max_iterations,
             system_prompt=system_prompt,
             agent_id=_build_jiuwen_agent_resource_id(state, caller=caller),
-            context_max_rounds=getattr(self.agent_config, "context_max_rounds", 10),
+            context_max_rounds=effective_rounds,
             enable_reasoning=enable_reasoning,
             stream_enabled=stream_enabled,
         )
@@ -797,6 +834,7 @@ class JiuwenReactLoopEngine:
         inputs: Dict[str, Any],
         *,
         state: Optional[Mapping[str, Any]] = None,
+        history_source_messages: Optional[list[Dict[str, Any]]] = None,
         caller: str = "main",
         event_writer: Optional[Any] = None,
         iteration_provider: Optional[Any] = None,
@@ -808,7 +846,11 @@ class JiuwenReactLoopEngine:
         observability_context: Optional[Dict[str, Any]] = None,
     ) -> Any:
         _raise_if_jiuwen_cancelled(cancel_event, state)
-        history_messages = _build_jiuwen_history_messages(state or {}, self.agent_config)
+        history_messages = _build_jiuwen_history_messages(
+            state or {},
+            self.agent_config,
+            history_source_messages=history_source_messages,
+        )
         session = None
         if history_messages:
             session = _run_awaitable(
@@ -1535,6 +1577,66 @@ def _normalize_context_max_rounds(value: Optional[Any]) -> int:
         return 10
 
 
+def _resolve_effective_context_max_rounds(
+    configured_rounds: int,
+    state: Optional[Mapping[str, Any]],
+) -> int:
+    """Return the effective ``default_window_round_num`` for the agent's
+    ContextEngineConfig.
+
+    For ask-user resume requests (``interaction_response`` present in
+    ``user_context``) the effective rounds are clamped to at least 2 so the
+    model always sees the preceding user turn and the interaction context
+    needed to continue the conversation.
+
+    For normal requests the configured value is used unchanged; the
+    ContextEngine is solely responsible for applying the window.
+    """
+    user_context = dict((state or {}).get("user_context") or {})
+    interaction_response = user_context.get("interaction_response")
+    if interaction_response:
+        return max(configured_rounds, 2)
+    return configured_rounds
+
+
+def _reject_factory_agent_with_history(
+    state: Optional[Mapping[str, Any]],
+    *,
+    history_source_messages: Optional[list[Dict[str, Any]]] = None,
+    interaction_response: Any = None,
+) -> None:
+    """Reject factory-agent invocations that carry conversation history or an
+    ask-user interaction response.
+
+    The ``_agent_factory`` path bypasses the default Jiuwen ReAct agent and
+    its ContextEngineConfig; it is only safe for single-turn, stateless
+    requests.  When prior messages or an ``interaction_response`` exist, the
+    factory cannot guarantee correct window management and must be rejected.
+    """
+    if not state:
+        return
+    resolved_interaction_response = interaction_response
+    if resolved_interaction_response is None:
+        resolved_interaction_response = dict(state.get("user_context") or {}).get(
+            "interaction_response"
+        )
+    if resolved_interaction_response:
+        raise ValueError(
+            "_agent_factory cannot be used for ask-user resume requests "
+            "with interaction_response; use the default agent path instead."
+        )
+    history_source = (
+        history_source_messages
+        if history_source_messages is not None
+        else _build_jiuwen_history_source_messages(state)
+    )
+    if history_source:
+        raise ValueError(
+            "_agent_factory cannot be used with conversation history; "
+            "use the default agent path instead."
+        )
+
+
 def _resolve_jiuwen_llm_config(
     state: Optional[Mapping[str, Any]],
     *,
@@ -1624,25 +1726,34 @@ def _resolve_current_workspace_id() -> Optional[str]:
         return None
 
 
-def _build_jiuwen_history_messages(state: Mapping[str, Any], agent_config: Any) -> list[Any]:
-    messages = [
-        dict(message)
-        for message in list(state.get("messages") or [])
-        if isinstance(message, Mapping)
-    ]
-    if not messages:
-        return []
-
-    max_rounds = _normalize_context_max_rounds(getattr(agent_config, "context_max_rounds", None))
-    prune_tools = getattr(agent_config, "context_prune_tools", None) or None
-    windowed_messages = apply_sliding_window(messages, max_rounds, prune_tools)
-    history_messages = _drop_current_user_message(windowed_messages, state)
+def _build_jiuwen_history_messages(
+    state: Mapping[str, Any],
+    agent_config: Any,
+    *,
+    history_source_messages: Optional[list[Dict[str, Any]]] = None,
+) -> list[Any]:
+    del agent_config
+    history_messages = (
+        history_source_messages
+        if history_source_messages is not None
+        else _build_jiuwen_history_source_messages(state)
+    )
     converted: list[Any] = []
     for message in history_messages:
         converted_message = _to_jiuwen_history_message(message)
         if converted_message is not None:
             converted.append(converted_message)
     return converted
+
+
+def _build_jiuwen_history_source_messages(state: Mapping[str, Any]) -> list[Dict[str, Any]]:
+    """Return the exact persisted history source used for ContextEngine seeding."""
+    messages = [
+        dict(message)
+        for message in list(state.get("messages") or [])
+        if isinstance(message, Mapping)
+    ]
+    return _drop_current_user_message(messages, state)
 
 
 def _build_jiuwen_context_messages(
@@ -1652,17 +1763,23 @@ def _build_jiuwen_context_messages(
     system_prompt: Optional[str],
     agent_config: Any,
 ) -> list[Dict[str, Any]]:
+    """Build the immutable run-start snapshot used by legacy trace metrics.
+
+    This production helper intentionally includes the complete persisted
+    history plus the current query.  It is not the ContextEngine output, is
+    never sent to the model, and is reused for every ``iteration_prepared``
+    event in the run.  Consequently its message/character counts can be
+    larger than the final model window.
+    """
+    del agent_config
     messages = [
         dict(message)
         for message in list(state.get("messages") or [])
         if isinstance(message, Mapping)
     ]
-    max_rounds = _normalize_context_max_rounds(getattr(agent_config, "context_max_rounds", None))
-    prune_tools = getattr(agent_config, "context_prune_tools", None) or None
-    windowed_messages = apply_sliding_window(messages, max_rounds, prune_tools) if messages else []
     estimated_messages = [
         dict(message)
-        for message in windowed_messages
+        for message in messages
         if isinstance(message, Mapping) and message.get("role") != "system"
     ]
     query = str(inputs.get("query") or "").strip()

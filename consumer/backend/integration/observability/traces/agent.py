@@ -342,6 +342,12 @@ class AgentRuntimeTrace:
         llm_input_chars: Any,
         tools_count: int,
     ) -> None:
+        """Emit the run-input snapshot for one prepared iteration.
+
+        ``sliding_window_applied`` is a legacy compatibility name. ``True``
+        means the caller configured a Jiuwen-owned ContextEngine round window;
+        it does not mean the project layer already trimmed the message list.
+        """
         self._prepared_iterations.add(str(iteration))
         if not self.enabled:
             return

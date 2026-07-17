@@ -118,7 +118,6 @@ export const SYSTEM_CONFIG_FIELDS = Object.freeze({
     number('sub_agent_max_depth', '子智能体最大深度', { min: 1 }),
     number('parallel_default_max_workers', '默认并发工作数', { min: 1 }),
     number('context_max_rounds', '上下文保留轮次', { min: 1 }),
-    text('context_prune_tools', '上下文裁剪工具', { hint: '逗号分隔工具名' }),
     toggle('runtime_warmup_enabled', '启动时预热运行时'),
     number('evolution_min_occurrences', '进化最少出现次数', { min: 1 }),
     number('evolution_min_applied', '进化最少应用次数', { min: 1 }),

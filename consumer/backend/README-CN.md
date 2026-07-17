@@ -227,7 +227,6 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AGENT_SUB_AGENT_MAX_DEPTH` | 子 Agent 最大嵌套深度 | `10` |
 | `AGENT_PARALLEL_DEFAULT_MAX_WORKERS` | 普通并发工具 worker 数 | `10` |
 | `AGENT_CONTEXT_MAX_ROUNDS` | 滑动上下文保留轮数 | `10` |
-| `AGENT_CONTEXT_PRUNE_TOOLS` | 更早裁剪的工具名列表，逗号分隔 | 空 |
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM 连接类失败重试次数 | `3` |
 | `AGENT_RUN_TPS` | 单进程全局运行请求 TPS | `50` |
 | `USER_MAX_COUNT` | 最大用户数量 | `10` |
