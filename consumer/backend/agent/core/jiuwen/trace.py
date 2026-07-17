@@ -15,7 +15,12 @@ from .tools import set_jiuwen_pending_assistant_context
 
 
 class JiuwenModelTraceBridge:
-    """Bridge openJiuwen model callbacks into the repo observability facade."""
+    """Bridge openJiuwen model callbacks into the repo observability facade.
+
+    ``sliding_window_applied`` is a compatibility field.  It indicates that
+    this project configured the Jiuwen-owned ContextEngine round window; it
+    does not mean the project pre-trimmed the message list.
+    """
 
     def __init__(
         self,
@@ -31,7 +36,7 @@ class JiuwenModelTraceBridge:
         event_class_provider: Any = None,
         prompt_build_ms: int = 0,
         system_prompt_chars: int = 0,
-        sliding_window_applied: bool = True,
+        sliding_window_applied: bool,
     ) -> None:
         self.runtime_trace = runtime_trace
         self.state = state
@@ -44,6 +49,8 @@ class JiuwenModelTraceBridge:
         self.event_class_provider = event_class_provider
         self.prompt_build_ms = max(0, int(prompt_build_ms or 0))
         self.system_prompt_chars = max(0, int(system_prompt_chars or 0))
+        # Keep the legacy exported name, but store only the static ownership
+        # signal documented above?not a claim that messages were mutated.
         self.sliding_window_applied = bool(sliding_window_applied)
         self._manager: Any = None
         self._registered: list[tuple[Any, Any]] = []

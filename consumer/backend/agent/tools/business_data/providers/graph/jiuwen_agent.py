@@ -259,6 +259,7 @@ class JiuwenGraphQueryAgent:
                 llm_config=llm_config,
                 stream_enabled=False,
                 enable_reasoning=False,
+                sliding_window_applied=False,
             )
             _run_awaitable(trace_bridge.register(agent))
 
