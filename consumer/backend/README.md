@@ -227,7 +227,6 @@ Important variables:
 | `AGENT_SUB_AGENT_MAX_DEPTH` | Max nested sub-agent depth | `10` |
 | `AGENT_PARALLEL_DEFAULT_MAX_WORKERS` | Parallel regular-tool workers | `10` |
 | `AGENT_CONTEXT_MAX_ROUNDS` | Sliding context rounds kept | `10` |
-| `AGENT_CONTEXT_PRUNE_TOOLS` | Comma-separated tools to prune earlier | empty |
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM HTTP retry count for connection-style failures | `3` |
 | `LOG_LEVEL` | Process startup log level; overridden by `ops_config.json` `logging.level` | `INFO` |
 | `LOG_CONSOLE` | Enable console logging when set | off |

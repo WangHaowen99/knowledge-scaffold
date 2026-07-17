@@ -1760,8 +1760,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "sub_agent_max_concurrency": 6,
     "sub_agent_max_depth": 10,
     "parallel_default_max_workers": 10,
-    "context_max_rounds": 10,
-    "context_prune_tools": ""
+    "context_max_rounds": 10
   },
   "web_search": {
     "enabled": false,
@@ -2002,7 +2001,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `sub_agent_max_depth` | int | 子 agent 最大深度 |
 | `parallel_default_max_workers` | int | 默认并行 worker 数 |
 | `context_max_rounds` | int | 上下文保留轮数 |
-| `context_prune_tools` | string | 上下文裁剪工具列表 |
 
 #### `web_search`
 

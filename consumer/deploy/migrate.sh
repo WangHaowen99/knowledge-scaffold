@@ -75,6 +75,16 @@ docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1 || die \
 # Ensure the one-shot migration runtime exists before the auth migration can apply changes.
 python3 "${SCRIPT_DIR}/migrate_auth_workspace.py" "${ARGS[@]}"
 
+SYSTEM_CONFIG_REPORT="${REPORT_FILE%.json}-system-config.json"
+SYSTEM_CONFIG_ARGS=(
+    --root "${BUNDLE_ROOT}"
+    --report "${SYSTEM_CONFIG_REPORT}"
+)
+if [ "${DRY_RUN}" = true ]; then
+    SYSTEM_CONFIG_ARGS+=(--dry-run)
+fi
+python3 "${SCRIPT_DIR}/migrate_system_config.py" "${SYSTEM_CONFIG_ARGS[@]}"
+
 BACKEND_MIGRATION_ARGS=(
     --runtime-root /app/.onto-runtime
     --report /migration-state/backend-migration-report.json

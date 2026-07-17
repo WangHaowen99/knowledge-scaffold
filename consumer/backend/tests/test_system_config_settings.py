@@ -223,9 +223,16 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
+    effective_config = system_config_module.load_system_config()
     app_config = AppConfig.from_env()
     agent_config = AgentConfig.from_env()
 
+    assert "context_prune_tools" not in effective_config["agent"]
+    with pytest.raises(system_config_module.SystemConfigValidationError, match="context_prune_tools"):
+        system_config_module.build_effective_section_config(
+            "agent",
+            {"context_prune_tools": "read_file"},
+        )
     assert app_config.llm.base_url == "https://llm.example/v1"
     assert app_config.llm.model == "main-model"
     assert app_config.task_llm.base_url == "https://task.example/v1"
@@ -242,7 +249,7 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     assert agent_config.main_agent_max_iterations == 77
     assert agent_config.sub_agent_max_concurrency == 13
     assert agent_config.sub_agent_max_depth == 3
-    assert agent_config.context_prune_tools == {"read_file", "list_files"}
+    assert not hasattr(agent_config, "context_prune_tools")
     assert agent_config.web_search.enabled is True
     assert agent_config.web_search.provider == "tavily"
     assert agent_config.web_search.base_url == "https://search.example"

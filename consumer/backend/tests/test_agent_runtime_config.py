@@ -12,7 +12,6 @@ def _base_agent_config() -> AgentConfig:
         sub_agent_max_depth=10,
         parallel_default_max_workers=10,
         context_max_rounds=10,
-        context_prune_tools=set(),
     )
 
 
@@ -72,7 +71,6 @@ def test_agent_connection_check_uses_jiuwen_smoke_with_effective_config(monkeypa
             "agent",
             _effective_agent_config(
                 main_agent_max_iterations=data["main_agent_max_iterations"],
-                context_prune_tools="read_file, list_files",
                 runtime_warmup_enabled=False,
             ),
         ),
@@ -100,7 +98,6 @@ def test_agent_connection_check_uses_jiuwen_smoke_with_effective_config(monkeypa
     assert checked_mode == "quick"
     assert register_tools is system_config._validate_jiuwen_tools_without_runtime_delegates
     assert checked_config.main_agent_max_iterations == 7
-    assert checked_config.context_prune_tools == {"read_file", "list_files"}
     assert checked_config.runtime_warmup_enabled is False
 
 

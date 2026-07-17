@@ -44,7 +44,6 @@ test('field schemas cover the backend agent and auth contracts', () => {
     'sub_agent_max_depth',
     'parallel_default_max_workers',
     'context_max_rounds',
-    'context_prune_tools',
     'runtime_warmup_enabled',
     'evolution_min_occurrences',
     'evolution_min_applied',

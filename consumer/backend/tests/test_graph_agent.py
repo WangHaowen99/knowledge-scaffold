@@ -856,3 +856,17 @@ def test_graph_private_registration_passes_explicit_tools_to_current_jiuwen_boun
     )
     assert len(result.messages) == 1
     assert '"success": true' in result.messages[0]["content"]
+
+
+def test_graph_agent_trace_bridge_sliding_window_applied_is_false():
+    """Graph agent must pass sliding_window_applied=False to JiuwenModelTraceBridge."""
+    import inspect
+
+    # Verify the trace bridge init signature includes sliding_window_applied
+    from agent.core.jiuwen.trace import JiuwenModelTraceBridge
+    source = inspect.getsource(JiuwenModelTraceBridge.__init__)
+    assert 'sliding_window_applied' in source
+
+    # Verify the graph agent _invoke_once passes sliding_window_applied=False
+    agent_source = inspect.getsource(JiuwenGraphQueryAgent._invoke_once)
+    assert 'sliding_window_applied=False' in agent_source

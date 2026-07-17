@@ -260,7 +260,6 @@ class AgentConfig:
     sub_agent_max_depth: int
     parallel_default_max_workers: int
     context_max_rounds: int
-    context_prune_tools: Set[str]
     runtime_warmup_enabled: bool = True
     execute_script_timeout: int = 300
 
@@ -288,10 +287,6 @@ class AgentConfig:
     def from_env(cls) -> "AgentConfig":
         """Load agent configuration from system config with env/default fallback."""
         config = load_system_config()["agent"]
-        raw_prune = str(config.get("context_prune_tools") or "").strip()
-        prune_tools: Set[str] = set()
-        if raw_prune:
-            prune_tools = {s.strip() for s in raw_prune.split(",") if s.strip()}
         return cls(
             llm_connection_max_retries=int(config["llm_connection_max_retries"]),
             main_agent_max_iterations=int(config["main_agent_max_iterations"]),
@@ -300,7 +295,6 @@ class AgentConfig:
             sub_agent_max_depth=int(config["sub_agent_max_depth"]),
             parallel_default_max_workers=int(config["parallel_default_max_workers"]),
             context_max_rounds=int(config["context_max_rounds"]),
-            context_prune_tools=prune_tools,
             runtime_warmup_enabled=bool(config.get("runtime_warmup_enabled", True)),
             evolution_min_occurrences=int(config.get("evolution_min_occurrences", 3)),
             evolution_min_applied=int(config.get("evolution_min_applied", 2)),
