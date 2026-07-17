@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, RefreshCw, Save } from 'lucide-react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 
 const DEFAULT_CONFIG = {
   lang: {

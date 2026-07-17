@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import useAuth from '../hooks/useAuth';
-import { authFetch, getCurrentWorkspaceId, setCurrentWorkspaceId } from '../utils/auth';
+import useAuth from '../features/auth/useAuth';
+import { authFetch, getCurrentWorkspaceId, setCurrentWorkspaceId } from '../shared/api/auth';
 import { friendlyRequestError } from '../utils/requestErrors';
 import { can as canCheck } from './permissions';
 import { AuthCtx } from './useAuthContext';

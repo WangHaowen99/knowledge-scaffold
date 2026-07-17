@@ -19,7 +19,7 @@ import {
   Upload,
 } from 'lucide-react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 
 const CONNECTION_SECTIONS = ['llm_profiles', 'task_llm', 'web_search', 'observability'];
 const VISIBLE_SECTION_ORDER = [...CONNECTION_SECTIONS, 'agent'];

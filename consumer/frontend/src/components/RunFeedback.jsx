@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { ThumbsUp, ThumbsDown, Check, Loader2 } from 'lucide-react';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 
 /**
  * Per-run feedback widget — thumbs up/down only.

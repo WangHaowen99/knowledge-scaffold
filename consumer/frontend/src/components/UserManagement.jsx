@@ -8,7 +8,7 @@ import {
   X,
 } from 'lucide-react';
 import ChangePasswordModal from './ChangePasswordModal';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import {
   getAccountUserAction,
   getVisibleAccountUsers,

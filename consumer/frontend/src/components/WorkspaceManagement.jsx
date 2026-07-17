@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Database, Edit3, Loader2, Plus, RefreshCw, Star, Trash2, X } from 'lucide-react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import DataConnectionManagement from './DataConnectionManagement';
 
 const RESERVED_WORKSPACE_IDS = new Set(['default']);

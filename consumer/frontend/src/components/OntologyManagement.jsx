@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import {
   ONTOLOGY_IMPORT_DISCLAIMER,
   canSubmitOntologyImport,

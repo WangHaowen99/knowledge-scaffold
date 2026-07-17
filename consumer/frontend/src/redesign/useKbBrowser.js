@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import { friendlyRequestError } from '../utils/requestErrors';
 import { useAuthContext } from './useAuthContext';
 

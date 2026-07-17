@@ -3,8 +3,8 @@ import {
   ChevronDown, Compass, FolderKanban, LogOut, Menu, MessageSquarePlus,
   PackageOpen, PanelLeftClose, PanelLeftOpen, Plus, Settings2, SlidersHorizontal, Upload, X,
 } from 'lucide-react';
-import useStreamManager from '../hooks/useStreamManager';
-import useChatSessions from '../hooks/useChatSessions';
+import useStreamManager from '../features/chat/hooks/useStreamManager';
+import useChatSessions from '../features/chat/hooks/useChatSessions';
 import { APP_VERSION } from './version';
 import ForceChangePasswordPage from '../components/ForceChangePasswordPage';
 import { useAuthContext } from './useAuthContext';
@@ -16,7 +16,7 @@ import ChatHistorySidebar from './ChatHistorySidebar';
 import KbSidebarTree from './KbSidebarTree';
 import useKbBrowser from './useKbBrowser';
 import { ConfirmDialog, SkeletonState, ToastNotice } from './UiFeedback';
-import { clearWorkspaceRuntime } from '../utils/workspaceRuntime';
+import { clearWorkspaceRuntime } from '../app/providers/workspaceRuntime';
 
 const KnowledgeWorkbench = lazy(() => import('./KnowledgeWorkbench'));
 const ConfigCenter = lazy(() => import('./ConfigCenter'));
@@ -58,8 +58,8 @@ export default function AppShell() {
   }, [status, user?.password_change_required]);
 
   useEffect(() => {
-    if (status !== 'authenticated') return undefined;
     clearWorkspaceRuntime({ streamManager, chat });
+    if (status !== 'authenticated') return undefined;
     const t = setTimeout(() => chat.loadSessions(false), 0);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import { useAuthContext } from './useAuthContext';
 import { EmptyState, SectionCard, ScopeTabs, StatusTag, Table } from './ui';
 

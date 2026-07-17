@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { authFetch } from '../utils/auth';
+import { authFetch } from '../shared/api/auth';
 import { friendlyRequestError } from '../utils/requestErrors';
 import EvolutionWorkbench from './EvolutionWorkbench';
 import KnowledgeDataSources from './KnowledgeDataSources';
