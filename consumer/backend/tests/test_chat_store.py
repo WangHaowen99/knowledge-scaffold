@@ -161,6 +161,71 @@ def test_chat_store_compacts_event_log_into_snapshot(tmp_path):
     assert loaded.events[0]["data"]["payload"]["text"] == "hello world"
 
 
+def test_chat_store_persists_complete_tool_output_across_compaction(tmp_path):
+    store = ChatStore(str(tmp_path / "chats"))
+    created = store.create_session(session_id="tool-output-session", title="trace")
+    complete_output = "完整输出🙂" * 1200
+
+    artifact = store.store_tool_output(
+        created.id,
+        "run:with:opaque:id",
+        "call-1",
+        complete_output,
+    )
+
+    assert artifact is not None
+    assert artifact["output_size"] == len(complete_output.encode("utf-8"))
+    loaded = store.get_tool_output(
+        created.id,
+        "run:with:opaque:id",
+        artifact["output_ref"],
+    )
+    assert loaded is not None
+    assert loaded["output"] == complete_output
+    assert loaded["tool_call_id"] == "call-1"
+
+    assert store.compact_session(created.id) is True
+    retained = store.get_tool_output(
+        created.id,
+        "run:with:opaque:id",
+        artifact["output_ref"],
+    )
+    assert retained is not None
+    assert retained["output"] == complete_output
+    reloaded_store = ChatStore(str(tmp_path / "chats"))
+    reloaded = reloaded_store.get_tool_output(
+        created.id,
+        "run:with:opaque:id",
+        artifact["output_ref"],
+    )
+    assert reloaded is not None
+    assert reloaded["output"] == complete_output
+    assert store.get_tool_output(
+        created.id,
+        "another-run",
+        artifact["output_ref"],
+    ) is None
+
+
+def test_chat_store_tool_output_follows_run_and_session_deletion_lifecycle(tmp_path):
+    storage_dir = tmp_path / "chats"
+    store = ChatStore(str(storage_dir))
+    first = store.create_session(session_id="first-session")
+    second = store.create_session(session_id="second-session")
+    first_artifact = store.store_tool_output(first.id, "run-1", "call-1", "first")
+    second_artifact = store.store_tool_output(second.id, "run-2", "call-2", "second")
+    assert first_artifact is not None
+    assert second_artifact is not None
+
+    assert store.delete_tool_outputs_for_run(first.id, "run-1") is True
+    assert store.get_tool_output(first.id, "run-1", first_artifact["output_ref"]) is None
+    assert store.get_tool_output(second.id, "run-2", second_artifact["output_ref"]) is not None
+
+    assert store.delete_session(second.id) is True
+    assert not (storage_dir / second.id).exists()
+    assert store.get_tool_output(second.id, "run-2", second_artifact["output_ref"]) is None
+
+
 def test_chat_store_migrates_legacy_json_session(tmp_path):
     storage_dir = tmp_path / "chats"
     storage_dir.mkdir()

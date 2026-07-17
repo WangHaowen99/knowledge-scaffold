@@ -493,6 +493,86 @@ def test_get_session_no_longer_exposes_delta_polling(tmp_path, monkeypatch):
     assert "delta polling has been removed" in payload["error"]
 
 
+def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = ChatStore(str(tmp_path / "owner-chats"))
+    chat_store.create_session(session_id="sess-output", title="Trace")
+    complete_output = "完整工具输出🙂" * 900
+    artifact = chat_store.store_tool_output(
+        "sess-output",
+        "run-output",
+        "call-output",
+        complete_output,
+    )
+    assert artifact is not None
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
+    )
+
+    response = client.get(
+        "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(
+            artifact["output_ref"]
+        ),
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    payload = response.get_json()
+    assert payload["output"] == complete_output
+    assert payload["output_size"] == len(complete_output.encode("utf-8"))
+    assert payload["tool_call_id"] == "call-output"
+    assert payload["run_id"] == "run-output"
+
+
+def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    owner_store = ChatStore(str(tmp_path / "workspace-alpha"))
+    owner_store.create_session(session_id="shared-session")
+    artifact = owner_store.store_tool_output(
+        "shared-session",
+        "owner-run",
+        "owner-call",
+        "private output",
+    )
+    assert artifact is not None
+
+    foreign_workspace_store = ChatStore(str(tmp_path / "workspace-beta"))
+    foreign_workspace_store.create_session(session_id="shared-session")
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (foreign_workspace_store, _FakeExecutionStore()),
+    )
+    foreign_response = client.get(
+        "/agentic/sessions/shared-session/runs/owner-run/tool-outputs/{}".format(
+            artifact["output_ref"]
+        ),
+        headers=headers,
+    )
+    assert foreign_response.status_code == 404
+
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (owner_store, _FakeExecutionStore()),
+    )
+    wrong_run_response = client.get(
+        "/agentic/sessions/shared-session/runs/another-run/tool-outputs/{}".format(
+            artifact["output_ref"]
+        ),
+        headers=headers,
+    )
+    assert wrong_run_response.status_code == 404
+
+    wrong_session_response = client.get(
+        "/agentic/sessions/missing-session/runs/owner-run/tool-outputs/{}".format(
+            artifact["output_ref"]
+        ),
+        headers=headers,
+    )
+    assert wrong_session_response.status_code == 404
+
+
 def test_get_session_exposes_active_run_status_for_resume(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path)
     chat_store = ChatStore(str(tmp_path / "chats"))

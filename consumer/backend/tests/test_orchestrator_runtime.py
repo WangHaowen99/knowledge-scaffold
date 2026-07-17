@@ -12,6 +12,8 @@ from agent.core.orchestrator import (
     AgenticOrchestrator,
     _public_workflow_error_message,
 )
+from agent.tools.base import ToolContext
+from agent.tools.events import emit_tool_finished
 from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
@@ -332,6 +334,84 @@ def test_stream_agent_loop_emits_custom_before_values(monkeypatch):
     assert [event[0] for event in events] == ["custom", "values"]
     assert events[0][1]["data"]["type"] == "tool.progress"
     assert events[1][1]["messages"][-1]["content"] == "done"
+
+
+def test_stream_agent_loop_persists_complete_tool_output_before_emitting_reference(
+    tmp_path,
+    monkeypatch,
+):
+    chat_store = ChatStore(str(tmp_path / "artifact-chats"))
+    chat_store.create_session(session_id="artifact-session")
+    orchestrator = AgenticOrchestrator(
+        chat_store=chat_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+    complete_output = "long-output-🙂" * 600
+
+    class _FakeEngine:
+        def __init__(self, *, memory_manager=None, agent_config=None):
+            self.agent_config = agent_config
+            del memory_manager
+
+        def run(
+            self,
+            state,
+            *,
+            caller,
+            event_writer=None,
+            snapshot_callback=None,
+            iteration_limit=None,
+            observer=None,
+            event_source_node=None,
+        ):
+            del event_writer, iteration_limit, observer, event_source_node
+            emit_tool_finished(
+                context=ToolContext(
+                    memory_manager=None,
+                    messages=[],
+                    run_id=state["run_id"],
+                    session_id=state["session_id"],
+                    turn_id=state["current_turn_id"],
+                    agent_config=self.agent_config,
+                    caller=caller,
+                    agent_iteration=1,
+                ),
+                tool_name="execute_script",
+                tool_call_id="call-artifact",
+                status="completed",
+                raw_output=complete_output,
+                error=None,
+                elapsed_ms=23,
+            )
+            snapshot_callback(state)
+            return state
+
+    monkeypatch.setattr("agent.core.orchestrator.AgentLoopEngine", _FakeEngine)
+
+    events = list(
+        orchestrator._stream_agent_loop(
+            {
+                "run_id": "artifact-run",
+                "session_id": "artifact-session",
+                "current_turn_id": 1,
+                "workspace_id": "test-workspace",
+                "messages": [],
+            },
+            memory_manager=None,
+        )
+    )
+
+    tool_event = next(event[1] for event in events if event[0] == "custom")
+    payload = tool_event["data"]["payload"]
+    artifact = chat_store.get_tool_output(
+        "artifact-session",
+        "artifact-run",
+        payload["output_ref"],
+    )
+    assert payload["output_size"] == len(complete_output.encode("utf-8"))
+    assert payload["output_truncated"] is True
+    assert artifact is not None
+    assert artifact["output"] == complete_output
 
 
 def test_stream_agent_loop_runs_engine_inside_workspace_scope(monkeypatch):

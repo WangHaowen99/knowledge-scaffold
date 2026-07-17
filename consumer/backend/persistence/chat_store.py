@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import re
 import shutil
 import threading
 import time
@@ -29,6 +31,8 @@ logger = get_logger("stores.chat")
 
 _SNAPSHOT_FILENAME = "snapshot.json"
 _EVENT_LOG_FILENAME = "events.jsonl"
+_TOOL_OUTPUTS_DIRNAME = "tool-outputs"
+_TOOL_OUTPUT_REF_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _LEGACY_MIGRATED_SUFFIX = ".migrated"
 _STORAGE_VERSION = "append-only-v1"
 _SUPPORTED_EVENT_NAMES = {"chat_message", "agent.v2"}
@@ -114,6 +118,29 @@ class _AppendOnlyChatStore:
 
     def _event_log_path(self, session_id: str) -> str:
         return os.path.join(self._session_dir(session_id), _EVENT_LOG_FILENAME)
+
+    def _tool_output_run_dir(self, session_id: str, run_id: str) -> Path:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        session_dir = Path(self._session_dir(session_id)).resolve()
+        run_key = hashlib.sha256(normalized_run_id.encode("utf-8")).hexdigest()
+        candidate = (session_dir / _TOOL_OUTPUTS_DIRNAME / run_key).resolve()
+        candidate.relative_to(session_dir)
+        return candidate
+
+    def _tool_output_path(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Path:
+        normalized_ref = str(output_ref or "").strip().lower()
+        if not _TOOL_OUTPUT_REF_PATTERN.fullmatch(normalized_ref):
+            raise ValueError("output_ref is invalid")
+        return self._tool_output_run_dir(session_id, run_id) / "{}.json".format(
+            normalized_ref
+        )
 
     def _legacy_session_path(self, session_id: str) -> str:
         normalized = validate_session_id(session_id)
@@ -533,6 +560,121 @@ class _AppendOnlyChatStore:
         """Append a streamed event to a chat session."""
         return self.append_events(session_id, [event])
 
+    def store_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        tool_call_id: Optional[str],
+        output: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a complete tool output for the lifetime of its chat session."""
+        normalized_session_id = validate_session_id(session_id)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        text = str(output or "")
+        output_ref = uuid.uuid4().hex
+        record = {
+            "version": 1,
+            "output_ref": output_ref,
+            "session_id": normalized_session_id,
+            "run_id": normalized_run_id,
+            "tool_call_id": str(tool_call_id or "").strip() or None,
+            "content_type": "text/plain; charset=utf-8",
+            "output_size": len(text.encode("utf-8")),
+            "output": text,
+            "created_at": self._now_iso(),
+        }
+
+        with self._lock_for_session(normalized_session_id):
+            if not self._read_snapshot_unlocked(normalized_session_id):
+                return None
+            path = self._tool_output_path(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, separators=(",", ":"))
+            os.replace(tmp_path, path)
+
+        return {
+            "output_ref": output_ref,
+            "output_size": record["output_size"],
+        }
+
+    def get_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Load one complete output after validating its session and run scope."""
+        normalized_session_id = validate_session_id(session_id)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        path = self._tool_output_path(
+            normalized_session_id,
+            normalized_run_id,
+            output_ref,
+        )
+        with self._lock_for_session(normalized_session_id):
+            if not self._read_snapshot_unlocked(normalized_session_id) or not path.is_file():
+                return None
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    record = json.load(f)
+            except (IOError, json.JSONDecodeError):
+                logger.warning(
+                    "Failed to read tool output artifact session=%s run=%s ref=%s",
+                    normalized_session_id,
+                    normalized_run_id,
+                    output_ref,
+                )
+                return None
+
+        if not isinstance(record, dict):
+            return None
+        if (
+            record.get("session_id") != normalized_session_id
+            or record.get("run_id") != normalized_run_id
+            or record.get("output_ref") != str(output_ref or "").strip().lower()
+        ):
+            logger.warning(
+                "Rejected mismatched tool output artifact session=%s run=%s ref=%s",
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            return None
+        output = record.get("output")
+        try:
+            output_size = int(record.get("output_size"))
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(output, str) or output_size != len(output.encode("utf-8")):
+            logger.warning(
+                "Rejected corrupt tool output artifact session=%s run=%s ref=%s",
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            return None
+        return record
+
+    def delete_tool_outputs_for_run(self, session_id: str, run_id: str) -> bool:
+        """Delete one run's outputs without affecting the rest of the session."""
+        normalized_session_id = validate_session_id(session_id)
+        with self._lock_for_session(normalized_session_id):
+            run_dir = self._tool_output_run_dir(normalized_session_id, run_id)
+            if not run_dir.is_dir():
+                return False
+            shutil.rmtree(run_dir)
+            return True
+
     def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get stored session history (TurnSummary list) for a session."""
         with self._lock_for_session(session_id):
@@ -851,6 +993,34 @@ class ChatStore:
             return True
         session = self._store.append_events(session_id, event_list)
         return session is not None
+
+    def store_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        tool_call_id: Optional[str],
+        output: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist complete output while stream events retain only a preview."""
+        return self._store.store_tool_output(
+            session_id,
+            run_id,
+            tool_call_id,
+            output,
+        )
+
+    def get_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a complete output scoped to this store, session, and run."""
+        return self._store.get_tool_output(session_id, run_id, output_ref)
+
+    def delete_tool_outputs_for_run(self, session_id: str, run_id: str) -> bool:
+        """Delete complete outputs for one run."""
+        return self._store.delete_tool_outputs_for_run(session_id, run_id)
 
     def compact_session(self, session_id: str) -> bool:
         """Fold append-only events into the compact snapshot."""

@@ -20,10 +20,10 @@ const TOOL_STATUS_ICON_MAP = {
   error: 'error',
   failed: 'error',
   fail: 'error',
-  cancelled: 'error',
-  canceled: 'error',
-  aborted: 'error',
-  abort: 'error',
+  cancelled: 'cancelled',
+  canceled: 'cancelled',
+  aborted: 'cancelled',
+  abort: 'cancelled',
 };
 
 const normalizeToolStatus = (value) => {
@@ -145,11 +145,58 @@ export const closeOpenSegment = (segments = []) => {
   return next;
 };
 
+const closeSubagentEventsForTerminal = (events, terminalStatus, ts) => (
+  (Array.isArray(events) ? events : []).map((event) => {
+    if (!event || event.finished) return event;
+    return {
+      ...event,
+      status: terminalStatus,
+      finished: true,
+      endTs: event.kind === 'tool' ? ts : (event.endTs || event.ts || ts),
+    };
+  })
+);
+
+const closeSubagentGroupForTerminalTurn = (group, terminalStatus, ts) => {
+  const fallbackStatus = terminalStatus === 'cancelled'
+    ? 'cancelled'
+    : (terminalStatus === 'error' ? 'error' : 'completed');
+  const children = {};
+  Object.entries(group?.children || {}).forEach(([subagentId, child]) => {
+    const childStatus = ['completed', 'error', 'cancelled'].includes(child?.status)
+      ? child.status
+      : fallbackStatus;
+    children[subagentId] = {
+      ...child,
+      status: childStatus,
+      endTs: child?.endTs || ts,
+      events: closeSubagentEventsForTerminal(child?.events, childStatus, ts),
+      childGroups: (Array.isArray(child?.childGroups) ? child.childGroups : []).map((nested) => (
+        closeSubagentGroupForTerminalTurn(nested, terminalStatus, ts)
+      )),
+    };
+  });
+  const groupStatus = ['completed', 'error', 'cancelled'].includes(group?.status)
+    ? group.status
+    : fallbackStatus;
+  return {
+    ...group,
+    status: groupStatus,
+    finished: true,
+    endTs: group?.endTs || ts,
+    children,
+  };
+};
+
 const closeUnfinishedSegmentsForTerminalTurn = (segments = [], terminalStatus = 'success', ts = Date.now()) => {
   if (!Array.isArray(segments) || segments.length === 0) return Array.isArray(segments) ? segments : [];
 
-  const isFailure = terminalStatus === 'error' || terminalStatus === 'cancelled';
+  const isError = terminalStatus === 'error';
+  const isCancelled = terminalStatus === 'cancelled';
   return segments.map((segment) => {
+    if (segment?.type === 'subagent_group') {
+      return closeSubagentGroupForTerminalTurn(segment, terminalStatus, ts || Date.now());
+    }
     if (!segment || segment.finished) return segment;
 
     const closed = {
@@ -159,7 +206,7 @@ const closeUnfinishedSegmentsForTerminalTurn = (segments = [], terminalStatus = 
     };
     if (segment.type !== 'tool') return closed;
 
-    const terminalToolStatus = isFailure ? 'error' : 'completed';
+    const terminalToolStatus = isCancelled ? 'cancelled' : (isError ? 'error' : 'completed');
     return {
       ...closed,
       state: terminalToolStatus,
@@ -580,14 +627,38 @@ const appendChildEvent = (child, event) => {
   const last = next.events[next.events.length - 1];
 
   if (event.kind === 'token') {
-    if (last && last.kind === 'token' && last.channel === event.channel) {
+    const finiteOrder = (value) => (
+      value != null && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null
+    );
+    const lastStartedAt = Number(last?.startTs ?? last?.ts);
+    const lastSourceOrder = finiteOrder(last?.endSourceOrder ?? last?.sourceOrder);
+    const latestGroupSourceOrder = Math.max(
+      ...getChildGroups(next).map((group) => finiteOrder(group?.sourceOrder)).filter((value) => value != null),
+      Number.NEGATIVE_INFINITY,
+    );
+    const latestGroupStartedAt = Math.max(
+      ...getChildGroups(next).map((group) => Number(group?.startTs)).filter(Number.isFinite),
+      Number.NEGATIVE_INFINITY,
+    );
+    const groupInterruptedToken = Number.isFinite(latestGroupSourceOrder) && lastSourceOrder != null
+      ? latestGroupSourceOrder > lastSourceOrder
+      : Number.isFinite(lastStartedAt) && latestGroupStartedAt > lastStartedAt;
+    if (last && last.kind === 'token' && last.channel === event.channel && !groupInterruptedToken) {
       next.events[next.events.length - 1] = {
         ...last,
         text: `${last.text || ''}${event.text || ''}`,
-        ts: event.ts || last.ts,
+        startTs: last.startTs ?? last.ts,
+        endTs: event.ts || last.endTs || last.ts,
+        sourceOrder: last.sourceOrder ?? event.sourceOrder,
+        endSourceOrder: event.sourceOrder ?? last.endSourceOrder ?? last.sourceOrder,
       };
     } else {
-      next.events.push(event);
+      next.events.push({
+        ...event,
+        startTs: event.startTs ?? event.ts,
+        endTs: event.endTs ?? event.ts,
+        endSourceOrder: event.endSourceOrder ?? event.sourceOrder,
+      });
     }
     return next;
   }
@@ -613,7 +684,14 @@ const appendChildEvent = (child, event) => {
         finished: Boolean(event.finishedStatus),
         progress: event.progressEntry ? [event.progressEntry] : [],
         output: event.output || '',
+        outputRef: event.outputRef || '',
+        outputSize: event.outputSize ?? null,
+        outputTruncated: Boolean(event.outputTruncated),
+        outputProjection: event.outputProjection || null,
+        elapsedMs: event.elapsedMs ?? null,
         error: event.error || '',
+        sourceOrder: event.sourceOrder ?? null,
+        endSourceOrder: event.sourceOrder ?? null,
         startTs: event.ts,
         endTs: event.finishedStatus ? event.ts : null,
       });
@@ -629,7 +707,13 @@ const appendChildEvent = (child, event) => {
           ? [...(prev.progress || []), event.progressEntry]
           : prev.progress,
         output: event.output || prev.output,
+        outputRef: event.outputRef || prev.outputRef,
+        outputSize: event.outputSize ?? prev.outputSize,
+        outputTruncated: event.outputTruncated ?? prev.outputTruncated,
+        outputProjection: event.outputProjection || prev.outputProjection,
+        elapsedMs: event.elapsedMs ?? prev.elapsedMs,
         error: event.error || prev.error,
+        endSourceOrder: event.sourceOrder ?? prev.endSourceOrder ?? prev.sourceOrder,
         endTs: event.finishedStatus ? event.ts : prev.endTs,
       };
     }
@@ -640,7 +724,7 @@ const appendChildEvent = (child, event) => {
   return next;
 };
 
-const buildToolEventFromPayload = (type, payload, ts) => {
+const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
   const toolCallId = typeof payload?.tool_call_id === 'string' ? payload.tool_call_id : '';
   const toolName = typeof payload?.tool_name === 'string' ? payload.tool_name : '';
   if (type === 'tool.started') {
@@ -649,6 +733,7 @@ const buildToolEventFromPayload = (type, payload, ts) => {
       toolCallId,
       toolName,
       input: payload?.input || null,
+      sourceOrder,
       ts,
     };
   }
@@ -668,6 +753,7 @@ const buildToolEventFromPayload = (type, payload, ts) => {
         web: webSearchEvent,
         ts,
       },
+      sourceOrder,
       ts,
     };
   }
@@ -678,7 +764,13 @@ const buildToolEventFromPayload = (type, payload, ts) => {
       toolName,
       finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
       output: payload?.output_preview || '',
+      outputRef: payload?.output_ref || '',
+      outputSize: payload?.output_size ?? null,
+      outputTruncated: Boolean(payload?.output_truncated),
+      outputProjection: payload?.output_projection || null,
+      elapsedMs: payload?.elapsed_ms ?? null,
       error: payload?.error || '',
+      sourceOrder,
       ts,
     };
   }
@@ -711,12 +803,15 @@ export const applyAgentV2Event = (current, envelope) => {
   // segments without spanKey fall back to a flat list in TracePanel.
   const envelopeSpanKey = typeof envelope?.span_key === 'string' ? envelope.span_key : '';
   const envelopeParentKey = typeof envelope?.parent_key === 'string' ? envelope.parent_key : '';
+  const envelopeSourceOrder = envelope?.seq != null && Number.isFinite(Number(envelope.seq))
+    ? Number(envelope.seq)
+    : null;
   const subagentIdInPayload = typeof payload?.subagent_id === 'string' && payload.subagent_id
     ? payload.subagent_id
     : null;
 
   if (subagentIdInPayload && (type === 'tool.started' || type === 'tool.progress' || type === 'tool.finished')) {
-    const event = buildToolEventFromPayload(type, payload, envelope.ts || Date.now());
+    const event = buildToolEventFromPayload(type, payload, envelope.ts || Date.now(), envelopeSourceOrder);
     if (event) {
       const routed = routeEventToSubagentChild(
         next.streamSegments,
@@ -744,6 +839,7 @@ export const applyAgentV2Event = (current, envelope) => {
       kind: 'token',
       channel: payload.channel === 'reasoning' ? 'reasoning' : 'content',
       text: payload.text == null ? '' : String(payload.text),
+      sourceOrder: envelopeSourceOrder,
       ts: envelope.ts || Date.now(),
     };
     const routed = routeEventToSubagentChild(
@@ -794,6 +890,7 @@ export const applyAgentV2Event = (current, envelope) => {
       taskOrder: [],
       pendingTasks,
       finished: false,
+      sourceOrder: envelopeSourceOrder,
       startTs: envelope.ts || Date.now(),
       meta: payload,
     };
@@ -821,14 +918,19 @@ export const applyAgentV2Event = (current, envelope) => {
   }
 
   if (type === 'subagent_group.finished') {
-    const status = payload.status === 'error' || (payload.error_count || 0) > 0
-      ? 'error'
-      : 'completed';
+    const normalizedStatus = normalizeToolStatus(payload.status);
+    const status = normalizedStatus === 'cancelled'
+      ? 'cancelled'
+      : (normalizedStatus === 'error' || (payload.error_count || 0) > 0 ? 'error' : 'completed');
     const updatedSegments = updateGroupByGroupId(
       next.streamSegments,
       payload.group_id,
       (group) => ({
-        ...cloneSubagentGroup(group),
+        ...closeSubagentGroupForTerminalTurn(
+          group,
+          status === 'cancelled' ? 'cancelled' : (status === 'error' ? 'error' : 'success'),
+          envelope.ts || Date.now(),
+        ),
         status,
         finished: true,
         endTs: envelope.ts || Date.now(),
@@ -887,6 +989,7 @@ export const applyAgentV2Event = (current, envelope) => {
       channel: payload.channel || 'content',
       text: payload.text == null ? '' : String(payload.text),
       meta: payload,
+      sourceOrder: envelopeSourceOrder,
       ts: envelope.ts || Date.now(),
     };
     const routed = routeEventToSubagentChild(
@@ -933,9 +1036,7 @@ export const applyAgentV2Event = (current, envelope) => {
   }
 
   if (type === 'subagent.finished' && subagentIdInPayload) {
-    const finalStatus = normalizeToolStatus(payload.status) === 'error'
-      ? 'error'
-      : (payload.status || 'completed');
+    const finalStatus = normalizeToolStatus(payload.status) || payload.status || 'completed';
     const updatedSegments = updateSubagentChildInSegments(
       next.streamSegments,
       subagentIdInPayload,
@@ -950,6 +1051,7 @@ export const applyAgentV2Event = (current, envelope) => {
         ...cloneChild(child),
         status: finalStatus,
         endTs: envelope.ts || Date.now(),
+        events: closeSubagentEventsForTerminal(child?.events, finalStatus, envelope.ts || Date.now()),
         result: payload.result || null,
         error: payload.error || null,
       }),
@@ -1076,6 +1178,8 @@ export const applyAgentV2Event = (current, envelope) => {
         node: sourceNode || target.node,
         meta: mergeToolMeta(target.meta, payload),
         finished: false,
+        startTs: target.startTs || envelope.ts || Date.now(),
+        endTs: null,
         spanKey: target.spanKey || envelopeSpanKey || undefined,
         parentKey: target.parentKey || envelopeParentKey || undefined,
       };
@@ -1089,6 +1193,8 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         finished: false,
         toolStatus: null,
+        startTs: envelope.ts || Date.now(),
+        endTs: null,
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });
@@ -1133,6 +1239,7 @@ export const applyAgentV2Event = (current, envelope) => {
           webSearchEvent,
         ),
         finished: targetOpenIdx !== -1 ? false : Boolean(target.finished),
+        startTs: target.startTs || envelope.ts || Date.now(),
         spanKey: target.spanKey || envelopeSpanKey || undefined,
         parentKey: target.parentKey || envelopeParentKey || undefined,
       };
@@ -1152,6 +1259,8 @@ export const applyAgentV2Event = (current, envelope) => {
         ),
         finished: false,
         toolStatus: null,
+        startTs: envelope.ts || Date.now(),
+        endTs: null,
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });
@@ -1196,6 +1305,11 @@ export const applyAgentV2Event = (current, envelope) => {
         text: target.text || payload.output_preview || '',
         finished: true,
         toolStatus,
+        startTs: target.startTs
+          || (Number.isFinite(Number(payload.elapsed_ms))
+            ? (envelope.ts || Date.now()) - Number(payload.elapsed_ms)
+            : envelope.ts || Date.now()),
+        endTs: envelope.ts || Date.now(),
         spanKey: target.spanKey || envelopeSpanKey || undefined,
         parentKey: target.parentKey || envelopeParentKey || undefined,
       };
@@ -1209,6 +1323,10 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         finished: true,
         toolStatus,
+        startTs: Number.isFinite(Number(payload.elapsed_ms))
+          ? (envelope.ts || Date.now()) - Number(payload.elapsed_ms)
+          : envelope.ts || Date.now(),
+        endTs: envelope.ts || Date.now(),
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });
