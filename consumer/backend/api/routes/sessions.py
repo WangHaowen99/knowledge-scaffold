@@ -259,7 +259,7 @@ def create_session():
             workspace_id=workspace_id,
         )
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"detail": str(exc)}), 400
     try:
         selected_profile = resolve_effective_llm_profile_config(
             model_profile_id or None,
@@ -267,7 +267,7 @@ def create_session():
             workspace_id=workspace_id,
         )
     except SystemConfigValidationError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"detail": str(exc)}), 400
 
     chat_store, execution_store = _get_user_stores()
     metadata = {

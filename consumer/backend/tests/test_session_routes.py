@@ -259,7 +259,7 @@ def test_create_session_rejects_unknown_prefixed_profile_as_bad_request(tmp_path
     )
 
     assert response.status_code == 400
-    assert "模型配置不存在" in response.get_json()["error"]
+    assert "模型配置不存在" in response.get_json()["detail"]
 
 
 def test_create_session_rejects_empty_scoped_profile_as_bad_request(tmp_path, monkeypatch):
@@ -275,7 +275,7 @@ def test_create_session_rejects_empty_scoped_profile_as_bad_request(tmp_path, mo
     )
 
     assert response.status_code == 400
-    assert "不能为空" in response.get_json()["error"]
+    assert "不能为空" in response.get_json()["detail"]
 
 
 def _stub_session_create_dependencies(monkeypatch, chat_store, *, workspace_id="alpha"):
@@ -390,7 +390,7 @@ def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_pat
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == "知识包不存在: beta-only"
+    assert response.get_json() == {"detail": "知识包不存在: beta-only"}
     assert chat_store.created_sessions == []
 
 
@@ -415,7 +415,7 @@ def test_create_session_rejects_disabled_selected_ontology(tmp_path, monkeypatch
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == "知识包已禁用: disabled-ontology"
+    assert response.get_json() == {"detail": "知识包已禁用: disabled-ontology"}
     assert chat_store.created_sessions == []
 
 
