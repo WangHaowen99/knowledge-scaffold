@@ -46,6 +46,8 @@ def execute_migration(
 5. 先回读验证规范目标，再删除或改名旧源。
 6. 完成标记只是提交记录；重复执行仍要验证规范目标。
 
+同一文件上的有序迁移不会自动组成事务。`system-config-model-profiles-v1` 先提交模型/profile 结构，`system-config-secret-encryption-v1` 再加密规范位置上的明文 secret；第二步失败时保留第一步结果、阻止启动，并在密钥或配置修复后安全重试。两步 dry-run 都不写盘；第二步通过共享的纯内存 planner 预检第一步投影后的 secret 位置与加密 context，runner 不包含迁移专用分支。
+
 迁移和部署均不提供自动 rollback。发布级恢复使用停写后由 `backup.sh` 创建的全量备份；迁移模块生成的副本只供人工排障与恢复，不会被运行时读取。
 
 人工恢复副本可能包含明文 secret、Token、凭据或业务敏感数据，必须保持 `0600` 并只允许指定运维人员访问。副本保留到升级验收完成且对应兼容窗口关闭，之后由指定运维人员按报告中的 `backup_paths` 清点并安全销毁；runner 不自动恢复或销毁副本，也不得把副本内容复制到普通日志、工单或 PR。
@@ -56,6 +58,8 @@ def execute_migration(
 | --- | --- | --- | --- | --- |
 | `ontology-data-sources-direct-v2` | 删除共享连接引用，将存量数据源展开为 ontology 私有直接配置。 | `startup` | `blocking` | 新运行时不能安全读取旧引用；任何 scope 失败都必须保留源数据并阻止启动。 |
 | `observability-workspace-config-v1` | 删除全局观测配置，将其复制到规范 workspace，并清理旧性能日志。 | `startup` | `non-blocking` | workspace 目标缺失时观测安全降级为关闭，配置失败时保留全局源以便重试；旧日志清理失败仅告警。 |
+| `system-config-model-profiles-v1` | 将旧 `task_llm` 与 `default_profile_id` 收敛为有目标校验的全局 profile ref。 | `startup` | `blocking` | 严格读取拒绝旧字段、重复 profile ID、悬空 ref 与新旧配置冲突；失败时不覆盖 `system_config.json`。 |
+| `system-config-secret-encryption-v1` | 加密 system config 全部规范 secret 字段，并验证已有密文的密钥与 context。 | `startup` | `blocking` | security-critical；缺少或无效密钥、密文不可解密、加密/备份/原子提交失败均阻止启动，原文件在提交前失败时保持不变。 |
 
 ## 迁移退场
 

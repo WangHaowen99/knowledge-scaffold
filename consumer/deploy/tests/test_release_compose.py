@@ -89,3 +89,22 @@ def test_observability_compatibility_migration_has_no_entrypoint_or_deploy_coupl
     assert not (
         BACKEND_ROOT / "integration" / "observability" / "migration.py"
     ).exists()
+
+
+def test_system_config_migrations_are_ordered_only_in_shared_runner():
+    app_text = (BACKEND_ROOT / "app.py").read_text(encoding="utf-8")
+    runner_text = (BACKEND_ROOT / "migrations" / "runner.py").read_text(encoding="utf-8")
+    forbidden_values = (
+        "system-config-model-profiles-v1",
+        "system-config-secret-encryption-v1",
+        "system_config_model_profiles_v1",
+        "system_config_secret_encryption_v1",
+    )
+
+    assert app_text.count("run_startup_migrations()") == 1
+    assert runner_text.index("system-config-model-profiles-v1") < runner_text.index(
+        "system-config-secret-encryption-v1"
+    )
+    for script_name in ("deploy.sh", "migrate.sh", "preflight.sh", "backup.sh"):
+        script_text = (DEPLOY_ROOT / script_name).read_text(encoding="utf-8")
+        assert all(value not in script_text for value in forbidden_values)
