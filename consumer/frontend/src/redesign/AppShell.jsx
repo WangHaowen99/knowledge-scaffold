@@ -95,11 +95,12 @@ export default function AppShell() {
     return <ForceChangePasswordPage user={user} onChangePassword={changePassword} onLogout={logout} />;
   }
 
-  const navigate = ({ surface: sf, scope, sec, tab }) => {
+  const navigate = ({ surface: sf, scope, sec, tab, ontologyId }) => {
     if (sf) setSurface(sf);
     if (scope) setCfgScope(scope);
     if (sec) setCfgSec(sec);
-    if (sf === 'kb' && tab) setKbFocus({ ontologyId: kb.pkgId || '', tab, token: Date.now() });
+    if (sf === 'kb' && ontologyId) kb.selectPkg(ontologyId);
+    if (sf === 'kb' && tab) setKbFocus({ ontologyId: ontologyId || kb.pkgId || '', tab, token: Date.now() });
     setMobileNavOpen(false);
   };
 
@@ -224,7 +225,8 @@ export default function AppShell() {
         <div className={surface !== 'config' ? 'content content-full' : 'content'}
           style={surface !== 'config' ? { display: 'flex', flexDirection: 'column' } : undefined}>
           <div key={surface} className={`surface-stage surface-${surface}`}>
-            {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager} />}
+            {surface === 'chat' && <ChatWorkspace chat={chat} streamManager={streamManager}
+              onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />}
             {surface === 'kb' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} /></Suspense>}
             {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
           </div>
