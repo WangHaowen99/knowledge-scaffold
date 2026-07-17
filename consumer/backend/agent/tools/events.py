@@ -33,6 +33,7 @@ _SUBAGENT_LINEAGE_FIELDS = (
 _WEB_SEARCH_RESULT_LIMIT = 8
 _WEB_SEARCH_SCAN_LIMIT = 32
 _WEB_SEARCH_URL_LIMIT = 2048
+_FULL_TRACE_OUTPUT_TOOLS = {"ontology_context", "business_data_search"}
 
 
 def _bounded_text(value: Any, limit: int) -> str:
@@ -134,17 +135,28 @@ def emit_protocol_event(
     payload: Dict[str, Any],
     source: Dict[str, str],
     writer: Optional[Callable[[Dict[str, Any]], None]] = None,
+    observability_payload: Optional[Dict[str, Any]] = None,
 ) -> None:
+    """Emit the bounded protocol payload and optional observer-only detail."""
     if not context.run_id:
         return
 
     scoped_payload = _inject_subagent_lineage(context, payload)
+    scoped_observability_payload = (
+        _inject_subagent_lineage(context, observability_payload)
+        if observability_payload is not None
+        else scoped_payload
+    )
 
     if context.caller == "subagent" and context.event_emitter and writer is None:
         context.event_emitter(event_type, scoped_payload)
         if context.protocol_event_observer:
             context.protocol_event_observer(event_type, scoped_payload)
-        _emit_tool_observability_event(context=context, event_type=event_type, payload=scoped_payload)
+        _emit_tool_observability_event(
+            context=context,
+            event_type=event_type,
+            payload=scoped_observability_payload,
+        )
         return
 
     emit_agent_event(
@@ -160,7 +172,11 @@ def emit_protocol_event(
     )
     if context.protocol_event_observer:
         context.protocol_event_observer(event_type, scoped_payload)
-    _emit_tool_observability_event(context=context, event_type=event_type, payload=scoped_payload)
+    _emit_tool_observability_event(
+        context=context,
+        event_type=event_type,
+        payload=scoped_observability_payload,
+    )
 
 
 def emit_tool_started(
@@ -202,11 +218,15 @@ def emit_tool_finished(
         error=error,
         elapsed_ms=elapsed_ms,
     )
+    observability_payload = dict(payload)
+    if tool_name in _FULL_TRACE_OUTPUT_TOOLS:
+        observability_payload["output_full"] = str(raw_output or "")
     emit_protocol_event(
         context=context,
         event_type="tool.finished",
         source={"node": "agent_loop", "component": "tool"},
         payload=payload,
+        observability_payload=observability_payload,
     )
 
 

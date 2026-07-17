@@ -180,8 +180,9 @@ def test_run_stream_forwards_requested_run_id(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
+    response_text = response.get_data(as_text=True)
     assert captured["requested_run_id"] == "client-run-123"
-    assert "id: 1\nevent: agent.v2" in response.get_data(as_text=True)
+    assert "id: 1\nevent: agent.v2" in response_text
 
 
 def test_queued_run_returns_json_until_slot_is_admitted(monkeypatch, tmp_path):

@@ -26,7 +26,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
     pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
     canManage, viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
-    importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge,
+    importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge, retryPackages,
     importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
     resolveImportConflict, retryImport, reopenImportConflict, cancelImport,
   } = kb;
@@ -58,6 +58,9 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   ), [sel.file, tree]);
 
   useEffect(() => {
+    if (focusRequest?.tab && KB_TABS.some((item) => item.id === focusRequest.tab)) {
+      setActiveTab(focusRequest.tab);
+    }
     if (!focusRequest?.path) return;
     if (focusRequest.ontologyId && focusRequest.ontologyId !== pkgId) return;
     if (!treeContainsPath(tree, focusRequest.path)) return;
@@ -135,7 +138,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   if (!pkg) {
     return (
       <>
-        <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、连接、本体图和进化任务将在这里统一管理。" /></div>
+        <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、数据源、本体图和进化任务将在这里统一管理。" /></div>
         {importDialog}
       </>
     );
@@ -312,7 +315,8 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
           </div>
         </div>
       )}
-      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources key={`${workspaceId}:${pkgId}`} ontologyId={pkgId} /></div>}
+      {activeTab === 'data' && <div className="kb-scroll"><KnowledgeDataSources key={`${workspaceId}:${pkgId}`}
+        ontologyId={pkgId} onDataSourceChanged={retryPackages} /></div>}
       {activeTab === 'graph' && <div className="kb-scroll"><OntologyGraphPanel ontologyId={pkgId} version={viewVersion}
         traceMessages={traceInput} onOpenSource={(path) => { setActiveTab('files'); selectFile(path); }} /></div>}
       {activeTab === 'evolution' && <div className="kb-scroll"><EvolutionWorkbench ontologyId={pkgId}

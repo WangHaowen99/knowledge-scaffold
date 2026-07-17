@@ -50,9 +50,7 @@ from ontology.package_import import (
 from agent.tools.business_data.ontology_sources_store import (
     build_ontology_business_data_summary,
     clear_ontology_data_source_on_delete,
-    set_ontology_data_binding,
 )
-from agent.tools.business_data.connections_store import list_data_connections
 from ontology.ontology_graph import build_ontology_graph
 from workspace.workspaces import (
     get_workspace_ontologies_root,
@@ -212,34 +210,6 @@ def _package_browser_error_response(exc: PackageBrowserError):
     }
     status_code = 404 if exc.code == "not_found" else 500 if exc.code == "read_failed" else 400
     return jsonify({"error": messages.get(exc.code, str(exc))}), status_code
-
-
-def _bind_default_connection_for_new_ontology(
-    *,
-    ontology_id: str,
-    workspace_id: str,
-    existed: bool,
-) -> Optional[dict]:
-    if existed:
-        return None
-    document = list_data_connections(workspace_id=workspace_id)
-    default_connection_id = str(document.get("default_connection_id") or "").strip()
-    if not default_connection_id:
-        return None
-    try:
-        return set_ontology_data_binding(
-            ontology_id=ontology_id,
-            connection_id=default_connection_id,
-            workspace_id=workspace_id,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to bind default data connection after ontology import: workspace_id=%s ontology_id=%s connection_id=%s",
-            workspace_id,
-            ontology_id,
-            default_connection_id,
-        )
-        return None
 
 
 def _manifest_for_download(ontology_dir: Path, version: str) -> str:
@@ -2091,11 +2061,6 @@ def import_ontology_zip_with_auto_create():
                 return jsonify({"error": "Failed to parse uploaded zip"}), 500
 
         export_ontology_snapshot_safely(workspace_id=workspace_id)
-        business_data_binding = _bind_default_connection_for_new_ontology(
-            ontology_id=ontology_id,
-            workspace_id=workspace_id,
-            existed=existed,
-        )
         business_data_summary = build_ontology_business_data_summary(
             ontology_id,
             workspace_id=workspace_id,
@@ -2128,7 +2093,6 @@ def import_ontology_zip_with_auto_create():
             "objects_index_path": objects_index_path,
             "operations_index_path": operations_index_path,
             "business_data_configured": bool(business_data_summary.get("configured")),
-            "business_data_binding": business_data_binding,
             "warnings": warnings,
             "normalization_warnings": normalization_warnings,
             "preview": preview,

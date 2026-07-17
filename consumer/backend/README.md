@@ -31,7 +31,7 @@ Runtime ontology and skill assets now live under the `consumer/` application roo
 - Unified `memory` tool for explicit user-provided memory capture, with filesystem/OpenViking memory backends and operation-evolution routing
 - Homogeneous sub-agents via `spawn_sub_agent`
 - Skill CRUD, ontology import/file APIs, operation evolution review, and workspace runtime config APIs
-- Workspace-scoped business data connections, provider schemas, and ontology data bindings
+- Provider schemas and one workspace-local private business data source per ontology
 - Agent-to-Agent (A2A) and ACP protocol adapters over the same orchestrator/runtime
 - Local performance analysis plus optional observability export through system config
 - Skill ontology parser pipeline (`skill_parser/`)
@@ -55,7 +55,7 @@ agentic/
 │   ├── models.py             # A2A data models
 │   └── service.py            # A2A service layer
 ├── acp/                      # ACP protocol adapter and config
-├── business_data/            # Workspace-local data connections, bindings, and provider adapters
+├── business_data/            # Ontology-scoped data sources and provider adapters
 ├── direct_execution/         # Script direct-execution guards and scoped runtime
 ├── evolution/                # Operation evolution proposal/review services
 ├── observability/            # Runtime event bus and exporters
@@ -65,7 +65,7 @@ agentic/
 │   ├── sessions.py           # /agentic/sessions/*
 │   ├── ontologies.py         # /agentic/ontologies/*
 │   ├── skills.py             # /agentic/skills/*
-│   ├── business_data.py      # /agentic/data-connections* and data-binding APIs
+│   ├── business_data.py      # ontology data-source API and legacy retirement responses
 │   ├── operations.py         # /agentic/operations/*
 │   ├── performance.py        # /agentic/*/performance and /api/local-observability/*
 │   ├── workspaces.py         # /agentic/workspaces/*
@@ -231,16 +231,19 @@ Important variables:
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM HTTP retry count for connection-style failures | `3` |
 | `LOG_LEVEL` | Process startup log level; overridden by `ops_config.json` `logging.level` | `INFO` |
 | `LOG_CONSOLE` | Enable console logging when set | off |
+| `SPEEDSCOPE_TRACE_ENABLED` | Generate developer-only, session-scoped Speedscope timing files | `false` |
 
 Notes:
 
 - Runtime log-level changes use `<consumer>/.onto-runtime/config/ops_config.json` (or `OPS_CONFIG_PATH`): `{"logging":{"level":"DEBUG"}}`. Each backend and MCP process checks the file metadata on the next logging call and reloads it only after a change; no restart is required. Invalid JSON or levels preserve the last valid value. Use an atomic file replacement when possible.
 - The backend no longer ships with a built-in default LLM endpoint or model id. You must configure `LLM_BASE_URL` and `LLM_MODEL`, or save an enabled model profile in system config before chat can run.
 - The main ReAct loop runs on openJiuwen. Install the backend dependencies from `backend/requirements.txt`.
-- `business_data_search` uses workspace-local data connections and explicit ontology bindings. Create a MindsDB or NL2SQL HTTP connection through `/agentic/data-connections`, then bind each ontology through `/agentic/ontologies/{ontology_id}/data-binding`.
+- `business_data_search` resolves one private source by `workspace_id + ontology_id`. Save `provider + config` through `/agentic/ontologies/{ontology_id}/data-source`; credentials remain in workspace runtime storage, outside the ontology package.
 - `web_search` is optional and disabled by default. Configure `web_search` through system settings or `WEB_SEARCH_*` environment variables before the tool is exposed to the model.
-- Observability output is configured through `/api/system-config` or the system settings UI. `observability.enabled` controls whether events are exported and `observability.mode` selects local performance JSONL or Langfuse; the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
-- With `observability.mode=local`, the chat UI can analyze the current session and admins can open the global local-observability dashboard. Those views read only the current machine's retained new-schema local perf JSONL files; they do not read Langfuse data or old direct perf logger records.
+- Observability output is configured per workspace through `/agentic/workspaces/<workspace_id>/observability-config` or the configuration center's workspace observability section. Each workspace can independently select local performance JSONL or its own Langfuse project. Global system config no longer exposes an `observability` section, and the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
+- When a workspace uses `mode=local`, the chat UI can analyze that workspace's current session. Admins can also aggregate and filter local observations across workspaces, but that dashboard is an analysis view rather than global observability configuration. Neither view reads Langfuse data or old direct perf logger records.
+- `SPEEDSCOPE_TRACE_ENABLED=true` is a developer diagnostic switch independent of workspace observability configuration. The knowledge-QA backend writes standard session-scoped `.speedscope.json` files under `<PROJECT_ROOT>/logs/speedscope/`, retained for 30 days. Runs and parallel execution lanes become evented profiles that can be opened directly in [Speedscope](https://www.speedscope.app/); these files are not consumed by the local-observability UI. Normal `agent.log` output remains enabled, while `agent_perf` is produced only for workspaces configured with `mode=local` and follows each workspace's retention setting.
+- Speedscope traces contain stage names, status, and timing only. They exclude user questions, prompts, reasoning, answers, tool arguments, SQL parameters, and tool output. The standalone MCP container explicitly disables this switch.
 - If you use GLM directly, the recommended endpoint example is `https://open.bigmodel.cn/api/paas/v4`.
 
 ## HTTP surface
@@ -260,11 +263,13 @@ Main route groups:
 - `GET /api/local-observability/runs` (`admin`)
 - `GET/POST/DELETE /agentic/skills...`
 - `GET/PUT/POST /agentic/ontologies...`
-- `GET/PUT/DELETE /agentic/ontologies/<ontology_id>/data-binding`
-- `GET/POST/PATCH/DELETE /agentic/data-connections...`
+- `GET/PUT/DELETE /agentic/ontologies/<ontology_id>/data-source`
+- `POST /agentic/ontologies/<ontology_id>/data-source/test`
+- `GET /agentic/business-data/provider-schemas`
 - `GET/POST/PATCH /agentic/operations...`
 - `GET/POST/DELETE /agentic/workspaces...`
 - `GET/PATCH /agentic/workspaces/<workspace_id>/runtime-config`
+- `GET/PATCH/POST /agentic/workspaces/<workspace_id>/observability-config...`
 - `GET/PATCH/POST /api/system-config...`
 - `GET /.well-known/a2a/agent-card.json`
 - `GET/POST/DELETE /a2a/tasks...` (Agent-to-Agent protocol)

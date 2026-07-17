@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from utils.security.secrets import decrypt_secret, encrypt_secret
-from workspace.workspaces import WorkspaceNotFoundError, get_workspace_paths, validate_workspace_id, workspace_exists
+from utils.security.secrets import (
+    SECRET_ENCRYPTION_KEY_ENV,
+    decrypt_secret,
+    encrypt_secret,
+    is_encrypted_secret,
+)
+from workspace.workspaces import (
+    WorkspaceNotFoundError,
+    get_runtime_root,
+    get_workspace_paths,
+    validate_workspace_id,
+    workspace_exists,
+)
 
 
 DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG: dict[str, Any] = {
@@ -33,6 +46,26 @@ _LOCAL_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["local"].keys())
 _LANGFUSE_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["langfuse"].keys())
 
 
+class WorkspaceObservabilityMigrationRequiredError(ValueError):
+    """Raised when a persisted workspace document is not canonical."""
+
+    code = "WORKSPACE_OBSERVABILITY_MIGRATION_REQUIRED"
+
+    def __init__(self, workspace_id: str) -> None:
+        self.workspace_id = validate_workspace_id(workspace_id)
+        self.detail = (
+            f"工作空间 '{self.workspace_id}' 的观测配置不是规范格式，需要先完成迁移或人工修复"
+        )
+        super().__init__(self.detail)
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "detail": self.detail,
+            "workspace_id": self.workspace_id,
+        }
+
+
 def get_workspace_observability_config_path(workspace_id: str) -> Path:
     resolved_id = _require_workspace(workspace_id)
     return get_workspace_paths(resolved_id).workspace_dir / "observability_config.json"
@@ -46,22 +79,80 @@ def get_workspace_observability_log_dir(workspace_id: str) -> Path:
 def get_workspace_observability_config(workspace_id: str) -> dict[str, Any]:
     resolved_id = _require_workspace(workspace_id)
     config_path = get_workspace_observability_config_path(resolved_id)
+    if config_path.is_symlink():
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
     if not config_path.exists():
         return copy.deepcopy(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG)
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return copy.deepcopy(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG)
-    if not isinstance(raw, dict):
-        return copy.deepcopy(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG)
+        return decode_workspace_observability_document(
+            resolved_id,
+            raw,
+            runtime_root=config_path.parents[2],
+        )
+    except WorkspaceObservabilityMigrationRequiredError:
+        raise
+    except Exception as exc:
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id) from exc
 
-    merged = copy.deepcopy(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG)
-    _deep_update(merged, _normalize_observability_patch(raw, strict=False))
-    merged["langfuse"]["secret_key"] = decrypt_secret(
-        str(merged.get("langfuse", {}).get("secret_key") or ""),
-        context=workspace_langfuse_secret_context(resolved_id),
-    )
-    return merged
+
+def decode_workspace_observability_document(
+    workspace_id: str,
+    raw: Any,
+    *,
+    runtime_root: Path | None = None,
+) -> dict[str, Any]:
+    """Validate and decrypt a canonical persisted document without writing."""
+    resolved_id = validate_workspace_id(workspace_id)
+    if not isinstance(raw, dict):
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
+    local = raw.get("local")
+    langfuse = raw.get("langfuse")
+    if (
+        set(raw) != _TOP_LEVEL_KEYS
+        or not isinstance(local, dict)
+        or set(local) != _LOCAL_KEYS
+        or not isinstance(langfuse, dict)
+        or set(langfuse) != _LANGFUSE_KEYS
+        or not isinstance(raw.get("enabled"), bool)
+        or raw.get("mode") not in {"local", "langfuse"}
+    ):
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
+    retention_days = local.get("retention_days")
+    if (
+        isinstance(retention_days, bool)
+        or not isinstance(retention_days, int)
+        or retention_days < 1
+        or not isinstance(langfuse.get("debug"), bool)
+        or any(
+            not isinstance(langfuse.get(field_name), str)
+            for field_name in ("public_key", "secret_key", "base_url")
+        )
+    ):
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
+
+    result = copy.deepcopy(raw)
+    raw_secret = str(result["langfuse"].get("secret_key") or "")
+    if raw_secret and not is_encrypted_secret(raw_secret):
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
+    if raw_secret and not _secret_encryption_key_available(runtime_root):
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
+    try:
+        result["langfuse"]["secret_key"] = decrypt_secret(
+            raw_secret,
+            context=workspace_langfuse_secret_context(resolved_id),
+        )
+    except Exception as exc:
+        raise WorkspaceObservabilityMigrationRequiredError(resolved_id) from exc
+    return result
+
+
+def _secret_encryption_key_available(runtime_root: Path | None = None) -> bool:
+    if str(os.getenv(SECRET_ENCRYPTION_KEY_ENV) or "").strip():
+        return True
+    resolved_root = Path(runtime_root).resolve() if runtime_root else get_runtime_root()
+    key_path = resolved_root / "config" / "secret.key"
+    return key_path.is_file() and not key_path.is_symlink()
 
 
 def get_public_workspace_observability_config(workspace_id: str) -> dict[str, Any]:
@@ -172,11 +263,45 @@ def _write_workspace_observability_config(workspace_id: str, config: dict[str, A
         str(raw.get("langfuse", {}).get("secret_key") or ""),
         context=workspace_langfuse_secret_context(workspace_id),
     )
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        json.dumps(raw, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(config_path, raw)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Persist secret-bearing workspace config with an atomic durable replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise OSError("observability config path must not be a symbolic link")
+    temporary = path.with_name("{}.{}.tmp".format(path.name, uuid.uuid4().hex))
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        stream = os.fdopen(descriptor, "wb")
+        descriptor = None
+        with stream:
+            stream.write(
+                (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        path.chmod(0o600)
+        _fsync_directory(path.parent)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def _normalize_observability_patch(data: dict[str, Any], *, strict: bool) -> dict[str, Any]:

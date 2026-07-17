@@ -88,7 +88,7 @@ LLM_MODEL=<model-id>
 LLM_API_KEY=<api-key>
 ```
 
-业务数据检索不再使用全局本体检索 provider。启动后在「工作区 -> 数据连接」中为当前 workspace 创建 MindsDB 或 NL2SQL HTTP 连接，再在「本体绑定」中为每个 ontology 显式绑定一个连接。运行时 `business_data_search` 只使用该 workspace 下当前 ontology 的绑定连接。
+业务数据检索不再使用全局本体检索 provider。启动后在知识包的「数据源」页直接选择 MindsDB、NL2SQL HTTP 等 provider，并填写当前 ontology 专属的配置。运行时 `business_data_search` 只使用当前 workspace + ontology 对应的数据源，不共享连接，也不需要额外绑定。
 
 ### 3. 准备前端
 
@@ -224,7 +224,8 @@ AgenticOrchestrator.run()
 | `backend/agentic/tools/executor.py` | 工具批处理执行、并发/串行阶段调度 |
 | `backend/agentic/sub_agents/` | 子 Agent 执行与并发管理 |
 | `backend/agentic/memory/` | 长期记忆后端与上下文构造 |
-| `backend/agentic/business_data/` | workspace 数据连接、provider schema 与 ontology 绑定 |
+| `backend/agent/tools/business_data/` | ontology 数据源、provider schema 与配置加密 |
+| `backend/migrations/` | 部署与本地启动共用的集中入口，以及可独立删除的一次性兼容迁移 |
 | `backend/agentic/direct_execution/` | 可选直执行分支与脚本运行封装 |
 | `backend/agentic/evolution/` | operation evolution 缓冲、补丁生成与审批 |
 | `backend/agentic/a2a/`, `backend/agentic/acp/` | 外部协议适配层 |
@@ -260,8 +261,10 @@ AgenticOrchestrator.run()
 | `GET` / `DELETE` | `/agentic/sessions/<session_id>` | 获取或删除会话 |
 | `GET` | `/agentic/sessions/<session_id>/performance` | 查看当前会话本地性能分析 |
 | `GET` | `/api/local-observability/overview` | 管理员查看本机本地观测总览 |
-| `GET` / `POST` / `PATCH` / `DELETE` | `/agentic/data-connections...` | workspace 业务数据连接管理 |
-| `GET` / `PUT` / `DELETE` | `/agentic/ontologies/<ontology_id>/data-binding` | 本体与业务数据连接绑定 |
+| `GET` / `PATCH` / `POST` | `/agentic/workspaces/<workspace_id>/observability-config...` | 读取、保存或测试工作空间观测配置 |
+| `GET` / `PUT` / `DELETE` | `/agentic/ontologies/<ontology_id>/data-source` | 本体私有业务数据源配置 |
+| `POST` | `/agentic/ontologies/<ontology_id>/data-source/test` | 测试已保存或候选数据源配置 |
+| `GET` | `/agentic/business-data/provider-schemas` | 数据源 Provider 表单元数据 |
 | `GET` / `POST` / `PATCH` | `/agentic/operations...` | operation evolution 提案与 staged patch 审核 |
 | `GET` / `POST` / `DELETE` | `/agentic/skills...` | 技能管理 |
 | `GET` / `PUT` / `POST` | `/agentic/ontologies...` | 本体资源管理 |
@@ -339,7 +342,7 @@ data: { ... }
 | `AUTH_SERVER_ADMIN_TOKEN` | 与 auth-server 共享的管理令牌，用户管理必填 |
 | `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience，默认 `meta-wise` |
 | `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` |
-| `SECRET_ENCRYPTION_KEY` | 可选的 32 字节 base64 加密根密钥，用于加密落盘 API key 和业务数据连接 secret |
+| `SECRET_ENCRYPTION_KEY` | 可选的 32 字节 base64 加密根密钥，用于加密落盘 API key 和业务数据源 secret |
 | `MEMORY_MODE` | 记忆后端模式，默认 `filesystem` |
 | `MEMORY_WORKSPACE_ROOT` | 文件系统记忆工作区根目录 |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | 主 Agent 最大迭代次数 |
@@ -353,7 +356,7 @@ data: { ... }
 | `ONTOLOGY_OBJECT_MAX_COUNT` | 单本体最大实体数量，默认 `200` |
 | `ONTOLOGY_OPERATION_MAX_COUNT` | 单本体最大流程数量，默认 `100` |
 | `ENTITY_ATTRIBUTE_MAX_COUNT` | 单实体最大属性数量，默认 `100` |
-| `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | 每个 workspace 最大数据连接配置数量，默认 `10` |
+| `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | 旧版数据连接数量上限兼容字段；本体私有数据源不使用该限制 |
 | `MODEL_PROFILE_MAX_COUNT` | 最大模型 profile 数量，默认 `10` |
 | `MODEL_INPUT_TOKEN_LIMIT` | 平台输入 token 硬上限，默认 `50000` |
 | `MODEL_OUTPUT_TOKEN_LIMIT` | 平台输出 token 硬上限，默认 `100000` |
@@ -361,14 +364,16 @@ data: { ... }
 | `ONTOLOGY_OPERATION_MAX_CHARS` | 单个最终 operation markdown 字符上限，默认 `15000` |
 | `AGENT_LOG_RETENTION_DAYS` | 普通 agent 日志保留天数，默认 `180` |
 | `AGENT_LOG_COMPRESS_OLD` | 是否压缩历史普通日志，默认 `true` |
+| `SPEEDSCOPE_TRACE_ENABLED` | 是否生成开发者会话级 Speedscope 耗时文件，默认 `false` |
 
 说明：
 
 - 当前版本后端不再内建默认 LLM 地址和模型 ID。首次启动后如果尚未配置模型，聊天页会提示先完成模型配置。
-- 业务数据检索连接按 workspace 存储在运行时目录中，并通过 ontology 绑定选择；系统配置页不再提供全局本体检索 provider。
-- 观测输出通过系统设置页 / `.onto-runtime/config/system_config.json` 管理，`observability.enabled` 控制开关，`observability.mode` 选择本地性能日志或 Langfuse；不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
-- `observability.mode=local` 时，聊天页的当前会话可打开“性能分析”；管理员可在用户菜单打开“本地观测分析”查看当前机器保留窗口内的整体趋势、慢运行、慢工具和慢运行阶段。该分析只读取新 local perf JSONL，不读取 Langfuse 或旧 direct perf logger 数据。
-- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`agent_perf` 仍由 `observability.local.retention_days` 独立控制。
+- 业务数据源按 `workspace_id + ontology_id` 存储在运行时目录中；系统配置页不再提供全局本体检索 provider。
+- 观测输出按工作空间配置，通过配置中心的“空间观测”或 `/agentic/workspaces/<workspace_id>/observability-config` 管理；每个工作空间可独立关闭观测，或选择本地性能日志和独立 Langfuse 项目。全局系统配置不再提供 `observability` section，也不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
+- 工作空间观测配置为 `mode=local` 时，聊天页的当前会话可打开“性能分析”；管理员可在用户菜单打开“本地观测分析”，跨工作空间聚合当前机器保留窗口内的整体趋势，并按工作空间筛选。该页面是聚合分析视图，不是全局观测配置；它只读取新的 workspace local perf JSONL，不读取 Langfuse 或旧 direct perf logger 数据。
+- `SPEEDSCOPE_TRACE_ENABLED=true` 是独立于工作空间观测配置的开发诊断开关。仅知识问答 backend 会在 `.onto-runtime/logs/speedscope/` 下按会话生成标准 `.speedscope.json`，默认保留 30 天；独立 MCP 容器固定关闭。文件不包含问题、Prompt、reasoning、回答、工具参数或工具输出，可直接使用 [Speedscope](https://www.speedscope.app/) 打开，也不会被“本地观测分析”页面消费。
+- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，各工作空间的 `agent_perf` 由其观测模式和 `local.retention_days` 独立控制。
 - 内置默认值只用于超时、重试、temperature、存储路径等运行参数；模型和业务数据源这类外部能力必须显式配置。
 - 如果接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 

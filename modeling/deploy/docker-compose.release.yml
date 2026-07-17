@@ -1,0 +1,39 @@
+services:
+  modeling:
+    image: ${MODELING_IMAGE}
+    container_name: mw-modeling
+    restart: unless-stopped
+    ports:
+      - "${MODELING_PORT:-5100}:5100"
+    environment:
+      - PORT=5100
+      - DATA_DIR=/data
+      - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-faux}
+      - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-faux}
+      - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
+      - MODELING_TASK_LLM_BASE_URL=${MODELING_TASK_LLM_BASE_URL:-}
+      - MODELING_TASK_LLM_MODEL=${MODELING_TASK_LLM_MODEL:-}
+      - MODELING_TASK_LLM_API_KEY=${MODELING_TASK_LLM_API_KEY:-}
+      - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://auth-server:5056}
+      - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}
+      - AUTH_JWT_AUDIENCE=${AUTH_JWT_AUDIENCE:-meta-wise}
+      - CONSUMER_API_URL=${CONSUMER_API_URL:-http://backend:5055}
+      - EVAL_DB_URL=${EVAL_DB_URL:-}
+    volumes:
+      - modeling-data:/data
+    networks:
+      - consumer-net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  consumer-net:
+    external: true
+    name: ${CONSUMER_NETWORK:?CONSUMER_NETWORK is required}
+
+volumes:
+  modeling-data:

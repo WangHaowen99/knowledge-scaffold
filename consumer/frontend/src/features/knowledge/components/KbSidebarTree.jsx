@@ -39,7 +39,9 @@ export default function KbSidebarTree({ kb }) {
               ))}
               <div className="kbt-meta">
                 v{p.active_version || p.version} · {p.enabled ? '已启用' : '已停用'}
-                {p.business_data?.connection_name ? ` · 绑定 ${p.business_data.connection_name}` : ' · 未绑定数据'}
+                {p.business_data?.configured
+                  ? ` · 数据源 ${p.business_data.provider || '已配置'}`
+                  : ' · 未配置数据源'}
               </div>
             </div>
           )}

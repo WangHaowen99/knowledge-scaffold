@@ -184,15 +184,18 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 - `upgrade.sh`：升级覆盖文件时列入保护清单，不会被新发布包覆盖
 - `rollback.sh`：回滚时随镜像一并恢复（备份不含该目录则跳过）
 
-### 存量用户与 workspace 迁移
+### 存量用户、workspace 与本体数据源迁移
 
-`deploy.sh` 固定按以下顺序执行：migration dry-run → 停止旧容器写入 → 同时备份 runtime users/workspaces 与 auth users/keys → 校验用户字段和 workspace ACL → 必要时原子复制 → 启动 auth-server。
+`deploy.sh` 固定按以下顺序执行：迁移前基础预检（持久化格式校验交给 migration dry-run）→ migration dry-run → 停止旧容器写入 → 一致性备份 → apply migration → 严格预检 → 启动新容器。
 
 - 只有 `.onto-runtime/users.json` 时，原样复制密码哈希到 `.onto-auth/users.json`，目标权限为 `0600`。
 - 只有 auth users 时直接使用。
 - 两份同时存在时做字段级语义比较；缺失 `token_version` 按 `1`。任一字段不同立即失败，差异报告不会泄露密码哈希。
 - 无 owner 的存量 workspace 继续作为公共空间，报告列出但不自动私有化。
 - 未知 owner/member、重复成员或未完成用户删除 reconciliation 会阻止启动，避免同名账号继承旧权限。
+- `connection_ref` 与旧 `ontology-bindings.json` 会展开为每个 ontology 独立的 `direct_provider` 配置。apply 前会先校验全部 workspace，校验失败不修改原数据；apply 仍按 forward-only 执行，但在首次写入前会为实际存在的 `ontology-data-sources.json`、`data-connections.json`、`ontology-bindings.json` 生成同目录 `*.pre-direct-v2.bak` 原始字节副本。副本权限固定为 `0600`，重试不会覆盖首次副本，路径同时记录在迁移报告和完成标记中。每个 workspace 的新格式写入并回读校验成功后才删除旧 `data-connections.json` 与 `ontology-bindings.json`；清理失败会阻止启动，并可在修复文件权限后继续重试。
+- `*.pre-direct-v2.bak` 可能包含明文凭据，只作为人工排查和恢复材料；应用运行时与迁移 runner 不会自动读取这些文件，`rollback.sh` 也不会把它们作为单文件恢复输入。人工恢复前必须先停止写入并核对同一 workspace 下各副本的一致性。部署级回滚仍使用 `backup.sh` 生成的整包备份，不受本迁移副本影响。
+- 本体数据源迁移是后端镜像中的独立一次性模块，只在 `backend/migrations/runner.py` 的通用注册表中登记。部署流程和 Flask 启动共用该 runner；运行时 store 不包含兼容逻辑。兼容窗口结束后只需删除注册项、独立迁移模块及对应测试说明，`app.py`、`deploy.sh` 和 `migrate.sh` 无需修改。
 
 可在停机前读取检查：
 
@@ -206,7 +209,7 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 ./deploy/migrate.sh <旧版本> <新版本> --confirm-writes-stopped
 ```
 
-报告写入 `deploy/state/migration-report.json`。旧 HMAC access token 升级后不再接受，用户需重新登录；JWT `sub` 仍等于 username，因此 session 路径无需迁移。
+用户与 workspace 报告写入 `deploy/state/migration-report.json`，后端通用迁移报告写入 `deploy/state/backend-migration-report.json`；本体数据源副本可从对应 workspace 结果的 `backup_paths` 查看。手工执行 `migrate.sh` 前需确保当前发布包的 backend 镜像已加载；正常 `deploy.sh` 会自动加载。旧 HMAC access token 升级后不再接受，用户需重新登录；JWT `sub` 仍等于 username，因此 session 路径无需迁移。
 
 ## 运行目录
 

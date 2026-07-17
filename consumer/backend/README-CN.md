@@ -33,7 +33,7 @@
 - 支持统一 `memory` 工具，用于显式记忆沉淀，并在后台路由到普通记忆或 operation evolution
 - 支持 `spawn_sub_agent` 批量子任务分解、并发执行和嵌套深度限制
 - 支持技能 CRUD、本体文件管理、本体导入、工作区管理、工作区运行配置和系统配置管理
-- 支持 workspace 级业务数据连接、provider schema 查询，以及本体与数据连接绑定
+- 支持 provider schema 查询，以及每个本体独立的 workspace 本地业务数据源配置
 - 提供 A2A 和 ACP 适配接口，便于外部系统按协议调用同一个编排器和运行时
 - 支持本地性能分析，以及通过系统配置启用的观测导出
 
@@ -49,7 +49,7 @@ agentic/
 │   └── shared/               # Jiuwen 运行时复用的 loop helper
 ├── a2a/                      # A2A 协议适配、模型与 service
 ├── acp/                      # ACP 协议适配与配置
-├── business_data/            # 工作区数据连接、绑定与 provider 适配器
+├── business_data/            # 本体私有数据源与 provider 适配器
 ├── direct_execution/         # 脚本直连执行保护与作用域
 ├── evolution/                # operation evolution 提案与审核
 ├── observability/            # RuntimeEvent 总线与 exporter
@@ -60,7 +60,7 @@ agentic/
 │   ├── ontologies.py         # /agentic/ontologies/*
 │   ├── skills.py             # /agentic/skills/*
 │   ├── workspaces.py         # /agentic/workspaces/*
-│   ├── business_data.py      # /agentic/data-connections* 与 data-binding
+│   ├── business_data.py      # 本体 data-source API 与旧接口退役提示
 │   ├── operations.py         # /agentic/operations/*
 │   ├── performance.py        # /agentic/*/performance 与 /api/local-observability/*
 │   ├── system_config.py      # /api/system-config*
@@ -220,7 +220,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `MCP_TOKEN_AUDIENCE` | MCP JWT `aud` claim | `meta-wise-mcp` |
 | `MCP_TOKEN_TTL_SECONDS` | MCP token 默认有效期，单位秒 | `86400` |
 | `MCP_TOKEN_STORE_PATH` | MCP 可吊销 token 注册表文件 | `<PROJECT_ROOT>/mcp-tokens.json` |
-| `SECRET_ENCRYPTION_KEY` | API key / 业务数据连接 secret 落盘加密根密钥，base64 编码 32 字节 | 未设置时本地生成 `<PROJECT_ROOT>/config/secret.key` |
+| `SECRET_ENCRYPTION_KEY` | API key / 业务数据源 secret 落盘加密根密钥，base64 编码 32 字节 | 未设置时本地生成 `<PROJECT_ROOT>/config/secret.key` |
 | `AGENT_MAIN_LOOP_MAX_ITERATIONS` | 主 Agent 最大迭代次数 | `50` |
 | `AGENT_SUB_AGENT_MAX_ITERATIONS` | 子 Agent 最大迭代次数 | `20` |
 | `AGENT_SUB_AGENT_MAX_CONCURRENCY` | 单次运行最大并发子 Agent 数 | `6` |
@@ -236,7 +236,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `ONTOLOGY_OBJECT_MAX_COUNT` | 单本体最大实体数量 | `200` |
 | `ONTOLOGY_OPERATION_MAX_COUNT` | 单本体最大流程数量 | `100` |
 | `ENTITY_ATTRIBUTE_MAX_COUNT` | 单实体最大属性数量 | `100` |
-| `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | 每个 workspace 最大数据连接配置数量 | `10` |
+| `DATA_CONNECTION_CONFIGS_MAX_PER_WORKSPACE` | 旧版数据连接数量上限兼容字段，本体私有数据源不使用 | `10` |
 | `MODEL_PROFILE_MAX_COUNT` | 最大模型 profile 数量 | `10` |
 | `MODEL_INPUT_TOKEN_LIMIT` | 平台输入 token 硬上限 | `50000` |
 | `MODEL_OUTPUT_TOKEN_LIMIT` | 平台输出 token 硬上限 | `100000` |
@@ -250,16 +250,19 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AGENT_MEMORY_RECALL_THRESHOLD` | 记忆召回阈值 | 空 |
 | `LOG_LEVEL` | 进程启动日志级别；`ops_config.json` 的 `logging.level` 可覆盖 | `INFO` |
 | `LOG_CONSOLE` | 是否启用控制台日志 | 关闭 |
+| `SPEEDSCOPE_TRACE_ENABLED` | 是否生成面向开发者的会话级 Speedscope 耗时文件 | `false` |
 
 说明：
 
 - 后端已不再内建默认 LLM 地址和模型 ID。要让对话可用，需要显式配置 `LLM_BASE_URL` 与 `LLM_MODEL`，或先在系统配置中保存至少一个启用的模型。
 - 主 ReAct 循环运行在 openJiuwen 上。后端依赖统一通过 `backend/requirements.txt` 安装。
-- `business_data_search` 使用 workspace 本地的数据连接与 ontology 绑定。请通过 `/agentic/data-connections` 创建 MindsDB 或 NL2SQL HTTP 连接，再通过 `/agentic/ontologies/{ontology_id}/data-binding` 为本体绑定连接。
+- `business_data_search` 根据 `workspace_id + ontology_id` 读取本体私有数据源。通过 `/agentic/ontologies/{ontology_id}/data-source` 保存 `provider + config`；配置存于 workspace 运行目录，不进入本体包。
 - `web_search` 是可选联网搜索工具，通过系统设置 UI 或 `web_search` 配置 section 开启；默认关闭，未开启时不会暴露给模型。
-- 观测输出通过 `/api/system-config` 或系统设置 UI 配置。`observability.enabled` 控制是否导出事件，`observability.mode` 选择本地性能 JSONL 或 Langfuse；旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量不再作为运行时配置入口读取。
-- `observability.mode=local` 时，前端会话性能页和管理员本地观测页只读取当前机器保留的新 schema 本地 perf JSONL，不读取 Langfuse 数据，也不读取旧 direct perf logger 记录。
-- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，`agent_perf` 仍由 `observability.local.retention_days` 独立控制。
+- 观测输出按工作空间配置，通过 `/agentic/workspaces/<workspace_id>/observability-config` 或配置中心的“空间观测”管理；每个工作空间可独立选择本地性能 JSONL 或 Langfuse。全局系统配置不再提供 `observability` section，旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量也不再作为运行时配置入口读取。
+- 工作空间观测配置为 `mode=local` 时，前端会话性能页读取当前工作空间的新 schema 本地 perf JSONL；管理员本地观测页可以跨工作空间聚合和筛选，但只是分析视图，不是全局观测配置。两者都不读取 Langfuse 数据或旧 direct perf logger 记录。
+- `SPEEDSCOPE_TRACE_ENABLED=true` 是独立于工作空间观测配置的开发诊断开关。知识问答 backend 会在 `<PROJECT_ROOT>/logs/speedscope/` 下按会话直接生成标准 `.speedscope.json`；每轮 run 与并行执行通道分别映射为 evented profile，代码栈采样映射为 sampled profile。文件默认保留 30 天，可直接拖入 [Speedscope](https://www.speedscope.app/) 查看，不被前端本地观测页消费。代码栈采样默认 10ms 间隔、单 run 最多 20,000 个样本、进程内活跃样本最多 50,000 个，可通过 `SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS`、`SPEEDSCOPE_STACK_PROFILE_MAX_EVENTS` 和 `SPEEDSCOPE_STACK_PROFILE_PROCESS_MAX_EVENTS` 调整。普通 `agent.log` 始终保留；只有配置为 `mode=local` 的工作空间会生成 `agent_perf`。
+- Speedscope 文件只保存阶段名称、状态、时间关系以及代码帧标签（模块、函数、文件和行号），不保存源码文本、用户问题、Prompt、reasoning、回答、工具参数、SQL 参数或工具输出。独立 MCP 容器固定关闭该开关，避免外部 MCP 请求写入知识问答会话 trace。
+- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，各工作空间的 `agent_perf` 由其观测模式和 `local.retention_days` 独立控制。
 - 如果直接接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 
 ## HTTP 接口
@@ -279,11 +282,13 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - `GET /api/local-observability/runs`（`admin`）
 - `GET/POST/DELETE /agentic/skills...`
 - `GET/PUT/POST/DELETE /agentic/ontologies...`
-- `GET/PUT/DELETE /agentic/ontologies/<ontology_id>/data-binding`
-- `GET/POST/PATCH/DELETE /agentic/data-connections...`
+- `GET/PUT/DELETE /agentic/ontologies/<ontology_id>/data-source`
+- `POST /agentic/ontologies/<ontology_id>/data-source/test`
+- `GET /agentic/business-data/provider-schemas`
 - `GET/POST/PATCH /agentic/operations...`
 - `GET/POST/PATCH/DELETE /agentic/workspaces...`
 - `GET/PATCH /agentic/workspaces/<workspace_id>/runtime-config`
+- `GET/PATCH/POST /agentic/workspaces/<workspace_id>/observability-config...`
 - `GET/PATCH/POST /api/system-config...`
 - `GET/POST/DELETE /a2a/tasks...`
 - `GET /.well-known/a2a/agent-card.json`

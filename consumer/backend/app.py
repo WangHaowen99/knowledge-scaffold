@@ -4,19 +4,15 @@ from flask import Flask
 from flask_cors import CORS
 
 from config import AgentConfig, AppConfig
-from agent.tools.business_data.ontology_sources_store import migrate_legacy_ontology_data_sources_for_all_workspaces
 from agent.core.warmup import start_runtime_warmup
 from integration.observability import reset_observer
-from integration.observability.migration import migrate_global_observability_to_workspaces
 from integration.platform.manager import reset_platform_observer, start_platform_observer_if_enabled
+from migrations.runner import run_startup_migrations
 from api.routes import register_routes, update_runtime_dependencies
 from api.routes.auth import auth_bp
 from api.auth.remote_auth import RemoteAuthBackend
 from llm import LLMRouter, configure_llm_router
 from workspace.user_store_manager import UserStoreManager
-from utils.logging import get_logger
-
-logger = get_logger("app")
 
 
 def build_runtime_services(previous_llm_router=None):
@@ -72,34 +68,9 @@ def refresh_platform_connector() -> None:
     reset_observer(timeout=1.0)
 
 
-def _run_startup_observability_migration() -> None:
-    try:
-        result = migrate_global_observability_to_workspaces()
-    except Exception:
-        logger.warning("Workspace observability migration failed during startup", exc_info=True)
-        return
-
-    errors = result.get("errors") if isinstance(result, dict) else None
-    if errors:
-        logger.warning("Workspace observability migration completed with warnings: %s", errors)
-
-
-def _run_startup_ontology_data_source_migration() -> None:
-    try:
-        result = migrate_legacy_ontology_data_sources_for_all_workspaces()
-    except Exception:
-        logger.warning("Ontology data source migration failed during startup", exc_info=True)
-        return
-
-    errors = result.get("errors") if isinstance(result, dict) else None
-    if errors:
-        logger.warning("Ontology data source migration completed with warnings: %s", errors)
-
-
 def create_app() -> Flask:
     """Create and configure the Flask app."""
-    _run_startup_observability_migration()
-    _run_startup_ontology_data_source_migration()
+    run_startup_migrations()
 
     app = Flask(__name__)
     app.json.ensure_ascii = False

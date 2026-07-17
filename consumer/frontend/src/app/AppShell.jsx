@@ -175,10 +175,14 @@ export default function AppShell() {
     return <ForceChangePassword user={user} onChangePassword={changePassword} onLogout={logout} />;
   }
 
-  const navigate = ({ surface: sf, scope, sec }) => {
+  const navigate = ({ surface: sf, scope, sec, tab, ontologyId }) => {
     if (sf) setSurface(sf);
     if (scope) setCfgScope(scope);
     if (sec) setCfgSec(sec);
+    if (sf === 'kb' && ontologyId) kb.selectPkg(ontologyId);
+    if (sf === 'kb' && tab) {
+      setKbFocus({ ontologyId: ontologyId || kb.pkgId || '', tab, token: Date.now() });
+    }
     setMobileNavOpen(false);
   };
 
@@ -353,7 +357,11 @@ export default function AppShell() {
                     />}
               </div>
             )}
-            {surface === 'chat' && workspaceDataReady && <ChatWorkspace chat={chat} streamManager={streamManager} onOpenObservability={openObservability} />}
+            {surface === 'chat' && workspaceDataReady && (
+              <ChatWorkspace chat={chat} streamManager={streamManager}
+                onOpenObservability={openObservability}
+                onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />
+            )}
             {surface === 'kb' && workspaceDataReady && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载知识包工作台" /></div>}><KnowledgeWorkbench kb={kb} focusRequest={kbFocus} traceMessages={chat.messages} traceMetadata={currentTraceMetadata} /></Suspense>}
             {surface === 'config' && <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载配置中心" /></div>}><ConfigCenter scope={cfgScope} section={cfgSec} onNavigate={navigate} /></Suspense>}
             {surface === 'observability' && !workspaceSurfaceBlocked && (

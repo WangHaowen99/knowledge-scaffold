@@ -5,7 +5,7 @@ Base URL: `http://localhost:5055`
 本文档以当前代码实现为准，覆盖以下路由前缀：
 
 - `/auth/*`：认证与用户管理接口
-- `/agentic/*`：主业务接口（runs / sessions / skills / ontologies / workspaces / data connections / operations / performance）
+- `/agentic/*`：主业务接口（runs / sessions / skills / ontologies / workspaces / ontology data sources / operations / performance）
 - `/api/*`：系统配置与本地观测接口
 - `/.well-known/a2a/*` 与 `/a2a/*`：A2A 适配层接口
 - `/acp/*`：ACP 适配层接口
@@ -51,13 +51,11 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
   - `DELETE /agentic/workspaces/{workspace_id}`
   - `POST /agentic/workspaces/{workspace_id}/default`
   - `PATCH /agentic/workspaces/{workspace_id}/runtime-config`
-  - `POST /agentic/data-connections`
-  - `PATCH /agentic/data-connections/{connection_id}`
-  - `DELETE /agentic/data-connections/{connection_id}`
-  - `POST /agentic/data-connections/{connection_id}/default`
-  - `POST /agentic/data-connections/{connection_id}/test`
-  - `PUT /agentic/ontologies/{ontology_id}/data-binding`
-  - `DELETE /agentic/ontologies/{ontology_id}/data-binding`
+  - `PATCH /agentic/workspaces/{workspace_id}/observability-config`
+  - `POST /agentic/workspaces/{workspace_id}/observability-config/test`
+  - `PUT /agentic/ontologies/{ontology_id}/data-source`
+  - `DELETE /agentic/ontologies/{ontology_id}/data-source`
+  - `POST /agentic/ontologies/{ontology_id}/data-source/test`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/apply`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/reject`
   - `GET /auth/users`
@@ -446,7 +444,7 @@ data: { ...agent-stream.v2 envelope... }
 
 - 普通用户最多 **1** 个活跃 run
 - 管理员最多 **100** 个活跃 run
-- 启动前必须已有可用模型配置；如果选定 ontology 需要查询业务数据，还必须先为该 ontology 绑定工作区数据连接
+- 启动前必须已有可用模型配置；如果选定 ontology 需要查询业务数据，还必须先配置该 ontology 的私有数据源
 - 如果提供的 `run_id` 已存在，系统**不会报错**，而是自动回退为一个新的 UUID
 - 未传 `agent_mode`、传空值或传未知值时，默认为 `quick`
 - 默认模式下 `llm_request_mode = stream`
@@ -457,7 +455,7 @@ data: { ...agent-stream.v2 envelope... }
 - 缺少 `request`
 - 缺少 `session_id`
 - 模型配置不存在或未启用
-- 已选 ontology 未绑定业务数据连接时，运行中的 `business_data_search` 会返回工具错误
+- 已选 ontology 未配置业务数据源时，运行中的 `business_data_search` 会返回工具错误
 
 响应 `429`：
 
@@ -610,7 +608,7 @@ Last-Event-ID: 42
 其他 `400` 场景：
 
 - 模型配置不存在或未启用
-- 已选 ontology 未绑定业务数据连接时，运行中的 `business_data_search` 会返回工具错误
+- 已选 ontology 未配置业务数据源时，运行中的 `business_data_search` 会返回工具错误
 
 TPS 超限 `429`：
 
@@ -839,7 +837,7 @@ TPS 超限 `429`：
 
 ### 4.7 本地性能分析
 
-本组接口只读取当前机器上由 `observability.mode=local` 写出的新 local perf JSONL schema。默认扫描最近 24 小时，最大扫描窗口为 7 天；当本地观测关闭、当前模式为 Langfuse、日志过期或日志文件被删除时，返回结果可能为空。
+本组接口只读取当前机器上由工作空间观测配置 `mode=local` 写出的新 local perf JSONL schema。默认扫描最近 24 小时，最大扫描窗口为 7 天；当对应工作空间的本地观测关闭、当前模式为 Langfuse、日志过期或日志文件被删除时，返回结果可能为空。
 
 底层 Trace 记录使用以下稳定 schema；`span_key`/`parent_key` 表达 run 内层级关系，回放和 local/Langfuse exporter 都保留该关系：
 
@@ -881,7 +879,7 @@ TPS 超限 `429`：
 返回单次运行的耗时拆分、iteration、LLM、工具、runtime phase 和事件时间线。
 
 - 普通用户必须同时传 `session_id`，且该 session 的执行记录必须能关联该 `run_id`。
-- 管理员可从全局本地观测页直接按 run 下钻。
+- 管理员可从跨工作空间聚合的本地观测页直接按 run 下钻；该页面是分析视图，不是全局观测配置。
 - 支持与会话分析相同的 `from` / `to` 窗口参数。
 
 #### `GET /api/local-observability/overview` (`admin`)
@@ -1028,10 +1026,11 @@ Ontologies 也按工作空间隔离。
       "manifest_path": "/abs/path/.../manifest.yaml",
       "index_path": "/abs/path/.../index.md",
       "business_data": {
-        "connection_id": "example-nl2sql",
-        "connection_name": "示例制造 NL2SQL",
+        "configured": true,
+        "ready": true,
+        "mode": "direct_provider",
         "provider": "nl2sql_http",
-        "ready": true
+        "updated_at": "2026-07-15T10:00:00+00:00"
       }
     }
   ]
@@ -1274,11 +1273,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "operations_count": 18,
   "objects_index_path": "/abs/path/.../objects/index.md",
   "operations_index_path": "/abs/path/.../operations/index.md",
-  "business_data_binding": {
-    "ontology_id": "example-domain-operations-manual",
-    "connection_id": "example-nl2sql",
-    "updated_at": "2026-05-10T10:00:00+00:00"
-  },
+  "business_data_configured": false,
   "warnings": {
     "objects": [],
     "objects_index": [],
@@ -1291,7 +1286,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 - `import_mode=source`：表示上传的是源格式包，服务端已执行格式转换
 - `import_mode=converted`：表示上传的是已转换完成的 ontology 包，服务端直接导入目录内容
-- `business_data_binding` 仅在新导入 ontology 且当前 workspace 已设置默认数据连接时返回，否则为 `null`
+- 新导入 ontology 不继承默认连接，`business_data_configured` 初始为 `false`；需要在导入后显式配置该 ontology 的数据源
 
 ---
 
@@ -1481,9 +1476,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 按当前请求的 `X-Workspace-Id` 或默认工作区读取运行配置。
 
-### 7.9 工作区业务数据连接与本体绑定
+### 7.9 本体业务数据源
 
-业务数据连接按 workspace 隔离。运行时不会从全局配置隐式继承 provider；`business_data_search` 会解析当前 workspace 下当前 ontology 的显式绑定。
+每个 ontology 在当前 workspace 下拥有一份私有业务数据源。运行时不会从全局配置、默认连接或其他 ontology 隐式继承 provider；`business_data_search` 只解析当前 `workspace_id + ontology_id` 对应的数据源。
 
 Graph provider 配置：
 
@@ -1492,13 +1487,13 @@ Graph provider 配置：
 | `neo4j` | `uri`、`username`、`password` | `database=neo4j`、超时/重试/结果上限 | `workspace_property=d2o_workspace_id`，建议显式配置 `ontology_property=d2o_ontology_id` |
 | `hugegraph` | `url` | `graph=hugegraph`、`graph_space`、`username/password/token`、超时/重试/结果上限 | 同样配置 workspace/ontology 属性 |
 
-密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。创建连接后先调用 test，再通过 data-binding 绑定 ontology；MCP search 只接受已绑定的 `neo4j` 或 `hugegraph`。
+密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。可先用候选配置调用 test，确认可用后再保存；MCP search 只接受已配置的 `neo4j` 或 `hugegraph` 数据源。
 
 新增业务数据 provider 的开发步骤见 [`docs/business-data-provider-extension.md`](business-data-provider-extension.md)。
 
 #### `GET /agentic/business-data/provider-schemas`
 
-返回当前支持的数据连接 provider 表单 schema。所有已认证用户可访问。
+返回当前支持的数据源 provider 表单 schema。所有已认证用户可访问。
 
 响应 `200`：
 
@@ -1518,46 +1513,42 @@ Graph provider 配置：
 }
 ```
 
-#### `GET /agentic/data-connections`
+#### `GET /agentic/ontologies/{ontology_id}/data-source`
 
-列出当前 workspace 的业务数据连接。secret 字段只返回 `has_*` 标记。
+读取当前 workspace 下某个 ontology 的私有数据源。secret 字段只返回 `has_*` 标记。
 
 响应 `200`：
 
 ```json
 {
-  "default_connection_id": "example-nl2sql",
-  "connections": [
-    {
-      "id": "example-nl2sql",
-      "name": "示例制造 NL2SQL",
-      "provider": "nl2sql_http",
-      "config": {
-        "url": "https://nl2sql.example.com",
-        "has_token": true,
-        "scene": "example",
-        "timeout_seconds": 600,
-        "max_retries": 3
-      },
-      "created_at": "2026-05-10T10:00:00+00:00",
-      "updated_at": "2026-05-10T10:00:00+00:00"
-    }
-  ]
+  "ontology_id": "example-domain-operations-manual",
+  "configured": true,
+  "source": {
+    "mode": "direct_provider",
+    "provider": "nl2sql_http",
+    "config": {
+      "url": "https://nl2sql.example.com",
+      "has_token": true,
+      "scene": "example",
+      "timeout_seconds": 600,
+      "max_retries": 3
+    },
+    "created_at": "2026-05-10T10:00:00+00:00",
+    "updated_at": "2026-07-15T10:00:00+00:00"
+  }
 }
 ```
 
-#### `POST /agentic/data-connections` (`admin`)
+尚未配置时返回 `configured=false`、`source=null`。
 
-创建当前 workspace 的业务数据连接。
+#### `PUT /agentic/ontologies/{ontology_id}/data-source` (`admin`)
 
-请求体：
+创建或覆盖 ontology 的私有数据源。当前只接受 `mode=direct_provider`；同一 provider 更新时，secret 字段留空或省略会保留原值。
 
 ```json
 {
-  "id": "example-nl2sql",
-  "name": "示例制造 NL2SQL",
+  "mode": "direct_provider",
   "provider": "nl2sql_http",
-  "set_as_default": true,
   "config": {
     "url": "https://nl2sql.example.com",
     "token": "secret-token",
@@ -1566,87 +1557,109 @@ Graph provider 配置：
 }
 ```
 
-响应 `201`：
+响应结构与 GET 相同，`configured=true`。
+
+#### `DELETE /agentic/ontologies/{ontology_id}/data-source` (`admin`)
+
+清除 ontology 的私有数据源。重复删除仍返回 `200`：
 
 ```json
 {
-  "connection": { "...": "同 GET /agentic/data-connections 中的单个 connection" },
-  "default_connection_id": "example-nl2sql"
+  "success": true,
+  "ontology_id": "example-domain-operations-manual",
+  "configured": false
 }
 ```
 
-#### `PATCH /agentic/data-connections/{connection_id}` (`admin`)
+#### `POST /agentic/ontologies/{ontology_id}/data-source/test` (`admin`)
 
-更新连接名称、provider 或配置。secret 字段留空时保留原值。
-
-#### `DELETE /agentic/data-connections/{connection_id}` (`admin`)
-
-删除连接。若仍有 ontology 绑定该连接，返回 `409`。
-
-```json
-{
-  "detail": "该连接仍被本体绑定，不能删除",
-  "bound_ontologies": ["example-domain-operations-manual"]
-}
-```
-
-#### `POST /agentic/data-connections/{connection_id}/default` (`admin`)
-
-设置当前 workspace 新导入 ontology 的默认连接。导入新 ontology 时如果尚无绑定，会自动创建绑定；运行时仍以 ontology 显式绑定为准。
-
-#### `POST /agentic/data-connections/{connection_id}/test` (`admin`)
-
-测试连接服务可达性。MindsDB 会执行轻量 SQL 探测；启用鉴权时会先登录再带 token 探测查询接口。NL2SQL HTTP / NL2SQL Template 会请求 `/api/v1/query`，携带轻量 `question` 与配置的 `scene`，验证服务地址、网络和鉴权头是否可用。
+测试数据源服务可达性。请求体可传入与 PUT 相同的候选配置；请求体为空时测试已保存配置。测试不会保存候选配置。MindsDB 会请求 Project 范围内的 Agent 列表，并校验 `project_name + default_agent_name`；NL2SQL HTTP / NL2SQL Template 会请求 `/api/v1/query`，验证服务地址、网络和鉴权头。
 
 ```json
 {
   "success": true,
   "message": "NL2SQL 服务连接正常",
-  "tested_at": "2026-05-10T10:00:00+00:00",
-  "connection": {
-    "id": "example-nl2sql",
-    "name": "示例制造 NL2SQL",
-    "provider": "nl2sql_http",
-    "config": {
-      "url": "https://nl2sql.example.com",
-      "has_token": true,
-      "scene": "example",
-      "timeout_seconds": 600,
-      "max_retries": 3
-    }
+  "tested_at": "2026-07-15T10:00:00+00:00"
+}
+```
+
+旧 `/agentic/data-connections*` 与 `/agentic/ontologies/{ontology_id}/data-binding` 路由在一个兼容版本内保留，但统一返回 `410 Gone` 和新接口地址，不再写入共享连接或绑定。
+
+### 7.10 工作区观测配置
+
+本地性能日志和 Langfuse 连接按 workspace 隔离，配置保存在：
+
+```text
+.onto-runtime/workspaces/{workspace_id}/observability_config.json
+```
+
+全局 `/api/system-config` 不提供 `observability` section。管理员跨工作空间查看本地观测数据时使用的是聚合分析接口，不会产生或修改一份全局观测配置。
+
+#### `GET /agentic/workspaces/{workspace_id}/observability-config`
+
+读取指定工作空间的观测配置。所有已认证且可访问该工作空间的用户均可读取；secret 不返回明文，只返回 `has_secret_key`。
+
+响应 `200`：
+
+```json
+{
+  "enabled": true,
+  "mode": "local",
+  "local": {
+    "retention_days": 30
+  },
+  "langfuse": {
+    "public_key": "",
+    "has_secret_key": false,
+    "base_url": "",
+    "debug": false
   }
 }
 ```
 
-#### `GET /agentic/ontologies/{ontology_id}/data-binding`
-
-读取某个 ontology 的业务数据连接绑定。
+如果持久化文件仍是旧结构、JSON 损坏、字段不完整或 secret 无法解密，读取路径不会改写文件或回退到旧格式，而是返回 `409`：
 
 ```json
 {
-  "ontology_id": "example-domain-operations-manual",
-  "binding": {
-    "connection_id": "example-nl2sql",
-    "updated_at": "2026-05-10T10:00:00+00:00"
+  "code": "WORKSPACE_OBSERVABILITY_MIGRATION_REQUIRED",
+  "detail": "工作空间 'demo' 的观测配置不是规范格式，需要先完成迁移或人工修复",
+  "workspace_id": "demo"
+}
+```
+
+#### `PATCH /agentic/workspaces/{workspace_id}/observability-config` (`admin`)
+
+增量更新指定工作空间的观测配置。保存后只影响后续运行；本地模式写入该工作空间的 runtime 目录，Langfuse 模式使用该工作空间自己的项目凭据。
+
+请求示例：
+
+```json
+{
+  "enabled": true,
+  "mode": "langfuse",
+  "local": {
+    "retention_days": 30
+  },
+  "langfuse": {
+    "public_key": "pk-example",
+    "secret_key": "sk-example",
+    "base_url": "https://langfuse.example.com",
+    "debug": false
   }
 }
 ```
 
-#### `PUT /agentic/ontologies/{ontology_id}/data-binding` (`admin`)
+更新时省略 `langfuse.secret_key` 会保留已保存的密钥；显式传空字符串会清空密钥。
 
-绑定或切换 ontology 的业务数据连接。
+#### `POST /agentic/workspaces/{workspace_id}/observability-config/test` (`admin`)
 
-```json
-{
-  "connection_id": "example-nl2sql"
-}
-```
+使用请求中的增量配置和已保存配置测试当前工作空间的观测目标，不写入配置：
 
-#### `DELETE /agentic/ontologies/{ontology_id}/data-binding` (`admin`)
+- `enabled=false`：返回工作空间观测已关闭。
+- `mode=local`：校验本地观测配置可用。
+- `mode=langfuse`：校验 `public_key`、`secret_key`、`base_url` 并请求 Langfuse 项目接口。
 
-删除 ontology 的业务数据连接绑定。
-
-### 7.10 Operation Evolution API
+### 7.11 Operation Evolution API
 
 Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/运行时积累的 operation 改进建议，并在管理员确认后把 staged patch 应用到 ontology 的 operation Markdown 文件。
 
@@ -1679,7 +1692,8 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 说明：
 
 - 模型属于外部运行必需能力，不提供可运行的内置默认值。
-- 业务数据连接不属于全局系统配置，按 workspace 存储并由 ontology 绑定选择。
+- 业务数据源不属于全局系统配置，按 `workspace_id + ontology_id` 独立存储。
+- 观测不属于全局系统配置，按 workspace 通过 `/agentic/workspaces/{workspace_id}/observability-config` 管理。
 - 内置默认值主要用于超时、重试、temperature、存储路径等运行参数。
 - 可通过 `SYSTEM_CONFIG_PATH` 指定其他保存位置。
 
@@ -1692,10 +1706,9 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 - `auth`
 - `agent`
 - `memory`
-- `observability`
 - `web_search`
 
-说明：观测配置只从 `.onto-runtime/config/system_config.json` / 系统设置页读取，不再读取旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量。
+说明：旧全局 `observability` 只作为启动兼容迁移的输入；迁移后由各工作空间独立保存和使用。旧的 `LANGFUSE_*` 或 `OBSERVABILITY_*` 环境变量不再作为运行时配置入口。
 
 ### 8.1 `GET /api/system-config`
 
@@ -1707,7 +1720,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - 当前版本后端不再内建默认 LLM 地址与模型 ID
 - 若系统尚未配置模型，则 `llm.base_url` / `llm.model` 以及 `llm_profiles.profiles` 可能为空
-- 业务数据连接请使用 `/agentic/data-connections` 与 `/agentic/ontologies/{ontology_id}/data-binding`
+- 业务数据源请使用 `/agentic/ontologies/{ontology_id}/data-source`
 
 响应 `200`：
 
@@ -1749,19 +1762,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "parallel_default_max_workers": 10,
     "context_max_rounds": 10,
     "context_prune_tools": ""
-  },
-  "observability": {
-    "enabled": true,
-    "mode": "local",
-    "local": {
-      "retention_days": 30
-    },
-    "langfuse": {
-      "public_key": "",
-      "has_secret_key": false,
-      "base_url": "",
-      "debug": false
-    }
   },
   "web_search": {
     "enabled": false,
@@ -1849,12 +1849,11 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 说明：
 
-- `section` 仅支持：`llm | llm_profiles | task_llm | storage | auth | agent | memory | observability | web_search`
+- `section` 仅支持：`llm | llm_profiles | task_llm | storage | auth | agent | memory | web_search`
 - `data` 必须为对象
 - secret 清空不能直接传空字符串，需使用对应清除字段：
   - `llm.clear_api_key`
   - `task_llm.clear_api_key`
-  - `observability.clear_langfuse_secret_key`
   - `web_search.clear_api_key`
 - 配置保存后会尝试刷新运行时依赖；若保存成功但刷新失败，会返回 `500`
 - `llm_profiles` 为多模型配置 section，对话时实际优先使用它，而不是旧版单模型 `llm`
@@ -1929,8 +1928,9 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - `llm` / `task_llm`：测试 OpenAI 兼容 `chat/completions`
 - `llm_profiles`：测试指定模型 profile（若请求里带 `profile_id`）或默认模型 profile
-- `observability`：`enabled=false` 返回 `观测已关闭`，启用后 `mode=local` 返回本地性能日志已启用，`mode=langfuse` 时校验 `public_key` / `secret_key` / `base_url` 是否已配置
 - `storage` / `auth` / `agent`：仅做配置校验，返回 `配置校验通过`
+
+工作空间观测连接测试使用 `POST /agentic/workspaces/{workspace_id}/observability-config/test`，不通过本接口处理。
 
 ### 8.7 配置字段清单
 
@@ -2004,18 +2004,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `context_max_rounds` | int | 上下文保留轮数 |
 | `context_prune_tools` | string | 上下文裁剪工具列表 |
 
-#### `observability`
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `enabled` | bool | 是否启用运行时观测输出 |
-| `mode` | string | 启用后使用的观测 exporter，支持 `local \| langfuse` |
-| `local.retention_days` | int | 本地性能日志保留天数 |
-| `langfuse.public_key` | string | Langfuse public key |
-| `langfuse.secret_key` | secret | Langfuse secret key |
-| `langfuse.base_url` | string | Langfuse 服务地址 |
-| `langfuse.debug` | bool | 是否启用 Langfuse SDK debug |
-
 #### `web_search`
 
 | 字段 | 类型 | 说明 |
@@ -2081,7 +2069,7 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 - SSE：`http://<host>:7488/search/sse`、`http://<host>:7488/chat/sse`
 - 健康检查：`http://<host>:7488/health`
 
-search 服务要求 ontology 已绑定 `neo4j` 或 `hugegraph` 数据连接。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
+search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
 
 ---
 

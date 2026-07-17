@@ -9,6 +9,7 @@ import useAgenticStream from './hooks/useAgenticStream';
 import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
 import { formatTime } from './lib/chatPresentation';
+import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
 import {
   isSessionWaitingForUserStatus,
   resolveSessionPreferences,
@@ -135,7 +136,7 @@ function AgentModePicker({ value, onChange, disabled }) {
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
 // useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
-export default function ChatWorkspace({ chat, streamManager, onOpenObservability }) {
+export default function ChatWorkspace({ chat, streamManager, onOpenObservability, onConfigureDataSource }) {
   const { workspaceId, workspaceDataReady } = useAuthContext();
   const {
     sessions,
@@ -145,6 +146,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     createChat,
     hydrateChat,
     generateSessionTitle,
+    touchSession,
   } = chat;
   const { sendAgentic, resumeAgentic } = useAgenticStream({
     sessionId: currentChatId,
@@ -222,6 +224,14 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   }, []);
 
   const current = sessions.find((session) => session.id === currentChatId);
+  const selectedOntology = useMemo(
+    () => ontologies.find((ontology) => ontology.id === selectedOntologyId) || null,
+    [ontologies, selectedOntologyId],
+  );
+  const emptyState = useMemo(
+    () => getChatDataSourceStatus(selectedOntology),
+    [selectedOntology],
+  );
   const conversationModel = useMemo(() => buildConversationViewModel(messages), [messages]);
   const traceModel = useMemo(() => buildTraceViewModel(conversationModel), [conversationModel]);
   const {
@@ -343,7 +353,14 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
         sessionId = session.id;
         isNew = true;
       }
-      sendAgentic(text, sessionId, { agentMode, modelProfileId, selectedOntologyId });
+      const refreshSessionTime = () => touchSession?.(sessionId);
+      refreshSessionTime();
+      sendAgentic(text, sessionId, {
+        agentMode,
+        modelProfileId,
+        selectedOntologyId,
+        onSessionUpdated: refreshSessionTime,
+      });
       setInput('');
       if (isNew) generateSessionTitle(sessionId, text);
     } catch {
@@ -382,10 +399,13 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   };
   const submitInteraction = (displayText, response) => {
     if (!workspaceDataReady || !pendingInteraction?.id || !currentChatId) return;
+    const refreshSessionTime = () => touchSession?.(currentChatId);
+    refreshSessionTime();
     sendAgentic(String(displayText || response?.value || ''), currentChatId, {
       agentMode,
       modelProfileId,
       selectedOntologyId,
+      onSessionUpdated: refreshSessionTime,
       interactionResponse: {
         interaction_id: pendingInteraction.id,
         type: response?.type || pendingInteraction.type || 'input',
@@ -421,9 +441,17 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
                 <span className="orbit orbit-a" /><span className="orbit orbit-b" />
                 <img src="/brand-mark.png" alt="" />
               </div>
-              <div className="chat-empty-kicker"><Sparkles size={13} />知识与数据已就绪</div>
-              <h2>从一个业务问题开始</h2>
-              <p>我会结合当前工作空间的知识包、数据连接和运行工具给出可追溯的回答。</p>
+              <div className={`chat-empty-kicker ${emptyState.kind}`}>
+                <Sparkles size={13} />{emptyState.kicker}
+              </div>
+              <h2>{emptyState.title}</h2>
+              <p>{emptyState.description}</p>
+              {emptyState.actionLabel && selectedOntology && (
+                <button className="btn chat-empty-data-action" type="button"
+                  onClick={() => onConfigureDataSource?.(selectedOntology.id)}>
+                  {emptyState.actionLabel}<ArrowUpRight size={14} />
+                </button>
+              )}
               <div className="chat-starters">
                 {STARTER_PROMPTS.map((prompt) => (
                   <button key={prompt} type="button" onClick={() => { setInput(prompt); inputRef.current?.focus(); }}>

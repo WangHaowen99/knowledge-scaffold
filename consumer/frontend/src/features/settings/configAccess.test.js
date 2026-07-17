@@ -47,7 +47,7 @@ test('workspace access remains closed until the selected workspace is confirmed'
 
 test('zero-workspace state blocks scoped sections but leaves global and local personal settings open', () => {
   const access = WORKSPACE_ACCESS_STATE.EMPTY;
-  assert.equal(configSectionDisabled('workspace', 'conn', access), true);
+  assert.equal(configSectionDisabled('workspace', 'info', access), true);
   assert.equal(configSectionDisabled('personal', 'memory', access), true);
   assert.equal(configSectionDisabled('global', 'wsmgmt', access), false);
   assert.equal(configSectionDisabled('personal', 'prefs', access), false);
