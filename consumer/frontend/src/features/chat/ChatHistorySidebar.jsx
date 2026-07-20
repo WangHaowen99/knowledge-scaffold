@@ -1,8 +1,14 @@
 import { useMemo, useState } from 'react';
-import { Clock3, Loader2, Trash2 } from 'lucide-react';
+import { Clock3, Loader2, MessageCircleQuestion, Trash2 } from 'lucide-react';
 import { ConfirmDialog, SkeletonState } from '../../shared/ui/feedback';
 import { formatTime, groupSessions } from './lib/chatPresentation';
 import { resolveSessionRunIndicator } from './lib/sessionScope';
+
+const RUN_STATUS_PRESENTATION = {
+  queued: { label: '排队中', Icon: Clock3 },
+  running: { label: '运行中', Icon: Loader2 },
+  awaiting_input: { label: '需要输入', Icon: MessageCircleQuestion },
+};
 
 // 侧边栏左下固定的历史对话区块：所有页面常驻，标题 + 搜索框固定，列表内部滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
@@ -26,8 +32,9 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
             <div className="ch-group">{label}</div>
             {items.map((s) => {
               const runStatus = resolveSessionRunIndicator(s, streamStates?.get(s.id));
-              const runStatusLabel = runStatus === 'queued' ? '排队中' : '运行中';
-              const RunStatusIcon = runStatus === 'queued' ? Clock3 : Loader2;
+              const runStatusPresentation = RUN_STATUS_PRESENTATION[runStatus];
+              const runStatusLabel = runStatusPresentation?.label || '';
+              const RunStatusIcon = runStatusPresentation?.Icon;
               return (
                 <div key={s.id} className={`ch-item-wrap ${s.id === currentChatId ? 'on' : ''}`}>
                   <button type="button" className="ch-item" onClick={() => onOpen(s.id)}>
@@ -36,7 +43,7 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
                       {s.title || '未命名对话'}
                     </span>
                     <span className="ch-meta">
-                      {runStatus && (
+                      {RunStatusIcon && (
                         <span className="ch-run-status" title={runStatusLabel}>
                           <RunStatusIcon size={11} className={runStatus === 'running' ? 'spin' : undefined}
                             aria-label={runStatusLabel} />

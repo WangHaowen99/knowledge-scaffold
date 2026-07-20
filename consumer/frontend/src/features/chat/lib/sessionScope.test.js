@@ -79,10 +79,11 @@ test('all queued and running sessions are selected for background resume', () =>
   ]);
 });
 
-test('session run indicators prefer live stream state and clear on terminal state', () => {
+test('session run indicators prefer live stream state and preserve awaiting input', () => {
   assert.equal(resolveSessionRunIndicator({ active_run_status: 'queued' }), 'queued');
   assert.equal(resolveSessionRunIndicator({ active_run_status: 'running' }), 'running');
-  assert.equal(resolveSessionRunIndicator({ active_run_status: 'awaiting_input' }), '');
+  assert.equal(resolveSessionRunIndicator({ active_run_status: 'awaiting_input' }), 'awaiting_input');
+  assert.equal(resolveSessionRunIndicator({ active_run_status: 'awaiting' }), 'awaiting_input');
   assert.equal(resolveSessionRunIndicator(
     { active_run_status: 'idle' },
     { isLoading: true, status: 'queued' },
@@ -93,7 +94,13 @@ test('session run indicators prefer live stream state and clear on terminal stat
       { isLoading: true, status },
     ), 'running');
   }
-  for (const status of ['completed', 'failed', 'cancelled', 'awaiting_input']) {
+  for (const status of ['awaiting', 'awaiting_input']) {
+    assert.equal(resolveSessionRunIndicator(
+      { active_run_status: 'running' },
+      { isLoading: false, status },
+    ), 'awaiting_input');
+  }
+  for (const status of ['completed', 'failed', 'cancelled']) {
     assert.equal(resolveSessionRunIndicator(
       { active_run_status: 'running' },
       { isLoading: false, status },
