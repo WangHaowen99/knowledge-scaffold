@@ -218,7 +218,7 @@ export default function AppShell() {
         </div>
         <div className="nav">
           <div className="grp">工作</div>
-          <button className={surface === 'chat' ? 'on' : ''} data-wiz="nav-chat" title="新建对话"
+          <button className={surface === 'chat' && !chat.currentChatId ? 'on' : ''} data-wiz="nav-chat" title="新建对话"
             onClick={() => { setSurface('chat'); setMobileNavOpen(false); chat.startNewChat(); }}>
             <MessageSquarePlus className="nav-icon" size={17} strokeWidth={1.9} /><span className="nav-label">新建对话</span>
           </button>
