@@ -1,4 +1,4 @@
-import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench, X } from 'lucide-react';
+import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench } from 'lucide-react';
 
 import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import ToolOutput from './ToolOutput';
@@ -30,13 +30,12 @@ const safeJson = (value) => {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 };
 
-export default function TracePanel({ model, width, onClose, sessionId = '' }) {
+export default function TracePanel({ model, width, sessionId = '' }) {
   return (
     <aside className="trace" style={width ? { width } : undefined} aria-label="运行轨迹">
       <div className="tr-head">
         <span className="trace-title"><Activity size={14} />运行轨迹</span>
         <span className="trace-caption">Trace</span>
-        <button className="iconbtn trace-close" type="button" aria-label="关闭运行轨迹" onClick={onClose}><X size={16} /></button>
       </div>
       <div className="tr-body">
         {!model?.turns?.length && <div className="ch-empty trace-empty">发起对话后，这里按回合展示思考、工具、子任务和耗时。</div>}
