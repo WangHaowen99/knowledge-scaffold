@@ -79,6 +79,11 @@ def test_missing_workspace_returns_consistent_404_contract(tmp_path, monkeypatch
     ]
 
     for method, path, headers, json_body in cases:
-        response = client.open(path, method=method, headers=headers, json=json_body)
+        if method == "GET":
+            response = client.get(path, headers=headers)
+        elif method == "POST":
+            response = client.post(path, headers=headers, json=json_body)
+        else:
+            raise AssertionError(f"Unsupported method in test case: {method}")
         assert response.status_code == 404, path
         assert response.get_json() == expected_body, path

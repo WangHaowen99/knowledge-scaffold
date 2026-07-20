@@ -1454,7 +1454,7 @@ def _parse_agent_perf_log(run_id: str) -> dict:
                     continue
                 try:
                     record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
                 if record.get("run_id") != run_id:
                     continue
@@ -1601,7 +1601,7 @@ def _detect_chinese_in_kg_outputs(kg_tool_outputs: list[dict], target_lang: str)
         parsed = None
         try:
             parsed = json.loads(raw_output)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             pass
         chinese_keys: list[str] = []
         chinese_values: list[str] = []
@@ -2485,7 +2485,7 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
     log_path = _find_backend_log()
     if not log_path or not run_ids:
         print(f"  ⚠ 无法分析: 日志文件不存在或无成功执行的 run_id")
-        return
+        return {}
 
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
         lines = []
