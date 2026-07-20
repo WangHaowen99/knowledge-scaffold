@@ -29,9 +29,13 @@ body:has(> #root .mwr) { background: #f3f5f8; }
   --good: #16845b; --warn: #b77909; --crit: #c53d4b;
   --radius-pill: 999px;
   --canvas: var(--surface-page); --surface: var(--surface-card); --line: var(--border-default);
+  --control-bg: var(--surface-raised); --control-fg: var(--text-primary); --control-border: var(--border-default);
+  --control-placeholder: var(--text-tertiary); --control-disabled-bg: var(--surface-subtle); --control-disabled-fg: var(--text-secondary);
   --status-success-bg: #e2f5ed; --status-success-fg: #0e6b4a;
   --status-warning-bg: #fbf0d7; --status-warning-fg: #7a5200;
   --status-error-bg: #fbe8e8; --status-error-fg: #a62f2f;
+  --control-focus-ring: var(--color-primary-hover);
+  --control-error-border: var(--status-error-fg); --control-error-ring: color-mix(in srgb, var(--status-error-fg) 22%, transparent);
   --l1: var(--blue-l); --l2: var(--blue); --l3: var(--blue-d);
   font-family: var(--font-sans);
   color: var(--ink);
@@ -59,8 +63,32 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .sr-only { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .mwr button { font-family: inherit; cursor: pointer; }
 .mwr input, .mwr select, .mwr textarea { font-family: inherit; font-size: 13px; }
+.mwr :where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), select, textarea) {
+  color: var(--control-fg);
+  background-color: var(--control-bg);
+  border-color: var(--control-border);
+}
+.mwr :where(input, textarea)::placeholder { color: var(--control-placeholder); opacity: 1; }
+.mwr :where(input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']), select, textarea):disabled {
+  color: var(--control-disabled-fg);
+  background-color: var(--control-disabled-bg);
+}
+.mwr :where(input[readonly], textarea[readonly]) { color: var(--control-fg); background-color: var(--control-disabled-bg); }
+.mwr :where(input, select, textarea):is([aria-invalid='true'], :user-invalid) {
+  border-color: var(--control-error-border);
+  box-shadow: 0 0 0 3px var(--control-error-ring);
+}
+.mwr :where(input[type='checkbox'], input[type='radio'], input[type='range']) { accent-color: var(--blue); }
+.mwr input:-webkit-autofill,
+.mwr input:-webkit-autofill:hover,
+.mwr input:-webkit-autofill:focus,
+.mwr input:-webkit-autofill:active {
+  caret-color: var(--control-fg);
+  -webkit-text-fill-color: var(--control-fg);
+  -webkit-box-shadow: 0 0 0 1000px var(--control-bg) inset;
+}
 .mwr button, .mwr input, .mwr select, .mwr textarea { transition: border-color var(--motion-fast), box-shadow var(--motion-fast), background-color var(--motion-fast), color var(--motion-fast), transform var(--motion-fast); }
-.mwr :is(button, input, select, textarea, a):focus-visible { outline: 3px solid color-mix(in srgb, var(--color-primary) 24%, transparent); outline-offset: 2px; }
+.mwr :is(button, input, select, textarea, a):focus-visible { outline: 3px solid var(--control-focus-ring); outline-offset: 2px; }
 .mwr .spin { animation: mwspin .8s linear infinite; }
 @keyframes mwspin { to { transform: rotate(360deg); } }
 
@@ -74,6 +102,8 @@ html[data-mwr-mode='dark'] .mwr {
   --status-success-bg: color-mix(in srgb, #16845b 18%, var(--surface-card)); --status-success-fg: #73d7ae;
   --status-warning-bg: color-mix(in srgb, #b77909 18%, var(--surface-card)); --status-warning-fg: #e7c36c;
   --status-error-bg: color-mix(in srgb, #c53d4b 18%, var(--surface-card)); --status-error-fg: #ff9daa;
+  --control-disabled-fg: var(--text-tertiary);
+  --control-focus-ring: color-mix(in srgb, var(--color-primary) 58%, #fff);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .25); --shadow-md: 0 16px 40px rgba(0, 0, 0, .34);
   color-scheme: dark;
 }
@@ -102,11 +132,6 @@ html[data-mwr-mode='dark'] .mwr .scope-tabs button.on,
 html[data-mwr-mode='dark'] .mwr .cfg .subnav button.on,
 html[data-mwr-mode='dark'] .mwr .viewtog button { background: var(--surface-card); color: var(--ink); border-color: var(--border-default); }
 html[data-mwr-mode='dark'] .mwr .btn-p { background: var(--blue); color: #fff; border-color: var(--blue); }
-html[data-mwr-mode='dark'] .mwr input,
-html[data-mwr-mode='dark'] .mwr select,
-html[data-mwr-mode='dark'] .mwr textarea,
-html[data-mwr-mode='dark'] .mwr .lfield input,
-html[data-mwr-mode='dark'] .mwr .kb-toolbar select,
 html[data-mwr-mode='dark'] .mwr .lform { background: radial-gradient(circle at 80% 10%, color-mix(in srgb, var(--color-primary) 10%, transparent), transparent 35%), var(--surface-page); }
 html[data-mwr-mode='dark'] .mwr .scope-tabs { background: #202936; }
 html[data-mwr-mode='dark'] .mwr .msg.a .bub,
