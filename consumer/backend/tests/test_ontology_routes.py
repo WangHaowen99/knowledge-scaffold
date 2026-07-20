@@ -175,7 +175,7 @@ def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
 
 
 def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
-    import ontology.ontologies as ontologies_module
+    import ontology.ontologies as ontology_registry_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -193,7 +193,7 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
 
     client, headers = _build_test_client(tmp_path)
     response = client.get("/agentic/ontologies", headers=headers)

@@ -370,12 +370,13 @@ def test_workspace_llm_profiles_test_route_uses_workspace_private_payload(tmp_pa
         def raise_for_status(self):
             return None
 
-    def fake_post(url, *, headers=None, json=None, timeout=None):
+    def fake_post(url, *, headers=None, timeout=None, **kwargs):
+        request_json = kwargs.get("json")
         calls.append(
             {
                 "url": url,
                 "headers": headers or {},
-                "json": json or {},
+                "json": request_json or {},
                 "timeout": timeout,
             }
         )

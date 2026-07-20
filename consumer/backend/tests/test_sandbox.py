@@ -52,7 +52,7 @@ def test_sandbox_id_for_run_is_stable_and_valid_length():
 
 def test_create_sandbox_treats_409_as_conflict():
     class ConflictHttpClient:
-        def post(self, path, json):
+        def post(self, path, **kwargs):
             return _FakeResponse({"detail": "sandbox already exists"}, status_code=409)
 
     client = JiuwenboxClient.__new__(JiuwenboxClient)
