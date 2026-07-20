@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal } from '../../../shared/ui/primitives';
 import { authFetch } from '../../../shared/api/auth';
 import {
+  canCreateWorkspace,
+  canDeleteWorkspace,
   canEditWorkspace,
   canManageWorkspaceCollection,
   chooseWorkspaceFallback,
@@ -24,12 +26,12 @@ function responseMessage(response, payload, fallback) {
   return payload?.error || payload?.detail || (response.ok ? '' : `${fallback}（${response.status}）`);
 }
 
-function WorkspaceDialog({ dialog, draft, setDraft, busy, onClose, onSubmit }) {
+function WorkspaceDialog({ dialog, draft, setDraft, busy, canSetDefault, onClose, onSubmit }) {
   const isCreate = dialog.type === 'create';
   return (
     <Modal
       title={isCreate ? '新建工作空间' : `编辑 ${dialog.workspace?.name || dialog.workspace?.id}`}
-      description={isCreate ? '工作空间 ID 创建后不可修改。' : '仅更新名称与描述，不改变成员和所有者。'}
+      description={isCreate ? '工作空间 ID 创建后不可修改；普通用户创建后会自动成为 owner。' : '仅更新名称与描述，不改变成员和所有者。'}
       onClose={busy ? undefined : onClose}
       actions={<>
         <button className="btn" type="button" disabled={busy} onClick={onClose}>取消</button>
@@ -76,7 +78,7 @@ function WorkspaceDialog({ dialog, draft, setDraft, busy, onClose, onSubmit }) {
             onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
           />
         </label>
-        {isCreate && (
+        {isCreate && canSetDefault && (
           <label className="settings-admin-check">
             <input
               type="checkbox"
@@ -113,6 +115,7 @@ export default function WorkspaceAdminPanel({
   const loadSequenceRef = useRef(0);
   const loadControllerRef = useRef(null);
   const mutationControllerRef = useRef(null);
+  const canCreate = canCreateWorkspace(currentUser);
   const canManageCollection = canManageWorkspaceCollection(currentUser);
 
   const loadWorkspaces = useCallback(async ({ quiet = false } = {}) => {
@@ -201,7 +204,11 @@ export default function WorkspaceAdminPanel({
     const isCreate = dialog.type === 'create';
     const id = isCreate ? draft.id.trim() : dialog.workspace.id;
     const body = isCreate
-      ? { id, ...workspaceMutationPayload(draft), set_as_default: draft.setAsDefault }
+      ? {
+          id,
+          ...workspaceMutationPayload(draft),
+          ...(canManageCollection ? { set_as_default: draft.setAsDefault } : {}),
+        }
       : workspaceMutationPayload(draft);
     const result = await runMutation(
       `${dialog.type}:${id}`,
@@ -279,7 +286,7 @@ export default function WorkspaceAdminPanel({
           <button className="btn" type="button" disabled={loading || Boolean(busy)} onClick={() => loadWorkspaces()}>
             {loading ? '刷新中…' : '刷新'}
           </button>
-          {canManageCollection && <button className="btn btn-p" type="button" disabled={Boolean(busy)} onClick={openCreate}>新建工作空间</button>}
+          {canCreate && <button className="btn btn-p" type="button" disabled={Boolean(busy)} onClick={openCreate}>新建工作空间</button>}
         </div>
       </div>
 
@@ -300,6 +307,7 @@ export default function WorkspaceAdminPanel({
               {paged.items.map((workspace) => {
                 const isDefault = workspace.id === defaultWorkspaceId || workspace.is_default;
                 const isCurrent = workspace.id === currentWorkspaceId;
+                const canDelete = canDeleteWorkspace(currentUser, workspace);
                 return (
                   <tr key={workspace.id}>
                     <td><strong>{workspace.name}</strong><small>{workspace.id}{workspace.description ? ` · ${workspace.description}` : ''}</small></td>
@@ -311,7 +319,7 @@ export default function WorkspaceAdminPanel({
                         {!isCurrent && <button className="btn btn-sm" type="button" disabled={Boolean(busy)} onClick={() => onWorkspaceChange?.(workspace.id)}>切换</button>}
                         {canEditWorkspace(currentUser, workspace) && <button className="btn btn-sm" type="button" disabled={Boolean(busy)} onClick={() => openEdit(workspace)}>编辑</button>}
                         {canManageCollection && !isDefault && <button className="btn btn-sm" type="button" disabled={Boolean(busy)} onClick={() => setDefault(workspace)}>设为默认</button>}
-                        {canManageCollection && <button className="btn btn-sm btn-danger" type="button" disabled={Boolean(busy) || isDefault} onClick={() => setDialog({ type: 'delete', workspace })}>删除</button>}
+                        {canDelete && <button className="btn btn-sm btn-danger" type="button" disabled={Boolean(busy) || (isDefault && canManageCollection)} onClick={() => setDialog({ type: 'delete', workspace })}>删除</button>}
                       </div>
                     </td>
                   </tr>
@@ -333,7 +341,15 @@ export default function WorkspaceAdminPanel({
       )}
 
       {(dialog?.type === 'create' || dialog?.type === 'edit') && (
-        <WorkspaceDialog dialog={dialog} draft={draft} setDraft={setDraft} busy={Boolean(busy)} onClose={closeDialog} onSubmit={saveWorkspace} />
+        <WorkspaceDialog
+          dialog={dialog}
+          draft={draft}
+          setDraft={setDraft}
+          busy={Boolean(busy)}
+          canSetDefault={canManageCollection}
+          onClose={closeDialog}
+          onSubmit={saveWorkspace}
+        />
       )}
       {dialog?.type === 'delete' && (
         <Modal

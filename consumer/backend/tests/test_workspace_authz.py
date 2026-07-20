@@ -313,6 +313,104 @@ def test_create_workspace_defaults_owner_to_creator(tmp_path, monkeypatch):
     assert body["members"] == []
 
 
+def test_regular_user_can_create_only_self_owned_non_default_workspace(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _create_workspace_api(
+        client,
+        headers["admin"],
+        name="Shared WS",
+        workspace_id="shared",
+        owner=None,
+    )
+
+    response = client.post(
+        "/agentic/workspaces",
+        json={
+            "name": "Alice Created WS",
+            "id": "alice-created",
+            "owner": "bob",
+            "set_as_default": True,
+        },
+        headers=headers["alice"],
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["owner"] == "alice"
+    assert body["members"] == []
+    assert body["is_default"] is False
+
+
+def test_regular_user_first_workspace_does_not_become_global_default(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/agentic/workspaces",
+        json={"name": "Alice First WS", "id": "alice-first"},
+        headers=headers["alice"],
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["owner"] == "alice"
+    assert response.get_json()["is_default"] is False
+    listing = client.get("/agentic/workspaces", headers=headers["alice"]).get_json()
+    assert listing["default_workspace_id"] is None
+    assert listing["workspaces"][0]["is_default"] is False
+    bob_listing = client.get("/agentic/workspaces", headers=headers["bob"]).get_json()
+    assert bob_listing["workspaces"] == []
+
+
+def test_workspace_owner_can_delete_owned_workspace_but_member_cannot(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+    member_response = client.put(
+        "/agentic/workspaces/alice-ws/members",
+        json={"members": ["bob"]},
+        headers=headers["alice"],
+    )
+    assert member_response.status_code == 200
+
+    denied = client.delete("/agentic/workspaces/alice-ws", headers=headers["bob"])
+    assert denied.status_code == 403
+    assert denied.get_json() == FORBIDDEN_BODY
+
+    deleted = client.delete("/agentic/workspaces/alice-ws", headers=headers["alice"])
+    assert deleted.status_code == 200
+    assert deleted.get_json() == {"success": True, "id": "alice-ws"}
+    assert client.get("/agentic/workspaces/alice-ws", headers=headers["admin"]).status_code == 404
+
+
+def test_workspace_owner_can_delete_owned_default_without_promoting_another_workspace(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+    set_default = client.post(
+        "/agentic/workspaces/alice-ws/default",
+        headers=headers["admin"],
+    )
+    assert set_default.status_code == 200
+
+    deleted = client.delete("/agentic/workspaces/alice-ws", headers=headers["alice"])
+
+    assert deleted.status_code == 200
+    listing = client.get("/agentic/workspaces", headers=headers["admin"]).get_json()
+    assert listing["default_workspace_id"] is None
+    assert [workspace["id"] for workspace in listing["workspaces"]] == ["shared"]
+    assert listing["workspaces"][0]["is_default"] is False
+
+
+def test_global_admin_still_cannot_delete_default_workspace_directly(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    response = client.delete("/agentic/workspaces/shared", headers=headers["admin"])
+
+    assert response.status_code == 400
+    assert response.get_json() == {"detail": "默认工作空间不可删除，请先切换默认工作空间"}
+
+
 # ---------------------------------------------------------------------------
 # 旧数据兼容：workspace.json 无 owner/members 字段
 # ---------------------------------------------------------------------------
