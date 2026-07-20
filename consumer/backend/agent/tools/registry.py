@@ -65,9 +65,10 @@ def get_tool_specs_for_caller(
     include_memory: bool = True,
     include_orchestration: bool = True,
     include_web_search: bool = False,
+    workspace_id: Optional[str] = None,
 ) -> List[BaseTool]:
     specs: List[BaseTool] = []
-    has_skills = _has_registered_skills()
+    has_skills = _has_registered_skills(workspace_id=workspace_id)
     for spec in TOOL_SPECS.values():
         if caller not in spec.allowed_callers:
             continue
@@ -103,6 +104,7 @@ def get_tools_schema(
             include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
+            workspace_id=workspace_id,
         )
     ]
 
@@ -125,9 +127,10 @@ def get_regular_tools_schema(
     *,
     include_memory: bool = False,
     include_web_search: bool = False,
+    workspace_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     schemas = []
-    has_skills = _has_registered_skills()
+    has_skills = _has_registered_skills(workspace_id=workspace_id)
     for spec in TOOL_SPECS.values():
         if spec.category not in {"regular", "business_data_search", "web_search"}:
             continue
@@ -145,17 +148,24 @@ def get_universal_tools_schema(
     *,
     include_memory: bool = True,
     include_web_search: bool = False,
+    workspace_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     return get_tools_schema(
         "main",
         include_memory=include_memory,
         include_web_search=include_web_search,
+        workspace_id=workspace_id,
     )
 
 
-def _has_registered_skills() -> bool:
+def _has_registered_skills(*, workspace_id: Optional[str] = None) -> bool:
     try:
-        return bool(get_skill_registry().list_skills())
+        registry = (
+            get_skill_registry(workspace_id=workspace_id)
+            if workspace_id
+            else get_skill_registry()
+        )
+        return bool(registry.list_skills())
     except Exception:
         logger.warning("Failed to inspect skill registry while building tool schemas", exc_info=True)
         # Schema generation can run before a default workspace is established.

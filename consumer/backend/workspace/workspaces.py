@@ -631,6 +631,12 @@ def delete_workspace(workspace_id: str) -> None:
         if not paths.metadata_path.exists():
             raise WorkspaceNotFoundError(resolved_id)
         shutil.rmtree(paths.workspace_dir, ignore_errors=True)
+    # Keep process caches from retaining content for a deleted workspace id.
+    from ontology.ontologies import invalidate_ontology_registry
+    from utils.skills import invalidate_skill_registry
+
+    invalidate_ontology_registry(workspace_id=resolved_id)
+    invalidate_skill_registry(workspace_id=resolved_id)
 
 
 def list_owned_workspace_ids(username: str) -> List[str]:

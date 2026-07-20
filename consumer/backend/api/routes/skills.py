@@ -12,7 +12,7 @@ from flask import Blueprint, request, jsonify
 
 from api.auth.auth import require_auth
 from utils.logging import get_logger
-from utils.skills import SkillLoader, get_skill_registry
+from utils.skills import SkillLoader, get_skill_registry, invalidate_skill_registry
 from workspace.workspaces import (
     get_workspace_skills_root,
     resolve_workspace_id,
@@ -144,14 +144,10 @@ def list_skills():
         return jsonify({"detail": str(exc)}), 400
 
     with workspace_scope(workspace_id):
-        registry = get_skill_registry()
-
-        # Re-discover skills to get fresh list
-        registry.skills.clear()
-        registry.discover_skills()
+        registry = get_skill_registry(workspace_id=workspace_id)
 
         skills_list = []
-        for name, skill in registry.skills.items():
+        for skill in registry.snapshot().values():
             skills_list.append({
                 "name": skill.name,
                 "description": skill.description,
@@ -235,10 +231,8 @@ def upload_skill():
 
             logger.info("Successfully uploaded skill: {}".format(skill_name))
 
-            # Reload skill registry
-            registry = get_skill_registry()
-            registry.skills.clear()
-            registry.discover_skills()
+            invalidate_skill_registry(workspace_id=workspace_id)
+            registry = get_skill_registry(workspace_id=workspace_id)
 
             # Get skill info
             skill = registry.get_skill(skill_name)
@@ -275,11 +269,7 @@ def delete_skill(skill_name: str):
         try:
             shutil.rmtree(skill_dir)
             logger.info("Deleted skill: {}".format(skill_name))
-
-            # Reload skill registry
-            registry = get_skill_registry()
-            registry.skills.clear()
-            registry.discover_skills()
+            invalidate_skill_registry(workspace_id=workspace_id)
 
             return jsonify({"success": True})
         except Exception as e:
@@ -299,7 +289,7 @@ def get_skill(skill_name: str):
         return jsonify({"detail": str(exc)}), 400
 
     with workspace_scope(workspace_id):
-        registry = get_skill_registry()
+        registry = get_skill_registry(workspace_id=workspace_id)
         skill = registry.get_skill(skill_name)
 
         if not skill:

@@ -37,12 +37,23 @@ def _error_batch(tool_calls, content="Error: arguments must be a JSON object"):
     )
 
 
-def test_loop_stall_error_is_exposed_as_its_safe_public_message():
+def test_loop_stall_error_uses_a_safe_public_message():
     exception_type = getattr(agent_exceptions, "AgentLoopStalledError", None)
 
     assert exception_type is not None
-    exc = exception_type("Tool execution stalled after a repeated failure.")
-    assert _public_workflow_error_message(exc) == exc.message
+    exc = exception_type("internal script stderr: TOKEN=do-not-expose")
+    public_message = _public_workflow_error_message(exc)
+    assert public_message == "Tool execution stopped after a repeated failure."
+    assert "TOKEN=do-not-expose" not in public_message
+
+
+def test_loop_stall_error_string_never_includes_internal_details():
+    exc = agent_exceptions.AgentLoopStalledError(
+        "internal script stderr: TOKEN=do-not-expose",
+        details={"stderr": "DSN=postgres://internal"},
+    )
+
+    assert str(exc) == agent_exceptions.AgentLoopStalledError.PUBLIC_MESSAGE
 
 
 def test_force_finish_bridge_skips_event_loading_without_callback_manager():
@@ -89,8 +100,7 @@ def test_identical_tool_failure_stops_after_second_attempt_with_stable_arg_order
         asyncio.run(adapter.invoke(second_args))
 
     assert len(calls) == 2
-    assert "execute_script" in raised.value.message
-    assert "arguments must be a JSON object" in raised.value.message
+    assert raised.value.message == agent_exceptions.AgentLoopStalledError.PUBLIC_MESSAGE
 
 
 def test_stalled_failure_snapshots_the_tool_result_before_propagating():
@@ -156,6 +166,322 @@ def test_terminal_result_resets_the_failure_guard():
     guard.record(invocation, _error_batch([invocation]))
     guard.record(invocation, ToolBatchResult(terminal=True))
     guard.record(invocation, _error_batch([invocation]))
+
+
+def test_terminal_result_closes_guard_until_explicit_reset():
+    guard = ConsecutiveToolFailureGuard()
+    terminal_call = ToolInvocation(
+        id="call-terminal",
+        name="request_user_interaction",
+        arguments={"prompt": "continue?"},
+    )
+    first_trailing_call = ToolInvocation(
+        id="call-trailing-1",
+        name="business_data_search",
+        arguments={"query": "same"},
+    )
+    second_trailing_call = ToolInvocation(
+        id="call-trailing-2",
+        name="business_data_search",
+        arguments={"query": "same"},
+    )
+
+    for invocation_index in (1, 2, 3):
+        guard.register_invocation(invocation_index)
+
+    guard.record(
+        terminal_call,
+        ToolBatchResult(terminal=True),
+        invocation_index=1,
+    )
+    guard.record(
+        first_trailing_call,
+        _error_batch([first_trailing_call], content="Error: same failure"),
+        invocation_index=2,
+    )
+    guard.record(
+        second_trailing_call,
+        _error_batch([second_trailing_call], content="Error: same failure"),
+        invocation_index=3,
+    )
+
+    guard.reset()
+    guard.record(first_trailing_call, _error_batch([first_trailing_call]))
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
+        guard.record(second_trailing_call, _error_batch([second_trailing_call]))
+
+
+def test_same_failure_only_stalls_after_a_later_agent_iteration():
+    guard = ConsecutiveToolFailureGuard()
+    first_call = ToolInvocation(
+        id="call-iteration-1",
+        name="business_data_search",
+        arguments={"query": "same"},
+    )
+    second_call = ToolInvocation(
+        id="call-iteration-2",
+        name="business_data_search",
+        arguments={"query": "same"},
+    )
+    retry_call = ToolInvocation(
+        id="call-iteration-3",
+        name="business_data_search",
+        arguments={"query": "same"},
+    )
+
+    for invocation_index in (1, 2):
+        guard.register_invocation(invocation_index)
+
+    # The second call completes first, but both calls belong to one model
+    # response and therefore are not separate retry attempts.
+    guard.record(
+        second_call,
+        _error_batch([second_call], content="Error: same failure"),
+        invocation_index=2,
+        agent_iteration=4,
+    )
+    guard.record(
+        first_call,
+        _error_batch([first_call], content="Error: same failure"),
+        invocation_index=1,
+        agent_iteration=4,
+    )
+
+    guard.register_invocation(3)
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
+        guard.record(
+            retry_call,
+            _error_batch([retry_call], content="Error: same failure"),
+            invocation_index=3,
+            agent_iteration=5,
+        )
+
+
+def test_failure_guard_replays_concurrent_results_in_invocation_order():
+    """Completion order must not turn non-consecutive failures into a stall."""
+    guard = ConsecutiveToolFailureGuard()
+    call_one = ToolInvocation(id="call-1", name="business_data_search", arguments={"query": "same"})
+    call_two = ToolInvocation(id="call-2", name="business_data_search", arguments={"step": 2})
+    call_three = ToolInvocation(id="call-3", name="business_data_search", arguments={"query": "same"})
+
+    for invocation_index in (1, 2, 3):
+        guard.register_invocation(invocation_index)
+
+    # Logical order is failure, success, failure.  The two failures complete
+    # first, which used to make the shared guard raise before the success was
+    # observed.
+    guard.record(call_three, _error_batch([call_three], content="Error: same failure"), invocation_index=3)
+    guard.record(call_one, _error_batch([call_one], content="Error: same failure"), invocation_index=1)
+    guard.record(
+        call_two,
+        ToolBatchResult(
+            messages=[
+                {
+                    "role": "tool",
+                    "content": '{"success": true}',
+                    "tool_call_id": call_two.id,
+                    "name": call_two.name,
+                }
+            ]
+        ),
+        invocation_index=2,
+    )
+
+
+def test_script_execution_error_is_classified_as_a_failure():
+    guard = ConsecutiveToolFailureGuard()
+    invocation = ToolInvocation(
+        id="call-script-error",
+        name="execute_script",
+        arguments={"operation_key": "split_material"},
+    )
+    content = "Error executing script 'split_material': backend failed"
+
+    guard.record(invocation, _error_batch([invocation], content=content))
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
+        guard.record(invocation, _error_batch([invocation], content=content))
+
+
+def test_skipped_invocation_breaks_the_failure_streak():
+    guard = ConsecutiveToolFailureGuard()
+    first = ToolInvocation(id="call-skip-1", name="execute_script", arguments={"x": 1})
+    third = ToolInvocation(id="call-skip-3", name="execute_script", arguments={"x": 1})
+    for invocation_index in (1, 2, 3):
+        guard.register_invocation(invocation_index)
+
+    guard.record(first, _error_batch([first], content="Error: same"), invocation_index=1)
+    guard.skip_invocation(2)
+    guard.record(third, _error_batch([third], content="Error: same"), invocation_index=3)
+
+
+def test_adapter_cancellation_before_serial_execution_skips_registered_call(monkeypatch):
+    guard = ConsecutiveToolFailureGuard()
+
+    async def cancel_before_lock(_lock):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr("agent.core.jiuwen.tools._acquire_thread_lock_async", cancel_before_lock)
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="execute_script",
+        state={"messages": [], "results": {}},
+        context_factory=lambda: SimpleNamespace(name="ctx"),
+        failure_guard=guard,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(adapter.invoke({"operation_key": "split_material"}))
+
+    assert guard._registered_invocations == set()
+    assert guard._pending_results == {}
+
+
+def test_context_factory_failure_does_not_block_later_guard_results():
+    guard = ConsecutiveToolFailureGuard()
+    context_calls = 0
+
+    def context_factory():
+        nonlocal context_calls
+        context_calls += 1
+        if context_calls == 1:
+            raise RuntimeError("context creation failed")
+        return SimpleNamespace(name="ctx", agent_iteration=context_calls - 1)
+
+    def fake_executor(tool_calls, context):
+        del context
+        return _error_batch(tool_calls, content="Error: same failure")
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="business_data_search",
+        state={"messages": [], "results": {}},
+        context_factory=context_factory,
+        tool_batch_executor=fake_executor,
+        failure_guard=guard,
+    )
+    arguments = {"query": "same"}
+
+    with pytest.raises(RuntimeError, match="context creation failed"):
+        asyncio.run(adapter.invoke(arguments))
+    assert asyncio.run(adapter.invoke(arguments)) == "Error: same failure"
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
+        asyncio.run(adapter.invoke(arguments))
+
+
+def test_state_append_failure_does_not_block_later_guard_results():
+    guard = ConsecutiveToolFailureGuard()
+    state = {"messages": {}, "results": {}}
+    iteration = 0
+
+    def context_factory():
+        nonlocal iteration
+        iteration += 1
+        return SimpleNamespace(name="ctx", agent_iteration=iteration)
+
+    def fake_executor(tool_calls, context):
+        del context
+        return _error_batch(tool_calls, content="Error: same failure")
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="business_data_search",
+        state=state,
+        context_factory=context_factory,
+        tool_batch_executor=fake_executor,
+        failure_guard=guard,
+    )
+    arguments = {"query": "same"}
+
+    with pytest.raises(AttributeError):
+        asyncio.run(adapter.invoke(arguments))
+    state["messages"] = []
+    assert asyncio.run(adapter.invoke(arguments)) == "Error: same failure"
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
+        asyncio.run(adapter.invoke(arguments))
+
+
+def test_snapshot_failure_does_not_block_later_guard_results():
+    guard = ConsecutiveToolFailureGuard()
+    snapshot_calls = 0
+    iteration = 0
+
+    def snapshot_callback(_snapshot):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            raise RuntimeError("snapshot failed")
+
+    def context_factory():
+        nonlocal iteration
+        iteration += 1
+        return SimpleNamespace(name="ctx", agent_iteration=iteration)
+
+    def fake_executor(tool_calls, context):
+        del context
+        return _error_batch(tool_calls, content="Error: same failure")
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="business_data_search",
+        state={"messages": [], "results": {}},
+        context_factory=context_factory,
+        tool_batch_executor=fake_executor,
+        state_snapshot_callback=snapshot_callback,
+        failure_guard=guard,
+    )
+    arguments = {"query": "same"}
+
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        asyncio.run(adapter.invoke(arguments))
+    assert asyncio.run(adapter.invoke(arguments)) == "Error: same failure"
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
+        asyncio.run(adapter.invoke(arguments))
+
+
+def test_adapter_keeps_legacy_failure_guard_record_signature():
+    recorded = []
+
+    class LegacyFailureGuard:
+        def record(self, tool_call, batch_result):
+            recorded.append((tool_call, batch_result))
+
+    def fake_executor(tool_calls, context):
+        del context
+        return ToolBatchResult(
+            messages=[
+                {
+                    "role": "tool",
+                    "content": "ok",
+                    "tool_call_id": tool_calls[0].id,
+                    "name": tool_calls[0].name,
+                }
+            ]
+        )
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="business_data_search",
+        state={"messages": [], "results": {}},
+        context_factory=lambda: SimpleNamespace(name="ctx", agent_iteration=1),
+        tool_batch_executor=fake_executor,
+        failure_guard=LegacyFailureGuard(),
+    )
+
+    assert asyncio.run(adapter.invoke({"query": "same"})) == "ok"
+    assert len(recorded) == 1
+
+
+def test_stall_error_does_not_expose_raw_script_output():
+    guard = ConsecutiveToolFailureGuard()
+    invocation = ToolInvocation(
+        id="call-secret-error",
+        name="execute_script",
+        arguments={"operation_key": "split_material"},
+    )
+    secret_output = "Error executing script: TOKEN=super-secret; DSN=postgres://internal"
+    guard.record(invocation, _error_batch([invocation], content=secret_output))
+
+    with pytest.raises(agent_exceptions.AgentLoopStalledError) as raised:
+        guard.record(invocation, _error_batch([invocation], content=secret_output))
+
+    assert "super-secret" not in raised.value.message
+    assert "postgres://internal" not in raised.value.message
+    assert _public_workflow_error_message(raised.value) == raised.value.message
 
 
 @pytest.mark.parametrize(
@@ -353,6 +679,16 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
                 "arguments": {},
             }
             await tool.invoke(arguments)
+            model_callback = self.agent_callback_manager.callbacks[
+                FakeAgentCallbackEvent.BEFORE_MODEL_CALL
+            ]
+            model_context = SimpleNamespace(
+                agent=self,
+                inputs=SimpleNamespace(messages=[], tools=[]),
+            )
+            callback_result = model_callback(model_context)
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
             try:
                 await tool.invoke(arguments)
             except agent_exceptions.AgentLoopStalledError as exc:
@@ -398,7 +734,10 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
     def fake_executor(tool_calls, context):
         del context
         created["last_tool_call_id"] = tool_calls[0].id
-        return _error_batch(tool_calls)
+        return _error_batch(
+            tool_calls,
+            content="Error executing script: TOKEN=force-finish-secret",
+        )
 
     tool_info = {
         "type": "function",
@@ -458,7 +797,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
     }
     observer = RecordingObserver()
 
-    with pytest.raises(agent_exceptions.AgentLoopStalledError, match="execute_script"):
+    with pytest.raises(agent_exceptions.AgentLoopStalledError):
         engine.run(
             state,
             caller="main",
@@ -468,6 +807,10 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
 
     assert fake_agent.force_finish_results
     assert fake_agent.force_finish_results[-1]["result_type"] == "error"
+    assert fake_agent.force_finish_results[-1]["output"] == (
+        agent_exceptions.AgentLoopStalledError.PUBLIC_MESSAGE
+    )
+    assert "force-finish-secret" not in str(fake_agent.force_finish_results[-1])
     assert "final_output" not in state
     loop_finished = [
         event

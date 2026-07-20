@@ -90,12 +90,24 @@ Return compact, structured text:
 class SubAgent:
     """Homogeneous sub-agent: isolated ReAct loop with the standard worker toolset."""
 
-    def _build_system_prompt(self, *, workspace_id: Optional[str] = None) -> str:
+    def _build_system_prompt(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        selected_ontology_id: Optional[str] = None,
+    ) -> str:
         prompt = SUBAGENT_SYSTEM_PROMPT
-        ontologies_section = build_ontologies_section(workspace_id=workspace_id)
+        ontologies_section = build_ontologies_section(
+            selected_ontology_id=selected_ontology_id,
+            workspace_id=workspace_id,
+        )
         if ontologies_section:
             prompt = "{}\n\n{}".format(prompt, ontologies_section)
-        skills_section = build_skills_section()
+        skills_section = (
+            build_skills_section(workspace_id=workspace_id)
+            if workspace_id
+            else build_skills_section()
+        )
         if skills_section:
             prompt = "{}\n\n{}".format(prompt, skills_section)
         return prompt
@@ -136,6 +148,7 @@ class SubAgent:
         subagent_manager: Any = None,
         protocol_event_observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         observer: Any = None,
+        parent_selected_ontology_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         logger.info("Sub-agent executing task: %s...", task[:100])
         subagent_id = "sub_{}".format(uuid.uuid4().hex[:10])
@@ -180,7 +193,21 @@ class SubAgent:
                 or str(task_context.get("workspace_id") or "").strip()
                 or None
             )
-            system_prompt = self._build_system_prompt(workspace_id=effective_workspace_id)
+            # Selection is a backend authority boundary. A model-provided task
+            # context may carry an ontology_id as data, but cannot establish the
+            # selected-ontology scope used by prompts, schemas, and tools.
+            task_context.pop("selected_ontology_id", None)
+            effective_selected_ontology_id = (
+                str(parent_selected_ontology_id or "").strip() or None
+            )
+            if effective_selected_ontology_id:
+                # The parent's selected ontology is a backend scope, not task input.
+                task_context["selected_ontology_id"] = effective_selected_ontology_id
+                task_context["ontology_id"] = effective_selected_ontology_id
+            system_prompt = self._build_system_prompt(
+                workspace_id=effective_workspace_id,
+                selected_ontology_id=effective_selected_ontology_id,
+            )
             user_prompt = self._build_user_prompt(task, task_context)
             token_index = {"content": 0, "reasoning": 0}
 
@@ -204,6 +231,8 @@ class SubAgent:
             normalized_profile_id = str(parent_model_profile_id or "").strip()
             if normalized_profile_id:
                 child_user_context["model_profile_id"] = normalized_profile_id
+            if effective_selected_ontology_id:
+                child_user_context["selected_ontology_id"] = effective_selected_ontology_id
             initial_state = {
                 "run_id": run_id,
                 "session_id": session_id,

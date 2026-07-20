@@ -24,6 +24,7 @@ from ontology.ontologies import (
     ensure_ontology_versions,
     get_ontology_registry,
     get_ontology_version_dir,
+    invalidate_ontology_registry,
     is_valid_ontology_version,
     load_ontology_manifest_data,
     save_ontology_manifest_data,
@@ -2061,6 +2062,7 @@ def import_ontology_zip_with_auto_create():
                 return jsonify({"error": "Failed to parse uploaded zip"}), 500
 
         export_ontology_snapshot_safely(workspace_id=workspace_id)
+        invalidate_ontology_registry(workspace_id=workspace_id)
         business_data_summary = build_ontology_business_data_summary(
             ontology_id,
             workspace_id=workspace_id,

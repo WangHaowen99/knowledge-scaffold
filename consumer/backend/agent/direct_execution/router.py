@@ -222,16 +222,22 @@ class OperationDirectRouter:
         missing: list[str] = []
         for key in requirements:
             ctx_field = _RUNTIME_CTX_FIELDS.get(key)
-            if ctx_field and runtime_context.get(ctx_field) is None:
+            if not ctx_field or runtime_context.get(ctx_field) is None:
                 missing.append(key)
         return missing
 
 # Field mapping for runtime context validation
 _RUNTIME_CTX_FIELDS = {
     "session-id": "session_id",
+    "session_id": "session_id",
     "run_id": "run_id",
+    "run-id": "run_id",
     "turn_id": "turn_id",
-    "user_id": "user_id",
+    "turn-id": "turn_id",
     "workspace_id": "workspace_id",
+    "workspace-id": "workspace_id",
     "selected_ontology_id": "selected_ontology_id",
+    "selected-ontology-id": "selected_ontology_id",
+    "ontology_id": "selected_ontology_id",
+    "ontology-id": "selected_ontology_id",
 }

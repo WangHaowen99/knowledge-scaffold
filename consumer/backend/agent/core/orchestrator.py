@@ -77,7 +77,7 @@ def _build_tool_output_artifact_writer(chat_store, *, session_id: str, run_id: s
 def _public_workflow_error_message(exc: Exception) -> str:
     """Return a user-safe workflow error message for known external failures."""
     if isinstance(exc, AgentLoopStalledError):
-        return exc.message
+        return str(getattr(exc, "public_message", None) or AgentLoopStalledError.PUBLIC_MESSAGE)
 
     if isinstance(exc, APIStatusError):
         status_code = getattr(exc, "status_code", None)

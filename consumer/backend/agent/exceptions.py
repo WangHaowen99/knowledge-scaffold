@@ -35,4 +35,21 @@ class WorkflowCancelledError(AgenticError):
 class AgentLoopStalledError(AgenticError):
     """Raised when the agent repeats an identical failed tool call."""
 
-    pass
+    PUBLIC_MESSAGE = "Tool execution stopped after a repeated failure."
+
+    def __init__(
+        self,
+        message: str = "",
+        details: Optional[Dict[str, Any]] = None,
+        *,
+        public_message: Optional[str] = None,
+    ) -> None:
+        # Tool output can contain credentials or internal paths. Keep the
+        # original text available to controlled diagnostics, but never expose
+        # it through the normal exception boundary.
+        self.internal_message = str(message or "")
+        self.public_message = str(public_message or self.PUBLIC_MESSAGE)
+        super().__init__(self.public_message, details)
+
+    def __str__(self) -> str:
+        return self.public_message

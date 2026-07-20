@@ -261,6 +261,38 @@ def _script_entry_dedupe_key(entry: Dict[str, Any]) -> str:
     return "{}\n{}".format(operation_key, script_key)
 
 
+def _normalize_script_entrypoint(value: Any) -> Optional[str]:
+    """Return a portable scripts-relative path, or None for an unsafe path."""
+    raw_path = str(value or "").strip().replace("\\", "/")
+    if not raw_path or raw_path.startswith("/") or re.match(r"^[A-Za-z]:", raw_path):
+        return None
+    parts = [part for part in raw_path.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts:
+        return None
+    if parts[0] != "scripts":
+        parts.insert(0, "scripts")
+    return "/".join(parts)
+
+
+def resolve_ontology_script_path(
+    ontology_dir: Path,
+    entrypoint: Any,
+) -> Optional[Path]:
+    """Resolve an entrypoint while containing scripts and symlinks to one ontology."""
+    normalized = _normalize_script_entrypoint(entrypoint)
+    if normalized is None:
+        return None
+    ontology_root = Path(ontology_dir).resolve()
+    scripts_root = (ontology_root / "scripts").resolve()
+    candidate = (ontology_root / normalized).resolve()
+    try:
+        scripts_root.relative_to(ontology_root)
+        candidate.relative_to(scripts_root)
+    except ValueError:
+        return None
+    return candidate
+
+
 def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[Dict[str, Any]]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -277,12 +309,12 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
     if not entrypoint:
         return None
 
-    entrypoint_path = Path(entrypoint)
-    if entrypoint_path.is_absolute() or ".." in entrypoint_path.parts:
+    raw_path = _normalize_script_entrypoint(entrypoint)
+    if raw_path is None:
         return None
-    raw_path = entrypoint
-    if not raw_path.replace("\\", "/").startswith("scripts/"):
-        raw_path = "scripts/{}".format(raw_path.replace("\\", "/").lstrip("/"))
+    resolved_script_path = resolve_ontology_script_path(ontology_dir, raw_path)
+    if resolved_script_path is None:
+        return None
 
     parameters = _parse_script_parameters_from_markdown(body)
     entry: Dict[str, Any] = {
@@ -293,7 +325,7 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
         "parameters": parameters,
         "_script_path": raw_path,
         "_script_doc_path": str(path.resolve()),
-        "_resolved_script_path": str((ontology_dir / raw_path).resolve()),
+        "_resolved_script_path": str(resolved_script_path),
         "_is_bound_operation": is_bound_operation,
     }
     return entry
@@ -310,6 +342,9 @@ def _parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]
         required_text = _first_row_value(row, "必填", "required", "Required")
         aliases_text = _first_row_value(row, "别名", "aliases", "Aliases")
         action_text = _first_row_value(row, "Action", "action")
+        runtime_text = _first_row_value(row, "runtime", "Runtime")
+        source_text = _first_row_value(row, "source", "Source")
+        placeholder_text = _first_row_value(row, "placeholder", "Placeholder")
         if not name and not flag:
             continue
         parameter = {
@@ -327,6 +362,12 @@ def _parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]
         action = _normalize_boolean_action(action_text)
         if action:
             parameter["action"] = action
+        if runtime_text:
+            parameter["runtime"] = _as_bool(runtime_text, default=False)
+        if source_text:
+            parameter["source"] = source_text
+        if placeholder_text:
+            parameter["placeholder"] = placeholder_text
         parameters.append(parameter)
     return _normalize_script_parameters(parameters)
 
@@ -388,6 +429,14 @@ def _normalize_script_parameters(value: Any) -> List[Dict[str, Any]]:
         action = _normalize_boolean_action(item.get("action"))
         if action:
             parameter["action"] = action
+        if "runtime" in item:
+            parameter["runtime"] = _as_bool(item.get("runtime"), default=False)
+        source = str(item.get("source") or "").strip()
+        if source:
+            parameter["source"] = source
+        placeholder = str(item.get("placeholder") or "").strip()
+        if placeholder:
+            parameter["placeholder"] = placeholder
         parameters.append(parameter)
     return parameters
 
@@ -396,8 +445,14 @@ def _public_script_parameters(parameters: Any) -> List[Dict[str, Any]]:
     public: List[Dict[str, Any]] = []
     if not isinstance(parameters, list):
         return public
+    # Import lazily: ``agent.tools`` imports business-data helpers which refer
+    # back to this module during application startup.
+    from agent.tools.script_parameters import is_runtime_parameter
+
     for item in parameters:
         if not isinstance(item, dict):
+            continue
+        if is_runtime_parameter(item):
             continue
         name = str(item.get("name") or "").strip()
         if not name:
@@ -451,9 +506,22 @@ def _as_bool(value: Any, *, default: bool) -> bool:
     return bool(value)
 
 
-def find_script_entry(catalog: List[Dict[str, Any]], operation_key: str) -> Optional[Dict[str, Any]]:
+def find_script_entry(
+    catalog: List[Dict[str, Any]],
+    operation_key: str,
+    *,
+    bound_only: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Find a script entry, optionally requiring a public bound operation.
+
+    The default preserves catalog lookup compatibility for internal callers.
+    Execution-facing callers should set ``bound_only`` so helper scripts that
+    are not attached to a business operation cannot be invoked by key.
+    """
     normalized_key = str(operation_key or "").strip()
     for entry in catalog:
+        if bound_only and not bool(entry.get("_is_bound_operation")):
+            continue
         if str(entry.get("operation_key") or "").strip() == normalized_key:
             return dict(entry)
         if str(entry.get("script_key") or "").strip() == normalized_key:
