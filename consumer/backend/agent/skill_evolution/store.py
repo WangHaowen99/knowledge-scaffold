@@ -133,7 +133,7 @@ class SkillEvolutionStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return TaskRecord.from_dict(data)
-        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError):
             logger.warning("skill-evolution: corrupt task record %s, quarantining", path)
             self._quarantine(workspace_id, task_id, path)
             return None
