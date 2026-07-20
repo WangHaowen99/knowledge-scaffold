@@ -35,6 +35,7 @@ import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from 
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
+import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-operations.js';
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -256,12 +257,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
-    // 长任务防重入（同项目同操作并发触发 → 409），配合前端从节点状态推导进行中
-    const inFlight = new Set<string>();
-    const withLock = async (key: string, reply: any, fn: () => Promise<unknown>) => {
-      if (inFlight.has(key)) return reply.code(409).send({ error: '该操作正在进行中，请稍候（切换页面不会中断执行）' });
-      inFlight.add(key);
-      try { return await fn(); } finally { inFlight.delete(key); }
+    // 长任务防重入（同项目同操作并发触发 → 409），并登记操作类型供前端恢复运行状态
+    const inFlight = new InFlightOperations();
+    const withLock = async (
+      key: string,
+      reply: any,
+      fn: () => Promise<unknown>,
+      operation = key.slice(key.lastIndexOf(':') + 1),
+    ) => {
+      try {
+        return await inFlight.run(key, operation, fn);
+      } catch (error) {
+        if (error instanceof OperationAlreadyRunningError) {
+          return reply.code(409).send({ error: '该操作正在进行中，请稍候（切换页面不会中断执行）' });
+        }
+        throw error;
+      }
     };
 
     // 取项目 + 数据字典上下文的公共辅助
@@ -727,13 +738,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       } catch (e) {
         return reply.code(500).send({ error: `优化建议生成失败：${e instanceof Error ? e.message : e}` });
       }
-      });
+      }, 'propose');
     });
     r.get('/api/projects/:id/optimize/suggestions', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const roundId = (req.query as any).roundId ? String((req.query as any).roundId) : undefined;
-      return { suggestions: m4repo.listSuggestions(c.p.id, roundId) };
+      return {
+        suggestions: m4repo.listSuggestions(c.p.id, roundId),
+        runningOperation: inFlight.current(`${c.p.id}:optimize`),
+      };
     });
     r.post('/api/projects/:id/optimize/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -759,7 +773,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       } catch (e) {
         return reply.code(500).send({ error: `优化应用失败：${e instanceof Error ? e.message : e}` });
       }
-      });
+      }, 'apply');
     });
     r.post('/api/projects/:id/optimize/reject', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);

@@ -422,7 +422,7 @@ class AuthManager:
         try:
             payload_bytes = _b64url_decode(payload_b64)
             payload = json.loads(payload_bytes.decode("utf-8"))
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             return None
         exp = payload.get("exp")
         if not isinstance(exp, int) or exp < int(time.time()):

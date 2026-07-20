@@ -60,12 +60,13 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
             }
 
     class _FakeSession:
-        def post(self, url, headers=None, json=None, timeout=None):
+        def post(self, url, headers=None, timeout=None, **kwargs):
+            request_json = kwargs.get("json")
             captured.update(
                 {
                     "url": url,
                     "headers": headers,
-                    "json": json,
+                    "json": request_json,
                     "timeout": timeout,
                 }
             )

@@ -73,9 +73,9 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
         def json(self):
             return {"success": True, "sql": "SELECT * FROM Part", "data": [{"id": 1}], "row_count": 1}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, timeout=None, **request_kwargs):
         captured["url"] = url
-        captured["json"] = json
+        captured["json"] = request_kwargs.get("json")
         captured["timeout"] = timeout
         return _FakeResponse()
 
@@ -119,9 +119,9 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
         def json(self):
             return {"success": True, "data": [], "row_count": 0}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, timeout=None, **request_kwargs):
         captured["url"] = url
-        captured["json"] = json
+        captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
     provider._session.post = _fake_post
@@ -218,8 +218,8 @@ def test_external_matcher_discovered_and_called(tmp_path):
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        captured["json"] = json
+    def _fake_post(url, headers=None, timeout=None, **request_kwargs):
+        captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
     provider._session.post = _fake_post
@@ -257,7 +257,7 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
         def json(self):
             return {"success": True, "data": [], "row_count": 0}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
+    def _fake_post(url, headers=None, timeout=None, **_request_kwargs):
         captured["url"] = url
         return _FakeResponse()
 
@@ -488,8 +488,8 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
         def json(self):
             return {"success": True, "data": [{"id": 1}], "row_count": 1}
 
-    def _fake_post(url, headers=None, json=None, timeout=None):
-        captured["json"] = json
+    def _fake_post(url, headers=None, timeout=None, **request_kwargs):
+        captured["json"] = request_kwargs.get("json")
         return _FakeResponse()
 
     provider._session.post = _fake_post
