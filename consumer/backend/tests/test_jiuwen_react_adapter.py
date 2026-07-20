@@ -37,6 +37,10 @@ import utils.logging as logging_utils
 _REAL_IMPORT_MODULE = importlib.import_module
 
 
+def _raise_when_iterated(error: BaseException):
+    raise error
+
+
 class _FakeContextEngineConfig:
     """Shared fake for ContextEngineConfig capturing constructor kwargs."""
 
@@ -3910,8 +3914,9 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
         async def stream(self, inputs):
             del inputs
             await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
-            raise WorkflowCancelledError("Workflow cancelled by user")
-            yield None
+            yield _raise_when_iterated(
+                WorkflowCancelledError("Workflow cancelled by user")
+            )
 
     def fake_import_module(name):
         modules = {

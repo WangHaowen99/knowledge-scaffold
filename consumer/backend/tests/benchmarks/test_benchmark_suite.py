@@ -2658,7 +2658,6 @@ def _generate_time_breakdown_chart(
     plt.close(fig1)
     print(f"  📊 时间分解图已保存: {p1}")
 
-    import json
     json_path = os.path.join(run_dir, "script_call_details.json")
     if not os.path.exists(json_path):
         return
@@ -4232,7 +4231,6 @@ def run_tests():
         },
     )
 
-    import json
     _script_details_path = os.path.join(
         _current_run_dir or os.path.join(_RESULT_BASE_DIR, "misc"),
         "script_call_details.json",

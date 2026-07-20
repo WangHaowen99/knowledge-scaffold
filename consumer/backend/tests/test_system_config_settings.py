@@ -931,7 +931,6 @@ def test_system_config_ignores_saved_global_observability_section(tmp_path, monk
 
 
 def test_system_config_connection_rejects_global_observability_section():
-    import pytest
     import config.system_config as system_config_module
 
     with pytest.raises(system_config_module.SystemConfigValidationError, match="section 非法"):
