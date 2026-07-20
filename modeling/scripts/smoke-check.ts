@@ -34,6 +34,24 @@ const BAD: PackageSpec = {
   ],
 };
 
+const CHAT_SPEC: PackageSpec = {
+  ...BAD,
+  objects: [
+    {
+      ...BAD.objects[0],
+      description: '用于验证知识包修缮流程的制造物料清单对象',
+      primaryKey: ['ID'],
+    },
+    {
+      ...BAD.objects[1],
+      description: '与 STRUCTURE_LIST 共用来源 Sheet 的第二个业务实体',
+      sourceTable: 'STRUCTURE_LIST',
+      primaryKey: ['ID'],
+      fields: [{ key: 'ID' }],
+    },
+  ],
+};
+
 async function main() {
   console.log('\n=== 包体检 + 两段式修缮冒烟 ===\n');
 
@@ -109,21 +127,21 @@ async function main() {
   ok(sem.length >= 1 && sem[0].source === 'semantic' && !!sem[0].suggestion, `语义检查（faux）产出 ${sem.length} 条发现且带修复建议`);
 
   // ③ 两段式修缮
-  insertPackageVersion(project.id, '1.0.0', BAD, { covered: [], uncovered: [] });
+  insertPackageVersion(project.id, '1.0.0', CHAT_SPEC, { covered: [], uncovered: [] });
   const consult = await packageChatPlan(getProject(project.id)!, [], '解释一下 OP-A 是干什么的');
   ok(!!consult.reply && !consult.plan, '咨询类：直接文字回复，不出计划');
 
   const planRes = await packageChatPlan(getProject(project.id)!, [], '增加一个查询 CHANGE_ORDER 的操作');
   ok(!!planRes.plan && planRes.plan.changes.length >= 1, `修改类：返回计划（${planRes.plan?.changes.length} 条 change，含风险 ${planRes.plan?.risks?.length ?? 0} 条）`);
 
-  const applied = await packageChatApply(getProject(project.id)!, [], '增加一个查询 CHANGE_ORDER 的操作', planRes.plan!);
+  const applied = await packageChatApply(getProject(project.id)!, [], '增加一个查询 CHANGE_ORDER 的操作', planRes.plan!, TABLES);
   ok(applied.version === '1.1.0', `确认应用：生成 v${applied.version}`);
   ok(listPackageVersions(project.id).length === 2, '版本历史 +1');
 
   // 删除计划：数量收缩被计划豁免
   const delPlan = await packageChatPlan(getProject(project.id)!, [], '删除第一个操作');
   ok(delPlan.plan?.changes.some((c) => c.action === 'remove'), '删除类：计划含 remove 条目');
-  const delApplied = await packageChatApply(getProject(project.id)!, [], '删除第一个操作', delPlan.plan!);
+  const delApplied = await packageChatApply(getProject(project.id)!, [], '删除第一个操作', delPlan.plan!, TABLES);
   ok(delApplied.version === '1.2.0', `计划内删除放行：生成 v${delApplied.version}`);
 
   // 计划外丢失：伪造一个「只 add 却导致收缩」的计划 → 应被拒绝
@@ -131,7 +149,7 @@ async function main() {
   // faux apply 只会按 remove 移除指名 key；objects remove 的 targetKey 是真实对象 → 收缩 1 对象 1 操作，计划允许 → 放行。
   // 反向用 add-only 计划配 faux 的 remove 行为无法构造，改为直接验证防护函数逻辑：
   const addOnly = { summary: 'add-only', changes: [{ targetKind: 'operation' as const, targetKey: 'OP-A', action: 'remove' as const, description: '' }] };
-  const guarded = await packageChatApply(getProject(project.id)!, [], '删除 OP-A 与一个对象', addOnly)
+  const guarded = await packageChatApply(getProject(project.id)!, [], '删除 OP-A 与一个对象', addOnly, TABLES)
     .then((r) => ({ okApplied: true as const, r }))
     .catch((e) => ({ okApplied: false as const, msg: String(e?.message ?? e) }));
   // addOnly 只允许删 1 个操作、0 个对象；faux 只删操作 → 应放行

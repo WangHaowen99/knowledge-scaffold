@@ -4,7 +4,7 @@
 
 This file defines how Claude Code should help initialize, design, and develop this project.
 
-The project is currently in an early or empty state. Claude must not assume that an existing architecture, framework, database, or deployment model has already been chosen unless it is explicitly stated by the user or recorded in this file.
+The project is an established multi-area codebase. Claude must inspect the existing architecture, commands, tests, and deployment files before introducing a new framework, database, directory structure, or runtime convention.
 
 Primary goals:
 
@@ -173,10 +173,25 @@ Current commands for the consumer application:
 - Install frontend dependencies: `cd consumer/frontend && npm install`
 - Start frontend development server: `cd consumer/frontend && npm run dev`
 - Run backend tests: `cd consumer && PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests`
-- Run frontend lint/build: `cd consumer/frontend && npm run lint && npm run build`
+- Run frontend checks: `cd consumer/frontend && npm run lint && npm test && npm run build`
+- Check frontend architecture boundaries: `cd consumer/frontend && npm run check:architecture`
+- Check the frontend entry dependency baseline: `cd consumer/frontend && npm run check:entry`
 - Run full-stack Docker Compose: `cd consumer && docker compose up --build`
+- Build full release package: `./deploy/build.sh <version> [amd|arm]`
+- Deploy full stack from extracted release package: `./deploy/deploy.sh`
+- Build consumer-only release package: `cd consumer && ./build.sh <version> [amd|arm]`
+- Build modeling-only release package: `cd modeling && ./build.sh <version> [amd|arm]`
 
 After initializing the project, Claude must update this section with real commands.
+
+### 8.1 Consumer 前端收敛约束
+
+- `consumer/frontend/src/main.jsx` 是唯一生产入口。
+- `consumer/frontend/src/app/App.jsx` 是唯一应用实现；不得新增第二套入口或 `redesign`、`legacy`、`old`、`v1` 历史目录。
+- 生产代码按 `app / features / shared` 分层；跨 feature 依赖必须经目标 feature 的公开 `index`。
+- 新增生产 JS、JSX、CSS 必须进入 `main.jsx` 可达依赖树，批准孤儿列表保持为空。
+- 前端变更必须通过 `npm run check:architecture`；不要绕过 import/CSS 边界、潜在孤儿 class/compound selector 或入口可达性门禁。
+- `.gitcode/workflows/consumer-frontend-ci.yml` 在 `develop`、`frontend-unify`、`codex/frontend-*` 分支 push 和目标为 `develop` 的 PR 上执行 lint、测试、架构门禁和构建；变更命令时同步更新 workflow。
 
 ## 9. Dependency Rules
 

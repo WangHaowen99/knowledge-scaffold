@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from agentic.evolution.models import Aggregate
-from agentic.evolution import registry
-from agentic.evolution.patcher import OperationPatcher
-from agentic.evolution.patcher import PatcherConfig
-from agentic.evolution.patcher import StagedMergeOutput
-from agentic.services.llm import LLMPurpose
+from agent.evolution.models import Aggregate
+from agent.evolution import registry
+from agent.evolution.patcher import OperationPatcher
+from agent.evolution.patcher import PatcherConfig
+from agent.evolution.patcher import StagedMergeOutput
+from llm import LLMPurpose
 
 
 def _aggregate(fp: str) -> Aggregate:
@@ -74,7 +74,7 @@ def test_llm_merge_requests_json_object_response(monkeypatch):
             return _TaskLLM()
 
     monkeypatch.setattr(
-        "agentic.evolution.patcher.get_llm_router",
+        "agent.evolution.patcher.get_llm_router",
         lambda: _Router(),
     )
     patcher = OperationPatcher(

@@ -107,11 +107,11 @@ def test_prepare_run_writes_public_and_private_artifacts(monkeypatch, tmp_path):
         "llm_profiles": {"default_profile_id": "", "profiles": []},
     }
     monkeypatch.setattr(
-        "agentic.config.system_config.load_system_config",
+        "config.system_config.load_system_config",
         lambda: private_config,
     )
     monkeypatch.setattr(
-        "agentic.config.system_config.get_public_system_config",
+        "config.system_config.get_public_system_config",
         lambda: public_config,
     )
 

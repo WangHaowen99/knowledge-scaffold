@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from agentic.services.mindsdb import (
-    ACTION_THOUGHT_MARKER,
-    MindsDBClient,
+from agent.tools.business_data.adapters.mindsdb_search import MindsDBSearchAdapter
+from shared_capabilities.business_data import AuthSpec, EffectiveConnection
+from shared_capabilities.business_data.providers.mindsdb import (
+    _THOUGHT_MARKER,
     _parse_mindsdb_chunk_to_events,
 )
-from agentic.tools.business_data_search import (
+from agent.tools.business_data_search import (
     BUSINESS_DATA_SEARCH_TOOL_SCHEMA,
     handle_business_data_search,
 )
@@ -19,7 +20,7 @@ def _fake_ontology(ontology_id):
 
 
 def test_business_data_search_rejects_empty_query(monkeypatch):
-    monkeypatch.setattr("agentic.tools.business_data_search.get_ontology_manifest", _fake_ontology)
+    monkeypatch.setattr("agent.tools.business_data_search.get_ontology_manifest", _fake_ontology)
     assert handle_business_data_search(ontology_id="demo", query="   ", entity="TargetItem") == "Error: Search query cannot be empty"
 
 
@@ -38,8 +39,8 @@ def test_parse_mindsdb_chunk_to_events_handles_actions_and_final_output():
     action_events = _parse_mindsdb_chunk_to_events(
         {
             "actions": [
-                {"log": "先读取对象定义{}\n继续".format(ACTION_THOUGHT_MARKER)},
-                {"log": "先读取对象定义{}\n继续".format(ACTION_THOUGHT_MARKER)},
+                {"log": "先读取对象定义{}\n继续".format(_THOUGHT_MARKER)},
+                {"log": "先读取对象定义{}\n继续".format(_THOUGHT_MARKER)},
             ]
         }
     )
@@ -51,23 +52,21 @@ def test_parse_mindsdb_chunk_to_events_handles_actions_and_final_output():
     assert final_events == [{"type": "final", "content": "最终结果"}]
 
 
-def test_mindsdb_client_query_stream_parses_sse_events():
-    client = MindsDBClient(
-        {
-            "ontology_search": {
-                "mindsdb": {
-                    "url": "http://unit.test",
-                    "login": "demo",
-                    "password": "",
-                    "default_database": "",
-                    "default_agent_name": "agent_x",
-                    "project_name": "project_x",
-                    "requires_auth": False,
-                    "timeout_seconds": 120,
-                    "max_retries": 3,
-                }
-            }
-        }
+def test_mindsdb_adapter_query_stream_parses_sse_events():
+    provider = MindsDBSearchAdapter(
+        EffectiveConnection(
+            version=1,
+            provider="mindsdb",
+            endpoint="http://unit.test",
+            auth=AuthSpec(type="none"),
+            options={
+                "default_database": "",
+                "default_agent_name": "agent_x",
+                "project_name": "project_x",
+                "timeout_seconds": 120,
+                "max_retries": 3,
+            },
+        )
     )
 
     class _FakeResponse:
@@ -106,9 +105,9 @@ def test_mindsdb_client_query_stream_parses_sse_events():
             ]
         )
 
-    client._session.post = _fake_post
+    provider._session.post = _fake_post
 
-    events = list(client.query_agent_stream("查询快艇 B001"))
+    events = list(provider.search_stream(query="查询快艇 B001", entity="TargetItem"))
 
     assert events == [
         {"type": "start", "content": "开始执行本体探索"},

@@ -213,16 +213,18 @@ export const specObjectSchema = () => Type.Object({
     target: KeyString(),
     note: Type.Optional(Type.String()),
   }, { description: '对象间关系（目标对象须是包内已声明的对象 key）' }))),
-  sourceTable: Type.Optional(Type.String()),
+  sourceTable: Type.String({
+    description: '该实体对应的数据字典真实 Sheet 名；每个实体必填，同一 Sheet 可以对应多个实体',
+  }),
   primaryKey: Type.Optional(Type.Array(Type.String())),
   fields: Type.Array(Type.Object({
     key: KeyString(),
-    cnName: Type.Optional(Type.String()),
+    cnName: Type.String({ description: '字段中文业务名，用于语义展示，不作为 mapping 字段 key' }),
     type: Type.Optional(Type.String()),
     required: Type.Optional(Type.Boolean()),
     note: Type.Optional(Type.String()),
     alias: Type.Optional(Type.String({ description: '字段的业务别名' })),
-    sourceColumn: Type.Optional(Type.String({ description: '数据字典中的真实列名（与字段 key 不同时必填）' })),
+    sourceColumn: Type.Optional(Type.String({ description: '来源 Sheet 中的真实列名（与字段 key 不同时必填）' })),
   })),
 });
 

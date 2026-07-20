@@ -7,9 +7,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
-from agentic.config import AgentConfig, LLMConfig
-from agentic.exceptions import InputTokenLimitError
-from agentic.services.llm import LLMService
+from config import AgentConfig, LLMConfig
+from llm import LLMService
 
 
 class _FakeStreamingResponse:
@@ -48,32 +47,6 @@ class _FakeOpenAIClient:
 class _StructuredOutput(BaseModel):
     answer: str
     score: float
-
-
-def test_llm_call_rejects_input_over_effective_token_limit(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPS_CONFIG_PATH", str(tmp_path / "missing-ops-config.json"))
-    monkeypatch.setenv("MODEL_INPUT_TOKEN_LIMIT", "5")
-    fake_client = _FakeOpenAIClient([])
-    llm = LLMService(
-        LLMConfig(
-            base_url="http://unit.test/v1",
-            model="unit-model",
-            api_key=None,
-            timeout=30,
-            max_tokens=256,
-            temperature=0.0,
-        ),
-        openai_client=fake_client,
-    )
-
-    with pytest.raises(InputTokenLimitError, match="输入 Token 长度超过上限"):
-        llm.call(
-            messages=[{"role": "user", "content": "a" * 100}],
-            stream=False,
-            enable_reasoning=False,
-        )
-
-    assert fake_client.calls == []
 
 
 def test_llm_call_clamps_output_tokens_to_ops_limit(tmp_path, monkeypatch):
@@ -403,7 +376,7 @@ def test_llm_request_payload_logged_at_debug(caplog):
         openai_client=fake_client,
     )
 
-    with caplog.at_level(logging.DEBUG, logger="agentic.services.llm.transport"):
+    with caplog.at_level(logging.DEBUG, logger="llm.transport"):
         llm.call(
             messages=[{"role": "user", "content": "log full payload"}],
             tools=[
@@ -452,7 +425,7 @@ def test_llm_request_payload_not_logged_at_info(caplog):
         openai_client=fake_client,
     )
 
-    with caplog.at_level(logging.INFO, logger="agentic.services.llm.transport"):
+    with caplog.at_level(logging.INFO, logger="llm.transport"):
         llm.call(
             messages=[{"role": "user", "content": "do not log full payload"}],
             stream=False,
@@ -789,7 +762,6 @@ def test_llm_with_config_refreshes_transport_agent_config():
         sub_agent_max_depth=10,
         parallel_default_max_workers=10,
         context_max_rounds=10,
-        context_prune_tools=set(),
     )
     new_agent_config = AgentConfig(
         llm_connection_max_retries=9,
@@ -799,7 +771,6 @@ def test_llm_with_config_refreshes_transport_agent_config():
         sub_agent_max_depth=10,
         parallel_default_max_workers=10,
         context_max_rounds=10,
-        context_prune_tools=set(),
     )
     old_config = LLMConfig(
         base_url="http://old.test",

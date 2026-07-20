@@ -6,13 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from agentic.business_data.providers.graph.models import (
+from agent.tools.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
     GraphScope,
     GraphSearchRuntimeContext,
 )
-from agentic.business_data.providers.graph.tools import (
+from agent.tools.business_data.providers.graph.tools import (
     GraphToolExecutor,
     GraphToolInputError,
     aggregate_search,
@@ -20,11 +20,12 @@ from agentic.business_data.providers.graph.tools import (
     get_element_info,
     get_edges_schema,
     get_nodes_schema,
+    get_object_types,
+    get_relation_types,
     pattern_search,
     property_filter,
     sorted_search,
 )
-from agentic.business_data.providers.graph.trace import GraphProviderTrace
 
 
 class _ToolBackend:
@@ -138,23 +139,19 @@ def _context(scope):
     )
 
 
-class _Observer:
-    enabled = True
-
-    def __init__(self):
-        self.events = []
-
-    def emit(self, event):
-        self.events.append(event)
-        return True
-
-
 def test_internal_graph_tool_adapters_delegate_to_backend():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
 
     assert get_nodes_schema(backend, scope=scope) == {"labels": ["TargetItem"]}
     assert get_edges_schema(backend, scope=scope) == {"relationship_types": ["D2O_RELATION"]}
+    assert get_object_types(backend, scope=scope) == {"labels": ["TargetItem"]}
+    assert get_relation_types(backend, scope=scope) == {"relationship_types": ["D2O_RELATION"]}
     assert property_filter(
         backend=backend,
         element_class="TargetItem",
@@ -209,6 +206,8 @@ def test_internal_graph_tool_adapters_delegate_to_backend():
     assert backend.calls == [
         ("get_nodes_schema", "workspace-a", None),
         ("get_edges_schema", "workspace-a", None),
+        ("get_nodes_schema", "workspace-a", None),
+        ("get_edges_schema", "workspace-a", None),
         ("property_filter", "TargetItem", "NODE", {}, None, 100, 0, "workspace-a"),
         ("count_search", "TargetItem", "NODE", {}, "workspace-a"),
         ("aggregate_search", "TargetItem", "NODE", "Weight", "SUM", {}, "workspace-a"),
@@ -220,9 +219,22 @@ def test_internal_graph_tool_adapters_delegate_to_backend():
 
 def test_graph_tool_executor_runs_jiutian_style_property_query_and_blocks_scope_fields():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="target_item", kind="node", source="test", label="TargetItem")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
+
+    object_types = executor.execute("get_object_types", {})
+    relation_types = executor.execute("get_relation_types", {})
+
+    assert object_types.tool_name == "get_object_types"
+    assert object_types.payload["result"] == {"labels": ["TargetItem"]}
+    assert relation_types.tool_name == "get_relation_types"
+    assert relation_types.payload["result"] == {"relationship_types": ["D2O_RELATION"]}
 
     execution = executor.execute(
         "property_filter",
@@ -252,6 +264,22 @@ def test_graph_tool_executor_runs_jiutian_style_property_query_and_blocks_scope_
         "workspace-a",
     )
 
+    executor.execute(
+        "property_filter",
+        {
+            "max_total_rows": 9999,
+            "queries": [
+                {
+                    "element_class": "TargetItem",
+                    "element_type": "NODE",
+                    "filter_dict": {},
+                    "limit": 9999,
+                }
+            ],
+        },
+    )
+    assert backend.calls[-1][5] == 2000
+
     with pytest.raises(GraphToolInputError, match="scope/internal"):
         executor.execute(
             "property_filter",
@@ -265,11 +293,29 @@ def test_graph_tool_executor_runs_jiutian_style_property_query_and_blocks_scope_
                 ]
             },
         )
+    with pytest.raises(GraphToolInputError, match="scope/internal"):
+        executor.execute(
+            "property_filter",
+            {
+                "queries": [
+                    {
+                        "element_class": "TargetItem",
+                        "element_type": "NODE",
+                        "filter_dict": {"d2o_ontology_id": "other-ontology"},
+                    }
+                ]
+            },
+        )
 
 
 def test_graph_tool_executor_passes_pattern_return_properties():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="target_item", kind="path", source="test")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -296,7 +342,12 @@ def test_graph_tool_executor_passes_pattern_return_properties():
 
 def test_graph_tool_executor_runs_mcp_extra_graph_tools():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="product", kind="node", source="test", label="Product")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -331,7 +382,12 @@ def test_graph_tool_executor_runs_mcp_extra_graph_tools():
 
 def test_graph_tool_executor_validates_pattern_search_against_preloaded_schema():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="target_item", kind="node", source="test", label="TargetItem")
     context = replace(
         _context(scope),
@@ -392,7 +448,12 @@ def test_graph_tool_executor_validates_pattern_search_against_preloaded_schema()
 
 def test_graph_tool_executor_rejects_wildcard_return_properties_before_backend():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="target_item", kind="path", source="test")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -411,7 +472,12 @@ def test_graph_tool_executor_rejects_wildcard_return_properties_before_backend()
 
 def test_graph_tool_executor_wraps_backend_input_errors():
     backend = _BackendInputErrorBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="target_item", kind="node", source="test", label="TargetItem")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -434,7 +500,12 @@ def test_graph_tool_executor_wraps_backend_input_errors():
 
 def test_graph_tool_executor_expands_simple_or_filter_into_batched_queries():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="source_item", kind="node", source="test", label="SourceItem")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -471,7 +542,12 @@ def test_graph_tool_executor_expands_simple_or_filter_into_batched_queries():
 
 def test_graph_tool_executor_rejects_nested_logical_filter():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="source_item", kind="node", source="test", label="SourceItem")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -498,7 +574,12 @@ def test_graph_tool_executor_rejects_nested_logical_filter():
 
 def test_graph_tool_executor_ignores_empty_filter_fallback_samples_after_constrained_query():
     backend = _FallbackSampleBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="flight-material", kind="node", source="test", label="EquipmentMaterialStatus")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -542,7 +623,12 @@ def test_graph_tool_executor_ignores_empty_filter_fallback_samples_after_constra
 
 def test_graph_tool_executor_counts_single_empty_filter_query_as_intentional_broad_query():
     backend = _FallbackSampleBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     mapping = GraphEntityMapping(entity="flight-material", kind="node", source="test", label="EquipmentMaterialStatus")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
@@ -572,17 +658,21 @@ def test_graph_tool_executor_counts_single_empty_filter_query_as_intentional_bro
 
 def test_graph_tool_executor_emits_internal_tool_trace_events():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     context = _context(scope)
-    context.provider_config.update({
-        "run_id": "run-graph",
-        "session_id": "session-graph",
-        "turn_id": 2,
-    })
-    observer = _Observer()
-    trace = GraphProviderTrace(context, observer=observer)
+    events = []
     mapping = GraphEntityMapping(entity="target_item", kind="node", source="test", label="TargetItem")
-    executor = GraphToolExecutor(backend=backend, context=context, mapping=mapping, trace=trace)
+    executor = GraphToolExecutor(
+        backend=backend,
+        context=context,
+        mapping=mapping,
+        event_sink=events.append,
+    )
 
     execution = executor.execute(
         "count_search",
@@ -598,30 +688,36 @@ def test_graph_tool_executor_emits_internal_tool_trace_events():
     )
 
     assert execution.backend_result.total == 1
-    assert [event.type for event in observer.events] == ["tool.started", "tool.finished"]
-    assert observer.events[0].run_id == "run-graph"
-    assert observer.events[0].session_id == "session-graph"
-    assert observer.events[0].turn_id == 2
-    assert observer.events[0].payload["tool_name"] == "count_search"
-    assert observer.events[0].payload["display_name"] == "graph:count_search"
-    assert "tool_args_digest" in observer.events[0].payload["input"]
-    assert observer.events[1].payload["status"] == "success"
-    assert observer.events[1].payload["result_count"] == 1
+    assert events == [
+        {"type": "start", "content": "开始执行图工具: count_search"},
+        {"type": "intermediate", "content": "图工具执行完成: count_search"},
+    ]
+    assert all(set(event) == {"type", "content"} for event in events)
+    assert all(isinstance(value, str) for event in events for value in event.values())
 
 
 def test_graph_tool_executor_emits_error_trace_event():
     backend = _ToolBackend()
-    scope = GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a")
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="d2o_ontology_id",
+        ontology_value="demo",
+    )
     context = _context(scope)
-    context.provider_config["run_id"] = "run-graph"
-    observer = _Observer()
-    trace = GraphProviderTrace(context, observer=observer)
+    events = []
     mapping = GraphEntityMapping(entity="target_item", kind="node", source="test", label="TargetItem")
-    executor = GraphToolExecutor(backend=backend, context=context, mapping=mapping, trace=trace)
+    executor = GraphToolExecutor(
+        backend=backend,
+        context=context,
+        mapping=mapping,
+        event_sink=events.append,
+    )
 
     with pytest.raises(GraphToolInputError):
         executor.execute("missing_tool", {})
 
-    assert [event.type for event in observer.events] == ["tool.started", "tool.finished"]
-    assert observer.events[1].payload["status"] == "error"
-    assert observer.events[1].payload["error_type"] == "GraphToolInputError"
+    assert events == [
+        {"type": "start", "content": "开始执行图工具: missing_tool"},
+        {"type": "error", "content": "图工具执行失败: missing_tool"},
+    ]

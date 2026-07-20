@@ -74,7 +74,7 @@ async function main() {
   // 节点 6：包生成（agent 产出 spec，每个胜任力问题被 operation 覆盖）
   const gen = await m2.generatePackage(project as any, ctx, faux([
     fauxAssistantMessage([fauxToolCall('submit_package_spec', {
-      objects: [{ key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: '制造物料清单', sourceTable: 'STRUCTURE_LIST', primaryKey: ['ID'],
+      objects: [{ key: 'STRUCTURE_LIST', title: '制造物料清单', description: '制造物料清单', sourceTable: 'STRUCTURE_LIST', primaryKey: ['ID'],
         fields: [{ key: 'ID', cnName: '行编号', type: 'string', required: true, note: '行编码' }, { key: 'Effective', cnName: '有效性', type: 'string', note: '批次区间' }] }],
       operations: cqs.map((q, i) => ({
         key: `op_${i}`, title: `操作${i}`, description: q.question,
@@ -95,7 +95,14 @@ async function main() {
   const objMd = files['objects/STRUCTURE_LIST.md'];
   ok(objMd.startsWith('---\n') && objMd.includes('resource: object') && objMd.includes('| 字段 key |'), 'object.md 含 frontmatter + 字段表（格式对齐 examples）');
   const mapping = JSON.parse(files['mappings/object-data-mappings.json']);
-  ok(mapping.objects.STRUCTURE_LIST?.resource === 'STRUCTURE_LIST' && Array.isArray(mapping.objects.STRUCTURE_LIST.primary_key), 'mapping json 结构正确（resource + primary_key + fields）');
+  const structureListMapping = mapping.objects.STRUCTURE_LIST;
+  ok(
+    structureListMapping?.resource === 'STRUCTURE_LIST'
+      && JSON.stringify(structureListMapping.primary_key) === JSON.stringify(['ID'])
+      && structureListMapping.fields?.ID?.source === 'ID'
+      && structureListMapping.fields?.Effective?.source === 'Effective',
+    'mapping json 的 object、resource、primary_key、fields 和 source 均使用稳定 key',
+  );
 
   // 校验 zip 可解压且内容一致（consumer 用 Python zipfile 解压）
   const zip = zipPackage(files);

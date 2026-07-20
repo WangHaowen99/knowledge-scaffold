@@ -113,7 +113,7 @@ export interface OntologySummary {
   version?: string;
   language?: string;
   manifest_path?: string;
-  ontology_md_path?: string;
+  index_path?: string;
 }
 
 export interface OntologyListResponse {
@@ -174,8 +174,8 @@ export interface ImportOntologyZipResponse {
   source_root?: string;
   objects_count?: number;
   operations_count?: number;
-  objects_list_path?: string;
-  operations_list_path?: string;
+  objects_index_path?: string;
+  operations_index_path?: string;
   warnings?: Record<string, unknown>;
 }
 

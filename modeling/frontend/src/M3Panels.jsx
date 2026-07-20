@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   listTestcases, addTestcase, prefillTestcases, updateTestcase, deleteTestcase,
-  startEvaluate, listRounds, getRound, overrideVerdict, getSettings,
+  startEvaluate, listRounds, getRound, overrideVerdict, getDataSource,
 } from './api.js';
 import { AutoTextarea } from './ui.jsx';
+import { DataSourceSummary } from './DataSourcePanel.jsx';
 
-/* ================= 节点 8 · 评测用例录入 ================= */
+/* ================= 节点 9 · 评测用例录入 ================= */
 
 export function TestcasesPanel({ projectId, onAdvance }) {
   const [cases, setCases] = useState(null);
@@ -91,24 +92,15 @@ function CaseRow({ c, busy, onSave, onDelete }) {
   );
 }
 
-/* ================= 节点 9 · 评测运行 ================= */
+/* ================= 节点 10 · 评测运行 ================= */
 
-export function EvaluatePanel({ projectId }) {
+export function EvaluatePanel({ projectId, onProjectChanged }) {
   const [rounds, setRounds] = useState(null);
   const [current, setCurrent] = useState(null); // { round, results }
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [bindOn, setBindOn] = useState(false);
-  const [bind, setBind] = useState({ provider: 'nl2sql_template', url: '', token: '', scene: '' });
+  const [dataSource, setDataSource] = useState(undefined);
   const pollRef = useRef(null);
-
-  // 配置中心的评测连接默认值自动预填（配了 url 就默认勾选绑定）
-  useEffect(() => {
-    getSettings().then((d) => {
-      const b = d.evalBinding || {};
-      if (b.url) { setBind({ provider: b.provider || 'nl2sql_template', url: b.url, token: b.token || '', scene: b.scene || '' }); setBindOn(true); }
-    }).catch(() => {});
-  }, [projectId]);
 
   const loadRounds = () => listRounds(projectId).then((d) => {
     setRounds(d.rounds);
@@ -135,6 +127,9 @@ export function EvaluatePanel({ projectId }) {
   };
 
   useEffect(() => {
+    getDataSource(projectId)
+      .then((result) => setDataSource(result.dataSource || null))
+      .catch((e) => { setDataSource(null); setErr(e.message); });
     loadRounds().then((rs) => { if (rs[0]) openRound(rs[0].id); });
     return () => clearTimeout(pollRef.current);
   }, [projectId]);
@@ -142,12 +137,8 @@ export function EvaluatePanel({ projectId }) {
   const start = async () => {
     setBusy(true); setErr('');
     try {
-      let binding;
-      if (bindOn) {
-        if (!bind.url) throw new Error('请填写数据服务 URL（或在配置中心配好默认值）');
-        binding = { provider: bind.provider || 'nl2sql_template', config: { url: bind.url, token: bind.token, scene: bind.scene } };
-      }
-      const { roundId } = await startEvaluate(projectId, binding);
+      const { roundId } = await startEvaluate(projectId);
+      await onProjectChanged?.();
       await loadRounds();
       openRound(roundId);
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
@@ -160,35 +151,15 @@ export function EvaluatePanel({ projectId }) {
     <div>
       {err && <div className="lerr">{err}</div>}
 
-      {/* 启动区 */}
-      <div className="ev-launch">
-        <label className="ev-bind-toggle">
-          <input type="checkbox" checked={bindOn} onChange={(e) => setBindOn(e.target.checked)} />
-          绑定数据连接<span style={{ color: 'var(--muted)' }}>（查询类用例需要）</span>
-        </label>
-        {bindOn && (
-          <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>
-            <div className="field">
-              <label>provider</label>
-              <input value={bind.provider} onChange={(e) => setBind((b) => ({ ...b, provider: e.target.value }))} placeholder="nl2sql_template" />
-            </div>
-            <div className="field">
-              <label>数据服务 URL</label>
-              <input value={bind.url} onChange={(e) => setBind((b) => ({ ...b, url: e.target.value }))} placeholder="http://localhost:5600" />
-            </div>
-            <div className="field">
-              <label>token</label>
-              <input value={bind.token} onChange={(e) => setBind((b) => ({ ...b, token: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label>scene</label>
-              <input value={bind.scene} onChange={(e) => setBind((b) => ({ ...b, scene: e.target.value }))} placeholder="留空 = 本项目评测库" />
-            </div>
-          </div>
-        )}
-        <button className="btn btn-p" disabled={busy || running} onClick={start} style={{ marginTop: 6 }}>
+      {/* 数据源只读摘要与启动区 */}
+      <DataSourceSummary dataSource={dataSource} />
+      <div style={{ marginTop: 10 }}>
+        <button className="btn btn-p" disabled={busy || running || !dataSource} onClick={start}>
           {running ? '评测运行中…' : '▶ 开始新一轮评测'}
         </button>
+        {dataSource === null && (
+          <span style={{ color: 'var(--crit)', fontSize: 12, marginLeft: 10 }}>请先完成“数据源配置”步骤</span>
+        )}
       </div>
 
       {/* 轮次历史 */}

@@ -2,26 +2,26 @@
 
 本文说明当系统需要接入一种新的业务数据检索后端时，应该如何新增 provider。
 
-这里的 provider 指 `business_data_search` 背后的业务数据检索实现。它不是全局系统配置，而是工作区级数据连接的一种类型：用户在某个 workspace 下创建数据连接，再把 ontology 显式绑定到该连接。运行时只使用当前 workspace + 当前 ontology 的绑定连接。
+这里的 provider 指 `business_data_search` 背后的业务数据检索实现。它不是全局系统配置；用户在某个 workspace 的 ontology 中直接保存一份私有 provider 配置，运行时只使用当前 workspace + ontology 对应的数据源。
 
 ## 设计边界
 
 新增 provider 时需要保持三个边界不变：
 
 1. `business_data_search` 工具入参不变：`ontology_id`、`entity`、`query`。
-2. provider 配置不进入 `system_config.json`，只存储在 workspace 的数据连接中。
+2. provider 配置不进入 `system_config.json`，只存储在 workspace 的 ontology 数据源中。
 3. 前端表单由后端 provider schema 驱动；后端 schema 只描述字段，不承载界面布局。
 
-如果新需求只是某个 provider 的 URL、token、scene 等参数不同，不应该新增 provider，而应该新增一个数据连接实例。
+如果新需求只是某个 provider 的 URL、token、scene 等参数不同，不应该新增 provider，只需在目标 ontology 中保存不同配置。
 
 ## 当前调用链
 
 ```text
 business_data_search
-  -> resolve_business_data_connection(workspace_id, ontology_id)
-  -> query_business_data_stream(request, connection)
-  -> provider_registry.get_provider_spec(connection.provider)
-  -> spec.factory({"ontology_search": {provider_name: connection.config}})
+  -> resolve_business_data_source(workspace_id, ontology_id)
+  -> query_business_data_stream(request, source)
+  -> provider_registry.get_provider_spec(source.provider)
+  -> spec.factory({"ontology_search": {provider_name: source.config}})
   -> provider.search_stream(query=query, entity=entity)
 ```
 
@@ -32,10 +32,12 @@ business_data_search
 | provider 接口定义 | `backend/agentic/business_data/provider_base.py` |
 | provider 实现 | `backend/agentic/business_data/providers/` |
 | 业务数据 provider 注册与表单 schema | `backend/agentic/business_data/provider_registry.py` |
-| workspace 数据连接存储与配置归一化 | `backend/agentic/business_data/connections_store.py` |
+| ontology 数据源存储与配置归一化 | `backend/agent/tools/business_data/ontology_sources_store.py` |
+| 通用迁移注册与执行入口 | `backend/migrations/runner.py` |
+| 一次性旧数据迁移 | `backend/migrations/ontology_data_sources_direct_v2.py` |
 | 运行时 provider 调用 | `backend/agentic/business_data/service.py` |
 | 测试连接 | `backend/agentic/business_data/connection_tester.py` |
-| 前端数据连接表单 | `frontend/src/components/DataConnectionManagement.jsx` |
+| 前端 ontology 数据源表单 | `frontend/src/redesign/KnowledgeDataSources.jsx` |
 | 后端测试 | `backend/tests/test_business_data_connections.py`、`backend/tests/test_business_data_search_resolution.py` |
 
 ## 新增步骤
@@ -51,7 +53,7 @@ warehouse_http
 这个 id 会同时用于：
 
 - `PROVIDER_SPECS` 的 key
-- 数据连接 payload 的 `provider`
+- ontology data-source payload 的 `provider`
 - provider 读取配置时的 section 名：`config["ontology_search"]["warehouse_http"]`
 
 不要使用展示名称、中文名或带空格的值作为 provider id。
@@ -124,7 +126,7 @@ class WarehouseHttpProvider:
 - 建议事件顺序为 `start -> intermediate* -> final -> done`。
 - `final.content` 建议是 JSON 字符串，便于模型稳定读取结果。
 - 如果 provider 内部持有 `requests.Session` 或其他连接资源，应提供 `close()`。
-- 不要在 provider 里读取 env 或全局 system config。配置必须来自 workspace 数据连接。
+- 不要在 provider 里读取 env 或全局 system config。配置必须来自 ontology 私有数据源。
 
 ### 3. 注册 provider schema
 
@@ -159,15 +161,15 @@ PROVIDER_SPECS = {
 | `name` | 存储字段名，也是前端表单字段名 |
 | `label` | 前端展示文案 |
 | `type` | 当前支持 `str`、`int`、`bool` |
-| `required` | 保存连接时必填 |
+| `required` | 保存数据源时必填 |
 | `secret` | 不在列表接口明文返回，只返回 `has_<name>` |
-| `default` | 新建连接和缺省归一化时使用 |
+| `default` | 新建数据源和缺省归一化时使用 |
 
 secret 字段的行为：
 
 - 创建或更新时传入明文，例如 `token`。
 - 列表和详情接口不会返回明文，只返回 `has_token: true`。
-- 更新连接时 secret 留空会保留旧值。
+- 更新同一 provider 的数据源时 secret 留空会保留旧值。
 
 如果 provider 有跨字段约束，在 `normalize_provider_config()` 末尾补充校验。例如“启用鉴权时密码必填”这类逻辑不应该放到前端。
 
@@ -178,18 +180,18 @@ secret 字段的行为：
 入口函数增加分支：
 
 ```python
-def test_business_data_connection(connection: ResolvedBusinessDataConnection) -> Dict[str, Any]:
-    if connection.provider == "warehouse_http":
-        return _test_warehouse_http(connection)
+def test_business_data_connection(source: ResolvedBusinessDataSource) -> Dict[str, Any]:
+    if source.provider == "warehouse_http":
+        return _test_warehouse_http(source)
     # existing provider branches omitted
 ```
 
 测试函数需要做真实连接探测，而不是只校验格式：
 
 ```python
-def _test_warehouse_http(connection: ResolvedBusinessDataConnection) -> Dict[str, Any]:
+def _test_warehouse_http(source: ResolvedBusinessDataSource) -> Dict[str, Any]:
     tested_at = _utc_now()
-    config = dict(connection.config or {})
+    config = dict(source.config or {})
     url = _coerce_string(config.get("url")).rstrip("/")
     if not url:
         return {"success": False, "message": "Warehouse HTTP URL 未配置", "tested_at": tested_at}
@@ -237,7 +239,7 @@ GET /agentic/business-data/provider-schemas
 
 然后按返回的 `fields` 动态渲染表单。
 
-只有在字段宽度需要特殊处理时，才修改 `frontend/src/components/DataConnectionManagement.jsx` 的 `PROVIDER_FIELD_LAYOUT`：
+只有在字段宽度需要特殊处理时，才修改 `frontend/src/redesign/KnowledgeDataSources.jsx` 的字段渲染逻辑：
 
 ```js
 const PROVIDER_FIELD_LAYOUT = {
@@ -268,9 +270,9 @@ url, endpoint, token, schema, prompt, query, json, headers, sql
 至少补充以下测试：
 
 1. provider schema 是否包含新 provider。
-2. 创建连接时字段归一化、必填校验、secret 脱敏是否正确。
-3. 测试连接接口是否真的调用 provider 的探测接口。
-4. `business_data_search` 是否通过 workspace + ontology 绑定解析到新 provider。
+2. 保存数据源时字段归一化、必填校验、secret 脱敏是否正确。
+3. 数据源测试接口是否真的调用 provider 的探测接口。
+4. `business_data_search` 是否通过 workspace + ontology 解析到新 provider。
 
 推荐测试位置：
 
@@ -282,7 +284,7 @@ backend/tests/test_business_data_search_resolution.py
 测试连接示例：
 
 ```python
-def test_data_connection_test_route_probes_warehouse_http_service(tmp_path, monkeypatch):
+def test_data_source_test_route_probes_warehouse_http_service(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, monkeypatch)
     calls = []
 
@@ -306,12 +308,11 @@ def test_data_connection_test_route_probes_warehouse_http_service(tmp_path, monk
         return FakeResponse()
 
     monkeypatch.setattr("requests.post", fake_post)
-    create_response = client.post(
-        "/agentic/data-connections",
+    response = client.post(
+        "/agentic/ontologies/warehouse-ontology/data-source/test",
         headers=headers,
         json={
-            "id": "warehouse-main",
-            "name": "Warehouse Main",
+            "mode": "direct_provider",
             "provider": "warehouse_http",
             "config": {
                 "url": "https://warehouse.example.com",
@@ -319,10 +320,6 @@ def test_data_connection_test_route_probes_warehouse_http_service(tmp_path, monk
             },
         },
     )
-    assert create_response.status_code == 201
-
-    response = client.post("/agentic/data-connections/warehouse-main/test", headers=headers)
-
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["success"] is True
@@ -348,7 +345,7 @@ PYTHONPATH=backend python -m pytest \
   -q
 ```
 
-如果 provider 会影响导入默认绑定或 ontology summary，再补跑：
+如果 provider 会影响 ontology summary，再补跑：
 
 ```bash
 PYTHONPATH=backend python -m pytest backend/tests/test_ontology_routes.py -q
@@ -371,7 +368,7 @@ git diff --check
 ## 开发检查清单
 
 - [ ] provider id 使用小写 snake_case。
-- [ ] provider 实现只读取 workspace 连接配置，不读取全局配置和 env。
+- [ ] provider 实现只读取 ontology 私有数据源配置，不读取全局配置和 env。
 - [ ] `PROVIDER_SPECS` 已注册 `factory` 和字段 schema。
 - [ ] secret 字段设置了 `secret=True`，接口不会返回明文。
 - [ ] 必填字段和跨字段约束在后端校验。

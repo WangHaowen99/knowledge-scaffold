@@ -9,10 +9,10 @@ from urllib.parse import quote
 
 from flask import Flask
 
-from agentic.evolution import get_proposal_buffer, reset_operation_patcher, reset_proposal_buffer
-from agentic.routes.operations import operations_bp
-from agentic.services.auth import AuthManager
-from agentic.workspaces import create_workspace, get_workspace_paths
+from agent.evolution import get_proposal_buffer, reset_operation_patcher, reset_proposal_buffer
+from api.routes.operations import operations_bp
+from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _build_test_client(tmp_path):

@@ -1,14 +1,17 @@
 import os
+import json
 
 from flask import Flask
 import pytest
 
-from agentic.routes.workflows import workflows_bp
-from agentic.services.auth import AuthManager
-from agentic.stores import RunSlotManager, RunStatus
-from agentic.stores.run_queue import TokenBucketRateLimiter
-from agentic.stores.run_store import Run
-from agentic.workspaces import create_workspace
+from config.workspace_llm_profiles import update_workspace_llm_profiles
+from api.routes.workflows import _encode_agent_sse, workflows_bp
+from api.auth.auth import AuthManager
+from persistence.run_queue import RunAdmissionQueue, RunSlotManager
+from persistence.run_store import RunStatus, RunStore
+from persistence.run_queue import TokenBucketRateLimiter
+from persistence.run_store import Run
+from workspace.workspaces import create_workspace
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +49,38 @@ def _build_test_client(tmp_path):
     return client, headers
 
 
+def _write_system_profiles(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / ".onto-runtime" / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "llm_profiles": {
+                    "default_profile_id": "fast",
+                    "profiles": [
+                        {
+                            "id": "fast",
+                            "name": "Fast Global",
+                            "provider": "openai_compatible",
+                            "base_url": "https://fast.example/v1",
+                            "model": "fast-model",
+                            "api_key": "fast-secret",
+                            "enabled": True,
+                        }
+                    ],
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+
+
 def test_run_stream_requires_session_id(tmp_path):
     client, headers = _build_test_client(tmp_path)
 
@@ -59,18 +94,59 @@ def test_run_stream_requires_session_id(tmp_path):
     assert response.get_json() == {"error": "session_id is required"}
 
 
+@pytest.mark.parametrize("endpoint", ["/agentic/runs/stream", "/agentic/runs/sync"])
+def test_run_endpoints_reject_unsafe_session_id_before_starting(tmp_path, endpoint):
+    client, headers = _build_test_client(tmp_path)
+
+    response = client.post(
+        endpoint,
+        json={"request": "hello", "session_id": "../escape"},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert "session_id" in response.get_json()["error"]
+    assert not (tmp_path / "escape").exists()
+
+
+def test_model_profiles_returns_global_and_workspace_private_profiles(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+    _write_system_profiles(tmp_path, monkeypatch)
+    update_workspace_llm_profiles(
+        "demo",
+        {
+            "profiles": [
+                {
+                    "id": "private",
+                    "name": "Private Model",
+                    "provider": "openai_compatible",
+                    "base_url": "https://private.example/v1",
+                    "model": "private-model",
+                    "api_key": "private-secret",
+                    "enabled": True,
+                }
+            ]
+        },
+    )
+
+    response = client.get(
+        "/agentic/model-profiles",
+        headers={**headers, "X-Workspace-Id": "demo"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert [profile["id"] for profile in payload["profiles"]] == ["global:fast", "workspace:private"]
+    assert payload["default_profile_id"] == "global:fast"
+    assert payload["profiles"][1]["scope"] == "workspace"
+
+
 def test_run_stream_forwards_requested_run_id(monkeypatch, tmp_path):
     client, headers = _build_test_client(tmp_path)
     captured = {}
 
     class _FakeOrchestrator:
-        class _RunStore:
-            @staticmethod
-            def list_runs(limit=1000):
-                del limit
-                return []
-
-        run_store = _RunStore()
+        run_store = RunStore()
         slot_manager = RunSlotManager()
 
         def run(self, **kwargs):
@@ -91,7 +167,7 @@ def test_run_stream_forwards_requested_run_id(monkeypatch, tmp_path):
                 },
             }
 
-    monkeypatch.setattr("agentic.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
 
     response = client.post(
         "/agentic/runs/stream",
@@ -104,7 +180,77 @@ def test_run_stream_forwards_requested_run_id(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
+    response_text = response.get_data(as_text=True)
     assert captured["requested_run_id"] == "client-run-123"
+    assert "id: 1\nevent: agent.v2" in response_text
+
+
+def test_agent_sse_replaces_non_finite_numbers_with_json_null():
+    encoded = _encode_agent_sse({
+        "seq": 7,
+        "payload": {
+            "response_time": float("nan"),
+            "nested": [float("inf"), float("-inf")],
+        },
+    })
+    data_line = next(line for line in encoded.splitlines() if line.startswith("data: "))
+    payload = json.loads(data_line.removeprefix("data: "))
+
+    assert payload["payload"] == {
+        "response_time": None,
+        "nested": [None, None],
+    }
+    assert "NaN" not in encoded
+    assert "Infinity" not in encoded
+
+
+def test_queued_run_returns_json_until_slot_is_admitted(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        def __init__(self):
+            self.run_store = RunStore()
+            self.slot_manager = RunSlotManager()
+            self.run_admission_queue = RunAdmissionQueue(self.slot_manager)
+            for _index in range(100):
+                assert self.slot_manager.acquire("admin", 100, timeout=0) is True
+
+        def run(self, **kwargs):
+            del kwargs
+            raise AssertionError("queued run must not start before admission")
+            yield
+
+        def get_run_status(self, run_id):
+            run = self.run_store.get_run(run_id)
+            return {"run_id": run_id, "status": run.status.value} if run else None
+
+    orchestrator = _FakeOrchestrator()
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: orchestrator)
+
+    response = client.post(
+        "/agentic/runs/stream",
+        json={
+            "request": "hello",
+            "session_id": "queued-session",
+            "run_id": "queued-run-123",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 202
+    assert response.content_type.startswith("application/json")
+    payload = response.get_json()
+    assert payload["status"] == "queued"
+    assert payload["queue"]["position"] == 1
+    assert payload["links"]["events"] == "/agentic/runs/queued-run-123/events"
+
+    status_response = client.get("/agentic/runs/queued-run-123/status", headers=headers)
+    assert status_response.status_code == 200
+    assert status_response.get_json()["queue"]["position"] == 1
+
+    events_response = client.get("/agentic/runs/queued-run-123/events", headers=headers)
+    assert events_response.status_code == 409
+    assert events_response.content_type.startswith("application/json")
 
 
 def test_token_bucket_allows_burst_then_refills_by_rate():
@@ -146,7 +292,7 @@ def test_run_sync_returns_429_when_global_tps_is_exhausted(monkeypatch, tmp_path
         def run(self, **kwargs):
             raise AssertionError("run should not start when global TPS is exhausted")
 
-    monkeypatch.setattr("agentic.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
 
     response = client.post(
         "/agentic/runs/sync",
@@ -208,7 +354,7 @@ def test_run_sync_returns_final_answer(monkeypatch, tmp_path):
                 },
             }
 
-    monkeypatch.setattr("agentic.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
 
     response = client.post(
         "/agentic/runs/sync",
@@ -286,7 +432,7 @@ def test_run_sync_queues_when_concurrent_limit_exceeded(monkeypatch, tmp_path):
                 },
             }
 
-    monkeypatch.setattr("agentic.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
 
     response = client.post(
         "/agentic/runs/sync",
@@ -316,7 +462,7 @@ def test_run_sync_returns_500_when_orchestrator_raises(monkeypatch, tmp_path):
             raise RuntimeError("boom")
             yield
 
-    monkeypatch.setattr("agentic.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
 
     response = client.post(
         "/agentic/runs/sync",

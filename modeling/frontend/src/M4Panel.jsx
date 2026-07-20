@@ -5,8 +5,12 @@ import {
   listRounds, proposeOptimize, listSuggestions, applyOptimize, rejectSuggestions,
   listVersions, exportVersionUrl, authFetch,
 } from './api.js';
+import {
+  normalizeOptimizeOperation,
+  shouldPollOptimizeOperation,
+} from './optimize-running-state.js';
 
-/* ================= 节点 10 · 优化建议与应用 ================= */
+/* ================= 节点 11 · 优化建议与应用 ================= */
 
 const KIND_LABEL = {
   add_operation: '新增操作', modify_operation: '修改操作',
@@ -78,16 +82,37 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
   const [busy, setBusy] = useState('');   // '' | propose | apply
   const [err, setErr] = useState('');
   const [applied, setApplied] = useState(null); // { version, applied }
+  const pollRef = useRef(null);
 
   const load = () => Promise.all([
     listRounds(projectId).then((d) => { setRounds(d.rounds); return d.rounds; }),
     listVersions(projectId).then((d) => setVersions(d.versions)),
     listSuggestions(projectId).then((d) => {
+      const runningOperation = normalizeOptimizeOperation(d.runningOperation);
+      setBusy(runningOperation);
       setSuggestions(d.suggestions);
       setSel(new Set(d.suggestions.filter((s) => s.status === 'pending').map((s) => s.id)));
+      return runningOperation;
     }),
-  ]).catch((e) => setErr(e.message));
-  useEffect(() => { load(); }, [projectId]);
+  ]).then(([, , runningOperation]) => {
+    setErr('');
+    return runningOperation;
+  })
+    .catch((e) => { setErr(e.message); return undefined; });
+  useEffect(() => {
+    let cancelled = false;
+    const refreshUntilIdle = async () => {
+      const runningOperation = await load();
+      if (!cancelled && shouldPollOptimizeOperation(runningOperation)) {
+        pollRef.current = setTimeout(refreshUntilIdle, 2000);
+      }
+    };
+    refreshUntilIdle();
+    return () => {
+      cancelled = true;
+      clearTimeout(pollRef.current);
+    };
+  }, [projectId]);
 
   if (!rounds) return <div className="empty">{err || '加载中…'}</div>;
   const latestDone = rounds.find((r) => r.status === 'done');
@@ -143,6 +168,11 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
           onClick={propose}>
           {busy === 'propose' ? '优化器分析中…' : '⚙ 生成优化建议'}
         </button>
+        {busy && (
+          <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--muted)' }}>
+            优化任务正在执行，请稍候
+          </span>
+        )}
         {latestDone && latestDone.passCount === latestDone.progressTotal && (
           <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--muted)' }}>最近一轮已全部通过，无需优化</span>
         )}

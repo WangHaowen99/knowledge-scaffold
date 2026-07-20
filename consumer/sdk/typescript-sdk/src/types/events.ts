@@ -55,6 +55,8 @@ export interface NormalizedStreamEvent {
   taskId?: string;
   sessionId?: string;
   turnId?: number;
+  sequence?: number;
+  eventId?: string;
   timestamp?: number;
   source?: AgenticEventSource;
   payload: Record<string, unknown>;
@@ -118,6 +120,8 @@ export const normalizeAgenticEnvelope = (envelope: AgenticEnvelope): NormalizedS
     runId: envelope.run_id,
     sessionId: envelope.session_id,
     turnId: envelope.turn_id,
+    sequence: envelope.seq,
+    eventId: envelope.event_id,
     timestamp: envelope.ts,
     source: envelope.source,
     payload,
@@ -145,13 +149,18 @@ export const normalizeA2AUpdate = (update: A2ATaskUpdateEvent): NormalizedStream
 export const normalizeAgenticSseMessage = (message: SseEventMessage): NormalizedStreamEvent => {
   const json = message.json;
   if (message.event === 'agent.v2' && json && typeof json === 'object' && (json as Record<string, unknown>).protocol === 'agent-stream.v2') {
-    return normalizeAgenticEnvelope(json as AgenticEnvelope);
+    const normalized = normalizeAgenticEnvelope(json as AgenticEnvelope);
+    return {
+      ...normalized,
+      eventId: normalized.eventId || message.id,
+    };
   }
 
   return {
     kind: 'raw',
     protocol: 'agentic',
     eventName: message.event,
+    eventId: message.id,
     payload: {},
     raw: message,
   };

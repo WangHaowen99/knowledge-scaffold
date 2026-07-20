@@ -1,16 +1,17 @@
 """Tests for ontology management routes."""
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
 import yaml
 from flask import Flask
 
-from agentic.routes import ontologies as ontologies_module
-from agentic.routes.ontologies import ontologies_bp
-from agentic.services.auth import AuthManager
-from agentic.workspaces import create_workspace, get_workspace_paths
+from api.routes import ontologies as ontologies_module
+from api.routes.ontologies import ontologies_bp
+from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
@@ -58,7 +59,8 @@ def _write_example_ontology(workspace_paths):
     objects_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             f"id: {EXAMPLE_ONTOLOGY_ID}\n"
             f"name: {EXAMPLE_ONTOLOGY_ID}\n"
             "description: Example DOMAIN ontology for route tests\n"
@@ -173,14 +175,15 @@ def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
 
 
 def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
+    import ontology.ontologies as ontologies_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for routes\n"
@@ -199,21 +202,22 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
     payload = response.get_json()
     assert payload is not None
     assert payload["ontologies"] == [
-            {
-                "business_data": {
-                    "connection_id": "",
-                    "connection_name": "",
-                    "provider": "",
-                    "ready": False,
-                },
-                "description": "Demo ontology for routes",
-                "enabled": True,
-                "id": "demo-ontology",
-                "language": "zh-CN",
+        {
             "active_version": "1.0.0",
+            "business_data": {
+                "configured": False,
+                "mode": "",
+                "provider": "",
+                "ready": False,
+                "updated_at": "",
+            },
+            "description": "Demo ontology for routes",
+            "enabled": True,
+            "id": "demo-ontology",
+            "language": "zh-CN",
             "manifest_path": str(ontology_dir / "manifest.yaml"),
             "name": "Demo Ontology",
-            "ontology_md_path": None,
+            "index_path": None,
             "version": "1.0.0",
             "versions": ["1.0.0"],
         }
@@ -226,7 +230,8 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for routes\n"
@@ -273,13 +278,16 @@ def test_get_ontology_file_reads_object_markdown(tmp_path, monkeypatch):
     assert "TargetItem_ID" in payload["content"]
 
 
-def test_ontology_file_routes_reject_assets_folder(tmp_path, monkeypatch):
+def test_ontology_file_routes_list_and_read_assets_folder(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
-    (ontology_dir / "versions" / "1.0.0").mkdir(parents=True)
+    assets_dir = ontology_dir / "versions" / "1.0.0" / "assets"
+    (assets_dir / "rules").mkdir(parents=True)
+    (assets_dir / "rules" / "limits.ini").write_text("[limits]\nmax=10\n", encoding="utf-8")
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for folder route tests\n"
@@ -299,16 +307,18 @@ def test_ontology_file_routes_reject_assets_folder(tmp_path, monkeypatch):
         headers=headers,
     )
 
-    assert list_response.status_code == 400
-    assert list_response.get_json()["error"] == "Invalid ontology or folder. Use 'operations' or 'objects'."
+    assert list_response.status_code == 200
+    assert [item["name"] for item in list_response.get_json()["files"]] == [
+        "rules/limits.ini"
+    ]
 
     read_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
         query_string={"folder": "assets", "name": "rules/limits.ini"},
         headers=headers,
     )
-    assert read_response.status_code == 400
-    assert read_response.get_json()["error"] == "Invalid ontology or folder. Use 'operations' or 'objects'."
+    assert read_response.status_code == 200
+    assert read_response.get_json()["content"] == "[limits]\nmax=10"
 
 
 def test_get_ontology_file_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
@@ -317,7 +327,8 @@ def test_get_ontology_file_uses_onto_runtime_root_from_env(tmp_path, monkeypatch
     object_dir.mkdir(parents=True)
     (workspace_paths.ontologies_dir / "demo-ontology" / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for routes\n"
@@ -348,7 +359,8 @@ def test_update_operation_file_allows_content_at_default_char_limit(tmp_path, mo
     operation_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for operation length route tests\n"
@@ -384,7 +396,8 @@ def test_update_operation_file_rejects_content_over_char_limit(tmp_path, monkeyp
     operation_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for operation length route tests\n"
@@ -418,7 +431,8 @@ def test_update_object_file_rejects_attribute_count_over_limit(tmp_path, monkeyp
     object_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for object attribute limits\n"
@@ -464,7 +478,8 @@ def test_upload_object_file_rejects_new_file_when_object_count_reaches_limit(tmp
     object_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for object count limits\n"
@@ -499,7 +514,8 @@ def test_upload_operation_file_rejects_new_file_when_operation_count_reaches_lim
     operation_dir.mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for operation count limits\n"
@@ -531,10 +547,14 @@ def test_download_ontology_zip_returns_full_package_for_regular_user(tmp_path, m
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
     (ontology_dir / "objects").mkdir(parents=True)
     (ontology_dir / "operations").mkdir(parents=True)
+    (ontology_dir / "rules").mkdir(parents=True)
+    (ontology_dir / "metrics").mkdir(parents=True)
     (ontology_dir / "scripts" / "nested").mkdir(parents=True)
+    (ontology_dir / "mappings").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology for download\n"
@@ -543,11 +563,23 @@ def test_download_ontology_zip_returns_full_package_for_regular_user(tmp_path, m
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "objects-list.md").write_text("- 实体A\n", encoding="utf-8")
-    (ontology_dir / "operations-list.md").write_text("- 流程A\n", encoding="utf-8")
+    (ontology_dir / "index.md").write_text("# Demo Ontology\n", encoding="utf-8")
+    (ontology_dir / "objects" / "index.md").write_text("- 实体A\n", encoding="utf-8")
+    (ontology_dir / "operations" / "index.md").write_text("- 流程A\n", encoding="utf-8")
+    (ontology_dir / "rules" / "index.md").write_text("# Rules\n", encoding="utf-8")
+    (ontology_dir / "metrics" / "index.md").write_text("# Metrics\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "index.md").write_text("# Scripts\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "demo.md").write_text(
+        "---\nresource: script\nkey: demo\nentrypoint: nested/demo.py\n---\n",
+        encoding="utf-8",
+    )
     (ontology_dir / "objects" / "实体A.md").write_text("实体A内容\n", encoding="utf-8")
     (ontology_dir / "operations" / "流程A.md").write_text("流程A内容\n", encoding="utf-8")
     (ontology_dir / "scripts" / "nested" / "demo.py").write_text("print('demo')\n", encoding="utf-8")
+    (ontology_dir / "mappings" / "object-data-mappings.json").write_text(
+        '{"schema_version":"0.1","objects":{}}\n',
+        encoding="utf-8",
+    )
 
     client, headers = _build_test_client(
         tmp_path,
@@ -567,18 +599,24 @@ def test_download_ontology_zip_returns_full_package_for_regular_user(tmp_path, m
     zip_buffer = io.BytesIO(response.data)
     with zipfile.ZipFile(zip_buffer, "r") as zf:
         assert sorted(zf.namelist()) == [
+            "demo-ontology/index.md",
             "demo-ontology/manifest.yaml",
-            "demo-ontology/objects-list.md",
+            "demo-ontology/mappings/object-data-mappings.json",
+            "demo-ontology/metrics/index.md",
+            "demo-ontology/objects/index.md",
             "demo-ontology/objects/实体A.md",
-            "demo-ontology/operations-list.md",
+            "demo-ontology/operations/index.md",
             "demo-ontology/operations/流程A.md",
+            "demo-ontology/rules/index.md",
+            "demo-ontology/scripts/demo.md",
+            "demo-ontology/scripts/index.md",
             "demo-ontology/scripts/nested/demo.py",
         ]
         assert zf.read("demo-ontology/objects/实体A.md").decode("utf-8") == "实体A内容\n"
         assert zf.read("demo-ontology/scripts/nested/demo.py").decode("utf-8") == "print('demo')\n"
 
 
-def test_import_ontology_zip_supports_already_converted_package(tmp_path, monkeypatch):
+def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
     operation_content = "x" * 15000
@@ -619,16 +657,22 @@ def test_import_ontology_zip_supports_already_converted_package(tmp_path, monkey
     assert payload["ontology_name"] == "Converted Demo"
     assert payload["objects_count"] == 1
     assert payload["operations_count"] == 1
-    assert payload["warnings"] == {"objects": [], "objects_list": [], "operations": []}
+    assert payload["warnings"] == {"objects": [], "objects_index": [], "operations": []}
     assert payload["preview"]["source"]["total_files"] == 7
-    assert payload["preview"]["result"]["total_files"] == 7
+    assert payload["preview"]["result"]["total_files"] >= 10
     source_paths = {item["path"] for item in payload["preview"]["source"]["files"]}
     result_paths = {item["path"] for item in payload["preview"]["result"]["files"]}
     assert "manifest.yaml" in source_paths
     assert "objects/实体A.md" in result_paths
+    assert "objects/index.md" in result_paths
+    assert "operations/index.md" in result_paths
+    assert not any(path.endswith("-list.md") for path in result_paths)
+    assert "ONTOLOGY.md" not in result_paths
 
     ontology_dir = workspace_paths.ontologies_dir / "converted-demo"
-    assert (ontology_dir / "manifest.yaml").read_text(encoding="utf-8").startswith("kind: ontology\n")
+    assert (ontology_dir / "manifest.yaml").read_text(encoding="utf-8").startswith(
+        "kind: ontology-package\nschema_version: 0.1\n"
+    )
     version_dir = ontology_dir / "versions" / "1.0.0"
     assert (version_dir / "objects" / "实体A.md").read_text(encoding="utf-8") == "#### 对象描述\n实体A说明\n"
     assert (version_dir / "operations" / "流程A.md").read_text(encoding="utf-8") == operation_content
@@ -641,15 +685,16 @@ def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_pat
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Converted Demo\n"
             "description: Imported from converted zip\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/objects-list.md": "- 实体A\n",
-        "converted-demo/operations-list.md": "- 流程A\n",
+        "converted-demo/objects/index.md": "- 实体A\n",
+        "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
         "converted-demo/operations/流程A.md": "x" * 15001,
     })
@@ -672,7 +717,8 @@ def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit
     existing_dir.mkdir(parents=True)
     (existing_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: existing-demo\n"
             "name: Existing Demo\n"
             "description: Existing ontology\n"
@@ -685,15 +731,16 @@ def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Converted Demo\n"
             "description: Imported from converted zip\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/objects-list.md": "- 实体A\n",
-        "converted-demo/operations-list.md": "- 流程A\n",
+        "converted-demo/objects/index.md": "- 实体A\n",
+        "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
         "converted-demo/operations/流程A.md": "#### 操作描述\n流程A说明\n",
     })
@@ -717,15 +764,16 @@ def test_import_converted_ontology_zip_rejects_object_count_over_limit(tmp_path,
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Converted Demo\n"
             "description: Imported from converted zip\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/objects-list.md": "- 实体A\n- 实体B\n",
-        "converted-demo/operations-list.md": "- 流程A\n",
+        "converted-demo/objects/index.md": "- 实体A\n- 实体B\n",
+        "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
         "converted-demo/objects/实体B.md": "#### 对象描述\n实体B说明\n",
         "converted-demo/operations/流程A.md": "#### 操作描述\n流程A说明\n",
@@ -749,15 +797,16 @@ def test_import_converted_ontology_zip_rejects_operation_count_over_limit(tmp_pa
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Converted Demo\n"
             "description: Imported from converted zip\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/objects-list.md": "- 实体A\n",
-        "converted-demo/operations-list.md": "- 流程A\n- 流程B\n",
+        "converted-demo/objects/index.md": "- 实体A\n",
+        "converted-demo/operations/index.md": "- 流程A\n- 流程B\n",
         "converted-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
         "converted-demo/operations/流程A.md": "#### 操作描述\n流程A说明\n",
         "converted-demo/operations/流程B.md": "#### 操作描述\n流程B说明\n",
@@ -781,15 +830,16 @@ def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Converted Demo\n"
             "description: Imported from converted zip\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "converted-demo/objects-list.md": "- 实体A\n",
-        "converted-demo/operations-list.md": "- 流程A\n",
+        "converted-demo/objects/index.md": "- 实体A\n",
+        "converted-demo/operations/index.md": "- 流程A\n",
         "converted-demo/objects/实体A.md": "\n".join([
             "#### 对象描述",
             "实体A说明",
@@ -888,33 +938,35 @@ def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tm
     assert "单本体实体数量已达上限" in response.get_json()["error"]
 
 
-def test_import_ontology_zip_binds_default_data_connection_for_new_ontology(tmp_path, monkeypatch):
-    _create_demo_workspace(tmp_path, monkeypatch)
-    from agentic.business_data.bindings_store import get_ontology_data_binding
-    from agentic.business_data.connections_store import create_data_connection
+def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    from agent.tools.business_data.ontology_sources_store import get_ontology_data_source
 
-    create_data_connection(
-        {
-            "id": "default-nl2sql",
-            "name": "Default NL2SQL",
-            "provider": "nl2sql_http",
-            "set_as_default": True,
-            "config": {"url": "https://nl2sql.example.com"},
-        },
-        workspace_id="demo",
+    (workspace_paths.workspace_dir / "data-connections.json").write_text(
+        json.dumps({
+            "default_connection_id": "default-nl2sql",
+            "connections": [{
+                "id": "default-nl2sql",
+                "name": "Default NL2SQL",
+                "provider": "nl2sql_http",
+                "config": {"url": "https://nl2sql.example.com"},
+            }],
+        }),
+        encoding="utf-8",
     )
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
     zip_buffer = _build_zip_file({
         "bound-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: bound-demo\n"
             "name: Bound Demo\n"
-            "description: Imported with default binding\n"
+            "description: Imported without implicit data source\n"
             "version: 1.0.0\n"
             "language: zh-CN\n"
         ),
-        "bound-demo/objects-list.md": "- 实体A\n",
-        "bound-demo/operations-list.md": "- 流程A\n",
+        "bound-demo/objects/index.md": "- 实体A\n",
+        "bound-demo/operations/index.md": "- 流程A\n",
     })
 
     response = client.post(
@@ -926,9 +978,9 @@ def test_import_ontology_zip_binds_default_data_connection_for_new_ontology(tmp_
 
     assert response.status_code == 201
     payload = response.get_json()
-    assert payload["business_data_binding"]["connection_id"] == "default-nl2sql"
-    binding = get_ontology_data_binding("bound-demo", workspace_id="demo")
-    assert binding["connection_id"] == "default-nl2sql"
+    assert payload["business_data_configured"] is False
+    assert "business_data_binding" not in payload
+    assert get_ontology_data_source("bound-demo", workspace_id="demo") is None
 
 
 def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_path, monkeypatch):
@@ -937,7 +989,8 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
     (ontology_dir / "objects").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Old Converted Demo\n"
             "description: Old version\n"
@@ -952,7 +1005,8 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
     zip_entries = {
         "converted-demo/manifest.yaml": (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: converted-demo\n"
             "name: Converted Demo\n"
             "description: Replaced from converted zip\n"
@@ -960,8 +1014,8 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
             "language: zh-CN\n"
             "scope: []\n"
         ),
-        "converted-demo/objects-list.md": "- 新实体\n",
-        "converted-demo/operations-list.md": "- 新流程\n",
+        "converted-demo/objects/index.md": "- 新实体\n",
+        "converted-demo/operations/index.md": "- 新流程\n",
         "converted-demo/objects/新实体.md": "新内容\n",
         "converted-demo/operations/新流程.md": "新流程内容\n",
     }
@@ -1024,7 +1078,7 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
     result_paths = {item["path"] for item in payload["preview"]["result"]["files"]}
     assert "object/实体A.md" in source_paths
     assert "action/process_a.py" in source_paths
-    assert "objects-list.md" in result_paths
+    assert "objects/index.md" in result_paths
     assert "objects/实体A.md" in result_paths
     assert not any(path.startswith("assets/") for path in result_paths)
     result_object = next(item for item in payload["preview"]["result"]["files"] if item["path"] == "objects/实体A.md")
@@ -1032,13 +1086,11 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
 
     ontology_dir = workspace_paths.ontologies_dir / "source-demo"
     version_dir = ontology_dir / "versions" / "1.0.0"
-    scripts_list_content = (version_dir / "scripts-list.md").read_text(encoding="utf-8")
-    assert "- `流程A` -> `scripts/process_a.py`" in scripts_list_content
-    assert (
-        "  `parameters`: `[{\"name\":\"实体A编号\",\"flag\":\"--entity-a-code\","
-        "\"description\":\"实体A编号\",\"required\":true,\"type\":\"string\","
-        "\"aliases\":[\"entity_a_code\"]}]`"
-    ) in scripts_list_content
+    scripts_index_content = (version_dir / "scripts" / "index.md").read_text(encoding="utf-8")
+    script_descriptor = (version_dir / "scripts" / "process_a.md").read_text(encoding="utf-8")
+    assert "| process_a | process_a | 流程A | process_a.py |" in scripts_index_content
+    assert "bound_operation: 流程A" in script_descriptor
+    assert "| 实体A编号 | --entity-a-code | string | 是 | 否 | 实体A编号 | entity_a_code |" in script_descriptor
     assert (version_dir / "scripts" / "process_a.py").read_text(encoding="utf-8") == (
         "# 工具流程: 流程A\n"
         "# parameters: [{\"name\":\"实体A编号\",\"flag\":\"--entity-a-code\",\"description\":\"实体A编号\",\"required\":true,\"type\":\"string\"}]\n"
@@ -1046,7 +1098,7 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
         "print('process_a')\n"
     )
     assert (version_dir / "scripts" / ".env").read_text(encoding="utf-8") == "API_TOKEN=demo-token\n"
-    assert ".env" not in scripts_list_content
+    assert ".env" not in scripts_index_content
     assert not (version_dir / "assets").exists()
 
 
@@ -1068,8 +1120,9 @@ def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, mo
 
     ontology_dir = workspace_paths.ontologies_dir / "source-demo"
     version_dir = ontology_dir / "versions" / "1.0.0"
-    assert not (version_dir / "scripts-list.md").exists()
-    assert not (version_dir / "scripts").exists()
+    assert not list(version_dir.glob("*-list.md"))
+    assert (version_dir / "scripts" / "index.md").is_file()
+    assert list((version_dir / "scripts").glob("*.md")) == [version_dir / "scripts" / "index.md"]
 
 
 def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monkeypatch):
@@ -1080,7 +1133,8 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
     (ontology_dir / "scripts").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: source-demo\n"
             "name: Source Demo\n"
             "description: Existing source ontology\n"
@@ -1090,10 +1144,16 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "ONTOLOGY.md").write_text("# Old Source Demo\n", encoding="utf-8")
+    (ontology_dir / "index.md").write_text("# Old Source Demo\n", encoding="utf-8")
+    (ontology_dir / "objects" / "index.md").write_text("# objects\n", encoding="utf-8")
+    (ontology_dir / "operations" / "index.md").write_text("# operations\n", encoding="utf-8")
     (ontology_dir / "objects" / "旧实体.md").write_text("旧实体\n", encoding="utf-8")
     (ontology_dir / "operations" / "旧流程.md").write_text("旧流程\n", encoding="utf-8")
-    (ontology_dir / "scripts-list.md").write_text("- `旧流程` -> `scripts/old.py`\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    (ontology_dir / "scripts" / "old.md").write_text(
+        "---\nresource: script\nkey: old\nbound_operation: 旧流程\nentrypoint: old.py\n---\n",
+        encoding="utf-8",
+    )
     (ontology_dir / "scripts" / "old.py").write_text("print('old')\n", encoding="utf-8")
 
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
@@ -1117,8 +1177,10 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
     version_dir = ontology_dir / "versions" / "1.0.0"
     assert not (version_dir / "objects" / "旧实体.md").exists()
     assert not (version_dir / "operations" / "旧流程.md").exists()
-    assert not (version_dir / "scripts-list.md").exists()
-    assert not (version_dir / "scripts").exists()
+    assert not list(version_dir.glob("*-list.md"))
+    assert not (version_dir / "scripts" / "old.md").exists()
+    assert not (version_dir / "scripts" / "old.py").exists()
+    assert (version_dir / "scripts" / "index.md").is_file()
     assert (version_dir / "objects" / "实体A.md").exists()
     assert (version_dir / "operations" / "流程A.md").exists()
 
@@ -1130,7 +1192,8 @@ def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_p
     (ontology_dir / "operations").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: source-demo\n"
             "name: Source Demo\n"
             "description: Existing source ontology\n"
@@ -1235,7 +1298,8 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
     (version2 / "objects").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology\n"
@@ -1284,8 +1348,8 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
 
 
 def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
-    from agentic.utils import ontologies as ontologies_module
-    from agentic.utils.ontologies import get_ontology_registry
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import get_ontology_registry
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -1295,7 +1359,8 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     (version2 / "operations").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology\n"
@@ -1308,8 +1373,8 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    (version1 / "operations-list.md").write_text("- v1-op\n", encoding="utf-8")
-    (version2 / "operations-list.md").write_text("- v2-op\n", encoding="utf-8")
+    (version1 / "operations" / "index.md").write_text("- v1-op\n", encoding="utf-8")
+    (version2 / "operations" / "index.md").write_text("- v2-op\n", encoding="utf-8")
 
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
     response = client.put(
@@ -1335,7 +1400,8 @@ def test_delete_ontology_version_removes_only_target_version(tmp_path, monkeypat
     (version2 / "operations").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology\n"
@@ -1381,7 +1447,8 @@ def test_delete_active_ontology_version_returns_409(tmp_path, monkeypatch):
     (version2 / "operations").mkdir(parents=True)
     (ontology_dir / "manifest.yaml").write_text(
         (
-            "kind: ontology\n"
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
             "id: demo-ontology\n"
             "name: Demo Ontology\n"
             "description: Demo ontology\n"

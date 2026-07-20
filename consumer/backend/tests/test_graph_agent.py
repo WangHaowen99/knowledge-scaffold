@@ -7,15 +7,25 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentic.business_data.providers.graph.agent import GraphAgentTimeoutError
-from agentic.business_data.providers.graph.jiuwen_agent import JiuwenGraphQueryAgent
-from agentic.business_data.providers.graph.models import (
+from agent.tools.business_data.providers.graph.agent import (
+    GraphAgentTimeoutError,
+    _GRAPH_TOOL_SCHEMAS,
+)
+from agent.tools.business_data.providers.graph.jiuwen_agent import (
+    GraphJiuwenToolAdapter,
+    JiuwenGraphQueryAgent,
+    _resolve_graph_jiuwen_llm_config,
+    register_graph_runtime_tools,
+)
+from agent.tools.business_data.providers.graph.models import (
     GraphBackendResult,
     GraphEntityMapping,
     GraphScope,
     GraphSearchRuntimeContext,
 )
-from agentic.business_data.providers.graph.tools.executor import GraphToolExecutor
+from agent.tools.business_data.providers.graph.tools.executor import GraphToolExecutor
+from agent.tools.base import ToolInvocation
+from agent.tools.registry import get_tool_spec
 
 
 class _Backend:
@@ -94,7 +104,12 @@ def _context():
         query="查询CHANGE_ORDER受影响对象中CHANGE_ORDER编码为\"CHANGE_ORDER-001\"的所有记录",
         timeout_seconds=60,
         max_result_rows=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=GraphScope(
+            workspace_property="d2o_workspace_id",
+            workspace_value="workspace-a",
+            ontology_property="d2o_ontology_id",
+            ontology_value="demo-ontology",
+        ),
         mapping=GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="path", source="test"),
         provider_config={},
     )
@@ -114,7 +129,12 @@ def _record_context():
         query='查询SourceItem编码为"101001-001"且SourceItem版本为"A"的工艺关系记录',
         timeout_seconds=60,
         max_result_rows=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=GraphScope(
+            workspace_property="d2o_workspace_id",
+            workspace_value="workspace-a",
+            ontology_property="d2o_ontology_id",
+            ontology_value="demo-ontology",
+        ),
         mapping=GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"),
         provider_config={},
         schema_context={
@@ -286,7 +306,12 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
         query="查询 SourceItem 101000-001 对应的 TargetItem",
         timeout_seconds=60,
         max_result_rows=100,
-        scope=GraphScope(workspace_property="d2o_workspace_id", workspace_value="workspace-a"),
+        scope=GraphScope(
+            workspace_property="d2o_workspace_id",
+            workspace_value="workspace-a",
+            ontology_property="d2o_ontology_id",
+            ontology_value="demo-ontology",
+        ),
         mapping=GraphEntityMapping(entity="SourceItem与TargetItem工艺关系", kind="node", source="test", label="SourceItem_TargetItem"),
         provider_config={},
         schema_context={
@@ -653,3 +678,195 @@ def test_jiuwen_graph_query_agent_timeout_raises_structured_error():
         )
 
     assert exc_info.value.error_code == "GRAPH_AGENT_TIMEOUT"
+
+
+def test_graph_agent_exposes_exact_private_fourteen_tool_contract():
+    names = [schema["function"]["name"] for schema in _GRAPH_TOOL_SCHEMAS]
+
+    assert names == [
+        "get_object_types",
+        "get_relation_types",
+        "get_nodes_schema",
+        "get_edges_schema",
+        "property_filter",
+        "pattern_search",
+        "count_search",
+        "aggregate_search",
+        "sorted_search",
+        "get_element_info",
+        "hop_search",
+        "shortest_path",
+        "list_logic_titles",
+        "get_logic_content",
+    ]
+    assert all(get_tool_spec(name) is None for name in names)
+
+
+def test_graph_agent_reuses_current_jiuwen_workspace_profile_resolution(monkeypatch):
+    calls = []
+
+    def fake_resolve(state, *, caller, agent_config=None):
+        calls.append((state, caller, agent_config))
+        return SimpleNamespace(
+            provider="openai",
+            model="graph-model",
+            max_tokens=8192,
+            temperature=0.9,
+        )
+
+    monkeypatch.setattr(
+        "agent.tools.business_data.providers.graph.jiuwen_agent._resolve_jiuwen_llm_config",
+        fake_resolve,
+    )
+
+    config = _resolve_graph_jiuwen_llm_config(
+        {
+            "model_profile_id": "workspace:graph",
+            "graph_agent_max_tokens": 1200,
+            "graph_agent_temperature": 0.1,
+        },
+        workspace_id="workspace-a",
+    )
+
+    assert calls == [(
+        {
+            "workspace_id": "workspace-a",
+            "user_context": {"model_profile_id": "workspace:graph"},
+        },
+        "subagent",
+        None,
+    )]
+    assert config.model == "graph-model"
+    assert config.max_tokens == 1200
+    assert config.temperature == 0.1
+
+
+def test_graph_agent_inherits_router_output_limit(monkeypatch):
+    calls = []
+
+    class FakeRouter:
+        agent_config = SimpleNamespace(
+            limits=SimpleNamespace(model_output_token_limit=900),
+        )
+
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            calls.append((purpose, profile_id, workspace_id))
+            return SimpleNamespace(
+                provider="openai",
+                model="graph-model",
+                max_tokens=8192,
+                temperature=0.9,
+            )
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_llm_router",
+        lambda: FakeRouter(),
+    )
+
+    config = _resolve_graph_jiuwen_llm_config(
+        {
+            "model_profile_id": "workspace:graph",
+            "graph_agent_max_tokens": 1200,
+            "graph_agent_temperature": 0.1,
+        },
+        workspace_id="workspace-a",
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1:] == ("workspace:graph", "workspace-a")
+    assert config.max_tokens == 900
+    assert config.temperature == 0.1
+
+
+def test_graph_agent_accepts_router_without_agent_config(monkeypatch):
+    class FakeRouter:
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            del purpose, profile_id, workspace_id
+            return SimpleNamespace(
+                provider="openai",
+                model="graph-model",
+                max_tokens=8192,
+                temperature=0.9,
+            )
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.get_llm_router",
+        lambda: FakeRouter(),
+    )
+
+    config = _resolve_graph_jiuwen_llm_config(
+        {"graph_agent_max_tokens": 1200},
+        workspace_id="workspace-a",
+    )
+
+    assert config.max_tokens == 1200
+
+
+def test_graph_private_registration_passes_explicit_tools_to_current_jiuwen_boundary(monkeypatch):
+    captured = {}
+
+    def fake_register(agent, **kwargs):
+        captured["agent"] = agent
+        captured.update(kwargs)
+        return [SimpleNamespace(id="private-card")]
+
+    monkeypatch.setattr(
+        "agent.tools.business_data.providers.graph.jiuwen_agent.register_current_runtime_tools",
+        fake_register,
+    )
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    adapter = GraphJiuwenToolAdapter(
+        tool_executor=_executor(_DuplicateTargetItemBackend(), context, mapping),
+        executions=[],
+        executed_steps=[],
+    )
+    agent = SimpleNamespace(card=SimpleNamespace(id="graph-private"))
+
+    cards = register_graph_runtime_tools(
+        agent,
+        tool_schemas=_GRAPH_TOOL_SCHEMAS,
+        adapter=adapter,
+        context=context,
+    )
+
+    assert [card.id for card in cards] == ["private-card"]
+    assert [tool["name"] for tool in captured["tool_infos"]] == [
+        schema["function"]["name"] for schema in _GRAPH_TOOL_SCHEMAS
+    ]
+    assert captured["state"]["messages"] == []
+    private_context = captured["context_factory"]()
+    assert private_context.caller == "graph"
+    assert private_context.observer is None
+
+    result = captured["tool_batch_executor"](
+        [
+            ToolInvocation(
+                id="graph-call-1",
+                name="property_filter",
+                arguments={
+                    "element_class": "TargetItem",
+                    "element_type": "NODE",
+                    "filter_dict": {"TargetItemCode": "A001"},
+                    "return_properties": ["TargetItemCode"],
+                },
+            )
+        ],
+        private_context,
+    )
+    assert len(result.messages) == 1
+    assert '"success": true' in result.messages[0]["content"]
+
+
+def test_graph_agent_trace_bridge_sliding_window_applied_is_false():
+    """Graph agent must pass sliding_window_applied=False to JiuwenModelTraceBridge."""
+    import inspect
+
+    # Verify the trace bridge init signature includes sliding_window_applied
+    from agent.core.jiuwen.trace import JiuwenModelTraceBridge
+    source = inspect.getsource(JiuwenModelTraceBridge.__init__)
+    assert 'sliding_window_applied' in source
+
+    # Verify the graph agent _invoke_once passes sliding_window_applied=False
+    agent_source = inspect.getsource(JiuwenGraphQueryAgent._invoke_once)
+    assert 'sliding_window_applied=False' in agent_source

@@ -1,14 +1,20 @@
+import json
 from pathlib import Path
 
 import pytest
 
-from agentic.mcp.config import MCPRuntimeConfig
-from agentic.mcp.token_store import MCPTokenStore
-from agentic.mcp.token_service import (
+from integration.mcp.config import (
+    MCPConfigurationError,
+    MCPRuntimeConfig,
+    load_mcp_runtime_config,
+)
+from integration.mcp.token_store import MCPTokenStore
+from integration.mcp.token_service import (
     MCPTokenAuthError,
     create_mcp_token,
     list_mcp_tokens,
     revoke_mcp_token,
+    revoke_all_mcp_tokens_for_user,
     verify_mcp_token,
 )
 
@@ -52,6 +58,7 @@ def test_mcp_token_uses_oauth_style_scope_and_registry(tmp_path):
 
     items = list_mcp_tokens(username="admin", workspace_id="test_project", store=MCPTokenStore(cfg.token_store_path))
     assert "token" not in items[0]
+    assert created["token"] not in cfg.token_store_path.read_text(encoding="utf-8")
     assert items[0]["status"] == "active"
 
 
@@ -90,3 +97,97 @@ def test_mcp_token_rejects_missing_or_weak_signing_secret(tmp_path):
             scopes=["mcp:search"],
             config=cfg,
         )
+
+
+def test_wrong_scope_and_expired_mcp_tokens_are_rejected(tmp_path, monkeypatch):
+    cfg = _config(tmp_path / "tokens.json")
+    created = create_mcp_token(
+        username="admin",
+        workspace_id="test_project",
+        scopes=["mcp:search"],
+        expires_in=1,
+        config=cfg,
+    )
+
+    with pytest.raises(MCPTokenAuthError) as scope_error:
+        verify_mcp_token(created["token"], required_scope="mcp:chat", config=cfg)
+    assert scope_error.value.code == "MCP_SCOPE_FORBIDDEN"
+
+    created_at = __import__("time").time()
+    monkeypatch.setattr("integration.mcp.token_crypto.time.time", lambda: created_at + 2)
+    with pytest.raises(MCPTokenAuthError, match="过期"):
+        verify_mcp_token(created["token"], required_scope="mcp:search", config=cfg)
+
+
+def test_revoke_all_user_tokens_is_idempotent_and_scoped(tmp_path):
+    cfg = _config(tmp_path / "tokens.json")
+    store = MCPTokenStore(cfg.token_store_path)
+    alice_tokens = [
+        create_mcp_token(
+            username="alice",
+            workspace_id=workspace_id,
+            scopes=["mcp:search"],
+            expires_in=3600,
+            config=cfg,
+            store=store,
+        )["token"]
+        for workspace_id in ("workspace-a", "workspace-b")
+    ]
+    bob_token = create_mcp_token(
+        username="bob",
+        workspace_id="workspace-a",
+        scopes=["mcp:search"],
+        expires_in=3600,
+        config=cfg,
+        store=store,
+    )["token"]
+
+    assert revoke_all_mcp_tokens_for_user(username="alice", store=store) == 2
+    assert revoke_all_mcp_tokens_for_user(username="alice", store=store) == 0
+    for token in alice_tokens:
+        with pytest.raises(MCPTokenAuthError):
+            verify_mcp_token(token, config=cfg)
+    assert verify_mcp_token(bob_token, config=cfg)["username"] == "bob"
+
+
+def test_legacy_plaintext_token_is_backed_up_and_removed(tmp_path):
+    path = tmp_path / "tokens.json"
+    plaintext = "mcp_legacy-secret-token"
+    path.write_text(
+        json.dumps({
+            "version": 1,
+            "tokens": [{
+                "token_id": "legacy-1",
+                "jti": "legacy-jti",
+                "token_value": plaintext,
+                "username": "admin",
+                "workspace_id": "test_project",
+                "scopes": ["mcp:search"],
+                "status": "active",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    store = MCPTokenStore(path)
+    report = store.migrate_legacy_plaintext_tokens()
+
+    assert report["migrated"] is True
+    assert report["removed_plaintext_fields"] == 1
+    backup = path.with_suffix(path.suffix + ".pre-plaintext.bak")
+    assert backup.exists()
+    assert plaintext in backup.read_text(encoding="utf-8")
+    migrated = path.read_text(encoding="utf-8")
+    assert plaintext not in migrated
+    assert "token_value" not in migrated
+    assert "sha256:" in migrated
+    assert "token" not in store.list_tokens(username="admin", workspace_id="test_project")[0]
+
+
+def test_mcp_runtime_requires_independent_token_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.delenv("MCP_TOKEN_SECRET", raising=False)
+    monkeypatch.setattr("integration.mcp.config._load_local_dotenv", lambda: None)
+
+    with pytest.raises(MCPConfigurationError, match="MCP_TOKEN_SECRET"):
+        load_mcp_runtime_config()

@@ -128,9 +128,9 @@ def matcher(query):
     return None, None
 ```
 
-## 数据连接配置
+## Ontology 数据源配置
 
-在系统中创建 NL2SQL Template 数据连接时，需要填写以下配置：
+在知识包的「数据源」页选择 NL2SQL Template，并为当前 ontology 填写以下私有配置：
 
 | 字段 | 说明                         | 必填 |
 | --- |----------------------------| --- |

@@ -1,6 +1,10 @@
 # Workspace 归属模型与服务端访问强制
 
 > 状态：已实施 · 2026-07-10 · 分支 fix/workspace-authz
+>
+> 2026-07-13 更新：Decision 3 的 ACP `auth=none` 全放行规则已被
+> `2026-07-13-cross-entry-workspace-and-user-deletion.md` 取代。匿名 ACP
+> 现在只允许默认 workspace 或无 owner workspace。
 
 ## Context
 

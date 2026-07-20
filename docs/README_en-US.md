@@ -26,14 +26,14 @@ Each scenario ships with knowledge-package source files (plain directories), sam
     + Package contents are browsable online in the console (objects / operations / scripts / mappings, rendered as Markdown).
 - ✅ **Unified business data access**
     + Business objects map to real tables and fields via `mappings/object-data-mappings.json`; queries never guess table or column names.
-    + Pluggable data providers: NL2SQL HTTP, NL2SQL template, MindsDB, DataAgent, Neo4j, HugeGraph — bound per workspace.
+    + Pluggable data providers: NL2SQL HTTP, NL2SQL template, MindsDB, DataAgent, Neo4j, HugeGraph — configured independently per workspace and ontology.
 - ✅ **Multi-agent orchestration**
     + A ReAct main loop drives model reasoning, tool invocation, result write-back, and termination; complex tasks fan out to concurrent sub-agents and merge back.
     + Full SSE streaming (`agent-stream.v2`): model reasoning, tool calls, and sub-task progress render live, backed by a Trace panel.
 - ✅ **Long-term memory and knowledge evolution**
     + User-level memory injection and explicit memory capture; agents file operation-evolution proposals at runtime, **applied only after human review**.
 - ✅ **Layered configuration and access control**
-    + Three scopes: Global (model pool, web search, observability, agent limits) → Workspace (data connections, knowledge-data binding, runtime parameters) → Personal (preferences, themes).
+    + Three scopes: Global (model pool, web search, platform connection, agent parameters) → Workspace (model selection, ontology-private data sources, runtime parameters, observability, MCP) → Personal (preferences, themes).
     + API keys live only in the global scope; workspaces reference model profiles without ever touching keys.
     + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and modeling share one account system, the backend requires `AUTH_SERVER_URL`, with opt-in open registration (one-step signup, no email verification code).
 - ✅ **Protocols and SDK**
@@ -161,10 +161,9 @@ On Windows, if Python dependency paths exceed the length limit, enable long-path
 
 1. **Log in** — an admin account is created on first startup; you must change the initial password at first login. A masked onboarding tour walks through the setup path (skippable, reopenable from the top bar).
 2. **Configure models** — Configuration Center → Global → Model Pool: add model profiles (keys stored encrypted, global scope only) and pick a default.
-3. **Connect data** — Configuration Center → Workspace → Data Connections: create a connection with the schema form, then test it.
-4. **Import a knowledge package** — Knowledge Package Workbench → Import (.zip). Example package sources live under [examples/](../examples/); zip a package directory before importing.
-5. **Bind knowledge to data** — Configuration Center → Workspace → Knowledge & Data Binding: map the package to a connection. Queries only use connections bound in the current workspace.
-6. **Ask** — start a New Chat and try the package's typical questions, e.g. *"Which SourceItem versions does TargetItem M-3021 map to?"*; tool-call details for each step are available in the Trace panel on the right.
+3. **Import a knowledge package** — Knowledge Package Workbench → Import (.zip). Example package sources live under [examples/](../examples/); zip a package directory before importing.
+4. **Configure its data source** — select the imported package in the Knowledge Package Workbench, open the Data Source tab, choose a provider, complete the form, test it, and save. The source belongs only to that package in the current workspace.
+5. **Ask** — start a New Chat and try the package's typical questions, e.g. *"Which SourceItem versions does TargetItem M-3021 map to?"*; tool-call details for each step are available in the Trace panel on the right.
 
 ## Build a knowledge package (design time)
 
@@ -250,7 +249,7 @@ Documentation map:
 # ❓ FAQ
 
 - **The console starts but chat replies fail** — check that a model profile is configured (Configuration Center → Global → Model Pool: a profile is added, its key shows "configured", and a default model is selected), and that `LLM_*` variables are set when starting from `.env`.
-- **Business data queries return nothing** — packages only query connections bound in the *current workspace*; verify the binding under Configuration Center → Workspace → Knowledge & Data Binding.
+- **Business data queries return nothing** — a package only queries its own data source in the *current workspace*; select the package in the Knowledge Package Workbench, open Data Source, verify the configuration, and test it again.
 - **Modeling workbench login fails** — modeling delegates login to consumer (`AUTH_ISSUER_URL`); make sure consumer is running and the address is correct. The account is your consumer account.
 - **Modeling evaluations keep failing** — run the connectivity test under the modeling tool's Configuration Center → consumer service (service reachable / auth OK / model ready must all pass); query-style test cases also require an evaluation data connection.
 - **Windows dependency install fails with path errors** — enable long-path support; see [consumer/README.md](../consumer/README.md).
