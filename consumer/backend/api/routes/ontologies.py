@@ -55,6 +55,7 @@ from ontology.ontology_graph import build_ontology_graph
 from workspace.workspaces import (
     get_workspace_ontologies_root,
     resolve_workspace_id,
+    resolve_workspace_owner_or_admin_id,
     workspace_scope,
 )
 from api.routes.errors import not_found_response
@@ -438,10 +439,10 @@ def list_ontologies():
 
 
 @ontologies_bp.route("/ontologies/<ontology_id>/status", methods=["PUT"])
-@require_auth(roles=["admin"])
+@require_auth()
 def update_ontology_status(ontology_id: str):
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
@@ -479,10 +480,10 @@ def update_ontology_status(ontology_id: str):
 
 
 @ontologies_bp.route("/ontologies/<ontology_id>/active-version", methods=["PUT"])
-@require_auth(roles=["admin"])
+@require_auth()
 def update_ontology_active_version(ontology_id: str):
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
@@ -524,10 +525,10 @@ def update_ontology_active_version(ontology_id: str):
 
 
 @ontologies_bp.route("/ontologies/<ontology_id>", methods=["DELETE"])
-@require_auth(roles=["admin"])
+@require_auth()
 def delete_ontology(ontology_id: str):
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
@@ -566,10 +567,10 @@ def delete_ontology(ontology_id: str):
 
 
 @ontologies_bp.route("/ontologies/<ontology_id>/versions/<version>", methods=["DELETE"])
-@require_auth(roles=["admin"])
+@require_auth()
 def delete_ontology_version(ontology_id: str, version: str):
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
@@ -977,10 +978,10 @@ def get_ontology_file(ontology_id: str):
 
 
 @ontologies_bp.route("/ontologies/<ontology_id>/file", methods=["PUT"])
-@require_auth(roles=["admin"])
+@require_auth()
 def update_ontology_file(ontology_id: str):
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
@@ -1032,10 +1033,10 @@ def update_ontology_file(ontology_id: str):
 
 
 @ontologies_bp.route("/ontologies/<ontology_id>/upload", methods=["POST"])
-@require_auth(roles=["admin"])
+@require_auth()
 def upload_ontology_file(ontology_id: str):
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
@@ -1798,11 +1799,11 @@ def _import_converted_ontology_package(source_root: Path, ontology_dir: Path) ->
 
 
 @ontologies_bp.route("/ontologies/import-zip", methods=["POST"])
-@require_auth(roles=["admin"])
+@require_auth()
 def import_ontology_zip_with_auto_create():
     """Import ontology zip and auto-create ontology when none is selected."""
     try:
-        workspace_id = resolve_workspace_id(request)
+        workspace_id = resolve_workspace_owner_or_admin_id(request)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:

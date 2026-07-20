@@ -1,13 +1,42 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
+  canCreateWorkspace,
+  canDeleteWorkspace,
   canEditWorkspace,
+  canManageWorkspaceCollection,
   chooseWorkspaceFallback,
   classifyWorkspaceDeleteResult,
   filterAndPaginateWorkspaces,
   normalizeWorkspaceList,
 } from './workspaceModel.js';
+
+const currentDir = dirname(fileURLToPath(import.meta.url));
+const panelSource = readFileSync(join(currentDir, 'WorkspaceAdminPanel.jsx'), 'utf8');
+const appShellSource = readFileSync(join(currentDir, '../../../app/AppShell.jsx'), 'utf8');
+
+test('authenticated users can create workspaces while collection management stays global-admin only', () => {
+  assert.equal(canCreateWorkspace({ username: 'alice', role: 'user' }), true);
+  assert.equal(canCreateWorkspace({ username: 'root', role: 'admin' }), true);
+  assert.equal(canCreateWorkspace(null), false);
+  assert.equal(canManageWorkspaceCollection({ username: 'alice', role: 'user' }), false);
+  assert.equal(canManageWorkspaceCollection({ username: 'root', role: 'admin' }), true);
+});
+
+test('workspace creation is exposed to ordinary users without exposing global default controls', () => {
+  assert.equal(panelSource.includes('const canCreate = canCreateWorkspace(currentUser);'), true);
+  assert.equal(panelSource.includes('{canCreate && <button className="btn btn-p"'), true);
+  assert.equal(panelSource.includes('canSetDefault={canManageCollection}'), true);
+  assert.equal(panelSource.includes('{isCreate && canSetDefault && ('), true);
+  assert.equal(panelSource.includes('const canDelete = canDeleteWorkspace(currentUser, workspace);'), true);
+  assert.equal(panelSource.includes('{canDelete && <button className="btn btn-sm btn-danger"'), true);
+  assert.equal(appShellSource.includes("const canCreateWorkspace = can('workspace.create');"), true);
+  assert.equal(appShellSource.includes('action={canCreateWorkspace ? ('), true);
+});
 
 test('workspace payload is normalized then searched and paged on the client', () => {
   const normalized = normalizeWorkspaceList({
@@ -31,6 +60,12 @@ test('workspace edit follows backend global-admin and owner authorization', () =
   assert.equal(canEditWorkspace({ username: 'alice', role: 'user' }, { owner: 'alice' }), true);
   assert.equal(canEditWorkspace({ username: 'bob', role: 'user' }, { owner: 'alice', role: 'member' }), false);
   assert.equal(canEditWorkspace({ username: 'root', role: 'admin' }, { owner: 'alice' }), true);
+});
+
+test('workspace deletion follows backend global-admin and owner authorization', () => {
+  assert.equal(canDeleteWorkspace({ username: 'alice', role: 'user' }, { owner: 'alice' }), true);
+  assert.equal(canDeleteWorkspace({ username: 'bob', role: 'user' }, { owner: 'alice', role: 'member' }), false);
+  assert.equal(canDeleteWorkspace({ username: 'root', role: 'admin' }, { owner: 'alice' }), true);
 });
 
 test('deleting the current workspace falls back to default then first remaining workspace', () => {

@@ -17,15 +17,20 @@ from agent.tools.business_data.provider_registry import list_provider_schemas
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource, resolve_business_data_source
 from api.auth.auth import require_auth, require_role
 from api.routes.errors import not_found_response
-from workspace.workspaces import resolve_workspace_id, workspace_scope
+from workspace.workspaces import (
+    resolve_workspace_id,
+    resolve_workspace_owner_or_admin_id,
+    workspace_scope,
+)
 
 
 business_data_bp = Blueprint("business_data", __name__, url_prefix="/agentic")
 
 
-def _resolve_workspace_or_response():
+def _resolve_workspace_or_response(*, owner_or_admin: bool = False):
     try:
-        return resolve_workspace_id(request), None
+        resolver = resolve_workspace_owner_or_admin_id if owner_or_admin else resolve_workspace_id
+        return resolver(request), None
     except KeyError as exc:
         return None, not_found_response(exc)
     except ValueError as exc:
@@ -116,9 +121,9 @@ def get_ontology_data_source_api(ontology_id: str):
 
 
 @business_data_bp.route("/ontologies/<ontology_id>/data-source", methods=["PUT"])
-@require_role("admin")
+@require_auth()
 def set_ontology_data_source_api(ontology_id: str):
-    workspace_id, error_response = _resolve_workspace_or_response()
+    workspace_id, error_response = _resolve_workspace_or_response(owner_or_admin=True)
     if error_response:
         return error_response
     payload = request.get_json(silent=True) or {}
@@ -135,9 +140,9 @@ def set_ontology_data_source_api(ontology_id: str):
 
 
 @business_data_bp.route("/ontologies/<ontology_id>/data-source", methods=["DELETE"])
-@require_role("admin")
+@require_auth()
 def delete_ontology_data_source_api(ontology_id: str):
-    workspace_id, error_response = _resolve_workspace_or_response()
+    workspace_id, error_response = _resolve_workspace_or_response(owner_or_admin=True)
     if error_response:
         return error_response
     with workspace_scope(workspace_id):
@@ -153,9 +158,9 @@ def delete_ontology_data_source_api(ontology_id: str):
 
 
 @business_data_bp.route("/ontologies/<ontology_id>/data-source/test", methods=["POST"])
-@require_role("admin")
+@require_auth()
 def test_ontology_data_source_api(ontology_id: str):
-    workspace_id, error_response = _resolve_workspace_or_response()
+    workspace_id, error_response = _resolve_workspace_or_response(owner_or_admin=True)
     if error_response:
         return error_response
     payload = request.get_json(silent=True) or {}
