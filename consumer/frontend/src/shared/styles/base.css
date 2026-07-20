@@ -92,6 +92,23 @@ html[data-mwr-theme='graphite'] .mwr {
 .mwr .spin { animation: mwspin .8s linear infinite; }
 @keyframes mwspin { to { transform: rotate(360deg); } }
 
+/* 外观切换：现代浏览器整页交叉淡化，旧浏览器仅在切换期间过渡颜色。 */
+html[data-mwr-appearance-transition='view']::view-transition-group(root),
+html[data-mwr-appearance-transition='view']::view-transition-old(root),
+html[data-mwr-appearance-transition='view']::view-transition-new(root) {
+  animation-duration: 500ms;
+  animation-timing-function: cubic-bezier(.4, 0, .2, 1);
+}
+html[data-mwr-appearance-transition='fallback'] body:has(> #root .mwr),
+html[data-mwr-appearance-transition='fallback'] .mwr,
+html[data-mwr-appearance-transition='fallback'] .mwr *,
+html[data-mwr-appearance-transition='fallback'] .mwr *::before,
+html[data-mwr-appearance-transition='fallback'] .mwr *::after {
+  transition-property: background-color, border-color, box-shadow, color, fill, stroke;
+  transition-duration: 500ms;
+  transition-timing-function: cubic-bezier(.4, 0, .2, 1);
+}
+
 /* ---- 深色外观：保留强调色，仅替换语义表面与文字 ---- */
 html[data-mwr-mode='dark'] body:has(> #root .mwr) { background: #0d1118; }
 html[data-mwr-mode='dark'] .mwr {
@@ -170,5 +187,8 @@ html[data-mwr-mode='dark'] .mwr-wizc .wz-step,
 html[data-mwr-mode='dark'] .mwr-wizc .wz-skip { color: var(--text-tertiary); }
 
 @media (prefers-reduced-motion: reduce) {
+  html[data-mwr-appearance-transition='view']::view-transition-group(root),
+  html[data-mwr-appearance-transition='view']::view-transition-old(root),
+  html[data-mwr-appearance-transition='view']::view-transition-new(root) { animation-duration: .01ms !important; }
   .mwr *, .mwr *::before, .mwr *::after, .mwr-wiz-hole { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
