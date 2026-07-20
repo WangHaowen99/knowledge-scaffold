@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Clock3, Loader2, Trash2 } from 'lucide-react';
 import { ConfirmDialog, SkeletonState } from '../../shared/ui/feedback';
 import { formatTime, groupSessions } from './lib/chatPresentation';
+import { resolveSessionRunIndicator } from './lib/sessionScope';
 
 // 侧边栏左下固定的历史对话区块：所有页面常驻，标题 + 搜索框固定，列表内部滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
-  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned, activeSessionIds } = chat;
+  const { sessions, currentChatId, deleteChat, loadingSessions, setPinned, streamStates } = chat;
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -23,27 +24,36 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
         {groups.map(([label, items]) => (
           <div key={label}>
             <div className="ch-group">{label}</div>
-            {items.map((s) => (
-              <div key={s.id} className={`ch-item-wrap ${s.id === currentChatId ? 'on' : ''}`}>
-                <button type="button" className="ch-item" onClick={() => onOpen(s.id)}>
-                  <span className="ch-title">
-                    {s.metadata?.pinned && <span title="已固定">★ </span>}
-                    {s.title || '未命名对话'}
-                  </span>
-                  <span className="ch-meta">
-                    {(activeSessionIds.includes(s.id) || ['queued', 'running'].includes(s.active_run_status))
-                      ? `${s.active_run_status === 'queued' ? '排队中' : '运行中'} · `
-                      : ''}
-                    {formatTime(s.updated_at || s.created_at)}
-                  </span>
-                </button>
-                <button type="button" className="ch-pin" title={s.metadata?.pinned ? '取消固定' : '固定对话'}
-                  aria-label={`${s.metadata?.pinned ? '取消固定' : '固定对话'} ${s.title || '未命名对话'}`}
-                  onClick={() => setPinned(s.id, !s.metadata?.pinned)}>{s.metadata?.pinned ? '☆' : '★'}</button>
-                <button type="button" className="ch-delete" title="删除对话" aria-label={`删除对话 ${s.title || '未命名对话'}`}
-                  onClick={() => setDeleteId(s.id)}><Trash2 size={12} /></button>
-              </div>
-            ))}
+            {items.map((s) => {
+              const runStatus = resolveSessionRunIndicator(s, streamStates?.get(s.id));
+              const runStatusLabel = runStatus === 'queued' ? '排队中' : '运行中';
+              const RunStatusIcon = runStatus === 'queued' ? Clock3 : Loader2;
+              return (
+                <div key={s.id} className={`ch-item-wrap ${s.id === currentChatId ? 'on' : ''}`}>
+                  <button type="button" className="ch-item" onClick={() => onOpen(s.id)}>
+                    <span className="ch-title">
+                      {s.metadata?.pinned && <span title="已固定">★ </span>}
+                      {s.title || '未命名对话'}
+                    </span>
+                    <span className="ch-meta">
+                      {runStatus && (
+                        <span className="ch-run-status" title={runStatusLabel}>
+                          <RunStatusIcon size={11} className={runStatus === 'running' ? 'spin' : undefined}
+                            aria-label={runStatusLabel} />
+                          <span aria-hidden="true">{runStatusLabel} ·</span>
+                        </span>
+                      )}
+                      {formatTime(s.updated_at || s.created_at)}
+                    </span>
+                  </button>
+                  <button type="button" className="ch-pin" title={s.metadata?.pinned ? '取消固定' : '固定对话'}
+                    aria-label={`${s.metadata?.pinned ? '取消固定' : '固定对话'} ${s.title || '未命名对话'}`}
+                    onClick={() => setPinned(s.id, !s.metadata?.pinned)}>{s.metadata?.pinned ? '☆' : '★'}</button>
+                  <button type="button" className="ch-delete" title="删除对话" aria-label={`删除对话 ${s.title || '未命名对话'}`}
+                    onClick={() => setDeleteId(s.id)}><Trash2 size={12} /></button>
+                </div>
+              );
+            })}
           </div>
         ))}
       </div>
