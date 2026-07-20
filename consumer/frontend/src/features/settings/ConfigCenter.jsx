@@ -496,7 +496,7 @@ function PersonalPrefs() {
   const [appearance, setAppearance] = useState(() => getAppearance());
 
   const pickTheme = (id) => setTheme(applyTheme(id));
-  const pickAppearance = (id) => setAppearance(applyAppearance(id));
+  const pickAppearance = (id) => setAppearance(applyAppearance(id, { animate: true }));
   const selectedWorkspaceId = workspaces.some((workspace) => workspace.id === workspaceId)
     ? workspaceId
     : '';
