@@ -69,3 +69,10 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(chatSessionsSource.includes('const touchSession = useCallback'), true);
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
 });
+
+test('new chat navigation is active only for a blank chat session', () => {
+  assert.equal(
+    appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),
+    true,
+  );
+});
