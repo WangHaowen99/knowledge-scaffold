@@ -285,6 +285,7 @@ class OntologyRegistry:
         self._ontologies: Dict[str, OntologyManifest] = {}
         self._refresh_lock = threading.RLock()
         self.ontology_dirs = ontology_dirs or []
+        self._source_signature: Optional[Tuple[Any, ...]] = None
 
     @property
     def ontologies(self) -> Dict[str, OntologyManifest]:
@@ -317,14 +318,31 @@ class OntologyRegistry:
 
     def refresh(self) -> int:
         with self._refresh_lock:
-            ontologies, loaded_count = self._discover_ontologies_snapshot()
+            stable_signature: Optional[Tuple[Any, ...]] = None
+            ontologies: Dict[str, OntologyManifest] = {}
+            loaded_count = 0
+            for _attempt in range(3):
+                before_signature = _build_registry_source_signature(self.ontology_dirs)
+                ontologies, loaded_count = self._discover_ontologies_snapshot()
+                after_signature = _build_registry_source_signature(self.ontology_dirs)
+                if before_signature == after_signature:
+                    stable_signature = after_signature
+                    break
             self._ontologies = ontologies
+            # An unstable final attempt remains stale and will be retried on the
+            # next registry lookup instead of pairing old data with a new marker.
+            self._source_signature = stable_signature
 
         logger.info("Ontology discovery complete: %s ontologies loaded", loaded_count)
         return loaded_count
 
     def discover_ontologies(self) -> int:
         return self.refresh()
+
+    def is_stale(self) -> bool:
+        """Return whether the filesystem backing this registry changed."""
+        with self._refresh_lock:
+            return self._source_signature != _build_registry_source_signature(self.ontology_dirs)
 
     def get_ontology(self, ontology_id: str) -> Optional[OntologyManifest]:
         return self._ontologies.get(ontology_id)
@@ -339,6 +357,45 @@ class OntologyRegistry:
 _global_registry: Optional[OntologyRegistry] = None
 _registry_lock = threading.RLock()
 _registries: Dict[Tuple[str, ...], OntologyRegistry] = {}
+
+
+def _file_stat_signature(path: Path) -> Tuple[bool, int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return False, 0, 0
+    return True, int(stat.st_mtime_ns), int(stat.st_size)
+
+
+def _build_registry_source_signature(ontology_dirs: List[Path]) -> Tuple[Any, ...]:
+    """Build a cheap cross-process change marker for ontology discovery roots."""
+    signature: List[Any] = []
+    for root in ontology_dirs:
+        resolved_root = root.resolve()
+        children: List[Any] = []
+        try:
+            entries = sorted(
+                (item for item in resolved_root.iterdir() if item.is_dir()),
+                key=lambda item: item.name.lower(),
+            )
+        except OSError:
+            entries = []
+        for child in entries:
+            children.append(
+                (
+                    child.name,
+                    _file_stat_signature(child),
+                    _file_stat_signature(child / ONTOLOGY_SHARED_MANIFEST_NAME),
+                )
+            )
+        signature.append(
+            (
+                str(resolved_root),
+                _file_stat_signature(resolved_root),
+                tuple(children),
+            )
+        )
+    return tuple(signature)
 
 
 def _get_backend_root() -> Path:
@@ -369,7 +426,11 @@ def get_ontology_registry(
         registry = _registries.get(key)
         if registry is not None:
             _global_registry = registry
-            return registry
+
+    if registry is not None:
+        if registry.is_stale():
+            registry.refresh()
+        return registry
 
     candidate = OntologyRegistry(ontology_dirs=ontology_dirs)
     candidate.refresh()
@@ -382,6 +443,25 @@ def get_ontology_registry(
 
         _global_registry = registry
         return registry
+
+
+def invalidate_ontology_registry(
+    *,
+    base_dir: Optional[Path] = None,
+    workspace_id: Optional[str] = None,
+) -> None:
+    """Evict one cached registry after a known workspace/package mutation."""
+    global _global_registry
+
+    if base_dir is None:
+        ontology_dirs = [get_workspace_ontologies_root(workspace_id)]
+    else:
+        ontology_dirs = [(base_dir / "ontologies").resolve()]
+    key = tuple(str(path.resolve()) for path in ontology_dirs)
+    with _registry_lock:
+        registry = _registries.pop(key, None)
+        if registry is not None and _global_registry is registry:
+            _global_registry = next(iter(_registries.values()), None)
 
 
 def build_ontologies_section(
@@ -404,11 +484,14 @@ def build_ontologies_section(
 
     lines = ["<Available-Ontologies>"]
 
-    ontology_ids = (
-        [selected_ontology.id]
-        if selected_ontology is not None
-        else sorted(ontology_id for ontology_id, ontology in ontologies.items() if ontology.enabled)
-    )
+    if selected_id:
+        ontology_ids = [selected_ontology.id] if selected_ontology is not None else []
+    else:
+        ontology_ids = sorted(
+            ontology_id
+            for ontology_id, ontology in ontologies.items()
+            if ontology.enabled
+        )
     for ontology_id in ontology_ids:
         ontology = ontologies[ontology_id]
         lines.append(

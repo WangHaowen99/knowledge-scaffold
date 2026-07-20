@@ -12,12 +12,18 @@ Supports two formats:
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from utils.logging import get_logger
 from agent.direct_execution.models import RuntimeContext
-from agent.tools.script_parameters import append_script_parameter_cli_argument
+from agent.tools.script_parameters import (
+    append_script_parameter_cli_argument,
+    is_runtime_parameter,
+    runtime_parameter_field,
+    script_parameter_argument_keys,
+)
 
 logger = get_logger("direct_execution.arguments")
 
@@ -27,11 +33,17 @@ _OPTIONAL_PLACEHOLDER_PATTERN = re.compile(r"^<\?([^>]+)>$")
 # Mapping from runtime key (the part after <runtime.>) to RuntimeContext field name
 _RUNTIME_KEY_TO_CTX_FIELD: Dict[str, str] = {
     "session-id": "session_id",
+    "session_id": "session_id",
     "run_id": "run_id",
+    "run-id": "run_id",
     "turn_id": "turn_id",
-    "user_id": "user_id",
+    "turn-id": "turn_id",
     "workspace_id": "workspace_id",
+    "workspace-id": "workspace_id",
     "selected_ontology_id": "selected_ontology_id",
+    "selected-ontology-id": "selected_ontology_id",
+    "ontology_id": "selected_ontology_id",
+    "ontology-id": "selected_ontology_id",
 }
 
 # Allowed runtime placeholder keys — acts as an allowlist
@@ -60,15 +72,18 @@ def extract_business_placeholder_keys(
     if script_parameters:
         keys: Set[str] = set()
         for param in script_parameters:
-            name = _parameter_name(param)
-            if name and not _is_runtime_param(param):
-                keys.add(name)
+            if not _is_runtime_param(param):
+                keys.update(script_parameter_argument_keys(param))
         return keys
 
     # Legacy flat format
     keys = set()
     for item in script_args:
         stripped = str(item).strip()
+        if stripped.startswith("--"):
+            flag_key = stripped.lstrip("-")
+            keys.update({stripped, flag_key, flag_key.replace("-", "_")})
+            continue
         if not stripped.startswith("<") or not stripped.endswith(">"):
             continue
         if _RUNTIME_PLACEHOLDER_PATTERN.match(stripped):
@@ -77,7 +92,7 @@ def extract_business_placeholder_keys(
         if key.startswith("?"):
             key = key[1:]
         if key:
-            keys.add(key)
+            keys.update({key, key.replace("-", "_"), key.replace("_", "-")})
     return keys
 
 
@@ -87,18 +102,19 @@ def extract_runtime_requirements(
 ) -> List[str]:
     """Extract runtime parameter names.
 
-    For structured ``script_parameters``, identifies runtime params by flag
-    convention matching known runtime keys.
+    For structured ``script_parameters``, identifies only parameters explicitly
+    marked as runtime (or carrying a ``runtime.`` placeholder).
     For flat ``script_args``, parses ``<runtime.xxx>`` placeholders.
     """
     if script_parameters:
         requirements: List[str] = []
         for param in script_parameters:
-            flag = str(param.get("flag") or "").strip()
-            # Try to match --flag to a known runtime key, e.g. --session-id -> session-id
-            key = _runtime_key_from_flag(flag)
-            if key and key in _ALLOWED_RUNTIME_KEYS:
-                requirements.append(key)
+            if not bool(param.get("required", True)) or not is_runtime_parameter(param):
+                continue
+            field = runtime_parameter_field(param)
+            requirements.append(
+                field or "unsupported_runtime:{}".format(_parameter_name(param) or "<unnamed>")
+            )
         return requirements
 
     # Legacy flat format
@@ -126,13 +142,7 @@ def _runtime_key_from_flag(flag: str) -> Optional[str]:
 
 def _is_runtime_param(parameter: Mapping[str, Any]) -> bool:
     """Check if a structured parameter is a runtime parameter."""
-    name = _parameter_name(parameter)
-    # Structured params from new-format catalogs won't have runtime. prefix;
-    # runtime params are identified by matching the flag against known keys.
-    if name.startswith("runtime."):
-        return True
-    flag = str(parameter.get("flag") or "").strip()
-    return _runtime_key_from_flag(flag) is not None
+    return is_runtime_parameter(parameter)
 
 
 def filter_business_args(script_args: Sequence[str]) -> List[str]:
@@ -211,15 +221,6 @@ def _build_direct_cli_args_from_parameters(
     labels the caller did not supply.  ``system_error`` is set for type
     conversion errors or unknown arguments.
     """
-    # Build merged argument lookup: business values first, runtime values override
-    merged_args: Dict[str, Any] = dict(business_arguments)
-    if runtime_context is not None:
-        for runtime_key, ctx_field in _RUNTIME_KEY_TO_CTX_FIELD.items():
-            ctx_value = runtime_context.get(ctx_field)
-            if ctx_value is not None:
-                merged_args[runtime_key] = ctx_value
-                merged_args[runtime_key.replace("-", "_")] = ctx_value
-
     result: List[str] = []
     consumed: Set[str] = set()
     missing: List[str] = []
@@ -232,15 +233,34 @@ def _build_direct_cli_args_from_parameters(
         flag = str(parameter.get("flag") or "").strip()
         required = bool(parameter.get("required", True))
 
-        value, matched_key = _resolve_parameter_value(
-            parameter=parameter,
-            arguments=merged_args,
-        )
+        runtime_owned = is_runtime_parameter(parameter)
+        runtime_field = runtime_parameter_field(parameter)
+        if runtime_owned:
+            matched_key = None
+            # Treat user-supplied aliases as consumed only to avoid reporting a
+            # duplicate unknown argument; their value is intentionally ignored.
+            for candidate in _parameter_argument_keys(parameter):
+                if candidate in business_arguments:
+                    consumed.add(candidate)
+            if not runtime_field:
+                system_error = "Unsupported runtime parameter '{}'".format(name)
+                break
+            context_field = _RUNTIME_KEY_TO_CTX_FIELD.get(runtime_field, runtime_field)
+            value = runtime_context.get(context_field) if runtime_context else None
+        else:
+            value, matched_key = _resolve_parameter_value(
+                parameter=parameter,
+                arguments=business_arguments,
+            )
 
         if matched_key:
             consumed.add(matched_key)
         if value is None:
-            if required and not _is_runtime_param(parameter):
+            if runtime_field:
+                if required:
+                    system_error = "Runtime context missing '{}'".format(runtime_field)
+                    break
+            elif required:
                 missing.append(_parameter_label(parameter))
             continue
 
@@ -266,7 +286,8 @@ def _build_direct_cli_args_from_parameters(
                 break
             continue
 
-        if isinstance(value, (list, tuple, set)):
+        parameter_type = str(parameter.get("type") or "string").strip().lower()
+        if isinstance(value, (list, tuple, set)) and parameter_type not in {"array"}:
             system_error = "{} does not accept multiple values".format(name)
             break
         converted, error = _convert_parameter_value(value, parameter)
@@ -332,6 +353,10 @@ def _build_direct_cli_args_legacy(
                 business_arguments=business_arguments,
                 runtime_context=runtime_context,
             )
+            if is_runtime_placeholder(placeholder):
+                for candidate in _runtime_placeholder_argument_keys(placeholder, flag=item):
+                    if candidate in business_arguments:
+                        consumed.add(candidate)
             if error:
                 system_error = error
             elif value is not None:
@@ -432,25 +457,37 @@ def _resolve_parameter_value(
 
     Returns (value, matched_key).  *value* is None when not found.
     """
-    candidates: List[str] = []
-    name = _parameter_name(parameter)
-    flag = str(parameter.get("flag") or "").strip()
-    description = str(parameter.get("description") or "").strip()
-    if name:
-        candidates.append(name)
-    if flag:
-        stripped_flag = flag.lstrip("-")
-        candidates.extend([flag, stripped_flag, stripped_flag.replace("-", "_")])
-    if description:
-        candidates.append(description)
-    aliases = parameter.get("aliases")
-    if isinstance(aliases, list):
-        candidates.extend(str(alias).strip() for alias in aliases if str(alias or "").strip())
-
-    for candidate in candidates:
+    for candidate in script_parameter_argument_keys(parameter):
         if candidate in arguments:
             return arguments[candidate], candidate
     return None, None
+
+
+def _parameter_argument_keys(parameter: Mapping[str, Any]) -> Set[str]:
+    """Return all user-facing aliases for a structured parameter."""
+    return set(script_parameter_argument_keys(parameter))
+
+
+def _runtime_placeholder_argument_keys(placeholder: str, *, flag: str = "") -> Set[str]:
+    match = _RUNTIME_PLACEHOLDER_PATTERN.match(str(placeholder or "").strip())
+    if match is None:
+        return set()
+    raw_key = match.group(1)
+    context_field = _RUNTIME_KEY_TO_CTX_FIELD.get(raw_key, raw_key.replace("-", "_"))
+    keys: Set[str] = set()
+    for candidate in (raw_key, context_field, str(flag or "").strip()):
+        if not candidate:
+            continue
+        keys.update(
+            {
+                candidate,
+                candidate.lstrip("-"),
+                candidate.replace("-", "_"),
+                candidate.replace("_", "-"),
+                "--" + candidate.lstrip("-").replace("_", "-"),
+            }
+        )
+    return keys
 
 
 def _coerce_multiple_values(value: Any) -> List[Any]:
@@ -487,4 +524,22 @@ def _convert_parameter_value(
         if normalized in {"false", "0", "no", "n"}:
             return "false", None
         return None, "expected boolean"
+    if param_type in {"object", "array"}:
+        candidate = value
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except (TypeError, ValueError):
+                return None, "expected valid JSON {}".format(param_type)
+        if param_type == "object" and not isinstance(candidate, Mapping):
+            return None, "expected object"
+        if param_type == "array":
+            if isinstance(candidate, tuple):
+                candidate = list(candidate)
+            if not isinstance(candidate, list):
+                return None, "expected array"
+        try:
+            return json.dumps(candidate, ensure_ascii=False), None
+        except (TypeError, ValueError):
+            return None, "expected JSON-serializable {}".format(param_type)
     return str(value), None

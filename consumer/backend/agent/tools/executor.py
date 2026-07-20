@@ -18,6 +18,8 @@ from agent.tools.events import emit_protocol_event, emit_tool_finished, emit_too
 
 logger = get_logger("tools.executor")
 
+_SAFE_SCRIPT_EXECUTION_ERROR = "Error: Script execution failed due to an internal error."
+
 _ONTOLOGY_SCOPED_TOOLS = frozenset({
     "ontology_context",
     "business_data_search",
@@ -273,7 +275,7 @@ def _execute_single_task(
     context: ToolContext,
     subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
 ) -> Dict[str, Any]:
-    from agent.tools.registry import validate_tool_arguments
+    from agent.tools.registry import get_tool_schema_for_context, validate_tool_arguments
 
     name = task["name"]
     spec: BaseTool = task["spec"]
@@ -290,7 +292,12 @@ def _execute_single_task(
         message=_build_tool_progress_message(name=name, args=args) or "调用工具: {}".format(name),
     )
 
-    validation_error = validate_tool_arguments(spec.name, args, tool_schema=spec.schema)
+    request_schema = get_tool_schema_for_context(
+        spec,
+        selected_ontology_id=context.selected_ontology_id,
+        workspace_id=context.workspace_id,
+    )
+    validation_error = validate_tool_arguments(spec.name, args, tool_schema=request_schema)
     if validation_error:
         logger.warning("Skipping tool %s due to invalid arguments: %s", name, validation_error)
         outcome = ToolOutcome(content=validation_error)
@@ -334,9 +341,14 @@ def _execute_single_task(
                 raise
             except Exception as exc:
                 logger.error("Tool execution failed for %s", name, exc_info=True)
-                outcome = ToolOutcome(content="工具执行失败 {}: {}".format(name, str(exc)))
+                public_error = (
+                    _SAFE_SCRIPT_EXECUTION_ERROR
+                    if name == "execute_script"
+                    else "工具执行失败 {}: {}".format(name, str(exc))
+                )
+                outcome = ToolOutcome(content=public_error)
                 terminal_status = "error"
-                error_message = str(exc)
+                error_message = public_error
 
     finished_at_ms = _now_monotonic_ms()
     elapsed_ms = max(0, finished_at_ms - started_at_ms)

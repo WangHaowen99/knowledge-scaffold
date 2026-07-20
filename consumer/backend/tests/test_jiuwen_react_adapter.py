@@ -1721,7 +1721,7 @@ def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatc
     )
     monkeypatch.setattr(
         "agent.core.shared.prompting.build_skills_section",
-        lambda: "<Available-Skills></Available-Skills>",
+        lambda **_kwargs: "<Available-Skills></Available-Skills>",
         raising=False,
     )
 
@@ -1810,7 +1810,7 @@ def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkey
     )
     monkeypatch.setattr(
         "agent.core.shared.prompting.build_skills_section",
-        lambda: "<Available-Skills></Available-Skills>",
+        lambda **_kwargs: "<Available-Skills></Available-Skills>",
         raising=False,
     )
 
@@ -2339,7 +2339,7 @@ def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
     )
     monkeypatch.setattr(
         "agent.core.shared.prompting.build_skills_section",
-        lambda: "<Available-Skills></Available-Skills>",
+        lambda **_kwargs: "<Available-Skills></Available-Skills>",
         raising=False,
     )
 

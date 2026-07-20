@@ -55,8 +55,9 @@ def handle_skill(
     skill_name: str,
     resource: str,
     key: str = "",
+    workspace_id: Optional[str] = None,
 ) -> str:
-    skill, error = _get_skill(skill_name)
+    skill, error = _get_skill(skill_name, workspace_id=workspace_id)
     if error:
         return error
     assert skill is not None
@@ -132,7 +133,10 @@ class SkillTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         del tool_call_id, event_emitter
-        content = handle_skill(**args)
+        # Workspace scope comes from the backend execution context, never from
+        # model-supplied arguments.
+        tool_args = {key: value for key, value in args.items() if key != "workspace_id"}
+        content = handle_skill(workspace_id=context.workspace_id, **tool_args)
         state_updates: Dict[str, Any] = {}
         record = _build_read_record(args=args, context=context, content=content)
         if record:
@@ -140,11 +144,15 @@ class SkillTool:
         return ToolOutcome(content=content, state_updates=state_updates)
 
 
-def _get_skill(skill_name: str):
+def _get_skill(skill_name: str, *, workspace_id: Optional[str] = None):
     normalized_name = str(skill_name or "").strip()
     if not normalized_name:
         return None, "Error: `skill_name` is required."
-    registry = get_skill_registry()
+    registry = (
+        get_skill_registry(workspace_id=workspace_id)
+        if workspace_id
+        else get_skill_registry()
+    )
     skill = registry.get_skill(normalized_name)
     if skill is None:
         available = sorted(registry.list_skills())
@@ -268,7 +276,10 @@ def _build_read_record(
     if not context.project_root or str(content or "").startswith("Error:"):
         return None
 
-    skill, error = _get_skill(str(args.get("skill_name") or ""))
+    skill, error = _get_skill(
+        str(args.get("skill_name") or ""),
+        workspace_id=context.workspace_id,
+    )
     if error or skill is None:
         return None
 

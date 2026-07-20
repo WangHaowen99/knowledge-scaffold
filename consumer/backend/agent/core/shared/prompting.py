@@ -42,7 +42,11 @@ def build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration:
             selected_ontology_id=selected_ontology_id_from_state(state),
             workspace_id=workspace_id,
         ),
-        skills_section=build_skills_section(),
+        skills_section=(
+            build_skills_section(workspace_id=workspace_id)
+            if workspace_id
+            else build_skills_section()
+        ),
         memory_context=state.get("memory_context") if isinstance(state, Mapping) else None,
         include_orchestration=include_orchestration,
         lang_instruction=lang_instruction,

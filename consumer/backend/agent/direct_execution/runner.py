@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.tools.execute_script import BACKEND_DIR, _build_script_env_overrides, handle_execute_script_path
 from utils.logging import get_logger
-from ontology.ontology_catalog import get_ontology_manifest
+from ontology.ontology_catalog import get_ontology_manifest, resolve_ontology_script_path
 from utils.streaming import build_agent_event
 from integration.observability.traces import DirectExecutionRuntimeTrace
 from agent.direct_execution.arguments import build_direct_cli_args
@@ -56,32 +56,38 @@ def run_direct_script(
         turn_id=turn_id,
     )
 
+    def fail_preflight(message: str, error_code: str) -> Tuple[List[Dict[str, Any]], DirectExecutionResult]:
+        result = DirectExecutionResult(
+            status="error",
+            output=message,
+            elapsed_ms=0,
+            error=error_code,
+        )
+        events.append(_build_event(
+            run_id,
+            session_id,
+            turn_id,
+            "tool.finished",
+            build_tool_finished_payload(
+                tool_call_id="direct",
+                tool_name="execute_script",
+                status="error",
+                raw_output=message,
+                error=message,
+                elapsed_ms=0,
+            ),
+        ))
+        tracer.mark_failed()
+        return events, result
+
     with tracer.direct_execution_scope(ontology_id=ontology_id, operation_key=operation_key):
         # --- Resolve script path ---
         raw_script_path = str(script_entry.get("_script_path") or "").strip() if script_entry else ""
         if not raw_script_path:
-            result = DirectExecutionResult(
-                status="error",
-                output="Error: No script path found for operation '{}'.".format(operation_key),
-                elapsed_ms=0,
-                error="script_path_missing",
+            return fail_preflight(
+                "Error: No script path found for operation '{}'.".format(operation_key),
+                "script_path_missing",
             )
-            events.append(_build_event(
-                run_id,
-                session_id,
-                turn_id,
-                "tool.finished",
-                build_tool_finished_payload(
-                    tool_call_id="direct",
-                    tool_name="execute_script",
-                    status="error",
-                    raw_output=result.output,
-                    error=result.output,
-                    elapsed_ms=0,
-                ),
-            ))
-            tracer.mark_failed()
-            return events, result
 
         # --- Build CLI args with runtime injection ---
         script_args = list(script_entry.get("arguments") or []) if script_entry else []
@@ -94,43 +100,40 @@ def run_direct_script(
         )
 
         if system_error:
-            result = DirectExecutionResult(
-                status="error",
-                output=system_error,
-                elapsed_ms=0,
-                error="runtime_context_incomplete",
-            )
-            events.append(_build_event(
-                run_id,
-                session_id,
-                turn_id,
-                "tool.finished",
-                build_tool_finished_payload(
-                    tool_call_id="direct",
-                    tool_name="execute_script",
-                    status="error",
-                    raw_output=system_error,
-                    error=system_error,
-                    elapsed_ms=0,
-                ),
-            ))
-            tracer.mark_failed()
-            return events, result
+            return fail_preflight(system_error, "runtime_context_incomplete")
 
         # --- Resolve project base path ---
         base_path = Path(project_root).resolve() if project_root else None
         if base_path is None:
             base_path = BACKEND_DIR.parent.resolve()
 
-        # Resolve the script path relative to project root
-        if script_entry.get("_resolved_script_path"):
-            resolved = Path(str(script_entry["_resolved_script_path"]))
-            try:
-                script_rel = str(resolved.relative_to(base_path)).replace("\\", "/")
-            except ValueError:
-                script_rel = raw_script_path
-        else:
-            script_rel = raw_script_path
+        onto_manifest, onto_error = get_ontology_manifest(
+            ontology_id,
+            workspace_id=runtime_context.workspace_id,
+        )
+        if onto_error or onto_manifest is None:
+            return fail_preflight(
+                onto_error or "Error: Ontology '{}' not found.".format(ontology_id),
+                "ontology_not_found",
+            )
+        ontology_dir = Path(onto_manifest.ontology_dir).resolve()
+        resolved = resolve_ontology_script_path(ontology_dir, raw_script_path)
+        if resolved is None:
+            return fail_preflight(
+                "Error: Registered script for operation '{}' is outside ontology scripts directory.".format(
+                    operation_key
+                ),
+                "script_path_outside_ontology",
+            )
+        try:
+            script_rel = str(resolved.relative_to(base_path)).replace("\\", "/")
+        except ValueError:
+            return fail_preflight(
+                "Error: Registered script for operation '{}' is outside project root.".format(
+                    operation_key
+                ),
+                "script_path_outside_project",
+            )
 
         script_name = Path(script_rel).name if script_rel else operation_key
 
@@ -145,17 +148,7 @@ def run_direct_script(
             "message": "直接执行流程：{}".format(operation_key),
         }))
 
-        # --- Resolve ontology directory for script imports ---
-        ontology_pythonpath: List[Path] = []
-        ontology_dir: Optional[Path] = None
-        if ontology_id:
-            onto_manifest, onto_error = get_ontology_manifest(
-                ontology_id,
-                workspace_id=runtime_context.workspace_id,
-            )
-            if onto_manifest and not onto_error:
-                ontology_dir = Path(onto_manifest.ontology_dir).resolve()
-                ontology_pythonpath.append(ontology_dir)
+        ontology_pythonpath = [ontology_dir]
 
         # --- Build env overrides from the ontology-scoped business data source ---
         env_overrides = _build_script_env_overrides(
@@ -219,19 +212,21 @@ def run_direct_script(
                 )
                 return events, result
 
-            except Exception as exc:
+            except Exception:
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                error_msg = "Direct script execution failed: {}".format(str(exc))
-                logger.exception(
+                error_msg = "Error: Direct script execution failed."
+                error_code = "direct_script_execution_failed"
+                logger.error(
                     "Direct execution script error: run_id=%s operation=%s",
                     run_id,
                     operation_key,
+                    exc_info=True,
                 )
                 result = DirectExecutionResult(
                     status="error",
                     output=error_msg,
                     elapsed_ms=elapsed_ms,
-                    error=str(exc),
+                    error=error_code,
                 )
                 events.append(_build_event(
                     run_id,

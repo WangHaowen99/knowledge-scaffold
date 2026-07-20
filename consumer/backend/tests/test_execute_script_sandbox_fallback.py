@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 import agent.tools.execute_script as execute_script_module
-from integration.sandbox.errors import SandboxUnavailableError
+from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
 
 
 def _write_script(tmp_path):
@@ -75,9 +78,10 @@ def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
 
 
 def test_explicit_ontology_dir_is_forwarded_to_sandbox(tmp_path, monkeypatch):
-    script = _write_script(tmp_path)
     ontology_dir = tmp_path / "ontology"
-    ontology_dir.mkdir()
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    script = _write_script(scripts_dir)
     _set_sandbox_config(monkeypatch, fallback_local=False)
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
     sandbox_calls = []
@@ -90,7 +94,7 @@ def test_explicit_ontology_dir_is_forwarded_to_sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(execute_script_module, "SandboxScriptExecutor", FakeSandboxExecutor)
 
     result = execute_script_module.handle_execute_script_path(
-        script.name,
+        str(script.relative_to(tmp_path)),
         base_path=tmp_path,
         run_id="run-explicit-ontology",
         ontology_dir=ontology_dir,
@@ -275,6 +279,7 @@ def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
 
     assert result == "local-after-error"
     assert fallback_events[0]["reason"] == "sandbox_unavailable"
+    assert fallback_events[0]["error"] == "SandboxUnavailableError"
 
 
 def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeypatch):
@@ -301,4 +306,183 @@ def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeyp
         run_id="run-error",
     )
 
-    assert result == "Error: Sandbox unavailable: jiuwenbox is down"
+    assert result == "Error: Sandbox unavailable."
+
+
+@pytest.mark.parametrize(
+    "sandbox_error",
+    [
+        SandboxExecError("ACCESS_TOKEN=sandbox-exec-secret"),
+        RuntimeError("ACCESS_TOKEN=unexpected-sandbox-secret"),
+    ],
+)
+def test_sandbox_execution_errors_are_redacted_when_fallback_disabled(
+    tmp_path,
+    monkeypatch,
+    sandbox_error,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+
+    class FailingSandboxExecutor:
+        def run_script(self, **kwargs):
+            raise sandbox_error
+
+    monkeypatch.setattr(execute_script_module, "SandboxScriptExecutor", FailingSandboxExecutor)
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-error",
+    )
+
+    assert result == "Error: Sandbox execution failed."
+    assert "secret" not in result
+
+
+def test_request_log_redacts_cli_argument_values(tmp_path, monkeypatch, caplog):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _completed("ok"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+            args=["--access-token", "cli-secret-value"],
+        )
+
+    assert result == "ok"
+    assert "cli-secret-value" not in caplog.text
+    assert "arg_count=2" in caplog.text
+
+
+def test_live_log_redacts_script_output_values(tmp_path, monkeypatch, caplog):
+    script = tmp_path / "live_output.py"
+    script.write_text("print('ACCESS_TOKEN=live-secret-value')\n", encoding="utf-8")
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(execute_script_module, "SCRIPT_LIVE_LOG_ENABLED", True)
+
+    with caplog.at_level(logging.INFO):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert "live-secret-value" in result
+    assert "live-secret-value" not in caplog.text
+    assert "line_chars=" in caplog.text
+
+
+def test_unexpected_execution_error_is_redacted_from_result_and_logs(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    script = _write_script(tmp_path)
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_sandbox_config",
+        lambda: (_ for _ in ()).throw(
+            RuntimeError("ACCESS_TOKEN=unexpected-secret-value")
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == "Error: Script execution failed due to an internal error."
+    assert "unexpected-secret-value" not in result
+    assert "unexpected-secret-value" not in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+
+
+def test_nonzero_exit_redacts_process_output_from_result_and_logs(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=7,
+            stdout="ACCESS_TOKEN=stdout-secret",
+            stderr="DATABASE_URL=stderr-secret",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == "Error: Script exited with code 7."
+    assert "stdout-secret" not in caplog.text
+    assert "stderr-secret" not in caplog.text
+
+
+def test_timeout_redacts_process_output_from_logs(tmp_path, monkeypatch, caplog):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=["python"],
+            timeout=1,
+            output="ACCESS_TOKEN=timeout-stdout-secret",
+            stderr="DATABASE_URL=timeout-stderr-secret",
+        )
+
+    monkeypatch.setattr(execute_script_module.subprocess, "run", timeout)
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+            timeout_seconds=1,
+        )
+
+    assert result == "Error: Script execution timed out after 1 seconds."
+    assert "timeout-stdout-secret" not in caplog.text
+    assert "timeout-stderr-secret" not in caplog.text
+
+
+def test_execution_boundary_rejects_path_outside_current_ontology_scripts(
+    tmp_path,
+    monkeypatch,
+):
+    project_root = tmp_path / "runtime"
+    ontology_dir = project_root / "workspaces" / "workspace-a" / "ontology"
+    (ontology_dir / "scripts").mkdir(parents=True)
+    outside_script = project_root / "workspaces" / "workspace-b" / "outside.py"
+    outside_script.parent.mkdir(parents=True)
+    outside_script.write_text("print('outside')\n", encoding="utf-8")
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    executed = []
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: executed.append((args, kwargs)) or _completed("outside"),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        str(outside_script.relative_to(project_root)),
+        base_path=project_root,
+        ontology_dir=ontology_dir,
+    )
+
+    assert result == "Error: Access denied - script must be within current ontology scripts directory"
+    assert executed == []

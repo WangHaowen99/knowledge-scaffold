@@ -29,6 +29,7 @@ from ontology.ontology_catalog import (
     find_script_entry,
     get_ontology_manifest,
     load_script_catalog,
+    resolve_ontology_script_path,
 )
 from ontology.ontologies import OntologyManifest, OntologyRegistry
 from integration.sandbox.executor import SandboxScriptExecutor
@@ -36,15 +37,18 @@ from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
 from integration.sandbox.config import load_sandbox_config
 from integration.sandbox.alerts import log_sandbox_security_fallback
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
-from agent.tools.script_parameters import append_script_parameter_cli_argument
+from agent.tools.script_parameters import (
+    append_script_parameter_cli_argument,
+    is_runtime_parameter,
+    runtime_parameter_field,
+    script_parameter_argument_keys,
+)
 from workspace.workspaces import get_workspace_ontologies_root
 
 logger = get_logger("tools.execute_script")
 
 # backend/agentic/tools/execute_script.py -> parents[2] == backend/
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-LOG_ARG_PREVIEW_LIMIT = 8
-LOG_OUTPUT_PREVIEW_LIMIT = 240
 
 # Linux ARG_MAX is typically 2 MB. When env + cmdline exceeds this,
 # we offload CLI args to a temp file to bypass the kernel limit.
@@ -169,6 +173,10 @@ def build_execute_script_tool_schema(
             parameter_names: List[str] = []
             for parameter in list(entry.get("parameters") or []):
                 if not isinstance(parameter, Mapping):
+                    continue
+                # Runtime identity/context values are injected by the backend
+                # and must never be exposed as model-controlled arguments.
+                if is_runtime_parameter(parameter):
                     continue
                 name = _parameter_name(parameter)
                 if not name:
@@ -348,29 +356,9 @@ def _fallback_or_error(
         call_context=call_context,
         script_path=script_path,
         run_id=run_id,
-        error=error,
+        error=type(error).__name__ if error is not None else None,
     )
     return None
-
-
-def _preview_cli_args(args: Sequence[str], limit: int = LOG_ARG_PREVIEW_LIMIT) -> str:
-    if not args:
-        return "[]"
-
-    preview = [str(item) for item in args[:limit]]
-    rendered = repr(preview)
-    if len(args) <= limit:
-        return rendered
-    return "{} (+{} more)".format(rendered, len(args) - limit)
-
-
-def _preview_output_text(text: str, limit: int = LOG_OUTPUT_PREVIEW_LIMIT) -> str:
-    normalized = str(text or "").replace("\r", "\\r").replace("\n", "\\n")
-    if not normalized:
-        return "<empty>"
-    if len(normalized) <= limit:
-        return normalized
-    return "{}...".format(normalized[:limit])
 
 
 def _estimate_cmdline_size(env: Dict[str, str], *cmdline_parts: str) -> int:
@@ -438,13 +426,21 @@ def _run_with_live_logging(
         assert proc.stdout is not None
         for line in proc.stdout:
             stdout_lines.append(line)
-            logger.info("[script:stdout]%s %s", label, line.rstrip("\n\r"))
+            logger.info(
+                "[script:stdout]%s line_chars=%s",
+                label,
+                len(line.rstrip("\n\r")),
+            )
 
     def _read_stderr() -> None:
         assert proc.stderr is not None
         for line in proc.stderr:
             stderr_lines.append(line)
-            logger.info("[script:stderr]%s %s", label, line.rstrip("\n\r"))
+            logger.info(
+                "[script:stderr]%s line_chars=%s",
+                label,
+                len(line.rstrip("\n\r")),
+            )
 
     t_out = threading.Thread(target=_read_stdout, daemon=True)
     t_err = threading.Thread(target=_read_stderr, daemon=True)
@@ -622,6 +618,9 @@ def handle_execute_script_path(
             script_path,
         )
         return "Error: Project base path not configured"
+    # Tool adapters may carry the project root as a string (especially across
+    # JSON/provider boundaries); normalize once at the filesystem boundary.
+    base_path = Path(base_path)
 
     cli_args: List[str] = []
     if args:
@@ -631,10 +630,10 @@ def handle_execute_script_path(
             cli_args.append(str(item))
 
     logger.info(
-        "execute_script request received (%s): script_path=%s args=%s",
+        "execute_script request received (%s): script_path=%s arg_count=%s",
         call_context,
         script_path,
-        _preview_cli_args(cli_args),
+        len(cli_args),
     )
 
     resolved_path: Optional[Path] = None
@@ -670,6 +669,27 @@ def handle_execute_script_path(
                 base_resolved,
             )
             return "Error: Access denied - path must be within project directory"
+
+        if ontology_dir is not None:
+            ontology_root = Path(ontology_dir).resolve()
+            ontology_scripts_root = (ontology_root / "scripts").resolve()
+            try:
+                ontology_scripts_root.relative_to(ontology_root)
+                resolved_path.relative_to(ontology_scripts_root)
+            except ValueError:
+                logger.warning(
+                    (
+                        "Blocked script outside ontology scripts (%s): "
+                        "script_path=%s resolved_path=%s ontology_dir=%s"
+                    ),
+                    call_context,
+                    script_path,
+                    resolved_path,
+                    ontology_root,
+                )
+                return (
+                    "Error: Access denied - script must be within current ontology scripts directory"
+                )
 
         if resolved_path.suffix.lower() != ".py":
             logger.warning(
@@ -773,7 +793,7 @@ def handle_execute_script_path(
                 except SandboxUnavailableError as exc:
                     fallback_reason = "sandbox_unavailable"
                     fallback_error = exc
-                    fallback_blocked_message = "Error: Sandbox unavailable: {}".format(exc)
+                    fallback_blocked_message = "Error: Sandbox unavailable."
                 except SandboxExecError as exc:
                     if "timed out" in str(exc).lower():
                         return "Error: Script execution timed out after {} seconds.".format(
@@ -781,15 +801,11 @@ def handle_execute_script_path(
                         )
                     fallback_reason = "sandbox_exec_failed"
                     fallback_error = exc
-                    fallback_blocked_message = (
-                        "Error: Sandbox execution failed: {}".format(exc)
-                    )
+                    fallback_blocked_message = "Error: Sandbox execution failed."
                 except Exception as exc:
                     fallback_reason = "sandbox_execution_error"
                     fallback_error = exc
-                    fallback_blocked_message = (
-                        "Error: Sandbox execution failed: {}".format(exc)
-                    )
+                    fallback_blocked_message = "Error: Sandbox execution failed."
 
             if completed is None:
                 if fallback_reason is None:
@@ -875,21 +891,15 @@ def handle_execute_script_path(
                 (
                     "Python script exited with non-zero status (%s): "
                     "resolved_path=%s return_code=%s elapsed_ms=%s "
-                    "stdout_preview=%s stderr_preview=%s"
+                    "stdout_chars=%s stderr_chars=%s"
                 ),
                 call_context,
                 resolved_path,
                 completed.returncode,
                 elapsed_ms,
-                _preview_output_text(stdout),
-                _preview_output_text(stderr),
+                len(stdout),
+                len(stderr),
             )
-            details = _combine_process_output(stdout=stdout, stderr=stderr)
-            if details:
-                return "Error: Script exited with code {}.\n{}".format(
-                    completed.returncode,
-                    details,
-                )
             return "Error: Script exited with code {}.".format(completed.returncode)
 
         result = _combine_process_output(stdout=stdout, stderr=stderr)
@@ -903,24 +913,23 @@ def handle_execute_script_path(
         logger.warning(
             (
                 "Python script timed out (%s): script_path=%s resolved_path=%s "
-                "timeout_seconds=%s stdout_preview=%s stderr_preview=%s"
+                "timeout_seconds=%s stdout_chars=%s stderr_chars=%s"
             ),
             call_context,
             script_path,
             resolved_path or "n/a",
             timeout_seconds,
-            _preview_output_text(timeout_stdout),
-            _preview_output_text(timeout_stderr),
+            len(timeout_stdout),
+            len(timeout_stderr),
         )
         return "Error: Script execution timed out after {} seconds.".format(timeout_seconds)
     except Exception as exc:
-        logger.exception(
-            "Error executing script (%s): script_path=%s resolved_path=%s",
+        logger.error(
+            "Error executing script (%s): error_type=%s",
             call_context,
-            script_path,
-            resolved_path or "n/a",
+            type(exc).__name__,
         )
-        return "Error executing script '{}': {}".format(script_path, str(exc))
+        return _SCRIPT_EXECUTION_INTERNAL_ERROR
 
 
 def _combine_process_output(*, stdout: str, stderr: str) -> str:
@@ -958,21 +967,25 @@ def handle_execute_script(
 
     ontology_dir = Path(ontology.ontology_dir).resolve()
     script_catalog = load_script_catalog(ontology_dir)
-    script_entry = find_script_entry(script_catalog, operation_key)
+    script_entry = find_script_entry(script_catalog, operation_key, bound_only=True)
     if script_entry is None:
         return (
-            "Error: Operation '{}' in ontology '{}' has no registered script implementation."
+            "Error: Operation '{}' in ontology '{}' has no registered script implementation or is not a bound operation."
         ).format(operation_key, ontology.id)
 
     raw_script_path = str(script_entry.get("_script_path") or "").strip()
     if not raw_script_path:
         return "Error: Registered script path missing for operation '{}'.".format(operation_key)
 
-    project_root = base_path.resolve() if base_path else None
+    project_root = Path(base_path).resolve() if base_path else None
     if project_root is None:
         return "Error: Project base path not configured"
 
-    resolved_script_path = (ontology_dir / raw_script_path).resolve()
+    resolved_script_path = resolve_ontology_script_path(ontology_dir, raw_script_path)
+    if resolved_script_path is None:
+        return "Error: Registered script for operation '{}' is outside ontology scripts directory.".format(
+            operation_key
+        )
     try:
         script_path = str(resolved_script_path.relative_to(project_root)).replace("\\", "/")
     except ValueError:
@@ -1030,14 +1043,14 @@ def _build_cli_args(
     labels not supplied and *invalid* lists arguments with unknown keys or
     invalid values.
 
-    When ``runtime_context`` is provided, ``<runtime.xxx>`` placeholders are
-    filled from it.  When None (the Agent-loop path), runtime placeholders are
-    silently skipped so that old scripts and old callers continue to work.
+    ``<runtime.xxx>`` placeholders are filled only from ``runtime_context``;
+    caller-supplied arguments are never used as a fallback for them.
     """
     if script_parameters:
         return _build_cli_args_from_parameters(
             script_parameters=script_parameters,
             arguments=arguments,
+            runtime_context=runtime_context,
         )
 
     # Legacy path: no structured parameters declared.
@@ -1050,6 +1063,7 @@ def _build_cli_args(
     result: List[str] = []
     consumed: Set[str] = set()
     missing: List[str] = []
+    invalid: List[str] = []
     index = 0
     while index < len(script_args):
         item = str(script_args[index])
@@ -1066,10 +1080,32 @@ def _build_cli_args(
                 if matched_key:
                     consumed.add(matched_key)
             elif _is_runtime_placeholder(placeholder):
-                # Runtime placeholder skipped (Agent-loop path)
-                # Pop the flag that was already added since it has no value
+                # Runtime values are backend-owned.  Pop the flag that was
+                # already added and report an incomplete backend context.
                 if result and result[-1] == item:
                     result.pop()
+                runtime_match = _RUNTIME_PLACEHOLDER_PATTERN.match(placeholder.strip())
+                declared_runtime_key = (
+                    runtime_match.group(1).replace("-", "_")
+                    if runtime_match
+                    else placeholder.strip()
+                )
+                runtime_key = runtime_parameter_field(
+                    {"runtime": True, "placeholder": placeholder}
+                )
+                if runtime_key is None:
+                    invalid.append(
+                        "Unsupported runtime parameter '{}'".format(declared_runtime_key)
+                    )
+                elif runtime_context is None or runtime_context.get(runtime_key) is None:
+                    invalid.append("Runtime context missing '{}'".format(runtime_key))
+                for candidate in {
+                    declared_runtime_key,
+                    declared_runtime_key.replace("_", "-"),
+                    "--" + declared_runtime_key.replace("_", "-"),
+                }:
+                    if candidate in arguments:
+                        consumed.add(candidate)
             elif _is_optional_placeholder(placeholder):
                 # Optional parameter not provided — remove the flag and skip
                 if result and result[-1] == item:
@@ -1080,6 +1116,8 @@ def _build_cli_args(
             continue
         index += 1
 
+    if invalid:
+        return [], missing, invalid
     if result:
         return result, missing, []
 
@@ -1121,7 +1159,9 @@ def _resolve_placeholder(
     stripped = placeholder.strip()
     m = _RUNTIME_PLACEHOLDER_PATTERN.match(stripped)
     if m:
-        key = m.group(1)
+        key = runtime_parameter_field({"runtime": True, "placeholder": stripped})
+        if key is None:
+            return None, None
         if runtime_context is not None:
             val = runtime_context.get(key)
             if val is not None:
@@ -1170,6 +1210,7 @@ def _build_cli_args_from_parameters(
     *,
     script_parameters: Sequence[Mapping[str, Any]],
     arguments: Mapping[str, Any],
+    runtime_context: Optional[Mapping[str, Any]] = None,
 ) -> tuple[List[str], List[str], List[str]]:
     """Build CLI arguments from structured parameter definitions.
 
@@ -1189,12 +1230,30 @@ def _build_cli_args_from_parameters(
         flag = str(parameter.get("flag") or "").strip()
         required = bool(parameter.get("required", True))
         multiple = bool(parameter.get("multiple", False))
-        value, matched_key = _resolve_parameter_value(parameter=parameter, arguments=arguments)
+
+        runtime_owned = is_runtime_parameter(parameter)
+        runtime_field = runtime_parameter_field(parameter)
+        if runtime_owned:
+            matched_key = None
+            # User-provided runtime aliases are deliberately consumed but
+            # ignored; backend context remains authoritative.
+            for candidate in _parameter_argument_keys(parameter):
+                if candidate in arguments:
+                    consumed.add(candidate)
+            if not runtime_field:
+                invalid.append("Unsupported runtime parameter '{}'".format(name))
+                continue
+            value = runtime_context.get(runtime_field) if runtime_context else None
+        else:
+            value, matched_key = _resolve_parameter_value(parameter=parameter, arguments=arguments)
 
         if matched_key:
             consumed.add(matched_key)
         if value is None:
-            if required:
+            if runtime_field:
+                if required:
+                    invalid.append("Runtime context missing '{}'".format(runtime_field))
+            elif required:
                 missing.append(_parameter_label(parameter))
             continue
 
@@ -1217,7 +1276,8 @@ def _build_cli_args_from_parameters(
                 )
             continue
 
-        if isinstance(value, (list, tuple, set)):
+        parameter_type = str(parameter.get("type") or "string").strip().lower()
+        if isinstance(value, (list, tuple, set)) and parameter_type not in {"array"}:
             invalid.append("{} does not accept multiple values".format(name))
             continue
         converted, error = _convert_parameter_value(value, parameter)
@@ -1253,25 +1313,15 @@ def _resolve_parameter_value(
     parameter: Mapping[str, Any],
     arguments: Mapping[str, Any],
 ) -> tuple[Optional[Any], Optional[str]]:
-    candidates: List[str] = []
-    name = _parameter_name(parameter)
-    flag = str(parameter.get("flag") or "").strip()
-    description = str(parameter.get("description") or "").strip()
-    if name:
-        candidates.append(name)
-    if flag:
-        stripped_flag = flag.lstrip("-")
-        candidates.extend([flag, stripped_flag, stripped_flag.replace("-", "_")])
-    if description:
-        candidates.append(description)
-    aliases = parameter.get("aliases")
-    if isinstance(aliases, list):
-        candidates.extend(str(alias).strip() for alias in aliases if str(alias or "").strip())
-
-    for candidate in candidates:
+    for candidate in script_parameter_argument_keys(parameter):
         if candidate in arguments:
             return arguments[candidate], candidate
     return None, None
+
+
+def _parameter_argument_keys(parameter: Mapping[str, Any]) -> Set[str]:
+    """Return all user-facing aliases for a structured parameter."""
+    return set(script_parameter_argument_keys(parameter))
 
 
 def _coerce_multiple_values(value: Any) -> List[Any]:
@@ -1309,6 +1359,24 @@ def _convert_parameter_value(
         if normalized in {"false", "0", "no"}:
             return "false", None
         return None, "expected boolean"
+    if param_type in {"object", "array"}:
+        candidate = value
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except (TypeError, ValueError):
+                return None, "expected valid JSON {}".format(param_type)
+        if param_type == "object" and not isinstance(candidate, Mapping):
+            return None, "expected object"
+        if param_type == "array":
+            if isinstance(candidate, tuple):
+                candidate = list(candidate)
+            if not isinstance(candidate, list):
+                return None, "expected array"
+        try:
+            return json.dumps(candidate, ensure_ascii=False), None
+        except (TypeError, ValueError):
+            return None, "expected JSON-serializable {}".format(param_type)
     return raw, None
 
 
@@ -1340,7 +1408,10 @@ class ExecuteScriptTool:
             if key in args
         }
         if context.project_root:
-            call_args["base_path"] = Path(context.project_root)
+            # Keep the caller's path representation intact; normalize it at the
+            # execution boundary so POSIX-style paths remain observable on
+            # Windows test/adapter seams.
+            call_args["base_path"] = context.project_root
         call_args["tool_call_id"] = tool_call_id
         call_args["caller"] = context.caller
         call_args["run_id"] = context.run_id
@@ -1349,10 +1420,12 @@ class ExecuteScriptTool:
         call_args["timeout_seconds"] = context.agent_config.execute_script_timeout
         call_args["workspace_id"] = context.workspace_id
         call_args["runtime_context"] = {
-            "insight-id": context.session_id,
+            "session_id": context.session_id,
             "run_id": context.run_id,
             "turn_id": str(context.turn_id),
             "workspace_id": context.workspace_id,
+            "selected_ontology_id": context.selected_ontology_id,
+            "ontology_id": call_args.get("ontology_id"),
         }
         logger.info(
             (

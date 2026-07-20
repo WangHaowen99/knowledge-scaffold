@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+import json
+
+import pytest
 
 from agent.core.jiuwen.tools import get_jiuwen_tool_infos
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 import agent.tools.execute_script as execute_script_module
+import ontology.ontology_catalog as ontology_catalog_module
+from agent.tools.execute_script import handle_execute_script
 from agent.tools.registry import get_tool_schema, get_tools_schema, validate_tool_arguments
 from config.settings import AgentConfig
+from ontology.ontology_catalog import find_script_entry
 from workspace.workspaces import get_workspace_paths
 
 
@@ -44,19 +51,20 @@ def _write_ontology(
         script_key = "script_{}".format(index)
         (scripts_dir / "{}.py".format(script_key)).write_text("print('ok')\n", encoding="utf-8")
         rows = [
-            "| name | flag | type | required | multiple | description |",
-            "| --- | --- | --- | --- | --- | --- |",
+            "| name | flag | type | required | multiple | description | runtime |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
         ]
         for parameter in parameters:
             name = str(parameter["name"])
             rows.append(
-                "| {} | --{} | {} | {} | {} | {} |".format(
+                "| {} | --{} | {} | {} | {} | {} | {} |".format(
                     name,
                     name.replace("_", "-"),
                     parameter.get("type", "string"),
                     str(parameter.get("required", True)).lower(),
                     str(parameter.get("multiple", False)).lower(),
                     parameter.get("description", ""),
+                    str(parameter.get("runtime", False)).lower(),
                 )
             )
         (scripts_dir / "{}.md".format(script_key)).write_text(
@@ -347,3 +355,190 @@ def test_dynamic_schema_deduplicates_parameter_descriptions():
     )
 
     assert merged["description"] == "First format / Second format"
+
+
+def test_dynamic_schema_hides_backend_runtime_parameters(monkeypatch, tmp_path):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    _write_ontology(
+        "workspace-runtime",
+        "demo",
+        [
+            (
+                "run",
+                [
+                    {"name": "session_id", "type": "string", "required": True, "runtime": True},
+                    {"name": "payload", "type": "string", "required": True},
+                ],
+            )
+        ],
+    )
+
+    parameters = _execute_script_schema(
+        get_tools_schema(
+            "main",
+            selected_ontology_id="demo",
+            workspace_id="workspace-runtime",
+        )
+    )["function"]["parameters"]
+    argument_schema = parameters["properties"]["arguments"]
+
+    assert "session_id" not in argument_schema["properties"]
+    assert argument_schema["required"] == ["payload"]
+
+
+def test_find_script_entry_can_require_bound_operation():
+    catalog = [
+        {"operation_key": "helper", "script_key": "helper", "_is_bound_operation": False},
+        {"operation_key": "public", "script_key": "public", "_is_bound_operation": True},
+    ]
+
+    assert find_script_entry(catalog, "helper", bound_only=True) is None
+    assert find_script_entry(catalog, "public", bound_only=True)["operation_key"] == "public"
+
+
+def test_handle_execute_script_rejects_unbound_operation_before_execution(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        execute_script_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="demo", ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_script_catalog",
+        lambda _ontology_dir: [
+            {
+                "operation_key": "internal_helper",
+                "script_key": "internal_helper",
+                "_is_bound_operation": False,
+                "_script_path": "scripts/internal_helper.py",
+                "arguments": [],
+                "parameters": [],
+            }
+        ],
+    )
+    executed = []
+    monkeypatch.setattr(
+        execute_script_module,
+        "handle_execute_script_path",
+        lambda **kwargs: executed.append(kwargs) or "ok",
+    )
+
+    result = handle_execute_script(
+        ontology_id="demo",
+        operation_key="internal_helper",
+        arguments={},
+        base_path=tmp_path,
+    )
+
+    assert result.startswith(
+        "Error: Operation 'internal_helper' in ontology 'demo' has no registered script implementation"
+    )
+    assert "not a bound operation" in result
+    assert executed == []
+
+
+def test_handle_execute_script_rejects_script_outside_ontology_scripts(monkeypatch, tmp_path):
+    ontology_dir = tmp_path / "ontology"
+    (ontology_dir / "scripts").mkdir(parents=True)
+    outside_script = tmp_path / "outside.py"
+    outside_script.write_text("print('outside')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        execute_script_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_script_catalog",
+        lambda _ontology_dir: [
+            {
+                "operation_key": "run",
+                "script_key": "run",
+                "_is_bound_operation": True,
+                "_script_path": "../outside.py",
+                "arguments": [],
+                "parameters": [],
+            }
+        ],
+    )
+    executed = []
+    monkeypatch.setattr(
+        execute_script_module,
+        "handle_execute_script_path",
+        lambda **kwargs: executed.append(kwargs) or "outside-executed",
+    )
+
+    result = handle_execute_script(
+        ontology_id="demo",
+        operation_key="run",
+        arguments={},
+        base_path=tmp_path,
+    )
+
+    assert result == "Error: Registered script for operation 'run' is outside ontology scripts directory."
+    assert executed == []
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    [
+        r"..\outside.py",
+        r"scripts\..\outside.py",
+        r"C:outside.py",
+        "/absolute/outside.py",
+    ],
+)
+def test_normalize_script_entrypoint_rejects_cross_platform_escapes(entrypoint):
+    assert ontology_catalog_module._normalize_script_entrypoint(entrypoint) is None
+
+
+def test_normalize_script_entrypoint_accepts_windows_separators_inside_scripts():
+    assert (
+        ontology_catalog_module._normalize_script_entrypoint(r"subdir\run.py")
+        == "scripts/subdir/run.py"
+    )
+
+
+@pytest.mark.parametrize("link_kind", ["scripts_root", "script_file"])
+def test_resolve_ontology_script_path_rejects_symlink_escape(tmp_path, link_kind):
+    ontology_dir = tmp_path / "ontology"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_script = outside_dir / "run.py"
+    outside_script.write_text("print('outside')\n", encoding="utf-8")
+
+    try:
+        if link_kind == "scripts_root":
+            (ontology_dir / "scripts").parent.mkdir(parents=True, exist_ok=True)
+            (ontology_dir / "scripts").symlink_to(outside_dir, target_is_directory=True)
+        else:
+            scripts_dir = ontology_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / "run.py").symlink_to(outside_script)
+    except OSError as exc:
+        pytest.skip("symlink creation is unavailable: {}".format(exc))
+
+    assert ontology_catalog_module.resolve_ontology_script_path(
+        ontology_dir,
+        "scripts/run.py",
+    ) is None
+
+
+def test_script_parameter_parser_preserves_explicit_runtime_false():
+    parameters = ontology_catalog_module._parse_script_parameters_from_markdown(
+        "\n".join(
+            [
+                "| name | flag | type | required | runtime |",
+                "| --- | --- | --- | --- | --- |",
+                "| session_id | --session-id | string | true | false |",
+            ]
+        )
+    )
+
+    assert parameters[0]["runtime"] is False

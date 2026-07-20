@@ -888,6 +888,110 @@ def test_single_tool_interval_starts_at_actual_execution(monkeypatch):
     }
 
 
+def test_single_tool_uses_request_scoped_schema_for_server_validation(monkeypatch):
+    executed = []
+    spec = _make_mock_tool(
+        "mock_tool",
+        lambda **kwargs: executed.append(kwargs) or "unexpected",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "mock_tool",
+                "description": "static schema",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    )
+    request_schema = {
+        "type": "function",
+        "function": {
+            "name": "mock_tool",
+            "description": "request schema",
+            "parameters": {
+                "type": "object",
+                "properties": {"allowed": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+    }
+    observed_scope = []
+
+    def request_scoped_schema(resolved_spec, *, selected_ontology_id=None, workspace_id=None):
+        observed_scope.append((resolved_spec, selected_ontology_id, workspace_id))
+        return request_schema
+
+    monkeypatch.setattr(
+        "agent.tools.registry.get_tool_schema_for_context",
+        request_scoped_schema,
+    )
+    task = {
+        "index": 0,
+        "name": "mock_tool",
+        "args": {"forged": "value"},
+        "tool_call_id": "call_dynamic_schema",
+        "spec": spec,
+    }
+
+    output = _execute_single_task(
+        task,
+        _make_context(
+            workspace_id="workspace-a",
+            selected_ontology_id="ontology-a",
+        ),
+        None,
+    )
+
+    assert executed == []
+    assert observed_scope == [(spec, "ontology-a", "workspace-a")]
+    assert "unexpected field(s): forged" in output["outcome"].content
+
+
+def test_execute_script_executor_fallback_does_not_publish_exception_details(monkeypatch):
+    secret = "ACCESS_TOKEN=executor-secret"
+
+    def fail_with_secret(**_kwargs):
+        raise RuntimeError(secret)
+
+    spec = _make_mock_tool(
+        "execute_script",
+        fail_with_secret,
+        schema={
+            "type": "function",
+            "function": {
+                "name": "execute_script",
+                "description": "test",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "agent.tools.registry.get_tool_schema_for_context",
+        lambda resolved_spec, **_scope: resolved_spec.schema,
+    )
+    events = []
+    task = {
+        "index": 0,
+        "name": "execute_script",
+        "args": {},
+        "tool_call_id": "call_secret_exception",
+        "spec": spec,
+    }
+
+    with stream_writer_context(events.append):
+        output = _execute_single_task(task, _make_context(), None)
+
+    public_payload = json.dumps(
+        {"content": output["outcome"].content, "events": events},
+        ensure_ascii=False,
+    )
+    assert secret not in public_payload
+    assert [event["data"]["type"] for event in events] == [
+        "tool.started",
+        "tool.finished",
+    ]
+    assert output["outcome"].content == "Error: Script execution failed due to an internal error."
+
+
 def test_registry_executes_script_from_ontology_operation(tmp_path, monkeypatch):
     _write_scripted_ontology(tmp_path)
     _patch_test_ontology_registry(monkeypatch, tmp_path)

@@ -13,11 +13,14 @@ from agent.tools.business_data_search import handle_business_data_search
 from agent.tools.ontology_context import handle_ontology_context
 from ontology.ontology_catalog import get_ontology_manifest
 from ontology.ontologies import (
+    OntologyRegistry,
     build_ontologies_section,
     build_selected_ontology_preload_context,
     build_selected_ontology_preload_records,
+    get_ontology_registry,
+    invalidate_ontology_registry,
 )
-from workspace.workspaces import create_workspace, get_workspace_paths
+from workspace.workspaces import create_workspace, delete_workspace, get_workspace_paths
 
 
 def _write_ontology(
@@ -129,6 +132,126 @@ def test_explicit_workspace_resolution_is_safe_under_concurrent_catalog_reads(
 
     assert future_a.result() == ("Ontology from A", "alpha")
     assert future_b.result() == ("Ontology from B", "beta")
+
+
+def test_cached_registry_refreshes_after_workspace_package_changes(monkeypatch, tmp_path):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    registry = get_ontology_registry(workspace_id="workspace-a")
+    assert registry.get_ontology("new-ontology") is None
+
+    _write_ontology(
+        "workspace-a",
+        ontology_id="new-ontology",
+        description="Added after registry initialization",
+    )
+
+    refreshed = get_ontology_registry(workspace_id="workspace-a")
+    ontology = refreshed.get_ontology("new-ontology")
+    assert ontology is not None
+    assert ontology.description == "Added after registry initialization"
+
+
+def test_deleted_and_recreated_workspace_does_not_reuse_cached_ontology_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    _write_ontology("workspace-b", description="Before deletion")
+    registry = get_ontology_registry(workspace_id="workspace-b")
+    assert registry.get_ontology("shared-ontology").description == "Before deletion"
+
+    delete_workspace("workspace-b")
+    create_workspace("Workspace B Recreated", workspace_id="workspace-b")
+    _write_ontology("workspace-b", description="After recreation")
+
+    recreated_registry = get_ontology_registry(workspace_id="workspace-b")
+    ontology = recreated_registry.get_ontology("shared-ontology")
+    assert ontology is not None
+    assert ontology.description == "After recreation"
+
+
+def test_invalidating_one_workspace_preserves_other_workspace_registry(
+    monkeypatch,
+    tmp_path,
+):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    _write_ontology("workspace-a", description="Ontology from A")
+    _write_ontology("workspace-b", description="Ontology from B")
+    registry_a = get_ontology_registry(workspace_id="workspace-a")
+    registry_b = get_ontology_registry(workspace_id="workspace-b")
+
+    invalidate_ontology_registry(workspace_id="workspace-b")
+
+    assert get_ontology_registry(workspace_id="workspace-a") is registry_a
+    assert get_ontology_registry(workspace_id="workspace-b") is not registry_b
+
+
+def test_selected_missing_ontology_does_not_expose_workspace_fallbacks(monkeypatch, tmp_path):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    _write_ontology("workspace-a", ontology_id="other-ontology", description="Other ontology")
+
+    section = build_ontologies_section(
+        selected_ontology_id="missing-ontology",
+        workspace_id="workspace-a",
+    )
+
+    assert "missing-ontology" not in section
+    assert "other-ontology" not in section
+    assert section == "<Available-Ontologies>\n</Available-Ontologies>"
+
+
+def test_selected_disabled_ontology_does_not_expose_workspace_fallbacks(monkeypatch, tmp_path):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    _write_ontology("workspace-a", ontology_id="selected-ontology", description="Selected ontology")
+    _write_ontology("workspace-a", ontology_id="other-ontology", description="Other ontology")
+    manifest_path = (
+        get_workspace_paths("workspace-a").ontologies_dir
+        / "selected-ontology"
+        / "manifest.yaml"
+    )
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8") + "\nenabled: false\n",
+        encoding="utf-8",
+    )
+
+    section = build_ontologies_section(
+        selected_ontology_id="selected-ontology",
+        workspace_id="workspace-a",
+    )
+
+    assert "selected-ontology" not in section
+    assert "other-ontology" not in section
+    assert section == "<Available-Ontologies>\n</Available-Ontologies>"
+
+
+def test_registry_refresh_retries_when_sources_change_during_discovery(monkeypatch, tmp_path):
+    _create_isolated_workspaces(monkeypatch, tmp_path)
+    _write_ontology("workspace-a", description="Initially enabled")
+    ontology_root = get_workspace_paths("workspace-a").ontologies_dir
+    manifest_path = ontology_root / "shared-ontology" / "manifest.yaml"
+    registry = OntologyRegistry(ontology_dirs=[ontology_root])
+    original_discover = registry._discover_ontologies_snapshot
+    mutated = False
+
+    def discover_then_disable():
+        nonlocal mutated
+        snapshot = original_discover()
+        if not mutated:
+            mutated = True
+            manifest_path.write_text(
+                manifest_path.read_text(encoding="utf-8") + "\nenabled: false\n",
+                encoding="utf-8",
+            )
+        return snapshot
+
+    monkeypatch.setattr(registry, "_discover_ontologies_snapshot", discover_then_disable)
+
+    registry.refresh()
+
+    ontology = registry.get_ontology("shared-ontology")
+    assert ontology is not None
+    assert ontology.enabled is False
+    assert registry.is_stale() is False
 
 
 def test_ontology_context_uses_tool_workspace_scope(monkeypatch, tmp_path):

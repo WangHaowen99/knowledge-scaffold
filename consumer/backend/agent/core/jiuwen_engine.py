@@ -182,7 +182,11 @@ class _JiuwenTerminalForceFinishBridge:
             await self._request_force_finish(
                 ctx,
                 {
-                    "output": str(getattr(terminal_error, "message", None) or terminal_error),
+                    "output": str(
+                        getattr(terminal_error, "public_message", None)
+                        or getattr(terminal_error, "message", None)
+                        or terminal_error
+                    ),
                     "result_type": "error",
                 },
             )
@@ -2020,7 +2024,10 @@ async def _produce_managed_jiuwen_stream(
                     await written
         except Exception as exc:
             written = write_result(
-                {"output": str(exc), "result_type": "error"},
+                {
+                    "output": str(getattr(exc, "public_message", None) or exc),
+                    "result_type": "error",
+                },
                 session,
             )
             if isawaitable(written):

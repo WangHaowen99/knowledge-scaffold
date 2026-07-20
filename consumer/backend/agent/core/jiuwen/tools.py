@@ -39,11 +39,86 @@ class ConsecutiveToolFailureGuard:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._last_failure: Optional[tuple[str, str, str]] = None
+        self._last_failure_iteration: Optional[int] = None
+        self._closed = False
+        self._next_invocation_index: Optional[int] = None
+        self._registered_invocations: set[int] = set()
+        self._pending_results: Dict[
+            int,
+            tuple[ToolInvocation, ToolBatchResult, Optional[int]],
+        ] = {}
+        self._skipped_invocations: set[int] = set()
+        self._reported_invocations: set[int] = set()
+        self._settled_invocations: set[int] = set()
 
-    def record(self, tool_call: ToolInvocation, batch_result: ToolBatchResult) -> None:
+    def register_invocation(self, invocation_index: int) -> None:
+        """Register a call before it starts so completion order is irrelevant."""
+        index = _coerce_invocation_index(invocation_index)
+        if index is None:
+            return
+        with self._lock:
+            if self._closed or self._invocation_is_known_locked(index):
+                return
+            self._registered_invocations.add(index)
+            self._ensure_next_invocation_locked(index)
+            self._drain_ordered_results_locked()
+
+    def skip_invocation(self, invocation_index: int) -> None:
+        """Advance the ordered stream when a call has no batch result."""
+        index = _coerce_invocation_index(invocation_index)
+        if index is None:
+            return
+        with self._lock:
+            if self._closed or self._invocation_is_known_locked(index):
+                return
+            self._registered_invocations.add(index)
+            self._skipped_invocations.add(index)
+            self._ensure_next_invocation_locked(index)
+            self._drain_ordered_results_locked()
+
+    def record(
+        self,
+        tool_call: ToolInvocation,
+        batch_result: ToolBatchResult,
+        *,
+        invocation_index: Optional[int] = None,
+        agent_iteration: Optional[int] = None,
+    ) -> None:
+        index = _coerce_invocation_index(invocation_index)
+        iteration = _coerce_agent_iteration(agent_iteration)
+        if index is None:
+            with self._lock:
+                if self._closed:
+                    return
+                self._record_one_locked(
+                    tool_call,
+                    batch_result,
+                    agent_iteration=iteration,
+                )
+            return
+
+        with self._lock:
+            if self._closed or self._invocation_is_known_locked(index):
+                return
+            self._registered_invocations.add(index)
+            self._reported_invocations.add(index)
+            self._pending_results[index] = (tool_call, batch_result, iteration)
+            self._ensure_next_invocation_locked(index)
+            self._drain_ordered_results_locked()
+
+    def _record_one_locked(
+        self,
+        tool_call: ToolInvocation,
+        batch_result: ToolBatchResult,
+        agent_iteration: Optional[int],
+    ) -> None:
         error = _canonical_tool_error(batch_result)
-        if bool(getattr(batch_result, "terminal", False)) or error is None:
-            self.reset()
+        if bool(getattr(batch_result, "terminal", False)):
+            self._close_locked()
+            return
+        if error is None:
+            self._last_failure = None
+            self._last_failure_iteration = None
             return
 
         fingerprint = (
@@ -51,21 +126,91 @@ class ConsecutiveToolFailureGuard:
             _canonical_tool_arguments(tool_call.arguments),
             error,
         )
-        with self._lock:
-            repeated = fingerprint == self._last_failure
-            self._last_failure = fingerprint
+        repeated = fingerprint == self._last_failure and (
+            agent_iteration is None
+            or self._last_failure_iteration is None
+            or agent_iteration != self._last_failure_iteration
+        )
+        self._last_failure = fingerprint
+        self._last_failure_iteration = agent_iteration
         if repeated:
-            error_preview = error if len(error) <= 500 else "{}...".format(error[:500])
+            # Never include raw tool output: script stderr/stdout may contain
+            # credentials or private infrastructure details.
+            self._close_locked()
             raise AgentLoopStalledError(
-                "Tool '{}' failed twice with identical arguments: {}".format(
+                "Repeated failure for tool '{}'".format(
                     str(tool_call.name or "").strip() or "unknown",
-                    error_preview,
                 )
             )
 
+    def _ensure_next_invocation_locked(self, index: int) -> None:
+        if self._next_invocation_index is None or index < self._next_invocation_index:
+            self._next_invocation_index = index
+
+    def _drain_ordered_results_locked(self) -> None:
+        while not self._closed and self._next_invocation_index is not None:
+            index = self._next_invocation_index
+            if index in self._skipped_invocations:
+                self._last_failure = None
+                self._last_failure_iteration = None
+                self._skipped_invocations.remove(index)
+                self._registered_invocations.discard(index)
+                self._settled_invocations.add(index)
+                self._advance_next_invocation_locked(index)
+                continue
+            pending = self._pending_results.get(index)
+            if pending is None:
+                return
+            self._pending_results.pop(index, None)
+            self._registered_invocations.discard(index)
+            self._settled_invocations.add(index)
+            self._next_invocation_index = index + 1
+            self._record_one_locked(*pending)
+            if self._closed:
+                return
+            self._advance_next_invocation_locked(index)
+
+    def _advance_next_invocation_locked(self, completed_index: int) -> None:
+        next_index = completed_index + 1
+        candidates = (
+            self._registered_invocations
+            | set(self._pending_results)
+            | self._skipped_invocations
+        )
+        self._next_invocation_index = (
+            next_index
+            if next_index in candidates
+            else (min(candidates) if candidates else None)
+        )
+
+    def _invocation_is_known_locked(self, index: int) -> bool:
+        return (
+            index in self._reported_invocations
+            or index in self._skipped_invocations
+            or index in self._settled_invocations
+        )
+
     def reset(self) -> None:
         with self._lock:
-            self._last_failure = None
+            self._reset_locked()
+
+    def _close_locked(self) -> None:
+        self._closed = True
+        self._clear_locked()
+
+    def _reset_locked(self) -> None:
+        self._closed = False
+        self._clear_locked()
+
+    def _clear_locked(self) -> None:
+        self._last_failure = None
+        self._last_failure_iteration = None
+        self._next_invocation_index = None
+        self._registered_invocations.clear()
+        self._pending_results.clear()
+        self._skipped_invocations.clear()
+        self._reported_invocations.clear()
+        self._settled_invocations.clear()
 
 
 class CurrentRuntimeToolAdapter:
@@ -141,31 +286,36 @@ class CurrentRuntimeToolAdapter:
             name=self.tool_name,
             arguments=_normalize_jiuwen_tool_args(tool_args),
         )
-        assistant_tool_call = {
-            "id": tool_call_id,
-            "type": "function",
-            "function": {
-                "name": self.tool_name,
-                "arguments": normalize_arguments(tool_args),
-            },
-        }
-        append_assistant_tool_call_to_state(self.state, assistant_tool_call)
-        self._emit_state_snapshot()
-        if self._serial_execution_lock is not None and not lock_held:
-            await _acquire_thread_lock_async(self._serial_execution_lock)
-            try:
-                return await self._execute_tool_call(
-                    invocation,
-                    call_index=call_index,
-                    batch_index=call_index,
-                )
-            finally:
-                self._serial_execution_lock.release()
-        return await self._execute_tool_call(
-            invocation,
-            call_index=call_index,
-            batch_index=call_index,
-        )
+        try:
+            self._register_failure_guard_invocation(call_index)
+            assistant_tool_call = {
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": self.tool_name,
+                    "arguments": normalize_arguments(tool_args),
+                },
+            }
+            append_assistant_tool_call_to_state(self.state, assistant_tool_call)
+            self._emit_state_snapshot()
+            if self._serial_execution_lock is not None and not lock_held:
+                await _acquire_thread_lock_async(self._serial_execution_lock)
+                try:
+                    return await self._execute_tool_call(
+                        invocation,
+                        call_index=call_index,
+                        batch_index=call_index,
+                    )
+                finally:
+                    self._serial_execution_lock.release()
+            return await self._execute_tool_call(
+                invocation,
+                call_index=call_index,
+                batch_index=call_index,
+            )
+        except BaseException:
+            self._skip_failure_guard_invocation(call_index)
+            raise
 
     async def _execute_tool_call(
         self,
@@ -180,6 +330,9 @@ class CurrentRuntimeToolAdapter:
         context.tool_batch_index = batch_index
         runtime_trace = runtime_trace_from_tool_context(context)
         iteration = tool_context_iteration(context)
+        guard_iteration = _coerce_agent_iteration(
+            getattr(context, "agent_iteration", None)
+        )
         try:
             if self.tool_batch_started_callback is not None:
                 self.tool_batch_started_callback(
@@ -196,8 +349,14 @@ class CurrentRuntimeToolAdapter:
             )
             with JIUWEN_STATE_MESSAGES_LOCK:
                 apply_tool_batch_result_to_state(self.state, batch_result)
-            self.failure_guard.record(tool_call, batch_result)
+            self._record_failure_guard_invocation(
+                tool_call,
+                batch_result,
+                call_index=call_index,
+                agent_iteration=guard_iteration,
+            )
         except (WorkflowCancelledError, asyncio.CancelledError):
+            self._skip_failure_guard_invocation(call_index)
             self._rollback_cancelled_tool_call(tool_call.id)
             if self.tool_batch_failed_callback is not None:
                 self.tool_batch_failed_callback(
@@ -232,6 +391,7 @@ class CurrentRuntimeToolAdapter:
                 )
             raise
         except Exception:
+            self._skip_failure_guard_invocation(call_index)
             if self.tool_batch_failed_callback is not None:
                 self.tool_batch_failed_callback(
                     context,
@@ -293,6 +453,35 @@ class CurrentRuntimeToolAdapter:
         if remove_assistant_tool_call_from_state(self.state, tool_call_id):
             self._emit_state_snapshot()
 
+    def _register_failure_guard_invocation(self, call_index: int) -> None:
+        register_invocation = getattr(self.failure_guard, "register_invocation", None)
+        if callable(register_invocation):
+            register_invocation(call_index)
+
+    def _record_failure_guard_invocation(
+        self,
+        tool_call: ToolInvocation,
+        batch_result: ToolBatchResult,
+        *,
+        call_index: int,
+        agent_iteration: Optional[int],
+    ) -> None:
+        register_invocation = getattr(self.failure_guard, "register_invocation", None)
+        if callable(register_invocation):
+            self.failure_guard.record(
+                tool_call,
+                batch_result,
+                invocation_index=call_index,
+                agent_iteration=agent_iteration,
+            )
+            return
+        self.failure_guard.record(tool_call, batch_result)
+
+    def _skip_failure_guard_invocation(self, call_index: int) -> None:
+        skip_invocation = getattr(self.failure_guard, "skip_invocation", None)
+        if callable(skip_invocation):
+            skip_invocation(call_index)
+
 
 def _normalize_jiuwen_tool_args(tool_args: Any) -> Dict[str, Any]:
     if isinstance(tool_args, Mapping):
@@ -331,6 +520,7 @@ def _canonical_tool_error(batch_result: Any) -> Optional[str]:
     if (
         lowered.startswith("error:")
         or lowered.startswith("tool execution failed")
+        or lowered.startswith("error executing script")
         or normalized.startswith("工具执行失败")
     ):
         return normalized
@@ -348,6 +538,22 @@ def _canonical_json(value: Any) -> str:
         )
     except (TypeError, ValueError):
         return repr(value)
+
+
+def _coerce_invocation_index(value: Any) -> Optional[int]:
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return None
+    return index if index > 0 else None
+
+
+def _coerce_agent_iteration(value: Any) -> Optional[int]:
+    try:
+        iteration = int(value)
+    except (TypeError, ValueError):
+        return None
+    return iteration if iteration > 0 else None
 
 
 def _has_pending_user_interaction(state: Mapping[str, Any]) -> bool:
@@ -587,6 +793,7 @@ def get_jiuwen_tool_infos(
             include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
+            workspace_id=workspace_id,
         )
     ]
 

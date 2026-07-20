@@ -148,6 +148,35 @@ def test_spawn_sub_agent_forwards_parent_agent_mode(monkeypatch):
     assert captured_kwargs["parent_model_profile_id"] == "accurate"
 
 
+def test_spawn_sub_agent_forwards_parent_selected_ontology(monkeypatch):
+    from agent.sub_agents import manager as manager_module
+
+    manager_module.clear_subagent_manager_registry()
+    captured_kwargs = {}
+
+    def handler(task, context, **kwargs):
+        del task, context
+        captured_kwargs.update(kwargs)
+        return {
+            "output": "ok",
+            "_success": True,
+            "_key_steps": ["dispatch started", "produced final result"],
+        }
+
+    _patch_subagent(monkeypatch, handler)
+
+    tool = SpawnSubAgentTool()
+    outcome = tool.execute(
+        args={"tasks": [{"id": "t1", "task": "use selected ontology"}]},
+        context=_make_context(selected_ontology_id="parent-ontology"),
+        tool_call_id="call_spawn_selected_ontology",
+    )
+
+    payload = json.loads(outcome.content)
+    assert payload["status"] == "completed"
+    assert captured_kwargs["parent_selected_ontology_id"] == "parent-ontology"
+
+
 def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
     from agent.sub_agents.base import SubAgent
 
@@ -173,7 +202,7 @@ def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
         lambda: SimpleNamespace(agent_config=agent_config),
     )
     monkeypatch.setattr("agent.sub_agents.base.build_ontologies_section", lambda **_kwargs: "")
-    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda: "")
+    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
 
     result = SubAgent().execute(
         "child task",
@@ -193,6 +222,130 @@ def test_sub_agent_uses_stable_loop_engine_facade(monkeypatch):
         "agent_mode": "thinking",
         "model_profile_id": "accurate",
     }
+
+
+def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_schema(monkeypatch):
+    from agent.core.shared.tool_context import build_tool_context
+    from agent.sub_agents.base import SubAgent
+    from agent.tools.registry import get_tools_schema
+
+    calls = {}
+
+    def fake_build_ontologies_section(*, selected_ontology_id=None, workspace_id=None):
+        calls["prompt_scope"] = (selected_ontology_id, workspace_id)
+        return "selected ontology prompt"
+
+    def fake_execute_script_schema(selected_ontology_id=None, *, workspace_id=None):
+        calls["schema_scope"] = (selected_ontology_id, workspace_id)
+        return {
+            "type": "function",
+            "function": {
+                "name": "execute_script",
+                "description": "test",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    class FakeLoopEngine:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def run(self, state, **kwargs):
+            del kwargs
+            calls["state"] = state
+            calls["user_prompt"] = state["user_request"]
+            tool_context = build_tool_context(
+                state,
+                memory_manager=None,
+                agent_config=_agent_config(),
+                caller="subagent",
+                agent_iteration=1,
+                workspace_id=state["workspace_id"],
+                project_root=None,
+            )
+            calls["tool_context"] = tool_context
+            get_tools_schema(
+                "subagent",
+                selected_ontology_id=tool_context.selected_ontology_id,
+                workspace_id=tool_context.workspace_id,
+            )
+            return {**state, "final_output": "done", "messages": []}
+
+    monkeypatch.setattr("agent.core.engine.AgentLoopEngine", FakeLoopEngine)
+    monkeypatch.setattr(
+        "agent.sub_agents.base.get_llm_router",
+        lambda: SimpleNamespace(agent_config=_agent_config()),
+    )
+    monkeypatch.setattr(
+        "agent.sub_agents.base.build_ontologies_section",
+        fake_build_ontologies_section,
+    )
+    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
+    monkeypatch.setattr(
+        "agent.tools.registry.build_execute_script_tool_schema",
+        fake_execute_script_schema,
+    )
+
+    result = SubAgent().execute(
+        "child task",
+        {
+            "workspace_id": "task-workspace",
+            "selected_ontology_id": "task-ontology",
+            "ontology_id": "operation-ontology",
+        },
+        run_id="run-child",
+        session_id="sess-child",
+        parent_workspace_id="parent-workspace",
+        parent_selected_ontology_id="parent-ontology",
+    )
+
+    assert result["_success"] is True
+    assert calls["state"]["workspace_id"] == "parent-workspace"
+    assert calls["state"]["user_context"]["selected_ontology_id"] == "parent-ontology"
+    assert calls["tool_context"].selected_ontology_id == "parent-ontology"
+    assert calls["prompt_scope"] == ("parent-ontology", "parent-workspace")
+    assert calls["schema_scope"] == ("parent-ontology", "parent-workspace")
+    assert "parent-ontology" in calls["user_prompt"]
+    assert "task-ontology" not in calls["user_prompt"]
+    assert "operation-ontology" not in calls["user_prompt"]
+
+
+def test_sub_agent_task_context_cannot_define_selected_ontology_scope(monkeypatch):
+    from agent.sub_agents.base import SubAgent
+
+    calls = {}
+
+    class FakeLoopEngine:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def run(self, state, **kwargs):
+            del kwargs
+            calls["state"] = state
+            return {**state, "final_output": "done", "messages": []}
+
+    monkeypatch.setattr("agent.core.engine.AgentLoopEngine", FakeLoopEngine)
+    monkeypatch.setattr(
+        "agent.sub_agents.base.get_llm_router",
+        lambda: SimpleNamespace(agent_config=_agent_config()),
+    )
+    monkeypatch.setattr(
+        "agent.sub_agents.base.build_ontologies_section",
+        lambda **kwargs: calls.setdefault("prompt_scope", kwargs) and "",
+    )
+    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
+
+    result = SubAgent().execute(
+        "child task",
+        {"selected_ontology_id": "task-controlled-ontology"},
+        parent_workspace_id="parent-workspace",
+        parent_selected_ontology_id=None,
+    )
+
+    assert result["_success"] is True
+    assert calls["state"]["user_context"].get("selected_ontology_id") is None
+    assert calls["prompt_scope"]["selected_ontology_id"] is None
+    assert "task-controlled-ontology" not in calls["state"]["user_request"]
 
 
 def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monkeypatch):
@@ -217,9 +370,9 @@ def test_sub_agent_parent_workspace_locks_scope_with_task_context_fallback(monke
     )
     monkeypatch.setattr(
         "agent.sub_agents.base.build_ontologies_section",
-        lambda *, workspace_id=None: observed_workspaces.append(workspace_id) or "",
+        lambda *, workspace_id=None, selected_ontology_id=None: observed_workspaces.append(workspace_id) or "",
     )
-    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda: "")
+    monkeypatch.setattr("agent.sub_agents.base.build_skills_section", lambda **_kwargs: "")
 
     SubAgent().execute(
         "parent lock",
