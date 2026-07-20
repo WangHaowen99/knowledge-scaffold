@@ -15,6 +15,10 @@ from system_config_migration_helpers import apply_test_system_config_migrations
 from workspace.workspaces import create_workspace
 
 
+def _raise_when_iterated(error: BaseException):
+    raise error
+
+
 @pytest.fixture(autouse=True)
 def _restore_project_root_env(monkeypatch):
     monkeypatch.setenv("LLM_BASE_URL", "https://llm.example/v1")
@@ -223,8 +227,9 @@ def test_queued_run_returns_json_until_slot_is_admitted(monkeypatch, tmp_path):
 
         def run(self, **kwargs):
             del kwargs
-            raise AssertionError("queued run must not start before admission")
-            yield
+            yield _raise_when_iterated(
+                AssertionError("queued run must not start before admission")
+            )
 
         def get_run_status(self, run_id):
             run = self.run_store.get_run(run_id)
@@ -465,8 +470,7 @@ def test_run_sync_returns_500_when_orchestrator_raises(monkeypatch, tmp_path):
 
         def run(self, **kwargs):
             del kwargs
-            raise RuntimeError("boom")
-            yield
+            yield _raise_when_iterated(RuntimeError("boom"))
 
     monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
 

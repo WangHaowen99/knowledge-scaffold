@@ -60,7 +60,7 @@ def _validate_password_hash(value: Any, *, label: str, username: str) -> str:
             raise ValueError
         for encoded in parts[2:]:
             base64.b64decode(encoded.encode("ascii"), altchars=b"-_", validate=True)
-    except (ValueError, UnicodeEncodeError) as exc:
+    except ValueError as exc:
         raise MigrationIssue(
             "INVALID_USER_STORE",
             f"{label} user {username!r} has an invalid password_hash payload",

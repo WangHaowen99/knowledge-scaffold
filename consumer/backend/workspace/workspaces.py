@@ -715,7 +715,7 @@ def evaluate_workspace_subject_access(
                 resolved_workspace_id,
                 metadata,
             )
-        except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
+        except (OSError, TypeError, ValueError, KeyError):
             return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
         default_workspace_id = _read_default_workspace_id_for_acl()
 
@@ -775,7 +775,7 @@ def _read_default_workspace_id_for_acl() -> Optional[str]:
             return None
         resolved_default = validate_workspace_id(raw_default)
         return resolved_default if resolved_default == raw_default else None
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError):
         return None
 
 

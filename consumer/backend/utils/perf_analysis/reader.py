@@ -95,40 +95,38 @@ class LocalPerfLogReader:
             diagnostics["scanned_files"] += 1
             diagnostics["scanned_file_names"].append(path.name)
             try:
-                lines = path.open("r", encoding="utf-8")
+                with path.open("r", encoding="utf-8") as lines:
+                    for line in lines:
+                        raw = line.strip()
+                        if not raw:
+                            continue
+                        try:
+                            record = json.loads(raw)
+                        except json.JSONDecodeError:
+                            diagnostics["parse_error_count"] += 1
+                            continue
+                        if not isinstance(record, dict):
+                            diagnostics["skipped_record_count"] += 1
+                            continue
+                        if record.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+                            diagnostics["unknown_schema_count"] += 1
+                            continue
+                        timestamp_ms = _read_int(record.get("ts_ms"))
+                        if timestamp_ms is None or timestamp_ms < normalized_start or timestamp_ms > normalized_end:
+                            diagnostics["skipped_record_count"] += 1
+                            continue
+                        if run_id and str(record.get("run_id") or "") != run_id:
+                            continue
+                        if session_id and str(record.get("session_id") or "") != session_id:
+                            continue
+                        if kinds_filter and str(record.get("kind") or "") not in kinds_filter:
+                            continue
+                        records.append(record)
+                        if stop_after_first:
+                            return PerfReadResult(records=records, diagnostics=diagnostics)
             except OSError:
                 diagnostics["skipped_record_count"] += 1
                 continue
-
-            with lines:
-                for line in lines:
-                    raw = line.strip()
-                    if not raw:
-                        continue
-                    try:
-                        record = json.loads(raw)
-                    except json.JSONDecodeError:
-                        diagnostics["parse_error_count"] += 1
-                        continue
-                    if not isinstance(record, dict):
-                        diagnostics["skipped_record_count"] += 1
-                        continue
-                    if record.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
-                        diagnostics["unknown_schema_count"] += 1
-                        continue
-                    timestamp_ms = _read_int(record.get("ts_ms"))
-                    if timestamp_ms is None or timestamp_ms < normalized_start or timestamp_ms > normalized_end:
-                        diagnostics["skipped_record_count"] += 1
-                        continue
-                    if run_id and str(record.get("run_id") or "") != run_id:
-                        continue
-                    if session_id and str(record.get("session_id") or "") != session_id:
-                        continue
-                    if kinds_filter and str(record.get("kind") or "") not in kinds_filter:
-                        continue
-                    records.append(record)
-                    if stop_after_first:
-                        return PerfReadResult(records=records, diagnostics=diagnostics)
 
         return PerfReadResult(records=records, diagnostics=diagnostics)
 
