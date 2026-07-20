@@ -2,8 +2,10 @@
 
 from datetime import date, datetime
 import gzip
+import json
 import logging
 import logging.handlers
+import os
 from pathlib import Path
 import sys
 
@@ -13,11 +15,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import agentic.utils.logging as logging_utils
+import utils.logging as logging_utils
 
 DatePartitionedRotatingFileHandler = logging_utils.DatePartitionedRotatingFileHandler
 configure_logging = logging_utils.configure_logging
-refresh_log_level = logging_utils.refresh_log_level
 
 
 def _record(message: str, created_at: float) -> logging.LogRecord:
@@ -35,27 +36,31 @@ def _record(message: str, created_at: float) -> logging.LogRecord:
     return record
 
 
-def _write_log_config(config_path: Path, level: str | None) -> None:
-    lines = [
-        '"""Test logging config."""',
-        "",
-    ]
-    if level is not None:
-        lines.append('LOG_LEVEL = "{}"'.format(level))
-    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _write_ops_config(config_path: Path, level: str | None) -> None:
+    document = {"logging": {"level": level}} if level is not None else {}
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _rewrite_ops_config(config_path: Path, content: str) -> None:
+    previous_mtime_ns = config_path.stat().st_mtime_ns
+    config_path.write_text(content, encoding="utf-8")
+    current_mtime_ns = config_path.stat().st_mtime_ns
+    if current_mtime_ns == previous_mtime_ns:
+        os.utime(config_path, ns=(previous_mtime_ns + 1, previous_mtime_ns + 1))
 
 
 @pytest.fixture(autouse=True)
-def _restore_root_logging():
+def _restore_root_logging(tmp_path, monkeypatch):
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
     original_level = root_logger.level
     original_configured = logging_utils._LOGGING_CONFIGURED
     original_configured_level = logging_utils._CONFIGURED_LOG_LEVEL
     original_runtime_level = logging_utils._CURRENT_RUNTIME_LOG_LEVEL
-    original_config_path = logging_utils._LOG_LEVEL_CONFIG_PATH
-    original_config_mtime = logging_utils._LOG_LEVEL_CONFIG_MTIME
-    original_config_value = logging_utils._LOG_LEVEL_FROM_CONFIG
+    original_config_signature = logging_utils._OPS_CONFIG_SIGNATURE
+    original_config_value = logging_utils._LOG_LEVEL_FROM_OPS_CONFIG
+
+    monkeypatch.setenv("OPS_CONFIG_PATH", str(tmp_path / "missing-ops-config.json"))
 
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
@@ -73,9 +78,8 @@ def _restore_root_logging():
         logging_utils._LOGGING_CONFIGURED = original_configured
         logging_utils._CONFIGURED_LOG_LEVEL = original_configured_level
         logging_utils._CURRENT_RUNTIME_LOG_LEVEL = original_runtime_level
-        logging_utils._LOG_LEVEL_CONFIG_PATH = original_config_path
-        logging_utils._LOG_LEVEL_CONFIG_MTIME = original_config_mtime
-        logging_utils._LOG_LEVEL_FROM_CONFIG = original_config_value
+        logging_utils._OPS_CONFIG_SIGNATURE = original_config_signature
+        logging_utils._LOG_LEVEL_FROM_OPS_CONFIG = original_config_value
 
 
 def test_date_partitioned_handler_writes_same_day_records_to_one_file(tmp_path):
@@ -242,15 +246,15 @@ def test_configure_logging_appends_agent_context_to_plain_logs(tmp_path):
     assert "task_id=task-ctx" in content
 
 
-def test_runtime_log_level_reloads_from_config_file(tmp_path):
-    config_path = tmp_path / "server.py"
-    _write_log_config(config_path, "INFO")
+def test_runtime_log_level_reloads_from_ops_config_on_next_log_check(tmp_path, monkeypatch):
+    config_path = tmp_path / "ops_config.json"
+    _write_ops_config(config_path, "INFO")
+    monkeypatch.setenv("OPS_CONFIG_PATH", str(config_path))
 
     configure_logging(
         level="INFO",
         log_dir=str(tmp_path),
         log_file="agent.log",
-        level_config_path=str(config_path),
         console=False,
         max_bytes=0,
         backup_count=2,
@@ -262,13 +266,11 @@ def test_runtime_log_level_reloads_from_config_file(tmp_path):
     assert not logger.isEnabledFor(logging.DEBUG)
     logger.debug("hidden-before-change")
 
-    _write_log_config(config_path, "DEBUG")
-    refresh_log_level(force=True)
+    _rewrite_ops_config(config_path, '{"logging":{"level":"DEBUG"}}')
     assert logger.isEnabledFor(logging.DEBUG)
     logger.debug("visible-after-change")
 
-    _write_log_config(config_path, "INFO")
-    refresh_log_level(force=True)
+    _rewrite_ops_config(config_path, '{"logging":{"level":"INFO"}}')
     assert not logger.isEnabledFor(logging.DEBUG)
     logger.debug("hidden-after-reset")
 
@@ -278,15 +280,15 @@ def test_runtime_log_level_reloads_from_config_file(tmp_path):
     assert "hidden-after-reset" not in content
 
 
-def test_refresh_log_level_preserves_explicit_default_when_config_has_no_override(tmp_path):
-    config_path = tmp_path / "server.py"
-    _write_log_config(config_path, None)
+def test_refresh_log_level_preserves_explicit_default_when_ops_config_has_no_override(tmp_path, monkeypatch):
+    config_path = tmp_path / "ops_config.json"
+    _write_ops_config(config_path, None)
+    monkeypatch.setenv("OPS_CONFIG_PATH", str(config_path))
 
     configure_logging(
         level="WARNING",
         log_dir=str(tmp_path),
         log_file="agent.log",
-        level_config_path=str(config_path),
         console=False,
         max_bytes=0,
         backup_count=2,
@@ -295,10 +297,34 @@ def test_refresh_log_level_preserves_explicit_default_when_config_has_no_overrid
     logger = logging_utils.get_logger("tests.dynamic-default")
     assert not logger.isEnabledFor(logging.INFO)
 
-    _write_log_config(config_path, "DEBUG")
-    refresh_log_level(force=True)
+    _rewrite_ops_config(config_path, '{"logging":{"level":"DEBUG"}}')
     assert logger.isEnabledFor(logging.DEBUG)
 
-    _write_log_config(config_path, None)
-    refresh_log_level(force=True)
+    _rewrite_ops_config(config_path, "{}")
     assert not logger.isEnabledFor(logging.INFO)
+
+
+def test_runtime_log_level_keeps_last_good_value_for_invalid_ops_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "ops_config.json"
+    _write_ops_config(config_path, "DEBUG")
+    monkeypatch.setenv("OPS_CONFIG_PATH", str(config_path))
+
+    configure_logging(
+        log_dir=str(tmp_path),
+        log_file="agent.log",
+        console=False,
+        max_bytes=0,
+        backup_count=2,
+    )
+
+    logger = logging_utils.get_logger("tests.dynamic-invalid")
+    assert logger.isEnabledFor(logging.DEBUG)
+
+    _rewrite_ops_config(config_path, '{"logging":')
+    assert logger.isEnabledFor(logging.DEBUG)
+
+    _rewrite_ops_config(config_path, '{"logging":{"level":"VERBOSE"}}')
+    assert logger.isEnabledFor(logging.DEBUG)
+
+    _rewrite_ops_config(config_path, '{"logging":{"level":"INFO"}}')
+    assert not logger.isEnabledFor(logging.DEBUG)

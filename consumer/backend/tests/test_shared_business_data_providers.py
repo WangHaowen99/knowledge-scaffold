@@ -1,0 +1,448 @@
+from __future__ import annotations
+
+import json
+
+import requests
+
+from shared_capabilities.business_data import (
+    AuthSpec,
+    EffectiveConnection,
+    ProviderResult,
+    create_provider_client,
+    iter_query_events,
+)
+from shared_capabilities.business_data.providers.dataagent import (
+    DataAgentProvider,
+    _extract_fields as extract_dataagent_fields,
+)
+from shared_capabilities.business_data.providers.mindsdb import (
+    MindsDBProvider,
+    _chunk_events,
+)
+from shared_capabilities.business_data.providers.nl2sql import NL2SQLProvider
+
+
+class _Response:
+    def __init__(self, payload, status_code=200, text=""):
+        self.payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        if isinstance(self.payload, Exception):
+            raise self.payload
+        return self.payload
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+
+class _Session:
+    def __init__(self, response):
+        self.response = response
+        self.requests = []
+        self.closed = False
+
+    def post(self, url, **kwargs):
+        self.requests.append(("POST", url, kwargs))
+        return self.response
+
+    def get(self, url, **kwargs):
+        self.requests.append(("GET", url, kwargs))
+        return self.response
+
+    def close(self):
+        self.closed = True
+
+
+def _connection(provider, *, auth=None, options=None):
+    return EffectiveConnection(
+        version=1,
+        provider=provider,
+        endpoint="https://provider.example.com",
+        auth=auth or AuthSpec(type="none"),
+        options=options or {},
+    )
+
+
+def test_nl2sql_query_uses_explicit_connection_and_normalizes_result():
+    session = _Session(
+        _Response(
+            {
+                "success": True,
+                "data": [{"id": 1}],
+                "row_count": 1,
+                "sql": "SELECT 1",
+            }
+        )
+    )
+    provider = NL2SQLProvider(
+        _connection(
+            "nl2sql_http",
+            auth=AuthSpec(type="bearer", token="token-x"),
+            options={"scene": "scene-x", "timeout_seconds": 88},
+        ),
+        session=session,
+    )
+
+    result = provider.query("find one")
+
+    assert session.requests == [
+        (
+            "POST",
+            "https://provider.example.com/api/v1/query",
+            {
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer token-x",
+                },
+                "json": {"question": "find one", "scene": "scene-x"},
+                "timeout": 88,
+            },
+        )
+    ]
+    assert result == ProviderResult(
+        success=True,
+        data=[{"id": 1}],
+        message="查询成功，返回 1 行数据",
+        metadata={"sql": "SELECT 1", "row_count": 1},
+    )
+
+
+def test_nl2sql_invalid_json_is_a_failed_result_and_external_session_is_not_closed():
+    session = _Session(_Response(ValueError("secret-token must not leak")))
+    provider = NL2SQLProvider(_connection("nl2sql_http"), session=session)
+    result = provider.query("find one")
+    provider.close()
+    assert result.success is False
+    assert result.metadata["error_code"] == "invalid_json"
+    assert "secret-token" not in result.error
+    assert session.closed is False
+
+
+def test_nl2sql_preserves_all_non_contract_response_fields_in_metadata():
+    provider = NL2SQLProvider(
+        _connection("nl2sql_http"),
+        session=_Session(
+            _Response(
+                {
+                    "success": True,
+                    "data": [[1, "A"]],
+                    "columns": ["id", "name"],
+                    "row_count": "1",
+                    "sql": "SELECT id, name FROM parts",
+                    "trace_id": "trace-123",
+                }
+            )
+        ),
+    )
+
+    result = provider.query("find parts")
+
+    assert result.success is True
+    assert result.data == [[1, "A"]]
+    assert result.metadata == {
+        "columns": ["id", "name"],
+        "row_count": 1,
+        "sql": "SELECT id, name FROM parts",
+        "trace_id": "trace-123",
+    }
+
+
+def test_nl2sql_http_error_redacts_endpoint_and_token():
+    provider = NL2SQLProvider(
+        _connection(
+            "nl2sql_http", auth=AuthSpec(type="bearer", token="token-x")
+        ),
+        session=_Session(
+            _Response(
+                {"detail": "token-x rejected by https://provider.example.com"},
+                status_code=403,
+            )
+        ),
+    )
+
+    result = provider.query("find one")
+
+    assert result.success is False
+    assert "token-x" not in result.error
+    assert "https://provider.example.com" not in result.error
+    assert "[REDACTED]" in result.error
+
+
+def test_mindsdb_sql_authenticates_and_normalizes_result():
+    class _MindsSession(_Session):
+        def post(self, url, **kwargs):
+            self.requests.append(("POST", url, kwargs))
+            if url.endswith("/api/login"):
+                return _Response({"token": "jwt-x"})
+            return _Response({"type": "table", "data": [{"id": 1}]})
+
+    session = _MindsSession(None)
+    provider = MindsDBProvider(
+        _connection(
+            "mindsdb",
+            auth=AuthSpec(
+                type="mindsdb_password", username="mindsdb", password="password-x"
+            ),
+            options={"default_database": "analytics", "timeout_seconds": 120},
+        ),
+        session=session,
+    )
+
+    result = provider.query_sql("SELECT 1")
+
+    assert result.success is True
+    assert result.data == {"type": "table", "data": [{"id": 1}]}
+    assert session.requests[1][2]["headers"]["Authorization"] == "Bearer jwt-x"
+    assert session.requests[1][2]["json"]["context"]["db"] == "analytics"
+
+
+def test_mindsdb_anonymous_401_is_not_replayed_with_empty_credentials():
+    session = _Session(_Response({"detail": "authentication required"}, status_code=401))
+    provider = MindsDBProvider(_connection("mindsdb"), session=session)
+
+    result = provider.query_sql("SELECT 1")
+
+    assert result.success is False
+    assert len(session.requests) == 1
+    assert "Authorization" not in session.requests[0][2]["headers"]
+
+
+def test_mindsdb_native_event_sequence_uses_shared_contract():
+    response = _Response({})
+    response.iter_lines = lambda decode_unicode=True: iter(
+        [
+            'data: {"type":"start","prompt":"starting"}',
+            "",
+            'data: {"output":"final answer"}',
+            "",
+            'data: {"type":"end"}',
+            "",
+        ]
+    )
+    provider = MindsDBProvider(
+        _connection(
+            "mindsdb",
+            options={"default_agent_name": "agent-x", "project_name": "project-x"},
+        ),
+        session=_Session(response),
+    )
+    events = list(iter_query_events(provider, "question"))
+    assert [event.type for event in events] == ["start", "final", "done"]
+    assert events[1].content == "final answer"
+
+
+def test_mindsdb_chunk_events_preserve_pre_refactor_branch_priority_and_content():
+    thought = "```\nThought:"
+    cases = [
+        (
+            {"type": "start"},
+            [("start", "开始执行本体探索")],
+        ),
+        (
+            {"type": "start", "messages": [{"content": "start from messages"}]},
+            [("start", "start from messages")],
+        ),
+        (
+            {"type": "start", "content": "ignored start content"},
+            [("start", "开始执行本体探索")],
+        ),
+        (
+            {"type": "sql", "content": "SELECT 1"},
+            [],
+        ),
+        (
+            {"type": "final", "content": "not a baseline final"},
+            [("intermediate", "not a baseline final")],
+        ),
+        (
+            {"type": "other", "content": "## 最终回答:\nkeep marker"},
+            [("intermediate", "## 最终回答:\nkeep marker")],
+        ),
+        (
+            {"type": "data", "content": "Executing final SQL query: SELECT 1"},
+            [("final", "Executing final SQL query: SELECT 1")],
+        ),
+        (
+            {"output": "", "content": "content is not output"},
+            [],
+        ),
+        (
+            {
+                "actions": [
+                    {"log": "prepare SQL" + thought},
+                    {"log": "prepare SQL" + thought},
+                ],
+                "steps": [
+                    {
+                        "action": {"tool": "sql_query"},
+                        "observation": "mindsdb.result",
+                    }
+                ],
+                "content": "ignored because actions win",
+            },
+            [("intermediate", "prepare SQL")],
+        ),
+        (
+            {
+                "actions": [],
+                "steps": [
+                    {
+                        "action": {"tool": "sql_query"},
+                        "observation": "mindsdb.result",
+                    }
+                ],
+            },
+            [],
+        ),
+        (
+            {"type": "done"},
+            [],
+        ),
+        (
+            {"messages": ["plain string", {"content": "dict content"}]},
+            [("intermediate", "plain string\ndict content")],
+        ),
+        (
+            '{"type":"data","content":"json string final"}',
+            [("final", "json string final")],
+        ),
+    ]
+
+    for chunk, expected in cases:
+        actual = [(event.type, event.content) for event in _chunk_events(chunk)]
+        assert actual == expected, chunk
+
+
+def test_mindsdb_query_without_final_preserves_baseline_empty_success():
+    response = _Response({})
+    response.iter_lines = lambda decode_unicode=True: iter(
+        [
+            'data: {"type":"start","prompt":"starting"}',
+            "",
+            'data: {"type":"end"}',
+            "",
+        ]
+    )
+    provider = MindsDBProvider(_connection("mindsdb"), session=_Session(response))
+
+    result = provider.query("question")
+
+    assert result == ProviderResult(
+        success=True,
+        data="",
+        message="Query successful",
+    )
+
+
+def test_dataagent_builds_a2a_request_and_synthesizes_events():
+    session = _Session(
+        _Response(
+            {
+                "task": {
+                    "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "message": {
+                            "parts": [
+                                {
+                                    "text": "{'sql': 'SELECT 1', 'columns': ['n'], 'rows_preview': [(1,)]}"
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+        )
+    )
+    provider = DataAgentProvider(
+        _connection(
+            "dataagent",
+            auth=AuthSpec(type="bearer", token="data-token"),
+            options={"timeout_seconds": 44},
+        ),
+        session=session,
+    )
+    events = list(iter_query_events(provider, "question"))
+    assert [event.type for event in events] == ["start", "final", "done"]
+    assert events[1].result is not None and events[1].result.success is True
+    assert session.requests[0][1].endswith("/a2a/rest/message:send")
+    assert session.requests[0][2]["timeout"] == 44
+
+
+def test_dataagent_reports_incomplete_structured_result_without_exposing_sql_internals():
+    session = _Session(
+        _Response(
+            {
+                "task": {
+                    "status": {
+                        "state": "TASK_STATE_COMPLETED",
+                        "message": {
+                            "parts": [
+                                {
+                                    "text": "{'columns': ['n'], 'rows_preview': [(1,)]}"
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+        )
+    )
+    provider = DataAgentProvider(_connection("dataagent"), session=session)
+
+    result = provider.query("question")
+
+    assert result.success is False
+    assert result.error == "DataAgent 未返回有效的结构化查询结果"
+    assert result.metadata["error_code"] == "missing_sql"
+    assert result.metadata["row_count"] == 1
+
+
+def test_dataagent_field_parser_preserves_matched_raw_text_on_literal_failure():
+    fields = extract_dataagent_fields(
+        r"{'sql': '\x', 'columns': [invalid], 'confidence': None, 'error': None}"
+    )
+
+    assert fields["sql"] == r"'\x'"
+    assert fields["columns"] == "[invalid]"
+    assert fields["confidence"] == "None"
+    assert fields["error"] is None
+
+
+def test_dataagent_converts_unexpected_transport_exception_to_safe_failed_result():
+    class _UnexpectedSession(_Session):
+        def post(self, url, **kwargs):
+            raise RuntimeError(
+                "token-x failed at https://provider.example.com/internal"
+            )
+
+    provider = DataAgentProvider(
+        _connection(
+            "dataagent",
+            auth=AuthSpec(type="bearer", token="token-x"),
+        ),
+        session=_UnexpectedSession(None),
+    )
+
+    result = provider.query("question")
+
+    assert result.success is False
+    assert result.metadata["error_code"] == "internal_error"
+    assert result.error.startswith("RuntimeError: ")
+    assert "token-x" not in result.error
+    assert "https://provider.example.com" not in result.error
+    assert "[REDACTED]" in result.error
+
+
+def test_builtin_registry_constructs_all_agent_providers():
+    for name in ("mindsdb", "nl2sql_http", "dataagent"):
+        provider = create_provider_client(_connection(name))
+        assert provider is not None
+        provider.close()

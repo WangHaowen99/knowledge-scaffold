@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from agentic.services.auth import AuthManager
+from api.auth.auth import AuthManager
 
 
 def _build_app(auth_manager, auth_server_url=""):
-    import agentic.app as app_module
+    import app as app_module
 
     runtime = {
         "config": SimpleNamespace(auth_server_url=auth_server_url),
@@ -66,7 +66,7 @@ def test_capabilities_disabled_without_auth_server_url(auth_manager):
 
 
 def test_capabilities_proxy_registration_setting(auth_manager, monkeypatch):
-    import agentic.routes.auth as auth_routes
+    import api.routes.auth as auth_routes
 
     monkeypatch.setattr(
         auth_routes.requests,
@@ -97,7 +97,7 @@ def test_register_proxy_passthrough_success(auth_manager, monkeypatch):
             },
         })
 
-    import agentic.routes.auth as auth_routes
+    import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = _build_app(auth_manager, "http://auth-server:5056/").test_client()
@@ -130,7 +130,7 @@ def test_register_proxy_passthrough_password_policy_error(auth_manager, monkeypa
             "violations": ["min_length"],
         })
 
-    import agentic.routes.auth as auth_routes
+    import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = _build_app(auth_manager, "http://auth-server:5056").test_client()
@@ -145,7 +145,7 @@ def test_register_proxy_passthrough_rate_limited(auth_manager, monkeypatch):
     def fake_post(url, json=None, headers=None, timeout=None):
         return _StubResponse(429, {"error": "请求过于频繁，请稍后再试"})
 
-    import agentic.routes.auth as auth_routes
+    import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = _build_app(auth_manager, "http://auth-server:5056").test_client()
@@ -161,7 +161,7 @@ def test_register_proxy_upstream_down(auth_manager, monkeypatch):
     def fake_post(url, json=None, headers=None, timeout=None):
         raise requests.ConnectionError("boom")
 
-    import agentic.routes.auth as auth_routes
+    import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = _build_app(auth_manager, "http://auth-server:5056").test_client()
@@ -177,7 +177,7 @@ def test_register_proxy_non_json_upstream(auth_manager, monkeypatch):
     def fake_post(url, json=None, headers=None, timeout=None):
         return _StubResponse(500, ValueError("not json"))
 
-    import agentic.routes.auth as auth_routes
+    import api.routes.auth as auth_routes
     monkeypatch.setattr(auth_routes.requests, "post", fake_post)
 
     client = _build_app(auth_manager, "http://auth-server:5056").test_client()

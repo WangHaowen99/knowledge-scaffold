@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getSettings, saveSettings, testLlm, testConsumer } from './api.js';
 
-// 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测（评测库与数据连接默认值）。
+// 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测（评测库与数据源默认值）。
 // 优先级统一为：页面配置 > 环境变量。api key 保存后不回显；测试失败展示服务端原始错误便于排障。
 export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   const [tab, setTab] = useState(tabProp);
@@ -158,7 +158,7 @@ function EvalTab({ form, set }) {
         <label>评测库 MySQL 地址</label>
         <input value={form.evalDbUrl ?? ''} onChange={set('evalDbUrl')} placeholder="mysql://user:pass@host:3306（Excel 数据自动落库；留空跳过）" />
       </div>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)', margin: '14px 0 8px' }}>评测数据连接默认值</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)', margin: '14px 0 8px' }}>评测数据源默认值</div>
       <div className="field">
         <label>provider</label>
         <input value={form.evalBindingProvider ?? ''} onChange={set('evalBindingProvider')} placeholder="nl2sql_template" style={{ width: 240 }} />

@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { getProject, uploadDocument, deleteDocument, runAnalyze } from './api.js';
 import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from './M2Panels.jsx';
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
+import DataSourcePanel from './DataSourcePanel.jsx';
 import { OptimizePanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
 import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
@@ -14,16 +15,16 @@ import { BusyButton } from './ui.jsx';
 const TRUNK = [
   ['project_setup', '项目创建'], ['ingest', '资料上传与解析'], ['analyze', '领域分析'],
   ['interview', '知识萃取访谈'], ['generate', '知识包生成'],
-  ['review', '知识包完善'], ['testcases', '评测用例录入'], ['evaluate', '评测运行'], ['optimize', '优化建议与应用'],
+  ['review', '知识包完善'], ['data_source', '数据源配置'], ['testcases', '评测用例录入'], ['evaluate', '评测运行'], ['optimize', '优化建议与应用'],
 ];
 // stage 序含历史节点 competency（老项目 stage 可能停在该值）
-const STAGE_ORDER = ['project_setup', 'ingest', 'analyze', 'interview', 'competency', 'generate', 'review', 'testcases', 'evaluate', 'optimize'];
+const STAGE_ORDER = ['project_setup', 'ingest', 'analyze', 'interview', 'competency', 'generate', 'review', 'data_source', 'testcases', 'evaluate', 'optimize'];
 const STAGE_INDEX = Object.fromEntries(STAGE_ORDER.map((k, i) => [k, i]));
 
 const TITLE = {
   ingest: '资料上传与解析', analyze: '领域分析', interview: '知识萃取访谈',
   competency: '领域问题', generate: '知识包生成', review: '知识包完善',
-  testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
+  data_source: '数据源配置', testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
   project_setup: '项目信息',
 };
 
@@ -50,7 +51,7 @@ export default function Workbench({ projectId }) {
   if (err && !data) return <div className="empty">{err}</div>;
   if (!data) return <div className="empty">加载中…</div>;
 
-  const { project, documents, nodes } = data;
+  const { project, documents, nodes, dataSource } = data;
   const stageIdx = STAGE_INDEX[project.stage] ?? 0;
   const nodeOf = (type) => nodes.find((n) => n.type === type);
   const analyzeNode = nodeOf('analyze');
@@ -65,16 +66,18 @@ export default function Workbench({ projectId }) {
   const interviewDone = interviewNode?.status === 'done';
   const generateDone = generateNode && ['done', 'stale'].includes(generateNode.status);
   const cqSelected = data.competency?.selected ?? 0;
+  const legacyBeyondDataSource = !dataSource && stageIdx >= STAGE_INDEX.testcases;
 
-  // 节点解锁：1~2 始终可进；3 需资料；4 需领域分析产出且领域问题选满 5 条；5 需访谈完成；6~9 需包已生成
+  // 节点解锁：1~2 始终可进；3 需资料；4 需领域分析产出且领域问题选满 5 条；5 需访谈完成；后续需包已生成
   const unlocked = {
     project_setup: true, ingest: true,
     analyze: tables.length > 0 || parsedDocs.length > 0,
     interview: !!analyzeDone && cqSelected >= 5,
     generate: interviewDone && !!competencyNode,
     review: !!generateDone,
-    testcases: !!generateDone,
-    evaluate: !!generateDone,
+    data_source: !!generateDone,
+    testcases: !!generateDone && (!!dataSource || legacyBeyondDataSource),
+    evaluate: !!generateDone && (!!dataSource || legacyBeyondDataSource),
     optimize: stageIdx >= STAGE_INDEX.evaluate,
   };
   const nodeStatus = {
@@ -83,6 +86,7 @@ export default function Workbench({ projectId }) {
     interview: interviewNode?.status === 'running' ? 'running' : interviewNode?.status === 'stale' ? 'stale' : interviewDone ? 'done' : interviewNode ? 'active-run' : 'pending',
     generate: generateNode?.status === 'running' ? 'running' : generateNode?.status === 'stale' ? 'stale' : generateDone ? 'done' : 'pending',
     review: generateDone ? 'done' : 'pending',
+    data_source: dataSource ? 'done' : 'pending',
     testcases: stageIdx >= STAGE_INDEX.testcases ? 'done' : 'pending',
     evaluate: stageIdx >= STAGE_INDEX.evaluate ? 'done' : 'pending',
     optimize: stageIdx >= STAGE_INDEX.optimize ? 'done' : 'pending',
@@ -95,6 +99,7 @@ export default function Workbench({ projectId }) {
     : project.stage === 'optimize' ? 'optimize'
     : project.stage === 'evaluate' ? 'evaluate'
     : project.stage === 'testcases' ? 'testcases'
+    : project.stage === 'data_source' ? 'data_source'
     : 'review';
   const effFocus = focus && unlocked[focus] ? focus : autoFocus;
 
@@ -182,11 +187,16 @@ export default function Workbench({ projectId }) {
             <GeneratePanel projectId={projectId} node={generateNode} onRefresh={load}
               onAdvance={() => { load(); setFocus('review'); }} />
           )}
-          {effFocus === 'review' && <ReviewPanel projectId={projectId} />}
+          {effFocus === 'review' && (
+            <ReviewPanel projectId={projectId} onAdvance={() => setFocus('data_source')} />
+          )}
+          {effFocus === 'data_source' && (
+            <DataSourcePanel projectId={projectId} onAdvance={() => { load(); setFocus('testcases'); }} />
+          )}
           {effFocus === 'testcases' && (
             <TestcasesPanel projectId={projectId} onAdvance={() => { load(); setFocus('evaluate'); }} />
           )}
-          {effFocus === 'evaluate' && <EvaluatePanel projectId={projectId} />}
+          {effFocus === 'evaluate' && <EvaluatePanel projectId={projectId} onProjectChanged={load} />}
           {effFocus === 'optimize' && (
             <OptimizePanel projectId={projectId} onGoEvaluate={() => { load(); setFocus('evaluate'); }} />
           )}

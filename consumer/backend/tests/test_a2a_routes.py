@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 from flask import Flask
 
-from agentic.a2a.models import A2ATaskSnapshot, A2ATaskState
-from agentic.routes.a2a import a2a_bp
-from agentic.services.auth import AuthManager
+from api.protocols.a2a.models import A2ATaskSnapshot, A2ATaskState
+from api.routes.a2a import a2a_bp
+from api.auth.auth import AuthManager
+from persistence.run_store import RunStore
+from workspace.workspaces import create_workspace
 
 
 class _FakeTaskService:
@@ -17,6 +19,19 @@ class _FakeTaskService:
             state=A2ATaskState.NOT_FOUND,
             error="Task not found",
         )
+        self.orchestrator = SimpleNamespace(run_store=RunStore())
+        self.user_id = "admin"
+        self.workspace_id = "a2a-test"
+        if self.snapshot.state != A2ATaskState.NOT_FOUND:
+            self.orchestrator.run_store.create_run(
+                run_id=self.snapshot.id,
+                user_request="test",
+                metadata={
+                    "user_id": self.user_id,
+                    "workspace_id": self.workspace_id,
+                    "session_id": self.snapshot.session_id,
+                },
+            )
 
     def get_task(self, task_id, session_id=None):
         del task_id, session_id
@@ -32,7 +47,15 @@ class _FakeChatStore:
         return self.session
 
 
-def _build_test_client(tmp_path):
+def _build_test_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    create_workspace(
+        "A2A Test Workspace",
+        workspace_id="a2a-test",
+        owner=None,
+        set_as_default=True,
+    )
+
     app = Flask(__name__)
     app.config["TESTING"] = True
 
@@ -50,8 +73,8 @@ def _build_test_client(tmp_path):
     return client, headers
 
 
-def test_agent_card_is_public(tmp_path):
-    client, _headers = _build_test_client(tmp_path)
+def test_agent_card_is_public(tmp_path, monkeypatch):
+    client, _headers = _build_test_client(tmp_path, monkeypatch)
 
     resp = client.get("/.well-known/a2a/agent-card.json")
     assert resp.status_code == 200
@@ -63,9 +86,9 @@ def test_agent_card_is_public(tmp_path):
 
 
 def test_get_task_returns_404_for_not_found(monkeypatch, tmp_path):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
 
-    monkeypatch.setattr("agentic.routes.a2a._build_task_service", lambda: _FakeTaskService())
+    monkeypatch.setattr("api.routes.a2a._build_task_service", lambda: _FakeTaskService())
 
     resp = client.get("/a2a/tasks/task-not-exists", headers=headers)
     assert resp.status_code == 404
@@ -74,7 +97,7 @@ def test_get_task_returns_404_for_not_found(monkeypatch, tmp_path):
 
 
 def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tmp_path):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
 
     event = {
         "event": "agent.v2",
@@ -95,11 +118,11 @@ def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tm
     )
 
     monkeypatch.setattr(
-        "agentic.routes.a2a._build_task_service",
+        "api.routes.a2a._build_task_service",
         lambda: _FakeTaskService(snapshot=snapshot),
     )
     monkeypatch.setattr(
-        "agentic.routes.a2a._get_user_stores",
+        "api.routes.a2a._get_user_stores",
         lambda: (_FakeChatStore(session=session), None),
     )
 

@@ -1,4 +1,4 @@
-"""Tests for the NL2SQL Template ontology search provider."""
+"""Tests for the NL2SQL Template search adapter."""
 
 from __future__ import annotations
 
@@ -8,28 +8,40 @@ from pathlib import Path
 
 import pytest
 
-from agentic.business_data.providers.nl2sql_template import (
-    NL2SQLTemplateProvider,
+from agent.tools.business_data.adapters.nl2sql_template_search import (
+    NL2SQLTemplateSearchAdapter,
     _DefaultMatcher,
 )
+from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 
 
-def _config(**overrides) -> dict:
-    base = {
-        "ontology_search": {
-            "nl2sql_template": {
-                "url": "http://nl2sql.test/",
-                "token": "token-x",
-                "scene": "scene-x",
-                "timeout_seconds": 88,
-                "max_retries": 2,
-                "ontology_id": "",
-                "_workspace_root": "",
-            },
-        },
+def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
+    config = {
+        "url": "http://nl2sql.test/",
+        "token": "token-x",
+        "scene": "scene-x",
+        "timeout_seconds": 88,
+        "max_retries": 2,
+        "ontology_id": "",
+        "_workspace_root": "",
+        **overrides,
     }
-    base["ontology_search"]["nl2sql_template"].update(overrides)
-    return base
+    workspace_root = str(config.pop("_workspace_root"))
+    ontology_id = str(config.pop("ontology_id"))
+    endpoint = str(config.pop("url")).rstrip("/")
+    token = str(config.pop("token"))
+    connection = EffectiveConnection(
+        version=1,
+        provider="nl2sql_http",
+        endpoint=endpoint,
+        auth=AuthSpec(type="bearer", token=token),
+        options=config,
+    )
+    return NL2SQLTemplateSearchAdapter(
+        connection,
+        workspace_root=workspace_root,
+        ontology_id=ontology_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +59,10 @@ def test_default_matcher_hits_template_and_executes_sql(tmp_path):
         encoding="utf-8",
     )
 
-    config = _config(
+    provider = _provider(
         _workspace_root=str(tmp_path),
         ontology_id="test-ontology",
     )
-    provider = NL2SQLTemplateProvider(config)
 
     captured = {}
 
@@ -97,8 +108,7 @@ def test_default_matcher_falls_back_to_nl2sql(tmp_path):
     templates_file = scripts_dir / "query_templates.json"
     templates_file.write_text("{}", encoding="utf-8")
 
-    config = _config(_workspace_root=str(tmp_path), ontology_id="test-ontology")
-    provider = NL2SQLTemplateProvider(config)
+    provider = _provider(_workspace_root=str(tmp_path), ontology_id="test-ontology")
 
     captured = {}
 
@@ -146,8 +156,7 @@ def test_default_matcher_with_rich_template_dedupes(tmp_path):
         encoding="utf-8",
     )
 
-    config = _config(_workspace_root=str(tmp_path), ontology_id="test-ontology")
-    provider = NL2SQLTemplateProvider(config)
+    provider = _provider(_workspace_root=str(tmp_path), ontology_id="test-ontology")
 
     class _FakeResponse:
         status_code = 200
@@ -195,11 +204,10 @@ def test_external_matcher_discovered_and_called(tmp_path):
     """)
     (scripts_dir / "sql_matcher.py").write_text(matcher_code, encoding="utf-8")
 
-    config = _config(
+    provider = _provider(
         _workspace_root=str(tmp_path),
         ontology_id="test-ontology",
     )
-    provider = NL2SQLTemplateProvider(config)
 
     captured = {}
 
@@ -235,11 +243,10 @@ def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):
     """)
     (scripts_dir / "sql_matcher.py").write_text(matcher_code, encoding="utf-8")
 
-    config = _config(
+    provider = _provider(
         _workspace_root=str(tmp_path),
         ontology_id="test-ontology",
     )
-    provider = NL2SQLTemplateProvider(config)
 
     captured = {}
 
@@ -277,8 +284,7 @@ def test_template_matcher_returns_error_for_http_failure(tmp_path):
         encoding="utf-8",
     )
 
-    config = _config(_workspace_root=str(tmp_path), ontology_id="test-ontology")
-    provider = NL2SQLTemplateProvider(config)
+    provider = _provider(_workspace_root=str(tmp_path), ontology_id="test-ontology")
 
     class _FakeResponse:
         status_code = 500
@@ -312,7 +318,7 @@ def test_dedupe_result_keeps_first_per_key():
         ],
     }
 
-    deduped = NL2SQLTemplateProvider._dedupe_result(result, dedupe_key="id")
+    deduped = NL2SQLTemplateSearchAdapter._dedupe_result(result, dedupe_key="id")
 
     assert len(deduped["data"]) == 2
     row_a = next(r for r in deduped["data"] if r["id"] == "A")
@@ -324,7 +330,7 @@ def test_dedupe_result_keeps_first_per_key():
 def test_dedupe_result_empty_data_is_noop():
     """_dedupe_result with empty data returns the result unchanged."""
     result = {"success": True, "data": []}
-    deduped = NL2SQLTemplateProvider._dedupe_result(result, dedupe_key="id")
+    deduped = NL2SQLTemplateSearchAdapter._dedupe_result(result, dedupe_key="id")
     assert len(deduped["data"]) == 0
 
 
@@ -411,7 +417,8 @@ def test_default_matcher_resolves_versioned_scripts_dir(tmp_path):
     (ontology_root / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: my-ontology",
                 "name: My Ontology",
                 "description: Demo",
@@ -444,7 +451,8 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
     (ontology_root / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: test-ontology",
                 "name: Test Ontology",
                 "description: Demo",
@@ -466,11 +474,10 @@ def test_external_matcher_uses_versioned_scripts_dir(tmp_path):
     """)
     (scripts_dir / "sql_matcher.py").write_text(matcher_code, encoding="utf-8")
 
-    config = _config(
+    provider = _provider(
         _workspace_root=str(tmp_path),
         ontology_id="test-ontology",
     )
-    provider = NL2SQLTemplateProvider(config)
 
     captured = {}
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from agentic.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
-from agentic.business_data.providers.graph.models import GraphScope
+from agent.tools.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
+from agent.tools.business_data.providers.graph.models import GraphScope
 
 
 def _scope():

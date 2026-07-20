@@ -103,17 +103,22 @@ ${BUILD_CMD} \
     "${AUTH_SERVER_SRC}"
 docker save -o "${IMAGES_DIR}/onto-agent-auth-server-${VERSION}.tar" "onto-agent-auth-server:${VERSION}"
 
+bash "${SCRIPT_DIR}/build_jiuwenbox.sh" "onto-agent-jiuwenbox:${VERSION}" "${ARCH}"
+docker save -o "${IMAGES_DIR}/onto-agent-jiuwenbox-${VERSION}.tar" "onto-agent-jiuwenbox:${VERSION}"
+
 cp "${PROJECT_ROOT}/backend/.env.example" "${BUNDLE_DIR}/backend/.env.example"
 cp "${PROJECT_ROOT}/frontend/.env.example" "${BUNDLE_DIR}/frontend/.env.example"
 cp -r "${PROJECT_ROOT}/deploy/"* "${BUNDLE_DIR}/deploy/"
-rm -rf "${BUNDLE_DIR}/deploy/state" "${BUNDLE_DIR}/deploy/backups"
+rm -rf "${BUNDLE_DIR}/deploy/state" "${BUNDLE_DIR}/deploy/backups" "${BUNDLE_DIR}/deploy/tests"
+find "${BUNDLE_DIR}/deploy" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "${BUNDLE_DIR}/deploy" -type f -name '*.pyc' -delete
 find "${BUNDLE_DIR}/deploy" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 chmod +x "${BUNDLE_DIR}/deploy/"*.sh
 
 mkdir -p \
-    "${BUNDLE_DIR}/backend/config" \
     "${BUNDLE_DIR}/backend/logs" \
     "${BUNDLE_DIR}/.onto-runtime/config" \
+    "${BUNDLE_DIR}/.onto-auth" \
     "${BUNDLE_DIR}/frontend/logs/nginx" \
     "${BUNDLE_DIR}/deploy/backups"
 
@@ -124,9 +129,12 @@ cat > "${BUNDLE_DIR}/deploy/manifest.json" <<EOF
   "backend_image": "onto-agent-backend:${VERSION}",
   "frontend_image": "onto-agent-frontend:${VERSION}",
   "auth_server_image": "onto-agent-auth-server:${VERSION}",
+  "jiuwenbox_image": "onto-agent-jiuwenbox:${VERSION}",
   "backend_image_tar": "images/onto-agent-backend-${VERSION}.tar",
   "frontend_image_tar": "images/onto-agent-frontend-${VERSION}.tar",
-  "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar"
+  "auth_server_image_tar": "images/onto-agent-auth-server-${VERSION}.tar",
+  "jiuwenbox_image_tar": "images/onto-agent-jiuwenbox-${VERSION}.tar",
+  "jiuwenswarm_commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
 }
 EOF
 

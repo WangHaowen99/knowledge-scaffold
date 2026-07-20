@@ -43,7 +43,12 @@ export async function parseDocument(kind: DocKind, buffer: Buffer): Promise<Pars
 }
 
 // Excel 语义（design.md 决策 5）：sheet=表，首行=字段名，次行可选注释，余行=样例数据。
-function parseExcel(buffer: Buffer): DataDictTable[] {
+export interface ParseExcelOptions {
+  maxRows?: number;
+  rejectOverflow?: boolean;
+}
+
+export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): DataDictTable[] {
   // cellDates：银行/企业表常见日期列，避免 agent 面对 46152 这类 Excel 序列号
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const tables: DataDictTable[] = [];
@@ -88,8 +93,11 @@ function parseExcel(buffer: Buffer): DataDictTable[] {
       };
     });
 
-    const MAX_ROWS = 2000;
-    const rowMatrix = dataRows.slice(0, MAX_ROWS).map((r) =>
+    const maxRows = options.maxRows ?? 2000;
+    if (options.rejectOverflow && dataRows.length > maxRows) {
+      throw new Error(`Sheet「${sheetName}」数据行数 ${dataRows.length} 超过上限 ${maxRows}`);
+    }
+    const rowMatrix = dataRows.slice(0, maxRows).map((r) =>
       header.map((_, col) => String((r[col] ?? '')).trim()));
     tables.push({ name: sheetName, fields, rowCount: dataRows.length, rows: rowMatrix });
   }

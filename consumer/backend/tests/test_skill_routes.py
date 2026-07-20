@@ -2,9 +2,9 @@
 
 from flask import Flask
 
-from agentic.routes.skills import skills_bp
-from agentic.services.auth import AuthManager
-from agentic.workspaces import create_workspace, get_workspace_paths
+from api.routes.skills import skills_bp
+from api.auth.auth import AuthManager
+from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _build_test_client(tmp_path, username: str = "admin", password: str = "admin123"):
@@ -34,7 +34,7 @@ def _create_demo_workspace(tmp_path, monkeypatch, workspace_id: str = "demo"):
 
 
 def test_list_skills_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
-    from agentic.utils import skills as skills_module
+    from utils import skills as skills_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     skill_dir = workspace_paths.skills_dir / "demo-skill"
@@ -69,7 +69,7 @@ def test_list_skills_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
 
 
 def test_get_skill_reads_from_onto_runtime_root_env(tmp_path, monkeypatch):
-    from agentic.utils import skills as skills_module
+    from utils import skills as skills_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     skill_dir = workspace_paths.skills_dir / "demo-skill"

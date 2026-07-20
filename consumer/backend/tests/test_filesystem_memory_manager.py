@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic.memory.filesystem_manager import FileSystemMemoryManager
+from agent.memory.filesystem_manager import FileSystemMemoryManager
 
 
 def test_filesystem_manager_persists_notes_rebuilds_index_and_recalls_by_scope(tmp_path):
@@ -60,7 +60,6 @@ def test_filesystem_manager_persists_notes_rebuilds_index_and_recalls_by_scope(t
 
     context = manager.build_memory_context(
         query="What should the agent remember?",
-        ov_session_id="session-1",
         limit=3,
     )
 
@@ -142,28 +141,39 @@ def test_filesystem_manager_rejects_non_personalization_memory(tmp_path):
         )
 
 
-def test_filesystem_manager_skips_legacy_non_personalization_notes(tmp_path):
-    workspace_dir = tmp_path / "memory"
-    legacy_dir = workspace_dir / "memories" / "constraints"
-    legacy_dir.mkdir(parents=True)
-    (legacy_dir / "constraint-old.md").write_text(
-        "\n".join(
-            [
-                "---",
-                'memory_type: "constraint"',
-                'scope: "project"',
-                "---",
-                "",
-                "项目约束：不要修改现有 SSE 事件协议。",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
+def test_filesystem_manager_list_memories_filters_by_type_and_archived(tmp_path):
     manager = FileSystemMemoryManager(
         user_id="alice",
-        workspace_dir=workspace_dir,
+        workspace_dir=tmp_path / "memory",
     )
 
-    assert manager.build_memory_context(query="SSE", ov_session_id="session-1") == ""
+    manager.store_memory(
+        content="用户偏好：默认使用中文回答。",
+        memory_type="preference",
+        scope="user",
+    )
+    manager.store_memory(
+        content="用户画像：用户是质量工程师，关注风险说明。",
+        memory_type="profile",
+        scope="user",
+    )
+
+    all_hits = manager.list_memories(limit=10)
+    assert len(all_hits) == 2
+    assert {hit.memory_type for hit in all_hits} == {"preference", "profile"}
+
+    profile_hits = manager.list_memories(memory_type="profile", limit=10)
+    assert len(profile_hits) == 1
+    assert profile_hits[0].memory_type == "profile"
+    assert "质量工程师" in profile_hits[0].content
+
+    preference_uri = next(hit.source_uri for hit in all_hits if hit.memory_type == "preference")
+    assert manager.archive_memory(source_uri=preference_uri, reason="test") is True
+
+    active_hits = manager.list_memories(limit=10)
+    assert len(active_hits) == 1
+    assert active_hits[0].memory_type == "profile"
+
+    archived_hits = manager.list_memories(include_archived=True, limit=10)
+    assert len(archived_hits) == 2
+    assert any(hit.archived and hit.memory_type == "preference" for hit in archived_hits)

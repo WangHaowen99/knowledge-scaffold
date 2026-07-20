@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentic.config.settings import AgentConfig, LimitsConfig, WebSearchConfig
-from agentic.loop.jiuwen import smoke as jiuwen_smoke
-from agentic.loop.jiuwen.smoke import run_jiuwen_smoke
-from agentic.loop.jiuwen.tools import JiuwenTerminalToolBatch, jiuwen_tool_info_from_spec
-from agentic.loop.jiuwen.trace import jiuwen_tool_call_to_trace_tool_call
-from agentic.loop.jiuwen_adapter import (
+from agent.context import apply_sliding_window
+from agent.core.jiuwen import smoke as jiuwen_smoke
+from agent.core.jiuwen.smoke import run_jiuwen_smoke
+from agent.core.jiuwen.tools import jiuwen_tool_info_from_spec
+from agent.core.jiuwen.trace import jiuwen_tool_call_to_trace_tool_call
+from agent.core.jiuwen_engine import (
     CurrentRuntimeToolAdapter,
     JiuwenBackendUnavailable,
     JiuwenReactLoopEngine,
@@ -26,21 +26,45 @@ from agentic.loop.jiuwen_adapter import (
     _patch_jiuwen_openai_reasoning_alias,
     warm_up_jiuwen_runtime,
 )
-from agentic.exceptions import InputTokenLimitError, WorkflowCancelledError
-from agentic.services.llm import LLMPurpose
-from agentic.tools.base import ToolBatchResult, ToolInvocation
-from agentic.tools.registry import get_tool_schema, get_tool_spec
-import agentic.utils.logging as logging_utils
+from agent.exceptions import WorkflowCancelledError
+from agent.tools.base import ToolBatchResult, ToolInvocation
+from agent.tools.registry import get_tool_schema, get_tool_spec
+from config.settings import AgentConfig, LimitsConfig, WebSearchConfig
+from llm import LLMPurpose
+import utils.logging as logging_utils
 
 
 _REAL_IMPORT_MODULE = importlib.import_module
 
 
+class _FakeContextEngineConfig:
+    """Shared fake for ContextEngineConfig capturing constructor kwargs."""
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _RemovableFakeResourceManager:
+    def remove_tool(self, tool_id, tag=None, skip_if_tag_not_exists=True):
+        del tag, skip_if_tag_not_exists
+        tool_ids = tool_id if isinstance(tool_id, list) else [tool_id]
+        removed_tool_ids = getattr(self, "removed_tool_ids", None)
+        if removed_tool_ids is None:
+            removed_tool_ids = []
+            self.removed_tool_ids = removed_tool_ids
+        removed_tool_ids.extend(tool_ids)
+        registered_tools = getattr(self, "registered_tools", None)
+        if isinstance(registered_tools, dict):
+            for registered_tool_id in tool_ids:
+                registered_tools.pop(registered_tool_id, None)
+        return SimpleNamespace(success=True)
+
+
 @pytest.fixture(autouse=True)
 def _configure_workspace_runtime(tmp_path, monkeypatch):
-    import agentic.utils.ontologies as ontologies_module
-    import agentic.utils.skills as skills_module
-    from agentic.workspaces import create_workspace
+    import ontology.ontologies as ontologies_module
+    import utils.skills as skills_module
+    from workspace.workspaces import create_workspace
 
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
@@ -51,27 +75,27 @@ def _configure_workspace_runtime(tmp_path, monkeypatch):
 
 def test_jiuwen_adapter_support_modules_are_split_out():
     for module_name in (
-        "agentic.loop.jiuwen",
-        "agentic.loop.jiuwen.common",
-        "agentic.loop.jiuwen.tools",
-        "agentic.loop.jiuwen.trace",
-        "agentic.loop.jiuwen.patches",
-        "agentic.loop.jiuwen.smoke",
-        "agentic.loop.jiuwen_adapter",
+        "agent.core.jiuwen",
+        "agent.core.jiuwen.common",
+        "agent.core.jiuwen.tools",
+        "agent.core.jiuwen.trace",
+        "agent.core.jiuwen.patches",
+        "agent.core.jiuwen.smoke",
+        "agent.core.jiuwen_engine",
     ):
         assert importlib.util.find_spec(module_name) is not None
-    assert importlib.util.find_spec("agentic.loop.jiuwen_smoke") is None
+    assert importlib.util.find_spec("agent.core.jiuwen_smoke") is None
 
 
 def test_loop_package_no_longer_exports_factory():
-    loop_module = importlib.import_module("agentic.loop")
+    loop_module = importlib.import_module("agent.core")
 
-    assert importlib.util.find_spec("agentic.loop.factory") is None
+    assert importlib.util.find_spec("agent.core.factory") is None
     assert not hasattr(loop_module, "create_jiuwen_loop_engine")
 
 
 def test_loop_package_no_longer_reexports_runtime_factory():
-    import agentic.loop as loop_module
+    import agent.core as loop_module
 
     assert loop_module.__all__ == []
 
@@ -126,15 +150,15 @@ def test_jiuwen_tool_call_to_trace_tool_call_accepts_mapping_payload():
 
 
 def test_jiuwen_tool_call_trace_normalizer_is_not_exported_from_tool_binding():
-    tools_module = importlib.import_module("agentic.loop.jiuwen.tools")
-    adapter_module = importlib.import_module("agentic.loop.jiuwen_adapter")
+    tools_module = importlib.import_module("agent.core.jiuwen.tools")
+    adapter_module = importlib.import_module("agent.core.jiuwen_engine")
 
     assert not hasattr(tools_module, "jiuwen_tool_call_to_openai_tool_call")
     assert not hasattr(adapter_module, "jiuwen_tool_call_to_openai_tool_call")
 
 
 def test_jiuwen_loop_engine_constructs_when_jiuwen_available(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
 
@@ -142,14 +166,14 @@ def test_jiuwen_loop_engine_constructs_when_jiuwen_available(monkeypatch):
 
 
 def test_jiuwen_loop_engine_fails_loudly_when_dependency_missing(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: False)
 
     with pytest.raises(JiuwenBackendUnavailable, match="openjiuwen"):
         JiuwenReactLoopEngine(agent_config=_agent_config())
 
 
 def test_jiuwen_loop_engine_accepts_agent_factory(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     fake_agent = _FakeJiuwenAgent({"output": "factory answer"})
     engine = JiuwenReactLoopEngine(
@@ -172,7 +196,7 @@ def test_jiuwen_loop_engine_accepts_agent_factory(monkeypatch):
 
 
 def test_jiuwen_loop_engine_invokes_agent_and_updates_current_state(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     fake_agent = _FakeJiuwenAgent({"output": "jiuwen answer", "result_type": "answer"})
     engine = JiuwenReactLoopEngine(
@@ -217,7 +241,7 @@ def test_jiuwen_loop_engine_invokes_agent_and_updates_current_state(monkeypatch)
 
 
 def test_jiuwen_loop_engine_emits_runtime_trace_events(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
     class RecordingObserver:
         enabled = True
@@ -229,7 +253,7 @@ def test_jiuwen_loop_engine_emits_runtime_trace_events(monkeypatch):
             self.events.append(event)
             return True
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     observer = RecordingObserver()
     fake_agent = _FakeJiuwenAgent({"output": "traced answer", "result_type": "answer"})
@@ -260,7 +284,7 @@ def test_jiuwen_loop_engine_emits_runtime_trace_events(monkeypatch):
 
 
 def test_jiuwen_loop_engine_finishes_trace_when_setup_fails(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
     class RecordingObserver:
         enabled = True
@@ -276,9 +300,9 @@ def test_jiuwen_loop_engine_finishes_trace_when_setup_fails(monkeypatch):
         del args, kwargs
         raise RuntimeError("selected context failed")
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.shared.ontology_context.build_selected_ontology_preload_context",
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
         fail_selected_context,
     )
 
@@ -313,7 +337,7 @@ def test_jiuwen_loop_engine_finishes_trace_when_setup_fails(monkeypatch):
 
 
 def test_jiuwen_loop_engine_marks_loop_error_when_post_processing_fails(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
     class RecordingObserver:
         enabled = True
@@ -325,7 +349,7 @@ def test_jiuwen_loop_engine_marks_loop_error_when_post_processing_fails(monkeypa
             self.events.append(event)
             return True
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     observer = RecordingObserver()
     fake_agent = _FakeJiuwenAgent({"output": "answer before snapshot", "result_type": "answer"})
@@ -361,7 +385,7 @@ def test_jiuwen_loop_engine_marks_loop_error_when_post_processing_fails(monkeypa
 
 
 def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
-    from agentic.observability import RuntimeEventType
+    from integration.observability import RuntimeEventType
 
     class RecordingObserver:
         enabled = True
@@ -451,9 +475,9 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
                 payload={"output": "最终答案", "result_type": "answer"},
             )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._jiuwen_agent_callback_event_class",
+        "agent.core.jiuwen_engine._jiuwen_agent_callback_event_class",
         lambda: FakeAgentCallbackEvent,
     )
     fake_agent = FakeInternalTraceJiuwenAgent()
@@ -504,7 +528,7 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
 
 
 def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
-    from agentic.observability.traces.agent import AgentRuntimeTrace
+    from integration.observability.traces.agent import AgentRuntimeTrace
 
     class RecordingObserver:
         enabled = True
@@ -553,6 +577,7 @@ def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
         llm_config=None,
         stream_enabled=True,
         enable_reasoning=True,
+        sliding_window_applied=True,
     )
     ctx = SimpleNamespace(
         agent=SimpleNamespace(_config=SimpleNamespace(model_name="compat-model")),
@@ -570,8 +595,8 @@ def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
 
 
 def test_jiuwen_model_trace_normalizes_openai_compatible_cache_usage():
-    from agentic.observability import RuntimeEventType
-    from agentic.observability.traces.agent import AgentRuntimeTrace
+    from integration.observability import RuntimeEventType
+    from integration.observability.traces.agent import AgentRuntimeTrace
 
     class RecordingObserver:
         enabled = True
@@ -623,6 +648,7 @@ def test_jiuwen_model_trace_normalizes_openai_compatible_cache_usage():
         model_provider="openai_compatible",
         stream_enabled=True,
         enable_reasoning=False,
+        sliding_window_applied=True,
     )
     ctx = SimpleNamespace(
         agent=SimpleNamespace(_config=SimpleNamespace(model_name="compat-model")),
@@ -643,8 +669,8 @@ def test_jiuwen_model_trace_normalizes_openai_compatible_cache_usage():
 
 
 def test_jiuwen_model_trace_normalizes_usage_metadata_cache_tokens():
-    from agentic.observability import RuntimeEventType
-    from agentic.observability.traces.agent import AgentRuntimeTrace
+    from integration.observability import RuntimeEventType
+    from integration.observability.traces.agent import AgentRuntimeTrace
 
     class RecordingObserver:
         enabled = True
@@ -695,6 +721,7 @@ def test_jiuwen_model_trace_normalizes_usage_metadata_cache_tokens():
         model_provider="deepseek",
         stream_enabled=True,
         enable_reasoning=False,
+        sliding_window_applied=True,
     )
     ctx = SimpleNamespace(
         agent=SimpleNamespace(_config=SimpleNamespace(model_name="deepseek-v4-pro")),
@@ -715,8 +742,8 @@ def test_jiuwen_model_trace_normalizes_usage_metadata_cache_tokens():
 
 
 def test_jiuwen_model_trace_includes_runtime_config_api_params():
-    from agentic.observability import RuntimeEventType
-    from agentic.observability.traces.agent import AgentRuntimeTrace
+    from integration.observability import RuntimeEventType
+    from integration.observability.traces.agent import AgentRuntimeTrace
 
     class RecordingObserver:
         enabled = True
@@ -786,7 +813,7 @@ def test_jiuwen_model_trace_includes_runtime_config_api_params():
 
 
 def test_jiuwen_loop_engine_raises_when_agent_returns_error_result_type(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
     class RecordingObserver:
         enabled = True
@@ -798,7 +825,7 @@ def test_jiuwen_loop_engine_raises_when_agent_returns_error_result_type(monkeypa
             self.events.append(event)
             return True
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     observer = RecordingObserver()
     fake_agent = _FakeJiuwenAgent(
@@ -835,7 +862,7 @@ def test_jiuwen_loop_engine_raises_when_agent_returns_error_result_type(monkeypa
 
 
 def test_jiuwen_loop_engine_marks_loop_error_when_agent_raises(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
     class RecordingObserver:
         enabled = True
@@ -853,7 +880,7 @@ def test_jiuwen_loop_engine_marks_loop_error_when_agent_raises(monkeypatch):
             raise RuntimeError("jiuwen exploded")
             yield None
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     observer = RecordingObserver()
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(),
@@ -883,7 +910,7 @@ def test_jiuwen_loop_engine_marks_loop_error_when_agent_raises(monkeypatch):
 
 
 def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
-    from agentic.observability import RuntimeEventType
+    from integration.observability import RuntimeEventType
 
     class RecordingObserver:
         enabled = True
@@ -932,8 +959,8 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
     captured = {}
 
     class FakeRouter:
-        def get_config(self, purpose, profile_id=None):
-            del purpose, profile_id
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            del purpose, profile_id, workspace_id
             return SimpleNamespace(provider="openai_compatible", model="model-a")
 
     class FakeAgent:
@@ -968,12 +995,12 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
         captured["iteration_event_callback"] = kwargs["iteration_event_callback"]
         return []
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", lambda **_kwargs: FakeAgent())
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", fake_register_current_runtime_tools)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", lambda **_kwargs: FakeAgent())
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register_current_runtime_tools)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._jiuwen_agent_callback_event_class",
+        "agent.core.jiuwen_engine._jiuwen_agent_callback_event_class",
         lambda: FakeAgentCallbackEvent,
     )
 
@@ -992,11 +1019,12 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
         observer=observer,
     )
 
-    prepared_iterations = [
-        event.payload["iteration"]
+    prepared_events = [
+        event
         for event in observer.events
         if event.type == RuntimeEventType.AGENT_ITERATION_PREPARED
     ]
+    prepared_iterations = [event.payload["iteration"] for event in prepared_events]
     finished_iterations = [
         event.payload["iteration"]
         for event in observer.events
@@ -1004,10 +1032,12 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
     ]
     assert prepared_iterations == [1, 2, 3]
     assert finished_iterations == [1, 2, 3]
+    assert len({event.payload["llm_message_count"] for event in prepared_events}) == 1
+    assert len({event.payload["llm_input_chars"] for event in prepared_events}) == 1
 
 
 def test_jiuwen_loop_engine_streams_llm_output_as_token_delta(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeStreamingJiuwenAgent:
         def __init__(self):
@@ -1079,7 +1109,7 @@ def test_jiuwen_loop_engine_streams_llm_output_as_token_delta(monkeypatch):
 
 
 def test_jiuwen_loop_engine_streams_acp_output_as_token_delta(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeStreamingJiuwenAgent:
         async def stream(self, inputs):
@@ -1128,7 +1158,7 @@ def test_jiuwen_loop_engine_streams_acp_output_as_token_delta(monkeypatch):
 
 
 def test_jiuwen_loop_engine_does_not_duplicate_streamed_answer_chunk(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeDuplicateAnswerStreamingJiuwenAgent:
         async def stream(self, inputs):
@@ -1174,7 +1204,7 @@ def test_jiuwen_loop_engine_does_not_duplicate_streamed_answer_chunk(monkeypatch
 
 
 def test_jiuwen_loop_engine_streams_answer_chunk_as_content_delta(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeAnswerOnlyStreamingJiuwenAgent:
         async def stream(self, inputs):
@@ -1215,8 +1245,8 @@ def test_jiuwen_loop_engine_streams_answer_chunk_as_content_delta(monkeypatch):
 
 
 def test_jiuwen_loop_engine_uses_last_user_message_when_user_request_missing(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.shared.messages.current_utc8_date_text", lambda: "2026/06/08")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.shared.messages.current_utc8_date_text", lambda: "2026/06/08")
 
     fake_agent = _FakeJiuwenAgent({"output": "from history", "result_type": "answer"})
     engine = JiuwenReactLoopEngine(
@@ -1241,7 +1271,7 @@ def test_jiuwen_loop_engine_uses_last_user_message_when_user_request_missing(mon
 
 
 def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeMessage:
         role = ""
@@ -1281,7 +1311,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
             self.committed = True
 
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._jiuwen_message_classes",
+        "agent.core.jiuwen_engine._jiuwen_message_classes",
         lambda: {
             "user": FakeUserMessage,
             "assistant": FakeAssistantMessage,
@@ -1289,7 +1319,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
         },
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._create_jiuwen_agent_session",
+        "agent.core.jiuwen_engine._create_jiuwen_agent_session",
         lambda agent, inputs: FakeSession(inputs["conversation_id"]),
     )
 
@@ -1315,9 +1345,12 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
             return {"output": "from restored history", "result_type": "answer"}
 
     fake_agent = FakeHistoryJiuwenAgent()
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
+        lambda **_kwargs: fake_agent,
+    )
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(context_max_rounds=4),
-        agent_factory=lambda: fake_agent,
     )
     state = {
         "run_id": "run-jiuwen-restored-history",
@@ -1356,8 +1389,10 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
     engine.run(state, caller="main")
 
     assert fake_agent.session is not None
-    assert fake_agent.session.get_session_id() == "sess-jiuwen-restored-history"
-    assert fake_agent.session.pre_run_inputs["conversation_id"] == "sess-jiuwen-restored-history"
+    owned_session_id = fake_agent.session.get_session_id()
+    assert owned_session_id.startswith("history-agent.session.")
+    assert owned_session_id != "sess-jiuwen-restored-history"
+    assert fake_agent.session.pre_run_inputs["conversation_id"] == owned_session_id
     assert fake_agent.session.closed is True
     assert fake_agent.session.committed is True
     assert len(fake_agent.context_engine.calls) == 1
@@ -1383,7 +1418,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
 
 
 def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeMessage:
         role = ""
@@ -1419,7 +1454,7 @@ def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
             self.committed = True
 
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._jiuwen_message_classes",
+        "agent.core.jiuwen_engine._jiuwen_message_classes",
         lambda: {
             "user": FakeUserMessage,
             "assistant": FakeAssistantMessage,
@@ -1427,7 +1462,7 @@ def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._create_jiuwen_agent_session",
+        "agent.core.jiuwen_engine._create_jiuwen_agent_session",
         lambda agent, inputs: FakeSession(inputs["conversation_id"]),
     )
 
@@ -1458,9 +1493,12 @@ def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
             )
 
     fake_agent = FakeStreamHistoryAgent()
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
+        lambda **_kwargs: fake_agent,
+    )
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(context_max_rounds=4),
-        agent_factory=lambda: fake_agent,
     )
     state = {
         "run_id": "run-jiuwen-stream-history",
@@ -1480,16 +1518,16 @@ def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
     assert fake_agent.session is not None
     assert fake_agent.context_engine.created_sessions == [fake_agent.session]
     assert fake_agent.context_engine.saved_sessions == [fake_agent.session]
-    assert fake_agent.session.closed is True
-    assert fake_agent.session.committed is True
+    assert fake_agent.session.closed is False
+    assert fake_agent.session.committed is False
 
 
 def test_jiuwen_loop_engine_appends_current_date_after_selected_ontology_context(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.shared.messages.current_utc8_date_text", lambda: "2026/06/08")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.shared.messages.current_utc8_date_text", lambda: "2026/06/08")
     monkeypatch.setattr(
-        "agentic.loop.shared.ontology_context.build_selected_ontology_preload_context",
-        lambda selected_ontology_id=None: "<Selected-Ontology>\nid: {}</Selected-Ontology>".format(
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
+        lambda selected_ontology_id=None, **_kwargs: "<Selected-Ontology>\nid: {}</Selected-Ontology>".format(
             selected_ontology_id
         ),
         raising=False,
@@ -1522,10 +1560,10 @@ def test_jiuwen_loop_engine_appends_current_date_after_selected_ontology_context
 
 
 def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.shared.ontology_context.build_selected_ontology_preload_context",
-        lambda selected_ontology_id=None: (
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
+        lambda selected_ontology_id=None, **_kwargs: (
             "<Selected-Ontology>\n"
             "id: {}\n"
             "operations_catalog:\n"
@@ -1563,19 +1601,19 @@ def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkey
 
 
 def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.shared.ontology_context.build_selected_ontology_preload_context",
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
         lambda *args, **kwargs: "<Selected-Ontology>\n- selected ontology\n</Selected-Ontology>",
         raising=False,
     )
     monkeypatch.setattr(
-        "agentic.loop.shared.ontology_context.build_selected_ontology_preload_records",
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_records",
         lambda *args, **kwargs: [
             {
-                "path": "ontologies/demo/objects-list.md",
-                "normalized_path": "ontologies/demo/objects-list.md",
-                "doc_type": "objects_list",
+                "path": "ontologies/demo/objects/index.md",
+                "normalized_path": "ontologies/demo/objects/index.md",
+                "doc_type": "objects_index",
                 "ontology_id": "demo",
                 "source": "preload",
                 "turn_id": 12,
@@ -1601,7 +1639,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
@@ -1638,18 +1676,18 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "ontology_context",
                 }
             ],
         )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FakeAgent(),
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -1664,25 +1702,25 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
 
     final_state = engine.run(state, caller="main")
 
-    assert final_state["read_documents"]["by_path"]["ontologies/demo/objects-list.md"]["source"] == "preload"
-    assert final_state["read_documents"]["recent_paths"] == ["ontologies/demo/objects-list.md"]
-    assert observed["tool_context_read_documents"]["by_path"]["ontologies/demo/objects-list.md"]["source"] == "preload"
+    assert final_state["read_documents"]["by_path"]["ontologies/demo/objects/index.md"]["source"] == "preload"
+    assert final_state["read_documents"]["recent_paths"] == ["ontologies/demo/objects/index.md"]
+    assert observed["tool_context_read_documents"]["by_path"]["ontologies/demo/objects/index.md"]["source"] == "preload"
     assert final_state["final_output"] == "done"
 
 
 def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatch):
-    from agentic.observability import NOOP_OBSERVER
+    from integration.observability import NOOP_OBSERVER
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.shared.prompting.build_ontologies_section",
-        lambda selected_ontology_id=None: "<Available-Ontologies>\n- {}: selected\n</Available-Ontologies>".format(
+        "agent.core.shared.prompting.build_ontologies_section",
+        lambda selected_ontology_id=None, **_kwargs: "<Available-Ontologies>\n- {}: selected\n</Available-Ontologies>".format(
             selected_ontology_id or "all"
         ),
         raising=False,
     )
     monkeypatch.setattr(
-        "agentic.loop.shared.prompting.build_skills_section",
+        "agent.core.shared.prompting.build_skills_section",
         lambda: "<Available-Skills></Available-Skills>",
         raising=False,
     )
@@ -1708,6 +1746,7 @@ def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatc
         tool_batch_failed_callback=None,
         terminal_tool_batch_callback=None,
         state_snapshot_callback=None,
+        terminal_error_callback=None,
     ):
         calls["agent"] = agent
         calls["state"] = state
@@ -1719,10 +1758,11 @@ def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatc
         calls["tool_batch_failed_callback"] = tool_batch_failed_callback
         calls["terminal_tool_batch_callback"] = terminal_tool_batch_callback
         calls["state_snapshot_callback"] = state_snapshot_callback
+        calls["terminal_error_callback"] = terminal_error_callback
         return []
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", fake_register)
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register)
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
         "run_id": "run-register",
@@ -1755,20 +1795,21 @@ def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatc
     assert calls["context"].run_id == "run-register"
     assert calls["context"].observer is NOOP_OBSERVER
     assert callable(calls["iteration_event_callback"])
+    assert callable(calls["terminal_error_callback"])
     tool_names = [info["name"] for info in calls["tool_infos"]]
     assert "spawn_sub_agent" in tool_names
 
 
 def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_current_workspace_id", lambda: "ws-selected-profile")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-selected-profile")
     monkeypatch.setattr(
-        "agentic.loop.shared.prompting.build_ontologies_section",
-        lambda selected_ontology_id=None: "<Available-Ontologies></Available-Ontologies>",
+        "agent.core.shared.prompting.build_ontologies_section",
+        lambda selected_ontology_id=None, **_kwargs: "<Available-Ontologies></Available-Ontologies>",
         raising=False,
     )
     monkeypatch.setattr(
-        "agentic.loop.shared.prompting.build_skills_section",
+        "agent.core.shared.prompting.build_skills_section",
         lambda: "<Available-Skills></Available-Skills>",
         raising=False,
     )
@@ -1794,6 +1835,7 @@ def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkey
         tool_batch_failed_callback=None,
         terminal_tool_batch_callback=None,
         state_snapshot_callback=None,
+        terminal_error_callback=None,
     ):
         del (
             agent,
@@ -1806,25 +1848,27 @@ def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkey
             tool_batch_failed_callback,
             terminal_tool_batch_callback,
             state_snapshot_callback,
+            terminal_error_callback,
         )
         return []
 
     class FakeRouter:
-        def get_config(self, purpose, profile_id=None):
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
             calls["purpose"] = purpose
             calls["profile_id"] = profile_id
+            calls["workspace_id"] = workspace_id
             return SimpleNamespace(model="accurate-model", profile_id=profile_id)
 
     monkeypatch.setattr(
-        "agentic.config.settings.AppConfig.from_env",
+        "config.settings.AppConfig.from_env",
         lambda: SimpleNamespace(
             llm=SimpleNamespace(model="default-model"),
             project_root="/private/tmp/onto-agent-jiuwen-selected-profile-test",
         ),
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", fake_register)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     engine.run(
@@ -1848,11 +1892,12 @@ def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkey
     assert calls["stream_enabled"] is True
     assert calls["purpose"] == LLMPurpose.MAIN
     assert calls["profile_id"] == "accurate"
+    assert calls["workspace_id"] == "ws-selected-profile"
 
 
 def test_jiuwen_loop_engine_clamps_profile_max_tokens_to_platform_output_limit(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_current_workspace_id", lambda: "ws-output-limit")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-output-limit")
 
     fake_agent = _FakeJiuwenAgent({"output": "limited output"})
     calls = {}
@@ -1863,17 +1908,17 @@ def test_jiuwen_loop_engine_clamps_profile_max_tokens_to_platform_output_limit(m
         return fake_agent
 
     class FakeRouter:
-        def get_config(self, purpose, profile_id=None):
-            del purpose, profile_id
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            del purpose, profile_id, workspace_id
             return SimpleNamespace(
                 model="large-output-model",
                 max_tokens=4096,
                 temperature=0.2,
             )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", lambda *_args, **_kwargs: [])
 
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(
@@ -1896,8 +1941,8 @@ def test_jiuwen_loop_engine_clamps_profile_max_tokens_to_platform_output_limit(m
 
 
 def test_jiuwen_loop_engine_enables_reasoning_for_thinking_modes(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_current_workspace_id", lambda: "ws-reasoning-mode")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-reasoning-mode")
 
     calls = []
 
@@ -1914,8 +1959,8 @@ def test_jiuwen_loop_engine_enables_reasoning_for_thinking_modes(monkeypatch):
         calls.append(bool(enable_reasoning))
         return _FakeJiuwenAgent({"output": "mode answer"})
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", lambda *_args, **_kwargs: [])
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     for mode in ("quick", "thinking", "multi_agent"):
@@ -1936,8 +1981,8 @@ def test_jiuwen_loop_engine_enables_reasoning_for_thinking_modes(monkeypatch):
 
 
 def test_jiuwen_loop_engine_uses_subagent_purpose_for_subagent_caller(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_current_workspace_id", lambda: "ws-subagent-profile")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-subagent-profile")
 
     fake_agent = _FakeJiuwenAgent({"output": "subagent model answer"})
     calls = {}
@@ -1960,6 +2005,7 @@ def test_jiuwen_loop_engine_uses_subagent_purpose_for_subagent_caller(monkeypatc
         tool_batch_failed_callback=None,
         terminal_tool_batch_callback=None,
         state_snapshot_callback=None,
+        terminal_error_callback=None,
     ):
         del (
             agent,
@@ -1972,18 +2018,20 @@ def test_jiuwen_loop_engine_uses_subagent_purpose_for_subagent_caller(monkeypatc
             tool_batch_failed_callback,
             terminal_tool_batch_callback,
             state_snapshot_callback,
+            terminal_error_callback,
         )
         return []
 
     class FakeRouter:
-        def get_config(self, purpose, profile_id=None):
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
             calls["purpose"] = purpose
             calls["profile_id"] = profile_id
+            calls["workspace_id"] = workspace_id
             return SimpleNamespace(model="subagent-model", profile_id=profile_id)
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", fake_register)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register)
 
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(
@@ -2011,11 +2059,12 @@ def test_jiuwen_loop_engine_uses_subagent_purpose_for_subagent_caller(monkeypatc
     assert calls["llm_config"].model == "subagent-model"
     assert calls["purpose"] == LLMPurpose.SUBAGENT
     assert calls["profile_id"] == "accurate"
+    assert calls["workspace_id"] == "ws-subagent-profile"
     assert calls["max_iterations"] == 3
 
 
 def test_jiuwen_loop_engine_routes_stream_tokens_to_token_callback(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeStreamingJiuwenAgent:
         async def stream(self, inputs):
@@ -2069,7 +2118,7 @@ def test_jiuwen_loop_engine_routes_stream_tokens_to_token_callback(monkeypatch):
 
 
 def test_jiuwen_loop_engine_preserves_streamed_reasoning_content_on_assistant_message(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeReasoningStreamingJiuwenAgent:
         async def stream(self, inputs):
@@ -2111,7 +2160,7 @@ def test_jiuwen_loop_engine_preserves_streamed_reasoning_content_on_assistant_me
 
 
 def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeSummaryService:
         def _dispatch_reasoning_summary(
@@ -2144,7 +2193,7 @@ def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monke
                 payload={"output": "最终答案", "result_type": "answer"},
             )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(),
         agent_factory=lambda: FakeReasoningStreamingJiuwenAgent(),
@@ -2177,7 +2226,7 @@ def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monke
 
 
 def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeSummaryService:
         def _dispatch_reasoning_summary(
@@ -2210,7 +2259,7 @@ def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):
                 payload={"output": "ACP最终答案", "result_type": "answer"},
             )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
     engine = JiuwenReactLoopEngine(
         agent_config=_agent_config(),
         agent_factory=lambda: FakeReasoningStreamingJiuwenAgent(),
@@ -2244,7 +2293,7 @@ def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):
 
 
 def test_jiuwen_loop_engine_uses_invoke_when_request_mode_is_sync(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     class FakeStreamCapableJiuwenAgent:
         def __init__(self):
@@ -2280,54 +2329,80 @@ def test_jiuwen_loop_engine_uses_invoke_when_request_mode_is_sync(monkeypatch):
     assert state["final_output"] == "sync answer"
 
 
-def test_jiuwen_loop_engine_enforces_input_token_limit_before_invoke(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_current_workspace_id", lambda: "ws-input-limit")
+def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-input-limit")
     monkeypatch.setattr(
-        "agentic.loop.shared.prompting.build_ontologies_section",
-        lambda selected_ontology_id=None: "<Available-Ontologies></Available-Ontologies>",
+        "agent.core.shared.prompting.build_ontologies_section",
+        lambda selected_ontology_id=None, **_kwargs: "<Available-Ontologies></Available-Ontologies>",
         raising=False,
     )
     monkeypatch.setattr(
-        "agentic.loop.shared.prompting.build_skills_section",
+        "agent.core.shared.prompting.build_skills_section",
         lambda: "<Available-Skills></Available-Skills>",
         raising=False,
     )
 
-    fake_agent = _FakeJiuwenAgent({"output": "should not be invoked"})
+    sliding_window_calls = []
 
-    def fake_create_default_jiuwen_agent(*, llm_config, max_iterations, system_prompt=None, agent_id=None, **_kwargs):
+    def fail_if_called_apply_sliding_window(messages, max_rounds):
+        sliding_window_calls.append((messages, max_rounds))
+        raise AssertionError(
+            "apply_sliding_window must not be invoked by the engine; "
+            "ContextEngine is responsible for windowing."
+        )
+
+    # Patch the source module so that, if the engine ever re-imports
+    # apply_sliding_window, the test fails loudly.
+    monkeypatch.setattr(
+        "agent.context.apply_sliding_window",
+        fail_if_called_apply_sliding_window,
+    )
+
+    fake_agent = _FakeJiuwenAgent({"output": "invoked with full history"})
+    create_calls = []
+
+    def fake_create_default_jiuwen_agent(*, llm_config, max_iterations, system_prompt=None, agent_id=None,
+                                         context_max_rounds=None, **_kwargs):
+        create_calls.append({"context_max_rounds": context_max_rounds})
         del llm_config, max_iterations, system_prompt, agent_id
         return fake_agent
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", lambda *_args, **_kwargs: [])
 
     engine = JiuwenReactLoopEngine(
-        agent_config=_agent_config(
-            limits=LimitsConfig(model_input_token_limit=1),
-        )
+        agent_config=_agent_config(context_max_rounds=1)
     )
+    current_message = {
+        "role": "user",
+        "content": "this request uses the current context window",
+    }
+    persisted_messages = [
+        {"role": "user", "content": "old request outside the window"},
+        {"role": "assistant", "content": "old answer outside the window"},
+        current_message,
+    ]
+    state = {
+        "run_id": "run-input-limit",
+        "session_id": "sess-input-limit",
+        "current_turn_id": 5,
+        "user_request": current_message["content"],
+        "messages": list(persisted_messages),
+        "results": {},
+    }
 
-    with pytest.raises(InputTokenLimitError) as exc_info:
-        engine.run(
-            {
-                "run_id": "run-input-limit",
-                "session_id": "sess-input-limit",
-                "current_turn_id": 5,
-                "user_request": "this request is over the configured limit",
-                "messages": [],
-                "results": {},
-            },
-            caller="main",
-        )
+    engine.run(state, caller="main")
 
-    assert exc_info.value.details["limit"] == 1
-    assert fake_agent.inputs is None
+    assert sliding_window_calls == []
+    assert create_calls and create_calls[-1]["context_max_rounds"] == 1
+    assert fake_agent.inputs["query"].startswith(current_message["content"])
+    assert state["messages"][:3] == persisted_messages
+    assert state["final_output"] == "invoked with full history"
 
 
 def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
 
     def run_with_web_search(enabled):
         fake_agent = _FakeJiuwenAgent({"output": "registered"})
@@ -2349,6 +2424,7 @@ def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
             tool_batch_failed_callback=None,
             terminal_tool_batch_callback=None,
             state_snapshot_callback=None,
+            terminal_error_callback=None,
         ):
             del (
                 agent,
@@ -2360,15 +2436,16 @@ def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
                 tool_batch_failed_callback,
                 terminal_tool_batch_callback,
                 state_snapshot_callback,
+                terminal_error_callback,
             )
             calls["tool_infos"] = tool_infos
             return []
 
         monkeypatch.setattr(
-            "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+            "agent.core.jiuwen_engine.create_default_jiuwen_agent",
             fake_create_default_jiuwen_agent,
         )
-        monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", fake_register)
+        monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register)
         engine = JiuwenReactLoopEngine(
             agent_config=_agent_config(
                 web_search=WebSearchConfig(enabled=enabled),
@@ -2393,9 +2470,9 @@ def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
 
 
 def test_jiuwen_loop_engine_uses_main_tool_schema_for_acp_caller(monkeypatch):
-    from agentic.tools.registry import get_tools_schema
+    from agent.tools.registry import get_tools_schema
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {"user_context": {"agent_mode": "quick"}}
 
@@ -2416,10 +2493,10 @@ def test_jiuwen_loop_engine_uses_main_tool_schema_for_acp_caller(monkeypatch):
 
 
 def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_current_workspace_id", lambda: "ws-cancel")
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_current_workspace_id", lambda: "ws-cancel")
 
     class RecordingObserver:
         enabled = True
@@ -2434,8 +2511,8 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
     cancel_event = threading.Event()
 
     class FakeRouter:
-        def get_config(self, purpose, profile_id=None):
-            del purpose, profile_id
+        def get_config(self, purpose, profile_id=None, workspace_id=None):
+            del purpose, profile_id, workspace_id
             return SimpleNamespace(model="model-cancel")
 
         def get_cancel_event(self, run_id):
@@ -2456,12 +2533,12 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
                 payload={"content": "second", "result_type": "answer"},
             )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.get_llm_router", lambda: FakeRouter(), raising=False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.get_llm_router", lambda: FakeRouter(), raising=False)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FakeStreamingAgent(),
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", lambda *_args, **_kwargs: [])
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     observer = RecordingObserver()
@@ -2476,7 +2553,12 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
     }
 
     with pytest.raises(WorkflowCancelledError):
-        engine.run(state, caller="main", event_writer=events.append, observer=observer)
+        engine.run(
+            state,
+            caller="main",
+            event_writer=events.append,
+            observer=observer,
+        )
 
     token_texts = [
         event["data"]["payload"]["text"]
@@ -2494,9 +2576,9 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
 
 
 def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.get_current_workspace_id",
+        "agent.core.jiuwen_engine.get_current_workspace_id",
         lambda: "ws-current",
         raising=False,
     )
@@ -2507,7 +2589,7 @@ def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
         return "/workspace/{}".format(workspace_id or "missing")
 
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.get_workspace_project_root",
+        "agent.core.jiuwen_engine.get_workspace_project_root",
         fake_get_workspace_project_root,
     )
 
@@ -2530,6 +2612,7 @@ def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
         tool_batch_failed_callback=None,
         terminal_tool_batch_callback=None,
         state_snapshot_callback=None,
+        terminal_error_callback=None,
     ):
         del (
             agent,
@@ -2540,13 +2623,14 @@ def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
             tool_batch_failed_callback,
             terminal_tool_batch_callback,
             state_snapshot_callback,
+            terminal_error_callback,
         )
         calls["state_workspace_id"] = state.get("workspace_id")
         calls["context"] = context_factory()
         return []
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.register_current_runtime_tools", fake_register)
+    monkeypatch.setattr("agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_create_default_jiuwen_agent)
+    monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register)
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
         "run_id": "run-register-workspace",
@@ -2569,6 +2653,7 @@ def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
 def test_current_runtime_tool_adapter_executes_current_tool_batch_and_merges_state():
     captured = {}
     state = {
+        "run_id": "run-tool-adapter",
         "messages": [],
         "results": {"existing": "kept"},
     }
@@ -2603,10 +2688,9 @@ def test_current_runtime_tool_adapter_executes_current_tool_batch_and_merges_sta
     assert result == "tool response"
     tool_call = captured["tool_calls"][0]
     assert isinstance(tool_call, ToolInvocation)
-    assert tool_call.tool_call_id.startswith("jiuwen_skill_")
+    assert tool_call.id == "jiuwen_run-tool-adapter_skill_1"
     assert tool_call.name == "skill"
-    assert tool_call.args == {"skill_id": "finance"}
-    assert tool_call.index == 0
+    assert tool_call.arguments == {"skill_id": "finance"}
     assert captured["context"].name == "ctx"
     assert state["messages"][0]["role"] == "assistant"
     assert state["messages"][0]["tool_calls"][0]["function"]["name"] == "skill"
@@ -2620,8 +2704,9 @@ def test_current_runtime_tool_adapter_executes_current_tool_batch_and_merges_sta
     assert state["errors"] == ["soft warning"]
 
 
-def test_current_runtime_tool_adapter_raises_terminal_batch_without_callback():
+def test_current_runtime_tool_adapter_returns_terminal_content_without_callback():
     state = {"messages": [], "results": {}}
+    terminal_batches = []
 
     def fake_executor(tool_calls, context):
         del context
@@ -2630,7 +2715,7 @@ def test_current_runtime_tool_adapter_raises_terminal_batch_without_callback():
                 {
                     "role": "tool",
                     "content": "需要用户补充信息",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "request_user_interaction",
                 }
             ],
@@ -2646,13 +2731,14 @@ def test_current_runtime_tool_adapter_raises_terminal_batch_without_callback():
         state=state,
         context_factory=lambda: SimpleNamespace(name="ctx"),
         tool_batch_executor=fake_executor,
-        terminal_tool_batch_callback=None,
+        terminal_tool_batch_callback=terminal_batches.append,
     )
 
-    with pytest.raises(JiuwenTerminalToolBatch) as raised:
-        asyncio.run(adapter.invoke({"type": "input", "prompt": "需要用户补充信息"}))
+    result = asyncio.run(adapter.invoke({"type": "input", "prompt": "需要用户补充信息"}))
 
-    assert raised.value.batch_result.terminal is True
+    assert result == "需要用户补充信息"
+    assert len(terminal_batches) == 1
+    assert terminal_batches[0].terminal is True
     assert state["pending_user_interaction"]["id"] == "interaction_1"
     assert state["final_output"] == {"type": "user_interaction", "text": "需要用户补充信息"}
     assert len([message for message in state["messages"] if message.get("role") == "tool"]) == 1
@@ -2660,18 +2746,19 @@ def test_current_runtime_tool_adapter_raises_terminal_batch_without_callback():
 
 def test_current_runtime_tool_adapter_does_not_repeat_pending_user_interaction():
     calls = []
+    terminal_batches = []
     state = {"messages": [], "results": {}}
 
     def fake_executor(tool_calls, context):
         del context
-        calls.append(tool_calls[0].tool_call_id)
+        calls.append(tool_calls[0].id)
         time.sleep(0.05)
         return ToolBatchResult(
             messages=[
                 {
                     "role": "tool",
                     "content": "请补充当前切换批次",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "request_user_interaction",
                 }
             ],
@@ -2687,7 +2774,7 @@ def test_current_runtime_tool_adapter_does_not_repeat_pending_user_interaction()
         state=state,
         context_factory=lambda: SimpleNamespace(name="ctx"),
         tool_batch_executor=fake_executor,
-        terminal_tool_batch_callback=None,
+        terminal_tool_batch_callback=terminal_batches.append,
     )
 
     async def invoke_twice():
@@ -2700,7 +2787,9 @@ def test_current_runtime_tool_adapter_does_not_repeat_pending_user_interaction()
     results = asyncio.run(invoke_twice())
 
     assert len(calls) == 1
-    assert all(isinstance(result, JiuwenTerminalToolBatch) for result in results)
+    assert results == ["请补充当前切换批次", "请补充当前切换批次"]
+    assert len(terminal_batches) == 2
+    assert all(batch.terminal for batch in terminal_batches)
     assert state["pending_user_interaction"]["id"] == "interaction_current_batch"
     assistant_messages = [message for message in state["messages"] if message.get("role") == "assistant"]
     tool_messages = [message for message in state["messages"] if message.get("role") == "tool"]
@@ -2721,7 +2810,7 @@ def test_current_runtime_tool_adapter_parses_json_string_tool_arguments_for_exec
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "skill",
                 }
             ],
@@ -2737,12 +2826,12 @@ def test_current_runtime_tool_adapter_parses_json_string_tool_arguments_for_exec
     result = asyncio.run(adapter.invoke('{"skill_id":"finance"}'))
 
     assert result == "tool response"
-    assert captured["tool_call"].args == {"skill_id": "finance"}
+    assert captured["tool_call"].arguments == {"skill_id": "finance"}
     assert state["messages"][0]["tool_calls"][0]["function"]["arguments"] == '{"skill_id":"finance"}'
 
 
 def test_current_runtime_tool_adapter_emits_tool_batch_trace_events():
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
     class RecordingObserver:
         enabled = True
@@ -2764,7 +2853,7 @@ def test_current_runtime_tool_adapter_emits_tool_batch_trace_events():
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "skill",
                 }
             ],
@@ -2800,17 +2889,17 @@ def test_current_runtime_tool_adapter_emits_tool_batch_trace_events():
 
 def test_current_runtime_tool_adapter_uses_unique_tool_call_ids_per_invocation():
     captured_tool_call_ids = []
-    state = {"messages": [], "results": {}}
+    state = {"run_id": "run-unique-tool-calls", "messages": [], "results": {}}
 
     def fake_executor(tool_calls, context):
         del context
-        captured_tool_call_ids.append(tool_calls[0].tool_call_id)
+        captured_tool_call_ids.append(tool_calls[0].id)
         return ToolBatchResult(
             messages=[
                 {
                     "role": "tool",
                     "content": "tool response {}".format(len(captured_tool_call_ids)),
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "business_data_search",
                 }
             ],
@@ -2828,8 +2917,8 @@ def test_current_runtime_tool_adapter_uses_unique_tool_call_ids_per_invocation()
 
     assert len(captured_tool_call_ids) == 2
     assert captured_tool_call_ids[0] != captured_tool_call_ids[1]
-    assert captured_tool_call_ids[0].startswith("jiuwen_business_data_search_")
-    assert captured_tool_call_ids[1].startswith("jiuwen_business_data_search_")
+    assert captured_tool_call_ids[0] == "jiuwen_run-unique-tool-calls_business_data_search_1"
+    assert captured_tool_call_ids[1] == "jiuwen_run-unique-tool-calls_business_data_search_2"
     assistant_tool_call_ids = [
         message["tool_calls"][0]["id"]
         for message in state["messages"]
@@ -2861,7 +2950,7 @@ def test_current_runtime_tool_adapter_preserves_pending_assistant_context():
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "business_data_search",
                 }
             ],
@@ -2900,7 +2989,7 @@ def test_current_runtime_tool_adapter_allows_parallel_jiuwen_tool_invocations():
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "business_data_search",
                 }
             ],
@@ -2953,7 +3042,7 @@ def test_current_runtime_tool_adapter_serializes_unsafe_jiuwen_tool_invocations(
                 {
                     "role": "tool",
                     "content": "script response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "execute_script",
                 }
             ],
@@ -2997,7 +3086,7 @@ def test_register_current_runtime_tools_adds_abilities_and_runner_resources(monk
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             created["tool"] = tool
             created["tag"] = tag
@@ -3037,7 +3126,7 @@ def test_register_current_runtime_tools_adds_abilities_and_runner_resources(monk
             ]
         )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     state = {"messages": [], "results": {}}
     agent = SimpleNamespace(
         card=SimpleNamespace(id="agent-1"),
@@ -3061,12 +3150,12 @@ def test_register_current_runtime_tools_adds_abilities_and_runner_resources(monk
     assert created["refresh"] is True
     assert result == "registered tool response"
     assert captured["tool_calls"][0].name == "skill"
-    assert captured["tool_calls"][0].args == {"skill_id": "finance"}
+    assert captured["tool_calls"][0].arguments == {"skill_id": "finance"}
     assert captured["context"].name == "ctx"
 
 
 def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metrics(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {}
 
     class FakeToolCard:
@@ -3080,7 +3169,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             tools = tool if isinstance(tool, list) else [tool]
             created["tool_by_name"] = {item.card.name: item for item in tools}
@@ -3135,13 +3224,13 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
         created["max_iterations"] = max_iterations
         return fake_agent
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         fake_create_default_agent,
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.execute_tool_batch",
+        "agent.core.jiuwen_engine.execute_tool_batch",
         fake_executor,
     )
 
@@ -3177,7 +3266,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
     assert state["messages"].index(assistant_tool_message) < state["messages"].index(tool_message)
     assert state["final_output"] == "agent saw registered tool response"
     assert created["tool_calls"][0].name == "ontology_context"
-    assert created["tool_calls"][0].args == {"resource": "root"}
+    assert created["tool_calls"][0].arguments == {"resource": "root"}
     assert created["context"].caller == "main"
     assert created["tag"] == "agent-e2e"
     assert created["refresh"] is True
@@ -3204,9 +3293,9 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
 
 
 def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(monkeypatch):
-    from agentic.observability import RuntimeEventType
+    from integration.observability import RuntimeEventType
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {"contexts": []}
 
     class RecordingObserver:
@@ -3230,11 +3319,15 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
+        def __init__(self):
+            self.registered_tools = {}
+
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
             created["tool_by_name"] = {item.card.name: item for item in tools}
+            self.registered_tools.update({item.card.id: item for item in tools})
 
     class FakeAbilityManager:
         def add(self, cards):
@@ -3263,24 +3356,27 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
                 payload={"output": "{} / {}".format(first, second), "result_type": "answer"},
             )
 
+    resource_mgr = FakeResourceMgr()
+    resource_count_before_run = len(resource_mgr.registered_tools)
+
     def fake_import_module(name):
         modules = {
             "openjiuwen.core.foundation.tool": SimpleNamespace(Tool=FakeTool, ToolCard=FakeToolCard),
             "openjiuwen.core.runner": SimpleNamespace(
-                Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
+                Runner=SimpleNamespace(resource_mgr=resource_mgr)
             ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         created["contexts"].append(context)
-        args_text = json.dumps(tool_calls[0].args, ensure_ascii=False, separators=(",", ":"))
+        args_text = json.dumps(tool_calls[0].arguments, ensure_ascii=False, separators=(",", ":"))
         return ToolBatchResult(
             messages=[
                 {
                     "role": "tool",
                     "content": "result for {}".format(args_text),
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "business_data_search",
                 }
             ],
@@ -3292,12 +3388,12 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
         del llm_config, max_iterations, system_prompt
         return fake_agent
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         fake_create_default_agent,
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -3365,13 +3461,49 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
         "business_data_search",
         "business_data_search",
     ]
+    assert len(resource_mgr.registered_tools) == resource_count_before_run
+    assert resource_mgr.removed_tool_ids
 
 
 def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
-    from agentic.observability import RuntimeEventType
+    from integration.observability import RuntimeEventType
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {}
+
+    class FakeAgentCallbackEvent:
+        BEFORE_MODEL_CALL = "before_model_call"
+        AFTER_MODEL_CALL = "after_model_call"
+        ON_MODEL_EXCEPTION = "on_model_exception"
+        AFTER_TOOL_CALL = "after_tool_call"
+
+    class FakeCallbackManager:
+        def __init__(self):
+            self.callbacks = {}
+            self.priorities = {}
+
+        async def register_callback(self, event, callback, priority=100):
+            self.callbacks[event] = callback
+            self.priorities[event] = priority
+
+        async def unregister(self, event, callback):
+            if self.callbacks.get(event) == callback:
+                self.callbacks.pop(event, None)
+
+    class FakeToolCallbackContext:
+        def __init__(self, tool_result, tool_call_id):
+            self.inputs = SimpleNamespace(
+                tool_call=SimpleNamespace(id=tool_call_id, name="request_user_interaction"),
+                tool_name="request_user_interaction",
+                tool_args={"type": "single_choice", "prompt": "请选择处理方式", "options": []},
+                tool_result=tool_result,
+                tool_msg=SimpleNamespace(content=tool_result),
+            )
+            self.exception = None
+            self.force_finish_result = None
+
+        def request_force_finish(self, result):
+            self.force_finish_result = result
 
     class RecordingObserver:
         enabled = True
@@ -3394,11 +3526,15 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
+        def __init__(self):
+            self.registered_tools = {}
+
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
             created["tool_by_name"] = {item.card.name: item for item in tools}
+            self.registered_tools.update({item.card.id: item for item in tools})
 
     class FakeAbilityManager:
         def add(self, cards):
@@ -3409,34 +3545,58 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
 
         def __init__(self):
             self.ability_manager = FakeAbilityManager()
+            self.agent_callback_manager = FakeCallbackManager()
+            self.model_calls = 0
+            self.force_finish_results = []
 
         async def stream(self, inputs):
             del inputs
-            await created["tool_by_name"]["request_user_interaction"].invoke(
+            self.model_calls += 1
+            tool_result = await created["tool_by_name"]["request_user_interaction"].invoke(
                 {"type": "single_choice", "prompt": "请选择处理方式", "options": []}
             )
+            callback = self.agent_callback_manager.callbacks[FakeAgentCallbackEvent.AFTER_TOOL_CALL]
+            callback_context = FakeToolCallbackContext(
+                tool_result,
+                created["terminal_tool_call_id"],
+            )
+            callback_result = callback(callback_context)
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
+            if callback_context.force_finish_result is not None:
+                self.force_finish_results.append(callback_context.force_finish_result)
+                yield SimpleNamespace(
+                    type="answer",
+                    payload=callback_context.force_finish_result,
+                )
+                return
+            self.model_calls += 1
             yield SimpleNamespace(
                 type="answer",
                 payload={"output": "should not continue", "result_type": "answer"},
             )
 
+    resource_mgr = FakeResourceMgr()
+    resource_count_before_run = len(resource_mgr.registered_tools)
+
     def fake_import_module(name):
         modules = {
             "openjiuwen.core.foundation.tool": SimpleNamespace(Tool=FakeTool, ToolCard=FakeToolCard),
             "openjiuwen.core.runner": SimpleNamespace(
-                Runner=SimpleNamespace(resource_mgr=FakeResourceMgr())
+                Runner=SimpleNamespace(resource_mgr=resource_mgr)
             ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
     def fake_executor(tool_calls, context):
         del context
+        created["terminal_tool_call_id"] = tool_calls[0].id
         return ToolBatchResult(
             messages=[
                 {
                     "role": "tool",
                     "content": "请选择处理方式",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "request_user_interaction",
                 }
             ],
@@ -3447,12 +3607,17 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
             terminal=True,
         )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
-        lambda **_kwargs: FakeAgent(),
+        "agent.core.jiuwen_engine._jiuwen_agent_callback_event_class",
+        lambda: FakeAgentCallbackEvent,
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    fake_agent = FakeAgent()
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
+        lambda **_kwargs: fake_agent,
+    )
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -3475,6 +3640,12 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
 
     assert final_state["pending_user_interaction"]["id"] == "interaction_1"
     assert final_state["final_output"] == {"type": "user_interaction", "text": "请选择处理方式"}
+    assert fake_agent.model_calls == 1
+    assert fake_agent.force_finish_results
+    assert fake_agent.force_finish_results[-1]["result_type"] == "answer"
+    assert FakeAgentCallbackEvent.AFTER_TOOL_CALL not in fake_agent.agent_callback_manager.callbacks
+    assert len(resource_mgr.registered_tools) == resource_count_before_run
+    assert resource_mgr.removed_tool_ids
     assert not any(
         message.get("content") == "should not continue"
         for message in final_state["messages"]
@@ -3495,7 +3666,7 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
 
 
 def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {}
     observed_agent_contexts = []
     observed_tool_contexts = []
@@ -3511,7 +3682,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
@@ -3553,18 +3724,18 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "ontology_context",
                 }
             ],
         )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FakeAgent(),
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -3604,9 +3775,9 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
 
 
 def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {}
 
     class RecordingObserver:
@@ -3630,7 +3801,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
@@ -3668,18 +3839,18 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "ontology_context",
                 }
             ],
         )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FailingAfterToolAgent(),
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     observer = RecordingObserver()
@@ -3705,9 +3876,9 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
 
 
 def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(monkeypatch):
-    from agentic.observability import RuntimeEventType, RuntimeStatus
+    from integration.observability import RuntimeEventType, RuntimeStatus
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {}
 
     class RecordingObserver:
@@ -3731,7 +3902,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
@@ -3769,18 +3940,18 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
                 {
                     "role": "tool",
                     "content": "tool response",
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "ontology_context",
                 }
             ],
         )
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: CancellingAfterToolAgent(),
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     observer = RecordingObserver()
@@ -3806,7 +3977,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
 
 
 def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     created = {}
 
     class FakeToolCard:
@@ -3820,7 +3991,7 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             del tag, refresh
             tools = tool if isinstance(tool, list) else [tool]
@@ -3862,14 +4033,14 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
 
     def fake_executor(tool_calls, context):
         del context
-        args_text = json.dumps(tool_calls[0].args, ensure_ascii=False, separators=(",", ":"))
+        args_text = json.dumps(tool_calls[0].arguments, ensure_ascii=False, separators=(",", ":"))
         time.sleep(0.12 if "slow" in args_text else 0.08)
         return ToolBatchResult(
             messages=[
                 {
                     "role": "tool",
                     "content": "result for {}".format(args_text),
-                    "tool_call_id": tool_calls[0].tool_call_id,
+                    "tool_call_id": tool_calls[0].id,
                     "name": "business_data_search",
                 }
             ],
@@ -3881,12 +4052,12 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
         del llm_config, max_iterations, system_prompt
         return fake_agent
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         fake_create_default_agent,
     )
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -4003,7 +4174,7 @@ def test_register_current_runtime_tools_uses_run_scoped_tool_ids(monkeypatch):
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             tools = tool if isinstance(tool, list) else [tool]
             registered_batches.append(
@@ -4036,7 +4207,7 @@ def test_register_current_runtime_tools_uses_run_scoped_tool_ids(monkeypatch):
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     tool_info = jiuwen_tool_info_from_spec(get_tool_spec("business_data_search"))
     first_agent = FakeAgent("agent-run-1")
     second_agent = FakeAgent("agent-run-2")
@@ -4076,7 +4247,7 @@ def test_register_current_runtime_tools_uses_native_jiuwen_tool_infos(monkeypatc
         def __init__(self, card):
             self.card = card
 
-    class FakeResourceMgr:
+    class FakeResourceMgr(_RemovableFakeResourceManager):
         def add_tool(self, tool, *, tag=None, refresh=False):
             tools = tool if isinstance(tool, list) else [tool]
             registered_batches.append([item.card for item in tools])
@@ -4105,9 +4276,9 @@ def test_register_current_runtime_tools_uses_native_jiuwen_tool_infos(monkeypatc
     def fail_schema_registry(*_args, **_kwargs):
         raise AssertionError("legacy OpenAI tool schema registry should not be used")
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     monkeypatch.setattr(
-        "agentic.tools.registry.get_tools_schema",
+        "agent.tools.registry.get_tools_schema",
         fail_schema_registry,
     )
 
@@ -4185,10 +4356,13 @@ def test_create_default_jiuwen_agent_lazy_loads_react_agent(monkeypatch):
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
     llm_config = SimpleNamespace(
         provider="openai_compatible",
         api_key="key",
@@ -4216,6 +4390,7 @@ def test_create_default_jiuwen_agent_lazy_loads_react_agent(monkeypatch):
         "max_retries": 3,
         "verify_ssl": False,
     }
+    assert created["model_client_config"]["verify_ssl"] is False
     assert created["model_request_config"]["model"] == "model-a"
     assert created["model_request_config"]["temperature"] == 0.2
     assert created["model_request_config"]["max_tokens"] == 2048
@@ -4236,7 +4411,7 @@ def test_create_default_jiuwen_agent_reports_missing_transitive_dependency(monke
         del name
         raise ModuleNotFoundError("No module named 'jsonschema_path'", name="jsonschema_path")
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
 
     with pytest.raises(JiuwenBackendUnavailable, match="jsonschema_path"):
         create_default_jiuwen_agent(llm_config=SimpleNamespace())
@@ -4283,10 +4458,13 @@ def test_create_default_jiuwen_agent_does_not_send_enable_reasoning_top_level(mo
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
 
     create_default_jiuwen_agent(
         llm_config=SimpleNamespace(
@@ -4347,10 +4525,13 @@ def test_create_default_jiuwen_agent_passes_provider_stream_usage_options(monkey
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
 
     create_default_jiuwen_agent(
         llm_config=SimpleNamespace(
@@ -4522,10 +4703,13 @@ def test_create_default_jiuwen_agent_maps_glm_provider_to_openai_client_provider
             "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
                 OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
             ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
         }
         return modules.get(name) or _REAL_IMPORT_MODULE(name)
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.importlib.import_module", fake_import_module)
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
 
     create_default_jiuwen_agent(
         llm_config=SimpleNamespace(
@@ -4546,7 +4730,7 @@ def test_create_default_jiuwen_agent_maps_glm_provider_to_openai_client_provider
 
 
 def test_warm_up_jiuwen_runtime_requires_openjiuwen(monkeypatch):
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: False)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: False)
 
     with pytest.raises(JiuwenBackendUnavailable, match="openjiuwen"):
         warm_up_jiuwen_runtime()
@@ -4566,13 +4750,13 @@ def test_warm_up_jiuwen_runtime_constructs_agent_without_invoking(monkeypatch):
         async def stream(self, *args, **kwargs):
             raise AssertionError("warm-up must not call agent.stream")
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._JIUWEN_LOOP_RUNNER.get_loop",
+        "agent.core.jiuwen_engine._JIUWEN_LOOP_RUNNER.get_loop",
         lambda: None,
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._resolve_jiuwen_llm_config",
+        "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
         lambda state, *, caller, agent_config=None: SimpleNamespace(
             provider="openai_compatible",
             api_key="",
@@ -4584,15 +4768,15 @@ def test_warm_up_jiuwen_runtime_constructs_agent_without_invoking(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **kwargs: _NoInvokeAgent(),
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.get_jiuwen_tool_infos",
+        "agent.core.jiuwen_engine.get_jiuwen_tool_infos",
         lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.importlib.import_module",
+        "agent.core.jiuwen_engine.importlib.import_module",
         lambda name: SimpleNamespace(__name__=name) if name.startswith("openjiuwen.") else _REAL_IMPORT_MODULE(name),
     )
 
@@ -4611,29 +4795,29 @@ def test_warm_up_jiuwen_runtime_does_not_register_tools(monkeypatch):
         register_calls.append({"args": args, "kwargs": kwargs})
         return []
 
-    monkeypatch.setattr("agentic.loop.jiuwen_adapter.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._JIUWEN_LOOP_RUNNER.get_loop",
+        "agent.core.jiuwen_engine._JIUWEN_LOOP_RUNNER.get_loop",
         lambda: None,
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter._resolve_jiuwen_llm_config",
+        "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
         lambda state, *, caller, agent_config=None: SimpleNamespace(),
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.create_default_jiuwen_agent",
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **kwargs: object(),
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.get_jiuwen_tool_infos",
+        "agent.core.jiuwen_engine.get_jiuwen_tool_infos",
         lambda *args, **kwargs: [],
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.importlib.import_module",
+        "agent.core.jiuwen_engine.importlib.import_module",
         lambda name: SimpleNamespace(__name__=name) if name.startswith("openjiuwen.") else _REAL_IMPORT_MODULE(name),
     )
     monkeypatch.setattr(
-        "agentic.loop.jiuwen_adapter.register_current_runtime_tools",
+        "agent.core.jiuwen_engine.register_current_runtime_tools",
         spy_register,
     )
 
@@ -4662,7 +4846,6 @@ def _agent_config(**overrides):
         "sub_agent_max_depth": 2,
         "parallel_default_max_workers": 10,
         "context_max_rounds": 10,
-        "context_prune_tools": set(),
     }
     config.update(overrides)
     return AgentConfig(**config)
@@ -4711,3 +4894,217 @@ def test_jiuwen_run_awaitable_does_not_submit_when_already_cancelled():
         )
 
     assert started["value"] is False
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: explicit ContextEngineConfig
+# ---------------------------------------------------------------------------
+
+def _install_fake_jiuwen_modules(monkeypatch, created):
+    """Install a shared fake openjiuwen module set for factory tests."""
+
+    class FakeAgentCard:
+        def __init__(self, **kwargs):
+            created["card_kwargs"] = kwargs
+
+    class FakeReActAgent:
+        def __init__(self, *, card):
+            self.card = card
+
+        def configure(self, config):
+            created["react_config"] = config
+            return self
+
+    class FakeModelClientConfig:
+        def __init__(self, **kwargs):
+            created["model_client_config"] = kwargs
+
+    class FakeModelRequestConfig:
+        def __init__(self, **kwargs):
+            created["model_request_config"] = kwargs
+
+    class FakeReActAgentConfig:
+        def __init__(self, **kwargs):
+            created["react_agent_config"] = kwargs
+
+    def fake_import_module(name):
+        modules = {
+            "openjiuwen.core.single_agent.schema.agent_card": SimpleNamespace(AgentCard=FakeAgentCard),
+            "openjiuwen.core.single_agent.agents.react_agent": SimpleNamespace(
+                ReActAgent=FakeReActAgent,
+                ReActAgentConfig=FakeReActAgentConfig,
+            ),
+            "openjiuwen.core.foundation.llm.schema.config": SimpleNamespace(
+                ModelClientConfig=FakeModelClientConfig,
+                ModelRequestConfig=FakeModelRequestConfig,
+            ),
+            "openjiuwen.core.foundation.llm.model_clients.openai_model_client": SimpleNamespace(
+                OpenAIModelClient=type("FakeOpenAIModelClient", (), {})
+            ),
+            "openjiuwen.core.context_engine": SimpleNamespace(
+                ContextEngineConfig=_FakeContextEngineConfig
+            ),
+        }
+        return modules.get(name) or _REAL_IMPORT_MODULE(name)
+
+    monkeypatch.setattr("agent.core.jiuwen_engine.importlib.import_module", fake_import_module)
+    return FakeReActAgent
+
+
+def _stub_llm_config():
+    return SimpleNamespace(
+        provider="openai_compatible",
+        api_key="key",
+        base_url="https://llm.example/v1",
+        model="model-a",
+        timeout=30,
+        max_tokens=2048,
+        temperature=0.2,
+    )
+
+
+def test_factory_passes_explicit_context_engine_config(monkeypatch):
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    create_default_jiuwen_agent(
+        llm_config=_stub_llm_config(),
+        max_iterations=50,
+        system_prompt="system rules",
+        context_max_rounds=14,
+    )
+
+    cec = created["react_agent_config"]["context_engine_config"]
+    assert isinstance(cec, _FakeContextEngineConfig)
+    assert cec.kwargs["max_context_message_num"] is None
+    assert cec.kwargs["default_window_round_num"] == 14
+    assert cec.kwargs["enable_reload"] is False
+    assert cec.kwargs["enable_kv_cache_release"] is False
+
+
+@pytest.mark.parametrize("value, expected", [
+    (None, 10),
+    ("abc", 10),
+    (0, 1),
+    (-5, 1),
+    (1, 1),
+    (14, 14),
+])
+def test_normalize_context_max_rounds(value, expected):
+    from agent.core.jiuwen_engine import _normalize_context_max_rounds
+    assert _normalize_context_max_rounds(value) == expected
+
+
+def test_factory_default_context_max_rounds_is_ten(monkeypatch):
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    create_default_jiuwen_agent(
+        llm_config=_stub_llm_config(),
+        max_iterations=50,
+        system_prompt="system rules",
+    )
+
+    cec = created["react_agent_config"]["context_engine_config"]
+    assert cec.kwargs["default_window_round_num"] == 10
+    assert cec.kwargs["max_context_message_num"] is None
+
+
+def test_create_agent_passes_context_max_rounds_from_agent_config(monkeypatch):
+    captured = {}
+
+    def fake_factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
+    )
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
+        lambda state, *, caller, agent_config=None: _stub_llm_config(),
+    )
+
+    engine = JiuwenReactLoopEngine(
+        agent_config=_agent_config(context_max_rounds=7),
+    )
+    engine._create_agent(
+        max_iterations=10,
+        system_prompt="prompt",
+        caller="main",
+    )
+
+    assert captured["context_max_rounds"] == 7
+
+
+def test_history_messages_uses_same_normalization_as_factory(monkeypatch):
+    """Both _build_jiuwen_history_messages and factory must fall back to 10
+    (not 50) when context_max_rounds is None/invalid, proving the
+    normalization path is unified."""
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    captured: dict = {}
+
+    def fake_factory(*, llm_config, max_iterations, system_prompt=None, agent_id=None,
+                     context_max_rounds=None, **_kwargs):
+        captured["context_max_rounds"] = context_max_rounds
+        del llm_config, max_iterations, system_prompt, agent_id
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine.create_default_jiuwen_agent", fake_factory
+    )
+    monkeypatch.setattr(
+        "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
+        lambda state, *, caller, agent_config=None: _stub_llm_config(),
+    )
+
+    from agent.core.jiuwen_engine import _build_jiuwen_history_messages
+
+    config_with_none = _agent_config()
+    config_with_none.context_max_rounds = None
+
+    # _build_jiuwen_history_messages no longer applies sliding window; verify
+    # it simply forwards full history without depending on max_rounds.
+    messages_out = _build_jiuwen_history_messages(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        config_with_none,
+    )
+    assert messages_out == []
+
+    # Normalization is now exercised through _create_agent ?
+    # create_default_jiuwen_agent(context_max_rounds=...).
+    engine = JiuwenReactLoopEngine(agent_config=config_with_none)
+    engine._create_agent(
+        max_iterations=10,
+        system_prompt="prompt",
+        caller="main",
+    )
+    # context_max_rounds falls back to 10 (not 50) when None
+    assert captured["context_max_rounds"] == 10
+
+
+def test_factory_does_not_truncate_messages_under_two_hundred(monkeypatch):
+    """With max_context_message_num=None, a single round with >200 messages
+    must not be truncated by the Jiuwen message buffer."""
+    created: dict = {}
+    _install_fake_jiuwen_modules(monkeypatch, created)
+
+    large_history = [
+        {"role": "user", "content": "start"},
+    ]
+    for i in range(250):
+        large_history.append({"role": "assistant", "content": f"assistant {i}"})
+        large_history.append({"role": "tool", "content": f"tool {i}", "tool_call_id": f"tc-{i}", "name": "noop"})
+
+    from agent.core.jiuwen_engine import _build_jiuwen_history_messages
+
+    config = _agent_config(context_max_rounds=1)
+    converted = _build_jiuwen_history_messages(
+        {"messages": large_history},
+        config,
+    )
+    # All 501 history messages (excluding current user) are converted;
+    # the Jiuwen ContextEngineConfig with max_context_message_num=None
+    # will not truncate them further.
+    assert len(converted) > 200

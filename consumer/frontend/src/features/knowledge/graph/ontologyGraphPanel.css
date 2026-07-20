@@ -1,0 +1,249 @@
+.mwr .ontology-runtime-graph-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.mwr .ontology-runtime-graph-shell.fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  max-width: none;
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  background: var(--canvas);
+}
+
+.mwr .ontology-runtime-graph-shell.fullscreen .ui-section-card {
+  min-height: calc(100vh - 36px);
+}
+
+.mwr .ontology-runtime-graph-toolbar,
+.mwr .ontology-runtime-graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.mwr .ontology-runtime-graph-toolbar {
+  justify-content: flex-end;
+}
+
+.mwr .ontology-runtime-graph-legend {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mwr .ontology-runtime-graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mwr .ontology-runtime-graph-legend i {
+  width: 10px;
+  height: 10px;
+  border: 1px solid color-mix(in srgb, var(--blue) 52%, var(--hair));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--blue) 15%, var(--surface-card));
+}
+
+.mwr .ontology-runtime-graph-legend i.object {
+  border-color: color-mix(in srgb, var(--good) 52%, var(--hair));
+  background: color-mix(in srgb, var(--good) 14%, var(--surface-card));
+}
+
+.mwr .ontology-runtime-graph-legend i.live {
+  border-color: #2878d0;
+  background: #4b9cf5;
+  box-shadow: 0 0 0 3px rgba(75, 156, 245, .18);
+}
+
+.mwr .ontology-runtime-graph-legend i.recent {
+  border-color: #c58211;
+  background: #f3b64d;
+}
+
+.mwr .ontology-runtime-graph-legend i.history {
+  border-color: #807d76;
+  background: #b6b2a9;
+}
+
+.mwr .ontology-runtime-graph-legend i.edge {
+  width: 22px;
+  height: 0;
+  border: 0;
+  border-top: 2px solid #a8a59c;
+  border-radius: 0;
+  background: transparent;
+}
+
+.mwr .ontology-runtime-graph-legend i.edge.inferred {
+  border-top-style: dashed;
+}
+
+.mwr .ontology-runtime-graph-canvas {
+  min-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-md);
+  background-color: var(--surface-card);
+  background-image: radial-gradient(color-mix(in srgb, var(--ink) 15%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
+  scroll-behavior: smooth;
+}
+
+.mwr .ontology-runtime-graph-canvas svg {
+  display: block;
+  max-width: none;
+}
+
+.mwr .ontology-runtime-edge {
+  fill: none;
+  stroke: #b9b7ae;
+  stroke-width: 1.4;
+  transition: stroke .18s ease, opacity .18s ease, stroke-width .18s ease;
+}
+
+.mwr .ontology-runtime-edge.inferred {
+  stroke-dasharray: 5 5;
+  opacity: .65;
+}
+
+.mwr .ontology-runtime-edge.hit-live {
+  stroke: #2878d0;
+  stroke-width: 3;
+  opacity: 1;
+}
+
+.mwr .ontology-runtime-edge.hit-recent {
+  stroke: #c58211;
+  stroke-width: 2.4;
+  opacity: .9;
+}
+
+.mwr .ontology-runtime-edge.hit-history {
+  stroke: #807d76;
+  stroke-width: 2;
+  opacity: .65;
+}
+
+.mwr .ontology-runtime-node {
+  cursor: default;
+  outline: none;
+}
+
+.mwr .ontology-runtime-node.has-source {
+  cursor: pointer;
+}
+
+.mwr .ontology-runtime-node rect {
+  fill: color-mix(in srgb, var(--blue) 15%, var(--surface-card));
+  stroke: color-mix(in srgb, var(--blue) 56%, var(--hair));
+  stroke-width: 1.2;
+  transition: fill .18s ease, stroke .18s ease, filter .18s ease;
+}
+
+.mwr .ontology-runtime-node.object rect {
+  fill: color-mix(in srgb, var(--good) 14%, var(--surface-card));
+  stroke: color-mix(in srgb, var(--good) 58%, var(--hair));
+}
+
+.mwr .ontology-runtime-node.has-source:hover rect,
+.mwr .ontology-runtime-node.has-source:focus rect {
+  stroke: var(--blue);
+  stroke-width: 2.2;
+  filter: drop-shadow(0 3px 4px rgba(35, 75, 125, .14));
+}
+
+.mwr .ontology-runtime-node.hit-live rect {
+  fill: color-mix(in srgb, var(--blue) 24%, var(--surface-card));
+  stroke: #2878d0;
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 6px rgba(40, 120, 208, .36));
+  animation: ontology-runtime-pulse 1.5s ease-in-out infinite;
+}
+
+.mwr .ontology-runtime-node.hit-recent rect {
+  fill: color-mix(in srgb, var(--warn) 20%, var(--surface-card));
+  stroke: #c58211;
+  stroke-width: 2.2;
+}
+
+.mwr .ontology-runtime-node.hit-history rect {
+  fill: color-mix(in srgb, var(--muted) 14%, var(--surface-card));
+  stroke: color-mix(in srgb, var(--muted) 65%, var(--hair));
+  stroke-width: 1.8;
+}
+
+.mwr .ontology-runtime-node text {
+  fill: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.mwr .ontology-runtime-node text.source {
+  fill: var(--muted);
+  font-size: 9px;
+  font-weight: 400;
+}
+
+.mwr .ontology-runtime-graph-edge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mwr .ontology-runtime-graph-edge-list span {
+  padding: 4px 8px;
+  border-radius: 99px;
+  background: var(--surface-subtle);
+  color: var(--ink2);
+  font-size: 11px;
+}
+
+.mwr .ontology-runtime-graph-edge-list span.hit-live {
+  background: color-mix(in srgb, var(--blue) 20%, var(--surface-card));
+  color: color-mix(in srgb, var(--blue) 62%, var(--ink));
+}
+
+.mwr .ontology-runtime-graph-edge-list span.hit-recent {
+  background: color-mix(in srgb, var(--warn) 20%, var(--surface-card));
+  color: color-mix(in srgb, var(--warn) 65%, var(--ink));
+}
+
+.mwr .ontology-runtime-graph-edge-list span.hit-history {
+  background: color-mix(in srgb, var(--muted) 14%, var(--surface-card));
+  color: var(--ink2);
+}
+
+.mwr .ontology-runtime-graph-sr-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes ontology-runtime-pulse {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(40, 120, 208, .22)); }
+  50% { filter: drop-shadow(0 0 8px rgba(40, 120, 208, .52)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mwr .ontology-runtime-node.hit-live rect { animation: none; }
+  .mwr .ontology-runtime-graph-canvas { scroll-behavior: auto; }
+}
+
+@media (max-width: 780px) {
+  .mwr .ontology-runtime-graph-shell.fullscreen { padding: 8px; }
+  .mwr .ontology-runtime-graph-toolbar { justify-content: flex-start; }
+}

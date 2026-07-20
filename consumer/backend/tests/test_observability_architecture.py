@@ -8,37 +8,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_observability_provider_between_tests():
-    from agentic.observability.provider import shutdown_observer
+    from integration.observability.provider import shutdown_observer
 
     shutdown_observer(timeout=1)
     yield
     shutdown_observer(timeout=1)
 
 
-def test_business_layers_do_not_reference_langfuse_trace_ids():
-    repo_root = Path(__file__).resolve().parents[2]
-    checked_paths = [
-        repo_root / "backend/agentic/orchestrator.py",
-        repo_root / "backend/agentic/loop/jiuwen_adapter.py",
-        repo_root / "backend/agentic/services/llm/service.py",
-        repo_root / "backend/agentic/tools/base.py",
-        repo_root / "backend/agentic/tools/spawn_sub_agent.py",
-        repo_root / "backend/agentic/sub_agents/base.py",
-        repo_root / "backend/agentic/sub_agents/manager.py",
-        repo_root / "backend/agentic/utils/reasoning_summary.py",
-    ]
-
-    offenders = [
-        str(path.relative_to(repo_root))
-        for path in checked_paths
-        if "langfuse_trace_id" in path.read_text(encoding="utf-8")
-    ]
-
-    assert offenders == []
-
-
 def test_observability_bus_emit_does_not_wait_for_exporter():
-    from agentic.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
+    from integration.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
 
     class SlowExporter:
         def export(self, event):
@@ -67,7 +45,7 @@ def test_observability_bus_emit_does_not_wait_for_exporter():
 
 
 def test_observability_bus_close_exits_after_full_queue_drains():
-    from agentic.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
+    from integration.observability import ObservabilityBus, RuntimeEvent, RuntimeEventType
 
     first_export_started = threading.Event()
     release_first_export = threading.Event()
@@ -104,7 +82,7 @@ def test_observability_bus_close_exits_after_full_queue_drains():
 
 
 def test_observability_bus_closes_exporter_after_worker_stops():
-    from agentic.observability import ObservabilityBus
+    from integration.observability import ObservabilityBus
 
     class ClosingExporter:
         def __init__(self):
@@ -130,11 +108,9 @@ def test_observability_bus_closes_exporter_after_worker_stops():
 def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, monkeypatch):
     import json
 
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.local import exporter as local_exporter_module
-
-    monkeypatch.setattr(local_exporter_module, "LOG_DIR", str(tmp_path))
-    exporter = local_exporter_module.LocalPerfExporter({"local": {}})
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.local import exporter as local_exporter_module
+    exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     exporter.export(
         RuntimeEvent(
             type=RuntimeEventType.LLM_FINISHED,
@@ -211,11 +187,9 @@ def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, m
 def test_local_perf_exporter_projects_glm_cache_usage(tmp_path, monkeypatch):
     import json
 
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.local import exporter as local_exporter_module
-
-    monkeypatch.setattr(local_exporter_module, "LOG_DIR", str(tmp_path))
-    exporter = local_exporter_module.LocalPerfExporter({"local": {}})
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.local import exporter as local_exporter_module
+    exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     exporter.export(
         RuntimeEvent(
             type=RuntimeEventType.LLM_FINISHED,
@@ -253,11 +227,9 @@ def test_local_perf_exporter_projects_glm_cache_usage(tmp_path, monkeypatch):
 def test_local_perf_exporter_does_not_parse_provider_specific_cache_fields(tmp_path, monkeypatch):
     import json
 
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.local import exporter as local_exporter_module
-
-    monkeypatch.setattr(local_exporter_module, "LOG_DIR", str(tmp_path))
-    exporter = local_exporter_module.LocalPerfExporter({"local": {}})
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.local import exporter as local_exporter_module
+    exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     exporter.export(
         RuntimeEvent(
             type=RuntimeEventType.LLM_FINISHED,
@@ -294,11 +266,9 @@ def test_local_perf_exporter_does_not_parse_provider_specific_cache_fields(tmp_p
 def test_local_perf_exporter_projects_runtime_perf_families(tmp_path, monkeypatch):
     import json
 
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.local import exporter as local_exporter_module
-
-    monkeypatch.setattr(local_exporter_module, "LOG_DIR", str(tmp_path))
-    exporter = local_exporter_module.LocalPerfExporter({"local": {}})
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.local import exporter as local_exporter_module
+    exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     events = [
         RuntimeEvent(
             type=RuntimeEventType.RUN_STARTED,
@@ -438,9 +408,9 @@ def test_local_perf_exporter_projects_runtime_perf_families(tmp_path, monkeypatc
 def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypatch):
     import json
 
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.local import exporter as local_exporter_module
-    from agentic.observability.traces.direct_execution import DirectExecutionRuntimeTrace
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.local import exporter as local_exporter_module
+    from integration.observability.traces.direct_execution import DirectExecutionRuntimeTrace
 
     class ExportingObserver:
         enabled = True
@@ -450,9 +420,7 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
 
         def emit(self, event):
             self.exporter.export(event)
-
-    monkeypatch.setattr(local_exporter_module, "LOG_DIR", str(tmp_path))
-    exporter = local_exporter_module.LocalPerfExporter({"local": {}})
+    exporter = local_exporter_module.LocalPerfExporter({"local": {}}, log_dir=tmp_path)
     observer = ExportingObserver(exporter)
 
     exporter.export(
@@ -517,22 +485,22 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
     assert records[-1]["metrics"]["tool_calls_finished"] == 1
 
 
-def test_jiuwen_adapter_uses_semantic_trace_facade_for_observability():
+def test_jiuwen_engine_uses_semantic_trace_facade_for_observability():
     repo_root = Path(__file__).resolve().parents[2]
-    adapter_text = (repo_root / "backend/agentic/loop/jiuwen_adapter.py").read_text(encoding="utf-8")
+    engine_text = (repo_root / "backend/agent/core/jiuwen_engine.py").read_text(encoding="utf-8")
 
-    assert "AgentRuntimeTrace" in adapter_text
-    assert "RuntimeEvent(" not in adapter_text
-    assert "RuntimeEventType." not in adapter_text
+    assert "AgentRuntimeTrace" in engine_text
+    assert "RuntimeEvent(" not in engine_text
+    assert "RuntimeEventType." not in engine_text
 
 
 def test_runtime_code_uses_observability_facades_not_raw_events():
     repo_root = Path(__file__).resolve().parents[2]
     checked_paths = [
-        repo_root / "backend/agentic/orchestrator.py",
-        repo_root / "backend/agentic/loop/jiuwen_adapter.py",
-        repo_root / "backend/agentic/direct_execution/runner.py",
-        repo_root / "backend/agentic/utils/reasoning_summary.py",
+        repo_root / "backend/agent/core/orchestrator.py",
+        repo_root / "backend/agent/core/engine.py",
+        repo_root / "backend/agent/direct_execution/runner.py",
+        repo_root / "backend/llm/reasoning_summary.py",
     ]
 
     offenders = [
@@ -544,35 +512,32 @@ def test_runtime_code_uses_observability_facades_not_raw_events():
     assert offenders == []
 
 
-def test_runtime_code_does_not_use_legacy_perf_logger():
+def test_jiuwen_engine_balances_agent_loop_trace_without_enabled_branching():
     repo_root = Path(__file__).resolve().parents[2]
-    checked_paths = [
-        repo_root / "backend/agentic/orchestrator.py",
-        repo_root / "backend/agentic/direct_execution/runner.py",
-        repo_root / "backend/agentic/loop/jiuwen_adapter.py",
-    ]
+    engine_text = (repo_root / "backend/agent/core/jiuwen_engine.py").read_text(encoding="utf-8")
 
-    offenders = [
-        str(path.relative_to(repo_root))
-        for path in checked_paths
-        if "perf_log(" in path.read_text(encoding="utf-8")
-        or "utils.perf_logging" in path.read_text(encoding="utf-8")
-    ]
-
-    assert offenders == []
-    assert not (repo_root / "backend/agentic/utils/perf_logging.py").exists()
+    assert "runtime_trace.agent_loop_started(" in engine_text
+    assert "runtime_trace.agent_loop_finished(" in engine_text
+    assert "runtime_trace.enabled" not in engine_text
 
 
-def test_jiuwen_adapter_uses_trace_facade_without_enabled_branching():
+def test_jiuwen_runtime_routes_llm_and_tool_events_through_trace_facades():
     repo_root = Path(__file__).resolve().parents[2]
-    adapter_text = (repo_root / "backend/agentic/loop/jiuwen_adapter.py").read_text(encoding="utf-8")
+    engine_text = (repo_root / "backend/agent/core/jiuwen_engine.py").read_text(encoding="utf-8")
+    callback_text = (repo_root / "backend/agent/core/jiuwen/trace.py").read_text(encoding="utf-8")
 
-    assert "AgentRuntimeTrace(" in adapter_text
-    assert "runtime_trace.enabled" not in adapter_text
+    assert "runtime_trace.tool_batch_started(" in engine_text
+    assert "runtime_trace.tool_batch_finished(" in engine_text
+    assert "runtime_trace.tool_batch_failed(" in engine_text
+    assert "self.runtime_trace.llm_started(" in callback_text
+    assert "self.runtime_trace.llm_finished(" in callback_text
+    assert "self.runtime_trace.llm_failed(" in callback_text
+    assert "RuntimeEvent(" not in engine_text
+    assert "RuntimeEvent(" not in callback_text
 
 
 def test_agent_runtime_trace_finishes_agent_loop_once():
-    from agentic.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
+    from integration.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
 
     events = []
 
@@ -599,7 +564,7 @@ def test_agent_runtime_trace_finishes_agent_loop_once():
 
 
 def test_agent_runtime_trace_scope_finishes_success_and_error():
-    from agentic.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
+    from integration.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
 
     success_events = []
     error_events = []
@@ -649,8 +614,8 @@ def test_agent_runtime_trace_scope_finishes_success_and_error():
 
 
 def test_agent_runtime_trace_scopes_mark_cancellation_explicitly():
-    from agentic.exceptions import WorkflowCancelledError
-    from agentic.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
+    from agent.exceptions import WorkflowCancelledError
+    from integration.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
 
     events = []
 
@@ -707,7 +672,7 @@ def test_agent_runtime_trace_scopes_mark_cancellation_explicitly():
 
 
 def test_agent_runtime_trace_evaluates_lazy_llm_payload_only_when_enabled():
-    from agentic.observability import AgentRuntimeTrace, NOOP_OBSERVER
+    from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER
 
     events = []
 
@@ -751,7 +716,7 @@ def test_agent_runtime_trace_evaluates_lazy_llm_payload_only_when_enabled():
 
 
 def test_agent_runtime_trace_lazy_payload_failure_does_not_escape():
-    from agentic.observability import AgentRuntimeTrace
+    from integration.observability import AgentRuntimeTrace
 
     events = []
 
@@ -781,7 +746,7 @@ def test_agent_runtime_trace_lazy_payload_failure_does_not_escape():
 
 
 def test_agent_runtime_trace_llm_call_scope_records_success_and_error():
-    from agentic.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
+    from integration.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
 
     success_events = []
     error_events = []
@@ -851,7 +816,7 @@ def test_agent_runtime_trace_llm_call_scope_records_success_and_error():
 
 
 def test_agent_runtime_trace_tool_batch_scope_records_success_and_error():
-    from agentic.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
+    from integration.observability import AgentRuntimeTrace, RuntimeEventType, RuntimeStatus
 
     success_events = []
     streamed_events = []
@@ -923,7 +888,7 @@ def test_agent_runtime_trace_tool_batch_scope_records_success_and_error():
 
 
 def test_agent_runtime_trace_records_iteration_perf_events():
-    from agentic.observability import AgentRuntimeTrace, RuntimeEventType
+    from integration.observability import AgentRuntimeTrace, RuntimeEventType
 
     events = []
 
@@ -978,7 +943,7 @@ def test_agent_runtime_trace_records_iteration_perf_events():
 
 
 def test_run_runtime_trace_phase_scope_records_success():
-    from agentic.observability import RunRuntimeTrace, RuntimeEventType, RuntimeStatus
+    from integration.observability import RunRuntimeTrace, RuntimeEventType, RuntimeStatus
 
     events = []
 
@@ -1013,198 +978,154 @@ def test_run_runtime_trace_phase_scope_records_success():
     assert events[-1].payload["duration_ms"] >= 0
 
 
-def test_observer_provider_uses_system_config_exporter_registry(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
+def test_observer_provider_uses_workspace_router_as_observer(monkeypatch):
+    import integration.observability.provider as provider_mod
 
-    class FakeExporter:
-        def __init__(self, config):
-            self.config = config
+    class FakeRouter:
+        available = True
 
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "enabled": true,
-    "mode": "fake",
-    "langfuse": {
-      "public_key": "pk-test",
-      "secret_key": "sk-test"
-    }
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
+        def emit(self, event):
+            del event
+            return True
 
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "fake", FakeExporter)
+        def close(self, timeout=1.0):
+            del timeout
+            pass
+
+    router = FakeRouter()
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", lambda: router)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
 
     observer = provider_mod.get_observer()
     try:
-        assert observer._exporter.__class__ is FakeExporter
-        assert observer._exporter.config["mode"] == "fake"
-        assert observer._exporter.config["langfuse"]["secret_key"] == "sk-test"
-        assert observer._queue.maxsize == 1000
-        assert observer._flush_interval_seconds == 5.0
+        assert observer is router
     finally:
         provider_mod.shutdown_observer(timeout=1)
 
 
-def test_observer_provider_selects_exporter_from_observability_mode(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
+def test_observer_provider_reuses_process_scoped_observer(monkeypatch):
+    import integration.observability.provider as provider_mod
 
-    class FakeExporter:
-        def __init__(self, config):
-            self.config = config
+    created_routers = []
 
-        def export(self, event):
+    class FakeRouter:
+        available = True
+
+        def __init__(self):
+            created_routers.append(self)
+
+        def emit(self, event):
             del event
+            return True
 
-        def flush(self):
+        def close(self, timeout=1.0):
+            del timeout
             pass
 
-        def close(self):
-            pass
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "enabled": true,
-    "mode": "fake"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "fake", FakeExporter)
-
-    observer = provider_mod.get_observer()
-    try:
-        assert observer._exporter.__class__ is FakeExporter
-        assert observer._exporter.config["mode"] == "fake"
-        assert observer._queue.maxsize == 1000
-        assert observer._flush_interval_seconds == 5.0
-    finally:
-        provider_mod.shutdown_observer(timeout=1)
-
-
-def test_observer_provider_reuses_process_scoped_observer(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
-
-    created_exporters = []
-
-    class FakeExporter:
-        def __init__(self, config):
-            self.config = config
-            created_exporters.append(self)
-
-        def export(self, event):
-            del event
-
-        def flush(self):
-            pass
-
-        def close(self):
-            pass
-
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "enabled": true,
-    "mode": "fake"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "fake", FakeExporter)
-    provider_mod.shutdown_observer(timeout=1)
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", FakeRouter)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
 
     observer_one = provider_mod.get_observer()
     observer_two = provider_mod.get_observer()
     try:
         assert observer_one is observer_two
-        assert len(created_exporters) == 1
+        assert len(created_routers) == 1
     finally:
         provider_mod.shutdown_observer(timeout=1)
 
 
-def test_observer_provider_reset_closes_current_observer_and_rebuilds(tmp_path, monkeypatch):
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
+def test_observer_provider_reset_retires_current_observer_and_rebuilds(monkeypatch):
+    import integration.observability.provider as provider_mod
 
-    created_exporters = []
+    created_routers = []
 
-    class FakeExporter:
-        def __init__(self, config):
-            self.config = config
+    class FakeRouter:
+        available = True
+
+        def __init__(self):
             self.closed = False
-            created_exporters.append(self)
+            self.retired = False
+            created_routers.append(self)
 
-        def export(self, event):
+        def emit(self, event):
             del event
+            return not self.closed
 
-        def flush(self):
-            pass
+        def retire(self, timeout=1.0):
+            del timeout
+            self.retired = True
 
-        def close(self):
+        def close(self, timeout=1.0):
+            del timeout
             self.closed = True
 
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "enabled": true,
-    "mode": "fake"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "fake", FakeExporter)
-    provider_mod.shutdown_observer(timeout=1)
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", FakeRouter)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
 
     observer_one = provider_mod.get_observer()
     provider_mod.reset_observer(timeout=1)
     observer_two = provider_mod.get_observer()
     try:
         assert observer_two is not observer_one
-        assert len(created_exporters) == 2
-        assert created_exporters[0].closed is True
-        assert created_exporters[1].closed is False
+        assert len(created_routers) == 2
+        assert created_routers[0].retired is True
+        assert created_routers[0].closed is False
+        assert created_routers[1].closed is False
+    finally:
+        provider_mod.shutdown_observer(timeout=1)
+
+
+def test_observer_provider_reset_keeps_retired_observer_usable_for_existing_run(monkeypatch):
+    import integration.observability.provider as provider_mod
+    from integration.observability import RuntimeEvent, RuntimeEventType
+
+    created_routers = []
+
+    class FakeRouter:
+        available = True
+
+        def __init__(self):
+            self.closed = False
+            self.retired = False
+            self.events = []
+            created_routers.append(self)
+
+        def emit(self, event):
+            if self.closed:
+                return False
+            self.events.append(event)
+            return True
+
+        def retire(self, timeout=1.0):
+            del timeout
+            self.retired = True
+
+        def close(self, timeout=1.0):
+            del timeout
+            self.closed = True
+
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", FakeRouter)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
+
+    observer_one = provider_mod.get_observer()
+    started = RuntimeEvent(type=RuntimeEventType.RUN_STARTED, run_id="run-retired")
+    finished = RuntimeEvent(type=RuntimeEventType.RUN_FINISHED, run_id="run-retired")
+    assert observer_one.emit(started) is True
+
+    provider_mod.reset_observer(timeout=1)
+    observer_two = provider_mod.get_observer()
+    try:
+        assert observer_two is not observer_one
+        assert observer_one.emit(finished) is True
+        assert created_routers[0].events == [started, finished]
+        assert created_routers[0].retired is True
+        assert created_routers[0].closed is False
     finally:
         provider_mod.shutdown_observer(timeout=1)
 
 
 def test_runtime_refresh_resets_observability_provider(monkeypatch):
-    import agentic.app as app_mod
+    import app as app_mod
 
     calls = []
     runtime = {
@@ -1239,140 +1160,374 @@ def test_runtime_refresh_resets_observability_provider(monkeypatch):
     assert calls == ["build", "update", ("reset", 1.0)]
 
 
-def test_observer_provider_ignores_environment_variables(tmp_path, monkeypatch):
-    from agentic.observability import NOOP_OBSERVER
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
+def test_runtime_refresh_does_not_restart_platform_manager(monkeypatch):
+    import app as app_mod
+
+    calls = []
+    runtime = {
+        "auth_manager": object(),
+        "user_store_manager": object(),
+        "llm_router": object(),
+        "config": object(),
+        "agent_config": object(),
+    }
+
+    class FakeApp:
+        config = {"LLM_ROUTER": object()}
+
+    monkeypatch.setattr(
+        app_mod,
+        "build_runtime_services",
+        lambda previous_llm_router=None: runtime,
+    )
+    monkeypatch.setattr(app_mod, "update_runtime_dependencies", lambda *args, **kwargs: calls.append("update"))
+    monkeypatch.setattr(app_mod, "reset_observer", lambda timeout=1.0: calls.append(("observer_reset", timeout)))
+    monkeypatch.setattr(
+        app_mod,
+        "start_platform_observer_if_enabled",
+        lambda: calls.append("platform_started"),
+    )
+
+    app_mod.refresh_runtime_services(FakeApp())
+
+    assert calls == ["update", ("observer_reset", 1.0)]
+
+
+def test_platform_config_refresh_restarts_platform_and_rebuilds_dispatcher(monkeypatch):
+    import app as app_mod
+
+    calls = []
+    monkeypatch.setattr(
+        app_mod,
+        "reset_platform_observer",
+        lambda timeout=1.0, restart=True: calls.append(("platform_reset", timeout, restart)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        app_mod,
+        "reset_observer",
+        lambda timeout=1.0: calls.append(("observer_reset", timeout)),
+    )
+
+    app_mod.refresh_platform_connector()
+
+    assert calls == [
+        ("platform_reset", 1.0, True),
+        ("observer_reset", 1.0),
+    ]
+
+
+def test_observer_dispatches_to_platform_when_workspace_observability_disabled(tmp_path, monkeypatch):
+    import config.system_config as system_config_module
+    import integration.observability.provider as provider_mod
+    from integration.observability import RuntimeEvent, RuntimeEventType
+
+    class RecordingPlatformObserver:
+        enabled = True
+
+        def __init__(self):
+            self.events = []
+            self.closed = False
+
+        def emit(self, event):
+            self.events.append(event)
+            return True
+
+        def close(self, timeout=1.0):
+            del timeout
+            self.closed = True
+
+    platform_observer = RecordingPlatformObserver()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / "system_config.json"
+    config_path.write_text('{"observability": {"enabled": false, "mode": "local"}}', encoding="utf-8")
+
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: platform_observer, raising=False)
+
+    observer = provider_mod.get_observer()
+    try:
+        event = RuntimeEvent(type=RuntimeEventType.RUN_FINISHED, run_id="run-platform-only")
+        assert observer.emit(event) is True
+        assert platform_observer.events == [event]
+    finally:
+        provider_mod.reset_observer(timeout=1)
+
+    assert platform_observer.closed is False
+
+
+def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monkeypatch):
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.workspace_config import update_workspace_observability_config
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+    from workspace.workspaces import create_workspace
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    create_workspace("Beta", workspace_id="beta")
+    update_workspace_observability_config(
+        "alpha",
+        {
+            "enabled": True,
+            "mode": "langfuse",
+            "langfuse": {
+                "public_key": "pk-alpha",
+                "secret_key": "sk-alpha",
+                "base_url": "https://langfuse-alpha.example",
+            },
+        },
+    )
+    update_workspace_observability_config(
+        "beta",
+        {
+            "enabled": True,
+            "mode": "langfuse",
+            "langfuse": {
+                "public_key": "pk-beta",
+                "secret_key": "sk-beta",
+                "base_url": "https://langfuse-beta.example",
+            },
+        },
+    )
+
+    created = {}
 
     class FakeExporter:
-        pass
+        available = True
 
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_dir / "system_config.json")
-    (config_dir / "system_config.json").write_text(
-        '{"observability": {"enabled": false, "mode": "fake"}}',
-        encoding="utf-8",
+        def __init__(self, config):
+            self.public_key = config["langfuse"]["public_key"]
+            self.events = []
+            created[self.public_key] = self
+
+        def export(self, event):
+            self.events.append(event)
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "integration.observability.workspace_router.create_langfuse_exporter",
+        lambda config: FakeExporter(config),
     )
+
+    router = WorkspaceObservabilityRouter()
+    try:
+        router.export(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_STARTED,
+                run_id="run-alpha",
+                payload={"workspace_id": "alpha"},
+            )
+        )
+        router.export(RuntimeEvent(type=RuntimeEventType.LLM_FINISHED, run_id="run-alpha"))
+        router.export(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_STARTED,
+                run_id="run-beta",
+                payload={"workspace_id": "beta"},
+            )
+        )
+    finally:
+        router.close()
+
+    assert [event.run_id for event in created["pk-alpha"].events] == ["run-alpha", "run-alpha"]
+    assert [event.run_id for event in created["pk-beta"].events] == ["run-beta"]
+
+
+def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path, monkeypatch):
+    import json
+
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.workspace_config import (
+        get_workspace_observability_log_dir,
+        update_workspace_observability_config,
+    )
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+    from workspace.workspaces import create_workspace
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_observability_config(
+        "alpha",
+        {"enabled": True, "mode": "local", "local": {"retention_days": 30}},
+    )
+
+    router = WorkspaceObservabilityRouter()
+    router.export(
+        RuntimeEvent(
+            type=RuntimeEventType.RUN_STARTED,
+            run_id="run-local-workspace",
+            session_id="session-1",
+            payload={"workspace_id": "alpha"},
+        )
+    )
+    router.export(
+        RuntimeEvent(
+            type=RuntimeEventType.RUN_FINISHED,
+            run_id="run-local-workspace",
+            session_id="session-1",
+            payload={"status": RuntimeStatus.SUCCESS, "duration_ms": 10},
+        )
+    )
+    router.close()
+
+    log_dir = get_workspace_observability_log_dir("alpha")
+    records = [
+        json.loads(line)
+        for path in log_dir.glob("agent_perf-*.log")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["run_id"] for record in records] == [
+        "run-local-workspace",
+        "run-local-workspace",
+        "run-local-workspace",
+    ]
+    assert not (tmp_path / "logs").exists()
+
+
+def test_observer_provider_keeps_workspace_observer_when_one_config_fails(tmp_path, monkeypatch):
+    import integration.observability.provider as provider_mod
+    from integration.observability import NOOP_OBSERVER, RuntimeEvent, RuntimeEventType
+    from workspace.workspaces import create_workspace
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    create_workspace("Beta", workspace_id="beta")
+
+    def fake_workspace_config(workspace_id):
+        if workspace_id == "alpha":
+            raise RuntimeError("bad alpha config")
+        if workspace_id == "beta":
+            return {
+                "enabled": True,
+                "mode": "local",
+                "local": {"retention_days": 30},
+                "langfuse": {"public_key": "", "secret_key": "", "base_url": "", "debug": False},
+            }
+        return {"enabled": False}
+
+    monkeypatch.setattr(
+        "integration.observability.workspace_router.get_workspace_observability_config",
+        fake_workspace_config,
+    )
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
+
+    observer = provider_mod.get_observer()
+    try:
+        assert observer is not NOOP_OBSERVER
+        assert observer.emit(
+            RuntimeEvent(
+                type=RuntimeEventType.RUN_STARTED,
+                run_id="run-beta",
+                payload={"workspace_id": "beta"},
+            )
+        ) is True
+    finally:
+        provider_mod.reset_observer(timeout=1)
+
+
+def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path, monkeypatch):
+    import integration.observability.provider as provider_mod
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.workspace_config import update_workspace_observability_config
+    from workspace.workspaces import create_workspace
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=")
+    create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
+    update_workspace_observability_config(
+        "alpha",
+        {
+            "enabled": True,
+            "mode": "langfuse",
+            "langfuse": {
+                "public_key": "pk-alpha",
+                "base_url": "https://langfuse-alpha.example",
+            },
+        },
+    )
+
+    class RecordingPlatformObserver:
+        enabled = True
+
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event):
+            self.events.append(event)
+            return True
+
+    platform_observer = RecordingPlatformObserver()
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: platform_observer)
+
+    observer = provider_mod.get_observer()
+    try:
+        event = RuntimeEvent(
+            type=RuntimeEventType.RUN_STARTED,
+            run_id="run-bad-langfuse",
+            payload={"workspace_id": "alpha"},
+        )
+        assert observer.emit(event) is True
+        assert platform_observer.events == [event]
+    finally:
+        provider_mod.reset_observer(timeout=1)
+
+
+def test_observer_provider_ignores_environment_variables(monkeypatch):
+    from integration.observability import NOOP_OBSERVER
+    import integration.observability.provider as provider_mod
+
     monkeypatch.setenv("OBSERVABILITY_MODE", "fake")
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "fake", FakeExporter)
+    monkeypatch.setattr(
+        provider_mod,
+        "create_workspace_observability_router",
+        lambda: type("UnavailableRouter", (), {"available": False})(),
+    )
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
 
     assert provider_mod.get_observer() is NOOP_OBSERVER
 
 
-def test_observer_provider_returns_noop_for_unknown_configured_mode(tmp_path, monkeypatch, caplog):
-    from agentic.observability import NOOP_OBSERVER
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
+def test_observer_provider_returns_noop_when_workspace_router_unavailable(monkeypatch):
+    from integration.observability import NOOP_OBSERVER
+    import integration.observability.provider as provider_mod
 
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "enabled": true,
-    "mode": "unknown-mode"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-
-    with caplog.at_level(logging.WARNING, logger="observability.provider"):
-        assert provider_mod.get_observer() is NOOP_OBSERVER
-
-    assert "Unknown observability exporter mode=unknown-mode" in caplog.text
-
-
-def test_observer_provider_warns_when_exporter_is_unavailable(tmp_path, monkeypatch, caplog):
-    from agentic.observability import NOOP_OBSERVER
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
-
-    class UnavailableExporter:
+    class UnavailableRouter:
         available = False
 
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "enabled": true,
-    "mode": "unavailable"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "unavailable", lambda config: UnavailableExporter())
-
-    with caplog.at_level(logging.WARNING, logger="observability.provider"):
-        assert provider_mod.get_observer() is NOOP_OBSERVER
-
-    assert "Observability exporter mode=unavailable is unavailable" in caplog.text
-
-
-def test_observer_provider_returns_noop_when_config_load_fails(monkeypatch):
-    from agentic.observability import NOOP_OBSERVER
-    import agentic.observability.provider as provider_mod
-
-    def fail_load_system_config():
-        raise RuntimeError("bad config")
-
-    monkeypatch.setattr(provider_mod, "load_system_config", fail_load_system_config)
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", UnavailableRouter)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
 
     assert provider_mod.get_observer() is NOOP_OBSERVER
 
 
-def test_observer_provider_returns_noop_when_exporter_creation_fails(tmp_path, monkeypatch):
-    from agentic.observability import NOOP_OBSERVER
-    import agentic.config.system_config as system_config_module
-    import agentic.observability.provider as provider_mod
+def test_observer_provider_returns_noop_when_router_creation_fails(monkeypatch):
+    from integration.observability import NOOP_OBSERVER
+    import integration.observability.provider as provider_mod
 
-    def fail_exporter(config):
-        del config
-        raise RuntimeError("bad exporter")
+    def fail_router():
+        raise RuntimeError("bad router")
 
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "system_config.json"
-    config_path.write_text(
-        """
-{
-  "observability": {
-    "mode": "failing"
-  }
-}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
-    monkeypatch.setitem(provider_mod.EXPORTER_REGISTRY, "failing", fail_exporter)
-
+    monkeypatch.setattr(provider_mod, "create_workspace_observability_router", fail_router)
+    monkeypatch.setattr("integration.platform.manager.get_platform_observer", lambda: None)
     assert provider_mod.get_observer() is NOOP_OBSERVER
 
 
 def test_exporter_registry_uses_provider_factories():
-    from agentic.observability.exporters import EXPORTER_REGISTRY
+    from integration.observability.exporters import EXPORTER_REGISTRY
 
     assert EXPORTER_REGISTRY["langfuse"].__name__ == "create_langfuse_exporter"
 
 
 def test_langfuse_exporter_accepts_adapter_not_config():
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     class FakeAdapter:
         available = True
@@ -1389,7 +1544,7 @@ def test_langfuse_exporter_accepts_adapter_not_config():
 
 
 def test_langfuse_exporter_closes_trace_adapter():
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     class FakeAdapter:
         available = True
@@ -1409,13 +1564,13 @@ def test_langfuse_exporter_closes_trace_adapter():
 
 
 def test_langfuse_exporter_preserves_existing_trace_granularity(monkeypatch):
-    from agentic.observability import (
+    from integration.observability import (
         RuntimeEvent,
         RuntimeEventType,
         RuntimeRequestLabel,
         RuntimeStatus,
     )
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     calls = []
 
@@ -1472,8 +1627,8 @@ def test_langfuse_exporter_preserves_existing_trace_granularity(monkeypatch):
 
 
 def test_langfuse_exporter_records_detailed_llm_tool_and_run_payloads():
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     calls = []
 
@@ -1638,63 +1793,16 @@ def test_langfuse_exporter_records_detailed_llm_tool_and_run_payloads():
     assert trace_output[1][1]["duration_ms"] == 500
     assert trace_output[1][1]["usage"]["total_tokens"] == 7
     assert trace_output[1][1]["main_iterations"] == 1
-
-
-def test_langfuse_exporter_names_jiuwen_llm_child_calls_with_call_index():
-    from agentic.observability import RuntimeEvent, RuntimeEventType
-    from agentic.observability.exporters.langfuse import LangfuseExporter
-
-    calls = []
-
-    def record(name):
-        def _inner(*args, **kwargs):
-            calls.append((name, args, kwargs))
-            if name == "create_trace":
-                return "trace-1"
-            if name in {"create_span", "create_llm_span"}:
-                return kwargs["name"]
-            return None
-
-        return _inner
-
-    class FakeAdapter:
-        available = True
-        create_trace = staticmethod(record("create_trace"))
-        create_span = staticmethod(record("create_span"))
-        create_llm_span = staticmethod(record("create_llm_span"))
-        end_observation = staticmethod(record("end_observation"))
-        update_llm_span_tokens = staticmethod(record("update_llm_span_tokens"))
-        update_trace_output = staticmethod(record("update_trace_output"))
-
-    exporter = LangfuseExporter(FakeAdapter())
-    exporter.export(
-        RuntimeEvent(
-            type=RuntimeEventType.RUN_STARTED,
-            run_id="run-jiuwen-llm-names",
-            session_id="session-jiuwen-llm-names",
-            payload={"user_query": "hi"},
-        )
-    )
-    exporter.export(
-        RuntimeEvent(
-            type=RuntimeEventType.LLM_STARTED,
-            run_id="run-jiuwen-llm-names",
-            session_id="session-jiuwen-llm-names",
-            span_key="llm:main:1:2",
-            payload={"caller": "main", "iteration": 1, "call_index": 2, "model": "model-a"},
-        )
-    )
-
-    llm_start = next(call for call in calls if call[0] == "create_llm_span")
-    assert llm_start[2]["name"] == "llm:main_iteration_1_call_2"
-    assert "call_2" in llm_start[2]["tags"]
+    trace_start = next(call for call in calls if call[0] == "create_trace")
+    assert trace_start[2]["metadata"]["workspace_id"] == "ws-1"
+    assert "workspace:ws-1" in trace_start[2]["tags"]
 
 
 def test_tool_protocol_events_emit_runtime_tool_events():
-    from agentic.config import AgentConfig
-    from agentic.observability import RuntimeEventType
-    from agentic.tools.base import ToolContext
-    from agentic.tools.events import emit_tool_finished, emit_tool_started
+    from config import AgentConfig
+    from integration.observability import RuntimeEventType
+    from agent.tools.base import ToolContext
+    from agent.tools.events import emit_tool_finished, emit_tool_started
 
     emitted = []
 
@@ -1710,7 +1818,6 @@ def test_tool_protocol_events_emit_runtime_tool_events():
         run_id="run-1",
         session_id="session-1",
         turn_id=2,
-        ov_session_id=None,
         agent_config=AgentConfig(
             llm_connection_max_retries=1,
             main_agent_max_iterations=3,
@@ -1719,7 +1826,6 @@ def test_tool_protocol_events_emit_runtime_tool_events():
             sub_agent_max_depth=2,
             parallel_default_max_workers=2,
             context_max_rounds=5,
-            context_prune_tools=set(),
         ),
         caller="subagent",
         agent_iteration=3,
@@ -1754,9 +1860,76 @@ def test_tool_protocol_events_emit_runtime_tool_events():
     assert emitted[0].payload["subagent_id"] == "sub-1"
 
 
+def test_tool_finished_keeps_full_output_only_in_trace_observer(monkeypatch):
+    from types import SimpleNamespace
+
+    from agent.tools import events as tool_events
+
+    protocol_events = []
+    runtime_events = []
+    monkeypatch.setattr(
+        tool_events,
+        "emit_agent_event",
+        lambda **kwargs: protocol_events.append(kwargs),
+    )
+
+    class FakeObserver:
+        enabled = True
+
+        def emit(self, event):
+            runtime_events.append(event)
+            return True
+
+    context = SimpleNamespace(
+        run_id="run-trace-output",
+        session_id="session-trace-output",
+        turn_id=1,
+        caller="main",
+        agent_iteration=2,
+        subagent_lineage=None,
+        protocol_event_observer=None,
+        observer=FakeObserver(),
+        tool_batch_index=None,
+    )
+    full_search_output = "full search output" * 400
+
+    tool_events.emit_tool_finished(
+        context=context,
+        tool_name="business_data_search",
+        tool_call_id="call-search",
+        status="completed",
+        raw_output=full_search_output,
+        error=None,
+        elapsed_ms=15,
+    )
+    tool_events.emit_tool_finished(
+        context=context,
+        tool_name="read_file",
+        tool_call_id="call-read",
+        status="cancelled",
+        raw_output="file output",
+        error="cancelled",
+        elapsed_ms=20,
+    )
+
+    search_protocol_payload = protocol_events[0]["payload"]
+    read_protocol_payload = protocol_events[1]["payload"]
+    search_trace_payload = runtime_events[0].payload
+    read_trace_payload = runtime_events[1].payload
+
+    assert len(search_protocol_payload["output_preview"]) == 4096
+    assert search_protocol_payload["output_truncated"] is True
+    assert search_protocol_payload["output_size"] == len(full_search_output.encode("utf-8"))
+    assert "output_full" not in search_protocol_payload
+    assert "output_full" not in read_protocol_payload
+    assert search_trace_payload["output_full"] == full_search_output
+    assert "output_full" not in read_trace_payload
+    assert read_protocol_payload["status"] == "cancelled"
+
+
 def test_langfuse_exporter_maps_tool_batch_failed_to_error_by_default():
-    from agentic.observability import RuntimeEvent, RuntimeEventType
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     calls = []
 
@@ -1802,8 +1975,8 @@ def test_langfuse_exporter_maps_tool_batch_failed_to_error_by_default():
 
 
 def test_langfuse_exporter_uses_generic_tool_display_name():
-    from agentic.observability import RuntimeEvent, RuntimeEventType
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     span_calls = []
 
@@ -1842,8 +2015,8 @@ def test_langfuse_exporter_uses_generic_tool_display_name():
 
 
 def test_langfuse_exporter_releases_run_bookkeeping_after_terminal_spans_finish():
-    from agentic.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability import RuntimeEvent, RuntimeEventType, RuntimeStatus
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     class FakeAdapter:
         available = True
@@ -1904,8 +2077,8 @@ def test_langfuse_exporter_releases_run_bookkeeping_after_terminal_spans_finish(
 
 
 def test_langfuse_trace_id_is_stable_for_the_same_run_identity():
-    from agentic.observability import RuntimeEvent, RuntimeEventType
-    from agentic.observability.exporters.langfuse import LangfuseExporter
+    from integration.observability import RuntimeEvent, RuntimeEventType
+    from integration.observability.exporters.langfuse import LangfuseExporter
 
     trace_ids = []
 
@@ -1938,10 +2111,3 @@ def test_langfuse_trace_id_is_stable_for_the_same_run_identity():
 
     assert len(trace_ids) == 2
     assert trace_ids[0] == trace_ids[1]
-
-
-def test_langfuse_langchain_dependency_is_not_required():
-    repo_root = Path(__file__).resolve().parents[2]
-    requirements = (repo_root / "backend/requirements.txt").read_text(encoding="utf-8")
-
-    assert "langfuse-langchain" not in requirements

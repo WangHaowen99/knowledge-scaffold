@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 
-from agentic.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
-from agentic.business_data.providers.graph.provider import GraphSearchProvider
+import agent.tools.business_data.providers.graph.hugegraph_provider as hugegraph_module
+import agent.tools.business_data.providers.graph.neo4j_provider as neo4j_module
+from agent.tools.business_data.providers.graph.models import GraphAgentResult, GraphBackendResult
+from agent.tools.business_data.providers.graph.provider import GraphSearchProvider
 
 
 class _ProviderBackend:
@@ -62,3 +64,41 @@ def test_graph_search_provider_yields_standard_events_and_closes_backend():
     assert final["provider"] == "graph"
     assert final["records"] == [{"properties": {"target_item_code": "M-001"}}]
     assert backend.closed is True
+
+
+def test_neo4j_provider_wrapper_binds_scoped_config(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        neo4j_module,
+        "Neo4jGraphBackend",
+        lambda config: captured.append(config) or _ProviderBackend(),
+    )
+
+    provider = neo4j_module.Neo4jGraphSearchProvider({
+        "ontology_search": {
+            "neo4j": {"workspace_id": "workspace-a", "ontology_id": "ontology-a"}
+        }
+    })
+
+    assert provider.name == "neo4j"
+    assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
+    assert provider._runtime.provider == "neo4j"
+
+
+def test_hugegraph_provider_wrapper_binds_scoped_config(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        hugegraph_module,
+        "HugeGraphBackend",
+        lambda config: captured.append(config) or _ProviderBackend(),
+    )
+
+    provider = hugegraph_module.HugeGraphSearchProvider({
+        "ontology_search": {
+            "hugegraph": {"workspace_id": "workspace-a", "ontology_id": "ontology-a"}
+        }
+    })
+
+    assert provider.name == "hugegraph"
+    assert captured == [{"workspace_id": "workspace-a", "ontology_id": "ontology-a"}]
+    assert provider._runtime.provider == "hugegraph"

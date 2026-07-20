@@ -8,18 +8,19 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from agentic.config import AgentConfig
-from agentic.exceptions import WorkflowCancelledError
-from agentic.evolution import ProposalBuffer
-from agentic.memory.filesystem_manager import FileSystemMemoryManager
-from agentic.services.llm import configure_llm_router, reset_llm_router_for_tests
-from agentic.tools.base import ToolCaller, ToolContext, ToolInvocation, ToolOutcome
-from agentic.tools.memory import wait_for_memory_tasks
-from agentic.tools.registry import (
+from config import AgentConfig
+from agent.exceptions import WorkflowCancelledError
+from agent.evolution import ProposalBuffer
+from agent.memory.filesystem_manager import FileSystemMemoryManager
+from llm import configure_llm_router, reset_llm_router_for_tests
+from agent.tools.base import ToolCaller, ToolContext, ToolInvocation, ToolOutcome
+from agent.tools.memory import wait_for_memory_tasks
+from agent.tools.registry import (
     TOOL_SPECS,
     _ARGUMENT_PARSE_ERROR_KEY,
     execute_tool_batch,
@@ -27,20 +28,20 @@ from agentic.tools.registry import (
     get_tools_schema,
     is_tool_available,
 )
-from agentic.tools.executor import _execute_single_task
-import agentic.utils.logging as logging_utils
-from agentic.utils.read_docs import build_read_document_record, merge_read_documents_registry
-from agentic.utils.streaming import stream_writer_context
-from agentic.utils.ontologies import OntologyRegistry
-from agentic.utils.skills import SkillRegistry
+from agent.tools.executor import _execute_single_task
+import utils.logging as logging_utils
+from utils.read_docs import build_read_document_record, merge_read_documents_registry
+from utils.streaming import stream_writer_context
+from ontology.ontologies import OntologyRegistry
+from utils.skills import SkillRegistry
 
 
-def _build_tool_call(name: str, arguments: dict, call_id: str = "call_1") -> ToolInvocation:
-    return ToolInvocation(
-        name=name,
-        args=arguments,
-        tool_call_id=call_id,
-    )
+def _build_tool_call(
+    name: str,
+    arguments: dict,
+    call_id: str = "call_1",
+) -> ToolInvocation:
+    return ToolInvocation(id=call_id, name=name, arguments=arguments)
 
 
 class _FakeMemoryManager:
@@ -188,7 +189,6 @@ def _make_context(**overrides) -> ToolContext:
         run_id="run-tools",
         session_id="sess-tools",
         turn_id=1,
-        ov_session_id="ov-tools",
         agent_config=AgentConfig.from_env(),
         caller="main",
         event_emitter=None,
@@ -199,6 +199,10 @@ def _make_context(**overrides) -> ToolContext:
     return base
 
 
+def test_tool_context_keeps_run_cancellation_out_of_tool_boundary():
+    assert "cancel_event" not in ToolContext.__dataclass_fields__
+
+
 def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="hello.py", script_body='print("hello from script")\n'):
     ontology_dir = tmp_path / "ontologies" / "demo"
     script_path = ontology_dir / "scripts" / script_name
@@ -207,7 +211,8 @@ def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: demo",
                 "name: Demo",
                 "description: Demo ontology",
@@ -217,20 +222,46 @@ def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "scripts-list.md").write_text(
-        "- `{}` -> `scripts/{}`\n".format(operation_key, script_name),
-        encoding="utf-8",
+    (ontology_dir / "index.md").write_text("# Demo\n", encoding="utf-8")
+    for folder in ("operations", "objects", "rules", "metrics"):
+        (ontology_dir / folder).mkdir(exist_ok=True)
+        (ontology_dir / folder / "index.md").write_text("# {}\n".format(folder), encoding="utf-8")
+    (ontology_dir / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    _write_script_descriptor(
+        ontology_dir,
+        operation_key=operation_key,
+        script_name=script_name,
     )
     return ontology_dir
 
 
+def _write_script_descriptor(
+    ontology_dir,
+    *,
+    operation_key="流程A",
+    script_name="hello.py",
+    body="",
+):
+    descriptor = ontology_dir / "scripts" / "{}.md".format(Path(script_name).stem)
+    descriptor.write_text(
+        (
+            "---\n"
+            "resource: script\n"
+            "key: {}\n"
+            "title: {}\n"
+            "bound_operation: {}\n"
+            "entrypoint: {}\n"
+            "---\n\n{}"
+        ).format(Path(script_name).stem, operation_key, operation_key, script_name, body),
+        encoding="utf-8",
+    )
+    return descriptor
+
+
 def _write_v01_ontology_package(tmp_path):
     ontology_dir = tmp_path / "ontologies" / "demo-v01"
-    (ontology_dir / "operations").mkdir(parents=True)
-    (ontology_dir / "objects").mkdir(parents=True)
-    (ontology_dir / "rules").mkdir(parents=True)
-    (ontology_dir / "metrics").mkdir(parents=True)
-    (ontology_dir / "scripts").mkdir(parents=True)
+    for directory in ("operations", "objects", "rules", "metrics", "scripts", "mappings"):
+        (ontology_dir / directory).mkdir(parents=True, exist_ok=True)
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
@@ -243,6 +274,10 @@ def _write_v01_ontology_package(tmp_path):
                 "language: zh-CN",
             ]
         ),
+        encoding="utf-8",
+    )
+    (ontology_dir / "index.md").write_text(
+        "---\nresource: root\nkey: root\n---\n\n# Demo Root\n",
         encoding="utf-8",
     )
     (ontology_dir / "operations" / "index.md").write_text(
@@ -261,6 +296,8 @@ def _write_v01_ontology_package(tmp_path):
             "key: 分析影响\n"
             "canonical_key: impact_analysis\n"
             "title: 影响分析\n"
+            "aliases:\n"
+            "  - 影响评估\n"
             "uses:\n"
             "  objects:\n"
             "    - 物料\n"
@@ -281,12 +318,13 @@ def _write_v01_ontology_package(tmp_path):
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "objects" / "target_item.md").write_text(
+    (ontology_dir / "objects" / "material_doc.md").write_text(
         (
             "---\n"
             "resource: object\n"
             "key: 物料\n"
             "canonical_key: target_item\n"
+            "title: 制造物料\n"
             "aliases:\n"
             "  - TargetItem\n"
             "---\n\n"
@@ -303,7 +341,17 @@ def _write_v01_ontology_package(tmp_path):
         encoding="utf-8",
     )
     (ontology_dir / "rules" / "effectivity.md").write_text(
-        "---\nresource: rule\nkey: 生效规则\ncanonical_key: effectivity_rule\n---\n\n# 生效规则\n",
+        (
+            "---\n"
+            "resource: rule\n"
+            "key: 生效规则\n"
+            "canonical_key: effectivity_rule\n"
+            "title: 变更生效规则\n"
+            "aliases:\n"
+            "  - 生效判定\n"
+            "---\n\n"
+            "# 生效规则\n"
+        ),
         encoding="utf-8",
     )
     (ontology_dir / "metrics" / "index.md").write_text(
@@ -315,7 +363,17 @@ def _write_v01_ontology_package(tmp_path):
         encoding="utf-8",
     )
     (ontology_dir / "metrics" / "handling_cost.md").write_text(
-        "---\nresource: metric\nkey: 处理成本\ncanonical_key: handling_cost\n---\n\n# 处理成本\n",
+        (
+            "---\n"
+            "resource: metric\n"
+            "key: 处理成本\n"
+            "canonical_key: handling_cost_metric\n"
+            "title: 库存处理成本\n"
+            "aliases:\n"
+            "  - 库存处理成本\n"
+            "---\n\n"
+            "# 处理成本\n"
+        ),
         encoding="utf-8",
     )
     (ontology_dir / "scripts" / "index.md").write_text(
@@ -326,12 +384,15 @@ def _write_v01_ontology_package(tmp_path):
         ),
         encoding="utf-8",
     )
-    (ontology_dir / "scripts" / "impact_script.md").write_text(
+    (ontology_dir / "scripts" / "script_doc.md").write_text(
         (
             "---\n"
             "resource: script\n"
             "key: 影响脚本\n"
             "canonical_key: impact_script\n"
+            "title: 影响分析脚本\n"
+            "aliases:\n"
+            "  - 影响执行脚本\n"
             "bound_operation: 分析影响\n"
             "entrypoint: impact.py\n"
             "---\n\n"
@@ -349,13 +410,21 @@ def _write_v01_ontology_package(tmp_path):
         ),
         encoding="utf-8",
     )
+    (ontology_dir / "scripts" / "legacy.py").write_text("print('legacy')\n", encoding="utf-8")
+    (ontology_dir / "mappings" / "object-data-mappings.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
     return ontology_dir
 
 
 def _patch_test_ontology_registry(monkeypatch, tmp_path):
     registry = OntologyRegistry(ontology_dirs=[tmp_path / "ontologies"])
     registry.discover_ontologies()
-    monkeypatch.setattr("agentic.utils.ontology_catalog.get_ontology_registry", lambda: registry)
+    monkeypatch.setattr(
+        "ontology.ontology_catalog.get_ontology_registry",
+        lambda **_kwargs: registry,
+    )
     return registry
 
 
@@ -384,31 +453,44 @@ def _write_demo_skill(tmp_path):
 def _patch_test_skill_registry(monkeypatch, tmp_path):
     registry = SkillRegistry(skill_dirs=[tmp_path / "skills"])
     registry.discover_skills()
-    monkeypatch.setattr("agentic.tools.skill.get_skill_registry", lambda: registry)
-    monkeypatch.setattr("agentic.tools.registry.get_skill_registry", lambda: registry)
+    monkeypatch.setattr("agent.tools.skill.get_skill_registry", lambda: registry)
+    monkeypatch.setattr(
+        "agent.tools.registry.get_skill_registry",
+        lambda: registry,
+        raising=False,
+    )
     return registry
 
 
 def _patch_empty_skill_registry(monkeypatch, tmp_path):
     registry = SkillRegistry(skill_dirs=[tmp_path / "skills"])
     registry.discover_skills()
-    monkeypatch.setattr("agentic.tools.skill.get_skill_registry", lambda: registry)
-    monkeypatch.setattr("agentic.tools.registry.get_skill_registry", lambda: registry)
+    monkeypatch.setattr("agent.tools.skill.get_skill_registry", lambda: registry)
+    monkeypatch.setattr(
+        "agent.tools.registry.get_skill_registry",
+        lambda: registry,
+        raising=False,
+    )
     return registry
 
 
 def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     ontology_dir = _write_scripted_ontology(tmp_path)
-    (ontology_dir / "operations-list.md").write_text(
+    (ontology_dir / "operations" / "index.md").write_text(
         "| 名称 | 标签 | 业务描述 |\n| --- | --- | --- |\n| 流程A | 工具流程 | demo |\n",
         encoding="utf-8",
     )
-    (ontology_dir / "objects-list.md").write_text(
+    (ontology_dir / "objects" / "index.md").write_text(
         "| 中文名称 | 别名 | 业务定义 |\n| --- | --- | --- |\n| TargetItem | 物料 | demo object |\n",
         encoding="utf-8",
     )
     (ontology_dir / "objects").mkdir(exist_ok=True)
     (ontology_dir / "objects" / "TargetItem.md").write_text("# TargetItem\n字段", encoding="utf-8")
+    (ontology_dir / "assets" / "common.conf").parent.mkdir(exist_ok=True)
+    (ontology_dir / "assets" / "common.conf").write_text("threshold=3\n", encoding="utf-8")
+    (ontology_dir / "assets" / "rules").mkdir(exist_ok=True)
+    (ontology_dir / "assets" / "rules" / "limits.ini").write_text("[limits]\nmax=10\n", encoding="utf-8")
+    (ontology_dir / "assets" / "binary.bin").write_bytes(b"\x00\x01")
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
     root_result = execute_tool_batch(
@@ -446,23 +528,32 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "asset", "key": "rules/limits.ini"})],
         _make_context(project_root=str(tmp_path)),
     )
-    assert "Unsupported ontology_context resource 'asset'" in unsupported_resource_result.messages[0]["content"]
+    assert "arguments.resource must be one of" in unsupported_resource_result.messages[0]["content"]
 
 
 def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
+    from agent.direct_execution.matcher import find_best_script_operation
+
     _write_v01_ontology_package(tmp_path)
     _patch_test_ontology_registry(monkeypatch, tmp_path)
+    context = _make_context(project_root=str(tmp_path))
 
     root_result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "root"})],
-        _make_context(project_root=str(tmp_path)),
+        context,
     )
     root_content = root_result.messages[0]["content"]
     assert "id: demo-v01" in root_content
+    assert "root_index:\n# Demo Root" in root_content
     assert (
         "operations_catalog:\n"
         "columns: operation key | 标题 | 输入\n"
         "- 分析影响 | 影响分析 | eco_id"
+    ) in root_content
+    assert (
+        "objects_catalog:\n"
+        "columns: object key | 标题 | 说明\n"
+        "- 物料 | TargetItem | 制造物料"
     ) in root_content
     assert (
         "rules_catalog:\n"
@@ -474,52 +565,57 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
         "columns: metric key | 标题 | 说明\n"
         "- 处理成本 | 库存处理成本 | 数量乘单价"
     ) in root_content
-    assert "- 分析影响 - 影响脚本 (parameters: eco_id=CHANGE_ORDER编号 required string)" in root_content
+    assert "- 分析影响 - 影响分析脚本 (parameters: eco_id=CHANGE_ORDER编号 required string)" in root_content
+    assert "assets_catalog" not in root_content
+    assert "legacy-operation" not in root_content
+    assert "legacy-object" not in root_content
+    assert "- 分析影响 (parameters: none)" not in root_content
+    root_record = root_result.state_updates["read_document_records"][0]
+    assert root_record["path"].endswith("ontologies/demo-v01/manifest.yaml")
+    assert root_record["ontology_version"] == "0.1.0"
 
-    operation_result = execute_tool_batch(
-        [
-            _build_tool_call(
-                "ontology_context",
-                {"ontology_id": "demo-v01", "resource": "operation", "key": "impact_analysis"},
+    resource_cases = {
+        "operation": {
+            "keys": ["分析影响", "impact_analysis", "影响分析", "影响评估", "impact", "impact.md"],
+            "filename": "impact.md",
+            "content": "# 影响分析",
+        },
+        "object": {
+            "keys": ["物料", "target_item", "制造物料", "TargetItem", "material_doc", "material_doc.md"],
+            "filename": "material_doc.md",
+            "content": "# 物料",
+        },
+        "rule": {
+            "keys": ["生效规则", "effectivity_rule", "变更生效规则", "生效判定", "effectivity", "effectivity.md"],
+            "filename": "effectivity.md",
+            "content": "# 生效规则",
+        },
+        "metric": {
+            "keys": ["处理成本", "handling_cost_metric", "库存处理成本", "库存处理成本", "handling_cost", "handling_cost.md"],
+            "filename": "handling_cost.md",
+            "content": "# 处理成本",
+        },
+        "script": {
+            "keys": ["影响脚本", "impact_script", "影响分析脚本", "影响执行脚本", "script_doc", "script_doc.md"],
+            "filename": "script_doc.md",
+            "content": "CLI 参数",
+        },
+    }
+    for resource, case in resource_cases.items():
+        for key in case["keys"]:
+            result = execute_tool_batch(
+                [
+                    _build_tool_call(
+                        "ontology_context",
+                        {"ontology_id": "demo-v01", "resource": resource, "key": key},
+                    )
+                ],
+                context,
             )
-        ],
-        _make_context(project_root=str(tmp_path)),
-    )
-    assert "operation_key: impact_analysis" in operation_result.messages[0]["content"]
-    assert "key: 分析影响" in operation_result.messages[0]["content"]
-
-    object_result = execute_tool_batch(
-        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "object", "key": "TargetItem"})],
-        _make_context(project_root=str(tmp_path)),
-    )
-    assert "object_key: TargetItem" in object_result.messages[0]["content"]
-    assert "# 物料" in object_result.messages[0]["content"]
-
-    rule_result = execute_tool_batch(
-        [
-            _build_tool_call(
-                "ontology_context",
-                {"ontology_id": "demo-v01", "resource": "rule", "key": "effectivity_rule"},
-            )
-        ],
-        _make_context(project_root=str(tmp_path)),
-    )
-    assert "rule_key: effectivity_rule" in rule_result.messages[0]["content"]
-    assert "# 生效规则" in rule_result.messages[0]["content"]
-
-    metric_result = execute_tool_batch(
-        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "metric", "key": "处理成本"})],
-        _make_context(project_root=str(tmp_path)),
-    )
-    assert "metric_key: 处理成本" in metric_result.messages[0]["content"]
-    assert "# 处理成本" in metric_result.messages[0]["content"]
-
-    script_doc_result = execute_tool_batch(
-        [_build_tool_call("ontology_context", {"ontology_id": "demo-v01", "resource": "script", "key": "影响脚本"})],
-        _make_context(project_root=str(tmp_path)),
-    )
-    assert "script_key: 影响脚本" in script_doc_result.messages[0]["content"]
-    assert "CLI 参数" in script_doc_result.messages[0]["content"]
+            assert case["content"] in result.messages[0]["content"]
+            record = result.state_updates["read_document_records"][0]
+            assert record["path"].endswith("/{}/{}".format("{}s".format(resource), case["filename"]))
+            assert record["ontology_version"] == "0.1.0"
 
     script_result = execute_tool_batch(
         [
@@ -528,9 +624,15 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
                 {"ontology_id": "demo-v01", "operation_key": "分析影响", "arguments": {"eco_id": "CHANGE_ORDER-001"}},
             )
         ],
-        _make_context(project_root=str(tmp_path)),
+        context,
     )
     assert json.loads(script_result.messages[0]["content"]) == ["--eco-id", "CHANGE_ORDER-001"]
+
+    matched_entry, matched_key, confidence = find_best_script_operation("分析影响", "demo-v01")
+    assert matched_entry is not None
+    assert matched_entry["_script_path"] == "scripts/impact.py"
+    assert matched_key == "分析影响"
+    assert confidence == 1.0
 
 
 def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):
@@ -542,7 +644,8 @@ def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):
     (ontology_dir / "manifest.yaml").write_text(
         "\n".join(
             [
-                "kind: ontology",
+                "kind: ontology-package",
+                "schema_version: 0.1",
                 "id: demo",
                 "name: Demo",
                 "description: Demo ontology",
@@ -556,9 +659,11 @@ def test_execute_script_uses_active_ontology_version(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
-    (version1 / "scripts-list.md").write_text("- `流程A` -> `scripts/hello.py`\n", encoding="utf-8")
+    (version1 / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    _write_script_descriptor(version1, operation_key="流程A", script_name="hello.py")
     (version1 / "scripts" / "hello.py").write_text('print("v1")\n', encoding="utf-8")
-    (version2 / "scripts-list.md").write_text("- `流程A` -> `scripts/hello.py`\n", encoding="utf-8")
+    (version2 / "scripts" / "index.md").write_text("# scripts\n", encoding="utf-8")
+    _write_script_descriptor(version2, operation_key="流程A", script_name="hello.py")
     (version2 / "scripts" / "hello.py").write_text('print("v2")\n', encoding="utf-8")
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
@@ -586,7 +691,7 @@ def test_ontology_context_appends_near_point_recall_for_operation(tmp_path, monk
         content="先校验物料编号是否为空，再查询供应商。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
 
     result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "operation", "key": "流程A"})],
@@ -631,7 +736,7 @@ def test_ontology_context_does_not_inject_ontology_level_procedure(tmp_path, mon
         content="流程A先校验物料编号。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
 
     result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "operation", "key": "流程A"})],
@@ -663,7 +768,7 @@ def test_ontology_context_appends_schema_recall_for_object_with_recent_operation
         content="TargetItem 的物料编码字段是 TargetItem编码。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
     read_documents = merge_read_documents_registry(
         None,
         [
@@ -704,7 +809,7 @@ def test_ontology_context_appends_object_level_schema_without_recent_operation(t
         content="TargetItem 的物料编码字段是 TargetItem编码。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.evolution.near_point_recall.get_proposal_buffer", lambda: buffer)
 
     result = execute_tool_batch(
         [_build_tool_call("ontology_context", {"ontology_id": "demo", "resource": "object", "key": "TargetItem"})],
@@ -763,7 +868,7 @@ def test_registry_loads_skill_root_and_supporting_files(tmp_path, monkeypatch):
 
 def test_single_tool_interval_starts_at_actual_execution(monkeypatch):
     ticks = iter([2000, 2015])
-    monkeypatch.setattr("agentic.tools.executor._now_monotonic_ms", lambda: next(ticks))
+    monkeypatch.setattr("agent.tools.executor._now_monotonic_ms", lambda: next(ticks))
 
     task = {
         "index": 0,
@@ -805,16 +910,15 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
             "print(json.dumps(sys.argv[1:], ensure_ascii=False))\n"
         ),
     )
-    scripts_list = tmp_path / "ontologies" / "demo" / "scripts-list.md"
-    scripts_list.write_text(
+    script_descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
+    script_descriptor.write_text(
         (
-            "- `流程A` -> `scripts/hello.py`\n"
-            "  `parameters`: `[{\"name\":\"target_item_code\",\"flag\":\"--target_item-code\","
-            "\"required\":true,\"type\":\"string\",\"description\":\"TargetItem编码\"},"
-            "{\"name\":\"equipment_model\",\"flag\":\"--equipment-model\",\"required\":false,"
-            "\"type\":\"string\",\"description\":\"设备型号\"},"
-            "{\"name\":\"batch_codes\",\"flag\":\"--batch-code\",\"required\":true,"
-            "\"type\":\"string\",\"multiple\":true,\"description\":\"设备批次\"}]`\n"
+            "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| target_item_code | --target_item-code | string | 是 | TargetItem编码 | 否 |\n"
+            "| equipment_model | --equipment-model | string | 否 | 设备型号 | 否 |\n"
+            "| batch_codes | --batch-code | string | 是 | 设备批次 | 是 |\n"
         ),
         encoding="utf-8",
     )
@@ -889,14 +993,14 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
 
 def test_execute_script_validates_structured_parameters(tmp_path, monkeypatch):
     _write_scripted_ontology(tmp_path)
-    scripts_list = tmp_path / "ontologies" / "demo" / "scripts-list.md"
-    scripts_list.write_text(
+    script_descriptor = tmp_path / "ontologies" / "demo" / "scripts" / "hello.md"
+    script_descriptor.write_text(
         (
-            "- `流程A` -> `scripts/hello.py`\n"
-            "  `parameters`: `[{\"name\":\"quantity\",\"flag\":\"--quantity\","
-            "\"required\":true,\"type\":\"integer\",\"description\":\"数量\"},"
-            "{\"name\":\"batch_codes\",\"flag\":\"--batch-code\",\"required\":false,"
-            "\"type\":\"string\",\"multiple\":true,\"description\":\"设备批次\"}]`\n"
+            "---\nresource: script\nkey: hello\ntitle: 流程A\nbound_operation: 流程A\nentrypoint: hello.py\n---\n\n"
+            "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| quantity | --quantity | integer | 是 | 数量 | 否 |\n"
+            "| batch_codes | --batch-code | string | 否 | 设备批次 | 是 |\n"
         ),
         encoding="utf-8",
     )
@@ -949,29 +1053,29 @@ def test_execute_script_rejects_arguments_when_no_parameters_declared(tmp_path, 
     assert "declares no parameters" in result.messages[0]["content"]
 
 
-def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
+def test_execute_script_injects_versioned_mindsdb_connection(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     _write_scripted_ontology(
         tmp_path,
         script_body=(
-            "from agentic.services.mindsdb import MindsDBClient\n"
-            "client = MindsDBClient()\n"
-            "try:\n"
-            "    print(client.base_url)\n"
-            "    print(client.config.default_database)\n"
-            "finally:\n"
-            "    client.close()\n"
+            "from shared_capabilities.ontology_script_sdk.connection_env import "
+            "load_effective_connection\n"
+            "connection = load_effective_connection()\n"
+            "print(connection.endpoint)\n"
+            "print(connection.options.get('default_database'))\n"
+            "print(connection.options.get('workspace_id'))\n"
+            "print(connection.options.get('ontology_id'))\n"
         ),
     )
     _patch_test_ontology_registry(monkeypatch, tmp_path)
 
-    from agentic.business_data.bindings_store import set_ontology_data_binding
-    from agentic.business_data.connections_store import create_data_connection
+    from agent.tools.business_data.ontology_sources_store import set_ontology_data_source
 
-    create_data_connection(
-        {
-            "id": "mindsdb-main",
-            "name": "MindsDB Main",
+    set_ontology_data_source(
+        ontology_id="demo",
+        workspace_id="demo-ws",
+        data={
+            "mode": "direct_provider",
             "provider": "mindsdb",
             "config": {
                 "url": "https://mindsdb.example.com/",
@@ -979,12 +1083,6 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
                 "timeout_seconds": 120,
             },
         },
-        workspace_id="demo-ws",
-    )
-    set_ontology_data_binding(
-        ontology_id="demo",
-        connection_id="mindsdb-main",
-        workspace_id="demo-ws",
     )
 
     result = execute_tool_batch(
@@ -995,6 +1093,8 @@ def test_execute_script_injects_bound_mindsdb_connection(tmp_path, monkeypatch):
     assert result.messages[0]["name"] == "execute_script"
     assert "https://mindsdb.example.com" in result.messages[0]["content"]
     assert "analytics" in result.messages[0]["content"]
+    assert "demo-ws" in result.messages[0]["content"]
+    assert "demo" in result.messages[0]["content"]
 
 
 def test_execute_script_forces_utf8_child_output(tmp_path, monkeypatch):
@@ -1140,6 +1240,158 @@ def test_registry_returns_validation_error_for_missing_required_args():
     assert "missing required argument(s): ontology_id, entity, query" in result.messages[0]["content"]
 
 
+def test_registry_rejects_unknown_server_owned_execute_script_arguments(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "ok",
+    )
+
+    result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "execute_script",
+                {
+                    "ontology_id": "demo",
+                    "operation_key": "流程A",
+                    "arguments": {},
+                    "workspace_id": "attacker-workspace",
+                    "timeout_seconds": 999999,
+                },
+            )
+        ],
+        _make_context(workspace_id="trusted-workspace"),
+    )
+
+    assert called == []
+    assert "unexpected field(s)" in result.messages[0]["content"]
+    assert "timeout_seconds" in result.messages[0]["content"]
+    assert "workspace_id" in result.messages[0]["content"]
+
+
+def test_execute_script_tool_overwrites_server_owned_context_even_without_registry(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: captured.update(kwargs) or "ok",
+    )
+    context = _make_context(workspace_id="trusted-workspace", project_root="/trusted/project")
+
+    TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "流程A",
+            "workspace_id": "attacker-workspace",
+            "timeout_seconds": 999999,
+            "base_path": "/attacker/project",
+        },
+        context=context,
+        tool_call_id="call-trusted",
+    )
+
+    assert captured["workspace_id"] == "trusted-workspace"
+    assert captured["timeout_seconds"] == context.agent_config.execute_script_timeout
+    assert str(captured["base_path"]) == "/trusted/project"
+    assert captured["session_id"] == context.session_id
+
+
+def test_terminal_interaction_skips_later_tool_calls(monkeypatch):
+    executed = []
+    monkeypatch.setitem(
+        TOOL_SPECS,
+        "after_interaction",
+        _make_mock_tool("after_interaction", lambda: executed.append(True) or "executed"),
+    )
+
+    result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "request_user_interaction",
+                {"type": "input", "prompt": "请补充物料编号"},
+                call_id="call-interaction",
+            ),
+            _build_tool_call("after_interaction", {}, call_id="call-after"),
+        ],
+        _make_context(),
+    )
+
+    assert result.terminal is True
+    assert executed == []
+    assert [message["tool_call_id"] for message in result.messages] == [
+        "call-interaction",
+        "call-after",
+    ]
+    assert json.loads(result.messages[1]["content"])["status"] == "skipped"
+
+
+def test_execute_tool_batch_stops_after_terminal_outcome(monkeypatch):
+    calls = []
+
+    class _TerminalUnitTool:
+        name = "terminal_unit_tool"
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "terminal_unit_tool",
+                "description": "terminal unit tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        allowed_callers = {"main"}
+        concurrency_safe = False
+        max_parallelism = 1
+        category = "regular"
+
+        def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
+            del args, context, event_emitter
+            calls.append(("terminal", tool_call_id))
+            return ToolOutcome(
+                content="awaiting input",
+                state_updates={"pending_user_interaction": {"id": "interaction_1"}},
+                terminal=True,
+            )
+
+    class _LaterUnitTool:
+        name = "later_unit_tool"
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "later_unit_tool",
+                "description": "later unit tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        allowed_callers = {"main"}
+        concurrency_safe = False
+        max_parallelism = 1
+        category = "regular"
+
+        def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
+            del args, context, tool_call_id, event_emitter
+            calls.append(("later", None))
+            return ToolOutcome(content="should not run")
+
+    monkeypatch.setitem(TOOL_SPECS, "terminal_unit_tool", _TerminalUnitTool())
+    monkeypatch.setitem(TOOL_SPECS, "later_unit_tool", _LaterUnitTool())
+
+    result = execute_tool_batch(
+        [
+            _build_tool_call("terminal_unit_tool", {}, call_id="call_terminal"),
+            _build_tool_call("later_unit_tool", {}, call_id="call_later"),
+        ],
+        _make_context(),
+    )
+
+    assert calls == [("terminal", "call_terminal")]
+    assert result.terminal is True
+    assert result.state_updates == {"pending_user_interaction": {"id": "interaction_1"}}
+    assert [message["name"] for message in result.messages] == [
+        "terminal_unit_tool",
+        "later_unit_tool",
+    ]
+    assert json.loads(result.messages[1]["content"])["status"] == "skipped"
+
+
 def test_registry_propagates_log_context_to_parallel_tool_threads(monkeypatch):
     captured_contexts = []
 
@@ -1216,7 +1468,7 @@ def test_registry_allows_business_data_search_without_matching_object_definition
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- TargetItem",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- TargetItem",
                 },
             ]
         ),
@@ -1350,7 +1602,7 @@ def test_registry_allows_explicit_entity_query_after_matching_object_definition(
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list_miwu",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- 迷雾\n- 快艇",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- 迷雾\n- 快艇",
                 }
             ],
             read_documents=merge_read_documents_registry(
@@ -1502,7 +1754,7 @@ def test_registry_allows_chinese_business_data_search_without_matching_object_de
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list_cn",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- CHANGE_ORDER受影响对象",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- CHANGE_ORDER受影响对象",
                 },
             ]
         ),
@@ -1584,7 +1836,7 @@ def test_registry_allows_explicit_entity_query_with_objects_list_only(monkeypatc
                     "role": "tool",
                     "name": "ontology_context",
                     "tool_call_id": "call_obj_list_miwu",
-                    "content": "File: ontologies/demo/objects-list.md\n\n- 迷雾\n- 快艇",
+                    "content": "File: ontologies/demo/objects/index.md\n\n- 迷雾\n- 快艇",
                 },
             ]
         ),
@@ -1751,7 +2003,7 @@ def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):
     )
     wait_for_memory_tasks(timeout=5)
 
-    context = memory_manager.build_memory_context(query="计算处理成本", ov_session_id=None)
+    context = memory_manager.build_memory_context(query="计算处理成本")
     assert "以后使用中文回答计算处理成本的问题" in context
     assert "以后使用英文回答计算处理成本的问题" not in context
 
@@ -1817,7 +2069,7 @@ def test_memory_schema_keeps_model_visible_arguments_minimal():
 
 def test_process_memory_request_uses_operation_evolution_buffer(monkeypatch, tmp_path):
     buffer = ProposalBuffer(str(tmp_path / "operations-evolution"))
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     llm = _FakeRouterLLM(
         [
             {
@@ -1904,7 +2156,7 @@ def test_process_memory_request_uses_operation_evolution_buffer(monkeypatch, tmp
 
 def test_operation_memory_extractor_skips_compact_key_lines(monkeypatch, tmp_path):
     buffer = ProposalBuffer(str(tmp_path / "operations-evolution"))
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     llm = _FakeRouterLLM(
         [
             {
@@ -1967,7 +2219,7 @@ def test_operation_evolution_relation_merges_procedure_duplicate(monkeypatch, tm
         content="流程A执行前先校验物料编号不能为空。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     llm = _FakeRouterLLM(
         [
             {
@@ -2023,7 +2275,7 @@ def test_operation_evolution_relation_replaces_same_scope_schema(monkeypatch, tm
         content="TargetItem 的物料编码字段是 code。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     llm = _FakeRouterLLM(
         [
             {
@@ -2089,7 +2341,7 @@ def test_operation_evolution_does_not_compare_schema_across_operations(monkeypat
         content="流程B中 TargetItem 的物料编码字段是 code。",
         source="active_chat",
     )
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     llm = _FakeRouterLLM(
         [
             {
@@ -2123,7 +2375,7 @@ def test_operation_evolution_does_not_compare_schema_across_operations(monkeypat
 
 def test_process_memory_request_stores_object_level_schema_without_operation(monkeypatch, tmp_path):
     buffer = ProposalBuffer(str(tmp_path / "operations-evolution"))
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     llm = _FakeRouterLLM(
         [
             {
@@ -2162,7 +2414,7 @@ def test_process_memory_request_stores_object_level_schema_without_operation(mon
 
 def test_operation_memory_without_operation_key_stays_in_evolution(monkeypatch, tmp_path):
     buffer = ProposalBuffer(str(tmp_path / "operations-evolution"))
-    monkeypatch.setattr("agentic.tools.memory.get_proposal_buffer", lambda: buffer)
+    monkeypatch.setattr("agent.tools.memory.get_proposal_buffer", lambda: buffer)
     memory_manager = _FakeMemoryManager()
     llm = _FakeRouterLLM(
         [
@@ -2210,13 +2462,21 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
     memory_schema = TOOL_SPECS["memory"].schema["function"]
     spawn_schema = TOOL_SPECS["spawn_sub_agent"].schema["function"]
 
-    ontology_resource_property = ontology_schema["parameters"]["properties"]["resource"]
-    ontology_resource_description = ontology_resource_property["description"]
+    ontology_resource_description = ontology_schema["parameters"]["properties"]["resource"]["description"]
     assert "root returns ontology metadata and catalogs" in ontology_resource_description
     assert "operation returns operation content by key" in ontology_resource_description
     assert "object returns object/entity definition by key" in ontology_resource_description
-    assert "asset" not in ontology_resource_property["enum"]
-    assert "asset" not in ontology_resource_description
+    assert "rule returns rule content by key" in ontology_resource_description
+    assert "metric returns metric content by key" in ontology_resource_description
+    assert "script returns registered script description by key" in ontology_resource_description
+    assert ontology_schema["parameters"]["properties"]["resource"]["enum"] == [
+        "root",
+        "operation",
+        "object",
+        "rule",
+        "metric",
+        "script",
+    ]
     assert "resource='root'" not in ontology_description
     assert "semantic keys" not in ontology_description
     assert "file paths" not in ontology_description
@@ -2298,9 +2558,11 @@ def test_registry_marks_status_error_payloads_as_tool_failures(monkeypatch):
 
 def test_registry_reports_invalid_tool_argument_json_before_required_fields():
     malformed_call = ToolInvocation(
+        id="call_bad_json",
         name="spawn_sub_agent",
-        args={_ARGUMENT_PARSE_ERROR_KEY: '{"tasks": [id": "cycle_impact"}'},
-        tool_call_id="call_bad_json",
+        arguments={
+            _ARGUMENT_PARSE_ERROR_KEY: '{"tasks": [id": "cycle_impact"}',
+        },
     )
 
     result = execute_tool_batch([malformed_call], _make_context())
@@ -2336,23 +2598,24 @@ def test_execute_tool_batch_accepts_internal_tool_invocation(monkeypatch):
                     },
                 },
             },
-            category="regular",
         ),
     )
 
     result = execute_tool_batch(
         [
             ToolInvocation(
+                id="jiuwen_skill_1",
                 name="unit_tool",
-                args={"skill_id": "finance"},
-                tool_call_id="jiuwen_skill_1",
-                index=0,
+                arguments={"skill_id": "finance"},
             )
         ],
         _make_context(),
     )
 
-    assert observed == {"skill_id": "finance", "tool_call_id": "jiuwen_skill_1"}
+    assert observed == {
+        "skill_id": "finance",
+        "tool_call_id": "jiuwen_skill_1",
+    }
     assert result.messages == [
         {
             "role": "tool",
@@ -2363,77 +2626,15 @@ def test_execute_tool_batch_accepts_internal_tool_invocation(monkeypatch):
     ]
 
 
-def test_execute_tool_batch_stops_after_terminal_outcome(monkeypatch):
-    calls = []
-
-    class _TerminalUnitTool:
-        name = "terminal_unit_tool"
-        schema = {
-            "type": "function",
-            "function": {
-                "name": "terminal_unit_tool",
-                "description": "terminal unit tool",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-        allowed_callers = {"main"}
-        concurrency_safe = False
-        max_parallelism = 1
-        category = "regular"
-
-        def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
-            del args, context, event_emitter
-            calls.append(("terminal", tool_call_id))
-            return ToolOutcome(
-                content="awaiting input",
-                state_updates={"pending_user_interaction": {"id": "interaction_1"}},
-                terminal=True,
-            )
-
-    class _LaterUnitTool:
-        name = "later_unit_tool"
-        schema = {
-            "type": "function",
-            "function": {
-                "name": "later_unit_tool",
-                "description": "later unit tool",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }
-        allowed_callers = {"main"}
-        concurrency_safe = False
-        max_parallelism = 1
-        category = "regular"
-
-        def execute(self, *, args, context, tool_call_id=None, event_emitter=None):
-            del args, context, event_emitter
-            calls.append(("later", tool_call_id))
-            return ToolOutcome(content="should not run")
-
-    monkeypatch.setitem(TOOL_SPECS, "terminal_unit_tool", _TerminalUnitTool())
-    monkeypatch.setitem(TOOL_SPECS, "later_unit_tool", _LaterUnitTool())
-
-    result = execute_tool_batch(
-        [
-            ToolInvocation(name="terminal_unit_tool", args={}, tool_call_id="call_terminal", index=0),
-            ToolInvocation(name="later_unit_tool", args={}, tool_call_id="call_later", index=1),
-        ],
-        _make_context(),
-    )
-
-    assert calls == [("terminal", "call_terminal")]
-    assert result.terminal is True
-    assert result.state_updates == {"pending_user_interaction": {"id": "interaction_1"}}
-    assert [message["name"] for message in result.messages] == ["terminal_unit_tool"]
-
-
 def test_execute_tool_batch_rejects_legacy_openai_style_tool_call_dict():
     legacy_tool_call = {
         "id": "call_legacy",
         "type": "function",
         "function": {
             "name": "spawn_sub_agent",
-            "arguments": json.dumps({"tasks": [{"id": "c1", "task": "child"}]}),
+            "arguments": json.dumps(
+                {"tasks": [{"id": "c1", "task": "child"}]}
+            ),
         },
     }
 
@@ -2467,18 +2668,11 @@ def test_registry_propagates_workflow_cancellation_from_tool(monkeypatch):
         )
 
 
-def test_registry_enforces_tool_whitelist_for_sub_agents(tmp_path, monkeypatch):
-    _write_demo_skill(tmp_path)
-    _patch_test_skill_registry(monkeypatch, tmp_path)
-
+def test_registry_enforces_tool_whitelist_for_sub_agents():
     subagent_tools = [tool["function"]["name"] for tool in get_tools_schema("subagent")]
-    removed_tool = "ask" + "_user"
 
-    assert "read_file" not in subagent_tools
-    assert "list_files" not in subagent_tools
     assert "ontology_context" in subagent_tools
     assert "skill" in subagent_tools
-    assert "skill_context" not in subagent_tools
     assert "business_data_search" in subagent_tools
     assert "web_search" not in subagent_tools
     assert "web_search" in [
@@ -2490,11 +2684,8 @@ def test_registry_enforces_tool_whitelist_for_sub_agents(tmp_path, monkeypatch):
     assert TOOL_SPECS["memory"].allowed_callers == {"main"}
     assert "request_user_interaction" not in subagent_tools
     assert TOOL_SPECS["request_user_interaction"].allowed_callers == {"main"}
-    assert "store_memory" not in TOOL_SPECS
-    assert "recall_memory" not in TOOL_SPECS
     assert "propose_operation_patch" not in TOOL_SPECS
     assert "spawn_sub_agent" in subagent_tools
-    assert removed_tool not in subagent_tools
 
 
 def test_registry_no_longer_registers_removed_hitl_tool(tmp_path, monkeypatch):
@@ -2514,9 +2705,7 @@ def test_registry_no_longer_registers_removed_hitl_tool(tmp_path, monkeypatch):
     )
 
 
-def test_registry_exposes_request_user_interaction_to_main_only(tmp_path, monkeypatch):
-    _patch_empty_skill_registry(monkeypatch, tmp_path)
-
+def test_registry_exposes_request_user_interaction_to_main_only():
     main_tools = [tool["function"]["name"] for tool in get_tools_schema("main")]
     subagent_tools = [tool["function"]["name"] for tool in get_tools_schema("subagent")]
 
@@ -2524,9 +2713,7 @@ def test_registry_exposes_request_user_interaction_to_main_only(tmp_path, monkey
     assert "request_user_interaction" not in subagent_tools
 
 
-def test_registry_exposes_single_subagent_tool_for_main_agent(tmp_path, monkeypatch):
-    _patch_empty_skill_registry(monkeypatch, tmp_path)
-
+def test_registry_exposes_single_subagent_tool_for_main_agent():
     main_tools = [tool["function"]["name"] for tool in get_tools_schema("main")]
 
     assert "spawn_sub_agent" in main_tools
@@ -2554,20 +2741,14 @@ def test_spawn_sub_agent_schema_contains_invocation_contract_not_plan_sync_guida
     assert "sub_operation_keys" in context_description
 
 
-def test_registry_can_hide_memory_tools_for_main_agent(tmp_path, monkeypatch):
-    _write_demo_skill(tmp_path)
-    _patch_test_skill_registry(monkeypatch, tmp_path)
-
+def test_registry_can_hide_memory_tools_for_main_agent():
     main_tools = [
         tool["function"]["name"]
         for tool in get_tools_schema("main", include_memory=False)
     ]
 
     assert "skill" in main_tools
-    assert "skill_context" not in main_tools
     assert "memory" not in main_tools
-    assert "store_memory" not in main_tools
-    assert "recall_memory" not in main_tools
 
 
 def test_registry_hides_skill_schema_when_no_skills_are_registered(tmp_path, monkeypatch):

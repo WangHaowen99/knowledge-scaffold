@@ -4,6 +4,7 @@ import { buildInterviewTools, buildCompetencyTools, buildGenerateTools, type Too
 import { makeAgent, runAgent, runAgentCaptured } from './agent.js';
 import { upsertNode, getNode, nextOrdinal, listNodes } from './engine.js';
 import * as repo from './m2-repo.js';
+import { assertObjectDataMappings } from './data-mapping.js';
 import { renderPackage } from './package-render.js';
 
 type Ctx = { tables: DataDictTable[]; documents: { filename: string; textContent?: string }[] };
@@ -144,8 +145,8 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   const tools = buildGenerateTools(toolCtx(ctx), cap);
   const sys = [
     '你是知识建模助手。基于数据字典、访谈结论与选中的领域问题，产出结构化知识包规格。',
-    '要求：① 每个业务对象给出字段（含中文名/类型/业务说明），标注对应的数据表（sourceTable）与主键；',
-    '字段 key 用业务命名，sourceColumn 填数据字典中的真实列名（二者一致时可省略）；',
+    '要求：① 每个业务对象都必须给出字段（含中文名/类型/业务说明）、sourceTable 和主键；sourceTable 只能逐字填写数据字典中真实存在的 Excel Sheet 名，不得生成没有 Excel 来源的对象；',
+    '同一个 Excel Sheet 可以拆分、投影为多个业务对象，不要求 Sheet 与对象一一对应；每个对象字段都必须存在于该对象的 sourceTable 中，字段 key 用业务命名，sourceColumn 填真实列名（二者一致时可省略）；',
     '尽量补充对象的查询边界（queryBoundary）、别名（aliases）、字段别名（alias）与对象间关系（relations）；',
     '② 每个选中的领域问题至少对应一个 operation（在 operation.competencyQuestion 里填该问题原文），operation 要有输入/输出（含中文名 cnName）/流程/关联对象；',
     '流程步骤中引用对象统一写 object:<key>、引用脚本统一写 script:<key>；',
@@ -176,6 +177,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
     metrics: raw.metrics ?? [],
   };
 
+  assertObjectDataMappings(spec, ctx.tables);
   const coverage = checkCoverage(spec, selected);
   const files = renderPackage(spec);
   repo.insertPackageVersion(project.id, version, spec, coverage, node.id);

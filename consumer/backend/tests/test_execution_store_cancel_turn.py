@@ -2,7 +2,7 @@
 
 import threading
 
-from agentic.stores.execution_store import ExecutionStore
+from persistence.execution_store import ExecutionStore
 
 
 def test_cancel_turn_marks_cancelled_and_persists_payload(tmp_path):

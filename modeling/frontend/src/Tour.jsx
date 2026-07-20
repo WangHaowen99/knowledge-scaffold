@@ -22,7 +22,7 @@ export const CONFIG_STEPS = [
   {
     sel: '[data-tour="cfg-eval"]', enter: openSettings('eval'),
     title: '配置中心 · 评测数据',
-    body: '上面是评测库 MySQL 地址：上传的 Excel 数据会自动落到这个库，供查询类用例使用。下面是评测数据连接的默认值（provider、数据服务 URL、token、scene），开评测时会自动预填。改完记得点「保存全部」。',
+    body: '上面是评测库 MySQL 地址：上传的 Excel 数据会自动落到这个库，供查询类用例使用。下面是评测数据源的默认值（provider、数据服务 URL、token、scene），开评测时会自动预填。改完记得点「保存全部」。',
   },
 ];
 
@@ -52,9 +52,10 @@ export const WORKBENCH_STEPS = [
   { sel: '[data-tour="node-interview"]', title: '③ 知识萃取访谈', body: '系统像顾问一样向你提问（一般 2~3 批）：对象怎么划分、字段是什么含义、口径怎么算。你的回答会成为建模的依据。提问在服务器上进行，切换页面不会中断。' },
   { sel: '[data-tour="node-generate"]', title: '④ 知识包生成', body: '根据数据字典、访谈结论和领域问题，自动生成知识包（业务对象、操作、字段映射），并逐条检查每个领域问题是否都有对应的操作能回答。' },
   { sel: '[data-tour="node-review"]', title: '⑤ 知识包完善', body: '「知识包体检」自动检查常见问题（口径冲突、兜底缺失、路由重复等）；每个文件都可以直接查看和编辑（✎ 表示人工修订稿，优先生效）；右栏的修缮对话支持用大白话提修改——先给出影响分析，你确认后才会生成新版本。' },
-  { sel: '[data-tour="node-testcases"]', title: '⑥ 评测用例录入', body: '每条用例就是一道考题：问题 + 标准答案。可以从已勾选的领域问题一键预填，再逐条补上标准答案。' },
-  { sel: '[data-tour="node-evaluate"]', title: '⑦ 评测运行', body: '把当前知识包放进独立的测试环境，逐条运行用例并自动判分；判得不准可以人工改判。每一轮结果都按包版本保存，随时回看对比。' },
-  { sel: '[data-tour="node-optimize"]', title: '⑧ 优化建议与应用', body: '对没通过的用例，系统会分析原因（缺知识、没用上、写错了）并给出修改建议；勾选认可的建议，一键生成新版本，再回到评测验证是否有提升。每个版本都能导出 zip 交付。' },
+  { sel: '[data-tour="node-data_source"]', title: '⑥ 数据源配置', body: '选择评测使用的数据源并保存连接；Neo4j 可配置 Database，以及 Workspace 与 Ontology 两组联合隔离条件。' },
+  { sel: '[data-tour="node-testcases"]', title: '⑦ 评测用例录入', body: '每条用例就是一道考题：问题 + 标准答案。可以从已勾选的领域问题一键预填，再逐条补上标准答案。' },
+  { sel: '[data-tour="node-evaluate"]', title: '⑧ 评测运行', body: '把当前知识包放进独立的测试环境，逐条运行用例并自动判分；判得不准可以人工改判。每一轮结果都按包版本保存，随时回看对比。' },
+  { sel: '[data-tour="node-optimize"]', title: '⑨ 优化建议与应用', body: '对没通过的用例，系统会分析原因（缺知识、没用上、写错了）并给出修改建议；勾选认可的建议，一键生成新版本，再回到评测验证是否有提升。每个版本都能导出 zip 交付。' },
   { sel: '[data-tour="context"]', title: '右栏 · 上下文', body: '数据字典和已上传的文档随时在这里查阅；进入「知识包完善」步骤时，这里会切换成修缮对话。' },
   { sel: '[data-tour="config"]', title: '配置中心', body: '大模型、consumer 服务与评测数据都在右上角的配置中心统一管理，保存即生效。接下来打开它逐项看一下。' },
   ...CONFIG_STEPS,

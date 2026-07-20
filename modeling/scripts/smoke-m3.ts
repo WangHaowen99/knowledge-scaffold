@@ -1,22 +1,27 @@
 /**
  * M3 冒烟：评测闭环端到端（stub consumer + faux judge）。
- * stub consumer 实现：workspaces / import-zip（首次 409 再覆盖）/ data-connections /
- * data-binding / runs·sync（含一次 429 限流验证退避）。
- * 验证：影子工作区创建、包导入、绑定、逐用例出分、judge 判定、轮次进度与日志。
+ * stub consumer 实现：workspaces / import-zip（首次 409 再覆盖）/ ontology data-source /
+ * runs·sync（含一次 429 限流验证退避）。
+ * 验证：隔离值工作空间创建/复用、包导入、本体数据源复用、逐用例新对话、judge 判定、轮次进度与日志。
  */
 import { createServer } from 'node:http';
 import { createProject } from '../src/projects/repo.js';
 import { insertDocument } from '../src/documents/repo.js';
 import { insertPackageVersion } from '../src/workflow/m2-repo.js';
 import * as m3repo from '../src/workflow/m3-repo.js';
-import { startEvaluation, shadowWorkspaceId } from '../src/evaluation/engine.js';
+import { startEvaluation } from '../src/evaluation/engine.js';
+import { configureProjectDataSource } from '../src/evaluation/data-source-service.js';
 import { setSetting } from '../src/settings/repo.js';
 import type { PackageSpec } from '../src/types.js';
 
 const ok = (c: boolean, m: string) => { console.log(`  ${c ? '✓' : '✗ FAIL'}  ${m}`); if (!c) process.exitCode = 1; };
 
 // ---- stub consumer ----
-const seen = { wsCreated: false, imported: 0, bound: false, connCreated: false, runs: 0, rateLimited: false };
+const seen = {
+  wsCreated: false, workspace: null as any, imported: 0,
+  dataSource: null as any, dataSourceReads: 0, runs: 0, rateLimited: false,
+  workspaceHeaders: [] as string[], sessionIds: [] as string[],
+};
 function startStubConsumer(port: number) {
   const srv = createServer(async (req, res) => {
     const url = req.url ?? '';
@@ -25,23 +30,33 @@ function startStubConsumer(port: number) {
     });
     res.setHeader('Content-Type', 'application/json');
     const send = (code: number, obj: unknown) => { res.statusCode = code; res.end(JSON.stringify(obj)); };
+    if (url.startsWith('/agentic/') && url !== '/agentic/workspaces') {
+      seen.workspaceHeaders.push(String(req.headers['x-workspace-id'] ?? ''));
+    }
 
     if (url === '/health') return send(200, { status: 'ok' });
     if (url === '/auth/me') return send(200, { user: { username: 'expert', role: 'user' } });
-    if (url === '/agentic/workspaces' && req.method === 'GET') return send(200, { workspaces: [], total: 0, default_workspace_id: null });
-    if (url === '/agentic/workspaces' && req.method === 'POST') { seen.wsCreated = true; return send(201, JSON.parse(body)); }
+    if (url === '/agentic/workspaces' && req.method === 'GET') return send(200, { workspaces: seen.workspace ? [seen.workspace] : [], total: seen.workspace ? 1 : 0, default_workspace_id: null });
+    if (url === '/agentic/workspaces' && req.method === 'POST') { seen.wsCreated = true; seen.workspace = JSON.parse(body); return send(201, seen.workspace); }
     if (url === '/agentic/ontologies/import-zip') {
       seen.imported++;
       if (seen.imported === 1) return send(409, { requires_confirmation: true, conflict_type: 'version_exists', ontology_id: 'x' });
       return send(201, { success: true, ontology_id: 'demo-agent', objects_count: 2, operations_count: 5 });
     }
-    if (url === '/agentic/data-connections' && req.method === 'GET') return send(200, { connections: [], default_connection_id: '' });
-    if (url === '/agentic/data-connections' && req.method === 'POST') { seen.connCreated = true; return send(201, { connection: JSON.parse(body) }); }
-    if (url.includes('/data-binding') && req.method === 'PUT') { seen.bound = true; return send(200, { binding: {} }); }
+    if (url === '/agentic/ontologies/demo-agent/data-source' && req.method === 'PUT') {
+      seen.dataSource = JSON.parse(body);
+      return send(200, { ontology_id: 'demo-agent', configured: true, source: seen.dataSource });
+    }
+    if (url === '/agentic/ontologies/demo-agent/data-source' && req.method === 'GET') {
+      seen.dataSourceReads++;
+      return send(200, { ontology_id: 'demo-agent', configured: true, source: seen.dataSource });
+    }
     if (url === '/agentic/runs/sync') {
       seen.runs++;
+      const runPayload = JSON.parse(body);
+      seen.sessionIds.push(String(runPayload.session_id ?? ''));
       if (seen.runs === 1 && !seen.rateLimited) { seen.rateLimited = true; return send(429, { error: '限流' }); }
-      const q = (JSON.parse(body).request ?? '') as string;
+      const q = (runPayload.request ?? '') as string;
       // 命中「STRUCTURE_LIST」的问题给正确答案，其余答错——制造 pass/fail 混合
       const answer = q.includes('STRUCTURE_LIST') ? '共有 2 条 STRUCTURE_LIST 记录，父项 A001。' : '无法确定。';
       return send(200, { status: 'success', final_answer: answer, session_id: 'x', run_id: 'r' });
@@ -79,10 +94,30 @@ async function main() {
   m3repo.addTestcase(project.id, 'STRUCTURE_LIST 有几条记录，父项是什么', '2 条 STRUCTURE_LIST 记录，父项 A001');
   m3repo.addTestcase(project.id, 'CHANGE_ORDER 审批流程是什么', '需经工艺、质量双会签');
 
+  // 走真实配置编排：Workspace 隔离值 test 同时作为 consumer 评测工作空间 ID。
+  await configureProjectDataSource({
+    projectId: project.id,
+    token: 'stub-token',
+    input: {
+      mode: 'connection',
+      provider: 'neo4j',
+      config: {
+        uri: 'bolt://neo4j:7687',
+        username: 'neo4j',
+        password: 'secret',
+        database: 'neo4j',
+        workspace_property: 'd2o_workspace_id',
+        workspace_value: 'test',
+        ontology_property: 'd2o_ontology_id',
+        ontology_value: spec.id,
+      },
+    },
+    testConnection: async () => {},
+  });
+
   const { roundId } = startEvaluation({
     projectId: project.id, token: 'stub-token',
     tables: [], // 评测库 provisioning 走“跳过”分支
-    binding: { provider: 'nl2sql_template', config: { url: 'http://nl2sql:8080', token: 't', scene: 'mw' } },
   });
   ok(!!roundId, `轮次已启动：${roundId}`);
 
@@ -96,10 +131,17 @@ async function main() {
   const results = m3repo.listResults(roundId);
 
   ok(round.status === 'done', `轮次状态=${round.status}`);
-  ok(seen.wsCreated, `影子工作区已创建（${shadowWorkspaceId(project.id)}）`);
-  ok(seen.imported === 2, `import-zip 409 冲突后以 overwrite_active 重试（调用 ${seen.imported} 次）`);
-  ok(seen.connCreated && seen.bound, '数据连接已创建并完成绑定');
+  ok(seen.wsCreated && seen.workspace?.id === 'test' && seen.workspace?.name === 'test', '按 Workspace 隔离值创建 test 评测工作空间');
+  ok(round.log.includes('复用评测工作空间：test'), '评测运行复用数据源配置的 test 工作空间');
+  ok(seen.workspaceHeaders.length > 0 && seen.workspaceHeaders.every((value) => value === 'test'), '数据源保存、导包和评测请求均使用 test 工作空间');
+  ok(seen.imported === 3, `配置导包遇到 409 后覆盖，评测再次导包（调用 ${seen.imported} 次）`);
+  ok(seen.dataSource?.mode === 'direct_provider'
+    && seen.dataSource?.provider === 'neo4j'
+    && seen.dataSourceReads === 1, '数据源配置写入并在评测时复用本体级数据源');
   ok(seen.rateLimited && seen.runs === 3, `runs/sync 经历一次 429 退避重试（共 ${seen.runs} 次调用）`);
+  ok(seen.sessionIds.length === 3
+    && seen.sessionIds[0] === seen.sessionIds[1]
+    && seen.sessionIds[1] !== seen.sessionIds[2], '同一用例重试复用对话，不同用例使用独立新对话');
   ok(results.length === 2, `产出 ${results.length} 条结果`);
   const passed = results.filter((r) => r.verdict === 'pass').length;
   const failed = results.filter((r) => r.verdict === 'fail').length;

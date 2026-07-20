@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from agentic.evolution.models import Aggregate
-from agentic.evolution.proposal_writer import append_operation_proposal_with_relations
+from agent.evolution.models import Aggregate
+from agent.evolution.proposal_writer import append_operation_proposal_with_relations
 
 
 def _aggregate(fp: str, content: str) -> Aggregate:
@@ -52,7 +52,7 @@ def _mock_relation(monkeypatch, decisions):
             return SimpleNamespace(content=json.dumps({"decisions": decisions}))
 
     monkeypatch.setattr(
-        "agentic.evolution.proposal_writer.get_llm_router",
+        "agent.evolution.proposal_writer.get_llm_router",
         lambda: _Router(),
     )
 

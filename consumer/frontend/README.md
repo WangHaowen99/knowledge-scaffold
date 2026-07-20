@@ -1,153 +1,106 @@
-# Agentic Frontend
+# Meta-wise Consumer Frontend
 
-React + Vite client for the refactored agent runtime. It renders authenticated chat sessions, streams `agent.v2` workflow events, and provides workspace configuration, ontology management, operation evolution, local observability, and task-process views.
+Meta-wise Consumer 的唯一生产前端。应用使用 React 19 + Vite，统一承载认证、聊天运行、知识包、Evolution、配置管理和可观测性。
 
-## Current UI areas
+## 能力范围
 
-- Chat workspace with incremental assistant/tool streaming
-- Session sidebar with background-stream indicators
-- Configuration center for system settings, workspaces, workspace runtime config, data connections, and ontology bindings
-- Ontology management and operation evolution review
-- Task process sidebar built from streamed run/tool/sub-agent events
-- Session performance and admin local-observability dashboards
-- Admin management UI for users and skills
-- Login flow backed by JWT auth
+- JWT 登录、首次强制改密和账号安全
+- 多会话聊天、后台流式运行、SSE 游标续传、等待用户输入和取消
+- 专业化消息、完整 Trace、复制与反馈、会话性能和全局观测
+- 知识包文件、版本、导入、数据源、本体图运行态
+- Operation / Skill Evolution 生命周期、Diff、漂移与审批
+- 全局、Workspace、个人三级配置
+- 系统配置导入/模板/连接测试、模型引用保护
+- Workspace、用户和 MCP 管理
+- 浅色、深色、跟随系统和主题色
 
-## Project layout
+## 目录
 
 ```text
 src/
-├── App.jsx
-├── main.jsx
-├── index.css
-├── components/
-│   ├── AgenticChat.jsx
-│   ├── ChatInput.jsx
-│   ├── ChatMessage.jsx
-│   ├── ChatSidebar.jsx
-│   ├── ConfigurationCenter.jsx
-│   ├── DataConnectionManagement.jsx
-│   ├── LocalObservabilityDashboard.jsx
-│   ├── OntologyManagement.jsx
-│   ├── OntologySelector.jsx
-│   ├── OperationEvolution.jsx
-│   ├── PerformanceRunDetail.jsx
-│   ├── RunFeedback.jsx
-│   ├── SessionPerformanceAnalysis.jsx
-│   ├── SystemSettings.jsx
-│   ├── TopBar.jsx
-│   ├── UserManagement.jsx
-│   ├── WorkspaceManagement.jsx
-│   ├── WorkspaceRuntimeConfig.jsx
-│   ├── LoginPage.jsx
-│   └── TaskDAGSidebar.jsx
-├── hooks/
-│   ├── useAuth.js
-│   ├── useAgenticStream.js
-│   ├── useStreamManager.js
-│   └── useChatSessions.js
-└── utils/
-    ├── auth.js
-    ├── streamHelpers.js
-    ├── messageBuilder.js
-    ├── conversationTurns.js
-    ├── segmentGroups.js
-    ├── toolCallTracker.js
-    ├── observabilityStatus.js
-    ├── ontologyCommand.js
-    ├── performanceMetrics.js
-    ├── reasoningDetailGroups.js
-    ├── nodeNames.js
-    └── logger.js
+├── main.jsx                 # 唯一 React 挂载入口
+├── app/
+│   ├── App.jsx              # Provider 与应用入口
+│   ├── AppShell.jsx         # 导航、路由编排与 Workspace 外壳
+│   ├── onboarding/
+│   └── providers/
+├── features/
+│   ├── auth/
+│   ├── chat/
+│   ├── evolution/
+│   ├── knowledge/
+│   ├── observability/
+│   └── settings/
+└── shared/
+    ├── api/
+    ├── lib/
+    ├── styles/
+    └── ui/
 ```
 
-## Run locally
+生产代码不保留第二套入口，也不使用 `redesign`、`legacy`、`old` 或 `v1` 目录。
 
-Run from the `frontend/` directory:
+## 本地运行
 
 ```bash
+cd consumer/frontend
 npm install
 npm run dev
 ```
 
-Dev server address: `http://localhost:6600`
+开发地址为 `http://localhost:6600`。Vite 将同源的 `/auth`、`/agentic`、`/api` 和 `/health` 代理到 `http://127.0.0.1:5055`。
 
-No frontend `.env` file is required for local development. The dev server uses Vite proxying and forwards same-origin paths such as `/auth`, `/agentic`, `/api`, and `/health` to `http://127.0.0.1:5055`.
+前端本地开发不要求 `.env`。可选设置见 [`.env.example`](.env.example)。
 
-## Environment
-
-[`frontend/.env.example`](.env.example) is optional and only needed for extra client-side settings such as log level:
-
-```bash
-# Optional
-# VITE_LOG_LEVEL=info
-```
-
-## Verification commands
+## 验证
 
 ```bash
 npm run lint
+npm test
 npm run build
+npm run check:architecture
+npm run check:entry
 ```
 
-Current verification status:
+`npm test` 会执行全部 `node:test` 用例和架构门禁。架构门禁包括：
 
-- `npm run build` passes
-- `npm run lint` passes
-- Build still emits a Vite chunk-size warning for the main bundle (~650 kB minified JS)
+- feature 不反向依赖 app
+- shared 不依赖 app 或具体 feature
+- 跨 feature 只能使用目标 feature 的公开 `index`
+- `shared/lib` 不引入 React，`shared/ui` 不调用业务 API
+- 扫描 `src` 全部文件和 `public` 资源的历史目录，禁止根级生产文件
+- 仅 `main.jsx` 可引入 `react-dom/client` 或创建 React root
+- 检查 CSS 相对 `@import` 的可解析性、分层边界和跨 feature 引用
+- 检查潜在孤儿 CSS class 及同元素 compound class 组合
+- 检查 JS、JSX、CSS 全部由 `main.jsx` 可达，批准孤儿列表必须为空
 
-## Runtime flow
+GitCode workflow [consumer-frontend-ci.yml](../../.gitcode/workflows/consumer-frontend-ci.yml) 会在 `develop`、`frontend-unify`、`codex/frontend-*` 分支 push 和目标为 `develop` 的 PR 上执行安装、lint、测试、架构门禁和 production build。
 
-### Authentication
+## 运行边界
 
-`useAuth` calls:
+### 认证
 
-- `POST /auth/login`
-- `GET /auth/me`
+`features/auth` 负责登录态、capability、Workspace 切换和改密。认证请求集中在 `shared/api/auth.js`。
 
-The JWT is stored in local storage and added to all authenticated fetch/SSE requests.
+### 聊天
 
-### Sessions
+`features/chat` 负责会话状态、SSE 协议、运行恢复、智能滚动、消息展示和 Trace。服务端 session metadata 是会话级模型、知识包和 Agent 模式的权威来源。
 
-`useChatSessions` loads and manages:
+### 知识与 Evolution
 
-- `GET /agentic/sessions`
-- `POST /agentic/sessions`
-- `GET /agentic/sessions/:id`
-- `DELETE /agentic/sessions/:id`
-- `POST /agentic/sessions/:id/generate-title`
+`features/knowledge` 负责知识包浏览、导入、版本、数据源和本体图；`features/evolution` 通过公开入口向知识工作台提供进化能力。大型页面保持按需加载。
 
-Message state is cached per session so switching sessions does not interrupt background streams.
+业务数据源按知识包隔离，前端使用 `GET/PUT/DELETE /agentic/ontologies/:id/data-source`、`POST /agentic/ontologies/:id/data-source/test` 和 `GET /agentic/business-data/provider-schemas`。配置中心不再提供 Workspace 级共享连接或知识包绑定入口。
 
-### Workflow streaming
+### 配置与观测
 
-`useAgenticStream` opens `POST /agentic/runs/stream` and feeds `agent.v2` envelopes through `applyAgentV2Event`.
-
-`useStreamManager`:
-
-- keeps one active stream per session
-- supports parallel streams across different sessions
-- tracks `runId` per session
-- calls `POST /agentic/runs/:run_id/cancel` on stop/disconnect/error when possible
-
-### Configuration and workspace resources
-
-The configuration center and related panels use:
-
-- `GET/PATCH/POST /api/system-config...`
-- `GET/POST/PATCH/DELETE /agentic/workspaces...`
-- `GET/PATCH /agentic/workspaces/:id/runtime-config`
-- `GET/POST/PATCH/DELETE /agentic/data-connections...`
-- `GET/PUT/DELETE /agentic/ontologies/:id/data-binding`
-
-### Tool activity
-
-- `TaskDAGSidebar` visualizes run progress from streamed turn, tool, sub-agent, and summary events
-- Production nginx proxies `/auth`, `/agentic`, `/api`, and `/health`
+`features/settings` 负责三级配置、系统/模型/Workspace/用户/MCP 管理；`features/observability` 负责会话性能、运行详情和全局观测。
 
 ## Docker
 
-- Frontend-only compose: [`frontend/docker-compose.yml`](docker-compose.yml)
-- Full stack compose: [`docker-compose.yml`](../docker-compose.yml)
+- 前端 Compose：[docker-compose.yml](docker-compose.yml)
+- Consumer 全栈 Compose：[../docker-compose.yml](../docker-compose.yml)
 
-The production image serves static assets with nginx on port `80` inside the container, mapped to `8888` by default in Compose.
+生产镜像由 nginx 提供静态资源，并代理 `/auth`、`/agentic`、`/api` 和 `/health`。
+
+迁移阶段和验收证据见 [前端收敛方案](../docs/migration/frontend-convergence-and-enhancement-plan.md)。

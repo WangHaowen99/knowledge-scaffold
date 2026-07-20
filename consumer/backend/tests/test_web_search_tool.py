@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from agentic.tools.web_search import handle_web_search
+from agent.tools.web_search_tool import handle_web_search
 
 
 def _configure_web_search(tmp_path, monkeypatch, payload):
-    import agentic.config.system_config as system_config_module
+    import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +73,7 @@ def test_web_search_returns_normalized_results(tmp_path, monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "agentic.web_search.providers.tavily_provider.requests.Session",
+        "agent.tools.web_search.providers.tavily_provider.requests.Session",
         lambda: _FakeSession(),
     )
 
