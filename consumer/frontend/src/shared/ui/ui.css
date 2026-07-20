@@ -18,7 +18,7 @@
 .mwr .scope-tabs button { border: none; background: transparent; border-radius: 8px; padding: 8px 18px; font-size: 13.5px; font-weight: 600; color: var(--ink2); display: flex; gap: 8px; align-items: center; }
 .mwr .scope-tabs button:hover { color: var(--ink); }
 .mwr .scope-tabs button.on { background: #fff; color: var(--ink); box-shadow: var(--shadow-sm); }
-.mwr .kb-search { border: 1px solid var(--hair); border-radius: 9px; padding: 8px 12px; width: 100%; background: #fff; }
+.mwr .kb-search { border: 1px solid var(--control-border); border-radius: 9px; padding: 8px 12px; width: 100%; background: var(--control-bg); color: var(--control-fg); }
 .mwr .empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
 .mwr .ro-banner { display: flex; gap: 10px; align-items: center; background: #fbf6e8; border: 1px solid #f0e2bb; border-radius: 10px; padding: 10px 14px; font-size: 13px; color: #6b5a1e; margin-bottom: 16px; }
 .mwr table.dt { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -29,10 +29,13 @@
 .mwr .fieldrow .fl { width: 220px; flex: none; }
 .mwr .fieldrow .fl .n { font-weight: 600; font-size: 13.5px; }
 .mwr .fieldrow .fl .h { font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4; }
-.mwr .fieldrow input[type="text"], .mwr .fieldrow input[type="password"], .mwr .fieldrow input[type="number"], .mwr .fieldrow select {
-  flex: 1; max-width: 420px; border: 1px solid var(--hair); border-radius: 8px; padding: 7px 11px; background: #fff;
+.mwr .fieldrow input:not([type]), .mwr .fieldrow input[type="text"], .mwr .fieldrow input[type="email"],
+.mwr .fieldrow input[type="password"], .mwr .fieldrow input[type="number"], .mwr .fieldrow input[type="search"],
+.mwr .fieldrow input[type="tel"], .mwr .fieldrow input[type="url"], .mwr .fieldrow select, .mwr .fieldrow textarea {
+  flex: 1; max-width: 420px; border: 1px solid var(--control-border); border-radius: 8px; padding: 7px 11px;
+  background: var(--control-bg); color: var(--control-fg);
 }
-.mwr .fieldrow input:disabled, .mwr .fieldrow select:disabled { background: #f7f6f3; color: var(--muted); cursor: not-allowed; }
+.mwr .fieldrow input:disabled, .mwr .fieldrow select:disabled, .mwr .fieldrow textarea:disabled { background: var(--control-disabled-bg); color: var(--control-disabled-fg); cursor: not-allowed; }
 .mwr .card { background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 22px 24px; margin-bottom: 16px; box-shadow: var(--shadow-sm); }
 .mwr .card h3 { font-size: 15.5px; margin: 0 0 2px; display: flex; align-items: center; gap: 10px; }
 .mwr .card .cd { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
@@ -101,7 +104,7 @@
 .mwr .ui-dialog-icon.danger { color: var(--crit); background: color-mix(in srgb, var(--crit) 11%, transparent); }
 .mwr .ui-dialog-copy h2 { font-size: 17px; margin: 1px 0 7px; }
 .mwr .ui-dialog-copy p { color: var(--muted); font-size: 13px; line-height: 1.65; margin: 0; }
-.mwr .ui-dialog-copy input { width: 100%; margin-top: 14px; padding: 9px 11px; color: var(--ink); background: var(--surface-card); border: 1px solid var(--border-default); border-radius: 9px; }
+.mwr .ui-dialog-copy input { width: 100%; margin-top: 14px; padding: 9px 11px; color: var(--control-fg); background: var(--control-bg); border: 1px solid var(--control-border); border-radius: 9px; }
 .mwr .ui-dialog-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 9px; margin-top: 6px; }
 .mwr .btn-danger-solid { color: #fff; background: var(--crit); border-color: var(--crit); }
 .mwr .btn-danger-solid:hover { color: #fff; background: #a92f3c; border-color: #a92f3c; }
@@ -113,8 +116,10 @@
   .mwr .card .foot { bottom: -16px; margin: 16px -16px -16px; padding: 11px 16px; }
   .mwr .fieldrow { align-items: stretch; flex-direction: column; gap: 8px; }
   .mwr .fieldrow .fl { width: auto; }
-  .mwr .fieldrow input[type="text"], .mwr .fieldrow input[type="password"],
-  .mwr .fieldrow input[type="number"], .mwr .fieldrow select { width: 100%; max-width: none; }
+  .mwr .fieldrow input:not([type]), .mwr .fieldrow input[type="text"], .mwr .fieldrow input[type="email"],
+  .mwr .fieldrow input[type="password"], .mwr .fieldrow input[type="number"], .mwr .fieldrow input[type="search"],
+  .mwr .fieldrow input[type="tel"], .mwr .fieldrow input[type="url"], .mwr .fieldrow select,
+  .mwr .fieldrow textarea { width: 100%; max-width: none; }
 }
 
 @media (max-width: 900px) {

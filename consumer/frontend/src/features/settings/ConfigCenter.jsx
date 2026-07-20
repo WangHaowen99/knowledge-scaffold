@@ -647,5 +647,12 @@ function Toggle({ on, disabled, onChange, ...accessibilityProps }) {
   );
 }
 
-const inputS = (w) => ({ border: '1px solid var(--hair)', borderRadius: 8, padding: '7px 11px', width: w, background: '#fff' });
+const inputS = (w) => ({
+  border: '1px solid var(--control-border)',
+  borderRadius: 8,
+  padding: '7px 11px',
+  width: w,
+  background: 'var(--control-bg)',
+  color: 'var(--control-fg)',
+});
 const btnS = { padding: '3px 10px', fontSize: 12, marginRight: 6 };
