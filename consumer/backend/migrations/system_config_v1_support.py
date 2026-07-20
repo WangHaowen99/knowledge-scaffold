@@ -42,6 +42,7 @@ LEGACY_TASK_SECRET_CONTEXT = "task_llm.api_key"
 LEGACY_MAIN_SECRET_CONTEXT = "llm.api_key"
 
 SUPPORTED_PROVIDERS = {"deepseek", "glm", "openai_compatible"}
+_WINDOWS = os.name == "nt"
 PROFILE_FIELDS = {
     "id",
     "name",
@@ -150,8 +151,10 @@ def _operation_problem(
     return _problem(code, object_id, f"{action}失败（{type(exc).__name__}）")
 
 
-def _open_regular_file_readonly(path: Path) -> int:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+def _open_regular_file(path: Path, flags: int) -> int:
+    if path.is_symlink():
+        raise OSError("file must not be a symbolic link")
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
@@ -160,6 +163,13 @@ def _open_regular_file_readonly(path: Path) -> int:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def _open_regular_file_readonly(path: Path) -> int:
+    return _open_regular_file(
+        path,
+        os.O_RDONLY | getattr(os, "O_BINARY", 0),
+    )
 
 
 def _read_regular_file_bytes(path: Path) -> bytes:
@@ -1015,6 +1025,11 @@ def plan_secret_document(
 
 
 def _fsync_directory(path: Path) -> None:
+    # Windows does not support opening a directory with os.open().  The file
+    # itself is flushed before os.replace(); directory fsync remains the POSIX
+    # durability enhancement where the platform exposes it.
+    if _WINDOWS:
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -1023,11 +1038,23 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _ensure_private_file(path: Path) -> None:
-    descriptor = _open_regular_file_readonly(path)
+    # Windows only maps chmod's write bits and otherwise relies on the
+    # runtime directory's inherited DACL.  Use a writable descriptor there so
+    # os.fsync maps to a valid FlushFileBuffers call.  POSIX keeps strict 0600
+    # enforcement and mode verification.
+    flags = (
+        os.O_RDWR | getattr(os, "O_BINARY", 0)
+        if _WINDOWS
+        else os.O_RDONLY
+    )
+    descriptor = _open_regular_file(path, flags)
     try:
-        os.fchmod(descriptor, 0o600)
-        if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
-            raise OSError("private file mode verification failed")
+        if _WINDOWS:
+            path.chmod(0o600)
+        else:
+            os.fchmod(descriptor, 0o600)
+            if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
+                raise OSError("private file mode verification failed")
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -1042,13 +1069,14 @@ def _write_bytes_atomic(path: Path, payload: bytes, *, mode: int = 0o600) -> Non
     try:
         descriptor = os.open(
             temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
             mode,
         )
         stream = os.fdopen(descriptor, "wb")
         descriptor = None
         with stream:
-            os.fchmod(stream.fileno(), mode)
+            if not _WINDOWS:
+                os.fchmod(stream.fileno(), mode)
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())

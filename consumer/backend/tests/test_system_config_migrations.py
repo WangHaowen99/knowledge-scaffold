@@ -238,6 +238,48 @@ def test_two_migrations_apply_with_independent_backups_markers_and_contexts(
         assert stat.S_IMODE(marker.stat().st_mode) == 0o600
 
 
+def test_two_migrations_apply_without_posix_only_file_operations(
+    tmp_path,
+    monkeypatch,
+):
+    import migrations.system_config_v1_support as support
+    from utils.security.secrets import is_encrypted_secret
+
+    runtime_root = _configure_runtime(tmp_path, monkeypatch)
+    _write_document(
+        runtime_root,
+        {
+            "task_llm": {
+                "base_url": "https://task.example/v1",
+                "model": "task-model",
+                "api_key": "task-secret",
+            }
+        },
+    )
+
+    real_open = support.os.open
+
+    def windows_open(path, flags, mode=0o777, *, dir_fd=None):
+        if Path(path).is_dir():
+            raise AssertionError("Windows migration path must not open directories")
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(support, "_WINDOWS", True)
+    monkeypatch.delattr(support.os, "fchmod", raising=False)
+    monkeypatch.setattr(support.os, "open", windows_open)
+
+    model_code, model_report = _execute_model(runtime_root, dry_run=False)
+    secret_code, secret_report = _execute_secret(runtime_root, dry_run=False)
+
+    assert model_code == secret_code == 0
+    assert model_report["status"] == secret_report["status"] == "applied"
+    migrated = json.loads(_config_path(runtime_root).read_text(encoding="utf-8"))
+    assert "task_llm" not in migrated
+    assert is_encrypted_secret(migrated["llm_profiles"]["profiles"][0]["api_key"])
+
+
 def test_no_old_data_is_a_noop_without_marker_or_backup(tmp_path, monkeypatch):
     from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_ID
     from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_ID
