@@ -391,16 +391,12 @@ def _validate_persisted_profiles(section: dict[str, Any]) -> None:
     if not isinstance(profiles, list):
         raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profiles 必须是数组")
     profile_ids: set[str] = set()
-    for profile in profiles:
+    for index, profile in enumerate(profiles):
         if not isinstance(profile, dict):
             raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile 必须是 object")
         profile_id = profile.get("id")
         if not isinstance(profile_id, str) or not profile_id.strip():
             raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile id 无效")
-        normalized_id = profile_id.strip()
-        if normalized_id in profile_ids:
-            raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile id 重复")
-        profile_ids.add(normalized_id)
         for field_name, default in _LLM_PROFILE_DEFAULTS.items():
             if field_name not in profile:
                 continue
@@ -418,6 +414,26 @@ def _validate_persisted_profiles(section: dict[str, Any]) -> None:
                     "SYSTEM_CONFIG_INVALID",
                     "模型 profile 字段类型无效",
                 )
+        try:
+            normalized_id = _normalize_profile_id(
+                profile_id,
+                field_name="profiles[{}].id".format(index),
+            )
+            if normalized_id != profile_id:
+                raise SystemConfigValidationError("模型 profile id 必须是规范值")
+            if "provider" in profile:
+                _coerce_llm_provider(profile["provider"])
+        except SystemConfigValidationError as exc:
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "模型 profile 语义无效",
+            ) from exc
+        if normalized_id in profile_ids:
+            raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile id 重复")
+        profile_ids.add(normalized_id)
+    max_profiles = max(1, int(load_ops_config()["limits"]["model_profile_max_count"]))
+    if len(profiles) > max_profiles:
+        raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile 数量无效")
     for field_name in ("default_main_profile_ref", "default_task_profile_ref"):
         if field_name not in section or section[field_name] is None:
             continue

@@ -2,6 +2,7 @@ import hashlib
 import json
 
 from flask import Flask
+import pytest
 
 from api.routes.system_config import system_config_bp
 from api.auth.auth import AuthManager
@@ -111,6 +112,53 @@ def test_get_system_config_returns_sanitized_migration_required_error(
         "detail": "系统配置包含明文 secret，需要先完成安全迁移",
     }
     assert "plaintext-api-secret" not in response.get_data(as_text=True)
+    assert config_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {
+            "llm_profiles": {
+                "profiles": [
+                    {"id": "bad id", "provider": "openai_compatible"},
+                ]
+            }
+        },
+        {
+            "llm_profiles": {
+                "profiles": [
+                    {"id": "valid", "provider": "unsupported"},
+                ]
+            }
+        },
+    ],
+    ids=(
+        "profile-id",
+        "profile-provider",
+    ),
+)
+def test_get_system_config_rejects_semantically_invalid_persisted_config(
+    tmp_path,
+    monkeypatch,
+    document,
+):
+    import config.system_config as system_config_module
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    config_path = tmp_path / "config" / "system_config.json"
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+    original = config_path.read_bytes()
+
+    with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
+        system_config_module.load_raw_system_config()
+    response = client.get("/api/system-config", headers=headers)
+
+    assert exc_info.value.code == "SYSTEM_CONFIG_INVALID"
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "SYSTEM_CONFIG_INVALID"
+    assert "unsupported" not in response.get_data(as_text=True)
+    assert "bad id" not in response.get_data(as_text=True)
     assert config_path.read_bytes() == original
 
 
