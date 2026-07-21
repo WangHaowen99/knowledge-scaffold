@@ -59,6 +59,20 @@ const assistantMessage = {
   iterationMetrics: [{ iteration: 1, status: 'completed', totalElapsedMs: 700, ts: 1750 }],
 };
 
+test('system cancellation notice remains a standalone non-turn message', () => {
+  const model = buildConversationViewModel([{
+    id: 'interaction-cancelled-1',
+    role: 'system',
+    content: '用户取消了操作',
+    metadata: { type: 'interaction_cancelled' },
+  }]);
+
+  assert.equal(model.messages[0].role, 'system');
+  assert.equal(model.messages[0].kind, 'message');
+  assert.equal(model.messages[0].content, '用户取消了操作');
+  assert.equal(model.turns.length, 0);
+});
+
 test('conversation blocks keep source segment order and add lifecycle last', () => {
   const model = buildConversationViewModel([assistantMessage]);
   const turn = model.turns[0];

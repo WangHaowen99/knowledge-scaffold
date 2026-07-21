@@ -29,6 +29,10 @@ class InteractionCheckpointError(ValueError):
     """Raised when a user response does not match the durable checkpoint."""
 
 
+INTERACTION_CANCELLED_MESSAGE = "我已主动取消上一条交互请求，未提供所请求的信息或选择。"
+INTERACTION_CANCELLED_NOTICE = "用户取消了操作"
+
+
 def _latest_pending_interaction(
     history: SessionExecutionHistory,
 ) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
@@ -45,6 +49,19 @@ def _latest_pending_interaction(
     if not isinstance(interaction, dict):
         raise InteractionCheckpointError("pending interaction checkpoint is invalid")
     return latest, interaction
+
+
+def _latest_unconsumed_interaction_cancellation(
+    history: SessionExecutionHistory,
+) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
+    for turn in reversed(list(history.get("turns") or [])):
+        response = turn.get("interaction_response")
+        if not isinstance(response, dict) or response.get("action") != "cancel":
+            continue
+        if turn.get("interaction_context_consumed_at"):
+            return None, None
+        return turn, response
+    return None, None
 
 
 def _validated_interaction_response(
@@ -241,10 +258,19 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             canonical_response = _validated_interaction_response(history, interaction_response)
+            started_at = datetime.now().isoformat()
             if canonical_response is not None:
                 pending_turn = history["turns"][-1]
                 pending_turn["interaction_response"] = canonical_response
-                pending_turn["interaction_consumed_at"] = datetime.now().isoformat()
+                pending_turn["interaction_consumed_at"] = started_at
+
+            prior_interaction_cancellation = None
+            if canonical_response is None:
+                cancelled_turn, cancellation = _latest_unconsumed_interaction_cancellation(history)
+                if cancelled_turn is not None and cancellation is not None:
+                    prior_interaction_cancellation = dict(cancellation)
+                    cancelled_turn["interaction_context_consumed_at"] = started_at
+                    cancelled_turn["interaction_context_consumed_by_turn_id"] = turn_id
 
             # Create new turn record
             turn: TurnExecutionRecord = {
@@ -252,13 +278,15 @@ class ExecutionStore:
                 "session_id": session_id,
                 "run_id": run_id,
                 "user_request": user_request,
-                "start_time": datetime.now().isoformat(),
+                "start_time": started_at,
                 "end_time": None,
                 "status": "running",
                 "final_output": None,
                 "summary": None,
                 "ontology_version": ontology_version,
             }
+            if prior_interaction_cancellation is not None:
+                turn["prior_interaction_cancellation"] = prior_interaction_cancellation
 
             history["turns"].append(turn)
             self._current_turns[session_id] = turn_id
@@ -275,6 +303,62 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
             return _validated_interaction_response(history, response)
+
+    def cancel_pending_interaction(
+        self,
+        session_id: str,
+        interaction_id: str,
+    ) -> Dict[str, Any]:
+        """Cancel a durable interaction for one-time injection into the next user turn."""
+        requested_id = str(interaction_id or "").strip()
+        if not requested_id:
+            raise InteractionCheckpointError("interaction_id is required")
+
+        with self._lock_for_session(session_id):
+            history = self._load_session(session_id)
+
+            # Retries stay idempotent even when the user has already started a new turn.
+            for turn in reversed(list(history.get("turns") or [])):
+                response = turn.get("interaction_response")
+                if not isinstance(response, dict):
+                    continue
+                if (
+                    response.get("action") == "cancel"
+                    and str(response.get("interaction_id") or "").strip() == requested_id
+                ):
+                    return dict(response)
+
+            pending_turn, interaction = _latest_pending_interaction(history)
+            if pending_turn is None or interaction is None:
+                raise InteractionCheckpointError("session has no pending interaction")
+
+            expected_id = str(interaction.get("id") or "").strip()
+            if not expected_id or requested_id != expected_id:
+                raise InteractionCheckpointError(
+                    "interaction_id does not match the pending interaction"
+                )
+
+            cancelled_at = datetime.now().isoformat()
+            cancellation = {
+                "interaction_id": expected_id,
+                "type": str(interaction.get("type") or "input").strip() or "input",
+                "action": "cancel",
+                "cancelled": True,
+                "cancelled_by": "user",
+                "cancelled_at": cancelled_at,
+                "message": INTERACTION_CANCELLED_MESSAGE,
+                "display_message": INTERACTION_CANCELLED_NOTICE,
+                "run_id": pending_turn.get("run_id"),
+                "turn_id": pending_turn.get("turn_id"),
+            }
+
+            pending_turn["status"] = "cancelled"
+            pending_turn["end_time"] = cancelled_at
+            pending_turn["interaction_response"] = cancellation
+            pending_turn["interaction_consumed_at"] = cancelled_at
+            pending_turn["interaction_cancelled_at"] = cancelled_at
+            self._save_session(session_id)
+            return cancellation
 
     def complete_turn(
         self,
