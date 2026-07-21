@@ -204,6 +204,73 @@ def test_mindsdb_sql_authenticates_and_normalizes_result():
     assert session.requests[1][2]["json"]["context"]["db"] == "analytics"
 
 
+def test_mindsdb_sql_normalizes_http_200_error_payload():
+    provider = MindsDBProvider(
+        _connection("mindsdb"),
+        session=_Session(
+            _Response({"type": " ERROR ", "error_message": "权限拒绝"})
+        ),
+    )
+
+    result = provider.query_sql("SELECT 1")
+
+    assert result == ProviderResult(
+        success=False,
+        error="权限拒绝",
+        metadata={"error_code": "query_error"},
+    )
+
+
+def test_mindsdb_sql_error_payload_uses_fallback_fields_and_default():
+    for payload, expected in (
+        ({"type": "error", "error": "invalid SQL"}, "invalid SQL"),
+        ({"type": "error", "message": "table not found"}, "table not found"),
+        ({"type": "error"}, "MindsDB SQL query failed"),
+    ):
+        provider = MindsDBProvider(
+            _connection("mindsdb"),
+            session=_Session(_Response(payload)),
+        )
+
+        result = provider.query_sql("SELECT 1")
+
+        assert result.success is False
+        assert result.error == expected
+        assert result.message != "查询成功"
+
+
+def test_mindsdb_sql_error_payload_redacts_connection_secrets():
+    provider = MindsDBProvider(
+        _connection(
+            "mindsdb",
+            auth=AuthSpec(
+                type="bearer",
+                token="token-x",
+                password="password-x",
+            ),
+        ),
+        session=_Session(
+            _Response(
+                {
+                    "type": "error",
+                    "error_message": (
+                        "token-x and password-x rejected by "
+                        "https://provider.example.com"
+                    ),
+                }
+            )
+        ),
+    )
+
+    result = provider.query_sql("SELECT 1")
+
+    assert result.success is False
+    assert "token-x" not in result.error
+    assert "password-x" not in result.error
+    assert "https://provider.example.com" not in result.error
+    assert result.error.count("[REDACTED]") == 3
+
+
 def test_mindsdb_anonymous_401_is_not_replayed_with_empty_credentials():
     session = _Session(_Response({"detail": "authentication required"}, status_code=401))
     provider = MindsDBProvider(_connection("mindsdb"), session=session)
