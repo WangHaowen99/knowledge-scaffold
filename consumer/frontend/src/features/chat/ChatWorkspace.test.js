@@ -83,6 +83,13 @@ test('trace panel has one accessible toggle and keeps the mobile backdrop close 
   assert.equal(chatCssSource.includes('trace-close'), false);
 });
 
+test('new chat navigation is active only for a blank chat session', () => {
+  assert.equal(
+    appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),
+    true,
+  );
+});
+
 test('awaiting interaction can be cancelled by button or Escape', () => {
   assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
   assert.equal(chatSource.includes("event.key !== 'Escape'"), true);

@@ -10,7 +10,7 @@ export default function App() {
     applyAppearance(getAppearance());
     const media = window.matchMedia?.('(prefers-color-scheme: dark)');
     const syncSystemAppearance = () => {
-      if (getAppearance() === 'system') applyAppearance('system');
+      if (getAppearance() === 'system') applyAppearance('system', { animate: true });
     };
     media?.addEventListener?.('change', syncSystemAppearance);
     return () => media?.removeEventListener?.('change', syncSystemAppearance);
