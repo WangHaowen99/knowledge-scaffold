@@ -161,6 +161,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   const [traceOpen, setTraceOpen] = useState(() => {
     try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
   });
+  const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';
   // Agent 模式：quick(快速) / thinking(深度思考) / multi_agent(多智能体)。
   // 按 workspace 持久化到 localStorage，默认 quick。
   const agentModeKey = `mw_ws_agentmode_${workspaceId}`;
@@ -464,7 +465,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
             onClick={() => onOpenObservability?.('session')}>
             <Gauge size={15} />
           </button>
-          <button className="iconbtn" title={traceOpen ? '收起 Trace' : '展开 Trace'}
+          <button className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}
             onClick={() => setTraceOpen((v) => !v)}>
             {traceOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
           </button>
@@ -553,7 +554,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
             role="separator" tabIndex={0} aria-label="调整运行轨迹宽度" aria-orientation="vertical"
             aria-valuemin={TRACE_MIN_W} aria-valuemax={Math.round(traceMaxWidth)} aria-valuenow={Math.round(traceWidth)}
             title="拖拽或使用方向键调整 Trace 宽度" />
-          <TracePanel model={traceModel} sessionId={currentChatId} width={traceWidth} onClose={() => setTraceOpen(false)} />
+          <TracePanel model={traceModel} sessionId={currentChatId} width={traceWidth} />
         </>
       )}
     </div>
