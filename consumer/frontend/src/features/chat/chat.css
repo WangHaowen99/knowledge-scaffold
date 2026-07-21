@@ -12,7 +12,8 @@
 .mwr .side-hist .ch-item { width: 100%; display: flex; flex-direction: column; align-items: stretch; padding: 6px 50px 6px 8px; color: var(--ink); border: none; border-radius: 8px; background: none; text-align: left; }
 .mwr .side-hist .ch-title { display: block; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mwr .side-hist .ch-item-wrap.on .ch-title { color: var(--blue-dd); }
-.mwr .side-hist .ch-meta { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .side-hist .ch-meta { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .side-hist .ch-run-status { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--blue-d); }
 .mwr .side-hist .ch-pin, .mwr .side-hist .ch-delete { position: absolute; top: 50%; transform: translateY(-50%); color: var(--muted); cursor: pointer; visibility: hidden; padding: 3px; border: none; border-radius: 5px; background: none; display: inline-flex; }
 .mwr .side-hist .ch-pin { right: 26px; font-size: 11px; }
 .mwr .side-hist .ch-delete { right: 6px; }
