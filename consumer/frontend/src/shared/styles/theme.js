@@ -2,6 +2,10 @@
 // 色板定义见 shared/styles/base.css 的主题变量。
 const KEY = 'mw_pref_theme';
 const APPEARANCE_KEY = 'mw_pref_appearance';
+const APPEARANCE_TRANSITION_MS = 500;
+let appearanceTransitionVersion = 0;
+let activeViewTransition = null;
+let fallbackCleanupTimer = null;
 const BRAND_FAVICON_FILTERS = {
   violet: 'hue-rotate(48deg) saturate(1.08)',
   teal: 'hue-rotate(-38deg) saturate(.92)',
@@ -74,12 +78,66 @@ export function getAppearance() {
   }
 }
 
-export function applyAppearance(id) {
-  const appearance = APPEARANCES.some((item) => item.id === id) ? id : 'system';
-  const resolved = appearance === 'system'
+function resolveAppearance(appearance) {
+  return appearance === 'system'
     ? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
     : appearance;
-  document.documentElement.dataset.mwrMode = resolved;
+}
+
+function stopAppearanceTransition(root) {
+  activeViewTransition?.skipTransition?.();
+  activeViewTransition = null;
+  if (fallbackCleanupTimer !== null) {
+    clearTimeout(fallbackCleanupTimer);
+    fallbackCleanupTimer = null;
+  }
+  delete root.dataset.mwrAppearanceTransition;
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
+export function applyAppearance(id, { animate = false } = {}) {
+  const appearance = APPEARANCES.some((item) => item.id === id) ? id : 'system';
+  const resolved = resolveAppearance(appearance);
+  const root = document.documentElement;
   try { localStorage.setItem(APPEARANCE_KEY, appearance); } catch { /* ignore */ }
+
+  const version = ++appearanceTransitionVersion;
+  stopAppearanceTransition(root);
+  const updateMode = () => {
+    if (version === appearanceTransitionVersion) root.dataset.mwrMode = resolved;
+  };
+
+  if (!animate || root.dataset.mwrMode === resolved || prefersReducedMotion()) {
+    updateMode();
+    return appearance;
+  }
+
+  if (typeof document.startViewTransition === 'function') {
+    root.dataset.mwrAppearanceTransition = 'view';
+    try {
+      const transition = document.startViewTransition(updateMode);
+      activeViewTransition = transition;
+      Promise.resolve(transition.finished).catch(() => {}).finally(() => {
+        if (version !== appearanceTransitionVersion) return;
+        activeViewTransition = null;
+        delete root.dataset.mwrAppearanceTransition;
+      });
+      return appearance;
+    } catch {
+      delete root.dataset.mwrAppearanceTransition;
+    }
+  }
+
+  root.dataset.mwrAppearanceTransition = 'fallback';
+  void root.offsetWidth;
+  updateMode();
+  fallbackCleanupTimer = setTimeout(() => {
+    if (version !== appearanceTransitionVersion) return;
+    fallbackCleanupTimer = null;
+    delete root.dataset.mwrAppearanceTransition;
+  }, APPEARANCE_TRANSITION_MS);
   return appearance;
 }
