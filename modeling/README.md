@@ -20,8 +20,11 @@ Fastify 5 + `node:sqlite`（零原生编译）+ pi-agent-core/pi-ai + xlsx/mammo
 ```bash
 cp .env.example .env      # 填 MODELING_LLM_* 与 AUTH_ISSUER_URL
 npm install
-# node:sqlite 在 Node 22 需实验开关；Node 24+ 可省略
-NODE_OPTIONS=--experimental-sqlite node --env-file=.env node_modules/.bin/tsx src/server.ts
+# Node 24+ 直接启动
+npx tsx --env-file=.env src/server.ts
+
+# Node 22 的 node:sqlite 需实验开关，改用：
+NODE_OPTIONS=--experimental-sqlite npx tsx --env-file=.env src/server.ts
 ```
 
 服务默认 `http://localhost:5100`。
