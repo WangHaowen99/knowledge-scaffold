@@ -200,6 +200,7 @@ export default function AppShell() {
   const isFullSurface = surface === 'chat' || surface === 'kb';
   const workspaceSurfaceBlocked = requiresWorkspaceData(surface, observabilityView)
     && !workspaceDataReady;
+  const canCreateWorkspace = can('workspace.create');
   const mobileNavigationInert = isNarrowViewport && (!mobileNavOpen || wizardOpen);
   const mainContentInert = isNarrowViewport && mobileNavOpen;
 
@@ -275,12 +276,14 @@ export default function AppShell() {
                     {(w.is_default || w.id === defaultWorkspaceId) && <span className="default-flag">默认</span>}
                   </button>
                 ))}
-                {can('workspace.manage') && (
+                {(canCreateWorkspace || can('workspace.manage')) && (
                   <>
                     <div className="div" />
-                    <button className="new" onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
-                      <span><Plus size={14} /> 新建工作空间</span>
-                    </button>
+                    {canCreateWorkspace && (
+                      <button className="new" onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
+                        <span><Plus size={14} /> 新建工作空间</span>
+                      </button>
+                    )}
                     <button style={{ color: 'var(--ink2)' }} onClick={() => { setWsMenu(false); navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' }); }}>
                       管理工作空间…
                     </button>
@@ -345,10 +348,8 @@ export default function AppShell() {
                       />
                   : <EmptyState
                       title="尚无可用工作空间"
-                      description={isAdmin
-                        ? '创建第一个工作空间后，即可配置模型、导入知识包并开始对话。'
-                        : '当前账号尚未加入任何工作空间，请联系平台管理员分配访问权限。'}
-                      action={isAdmin ? (
+                      description="创建第一个工作空间后，即可配置模型、导入知识包并开始对话。"
+                      action={canCreateWorkspace ? (
                         <button className="btn btn-p" type="button"
                           onClick={() => navigate({ surface: 'config', scope: 'global', sec: 'wsmgmt' })}>
                           新建工作空间

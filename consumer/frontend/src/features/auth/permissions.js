@@ -7,17 +7,21 @@ const RULES = {
   // 全局层（L1）
   'system_config.read':   { roles: ['admin', 'user'] },
   'system_config.write':  { roles: ['admin'] },
-  'workspace.manage':     { roles: ['admin'] },            // 空间集合的增删/设默认
+  'workspace.create':     { roles: ['admin', 'user'] },
+  'workspace.manage':     { roles: ['admin'] },            // 全局删除与设默认等集合管理
   'users.manage':         { roles: ['admin'] },
   'observability.global': { roles: ['admin'] },             // 全局运行观测只读入口
-  // 空间层（L2）——wsRoles 仅用于后端已放开 owner 通道的权限点，
-  // 避免 owner 看到可写 UI 但后端 admin-only 必 403；其余待后端放开后再补 wsRoles。
+  // 空间层（L2）——后端仍是唯一强制点；普通用户只能操作服务端确认其可访问的空间。
   'ws.config.read':       { roles: ['admin', 'user'] },
   'ws.info.write':        { roles: ['admin'], wsRoles: ['admin'] },   // PATCH 改名/描述（owner 可）
   'ws.members.write':     { roles: ['admin'], wsRoles: ['admin'] },   // PUT members（owner 可）
 
   'ws.config.write':      { roles: ['admin'] },   // runtime-config PATCH：后端仍 admin-only
-  'ws.kb.write':          { roles: ['admin'] },   // 知识包与其数据源写操作：后端仍 admin-only
+  'ws.kb.import':         { roles: ['admin'], wsRoles: ['admin'] },
+  'ws.kb.activate':       { roles: ['admin'], wsRoles: ['admin'] },
+  'ws.data_source.write': { roles: ['admin'], wsRoles: ['admin'] },
+  'ws.data_source.test':  { roles: ['admin'], wsRoles: ['admin'] },
+  'ws.kb.write':          { roles: ['admin'], wsRoles: ['admin'] },   // 状态、删除、文件编辑等 owner 管理操作
   'ws.observability.write': { roles: ['admin'] },
   // 个人层（L3）
   'self.preferences':     { self: true },
