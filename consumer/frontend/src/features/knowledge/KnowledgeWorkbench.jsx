@@ -24,7 +24,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const { workspaceId } = useAuthContext();
   const {
     pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
-    canManage, viewVersion, viewingActive, versionOverride, selectVersion,
+    canActivate, canManage, viewVersion, viewingActive, versionOverride, selectVersion,
     setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
     importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge, retryPackages,
     importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
@@ -252,7 +252,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
         <span className="kb-tb-sp" />
         <button className="btn" disabled={Boolean(opBusy)} onClick={downloadPkg}>{opBusy === 'download' ? '打包中…' : '下载 ZIP'}</button>
         {canManage && <button className="btn" disabled={Boolean(opBusy)} onClick={onToggleEnabled}>{opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用' : '启用'}</button>}
-        {canManage && !viewingActive && <button className="btn btn-p" disabled={Boolean(opBusy)} onClick={activateVersion}>{opBusy === 'activate' ? '激活中…' : '设为激活版本'}</button>}
+        {canActivate && !viewingActive && <button className="btn btn-p" disabled={Boolean(opBusy)} onClick={activateVersion}>{opBusy === 'activate' ? '激活中…' : '设为激活版本'}</button>}
         {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy) || viewingActive || versions.length <= 1} onClick={onDeleteVersion}>{opBusy === 'deleteVersion' ? '删除中…' : '删除版本'}</button>}
         {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy)} onClick={onDeletePackage}>{opBusy === 'deletePackage' ? '删除中…' : '删除知识包'}</button>}
       </div>

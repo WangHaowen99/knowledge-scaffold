@@ -877,8 +877,9 @@ def test_jiuwen_loop_engine_marks_loop_error_when_agent_raises(monkeypatch):
     class FailingAgent:
         async def stream(self, inputs):
             del inputs
+            if getattr(self, "_keep_async_generator", False):
+                yield None
             raise RuntimeError("jiuwen exploded")
-            yield None
 
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     observer = RecordingObserver()
@@ -3820,8 +3821,9 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
         async def stream(self, inputs):
             del inputs
             await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
+            if getattr(self, "_keep_async_generator", False):
+                yield None
             raise RuntimeError("agent failed after tool")
-            yield None
 
     def fake_import_module(name):
         modules = {
@@ -3921,8 +3923,9 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
         async def stream(self, inputs):
             del inputs
             await created["tool_by_name"]["ontology_context"].invoke({"resource": "root"})
+            if getattr(self, "_keep_async_generator", False):
+                yield None
             raise WorkflowCancelledError("Workflow cancelled by user")
-            yield None
 
     def fake_import_module(name):
         modules = {

@@ -39,7 +39,9 @@ export default function ConversationView({ model, sessionId = '' }) {
       {(model?.messages || []).map((message) => (
         message.role === 'user'
           ? <UserMessage key={message.key} message={message} />
-          : <AssistantTurn key={message.key} turn={message} sessionId={sessionId} />
+          : message.role === 'system'
+            ? <SystemMessage key={message.key} message={message} />
+            : <AssistantTurn key={message.key} turn={message} sessionId={sessionId} />
       ))}
     </div>
   );
@@ -53,6 +55,14 @@ export function UserMessage({ message }) {
         {message.startedAt != null && <div className="time">{formatTime(message.startedAt)}</div>}
       </div>
     </article>
+  );
+}
+
+export function SystemMessage({ message }) {
+  return (
+    <div className="conversation-system-message" role="status" data-message-key={message.key}>
+      <span>{message.content}</span>
+    </div>
   );
 }
 

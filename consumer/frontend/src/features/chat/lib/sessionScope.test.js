@@ -7,6 +7,7 @@ import {
   isSameSessionScope,
   listResumableSessions,
   mergeSessionCollections,
+  resolveSessionRunIndicator,
   selectedSessionStorageKey,
   shouldCommitSessionSelection,
 } from './sessionScope.js';
@@ -76,4 +77,33 @@ test('all queued and running sessions are selected for background resume', () =>
     { sessionId: 'queued', runId: 'run-q', status: 'queued', afterSequence: 3 },
     { sessionId: 'running', runId: 'run-r', status: 'running', afterSequence: 8 },
   ]);
+});
+
+test('session run indicators prefer live stream state and preserve awaiting input', () => {
+  assert.equal(resolveSessionRunIndicator({ active_run_status: 'queued' }), 'queued');
+  assert.equal(resolveSessionRunIndicator({ active_run_status: 'running' }), 'running');
+  assert.equal(resolveSessionRunIndicator({ active_run_status: 'awaiting_input' }), 'awaiting_input');
+  assert.equal(resolveSessionRunIndicator({ active_run_status: 'awaiting' }), 'awaiting_input');
+  assert.equal(resolveSessionRunIndicator(
+    { active_run_status: 'idle' },
+    { isLoading: true, status: 'queued' },
+  ), 'queued');
+  for (const status of ['streaming', 'reconnecting', 'finalizing']) {
+    assert.equal(resolveSessionRunIndicator(
+      { active_run_status: 'idle' },
+      { isLoading: true, status },
+    ), 'running');
+  }
+  for (const status of ['awaiting', 'awaiting_input']) {
+    assert.equal(resolveSessionRunIndicator(
+      { active_run_status: 'running' },
+      { isLoading: false, status },
+    ), 'awaiting_input');
+  }
+  for (const status of ['completed', 'failed', 'cancelled']) {
+    assert.equal(resolveSessionRunIndicator(
+      { active_run_status: 'running' },
+      { isLoading: false, status },
+    ), '');
+  }
 });

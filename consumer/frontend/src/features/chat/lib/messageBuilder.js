@@ -9,6 +9,7 @@ import {
   closeOpenSegment,
   isAgentV2Envelope,
 } from './streamHelpers.js';
+import { applyInteractionCancellation, INTERACTION_CANCELLED_TYPE } from './pendingInteraction.js';
 
 const logger = createLogger('MessageBuilder');
 
@@ -66,12 +67,24 @@ export const buildMessagesFromEvents = (events = []) => {
     if (eventLabel === 'chat_message') {
       const role = data?.role;
       const content = data?.content || '';
+      const metadata = data?.metadata && typeof data.metadata === 'object' ? data.metadata : {};
       if (!role) return;
+
+      if (metadata.type === INTERACTION_CANCELLED_TYPE) {
+        const next = applyInteractionCancellation(messages, {
+          interaction_id: metadata.interaction_id,
+          cancelled_at: metadata.cancelled_at,
+          display_message: content,
+        });
+        messages.splice(0, messages.length, ...next);
+        return;
+      }
 
       messages.push({
         id: `${role}-${messages.length}`,
         role,
         content,
+        metadata,
       });
       return;
     }

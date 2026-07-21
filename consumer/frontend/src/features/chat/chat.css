@@ -12,7 +12,8 @@
 .mwr .side-hist .ch-item { width: 100%; display: flex; flex-direction: column; align-items: stretch; padding: 6px 50px 6px 8px; color: var(--ink); border: none; border-radius: 8px; background: none; text-align: left; }
 .mwr .side-hist .ch-title { display: block; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mwr .side-hist .ch-item-wrap.on .ch-title { color: var(--blue-dd); }
-.mwr .side-hist .ch-meta { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .side-hist .ch-meta { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .side-hist .ch-run-status { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--blue-d); }
 .mwr .side-hist .ch-pin, .mwr .side-hist .ch-delete { position: absolute; top: 50%; transform: translateY(-50%); color: var(--muted); cursor: pointer; visibility: hidden; padding: 3px; border: none; border-radius: 5px; background: none; display: inline-flex; }
 .mwr .side-hist .ch-pin { right: 26px; font-size: 11px; }
 .mwr .side-hist .ch-delete { right: 6px; }
@@ -75,6 +76,9 @@
 .mwr .msg.u .bubwrap { max-width: 62%; }
 .mwr .msg.u .bub { background: var(--blue); color: #fff; border-radius: 14px 14px 3px 14px; padding: 10px 16px; font-size: 13.5px; line-height: 1.65; }
 .mwr .msg.a .bub { background: #f8f8f5; border: 1px solid #efeee9; border-radius: 3px 14px 14px 14px; padding: 14px 18px; font-size: 13.5px; line-height: 1.75; }
+.mwr .conversation-system-message { display: flex; align-items: center; gap: 10px; margin: 4px 0 18px; color: var(--muted); font-size: 11.5px; }
+.mwr .conversation-system-message::before, .mwr .conversation-system-message::after { content: ''; height: 1px; flex: 1; background: var(--border-subtle); }
+.mwr .conversation-system-message span { flex: none; padding: 3px 9px; border-radius: 999px; background: var(--surface-subtle); }
 .mwr .msg .time { font-size: 11px; color: #b6b4ab; margin-top: 5px; }
 .mwr .msg.u .time { text-align: right; }
 .mwr .statusline { display: flex; gap: 14px; font-size: 11.5px; color: #a5a39a; margin-top: 10px; align-items: center; }
@@ -85,7 +89,7 @@
 @keyframes mwblink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 .mwr .th-input { border-top: 1px solid var(--border-subtle); padding: 14px 22px 17px; flex: none; background: color-mix(in srgb, var(--surface-card) 94%, var(--surface-subtle)); }
 .mwr .ti-box { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--hair); border-radius: 15px; padding: 10px 10px 9px 14px; background: var(--surface-card); box-shadow: 0 2px 8px rgba(16, 24, 40, .035); transition: border-color var(--motion-fast), box-shadow var(--motion-fast); }
-.mwr .ti-box:focus-within { border-color: var(--blue-l); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 10%, transparent), 0 7px 20px rgba(16, 24, 40, .06); }
+.mwr .ti-box:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px var(--control-focus-ring), 0 7px 20px rgba(16, 24, 40, .06); }
 .mwr .ti-box .ti-input { width: 100%; min-height: 30px; border: none; outline: none; font-size: 13.5px; line-height: 1.6; padding: 2px 3px; background: transparent; color: var(--ink); }
 .mwr .ti-box .ti-input::placeholder { color: var(--muted); }
 .mwr .ti-actions { display: flex; align-items: center; gap: 8px; min-height: 34px; }
@@ -93,7 +97,7 @@
 .mwr .mode-dropdown { position: relative; flex: none; }
 .mwr .mode-picker { position: relative; height: 34px; min-width: 122px; display: inline-flex; align-items: center; color: var(--ink2); background: var(--surface-card); border: 1px solid var(--hair); border-radius: var(--radius-sm); padding: 0 28px 0 29px; font-size: 12px; font-weight: 600; transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast), color var(--motion-fast); }
 .mwr .mode-picker:hover { border-color: #bac2cd; background: var(--surface-subtle); color: var(--ink); }
-.mwr .mode-picker:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 12%, transparent); }
+.mwr .mode-picker:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px var(--control-focus-ring); }
 .mwr .mode-picker .mode-icon { position: absolute; left: 9px; color: var(--blue); pointer-events: none; }
 .mwr .mode-picker .mode-label { white-space: nowrap; }
 .mwr .mode-picker .mode-chevron { position: absolute; right: 8px; color: var(--muted); pointer-events: none; transition: transform var(--motion-fast); }
@@ -111,19 +115,21 @@
 .mwr .mode-option-desc { color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; }
 .mwr .mode-option-check { flex: none; color: var(--blue); }
 .mwr .chat-config-locks { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; min-width: 0; }
-.mwr .chat-config-locks select { min-width: 112px; max-width: 190px; border: 1px solid var(--hair); border-radius: 7px; background: #faf9f4; color: var(--ink2); font-size: 11.5px; padding: 5px 7px; }
+.mwr .chat-config-locks select { min-width: 112px; max-width: 190px; border: 1px solid var(--control-border); border-radius: 7px; background: var(--control-bg); color: var(--control-fg); font-size: 11.5px; padding: 5px 7px; }
 .mwr .chat-config-locks select:disabled { color: var(--muted); cursor: default; }
 .mwr .session-lock-note { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .mwr .ti-box input { flex: 1; border: none; outline: none; font-size: 13.5px; background: transparent; }
-.mwr .mwr-interaction { border: 1px solid #ead79e; border-radius: var(--radius-lg); background: #fffaf0; padding: 12px 14px; }
+.mwr .mwr-interaction { border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border-default)); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--warn) 10%, var(--surface-card)); padding: 12px 14px; }
 .mwr .mwr-interaction-head { display: flex; gap: 9px; align-items: center; }
 .mwr .mwr-interaction-head strong { font-size: 13px; }
 .mwr .mwr-interaction p { margin: 7px 0 0; color: var(--ink2); font-size: 12px; }
 .mwr .mwr-interaction form { display: flex; gap: 8px; margin-top: 10px; }
-.mwr .mwr-interaction form input { flex: 1; min-width: 0; border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; background: #fff; }
+.mwr .mwr-interaction form input { flex: 1; min-width: 0; border: 1px solid var(--control-border); border-radius: 8px; padding: 8px 10px; background: var(--control-bg); color: var(--control-fg); }
 .mwr .mwr-interaction-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .mwr .mwr-interaction-options .btn { display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
 .mwr .mwr-interaction-options .btn span { color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 2px; }
+.mwr .mwr-interaction-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.mwr .mwr-interaction-error { color: var(--crit); }
 .mwr .chat-empty { width: min(680px, 100%); min-height: 100%; margin: 0 auto; padding: 54px 20px 36px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .mwr .chat-empty-visual { width: 96px; height: 96px; position: relative; display: grid; place-items: center; margin-bottom: 18px; }
 .mwr .chat-empty-visual img { width: 54px; height: 54px; position: relative; z-index: 2; filter: var(--brand-logo-filter) drop-shadow(0 10px 18px color-mix(in srgb, var(--color-primary) 25%, transparent)); transition: filter var(--motion-normal); }

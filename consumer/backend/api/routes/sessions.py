@@ -12,6 +12,10 @@ from ontology.ontologies import get_ontology_registry
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
+from persistence.execution_store import (
+    INTERACTION_CANCELLED_NOTICE,
+    InteractionCheckpointError,
+)
 from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
@@ -98,6 +102,11 @@ def _last_durable_seq(events) -> int:
 
 def _last_turn_status(events) -> str:
     for event in reversed(list(events or [])):
+        if event.get("event") == "chat_message":
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+            if metadata.get("type") == "interaction_cancelled":
+                return "cancelled"
         if not _is_durable_agent_event(event):
             continue
         data = event.get("data") or {}
@@ -406,6 +415,45 @@ def get_session_messages(session_id: str):
 
     return jsonify({
         "messages": [m.to_dict() for m in messages]
+    })
+
+
+@sessions_bp.route(
+    "/sessions/<session_id>/interactions/<interaction_id>/cancel",
+    methods=["POST"],
+)
+@require_auth()
+def cancel_session_interaction(session_id: str, interaction_id: str):
+    """Cancel one pending interaction while preserving the conversation context."""
+    chat_store, execution_store = _get_user_stores()
+    if not chat_store.get_session(session_id):
+        return jsonify({"error": "Session not found"}), 404
+
+    try:
+        cancellation = execution_store.cancel_pending_interaction(
+            session_id,
+            interaction_id,
+        )
+    except InteractionCheckpointError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+    recorded = chat_store.record_interaction_cancellation(
+        session_id,
+        interaction_id,
+        INTERACTION_CANCELLED_NOTICE,
+        cancelled_at=cancellation["cancelled_at"],
+    )
+    if not recorded:
+        logger.error(
+            "Failed to persist interaction cancellation for session=%s interaction=%s",
+            session_id,
+            interaction_id,
+        )
+        return jsonify({"error": "Failed to persist interaction cancellation"}), 500
+
+    return jsonify({
+        "status": "cancelled",
+        **cancellation,
     })
 
 

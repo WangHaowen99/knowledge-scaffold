@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch, PanelRightClose, PanelRightOpen, Sparkles } from 'lucide-react';
 import { useAuthContext } from '../auth';
 import { authFetch } from '../../shared/api/auth';
@@ -10,7 +10,7 @@ import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
 import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
-import { findPendingInteraction } from './lib/pendingInteraction';
+import { applyInteractionCancellation, findPendingInteraction } from './lib/pendingInteraction';
 import {
   resolveSessionPreferences,
 } from './lib/sessionModel';
@@ -155,7 +155,9 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     scopeKey: workspaceId,
   });
   const [input, setInput] = useState('');
+  const [interactionCancelError, setInteractionCancelError] = useState('');
   const inputRef = useRef(null);
+  const currentChatIdRef = useRef(currentChatId);
   const [traceOpen, setTraceOpen] = useState(() => {
     try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
   });
@@ -242,6 +244,14 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   } = useSmartScroll(messages, `${workspaceId}:${currentChatId || 'new'}`);
   const sessionLocked = Boolean(currentChatId);
   const pendingInteraction = useMemo(() => findPendingInteraction(messages), [messages]);
+
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
+
+  useEffect(() => {
+    setInteractionCancelError('');
+  }, [currentChatId, pendingInteraction?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,6 +368,10 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     }
   };
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
+  const displayedStreamStatus = streamState.status === 'awaiting' && latestTurnStatus === 'cancelled'
+    ? 'cancelled'
+    : streamState.status;
   const streamStatusLabel = {
     queued: `排队中${streamState.queue?.position ? ` · 第 ${streamState.queue.position} 位` : ''}`,
     reconnecting: '连接恢复中',
@@ -367,8 +381,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     cancelled: '已停止',
     cancel_error: streamState.error || '停止失败，运行仍在继续',
     error: '连接异常',
-  }[streamState.status] || '';
-  const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
+  }[displayedStreamStatus] || '';
   const liveStatusLabel = streamStatusLabel || ({
     finished: '本轮回答已完成',
     cancelled: '本轮运行已停止',
@@ -404,6 +417,39 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
       },
     });
   };
+  const cancelInteraction = async () => {
+    if (!workspaceDataReady || !pendingInteraction?.id || !currentChatId) return false;
+    const interactionId = String(pendingInteraction.id);
+    const targetSessionId = currentChatId;
+    setInteractionCancelError('');
+    try {
+      const response = await authFetch(
+        `/agentic/sessions/${targetSessionId}/interactions/${encodeURIComponent(interactionId)}/cancel`,
+        { method: 'POST' },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || payload.detail || `取消失败（${response.status}）`);
+      }
+      setMessages(
+        (previous) => applyInteractionCancellation(previous, {
+          ...payload,
+          interaction_id: interactionId,
+        }),
+        targetSessionId,
+      );
+      touchSession?.(targetSessionId);
+      if (currentChatIdRef.current === targetSessionId) {
+        window.requestAnimationFrame(() => inputRef.current?.focus());
+      }
+      return true;
+    } catch (error) {
+      if (currentChatIdRef.current === targetSessionId) {
+        setInteractionCancelError(error?.message || '取消失败，请重试');
+      }
+      return false;
+    }
+  };
 
   return (
     <div className="chatwrap" ref={wrapRef}>
@@ -412,7 +458,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
         <div className="th-head">
           <span className="tt">{current?.title || '新对话'}</span>
           {current && <span className="tm">{formatTime(current.updated_at || current.created_at)}</span>}
-          {streamStatusLabel && <StatusTag status={streamState.status}>{streamStatusLabel}</StatusTag>}
+          {streamStatusLabel && <StatusTag status={displayedStreamStatus}>{streamStatusLabel}</StatusTag>}
           <button className="iconbtn" style={{ marginLeft: 'auto' }} type="button" title="会话性能分析"
             aria-label="打开会话性能分析" disabled={!currentChatId}
             onClick={() => onOpenObservability?.('session')}>
@@ -477,7 +523,13 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
             {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
           </div>
           {pendingInteraction ? (
-            <InteractionComposer interaction={pendingInteraction} disabled={streamState.isLoading} onSubmit={submitInteraction} />
+            <InteractionComposer
+              interaction={pendingInteraction}
+              disabled={streamState.isLoading}
+              cancelError={interactionCancelError}
+              onSubmit={submitInteraction}
+              onCancel={cancelInteraction}
+            />
           ) : (
             <div className="ti-box">
               <input className="ti-input" ref={inputRef} value={input} aria-label="对话内容" placeholder="输入问题，Enter 发送…"
@@ -508,9 +560,10 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   );
 }
 
-function InteractionComposer({ interaction, disabled, onSubmit }) {
+function InteractionComposer({ interaction, disabled, cancelError, onSubmit, onCancel }) {
   const [draft, setDraft] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const submittedRef = useRef(false);
   const type = String(interaction?.type || 'input');
   const prompt = String(interaction?.prompt || interaction?.text || '请补充信息后继续。');
   let options = Array.isArray(interaction?.options) ? interaction.options : [];
@@ -533,11 +586,41 @@ function InteractionComposer({ interaction, disabled, onSubmit }) {
   const isInput = type === 'input' || normalizedOptions.length === 0;
   const interactionDisabled = disabled || submitted;
 
+  const beginSubmission = () => {
+    if (disabled || submittedRef.current) return false;
+    submittedRef.current = true;
+    setSubmitted(true);
+    return true;
+  };
+
+  const requestCancel = useCallback(async () => {
+    if (disabled || submittedRef.current) return;
+    submittedRef.current = true;
+    setSubmitted(true);
+    const cancelled = await onCancel?.();
+    if (!cancelled) {
+      submittedRef.current = false;
+      setSubmitted(false);
+    }
+  }, [disabled, onCancel]);
+
   useEffect(() => {
+    submittedRef.current = false;
     if (disabled) return undefined;
     const resetTimer = window.setTimeout(() => setSubmitted(false), 0);
     return () => window.clearTimeout(resetTimer);
   }, [disabled, interaction?.id]);
+
+  useEffect(() => {
+    if (disabled) return undefined;
+    const cancelOnEscape = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      void requestCancel();
+    };
+    document.addEventListener('keydown', cancelOnEscape);
+    return () => document.removeEventListener('keydown', cancelOnEscape);
+  }, [disabled, requestCancel]);
 
   return (
     <div className="mwr-interaction" role="region" aria-label="等待用户交互">
@@ -551,8 +634,7 @@ function InteractionComposer({ interaction, disabled, onSubmit }) {
         <form onSubmit={(event) => {
           event.preventDefault();
           const value = draft.trim();
-          if (!value || interactionDisabled) return;
-          setSubmitted(true);
+          if (!value || !beginSubmission()) return;
           onSubmit(value, { type, value });
           setDraft('');
         }}>
@@ -565,8 +647,7 @@ function InteractionComposer({ interaction, disabled, onSubmit }) {
           {normalizedOptions.map((option) => (
             <button key={option.id} type="button" className="btn" disabled={interactionDisabled}
               onClick={() => {
-                if (interactionDisabled) return;
-                setSubmitted(true);
+                if (!beginSubmission()) return;
                 onSubmit(option.label, {
                   type,
                   value: option.value,
@@ -579,6 +660,13 @@ function InteractionComposer({ interaction, disabled, onSubmit }) {
           ))}
         </div>
       )}
+      <div className="mwr-interaction-actions">
+        <button type="button" className="btn" disabled={interactionDisabled}
+          aria-label="取消本次交互（Esc）" onClick={() => void requestCancel()}>
+          取消（Esc）
+        </button>
+      </div>
+      {cancelError && <p className="mwr-interaction-error" role="alert">{cancelError}</p>}
     </div>
   );
 }

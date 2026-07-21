@@ -11,7 +11,7 @@ from flask import Flask
 from api.routes import ontologies as ontologies_module
 from api.routes.ontologies import ontologies_bp
 from api.auth.auth import AuthManager
-from workspace.workspaces import create_workspace, get_workspace_paths
+from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace
 
 
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
@@ -46,10 +46,10 @@ def _build_test_client(
     return client, headers
 
 
-def _create_demo_workspace(tmp_path, monkeypatch, workspace_id: str = "demo"):
+def _create_demo_workspace(tmp_path, monkeypatch, workspace_id: str = "demo", *, owner=None):
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
-    create_workspace("Demo Workspace", workspace_id=workspace_id, set_as_default=True)
+    create_workspace("Demo Workspace", workspace_id=workspace_id, set_as_default=True, owner=owner)
     return get_workspace_paths(workspace_id)
 
 
@@ -175,7 +175,7 @@ def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
 
 
 def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
-    import ontology.ontologies as ontologies_module
+    import ontology.ontologies as ontology_registry_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -193,7 +193,7 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
 
     client, headers = _build_test_client(tmp_path)
     response = client.get("/agentic/ontologies", headers=headers)
@@ -258,6 +258,138 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
     list_response = client.get("/agentic/ontologies", headers=headers)
     list_payload = list_response.get_json()
     assert list_payload["ontologies"][0]["enabled"] is False
+
+
+def test_workspace_owner_can_manage_ontology_package(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, owner="modeler")
+    ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
+    version1 = ontology_dir / "versions" / "1.0.0"
+    version2 = ontology_dir / "versions" / "2.0.0"
+    (version1 / "objects").mkdir(parents=True)
+    (version2 / "objects").mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: demo-ontology\n"
+            "name: Demo Ontology\n"
+            "description: Owner managed ontology\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions:\n"
+            "  - 1.0.0\n"
+            "  - 2.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    (version1 / "objects" / "实体A.md").write_text("原始内容\n", encoding="utf-8")
+    (version2 / "objects" / "实体A.md").write_text("待删除版本\n", encoding="utf-8")
+    client, headers = _build_test_client(tmp_path, username="modeler", role="user")
+
+    status_response = client.put(
+        "/agentic/ontologies/demo-ontology/status",
+        headers=headers,
+        json={"enabled": False},
+    )
+    assert status_response.status_code == 200
+
+    edit_response = client.put(
+        "/agentic/ontologies/demo-ontology/file",
+        headers=headers,
+        json={
+            "folder": "objects",
+            "name": "实体A.md",
+            "version": "1.0.0",
+            "content": "所有者编辑\n",
+        },
+    )
+    assert edit_response.status_code == 200
+    assert (version1 / "objects" / "实体A.md").read_text(encoding="utf-8") == "所有者编辑\n"
+
+    upload_response = client.post(
+        "/agentic/ontologies/demo-ontology/upload",
+        headers=headers,
+        data={
+            "folder": "objects",
+            "version": "1.0.0",
+            "file": (io.BytesIO("新增内容\n".encode("utf-8")), "新增实体.md"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert upload_response.status_code == 201
+    assert (version1 / "objects" / "新增实体.md").read_text(encoding="utf-8") == "新增内容\n"
+
+    version_response = client.delete(
+        "/agentic/ontologies/demo-ontology/versions/2.0.0",
+        headers=headers,
+    )
+    assert version_response.status_code == 200
+
+    delete_response = client.delete("/agentic/ontologies/demo-ontology", headers=headers)
+    assert delete_response.status_code == 200
+    assert not ontology_dir.exists()
+
+
+def test_workspace_member_cannot_manage_ontology_package(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, owner="alice")
+    update_workspace("demo", members=["modeler"])
+    ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
+    version_dir = ontology_dir / "versions" / "1.0.0" / "objects"
+    version_dir.mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: demo-ontology\n"
+            "name: Demo Ontology\n"
+            "description: Member read-only ontology\n"
+            "version: 1.0.0\n"
+            "active_version: 1.0.0\n"
+            "versions:\n"
+            "  - 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+    (version_dir / "实体A.md").write_text("原始内容\n", encoding="utf-8")
+    client, headers = _build_test_client(tmp_path, username="modeler", role="user")
+
+    responses = [
+        client.post("/agentic/ontologies/import-zip", headers=headers),
+        client.put(
+            "/agentic/ontologies/demo-ontology/active-version",
+            headers=headers,
+            json={"version": "1.0.0"},
+        ),
+        client.put(
+            "/agentic/ontologies/demo-ontology/status",
+            headers=headers,
+            json={"enabled": False},
+        ),
+        client.put(
+            "/agentic/ontologies/demo-ontology/file",
+            headers=headers,
+            json={"folder": "objects", "name": "实体A.md", "content": "越权编辑\n"},
+        ),
+        client.post(
+            "/agentic/ontologies/demo-ontology/upload",
+            headers=headers,
+            data={"folder": "objects", "file": (io.BytesIO(b"unauthorized\n"), "new.md")},
+            content_type="multipart/form-data",
+        ),
+        client.delete(
+            "/agentic/ontologies/demo-ontology/versions/1.0.0",
+            headers=headers,
+        ),
+        client.delete("/agentic/ontologies/demo-ontology", headers=headers),
+    ]
+    for response in responses:
+        assert response.status_code == 403
+        assert response.get_json() == {
+            "error": "Forbidden",
+            "code": "WORKSPACE_ACCESS_DENIED",
+        }
 
 
 def test_get_ontology_file_reads_object_markdown(tmp_path, monkeypatch):
@@ -617,8 +749,8 @@ def test_download_ontology_zip_returns_full_package_for_regular_user(tmp_path, m
 
 
 def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch):
-    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, owner="modeler")
+    client, headers = _build_test_client(tmp_path, username="modeler", role="user")
     operation_content = "x" * 15000
 
     zip_buffer = _build_zip_file({
@@ -677,6 +809,27 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     assert (version_dir / "objects" / "实体A.md").read_text(encoding="utf-8") == "#### 对象描述\n实体A说明\n"
     assert (version_dir / "operations" / "流程A.md").read_text(encoding="utf-8") == operation_content
     assert (version_dir / "scripts" / "demo.py").read_text(encoding="utf-8") == "print('demo')\n"
+
+
+def test_regular_user_ontology_writes_still_enforce_workspace_access(tmp_path, monkeypatch):
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    create_workspace("Shared Workspace", workspace_id="shared", set_as_default=True, owner=None)
+    create_workspace("Private Workspace", workspace_id="private", owner="alice")
+    client, base_headers = _build_test_client(tmp_path, username="modeler", role="user")
+    headers = {**base_headers, "X-Workspace-Id": "private"}
+
+    responses = [
+        client.post("/agentic/ontologies/import-zip", headers=headers),
+        client.put(
+            "/agentic/ontologies/demo-ontology/active-version",
+            headers=headers,
+            json={"version": "1.0.0"},
+        ),
+    ]
+    for response in responses:
+        assert response.status_code == 403
+        assert response.get_json() == {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 
 
 def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_path, monkeypatch):
@@ -1348,10 +1501,10 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
 
 
 def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
-    import ontology.ontologies as ontologies_module
+    import ontology.ontologies as ontology_registry_module
     from ontology.ontologies import get_ontology_registry
 
-    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, owner="modeler")
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
     version1 = ontology_dir / "versions" / "1.0.0"
     version2 = ontology_dir / "versions" / "2.0.0"
@@ -1376,7 +1529,7 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     (version1 / "operations" / "index.md").write_text("- v1-op\n", encoding="utf-8")
     (version2 / "operations" / "index.md").write_text("- v2-op\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="modeler", role="user")
     response = client.put(
         "/agentic/ontologies/demo-ontology/active-version",
         headers=headers,
@@ -1385,7 +1538,7 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["active_version"] == "2.0.0"
 
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
     ontology = get_ontology_registry().get_ontology("demo-ontology")
     assert ontology.version == "2.0.0"
     assert Path(ontology.ontology_dir) == version2
