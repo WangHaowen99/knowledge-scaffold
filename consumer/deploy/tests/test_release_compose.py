@@ -1,8 +1,22 @@
+import json
+import re
 from pathlib import Path
 
 COMPOSE_PATH = Path(__file__).resolve().parents[1] / "docker-compose.release.yml"
 DEPLOY_ROOT = COMPOSE_PATH.parent
 BACKEND_ROOT = DEPLOY_ROOT.parent / "backend"
+REPOSITORY_ROOT = DEPLOY_ROOT.parents[1]
+
+
+def _manifest_template(build_script: Path) -> dict[str, str]:
+    script_text = build_script.read_text(encoding="utf-8")
+    match = re.search(
+        r'cat > "\$\{BUNDLE_DIR\}/deploy/manifest\.json" <<EOF\n(\{.*?\})\nEOF',
+        script_text,
+        flags=re.DOTALL,
+    )
+    assert match is not None, f"manifest template not found in {build_script}"
+    return json.loads(match.group(1).replace("${VERSION}", "v-test"))
 
 
 def test_release_compose_has_no_legacy_config_mount_or_environment():
@@ -35,6 +49,13 @@ def test_release_scripts_have_no_legacy_config_directory_plumbing():
         script_text = (DEPLOY_ROOT / script_name).read_text(encoding="utf-8")
         assert "backend/config" not in script_text
         assert "backend-config" not in script_text
+
+
+def test_full_release_manifest_preserves_all_consumer_fields():
+    consumer_manifest = _manifest_template(DEPLOY_ROOT / "build_release.sh")
+    full_manifest = _manifest_template(REPOSITORY_ROOT / "deploy" / "build.sh")
+
+    assert consumer_manifest.keys() <= full_manifest.keys()
 
 
 def test_deploy_runs_shared_migration_runner_before_strict_preflight():

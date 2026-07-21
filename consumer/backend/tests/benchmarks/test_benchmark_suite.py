@@ -1454,7 +1454,7 @@ def _parse_agent_perf_log(run_id: str) -> dict:
                     continue
                 try:
                     record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
                 if record.get("run_id") != run_id:
                     continue
@@ -1601,7 +1601,7 @@ def _detect_chinese_in_kg_outputs(kg_tool_outputs: list[dict], target_lang: str)
         parsed = None
         try:
             parsed = json.loads(raw_output)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             pass
         chinese_keys: list[str] = []
         chinese_values: list[str] = []
@@ -2485,7 +2485,7 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
     log_path = _find_backend_log()
     if not log_path or not run_ids:
         print(f"  ⚠ 无法分析: 日志文件不存在或无成功执行的 run_id")
-        return
+        return {}
 
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
         lines = []
@@ -2658,7 +2658,6 @@ def _generate_time_breakdown_chart(
     plt.close(fig1)
     print(f"  📊 时间分解图已保存: {p1}")
 
-    import json
     json_path = os.path.join(run_dir, "script_call_details.json")
     if not os.path.exists(json_path):
         return
@@ -4232,7 +4231,6 @@ def run_tests():
         },
     )
 
-    import json
     _script_details_path = os.path.join(
         _current_run_dir or os.path.join(_RESULT_BASE_DIR, "misc"),
         "script_call_details.json",

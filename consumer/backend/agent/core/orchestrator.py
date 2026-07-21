@@ -126,6 +126,19 @@ def _append_interaction_response_context(
     ).format(str(user_request or "").strip(), payload).strip()
 
 
+def _prepend_interaction_cancellation_context(
+    user_request: str,
+    interaction_cancellation: Optional[Dict[str, Any]],
+) -> str:
+    if not interaction_cancellation:
+        return user_request
+
+    payload = json.dumps(interaction_cancellation, ensure_ascii=False, default=str)
+    return (
+        "<user-interaction-cancellation>\n{}\n</user-interaction-cancellation>\n\n{}"
+    ).format(payload, str(user_request or "").strip()).strip()
+
+
 def _build_awaiting_final_output(
     final_output: Any,
     pending_interaction: Dict[str, Any],
@@ -690,17 +703,6 @@ class AgenticOrchestrator:
             stored_messages = []
 
         current_turn_id = session_turn_count + 1
-        model_user_request = _append_interaction_response_context(
-            user_request,
-            interaction_response,
-        )
-        if stored_messages:
-            # Continuation of existing conversation: append new user message
-            initial_messages = list(stored_messages) + [{"role": "user", "content": model_user_request}]
-        else:
-            # First turn: let the main agent loop seed system prompt + user message
-            initial_messages = []
-
         logger.info("stored_messages count: %d", len(stored_messages))
 
         # =====================================================================
@@ -732,7 +734,7 @@ class AgenticOrchestrator:
                 "external_trace_flags": trace_context.trace_flags,
             })
 
-        execution_store.start_turn(
+        started_turn = execution_store.start_turn(
             session_id=session_id,
             turn_id=current_turn_id,
             run_id=run_id,
@@ -740,6 +742,23 @@ class AgenticOrchestrator:
             ontology_version=stamp_ontology_version,
             interaction_response=interaction_response,
         )
+        interaction_cancellation = started_turn.get("prior_interaction_cancellation")
+        model_user_request = _prepend_interaction_cancellation_context(
+            user_request,
+            interaction_cancellation,
+        )
+        model_user_request = _append_interaction_response_context(
+            model_user_request,
+            interaction_response,
+        )
+        if stored_messages:
+            # Continuation of existing conversation: append one contextualized user message.
+            initial_messages = list(stored_messages) + [
+                {"role": "user", "content": model_user_request}
+            ]
+        else:
+            # First turn: let the main agent loop seed system prompt + user message.
+            initial_messages = []
 
         self.run_store.create_run(
             run_id=run_id,
@@ -948,7 +967,7 @@ class AgenticOrchestrator:
                         summary=None,
                     )
                     execution_store.append_to_llm_context(
-                        session_id, {"role": "user", "content": original_user_request},
+                        session_id, {"role": "user", "content": model_user_request},
                     )
                     execution_store.append_to_llm_context(
                         session_id, {"role": "assistant", "content": final_output},
@@ -1008,7 +1027,7 @@ class AgenticOrchestrator:
                         summary=None,
                     )
                     execution_store.append_to_llm_context(
-                        session_id, {"role": "user", "content": original_user_request},
+                        session_id, {"role": "user", "content": model_user_request},
                     )
                     execution_store.append_to_llm_context(
                         session_id, {"role": "assistant", "content": final_output},

@@ -175,7 +175,7 @@ def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
 
 
 def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
-    import ontology.ontologies as ontologies_module
+    import ontology.ontologies as ontology_registry_module
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
@@ -193,7 +193,7 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
 
     client, headers = _build_test_client(tmp_path)
     response = client.get("/agentic/ontologies", headers=headers)
@@ -1348,7 +1348,7 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
 
 
 def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
-    import ontology.ontologies as ontologies_module
+    import ontology.ontologies as ontology_registry_module
     from ontology.ontologies import get_ontology_registry
 
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
@@ -1385,7 +1385,7 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["active_version"] == "2.0.0"
 
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
     ontology = get_ontology_registry().get_ontology("demo-ontology")
     assert ontology.version == "2.0.0"
     assert Path(ontology.ontology_dir) == version2

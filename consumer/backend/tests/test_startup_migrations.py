@@ -10,6 +10,10 @@ from contextlib import contextmanager
 import pytest
 
 
+def _raise_when_iterated(error: BaseException):
+    raise error
+
+
 def _workspace_dir(runtime_root, workspace_id="demo"):
     workspace_dir = runtime_root / "workspaces" / workspace_id
     workspace_dir.mkdir(parents=True)
@@ -115,8 +119,7 @@ def test_startup_runner_wraps_lock_failure(tmp_path, monkeypatch):
 
     @contextmanager
     def broken_lock(_runtime_root):
-        raise OSError("lock denied")
-        yield  # pragma: no cover
+        yield _raise_when_iterated(OSError("lock denied"))
 
     monkeypatch.setattr(runner_module, "_migration_lock", broken_lock)
 
