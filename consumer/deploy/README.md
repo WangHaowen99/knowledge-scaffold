@@ -186,11 +186,12 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 ### 存量用户、workspace 与本体数据源迁移
 
-`deploy.sh` 固定按以下顺序执行：迁移前基础预检（持久化格式校验交给 migration dry-run）→ migration dry-run → 停止旧容器写入 → 一致性备份 → apply migration → 严格预检 → 启动新容器。
+`deploy.sh` 固定按以下顺序执行：迁移前基础预检（持久化格式校验交给 migration dry-run）→ migration dry-run → 停止旧容器写入（不立即删除容器）→ 一致性备份与旧容器 `/app/data/{chats,executions}` 导出 → apply migration → 删除已停止的旧容器 → 严格预检 → 启动新容器。
 
 - 只有 `.onto-runtime/users.json` 时，原样复制密码哈希到 `.onto-auth/users.json`，目标权限为 `0600`。
 - 只有 auth users 时直接使用。
 - 两份同时存在时做字段级语义比较；缺失 `token_version` 按 `1`。任一字段不同立即失败，差异报告不会泄露密码哈希。
+- 若旧 release 仍把 fallback 会话/执行数据写在 backend 容器可写层 `/app/data/chats` 或 `/app/data/executions`，升级时会先从已停止但尚未删除的旧容器导出这些目录，再合并到 `.onto-runtime/data/chats` 与 `.onto-runtime/data/executions`。若目标持久目录已存在同名且内容不同的文件，迁移直接失败，要求人工核对。
 - 无 owner 的存量 workspace 继续作为公共空间，报告列出但不自动私有化。
 - 未知 owner/member、重复成员或未完成用户删除 reconciliation 会阻止启动，避免同名账号继承旧权限。
 - `connection_ref` 与旧 `ontology-bindings.json` 会展开为每个 ontology 独立的 `direct_provider` 配置。apply 前会先校验全部 workspace，校验失败不修改原数据；apply 仍按 forward-only 执行，但在首次写入前会为实际存在的 `ontology-data-sources.json`、`data-connections.json`、`ontology-bindings.json` 生成同目录 `*.pre-direct-v2.bak` 原始字节副本。副本权限固定为 `0600`，重试不会覆盖首次副本，路径同时记录在迁移报告和完成标记中。每个 workspace 的新格式写入并回读校验成功后才删除旧 `data-connections.json` 与 `ontology-bindings.json`；清理失败会阻止启动，并可在修复文件权限后继续重试。

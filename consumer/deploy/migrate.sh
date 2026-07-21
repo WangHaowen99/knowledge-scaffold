@@ -13,6 +13,7 @@ WRITES_STOPPED=false
 REPORT_FILE="${STATE_DIR}/migration-report.json"
 BACKEND_REPORT_FILE="${STATE_DIR}/backend-migration-report.json"
 STORAGE_REPORT_FILE="${REPORT_FILE%.json}-persistent-storage.json"
+LEGACY_BACKUP_DIR=""
 
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
@@ -26,6 +27,11 @@ while [ "$#" -gt 0 ]; do
         --report)
             [ "$#" -ge 2 ] || die "--report requires a path"
             REPORT_FILE="$2"
+            shift
+            ;;
+        --legacy-backup-dir)
+            [ "$#" -ge 2 ] || die "--legacy-backup-dir requires a path"
+            LEGACY_BACKUP_DIR="$2"
             shift
             ;;
         --*)
@@ -82,6 +88,9 @@ STORAGE_ARGS=(
 )
 if [ "${DRY_RUN}" = true ]; then
     STORAGE_ARGS+=(--dry-run)
+fi
+if [ -n "${LEGACY_BACKUP_DIR}" ]; then
+    STORAGE_ARGS+=(--legacy-backup-dir "${LEGACY_BACKUP_DIR}")
 fi
 python3 "${SCRIPT_DIR}/migrate_persistent_storage.py" "${STORAGE_ARGS[@]}"
 

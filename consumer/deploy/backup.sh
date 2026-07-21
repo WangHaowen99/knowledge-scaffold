@@ -24,11 +24,49 @@ backup_path_if_present() {
     fi
 }
 
+backup_legacy_container_storage_if_present() {
+    local container_name="onto-agent-backend"
+    local staging_root="${BACKUP_DIR}/legacy-backend-data"
+    local exported=0
+
+    docker container inspect "${container_name}" >/dev/null 2>&1 || return 0
+
+    rm -rf "${staging_root}"
+    mkdir -p "${staging_root}/chats" "${staging_root}/executions"
+
+    if docker cp "${container_name}:/app/data/chats/." "${staging_root}/chats" 2>/dev/null; then
+        if find "${staging_root}/chats" -mindepth 1 -print -quit >/dev/null 2>&1; then
+            exported=1
+        else
+            rm -rf "${staging_root}/chats"
+        fi
+    else
+        rm -rf "${staging_root}/chats"
+    fi
+
+    if docker cp "${container_name}:/app/data/executions/." "${staging_root}/executions" 2>/dev/null; then
+        if find "${staging_root}/executions" -mindepth 1 -print -quit >/dev/null 2>&1; then
+            exported=1
+        else
+            rm -rf "${staging_root}/executions"
+        fi
+    else
+        rm -rf "${staging_root}/executions"
+    fi
+
+    if [ "${exported}" -eq 1 ]; then
+        tar -C "${BACKUP_DIR}" -czf "${BACKUP_DIR}/legacy-backend-data.tar.gz" "legacy-backend-data"
+    fi
+
+    rm -rf "${staging_root}"
+}
+
 backup_path_if_present "${BUNDLE_ROOT}/backend/.env" "backend-env.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/backend/logs" "backend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/frontend/logs" "frontend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
+backup_legacy_container_storage_if_present
 
 {
     printf '%s\n' \
@@ -38,6 +76,8 @@ backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
         '.onto-runtime/data/chats/' \
         '.onto-runtime/data/executions/' \
         '.onto-runtime/workspaces/*/runtime/users/' \
+        'legacy-backend-data/chats/' \
+        'legacy-backend-data/executions/' \
         '.onto-runtime/mcp-tokens.json' \
         '.onto-runtime/**/graph*migration*' \
         '.onto-auth/users.json' \

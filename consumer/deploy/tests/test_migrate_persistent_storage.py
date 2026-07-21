@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tarfile
 import sys
 import unittest
 from pathlib import Path
@@ -80,6 +81,71 @@ class PersistentStorageMigrationTests(unittest.TestCase):
         payload = json.loads(system_config_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["storage"]["chat_storage_dir"], "/app/.onto-runtime/custom/chats")
         self.assertEqual(payload["storage"]["execution_storage_dir"], "/app/.onto-runtime/custom/executions")
+
+    def test_apply_imports_legacy_container_storage_archive(self) -> None:
+        backup_dir = self.root / "deploy" / "backups" / "case-1"
+        staging_root = backup_dir / "legacy-backend-data"
+        (staging_root / "chats" / "sess-a").mkdir(parents=True, exist_ok=True)
+        (staging_root / "executions" / "sess-a").mkdir(parents=True, exist_ok=True)
+        (staging_root / "chats" / "sess-a" / "snapshot.json").write_text(
+            '{"id":"sess-a"}',
+            encoding="utf-8",
+        )
+        (staging_root / "executions" / "sess-a" / "execution.json").write_text(
+            '{"session_id":"sess-a","turns":[{"status":"awaiting_input"}]}',
+            encoding="utf-8",
+        )
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = backup_dir / "legacy-backend-data.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            archive.add(staging_root, arcname="legacy-backend-data")
+
+        report = migrate(self.root, dry_run=False, legacy_backup_dir=backup_dir)
+
+        self.assertTrue(report["legacy_container_import"]["detected"])
+        self.assertTrue(report["legacy_container_import"]["changed"])
+        self.assertEqual(report["legacy_container_import"]["chat"]["copied_files"], 1)
+        self.assertEqual(report["legacy_container_import"]["execution"]["copied_files"], 1)
+        self.assertTrue((self.root / ".onto-runtime" / "data" / "chats" / "sess-a" / "snapshot.json").is_file())
+        self.assertTrue((self.root / ".onto-runtime" / "data" / "executions" / "sess-a" / "execution.json").is_file())
+
+    def test_dry_run_reports_legacy_container_storage_import_without_writing(self) -> None:
+        backup_dir = self.root / "deploy" / "backups" / "case-2"
+        staging_root = backup_dir / "legacy-backend-data"
+        (staging_root / "chats" / "sess-b").mkdir(parents=True, exist_ok=True)
+        (staging_root / "chats" / "sess-b" / "snapshot.json").write_text(
+            '{"id":"sess-b"}',
+            encoding="utf-8",
+        )
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = backup_dir / "legacy-backend-data.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            archive.add(staging_root, arcname="legacy-backend-data")
+
+        report = migrate(self.root, dry_run=True, legacy_backup_dir=backup_dir)
+
+        self.assertTrue(report["legacy_container_import"]["detected"])
+        self.assertTrue(report["legacy_container_import"]["chat"]["changed"])
+        self.assertFalse((self.root / ".onto-runtime" / "data" / "chats" / "sess-b").exists())
+
+    def test_apply_fails_when_legacy_container_storage_conflicts_with_existing_runtime_data(self) -> None:
+        backup_dir = self.root / "deploy" / "backups" / "case-3"
+        staging_root = backup_dir / "legacy-backend-data"
+        (staging_root / "chats" / "sess-c").mkdir(parents=True, exist_ok=True)
+        (staging_root / "chats" / "sess-c" / "snapshot.json").write_text(
+            '{"id":"sess-c","value":"legacy"}',
+            encoding="utf-8",
+        )
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = backup_dir / "legacy-backend-data.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            archive.add(staging_root, arcname="legacy-backend-data")
+        target_path = self.root / ".onto-runtime" / "data" / "chats" / "sess-c" / "snapshot.json"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text('{"id":"sess-c","value":"runtime"}', encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "legacy storage import conflicts"):
+            migrate(self.root, dry_run=False, legacy_backup_dir=backup_dir)
 
 
 if __name__ == "__main__":
