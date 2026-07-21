@@ -6,7 +6,7 @@ export const AGENT_STREAM_PROTOCOL = 'agent-stream.v2';
 export const AGENT_STREAM_EVENT = 'agent.v2';
 
 const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled', 'awaiting_input']);
-const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final']);
+const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final', 'error']);
 const WEB_SEARCH_EVENT_TYPES = new Set(['start', 'final', 'error']);
 const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
 
@@ -347,7 +347,8 @@ const extractBusinessDataSearchProgressEvent = (payload = {}, envelope = {}) => 
     : '';
   if (!BUSINESS_DATA_SEARCH_EVENT_TYPES.has(eventType)) return null;
 
-  const content = rawEvent?.content == null ? '' : String(rawEvent.content);
+  const content = rawEvent?.content == null ? '' : String(rawEvent.content).trim();
+  if (!content) return null;
   const rawTs = Number(envelope?.ts);
   const rawSeq = Number(envelope?.seq);
 

@@ -87,8 +87,8 @@ def test_business_data_routes_enforce_workspace_authz_before_access(
 
     client, headers = _build_test_client(tmp_path, monkeypatch)
     monkeypatch.setattr("api.routes.business_data.resolve_workspace_id", lambda _request: abort(403))
-    response = client.open(path, method=method, headers=headers, json={})
-    assert response.status_code == 403
+    with client.open(path, method=method, headers=headers, json={}) as response:
+        assert response.status_code == 403
 
 
 def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
@@ -178,8 +178,13 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
         def json(self):
             return {"success": True}
 
-    def fake_post(_session, url, headers=None, json=None, timeout=None):
-        calls.append({"url": url, "headers": headers or {}, "json": json, "timeout": timeout})
+    def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
+        calls.append({
+            "url": url,
+            "headers": headers or {},
+            "json": request_kwargs.get("json"),
+            "timeout": timeout,
+        })
         return FakeResponse()
 
     monkeypatch.setattr(requests.Session, "post", fake_post)
@@ -259,8 +264,13 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
         def json(self):
             return self._payload
 
-    def fake_post(_session, url, headers=None, json=None, timeout=None):
-        post_calls.append({"url": url, "headers": headers or {}, "json": json, "timeout": timeout})
+    def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
+        post_calls.append({
+            "url": url,
+            "headers": headers or {},
+            "json": request_kwargs.get("json"),
+            "timeout": timeout,
+        })
         return FakeResponse({"token": "jwt-token"})
 
     def fake_get(_session, url, headers=None, timeout=None):

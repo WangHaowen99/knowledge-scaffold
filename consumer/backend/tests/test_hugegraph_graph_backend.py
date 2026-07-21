@@ -96,7 +96,15 @@ def _install_hugegraph_http(monkeypatch, *, include_competing_path=False):
         edges.append(_edge("e-rel-2", "v-e2", "v-m2", "PROCESS_TO", {"Qty": 1}))
     calls = []
 
-    def fake_request(method, url, params=None, json=None, timeout=None, headers=None, auth=None):
+    def fake_request(
+        method,
+        url,
+        params=None,
+        timeout=None,
+        headers=None,
+        auth=None,
+        **_request_kwargs,
+    ):
         calls.append({"method": method, "url": url, "params": params, "headers": headers, "auth": auth})
         if url.endswith("/schema"):
             return _FakeResponse({"schema": {}})

@@ -82,3 +82,10 @@ test('trace panel has one accessible toggle and keeps the mobile backdrop close 
   assert.equal(tracePanelSource.includes('trace-close'), false);
   assert.equal(chatCssSource.includes('trace-close'), false);
 });
+
+test('awaiting interaction can be cancelled by button or Escape', () => {
+  assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
+  assert.equal(chatSource.includes('取消（Esc）'), true);
+  assert.equal(chatSource.includes('applyInteractionCancellation'), true);
+});

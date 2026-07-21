@@ -553,7 +553,6 @@ def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkey
 
 
 def test_legacy_task_llm_and_default_profile_id_migrate_to_profile_refs(tmp_path, monkeypatch):
-    import json
     import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
@@ -931,7 +930,6 @@ def test_system_config_ignores_saved_global_observability_section(tmp_path, monk
 
 
 def test_system_config_connection_rejects_global_observability_section():
-    import pytest
     import config.system_config as system_config_module
 
     with pytest.raises(system_config_module.SystemConfigValidationError, match="section 非法"):
@@ -953,12 +951,13 @@ def test_web_search_connection_test_calls_tavily_search(monkeypatch):
         def raise_for_status(self):
             return None
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, timeout=None, **kwargs):
+        request_json = kwargs.get("json")
         captured.update(
             {
                 "url": url,
                 "headers": headers,
-                "json": json,
+                "json": request_json,
                 "timeout": timeout,
             }
         )
