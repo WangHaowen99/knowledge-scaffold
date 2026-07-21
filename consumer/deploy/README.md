@@ -63,7 +63,7 @@ dist/onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
 发布包内已包含所有部署、升级、回滚、重启脚本，无需额外文件。
-发布包**不包含** `.onto-runtime`；部署和升级时会保留目标机器现有的 `.onto-runtime` 目录，如不存在则创建空目录。
+发布包**不包含** `.onto-runtime`；部署和升级时会保留目标机器现有的 `.onto-runtime` 目录，如不存在则创建空目录。聊天会话、执行记录和 awaiting-input checkpoint 的 release 默认兜底目录也固定落在 `.onto-runtime/data/` 下。
 
 ## 首次部署
 
@@ -136,7 +136,7 @@ cd /opt/onto-agent
 回滚脚本会自动完成：
 
 - 先备份当前失败现场
-- 恢复上一次成功版本的配置、数据、日志、`.onto-runtime` 与 `.onto-auth`
+- 保留当前 `.onto-runtime`、`.onto-auth` 与运行中生成的数据，只回退镜像/代码
 - 如备份中包含旧镜像，则恢复旧镜像
 - 重新启动上一版本
 - 再次执行健康检查
@@ -182,7 +182,7 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 - `backup.sh`：打包为 `onto-auth.tar.gz`，auth 镜像同时 `docker save`
 - `upgrade.sh`：升级覆盖文件时列入保护清单，不会被新发布包覆盖
-- `rollback.sh`：回滚时随镜像一并恢复（备份不含该目录则跳过）
+- `rollback.sh`：执行 code-only rollback，不会自动覆盖 `.onto-runtime`、`.onto-auth` 或会话数据；如需恢复备份，必须显式人工操作
 
 ### 存量用户、workspace 与本体数据源迁移
 

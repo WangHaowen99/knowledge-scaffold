@@ -38,6 +38,14 @@ def test_release_compose_loads_sandbox_settings_from_backend_env_file():
         assert env_name not in compose_text
 
 
+def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
+    compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
+
+    assert "./.onto-runtime:/app/.onto-runtime" in compose_text
+    assert "CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats" in compose_text
+    assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
+
+
 def test_release_scripts_have_no_legacy_config_directory_plumbing():
     for script_name in (
         "backup.sh",
@@ -107,6 +115,16 @@ def test_observability_compatibility_migration_has_no_entrypoint_or_deploy_coupl
     assert "observability-workspace-config-v1" not in migrate_text
     assert "observability_workspace_config_v1" not in deploy_text
     assert "observability_workspace_config_v1" not in migrate_text
+
+
+def test_rollback_is_code_only_and_does_not_restore_runtime_snapshots():
+    rollback_text = (DEPLOY_ROOT / "rollback.sh").read_text(encoding="utf-8")
+
+    assert "Code-only rollback keeps current runtime/auth data in place" in rollback_text
+    assert 'restore_archive_if_present "${LAST_BACKUP_DIR}/onto-runtime.tar.gz"' not in rollback_text
+    assert 'restore_archive_if_present "${LAST_BACKUP_DIR}/onto-auth.tar.gz"' not in rollback_text
+    assert 'rm -rf "${BUNDLE_ROOT}/.onto-runtime"' not in rollback_text
+    assert 'rm -rf "${BUNDLE_ROOT}/.onto-auth"' not in rollback_text
     assert not (
         BACKEND_ROOT / "integration" / "observability" / "migration.py"
     ).exists()

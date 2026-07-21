@@ -100,6 +100,8 @@ ensure_runtime_layout() {
     mkdir -p \
         "${BUNDLE_ROOT}/backend/logs" \
         "${BUNDLE_ROOT}/.onto-runtime/config" \
+        "${BUNDLE_ROOT}/.onto-runtime/data/chats" \
+        "${BUNDLE_ROOT}/.onto-runtime/data/executions" \
         "${BUNDLE_ROOT}/frontend/logs/nginx" \
         "${BUNDLE_ROOT}/.onto-auth"
 

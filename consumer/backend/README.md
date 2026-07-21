@@ -201,8 +201,8 @@ Important variables:
 | `TASK_LLM_MAX_TOKENS` | Lightweight model max tokens | `4096` |
 | `TASK_LLM_TEMPERATURE` | Lightweight model temperature | `0.7` |
 | `SYSTEM_CONFIG_PATH` | Optional saved system config file path | `<consumer>/.onto-runtime/config/system_config.json` |
-| `CHAT_STORAGE_DIR` | Session JSON storage | `./data/chats` |
-| `EXECUTION_STORAGE_DIR` | Execution records | `./data/executions` |
+| `CHAT_STORAGE_DIR` | Session JSON storage; release defaults resolve to `<PROJECT_ROOT>/data/chats` | `<PROJECT_ROOT>/data/chats` |
+| `EXECUTION_STORAGE_DIR` | Execution records; release defaults resolve to `<PROJECT_ROOT>/data/executions` | `<PROJECT_ROOT>/data/executions` |
 | `PROJECT_ROOT` | Runtime root containing `system/` and `workspaces/` | `<consumer>/.onto-runtime` |
 | `AUTH_SERVER_URL` | Standalone auth-server base URL (required; startup fails when unset), e.g. `http://auth-server:5056` | empty |
 | `AUTH_SERVER_ADMIN_TOKEN` | Shared admin token for the auth-server Admin API (required for user management) | empty |

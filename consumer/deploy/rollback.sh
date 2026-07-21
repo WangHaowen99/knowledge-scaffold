@@ -25,26 +25,7 @@ compose_down "${FAILED_BACKEND_IMAGE}" "${FAILED_FRONTEND_IMAGE}" "${FAILED_AUTH
 FAILSAFE_BACKUP="$("${SCRIPT_DIR}/backup.sh" "rollback-${PREVIOUS_VERSION}" "${CURRENT_FAILED_VERSION}")"
 log "Captured current state before rollback at ${FAILSAFE_BACKUP}"
 
-restore_archive_if_present() {
-    local archive_path="$1"
-    if [ -f "${archive_path}" ]; then
-        tar -C "${BUNDLE_ROOT}" -xzf "${archive_path}"
-    fi
-}
-
-restore_archive_if_present "${LAST_BACKUP_DIR}/backend-env.tar.gz"
-restore_archive_if_present "${LAST_BACKUP_DIR}/frontend-env.tar.gz"
-restore_archive_if_present "${LAST_BACKUP_DIR}/backend-logs.tar.gz"
-restore_archive_if_present "${LAST_BACKUP_DIR}/frontend-logs.tar.gz"
-
-if [ -f "${LAST_BACKUP_DIR}/onto-runtime.tar.gz" ]; then
-    rm -rf "${BUNDLE_ROOT}/.onto-runtime"
-fi
-if [ -f "${LAST_BACKUP_DIR}/onto-auth.tar.gz" ]; then
-    rm -rf "${BUNDLE_ROOT}/.onto-auth"
-fi
-restore_archive_if_present "${LAST_BACKUP_DIR}/onto-runtime.tar.gz"
-restore_archive_if_present "${LAST_BACKUP_DIR}/onto-auth.tar.gz"
+log "Code-only rollback keeps current runtime/auth data in place; backup restore remains an explicit manual action"
 
 ROLLBACK_BACKEND_IMAGE=""
 ROLLBACK_FRONTEND_IMAGE=""
