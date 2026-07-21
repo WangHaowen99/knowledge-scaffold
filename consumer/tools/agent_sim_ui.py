@@ -19,9 +19,9 @@ BACKEND = ROOT / "backend"
 TOOLS = ROOT / "tools"
 import sys
 
-for item in (str(BACKEND), str(TOOLS)):
-    if item not in sys.path:
-        sys.path.insert(0, item)
+for search_path in (str(BACKEND), str(TOOLS)):
+    if search_path not in sys.path:
+        sys.path.insert(0, search_path)
 
 import agent_sim_runner as runner
 
@@ -264,11 +264,11 @@ def read_jsonl_tail(path: Path, *, limit: int) -> list[dict[str, Any]]:
     rows = []
     for line in lines[-limit:]:
         try:
-            item = json.loads(line)
+            record = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(item, dict):
-            rows.append(item)
+        if isinstance(record, dict):
+            rows.append(record)
     return rows
 
 

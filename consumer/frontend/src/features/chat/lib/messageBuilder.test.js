@@ -32,6 +32,46 @@ test('durable awaiting-input event restores interaction after page refresh', () 
   assert.equal(messages[0].isLoading, false);
 });
 
+test('durable cancellation marker clears an awaiting interaction after refresh', () => {
+  const messages = buildMessagesFromEvents([
+    {
+      event: AGENT_STREAM_EVENT,
+      data: {
+        protocol: AGENT_STREAM_PROTOCOL,
+        type: 'turn.finished',
+        run_id: 'run-awaiting',
+        seq: 8,
+        ts: 1008,
+        payload: {
+          status: 'awaiting_input',
+          final_output: {
+            interaction: { id: 'interaction-1', type: 'input' },
+          },
+        },
+      },
+    },
+    {
+      event: 'chat_message',
+      data: {
+        role: 'system',
+        content: '用户取消了操作',
+        metadata: {
+          type: 'interaction_cancelled',
+          interaction_id: 'interaction-1',
+          cancelled_at: '2026-07-17T10:00:00',
+        },
+      },
+    },
+  ]);
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].status, 'cancelled');
+  assert.equal(messages[0].isLoading, false);
+  assert.equal(messages[1].role, 'system');
+  assert.equal(messages[1].content, '用户取消了操作');
+  assert.equal(messages[1].metadata.type, 'interaction_cancelled');
+});
+
 test('history restoration preserves run and session-lock metadata', () => {
   const [message] = historyToMessages([{
     id: 'message-1',

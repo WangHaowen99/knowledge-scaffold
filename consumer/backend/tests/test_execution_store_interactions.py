@@ -1,6 +1,11 @@
 import pytest
 
-from persistence.execution_store import ExecutionStore, InteractionCheckpointError
+from persistence.execution_store import (
+    INTERACTION_CANCELLED_MESSAGE,
+    INTERACTION_CANCELLED_NOTICE,
+    ExecutionStore,
+    InteractionCheckpointError,
+)
 
 
 def _seed_choice_checkpoint(store: ExecutionStore, session_id: str = "sess-choice") -> dict:
@@ -104,6 +109,69 @@ def test_pending_interaction_cannot_be_bypassed_with_plain_message(tmp_path):
             run_id="run-2",
             user_request="ignore checkpoint",
         )
+
+
+def test_pending_interaction_can_be_cancelled_without_losing_context(tmp_path):
+    storage_dir = tmp_path / "executions"
+    store = ExecutionStore(str(storage_dir))
+    interaction = _seed_choice_checkpoint(store)
+    prior_context = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "assistant", "content": "请选择方案"},
+    ]
+    store.set_llm_context("sess-choice", list(prior_context))
+
+    cancellation = store.cancel_pending_interaction(
+        "sess-choice",
+        interaction["id"],
+    )
+
+    assert cancellation["action"] == "cancel"
+    assert cancellation["cancelled"] is True
+    assert cancellation["cancelled_by"] == "user"
+    assert cancellation["message"] == INTERACTION_CANCELLED_MESSAGE
+    assert cancellation["display_message"] == INTERACTION_CANCELLED_NOTICE
+    history = store.get_session_history("sess-choice")
+    assert history["turns"][0]["status"] == "cancelled"
+    assert history["turns"][0]["interaction_response"] == cancellation
+    assert history["turns"][0]["interaction_cancelled_at"]
+    assert "interaction_context_consumed_at" not in history["turns"][0]
+    assert store.get_llm_context("sess-choice") == prior_context
+
+    # A plain message claims the cancellation for one-time model injection.
+    reloaded = ExecutionStore(str(storage_dir))
+    assert reloaded.validate_interaction_response("sess-choice", None) is None
+    resumed_turn = reloaded.start_turn(
+        session_id="sess-choice",
+        turn_id=2,
+        run_id="run-2",
+        user_request="继续分析其他问题",
+    )
+    assert resumed_turn["prior_interaction_cancellation"] == cancellation
+    cancelled_turn = reloaded.get_turn("sess-choice", 1)
+    assert cancelled_turn["interaction_context_consumed_at"]
+    assert cancelled_turn["interaction_context_consumed_by_turn_id"] == 2
+    assert reloaded.get_llm_context("sess-choice") == prior_context
+
+    # Retrying stays idempotent and later turns cannot claim the event again.
+    assert reloaded.cancel_pending_interaction("sess-choice", interaction["id"]) == cancellation
+    reloaded.complete_turn("sess-choice", 2, {"answer": "done"}, None)
+    later_turn = reloaded.start_turn(
+        session_id="sess-choice",
+        turn_id=3,
+        run_id="run-3",
+        user_request="再次提问",
+    )
+    assert "prior_interaction_cancellation" not in later_turn
+    assert reloaded.get_llm_context("sess-choice") == prior_context
+
+
+def test_pending_interaction_cancel_rejects_stale_id(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    _seed_choice_checkpoint(store)
+
+    with pytest.raises(InteractionCheckpointError, match="interaction_id"):
+        store.cancel_pending_interaction("sess-choice", "stale-interaction")
 
 
 def test_turn_feedback_is_durable_and_queryable_without_evolution_store(tmp_path):

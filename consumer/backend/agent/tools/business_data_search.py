@@ -111,6 +111,8 @@ def handle_business_data_search(
 
     try:
         final_content = ""
+        error_content = ""
+        saw_final_event = False
         request = BusinessDataSearchRequest(
             workspace_id=str(workspace_id or ""),
             ontology_id=normalized_ontology_id,
@@ -127,11 +129,37 @@ def handle_business_data_search(
                 event=event,
                 tool_call_id=tool_call_id,
             )
-            if str(event.get("type") or "").strip().lower() == "final":
-                final_content = str(event.get("content") or "").strip()
+            event_type = str(event.get("type") or "").strip().lower()
+            event_content = str(event.get("content") or "").strip()
+            if event_type == "final":
+                saw_final_event = True
+                final_content = event_content
+            elif event_type == "error":
+                error_content = event_content or "数据源查询失败"
     except Exception as e:
         logger.exception("Unexpected error during database search: %s", str(e))
         return "Error: Unexpected error during database search."
+
+    if error_content:
+        logger.warning(
+            "Business data search failed: ontology_id=%s mode=%s provider=%s tool_call_id=%s error=%s",
+            connection.ontology_id,
+            connection.mode,
+            connection.provider,
+            tool_call_id or "n/a",
+            error_content,
+        )
+        return "Error: 业务数据查询失败：{}".format(error_content)
+
+    if not saw_final_event:
+        logger.warning(
+            "Business data search ended without a final result: ontology_id=%s mode=%s provider=%s tool_call_id=%s",
+            connection.ontology_id,
+            connection.mode,
+            connection.provider,
+            tool_call_id or "n/a",
+        )
+        return "Error: 业务数据查询失败：数据源未返回查询结果"
 
     logger.info(
         "Business data search completed: ontology_id=%s mode=%s provider=%s tool_call_id=%s result=%s",
