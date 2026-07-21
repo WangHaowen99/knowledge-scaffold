@@ -69,3 +69,10 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(chatSessionsSource.includes('const touchSession = useCallback'), true);
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
 });
+
+test('awaiting interaction can be cancelled by button or Escape', () => {
+  assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
+  assert.equal(chatSource.includes('取消（Esc）'), true);
+  assert.equal(chatSource.includes('applyInteractionCancellation'), true);
+});
