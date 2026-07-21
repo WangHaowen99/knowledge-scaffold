@@ -34,6 +34,7 @@ _EVENT_LOG_FILENAME = "events.jsonl"
 _TOOL_OUTPUTS_DIRNAME = "tool-outputs"
 _TOOL_OUTPUT_REF_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _TOOL_OUTPUT_METADATA_MAX_BYTES = 64 * 1024
+_INTERACTION_CANCELLED_EVENT_TYPE = "interaction_cancelled"
 _LEGACY_MIGRATED_SUFFIX = ".migrated"
 _STORAGE_VERSION = "append-only-v1"
 _SUPPORTED_EVENT_NAMES = {"chat_message", "agent.v2"}
@@ -635,6 +636,58 @@ class _AppendOnlyChatStore:
             self._write_snapshot_unlocked(session)
             return self._get_session_unlocked(session_id)
 
+    def record_interaction_cancellation(
+        self,
+        session_id: str,
+        interaction_id: str,
+        content: str,
+        *,
+        cancelled_at: str,
+    ) -> Optional[_FileChatSession]:
+        """Append one durable cancellation marker for an interaction."""
+        normalized_id = str(interaction_id or "").strip()
+        if not normalized_id:
+            raise ValueError("interaction_id is required")
+
+        with self._lock_for_session(session_id):
+            snapshot = self._read_snapshot_unlocked(session_id)
+            if not snapshot:
+                return None
+
+            current = self._replay_event_log_unlocked(snapshot)
+            for event in current.events:
+                if event.get("event") != "chat_message":
+                    continue
+                data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                metadata = (
+                    data.get("metadata")
+                    if isinstance(data.get("metadata"), dict)
+                    else {}
+                )
+                if (
+                    metadata.get("type") == _INTERACTION_CANCELLED_EVENT_TYPE
+                    and str(metadata.get("interaction_id") or "").strip() == normalized_id
+                ):
+                    return current
+
+            event = {
+                "event": "chat_message",
+                "data": {
+                    "role": "system",
+                    "content": str(content or ""),
+                    "metadata": {
+                        "type": _INTERACTION_CANCELLED_EVENT_TYPE,
+                        "interaction_id": normalized_id,
+                        "cancelled_at": str(cancelled_at or ""),
+                    },
+                },
+                "ts": int(time.time() * 1000),
+            }
+            self._append_events_to_log_unlocked(session_id, [event])
+            snapshot.updated_at = self._now_iso()
+            self._write_snapshot_unlocked(snapshot)
+            return self._get_session_unlocked(session_id)
+
     def _apply_event_to_session(
         self,
         session: _FileChatSession,
@@ -1158,6 +1211,23 @@ class ChatStore:
             metadata=metadata or {},
         )
         return message
+
+    def record_interaction_cancellation(
+        self,
+        session_id: str,
+        interaction_id: str,
+        content: str,
+        *,
+        cancelled_at: str,
+    ) -> bool:
+        """Persist an idempotent system notice for an interaction cancellation."""
+        session = self._store.record_interaction_cancellation(
+            session_id,
+            interaction_id,
+            content,
+            cancelled_at=cancelled_at,
+        )
+        return session is not None
 
     def get_history(
         self,

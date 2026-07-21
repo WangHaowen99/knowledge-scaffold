@@ -76,3 +76,10 @@ test('new chat navigation is active only for a blank chat session', () => {
     true,
   );
 });
+
+test('awaiting interaction can be cancelled by button or Escape', () => {
+  assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
+  assert.equal(chatSource.includes('取消（Esc）'), true);
+  assert.equal(chatSource.includes('applyInteractionCancellation'), true);
+});
