@@ -45,6 +45,7 @@ class ToolContext:
     turn_id: int
     agent_config: AgentConfig
     caller: ToolCaller
+    user_id: Optional[str] = None
     agent_mode: Optional[str] = None
     agent_iteration: Optional[int] = None
     tool_batch_index: Optional[int] = None

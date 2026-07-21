@@ -199,16 +199,23 @@ def _emit_business_data_search_event(
         )
 
 
-def _is_terminal_graph_timeout(content: str) -> bool:
+def _terminal_graph_timeout_error(content: str) -> Optional[Dict[str, str]]:
     try:
         payload = json.loads(str(content or ""))
     except (TypeError, ValueError):
-        return False
+        return None
     if not isinstance(payload, Mapping) or payload.get("retryable") is not False:
-        return False
-    return str(payload.get("error_code") or "").strip() in {
+        return None
+    error_code = str(payload.get("error_code") or "").strip()
+    if error_code not in {
         "GRAPH_AGENT_TIMEOUT",
         "GRAPH_BACKEND_TIMEOUT",
+    }:
+        return None
+    return {
+        "error_code": error_code,
+        "message": "Graph query timed out.",
+        "tool_name": "business_data_search",
     }
 
 
@@ -252,10 +259,13 @@ class BusinessDataSearchTool:
                     "iteration": int(context.agent_iteration or 0),
                 }
             ]
+        terminal_error = _terminal_graph_timeout_error(content)
+        if terminal_error is not None:
+            state_updates["terminal_error"] = terminal_error
         return ToolOutcome(
             content=content,
             state_updates=state_updates,
-            terminal=_is_terminal_graph_timeout(content),
+            terminal=terminal_error is not None,
         )
 
 

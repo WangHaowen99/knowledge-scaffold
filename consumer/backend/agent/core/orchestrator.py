@@ -50,7 +50,11 @@ from llm.llm_request_mode import normalize_llm_request_mode
 from ontology.ontologies import get_ontology_registry
 from utils.streaming import build_agent_event, clear_run_sequence, stream_writer_context
 from workspace.workspaces import workspace_scope
-from agent.exceptions import AgentLoopStalledError, WorkflowCancelledError
+from agent.exceptions import (
+    AgentLoopStalledError,
+    TerminalToolExecutionError,
+    WorkflowCancelledError,
+)
 from integration.sandbox.registry import release_run_sandbox
 
 logger = get_logger("orchestrator")
@@ -76,6 +80,9 @@ def _build_tool_output_artifact_writer(chat_store, *, session_id: str, run_id: s
 
 def _public_workflow_error_message(exc: Exception) -> str:
     """Return a user-safe workflow error message for known external failures."""
+    if isinstance(exc, TerminalToolExecutionError):
+        return exc.public_message
+
     if isinstance(exc, AgentLoopStalledError):
         return str(getattr(exc, "public_message", None) or AgentLoopStalledError.PUBLIC_MESSAGE)
 

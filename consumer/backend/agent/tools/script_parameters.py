@@ -13,6 +13,7 @@ _RUNTIME_PARAMETER_FIELDS = {
     "session_id",
     "run_id",
     "turn_id",
+    "user_id",
     "workspace_id",
     "selected_ontology_id",
 }

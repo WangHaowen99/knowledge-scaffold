@@ -53,3 +53,27 @@ class AgentLoopStalledError(AgenticError):
 
     def __str__(self) -> str:
         return self.public_message
+
+
+class TerminalToolExecutionError(AgenticError):
+    """Raised when a terminal tool result represents a workflow failure."""
+
+    PUBLIC_MESSAGE = "Tool execution failed."
+
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        public_message: Optional[str] = None,
+        tool_name: Optional[str] = None,
+    ) -> None:
+        self.error_code = str(error_code or "TERMINAL_TOOL_ERROR").strip()
+        self.public_message = str(public_message or self.PUBLIC_MESSAGE).strip()
+        self.tool_name = str(tool_name or "").strip() or None
+        details = {"error_code": self.error_code}
+        if self.tool_name:
+            details["tool_name"] = self.tool_name
+        super().__init__(self.public_message, details)
+
+    def __str__(self) -> str:
+        return self.public_message

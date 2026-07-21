@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import time
 from types import SimpleNamespace
+import uuid
 
 import pytest
+from openjiuwen.core.foundation.llm import ToolCall
+from openjiuwen.core.session.agent import create_agent_session
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
 from agent.tools.business_data.providers.graph.agent import (
     GraphAgentTimeoutError,
@@ -99,6 +105,7 @@ class _DuplicateTargetItemBackend(_Backend):
 class _TimeoutBackend(_Backend):
     def property_filter(self, **kwargs):
         del kwargs
+        self.calls.append(("property_filter", "timeout"))
         raise GraphBackendTimeoutError("graph query timed out")
 
 
@@ -709,32 +716,67 @@ def test_graph_backend_timeout_is_not_retryable_by_outer_agent():
     assert GraphBackendTimeoutError.retryable is False
 
 
+def test_graph_adapter_latches_non_retryable_backend_error():
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    backend = _TimeoutBackend()
+    adapter = GraphJiuwenToolAdapter(
+        tool_executor=_executor(backend, context, mapping),
+        executions=[],
+        executed_steps=[],
+    )
+    arguments = {
+        "queries": [
+            {
+                "element_class": "TargetItem",
+                "element_type": "NODE",
+                "filter_dict": {},
+                "return_properties": ["TargetItemCode"],
+                "limit": 20,
+            }
+        ]
+    }
+
+    first = adapter._invoke_sync("property_filter", arguments)
+    second = adapter._invoke_sync("property_filter", arguments)
+
+    assert json.loads(first)["error_code"] == "GRAPH_BACKEND_TIMEOUT"
+    assert second == first
+    assert backend.calls == [("property_filter", "timeout")]
+
+
 def test_jiuwen_graph_query_agent_preserves_backend_timeout_from_private_tool():
     class _FakeAgent:
         def __init__(self):
-            self.card = SimpleNamespace(id="timeout-agent")
-            self.adapter = None
+            self.card = AgentCard(id="timeout-agent-{}".format(uuid.uuid4().hex))
+            self.ability_manager = AbilityManager()
+            self.session = create_agent_session(
+                session_id="timeout-session-{}".format(uuid.uuid4().hex),
+                card=self.card,
+            )
 
-        def invoke(self, inputs):
+        async def invoke(self, inputs):
             del inputs
-            return self.adapter._invoke_sync(
-                "property_filter",
-                {
-                    "queries": [
-                        {
-                            "element_class": "TargetItem",
+            _result, tool_message = await self.ability_manager._execute_single_tool_call(
+                ToolCall(
+                    id="graph-timeout-call",
+                    type="function",
+                    name="property_filter",
+                    arguments=json.dumps({
+                        "queries": [
+                            {
+                                "element_class": "TargetItem",
                             "element_type": "NODE",
                             "filter_dict": {},
                             "return_properties": ["TargetItemCode"],
-                            "limit": 20,
-                        }
-                    ]
-                },
+                                "limit": 20,
+                            }
+                        ]
+                    }),
+                ),
+                self.session,
             )
-
-    def fake_tool_registrar(agent, **kwargs):
-        agent.adapter = kwargs["adapter"]
-        return []
+            return {"output": tool_message.content}
 
     context = _context()
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
@@ -742,7 +784,6 @@ def test_jiuwen_graph_query_agent_preserves_backend_timeout_from_private_tool():
     with pytest.raises(GraphBackendTimeoutError) as exc_info:
         JiuwenGraphQueryAgent(
             agent_factory=_FakeAgent,
-            tool_registrar=fake_tool_registrar,
         ).run(
             context=context,
             mapping=mapping,
@@ -928,6 +969,64 @@ def test_graph_private_registration_passes_explicit_tools_to_current_jiuwen_boun
     )
     assert len(result.messages) == 1
     assert '"success": true' in result.messages[0]["content"]
+
+
+def test_graph_private_registration_marks_non_retryable_backend_error_terminal(monkeypatch):
+    captured = {}
+
+    def fake_register(agent, **kwargs):
+        del agent
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "agent.tools.business_data.providers.graph.jiuwen_agent.register_current_runtime_tools",
+        fake_register,
+    )
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    adapter = GraphJiuwenToolAdapter(
+        tool_executor=_executor(_TimeoutBackend(), context, mapping),
+        executions=[],
+        executed_steps=[],
+    )
+
+    register_graph_runtime_tools(
+        SimpleNamespace(card=SimpleNamespace(id="graph-private-timeout")),
+        tool_schemas=_GRAPH_TOOL_SCHEMAS,
+        adapter=adapter,
+        context=context,
+    )
+    result = captured["tool_batch_executor"](
+        [
+            ToolInvocation(
+                id="graph-timeout-call",
+                name="property_filter",
+                arguments={
+                    "queries": [
+                        {
+                            "element_class": "TargetItem",
+                            "element_type": "NODE",
+                            "filter_dict": {},
+                            "return_properties": ["TargetItemCode"],
+                            "limit": 20,
+                        }
+                    ]
+                },
+            ),
+            ToolInvocation(
+                id="must-not-run",
+                name="get_nodes_schema",
+                arguments={},
+            ),
+        ],
+        captured["context_factory"](),
+    )
+
+    assert result.terminal is True
+    assert result.terminal_tool_call_id == "graph-timeout-call"
+    assert len(result.messages) == 1
+    assert json.loads(result.messages[0]["content"])["error_code"] == "GRAPH_BACKEND_TIMEOUT"
 
 
 def test_graph_agent_trace_bridge_sliding_window_applied_is_false():

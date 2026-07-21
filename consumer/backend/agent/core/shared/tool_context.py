@@ -34,6 +34,7 @@ def build_tool_context(
         run_id=state.get("run_id"),
         session_id=state.get("session_id"),
         turn_id=int(state.get("current_turn_id") or 0),
+        user_id=str(state.get("user_id") or "").strip() or None,
         agent_config=agent_config,
         caller=caller,
         agent_mode=resolve_agent_mode(user_context),

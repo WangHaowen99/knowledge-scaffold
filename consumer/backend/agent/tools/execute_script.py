@@ -61,6 +61,9 @@ _MAX_CLI_ARGS_SIZE = 25_000
 _SCRIPT_EXECUTION_INTERNAL_ERROR = (
     "Error: Script execution failed due to an internal error."
 )
+_PUBLIC_SCRIPT_ERROR_PREFIX = "ONTO_PUBLIC_ERROR:"
+_PUBLIC_SCRIPT_ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH = 240
 
 SCRIPT_LIVE_LOG_ENABLED = (
     os.getenv("SCRIPT_LIVE_LOG_ENABLED", "false").strip().lower()
@@ -900,7 +903,9 @@ def handle_execute_script_path(
                 len(stdout),
                 len(stderr),
             )
-            return "Error: Script exited with code {}.".format(completed.returncode)
+            error = "Error: Script exited with code {}.".format(completed.returncode)
+            public_error = _extract_public_script_error(stderr)
+            return "{} {}".format(error, public_error) if public_error else error
 
         result = _combine_process_output(stdout=stdout, stderr=stderr)
         if result:
@@ -940,6 +945,35 @@ def _combine_process_output(*, stdout: str, stderr: str) -> str:
     if stderr:
         return stderr
     return ""
+
+
+def _extract_public_script_error(stderr: str) -> Optional[str]:
+    """Read the script's explicit, bounded public error contract."""
+    for raw_line in str(stderr or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith(_PUBLIC_SCRIPT_ERROR_PREFIX):
+            continue
+        serialized = line[len(_PUBLIC_SCRIPT_ERROR_PREFIX):].strip()
+        try:
+            payload = json.loads(serialized)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        code = str(payload.get("code") or "").strip()
+        message = payload.get("message")
+        if not _PUBLIC_SCRIPT_ERROR_CODE_PATTERN.fullmatch(code):
+            continue
+        if not isinstance(message, str):
+            continue
+        normalized_message = " ".join(message.split())[
+            :_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH
+        ].strip()
+        return "[{}]{}".format(
+            code,
+            " {}".format(normalized_message) if normalized_message else "",
+        )
+    return None
 
 
 def handle_execute_script(
@@ -1423,9 +1457,10 @@ class ExecuteScriptTool:
             "session_id": context.session_id,
             "run_id": context.run_id,
             "turn_id": str(context.turn_id),
+            "user_id": context.user_id,
             "workspace_id": context.workspace_id,
             "selected_ontology_id": context.selected_ontology_id,
-            "ontology_id": call_args.get("ontology_id"),
+            "ontology_id": context.selected_ontology_id,
         }
         logger.info(
             (

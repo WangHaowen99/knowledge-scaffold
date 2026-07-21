@@ -26,7 +26,7 @@ from agent.core.jiuwen_engine import (
     _patch_jiuwen_openai_reasoning_alias,
     warm_up_jiuwen_runtime,
 )
-from agent.exceptions import WorkflowCancelledError
+from agent.exceptions import TerminalToolExecutionError, WorkflowCancelledError
 from agent.tools.base import ToolBatchResult, ToolInvocation
 from agent.tools.registry import get_tool_schema, get_tool_spec
 from config.settings import AgentConfig, LimitsConfig, WebSearchConfig
@@ -2743,6 +2743,48 @@ def test_current_runtime_tool_adapter_returns_terminal_content_without_callback(
     assert state["pending_user_interaction"]["id"] == "interaction_1"
     assert state["final_output"] == {"type": "user_interaction", "text": "需要用户补充信息"}
     assert len([message for message in state["messages"] if message.get("role") == "tool"]) == 1
+
+
+def test_current_runtime_tool_adapter_reports_terminal_tool_error():
+    state = {"messages": [], "results": {}}
+    terminal_errors = []
+
+    def fake_executor(tool_calls, context):
+        del context
+        return ToolBatchResult(
+            messages=[
+                {
+                    "role": "tool",
+                    "content": '{"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}',
+                    "tool_call_id": tool_calls[0].id,
+                    "name": "business_data_search",
+                }
+            ],
+            state_updates={
+                "terminal_error": {
+                    "error_code": "GRAPH_BACKEND_TIMEOUT",
+                    "message": "Graph query timed out.",
+                    "tool_name": "business_data_search",
+                }
+            },
+            terminal=True,
+        )
+
+    adapter = CurrentRuntimeToolAdapter(
+        tool_name="business_data_search",
+        state=state,
+        context_factory=lambda: SimpleNamespace(name="ctx"),
+        tool_batch_executor=fake_executor,
+        terminal_error_callback=terminal_errors.append,
+    )
+
+    result = asyncio.run(adapter.invoke({"query": "list units"}))
+
+    assert "GRAPH_BACKEND_TIMEOUT" in result
+    assert len(terminal_errors) == 1
+    assert isinstance(terminal_errors[0], TerminalToolExecutionError)
+    assert terminal_errors[0].error_code == "GRAPH_BACKEND_TIMEOUT"
+    assert terminal_errors[0].public_message == "Graph query timed out."
 
 
 def test_current_runtime_tool_adapter_does_not_repeat_pending_user_interaction():
