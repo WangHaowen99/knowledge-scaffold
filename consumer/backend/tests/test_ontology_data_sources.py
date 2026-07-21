@@ -9,17 +9,26 @@ import pytest
 from flask import Flask
 
 from api.auth.auth import AuthManager
-from workspace.workspaces import create_workspace, get_workspace_paths, workspace_scope
+from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace, workspace_scope
 
 
 SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 
 
-def _create_workspace_with_ontology(tmp_path, monkeypatch, *, ontology_id: str = "demo-ontology"):
+def _create_workspace_with_ontology(
+    tmp_path,
+    monkeypatch,
+    *,
+    ontology_id: str = "demo-ontology",
+    owner=None,
+    members=None,
+):
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     paths = get_workspace_paths("demo")
-    create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
+    create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True, owner=owner)
+    if members is not None:
+        update_workspace("demo", members=members)
     _create_ontology(paths, ontology_id)
     return paths
 
@@ -44,17 +53,35 @@ def _create_ontology(paths, ontology_id: str) -> None:
     )
 
 
-def _build_test_client(tmp_path, monkeypatch):
+def _build_test_client(
+    tmp_path,
+    monkeypatch,
+    *,
+    username="admin",
+    role="admin",
+    workspace_owner=None,
+    workspace_members=None,
+):
     from api.routes.business_data import business_data_bp
     from api.routes.ontologies import ontologies_bp
 
-    _create_workspace_with_ontology(tmp_path, monkeypatch)
+    _create_workspace_with_ontology(
+        tmp_path,
+        monkeypatch,
+        owner=workspace_owner,
+        members=workspace_members,
+    )
     app = Flask(__name__)
     app.config["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "admin123")
-    assert user is not None
-    user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+    if username == "admin":
+        user = auth_manager.authenticate("admin", "admin123")
+        assert user is not None
+        user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+    else:
+        temporary_password = "UserStrong123!"
+        auth_manager.create_user(username, temporary_password, role=role)
+        user = auth_manager.change_password(username, temporary_password, "ChangedStrong123!")
     app.config["AUTH_MANAGER"] = auth_manager
     app.register_blueprint(business_data_bp)
     app.register_blueprint(ontologies_bp)
@@ -731,7 +758,13 @@ def test_forward_only_verification_failure_keeps_legacy_files(tmp_path, monkeypa
 
 
 def test_ontology_data_source_routes_manage_private_source(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path, monkeypatch)
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        username="modeler",
+        role="user",
+        workspace_owner="modeler",
+    )
     get_empty = client.get("/agentic/ontologies/demo-ontology/data-source", headers=headers)
     assert get_empty.status_code == 200
     assert get_empty.get_json() == {"ontology_id": "demo-ontology", "configured": False, "source": None}
@@ -783,10 +816,29 @@ def test_legacy_connection_routes_return_retirement_guidance(tmp_path, monkeypat
     assert "/data-source" in response.get_json()["replacement"]
 
 
-def test_ontology_data_source_test_route_accepts_unsaved_candidate(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("username", "role", "workspace_owner"),
+    [
+        ("admin", "admin", None),
+        ("modeler", "user", "modeler"),
+    ],
+)
+def test_ontology_data_source_test_route_accepts_unsaved_candidate(
+    tmp_path,
+    monkeypatch,
+    username,
+    role,
+    workspace_owner,
+):
     from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 
-    client, headers = _build_test_client(tmp_path, monkeypatch)
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        username=username,
+        role=role,
+        workspace_owner=workspace_owner,
+    )
     captured = {}
 
     def fake_test_business_data_connection(connection):
@@ -809,3 +861,50 @@ def test_ontology_data_source_test_route_accepts_unsaved_candidate(tmp_path, mon
     assert captured["connection"].ontology_id == "demo-ontology"
     assert captured["connection"].provider == "dataagent"
     assert captured["connection"].config["token"] == "candidate-token"
+
+
+def test_ontology_data_source_write_routes_reject_workspace_member(tmp_path, monkeypatch):
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        username="modeler",
+        role="user",
+        workspace_owner="alice",
+        workspace_members=["modeler"],
+    )
+    read_response = client.get(
+        "/agentic/ontologies/demo-ontology/data-source",
+        headers=headers,
+    )
+    assert read_response.status_code == 200
+
+    responses = [
+        client.put(
+            "/agentic/ontologies/demo-ontology/data-source",
+            headers=headers,
+            json={
+                "mode": "direct_provider",
+                "provider": "dataagent",
+                "config": {"url": "https://candidate.example.com/"},
+            },
+        ),
+        client.delete(
+            "/agentic/ontologies/demo-ontology/data-source",
+            headers=headers,
+        ),
+        client.post(
+            "/agentic/ontologies/demo-ontology/data-source/test",
+            headers=headers,
+            json={
+                "mode": "direct_provider",
+                "provider": "dataagent",
+                "config": {"url": "https://candidate.example.com/"},
+            },
+        ),
+    ]
+    for response in responses:
+        assert response.status_code == 403
+        assert response.get_json() == {
+            "error": "Forbidden",
+            "code": "WORKSPACE_ACCESS_DENIED",
+        }

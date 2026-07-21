@@ -26,7 +26,9 @@ export const DIR_ICONS = { objects: '▤', operations: '⚙', scripts: '𝑓', m
 
 export default function useKbBrowser() {
   const { can, workspaceId, status, workspaceDataReady } = useAuthContext();
-  const canImport = can('ws.kb.write');
+  const canImport = can('ws.kb.import');
+  const canActivate = can('ws.kb.activate');
+  const canManage = can('ws.kb.write');
   const [packages, setPackages] = useState([]);
   const [pkgsLoading, setPkgsLoading] = useState(true);
   const [packagesError, setPackagesError] = useState('');
@@ -467,7 +469,7 @@ export default function useKbBrowser() {
   }, [pkgId, viewVersion]);
 
   return {
-    canImport, canManage: canImport, packages, pkgsLoading, packagesError, retryPackages: loadPackages,
+    canImport, canActivate, canManage, packages, pkgsLoading, packagesError, retryPackages: loadPackages,
     pkg, pkgId, tree, treeLoading, treeError, retryTree: () => setTreeReloadKey((value) => value + 1),
     sel, selectPkg, selectDir, selectFile, importZip,
     importing: importFlow.phase === IMPORT_PHASE.UPLOADING,
