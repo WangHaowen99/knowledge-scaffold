@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from agent.tools.web_search_tool import handle_web_search
+from system_config_migration_helpers import apply_test_system_config_migrations
 
 
 def _configure_web_search(tmp_path, monkeypatch, payload):
@@ -16,6 +17,7 @@ def _configure_web_search(tmp_path, monkeypatch, payload):
     config_path.write_text(json.dumps({"web_search": payload}), encoding="utf-8")
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(config_path, monkeypatch)
 
 
 def test_web_search_returns_normalized_results(tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ import pytest
 
 from api.routes.workspaces import workspaces_bp
 from api.auth.auth import AuthManager
+from system_config_migration_helpers import apply_test_system_config_migrations
 
 
 SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
@@ -38,7 +39,7 @@ def _isolate_runtime(tmp_path, monkeypatch):
     return runtime_root, workspaces_module
 
 
-def _write_global_profiles(runtime_root):
+def _write_global_profiles(runtime_root, monkeypatch):
     config_path = runtime_root / "config" / "system_config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -71,6 +72,11 @@ def _write_global_profiles(runtime_root):
             ensure_ascii=False,
         ),
         encoding="utf-8",
+    )
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=runtime_root,
     )
 
 
@@ -247,7 +253,7 @@ def test_workspace_runtime_config_accepts_default_profile_ref(tmp_path, monkeypa
 
 def test_effective_profiles_merge_global_and_workspace_private(tmp_path, monkeypatch):
     runtime_root, workspaces_module = _isolate_runtime(tmp_path, monkeypatch)
-    _write_global_profiles(runtime_root)
+    _write_global_profiles(runtime_root, monkeypatch)
     workspaces_module.create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     workspaces_module.create_workspace("Beta", workspace_id="beta")
 
