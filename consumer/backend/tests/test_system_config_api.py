@@ -132,10 +132,19 @@ def test_get_system_config_returns_sanitized_migration_required_error(
                 ]
             }
         },
+        {
+            "llm_profiles": {
+                "profiles": [
+                    {"id": "profile-{}".format(index)}
+                    for index in range(11)
+                ]
+            }
+        },
     ],
     ids=(
         "profile-id",
         "profile-provider",
+        "profile-count",
     ),
 )
 def test_get_system_config_rejects_semantically_invalid_persisted_config(
@@ -146,6 +155,7 @@ def test_get_system_config_rejects_semantically_invalid_persisted_config(
     import config.system_config as system_config_module
 
     client, headers = _build_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODEL_PROFILE_MAX_COUNT", "10")
     config_path = tmp_path / "config" / "system_config.json"
     config_path.write_text(json.dumps(document), encoding="utf-8")
     original = config_path.read_bytes()
