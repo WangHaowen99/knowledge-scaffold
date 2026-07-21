@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from ontology.ontologies import get_ontology_version_dir
 from .models import GraphAgentResult, GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
+from .timeouts import resolve_graph_agent_timeout_seconds
 from .tools.executor import GraphToolExecution
 
 
@@ -82,7 +83,7 @@ class GraphAgentTimeoutError(GraphAgentError):
     """Raised when GraphQueryAgent exceeds its provider-level timeout."""
 
     error_code = "GRAPH_AGENT_TIMEOUT"
-    retryable = True
+    retryable = False
 
 
 class GraphAgentToolInputError(GraphAgentError):
@@ -453,14 +454,8 @@ def _graph_agent_timeout_seconds(
     provider_config: Mapping[str, Any],
     outer_timeout_seconds: int,
 ) -> float:
-    raw = provider_config.get("graph_agent_timeout_seconds")
-    if raw in (None, ""):
-        raw = min(float(outer_timeout_seconds or 60), 30.0)
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = min(float(outer_timeout_seconds or 60), 30.0)
-    return max(0.001, value)
+    del outer_timeout_seconds
+    return resolve_graph_agent_timeout_seconds(provider_config)
 
 
 def _graph_agent_max_iterations(provider_config: Mapping[str, Any]) -> int:

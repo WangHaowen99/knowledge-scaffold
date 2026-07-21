@@ -272,6 +272,7 @@ def test_runtime_stops_when_graph_agent_times_out():
 
     assert final["success"] is False
     assert final["error_code"] == "GRAPH_AGENT_TIMEOUT"
+    assert final["retryable"] is False
     assert len(agent.calls) == 1
 
 

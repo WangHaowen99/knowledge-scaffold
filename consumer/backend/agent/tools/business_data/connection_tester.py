@@ -10,6 +10,7 @@ import requests
 from shared_capabilities.business_data import create_provider_client
 
 from agent.tools.business_data.effective_connection import build_effective_connection
+from agent.tools.business_data.providers.graph.timeouts import resolve_graph_connect_timeout_seconds
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 
 def _utc_now() -> str:
@@ -91,7 +92,7 @@ def _test_neo4j(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
     username = _coerce_string(config.get("username"))
     password = _coerce_string(config.get("password"))
     workspace_property = _coerce_string(config.get("workspace_property")) or "d2o_workspace_id"
-    timeout = min(int(config.get("timeout_seconds") or 15), 15)
+    timeout = resolve_graph_connect_timeout_seconds(config)
 
     if not uri:
         return {"success": False, "message": "Neo4J URI 未配置", "tested_at": tested_at}
@@ -144,7 +145,7 @@ def _test_hugegraph(connection: ResolvedBusinessDataSource) -> Dict[str, Any]:
     password = _coerce_string(config.get("password"))
     token = _coerce_string(config.get("token"))
     workspace_property = _coerce_string(config.get("workspace_property")) or "d2o_workspace_id"
-    timeout = min(int(config.get("timeout_seconds") or 15), 15)
+    timeout = resolve_graph_connect_timeout_seconds(config)
 
     if not url:
         return {"success": False, "message": "HugeGraph 地址未配置", "tested_at": tested_at}

@@ -28,7 +28,7 @@ from agent.tools.registry import (
     get_tools_schema,
     is_tool_available,
 )
-from agent.tools.executor import _execute_single_task
+from agent.tools.executor import _aggregate_outputs, _execute_single_task
 import utils.logging as logging_utils
 from utils.read_docs import build_read_document_record, merge_read_documents_registry
 from utils.streaming import stream_writer_context
@@ -1494,6 +1494,38 @@ def test_execute_tool_batch_stops_after_terminal_outcome(monkeypatch):
         "later_unit_tool",
     ]
     assert json.loads(result.messages[1]["content"])["status"] == "skipped"
+
+
+@pytest.mark.parametrize("terminal_index", [0, 1])
+def test_terminal_batch_tracks_the_exact_terminal_message(terminal_index):
+    from agent.core.jiuwen_engine import _terminal_force_finish_output, _terminal_tool_call_id
+
+    outputs = [
+        {
+            "index": 0,
+            "name": "ontology_context",
+            "tool_call_id": "call-context",
+            "outcome": ToolOutcome(content="successful context"),
+        },
+        {
+            "index": 1,
+            "name": "business_data_search",
+            "tool_call_id": "call-timeout",
+            "outcome": ToolOutcome(content="graph timeout", terminal=True),
+        },
+    ]
+    if terminal_index == 0:
+        outputs.reverse()
+        for index, output in enumerate(outputs):
+            output["index"] = index
+
+    result = _aggregate_outputs(outputs)
+
+    assert result.terminal is True
+    assert result.terminal_tool_call_id == "call-timeout"
+    assert result.terminal_content == "graph timeout"
+    assert _terminal_tool_call_id(result) == "call-timeout"
+    assert _terminal_force_finish_output(result) == "graph timeout"
 
 
 def test_registry_propagates_log_context_to_parallel_tool_threads(monkeypatch):

@@ -16,6 +16,10 @@ from ..scope import (
     sanitize_properties,
     sanitize_return_properties,
 )
+from ..timeouts import (
+    resolve_graph_connect_timeout_seconds,
+    resolve_graph_query_timeout_seconds,
+)
 
 
 _ENTITY_TYPE_ID_TOKEN_RE = re.compile(r"^[eE]\d+$")
@@ -63,7 +67,12 @@ class Neo4jGraphBackend:
         self.database = str(provider_config.get("database") or "neo4j").strip() or "neo4j"
         self.username = str(provider_config.get("username") or "").strip()
         self.password = str(provider_config.get("password") or "")
-        self.timeout = int(provider_config.get("timeout_seconds") or 60)
+        self.query_timeout = resolve_graph_query_timeout_seconds(provider_config)
+        self.connection_timeout = resolve_graph_connect_timeout_seconds(
+            provider_config,
+            query_timeout_seconds=self.query_timeout,
+        )
+        self.timeout = self.query_timeout
         self._driver = None
 
     def close(self) -> None:
@@ -784,14 +793,14 @@ class Neo4jGraphBackend:
         self._driver = GraphDatabase.driver(
             self.uri,
             auth=(self.username, self.password),
-            connection_timeout=self.timeout,
+            connection_timeout=self.connection_timeout,
         )
         return self._driver
 
     def _run(self, query: str, params: Mapping[str, Any]):
         driver = self._get_driver()
         with driver.session(database=self.database) as session:
-            query_object = _query_with_timeout(query, self.timeout)
+            query_object = _query_with_timeout(query, self.query_timeout)
             return list(session.run(query_object, dict(params)))
 
     def _get_node_info(self, element_id: str, scope: GraphScope, *, element_class: str = "") -> dict:
@@ -1480,7 +1489,7 @@ def _pick_business_label_with_fallback(labels: Any, fallback: Any) -> str:
     return cleaned[0] if cleaned else _normalize_text(fallback)
 
 
-def _query_with_timeout(query: str, timeout_seconds: int) -> Any:
+def _query_with_timeout(query: str, timeout_seconds: float) -> Any:
     try:
         from neo4j import Query
     except Exception:

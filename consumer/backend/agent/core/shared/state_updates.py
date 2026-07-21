@@ -76,6 +76,7 @@ def merge_tool_batch_results(
     existing: ToolBatchResult,
     incoming: ToolBatchResult,
 ) -> ToolBatchResult:
+    terminal_source = existing if existing.terminal else incoming
     return ToolBatchResult(
         messages=[*(existing.messages or []), *(incoming.messages or [])],
         state_updates=merge_tool_state_updates(existing.state_updates, incoming.state_updates),
@@ -84,4 +85,6 @@ def merge_tool_batch_results(
             *(existing.tool_intervals_ms or []),
             *(incoming.tool_intervals_ms or []),
         ],
+        terminal_tool_call_id=terminal_source.terminal_tool_call_id,
+        terminal_content=terminal_source.terminal_content,
     )

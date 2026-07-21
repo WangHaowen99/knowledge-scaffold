@@ -10,7 +10,9 @@ import pytest
 from agent.tools.business_data.providers.graph.agent import (
     GraphAgentTimeoutError,
     _GRAPH_TOOL_SCHEMAS,
+    _graph_agent_timeout_seconds,
 )
+from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.jiuwen_agent import (
     GraphJiuwenToolAdapter,
     JiuwenGraphQueryAgent,
@@ -92,6 +94,12 @@ class _DuplicateTargetItemBackend(_Backend):
             records=[{"element_id": "m-part-a001", "properties": {"TargetItemCode": "A001"}}],
             total=1,
         )
+
+
+class _TimeoutBackend(_Backend):
+    def property_filter(self, **kwargs):
+        del kwargs
+        raise GraphBackendTimeoutError("graph query timed out")
 
 
 def _context():
@@ -663,12 +671,13 @@ def test_jiuwen_graph_query_agent_deduplicates_overlapping_data_tool_results():
 def test_jiuwen_graph_query_agent_timeout_raises_structured_error():
     def slow_invoker(payload):
         del payload
-        time.sleep(0.05)
+        time.sleep(0.2)
         return ""
 
     context = _context()
-    context.provider_config["graph_agent_timeout_seconds"] = 0.001
+    context.provider_config["graph_agent_timeout_seconds"] = 0.01
     mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+    started = time.monotonic()
 
     with pytest.raises(GraphAgentTimeoutError) as exc_info:
         JiuwenGraphQueryAgent(invoker=slow_invoker).run(
@@ -678,6 +687,69 @@ def test_jiuwen_graph_query_agent_timeout_raises_structured_error():
         )
 
     assert exc_info.value.error_code == "GRAPH_AGENT_TIMEOUT"
+    assert time.monotonic() - started < 0.1
+
+
+def test_graph_agent_default_timeout_is_independent_from_query_timeout():
+    assert _graph_agent_timeout_seconds(
+        provider_config={},
+        outer_timeout_seconds=30,
+    ) == 120.0
+    assert _graph_agent_timeout_seconds(
+        provider_config={"graph_agent_timeout_seconds": 90},
+        outer_timeout_seconds=30,
+    ) == 90.0
+
+
+def test_graph_agent_timeout_is_not_retryable():
+    assert GraphAgentTimeoutError.retryable is False
+
+
+def test_graph_backend_timeout_is_not_retryable_by_outer_agent():
+    assert GraphBackendTimeoutError.retryable is False
+
+
+def test_jiuwen_graph_query_agent_preserves_backend_timeout_from_private_tool():
+    class _FakeAgent:
+        def __init__(self):
+            self.card = SimpleNamespace(id="timeout-agent")
+            self.adapter = None
+
+        def invoke(self, inputs):
+            del inputs
+            return self.adapter._invoke_sync(
+                "property_filter",
+                {
+                    "queries": [
+                        {
+                            "element_class": "TargetItem",
+                            "element_type": "NODE",
+                            "filter_dict": {},
+                            "return_properties": ["TargetItemCode"],
+                            "limit": 20,
+                        }
+                    ]
+                },
+            )
+
+    def fake_tool_registrar(agent, **kwargs):
+        agent.adapter = kwargs["adapter"]
+        return []
+
+    context = _context()
+    mapping = GraphEntityMapping(entity="TargetItem", kind="node", source="test", label="TargetItem")
+
+    with pytest.raises(GraphBackendTimeoutError) as exc_info:
+        JiuwenGraphQueryAgent(
+            agent_factory=_FakeAgent,
+            tool_registrar=fake_tool_registrar,
+        ).run(
+            context=context,
+            mapping=mapping,
+            tool_executor=_executor(_TimeoutBackend(), context, mapping),
+        )
+
+    assert exc_info.value.error_code == "GRAPH_BACKEND_TIMEOUT"
 
 
 def test_graph_agent_exposes_exact_private_fourteen_tool_contract():

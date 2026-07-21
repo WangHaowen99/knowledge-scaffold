@@ -91,6 +91,8 @@ def _aggregate_outputs(outputs: List[Dict[str, Any]]) -> ToolBatchResult:
     state_updates: Dict[str, Any] = {}
     tool_intervals_ms: List[Dict[str, int]] = []
     terminal = False
+    terminal_tool_call_id: Optional[str] = None
+    terminal_content: Optional[str] = None
 
     for output in outputs:
         outcome: ToolOutcome = output["outcome"]
@@ -114,6 +116,9 @@ def _aggregate_outputs(outputs: List[Dict[str, Any]]) -> ToolBatchResult:
                     state_updates[key] = existing
                 else:
                     state_updates[key] = value
+        if outcome.terminal and not terminal:
+            terminal_tool_call_id = output["tool_call_id"]
+            terminal_content = outcome.content
         if outcome.terminal:
             terminal = True
 
@@ -122,6 +127,8 @@ def _aggregate_outputs(outputs: List[Dict[str, Any]]) -> ToolBatchResult:
         state_updates=state_updates,
         terminal=terminal,
         tool_intervals_ms=tool_intervals_ms,
+        terminal_tool_call_id=terminal_tool_call_id,
+        terminal_content=terminal_content,
     )
 
 
