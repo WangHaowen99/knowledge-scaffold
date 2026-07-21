@@ -156,8 +156,10 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   });
   const [input, setInput] = useState('');
   const [interactionCancelError, setInteractionCancelError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const inputRef = useRef(null);
   const currentChatIdRef = useRef(currentChatId);
+  const sendInFlightRef = useRef(false);
   const [traceOpen, setTraceOpen] = useState(() => {
     try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
   });
@@ -338,7 +340,9 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
 
   const send = async () => {
     const text = input.trim();
-    if (!workspaceDataReady || !text || streamState.isLoading) return;
+    if (sendInFlightRef.current || !workspaceDataReady || !text || streamState.isLoading) return;
+    sendInFlightRef.current = true;
+    setIsSubmitting(true);
     let sessionId = currentChatId;
     let isNew = false;
     try {
@@ -365,6 +369,9 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
       if (isNew) generateSessionTitle(sessionId, text);
     } catch {
       setInput(text);
+    } finally {
+      sendInFlightRef.current = false;
+      setIsSubmitting(false);
     }
   };
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
@@ -506,7 +513,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
         <div className="th-input">
           <div className="chat-config-locks">
             <select value={modelProfileId} title="模型在会话创建后锁定"
-              disabled={sessionLocked || streamState.isLoading || !modelProfiles.length}
+              disabled={sessionLocked || isSubmitting || streamState.isLoading || !modelProfiles.length}
               onChange={(event) => {
                 setModelProfileId(event.target.value);
                 safeLocalSet(`mw_ws_model_${workspaceId}`, event.target.value);
@@ -515,7 +522,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
               {modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
             </select>
             <select value={selectedOntologyId} title="知识包在会话创建后锁定"
-              disabled={sessionLocked || streamState.isLoading}
+              disabled={sessionLocked || isSubmitting || streamState.isLoading}
               onChange={(event) => setSelectedOntologyId(event.target.value)}>
               <option value="">自动选择知识包</option>
               {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{ontology.name || ontology.id}</option>)}
@@ -533,13 +540,14 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
           ) : (
             <div className="ti-box">
               <input className="ti-input" ref={inputRef} value={input} aria-label="对话内容" placeholder="输入问题，Enter 发送…"
+                disabled={isSubmitting}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
               <div className="ti-actions">
-                <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={!workspaceDataReady || sessionLocked || streamState.isLoading} />
+                <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={!workspaceDataReady || sessionLocked || isSubmitting || streamState.isLoading} />
                 {streamState.isLoading
                   ? <button type="button" className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
-                  : <button type="button" className="btn btn-p" disabled={!workspaceDataReady || !modelProfileId || !input.trim()} onClick={send}>发送</button>}
+                  : <button type="button" className="btn btn-p" disabled={isSubmitting || !workspaceDataReady || !modelProfileId || !input.trim()} onClick={send}>{isSubmitting ? '发送中' : '发送'}</button>}
               </div>
             </div>
           )}

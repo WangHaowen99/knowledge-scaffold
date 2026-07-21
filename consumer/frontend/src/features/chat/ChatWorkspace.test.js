@@ -83,3 +83,11 @@ test('awaiting interaction can be cancelled by button or Escape', () => {
   assert.equal(chatSource.includes('取消（Esc）'), true);
   assert.equal(chatSource.includes('applyInteractionCancellation'), true);
 });
+
+test('new chat submission is single-flight while the session is being created', () => {
+  assert.equal(chatSource.includes('if (sendInFlightRef.current ||'), true);
+  assert.equal(chatSource.includes('sendInFlightRef.current = true;'), true);
+  assert.equal(chatSource.includes('sendInFlightRef.current = false;'), true);
+  assert.equal(chatSource.includes('disabled={isSubmitting}'), true);
+  assert.equal(chatSource.includes("{isSubmitting ? '发送中' : '发送'}"), true);
+});
