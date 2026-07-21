@@ -60,8 +60,15 @@ if [ "${MODE}" = "upgrade" ]; then
 fi
 
 log "Applying migration after writes stopped"
-"${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped \
-    ${BACKUP_DIR:+"--legacy-backup-dir"} ${BACKUP_DIR:+"${BACKUP_DIR}"}
+MIGRATE_APPLY_ARGS=(
+    "${CURRENT_VERSION:-}"
+    "${TARGET_VERSION}"
+    --confirm-writes-stopped
+)
+if [ -n "${BACKUP_DIR}" ]; then
+    MIGRATE_APPLY_ARGS+=(--legacy-backup-dir "${BACKUP_DIR}")
+fi
+"${SCRIPT_DIR}/migrate.sh" "${MIGRATE_APPLY_ARGS[@]}"
 
 log "Validating canonical configuration after migration"
 "${SCRIPT_DIR}/preflight.sh"

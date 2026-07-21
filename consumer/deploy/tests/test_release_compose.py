@@ -74,7 +74,7 @@ def test_deploy_runs_shared_migration_runner_before_strict_preflight():
     pre_migration_preflight = next(i for i, line in enumerate(deploy_lines) if 'preflight.sh" --pre-migration' in line)
     dry_run = next(i for i, line in enumerate(deploy_lines) if 'migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --dry-run' in line)
     stop_writes = next(i for i, line in enumerate(deploy_lines) if 'compose_stop "${CURRENT_BACKEND_IMAGE}"' in line)
-    apply = next(i for i, line in enumerate(deploy_lines) if 'migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped' in line)
+    apply = next(i for i, line in enumerate(deploy_lines) if '--confirm-writes-stopped' in line)
     remove_stopped = next(i for i, line in enumerate(deploy_lines) if 'compose_down "${CURRENT_BACKEND_IMAGE}"' in line)
     strict_preflight = next(i for i, line in enumerate(deploy_lines) if 'Validating canonical configuration after migration' in line)
 
@@ -91,6 +91,8 @@ def test_backup_captures_legacy_backend_container_storage_before_container_remov
     assert 'docker cp "${container_name}:/app/data/chats/."' in backup_text
     assert 'docker cp "${container_name}:/app/data/executions/."' in backup_text
     assert 'legacy-backend-data.tar.gz' in backup_text
+    assert 'find "${staging_root}/chats" -mindepth 1 -print -quit | grep -q .' in backup_text
+    assert 'find "${staging_root}/executions" -mindepth 1 -print -quit | grep -q .' in backup_text
 
 
 def test_data_source_compatibility_migration_uses_central_startup_runner_not_runtime_store():
@@ -132,6 +134,12 @@ def test_rollback_is_code_only_and_does_not_restore_runtime_snapshots():
     rollback_text = (DEPLOY_ROOT / "rollback.sh").read_text(encoding="utf-8")
 
     assert "Code-only rollback keeps current runtime/auth data in place" in rollback_text
+    assert 'compose_stop "${FAILED_BACKEND_IMAGE}"' in rollback_text
+    assert 'compose_down "${FAILED_BACKEND_IMAGE}"' in rollback_text
+    stop_index = rollback_text.index('compose_stop "${FAILED_BACKEND_IMAGE}"')
+    backup_index = rollback_text.index('backup.sh" "rollback-${PREVIOUS_VERSION}"')
+    down_index = rollback_text.index('compose_down "${FAILED_BACKEND_IMAGE}"')
+    assert stop_index < backup_index < down_index
     assert 'restore_archive_if_present "${LAST_BACKUP_DIR}/onto-runtime.tar.gz"' not in rollback_text
     assert 'restore_archive_if_present "${LAST_BACKUP_DIR}/onto-auth.tar.gz"' not in rollback_text
     assert 'rm -rf "${BUNDLE_ROOT}/.onto-runtime"' not in rollback_text

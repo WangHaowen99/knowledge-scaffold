@@ -35,7 +35,7 @@ backup_legacy_container_storage_if_present() {
     mkdir -p "${staging_root}/chats" "${staging_root}/executions"
 
     if docker cp "${container_name}:/app/data/chats/." "${staging_root}/chats" 2>/dev/null; then
-        if find "${staging_root}/chats" -mindepth 1 -print -quit >/dev/null 2>&1; then
+        if find "${staging_root}/chats" -mindepth 1 -print -quit | grep -q .; then
             exported=1
         else
             rm -rf "${staging_root}/chats"
@@ -45,7 +45,7 @@ backup_legacy_container_storage_if_present() {
     fi
 
     if docker cp "${container_name}:/app/data/executions/." "${staging_root}/executions" 2>/dev/null; then
-        if find "${staging_root}/executions" -mindepth 1 -print -quit >/dev/null 2>&1; then
+        if find "${staging_root}/executions" -mindepth 1 -print -quit | grep -q .; then
             exported=1
         else
             rm -rf "${staging_root}/executions"
