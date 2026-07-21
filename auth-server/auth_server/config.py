@@ -10,6 +10,8 @@ from typing import Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
+_DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
 # 架构决策 D2 硬约束：access token TTL 锁死短值，沿用 12h 即安全回归。
 ACCESS_TTL_MAX_SECONDS = 3600
 TTL_MIN_SECONDS = 60
@@ -21,6 +23,15 @@ DEFAULT_AUDIENCE = "meta-wise"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5056
 DEFAULT_USER_MAX_COUNT = 1000
+
+
+def _load_local_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        return
+
+    load_dotenv(dotenv_path=_DOTENV_PATH, override=False)
 
 
 def _int_env(env: Mapping[str, str], name: str, default: int) -> int:
@@ -86,7 +97,9 @@ class AuthServerConfig:
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "AuthServerConfig":
-        env = os.environ if env is None else env
+        if env is None:
+            _load_local_dotenv()
+            env = os.environ
         return cls(
             data_dir=Path(str(env.get("AUTH_SERVER_DATA_DIR") or "./data")),
             issuer=str(env.get("AUTH_SERVER_ISSUER") or DEFAULT_ISSUER).strip(),

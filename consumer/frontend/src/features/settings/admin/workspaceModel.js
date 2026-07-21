@@ -58,6 +58,14 @@ export function canEditWorkspace(currentUser, workspace) {
     || workspace.owner === currentUser.username;
 }
 
+export function canCreateWorkspace(currentUser) {
+  return Boolean(currentUser?.username);
+}
+
+export function canDeleteWorkspace(currentUser, workspace) {
+  return canEditWorkspace(currentUser, workspace);
+}
+
 export function canManageWorkspaceCollection(currentUser) {
   return currentUser?.role === 'admin';
 }

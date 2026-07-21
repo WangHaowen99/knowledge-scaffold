@@ -7,6 +7,7 @@ import json
 from flask import Blueprint, Response, current_app, jsonify, request
 
 from config.system_config import (
+    SystemConfigReadError,
     SystemConfigValidationError,
     get_public_system_config,
     get_system_config_readiness,
@@ -23,16 +24,26 @@ logger = get_logger("routes.system_config")
 system_config_bp = Blueprint("system_config", __name__, url_prefix="/api")
 
 
+def _system_config_read_error_response(exc: SystemConfigReadError):
+    return jsonify({"code": exc.code, "detail": str(exc)}), 409
+
+
 @system_config_bp.route("/system-config", methods=["GET"])
 @require_auth()
 def get_system_config_api():
-    return jsonify(get_public_system_config())
+    try:
+        return jsonify(get_public_system_config())
+    except SystemConfigReadError as exc:
+        return _system_config_read_error_response(exc)
 
 
 @system_config_bp.route("/system-config/readiness", methods=["GET"])
 @require_auth()
 def get_system_config_readiness_api():
-    return jsonify(get_system_config_readiness())
+    try:
+        return jsonify(get_system_config_readiness())
+    except SystemConfigReadError as exc:
+        return _system_config_read_error_response(exc)
 
 
 @system_config_bp.route("/system-config/template", methods=["GET"])
@@ -59,6 +70,8 @@ def update_system_config_api():
         refresh_runtime = current_app.config.get("REFRESH_RUNTIME_SERVICES")
         if callable(refresh_runtime):
             refresh_runtime(current_app)
+    except SystemConfigReadError as exc:
+        return _system_config_read_error_response(exc)
     except SystemConfigValidationError as exc:
         return jsonify({"detail": str(exc)}), 400
     except Exception:
@@ -77,6 +90,8 @@ def import_system_config_api():
         refresh_runtime = current_app.config.get("REFRESH_RUNTIME_SERVICES")
         if callable(refresh_runtime):
             refresh_runtime(current_app)
+    except SystemConfigReadError as exc:
+        return _system_config_read_error_response(exc)
     except SystemConfigValidationError as exc:
         return jsonify({"detail": str(exc)}), 400
     except Exception:
@@ -99,6 +114,8 @@ def test_system_config_api():
     payload = request.get_json(silent=True) or {}
     try:
         result = test_system_config_connection(payload.get("section"), payload.get("data", {}))
+    except SystemConfigReadError as exc:
+        return _system_config_read_error_response(exc)
     except SystemConfigValidationError as exc:
         return jsonify({"detail": str(exc)}), 400
     return jsonify(

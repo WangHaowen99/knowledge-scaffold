@@ -54,15 +54,15 @@
 .mwr .system-config-fields .fieldrow select {
   width: 100%;
   max-width: 520px;
-  color: var(--ink);
-  background: var(--surface-card);
-  border-color: var(--border-default);
+  color: var(--control-fg);
+  background: var(--control-bg);
+  border-color: var(--control-border);
 }
 
 .mwr .system-config-fields .fieldrow input:disabled,
 .mwr .system-config-fields .fieldrow select:disabled {
-  color: var(--muted);
-  background: var(--surface-subtle);
+  color: var(--control-disabled-fg);
+  background: var(--control-disabled-bg);
 }
 
 .mwr .system-config-input-wrap {

@@ -18,7 +18,8 @@ const sameScope = (left, right) => (
 
 export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }) {
   const { can, workspaceId } = useAuthContext();
-  const canEdit = can('ws.kb.write');
+  const canEdit = can('ws.data_source.write');
+  const canTest = can('ws.data_source.test');
   const [providers, setProviders] = useState([]);
   const [provider, setProvider] = useState('');
   const [config, setConfig] = useState({});
@@ -224,7 +225,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
           </StatusTag>
         )}
       >
-        {!canEdit && <div className="ro-banner">🔒 当前账号仅可查看，修改由平台管理员执行。</div>}
+        {!canEdit && <div className="ro-banner">🔒 当前账号仅可查看，修改由工作空间 owner 或平台管理员执行。</div>}
         <FieldRow label="Provider" hint={selectedProvider?.description || ''}>
           <select
             disabled={!canEdit || loadingProviders || sourceLoadError || !providers.length}
@@ -269,24 +270,28 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
           </FieldRow>
         ))}
         {notice && <div className="kb-opnotice">{notice}</div>}
-        {canEdit && (
+        {(canEdit || canTest) && (
           <div className="foot">
             {sourceLoadError && (
               <button className="btn" disabled={loadingProviders || loadingSource} onClick={load}>
                 重新加载
               </button>
             )}
-            {configured && (
+            {configured && canEdit && (
               <button className="btn btn-danger" disabled={Boolean(busy)} onClick={remove}>
                 {busy === 'delete' ? '清除中…' : '清除配置'}
               </button>
             )}
-            <button className="btn" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('test')}>
-              {busy === 'test' ? '测试中…' : '测试连接'}
-            </button>
-            <button className="btn btn-p" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('save')}>
-              {busy === 'save' ? '保存中…' : '保存配置'}
-            </button>
+            {canTest && (
+              <button className="btn" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('test')}>
+                {busy === 'test' ? '测试中…' : '测试连接'}
+              </button>
+            )}
+            {canEdit && (
+              <button className="btn btn-p" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('save')}>
+                {busy === 'save' ? '保存中…' : '保存配置'}
+              </button>
+            )}
           </div>
         )}
       </SectionCard>

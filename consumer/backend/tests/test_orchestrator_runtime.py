@@ -19,7 +19,7 @@ from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
 from integration.observability import stack_profiler as stack_profiler_module
 from persistence.chat_store import ChatStore
-from persistence.execution_store import ExecutionStore
+from persistence.execution_store import INTERACTION_CANCELLED_MESSAGE, ExecutionStore
 from persistence.run_store import RunStore
 from persistence.run_store import RunStatus
 from utils.read_docs import build_read_document_record, merge_read_documents_registry
@@ -53,6 +53,7 @@ def test_public_workflow_error_does_not_expose_generic_value_error_by_prefix():
 def _configure_runtime_llm(monkeypatch, tmp_path):
     import config.system_config as system_config_module
     from integration.observability.provider import reset_observer
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
@@ -85,6 +86,11 @@ def _configure_runtime_llm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=runtime_root,
+    )
     create_workspace("Test Workspace", workspace_id="test-workspace", set_as_default=True)
     configure_llm_router(
         LLMRouter(
@@ -1140,6 +1146,7 @@ def test_orchestrator_restores_read_documents_between_new_session_turns(monkeypa
 
 def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
     import config.system_config as system_config_module
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -1176,6 +1183,11 @@ def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=tmp_path / ".onto-runtime",
+    )
     configure_llm_router(
         LLMRouter(
             AppConfig.from_env(),
@@ -1646,6 +1658,121 @@ def test_orchestrator_injects_interaction_response_into_resume_message(monkeypat
     assert '"option_id": "a"' in captured["user_message"]
     history = execution_store.get_session_history("sess-resume")
     assert history["turns"][0]["interaction_consumed_at"]
+
+
+def test_orchestrator_merges_cancelled_interaction_into_next_user_message_once(
+    monkeypatch,
+    tmp_path,
+):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    execution_store.set_llm_context(
+        "sess-cancel-resume",
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "原始请求"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_user",
+                        "type": "function",
+                        "function": {"name": "request_user_interaction", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "request_user_interaction",
+                "tool_call_id": "call_user",
+                "content": '{"status":"awaiting_input"}',
+            },
+        ],
+    )
+    interaction = {
+        "id": "interaction_call_user",
+        "type": "input",
+        "prompt": "请补充信息",
+    }
+    execution_store.start_turn(
+        session_id="sess-cancel-resume",
+        turn_id=1,
+        run_id="run-await",
+        user_request="请补充",
+    )
+    execution_store.await_turn(
+        session_id="sess-cancel-resume",
+        turn_id=1,
+        final_output={"type": "user_interaction", "interaction": interaction},
+    )
+    cancellation = execution_store.cancel_pending_interaction(
+        "sess-cancel-resume",
+        interaction["id"],
+    )
+    captured_messages = []
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del self, memory_manager, observer
+        captured_messages.append(list(initial_state["messages"]))
+        state = dict(initial_state)
+        state["messages"] = list(initial_state["messages"]) + [
+            {"role": "assistant", "content": "done"},
+        ]
+        state["final_output"] = "done"
+        yield ("values", state)
+
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    list(
+        orchestrator.run(
+            user_request="继续分析其他问题",
+            session_id="sess-cancel-resume",
+        )
+    )
+
+    resumed_messages = captured_messages[0]
+    assert resumed_messages[-2]["role"] == "tool"
+    assert resumed_messages[-1]["role"] == "user"
+    assert all(
+        not (
+            current.get("role") == "user"
+            and following.get("role") == "user"
+        )
+        for current, following in zip(resumed_messages, resumed_messages[1:])
+    )
+    assert not any(
+        message.get("role") == "user"
+        and message.get("content") == INTERACTION_CANCELLED_MESSAGE
+        for message in resumed_messages
+    )
+    resumed_content = resumed_messages[-1]["content"]
+    assert resumed_content.endswith("继续分析其他问题")
+    assert "<user-interaction-cancellation>" in resumed_content
+    assert INTERACTION_CANCELLED_MESSAGE in resumed_content
+    assert '"cancelled_by": "user"' in resumed_content
+    assert cancellation["interaction_id"] in resumed_content
+
+    history = execution_store.get_session_history("sess-cancel-resume")
+    assert history["turns"][0]["interaction_context_consumed_by_turn_id"] == 2
+    assert history["turns"][1]["prior_interaction_cancellation"] == cancellation
+
+    list(
+        orchestrator.run(
+            user_request="再次提问",
+            session_id="sess-cancel-resume",
+        )
+    )
+    next_content = captured_messages[1][-1]["content"]
+    assert next_content == "再次提问"
+    assert "<user-interaction-cancellation>" not in next_content
 
 
 def test_orchestrator_records_evolution_recall_outcomes(monkeypatch, tmp_path):

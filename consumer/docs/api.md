@@ -37,25 +37,29 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
 权限规则：
 
 - 普通已认证用户可访问绝大多数读接口与运行接口
-- `admin` 才能访问：
-  - `POST /agentic/skills/upload`
-  - `DELETE /agentic/skills/{skill_name}`
+- 普通已认证用户可调用 `POST /agentic/workspaces` 创建工作空间；服务端会强制将 owner 设为当前用户，且普通用户不能主动替换已有全局默认工作空间
+- workspace member 只能读取、使用资源和执行评测运行，不能修改 workspace 资源
+- 全局 `admin` 或当前 workspace owner 可执行：
+  - `POST /agentic/ontologies/import-zip`
+  - `PUT /agentic/ontologies/{ontology_id}/active-version`
+  - `PUT /agentic/ontologies/{ontology_id}/data-source`
+  - `DELETE /agentic/ontologies/{ontology_id}/data-source`
+  - `PUT /agentic/ontologies/{ontology_id}/status`
   - `DELETE /agentic/ontologies/{ontology_id}`
   - `DELETE /agentic/ontologies/{ontology_id}/versions/{version}`
   - `PUT /agentic/ontologies/{ontology_id}/file`
   - `POST /agentic/ontologies/{ontology_id}/upload`
-  - `POST /agentic/ontologies/import-zip`
-  - `POST /agentic/workspaces`
-  - `PATCH /agentic/workspaces/{workspace_id}`（全局 admin 可转移 owner；workspace owner 可改名称和描述）
-  - `PUT /agentic/workspaces/{workspace_id}/members`（全局 admin 或 workspace owner）
-  - `DELETE /agentic/workspaces/{workspace_id}`
+  - `POST /agentic/ontologies/{ontology_id}/data-source/test`
+  - `PATCH /agentic/workspaces/{workspace_id}`（仅全局 admin 可转移 owner）
+  - `PUT /agentic/workspaces/{workspace_id}/members`
+  - `DELETE /agentic/workspaces/{workspace_id}`（workspace owner 只能删除自己的空间）
+- `admin` 才能访问：
+  - `POST /agentic/skills/upload`
+  - `DELETE /agentic/skills/{skill_name}`
   - `POST /agentic/workspaces/{workspace_id}/default`
   - `PATCH /agentic/workspaces/{workspace_id}/runtime-config`
   - `PATCH /agentic/workspaces/{workspace_id}/observability-config`
   - `POST /agentic/workspaces/{workspace_id}/observability-config/test`
-  - `PUT /agentic/ontologies/{ontology_id}/data-source`
-  - `DELETE /agentic/ontologies/{ontology_id}/data-source`
-  - `POST /agentic/ontologies/{ontology_id}/data-source/test`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/apply`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/reject`
   - `GET /auth/users`
@@ -1399,9 +1403,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 无 owner 的存量 workspace 保持公共可见，服务不会在迁移时自动私有化；管理员应根据审计报告显式设置 owner 和 members。
 
-### 7.6 `DELETE /agentic/workspaces/{workspace_id}` (`admin`)
+### 7.6 `DELETE /agentic/workspaces/{workspace_id}`（全局 `admin` 或 workspace owner）
 
-删除工作空间。
+删除工作空间。workspace owner 只能删除自己拥有的空间；普通 member 不能删除。
 
 响应 `200`：
 
@@ -1414,7 +1418,8 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 说明：
 
-- 默认工作空间不可删除，必须先切换默认 workspace
+- 全局 admin 删除默认 workspace 前仍必须先切换默认 workspace
+- workspace owner 可删除自己拥有的默认 workspace；删除后系统显式保持“无全局默认”状态，不会自动把其他私有 workspace 提升为默认
 
 ### 7.7 `POST /agentic/workspaces/{workspace_id}/default` (`admin`)
 
@@ -1701,7 +1706,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - `llm`
 - `llm_profiles`
-- `task_llm`
 - `storage`
 - `auth`
 - `agent`
@@ -1735,14 +1739,9 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
     "temperature": 0.7
   },
   "llm_profiles": {
-    "default_profile_id": "",
+    "default_main_profile_ref": null,
+    "default_task_profile_ref": null,
     "profiles": []
-  },
-  "task_llm": {
-    "base_url": "",
-    "model": "",
-    "has_api_key": false,
-    "timeout": 600
   },
   "storage": {
     "project_root": ".../.onto-runtime"
@@ -1777,6 +1776,22 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 }
 ```
 
+若持久化配置仍包含旧模型字段、明文 secret，或密文无法使用当前密钥和 context 解密，读取不会改写文件或回退到其他配置，而是返回 `409`：
+
+```json
+{
+  "code": "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED",
+  "detail": "系统配置包含明文 secret，需要先完成安全迁移"
+}
+```
+
+`code` 可能为：
+
+- `SYSTEM_CONFIG_MODEL_MIGRATION_REQUIRED`
+- `SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED`
+- `SYSTEM_CONFIG_SECRET_UNSAFE`
+- `SYSTEM_CONFIG_INVALID`
+
 ### 8.2 `GET /api/system-config/readiness`
 
 返回系统运行前置配置是否就绪。所有已认证用户都可查看。
@@ -1803,6 +1818,8 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `ready` | bool | 模型配置是否满足运行前置条件 |
 | `model.ready` | bool | 是否存在可用模型 profile |
 | `model.missing_fields` | array | 模型侧缺失字段 |
+
+持久化配置不可安全读取时，本接口返回与 `GET /api/system-config` 相同的 `409` 错误契约。
 
 ### 8.3 `GET /api/system-config/template` (`admin`)
 
@@ -1848,11 +1865,10 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 说明：
 
-- `section` 仅支持：`llm | llm_profiles | task_llm | storage | auth | agent | memory | web_search`
+- `section` 仅支持：`llm | llm_profiles | storage | auth | agent | memory | web_search | direct_execution | skill_evolution`
 - `data` 必须为对象
 - secret 清空不能直接传空字符串，需使用对应清除字段：
   - `llm.clear_api_key`
-  - `task_llm.clear_api_key`
   - `web_search.clear_api_key`
 - 配置保存后会尝试刷新运行时依赖；若保存成功但刷新失败，会返回 `500`
 - `llm_profiles` 为多模型配置 section，对话时实际优先使用它，而不是旧版单模型 `llm`
@@ -1893,7 +1909,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 - 至少需要包含一个合法 section
 - 不支持未知 section
-- 导入时可包含旧版 `llm` section；运行时会内部兼容迁移，但不会对外暴露兼容模型概念
+- 导入时可包含 `llm` section；`task_llm` 与 `llm_profiles.default_profile_id` 不属于可写入格式
 
 ### 8.6 `POST /api/system-config/test` (`admin`)
 
@@ -1925,7 +1941,7 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 测试行为：
 
-- `llm` / `task_llm`：测试 OpenAI 兼容 `chat/completions`
+- `llm`：测试 OpenAI 兼容 `chat/completions`
 - `llm_profiles`：测试指定模型 profile（若请求里带 `profile_id`）或默认模型 profile
 - `storage` / `auth` / `agent`：仅做配置校验，返回 `配置校验通过`
 
@@ -1948,7 +1964,8 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `default_profile_id` | string | 默认模型 profile id；为空表示尚未配置默认模型 |
+| `default_main_profile_ref` | object \| null | 默认主模型引用，格式为 `{ "scope": "global", "id": "..." }` |
+| `default_task_profile_ref` | object \| null | 默认轻量模型引用；为空时沿用主模型 |
 | `profiles` | array | 多模型配置列表 |
 
 `profiles[]` 字段：
@@ -1965,15 +1982,6 @@ Operation evolution API 按当前 workspace 读取和审核由 `memory` 工具/�
 | `max_tokens` | int | 默认最大 tokens |
 | `temperature` | float | 采样温度 |
 | `enabled` | bool | 是否启用 |
-
-#### `task_llm`
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `base_url` | string | 轻量任务模型 API 基地址 |
-| `model` | string | 轻量任务模型名称 |
-| `api_key` | secret | 密钥 |
-| `timeout` | int | 超时秒数 |
 
 #### `storage`
 
