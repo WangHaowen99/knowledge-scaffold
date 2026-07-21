@@ -1,4 +1,8 @@
-import { isSessionResumableStatus } from './sessionModel.js';
+import {
+  isSessionResumableStatus,
+  isSessionWaitingForUserStatus,
+  normalizeSessionRunStatus,
+} from './sessionModel.js';
 
 export const createSessionScope = (workspaceId, epoch = 0) => ({
   workspaceId: String(workspaceId || ''),
@@ -74,3 +78,17 @@ export const listResumableSessions = (sessions = []) => (sessions || [])
     status: String(session.active_run_status),
     afterSequence: Number(session.last_seq) || 0,
   }));
+
+export const resolveSessionRunIndicator = (session, streamState) => {
+  if (streamState) {
+    const streamStatus = normalizeSessionRunStatus(streamState.status);
+    if (isSessionWaitingForUserStatus(streamStatus)) return 'awaiting_input';
+    if (!streamState.isLoading) return '';
+    return streamStatus === 'queued'
+      ? 'queued'
+      : 'running';
+  }
+  const status = normalizeSessionRunStatus(session?.active_run_status);
+  if (isSessionWaitingForUserStatus(status)) return 'awaiting_input';
+  return isSessionResumableStatus(status) ? status : '';
+};
