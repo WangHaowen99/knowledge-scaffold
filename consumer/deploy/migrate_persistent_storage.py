@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import posixpath
 import shutil
 import tarfile
 import tempfile
@@ -19,6 +20,7 @@ CANONICAL_EXECUTION_STORAGE_DIR = "/app/.onto-runtime/data/executions"
 _LEGACY_CHAT_VALUES = {"", "./data/chats", "/app/data/chats"}
 _LEGACY_EXECUTION_VALUES = {"", "./data/executions", "/app/data/executions"}
 _LEGACY_ARCHIVE_NAME = "legacy-backend-data.tar.gz"
+_LEGACY_CONTAINER_WORKDIR = "/app"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -26,6 +28,19 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
     return raw if isinstance(raw, dict) else {}
+
+
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -66,7 +81,7 @@ def _replace_env_value(lines: list[str], key: str, expected: str) -> tuple[list[
     return rendered, changed
 
 
-def _normalize_env_file(path: Path, *, dry_run: bool) -> dict[str, Any]:
+def _normalize_env_file(path: Path) -> dict[str, Any]:
     original_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     lines = list(original_lines)
     changed = False
@@ -74,17 +89,16 @@ def _normalize_env_file(path: Path, *, dry_run: bool) -> dict[str, Any]:
     changed = changed or step_changed
     lines, step_changed = _replace_env_value(lines, "EXECUTION_STORAGE_DIR", CANONICAL_EXECUTION_STORAGE_DIR)
     changed = changed or step_changed
-    if changed and not dry_run:
-        _atomic_write_text(path, "\n".join(lines) + "\n")
     return {
         "path": str(path),
         "changed": changed,
         "chat_storage_dir": CANONICAL_CHAT_STORAGE_DIR,
         "execution_storage_dir": CANONICAL_EXECUTION_STORAGE_DIR,
+        "rendered_text": "\n".join(lines) + "\n",
     }
 
 
-def _normalize_system_config(path: Path, *, dry_run: bool) -> dict[str, Any]:
+def _normalize_system_config(path: Path) -> dict[str, Any]:
     payload = _read_json(path)
     storage = payload.get("storage")
     if not isinstance(storage, dict):
@@ -103,15 +117,25 @@ def _normalize_system_config(path: Path, *, dry_run: bool) -> dict[str, Any]:
         storage["execution_storage_dir"] = CANONICAL_EXECUTION_STORAGE_DIR
         changed = True
 
-    if payload and changed and not dry_run:
-        _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return {
         "path": str(path),
         "exists": path.exists(),
         "changed": changed,
         "chat_storage_dir": storage.get("chat_storage_dir"),
         "execution_storage_dir": storage.get("execution_storage_dir"),
+        "payload": payload,
+        "rendered_text": json.dumps(payload, ensure_ascii=False, indent=2) + "\n" if payload else "",
     }
+
+
+def _write_normalized_env(report: dict[str, Any]) -> None:
+    if report.get("changed"):
+        _atomic_write_text(Path(report["path"]), str(report["rendered_text"]))
+
+
+def _write_normalized_system_config(report: dict[str, Any]) -> None:
+    if report.get("changed") and report.get("payload"):
+        _atomic_write_text(Path(report["path"]), str(report["rendered_text"]))
 
 
 def _effective_container_storage_targets(
@@ -123,6 +147,36 @@ def _effective_container_storage_targets(
     return {
         "chat_storage_dir": config_chat or str(env_report["chat_storage_dir"]),
         "execution_storage_dir": config_execution or str(env_report["execution_storage_dir"]),
+    }
+
+
+def _normalize_legacy_container_path(raw: str) -> str:
+    normalized = str(raw or "").strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("/"):
+        return posixpath.normpath(normalized)
+    return posixpath.normpath(posixpath.join(_LEGACY_CONTAINER_WORKDIR, normalized))
+
+
+def resolve_legacy_container_storage_paths(root: Path) -> dict[str, str]:
+    env = _read_env(root / "backend" / ".env")
+    system_payload = _read_json(root / ".onto-runtime" / "config" / "system_config.json")
+    storage = system_payload.get("storage") if isinstance(system_payload, dict) else None
+    storage = storage if isinstance(storage, dict) else {}
+
+    def _pick(field: str, env_key: str, default_value: str) -> str:
+        config_value = str(storage.get(field) or "").strip()
+        if config_value:
+            return _normalize_legacy_container_path(config_value)
+        env_value = str(env.get(env_key) or "").strip()
+        if env_value:
+            return _normalize_legacy_container_path(env_value)
+        return _normalize_legacy_container_path(default_value)
+
+    return {
+        "chat_storage_dir": _pick("chat_storage_dir", "CHAT_STORAGE_DIR", "./data/chats"),
+        "execution_storage_dir": _pick("execution_storage_dir", "EXECUTION_STORAGE_DIR", "./data/executions"),
     }
 
 
@@ -178,6 +232,7 @@ def _merge_legacy_tree(
     source_files = sorted(path for path in source_root.rglob("*") if path.is_file())
     session_roots_copied: set[str] = set()
     conflicts: list[str] = []
+    copy_plan: list[tuple[Path, Path, Path]] = []
     copied_files = 0
     skipped_files = 0
 
@@ -193,9 +248,7 @@ def _merge_legacy_tree(
         copied_files += 1
         if relative.parts:
             session_roots_copied.add(relative.parts[0])
-        if not dry_run:
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, target_path)
+        copy_plan.append((source_path, target_path, relative))
 
     if conflicts:
         report["conflicts"] = conflicts
@@ -209,6 +262,10 @@ def _merge_legacy_tree(
     report["copied_session_roots"] = len(session_roots_copied)
     report["skipped_identical_files"] = skipped_files
     report["changed"] = copied_files > 0
+    if not dry_run:
+        for source_path, target_path, _relative in copy_plan:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
     return report
 
 
@@ -296,8 +353,8 @@ def migrate(
             "execution_storage_dir": CANONICAL_EXECUTION_STORAGE_DIR,
         },
     }
-    report["backend_env"] = _normalize_env_file(env_path, dry_run=dry_run)
-    report["system_config"] = _normalize_system_config(system_config_path, dry_run=dry_run)
+    report["backend_env"] = _normalize_env_file(env_path)
+    report["system_config"] = _normalize_system_config(system_config_path)
     targets = _effective_container_storage_targets(report["backend_env"], report["system_config"])
     runtime_chat_dir = _container_path_to_host(root, targets["chat_storage_dir"])
     runtime_execution_dir = _container_path_to_host(root, targets["execution_storage_dir"])
@@ -318,6 +375,8 @@ def migrate(
         or report["legacy_container_import"]["changed"]
     )
     if not dry_run:
+        _write_normalized_env(report["backend_env"])
+        _write_normalized_system_config(report["system_config"])
         runtime_chat_dir.mkdir(parents=True, exist_ok=True)
         runtime_execution_dir.mkdir(parents=True, exist_ok=True)
     report["host_paths"]["chat_storage_exists"] = runtime_chat_dir.exists() or not dry_run
@@ -332,10 +391,18 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--legacy-backup-dir", type=Path)
+    parser.add_argument("--print-legacy-export-paths", action="store_true")
     args = parser.parse_args(argv)
+    if args.print_legacy_export_paths:
+        resolved = resolve_legacy_container_storage_paths(args.root)
+        print("CHAT_STORAGE_DIR={}".format(resolved["chat_storage_dir"]))
+        print("EXECUTION_STORAGE_DIR={}".format(resolved["execution_storage_dir"]))
+        return 0
+    if args.report is None:
+        raise SystemExit("--report is required unless --print-legacy-export-paths is used")
     try:
         report = migrate(
             args.root,

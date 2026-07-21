@@ -88,8 +88,9 @@ def test_deploy_runs_shared_migration_runner_before_strict_preflight():
 def test_backup_captures_legacy_backend_container_storage_before_container_removal():
     backup_text = (DEPLOY_ROOT / "backup.sh").read_text(encoding="utf-8")
 
-    assert 'docker cp "${container_name}:/app/data/chats/."' in backup_text
-    assert 'docker cp "${container_name}:/app/data/executions/."' in backup_text
+    assert '--print-legacy-export-paths' in backup_text
+    assert 'docker cp "${container_name}:${chat_source}/."' in backup_text
+    assert 'docker cp "${container_name}:${execution_source}/."' in backup_text
     assert 'legacy-backend-data.tar.gz' in backup_text
     assert 'find "${staging_root}/chats" -mindepth 1 -print -quit | grep -q .' in backup_text
     assert 'find "${staging_root}/executions" -mindepth 1 -print -quit | grep -q .' in backup_text
