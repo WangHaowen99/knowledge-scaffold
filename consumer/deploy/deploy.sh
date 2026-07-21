@@ -50,7 +50,7 @@ log "Validating migration plan without changing data"
 
 if [ "${MODE}" = "upgrade" ]; then
     log "Stopping previous release writes before backup and migration"
-    compose_down "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_AUTH_IMAGE:-}" "${CURRENT_JIUWENBOX_IMAGE:-${JIUWENBOX_IMAGE}}"
+    compose_stop "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_AUTH_IMAGE:-}" "${CURRENT_JIUWENBOX_IMAGE:-${JIUWENBOX_IMAGE}}"
 fi
 
 BACKUP_DIR=""
@@ -60,10 +60,16 @@ if [ "${MODE}" = "upgrade" ]; then
 fi
 
 log "Applying migration after writes stopped"
-"${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped
+"${SCRIPT_DIR}/migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped \
+    ${BACKUP_DIR:+"--legacy-backup-dir"} ${BACKUP_DIR:+"${BACKUP_DIR}"}
 
 log "Validating canonical configuration after migration"
 "${SCRIPT_DIR}/preflight.sh"
+
+if [ "${MODE}" = "upgrade" ]; then
+    log "Removing stopped release containers before restart"
+    compose_down "${CURRENT_BACKEND_IMAGE}" "${CURRENT_FRONTEND_IMAGE}" "${CURRENT_AUTH_IMAGE:-}" "${CURRENT_JIUWENBOX_IMAGE:-${JIUWENBOX_IMAGE}}"
+fi
 
 log "Starting release containers"
 compose_up "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" "${AUTH_IMAGE}" "${JIUWENBOX_IMAGE}"

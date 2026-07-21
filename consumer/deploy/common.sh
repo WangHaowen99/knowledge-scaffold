@@ -204,6 +204,17 @@ compose_down() {
         down
 }
 
+compose_stop() {
+    local compose_cmd
+    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+
+    # shellcheck disable=SC2086
+    BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
+        -f "${COMPOSE_FILE}" \
+        --project-directory "${BUNDLE_ROOT}" \
+        stop
+}
+
 container_health() {
     local container_name="$1"
     docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_name}" 2>/dev/null || true

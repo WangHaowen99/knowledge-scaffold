@@ -69,17 +69,28 @@ def test_full_release_manifest_preserves_all_consumer_fields():
 def test_deploy_runs_shared_migration_runner_before_strict_preflight():
     deploy_text = (DEPLOY_ROOT / "deploy.sh").read_text(encoding="utf-8")
     migrate_text = (DEPLOY_ROOT / "migrate.sh").read_text(encoding="utf-8")
+    deploy_lines = deploy_text.splitlines()
 
-    pre_migration_preflight = deploy_text.index('preflight.sh" --pre-migration')
-    dry_run = deploy_text.index('migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --dry-run')
-    apply = deploy_text.index('migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped')
-    strict_preflight = deploy_text.index('Validating canonical configuration after migration')
+    pre_migration_preflight = next(i for i, line in enumerate(deploy_lines) if 'preflight.sh" --pre-migration' in line)
+    dry_run = next(i for i, line in enumerate(deploy_lines) if 'migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --dry-run' in line)
+    stop_writes = next(i for i, line in enumerate(deploy_lines) if 'compose_stop "${CURRENT_BACKEND_IMAGE}"' in line)
+    apply = next(i for i, line in enumerate(deploy_lines) if 'migrate.sh" "${CURRENT_VERSION:-}" "${TARGET_VERSION}" --confirm-writes-stopped' in line)
+    remove_stopped = next(i for i, line in enumerate(deploy_lines) if 'compose_down "${CURRENT_BACKEND_IMAGE}"' in line)
+    strict_preflight = next(i for i, line in enumerate(deploy_lines) if 'Validating canonical configuration after migration' in line)
 
-    assert pre_migration_preflight < dry_run < apply < strict_preflight
+    assert pre_migration_preflight < dry_run < stop_writes < apply < strict_preflight < remove_stopped
     assert "python -m migrations.runner" in migrate_text
     assert "ontology_data_sources_direct_v2" not in migrate_text
     assert '--env-file "${BUNDLE_ROOT}/backend/.env"' in migrate_text
     assert '${BUNDLE_ROOT}/.onto-runtime:/app/.onto-runtime' in migrate_text
+
+
+def test_backup_captures_legacy_backend_container_storage_before_container_removal():
+    backup_text = (DEPLOY_ROOT / "backup.sh").read_text(encoding="utf-8")
+
+    assert 'docker cp "${container_name}:/app/data/chats/."' in backup_text
+    assert 'docker cp "${container_name}:/app/data/executions/."' in backup_text
+    assert 'legacy-backend-data.tar.gz' in backup_text
 
 
 def test_data_source_compatibility_migration_uses_central_startup_runner_not_runtime_store():
