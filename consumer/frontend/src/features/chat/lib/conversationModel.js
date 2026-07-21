@@ -359,6 +359,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     node: stringValue(segment?.node),
     spanKey: stringValue(segment?.spanKey),
     parentKey: stringValue(segment?.parentKey),
+    iteration: numberValue(meta?.iteration),
     startedAt,
     endedAt,
     durationMs: elapsedValue(startedAt, endedAt),
