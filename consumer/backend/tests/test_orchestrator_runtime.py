@@ -1,5 +1,6 @@
 """Tests for the orchestrator-owned agent loop runtime."""
 
+import asyncio
 from contextlib import contextmanager
 import json
 from types import SimpleNamespace
@@ -12,8 +13,12 @@ from agent.core.orchestrator import (
     AgenticOrchestrator,
     _public_workflow_error_message,
 )
+from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
+from agent.core.jiuwen_engine import _JiuwenTerminalErrorSignal
+from agent.exceptions import TerminalToolExecutionError
 from agent.tools.base import ToolContext
 from agent.tools.events import build_tool_finished_payload, emit_tool_finished
+from agent.tools.executor import execute_tool_batch
 from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
@@ -47,6 +52,16 @@ def test_public_workflow_error_does_not_expose_generic_value_error_by_prefix():
         _public_workflow_error_message(ValueError("输入 Token 长度超过上限: internal"))
         == "Workflow execution failed"
     )
+
+
+def test_public_workflow_error_preserves_terminal_tool_message():
+    exc = TerminalToolExecutionError(
+        error_code="GRAPH_BACKEND_TIMEOUT",
+        public_message="Graph query timed out.",
+        tool_name="business_data_search",
+    )
+
+    assert _public_workflow_error_message(exc) == "Graph query timed out."
 
 
 @pytest.fixture(autouse=True)
@@ -745,6 +760,82 @@ def test_stream_agent_loop_propagates_engine_errors(monkeypatch):
                 memory_manager=None,
             )
         )
+
+
+def test_terminal_tool_error_fails_run_and_turn(monkeypatch, tmp_path):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        lambda **_kwargs: (
+            '{"success":false,"engine":"graph_search_runtime",'
+            '"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
+        ),
+    )
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del memory_manager, observer
+        state = dict(initial_state)
+        terminal_error_signal = _JiuwenTerminalErrorSignal()
+        adapter = CurrentRuntimeToolAdapter(
+            tool_name="business_data_search",
+            state=state,
+            context_factory=lambda: ToolContext(
+                memory_manager=None,
+                messages=list(state.get("messages") or []),
+                run_id=state["run_id"],
+                session_id=state["session_id"],
+                turn_id=state["current_turn_id"],
+                user_id=state.get("user_id"),
+                agent_config=self.agent_config,
+                caller="main",
+                agent_iteration=1,
+                workspace_id=state.get("workspace_id"),
+                selected_ontology_id="demo-ontology",
+            ),
+            tool_batch_executor=execute_tool_batch,
+            terminal_error_callback=terminal_error_signal.record,
+        )
+        asyncio.run(
+            adapter.invoke(
+                {
+                    "ontology_id": "demo-ontology",
+                    "entity": "refinery_unit",
+                    "query": "list refinery units",
+                }
+            )
+        )
+        terminal_error_signal.raise_if_set()
+        yield ("values", state)
+
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    events = list(
+        orchestrator.run(
+            user_request="list refinery units",
+            session_id="sess-terminal-tool-error",
+            requested_run_id="run-terminal-tool-error",
+        )
+    )
+
+    run = run_store.get_run("run-terminal-tool-error")
+    assert run is not None
+    assert run.status == RunStatus.FAILED
+    assert run.error == "Graph query timed out."
+    finished = events[-1]["data"]
+    assert finished["type"] == "turn.finished"
+    assert finished["payload"] == {
+        "status": "error",
+        "error": "Graph query timed out.",
+    }
 
 
 def test_orchestrator_uses_requested_run_id(monkeypatch, tmp_path):

@@ -30,24 +30,25 @@ logger = get_logger("direct_execution.arguments")
 _RUNTIME_PLACEHOLDER_PATTERN = re.compile(r"^<runtime\.([\w\-]+)>$")
 _OPTIONAL_PLACEHOLDER_PATTERN = re.compile(r"^<\?([^>]+)>$")
 
-# Mapping from runtime key (the part after <runtime.>) to RuntimeContext field name
+# Canonical runtime key to RuntimeContext field. Dashed aliases are normalized
+# at the boundary instead of being duplicated in this table.
 _RUNTIME_KEY_TO_CTX_FIELD: Dict[str, str] = {
-    "session-id": "session_id",
     "session_id": "session_id",
     "run_id": "run_id",
-    "run-id": "run_id",
     "turn_id": "turn_id",
-    "turn-id": "turn_id",
+    "user_id": "user_id",
     "workspace_id": "workspace_id",
-    "workspace-id": "workspace_id",
     "selected_ontology_id": "selected_ontology_id",
-    "selected-ontology-id": "selected_ontology_id",
     "ontology_id": "selected_ontology_id",
-    "ontology-id": "selected_ontology_id",
 }
 
-# Allowed runtime placeholder keys — acts as an allowlist
-_ALLOWED_RUNTIME_KEYS: set[str] = set(_RUNTIME_KEY_TO_CTX_FIELD.keys())
+def _canonical_runtime_key(key: str) -> str:
+    return str(key or "").strip().replace("-", "_")
+
+
+def runtime_context_field(key: str) -> Optional[str]:
+    """Resolve dashed or underscored runtime keys to one context field."""
+    return _RUNTIME_KEY_TO_CTX_FIELD.get(_canonical_runtime_key(key))
 
 
 def is_runtime_placeholder(value: str) -> bool:
@@ -122,8 +123,8 @@ def extract_runtime_requirements(
     for arg in script_args:
         m = _RUNTIME_PLACEHOLDER_PATTERN.match(str(arg).strip())
         if m:
-            key = m.group(1)
-            if key in _ALLOWED_RUNTIME_KEYS:
+            key = _canonical_runtime_key(m.group(1))
+            if runtime_context_field(key) is not None:
                 requirements.append(key)
     return requirements
 
@@ -131,13 +132,8 @@ def extract_runtime_requirements(
 def _runtime_key_from_flag(flag: str) -> Optional[str]:
     """Extract a runtime key from a CLI flag, e.g. ``--session-id`` → ``session-id``."""
     key = flag.lstrip("-").strip()
-    # Direct match
-    if key in _ALLOWED_RUNTIME_KEYS:
-        return key
-    # Try underscore variant (RuntimeContext field names are underscore)
-    if key.replace("_", "-") in _ALLOWED_RUNTIME_KEYS:
-        return key.replace("_", "-")
-    return None
+    canonical_key = _canonical_runtime_key(key)
+    return canonical_key if runtime_context_field(canonical_key) is not None else None
 
 
 def _is_runtime_param(parameter: Mapping[str, Any]) -> bool:
@@ -248,7 +244,7 @@ def _build_direct_cli_args_from_parameters(
             if not runtime_field:
                 system_error = "Unsupported runtime parameter '{}'".format(name)
                 break
-            context_field = _RUNTIME_KEY_TO_CTX_FIELD.get(runtime_field, runtime_field)
+            context_field = runtime_context_field(runtime_field) or runtime_field
             value = runtime_context.get(context_field) if runtime_context else None
         else:
             value, matched_key = _resolve_parameter_value(
@@ -410,11 +406,11 @@ def _resolve_placeholder_legacy(
     runtime_match = _RUNTIME_PLACEHOLDER_PATTERN.match(stripped)
     if runtime_match:
         key = runtime_match.group(1)
-        if key not in _ALLOWED_RUNTIME_KEYS:
+        ctx_field = runtime_context_field(key)
+        if ctx_field is None:
             return None, None, "Unknown runtime placeholder: <runtime.{}>".format(key)
 
-        ctx_field = _RUNTIME_KEY_TO_CTX_FIELD.get(key)
-        value = runtime_context.get(ctx_field) if runtime_context and ctx_field else None
+        value = runtime_context.get(ctx_field) if runtime_context else None
         if value is None:
             return None, None, "Runtime context missing '{}' for <runtime.{}>".format(ctx_field, key)
         return value, None, None
@@ -476,7 +472,7 @@ def _runtime_placeholder_argument_keys(placeholder: str, *, flag: str = "") -> S
     if match is None:
         return set()
     raw_key = match.group(1)
-    context_field = _RUNTIME_KEY_TO_CTX_FIELD.get(raw_key, raw_key.replace("-", "_"))
+    context_field = runtime_context_field(raw_key) or _canonical_runtime_key(raw_key)
     keys: Set[str] = set()
     for candidate in (raw_key, context_field, str(flag or "").strip()):
         if not candidate:

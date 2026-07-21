@@ -14,7 +14,11 @@ from contextvars import copy_context
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-from ...exceptions import AgentLoopStalledError, WorkflowCancelledError
+from ...exceptions import (
+    AgentLoopStalledError,
+    TerminalToolExecutionError,
+    WorkflowCancelledError,
+)
 from integration.observability import AgentRuntimeTrace, RuntimeStatus
 from integration.observability.stack_profiler import profile_current_thread
 from ...tools.base import ToolBatchResult, ToolInvocation
@@ -430,6 +434,9 @@ class CurrentRuntimeToolAdapter:
                 terminal=terminal,
             )
         if terminal:
+            terminal_error = _terminal_tool_execution_error(batch_result)
+            if terminal_error is not None and callable(self.terminal_error_callback):
+                self.terminal_error_callback(terminal_error)
             if self.terminal_tool_batch_callback is not None:
                 self.terminal_tool_batch_callback(batch_result)
         return first_tool_message_content(batch_result)
@@ -570,6 +577,18 @@ def _pending_user_interaction_batch_result(state: Mapping[str, Any]) -> ToolBatc
     if final_output:
         updates["final_output"] = final_output
     return ToolBatchResult(state_updates=updates, terminal=True)
+
+
+def _terminal_tool_execution_error(batch_result: Any) -> Optional[TerminalToolExecutionError]:
+    updates = getattr(batch_result, "state_updates", None)
+    payload = updates.get("terminal_error") if isinstance(updates, Mapping) else None
+    if not isinstance(payload, Mapping):
+        return None
+    return TerminalToolExecutionError(
+        error_code=str(payload.get("error_code") or "TERMINAL_TOOL_ERROR"),
+        public_message=str(payload.get("message") or "").strip() or None,
+        tool_name=str(payload.get("tool_name") or "").strip() or None,
+    )
 
 
 def _terminal_tool_content(state: Mapping[str, Any], batch_result: Any) -> str:

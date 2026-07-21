@@ -434,6 +434,70 @@ def test_nonzero_exit_redacts_process_output_from_result_and_logs(
     assert "stderr-secret" not in caplog.text
 
 
+def test_nonzero_exit_returns_explicit_public_business_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=7,
+            stdout="ACCESS_TOKEN=stdout-secret",
+            stderr=(
+                'ONTO_PUBLIC_ERROR: {"code":"MATERIAL_NOT_FOUND",'
+                '"message":"Material A001 was not found."}\n'
+                "DATABASE_URL=stderr-secret"
+            ),
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == (
+        "Error: Script exited with code 7. "
+        "[MATERIAL_NOT_FOUND] Material A001 was not found."
+    )
+    assert "stdout-secret" not in result
+    assert "stderr-secret" not in result
+    assert "stdout-secret" not in caplog.text
+    assert "stderr-secret" not in caplog.text
+
+
+def test_nonzero_exit_rejects_malformed_public_error_marker(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=9,
+            stdout="",
+            stderr=(
+                'ONTO_PUBLIC_ERROR: {"code":"bad-code",'
+                '"message":"DATABASE_URL=must-stay-redacted"}'
+            ),
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == "Error: Script exited with code 9."
+    assert "must-stay-redacted" not in result
+
+
 def test_timeout_redacts_process_output_from_logs(tmp_path, monkeypatch, caplog):
     script = _write_script(tmp_path)
     _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)

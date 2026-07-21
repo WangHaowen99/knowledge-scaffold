@@ -18,7 +18,9 @@ from typing import Any
 
 from agent.core.jiuwen.common import JiuwenBackendUnavailable
 from agent.core.jiuwen_engine import (
+    _JiuwenTerminalForceFinishBridge,
     _dispose_owned_jiuwen_runtime,
+    _jiuwen_agent_callback_event_class,
     _resolve_jiuwen_llm_config,
     _run_awaitable,
     create_default_jiuwen_agent,
@@ -212,11 +214,14 @@ class JiuwenGraphQueryAgent:
                 "attempt": attempt,
                 "invocation_id": invocation_id,
             })
+            adapter.raise_last_backend_error()
             return _extract_output(raw_result)
 
         agent: Any | None = None
         registered_cards: list[Any] = []
         trace_bridge: JiuwenModelTraceBridge | None = None
+        terminal_force_finish_bridge: _JiuwenTerminalForceFinishBridge | None = None
+        terminal_result: dict[str, Any] = {}
         owns_runtime = self._agent_factory is None
         conversation_id = _graph_conversation_id(
             context,
@@ -224,6 +229,13 @@ class JiuwenGraphQueryAgent:
             invocation_id=invocation_id,
         )
         llm_config: Any | None = None
+
+        def remember_terminal_tool_batch(batch_result: Any) -> None:
+            terminal_result["batch_result"] = batch_result
+            terminal_result["tool_call_id"] = str(
+                getattr(batch_result, "terminal_tool_call_id", None) or ""
+            ).strip()
+
         try:
             if owns_runtime:
                 llm_config = _resolve_graph_jiuwen_llm_config(
@@ -252,6 +264,7 @@ class JiuwenGraphQueryAgent:
                 context=context,
                 attempt=attempt,
                 invocation_id=invocation_id,
+                terminal_tool_batch_callback=remember_terminal_tool_batch,
             ) or [])
             trace_bridge = JiuwenModelTraceBridge(
                 runtime_trace=build_graph_agent_runtime_trace(context),
@@ -270,6 +283,11 @@ class JiuwenGraphQueryAgent:
                 sliding_window_applied=False,
             )
             _run_awaitable(trace_bridge.register(agent))
+            terminal_force_finish_bridge = _JiuwenTerminalForceFinishBridge(
+                terminal_result,
+                event_class_provider=_jiuwen_agent_callback_event_class,
+            )
+            _run_awaitable(terminal_force_finish_bridge.register(agent))
 
             invoke = getattr(agent, "invoke", None)
             if not callable(invoke):
@@ -284,6 +302,7 @@ class JiuwenGraphQueryAgent:
                     cancel_event=context.provider_config.get("_graph_cancel_event"),
                     state={"run_id": context.provider_config.get("run_id")},
                 )
+            adapter.raise_last_backend_error()
             if _is_error_result(raw_result):
                 raise GraphAgentError(_extract_output(raw_result) or "Jiuwen graph agent returned an error.")
             return _extract_output(raw_result)
@@ -300,6 +319,11 @@ class JiuwenGraphQueryAgent:
                 "GraphQueryAgent 调用失败: {}".format(_safe_exception_detail(exc))
             ) from exc
         finally:
+            if terminal_force_finish_bridge is not None:
+                _run_graph_cleanup(
+                    "terminal force-finish callback unregister",
+                    lambda: _run_awaitable(terminal_force_finish_bridge.unregister()),
+                )
             if trace_bridge is not None:
                 _run_graph_cleanup(
                     "model trace callback unregister",
@@ -334,6 +358,7 @@ class GraphJiuwenToolAdapter:
         self.executed_steps = executed_steps
         self.last_error = "GraphQueryAgent 未调用可用图检索工具"
         self.last_tool_input_error: GraphToolInputError | None = None
+        self.last_backend_error: GraphBackendError | None = None
         self._property_query_history: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
@@ -345,8 +370,11 @@ class GraphJiuwenToolAdapter:
         name = str(tool_name or "").strip()
         args = _normalize_jiuwen_graph_tool_args(tool_args)
         with self._lock:
+            if self.has_terminal_backend_error():
+                return self._backend_error_content(self.last_backend_error)
             if name == "pattern_search" and self._should_skip_pattern_search_after_record_hit():
                 self.last_tool_input_error = None
+                self.last_backend_error = None
                 return json.dumps(
                     _skipped_pattern_search_payload(),
                     ensure_ascii=False,
@@ -361,6 +389,7 @@ class GraphJiuwenToolAdapter:
                     })
                 if skipped and not _property_queries_from_args(args):
                     self.last_tool_input_error = None
+                    self.last_backend_error = None
                     return json.dumps(
                         _skipped_property_filter_payload(skipped),
                         ensure_ascii=False,
@@ -369,6 +398,7 @@ class GraphJiuwenToolAdapter:
             try:
                 execution = self.tool_executor.execute(name, args)
             except GraphToolInputError as exc:
+                self.last_backend_error = None
                 self.last_tool_input_error = exc
                 self.last_error = str(exc)
                 self.executed_steps.append({
@@ -385,7 +415,17 @@ class GraphJiuwenToolAdapter:
                     ensure_ascii=False,
                     default=str,
                 )
+            except GraphBackendError as exc:
+                self.last_tool_input_error = None
+                self.last_backend_error = exc
+                self.last_error = str(exc)
+                self.executed_steps.append({
+                    "tool": name or "<empty>",
+                    "summary": "Internal graph tool failed: {}".format(exc.error_code),
+                })
+                return self._backend_error_content(exc)
             self.last_tool_input_error = None
+            self.last_backend_error = None
             if execution.backend_result is not None and execution.tool_name in DATA_TOOLS:
                 self.executions.append(execution)
             if execution.tool_name == "property_filter":
@@ -395,6 +435,28 @@ class GraphJiuwenToolAdapter:
                 "summary": _summarize_tool_execution(execution),
             })
             return json.dumps(execution.payload, ensure_ascii=False, default=str)
+
+    def has_terminal_backend_error(self) -> bool:
+        error = self.last_backend_error
+        return error is not None and getattr(error, "retryable", True) is False
+
+    def raise_last_backend_error(self) -> None:
+        error = self.last_backend_error
+        if error is not None:
+            raise error
+
+    @staticmethod
+    def _backend_error_content(error: GraphBackendError | None) -> str:
+        return json.dumps(
+            {
+                "success": False,
+                "error_code": getattr(error, "error_code", "GRAPH_BACKEND_ERROR"),
+                "error": "Graph database query failed.",
+                "retryable": getattr(error, "retryable", True),
+            },
+            ensure_ascii=False,
+            default=str,
+        )
 
     def _should_skip_pattern_search_after_record_hit(self) -> bool:
         context = self.tool_executor.context
@@ -484,6 +546,7 @@ def register_graph_runtime_tools(
     context: GraphSearchRuntimeContext,
     attempt: int = 1,
     invocation_id: str = "",
+    terminal_tool_batch_callback: Any = None,
 ) -> list[Any]:
     del attempt, invocation_id
     tool_infos: list[dict[str, Any]] = []
@@ -519,6 +582,13 @@ def register_graph_runtime_tools(
                 "tool_call_id": tool_call.id,
                 "name": tool_call.name,
             })
+            if adapter.has_terminal_backend_error():
+                return ToolBatchResult(
+                    messages=messages,
+                    terminal=True,
+                    terminal_tool_call_id=tool_call.id,
+                    terminal_content=content,
+                )
         return ToolBatchResult(messages=messages)
 
     tool_context = SimpleNamespace(
@@ -537,6 +607,7 @@ def register_graph_runtime_tools(
             context_factory=lambda: tool_context,
             tool_infos=tool_infos,
             tool_batch_executor=execute_private_graph_tools,
+            terminal_tool_batch_callback=terminal_tool_batch_callback,
         )
 
 

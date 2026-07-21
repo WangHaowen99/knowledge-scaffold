@@ -9,6 +9,7 @@ import json
 import pytest
 
 from agent.core.jiuwen.tools import get_jiuwen_tool_infos
+from agent.core.shared.tool_context import build_tool_context
 from agent.core.jiuwen_engine import JiuwenReactLoopEngine
 import agent.tools.execute_script as execute_script_module
 import ontology.ontology_catalog as ontology_catalog_module
@@ -17,6 +18,52 @@ from agent.tools.registry import get_tool_schema, get_tools_schema, validate_too
 from config.settings import AgentConfig
 from ontology.ontology_catalog import find_script_entry
 from workspace.workspaces import get_workspace_paths
+
+
+def test_execute_script_runtime_context_uses_backend_identity(monkeypatch):
+    captured = {}
+
+    def fake_handle_execute_script(**kwargs):
+        captured.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(execute_script_module, "handle_execute_script", fake_handle_execute_script)
+    context = build_tool_context(
+        {
+            "run_id": "run-runtime",
+            "session_id": "session-runtime",
+            "user_id": "user-runtime",
+            "current_turn_id": 4,
+            "messages": [],
+            "user_context": {"selected_ontology_id": "selected-ontology"},
+        },
+        memory_manager=None,
+        agent_config=SimpleNamespace(execute_script_timeout=30),
+        caller="main",
+        agent_iteration=1,
+        workspace_id="workspace-runtime",
+        project_root=None,
+    )
+
+    outcome = execute_script_module.ExecuteScriptTool().execute(
+        args={
+            "ontology_id": "model-provided-ontology",
+            "operation_key": "run",
+            "arguments": {},
+        },
+        context=context,
+    )
+
+    assert outcome.content == "ok"
+    assert captured["runtime_context"] == {
+        "session_id": "session-runtime",
+        "run_id": "run-runtime",
+        "turn_id": "4",
+        "user_id": "user-runtime",
+        "workspace_id": "workspace-runtime",
+        "selected_ontology_id": "selected-ontology",
+        "ontology_id": "selected-ontology",
+    }
 
 
 def _write_ontology(

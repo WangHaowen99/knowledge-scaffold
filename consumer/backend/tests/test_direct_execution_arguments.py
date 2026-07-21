@@ -12,6 +12,7 @@ from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_business_placeholder_keys,
     extract_runtime_requirements,
+    runtime_context_field,
 )
 from agent.direct_execution.models import RouteDecision, RuntimeContext
 from agent.direct_execution.router import OperationDirectRouter
@@ -335,7 +336,7 @@ def test_direct_explicit_runtime_ontology_uses_selected_ontology_context():
     )
 
 
-def test_explicit_unsupported_runtime_field_remains_backend_owned():
+def test_explicit_runtime_user_id_uses_backend_context():
     parameter = {
         "name": "user_id",
         "flag": "--user-id",
@@ -344,7 +345,7 @@ def test_explicit_unsupported_runtime_field_remains_backend_owned():
     }
 
     assert is_runtime_parameter(parameter) is True
-    assert runtime_parameter_field(parameter) is None
+    assert runtime_parameter_field(parameter) == "user_id"
 
     args, missing, error = build_direct_cli_args(
         script_parameters=[parameter],
@@ -357,9 +358,20 @@ def test_explicit_unsupported_runtime_field_remains_backend_owned():
         ),
     )
 
-    assert args == []
-    assert missing == []
-    assert error == "Unsupported runtime parameter 'user_id'"
+    assert (args, missing, error) == (["--user-id", "real-user"], [], None)
+
+
+@pytest.mark.parametrize("runtime_key", ["session-id", "session_id"])
+def test_runtime_key_aliases_share_one_canonical_context_mapping(runtime_key):
+    assert runtime_context_field(runtime_key) == "session_id"
+    assert extract_runtime_requirements(
+        script_args=["--session-id", "<runtime.{}>".format(runtime_key)],
+    ) == ["session_id"]
+
+
+@pytest.mark.parametrize("runtime_key", ["ontology-id", "ontology_id"])
+def test_runtime_ontology_aliases_resolve_to_selected_ontology(runtime_key):
+    assert runtime_context_field(runtime_key) == "selected_ontology_id"
 
 
 @pytest.mark.parametrize("disabled", [False, "false", "no", "0", "off"])

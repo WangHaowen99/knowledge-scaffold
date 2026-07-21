@@ -74,6 +74,11 @@ def test_non_retryable_graph_timeout_stops_the_main_agent_tool_loop(monkeypatch)
     )
 
     assert outcome.terminal is True
+    assert outcome.state_updates["terminal_error"] == {
+        "error_code": "GRAPH_BACKEND_TIMEOUT",
+        "message": "Graph query timed out.",
+        "tool_name": "business_data_search",
+    }
 
 
 def test_business_data_search_uses_workspace_direct_provider(monkeypatch):
