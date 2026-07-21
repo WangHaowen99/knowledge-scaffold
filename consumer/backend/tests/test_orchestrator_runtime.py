@@ -53,6 +53,7 @@ def test_public_workflow_error_does_not_expose_generic_value_error_by_prefix():
 def _configure_runtime_llm(monkeypatch, tmp_path):
     import config.system_config as system_config_module
     from integration.observability.provider import reset_observer
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
@@ -85,6 +86,11 @@ def _configure_runtime_llm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=runtime_root,
+    )
     create_workspace("Test Workspace", workspace_id="test-workspace", set_as_default=True)
     configure_llm_router(
         LLMRouter(
@@ -1140,6 +1146,7 @@ def test_orchestrator_restores_read_documents_between_new_session_turns(monkeypa
 
 def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
     import config.system_config as system_config_module
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -1176,6 +1183,11 @@ def test_orchestrator_uses_requested_model_profile(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=tmp_path / ".onto-runtime",
+    )
     configure_llm_router(
         LLMRouter(
             AppConfig.from_env(),
