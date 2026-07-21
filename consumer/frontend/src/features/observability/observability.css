@@ -59,7 +59,7 @@
 .obs-pagination button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--obs-blue) 45%, var(--obs-line)); background: var(--obs-blue-soft); color: var(--obs-blue); }
 .obs-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--obs-blue) 88%, #000); color: #fff; }
 .obs-feature button:disabled { opacity: .48; cursor: not-allowed; }
-.obs-feature :is(button, input, select):focus-visible { outline: 3px solid color-mix(in srgb, var(--obs-blue) 24%, transparent); outline-offset: 2px; }
+.obs-feature :is(button, input, select):focus-visible { outline: 3px solid var(--control-focus-ring, var(--obs-blue)); outline-offset: 2px; }
 
 .obs-spin { animation: obs-spin .8s linear infinite; }
 @keyframes obs-spin { to { transform: rotate(360deg); } }

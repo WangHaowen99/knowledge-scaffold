@@ -162,6 +162,13 @@ const iterationFromParentKey = (parentKey) => {
   return match ? Number(match[1]) : null;
 };
 
+const iterationForBlock = (block) => (
+  iterationFromParentKey(block?.parentKey)
+  ?? (Number.isFinite(Number(block?.iteration)) && Number(block.iteration) > 0
+    ? Math.floor(Number(block.iteration))
+    : null)
+);
+
 /**
  * Trace consumes the canonical conversation model. `nodes` preserves source block
  * order; nested progress/subagent details live in `children` without reordering roots.
@@ -179,7 +186,7 @@ export const buildTraceViewModel = (input = []) => {
     const nodes = [];
     turn.blocks.forEach((block) => {
       const node = traceNodeForBlock(block, key);
-      const iteration = iterationByNumber.get(iterationFromParentKey(block.parentKey));
+      const iteration = iterationByNumber.get(iterationForBlock(block));
       if (iteration) {
         node.parentKey = iteration.key;
         iteration.children.push(node);

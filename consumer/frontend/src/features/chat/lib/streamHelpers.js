@@ -6,7 +6,7 @@ export const AGENT_STREAM_PROTOCOL = 'agent-stream.v2';
 export const AGENT_STREAM_EVENT = 'agent.v2';
 
 const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled', 'awaiting_input']);
-const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final']);
+const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final', 'error']);
 const WEB_SEARCH_EVENT_TYPES = new Set(['start', 'final', 'error']);
 const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
 
@@ -226,7 +226,17 @@ const findLastSegmentIndex = (segments = [], predicate) => {
   return -1;
 };
 
-const appendInlineTextSegment = (segments, { type, state, text, node, meta, mergeKey = null, ts }) => {
+const appendInlineTextSegment = (segments, {
+  type,
+  state,
+  text,
+  node,
+  meta,
+  mergeKey = null,
+  ts,
+  spanKey = '',
+  parentKey = '',
+}) => {
   if (!text) return segments;
 
   const next = Array.isArray(segments) ? segments.slice() : [];
@@ -237,6 +247,8 @@ const appendInlineTextSegment = (segments, { type, state, text, node, meta, merg
     && last.type === type
     && last.state === state
     && (last.node || '') === (node || '')
+    && (last.spanKey || '') === spanKey
+    && (last.parentKey || '') === parentKey
     && (
       !mergeKey
       || (
@@ -269,11 +281,19 @@ const appendInlineTextSegment = (segments, { type, state, text, node, meta, merg
       text,
       node,
       meta,
+      spanKey: spanKey || undefined,
+      parentKey: parentKey || undefined,
       finished: false,
       startTs: ts || Date.now(),
       endTs: ts || Date.now(),
     },
   ];
+};
+
+const iterationParentKeyFromPayload = (payload = {}) => {
+  const iteration = Number(payload?.iteration);
+  if (!Number.isFinite(iteration) || iteration < 1) return '';
+  return `iteration:main:${Math.floor(iteration)}`;
 };
 
 const extractTurnFinishedOutput = (payload = {}) => {
@@ -347,7 +367,8 @@ const extractBusinessDataSearchProgressEvent = (payload = {}, envelope = {}) => 
     : '';
   if (!BUSINESS_DATA_SEARCH_EVENT_TYPES.has(eventType)) return null;
 
-  const content = rawEvent?.content == null ? '' : String(rawEvent.content);
+  const content = rawEvent?.content == null ? '' : String(rawEvent.content).trim();
+  if (!content) return null;
   const rawTs = Number(envelope?.ts);
   const rawSeq = Number(envelope?.seq);
 
@@ -1082,6 +1103,8 @@ export const applyAgentV2Event = (current, envelope) => {
       node: sourceNode,
       meta: payload,
       ts: envelope.ts || Date.now(),
+      spanKey: envelopeSpanKey,
+      parentKey: envelopeParentKey || iterationParentKeyFromPayload(payload),
     });
     if (channel === 'reasoning') {
       next.reasoning = `${next.reasoning || ''}${text}`;
@@ -1394,6 +1417,9 @@ export const applyAgentV2Event = (current, envelope) => {
     );
 
     if (shouldAppendFinalContent(next.streamSegments, terminal.content || '')) {
+      const finalIteration = Array.isArray(next.iterationMetrics)
+        ? next.iterationMetrics[next.iterationMetrics.length - 1]
+        : null;
       next.streamSegments.push({
         type: 'content',
         state: 'final',
@@ -1401,6 +1427,7 @@ export const applyAgentV2Event = (current, envelope) => {
         node: 'final',
         meta: {},
         finished: true,
+        parentKey: iterationParentKeyFromPayload(finalIteration) || undefined,
       });
     }
 

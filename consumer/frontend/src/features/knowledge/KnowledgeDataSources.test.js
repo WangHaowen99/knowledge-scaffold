@@ -8,6 +8,7 @@ const currentDir = dirname(fileURLToPath(import.meta.url));
 const normalizeSource = (source) => source.replace(/\r\n?/g, '\n');
 const readNormalizedSource = (path) => normalizeSource(readFileSync(path, 'utf8'));
 const dataSourceSource = readNormalizedSource(join(currentDir, 'KnowledgeDataSources.jsx'));
+const kbBrowserSource = readNormalizedSource(join(currentDir, 'hooks/useKbBrowser.js'));
 const configCenterSource = readNormalizedSource(join(currentDir, '../settings/ConfigCenter.jsx'));
 const workbenchSource = readNormalizedSource(join(currentDir, 'KnowledgeWorkbench.jsx'));
 const onboardingSource = readNormalizedSource(join(currentDir, '../../app/onboarding/OnboardingWizard.jsx'));
@@ -66,6 +67,16 @@ test('workspace config center no longer exposes connection or binding sections',
 test('saving or clearing a data source refreshes the knowledge package summary', () => {
   assert.equal(dataSourceSource.includes('onDataSourceChanged?.()'), true);
   assert.equal(workbenchSource.includes('onDataSourceChanged={retryPackages}'), true);
+});
+
+test('knowledge write permissions are split by operation', () => {
+  assert.equal(kbBrowserSource.includes("const canImport = can('ws.kb.import');"), true);
+  assert.equal(kbBrowserSource.includes("const canActivate = can('ws.kb.activate');"), true);
+  assert.equal(kbBrowserSource.includes("const canManage = can('ws.kb.write');"), true);
+  assert.equal(workbenchSource.includes('{canActivate && !viewingActive &&'), true);
+  assert.equal(dataSourceSource.includes("const canEdit = can('ws.data_source.write');"), true);
+  assert.equal(dataSourceSource.includes("const canTest = can('ws.data_source.test');"), true);
+  assert.equal(dataSourceSource.includes('{canTest && ('), true);
 });
 
 test('onboarding directs admins to the ontology data-source tab', () => {

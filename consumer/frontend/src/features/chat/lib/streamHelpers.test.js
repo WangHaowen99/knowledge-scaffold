@@ -55,6 +55,26 @@ test('replayed tool events keep one node and preserve the original parent', () =
   assert.equal(state.streamSegments[0].endTs, 1002);
 });
 
+test('token deltas inherit their iteration parent and do not merge across iterations', () => {
+  let state = { streamSegments: [], status: 'idle', isLoading: false };
+
+  state = applyAgentV2Event(state, envelope('token.delta', {
+    channel: 'content', text: '第一轮输出', iteration: 1,
+  }, 1));
+  state = applyAgentV2Event(state, envelope('token.delta', {
+    channel: 'content', text: '第二轮输出', iteration: 2,
+  }, 2));
+
+  assert.deepEqual(
+    state.streamSegments.map((segment) => segment.parentKey),
+    ['iteration:main:1', 'iteration:main:2'],
+  );
+  assert.deepEqual(
+    state.streamSegments.map((segment) => segment.text),
+    ['第一轮输出', '第二轮输出'],
+  );
+});
+
 test('tool finish without a start event derives its timing from elapsed_ms', () => {
   const state = applyAgentV2Event(
     { streamSegments: [], status: 'running', isLoading: true },
@@ -287,6 +307,45 @@ test('cancelled turn freezes unfinished business data search as cancelled', () =
   assert.equal(state.streamSegments[0].endTs, 1010);
 });
 
+test('business data provider errors remain visible while empty progress is ignored', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('tool.started', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    input: { entity: '主CHANGE_ORDER', query: '查询所有主CHANGE_ORDER编号' },
+  }, 1));
+  state = applyAgentV2Event(state, envelope('tool.progress', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    progress: { business_data_search_event: { type: 'start', content: '' } },
+  }, 2));
+  state = applyAgentV2Event(state, envelope('tool.progress', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    progress: {
+      business_data_search_event: { type: 'error', content: 'MindsDB request failed' },
+    },
+  }, 3));
+  state = applyAgentV2Event(state, envelope('tool.finished', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    status: 'error',
+    output_preview: 'Error: 业务数据查询失败：MindsDB request failed',
+    error: 'Error: 业务数据查询失败：MindsDB request failed',
+  }, 4));
+
+  const [segment] = state.streamSegments;
+  assert.equal(segment.toolStatus, 'error');
+  assert.equal(segment.meta.error, 'Error: 业务数据查询失败：MindsDB request failed');
+  assert.deepEqual(segment.meta.db_events, [{
+    type: 'error',
+    content: 'MindsDB request failed',
+    ts: 1003,
+    seq: 3,
+  }]);
+});
+
 test('nested groups split surrounding subagent token events without reordering them', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
   const simultaneousEnvelope = (type, payload, seq) => envelope(type, payload, seq, { ts: 1000 });
@@ -457,13 +516,19 @@ test('turn finished appends final output after tool-only stream segments', () =>
     status: 'completed',
     iteration: 1,
   }, 2));
+  state = applyAgentV2Event(state, envelope('iteration.completed', {
+    iteration: 1,
+    status: 'final_output',
+    total_elapsed_ms: 20,
+  }, 3));
   state = applyAgentV2Event(state, envelope('turn.finished', {
     status: 'success',
     final_output: '最终处理成本为 3000 元。',
-  }, 3));
+  }, 4));
 
   assert.equal(state.status, 'finished');
   assert.deepEqual(state.streamSegments.map((segment) => segment.type), ['tool', 'content']);
   assert.equal(state.streamSegments[0].meta.output_preview, '查询完成');
   assert.equal(state.streamSegments[1].text, '最终处理成本为 3000 元。');
+  assert.equal(state.streamSegments[1].parentKey, 'iteration:main:1');
 });

@@ -5,6 +5,12 @@
 > 2026-07-13 更新：Decision 3 的 ACP `auth=none` 全放行规则已被
 > `2026-07-13-cross-entry-workspace-and-user-deletion.md` 取代。匿名 ACP
 > 现在只允许默认 workspace 或无 owner workspace。
+>
+> 2026-07-20 更新：Decision 5 中关于 workspace 创建、删除以及知识包和
+> 数据源写操作维持 admin-only 的规则，已被
+> `2026-07-20-evaluation-resource-write-permissions.md` 取代。当前规则为：
+> 登录用户可创建并删除自己拥有的 workspace；workspace 资源仅全局 admin
+> 或 workspace owner 可修改，member 只能读取、使用和评测。
 
 ## Context
 

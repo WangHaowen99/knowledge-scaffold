@@ -89,6 +89,22 @@ REGISTERED_MIGRATIONS = (
         # Keeping the global source document makes a later startup retryable.
         failure_policy=MigrationFailurePolicy.NON_BLOCKING,
     ),
+    RegisteredMigration(
+        migration_id="system-config-model-profiles-v1",
+        module="migrations.system_config_model_profiles_v1",
+        phase=MigrationPhase.STARTUP,
+        # Strict runtime reads reject task_llm, legacy default ids, dangling
+        # refs, and conflicting profiles; startup is unsafe until conversion.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
+        migration_id="system-config-secret-encryption-v1",
+        module="migrations.system_config_secret_encryption_v1",
+        phase=MigrationPhase.STARTUP,
+        # Runtime reads reject plaintext or unverifiable ciphertext, so a key
+        # or encryption failure must stop the new runtime.
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
 )
 
 

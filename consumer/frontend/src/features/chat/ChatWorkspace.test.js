@@ -8,6 +8,8 @@ import { getChatDataSourceStatus } from './lib/chatDataSourceStatus.js';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const chatSource = readFileSync(join(currentDir, 'ChatWorkspace.jsx'), 'utf8');
+const tracePanelSource = readFileSync(join(currentDir, 'components/TracePanel.jsx'), 'utf8');
+const chatCssSource = readFileSync(join(currentDir, 'chat.css'), 'utf8');
 const appShellSource = readFileSync(join(currentDir, '../../app/AppShell.jsx'), 'utf8');
 const agenticStreamSource = readFileSync(join(currentDir, 'hooks/useAgenticStream.js'), 'utf8');
 const chatSessionsSource = readFileSync(join(currentDir, 'hooks/useChatSessions.js'), 'utf8');
@@ -68,4 +70,29 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(agenticStreamSource.includes('onSessionUpdated?.();'), true);
   assert.equal(chatSessionsSource.includes('const touchSession = useCallback'), true);
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
+});
+
+test('trace panel has one accessible toggle and keeps the mobile backdrop close action', () => {
+  assert.equal(chatSource.includes("const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';"), true);
+  assert.equal(chatSource.includes('className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}'), true);
+  assert.equal(chatSource.includes('onClick={() => setTraceOpen((v) => !v)}'), true);
+  assert.equal(chatSource.includes('className="trace-backdrop"'), true);
+  assert.equal(chatSource.includes('onClose={() => setTraceOpen(false)}'), false);
+  assert.equal(tracePanelSource.includes('onClose'), false);
+  assert.equal(tracePanelSource.includes('trace-close'), false);
+  assert.equal(chatCssSource.includes('trace-close'), false);
+});
+
+test('new chat navigation is active only for a blank chat session', () => {
+  assert.equal(
+    appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),
+    true,
+  );
+});
+
+test('awaiting interaction can be cancelled by button or Escape', () => {
+  assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
+  assert.equal(chatSource.includes('取消（Esc）'), true);
+  assert.equal(chatSource.includes('applyInteractionCancellation'), true);
 });

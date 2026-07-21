@@ -479,6 +479,7 @@ const useChatSessions = (streamManager) => {
     currentChatId,
     messages,
     activeSessionIds: streamManager.activeSessionIds,
+    streamStates: streamManager.streamStates,
     setMessages,
     loadingSessions,
     loadSessions,

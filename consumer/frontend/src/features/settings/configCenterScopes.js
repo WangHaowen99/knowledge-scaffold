@@ -1,7 +1,7 @@
 export const CONFIG_CENTER_SCOPES = {
   global: {
     lv: 'L1', badge: 'sb-l1', label: '全局配置',
-    hint: '平台级配置，影响所有工作空间；仅平台管理员可修改，其他人可查看',
+    hint: '平台级配置通常仅管理员可修改；所有登录用户可创建并管理自己拥有的工作空间',
     sections: [
       { id: 'llm', name: '模型池' },
       { id: 'system', name: '系统配置' },

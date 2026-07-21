@@ -178,7 +178,16 @@ const normalizeProgress = (events, kind, blockKey) => {
       endedAt: startedAt,
       terminal: ['final', 'completed', 'error'].includes(stringValue(event?.type).toLowerCase()),
     };
-  });
+  }).filter((item) => item.text.trim());
+};
+
+const progressErrorText = (progress) => {
+  for (let index = progress.length - 1; index >= 0; index -= 1) {
+    if (stringValue(progress[index]?.type).trim().toLowerCase() === 'error') {
+      return stringValue(progress[index]?.text).trim();
+    }
+  }
+  return '';
 };
 
 const childEventKind = (event) => {
@@ -214,10 +223,13 @@ const normalizeSubagentGroup = (group, parentKey) => {
               item?.web ? { ...item.web, ts: item.web.ts ?? item.ts } : null
             )).filter(Boolean), kind, eventKey)
             : [];
+        const progressError = progressErrorText(progress);
         return {
           key: eventKey,
           kind,
-          status: event?.finished ? normalizeConversationStatus(event?.status || 'finished') : 'running',
+          status: progressError
+            ? 'error'
+            : (event?.finished ? normalizeConversationStatus(event?.status || 'finished') : 'running'),
           terminal: Boolean(event?.finished),
           text: event?.kind === 'tool'
             ? stringValue(event?.text || event?.message)
@@ -235,7 +247,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           parsedOutput: plainObject(event?.outputProjection ?? event?.output_projection)
             ? (event?.outputProjection ?? event?.output_projection)
             : parseOutput(event?.output),
-          error: stringValue(event?.error),
+          error: stringValue(event?.error) || progressError,
           progress,
           startedAt,
           endedAt,
@@ -325,9 +337,13 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     : kind === 'web_search'
       ? normalizeProgress(meta.web_search_events, kind, key)
       : [];
+  const progressError = progressErrorText(progress);
   let status = kind === 'tool' || kind === 'business_data' || kind === 'web_search'
     ? normalizeToolStatus(segment)
     : normalizeConversationStatus(segment?.state, !segment?.finished);
+  if (progressError) {
+    status = 'error';
+  }
   if (segment?.finished && !['error', 'cancelled', 'awaiting'].includes(status)) {
     status = 'finished';
   }
@@ -343,6 +359,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     node: stringValue(segment?.node),
     spanKey: stringValue(segment?.spanKey),
     parentKey: stringValue(segment?.parentKey),
+    iteration: numberValue(meta?.iteration),
     startedAt,
     endedAt,
     durationMs: elapsedValue(startedAt, endedAt),
@@ -359,7 +376,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     block.outputTruncated = Boolean(meta.output_truncated);
     block.outputProjection = plainObject(meta.output_projection) ? meta.output_projection : null;
     block.parsedOutput = block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
-    block.error = stringValue(meta.error);
+    block.error = stringValue(meta.error) || progressError;
     block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
   }
   if (kind === 'web_search') {

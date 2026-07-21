@@ -23,6 +23,7 @@ from workspace.workspaces import (
     create_workspace,
     delete_workspace,
     enforce_workspace_access,
+    enforce_workspace_owner_or_admin,
     get_default_workspace_id,
     get_workspace,
     get_workspace_runtime_config,
@@ -82,16 +83,20 @@ def list_workspaces_api():
 
 
 @workspaces_bp.route("/workspaces", methods=["POST"])
-@require_role("admin")
+@require_auth()
 def create_workspace_api():
     payload = request.get_json(silent=True) or {}
-    owner = payload.get("owner") if "owner" in payload else get_current_user().username
+    user = get_current_user()
+    is_admin = getattr(user, "role", None) == "admin"
+    owner = payload.get("owner") if is_admin and "owner" in payload else user.username
+    set_as_default = bool(payload.get("set_as_default")) if is_admin else False
     try:
         created = create_workspace(
             name=payload.get("name", ""),
             description=payload.get("description", ""),
             workspace_id=payload.get("id"),
-            set_as_default=bool(payload.get("set_as_default")),
+            set_as_default=set_as_default,
+            auto_set_default=is_admin,
             owner=owner,
         )
     except ValueError as exc:
@@ -153,10 +158,13 @@ def update_workspace_members_api(workspace_id: str):
 
 
 @workspaces_bp.route("/workspaces/<workspace_id>", methods=["DELETE"])
-@require_role("admin")
+@require_auth()
 def delete_workspace_api(workspace_id: str):
+    user = get_current_user()
+    is_admin = getattr(user, "role", None) == "admin"
     try:
-        delete_workspace(workspace_id)
+        enforce_workspace_owner_or_admin(workspace_id)
+        delete_workspace(workspace_id, allow_default=not is_admin)
     except KeyError as exc:
         return not_found_response(exc)
     except ValueError as exc:
