@@ -12,6 +12,7 @@ DRY_RUN=false
 WRITES_STOPPED=false
 REPORT_FILE="${STATE_DIR}/migration-report.json"
 BACKEND_REPORT_FILE="${STATE_DIR}/backend-migration-report.json"
+STORAGE_REPORT_FILE="${REPORT_FILE%.json}-persistent-storage.json"
 
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
@@ -74,6 +75,15 @@ docker image inspect "${BACKEND_IMAGE}" >/dev/null 2>&1 || die \
 
 # Ensure the one-shot migration runtime exists before the auth migration can apply changes.
 python3 "${SCRIPT_DIR}/migrate_auth_workspace.py" "${ARGS[@]}"
+
+STORAGE_ARGS=(
+    --root "${BUNDLE_ROOT}"
+    --report "${STORAGE_REPORT_FILE}"
+)
+if [ "${DRY_RUN}" = true ]; then
+    STORAGE_ARGS+=(--dry-run)
+fi
+python3 "${SCRIPT_DIR}/migrate_persistent_storage.py" "${STORAGE_ARGS[@]}"
 
 SYSTEM_CONFIG_REPORT="${REPORT_FILE%.json}-system-config.json"
 SYSTEM_CONFIG_ARGS=(

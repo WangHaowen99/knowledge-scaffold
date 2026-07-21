@@ -35,6 +35,9 @@ backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
         '.onto-runtime/users.json' \
         '.onto-runtime/workspaces/' \
         '.onto-runtime/config/' \
+        '.onto-runtime/data/chats/' \
+        '.onto-runtime/data/executions/' \
+        '.onto-runtime/workspaces/*/runtime/users/' \
         '.onto-runtime/mcp-tokens.json' \
         '.onto-runtime/**/graph*migration*' \
         '.onto-auth/users.json' \
