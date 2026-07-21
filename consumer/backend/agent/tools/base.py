@@ -81,6 +81,8 @@ class ToolBatchResult:
     state_updates: Dict[str, Any] = field(default_factory=dict)
     terminal: bool = False
     tool_intervals_ms: List[Dict[str, int]] = field(default_factory=list)
+    terminal_tool_call_id: Optional[str] = None
+    terminal_content: Optional[str] = None
 
 
 class BaseTool(Protocol):

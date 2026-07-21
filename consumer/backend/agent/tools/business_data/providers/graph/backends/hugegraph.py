@@ -16,6 +16,10 @@ from .base import GraphBackendError, GraphBackendTimeoutError, GraphBackendUnsup
 from ..filter_expr import normalize_structured_operator, safe_prop
 from ..models import GraphBackendResult, GraphScope
 from ..scope import sanitize_labels, sanitize_properties, sanitize_return_properties
+from ..timeouts import (
+    resolve_graph_connect_timeout_seconds,
+    resolve_graph_query_timeout_seconds,
+)
 
 _ENTITY_TYPE_ID_TOKEN_RE = re.compile(r"^[eE]\d+$")
 _RELATION_TYPE_ID_TOKEN_RE = re.compile(r"^[rR]\d+$")
@@ -144,10 +148,15 @@ class HugeGraphBackend:
         self.username = str(provider_config.get("username") or "").strip()
         self.password = str(provider_config.get("password") or "")
         self.token = str(provider_config.get("token") or "").strip()
-        self.timeout = int(provider_config.get("timeout_seconds") or 60)
+        self.query_timeout = resolve_graph_query_timeout_seconds(provider_config)
+        self.connection_timeout = resolve_graph_connect_timeout_seconds(
+            provider_config,
+            query_timeout_seconds=self.query_timeout,
+        )
+        self.timeout = self.query_timeout
         self.vertex_query_limit = int(provider_config.get("vertex_query_limit") or 200000)
         self.edge_query_limit = int(provider_config.get("edge_query_limit") or 200000)
-        self.max_retries = max(0, int(provider_config.get("max_retries") or 0))
+        self.max_retries = min(1, max(0, int(provider_config.get("max_retries") or 0)))
 
     def verify_connectivity(self) -> None:
         if not self.url:
@@ -957,7 +966,7 @@ class HugeGraphBackend:
         if not self.url:
             raise GraphBackendError("HugeGraph URL 未配置")
         url = "{}{}".format(self.url, path)
-        timeout = (min(max(1, int(self.timeout or 60)), 15), max(1, int(self.timeout or 60)))
+        timeout = (self.connection_timeout, self.query_timeout)
         headers = {}
         if self.token:
             headers["Authorization"] = "Bearer {}".format(self.token)

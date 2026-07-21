@@ -243,7 +243,7 @@ def test_neo4j_property_filter_forces_workspace_scope(monkeypatch):
     assert "e.`d2o_workspace_id` = $scope_workspace_value" in query_text
     assert "e.`tenant_ontology` = $scope_ontology_value" in query_text
     assert "e.eco_id = $fp_eco_id_0" in query_text
-    assert getattr(query, "timeout", None) == 60
+    assert getattr(query, "timeout", None) == 30
     assert params["elem_class"] == "ChangeOrderAffectedObject"
     assert params["scope_workspace_value"] == "workspace-a"
     assert params["scope_ontology_value"] == "demo-ontology"
@@ -433,7 +433,8 @@ def test_neo4j_timeout_maps_to_backend_timeout_error(monkeypatch):
         "database": "domain",
         "username": "neo4j",
         "password": "secret",
-        "timeout_seconds": 3,
+        "timeout_seconds": 120,
+        "graph_query_timeout_seconds": 30,
     })
     monkeypatch.setattr(backend, "_get_driver", lambda: _TimeoutDriver(calls))
 
@@ -449,5 +450,66 @@ def test_neo4j_timeout_maps_to_backend_timeout_error(monkeypatch):
         )
 
     query, _params = calls[1]
-    assert getattr(query, "timeout", None) == 3
+    assert getattr(query, "timeout", None) == 30
     assert exc_info.value.error_code == "GRAPH_BACKEND_TIMEOUT"
+
+
+def test_neo4j_legacy_timeout_does_not_override_default_query_timeout(monkeypatch):
+    calls = []
+    backend = Neo4jGraphBackend({
+        "uri": "bolt://neo4j.test:7687",
+        "database": "domain",
+        "username": "neo4j",
+        "password": "secret",
+        "timeout_seconds": 60,
+    })
+    monkeypatch.setattr(backend, "_get_driver", lambda: _FakeDriver(calls))
+
+    backend.property_filter(
+        element_class="ChangeOrderAffectedObject",
+        element_type="NODE",
+        filter_dict={},
+        return_properties=[],
+        limit=10,
+        offset=0,
+        scope=_scope(),
+    )
+
+    assert getattr(calls[1][0], "timeout", None) == 30
+
+
+def test_neo4j_uses_separate_connection_and_query_timeouts(monkeypatch):
+    calls = []
+
+    def fake_driver(uri, auth=None, connection_timeout=None):
+        calls.append(("driver", uri, auth, connection_timeout))
+        return _FakeDriver(calls)
+
+    monkeypatch.setattr("neo4j.GraphDatabase.driver", fake_driver)
+    backend = Neo4jGraphBackend({
+        "uri": "bolt://neo4j.test:7687",
+        "database": "domain",
+        "username": "neo4j",
+        "password": "secret",
+        "timeout_seconds": 120,
+        "graph_query_timeout_seconds": 30,
+        "graph_connect_timeout_seconds": 10,
+    })
+
+    backend.property_filter(
+        element_class="ChangeOrderAffectedObject",
+        element_type="NODE",
+        filter_dict={},
+        return_properties=[],
+        limit=10,
+        offset=0,
+        scope=_scope(),
+    )
+
+    assert calls[0] == (
+        "driver",
+        "bolt://neo4j.test:7687",
+        ("neo4j", "secret"),
+        10,
+    )
+    assert getattr(calls[2][0], "timeout", None) == 30

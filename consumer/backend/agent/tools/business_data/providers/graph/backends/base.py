@@ -18,7 +18,7 @@ class GraphBackendTimeoutError(GraphBackendError):
     """Raised when a graph backend query exceeds its configured timeout."""
 
     error_code = "GRAPH_BACKEND_TIMEOUT"
-    retryable = True
+    retryable = False
 
 
 class GraphBackendUnsupportedError(GraphBackendError):

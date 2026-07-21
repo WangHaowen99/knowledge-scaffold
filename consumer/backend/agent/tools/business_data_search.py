@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set
 
@@ -32,7 +33,8 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
             "ontology_context(resource='object'). "
             "Use one entity per call unless querying a join table explicitly defined in object definitions. "
             "An empty result means no matching data by default; do not retry the same retrieval goal unless "
-            "the previous attempt failed due to an explicit prerequisite, argument, or runtime error."
+            "the previous attempt failed due to an explicit prerequisite, argument, or retryable runtime error. "
+            "Never retry a result that explicitly contains retryable=false."
         ),
         "parameters": {
             "type": "object",
@@ -169,6 +171,19 @@ def _emit_business_data_search_event(
         )
 
 
+def _is_terminal_graph_timeout(content: str) -> bool:
+    try:
+        payload = json.loads(str(content or ""))
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, Mapping) or payload.get("retryable") is not False:
+        return False
+    return str(payload.get("error_code") or "").strip() in {
+        "GRAPH_AGENT_TIMEOUT",
+        "GRAPH_BACKEND_TIMEOUT",
+    }
+
+
 @dataclass(frozen=True)
 class BusinessDataSearchTool:
     name: str = "business_data_search"
@@ -212,6 +227,7 @@ class BusinessDataSearchTool:
         return ToolOutcome(
             content=content,
             state_updates=state_updates,
+            terminal=_is_terminal_graph_timeout(content),
         )
 
 

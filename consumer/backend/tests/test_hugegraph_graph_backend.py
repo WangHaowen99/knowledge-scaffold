@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+import requests
+
+from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.backends.hugegraph import HugeGraphBackend
 from agent.tools.business_data.providers.graph.models import GraphScope
 
@@ -97,7 +101,14 @@ def _install_hugegraph_http(monkeypatch, *, include_competing_path=False):
     calls = []
 
     def fake_request(method, url, params=None, json=None, timeout=None, headers=None, auth=None):
-        calls.append({"method": method, "url": url, "params": params, "headers": headers, "auth": auth})
+        calls.append({
+            "method": method,
+            "url": url,
+            "params": params,
+            "timeout": timeout,
+            "headers": headers,
+            "auth": auth,
+        })
         if url.endswith("/schema"):
             return _FakeResponse({"schema": {}})
         if url.endswith("/graph/vertices"):
@@ -196,6 +207,55 @@ def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_d
     assert calls[0]["url"] == "http://hugegraph.test/graphspaces/DEFAULT/graphs/demo/schema"
     assert calls[0]["headers"] == {"Authorization": "Bearer token"}
     assert calls[0]["auth"] == ("user", "secret")
+
+
+def test_hugegraph_uses_separate_connection_and_query_timeouts(monkeypatch):
+    calls = _install_hugegraph_http(monkeypatch)
+    backend = HugeGraphBackend({
+        "url": "http://hugegraph.test",
+        "graph": "demo",
+        "timeout_seconds": 120,
+        "graph_query_timeout_seconds": 30,
+        "graph_connect_timeout_seconds": 10,
+    })
+
+    backend.verify_connectivity()
+
+    assert calls[0]["timeout"] == (10, 30)
+
+
+def test_hugegraph_legacy_timeout_does_not_override_default_query_timeout(monkeypatch):
+    calls = _install_hugegraph_http(monkeypatch)
+    backend = HugeGraphBackend({
+        "url": "http://hugegraph.test",
+        "graph": "demo",
+        "timeout_seconds": 60,
+    })
+
+    backend.verify_connectivity()
+
+    assert calls[0]["timeout"] == (10, 30)
+
+
+def test_hugegraph_timeout_is_retried_at_most_once(monkeypatch):
+    calls = []
+
+    def timeout_request(*args, **kwargs):
+        calls.append({"args": args, "timeout": kwargs.get("timeout")})
+        raise requests.exceptions.Timeout("read timed out")
+
+    monkeypatch.setattr("requests.request", timeout_request)
+    backend = HugeGraphBackend({
+        "url": "http://hugegraph.test",
+        "graph": "demo",
+        "max_retries": 5,
+    })
+
+    with pytest.raises(GraphBackendTimeoutError):
+        backend.verify_connectivity()
+
+    assert len(calls) == 2
+    assert all(call["timeout"] == (10, 30) for call in calls)
 
 
 def test_hugegraph_backend_pattern_search_forces_scope(monkeypatch):

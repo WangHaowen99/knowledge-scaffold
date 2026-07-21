@@ -11,6 +11,11 @@ from agent.tools.business_data.adapters.nl2sql_http_search import NL2SQLHttpSear
 from agent.tools.business_data.adapters.nl2sql_template_search import NL2SQLTemplateSearchAdapter
 from agent.tools.business_data.providers.graph.hugegraph_provider import HugeGraphSearchProvider
 from agent.tools.business_data.providers.graph.neo4j_provider import Neo4jGraphSearchProvider
+from agent.tools.business_data.providers.graph.timeouts import (
+    resolve_graph_agent_timeout_seconds,
+    resolve_graph_connect_timeout_seconds,
+    resolve_graph_query_timeout_seconds,
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +101,9 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
         fields=[
             ProviderField("uri", "Neo4J URI", required=True),
             ProviderField("database", "Database", default="neo4j"),
+            ProviderField("graph_connect_timeout_seconds", "连接超时时间", type="int", default=10),
+            ProviderField("graph_query_timeout_seconds", "图数据库查询超时时间", type="int", default=30),
+            ProviderField("graph_agent_timeout_seconds", "图检索 Agent 兜底超时时间", type="int", default=120),
             ProviderField("username", "用户名", required=True),
             ProviderField("password", "密码", secret=True, required=True),
             ProviderField("timeout_seconds", "超时时间", type="int", default=60),
@@ -115,11 +123,14 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("url", "HugeGraph 地址", required=True),
             ProviderField("graph", "Graph 名称", default="hugegraph"),
             ProviderField("graph_space", "Graph Space"),
+            ProviderField("graph_connect_timeout_seconds", "连接超时时间", type="int", default=10),
+            ProviderField("graph_query_timeout_seconds", "图数据库查询超时时间", type="int", default=30),
+            ProviderField("graph_agent_timeout_seconds", "图检索 Agent 兜底超时时间", type="int", default=120),
             ProviderField("username", "用户名"),
             ProviderField("password", "密码", secret=True),
             ProviderField("token", "访问 Token", secret=True),
             ProviderField("timeout_seconds", "超时时间", type="int", default=60),
-            ProviderField("max_retries", "最大重试次数", type="int", default=2),
+            ProviderField("max_retries", "最大重试次数", type="int", default=1),
             ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
             ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
             ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
@@ -188,12 +199,23 @@ def normalize_provider_config(
             "{} 不支持字段: {}".format(spec.name, ", ".join(sorted(unknown)))
         )
 
+    effective_graph_timeouts: Dict[str, Any] = {}
+    if spec.name in {"neo4j", "hugegraph"}:
+        timeout_source = {**existing, **incoming}
+        effective_graph_timeouts = {
+            "graph_connect_timeout_seconds": resolve_graph_connect_timeout_seconds(timeout_source),
+            "graph_query_timeout_seconds": resolve_graph_query_timeout_seconds(timeout_source),
+            "graph_agent_timeout_seconds": resolve_graph_agent_timeout_seconds(timeout_source),
+        }
+
     for field in spec.fields:
         raw_value = incoming.get(field.name)
+        if raw_value is None and field.name in effective_graph_timeouts:
+            raw_value = effective_graph_timeouts[field.name]
         if field.secret and raw_value in {None, ""} and field.name in existing:
             raw_value = existing.get(field.name)
         value = _coerce_value(field, raw_value)
-        if field.name == "timeout_seconds" and int(value) <= 0:
+        if field.name.endswith("timeout_seconds") and int(value) <= 0:
             raise BusinessDataProviderError("timeout_seconds 必须大于 0")
         if field.name == "max_retries" and int(value) < 0:
             raise BusinessDataProviderError("max_retries 不能小于 0")
@@ -214,9 +236,19 @@ def normalize_provider_config(
 def publicize_provider_config(provider: Any, config: Dict[str, Any] | None) -> Dict[str, Any]:
     spec = get_provider_spec(provider)
     values = dict(config or {})
+    effective_graph_timeouts: Dict[str, Any] = {}
+    if spec.name in {"neo4j", "hugegraph"}:
+        effective_graph_timeouts = {
+            "graph_connect_timeout_seconds": resolve_graph_connect_timeout_seconds(values),
+            "graph_query_timeout_seconds": resolve_graph_query_timeout_seconds(values),
+            "graph_agent_timeout_seconds": resolve_graph_agent_timeout_seconds(values),
+        }
     payload: Dict[str, Any] = {}
     for field in spec.fields:
-        value = values.get(field.name, field.default)
+        value = values.get(
+            field.name,
+            effective_graph_timeouts.get(field.name, field.default),
+        )
         if field.secret:
             payload["has_{}".format(field.name)] = bool(value)
         else:

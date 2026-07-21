@@ -131,8 +131,56 @@ def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch
     hugegraph_fields = {field["name"]: field for field in schemas["hugegraph"]["fields"]}
     assert neo4j_fields["password"]["secret"] is True
     assert neo4j_fields["workspace_property"]["default"] == "d2o_workspace_id"
+    assert neo4j_fields["graph_connect_timeout_seconds"]["default"] == 10
+    assert neo4j_fields["graph_query_timeout_seconds"]["default"] == 30
+    assert neo4j_fields["graph_agent_timeout_seconds"]["default"] == 120
     assert hugegraph_fields["token"]["secret"] is True
     assert hugegraph_fields["ontology_property"]["default"] == "d2o_ontology_id"
+    assert hugegraph_fields["graph_connect_timeout_seconds"]["default"] == 10
+    assert hugegraph_fields["graph_query_timeout_seconds"]["default"] == 30
+    assert hugegraph_fields["graph_agent_timeout_seconds"]["default"] == 120
+    assert hugegraph_fields["max_retries"]["default"] == 1
+
+
+def test_legacy_graph_timeout_is_publicized_without_widening_stricter_limits():
+    from agent.tools.business_data.provider_registry import publicize_provider_config
+
+    public = publicize_provider_config("neo4j", {"timeout_seconds": 5})
+
+    assert public["graph_connect_timeout_seconds"] == 5
+    assert public["graph_query_timeout_seconds"] == 5
+    assert public["graph_agent_timeout_seconds"] == 120
+
+
+@pytest.mark.parametrize(
+    ("provider", "config"),
+    [
+        (
+            "neo4j",
+            {
+                "uri": "bolt://neo4j.example.local:7687",
+                "username": "neo4j",
+                "password": "secret-password",
+                "timeout_seconds": 5,
+            },
+        ),
+        (
+            "hugegraph",
+            {
+                "url": "https://hugegraph.example.local",
+                "timeout_seconds": 5,
+            },
+        ),
+    ],
+)
+def test_legacy_graph_timeout_is_normalized_without_widening_stricter_limits(provider, config):
+    from agent.tools.business_data.provider_registry import normalize_provider_config
+
+    normalized = normalize_provider_config(provider, config)
+
+    assert normalized["graph_connect_timeout_seconds"] == 5
+    assert normalized["graph_query_timeout_seconds"] == 5
+    assert normalized["graph_agent_timeout_seconds"] == 120
 
 
 def test_neo4j_source_secret_is_encrypted_at_rest(tmp_path, monkeypatch):
@@ -442,13 +490,14 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
             "database": "domain",
             "username": "neo4j",
             "password": "secret-password",
+            "graph_connect_timeout_seconds": 10,
             "workspace_property": "d2o_workspace_id",
         },
     )
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     assert calls == [
-        ("driver", "bolt://neo4j.example.com:7687", ("neo4j", "secret-password"), 15),
+        ("driver", "bolt://neo4j.example.com:7687", ("neo4j", "secret-password"), 10),
         ("verify", None),
         ("session", "domain"),
         ("run", "RETURN 1 AS ok"),
@@ -485,6 +534,7 @@ def test_data_source_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
             "username": "graph-user",
             "password": "secret-password",
             "token": "secret-token",
+            "graph_connect_timeout_seconds": 10,
             "workspace_property": "d2o_workspace_id",
         },
     )
@@ -494,5 +544,5 @@ def test_data_source_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
         "url": "https://hugegraph.example.com/graphs/demo/schema",
         "headers": {"Authorization": "Bearer secret-token"},
         "auth": ("graph-user", "secret-password"),
-        "timeout": 15,
+        "timeout": 10,
     }]

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
-from agent.tools.business_data_search import handle_business_data_search
+from agent.tools.business_data_search import BusinessDataSearchTool, handle_business_data_search
 
 
 def _fake_ontology(ontology_id, *, workspace_id=None):
@@ -47,6 +49,31 @@ def _install_search_fakes(monkeypatch):
         fake_query_business_data_stream,
     )
     return captured
+
+
+def test_non_retryable_graph_timeout_stops_the_main_agent_tool_loop(monkeypatch):
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        lambda **_kwargs: (
+            '{"success":false,"engine":"graph_search_runtime",'
+            '"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data_search._build_provider_runtime_context",
+        lambda **_kwargs: {},
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "refinery_unit",
+            "query": "query refinery units",
+        },
+        context=SimpleNamespace(workspace_id="demo-workspace", agent_iteration=0),
+    )
+
+    assert outcome.terminal is True
 
 
 def test_business_data_search_uses_workspace_direct_provider(monkeypatch):

@@ -2357,6 +2357,11 @@ def _extract_output(result: Any) -> str:
 
 
 def _terminal_tool_call_id(batch_result: Any) -> str:
+    explicit_tool_call_id = str(
+        getattr(batch_result, "terminal_tool_call_id", None) or ""
+    ).strip()
+    if explicit_tool_call_id:
+        return explicit_tool_call_id
     for message in reversed(list(getattr(batch_result, "messages", None) or [])):
         if not isinstance(message, Mapping):
             continue
@@ -2367,6 +2372,9 @@ def _terminal_tool_call_id(batch_result: Any) -> str:
 
 
 def _terminal_force_finish_output(batch_result: Any) -> str:
+    terminal_content = getattr(batch_result, "terminal_content", None)
+    if terminal_content is not None:
+        return str(terminal_content)
     return _first_tool_message_content(batch_result)
 
 

@@ -49,6 +49,7 @@ from .agent import (
     _safe_exception_detail,
     _summarize_tool_execution,
 )
+from .backends.base import GraphBackendError
 from .models import GraphAgentResult, GraphEntityMapping, GraphSearchRuntimeContext
 from .trace import build_graph_agent_runtime_trace
 from .tools.executor import DATA_TOOLS, GraphToolExecution, GraphToolExecutor, GraphToolInputError
@@ -98,7 +99,7 @@ class JiuwenGraphQueryAgent:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     timeout_cancel_event.set()
-                    _wait_for_graph_worker(future)
+                    future.cancel()
                     raise GraphAgentTimeoutError(
                         "GraphQueryAgent 调用超时（{}s）".format(_format_timeout(timeout_seconds))
                     )
@@ -107,9 +108,16 @@ class JiuwenGraphQueryAgent:
                 except FuturesTimeoutError:
                     continue
         finally:
-            if context.provider_config.get("_graph_cancel_event") is timeout_cancel_event:
-                context.provider_config.pop("_graph_cancel_event", None)
-            executor.shutdown(wait=True, cancel_futures=True)
+            def clear_cancel_event(_future: Any = None) -> None:
+                del _future
+                if context.provider_config.get("_graph_cancel_event") is timeout_cancel_event:
+                    context.provider_config.pop("_graph_cancel_event", None)
+
+            if future.done():
+                clear_cancel_event()
+            else:
+                future.add_done_callback(clear_cancel_event)
+            executor.shutdown(wait=future.done(), cancel_futures=True)
 
     def _run_without_timeout(
         self,
@@ -279,7 +287,7 @@ class JiuwenGraphQueryAgent:
             if _is_error_result(raw_result):
                 raise GraphAgentError(_extract_output(raw_result) or "Jiuwen graph agent returned an error.")
             return _extract_output(raw_result)
-        except (GraphAgentError, WorkflowCancelledError):
+        except (GraphAgentError, GraphBackendError, WorkflowCancelledError):
             raise
         except JiuwenBackendUnavailable as exc:
             raise GraphAgentUnavailableError(str(exc)) from exc
@@ -546,13 +554,6 @@ def _run_graph_cleanup(step: str, cleanup: Any) -> None:
         cleanup()
     except Exception:
         logger.warning("Graph Jiuwen cleanup failed: %s", step, exc_info=True)
-
-
-def _wait_for_graph_worker(future: Any) -> None:
-    try:
-        future.result()
-    except BaseException:
-        return
 
 
 def _resolve_graph_jiuwen_llm_config(
