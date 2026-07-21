@@ -12,6 +12,11 @@ from api.routes.sessions import sessions_bp
 from api.routes.workflows import AgenticRunRegistry
 from api.auth.auth import AuthManager
 from persistence.chat_store import ChatStore
+from persistence.execution_store import (
+    INTERACTION_CANCELLED_MESSAGE,
+    INTERACTION_CANCELLED_NOTICE,
+    ExecutionStore,
+)
 from workspace.workspaces import create_workspace
 
 
@@ -148,6 +153,73 @@ def test_update_session_pinned_state_returns_404_for_missing_session(tmp_path, m
 
     assert response.status_code == 404
     assert response.get_json()["error"] == "Session not found"
+
+
+def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    chat_store.create_session(session_id="sess-cancel", title="Cancel")
+    interaction = {
+        "id": "interaction-cancel-1",
+        "type": "input",
+        "prompt": "请补充信息",
+    }
+    execution_store.start_turn("sess-cancel", 1, "run-1", "开始")
+    execution_store.set_llm_context(
+        "sess-cancel",
+        [{"role": "assistant", "content": "请补充信息"}],
+    )
+    execution_store.await_turn(
+        "sess-cancel",
+        1,
+        final_output={"type": "user_interaction", "interaction": interaction},
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    stale = client.post(
+        "/agentic/sessions/sess-cancel/interactions/stale/cancel",
+        headers=headers,
+    )
+    assert stale.status_code == 409
+
+    url = "/agentic/sessions/sess-cancel/interactions/interaction-cancel-1/cancel"
+    response = client.post(url, headers=headers)
+    retry = client.post(url, headers=headers)
+
+    assert response.status_code == 200
+    assert retry.status_code == 200
+    assert response.get_json()["message"] == INTERACTION_CANCELLED_MESSAGE
+    assert response.get_json()["display_message"] == INTERACTION_CANCELLED_NOTICE
+    assert execution_store.get_turn("sess-cancel", 1)["status"] == "cancelled"
+    assert execution_store.get_llm_context("sess-cancel") == [
+        {"role": "assistant", "content": "请补充信息"},
+    ]
+    assert "interaction_context_consumed_at" not in execution_store.get_turn(
+        "sess-cancel",
+        1,
+    )
+    loaded = chat_store.get_session("sess-cancel")
+    cancellation_events = [
+        event for event in loaded.events
+        if event.get("event") == "chat_message"
+        and (event.get("data") or {}).get("metadata", {}).get("type")
+        == "interaction_cancelled"
+    ]
+    assert len(cancellation_events) == 1
+    assert cancellation_events[0]["data"]["role"] == "system"
+    assert cancellation_events[0]["data"]["content"] == INTERACTION_CANCELLED_NOTICE
+
+    monkeypatch.setattr(
+        "api.routes.sessions._get_request_workspace_id",
+        lambda: "test-workspace",
+    )
+    refreshed = client.get("/agentic/sessions/sess-cancel", headers=headers)
+    assert refreshed.status_code == 200
+    assert refreshed.get_json()["active_run_status"] == "cancelled"
 
 
 def test_list_session_turns_filters_status_and_feedback(tmp_path, monkeypatch):

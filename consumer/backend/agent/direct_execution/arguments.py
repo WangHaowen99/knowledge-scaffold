@@ -170,7 +170,7 @@ def filter_business_args(script_args: Sequence[str]) -> List[str]:
 def build_direct_cli_args(
     script_args: Sequence[str] = (),
     script_parameters: Sequence[Mapping[str, Any]] = (),
-    business_arguments: Dict[str, Any] = {},
+    business_arguments: Optional[Dict[str, Any]] = None,
     runtime_context: Optional[RuntimeContext] = None,
 ) -> Tuple[List[str], List[str], Optional[str]]:
     """Build the complete CLI argument list for direct script execution.
@@ -189,6 +189,9 @@ def build_direct_cli_args(
         - missing_business_args: business parameter names the user needs to supply
         - system_error: None if OK, error string if system/runtime context is incomplete
     """
+    if business_arguments is None:
+        business_arguments = {}
+
     if script_parameters:
         return _build_direct_cli_args_from_parameters(
             script_parameters=script_parameters,

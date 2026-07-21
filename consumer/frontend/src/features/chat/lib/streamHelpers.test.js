@@ -287,6 +287,45 @@ test('cancelled turn freezes unfinished business data search as cancelled', () =
   assert.equal(state.streamSegments[0].endTs, 1010);
 });
 
+test('business data provider errors remain visible while empty progress is ignored', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('tool.started', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    input: { entity: '主CHANGE_ORDER', query: '查询所有主CHANGE_ORDER编号' },
+  }, 1));
+  state = applyAgentV2Event(state, envelope('tool.progress', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    progress: { business_data_search_event: { type: 'start', content: '' } },
+  }, 2));
+  state = applyAgentV2Event(state, envelope('tool.progress', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    progress: {
+      business_data_search_event: { type: 'error', content: 'MindsDB request failed' },
+    },
+  }, 3));
+  state = applyAgentV2Event(state, envelope('tool.finished', {
+    tool_name: 'business_data_search',
+    tool_call_id: 'call-unreachable',
+    status: 'error',
+    output_preview: 'Error: 业务数据查询失败：MindsDB request failed',
+    error: 'Error: 业务数据查询失败：MindsDB request failed',
+  }, 4));
+
+  const [segment] = state.streamSegments;
+  assert.equal(segment.toolStatus, 'error');
+  assert.equal(segment.meta.error, 'Error: 业务数据查询失败：MindsDB request failed');
+  assert.deepEqual(segment.meta.db_events, [{
+    type: 'error',
+    content: 'MindsDB request failed',
+    ts: 1003,
+    seq: 3,
+  }]);
+});
+
 test('nested groups split surrounding subagent token events without reordering them', () => {
   let state = { streamSegments: [], status: 'idle', isLoading: false };
   const simultaneousEnvelope = (type, payload, seq) => envelope(type, payload, seq, { ts: 1000 });

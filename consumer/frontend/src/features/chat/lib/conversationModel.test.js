@@ -59,6 +59,20 @@ const assistantMessage = {
   iterationMetrics: [{ iteration: 1, status: 'completed', totalElapsedMs: 700, ts: 1750 }],
 };
 
+test('system cancellation notice remains a standalone non-turn message', () => {
+  const model = buildConversationViewModel([{
+    id: 'interaction-cancelled-1',
+    role: 'system',
+    content: '用户取消了操作',
+    metadata: { type: 'interaction_cancelled' },
+  }]);
+
+  assert.equal(model.messages[0].role, 'system');
+  assert.equal(model.messages[0].kind, 'message');
+  assert.equal(model.messages[0].content, '用户取消了操作');
+  assert.equal(model.turns.length, 0);
+});
+
 test('conversation blocks keep source segment order and add lifecycle last', () => {
   const model = buildConversationViewModel([assistantMessage]);
   const turn = model.turns[0];
@@ -192,6 +206,29 @@ test('business data exposes progress and parsed structured output', () => {
 
   assert.deepEqual(block.progress.map((event) => event.type), ['intermediate', 'final']);
   assert.deepEqual(structured.parsedOutput, { columns: ['cost'], rows: [[3000]], total: 1 });
+});
+
+test('business data progress omits empty entries and keeps provider errors', () => {
+  const block = buildConversationViewModel([{
+    ...assistantMessage,
+    streamSegments: [{
+      ...assistantMessage.streamSegments[1],
+      state: 'completed',
+      meta: {
+        ...assistantMessage.streamSegments[1].meta,
+        output_preview: '',
+        db_events: [
+          { type: 'start', content: '', seq: 1, ts: 1200 },
+          { type: 'error', content: 'MindsDB request failed', seq: 2, ts: 1210 },
+        ],
+      },
+    }],
+  }]).turns[0].blocks[0];
+
+  assert.equal(block.status, 'error');
+  assert.equal(block.error, 'MindsDB request failed');
+  assert.deepEqual(block.progress.map((event) => event.type), ['error']);
+  assert.equal(block.progress[0].text, 'MindsDB request failed');
 });
 
 test('raw envelopes hydrate into the same ordered conversation model', () => {

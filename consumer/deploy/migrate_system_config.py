@@ -27,15 +27,22 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
+    temporary: Path | None = None
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            prefix=f".{path.name}.",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
             handle.write(content)
         os.replace(temporary, path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _clean_env_lines(content: str) -> tuple[str, int]:

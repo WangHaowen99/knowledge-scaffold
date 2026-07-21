@@ -68,13 +68,25 @@ def _test_candidate(client, headers, provider: str, config: dict):
 
 
 @pytest.mark.parametrize(
-    ("method", "path"),
+    ("method", "path", "resolver_name"),
     [
-        ("GET", "/agentic/business-data/provider-schemas"),
-        ("GET", "/agentic/ontologies/demo-ontology/data-source"),
-        ("PUT", "/agentic/ontologies/demo-ontology/data-source"),
-        ("DELETE", "/agentic/ontologies/demo-ontology/data-source"),
-        ("POST", "/agentic/ontologies/demo-ontology/data-source/test"),
+        ("GET", "/agentic/business-data/provider-schemas", "resolve_workspace_id"),
+        ("GET", "/agentic/ontologies/demo-ontology/data-source", "resolve_workspace_id"),
+        (
+            "PUT",
+            "/agentic/ontologies/demo-ontology/data-source",
+            "resolve_workspace_owner_or_admin_id",
+        ),
+        (
+            "DELETE",
+            "/agentic/ontologies/demo-ontology/data-source",
+            "resolve_workspace_owner_or_admin_id",
+        ),
+        (
+            "POST",
+            "/agentic/ontologies/demo-ontology/data-source/test",
+            "resolve_workspace_owner_or_admin_id",
+        ),
     ],
 )
 def test_business_data_routes_enforce_workspace_authz_before_access(
@@ -82,13 +94,17 @@ def test_business_data_routes_enforce_workspace_authz_before_access(
     monkeypatch,
     method,
     path,
+    resolver_name,
 ):
     from flask import abort
 
     client, headers = _build_test_client(tmp_path, monkeypatch)
-    monkeypatch.setattr("api.routes.business_data.resolve_workspace_id", lambda _request: abort(403))
-    response = client.open(path, method=method, headers=headers, json={})
-    assert response.status_code == 403
+    monkeypatch.setattr(
+        f"api.routes.business_data.{resolver_name}",
+        lambda _request: abort(403),
+    )
+    with client.open(path, method=method, headers=headers, json={}) as response:
+        assert response.status_code == 403
 
 
 def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
@@ -226,8 +242,13 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
         def json(self):
             return {"success": True}
 
-    def fake_post(_session, url, headers=None, json=None, timeout=None):
-        calls.append({"url": url, "headers": headers or {}, "json": json, "timeout": timeout})
+    def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
+        calls.append({
+            "url": url,
+            "headers": headers or {},
+            "json": request_kwargs.get("json"),
+            "timeout": timeout,
+        })
         return FakeResponse()
 
     monkeypatch.setattr(requests.Session, "post", fake_post)
@@ -307,8 +328,13 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
         def json(self):
             return self._payload
 
-    def fake_post(_session, url, headers=None, json=None, timeout=None):
-        post_calls.append({"url": url, "headers": headers or {}, "json": json, "timeout": timeout})
+    def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
+        post_calls.append({
+            "url": url,
+            "headers": headers or {},
+            "json": request_kwargs.get("json"),
+            "timeout": timeout,
+        })
         return FakeResponse({"token": "jwt-token"})
 
     def fake_get(_session, url, headers=None, timeout=None):

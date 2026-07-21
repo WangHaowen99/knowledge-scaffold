@@ -139,3 +139,50 @@ def test_business_data_search_reports_missing_data_source(monkeypatch):
     )
 
     assert result == "Error: 本体 'demo-ontology' 未配置业务数据源"
+
+
+def test_business_data_search_reports_provider_stream_error(monkeypatch):
+    _install_search_fakes(monkeypatch)
+
+    def fake_query_business_data_stream(request, *, connection):
+        del request, connection
+        yield {"type": "start", "content": ""}
+        yield {"type": "error", "content": "MindsDB request failed"}
+        yield {"type": "done", "content": ""}
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.query_business_data_stream",
+        fake_query_business_data_stream,
+    )
+
+    result = handle_business_data_search(
+        ontology_id="demo-ontology",
+        entity="TargetItem",
+        query="查询 TargetItem",
+        workspace_id="demo-workspace",
+    )
+
+    assert result == "Error: 业务数据查询失败：MindsDB request failed"
+
+
+def test_business_data_search_reports_missing_final_event(monkeypatch):
+    _install_search_fakes(monkeypatch)
+
+    def fake_query_business_data_stream(request, *, connection):
+        del request, connection
+        yield {"type": "start", "content": "开始查询"}
+        yield {"type": "done", "content": "查询流程结束"}
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.query_business_data_stream",
+        fake_query_business_data_stream,
+    )
+
+    result = handle_business_data_search(
+        ontology_id="demo-ontology",
+        entity="TargetItem",
+        query="查询 TargetItem",
+        workspace_id="demo-workspace",
+    )
+
+    assert result == "Error: 业务数据查询失败：数据源未返回查询结果"

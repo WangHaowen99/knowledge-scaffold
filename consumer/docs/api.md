@@ -37,25 +37,29 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
 权限规则：
 
 - 普通已认证用户可访问绝大多数读接口与运行接口
-- `admin` 才能访问：
-  - `POST /agentic/skills/upload`
-  - `DELETE /agentic/skills/{skill_name}`
+- 普通已认证用户可调用 `POST /agentic/workspaces` 创建工作空间；服务端会强制将 owner 设为当前用户，且普通用户不能主动替换已有全局默认工作空间
+- workspace member 只能读取、使用资源和执行评测运行，不能修改 workspace 资源
+- 全局 `admin` 或当前 workspace owner 可执行：
+  - `POST /agentic/ontologies/import-zip`
+  - `PUT /agentic/ontologies/{ontology_id}/active-version`
+  - `PUT /agentic/ontologies/{ontology_id}/data-source`
+  - `DELETE /agentic/ontologies/{ontology_id}/data-source`
+  - `PUT /agentic/ontologies/{ontology_id}/status`
   - `DELETE /agentic/ontologies/{ontology_id}`
   - `DELETE /agentic/ontologies/{ontology_id}/versions/{version}`
   - `PUT /agentic/ontologies/{ontology_id}/file`
   - `POST /agentic/ontologies/{ontology_id}/upload`
-  - `POST /agentic/ontologies/import-zip`
-  - `POST /agentic/workspaces`
-  - `PATCH /agentic/workspaces/{workspace_id}`（全局 admin 可转移 owner；workspace owner 可改名称和描述）
-  - `PUT /agentic/workspaces/{workspace_id}/members`（全局 admin 或 workspace owner）
-  - `DELETE /agentic/workspaces/{workspace_id}`
+  - `POST /agentic/ontologies/{ontology_id}/data-source/test`
+  - `PATCH /agentic/workspaces/{workspace_id}`（仅全局 admin 可转移 owner）
+  - `PUT /agentic/workspaces/{workspace_id}/members`
+  - `DELETE /agentic/workspaces/{workspace_id}`（workspace owner 只能删除自己的空间）
+- `admin` 才能访问：
+  - `POST /agentic/skills/upload`
+  - `DELETE /agentic/skills/{skill_name}`
   - `POST /agentic/workspaces/{workspace_id}/default`
   - `PATCH /agentic/workspaces/{workspace_id}/runtime-config`
   - `PATCH /agentic/workspaces/{workspace_id}/observability-config`
   - `POST /agentic/workspaces/{workspace_id}/observability-config/test`
-  - `PUT /agentic/ontologies/{ontology_id}/data-source`
-  - `DELETE /agentic/ontologies/{ontology_id}/data-source`
-  - `POST /agentic/ontologies/{ontology_id}/data-source/test`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/apply`
   - `POST /agentic/operations/{ontology_id}/{operation_key}/staged/reject`
   - `GET /auth/users`
@@ -1399,9 +1403,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 无 owner 的存量 workspace 保持公共可见，服务不会在迁移时自动私有化；管理员应根据审计报告显式设置 owner 和 members。
 
-### 7.6 `DELETE /agentic/workspaces/{workspace_id}` (`admin`)
+### 7.6 `DELETE /agentic/workspaces/{workspace_id}`（全局 `admin` 或 workspace owner）
 
-删除工作空间。
+删除工作空间。workspace owner 只能删除自己拥有的空间；普通 member 不能删除。
 
 响应 `200`：
 
@@ -1414,7 +1418,8 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 说明：
 
-- 默认工作空间不可删除，必须先切换默认 workspace
+- 全局 admin 删除默认 workspace 前仍必须先切换默认 workspace
+- workspace owner 可删除自己拥有的默认 workspace；删除后系统显式保持“无全局默认”状态，不会自动把其他私有 workspace 提升为默认
 
 ### 7.7 `POST /agentic/workspaces/{workspace_id}/default` (`admin`)
 

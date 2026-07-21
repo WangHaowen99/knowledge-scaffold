@@ -188,7 +188,7 @@ def _write_workspace_metadata(paths: WorkspacePaths, payload: Dict[str, Any]) ->
     _write_json_atomic(paths.metadata_path, payload)
 
 
-def _read_workspace_settings() -> Dict[str, str]:
+def _read_workspace_settings() -> Dict[str, Any]:
     settings_path = get_workspace_settings_path()
     if not settings_path.exists():
         return {}
@@ -200,7 +200,7 @@ def _read_workspace_settings() -> Dict[str, str]:
         return {}
 
 
-def _write_workspace_settings(payload: Dict[str, str]) -> None:
+def _write_workspace_settings(payload: Dict[str, Any]) -> None:
     _write_json_atomic(get_workspace_settings_path(), payload)
 
 
@@ -293,6 +293,17 @@ def user_can_access_workspace(user: Any, workspace: Dict[str, Any], is_default: 
     if username and username == owner:
         return True
     return bool(username and username in _public_members(workspace))
+
+
+def user_can_administer_workspace(user: Any, workspace: Dict[str, Any]) -> bool:
+    """Return whether a user is the global admin or the workspace owner."""
+    if user is None:
+        return False
+    if getattr(user, "role", None) == "admin":
+        return True
+    username = getattr(user, "username", None)
+    owner = workspace.get("owner") or None
+    return bool(username and owner and username == owner)
 
 
 def _init_workspace_layout(
@@ -410,6 +421,9 @@ def _ensure_workspace_state() -> None:
         workspace_dirs = _list_workspace_dirs()
         settings = _read_workspace_settings()
         default_workspace_id = settings.get("default_workspace_id")
+        default_explicitly_cleared = (
+            "default_workspace_id" in settings and default_workspace_id is None
+        )
 
         if default_workspace_id and workspace_exists(default_workspace_id):
             return
@@ -419,15 +433,15 @@ def _ensure_workspace_state() -> None:
             _write_workspace_settings(settings)
             return
 
-        if len(workspace_dirs) == 1:
+        if len(workspace_dirs) == 1 and not default_explicitly_cleared:
             only_id = validate_workspace_id(workspace_dirs[0].name)
             settings["default_workspace_id"] = only_id
             _write_workspace_settings(settings)
             return
 
         if not workspace_dirs:
-            settings.pop("default_workspace_id", None)
-            if settings:
+            if "default_workspace_id" not in settings or settings.get("default_workspace_id") is not None:
+                settings["default_workspace_id"] = None
                 _write_workspace_settings(settings)
 
 
@@ -438,6 +452,8 @@ def get_default_workspace_id() -> Optional[str]:
         default_workspace_id = settings.get("default_workspace_id")
         if default_workspace_id and workspace_exists(default_workspace_id):
             return validate_workspace_id(default_workspace_id)
+        if "default_workspace_id" in settings and default_workspace_id is None:
+            return None
 
         workspace_dirs = _list_workspace_dirs()
         if len(workspace_dirs) == 1:
@@ -506,6 +522,7 @@ def create_workspace(
     *,
     workspace_id: Optional[str] = None,
     set_as_default: bool = False,
+    auto_set_default: bool = True,
     owner: Optional[str] = None,
 ) -> Dict[str, str]:
     _ensure_workspace_state()
@@ -533,7 +550,7 @@ def create_workspace(
             description=description,
             owner=normalized_owner,
         )
-    if set_as_default or get_default_workspace_id() is None:
+    if set_as_default or (auto_set_default and get_default_workspace_id() is None):
         set_default_workspace(candidate)
     return get_workspace(candidate)
 
@@ -622,15 +639,21 @@ def update_workspace_authorized(
         return get_workspace(paths.workspace_id)
 
 
-def delete_workspace(workspace_id: str) -> None:
+def delete_workspace(workspace_id: str, *, allow_default: bool = False) -> None:
     resolved_id = validate_workspace_id(workspace_id)
     with _workspace_metadata_lock:
-        if get_default_workspace_id() == resolved_id:
+        is_default = get_default_workspace_id() == resolved_id
+        if is_default and not allow_default:
             raise ValueError("默认工作空间不可删除，请先切换默认工作空间")
         paths = get_workspace_paths(resolved_id)
         if not paths.metadata_path.exists():
             raise WorkspaceNotFoundError(resolved_id)
         shutil.rmtree(paths.workspace_dir, ignore_errors=True)
+        if is_default:
+            settings = _read_workspace_settings()
+            settings["default_workspace_id"] = None
+            _write_workspace_settings(settings)
+
     # Keep process caches from retaining content for a deleted workspace id.
     from ontology.ontologies import invalidate_ontology_registry
     from utils.skills import invalidate_skill_registry
@@ -721,7 +744,7 @@ def evaluate_workspace_subject_access(
                 resolved_workspace_id,
                 metadata,
             )
-        except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
+        except (OSError, TypeError, ValueError, KeyError):
             return WorkspaceSubjectAccessDecision(False, "workspace_metadata_invalid")
         default_workspace_id = _read_default_workspace_id_for_acl()
 
@@ -781,7 +804,7 @@ def _read_default_workspace_id_for_acl() -> Optional[str]:
             return None
         resolved_default = validate_workspace_id(raw_default)
         return resolved_default if resolved_default == raw_default else None
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, TypeError, ValueError):
         return None
 
 
@@ -841,6 +864,21 @@ def enforce_workspace_access(workspace_id: str) -> str:
     return _enforce_workspace_access(resolved_id)
 
 
+def enforce_workspace_owner_or_admin(workspace_id: str) -> str:
+    """Require global admin or current workspace ownership for a request mutation."""
+    resolved_id = enforce_workspace_access(workspace_id)
+    paths = get_workspace_paths(resolved_id)
+    try:
+        with _workspace_metadata_lock:
+            workspace = _read_workspace_metadata_raw(paths.metadata_path)
+            _validate_workspace_metadata_identity(resolved_id, workspace)
+    except Exception:
+        _abort_workspace_metadata_invalid(resolved_id)
+    if not user_can_administer_workspace(_current_request_user(), workspace):
+        _abort_workspace_access_denied()
+    return resolved_id
+
+
 def resolve_workspace_id(request: Request) -> str:
     _ensure_workspace_state()
     default_workspace_id = get_default_workspace_id()
@@ -869,6 +907,11 @@ def resolve_workspace_id(request: Request) -> str:
     if not workspaces:
         raise ValueError("当前不存在任何工作空间")
     raise ValueError("X-Workspace-Id 不能为空；当前存在多个工作空间")
+
+
+def resolve_workspace_owner_or_admin_id(request: Request) -> str:
+    """Resolve request workspace and require global admin or workspace ownership."""
+    return enforce_workspace_owner_or_admin(resolve_workspace_id(request))
 
 
 @contextmanager
