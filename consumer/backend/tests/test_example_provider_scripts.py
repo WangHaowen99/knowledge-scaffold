@@ -59,12 +59,12 @@ def test_example_script_surfaces_shared_provider_failure():
 
     class FakeDataProviderClient:
         def query_sql(self, _sql: str) -> ProviderResult:
-            return ProviderResult(success=False, error="query failed")
+            return ProviderResult(success=False, error="权限拒绝")
 
     try:
         module._query(FakeDataProviderClient(), "SELECT 1")
     except RuntimeError as exc:
-        assert str(exc) == "query failed"
+        assert str(exc) == "权限拒绝"
     else:
         raise AssertionError("provider failure should raise RuntimeError")
 
