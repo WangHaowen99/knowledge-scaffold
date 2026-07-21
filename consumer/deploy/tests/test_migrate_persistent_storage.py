@@ -10,7 +10,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from migrate_persistent_storage import migrate  # noqa: E402
+from migrate_persistent_storage import migrate, resolve_legacy_container_storage_paths  # noqa: E402
 
 
 def _write_json(path: Path, payload) -> None:
@@ -82,6 +82,26 @@ class PersistentStorageMigrationTests(unittest.TestCase):
         self.assertEqual(payload["storage"]["chat_storage_dir"], "/app/.onto-runtime/custom/chats")
         self.assertEqual(payload["storage"]["execution_storage_dir"], "/app/.onto-runtime/custom/executions")
 
+    def test_legacy_export_paths_follow_saved_storage_before_env(self) -> None:
+        self.env_path.write_text(
+            "CHAT_STORAGE_DIR=./env-chats\nEXECUTION_STORAGE_DIR=./env-executions\n",
+            encoding="utf-8",
+        )
+        _write_json(
+            self.root / ".onto-runtime" / "config" / "system_config.json",
+            {
+                "storage": {
+                    "chat_storage_dir": "/app/custom/chats",
+                    "execution_storage_dir": "./saved-executions",
+                }
+            },
+        )
+
+        resolved = resolve_legacy_container_storage_paths(self.root)
+
+        self.assertEqual(resolved["chat_storage_dir"], "/app/custom/chats")
+        self.assertEqual(resolved["execution_storage_dir"], "/app/saved-executions")
+
     def test_apply_imports_legacy_container_storage_archive(self) -> None:
         backup_dir = self.root / "deploy" / "backups" / "case-1"
         staging_root = backup_dir / "legacy-backend-data"
@@ -143,9 +163,12 @@ class PersistentStorageMigrationTests(unittest.TestCase):
         target_path = self.root / ".onto-runtime" / "data" / "chats" / "sess-c" / "snapshot.json"
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_text('{"id":"sess-c","value":"runtime"}', encoding="utf-8")
+        original_env = self.env_path.read_text(encoding="utf-8") if self.env_path.exists() else ""
 
         with self.assertRaisesRegex(ValueError, "legacy storage import conflicts"):
             migrate(self.root, dry_run=False, legacy_backup_dir=backup_dir)
+        self.assertEqual(self.env_path.read_text(encoding="utf-8") if self.env_path.exists() else "", original_env)
+        self.assertFalse((self.root / ".onto-runtime" / "data" / "executions" / "sess-c").exists())
 
 
 if __name__ == "__main__":

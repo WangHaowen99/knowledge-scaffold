@@ -27,14 +27,23 @@ backup_path_if_present() {
 backup_legacy_container_storage_if_present() {
     local container_name="onto-agent-backend"
     local staging_root="${BACKUP_DIR}/legacy-backend-data"
+    local resolved_paths=""
+    local chat_source=""
+    local execution_source=""
     local exported=0
 
     docker container inspect "${container_name}" >/dev/null 2>&1 || return 0
 
+    resolved_paths="$(python3 "${SCRIPT_DIR}/migrate_persistent_storage.py" \
+        --root "${BUNDLE_ROOT}" \
+        --print-legacy-export-paths)"
+    chat_source="$(printf '%s\n' "${resolved_paths}" | sed -n 's/^CHAT_STORAGE_DIR=//p' | head -n 1)"
+    execution_source="$(printf '%s\n' "${resolved_paths}" | sed -n 's/^EXECUTION_STORAGE_DIR=//p' | head -n 1)"
+
     rm -rf "${staging_root}"
     mkdir -p "${staging_root}/chats" "${staging_root}/executions"
 
-    if docker cp "${container_name}:/app/data/chats/." "${staging_root}/chats" 2>/dev/null; then
+    if [ -n "${chat_source}" ] && docker cp "${container_name}:${chat_source}/." "${staging_root}/chats" 2>/dev/null; then
         if find "${staging_root}/chats" -mindepth 1 -print -quit | grep -q .; then
             exported=1
         else
@@ -44,7 +53,7 @@ backup_legacy_container_storage_if_present() {
         rm -rf "${staging_root}/chats"
     fi
 
-    if docker cp "${container_name}:/app/data/executions/." "${staging_root}/executions" 2>/dev/null; then
+    if [ -n "${execution_source}" ] && docker cp "${container_name}:${execution_source}/." "${staging_root}/executions" 2>/dev/null; then
         if find "${staging_root}/executions" -mindepth 1 -print -quit | grep -q .; then
             exported=1
         else
