@@ -19,13 +19,16 @@ FAILED_FRONTEND_IMAGE="${CURRENT_FRONTEND_IMAGE:-}"
 FAILED_AUTH_IMAGE="${CURRENT_AUTH_IMAGE:-}"
 FAILED_JIUWENBOX_IMAGE="${CURRENT_JIUWENBOX_IMAGE:-}"
 
-log "Stopping failed release writes before failsafe backup and restore"
-compose_down "${FAILED_BACKEND_IMAGE}" "${FAILED_FRONTEND_IMAGE}" "${FAILED_AUTH_IMAGE}" "${FAILED_JIUWENBOX_IMAGE:-onto-agent-jiuwenbox:latest}"
+log "Stopping failed release writes before failsafe backup"
+compose_stop "${FAILED_BACKEND_IMAGE}" "${FAILED_FRONTEND_IMAGE}" "${FAILED_AUTH_IMAGE}" "${FAILED_JIUWENBOX_IMAGE:-onto-agent-jiuwenbox:latest}"
 
 FAILSAFE_BACKUP="$("${SCRIPT_DIR}/backup.sh" "rollback-${PREVIOUS_VERSION}" "${CURRENT_FAILED_VERSION}")"
 log "Captured current state before rollback at ${FAILSAFE_BACKUP}"
 
 log "Code-only rollback keeps current runtime/auth data in place; backup restore remains an explicit manual action"
+
+log "Removing stopped failed-release containers before rollback"
+compose_down "${FAILED_BACKEND_IMAGE}" "${FAILED_FRONTEND_IMAGE}" "${FAILED_AUTH_IMAGE}" "${FAILED_JIUWENBOX_IMAGE:-onto-agent-jiuwenbox:latest}"
 
 ROLLBACK_BACKEND_IMAGE=""
 ROLLBACK_FRONTEND_IMAGE=""
