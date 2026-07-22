@@ -5,11 +5,11 @@ import { authFetch } from '../../shared/api/auth';
 import { StatusTag } from '../../shared/ui/primitives';
 import ConversationView from './components/ConversationView';
 import TracePanel from './components/TracePanel';
-import useAgenticStream from './hooks/useAgenticStream';
 import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
 import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
+import { isBlankChatSubmitting, scheduleBlankChatFocus } from './lib/firstSendCoordinator';
 import { applyInteractionCancellation, findPendingInteraction } from './lib/pendingInteraction';
 import {
   resolveSessionPreferences,
@@ -136,7 +136,13 @@ function AgentModePicker({ value, onChange, disabled }) {
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
 // useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
-export default function ChatWorkspace({ chat, streamManager, onOpenObservability, onConfigureDataSource }) {
+export default function ChatWorkspace({
+  chat,
+  streamManager,
+  agenticStream,
+  onOpenObservability,
+  onConfigureDataSource,
+}) {
   const { workspaceId, workspaceDataReady } = useAuthContext();
   const {
     sessions,
@@ -144,22 +150,17 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     messages,
     setMessages,
     createChat,
+    firstSendPending,
+    runFirstSend,
     hydrateChat,
     generateSessionTitle,
     touchSession,
   } = chat;
-  const { sendAgentic, resumeAgentic } = useAgenticStream({
-    sessionId: currentChatId,
-    setMessages,
-    streamManager,
-    scopeKey: workspaceId,
-  });
+  const { sendAgentic, resumeAgentic } = agenticStream;
   const [input, setInput] = useState('');
   const [interactionCancelError, setInteractionCancelError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const inputRef = useRef(null);
   const currentChatIdRef = useRef(currentChatId);
-  const sendInFlightRef = useRef(false);
   const [traceOpen, setTraceOpen] = useState(() => {
     try { return !window.matchMedia('(max-width: 900px)').matches; } catch { return true; }
   });
@@ -341,41 +342,60 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
 
   const send = async () => {
     const text = input.trim();
-    if (sendInFlightRef.current || !workspaceDataReady || !text || streamState.isLoading) return;
-    sendInFlightRef.current = true;
-    setIsSubmitting(true);
-    let sessionId = currentChatId;
-    let isNew = false;
-    try {
-      if (!sessionId) {
-        const session = await createChat({
-          llmRequestMode: 'stream',
-          modelProfileId,
-          agentMode,
-          selectedOntologyId,
-        });
-        if (!session) return;
-        sessionId = session.id;
-        isNew = true;
-      }
+    if (!workspaceDataReady || !text || streamState.isLoading) return;
+
+    const startRun = (sessionId, isNew = false) => {
       const refreshSessionTime = () => touchSession?.(sessionId);
       refreshSessionTime();
-      sendAgentic(text, sessionId, {
+      void sendAgentic(text, sessionId, {
         agentMode,
         modelProfileId,
         selectedOntologyId,
         onSessionUpdated: refreshSessionTime,
       });
+      if (isNew) void generateSessionTitle(sessionId, text);
+      return sessionId;
+    };
+
+    if (currentChatId) {
+      startRun(currentChatId);
       setInput('');
-      if (isNew) generateSessionTitle(sessionId, text);
+      return;
+    }
+
+    const flight = runFirstSend(async () => {
+      const session = await createChat({
+        llmRequestMode: 'stream',
+        modelProfileId,
+        agentMode,
+        selectedOntologyId,
+      });
+      return session ? startRun(session.id, true) : null;
+    });
+    if (!flight.started) return;
+
+    try {
+      const sessionId = await flight.promise;
+      if (sessionId) {
+        setInput('');
+        return;
+      }
+      scheduleBlankChatFocus({
+        getCurrentChatId: () => currentChatIdRef.current,
+        getInput: () => inputRef.current,
+        scheduleFrame: (callback) => window.requestAnimationFrame(callback),
+      });
     } catch {
       setInput(text);
-    } finally {
-      sendInFlightRef.current = false;
-      setIsSubmitting(false);
+      scheduleBlankChatFocus({
+        getCurrentChatId: () => currentChatIdRef.current,
+        getInput: () => inputRef.current,
+        scheduleFrame: (callback) => window.requestAnimationFrame(callback),
+      });
     }
   };
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const isSubmitting = isBlankChatSubmitting(currentChatId, firstSendPending);
   const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
   const displayedStreamStatus = streamState.status === 'awaiting' && latestTurnStatus === 'cancelled'
     ? 'cancelled'

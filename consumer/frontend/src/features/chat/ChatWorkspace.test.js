@@ -72,6 +72,12 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
 });
 
+test('agent stream ownership remains mounted while the chat surface changes', () => {
+  assert.equal(appShellSource.includes('const agenticStream = useAgenticStream({'), true);
+  assert.equal(appShellSource.includes('agenticStream={agenticStream}'), true);
+  assert.equal(chatSource.includes('const { sendAgentic, resumeAgentic } = agenticStream;'), true);
+});
+
 test('trace panel has one accessible toggle and keeps the mobile backdrop close action', () => {
   assert.equal(chatSource.includes("const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';"), true);
   assert.equal(chatSource.includes('className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}'), true);
@@ -95,12 +101,4 @@ test('awaiting interaction can be cancelled by button or Escape', () => {
   assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
   assert.equal(chatSource.includes('取消（Esc）'), true);
   assert.equal(chatSource.includes('applyInteractionCancellation'), true);
-});
-
-test('new chat submission is single-flight while the session is being created', () => {
-  assert.equal(chatSource.includes('if (sendInFlightRef.current ||'), true);
-  assert.equal(chatSource.includes('sendInFlightRef.current = true;'), true);
-  assert.equal(chatSource.includes('sendInFlightRef.current = false;'), true);
-  assert.equal(chatSource.includes('disabled={isSubmitting}'), true);
-  assert.equal(chatSource.includes("{isSubmitting ? '发送中' : '发送'}"), true);
 });
