@@ -10,7 +10,11 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from migrate_persistent_storage import migrate, resolve_legacy_container_storage_paths  # noqa: E402
+from migrate_persistent_storage import (  # noqa: E402
+    main,
+    migrate,
+    resolve_legacy_container_storage_paths,
+)
 
 
 def _write_json(path: Path, payload) -> None:
@@ -169,6 +173,27 @@ class PersistentStorageMigrationTests(unittest.TestCase):
             migrate(self.root, dry_run=False, legacy_backup_dir=backup_dir)
         self.assertEqual(self.env_path.read_text(encoding="utf-8") if self.env_path.exists() else "", original_env)
         self.assertFalse((self.root / ".onto-runtime" / "data" / "executions" / "sess-c").exists())
+
+    def test_main_reports_invalid_json_through_value_error_handler(self) -> None:
+        system_config_path = self.root / ".onto-runtime" / "config" / "system_config.json"
+        system_config_path.parent.mkdir(parents=True, exist_ok=True)
+        system_config_path.write_text("{invalid", encoding="utf-8")
+        report_path = self.root / "deploy" / "migration-report.json"
+
+        exit_code = main(
+            [
+                "--root",
+                str(self.root),
+                "--report",
+                str(report_path),
+                "--dry-run",
+            ]
+        )
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(report["status"], "failed")
+        self.assertTrue(report["error"])
 
 
 if __name__ == "__main__":

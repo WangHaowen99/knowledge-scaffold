@@ -411,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         _write_report(args.report, report)
         return 0
-    except (OSError, ValueError, json.JSONDecodeError, tarfile.TarError) as exc:
+    except (OSError, ValueError, tarfile.TarError) as exc:
         report = {
             "schema_version": 1,
             "mode": "dry-run" if args.dry_run else "apply",

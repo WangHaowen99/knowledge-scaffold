@@ -270,7 +270,11 @@ def _read_json_document(path: Path) -> dict[str, Any]:
         )
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            mode=0o600,
+        )
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise OSError("system config is not a regular file")
