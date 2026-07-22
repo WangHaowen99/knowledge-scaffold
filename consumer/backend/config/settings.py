@@ -1,6 +1,9 @@
 """Application configuration helpers."""
 
 from dataclasses import dataclass, field
+import posixpath
+from pathlib import Path
+import re
 from typing import Any, Dict, Optional, Set
 
 from config.system_config import (
@@ -217,6 +220,37 @@ class AppConfig:
     auth_server_audience: str = "meta-wise"
     auth_server_issuer: str = ""
 
+    @staticmethod
+    def _is_windows_absolute_path(value: str) -> bool:
+        return bool(re.match(r"^[A-Za-z]:[\\/]", value)) or value.startswith("\\\\")
+
+    @staticmethod
+    def _resolve_storage_path(
+        value: str,
+        *,
+        project_root: str,
+        default_relative: str | None = None,
+    ) -> str:
+        project_root_raw = str(project_root or "").strip()
+        if not project_root_raw:
+            return ""
+        if project_root_raw.startswith("/"):
+            base = posixpath.normpath(project_root_raw)
+        else:
+            base = str(Path(project_root_raw).expanduser().resolve())
+        raw = str(value or "").strip()
+        if not raw:
+            raw = str(default_relative or "").strip()
+            if not raw:
+                return base
+        if raw.startswith("/"):
+            return posixpath.normpath(raw)
+        if AppConfig._is_windows_absolute_path(raw):
+            return str(Path(raw).expanduser().resolve())
+        if base.startswith("/"):
+            return posixpath.normpath(posixpath.join(base, raw))
+        return str((Path(base) / raw).resolve())
+
     @classmethod
     def from_env(cls) -> "AppConfig":
         """Load configuration from system config with env/default fallback."""
@@ -225,13 +259,26 @@ class AppConfig:
         task_llm = LLMConfig.from_env(prefix="TASK_LLM", fallback=llm)
         storage = config["storage"]
         auth = config["auth"]
+        project_root = cls._resolve_storage_path(storage["project_root"], project_root=storage["project_root"])
         return cls(
             llm=llm,
             task_llm=task_llm,
-            chat_storage_dir=storage["chat_storage_dir"],
-            execution_storage_dir=storage["execution_storage_dir"],
-            project_root=storage["project_root"],
-            auth_users_file=storage["auth_users_file"],
+            chat_storage_dir=cls._resolve_storage_path(
+                storage["chat_storage_dir"],
+                project_root=project_root,
+                default_relative="data/chats",
+            ),
+            execution_storage_dir=cls._resolve_storage_path(
+                storage["execution_storage_dir"],
+                project_root=project_root,
+                default_relative="data/executions",
+            ),
+            project_root=project_root,
+            auth_users_file=cls._resolve_storage_path(
+                storage["auth_users_file"],
+                project_root=project_root,
+                default_relative="users.json",
+            ),
             auth_secret=auth.get("auth_secret") or None,
             auth_token_ttl_seconds=int(auth["auth_token_ttl_seconds"]),
             auth_server_url=str(auth.get("auth_server_url") or "").strip(),
