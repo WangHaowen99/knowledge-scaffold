@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -6,6 +7,26 @@ from config.settings import AgentConfig, AppConfig, LimitsConfig
 
 
 SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
+
+
+def _apply_system_config_migrations(config_path, monkeypatch):
+    from migrations.system_config_model_profiles_v1 import (
+        execute_migration as execute_model_migration,
+    )
+    from migrations.system_config_secret_encryption_v1 import (
+        execute_migration as execute_secret_migration,
+    )
+
+    runtime_root = config_path.parents[1]
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setenv("SYSTEM_CONFIG_PATH", str(config_path))
+    for execute in (execute_model_migration, execute_secret_migration):
+        code, report = execute(
+            runtime_root,
+            dry_run=False,
+            writes_stopped=True,
+        )
+        assert code == 0, report
 
 
 def test_limits_config_uses_current_builtin_defaults(tmp_path, monkeypatch):
@@ -128,7 +149,10 @@ def test_system_config_secret_fields_are_encrypted_at_rest(tmp_path, monkeypatch
     assert "api_key" not in public["llm_profiles"]["profiles"][0]
 
 
-def test_existing_runtime_system_config_plaintext_secrets_are_rewritten(tmp_path, monkeypatch):
+def test_existing_runtime_system_config_plaintext_secrets_require_migration_without_rewrite(
+    tmp_path,
+    monkeypatch,
+):
     import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
@@ -151,13 +175,115 @@ def test_existing_runtime_system_config_plaintext_secrets_are_rewritten(tmp_path
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
-    config = system_config_module.load_system_config()
+    original = config_path.read_bytes()
+    with pytest.raises(
+        system_config_module.SystemConfigReadError,
+        match="需要先完成安全迁移",
+    ) as exc_info:
+        system_config_module.load_system_config()
 
-    assert config["llm"]["api_key"] == "runtime-secret"
-    raw_text = config_path.read_text(encoding="utf-8")
-    raw = json.loads(raw_text)
-    assert "runtime-secret" not in raw_text
-    assert raw["llm"]["api_key"].startswith("enc:v1:")
+    assert exc_info.value.code == "SYSTEM_CONFIG_SECRET_MIGRATION_REQUIRED"
+    assert config_path.read_bytes() == original
+
+
+def test_load_public_and_template_reads_leave_file_tree_and_hashes_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_path = config_dir / "system_config.json"
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    system_config_module.update_system_config_section(
+        "llm",
+        {
+            "base_url": "https://llm.example/v1",
+            "model": "main-model",
+            "api_key": "read-only-secret",
+        },
+    )
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(tmp_path.rglob("*"))
+            if path.is_file()
+        }
+
+    before = snapshot()
+    assert system_config_module.load_raw_system_config()["llm"]["api_key"].startswith(
+        "enc:v1:"
+    )
+    assert system_config_module.load_system_config()["llm"]["api_key"] == "read-only-secret"
+    assert system_config_module.get_public_system_config()["llm"]["has_api_key"] is True
+    assert system_config_module.get_system_config_template()["llm"]["api_key"] == ""
+
+    assert snapshot() == before
+
+
+def test_encrypted_read_without_key_does_not_create_secret_key(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+    from utils.security.secrets import encrypt_secret
+
+    runtime_root = tmp_path / ".onto-runtime"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "system_config.json"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    encrypted = encrypt_secret(
+        "encrypted-secret",
+        context="llm.api_key",
+        allow_key_creation=False,
+        runtime_root=runtime_root,
+    )
+    config_path.write_text(
+        json.dumps({"llm": {"api_key": encrypted}}),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("SECRET_ENCRYPTION_KEY")
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    original = config_path.read_bytes()
+
+    with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
+        system_config_module.load_raw_system_config()
+
+    assert exc_info.value.code == "SYSTEM_CONFIG_SECRET_UNSAFE"
+    assert config_path.read_bytes() == original
+    assert not (runtime_root / "config" / "secret.key").exists()
+
+
+def test_legacy_model_read_requires_migration_without_fallback_or_writes(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "system_config.json"
+    original = json.dumps(
+        {
+            "task_llm": {
+                "base_url": "https://task.example/v1",
+                "model": "task-model",
+            }
+        }
+    ).encode()
+    config_path.write_bytes(original)
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+
+    with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
+        system_config_module.load_system_config()
+
+    assert exc_info.value.code == "SYSTEM_CONFIG_MODEL_MIGRATION_REQUIRED"
+    assert config_path.read_bytes() == original
 
 
 def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
@@ -220,6 +346,8 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
+    _apply_system_config_migrations(config_path, monkeypatch)
+
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
@@ -239,7 +367,10 @@ def test_runtime_settings_read_from_saved_system_config(tmp_path, monkeypatch):
     assert app_config.task_llm.timeout == 45
     assert app_config.task_llm.max_tokens == 4096
     assert app_config.task_llm.temperature == 0.7
-    assert app_config.chat_storage_dir == "./runtime/chats"
+    assert app_config.chat_storage_dir == "/tmp/project/runtime/chats"
+    assert app_config.execution_storage_dir == "/tmp/project/runtime/executions"
+    assert app_config.project_root == "/tmp/project"
+    assert app_config.auth_users_file == "/tmp/project/runtime/users.json"
     assert app_config.auth_secret == "auth-secret"
     assert app_config.auth_token_ttl_seconds == 999
     assert not hasattr(app_config, "ontologies_root")
@@ -283,6 +414,8 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
         encoding="utf-8",
     )
 
+    _apply_system_config_migrations(config_path, monkeypatch)
+
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
     monkeypatch.setenv("LLM_BASE_URL", "https://env.example/v1")
@@ -303,6 +436,8 @@ def test_saved_system_config_fields_override_environment_variables(tmp_path, mon
     assert config["storage"]["chat_storage_dir"] == "/env/chats"
     assert app_config.llm.base_url == "https://saved.example/v1"
     assert app_config.llm.model == "saved-model"
+    assert app_config.project_root == "/saved/project"
+    assert app_config.chat_storage_dir == "/env/chats"
 
 
 def test_legacy_llm_config_is_exposed_as_default_model_profile(tmp_path, monkeypatch):
@@ -326,6 +461,7 @@ def test_legacy_llm_config_is_exposed_as_default_model_profile(tmp_path, monkeyp
 """.strip(),
         encoding="utf-8",
     )
+    _apply_system_config_migrations(config_path, monkeypatch)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
@@ -497,6 +633,8 @@ def test_system_config_readiness_is_ready_when_model_profile_exists(tmp_path, mo
         encoding="utf-8",
     )
 
+    _apply_system_config_migrations(config_path, monkeypatch)
+
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
@@ -542,6 +680,7 @@ def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkey
 """.strip(),
         encoding="utf-8",
     )
+    _apply_system_config_migrations(config_path, monkeypatch)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
@@ -552,7 +691,10 @@ def test_default_model_profile_overrides_legacy_llm_for_runtime(tmp_path, monkey
     assert app_config.llm.provider == "openai_compatible"
 
 
-def test_legacy_task_llm_and_default_profile_id_migrate_to_profile_refs(tmp_path, monkeypatch):
+def test_registered_migrations_convert_legacy_task_llm_and_default_profile_id(
+    tmp_path,
+    monkeypatch,
+):
     import config.system_config as system_config_module
 
     config_dir = tmp_path / "config"
@@ -591,6 +733,7 @@ def test_legacy_task_llm_and_default_profile_id_migrate_to_profile_refs(tmp_path
         encoding="utf-8",
     )
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+    _apply_system_config_migrations(config_path, monkeypatch)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 
@@ -833,6 +976,7 @@ def test_model_profiles_do_not_expose_or_accept_token_hard_limits(tmp_path, monk
 """.strip(),
         encoding="utf-8",
     )
+    _apply_system_config_migrations(config_path, monkeypatch)
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
 

@@ -1,4 +1,4 @@
-import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench, X } from 'lucide-react';
+import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench } from 'lucide-react';
 
 import { formatDurationMs, formatTime } from '../lib/chatPresentation';
 import ToolOutput from './ToolOutput';
@@ -15,7 +15,7 @@ const TRACE_NODE_ICONS = {
 
 const labelForNode = (node) => {
   if (node.type === 'reasoning') return node.text || '模型思考';
-  if (node.type === 'business_data') return node.toolName || '业务数据查询';
+  if (node.type === 'business_data') return node.toolName || node.text || '业务数据查询';
   if (node.type === 'web_search') return node.toolName || '联网搜索';
   if (node.type === 'tool') return node.toolName || '工具调用';
   if (node.type === 'subagent') return node.text || '子任务';
@@ -30,13 +30,12 @@ const safeJson = (value) => {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 };
 
-export default function TracePanel({ model, width, onClose, sessionId = '' }) {
+export default function TracePanel({ model, width, sessionId = '' }) {
   return (
     <aside className="trace" style={width ? { width } : undefined} aria-label="运行轨迹">
       <div className="tr-head">
         <span className="trace-title"><Activity size={14} />运行轨迹</span>
         <span className="trace-caption">Trace</span>
-        <button className="iconbtn trace-close" type="button" aria-label="关闭运行轨迹" onClick={onClose}><X size={16} /></button>
       </div>
       <div className="tr-body">
         {!model?.turns?.length && <div className="ch-empty trace-empty">发起对话后，这里按回合展示思考、工具、子任务和耗时。</div>}
@@ -85,6 +84,7 @@ function TraceTurn({ turn, index, sessionId, defaultOpen }) {
 function TraceNode({ node, sessionId, runId }) {
   const Icon = TRACE_NODE_ICONS[node.type] || Circle;
   const duration = formatDurationMs(node.durationMs);
+  const isBusinessDataProgress = node.type === 'business_data' && !node.toolName;
   const hasDistinctDetail = Boolean(node.detail && node.detail !== node.text);
   const hasDetail = Boolean(
     hasDistinctDetail || node.input || node.output || node.error || node.outputRef || node.children?.length
@@ -95,7 +95,7 @@ function TraceNode({ node, sessionId, runId }) {
     return (
       <div className="trn-plain" data-source-key={node.sourceKey}>
         <span className="tr-ic"><Icon size={11} /></span>
-        <span className="tr-lb">{labelForNode(node)}</span>
+        <span className={`tr-lb ${isBusinessDataProgress ? 'trace-progress-label' : ''}`}>{labelForNode(node)}</span>
         <span className="tr-st">{duration || stateIcon}</span>
       </div>
     );
@@ -112,6 +112,14 @@ function TraceNode({ node, sessionId, runId }) {
       <div className="trn-detail">
         {node.input != null && <TraceBlock title="输入" text={safeJson(node.input)} />}
         {hasDistinctDetail && <TraceBlock title="详情" text={node.detail} />}
+        {node.children?.length > 0 && (
+          <div className="trace-node-progress">
+            <div className="trn-bt">{node.type === 'business_data' ? '查询轨迹' : '执行轨迹'}</div>
+            <div className="trace-node-children">
+              {node.children.map((child) => <TraceNode key={child.key} node={child} sessionId={sessionId} runId={runId} />)}
+            </div>
+          </div>
+        )}
         {(node.output || node.outputRef || node.outputTruncated) && (
           <ToolOutput meta={{
             output_preview: node.output,
@@ -121,11 +129,6 @@ function TraceNode({ node, sessionId, runId }) {
           }} sessionId={sessionId} runId={runId} />
         )}
         {node.error && <div className="conversation-error" role="alert"><AlertCircle size={12} />{node.error}</div>}
-        {node.children?.length > 0 && (
-          <div className="trace-node-children">
-            {node.children.map((child) => <TraceNode key={child.key} node={child} sessionId={sessionId} runId={runId} />)}
-          </div>
-        )}
       </div>
     </details>
   );

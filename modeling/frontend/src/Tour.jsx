@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 // 蒙版引导（多场景）：高亮目标元素（box-shadow 蒙版）+ 步骤气泡。
-// 每个场景（项目列表 / 建模工作台）首次进入自动播放一次，顶栏「❓ 引导」可重看当前页引导。
+// 每个场景默认首次进入自动播放一次，顶栏「❓ 引导」可重看当前页引导；局部引导可关闭自动播放。
 // 步骤可带 enter 钩子（如打开配置中心并切到指定 tab）；目标元素未就绪时短暂轮询，仍找不到则跳过该步。
 
 // 配置中心三个 tab 的逐项讲解：enter 钩子经 App 打开弹窗并切 tab（见 App.jsx 的 mw-settings-open 监听）
@@ -61,18 +61,18 @@ export const WORKBENCH_STEPS = [
   ...CONFIG_STEPS,
 ];
 
-export default function Tour({ scene, steps }) {
+export default function Tour({ scene, steps, autoStart = true }) {
   const doneKey = `mw_tour_done_${scene}`;
   const [idx, setIdx] = useState(-1); // -1 = 关闭
   const [rect, setRect] = useState(null);
 
   // 首次自动播放 + 顶栏按钮重看（按场景过滤）
   useEffect(() => {
-    if (!localStorage.getItem(doneKey)) setIdx(0);
+    if (autoStart && !localStorage.getItem(doneKey)) setIdx(0);
     const h = (e) => { if (!e.detail?.scene || e.detail.scene === scene) setIdx(0); };
     window.addEventListener('mw-tour-start', h);
     return () => window.removeEventListener('mw-tour-start', h);
-  }, []);
+  }, [autoStart, doneKey, scene]);
 
   const close = () => {
     localStorage.setItem(doneKey, '1');

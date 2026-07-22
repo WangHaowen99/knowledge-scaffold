@@ -34,6 +34,7 @@ ACTIVE_VERSION = "1.0.0"
 def _configure_runtime_llm(monkeypatch, tmp_path):
     import config.system_config as system_config_module
     from integration.observability.provider import reset_observer
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
@@ -66,6 +67,11 @@ def _configure_runtime_llm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=runtime_root,
+    )
     create_workspace("Test Workspace", workspace_id=WORKSPACE_ID, set_as_default=True)
     configure_llm_router(
         LLMRouter(

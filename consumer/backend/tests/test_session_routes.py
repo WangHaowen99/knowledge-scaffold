@@ -249,6 +249,7 @@ def test_list_session_turns_filters_status_and_feedback(tmp_path, monkeypatch):
 
 def _write_system_profiles(tmp_path, monkeypatch):
     import config.system_config as system_config_module
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     runtime_root = tmp_path / ".onto-runtime"
     config_dir = runtime_root / "config"
@@ -279,6 +280,11 @@ def _write_system_profiles(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=runtime_root,
+    )
 
 
 def test_create_session_accepts_workspace_private_model_profile(tmp_path, monkeypatch):
