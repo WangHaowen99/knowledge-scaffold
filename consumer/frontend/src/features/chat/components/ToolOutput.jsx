@@ -80,7 +80,7 @@ export default function ToolOutput({ meta = {}, fallbackText = '', sessionId = '
       </div>
       {displayOutput && (
         <details open={state === 'loaded'}>
-          <summary><ChevronDown size={12} />{state === 'loaded' ? '收起完整输出' : '展开输出预览'}</summary>
+          <summary><ChevronDown className="tool-output-chevron" size={12} />{state === 'loaded' ? '收起完整输出' : '展开输出预览'}</summary>
           <pre>{displayOutput}</pre>
         </details>
       )}
