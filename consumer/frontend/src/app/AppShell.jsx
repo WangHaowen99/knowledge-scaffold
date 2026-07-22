@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import useStreamManager from '../features/chat/hooks/useStreamManager';
 import useChatSessions from '../features/chat/hooks/useChatSessions';
+import useAgenticStream from '../features/chat/hooks/useAgenticStream';
 import ChatWorkspace from '../features/chat/ChatWorkspace';
 import ChatHistorySidebar from '../features/chat/ChatHistorySidebar';
 import { ForceChangePassword } from '../features/auth';
@@ -48,6 +49,12 @@ export default function AppShell() {
   const [kbFocus, setKbFocus] = useState(null);
   const streamManager = useStreamManager();
   const chat = useChatSessions(streamManager);
+  const agenticStream = useAgenticStream({
+    sessionId: chat.currentChatId,
+    setMessages: chat.setMessages,
+    streamManager,
+    scopeKey: workspaceId,
+  });
   const kb = useKbBrowser();
   const currentTraceMetadata = chat.sessions.find((session) => session.id === chat.currentChatId)?.metadata
     || EMPTY_TRACE_METADATA;
@@ -359,7 +366,7 @@ export default function AppShell() {
               </div>
             )}
             {surface === 'chat' && workspaceDataReady && (
-              <ChatWorkspace chat={chat} streamManager={streamManager}
+              <ChatWorkspace chat={chat} streamManager={streamManager} agenticStream={agenticStream}
                 onOpenObservability={openObservability}
                 onConfigureDataSource={(ontologyId) => navigate({ surface: 'kb', tab: 'data', ontologyId })} />
             )}
