@@ -100,7 +100,7 @@ def test_business_data_routes_enforce_workspace_authz_before_access(
 
     client, headers = _build_test_client(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        f"api.routes.business_data.{resolver_name}",
+        "api.routes.business_data.{}".format(resolver_name),
         lambda _request: abort(403),
     )
     with client.open(path, method=method, headers=headers, json={}) as response:
