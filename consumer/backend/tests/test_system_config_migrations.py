@@ -102,11 +102,12 @@ def _run_startup_in_process(runtime_root: Path, key: str):
     return run_startup_migrations(runtime_root)
 
 
-def test_two_dry_runs_are_read_only_and_secret_previews_model_projection(
+def test_two_dry_runs_are_read_only_and_preview_over_limit_model_projection(
     tmp_path,
     monkeypatch,
 ):
     runtime_root = _configure_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODEL_PROFILE_MAX_COUNT", "1")
     _write_document(
         runtime_root,
         {
@@ -451,6 +452,47 @@ def test_stable_task_profile_id_collision_blocks_without_overwrite(tmp_path, mon
     assert code == 2
     assert "SYSTEM_CONFIG_TASK_PROFILE_ID_CONFLICT" in report["error_codes"]
     assert _config_path(runtime_root).read_bytes() == original
+
+
+def test_startup_runner_migrates_over_limit_profiles_without_blocking_runtime(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+    from migrations.runner import run_startup_migrations
+
+    runtime_root = _configure_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODEL_PROFILE_MAX_COUNT", "10")
+    _write_document(
+        runtime_root,
+        {
+            "task_llm": {
+                "base_url": "https://task.example/v1",
+                "model": "task-model",
+            },
+            "llm_profiles": {
+                "profiles": [
+                    _profile("profile-{}".format(index))
+                    for index in range(10)
+                ]
+            },
+        },
+    )
+
+    report = run_startup_migrations(runtime_root)
+
+    assert report["ok"] is True
+    model_report = next(
+        item
+        for item in report["migrations"]
+        if item["migration_id"] == "system-config-model-profiles-v1"
+    )
+    assert model_report["status"] == "applied"
+    config_path = _config_path(runtime_root)
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_path.parent)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    effective = system_config_module.load_system_config()
+    assert len(effective["llm_profiles"]["profiles"]) == 11
 
 
 def test_encrypted_legacy_task_secret_is_rebound_to_profile_context(

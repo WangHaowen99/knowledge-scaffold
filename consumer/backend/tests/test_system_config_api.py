@@ -40,6 +40,21 @@ def _issue_token(tmp_path, username, role):
     return auth_manager.issue_token(user)
 
 
+def _persisted_profile(index):
+    return {
+        "id": "profile-{}".format(index),
+        "name": "Profile {}".format(index),
+        "provider": "openai_compatible",
+        "base_url": "https://llm.example/v1",
+        "model": "model-{}".format(index),
+        "api_key": "",
+        "timeout": 600,
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "enabled": True,
+    }
+
+
 def test_get_system_config_hides_secrets(tmp_path, monkeypatch):
     client, headers = _build_client(tmp_path, monkeypatch)
 
@@ -128,23 +143,18 @@ def test_get_system_config_returns_sanitized_migration_required_error(
         {
             "llm_profiles": {
                 "profiles": [
-                    {"id": "valid", "provider": "unsupported"},
+                    {"id": "valid", "provider": "private-unsupported-provider"},
                 ]
             }
         },
-        {
-            "llm_profiles": {
-                "profiles": [
-                    {"id": "profile-{}".format(index)}
-                    for index in range(11)
-                ]
-            }
-        },
+        {"web_search": {"provider": "private-unsupported-provider"}},
+        {"skill_evolution": {"max_iterations": 99}},
     ],
     ids=(
         "profile-id",
         "profile-provider",
-        "profile-count",
+        "web-search-provider",
+        "skill-evolution-max-iterations",
     ),
 )
 def test_get_system_config_rejects_semantically_invalid_persisted_config(
@@ -160,16 +170,196 @@ def test_get_system_config_rejects_semantically_invalid_persisted_config(
     config_path.write_text(json.dumps(document), encoding="utf-8")
     original = config_path.read_bytes()
 
-    with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
-        system_config_module.load_raw_system_config()
+    for loader in (
+        system_config_module.load_raw_system_config,
+        system_config_module.load_system_config,
+    ):
+        with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
+            loader()
+        assert exc_info.value.code == "SYSTEM_CONFIG_INVALID"
+
     response = client.get("/api/system-config", headers=headers)
+    readiness_response = client.get("/api/system-config/readiness", headers=headers)
+
+    for read_response in (response, readiness_response):
+        assert read_response.status_code == 409
+        assert read_response.get_json()["code"] == "SYSTEM_CONFIG_INVALID"
+        assert "private-unsupported" not in read_response.get_data(as_text=True)
+        assert "bad id" not in read_response.get_data(as_text=True)
+    assert config_path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("persisted_web_search", "environment"),
+    [
+        (
+            {"default_max_results": 20},
+            {"WEB_SEARCH_MAX_RESULTS_LIMIT": "30"},
+        ),
+        (
+            {"max_results_limit": 30},
+            {"WEB_SEARCH_DEFAULT_MAX_RESULTS": "20"},
+        ),
+    ],
+    ids=("environment-fills-limit", "environment-fills-default"),
+)
+def test_web_search_cross_field_validation_uses_effective_precedence(
+    tmp_path,
+    monkeypatch,
+    persisted_web_search,
+    environment,
+):
+    import config.system_config as system_config_module
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    config_path = tmp_path / "config" / "system_config.json"
+    config_path.write_text(
+        json.dumps({"web_search": persisted_web_search}),
+        encoding="utf-8",
+    )
+    original = config_path.read_bytes()
+
+    raw = system_config_module.load_raw_system_config()
+    effective = system_config_module.load_system_config()
+    response = client.get("/api/system-config", headers=headers)
+    readiness_response = client.get("/api/system-config/readiness", headers=headers)
+
+    assert raw["web_search"] == persisted_web_search
+    assert effective["web_search"]["default_max_results"] == 20
+    assert effective["web_search"]["max_results_limit"] == 30
+    assert response.status_code == 200
+    assert readiness_response.status_code == 200
+    assert config_path.read_bytes() == original
+
+
+def test_reads_allow_persisted_profiles_above_write_admission_limit(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+
+    client, headers = _build_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODEL_PROFILE_MAX_COUNT", "10")
+    profiles = [_persisted_profile(index) for index in range(11)]
+    config_path = tmp_path / "config" / "system_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "llm_profiles": {
+                    "default_main_profile_ref": {
+                        "scope": "global",
+                        "id": "profile-0",
+                    },
+                    "profiles": profiles,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = config_path.read_bytes()
+
+    raw = system_config_module.load_raw_system_config()
+    effective = system_config_module.load_system_config()
+    response = client.get("/api/system-config", headers=headers)
+    readiness_response = client.get("/api/system-config/readiness", headers=headers)
+
+    assert len(raw["llm_profiles"]["profiles"]) == 11
+    assert len(effective["llm_profiles"]["profiles"]) == 11
+    assert response.status_code == 200
+    assert len(response.get_json()["llm_profiles"]["profiles"]) == 11
+    assert readiness_response.status_code == 200
+    assert readiness_response.get_json()["ready"] is True
+    assert config_path.read_bytes() == original
+
+
+def test_over_limit_profiles_remain_manageable_but_cannot_grow(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("MODEL_PROFILE_MAX_COUNT", "10")
+    profiles = [_persisted_profile(index) for index in range(11)]
+    config_path = tmp_path / "config" / "system_config.json"
+    config_path.write_text(
+        json.dumps({"llm_profiles": {"profiles": profiles}}),
+        encoding="utf-8",
+    )
+
+    unrelated_update = client.patch(
+        "/api/system-config",
+        json={"section": "web_search", "data": {"enabled": True}},
+        headers=headers,
+    )
+    same_count_profiles = [dict(profile) for profile in profiles]
+    same_count_profiles[0]["name"] = "Updated Profile"
+    same_count_update = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": {"profiles": same_count_profiles},
+        },
+        headers=headers,
+    )
+    growth_import = client.post(
+        "/api/system-config/import",
+        json={
+            "config": {
+                "llm_profiles": {
+                    "profiles": [*same_count_profiles, _persisted_profile(11)],
+                }
+            }
+        },
+        headers=headers,
+    )
+    reduction_update = client.patch(
+        "/api/system-config",
+        json={
+            "section": "llm_profiles",
+            "data": {"profiles": same_count_profiles[:10]},
+        },
+        headers=headers,
+    )
+
+    assert unrelated_update.status_code == 200
+    assert same_count_update.status_code == 200
+    assert len(same_count_update.get_json()["config"]["profiles"]) == 11
+    assert growth_import.status_code == 400
+    assert reduction_update.status_code == 200
+    assert len(reduction_update.get_json()["config"]["profiles"]) == 10
+
+
+def test_load_system_config_sanitizes_effective_normalization_errors(
+    tmp_path,
+    monkeypatch,
+):
+    import config.system_config as system_config_module
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "system_config.json"
+    config_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+
+    def fail_normalization(_section):
+        raise system_config_module.SystemConfigValidationError(
+            "private-normalization-detail"
+        )
+
+    monkeypatch.setattr(
+        system_config_module,
+        "_normalize_web_search_effective",
+        fail_normalization,
+    )
+
+    with pytest.raises(system_config_module.SystemConfigReadError) as exc_info:
+        system_config_module.load_system_config()
 
     assert exc_info.value.code == "SYSTEM_CONFIG_INVALID"
-    assert response.status_code == 409
-    assert response.get_json()["code"] == "SYSTEM_CONFIG_INVALID"
-    assert "unsupported" not in response.get_data(as_text=True)
-    assert "bad id" not in response.get_data(as_text=True)
-    assert config_path.read_bytes() == original
+    assert "private-normalization-detail" not in str(exc_info.value)
+    assert config_path.read_text(encoding="utf-8") == "{}\n"
 
 
 def test_get_system_config_readiness_is_available_to_authenticated_users(tmp_path, monkeypatch):
@@ -314,6 +504,42 @@ def test_patch_updates_web_search_and_preserves_secret_masking(tmp_path, monkeyp
     assert update_payload["config"]["timeout_seconds"] == 11
     assert update_payload["config"]["search_depth"] == "fast"
     assert update_payload["config"]["has_api_key"] is True
+
+
+@pytest.mark.parametrize(
+    ("method", "payload"),
+    [
+        (
+            "patch",
+            {
+                "section": "web_search",
+                "data": {"provider": "unsupported"},
+            },
+        ),
+        (
+            "post",
+            {
+                "config": {
+                    "skill_evolution": {"max_iterations": 99},
+                }
+            },
+        ),
+    ],
+    ids=("patch", "import"),
+)
+def test_explicit_writes_keep_invalid_payload_contract_at_400(
+    tmp_path,
+    monkeypatch,
+    method,
+    payload,
+):
+    client, headers = _build_client(tmp_path, monkeypatch)
+    path = "/api/system-config" if method == "patch" else "/api/system-config/import"
+
+    response = client.open(path, method=method.upper(), json=payload, headers=headers)
+
+    assert response.status_code == 400
+    assert "SYSTEM_CONFIG_INVALID" not in response.get_data(as_text=True)
 
 
 def test_patch_rejects_global_observability_section(tmp_path, monkeypatch):
