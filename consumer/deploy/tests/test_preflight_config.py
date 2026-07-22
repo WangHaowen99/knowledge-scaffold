@@ -28,6 +28,28 @@ class PreflightConfigTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.env_file = self.root / "backend" / ".env"
         self.env_file.parent.mkdir(parents=True)
+        self.compose_file = self.root / "deploy" / "docker-compose.release.yml"
+        self.compose_file.parent.mkdir(parents=True, exist_ok=True)
+        self.compose_file.write_text(
+            """\
+services:
+  backend:
+    volumes:
+      - ./.onto-runtime:/app/.onto-runtime
+    environment:
+      - PROJECT_ROOT=/app/.onto-runtime
+      - CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats
+      - EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions
+  mcp:
+    volumes:
+      - ./.onto-runtime:/app/.onto-runtime
+    environment:
+      - PROJECT_ROOT=/app/.onto-runtime
+      - CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats
+      - EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions
+""",
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -35,7 +57,11 @@ class PreflightConfigTests(unittest.TestCase):
     def test_valid_config_without_graph_connections(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")
 
-        report = validate_config(self.env_file, self.root / ".onto-runtime")
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["graph_data_source_count"], 0)
@@ -51,7 +77,11 @@ class PreflightConfigTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        report = validate_config(self.env_file, self.root / ".onto-runtime")
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
 
         self.assertFalse(report["ok"])
         error_types = {item["type"] for item in report["errors"]}
@@ -78,7 +108,11 @@ class PreflightConfigTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        report = validate_config(self.env_file, self.root / ".onto-runtime")
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
 
         self.assertFalse(report["ok"])
         error_types = {item["type"] for item in report["errors"]}
@@ -114,6 +148,7 @@ class PreflightConfigTests(unittest.TestCase):
         report = validate_config(
             self.env_file,
             self.root / ".onto-runtime",
+            compose_file=self.compose_file,
             pre_migration=True,
         )
 
@@ -122,7 +157,11 @@ class PreflightConfigTests(unittest.TestCase):
         self.assertEqual(report["persisted_data_validation"], "deferred")
         self.assertIsNone(report["graph_data_source_count"])
 
-        strict = validate_config(self.env_file, self.root / ".onto-runtime")
+        strict = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
         self.assertFalse(strict["ok"])
         error_types = {item["type"] for item in strict["errors"]}
         self.assertEqual(
@@ -133,6 +172,56 @@ class PreflightConfigTests(unittest.TestCase):
                 "missing_graph_scope_field",
             },
         )
+
+    def test_preflight_rejects_relative_storage_paths_after_migration_window(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV + "CHAT_STORAGE_DIR=./data/chats\nEXECUTION_STORAGE_DIR=./data/executions\n",
+            encoding="utf-8",
+        )
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+
+        self.assertFalse(report["ok"])
+        error_types = [item["type"] for item in report["errors"]]
+        self.assertEqual(error_types.count("relative_storage_path"), 2)
+
+    def test_preflight_defers_legacy_relative_storage_paths_during_pre_migration(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV + "CHAT_STORAGE_DIR=./data/chats\nEXECUTION_STORAGE_DIR=./data/executions\n",
+            encoding="utf-8",
+        )
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+            pre_migration=True,
+        )
+
+        self.assertTrue(report["ok"])
+        warning_types = {item["type"] for item in report["warnings"]}
+        self.assertIn("relative_storage_path", warning_types)
+
+    def test_preflight_rejects_storage_paths_outside_runtime_root(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV
+            + "CHAT_STORAGE_DIR=/app/external/chats\nEXECUTION_STORAGE_DIR=/app/external/executions\n",
+            encoding="utf-8",
+        )
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+
+        self.assertFalse(report["ok"])
+        error_types = [item["type"] for item in report["errors"]]
+        self.assertEqual(error_types.count("storage_path_outside_runtime_root"), 2)
 
 
 if __name__ == "__main__":

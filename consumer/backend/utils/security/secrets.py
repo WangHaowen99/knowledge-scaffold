@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import secrets
+import stat
 import uuid
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,10 @@ class SecretEncryptionError(ValueError):
     """Raised when an encrypted secret cannot be decoded or decrypted."""
 
 
+class SecretEncryptionKeyUnavailableError(SecretEncryptionError):
+    """Raised when callers forbid creating a missing encryption key."""
+
+
 def _resolve_default_runtime_root() -> Path:
     if REPO_ROOT == Path("/"):
         return BACKEND_ROOT / ".onto-runtime"
@@ -38,8 +43,9 @@ def _resolve_runtime_root() -> Path:
     return _resolve_default_runtime_root()
 
 
-def _key_file_path() -> Path:
-    return _resolve_runtime_root() / "config" / "secret.key"
+def _key_file_path(runtime_root: Path | None = None) -> Path:
+    resolved_root = Path(runtime_root).expanduser() if runtime_root is not None else _resolve_runtime_root()
+    return resolved_root / "config" / "secret.key"
 
 
 def _decode_key(value: str) -> bytes:
@@ -52,14 +58,42 @@ def _decode_key(value: str) -> bytes:
     return key
 
 
-def _load_key() -> bytes:
+def _read_key_file(path: Path) -> str:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        mode=0o600,
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise SecretEncryptionError("secret 加密密钥文件无效")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            return stream.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _load_key(
+    *,
+    allow_creation: bool = True,
+    runtime_root: Path | None = None,
+) -> bytes:
     env_value = os.getenv(SECRET_ENCRYPTION_KEY_ENV)
     if env_value:
         return _decode_key(env_value)
 
-    path = _key_file_path()
+    path = _key_file_path(runtime_root)
+    if path.is_symlink():
+        raise SecretEncryptionError("secret 加密密钥文件无效")
     if path.exists():
-        return _decode_key(path.read_text(encoding="utf-8"))
+        if not path.is_file():
+            raise SecretEncryptionError("secret 加密密钥文件无效")
+        return _decode_key(_read_key_file(path))
+
+    if not allow_creation:
+        raise SecretEncryptionKeyUnavailableError("secret 加密密钥不可用")
 
     key = secrets.token_bytes(32)
     encoded_key = base64.b64encode(key).decode("ascii")
@@ -74,15 +108,23 @@ def _load_key() -> bytes:
         try:
             os.link(temp_path, path)
         except FileExistsError:
-            return _decode_key(path.read_text(encoding="utf-8"))
+            return _decode_key(_read_key_file(path))
     except FileExistsError:
-        return _decode_key(path.read_text(encoding="utf-8"))
+        return _decode_key(_read_key_file(path))
     finally:
         try:
             temp_path.unlink()
         except FileNotFoundError:
             pass
     return key
+
+
+def validate_secret_encryption_key(
+    *,
+    runtime_root: Path | None = None,
+) -> None:
+    """Validate an existing key without creating local key material."""
+    _load_key(allow_creation=False, runtime_root=runtime_root)
 
 
 def _key_id() -> str:
@@ -97,7 +139,13 @@ def is_encrypted_secret(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(ENCRYPTED_SECRET_PREFIX)
 
 
-def encrypt_secret(plaintext: str, *, context: str) -> str:
+def encrypt_secret(
+    plaintext: str,
+    *,
+    context: str,
+    allow_key_creation: bool = True,
+    runtime_root: Path | None = None,
+) -> str:
     value = str(plaintext or "")
     if not value:
         return ""
@@ -105,13 +153,21 @@ def encrypt_secret(plaintext: str, *, context: str) -> str:
         return value
 
     nonce = secrets.token_bytes(12)
-    ciphertext = AESGCM(_load_key()).encrypt(nonce, value.encode("utf-8"), _aad(context))
+    ciphertext = AESGCM(
+        _load_key(allow_creation=allow_key_creation, runtime_root=runtime_root)
+    ).encrypt(nonce, value.encode("utf-8"), _aad(context))
     nonce_b64 = base64.b64encode(nonce).decode("ascii")
     ciphertext_b64 = base64.b64encode(ciphertext).decode("ascii")
     return "{}{}:{}:{}".format(ENCRYPTED_SECRET_PREFIX, _key_id(), nonce_b64, ciphertext_b64)
 
 
-def decrypt_secret(value: str, *, context: str) -> str:
+def decrypt_secret(
+    value: str,
+    *,
+    context: str,
+    allow_key_creation: bool = True,
+    runtime_root: Path | None = None,
+) -> str:
     raw = str(value or "")
     if not raw:
         return ""
@@ -125,10 +181,12 @@ def decrypt_secret(value: str, *, context: str) -> str:
     try:
         nonce = base64.b64decode(nonce_b64.encode("ascii"), validate=True)
         ciphertext = base64.b64decode(ciphertext_b64.encode("ascii"), validate=True)
-        plaintext = AESGCM(_load_key()).decrypt(nonce, ciphertext, _aad(context))
+        plaintext = AESGCM(
+            _load_key(allow_creation=allow_key_creation, runtime_root=runtime_root)
+        ).decrypt(nonce, ciphertext, _aad(context))
+        return plaintext.decode("utf-8")
     except Exception as exc:
         raise SecretEncryptionError("secret 解密失败") from exc
-    return plaintext.decode("utf-8")
 
 
 def encrypt_secret_fields(payload: dict[str, Any], secret_fields: set[str], *, context: str) -> dict[str, Any]:

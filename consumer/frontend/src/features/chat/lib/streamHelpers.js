@@ -226,7 +226,17 @@ const findLastSegmentIndex = (segments = [], predicate) => {
   return -1;
 };
 
-const appendInlineTextSegment = (segments, { type, state, text, node, meta, mergeKey = null, ts }) => {
+const appendInlineTextSegment = (segments, {
+  type,
+  state,
+  text,
+  node,
+  meta,
+  mergeKey = null,
+  ts,
+  spanKey = '',
+  parentKey = '',
+}) => {
   if (!text) return segments;
 
   const next = Array.isArray(segments) ? segments.slice() : [];
@@ -237,6 +247,8 @@ const appendInlineTextSegment = (segments, { type, state, text, node, meta, merg
     && last.type === type
     && last.state === state
     && (last.node || '') === (node || '')
+    && (last.spanKey || '') === spanKey
+    && (last.parentKey || '') === parentKey
     && (
       !mergeKey
       || (
@@ -269,11 +281,19 @@ const appendInlineTextSegment = (segments, { type, state, text, node, meta, merg
       text,
       node,
       meta,
+      spanKey: spanKey || undefined,
+      parentKey: parentKey || undefined,
       finished: false,
       startTs: ts || Date.now(),
       endTs: ts || Date.now(),
     },
   ];
+};
+
+const iterationParentKeyFromPayload = (payload = {}) => {
+  const iteration = Number(payload?.iteration);
+  if (!Number.isFinite(iteration) || iteration < 1) return '';
+  return `iteration:main:${Math.floor(iteration)}`;
 };
 
 const extractTurnFinishedOutput = (payload = {}) => {
@@ -1083,6 +1103,8 @@ export const applyAgentV2Event = (current, envelope) => {
       node: sourceNode,
       meta: payload,
       ts: envelope.ts || Date.now(),
+      spanKey: envelopeSpanKey,
+      parentKey: envelopeParentKey || iterationParentKeyFromPayload(payload),
     });
     if (channel === 'reasoning') {
       next.reasoning = `${next.reasoning || ''}${text}`;
@@ -1395,6 +1417,9 @@ export const applyAgentV2Event = (current, envelope) => {
     );
 
     if (shouldAppendFinalContent(next.streamSegments, terminal.content || '')) {
+      const finalIteration = Array.isArray(next.iterationMetrics)
+        ? next.iterationMetrics[next.iterationMetrics.length - 1]
+        : null;
       next.streamSegments.push({
         type: 'content',
         state: 'final',
@@ -1402,6 +1427,7 @@ export const applyAgentV2Event = (current, envelope) => {
         node: 'final',
         meta: {},
         finished: true,
+        parentKey: iterationParentKeyFromPayload(finalIteration) || undefined,
       });
     }
 

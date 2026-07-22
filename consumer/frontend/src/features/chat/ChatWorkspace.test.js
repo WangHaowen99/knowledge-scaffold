@@ -8,6 +8,8 @@ import { getChatDataSourceStatus } from './lib/chatDataSourceStatus.js';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const chatSource = readFileSync(join(currentDir, 'ChatWorkspace.jsx'), 'utf8');
+const tracePanelSource = readFileSync(join(currentDir, 'components/TracePanel.jsx'), 'utf8');
+const chatCssSource = readFileSync(join(currentDir, 'chat.css'), 'utf8');
 const appShellSource = readFileSync(join(currentDir, '../../app/AppShell.jsx'), 'utf8');
 const agenticStreamSource = readFileSync(join(currentDir, 'hooks/useAgenticStream.js'), 'utf8');
 const chatSessionsSource = readFileSync(join(currentDir, 'hooks/useChatSessions.js'), 'utf8');
@@ -68,6 +70,27 @@ test('chat activity refreshes session ordering at send and terminal stream state
   assert.equal(agenticStreamSource.includes('onSessionUpdated?.();'), true);
   assert.equal(chatSessionsSource.includes('const touchSession = useCallback'), true);
   assert.equal(chatSessionsSource.includes('updated_at: updatedAt'), true);
+});
+
+test('trace panel has one accessible toggle and keeps the mobile backdrop close action', () => {
+  assert.equal(chatSource.includes("const traceToggleLabel = traceOpen ? '收起运行轨迹' : '展开运行轨迹';"), true);
+  assert.equal(chatSource.includes('className="iconbtn" type="button" title={traceToggleLabel} aria-label={traceToggleLabel}'), true);
+  assert.equal(chatSource.includes('onClick={() => setTraceOpen((v) => !v)}'), true);
+  assert.equal(chatSource.includes('className="trace-backdrop"'), true);
+  assert.equal(chatSource.includes('onClose={() => setTraceOpen(false)}'), false);
+  assert.equal(tracePanelSource.includes('onClose'), false);
+  assert.equal(tracePanelSource.includes('trace-close'), false);
+  assert.equal(chatCssSource.includes('trace-close'), false);
+});
+
+test('business data progress rows display and wrap their provider event text before output', () => {
+  assert.equal(
+    tracePanelSource.includes("if (node.type === 'business_data') return node.toolName || node.text || '业务数据查询';"),
+    true,
+  );
+  assert.equal(tracePanelSource.includes("isBusinessDataProgress ? 'trace-progress-label' : ''"), true);
+  assert.equal(chatCssSource.includes('.mwr .trace .trace-progress-label { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;'), true);
+  assert.equal(tracePanelSource.indexOf('className="trace-node-progress"') < tracePanelSource.indexOf('<ToolOutput'), true);
 });
 
 test('new chat navigation is active only for a blank chat session', () => {

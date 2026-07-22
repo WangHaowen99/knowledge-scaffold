@@ -273,3 +273,34 @@ test('trace attaches tools to their declared iterations', () => {
   assert.deepEqual(turn.iterations.map((iteration) => iteration.children[0].parentKey), turn.iterations.map((iteration) => iteration.key));
   assert.deepEqual(turn.nodes.map((node) => node.type), ['status']);
 });
+
+test('trace attaches narrative output to iterations from persisted segment metadata', () => {
+  const trace = buildTraceViewModel([{
+    id: 'iteration-output', role: 'assistant', runId: 'iteration-output-run', status: 'finished',
+    streamSegments: [
+      {
+        type: 'content', state: 'completed', text: '第一轮结果', finished: true,
+        meta: { iteration: 1 },
+      },
+      {
+        type: 'reasoning', state: 'completed', text: '第二轮思考', finished: true,
+        meta: { iteration: 2 },
+      },
+    ],
+    iterationMetrics: [
+      { iteration: 1, status: 'completed', totalElapsedMs: 100, ts: 100 },
+      { iteration: 2, status: 'completed', totalElapsedMs: 200, ts: 200 },
+    ],
+  }]);
+  const turn = trace.turns[0];
+
+  assert.deepEqual(
+    turn.iterations.map((iteration) => iteration.children.map((node) => node.type)),
+    [['content'], ['reasoning']],
+  );
+  assert.deepEqual(
+    turn.iterations.map((iteration) => iteration.children[0].detail),
+    ['第一轮结果', '第二轮思考'],
+  );
+  assert.deepEqual(turn.nodes.map((node) => node.type), ['status']);
+});
