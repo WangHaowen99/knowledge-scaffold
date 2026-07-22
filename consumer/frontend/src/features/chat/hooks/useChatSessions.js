@@ -21,6 +21,7 @@ import {
   selectedSessionStorageKey,
   shouldCommitSessionSelection,
 } from '../lib/sessionScope';
+import { createFirstSendCoordinator } from '../lib/firstSendCoordinator';
 
 const logger = createLogger('ChatSessions');
 
@@ -83,6 +84,10 @@ const useChatSessions = (streamManager) => {
   const currentChatId = currentSession.id;
   const messages = currentSession.messages;
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [firstSendPending, setFirstSendPending] = useState(false);
+  const [firstSendCoordinator] = useState(() => createFirstSendCoordinator({
+    onPendingChange: setFirstSendPending,
+  }));
 
   const streamManagerRef = useRef(streamManager);
   const scopeRef = useRef(createSessionScope(getCurrentWorkspaceId(), 0));
@@ -291,6 +296,10 @@ const useChatSessions = (streamManager) => {
     }
   }, [captureScope, isCurrentScope, noteSessionMutation, scopedFetch, setCurrentSession, setSessions]);
 
+  const runFirstSend = useCallback((operation) => (
+    firstSendCoordinator.run(operation)
+  ), [firstSendCoordinator]);
+
   const deleteChat = useCallback(async (id, onDeleted) => {
     if (!id) return false;
     const scope = captureScope();
@@ -396,10 +405,11 @@ const useChatSessions = (streamManager) => {
     hydrateInFlightRef.current = new Map();
     deletedSessionIdsRef.current = new Set();
     pinTransactionsRef.current = new Map();
+    firstSendCoordinator.reset();
     setLoadingSessions(false);
     setSessions([]);
     setCurrentSession({ id: null, messages: [] });
-  }, [setCurrentSession, setSessions]);
+  }, [firstSendCoordinator, setCurrentSession, setSessions]);
 
   const selectChat = useCallback(async (id) => {
     if (!id || id === currentSessionRef.current.id) return null;
@@ -482,8 +492,10 @@ const useChatSessions = (streamManager) => {
     streamStates: streamManager.streamStates,
     setMessages,
     loadingSessions,
+    firstSendPending,
     loadSessions,
     createChat,
+    runFirstSend,
     deleteChat,
     selectChat,
     startNewChat,

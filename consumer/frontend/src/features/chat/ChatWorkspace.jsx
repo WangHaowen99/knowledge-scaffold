@@ -4,12 +4,13 @@ import { useAuthContext } from '../auth';
 import { authFetch } from '../../shared/api/auth';
 import { StatusTag } from '../../shared/ui/primitives';
 import ConversationView from './components/ConversationView';
+import ChatPromptInput from './components/ChatPromptInput';
 import TracePanel from './components/TracePanel';
-import useAgenticStream from './hooks/useAgenticStream';
 import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
 import { formatTime } from './lib/chatPresentation';
 import { getChatDataSourceStatus } from './lib/chatDataSourceStatus';
+import { isBlankChatSubmitting, scheduleBlankChatFocus } from './lib/firstSendCoordinator';
 import { applyInteractionCancellation, findPendingInteraction } from './lib/pendingInteraction';
 import {
   resolveSessionPreferences,
@@ -136,7 +137,13 @@ function AgentModePicker({ value, onChange, disabled }) {
 // 新建对话（知识应用）：消息线程 + 输入区 + 右侧 Trace 竖栏。
 // 历史对话列表在应用侧边栏（ChatHistorySidebar）；会话状态由 AppShell 的
 // useChatSessions 下发。流式协议复用 useStreamManager / useAgenticStream（agent-stream.v2）。
-export default function ChatWorkspace({ chat, streamManager, onOpenObservability, onConfigureDataSource }) {
+export default function ChatWorkspace({
+  chat,
+  streamManager,
+  agenticStream,
+  onOpenObservability,
+  onConfigureDataSource,
+}) {
   const { workspaceId, workspaceDataReady } = useAuthContext();
   const {
     sessions,
@@ -144,16 +151,13 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
     messages,
     setMessages,
     createChat,
+    firstSendPending,
+    runFirstSend,
     hydrateChat,
     generateSessionTitle,
     touchSession,
   } = chat;
-  const { sendAgentic, resumeAgentic } = useAgenticStream({
-    sessionId: currentChatId,
-    setMessages,
-    streamManager,
-    scopeKey: workspaceId,
-  });
+  const { sendAgentic, resumeAgentic } = agenticStream;
   const [input, setInput] = useState('');
   const [interactionCancelError, setInteractionCancelError] = useState('');
   const inputRef = useRef(null);
@@ -340,35 +344,59 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
   const send = async () => {
     const text = input.trim();
     if (!workspaceDataReady || !text || streamState.isLoading) return;
-    let sessionId = currentChatId;
-    let isNew = false;
-    try {
-      if (!sessionId) {
-        const session = await createChat({
-          llmRequestMode: 'stream',
-          modelProfileId,
-          agentMode,
-          selectedOntologyId,
-        });
-        if (!session) return;
-        sessionId = session.id;
-        isNew = true;
-      }
+
+    const startRun = (sessionId, isNew = false) => {
       const refreshSessionTime = () => touchSession?.(sessionId);
       refreshSessionTime();
-      sendAgentic(text, sessionId, {
+      void sendAgentic(text, sessionId, {
         agentMode,
         modelProfileId,
         selectedOntologyId,
         onSessionUpdated: refreshSessionTime,
       });
+      if (isNew) void generateSessionTitle(sessionId, text);
+      return sessionId;
+    };
+
+    if (currentChatId) {
+      startRun(currentChatId);
       setInput('');
-      if (isNew) generateSessionTitle(sessionId, text);
+      return;
+    }
+
+    const flight = runFirstSend(async () => {
+      const session = await createChat({
+        llmRequestMode: 'stream',
+        modelProfileId,
+        agentMode,
+        selectedOntologyId,
+      });
+      return session ? startRun(session.id, true) : null;
+    });
+    if (!flight.started) return;
+
+    try {
+      const sessionId = await flight.promise;
+      if (sessionId) {
+        setInput('');
+        return;
+      }
+      scheduleBlankChatFocus({
+        getCurrentChatId: () => currentChatIdRef.current,
+        getInput: () => inputRef.current,
+        scheduleFrame: (callback) => window.requestAnimationFrame(callback),
+      });
     } catch {
       setInput(text);
+      scheduleBlankChatFocus({
+        getCurrentChatId: () => currentChatIdRef.current,
+        getInput: () => inputRef.current,
+        scheduleFrame: (callback) => window.requestAnimationFrame(callback),
+      });
     }
   };
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const isSubmitting = isBlankChatSubmitting(currentChatId, firstSendPending);
   const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
   const displayedStreamStatus = streamState.status === 'awaiting' && latestTurnStatus === 'cancelled'
     ? 'cancelled'
@@ -507,7 +535,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
         <div className="th-input">
           <div className="chat-config-locks">
             <select value={modelProfileId} title="模型在会话创建后锁定"
-              disabled={sessionLocked || streamState.isLoading || !modelProfiles.length}
+              disabled={sessionLocked || isSubmitting || streamState.isLoading || !modelProfiles.length}
               onChange={(event) => {
                 setModelProfileId(event.target.value);
                 safeLocalSet(`mw_ws_model_${workspaceId}`, event.target.value);
@@ -516,7 +544,7 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
               {modelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.id}</option>)}
             </select>
             <select value={selectedOntologyId} title="知识包在会话创建后锁定"
-              disabled={sessionLocked || streamState.isLoading}
+              disabled={sessionLocked || isSubmitting || streamState.isLoading}
               onChange={(event) => setSelectedOntologyId(event.target.value)}>
               <option value="">自动选择知识包</option>
               {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{ontology.name || ontology.id}</option>)}
@@ -533,14 +561,14 @@ export default function ChatWorkspace({ chat, streamManager, onOpenObservability
             />
           ) : (
             <div className="ti-box">
-              <input className="ti-input" ref={inputRef} value={input} aria-label="对话内容" placeholder="输入问题，Enter 发送…"
+              <ChatPromptInput inputRef={inputRef} value={input} isSubmitting={isSubmitting}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
+                onSend={send} />
               <div className="ti-actions">
-                <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={!workspaceDataReady || sessionLocked || streamState.isLoading} />
+                <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={!workspaceDataReady || sessionLocked || isSubmitting || streamState.isLoading} />
                 {streamState.isLoading
                   ? <button type="button" className="btn" onClick={() => streamManager.stopStreamForSession(currentChatId)}>停止</button>
-                  : <button type="button" className="btn btn-p" disabled={!workspaceDataReady || !modelProfileId || !input.trim()} onClick={send}>发送</button>}
+                  : <button type="button" className="btn btn-p" disabled={isSubmitting || !workspaceDataReady || !modelProfileId || !input.trim()} onClick={send}>{isSubmitting ? '发送中' : '发送'}</button>}
               </div>
             </div>
           )}
