@@ -83,6 +83,16 @@ test('trace panel has one accessible toggle and keeps the mobile backdrop close 
   assert.equal(chatCssSource.includes('trace-close'), false);
 });
 
+test('business data progress rows display and wrap their provider event text before output', () => {
+  assert.equal(
+    tracePanelSource.includes("if (node.type === 'business_data') return node.toolName || node.text || '业务数据查询';"),
+    true,
+  );
+  assert.equal(tracePanelSource.includes("isBusinessDataProgress ? 'trace-progress-label' : ''"), true);
+  assert.equal(chatCssSource.includes('.mwr .trace .trace-progress-label { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;'), true);
+  assert.equal(tracePanelSource.indexOf('className="trace-node-progress"') < tracePanelSource.indexOf('<ToolOutput'), true);
+});
+
 test('new chat navigation is active only for a blank chat session', () => {
   assert.equal(
     appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),
