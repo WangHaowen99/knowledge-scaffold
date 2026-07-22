@@ -30,6 +30,7 @@ command -v python3 >/dev/null 2>&1 || die "Python 3 is required for deployment v
 python3 "${SCRIPT_DIR}/preflight_config.py" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \
     --runtime-root "${BUNDLE_ROOT}/.onto-runtime" \
+    --compose-file "${COMPOSE_FILE}" \
     --report "${STATE_DIR}/preflight-config.json" \
     "${PREFLIGHT_ARGS[@]}" \
     || die "Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"

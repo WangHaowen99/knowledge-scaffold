@@ -24,17 +24,69 @@ backup_path_if_present() {
     fi
 }
 
+backup_legacy_container_storage_if_present() {
+    local container_name="onto-agent-backend"
+    local staging_root="${BACKUP_DIR}/legacy-backend-data"
+    local resolved_paths=""
+    local chat_source=""
+    local execution_source=""
+    local exported=0
+
+    docker container inspect "${container_name}" >/dev/null 2>&1 || return 0
+
+    resolved_paths="$(python3 "${SCRIPT_DIR}/migrate_persistent_storage.py" \
+        --root "${BUNDLE_ROOT}" \
+        --print-legacy-export-paths)"
+    chat_source="$(printf '%s\n' "${resolved_paths}" | sed -n 's/^CHAT_STORAGE_DIR=//p' | head -n 1)"
+    execution_source="$(printf '%s\n' "${resolved_paths}" | sed -n 's/^EXECUTION_STORAGE_DIR=//p' | head -n 1)"
+
+    rm -rf "${staging_root}"
+    mkdir -p "${staging_root}/chats" "${staging_root}/executions"
+
+    if [ -n "${chat_source}" ] && docker cp "${container_name}:${chat_source}/." "${staging_root}/chats" 2>/dev/null; then
+        if find "${staging_root}/chats" -mindepth 1 -print -quit | grep -q .; then
+            exported=1
+        else
+            rm -rf "${staging_root}/chats"
+        fi
+    else
+        rm -rf "${staging_root}/chats"
+    fi
+
+    if [ -n "${execution_source}" ] && docker cp "${container_name}:${execution_source}/." "${staging_root}/executions" 2>/dev/null; then
+        if find "${staging_root}/executions" -mindepth 1 -print -quit | grep -q .; then
+            exported=1
+        else
+            rm -rf "${staging_root}/executions"
+        fi
+    else
+        rm -rf "${staging_root}/executions"
+    fi
+
+    if [ "${exported}" -eq 1 ]; then
+        tar -C "${BACKUP_DIR}" -czf "${BACKUP_DIR}/legacy-backend-data.tar.gz" "legacy-backend-data"
+    fi
+
+    rm -rf "${staging_root}"
+}
+
 backup_path_if_present "${BUNDLE_ROOT}/backend/.env" "backend-env.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/backend/logs" "backend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/frontend/logs" "frontend-logs.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-runtime" "onto-runtime.tar.gz"
 backup_path_if_present "${BUNDLE_ROOT}/.onto-auth" "onto-auth.tar.gz"
+backup_legacy_container_storage_if_present
 
 {
     printf '%s\n' \
         '.onto-runtime/users.json' \
         '.onto-runtime/workspaces/' \
         '.onto-runtime/config/' \
+        '.onto-runtime/data/chats/' \
+        '.onto-runtime/data/executions/' \
+        '.onto-runtime/workspaces/*/runtime/users/' \
+        'legacy-backend-data/chats/' \
+        'legacy-backend-data/executions/' \
         '.onto-runtime/mcp-tokens.json' \
         '.onto-runtime/**/graph*migration*' \
         '.onto-auth/users.json' \

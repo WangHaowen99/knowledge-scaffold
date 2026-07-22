@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { getDataSource, getSettings, saveDataSource } from './api.js';
+import { getDataSource, getPackageFile, getSettings, saveDataSource } from './api.js';
 import {
-  PROVIDER_OPTIONS,
   dataSourceFormError,
   dataSourceFormPayload,
   dataSourceToForm,
   providerLabel,
 } from './data-source-form.js';
 import { runGraphImportContextRequest } from './graph-import-form.js';
+import { loadLatestKnowledgePackageManifestId } from './knowledge-package-manifest.js';
+import {
+  DATA_SOURCE_TOUR_SCENE,
+  dataSourceTourSteps,
+} from './data-source-tour.js';
+import DataSourceConnectionFields from './DataSourceConnectionFields.jsx';
 import GraphImportPanel from './GraphImportPanel.jsx';
-
-const gridStyle = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' };
+import Tour from './Tour.jsx';
 
 export function DataSourceSummary({ dataSource }) {
   if (!dataSource) {
@@ -71,15 +75,18 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
   const [form, setForm] = useState(null);
   const [saved, setSaved] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [syncingOntologyId, setSyncingOntologyId] = useState(false);
   const [err, setErr] = useState('');
   const [message, setMessage] = useState('');
   const projectContextRef = useRef(projectId);
+  const providerRevisionRef = useRef(0);
   projectContextRef.current = projectId;
 
   useEffect(() => {
     let active = true;
     const contextKey = projectId;
-    setForm(null); setSaved(null); setBusy(false); setErr(''); setMessage('');
+    providerRevisionRef.current += 1;
+    setForm(null); setSaved(null); setBusy(false); setSyncingOntologyId(false); setErr(''); setMessage('');
     void runGraphImportContextRequest({
       contextKey,
       isCurrent: (key) => active && projectContextRef.current === key,
@@ -100,6 +107,39 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
   }, [projectId]);
 
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }));
+  const changeProvider = (event) => {
+    const provider = event.target.value;
+    providerRevisionRef.current += 1;
+    setForm((current) => ({ ...current, provider }));
+    setSyncingOntologyId(false);
+    setErr('');
+    setMessage('');
+  };
+  const startConfigurationGuide = () => window.dispatchEvent(new CustomEvent(
+    'mw-tour-start',
+    { detail: { scene: DATA_SOURCE_TOUR_SCENE } },
+  ));
+  const syncOntologyId = async () => {
+    const contextKey = projectContextRef.current;
+    const providerRevision = providerRevisionRef.current;
+    const isCurrentSync = () => projectContextRef.current === contextKey
+      && providerRevisionRef.current === providerRevision;
+    setSyncingOntologyId(true); setErr(''); setMessage('');
+    try {
+      const outcome = await runGraphImportContextRequest({
+        contextKey,
+        isCurrent: isCurrentSync,
+        request: () => loadLatestKnowledgePackageManifestId(contextKey, getPackageFile),
+      });
+      if (outcome.kind === 'stale') return;
+      setForm((current) => ({ ...current, ontology_value: outcome.value }));
+      setMessage(`已从最新知识包 manifest.yaml 同步 Ontology ID：${outcome.value}`);
+    } catch (e) {
+      if (isCurrentSync()) setErr(`同步知识包 ID 失败：${e.message}`);
+    } finally {
+      if (isCurrentSync()) setSyncingOntologyId(false);
+    }
+  };
   const submit = async () => {
     const validationError = dataSourceFormError(form);
     if (validationError) {
@@ -133,6 +173,7 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
   if (!form) return <div className="empty">加载中…</div>;
   return (
     <div>
+      <Tour scene={DATA_SOURCE_TOUR_SCENE} steps={dataSourceTourSteps(form.provider)} autoStart={false} />
       {err && <div className="lerr">{err}</div>}
       <label className="ev-bind-toggle" style={{ marginBottom: 14 }}>
         <input type="checkbox" checked={form.mode === 'connection'}
@@ -141,43 +182,14 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       </label>
 
       {form.mode === 'connection' ? (
-        <div className="ev-launch">
-          <div className="field">
-            <label>Provider</label>
-            <select value={form.provider} onChange={set('provider')}>
-              {PROVIDER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </div>
-
-          {form.provider === 'neo4j' ? (
-            <>
-              <div style={gridStyle}>
-                <Field label="Neo4j URL" value={form.uri} onChange={set('uri')} placeholder="bolt://neo4j:7687" />
-                <Field label="Database" value={form.database} onChange={set('database')} placeholder="neo4j" />
-                <Field label="User" value={form.username} onChange={set('username')} placeholder="neo4j" />
-                <Field label="Password" type="password" value={form.password} onChange={set('password')}
-                  placeholder="用于本次连接测试并同步至评测服务" />
-              </div>
-              <div style={{ fontWeight: 700, fontSize: 12.5, margin: '10px 0 8px' }}>Neo4j 数据隔离条件</div>
-              <div style={gridStyle}>
-                <Field label="Workspace 隔离字段" value={form.workspace_property} onChange={set('workspace_property')} />
-                <Field label="Workspace 对应值" value={form.workspace_value} onChange={set('workspace_value')} />
-                <Field label="Ontology 隔离字段" value={form.ontology_property} onChange={set('ontology_property')} />
-                <Field label="Ontology 对应值" value={form.ontology_value} onChange={set('ontology_value')} />
-              </div>
-              <div style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 8 }}>
-                字段和值必须成对填写；两组都填写时按 AND 联合匹配指定 Database 中的实例、关系及路径元素。Workspace 对应值同时作为 consumer 评测工作空间 ID：须以英文小写字母开头，只能包含小写字母、数字、_、-，最长 64 个字符；已存在时直接复用。
-              </div>
-            </>
-          ) : (
-            <div style={gridStyle}>
-              <Field label="数据服务 URL" value={form.url} onChange={set('url')} placeholder="http://localhost:5600" />
-              <Field label="Scene" value={form.scene} onChange={set('scene')} placeholder="留空使用本项目评测库" />
-              <Field label="Token" type="password" value={form.token} onChange={set('token')}
-                placeholder="用于本次连接测试并同步至评测服务（可选）" />
-            </div>
-          )}
-        </div>
+        <DataSourceConnectionFields
+          form={form}
+          busy={busy}
+          syncingOntologyId={syncingOntologyId}
+          onFieldChange={set}
+          onProviderChange={changeProvider}
+          onSyncOntologyId={syncOntologyId}
+        />
       ) : (
         <div className="ev-launch" style={{ color: 'var(--muted)', fontSize: 12.5 }}>
           评测将不使用业务数据源；已有本体数据源配置会在每轮评测导入后被清除。
@@ -186,7 +198,12 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 14 }}>
         {message && <span style={{ color: 'var(--good)', fontSize: 12.5 }}>{message}</span>}
-        <button className="btn btn-p" disabled={busy} onClick={submit}>
+        {form.mode === 'connection' && (
+          <button className="btn" disabled={busy || syncingOntologyId} onClick={startConfigurationGuide}>
+            配置引导
+          </button>
+        )}
+        <button className="btn btn-p" disabled={busy || syncingOntologyId} onClick={submit}>
           {busy ? '保存并测试中…' : form.mode === 'connection' ? '保存并测试连接' : '保存并继续'}
         </button>
       </div>
@@ -200,15 +217,6 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function Field({ label, type = 'text', value, onChange, placeholder = '' }) {
-  return (
-    <div className="field">
-      <label>{label}</label>
-      <input type={type} value={value ?? ''} onChange={onChange} placeholder={placeholder} autoComplete="off" />
     </div>
   );
 }

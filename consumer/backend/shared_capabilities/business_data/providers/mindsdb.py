@@ -58,6 +58,30 @@ class MindsDBProvider:
             data = response.json()
         except (ValueError, TypeError):
             return ProviderResult(success=False, error="Invalid MindsDB SQL response JSON", metadata={"error_code": "invalid_json"})
+        if (
+            isinstance(data, dict)
+            and str(data.get("type") or "").strip().lower() == "error"
+        ):
+            detail = next(
+                (
+                    data.get(field)
+                    for field in ("error_message", "error", "message")
+                    if data.get(field) not in (None, "")
+                ),
+                "",
+            )
+            public_detail = sanitize_public_text(
+                detail,
+                self.connection.endpoint,
+                self.connection.auth.token,
+                self.connection.auth.password,
+                self._auth_token,
+            ).strip()[:200]
+            return ProviderResult(
+                success=False,
+                error=public_detail or "MindsDB SQL query failed",
+                metadata={"error_code": "query_error"},
+            )
         return ProviderResult(success=True, data=data, message="查询成功")
 
     def _iter_native_query_events(self, question: str) -> Iterator[ProviderEvent]:

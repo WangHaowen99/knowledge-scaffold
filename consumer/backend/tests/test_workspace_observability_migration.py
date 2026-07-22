@@ -508,6 +508,7 @@ def test_failed_source_survives_unrelated_system_config_rewrite(tmp_path, monkey
     )
     from config import system_config as system_config_module
     from migrations import observability_workspace_config_v1 as migration
+    from system_config_migration_helpers import apply_test_system_config_migrations
 
     original_write = migration._write_workspace_target
 
@@ -524,6 +525,11 @@ def test_failed_source_survives_unrelated_system_config_rewrite(tmp_path, monkey
 
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_path.parent)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=runtime_root,
+    )
     system_config_module.load_raw_system_config()
     system_config_module.update_system_config_section("web_search", {"enabled": True})
 

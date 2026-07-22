@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from config import AgentConfig, AppConfig, LLMConfig
+from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter
 from llm.service import LLMService
+from system_config_migration_helpers import apply_test_system_config_migrations
 from workspace.workspaces import create_workspace
 
 
@@ -69,6 +70,7 @@ def _write_system_config(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(config_path, monkeypatch)
 
 
 def test_main_uses_requested_profile(tmp_path, monkeypatch):
@@ -184,7 +186,7 @@ def test_task_ignores_workspace_private_profile(tmp_path, monkeypatch):
 
     task_config = router.get_config(LLMPurpose.TASK, profile_id="workspace:private", workspace_id="alpha")
 
-    assert task_config.profile_id.startswith("global:model_")
+    assert task_config.profile_id == "global:legacy-task-llm"
     assert task_config.model == "task-model"
 
 

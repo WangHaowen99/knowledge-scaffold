@@ -41,6 +41,97 @@ def _positive_int(value: str) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _read_json_document(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return raw if isinstance(raw, dict) else {}
+
+
+def _relative_path(value: str) -> bool:
+    if not value:
+        return False
+    expanded = value.strip()
+    if expanded.startswith("/"):
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", expanded):
+        return False
+    if expanded.startswith("\\\\"):
+        return False
+    return True
+
+
+def _release_storage_findings(
+    env: dict[str, str],
+    runtime_root: Path,
+    compose_file: Path,
+    *,
+    pre_migration: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    compose_text = compose_file.read_text(encoding="utf-8") if compose_file.exists() else ""
+    runtime_container_root = "/app/.onto-runtime"
+    canonical_paths = {
+        "chat_storage_dir": "/app/.onto-runtime/data/chats",
+        "execution_storage_dir": "/app/.onto-runtime/data/executions",
+    }
+    required_compose_fragments = [
+        "./.onto-runtime:/app/.onto-runtime",
+        "CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats",
+        "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions",
+    ]
+    for fragment in required_compose_fragments:
+        if fragment not in compose_text:
+            errors.append({
+                "type": "missing_persistent_storage_compose_contract",
+                "fragment": fragment,
+            })
+
+    storage_config = _read_json_document(runtime_root / "config" / "system_config.json").get("storage")
+    if not isinstance(storage_config, dict):
+        storage_config = {}
+
+    for field, canonical_path in canonical_paths.items():
+        env_key = "CHAT_STORAGE_DIR" if field == "chat_storage_dir" else "EXECUTION_STORAGE_DIR"
+        sources = [
+            ("env", env.get(env_key)),
+            ("system_config", storage_config.get(field)),
+        ]
+        for source_name, raw_value in sources:
+            if raw_value is None:
+                continue
+            normalized = str(raw_value).strip()
+            if not normalized:
+                target = warnings if pre_migration else errors
+                target.append({"type": "empty_storage_path", "source": source_name, "field": field})
+                continue
+            if _relative_path(normalized):
+                target = warnings if pre_migration else errors
+                target.append({
+                    "type": "relative_storage_path",
+                    "source": source_name,
+                    "field": field,
+                    "value": normalized,
+                    "canonical": canonical_path,
+                })
+                continue
+            if not normalized.startswith(runtime_container_root + "/"):
+                target = warnings if pre_migration else errors
+                target.append({
+                    "type": "storage_path_outside_runtime_root",
+                    "source": source_name,
+                    "field": field,
+                    "value": normalized,
+                    "runtime_root": runtime_container_root,
+                })
+
+    return errors, warnings, {
+        "runtime_root": runtime_container_root,
+        "canonical_paths": canonical_paths,
+    }
+
+
 def _graph_data_source_findings(
     runtime_root: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
@@ -134,6 +225,7 @@ def validate_config(
     env_file: Path,
     runtime_root: Path,
     *,
+    compose_file: Path,
     pre_migration: bool = False,
 ) -> dict[str, Any]:
     env = read_env(env_file)
@@ -176,6 +268,15 @@ def validate_config(
             "auth_user_max_count": auth_user_limit,
         })
 
+    storage_errors, storage_warnings, storage_contract = _release_storage_findings(
+        env,
+        runtime_root,
+        compose_file,
+        pre_migration=pre_migration,
+    )
+    errors.extend(storage_errors)
+    warnings.extend(storage_warnings)
+
     if pre_migration:
         graph_errors: list[dict[str, Any]] = []
         graph_warnings: list[dict[str, Any]] = []
@@ -203,6 +304,7 @@ def validate_config(
             "user_max_count": user_limit,
             "auth_user_max_count": auth_user_limit,
         },
+        "storage": storage_contract,
         "graph_data_source_count": graph_count,
         "errors": errors,
         "warnings": warnings,
@@ -213,6 +315,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--runtime-root", type=Path, required=True)
+    parser.add_argument("--compose-file", type=Path, required=True)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--pre-migration", action="store_true")
     return parser
@@ -223,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     report = validate_config(
         args.env_file,
         args.runtime_root,
+        compose_file=args.compose_file,
         pre_migration=args.pre_migration,
     )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
