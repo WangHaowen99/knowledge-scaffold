@@ -187,6 +187,8 @@
 .mwr .tool-output button:hover, .mwr .chat-copy-action > button:hover, .mwr .chat-run-feedback > button:hover { color: var(--ink); background: var(--surface-subtle); }
 .mwr .tool-output details > summary { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 5px; cursor: pointer; list-style: none; color: var(--blue-d); font-size: 11px; }
 .mwr .tool-output details > summary::-webkit-details-marker { display: none; }
+.mwr .tool-output-chevron { transform: rotate(-90deg); transition: transform 0.16s ease; }
+.mwr .tool-output details[open] > summary .tool-output-chevron { transform: rotate(0deg); }
 .mwr .tool-output-warning, .mwr .conversation-error { display: flex; align-items: flex-start; gap: 6px; margin-top: 7px; padding: 7px 8px; border-radius: 7px; color: var(--crit); background: color-mix(in srgb, var(--crit) 7%, transparent); font-size: 11.5px; line-height: 1.5; }
 .mwr .tool-progress-list { margin: 0 0 9px; padding: 0; list-style: none; }
 .mwr .tool-progress-list li { position: relative; display: flex; align-items: flex-start; gap: 6px; padding: 4px 0 4px 15px; color: var(--ink2); font-size: 11.5px; }
