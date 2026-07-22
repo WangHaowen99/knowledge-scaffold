@@ -68,13 +68,25 @@ def _test_candidate(client, headers, provider: str, config: dict):
 
 
 @pytest.mark.parametrize(
-    ("method", "path"),
+    ("method", "path", "resolver_name"),
     [
-        ("GET", "/agentic/business-data/provider-schemas"),
-        ("GET", "/agentic/ontologies/demo-ontology/data-source"),
-        ("PUT", "/agentic/ontologies/demo-ontology/data-source"),
-        ("DELETE", "/agentic/ontologies/demo-ontology/data-source"),
-        ("POST", "/agentic/ontologies/demo-ontology/data-source/test"),
+        ("GET", "/agentic/business-data/provider-schemas", "resolve_workspace_id"),
+        ("GET", "/agentic/ontologies/demo-ontology/data-source", "resolve_workspace_id"),
+        (
+            "PUT",
+            "/agentic/ontologies/demo-ontology/data-source",
+            "resolve_workspace_owner_or_admin_id",
+        ),
+        (
+            "DELETE",
+            "/agentic/ontologies/demo-ontology/data-source",
+            "resolve_workspace_owner_or_admin_id",
+        ),
+        (
+            "POST",
+            "/agentic/ontologies/demo-ontology/data-source/test",
+            "resolve_workspace_owner_or_admin_id",
+        ),
     ],
 )
 def test_business_data_routes_enforce_workspace_authz_before_access(
@@ -82,11 +94,15 @@ def test_business_data_routes_enforce_workspace_authz_before_access(
     monkeypatch,
     method,
     path,
+    resolver_name,
 ):
     from flask import abort
 
     client, headers = _build_test_client(tmp_path, monkeypatch)
-    monkeypatch.setattr("api.routes.business_data.resolve_workspace_id", lambda _request: abort(403))
+    monkeypatch.setattr(
+        "api.routes.business_data.{}".format(resolver_name),
+        lambda _request: abort(403),
+    )
     with client.open(path, method=method, headers=headers, json={}) as response:
         assert response.status_code == 403
 
