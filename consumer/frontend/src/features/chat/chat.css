@@ -50,6 +50,7 @@
 .mwr .trace .trn > summary:hover { background: #f4f4ef; }
 .mwr .trace .tr-ic { flex: none; width: 15px; text-align: center; }
 .mwr .trace .tr-lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mwr .trace .trace-progress-label { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.5; }
 .mwr .trace .tr-lb.err { color: var(--crit); }
 .mwr .trace .tr-st { flex: none; color: var(--muted); font-size: 10px; font-family: ui-monospace, monospace; }
 .mwr .trace .trn-plain { color: var(--muted); font-weight: 400; }
@@ -224,7 +225,8 @@
 .mwr .trace-iteration-group > summary { display: flex; align-items: center; gap: 5px; padding: 5px 7px; }
 .mwr .trace-iteration-group strong { margin-left: auto; color: var(--ink2); }
 .mwr .trace-iteration-children { padding: 0 6px 6px 15px; border-left: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--border-default)); }
-.mwr .trace-node-children { margin: 7px 0 0 8px; padding-left: 8px; border-left: 1px solid var(--border-default); }
+.mwr .trace-node-progress { margin: 7px 0; }
+.mwr .trace-node-children { margin: 3px 0 0 8px; padding-left: 8px; border-left: 1px solid var(--border-default); }
 .mwr .trace .trn-pre { max-height: 420px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .mwr .trace .tool-output-head { align-items: flex-start; flex-direction: column; }
 .mwr .trace .tool-output-actions { margin-left: 0; }
