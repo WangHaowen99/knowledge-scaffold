@@ -155,7 +155,7 @@ def _open_regular_file(path: Path, flags: int) -> int:
     if path.is_symlink():
         raise OSError("file must not be a symbolic link")
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    descriptor = os.open(path, flags, mode=0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise OSError("file is not regular")

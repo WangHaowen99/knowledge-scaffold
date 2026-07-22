@@ -59,7 +59,11 @@ def _decode_key(value: str) -> bytes:
 
 
 def _read_key_file(path: Path) -> str:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        mode=0o600,
+    )
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise SecretEncryptionError("secret 加密密钥文件无效")
