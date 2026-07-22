@@ -22,6 +22,9 @@ services:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
+      - SANDBOX_ENABLED=true
+      - SANDBOX_FALLBACK_LOCAL=false
+      - SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false
       - MCP_SERVER_HOST=mcp
       - MCP_SERVER_PORT=7488
       - SPEEDSCOPE_TRACE_ENABLED=${SPEEDSCOPE_TRACE_ENABLED:-false}
