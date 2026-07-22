@@ -26,16 +26,13 @@ def test_release_compose_has_no_legacy_config_mount_or_environment():
     assert "LEGACY_SYSTEM_CONFIG_PATH" not in compose_text
 
 
-def test_release_compose_loads_sandbox_settings_from_backend_env_file():
+def test_release_compose_pins_fail_closed_sandbox_settings():
     compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
 
     assert "env_file:\n      - ./backend/.env" in compose_text
-    for env_name in (
-        "SANDBOX_ENABLED",
-        "SANDBOX_FALLBACK_LOCAL",
-        "SANDBOX_SECRET_ALLOW_PLAIN_HTTP",
-    ):
-        assert env_name not in compose_text
+    assert "- SANDBOX_ENABLED=true" in compose_text
+    assert "- SANDBOX_FALLBACK_LOCAL=false" in compose_text
+    assert "- SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false" in compose_text
 
 
 def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
