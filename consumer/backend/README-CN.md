@@ -200,8 +200,8 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `TASK_LLM_TIMEOUT` | 轻量任务模型超时时间，单位秒 | `600` |
 | `SYSTEM_CONFIG_PATH` | 可选系统配置文件路径 | `<consumer>/.onto-runtime/config/system_config.json` |
 | `OPS_CONFIG_PATH` | 可选运维规格配置文件路径 | `<consumer>/.onto-runtime/config/ops_config.json` |
-| `CHAT_STORAGE_DIR` | 会话 JSON 存储目录 | `./data/chats` |
-| `EXECUTION_STORAGE_DIR` | 执行记录存储目录 | `./data/executions` |
+| `CHAT_STORAGE_DIR` | 会话 JSON 存储目录；release 默认落到 `<PROJECT_ROOT>/data/chats` | `<PROJECT_ROOT>/data/chats` |
+| `EXECUTION_STORAGE_DIR` | 执行记录存储目录；release 默认落到 `<PROJECT_ROOT>/data/executions` | `<PROJECT_ROOT>/data/executions` |
 | `PROJECT_ROOT` | 包含 `system/` 和 `workspaces/` 的运行时根目录 | `<consumer>/.onto-runtime` |
 | `AUTH_SERVER_URL` | 独立 auth-server 地址（必填，未配置后端启动报错），如 `http://auth-server:5056` | 空 |
 | `AUTH_SERVER_ADMIN_TOKEN` | auth-server Admin API 共享管理令牌（用户管理必填） | 空 |
