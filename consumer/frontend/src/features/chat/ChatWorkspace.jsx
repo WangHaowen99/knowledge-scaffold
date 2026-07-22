@@ -4,6 +4,7 @@ import { useAuthContext } from '../auth';
 import { authFetch } from '../../shared/api/auth';
 import { StatusTag } from '../../shared/ui/primitives';
 import ConversationView from './components/ConversationView';
+import ChatPromptInput from './components/ChatPromptInput';
 import TracePanel from './components/TracePanel';
 import useSmartScroll from './hooks/useSmartScroll';
 import { buildConversationViewModel } from './lib/conversationModel';
@@ -560,10 +561,9 @@ export default function ChatWorkspace({
             />
           ) : (
             <div className="ti-box">
-              <input className="ti-input" ref={inputRef} value={input} aria-label="对话内容" placeholder="输入问题，Enter 发送…"
-                disabled={isSubmitting}
+              <ChatPromptInput inputRef={inputRef} value={input} isSubmitting={isSubmitting}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send(); }} />
+                onSend={send} />
               <div className="ti-actions">
                 <AgentModePicker value={agentMode} onChange={changeAgentMode} disabled={!workspaceDataReady || sessionLocked || isSubmitting || streamState.isLoading} />
                 {streamState.isLoading
