@@ -11,6 +11,7 @@ from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_store import RunStatus, RunStore
 from persistence.run_queue import TokenBucketRateLimiter
 from persistence.run_store import Run
+from system_config_migration_helpers import apply_test_system_config_migrations
 from workspace.workspaces import create_workspace
 
 
@@ -83,6 +84,11 @@ def _write_system_profiles(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
+    apply_test_system_config_migrations(
+        config_path,
+        monkeypatch,
+        runtime_root=tmp_path / ".onto-runtime",
+    )
 
 
 def test_run_stream_requires_session_id(tmp_path):

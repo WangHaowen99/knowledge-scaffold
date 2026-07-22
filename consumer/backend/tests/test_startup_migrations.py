@@ -74,6 +74,8 @@ def _run_startup_in_process(runtime_root, secret_key):
 def test_shared_runner_registers_explicit_phase_and_failure_policy():
     from migrations.observability_workspace_config_v1 import MIGRATION_ID as OBSERVABILITY_ID
     from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID as DATA_SOURCE_ID
+    from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_CONFIG_ID
+    from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_CONFIG_ID
     from migrations.runner import (
         REGISTERED_MIGRATIONS,
         MigrationFailurePolicy,
@@ -83,14 +85,20 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
     assert [migration.migration_id for migration in REGISTERED_MIGRATIONS] == [
         DATA_SOURCE_ID,
         OBSERVABILITY_ID,
+        MODEL_CONFIG_ID,
+        SECRET_CONFIG_ID,
     ]
     assert [migration.phase for migration in REGISTERED_MIGRATIONS] == [
+        MigrationPhase.STARTUP,
+        MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
     ]
     assert [migration.failure_policy for migration in REGISTERED_MIGRATIONS] == [
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.NON_BLOCKING,
+        MigrationFailurePolicy.BLOCKING,
+        MigrationFailurePolicy.BLOCKING,
     ]
 
 
@@ -382,3 +390,66 @@ def test_concurrent_process_startup_is_serialized_and_idempotent(tmp_path):
     for workspace_id in ("alpha", "beta"):
         target = runtime_root / "workspaces" / workspace_id / "observability_config.json"
         assert json.loads(target.read_text(encoding="utf-8"))["local"]["retention_days"] == 8
+
+
+def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
+    tmp_path,
+    monkeypatch,
+):
+    from migrations.runner import run_startup_migrations
+
+    runtime_root = tmp_path / ".onto-runtime"
+    workspace_dir = _workspace_dir(runtime_root)
+    (workspace_dir / "workspace.json").write_text(
+        json.dumps({"id": "demo", "name": "Demo"}),
+        encoding="utf-8",
+    )
+    sources_path = workspace_dir / "ontology-data-sources.json"
+    sources_bytes = json.dumps(
+        {"version": 2, "sources": {}},
+        ensure_ascii=False,
+    ).encode()
+    sources_path.write_bytes(sources_bytes)
+    config_path = runtime_root / "config" / "system_config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "observability": {
+                    "enabled": True,
+                    "mode": "local",
+                    "local": {"retention_days": 8},
+                },
+                "task_llm": {
+                    "base_url": "https://task.example/v1",
+                    "model": "task-model",
+                    "api_key": "task-secret",
+                },
+                "future_section": {"preserved": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    monkeypatch.setenv("SYSTEM_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("LOG_DIR", str(runtime_root / "legacy-logs"))
+
+    report = run_startup_migrations(runtime_root)
+
+    assert [item["migration_id"] for item in report["migrations"]] == [
+        "ontology-data-sources-direct-v2",
+        "observability-workspace-config-v1",
+        "system-config-model-profiles-v1",
+        "system-config-secret-encryption-v1",
+    ]
+    assert sources_path.read_bytes() == sources_bytes
+    migrated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert migrated["future_section"] == {"preserved": True}
+    assert "observability" not in migrated
+    assert "task_llm" not in migrated
+    assert migrated["llm_profiles"]["profiles"][0]["api_key"].startswith("enc:v1:")
+    workspace_observability = json.loads(
+        (workspace_dir / "observability_config.json").read_text(encoding="utf-8")
+    )
+    assert workspace_observability["local"]["retention_days"] == 8
