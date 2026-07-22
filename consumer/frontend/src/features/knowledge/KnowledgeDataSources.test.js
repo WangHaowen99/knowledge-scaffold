@@ -5,11 +5,20 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const dataSourceSource = readFileSync(join(currentDir, 'KnowledgeDataSources.jsx'), 'utf8').replace(/\r\n/g, '\n');
-const kbBrowserSource = readFileSync(join(currentDir, 'hooks/useKbBrowser.js'), 'utf8');
-const configCenterSource = readFileSync(join(currentDir, '../settings/ConfigCenter.jsx'), 'utf8');
-const workbenchSource = readFileSync(join(currentDir, 'KnowledgeWorkbench.jsx'), 'utf8');
-const onboardingSource = readFileSync(join(currentDir, '../../app/onboarding/OnboardingWizard.jsx'), 'utf8');
+const normalizeSource = (source) => source.replace(/\r\n?/g, '\n');
+const readNormalizedSource = (path) => normalizeSource(readFileSync(path, 'utf8'));
+const dataSourceSource = readNormalizedSource(join(currentDir, 'KnowledgeDataSources.jsx'));
+const kbBrowserSource = readNormalizedSource(join(currentDir, 'hooks/useKbBrowser.js'));
+const configCenterSource = readNormalizedSource(join(currentDir, '../settings/ConfigCenter.jsx'));
+const workbenchSource = readNormalizedSource(join(currentDir, 'KnowledgeWorkbench.jsx'));
+const onboardingSource = readNormalizedSource(join(currentDir, '../../app/onboarding/OnboardingWizard.jsx'));
+
+test('source assertions normalize LF and CRLF checkouts identically', () => {
+  const lfSource = "setProvider('');\n      setConfig({});";
+  const crlfSource = lfSource.replace(/\n/g, '\r\n');
+
+  assert.equal(normalizeSource(crlfSource), lfSource);
+});
 
 test('knowledge data source editor exposes only the ontology direct-provider model', () => {
   assert.equal(dataSourceSource.includes('/agentic/data-connections'), false);
