@@ -27,7 +27,7 @@ knowledge-scaffold 采用 **Consumer backend 控制面 + JiuwenBox sidecar + per
 9. sandbox 只获得 proxy URL、placeholder 和非敏感 options，真实 target、token、password 和运行期 JWT 不进入 sandbox。
 10. 当前 sandbox 脚本只支持 `nl2sql_http` 和 `mindsdb`；其他 Provider 在准备连接时明确拒绝，往后根据实际脚本调用情况扩展。
 11. `execute_script`、Direct Execution 和经 backend workflow 进入的 MCP Chat 共用同一执行入口和 run 生命周期。
-12. run success、failure、cancel 均释放 sandbox 和 proxy route；官方 Compose 默认关闭 sandbox 并允许本地 fallback。
+12. run success、failure、cancel 均释放 sandbox 和 proxy route；发布版和完整 Compose 强制启用 sandbox 并禁止本地 fallback，backend-only 开发模式例外。
 
 ## 2. 目标与非目标
 
