@@ -9,6 +9,11 @@ from typing import Optional
 
 import yaml
 
+from ontology.ontology_catalog import (
+    ObjectAliasValidationResult,
+    validate_object_aliases,
+    validate_object_data_mappings,
+)
 from ontology.legacy_package_converter import (
     LEGACY_FILE_NAMES,
     V01_SCHEMA_VERSION,
@@ -39,6 +44,18 @@ class PackageNormalizationResult:
     root: Path
     generated_files: tuple[str, ...]
     warnings: tuple[str, ...]
+
+
+def validate_imported_object_aliases(root: Path) -> ObjectAliasValidationResult:
+    """Validate object aliases and mapping readability before installation."""
+    validation = validate_object_aliases(Path(root))
+    mapping_error = validate_object_data_mappings(Path(root))
+    if not mapping_error:
+        return validation
+    return ObjectAliasValidationResult(
+        errors=tuple(sorted(set((*validation.errors, mapping_error)))),
+        warnings=validation.warnings,
+    )
 
 
 def has_importable_package_layout(root: Path) -> bool:

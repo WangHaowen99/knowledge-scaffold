@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
+from ontology.ontology_catalog import split_object_aliases
+
 from .constants import TAG_PRIORITY
 from .fs_utils import collect_md_files, normalize_lines, relative_path
 from .markdown_utils import (
@@ -724,11 +726,7 @@ def add_resource_frontmatter(
 
 
 def split_alias_values(value: str) -> List[str]:
-    return [
-        item.strip()
-        for item in re.split(r"[,，、;/；]+", str(value or ""))
-        if item.strip()
-    ]
+    return split_object_aliases(value)
 
 
 def generate_assets(source_asset_dir: Path, *, target_root: Path) -> Dict[str, object]:

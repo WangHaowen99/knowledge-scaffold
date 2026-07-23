@@ -79,7 +79,7 @@ def _write_example_ontology(workspace_paths):
     return ontology_dir
 
 
-def _build_zip_file(entries: dict[str, str]) -> io.BytesIO:
+def _build_zip_file(entries: dict[str, str | bytes]) -> io.BytesIO:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path, content in entries.items():
@@ -88,7 +88,12 @@ def _build_zip_file(entries: dict[str, str]) -> io.BytesIO:
     return buffer
 
 
-def _build_source_ontology_zip(*, include_scripts: bool, version: str = "") -> io.BytesIO:
+def _build_source_ontology_zip(
+    *,
+    include_scripts: bool,
+    version: str = "",
+    object_aliases: str = "实体甲,实体乙",
+) -> io.BytesIO:
     version_line = [f"version: {version}"] if version else []
     entries = {
         "source-demo/SKILL.md": "\n".join([
@@ -109,7 +114,7 @@ def _build_source_ontology_zip(*, include_scripts: bool, version: str = "") -> i
             "实体A对象描述",
             "",
             "# 对象别名",
-            "实体甲,实体乙",
+            object_aliases,
             "",
             "# 英文名称",
             "EntityA",
@@ -789,7 +794,12 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     assert payload["ontology_name"] == "Converted Demo"
     assert payload["objects_count"] == 1
     assert payload["operations_count"] == 1
-    assert payload["warnings"] == {"objects": [], "objects_index": [], "operations": []}
+    assert payload["warnings"] == {
+        "objects": [],
+        "objects_index": [],
+        "operations": [],
+        "object_aliases": [],
+    }
     assert payload["preview"]["source"]["total_files"] == 7
     assert payload["preview"]["result"]["total_files"] >= 10
     source_paths = {item["path"] for item in payload["preview"]["source"]["files"]}
@@ -809,6 +819,242 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     assert (version_dir / "objects" / "实体A.md").read_text(encoding="utf-8") == "#### 对象描述\n实体A说明\n"
     assert (version_dir / "operations" / "流程A.md").read_text(encoding="utf-8") == operation_content
     assert (version_dir / "scripts" / "demo.py").read_text(encoding="utf-8") == "print('demo')\n"
+
+
+def test_import_ontology_zip_rejects_object_alias_mismatch(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "alias-warning/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: alias-warning\n"
+            "name: Alias Warning\n"
+            "description: Alias validation warning\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "alias-warning/index.md": "# Alias Warning\n",
+        "alias-warning/objects/index.md": (
+            "| object key | alias |\n"
+            "| --- | --- |\n"
+            "| ObjectA | CatalogAlias |\n"
+        ),
+        "alias-warning/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\ntitle: Display Object A\naliases:\n"
+            "  - DetailAlias\n---\n\n# Object A\n"
+        ),
+        "alias-warning/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "alias-warning.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["error"] == (
+        "对象 key='ObjectA'、title='Display Object A' 别名不一致："
+        "objects/index.md = [CatalogAlias]；"
+        "object_a.md = [DetailAlias]"
+    )
+    assert not (workspace_paths.ontologies_dir / "alias-warning").exists()
+
+
+def test_import_converted_ontology_zip_handles_unreadable_object_catalog(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    from ontology import ontology_catalog as catalog_module
+
+    original_read_optional_text = catalog_module.read_optional_text
+
+    def fail_to_read_object_catalog(path):
+        if path.name == "index.md" and path.parent.name == "objects":
+            raise OSError("permission denied")
+        return original_read_optional_text(path)
+
+    monkeypatch.setattr(
+        catalog_module,
+        "read_optional_text",
+        fail_to_read_object_catalog,
+    )
+    zip_buffer = _build_zip_file({
+        "invalid-catalog/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: invalid-catalog\n"
+            "name: Invalid Catalog\n"
+            "description: Invalid UTF-8 object catalog\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "invalid-catalog/index.md": "# Invalid Catalog\n",
+        "invalid-catalog/objects/index.md": (
+            "| object key |\n"
+            "| --- |\n"
+            "| ObjectA |\n"
+        ),
+        "invalid-catalog/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\n---\n\n# Object A\n"
+        ),
+        "invalid-catalog/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "invalid-catalog.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": "Failed to read objects/index.md."
+    }
+    assert not (workspace_paths.ontologies_dir / "invalid-catalog").exists()
+
+
+def test_import_converted_ontology_zip_rejects_invalid_utf8_object_mapping(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "invalid-mapping/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: invalid-mapping\n"
+            "name: Invalid Mapping\n"
+            "description: Invalid UTF-8 object mapping\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "invalid-mapping/index.md": "# Invalid Mapping\n",
+        "invalid-mapping/objects/index.md": (
+            "| object key |\n"
+            "| --- |\n"
+            "| ObjectA |\n"
+        ),
+        "invalid-mapping/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\n---\n\n# Object A\n"
+        ),
+        "invalid-mapping/operations/index.md": "# Operations\n",
+        "invalid-mapping/mappings/object-data-mappings.json": b"\xff\xfe",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "invalid-mapping.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": (
+            "Failed to decode mappings/object-data-mappings.json as UTF-8."
+        )
+    }
+    assert not (workspace_paths.ontologies_dir / "invalid-mapping").exists()
+
+
+def test_import_converted_ontology_zip_accepts_aligned_object_alias_table_and_reports_empty_warning(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "alias-warning/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: alias-warning\n"
+            "name: Alias Warning\n"
+            "description: Alias validation warning\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "alias-warning/index.md": "# Alias Warning\n",
+        "alias-warning/objects/index.md": (
+            "| object key | alias |\n"
+            "| :--- | ---: |\n"
+            "| ObjectA | First//Second |\n"
+        ),
+        "alias-warning/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\naliases:\n"
+            "  - First\n  - Second\n---\n\n# Object A\n"
+        ),
+        "alias-warning/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "alias-warning.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["import_mode"] == "converted"
+    assert payload["warnings"]["object_aliases"] == [
+        "Object 'ObjectA' catalog aliases contain an empty value."
+    ]
+    assert (workspace_paths.ontologies_dir / "alias-warning").is_dir()
+
+
+def test_import_ontology_zip_aggregates_object_alias_errors(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "alias-error/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: alias-error\n"
+            "name: Alias Error\n"
+            "description: Alias validation errors\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "alias-error/index.md": "# Alias Error\n",
+        "alias-error/objects/index.md": (
+            "| object key | alias |\n"
+            "| --- | --- |\n"
+            "| ObjectA | Shared |\n"
+            "| ObjectB | Shared |\n"
+            "| Missing | Ghost |\n"
+        ),
+        "alias-error/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\naliases:\n  - Shared\n---\n"
+        ),
+        "alias-error/objects/object_b.md": (
+            "---\nresource: object\nkey: ObjectB\naliases:\n  - Shared\n---\n"
+        ),
+        "alias-error/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "alias-error.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload is not None
+    assert "Object catalog key 'Missing' has no matching detail." in payload["error"]
+    assert "Object alias 'shared' points to multiple objects: ObjectA, ObjectB." in payload["error"]
+    assert not (workspace_paths.ontologies_dir / "alias-error").exists()
 
 
 def test_regular_user_ontology_writes_still_enforce_workspace_access(tmp_path, monkeypatch):
@@ -1276,6 +1522,39 @@ def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, mo
     assert not list(version_dir.glob("*-list.md"))
     assert (version_dir / "scripts" / "index.md").is_file()
     assert list((version_dir / "scripts").glob("*.md")) == [version_dir / "scripts" / "index.md"]
+
+
+def test_import_source_ontology_zip_splits_slash_aliases_and_reports_empty_warning(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={
+            "file": (
+                _build_source_ontology_zip(
+                    include_scripts=False,
+                    object_aliases="实体甲//实体乙",
+                ),
+                "source-demo.zip",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["import_mode"] == "source"
+    assert payload["warnings"]["object_aliases"] == [
+        "Object '实体A' catalog aliases contain an empty value."
+    ]
+
+    version_dir = workspace_paths.ontologies_dir / "source-demo" / "versions" / "1.0.0"
+    object_text = (version_dir / "objects" / "实体A.md").read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(object_text.split("---", 2)[1])
+    assert frontmatter["aliases"] == ["实体甲", "实体乙"]
 
 
 def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monkeypatch):

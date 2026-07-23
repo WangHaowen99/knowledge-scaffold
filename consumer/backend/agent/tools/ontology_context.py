@@ -15,10 +15,18 @@ from ontology.ontology_catalog import (
     format_root_payload_compact,
     get_ontology_manifest,
     read_required_text,
+    resolve_object_reference,
 )
 from utils.read_docs import build_read_document_record, normalize_read_documents_registry
 
 logger = get_logger("tools.ontology_context")
+
+
+@dataclass(frozen=True)
+class _OntologyContextResult:
+    content: str
+    resolved_path: Optional[Path] = None
+    resolved_key: str = ""
 
 
 ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
@@ -50,7 +58,9 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
                 "key": {
                     "type": "string",
                     "description": (
-                        "Resource key when loading operation/object/rule/metric/script. Leave empty for `root`."
+                        "Resource key when loading operation/object/rule/metric/script. "
+                        "For resource='object', the object key, title, canonical_key, or declared alias is accepted. "
+                        "Leave empty for `root`."
                     ),
                 },
             },
@@ -67,21 +77,39 @@ def handle_ontology_context(
     key: str = "",
     workspace_id: Optional[str] = None,
 ) -> str:
+    return _handle_ontology_context_result(
+        ontology_id=ontology_id,
+        resource=resource,
+        key=key,
+        workspace_id=workspace_id,
+    ).content
+
+
+def _handle_ontology_context_result(
+    *,
+    ontology_id: str,
+    resource: str,
+    key: str = "",
+    workspace_id: Optional[str] = None,
+) -> _OntologyContextResult:
     ontology, error = get_ontology_manifest(
         ontology_id,
         workspace_id=workspace_id,
     )
     if error:
-        return error
+        return _OntologyContextResult(content=error)
     assert ontology is not None
 
     normalized_resource = str(resource or "").strip()
     ontology_dir = Path(ontology.ontology_dir).resolve()
 
     if normalized_resource == "root":
-        return _build_root_payload(ontology=ontology, ontology_dir=ontology_dir)
+        return _OntologyContextResult(
+            content=_build_root_payload(ontology=ontology, ontology_dir=ontology_dir),
+            resolved_path=Path(ontology.manifest_path).resolve(),
+        )
     if normalized_resource == "operation":
-        return _build_markdown_payload(
+        return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
             directory=ontology_dir / "operations",
@@ -90,16 +118,29 @@ def handle_ontology_context(
             key_field="operation_key",
         )
     if normalized_resource == "object":
-        return _build_markdown_payload(
-            ontology_id=ontology.id,
-            ontology_dir=ontology_dir,
-            directory=ontology_dir / "objects",
-            key=key,
-            resource_name="object",
-            key_field="object_key",
+        resolution, resolution_error = resolve_object_reference(ontology_dir, key)
+        if resolution_error:
+            return _OntologyContextResult(content=resolution_error)
+        assert resolution is not None
+        content, read_error = read_required_text(
+            resolution.path,
+            "object '{}'".format(key),
+        )
+        if read_error:
+            return _OntologyContextResult(content=read_error)
+        return _OntologyContextResult(
+            content=format_markdown_payload_compact(
+                key_field="object_key",
+                key=resolution.object_key,
+                content=content or "",
+                requested_key=resolution.requested_key,
+                matched_by=resolution.matched_by,
+            ),
+            resolved_path=resolution.path,
+            resolved_key=resolution.object_key,
         )
     if normalized_resource == "rule":
-        return _build_markdown_payload(
+        return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
             directory=ontology_dir / "rules",
@@ -108,7 +149,7 @@ def handle_ontology_context(
             key_field="rule_key",
         )
     if normalized_resource == "metric":
-        return _build_markdown_payload(
+        return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
             directory=ontology_dir / "metrics",
@@ -117,7 +158,7 @@ def handle_ontology_context(
             key_field="metric_key",
         )
     if normalized_resource == "script":
-        return _build_markdown_payload(
+        return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
             directory=ontology_dir / "scripts",
@@ -125,8 +166,10 @@ def handle_ontology_context(
             resource_name="script",
             key_field="script_key",
         )
-    return "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, or script.".format(
-        normalized_resource
+    return _OntologyContextResult(
+        content=(
+            "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, or script."
+        ).format(normalized_resource)
     )
 
 
@@ -135,7 +178,7 @@ def _build_root_payload(*, ontology: Any, ontology_dir: Path) -> str:
     return "\n".join(format_root_payload_compact(ontology_id=ontology.id, root_payload=payload))
 
 
-def _build_markdown_payload(
+def _build_markdown_result(
     *,
     ontology_id: str,
     ontology_dir: Path,
@@ -143,20 +186,24 @@ def _build_markdown_payload(
     key: str,
     resource_name: str,
     key_field: str,
-) -> str:
+) -> _OntologyContextResult:
     path, error = find_markdown_file(directory.resolve(), key, resource_name)
     if error:
-        return error
+        return _OntologyContextResult(content=error)
     assert path is not None
 
     content, read_error = read_required_text(path, "{} '{}'".format(resource_name, key))
     if read_error:
-        return read_error
+        return _OntologyContextResult(content=read_error)
 
-    return format_markdown_payload_compact(
-        key_field=key_field,
-        key=str(key or "").strip(),
-        content=content or "",
+    return _OntologyContextResult(
+        content=format_markdown_payload_compact(
+            key_field=key_field,
+            key=str(key or "").strip(),
+            content=content or "",
+        ),
+        resolved_path=path,
+        resolved_key=str(key or "").strip(),
     )
 
 
@@ -182,19 +229,31 @@ class OntologyContextTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         del tool_call_id, event_emitter
-        scoped_args = dict(args)
-        scoped_args["workspace_id"] = context.workspace_id
-        content = handle_ontology_context(**scoped_args)
+        result = _handle_ontology_context_result(
+            **args,
+            workspace_id=context.workspace_id,
+        )
+        content = result.content
         state_updates: Dict[str, Any] = {}
+        resolved_args = dict(args)
+        if result.resolved_key and str(args.get("resource") or "").strip() == "object":
+            resolved_args["key"] = result.resolved_key
 
-        record = _build_read_record(args=args, context=context, content=content)
+        record = _build_read_record(
+            args=resolved_args,
+            context=context,
+            content=content,
+            resolved_path=result.resolved_path,
+        )
         if record:
             state_updates["read_document_records"] = [record]
-        content, recall_records = _append_near_point_recall(
-            content=content,
-            args=args,
-            context=context,
-        )
+        recall_records: list[Dict[str, Any]] = []
+        if result.resolved_path is not None:
+            content, recall_records = _append_near_point_recall(
+                content=content,
+                args=resolved_args,
+                context=context,
+            )
         if recall_records:
             state_updates["evolution_recall_records"] = recall_records
         return ToolOutcome(content=content, state_updates=state_updates)
@@ -205,8 +264,13 @@ def _build_read_record(
     args: Dict[str, Any],
     context: ToolContext,
     content: str,
+    resolved_path: Optional[Path],
 ) -> Optional[Dict[str, Any]]:
-    if not context.project_root or str(content or "").startswith("Error:"):
+    if (
+        not context.project_root
+        or resolved_path is None
+        or str(content or "").startswith("Error:")
+    ):
         return None
 
     ontology, error = get_ontology_manifest(
@@ -214,19 +278,6 @@ def _build_read_record(
         workspace_id=context.workspace_id,
     )
     if error or ontology is None:
-        return None
-
-    resource = str(args.get("resource") or "").strip()
-    key = str(args.get("key") or "").strip()
-    ontology_dir = Path(ontology.ontology_dir).resolve()
-    if resource == "root":
-        resolved_path = Path(ontology.manifest_path).resolve()
-    elif resource in {"operation", "object", "rule", "metric", "script"}:
-        directory = ontology_dir / "{}s".format(resource)
-        resolved_path, error = find_markdown_file(directory.resolve(), key, resource)
-        if error or resolved_path is None:
-            return None
-    else:
         return None
 
     try:

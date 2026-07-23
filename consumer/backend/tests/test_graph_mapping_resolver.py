@@ -219,3 +219,39 @@ def test_resolver_reads_object_frontmatter_graph_label(tmp_path):
     assert mapping.label == "TargetItem"
     assert mapping.property_map == {"TargetItemCode": "target_item_code"}
     assert mapping.source == "objects/target_item.md"
+
+
+def test_resolver_uses_resolved_path_for_canonical_object_filename(tmp_path):
+    workspace_root = _write_ontology(tmp_path, {"graph": {"entities": {}}})
+    object_dir = workspace_root / "demo-ontology" / "versions" / "1.0.0" / "objects"
+    object_dir.mkdir()
+    (object_dir / "formal-object.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "resource: object",
+                "key: 正式对象",
+                "canonical_key: formal-object",
+                "title: 正式对象标题",
+                "graph_label: FormalObject",
+                "graph_properties:",
+                "  对象编码: object_code",
+                "---",
+                "",
+                "# 正式对象",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    mapping = GraphMappingResolver(
+        workspace_root=str(workspace_root),
+        ontology_id="demo-ontology",
+        provider="neo4j",
+    ).resolve("正式对象")
+
+    assert mapping is not None
+    assert mapping.label == "FormalObject"
+    assert mapping.property_map == {"对象编码": "object_code"}
+    assert mapping.source == "objects/formal-object.md"

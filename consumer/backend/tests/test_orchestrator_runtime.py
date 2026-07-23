@@ -23,6 +23,10 @@ from config import AgentConfig, AppConfig
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from llm import LLMPurpose, LLMRouter, configure_llm_router, get_llm_router, reset_llm_router_for_tests
 from integration.observability import stack_profiler as stack_profiler_module
+from ontology.ontology_catalog import (
+    ObjectReferenceLookupResult,
+    ObjectReferenceStatus,
+)
 from persistence.chat_store import ChatStore
 from persistence.execution_store import INTERACTION_CANCELLED_MESSAGE, ExecutionStore
 from persistence.run_store import RunStore
@@ -778,6 +782,20 @@ def test_terminal_tool_error_fails_run_and_turn(monkeypatch, tmp_path):
         lambda **_kwargs: (
             '{"success":false,"engine":"graph_search_runtime",'
             '"error_code":"GRAPH_BACKEND_TIMEOUT","retryable":false}'
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.resolve_object_reference_result",
+        lambda *_args, **_kwargs: ObjectReferenceLookupResult(
+            status=ObjectReferenceStatus.RESOLVED,
+            resolution=SimpleNamespace(object_key="refinery_unit"),
         ),
     )
 

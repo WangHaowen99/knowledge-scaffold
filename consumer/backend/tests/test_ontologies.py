@@ -205,6 +205,35 @@ def test_example_ontology_manifest_contains_expected_metadata():
     assert content["version"] == "1.0.0"
 
 
+def test_example_operation_dependencies_cover_referenced_objects():
+    from ontology.ontology_catalog import read_markdown_frontmatter
+
+    cases = {
+        (
+            examples_root
+            / "example-domain-knowledge"
+            / "ontology"
+            / "operations"
+            / "设计变更不停产切换分析.md"
+        ): {"CHANGE_ORDER变更单", "AO工序", "设备批次", "设备批次工序状态"},
+        (
+            examples_root
+            / "corporate-deposit-marketing"
+            / "ontology"
+            / "operations"
+            / "IPO与上市辅导营销机会分析.md"
+        ): {"企业客户", "上市辅导", "IPO上市审核"},
+    }
+
+    for operation_path, expected_objects in cases.items():
+        frontmatter = read_markdown_frontmatter(operation_path)
+        declared_objects = set((frontmatter.get("uses") or {}).get("objects") or [])
+        assert expected_objects <= declared_objects
+        for object_key in expected_objects:
+            object_path = operation_path.parent.parent / "objects" / "{}.md".format(object_key)
+            assert object_path.is_file()
+
+
 def test_build_ontologies_section_honors_selected_ontology(tmp_path, monkeypatch):
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import build_ontologies_section

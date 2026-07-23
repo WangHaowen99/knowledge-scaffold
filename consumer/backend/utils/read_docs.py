@@ -172,6 +172,8 @@ def _extract_document_description(content: str) -> Optional[str]:
             "object_key:",
             "ontology_id:",
             "entity_key:",
+            "requested_key:",
+            "matched_by:",
             "key:",
         )):
             value = line.split(":", 1)[1].strip().strip("\"'")

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set
 
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.business_data.resolver import (
     BusinessDataConnectionError,
+    ResolvedBusinessDataSource,
     resolve_business_data_source,
 )
 from agent.tools.business_data.service import (
@@ -17,10 +19,17 @@ from agent.tools.business_data.service import (
 )
 from agent.tools.events import _tool_span_key
 from utils.logging import get_logger
-from ontology.ontology_catalog import get_ontology_manifest
+from ontology.ontology_catalog import (
+    ObjectDataMappingStatus,
+    ObjectReferenceStatus,
+    find_exact_object_data_mapping_result,
+    get_ontology_manifest,
+    resolve_object_reference_result,
+)
 
 logger = get_logger("tools.business_data_search")
 BusinessDataSearchEventEmitter = Callable[[Dict[str, str]], None]
+_GRAPH_SCHEMA_FALLBACK_PROVIDERS = {"neo4j", "hugegraph"}
 
 BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
@@ -46,7 +55,8 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                 "entity": {
                     "type": "string",
                     "description": (
-                        "The exact target entity/object key from the selected ontology's object definition. "
+                        "The target entity/object key, title, canonical key, or declared alias from the selected ontology. "
+                        "The tool resolves it to the exact object key before querying. "
                         "Prefer reading the object via ontology_context(resource='object') before querying so "
                         "the query can use the correct entity and field names."
                     ),
@@ -79,6 +89,7 @@ def handle_business_data_search(
     event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
     tool_call_id: Optional[str] = None,
     provider_runtime_context: Optional[Mapping[str, Any]] = None,
+    _resolved_connection: Optional[ResolvedBusinessDataSource] = None,
 ) -> str:
     normalized_ontology_id = str(ontology_id or "").strip()
     if not normalized_ontology_id:
@@ -98,13 +109,15 @@ def handle_business_data_search(
         return "Error: Search query cannot be empty"
 
     normalized_query = query.strip()
-    try:
-        connection = resolve_business_data_source(
-            workspace_id=workspace_id,
-            ontology_id=normalized_ontology_id,
-        )
-    except BusinessDataConnectionError as exc:
-        return "Error: {}".format(str(exc))
+    connection = _resolved_connection
+    if connection is None:
+        try:
+            connection = resolve_business_data_source(
+                workspace_id=workspace_id,
+                ontology_id=normalized_ontology_id,
+            )
+        except BusinessDataConnectionError as exc:
+            return "Error: {}".format(str(exc))
 
     logger.info(
         "Sending business_data_search query: workspace_id=%s ontology_id=%s mode=%s provider=%s entity=%s query=%s (tool_call_id=%s)",
@@ -240,8 +253,63 @@ class BusinessDataSearchTool:
         tool_call_id: Optional[str] = None,
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
+        normalized_args = dict(args)
+        normalized_args.pop("_resolved_connection", None)
+        normalized_entity = str(normalized_args.get("entity") or "").strip()
+        normalized_query = str(normalized_args.get("query") or "").strip()
+        if not normalized_entity:
+            return ToolOutcome(content="Error: entity cannot be empty")
+        if not normalized_query:
+            return ToolOutcome(content="Error: Search query cannot be empty")
+        normalized_args["entity"] = normalized_entity
+        normalized_args["query"] = normalized_query
+
+        ontology, ontology_error = get_ontology_manifest(
+            str(normalized_args.get("ontology_id") or ""),
+            workspace_id=context.workspace_id,
+        )
+        if ontology_error:
+            return ToolOutcome(content=ontology_error)
+        assert ontology is not None
+        graph_fallback_connection: Optional[ResolvedBusinessDataSource] = None
+        reference_result = resolve_object_reference_result(
+            Path(ontology.ontology_dir).resolve(),
+            normalized_entity,
+        )
+        resolution = reference_result.resolution
+        resolution_error = reference_result.error
+        if reference_result.status != ObjectReferenceStatus.RESOLVED:
+            if reference_result.status not in {
+                ObjectReferenceStatus.NOT_FOUND,
+                ObjectReferenceStatus.MISSING_DIRECTORY,
+            }:
+                return ToolOutcome(content=resolution_error)
+            ontology_dir = Path(ontology.ontology_dir).resolve()
+            mapping_result = find_exact_object_data_mapping_result(
+                ontology_dir,
+                normalized_entity,
+            )
+            if mapping_result.status == ObjectDataMappingStatus.INVALID:
+                return ToolOutcome(content=mapping_result.error)
+            has_exact_mapping = mapping_result.status == ObjectDataMappingStatus.FOUND
+            if not has_exact_mapping:
+                graph_fallback_connection = (
+                    _resolve_graph_schema_fallback_connection(
+                        workspace_id=context.workspace_id,
+                        ontology_id=str(normalized_args.get("ontology_id") or ""),
+                    )
+                )
+                if graph_fallback_connection is None:
+                    return ToolOutcome(content=resolution_error)
+        resolved_entity = (
+            resolution.object_key if resolution is not None else normalized_entity
+        )
+        normalized_args["entity"] = resolved_entity
+        if graph_fallback_connection is not None:
+            normalized_args["_resolved_connection"] = graph_fallback_connection
+
         content = handle_business_data_search(
-            **args,
+            **normalized_args,
             workspace_id=context.workspace_id,
             event_emitter=event_emitter,
             tool_call_id=tool_call_id,
@@ -251,7 +319,7 @@ class BusinessDataSearchTool:
             ),
         )
         state_updates: Dict[str, Any] = {}
-        entity_name = str(args.get("entity") or "").strip()
+        entity_name = resolved_entity if graph_fallback_connection is None else ""
         if entity_name:
             state_updates["object_context_usage"] = [
                 {
@@ -267,6 +335,23 @@ class BusinessDataSearchTool:
             state_updates=state_updates,
             terminal=terminal_error is not None,
         )
+
+
+def _resolve_graph_schema_fallback_connection(
+    *,
+    workspace_id: Optional[str],
+    ontology_id: str,
+) -> Optional[ResolvedBusinessDataSource]:
+    try:
+        connection = resolve_business_data_source(
+            workspace_id=workspace_id,
+            ontology_id=ontology_id,
+        )
+    except BusinessDataConnectionError:
+        return None
+    if connection.provider not in _GRAPH_SCHEMA_FALLBACK_PROVIDERS:
+        return None
+    return connection
 
 
 def _build_provider_runtime_context(
