@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from config.ops_config import load_ops_config
+from config.ops_config import resolve_model_profile_max_count
 from utils.security.secrets import (
     SecretEncryptionError,
     decrypt_secret,
@@ -435,9 +435,6 @@ def _validate_persisted_profiles(section: dict[str, Any]) -> None:
         if normalized_id in profile_ids:
             raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile id 重复")
         profile_ids.add(normalized_id)
-    max_profiles = max(1, int(load_ops_config()["limits"]["model_profile_max_count"]))
-    if len(profiles) > max_profiles:
-        raise SystemConfigReadError("SYSTEM_CONFIG_INVALID", "模型 profile 数量无效")
     for field_name in ("default_main_profile_ref", "default_task_profile_ref"):
         if field_name not in section or section[field_name] is None:
             continue
@@ -475,6 +472,30 @@ def _validate_persisted_document(document: dict[str, Any]) -> None:
             _validate_persisted_profiles(section_value)
         else:
             _validate_persisted_fields(_SECTION_FIELDS[section], section_value)
+        try:
+            if section in {"web_search", "skill_evolution"}:
+                # Cross-field rules must use the same persisted > env > default
+                # precedence as runtime; secrets are validated separately below.
+                semantic_specs = {
+                    field_name: field_spec
+                    for field_name, field_spec in _SECTION_FIELDS[section].items()
+                    if field_spec.get("type") != "secret"
+                }
+                effective_section = _process_fields_recursive(
+                    section,
+                    semantic_specs,
+                    section_value,
+                    [section],
+                )
+                if section == "web_search":
+                    _normalize_web_search_effective(effective_section)
+                else:
+                    _normalize_skill_evolution_effective(effective_section)
+        except SystemConfigValidationError as exc:
+            raise SystemConfigReadError(
+                "SYSTEM_CONFIG_INVALID",
+                "系统配置语义无效，请修复配置后重试",
+            ) from exc
 
 
 def _validate_encrypted_secrets(document: dict[str, Any]) -> None:
@@ -852,8 +873,16 @@ def _normalize_llm_profiles_section(
             seen_ids.add(profile["id"])
             profiles.append(profile)
     profile_ids = {profile["id"] for profile in profiles}
-    max_profiles = max(1, int(load_ops_config()["limits"]["model_profile_max_count"]))
-    if len(profiles) > max_profiles:
+    max_profiles = resolve_model_profile_max_count()
+    target_profile_count = len(profiles)
+    persisted_profiles = current_section.get("profiles")
+    persisted_profile_count = (
+        len(persisted_profiles) if isinstance(persisted_profiles, list) else 0
+    )
+    if (
+        target_profile_count > max_profiles
+        and target_profile_count > persisted_profile_count
+    ):
         raise SystemConfigValidationError("模型数量已达上限: {}".format(max_profiles))
 
     default_main_profile_ref = _normalize_default_profile_ref(
@@ -952,29 +981,35 @@ def load_system_config() -> dict[str, dict[str, Any]]:
 
 def _load_system_config_unlocked() -> dict[str, dict[str, Any]]:
     raw = _load_raw_system_config_unlocked()
-    effective: dict[str, dict[str, Any]] = {}
-    for section, specs in _SECTION_FIELDS.items():
-        if section == _LLM_PROFILES_SECTION:
-            continue
-        raw_section = raw.get(section) or {}
-        effective[section] = _process_fields_recursive(
-            section,
-            specs,
-            raw_section,
-            [section],
-        )
-        if section == "web_search":
-            effective[section] = _normalize_web_search_effective(effective[section])
-        if section == "skill_evolution":
-            effective[section] = _normalize_skill_evolution_effective(effective[section])
+    try:
+        effective: dict[str, dict[str, Any]] = {}
+        for section, specs in _SECTION_FIELDS.items():
+            if section == _LLM_PROFILES_SECTION:
+                continue
+            raw_section = raw.get(section) or {}
+            effective[section] = _process_fields_recursive(
+                section,
+                specs,
+                raw_section,
+                [section],
+            )
+            if section == "web_search":
+                effective[section] = _normalize_web_search_effective(effective[section])
+            if section == "skill_evolution":
+                effective[section] = _normalize_skill_evolution_effective(effective[section])
 
-    # 特殊处理 llm_profiles
-    effective[_LLM_PROFILES_SECTION] = _normalize_llm_profiles_section(
-        raw.get(_LLM_PROFILES_SECTION),
-        legacy_llm=effective.get("llm", {}),
-        current_raw_section=raw.get(_LLM_PROFILES_SECTION),
-    )
-    return effective
+        # 特殊处理 llm_profiles
+        effective[_LLM_PROFILES_SECTION] = _normalize_llm_profiles_section(
+            raw.get(_LLM_PROFILES_SECTION),
+            legacy_llm=effective.get("llm", {}),
+            current_raw_section=raw.get(_LLM_PROFILES_SECTION),
+        )
+        return effective
+    except SystemConfigValidationError as exc:
+        raise SystemConfigReadError(
+            "SYSTEM_CONFIG_INVALID",
+            "系统配置语义无效，请修复配置后重试",
+        ) from exc
 
 
 def _publicize_fields(specs: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
