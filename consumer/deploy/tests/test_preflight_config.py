@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from preflight_config import (  # noqa: E402
     _load_compose_config_json,
     _ontology_has_bound_python_script,
+    _release_host_ports,
     _release_sandbox_structured_source_errors,
     validate_config,
 )
@@ -77,7 +78,10 @@ def _compose_loader(
             "services": {
                 "backend": {
                     "environment": resolved_environment,
+                    "ports": [{"target": 5055, "published": "5100"}],
                 },
+                "mcp": {"ports": [{"target": 7488, "published": "9000"}]},
+                "frontend": {"ports": [{"target": 80, "published": "6600"}]},
             },
         }
         source_config = {
@@ -245,6 +249,14 @@ class PreflightConfigTests(unittest.TestCase):
         source_command = calls[2][0]
         self.assertIn("--no-interpolate", source_command)
         self.assertIn("--no-env-resolution", source_command)
+
+    def test_release_host_ports_use_resolved_compose_mappings(self) -> None:
+        config, _errors = _compose_loader()(self.compose_file, self.env_file)
+
+        self.assertEqual(
+            _release_host_ports(config),
+            {"backend": 5100, "mcp": 9000, "frontend": 6600},
+        )
 
     def test_compose_config_loader_rejects_nonliteral_structured_source(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")

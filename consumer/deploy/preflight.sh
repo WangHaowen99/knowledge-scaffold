@@ -27,10 +27,11 @@ ensure_env_files
 require_mcp_token_secret
 
 command -v python3 >/dev/null 2>&1 || die "Python 3 is required for deployment validation"
+build_compose_env_args
 PREFLIGHT_COMPOSE_ENV_ARGS=()
-while IFS= read -r compose_env_file; do
+for compose_env_file in "${COMPOSE_ENV_FILES[@]}"; do
     PREFLIGHT_COMPOSE_ENV_ARGS+=(--compose-env-file "${compose_env_file}")
-done < <(compose_env_files)
+done
 python3 "${SCRIPT_DIR}/preflight_config.py" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \
     "${PREFLIGHT_COMPOSE_ENV_ARGS[@]}" \
@@ -39,6 +40,19 @@ python3 "${SCRIPT_DIR}/preflight_config.py" \
     --report "${STATE_DIR}/preflight-config.json" \
     "${PREFLIGHT_ARGS[@]}" \
     || die "Sandbox, Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
+
+resolved_host_ports="$(python3 -c '
+import json
+import sys
+
+ports = json.load(open(sys.argv[1], encoding="utf-8")).get("host_ports", {})
+values = [ports.get(name) for name in ("backend", "mcp", "frontend")]
+if any(type(value) is not int or value < 1 or value > 65535 for value in values):
+    raise SystemExit(1)
+print(*values)
+' "${STATE_DIR}/preflight-config.json")" \
+    || die "Could not resolve release host ports from Compose config"
+read -r BACKEND_HOST_PORT MCP_HOST_PORT FRONTEND_HOST_PORT <<< "${resolved_host_ports}"
 
 host_arch="$(detect_host_arch)"
 release_arch="$(manifest_get release_arch)"
@@ -60,9 +74,9 @@ require_file "${BUNDLE_ROOT}/${backend_tar}"
 require_file "${BUNDLE_ROOT}/${frontend_tar}"
 require_file "${BUNDLE_ROOT}/${jiuwenbox_tar}"
 
-check_port_available "${BACKEND_PORT:-5055}"
-check_port_available "${MCP_SERVER_PORT:-7488}"
-check_port_available "${FRONTEND_PORT:-8888}"
+check_port_available "${BACKEND_HOST_PORT}"
+check_port_available "${MCP_HOST_PORT}"
+check_port_available "${FRONTEND_HOST_PORT}"
 
 # auth-server 附加检查（必备组件，不发布宿主端口，无需查端口占用）
 auth_tar="$(manifest_get auth_server_image_tar)"
@@ -88,9 +102,9 @@ case "${mcp_health}" in
         log "MCP 容器尚未创建（首次部署属正常，部署后监听 7488）"
         ;;
     healthy)
-        curl -fsS --max-time 3 "http://127.0.0.1:${MCP_SERVER_PORT:-7488}/health" >/dev/null \
+        curl -fsS --max-time 3 "http://127.0.0.1:${MCP_HOST_PORT}/health" >/dev/null \
             || die "MCP container is healthy but host health endpoint is unreachable"
-        log "MCP 7488 health verified"
+        log "MCP ${MCP_HOST_PORT} health verified"
         ;;
     *)
         warn "MCP 容器健康状态: ${mcp_health}（部署会重建该容器）"

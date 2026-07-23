@@ -204,6 +204,40 @@ def _load_compose_config_json(
     }]
 
 
+def _published_host_port(
+    compose_config: Mapping[str, Any] | None,
+    service_name: str,
+    target_port: int,
+) -> int | None:
+    services = compose_config.get("services") if isinstance(compose_config, Mapping) else None
+    service = services.get(service_name) if isinstance(services, Mapping) else None
+    ports = service.get("ports") if isinstance(service, Mapping) else None
+    if not isinstance(ports, list):
+        return None
+
+    published_ports: set[int] = set()
+    for port in ports:
+        if not isinstance(port, Mapping):
+            continue
+        target = _positive_int(str(port.get("target") or ""))
+        published = _positive_int(str(port.get("published") or ""))
+        if target == target_port and published is not None and published <= 65535:
+            published_ports.add(published)
+    if len(published_ports) != 1:
+        return None
+    return next(iter(published_ports))
+
+
+def _release_host_ports(
+    compose_config: Mapping[str, Any] | None,
+) -> dict[str, int | None]:
+    return {
+        "backend": _published_host_port(compose_config, "backend", 5055),
+        "mcp": _published_host_port(compose_config, "mcp", 7488),
+        "frontend": _published_host_port(compose_config, "frontend", 80),
+    }
+
+
 def _relative_path(value: str) -> bool:
     if not value:
         return False
@@ -797,6 +831,7 @@ def validate_config(
         compose_config_errors=compose_config_errors,
     )
     errors.extend(sandbox_errors)
+    host_ports = _release_host_ports(compose_config)
 
     auth_url = env.get("AUTH_SERVER_URL", "").rstrip("/")
     issuer = env.get("AUTH_SERVER_ISSUER", "").rstrip("/")
@@ -877,6 +912,7 @@ def validate_config(
             "port": mcp_port,
             "token_secret_configured": bool(mcp_secret),
         },
+        "host_ports": host_ports,
         "limits": {
             "user_max_count": user_limit,
             "auth_user_max_count": auth_user_limit,

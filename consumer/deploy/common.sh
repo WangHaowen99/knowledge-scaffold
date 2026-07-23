@@ -11,6 +11,7 @@ MANIFEST_FILE="${SCRIPT_DIR}/manifest.json"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.release.yml"
 BACKEND_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"
 LEGACY_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/.env"
+LEGACY_COMPOSE_HOST_ENV_FILE="${STATE_DIR}/legacy-compose-host.env"
 
 mkdir -p "${STATE_DIR}" "${BACKUP_ROOT}"
 
@@ -169,19 +170,76 @@ docker_compose_cmd() {
     return 1
 }
 
-compose_env_files() {
-    # Keep legacy host-level overrides effective without using them as backend env.
-    printf '%s\n' "${BACKEND_COMPOSE_ENV_FILE}"
-    if [ -f "${LEGACY_COMPOSE_ENV_FILE}" ]; then
-        printf '%s\n' "${LEGACY_COMPOSE_ENV_FILE}"
+render_legacy_compose_host_env() {
+    local rendered_tmp="${LEGACY_COMPOSE_HOST_ENV_FILE}.tmp"
+
+    if [ ! -f "${LEGACY_COMPOSE_ENV_FILE}" ]; then
+        rm -f "${LEGACY_COMPOSE_HOST_ENV_FILE}" "${rendered_tmp}"
+        return 0
     fi
+
+    if ! awk '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            if (line !~ /^[[:space:]]*(export[[:space:]]+)?(BACKEND_PORT|FRONTEND_PORT|MCP_SERVER_PORT)[[:space:]]*=/) {
+                next
+            }
+            key = line
+            sub(/^[[:space:]]*(export[[:space:]]+)?/, "", key)
+            sub(/[[:space:]]*=.*/, "", key)
+            value = line
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+#.*$/, "", value)
+            value = trim(value)
+            if (length(value) >= 2 && ((substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"") || (substr(value, 1, 1) == "\047" && substr(value, length(value), 1) == "\047"))) {
+                value = substr(value, 2, length(value) - 2)
+            }
+            values[key] = value
+        }
+        END {
+            keys[1] = "BACKEND_PORT"
+            keys[2] = "FRONTEND_PORT"
+            keys[3] = "MCP_SERVER_PORT"
+            invalid = 0
+            for (slot = 1; slot <= 3; slot++) {
+                key = keys[slot]
+                if (!(key in values)) {
+                    continue
+                }
+                value = values[key]
+                if (value !~ /^[0-9]+$/ || value + 0 < 1 || value + 0 > 65535) {
+                    printf "Invalid legacy host port %s=%s\n", key, value > "/dev/stderr"
+                    invalid = 1
+                    continue
+                }
+                printf "%s=%s\n", key, value
+            }
+            exit invalid
+        }
+    ' "${LEGACY_COMPOSE_ENV_FILE}" > "${rendered_tmp}"; then
+        rm -f "${rendered_tmp}"
+        die "Legacy root .env contains an invalid host port"
+    fi
+    chmod 600 "${rendered_tmp}"
+    mv "${rendered_tmp}" "${LEGACY_COMPOSE_HOST_ENV_FILE}"
 }
 
 build_compose_env_args() {
+    render_legacy_compose_host_env
+    COMPOSE_ENV_FILES=("${BACKEND_COMPOSE_ENV_FILE}")
+    if [ -s "${LEGACY_COMPOSE_HOST_ENV_FILE}" ]; then
+        COMPOSE_ENV_FILES+=("${LEGACY_COMPOSE_HOST_ENV_FILE}")
+    fi
     COMPOSE_ENV_ARGS=()
-    while IFS= read -r env_file; do
+    for env_file in "${COMPOSE_ENV_FILES[@]}"; do
         COMPOSE_ENV_ARGS+=(--env-file "${env_file}")
-    done < <(compose_env_files)
+    done
 }
 
 compose_up() {
