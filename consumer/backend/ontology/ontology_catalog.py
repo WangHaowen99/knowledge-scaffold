@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
+import unicodedata
+from dataclasses import dataclass
+from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -35,6 +40,100 @@ ASSET_TEXT_EXTENSIONS = {
 ASSET_TEXT_FILENAMES = {".env"}
 ASSET_MAX_READ_BYTES = 512_000
 
+_OBJECT_KEY_HEADERS = ("object key", "object_key", "key", "中文名称")
+_OBJECT_TITLE_HEADERS = ("标题", "title")
+_OBJECT_ALIAS_HEADERS = ("别名", "aliases", "alias")
+_OBJECT_ALIAS_SPLIT_RE = re.compile(r"[,，、;/；]")
+_MARKDOWN_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-+:?$")
+_OBJECT_CANONICAL_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+@dataclass(frozen=True)
+class ObjectReferenceResolution:
+    requested_key: str
+    object_key: str
+    matched_by: str
+    path: Path
+
+
+@dataclass(frozen=True)
+class ObjectAliasValidationResult:
+    errors: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+
+class ObjectReferenceStatus(str, Enum):
+    RESOLVED = "resolved"
+    NOT_FOUND = "not_found"
+    MISSING_DIRECTORY = "missing_directory"
+    INVALID_REQUEST = "invalid_request"
+    AMBIGUOUS = "ambiguous"
+    READ_ERROR = "read_error"
+    INVALID_PACKAGE = "invalid_package"
+
+
+@dataclass(frozen=True)
+class ObjectReferenceLookupResult:
+    status: ObjectReferenceStatus
+    resolution: Optional[ObjectReferenceResolution] = None
+    error: Optional[str] = None
+
+
+class ObjectDataMappingStatus(str, Enum):
+    FOUND = "found"
+    NOT_FOUND = "not_found"
+    FILE_MISSING = "file_missing"
+    INVALID = "invalid"
+
+
+@dataclass(frozen=True)
+class ObjectDataMappingLookupResult:
+    status: ObjectDataMappingStatus
+    mapping: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _ObjectDataMappingsLoadResult:
+    status: ObjectDataMappingStatus
+    payload: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _ObjectCatalogEntry:
+    key: str
+    title: str
+    aliases: Tuple[str, ...]
+    raw_aliases: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ObjectDefinition:
+    key: str
+    canonical_key: str
+    title: str
+    aliases: Tuple[str, ...]
+    raw_aliases: Tuple[str, ...]
+    path: Path
+
+
+@dataclass(frozen=True)
+class _ObjectReferenceIndex:
+    definitions: Tuple[_ObjectDefinition, ...]
+    matches_by_kind: Dict[str, Dict[str, Tuple[_ObjectDefinition, ...]]]
+
+
+class _ObjectCatalogReadError(RuntimeError):
+    pass
+
+
+class _ObjectDefinitionLoadError(RuntimeError):
+    def __init__(self, message: str, *, invalid_package: bool = False) -> None:
+        super().__init__(message)
+        self.invalid_package = invalid_package
+
+
 def split_markdown_frontmatter(markdown: str) -> Tuple[Dict[str, Any], str]:
     text = str(markdown or "")
     if not text.startswith("---"):
@@ -59,6 +158,162 @@ def read_markdown_frontmatter(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return frontmatter
+
+
+def find_exact_object_data_mapping(
+    ontology_dir: Path,
+    object_key: str,
+) -> Optional[Dict[str, Any]]:
+    return find_exact_object_data_mapping_result(
+        ontology_dir,
+        object_key,
+    ).mapping
+
+
+def find_exact_object_data_mapping_result(
+    ontology_dir: Path,
+    object_key: str,
+) -> ObjectDataMappingLookupResult:
+    key = str(object_key or "").strip()
+    if not key:
+        return ObjectDataMappingLookupResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error="Error: object key is required for data mapping lookup.",
+        )
+    document = _load_object_data_mappings(ontology_dir)
+    if document.status != ObjectDataMappingStatus.FOUND:
+        return ObjectDataMappingLookupResult(
+            status=document.status,
+            error=document.error,
+        )
+    payload = document.payload or {}
+
+    objects = payload.get("objects")
+    if isinstance(objects, dict):
+        mapping = objects.get(key)
+        if mapping is None:
+            return ObjectDataMappingLookupResult(
+                status=ObjectDataMappingStatus.NOT_FOUND,
+            )
+        return ObjectDataMappingLookupResult(
+            status=ObjectDataMappingStatus.FOUND,
+            mapping=dict(mapping),
+        )
+    if isinstance(objects, list):
+        for mapping in objects:
+            mapping_key = str(
+                mapping.get("object_key") or mapping.get("key") or ""
+            ).strip()
+            if mapping_key == key:
+                return ObjectDataMappingLookupResult(
+                    status=ObjectDataMappingStatus.FOUND,
+                    mapping=dict(mapping),
+                )
+        return ObjectDataMappingLookupResult(
+            status=ObjectDataMappingStatus.NOT_FOUND,
+        )
+    payload_key = str(payload.get("object_key") or "").strip()
+    if payload_key == key:
+        return ObjectDataMappingLookupResult(
+            status=ObjectDataMappingStatus.FOUND,
+            mapping=dict(payload),
+        )
+    return ObjectDataMappingLookupResult(
+        status=ObjectDataMappingStatus.NOT_FOUND,
+    )
+
+
+def _load_object_data_mappings(
+    ontology_dir: Path,
+) -> _ObjectDataMappingsLoadResult:
+    mapping_path = (
+        Path(ontology_dir).resolve()
+        / "mappings"
+        / "object-data-mappings.json"
+    )
+    if not mapping_path.exists():
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.FILE_MISSING,
+        )
+    if not mapping_path.is_file():
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error="Error: mappings/object-data-mappings.json is not a file.",
+        )
+    try:
+        payload = json.loads(mapping_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error=(
+                "Error: Failed to decode mappings/object-data-mappings.json "
+                "as UTF-8."
+            ),
+        )
+    except OSError:
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error="Error: Failed to read mappings/object-data-mappings.json.",
+        )
+    except json.JSONDecodeError:
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error=(
+                "Error: mappings/object-data-mappings.json contains invalid JSON."
+            ),
+        )
+    if not isinstance(payload, dict):
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error=(
+                "Error: mappings/object-data-mappings.json must contain a JSON object."
+            ),
+        )
+
+    objects = payload.get("objects")
+    if isinstance(objects, dict):
+        invalid_keys = sorted(
+            str(mapping_key)
+            for mapping_key, mapping in objects.items()
+            if not isinstance(mapping, dict)
+        )
+        if invalid_keys:
+            return _ObjectDataMappingsLoadResult(
+                status=ObjectDataMappingStatus.INVALID,
+                error=(
+                    "Error: Object mappings must contain JSON objects: {}."
+                ).format(", ".join(invalid_keys)),
+            )
+    elif isinstance(objects, list):
+        if any(not isinstance(mapping, dict) for mapping in objects):
+            return _ObjectDataMappingsLoadResult(
+                status=ObjectDataMappingStatus.INVALID,
+                error=(
+                    "Error: 'objects' entries in mappings/object-data-mappings.json "
+                    "must be JSON objects."
+                ),
+            )
+    elif "objects" in payload:
+        return _ObjectDataMappingsLoadResult(
+            status=ObjectDataMappingStatus.INVALID,
+            error=(
+                "Error: 'objects' in mappings/object-data-mappings.json "
+                "must be a JSON object or array."
+            ),
+        )
+    return _ObjectDataMappingsLoadResult(
+        status=ObjectDataMappingStatus.FOUND,
+        payload=dict(payload),
+    )
+
+
+def validate_object_data_mappings(ontology_dir: Path) -> Optional[str]:
+    result = _load_object_data_mappings(ontology_dir)
+    if result.status != ObjectDataMappingStatus.INVALID:
+        return None
+    return str(result.error or "Error: Invalid object data mapping.").removeprefix(
+        "Error: "
+    )
 
 
 def get_ontology_manifest(
@@ -199,7 +454,10 @@ def parse_markdown_table(markdown: str) -> List[Dict[str, str]]:
         if not line.startswith("|") or not line.endswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if cells and all(set(cell.replace(" ", "")) <= {"-"} for cell in cells):
+        if cells and all(
+            _MARKDOWN_TABLE_SEPARATOR_CELL_RE.fullmatch(cell.replace(" ", ""))
+            for cell in cells
+        ):
             continue
         if not headers:
             headers = cells
@@ -208,6 +466,613 @@ def parse_markdown_table(markdown: str) -> List[Dict[str, str]]:
             continue
         rows.append({headers[index]: cells[index] for index in range(len(headers))})
     return rows
+
+
+def normalize_object_identifier(value: Any) -> str:
+    normalized = unicodedata.normalize("NFC", str(value or "").strip())
+    return normalized.casefold() if normalized.isascii() else normalized
+
+
+def split_object_aliases(value: Any) -> List[str]:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return []
+    return [item.strip() for item in _OBJECT_ALIAS_SPLIT_RE.split(text) if item.strip()]
+
+
+def _split_object_alias_tokens(value: Any) -> Tuple[str, ...]:
+    text = str(value or "").strip()
+    if text == "-":
+        return ()
+    if not text:
+        return ("",)
+    return tuple(item.strip() for item in _OBJECT_ALIAS_SPLIT_RE.split(text))
+
+
+def resolve_object_reference(
+    ontology_dir: Path,
+    requested_key: str,
+) -> Tuple[Optional[ObjectReferenceResolution], Optional[str]]:
+    result = resolve_object_reference_result(ontology_dir, requested_key)
+    return result.resolution, result.error
+
+
+def resolve_object_reference_result(
+    ontology_dir: Path,
+    requested_key: str,
+) -> ObjectReferenceLookupResult:
+    requested = str(requested_key or "").strip()
+    if not requested:
+        return ObjectReferenceLookupResult(
+            status=ObjectReferenceStatus.INVALID_REQUEST,
+            error="Error: object reference is required.",
+        )
+
+    root = Path(ontology_dir).resolve()
+    objects_dir = root / "objects"
+    if not objects_dir.is_dir():
+        return ObjectReferenceLookupResult(
+            status=ObjectReferenceStatus.MISSING_DIRECTORY,
+            error="Error: object directory not found.",
+        )
+
+    try:
+        reference_index = _load_object_reference_index(root)
+    except _ObjectCatalogReadError as exc:
+        return ObjectReferenceLookupResult(
+            status=ObjectReferenceStatus.READ_ERROR,
+            error="Error: {}".format(exc),
+        )
+    except _ObjectDefinitionLoadError as exc:
+        return ObjectReferenceLookupResult(
+            status=(
+                ObjectReferenceStatus.INVALID_PACKAGE
+                if exc.invalid_package
+                else ObjectReferenceStatus.READ_ERROR
+            ),
+            error="Error: {}".format(exc),
+        )
+    definitions = reference_index.definitions
+    requested_compare = normalize_object_identifier(requested)
+
+    for matched_by in ("key", "canonical_key", "title", "alias", "filename"):
+        matches = reference_index.matches_by_kind[matched_by].get(
+            requested_compare,
+            (),
+        )
+        if not matches:
+            continue
+        if len(matches) > 1:
+            candidates = sorted({item.key for item in matches}, key=normalize_object_identifier)
+            return ObjectReferenceLookupResult(
+                status=ObjectReferenceStatus.AMBIGUOUS,
+                error=(
+                    "Error: object reference '{}' is ambiguous. "
+                    "Candidate object keys: {}."
+                ).format(requested, ", ".join(candidates)),
+            )
+        match = matches[0]
+        return ObjectReferenceLookupResult(
+            status=ObjectReferenceStatus.RESOLVED,
+            resolution=ObjectReferenceResolution(
+                requested_key=requested,
+                object_key=match.key,
+                matched_by=matched_by,
+                path=match.path,
+            ),
+        )
+
+    available = sorted({item.key for item in definitions}, key=normalize_object_identifier)
+    suffix = (
+        " Available object keys: {}.".format(", ".join(available[:30]))
+        if available
+        else ""
+    )
+    return ObjectReferenceLookupResult(
+        status=ObjectReferenceStatus.NOT_FOUND,
+        error="Object reference '{}' was not found.{}".format(requested, suffix),
+    )
+
+
+def _load_object_reference_index(ontology_dir: Path) -> _ObjectReferenceIndex:
+    root = Path(ontology_dir).resolve()
+    signature = _object_reference_signature(root / "objects")
+    return _load_object_reference_index_cached(str(root), signature)
+
+
+def _object_reference_signature(objects_dir: Path) -> Tuple[Tuple[str, int, int], ...]:
+    if not objects_dir.is_dir():
+        return ()
+    signature: List[Tuple[str, int, int]] = []
+    for path in sorted(objects_dir.glob("*.md"), key=lambda item: item.name.lower()):
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
+        signature.append((path.name, stat_result.st_mtime_ns, stat_result.st_size))
+    return tuple(signature)
+
+
+@lru_cache(maxsize=64)
+def _load_object_reference_index_cached(
+    ontology_dir: str,
+    signature: Tuple[Tuple[str, int, int], ...],
+) -> _ObjectReferenceIndex:
+    del signature
+    root = Path(ontology_dir)
+    catalog, _has_alias_column, _catalog_warnings = _load_object_catalog(root)
+    definitions = tuple(_load_object_definitions(root / "objects"))
+    return _ObjectReferenceIndex(
+        definitions=definitions,
+        matches_by_kind=_build_object_reference_matches(definitions, catalog),
+    )
+
+
+def _build_object_reference_matches(
+    definitions: Tuple[_ObjectDefinition, ...],
+    catalog: List[_ObjectCatalogEntry],
+) -> Dict[str, Dict[str, Tuple[_ObjectDefinition, ...]]]:
+    mutable: Dict[str, Dict[str, List[_ObjectDefinition]]] = {
+        kind: {}
+        for kind in ("key", "canonical_key", "title", "alias", "filename")
+    }
+
+    def add(kind: str, value: str, definition: _ObjectDefinition) -> None:
+        compare = normalize_object_identifier(value)
+        if compare:
+            mutable[kind].setdefault(compare, []).append(definition)
+
+    definitions_by_key: Dict[str, List[_ObjectDefinition]] = {}
+    for definition in definitions:
+        definitions_by_key.setdefault(
+            normalize_object_identifier(definition.key), []
+        ).append(definition)
+        add("key", definition.key, definition)
+        add("canonical_key", definition.canonical_key, definition)
+        add("title", definition.title, definition)
+        for alias in definition.aliases:
+            add("alias", alias, definition)
+        add("filename", definition.path.stem, definition)
+        add("filename", definition.path.name, definition)
+
+    for entry in catalog:
+        for definition in definitions_by_key.get(
+            normalize_object_identifier(entry.key), []
+        ):
+            add("key", entry.key, definition)
+            add("title", entry.title, definition)
+            for alias in entry.aliases:
+                add("alias", alias, definition)
+
+    return {
+        kind: {
+            compare: tuple(_dedupe_object_definitions(matches))
+            for compare, matches in by_identifier.items()
+        }
+        for kind, by_identifier in mutable.items()
+    }
+
+
+def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
+    root = Path(ontology_dir).resolve()
+    objects_dir = root / "objects"
+    try:
+        definitions = _load_object_definitions(objects_dir)
+    except _ObjectDefinitionLoadError as exc:
+        return ObjectAliasValidationResult(errors=(str(exc),))
+    try:
+        catalog, has_alias_column, catalog_warnings = _load_object_catalog(root)
+    except _ObjectCatalogReadError as exc:
+        return ObjectAliasValidationResult(errors=(str(exc),))
+    errors: List[str] = []
+    warnings: List[str] = list(catalog_warnings)
+
+    definitions_by_exact_key: Dict[str, List[_ObjectDefinition]] = {}
+    definitions_by_compare_key: Dict[str, List[_ObjectDefinition]] = {}
+    definitions_by_filename: Dict[str, _ObjectDefinition] = {}
+    for definition in definitions:
+        definitions_by_exact_key.setdefault(definition.key, []).append(definition)
+        definitions_by_compare_key.setdefault(
+            normalize_object_identifier(definition.key), []
+        ).append(definition)
+        definitions_by_filename[normalize_object_identifier(definition.path.name)] = definition
+
+    for object_key, matches in definitions_by_compare_key.items():
+        if len(matches) > 1:
+            errors.append(
+                "Duplicate object key '{}': {}.".format(
+                    object_key,
+                    ", ".join(sorted(str(item.path.name) for item in matches)),
+                )
+            )
+
+    for entry in catalog:
+        exact_matches = definitions_by_exact_key.get(entry.key, [])
+        normalized_matches = definitions_by_compare_key.get(
+            normalize_object_identifier(entry.key), []
+        )
+        filename_match = definitions_by_filename.get(
+            normalize_object_identifier("{}.md".format(entry.key))
+        )
+        if not exact_matches:
+            if normalized_matches:
+                errors.append(
+                    "Object catalog key '{}' does not exactly match detail key '{}'.".format(
+                        entry.key,
+                        normalized_matches[0].key,
+                    )
+                )
+            elif filename_match is not None:
+                errors.append(
+                    "Object catalog key '{}' does not exactly match detail key '{}'.".format(
+                        entry.key,
+                        filename_match.key,
+                    )
+                )
+            else:
+                errors.append(
+                    "Object catalog key '{}' has no matching detail.".format(entry.key)
+                )
+            continue
+        if len(exact_matches) > 1:
+            errors.append(
+                "Object catalog key '{}' matches multiple details.".format(entry.key)
+            )
+            continue
+        definition = exact_matches[0]
+        if has_alias_column:
+            catalog_aliases = {
+                normalize_object_identifier(alias) for alias in entry.aliases if alias
+            }
+            detail_aliases = {
+                normalize_object_identifier(alias) for alias in definition.aliases if alias
+            }
+            if catalog_aliases != detail_aliases:
+                catalog_alias_display = ", ".join(
+                    sorted(entry.aliases, key=normalize_object_identifier)
+                ) or "（无）"
+                detail_alias_display = ", ".join(
+                    sorted(definition.aliases, key=normalize_object_identifier)
+                ) or "（无）"
+                errors.append(
+                    (
+                        "对象 key='{}'、title='{}' 别名不一致："
+                        "objects/index.md = [{}]；{} = [{}]"
+                    ).format(
+                        definition.key,
+                        definition.title,
+                        catalog_alias_display,
+                        definition.path.name,
+                        detail_alias_display,
+                    )
+                )
+        warnings.extend(_duplicate_alias_warnings(entry.key, entry.aliases, source="catalog"))
+        if any(not alias for alias in entry.raw_aliases):
+            warnings.append(
+                "Object '{}' catalog aliases contain an empty value.".format(entry.key)
+            )
+
+    for definition in definitions:
+        warnings.extend(
+            _duplicate_alias_warnings(definition.key, definition.raw_aliases, source="detail")
+        )
+        if any(not str(alias or "").strip() for alias in definition.raw_aliases):
+            warnings.append(
+                "Object '{}' detail aliases contain an empty value.".format(definition.key)
+            )
+        if definition.canonical_key and not _OBJECT_CANONICAL_KEY_RE.fullmatch(
+            definition.canonical_key
+        ):
+            errors.append(
+                (
+                    "Object '{}' canonical_key '{}' must contain only ASCII letters, "
+                    "digits, underscores, or hyphens."
+                ).format(definition.key, definition.canonical_key)
+            )
+
+    _validate_object_identifier_conflicts(definitions, catalog, errors)
+    return ObjectAliasValidationResult(
+        errors=tuple(sorted(set(errors))),
+        warnings=tuple(sorted(set(warnings))),
+    )
+
+
+def _load_object_catalog(
+    ontology_dir: Path,
+) -> Tuple[List[_ObjectCatalogEntry], bool, List[str]]:
+    index_path = Path(ontology_dir) / "objects" / "index.md"
+    try:
+        markdown = read_optional_text(index_path)
+    except UnicodeDecodeError as exc:
+        raise _ObjectCatalogReadError(
+            "Failed to decode objects/index.md as UTF-8."
+        ) from exc
+    except OSError as exc:
+        raise _ObjectCatalogReadError(
+            "Failed to read objects/index.md."
+        ) from exc
+    rows = parse_markdown_table(markdown)
+    headers = _first_markdown_table_headers(markdown)
+    has_key_column = _has_table_header(headers, _OBJECT_KEY_HEADERS)
+    has_alias_column = _has_table_header(headers, _OBJECT_ALIAS_HEADERS)
+    warnings: List[str] = []
+    if headers and not has_key_column:
+        warnings.append(
+            "Object catalog table has no supported key column; alias routing will use detail fallback."
+        )
+
+    entries: List[_ObjectCatalogEntry] = []
+    if not has_key_column:
+        return entries, has_alias_column, warnings
+    for row in rows:
+        key = _object_row_value(row, _OBJECT_KEY_HEADERS)
+        if not key:
+            continue
+        raw_aliases = (
+            _split_object_alias_tokens(_object_row_value(row, _OBJECT_ALIAS_HEADERS))
+            if has_alias_column
+            else ()
+        )
+        entries.append(
+            _ObjectCatalogEntry(
+                key=key,
+                title=_object_row_value(row, _OBJECT_TITLE_HEADERS),
+                aliases=tuple(alias for alias in raw_aliases if alias),
+                raw_aliases=raw_aliases,
+            )
+        )
+    return entries, has_alias_column, warnings
+
+
+def _load_object_definitions(objects_dir: Path) -> List[_ObjectDefinition]:
+    definitions: List[_ObjectDefinition] = []
+    if not objects_dir.is_dir():
+        return definitions
+    for path in sorted(objects_dir.glob("*.md"), key=lambda item: item.name.lower()):
+        if path.name.lower() == "index.md":
+            continue
+        frontmatter = _read_object_definition_frontmatter(path)
+        raw_alias_value = frontmatter.get("aliases")
+        if isinstance(raw_alias_value, list):
+            raw_aliases = tuple(
+                token
+                for alias in raw_alias_value
+                for token in _split_object_alias_tokens(alias)
+            )
+            aliases = tuple(alias for alias in raw_aliases if alias)
+        elif raw_alias_value is None:
+            raw_aliases = ()
+            aliases = ()
+        else:
+            raw_aliases = _split_object_alias_tokens(raw_alias_value)
+            aliases = tuple(alias for alias in raw_aliases if alias)
+        key = str(frontmatter.get("key") or path.stem).strip() or path.stem
+        definitions.append(
+            _ObjectDefinition(
+                key=key,
+                canonical_key=str(frontmatter.get("canonical_key") or "").strip(),
+                title=str(frontmatter.get("title") or "").strip(),
+                aliases=aliases,
+                raw_aliases=raw_aliases,
+                path=path.resolve(),
+            )
+        )
+    return definitions
+
+
+def _read_object_definition_frontmatter(path: Path) -> Dict[str, Any]:
+    try:
+        markdown = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise _ObjectDefinitionLoadError(
+            "Failed to decode object detail '{}' as UTF-8.".format(path.name)
+        ) from exc
+    except OSError as exc:
+        raise _ObjectDefinitionLoadError(
+            "Failed to read object detail '{}'.".format(path.name)
+        ) from exc
+
+    if not markdown.startswith("---"):
+        return {}
+    end = markdown.find("\n---", 3)
+    if end < 0:
+        raise _ObjectDefinitionLoadError(
+            "Object detail '{}' has unclosed YAML frontmatter.".format(path.name),
+            invalid_package=True,
+        )
+    raw_frontmatter = markdown[3:end].strip()
+    try:
+        parsed = yaml.safe_load(raw_frontmatter) or {}
+    except yaml.YAMLError as exc:
+        raise _ObjectDefinitionLoadError(
+            "Object detail '{}' has invalid YAML frontmatter.".format(path.name),
+            invalid_package=True,
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise _ObjectDefinitionLoadError(
+            "Object detail '{}' YAML frontmatter must be a mapping.".format(
+                path.name
+            ),
+            invalid_package=True,
+        )
+    return parsed
+
+
+def _validate_object_identifier_conflicts(
+    definitions: List[_ObjectDefinition],
+    catalog: List[_ObjectCatalogEntry],
+    errors: List[str],
+) -> None:
+    identity_claims: Dict[str, List[Tuple[str, str]]] = {}
+    alias_claims: Dict[str, List[str]] = {}
+    for definition in definitions:
+        for kind, value in (
+            ("key", definition.key),
+            ("canonical_key", definition.canonical_key),
+            ("title", definition.title),
+        ):
+            compare = normalize_object_identifier(value)
+            if compare:
+                identity_claims.setdefault(compare, []).append((definition.key, kind))
+        for alias in definition.aliases:
+            compare = normalize_object_identifier(alias)
+            if compare:
+                alias_claims.setdefault(compare, []).append(definition.key)
+
+    known_keys = {definition.key for definition in definitions}
+    for entry in catalog:
+        if entry.key not in known_keys:
+            continue
+        title_compare = normalize_object_identifier(entry.title)
+        if title_compare:
+            identity_claims.setdefault(title_compare, []).append((entry.key, "title"))
+        for alias in entry.aliases:
+            compare = normalize_object_identifier(alias)
+            if compare:
+                alias_claims.setdefault(compare, []).append(entry.key)
+
+    for compare, object_keys in alias_claims.items():
+        distinct_alias_objects = sorted(set(object_keys), key=normalize_object_identifier)
+        if len(distinct_alias_objects) > 1:
+            errors.append(
+                "Object alias '{}' points to multiple objects: {}.".format(
+                    compare,
+                    ", ".join(distinct_alias_objects),
+                )
+            )
+        for identity_object, identity_kind in _highest_priority_identity_claims(
+            identity_claims.get(compare, [])
+        ):
+            if identity_object in distinct_alias_objects:
+                continue
+            errors.append(
+                "Object alias '{}' for '{}' conflicts with {} of object '{}'.".format(
+                    compare,
+                    distinct_alias_objects[0] if distinct_alias_objects else "",
+                    identity_kind,
+                    identity_object,
+                )
+            )
+
+    canonical_claims: Dict[str, List[str]] = {}
+    for definition in definitions:
+        compare = normalize_object_identifier(definition.canonical_key)
+        if compare:
+            canonical_claims.setdefault(compare, []).append(definition.key)
+    for compare, object_keys in canonical_claims.items():
+        distinct = sorted(set(object_keys), key=normalize_object_identifier)
+        if len(distinct) > 1:
+            errors.append(
+                "Canonical object key '{}' is shared by: {}.".format(
+                    compare,
+                    ", ".join(distinct),
+                )
+            )
+        identity_conflicts = [
+            (identity_object, identity_kind)
+            for identity_object, identity_kind in _highest_priority_identity_claims(
+                identity_claims.get(compare, [])
+            )
+            if identity_object not in distinct and identity_kind != "canonical_key"
+        ]
+        if len(distinct) > 1:
+            for identity_object, identity_kind in identity_conflicts:
+                errors.append(
+                    "Canonical object key '{}' shared by {} conflicts with {} of object '{}'.".format(
+                        compare,
+                        ", ".join(distinct),
+                        identity_kind,
+                        identity_object,
+                    )
+                )
+            continue
+        canonical_object = distinct[0]
+        for identity_object, identity_kind in identity_conflicts:
+            errors.append(
+                "Canonical object key '{}' for '{}' conflicts with {} of object '{}'.".format(
+                    compare,
+                    canonical_object,
+                    identity_kind,
+                    identity_object,
+                )
+            )
+
+
+def _highest_priority_identity_claims(
+    claims: List[Tuple[str, str]],
+) -> List[Tuple[str, str]]:
+    priority = {"key": 0, "canonical_key": 1, "title": 2}
+    by_object: Dict[str, str] = {}
+    for object_key, kind in claims:
+        current = by_object.get(object_key)
+        if current is None or priority[kind] < priority[current]:
+            by_object[object_key] = kind
+    return sorted(
+        by_object.items(),
+        key=lambda item: (normalize_object_identifier(item[0]), priority[item[1]]),
+    )
+
+
+def _duplicate_alias_warnings(
+    object_key: str,
+    aliases: Tuple[str, ...],
+    *,
+    source: str,
+) -> List[str]:
+    seen: Set[str] = set()
+    duplicates: Set[str] = set()
+    for alias in aliases:
+        normalized = normalize_object_identifier(alias)
+        if not normalized:
+            continue
+        if normalized in seen:
+            duplicates.add(normalized)
+        else:
+            seen.add(normalized)
+    return [
+        "Object '{}' {} aliases contain duplicate '{}'.".format(object_key, source, alias)
+        for alias in sorted(duplicates)
+    ]
+
+
+def _dedupe_object_definitions(
+    definitions: List[_ObjectDefinition],
+) -> List[_ObjectDefinition]:
+    result: List[_ObjectDefinition] = []
+    seen: Set[str] = set()
+    for definition in sorted(definitions, key=lambda item: item.path.name.lower()):
+        path_key = str(definition.path)
+        if path_key in seen:
+            continue
+        seen.add(path_key)
+        result.append(definition)
+    return result
+
+
+def _normalize_table_header(value: Any) -> str:
+    return "".join(str(value or "").strip().casefold().split())
+
+
+def _has_table_header(headers: List[str], candidates: Tuple[str, ...]) -> bool:
+    normalized = {_normalize_table_header(header) for header in headers}
+    return any(_normalize_table_header(candidate) in normalized for candidate in candidates)
+
+
+def _object_row_value(row: Dict[str, str], candidates: Tuple[str, ...]) -> str:
+    normalized = {_normalize_table_header(key): value for key, value in row.items()}
+    for candidate in candidates:
+        value = normalized.get(_normalize_table_header(candidate))
+        if value is not None:
+            return str(value or "").strip()
+    return ""
+
+
+def _first_markdown_table_headers(markdown: str) -> List[str]:
+    for raw_line in str(markdown or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("|") and line.endswith("|"):
+            return [cell.strip() for cell in line.strip("|").split("|")]
+    return []
 
 
 def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
@@ -601,12 +1466,18 @@ def format_markdown_payload_compact(
     key_field: str,
     key: str,
     content: str,
+    requested_key: str = "",
+    matched_by: str = "",
 ) -> str:
-    return "{}: {}\n\ncontent:\n{}".format(
-        key_field,
-        _compact_inline_text(key),
-        str(content or "").strip(),
-    ).strip()
+    lines = ["{}: {}".format(key_field, _compact_inline_text(key))]
+    normalized_requested = _compact_inline_text(requested_key)
+    normalized_matched_by = _compact_inline_text(matched_by)
+    if normalized_requested and normalized_requested != _compact_inline_text(key):
+        lines.append("requested_key: {}".format(normalized_requested))
+    if normalized_matched_by and normalized_matched_by != "key":
+        lines.append("matched_by: {}".format(normalized_matched_by))
+    lines.extend(["", "content:", str(content or "").strip()])
+    return "\n".join(lines).strip()
 
 
 def _format_catalog(catalog: Any) -> List[str]:

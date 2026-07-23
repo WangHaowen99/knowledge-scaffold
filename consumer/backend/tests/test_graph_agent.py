@@ -16,6 +16,7 @@ from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from agent.tools.business_data.providers.graph.agent import (
     GraphAgentTimeoutError,
     _GRAPH_TOOL_SCHEMAS,
+    _build_agent_input,
     _graph_agent_timeout_seconds,
 )
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
@@ -128,6 +129,52 @@ def _context():
         mapping=GraphEntityMapping(entity="CHANGE_ORDER受影响对象", kind="path", source="test"),
         provider_config={},
     )
+
+
+def test_agent_input_reads_object_definition_from_canonical_filename(tmp_path):
+    object_dir = tmp_path / "ontologies" / "demo-ontology" / "objects"
+    object_dir.mkdir(parents=True)
+    object_content = (
+        "---\n"
+        "resource: object\n"
+        "key: 正式对象\n"
+        "canonical_key: formal-object\n"
+        "---\n\n"
+        "# 正式对象定义\n"
+    )
+    (object_dir / "formal-object.md").write_text(object_content, encoding="utf-8")
+    context = GraphSearchRuntimeContext(
+        provider="neo4j",
+        workspace_id="workspace-a",
+        ontology_id="demo-ontology",
+        workspace_root=str(tmp_path / "ontologies"),
+        entity="正式对象",
+        query="查询正式对象",
+        timeout_seconds=60,
+        max_result_rows=100,
+        scope=GraphScope(
+            workspace_property="d2o_workspace_id",
+            workspace_value="workspace-a",
+            ontology_property="d2o_ontology_id",
+            ontology_value="demo-ontology",
+        ),
+        mapping=GraphEntityMapping(
+            entity="正式对象",
+            kind="node",
+            source="objects/formal-object.md",
+            label="FormalObject",
+        ),
+        provider_config={},
+    )
+    assert context.mapping is not None
+
+    payload = _build_agent_input(
+        context=context,
+        mapping=context.mapping,
+        tool_schemas=[],
+    )
+
+    assert payload["object_definition"] == object_content
 
 
 def _executor(backend, context, mapping):

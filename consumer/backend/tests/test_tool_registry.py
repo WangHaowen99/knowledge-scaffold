@@ -312,9 +312,9 @@ def _write_v01_ontology_package(tmp_path):
     )
     (ontology_dir / "objects" / "index.md").write_text(
         (
-            "| object key | 标题 | 说明 |\n"
-            "| --- | --- | --- |\n"
-            "| 物料 | TargetItem | 制造物料 |\n"
+            "| object key | 标题 | 别名 | 说明 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 物料 | TargetItem | 制造件 | 制造物料 |\n"
         ),
         encoding="utf-8",
     )
@@ -327,6 +327,7 @@ def _write_v01_ontology_package(tmp_path):
             "title: 制造物料\n"
             "aliases:\n"
             "  - TargetItem\n"
+            "  - 制造件\n"
             "---\n\n"
             "# 物料\n字段定义\n"
         ),
@@ -531,6 +532,37 @@ def test_registry_loads_ontology_context_root_and_object(tmp_path, monkeypatch):
     assert "arguments.resource must be one of" in unsupported_resource_result.messages[0]["content"]
 
 
+def test_ontology_context_reports_missing_object_as_recoverable_result(tmp_path, monkeypatch):
+    ontology_dir = _write_scripted_ontology(tmp_path)
+    (ontology_dir / "objects" / "TargetItem.md").write_text(
+        "---\nresource: object\nkey: TargetItem\n---\n\n# TargetItem\n",
+        encoding="utf-8",
+    )
+    _patch_test_ontology_registry(monkeypatch, tmp_path)
+    captured = []
+
+    with stream_writer_context(captured.append):
+        result = execute_tool_batch(
+            [
+                _build_tool_call(
+                    "ontology_context",
+                    {"ontology_id": "demo", "resource": "object", "key": "MissingObject"},
+                )
+            ],
+            _make_context(project_root=str(tmp_path)),
+        )
+
+    content = result.messages[0]["content"]
+    assert content.startswith("Object reference 'MissingObject' was not found.")
+    assert "Available object keys: TargetItem" in content
+    assert "read_document_records" not in result.state_updates
+    finished_event = next(
+        event for event in captured if event["data"]["type"] == "tool.finished"
+    )
+    assert finished_event["data"]["payload"]["status"] == "completed"
+    assert finished_event["data"]["payload"].get("error") in (None, "")
+
+
 def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
     from agent.direct_execution.matcher import find_best_script_operation
 
@@ -552,8 +584,8 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
     ) in root_content
     assert (
         "objects_catalog:\n"
-        "columns: object key | 标题 | 说明\n"
-        "- 物料 | TargetItem | 制造物料"
+        "columns: object key | 标题 | 别名 | 说明\n"
+        "- 物料 | TargetItem | 制造件 | 制造物料"
     ) in root_content
     assert (
         "rules_catalog:\n"
@@ -581,7 +613,7 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
             "content": "# 影响分析",
         },
         "object": {
-            "keys": ["物料", "target_item", "制造物料", "TargetItem", "material_doc", "material_doc.md"],
+            "keys": ["物料", "target_item", "制造物料", "TargetItem", "制造件", "material_doc", "material_doc.md"],
             "filename": "material_doc.md",
             "content": "# 物料",
         },
@@ -616,6 +648,20 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
             record = result.state_updates["read_document_records"][0]
             assert record["path"].endswith("/{}/{}".format("{}s".format(resource), case["filename"]))
             assert record["ontology_version"] == "0.1.0"
+
+    alias_result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "ontology_context",
+                {"ontology_id": "demo-v01", "resource": "object", "key": "制造件"},
+            )
+        ],
+        context,
+    )
+    assert alias_result.messages[0]["content"].startswith(
+        "object_key: 物料\nrequested_key: 制造件\nmatched_by: alias\n"
+    )
+    assert alias_result.state_updates["read_document_records"][0]["description"] == "制造物料"
 
     script_result = execute_tool_batch(
         [
@@ -2617,6 +2663,8 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
     assert "semantic keys" not in ontology_description
     assert "file paths" not in ontology_description
     assert "Load each needed ontology resource once" in ontology_description
+    ontology_key_description = ontology_schema["parameters"]["properties"]["key"]["description"]
+    assert "object key, title, canonical_key, or declared alias" in ontology_key_description
 
     skill_description = skill_schema["description"]
     assert "materially helps the task" in skill_description

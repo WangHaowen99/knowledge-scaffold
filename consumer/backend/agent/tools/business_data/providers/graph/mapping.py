@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 import yaml
 
+from ontology.ontology_catalog import (
+    find_exact_object_data_mapping,
+    resolve_object_reference,
+)
 from ontology.ontologies import get_ontology_version_dir
 from .models import GraphEntityMapping
 from .scope import sanitize_return_properties, validate_graph_identifier
@@ -66,8 +69,7 @@ class GraphMappingResolver:
         version_dir: Path,
         entity: str,
     ) -> Optional[GraphEntityMapping]:
-        payload = _load_json(version_dir / "mappings" / "object-data-mappings.json")
-        raw = _find_object_mapping(payload, entity)
+        raw = find_exact_object_data_mapping(version_dir, entity)
         if not isinstance(raw, dict):
             return None
 
@@ -88,7 +90,10 @@ class GraphMappingResolver:
         version_dir: Path,
         entity: str,
     ) -> Optional[GraphEntityMapping]:
-        frontmatter = _load_object_frontmatter(version_dir / "objects" / "{}.md".format(entity))
+        resolution, error = resolve_object_reference(version_dir, entity)
+        if error or resolution is None:
+            return None
+        frontmatter = _load_object_frontmatter(resolution.path)
         if not frontmatter:
             return None
         raw_graph = frontmatter.get("graph")
@@ -106,7 +111,7 @@ class GraphMappingResolver:
         return _mapping_from_payload(
             entity=entity,
             raw=raw,
-            source="objects/{}.md".format(entity),
+            source="objects/{}".format(resolution.path.name),
             fallback_title=str(frontmatter.get("title") or ""),
             allow_graph_extensions=True,
         )
@@ -284,32 +289,6 @@ def _normalize_path_pattern(raw: Any) -> Optional[list[dict[str, Any]]]:
             segment["return_properties"] = sanitize_return_properties(segment.get("return_properties"))
         normalized.append(segment)
     return normalized or None
-
-
-def _find_object_mapping(payload: Any, entity: str) -> Optional[Mapping[str, Any]]:
-    if not isinstance(payload, dict):
-        return None
-    objects = payload.get("objects")
-    if isinstance(objects, dict):
-        value = objects.get(entity)
-        return value if isinstance(value, Mapping) else None
-    if isinstance(objects, list):
-        for item in objects:
-            if isinstance(item, Mapping) and str(item.get("object_key") or item.get("key") or "").strip() == entity:
-                return item
-    if str(payload.get("object_key") or "").strip() == entity:
-        return payload
-    return None
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
 def _load_object_frontmatter(path: Path) -> dict[str, Any]:

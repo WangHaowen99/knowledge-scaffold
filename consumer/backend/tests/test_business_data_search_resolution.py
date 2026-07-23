@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from agent.tools.business_data_search import BusinessDataSearchTool, handle_business_data_search
+from ontology.ontology_catalog import (
+    ObjectReferenceLookupResult,
+    ObjectReferenceStatus,
+)
 
 
 def _fake_ontology(ontology_id, *, workspace_id=None):
@@ -51,7 +58,76 @@ def _install_search_fakes(monkeypatch):
     return captured
 
 
+def _business_data_tool_context():
+    return SimpleNamespace(
+        workspace_id="demo-workspace",
+        run_id="run-1",
+        session_id="session-1",
+        turn_id=1,
+        caller="main",
+        agent_iteration=2,
+        model_profile_id=None,
+        observer=None,
+    )
+
+
+def _write_object_alias_package(tmp_path, *, ambiguous=False):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    rows = ["| 正式对象 | 制造物料 | 制造件 |"]
+    if ambiguous:
+        rows.append("| 备选对象 | 备选物料 | 制造件 |")
+    (objects_dir / "index.md").write_text(
+        "| object key | title | alias |\n"
+        "| --- | --- | --- |\n{}\n".format("\n".join(rows)),
+        encoding="utf-8",
+    )
+    (objects_dir / "formal_object.md").write_text(
+        "---\nresource: object\nkey: 正式对象\naliases:\n  - 制造件\n---\n",
+        encoding="utf-8",
+    )
+    if ambiguous:
+        (objects_dir / "alternative.md").write_text(
+            "---\nresource: object\nkey: 备选对象\naliases:\n  - 制造件\n---\n",
+            encoding="utf-8",
+        )
+
+
+def _write_object_mapping(tmp_path, object_key):
+    mappings_dir = tmp_path / "mappings"
+    mappings_dir.mkdir(exist_ok=True)
+    (mappings_dir / "object-data-mappings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1",
+                "objects": {
+                    object_key: {
+                        "resource": "LegacyObject",
+                        "fields": {},
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_non_retryable_graph_timeout_stops_the_main_agent_tool_loop(monkeypatch):
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir="."),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.resolve_object_reference_result",
+        lambda *_args, **_kwargs: ObjectReferenceLookupResult(
+            status=ObjectReferenceStatus.RESOLVED,
+            resolution=SimpleNamespace(object_key="refinery_unit"),
+        ),
+    )
     monkeypatch.setattr(
         "agent.tools.business_data_search.handle_business_data_search",
         lambda **_kwargs: (
@@ -191,3 +267,386 @@ def test_business_data_search_reports_missing_final_event(monkeypatch):
     )
 
     assert result == "Error: 业务数据查询失败：数据源未返回查询结果"
+
+
+def test_business_data_search_tool_normalizes_alias_before_provider(tmp_path, monkeypatch):
+    _write_object_alias_package(tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    def fake_handle_business_data_search(**kwargs):
+        captured.update(kwargs)
+        return "查询结果"
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        fake_handle_business_data_search,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "制造件",
+            "query": "  查询制造件  ",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert outcome.content == "查询结果"
+    assert captured["entity"] == "正式对象"
+    assert captured["query"] == "查询制造件"
+    assert outcome.state_updates["object_context_usage"] == [
+        {"entity_name": "正式对象", "iteration": 2}
+    ]
+
+
+def test_business_data_search_tool_stops_before_provider_for_ambiguous_alias(
+    tmp_path,
+    monkeypatch,
+):
+    _write_object_alias_package(tmp_path, ambiguous=True)
+    _write_object_mapping(tmp_path, "制造件")
+    called = False
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    def fake_handle_business_data_search(**kwargs):
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        fake_handle_business_data_search,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "制造件",
+            "query": "查询制造件",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert called is False
+    assert outcome.content is not None
+    assert "ambiguous" in outcome.content
+    assert "正式对象" in outcome.content
+    assert "备选对象" in outcome.content
+    assert "object_context_usage" not in outcome.state_updates
+
+
+def test_business_data_search_tool_allows_exact_mapping_only_legacy_entity(
+    tmp_path,
+    monkeypatch,
+):
+    _write_object_mapping(tmp_path, "legacy_entity")
+    captured = _install_search_fakes(monkeypatch)
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "legacy_entity",
+            "query": "查询历史对象",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert outcome.content == "查询结果"
+    assert captured["request"].entity == "legacy_entity"
+    assert outcome.state_updates["object_context_usage"] == [
+        {"entity_name": "legacy_entity", "iteration": 2}
+    ]
+
+
+def test_business_data_search_tool_rejects_non_exact_mapping_only_entity(
+    tmp_path,
+    monkeypatch,
+):
+    _write_object_mapping(tmp_path, "legacy_entity")
+    called = False
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    def fake_handle_business_data_search(**kwargs):
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        fake_handle_business_data_search,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "LEGACY_ENTITY",
+            "query": "查询历史对象",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert called is False
+    assert outcome.content == "Error: object directory not found."
+    assert "object_context_usage" not in outcome.state_updates
+
+
+@pytest.mark.parametrize("with_object_catalog", [True, False])
+def test_business_data_search_tool_allows_graph_schema_only_entity(
+    tmp_path,
+    monkeypatch,
+    with_object_catalog,
+):
+    if with_object_catalog:
+        objects_dir = tmp_path / "objects"
+        objects_dir.mkdir()
+        (objects_dir / "index.md").write_text(
+            "| object key |\n| --- |\n| DeclaredObject |\n",
+            encoding="utf-8",
+        )
+        (objects_dir / "declared.md").write_text(
+            "---\nresource: object\nkey: DeclaredObject\n---\n",
+            encoding="utf-8",
+        )
+    captured = {"resolve_count": 0}
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+    def fake_resolve_business_data_source(**kwargs):
+        captured["resolve_count"] += 1
+        return ResolvedBusinessDataSource(
+            ontology_id=kwargs["ontology_id"],
+            mode="direct_provider",
+            provider="neo4j",
+            config={},
+        )
+
+    def fake_query_business_data_stream(request, *, connection):
+        captured["request"] = request
+        captured["connection"] = connection
+        yield {"type": "final", "content": "查询结果"}
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.resolve_business_data_source",
+        fake_resolve_business_data_source,
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.query_business_data_stream",
+        fake_query_business_data_stream,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "SchemaOnlyEntity",
+            "query": "查询图模式对象",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert outcome.content == "查询结果"
+    assert captured["request"].entity == "SchemaOnlyEntity"
+    assert captured["connection"].provider == "neo4j"
+    assert captured["resolve_count"] == 1
+    assert "object_context_usage" not in outcome.state_updates
+
+
+def test_business_data_search_tool_rejects_schema_only_entity_for_non_graph_provider(
+    tmp_path,
+    monkeypatch,
+):
+    called = False
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.resolve_business_data_source",
+        lambda **kwargs: ResolvedBusinessDataSource(
+            ontology_id=kwargs["ontology_id"],
+            mode="direct_provider",
+            provider="nl2sql_http",
+            config={},
+        ),
+    )
+
+    def fake_handle_business_data_search(**kwargs):
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        fake_handle_business_data_search,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "SchemaOnlyEntity",
+            "query": "查询非图数据源对象",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert called is False
+    assert outcome.content == "Error: object directory not found."
+    assert "object_context_usage" not in outcome.state_updates
+
+
+def test_business_data_search_tool_stops_on_object_catalog_read_error(
+    tmp_path,
+    monkeypatch,
+):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    (objects_dir / "index.md").write_bytes(b"\xff\xfe")
+    source_called = False
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    def fake_resolve_business_data_source(**kwargs):
+        nonlocal source_called
+        source_called = True
+        return ResolvedBusinessDataSource(
+            ontology_id=kwargs["ontology_id"],
+            mode="direct_provider",
+            provider="neo4j",
+            config={},
+        )
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.resolve_business_data_source",
+        fake_resolve_business_data_source,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "PossibleAlias",
+            "query": "查询图对象",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert source_called is False
+    assert outcome.content == (
+        "Error: Failed to decode objects/index.md as UTF-8."
+    )
+    assert "object_context_usage" not in outcome.state_updates
+
+
+def test_business_data_search_tool_rejects_invalid_utf8_mapping_before_provider(
+    tmp_path,
+    monkeypatch,
+):
+    mappings_dir = tmp_path / "mappings"
+    mappings_dir.mkdir()
+    (mappings_dir / "object-data-mappings.json").write_bytes(b"\xff\xfe")
+    source_called = False
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    def fake_resolve_business_data_source(**kwargs):
+        nonlocal source_called
+        source_called = True
+        return ResolvedBusinessDataSource(
+            ontology_id=kwargs["ontology_id"],
+            mode="direct_provider",
+            provider="nl2sql_http",
+            config={},
+        )
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.resolve_business_data_source",
+        fake_resolve_business_data_source,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "LegacyEntity",
+            "query": "查询历史对象",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert source_called is False
+    assert outcome.content == (
+        "Error: Failed to decode mappings/object-data-mappings.json as UTF-8."
+    )
+    assert "object_context_usage" not in outcome.state_updates
+
+
+def test_business_data_search_tool_validates_required_text_before_loading_ontology(
+    monkeypatch,
+):
+    manifest_called = False
+
+    def fake_get_ontology_manifest(ontology_id, *, workspace_id=None):
+        nonlocal manifest_called
+        del workspace_id
+        manifest_called = True
+        return object(), None
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        fake_get_ontology_manifest,
+    )
+    tool = BusinessDataSearchTool()
+    context = _business_data_tool_context()
+
+    missing_entity = tool.execute(
+        args={"ontology_id": "demo", "entity": "  ", "query": "查询"},
+        context=context,
+    )
+    missing_query = tool.execute(
+        args={"ontology_id": "demo", "entity": "ObjectA", "query": "  "},
+        context=context,
+    )
+
+    assert missing_entity.content == "Error: entity cannot be empty"
+    assert missing_query.content == "Error: Search query cannot be empty"
+    assert manifest_called is False

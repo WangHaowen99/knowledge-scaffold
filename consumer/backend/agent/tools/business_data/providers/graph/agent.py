@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
+from ontology.ontology_catalog import resolve_object_reference
 from ontology.ontologies import get_ontology_version_dir
 from .models import GraphAgentResult, GraphBackendResult, GraphEntityMapping, GraphSearchRuntimeContext
 from .timeouts import resolve_graph_agent_timeout_seconds
@@ -176,11 +177,11 @@ def _read_object_definition(context: GraphSearchRuntimeContext) -> str:
         version_dir = get_ontology_version_dir(ontology_root, create=False) or ontology_root
     except Exception:
         version_dir = ontology_root
-    path = version_dir / "objects" / "{}.md".format(entity)
-    if not path.is_file():
+    resolution, error = resolve_object_reference(version_dir, entity)
+    if error or resolution is None:
         return ""
     try:
-        return path.read_text(encoding="utf-8")[:6000]
+        return resolution.path.read_text(encoding="utf-8")[:6000]
     except OSError:
         return ""
 
