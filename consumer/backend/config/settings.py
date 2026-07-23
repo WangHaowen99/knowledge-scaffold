@@ -159,7 +159,7 @@ class LimitsConfig:
 
     run_tps: int = 50
     user_max_count: int = 10
-    workspace_max_count: int = 5
+    workspace_max_count: int = 50
     ontology_max_count_per_workspace: int = 10
     ontology_object_max_count: int = 200
     ontology_operation_max_count: int = 100

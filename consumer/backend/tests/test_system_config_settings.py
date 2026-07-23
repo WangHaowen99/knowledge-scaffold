@@ -32,11 +32,13 @@ def _apply_system_config_migrations(config_path, monkeypatch):
 def test_limits_config_uses_current_builtin_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("OPS_CONFIG_PATH", str(tmp_path / "missing-ops-config.json"))
     monkeypatch.delenv("AGENT_RUN_TPS", raising=False)
+    monkeypatch.delenv("WORKSPACE_MAX_COUNT", raising=False)
     monkeypatch.delenv("ONTOLOGY_OPERATION_MAX_CHARS", raising=False)
 
     limits = LimitsConfig.from_env()
 
     assert limits.run_tps == 50
+    assert limits.workspace_max_count == 50
     assert limits.operation_max_chars == 15000
 
 
