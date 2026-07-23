@@ -16,6 +16,13 @@ _SANDBOX_FALLBACK_ALERT = (
     "in production."
 )
 
+_SANDBOX_LOCAL_MODE_ALERT = (
+    "SANDBOX_LOCAL_MODE: script execution is running in explicit local mode "
+    "without JiuwenBox isolation. reason=%s run_id=%s script_path=%s "
+    "call_context=%s remediation=use the sandbox-enabled compose/deploy profile "
+    "for production workloads."
+)
+
 
 def log_sandbox_security_fallback(
     *,
@@ -37,6 +44,30 @@ def log_sandbox_security_fallback(
             "sandbox_fallback": True,
             "security_event": "sandbox_bypass",
             "fallback_reason": reason,
+            "run_id": run_id or "",
+            "script_path": script_path or "",
+        },
+    )
+
+
+def log_sandbox_local_mode(
+    *,
+    reason: str,
+    call_context: str,
+    script_path: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Emit a high-visibility alert for explicit unsandboxed local execution."""
+    logger.warning(
+        _SANDBOX_LOCAL_MODE_ALERT,
+        reason,
+        run_id or "",
+        script_path or "",
+        call_context,
+        extra={
+            "sandbox_fallback": False,
+            "security_event": "sandbox_local_mode",
+            "local_mode_reason": reason,
             "run_id": run_id or "",
             "script_path": script_path or "",
         },

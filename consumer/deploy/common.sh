@@ -9,6 +9,7 @@ STATE_FILE="${STATE_DIR}/current.env"
 BACKUP_ROOT="${SCRIPT_DIR}/backups"
 MANIFEST_FILE="${SCRIPT_DIR}/manifest.json"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.release.yml"
+COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"
 
 mkdir -p "${STATE_DIR}" "${BACKUP_ROOT}"
 
@@ -164,21 +165,6 @@ docker_compose_cmd() {
         printf 'docker compose'
         return 0
     fi
-
-    if command -v docker-compose >/dev/null 2>&1; then
-        # compose 文件使用 profiles 键（docker-compose >= 1.28 支持）；
-        # 更老的 v1 连 local 模式都无法解析，这里快速失败给出明确指引
-        local ver
-        ver="$(docker-compose version --short 2>/dev/null || true)"
-        case "${ver}" in
-            1.2[0-7].*|1.1?.*|1.?.*|0.*)
-                die "docker-compose ${ver} 过旧（<1.28 不支持 compose profiles），请升级 Docker Compose v2"
-                ;;
-        esac
-        printf 'docker-compose'
-        return 0
-    fi
-
     return 1
 }
 
@@ -188,6 +174,7 @@ compose_up() {
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
+        --env-file "${COMPOSE_ENV_FILE}" \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         up -d
@@ -199,6 +186,7 @@ compose_down() {
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
+        --env-file "${COMPOSE_ENV_FILE}" \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         down
@@ -210,6 +198,7 @@ compose_stop() {
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
+        --env-file "${COMPOSE_ENV_FILE}" \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         stop

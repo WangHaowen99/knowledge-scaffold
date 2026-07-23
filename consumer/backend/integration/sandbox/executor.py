@@ -9,7 +9,7 @@ from typing import Sequence
 from workspace.workspaces import get_workspace_project_root, get_workspaces_root
 from .config import SandboxConfig, load_sandbox_config
 from .data_proxy import get_data_connection_secret_manager
-from .env_allowlist import build_script_env
+from .env_allowlist import build_script_env, collect_script_config_env
 from .errors import SandboxUnavailableError
 from .paths import posix_path_string, to_sandbox_script_path
 from .policy_builder import PolicyContext
@@ -128,8 +128,10 @@ class SandboxScriptExecutor:
             if resolved_ontology_dir is not None
             else None
         )
+        env_overrides = collect_script_config_env()
+        env_overrides.update(prepared_connection.env)
         env = build_script_env(
-            env_overrides=prepared_connection.env,
+            env_overrides=env_overrides,
             ontology_dir=ontology_pythonpath,
             runtime_python_path=posix_path_string(runtime_python_dir),
         )

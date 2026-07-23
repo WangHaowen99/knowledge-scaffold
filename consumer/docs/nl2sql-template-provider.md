@@ -1,25 +1,24 @@
 # NL2SQL Template Provider
 
+> 2026-07-22 安全说明
+>
+> - backend 不再动态加载知识包中的 `scripts/sql_matcher.py`
+> - 自定义 matcher 仅支持声明式 `scripts/sql_matcher.json`
+> - `sql_matcher.json` 仅支持 `exact` / `contains` 两种匹配类型
+> - 每条规则只允许提供静态 `sql`，不支持 `sql_template`
+> - 旧 `sql_matcher.py` 只会触发安全审计并被忽略，不会在 backend 进程执行
+
 ## 功能简介
 
-NL2SQL Template 是一个业务数据查询 Provider，核心思路是**用预定义的查询模板将自然语言精确映射到 SQL**，避免 NL2SQL 服务的语义理解偏差，并提升查询速度。
+NL2SQL Template 是一个业务数据查询 Provider。执行顺序如下：
 
-工作流程：
+1. 先尝试声明式 `sql_matcher.json`
+2. 若未命中，再尝试 `query_templates.json` 的默认精确匹配
+3. 若仍未命中，再回退到 NL2SQL 自然语言查询接口
 
-1. 收到用户查询后，先尝试模板匹配。
-2. **模板命中**：直接执行模板中的 SQL，返回结果。
-3. **模板未命中**：回退到 NL2SQL 服务，由服务端将自然语言转为 SQL。
+## 文件结构
 
-模板匹配支持两种方式：
-
-- **默认匹配器**：从当前激活版本目录下的 `scripts/query_templates.json` 读取模板，按查询文本精确匹配 key。
-- **自定义匹配器**：在当前激活版本目录的 `scripts/sql_matcher.py` 中编写 Python 函数，基于 `query_templates.json` 中的模板数据实现模糊匹配、参数提取等灵活逻辑。
-
-## 本体需要提供的文件
-
-NL2SQL Template Provider 从**当前激活的本体版本目录**读取 `scripts/` 下的模板文件。Provider 会先解析 `<workspace_root>/<ontology_id>/manifest.yaml` 中的 `active_version`，再定位到对应版本目录。
-
-版本化本体目录结构如下：
+当前激活版本目录下的 `scripts/` 需要提供以下文件：
 
 ```text
 <workspace_root>/<ontology_id>/
@@ -27,19 +26,17 @@ NL2SQL Template Provider 从**当前激活的本体版本目录**读取 `scripts
 └── versions/
     └── <active_version>/
         └── scripts/
-            ├── query_templates.json    # 必需，定义查询模板
-            └── sql_matcher.py          # 可选，自定义匹配逻辑
+            ├── query_templates.json
+            └── sql_matcher.json
 ```
 
-未迁移到版本目录的旧本体，Provider 会回退到 `<workspace_root>/<ontology_id>/scripts/` 读取同名文件。
+未使用版本化目录的旧知识包，仍会回退到 `<workspace_root>/<ontology_id>/scripts/` 读取同名文件。
 
-### 1. `scripts/query_templates.json` — 查询模板（必需）
+## query_templates.json
 
-此文件定义所有查询模板。无论使用默认匹配器还是自定义匹配器，都需要提供此文件。
+`query_templates.json` 是必需文件，支持两种格式：
 
-它是一个 JSON 对象，key 是查询文本，value 是 SQL 或包含 SQL 与去重配置的对象。
-
-#### 简单格式：key → SQL 字符串
+简单字符串格式：
 
 ```json
 {
@@ -48,100 +45,98 @@ NL2SQL Template Provider 从**当前激活的本体版本目录**读取 `scripts
 }
 ```
 
-默认匹配器下，用户查询文本与 key 完全一致时，直接执行对应的 SQL。
-
-#### 丰富格式：key → 对象
+带去重元数据的对象格式：
 
 ```json
 {
   "查询零件": {
-    "sql": "SELECT * FROM Part WHERE id IN ({IDS}) ORDER BY updateTime DESC",
+    "sql": "SELECT * FROM Part ORDER BY updateTime DESC",
     "dedupe_key": "id"
   }
 }
 ```
 
-对象字段说明：
+字段说明：
 
-| 字段 | 类型 | 必填 | 说明                                                                                                                                                |
-| --- | --- | --- |---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `sql` | string | 是 | 要执行的 SQL 语句。                                                                                                                                      |
-| `dedupe_key` | string | 否 | 去重依据字段。设置后，查询结果按该字段去重，每个字段值只保留第一条记录。要求 SQL 已通过 `ORDER BY` 排好序，使期望保留的记录排在同值的首位。通常用来简化时序数据场景下模板中的SQL，避免窗口函数导致模板中的SQL不可维护，单纯去重可直接在SQL中使用DISTINCT关键字。 |
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `sql` | string | 是 | 要执行的静态 SQL |
+| `dedupe_key` | string | 否 | 返回结果按该字段去重，保留首条记录 |
 
-**去重约定**：当 `dedupe_key` 存在时，Provider 按 SQL 返回的顺序，对 `dedupe_key` 字段值相同的记录只保留首条。因此 SQL 需自行排序（如时序数据场景使用 `ORDER BY updateTime DESC`），Provider 不做排序假设。
+## sql_matcher.json
 
-### 2. `scripts/sql_matcher.py` — 自定义匹配器（可选）
+`sql_matcher.json` 是可选文件，用于在默认精确匹配之外增加声明式规则。
 
-默认匹配器只支持精确匹配。当需要模糊匹配、参数提取、组合条件等灵活逻辑时，在当前激活版本目录的 `scripts/sql_matcher.py` 中实现自定义匹配函数。自定义匹配器通常会读取同目录下的 `query_templates.json` 作为模板数据源，在其基础上实现更灵活的匹配逻辑。
+顶层结构：
 
-如果此文件存在，Provider 会优先使用它；若不存在，则使用默认匹配器。
-
-#### 函数签名
-
-```python
-def matcher(query: str) -> tuple[str | None, dict | None]:
-    ...
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "match": {
+        "type": "contains",
+        "value": "零件"
+      },
+      "sql": "SELECT * FROM Part",
+      "metadata": {
+        "from_template": "零件模板"
+      }
+    }
+  ]
+}
 ```
 
-- **入参** `query`：用户的自然语言查询文本。
-- **返回值**：
-  - 匹配成功：返回 `(sql, metadata)`，其中 `sql` 是要执行的 SQL，`metadata` 是元数据字典。
-  - 未匹配：返回 `(None, None)`，Provider 会回退到 NL2SQL 服务。
+### 支持的匹配类型
 
-`metadata` 字典支持以下字段：
+- `exact`
+- `contains`
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `from_template` | string | 模板标识，会附加到查询结果中。 |
-| `dedupe_key` | string | 去重依据字段。设置后，查询结果按该字段去重，每个字段值只保留第一条记录。要求 SQL 已排好序。 |
+### 不支持的能力
 
-#### 示例：基于模板数据的自定义匹配
+出于安全原因，以下能力已明确禁用：
 
-```python
-import json
-from pathlib import Path
+- `regex`
+- `sql_template`
+- 任意 Python matcher 执行
 
-# 加载同目录下的模板数据
-_templates = json.loads(
-    (Path(__file__).parent / "query_templates.json").read_text(encoding="utf-8")
-)
+### 字段说明
 
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `version` | integer | 是 | 当前仅支持 `1` |
+| `rules` | array | 是 | 规则列表 |
+| `rules[].match.type` | string | 是 | `exact` 或 `contains` |
+| `rules[].match.value` | string | 是 | 匹配值 |
+| `rules[].match.ignore_case` | bool | 否 | 是否忽略大小写 |
+| `rules[].sql` | string | 是 | 要执行的静态 SQL |
+| `rules[].metadata` | object | 否 | 可选元数据 |
+| `rules[].from_template` | string | 否 | 便捷写法，会写入 `metadata.from_template` |
+| `rules[].dedupe_key` | string | 否 | 便捷写法，会写入 `metadata.dedupe_key` |
 
-def matcher(query):
-    # 1. 先尝试精确匹配
-    if query in _templates:
-        entry = _templates[query]
-        if isinstance(entry, str):
-            return entry, {"from_template": query}
-        metadata = {"from_template": query}
-        if entry.get("dedupe_key"):
-            metadata["dedupe_key"] = entry["dedupe_key"]
-        return entry["sql"], metadata
+### 元数据约束
 
-    # 2. 模糊匹配：查询包含模板 key 的关键词
-    for key, entry in _templates.items():
-        if key in query:
-            sql = entry if isinstance(entry, str) else entry["sql"]
-            return sql, {"from_template": key}
+允许通过 `metadata` 传递附加字段，但目前只有以下字段对 Provider 行为有内置影响：
 
-    # 3. 未匹配，回退到 NL2SQL
-    return None, None
-```
+- `from_template`
+- `dedupe_key`
 
-## Ontology 数据源配置
+未知字段不会参与 SQL 生成。
 
-在知识包的「数据源」页选择 NL2SQL Template，并为当前 ontology 填写以下私有配置：
+### 非法规则的处理方式
 
-| 字段 | 说明                         | 必填 |
-| --- |----------------------------| --- |
-| 服务地址 | NL2SQL 服务的 URL             | 是 |
-| 访问 Token | 调用 NL2SQL 服务的 Bearer Token | 是 |
-| 数据源名称 | NL2SQL 服务端的场景标识，决定查询哪个数据源  | 是 |
-| 超时时间 | HTTP 请求超时秒数，默认 600         | 否 |
-| 最大重试次数 | 请求失败重试次数，默认 3              | 否 |
+- 单条非法规则会被忽略，并记录 warning 日志
+- 整个 `sql_matcher.json` 无法解析时，会回退到默认 matcher
+- 旧 `sql_matcher.py` 存在时，只会记录安全审计日志，不会执行
 
-## 匹配器优先级规则
+## 优先级规则
 
-1. 若当前激活版本目录下存在 `scripts/sql_matcher.py`，使用自定义匹配器。
-2. 若不存在，使用默认匹配器（对 `scripts/query_templates.json` 的 key 做精确匹配）。
-3. 两种匹配器未命中时，均回退到 NL2SQL 自然语言查询。
+1. 若存在合法的 `sql_matcher.json`，先按其中规则匹配
+2. 若未命中，再回退到 `query_templates.json` 的默认精确匹配
+3. 若仍未命中，再回退到 NL2SQL 自然语言查询
+
+## 配置建议
+
+- 把需要动态条件拼接的场景收敛到上游 NL2SQL 服务，不要在 matcher 内拼接用户输入
+- 只在 matcher 中配置静态、可审计的 SQL
+- 对多条候选规则，优先写更具体的规则在前面

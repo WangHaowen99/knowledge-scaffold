@@ -26,16 +26,13 @@ def test_release_compose_has_no_legacy_config_mount_or_environment():
     assert "LEGACY_SYSTEM_CONFIG_PATH" not in compose_text
 
 
-def test_release_compose_loads_sandbox_settings_from_backend_env_file():
+def test_release_compose_pins_fail_closed_sandbox_settings():
     compose_text = COMPOSE_PATH.read_text(encoding="utf-8")
 
     assert "env_file:\n      - ./backend/.env" in compose_text
-    for env_name in (
-        "SANDBOX_ENABLED",
-        "SANDBOX_FALLBACK_LOCAL",
-        "SANDBOX_SECRET_ALLOW_PLAIN_HTTP",
-    ):
-        assert env_name not in compose_text
+    assert "- SANDBOX_ENABLED=true" in compose_text
+    assert "- SANDBOX_FALLBACK_LOCAL=false" in compose_text
+    assert "- SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false" in compose_text
 
 
 def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
@@ -44,6 +41,16 @@ def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
     assert "./.onto-runtime:/app/.onto-runtime" in compose_text
     assert "CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats" in compose_text
     assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
+
+
+def test_release_lifecycle_requires_compose_v2_and_uses_preflight_env_file():
+    common_text = (DEPLOY_ROOT / "common.sh").read_text(encoding="utf-8")
+
+    assert "docker compose version" in common_text
+    assert "command -v docker-compose" not in common_text
+    assert "printf 'docker-compose'" not in common_text
+    assert 'COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"' in common_text
+    assert common_text.count('--env-file "${COMPOSE_ENV_FILE}"') == 3
 
 
 def test_release_scripts_have_no_legacy_config_directory_plumbing():
