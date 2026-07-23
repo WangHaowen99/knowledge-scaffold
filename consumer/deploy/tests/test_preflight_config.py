@@ -186,6 +186,11 @@ class PreflightConfigTests(unittest.TestCase):
 
     def test_compose_config_loader_uses_docker_compose_resolved_json(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        legacy_env_file = self.root / ".env"
+        legacy_env_file.write_text(
+            "BACKEND_PORT=5100\nFRONTEND_PORT=6600\n",
+            encoding="utf-8",
+        )
         calls = []
 
         def fake_run(command, **kwargs):
@@ -214,7 +219,7 @@ class PreflightConfigTests(unittest.TestCase):
         ), patch("preflight_config.subprocess.run", fake_run):
             config, errors = _load_compose_config_json(
                 self.compose_file,
-                self.env_file,
+                (self.env_file, legacy_env_file),
             )
 
         self.assertEqual(errors, [])
@@ -223,7 +228,18 @@ class PreflightConfigTests(unittest.TestCase):
             "false",
         )
         compose_command = calls[1][0]
-        self.assertIn("--env-file", compose_command)
+        env_file_indexes = [
+            index for index, value in enumerate(compose_command) if value == "--env-file"
+        ]
+        self.assertEqual(len(env_file_indexes), 2)
+        self.assertEqual(
+            compose_command[env_file_indexes[0] + 1],
+            str(self.env_file.resolve()),
+        )
+        self.assertEqual(
+            compose_command[env_file_indexes[1] + 1],
+            str(legacy_env_file.resolve()),
+        )
         self.assertIn("--format", compose_command)
         self.assertIn("json", compose_command)
         source_command = calls[2][0]

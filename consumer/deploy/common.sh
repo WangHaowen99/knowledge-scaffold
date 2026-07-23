@@ -9,7 +9,8 @@ STATE_FILE="${STATE_DIR}/current.env"
 BACKUP_ROOT="${SCRIPT_DIR}/backups"
 MANIFEST_FILE="${SCRIPT_DIR}/manifest.json"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.release.yml"
-COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"
+BACKEND_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"
+LEGACY_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/.env"
 
 mkdir -p "${STATE_DIR}" "${BACKUP_ROOT}"
 
@@ -168,13 +169,29 @@ docker_compose_cmd() {
     return 1
 }
 
+compose_env_files() {
+    # Keep legacy host-level overrides effective without using them as backend env.
+    printf '%s\n' "${BACKEND_COMPOSE_ENV_FILE}"
+    if [ -f "${LEGACY_COMPOSE_ENV_FILE}" ]; then
+        printf '%s\n' "${LEGACY_COMPOSE_ENV_FILE}"
+    fi
+}
+
+build_compose_env_args() {
+    COMPOSE_ENV_ARGS=()
+    while IFS= read -r env_file; do
+        COMPOSE_ENV_ARGS+=(--env-file "${env_file}")
+    done < <(compose_env_files)
+}
+
 compose_up() {
     local compose_cmd
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    build_compose_env_args
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
-        --env-file "${COMPOSE_ENV_FILE}" \
+        "${COMPOSE_ENV_ARGS[@]}" \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         up -d
@@ -183,10 +200,11 @@ compose_up() {
 compose_down() {
     local compose_cmd
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    build_compose_env_args
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
-        --env-file "${COMPOSE_ENV_FILE}" \
+        "${COMPOSE_ENV_ARGS[@]}" \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         down
@@ -195,10 +213,11 @@ compose_down() {
 compose_stop() {
     local compose_cmd
     compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    build_compose_env_args
 
     # shellcheck disable=SC2086
     BACKEND_IMAGE="$1" FRONTEND_IMAGE="$2" AUTH_SERVER_IMAGE="${3:-}" JIUWENBOX_IMAGE="${4:-onto-agent-jiuwenbox:latest}" ${compose_cmd} \
-        --env-file "${COMPOSE_ENV_FILE}" \
+        "${COMPOSE_ENV_ARGS[@]}" \
         -f "${COMPOSE_FILE}" \
         --project-directory "${BUNDLE_ROOT}" \
         stop
