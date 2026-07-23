@@ -503,14 +503,96 @@ def _graph_data_source_findings(
 
 
 _SANDBOX_SUPPORTED_SCRIPT_PROVIDERS = {"mindsdb", "nl2sql_http"}
-_FRONTMATTER_BOUND_OPERATION = re.compile(
-    r"^\s*(?:bound_operation|operation_key)\s*:\s*(?![\"']?\s*[\"']?\s*$).+\s*$",
-    re.MULTILINE,
-)
-_FRONTMATTER_PYTHON_ENTRYPOINT = re.compile(
-    r"^\s*(?:entrypoint|path)\s*:\s*[\"']?[^\n#\"']+\.py[\"']?\s*(?:#.*)?$",
-    re.MULTILINE | re.IGNORECASE,
-)
+_SCRIPT_FRONTMATTER_FIELDS = frozenset({
+    "bound_operation",
+    "operation_key",
+    "entrypoint",
+    "path",
+})
+
+
+def _strip_yaml_inline_comment(value: str) -> str:
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if quote == '"':
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+        elif quote == "'":
+            if character == quote:
+                if index + 1 < len(value) and value[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = None
+        elif character in {'"', "'"}:
+            quote = character
+        elif character == "#":
+            return value[:index]
+        index += 1
+    return value
+
+
+def _frontmatter_scalar(value: str) -> str:
+    token = _strip_yaml_inline_comment(value).strip()
+    if not token:
+        return ""
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        if token[0] == '"':
+            try:
+                decoded = json.loads(token)
+            except json.JSONDecodeError:
+                decoded = token[1:-1]
+            return str(decoded or "").strip()
+        return token[1:-1].replace("''", "'").strip()
+    try:
+        decoded = json.loads(token)
+    except json.JSONDecodeError:
+        decoded = token
+    if decoded != token:
+        return str(decoded or "").strip()
+    if token.lower() in {"", "~", "null", "false", "no", "off", "0"}:
+        return ""
+    return token
+
+
+def _script_frontmatter_fields(document: str) -> dict[str, str]:
+    if not document.startswith("---"):
+        return {}
+    end = document.find("\n---", 3)
+    if end < 0:
+        return {}
+    lines = document[3:end].splitlines()
+    content_lines = [
+        line for line in lines if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not content_lines:
+        return {}
+    base_indent = min(len(line) - len(line.lstrip()) for line in content_lines)
+    fields: dict[str, str] = {}
+    for line in content_lines:
+        if len(line) - len(line.lstrip()) != base_indent:
+            continue
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$", line.lstrip())
+        if match is None or match.group(1) not in _SCRIPT_FRONTMATTER_FIELDS:
+            continue
+        fields[match.group(1)] = _frontmatter_scalar(match.group(2))
+    return fields
+
+
+def _safe_python_entrypoint(value: str) -> bool:
+    raw_path = str(value or "").strip().replace("\\", "/")
+    if not raw_path or raw_path.startswith("/") or re.match(r"^[A-Za-z]:", raw_path):
+        return False
+    parts = [part for part in raw_path.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts:
+        return False
+    return parts[-1].lower().endswith(".py")
 
 
 def _ontology_has_bound_python_script(ontology_root: Path) -> bool:
@@ -522,16 +604,68 @@ def _ontology_has_bound_python_script(ontology_root: Path) -> bool:
         if not scripts_dir.is_dir():
             continue
         for descriptor in scripts_dir.glob("*.md"):
+            if descriptor.name == "index.md":
+                continue
             try:
                 descriptor_text = descriptor.read_text(encoding="utf-8")
             except OSError:
                 continue
-            if (
-                _FRONTMATTER_BOUND_OPERATION.search(descriptor_text)
-                and _FRONTMATTER_PYTHON_ENTRYPOINT.search(descriptor_text)
-            ):
+            frontmatter = _script_frontmatter_fields(descriptor_text)
+            operation_key = str(
+                frontmatter.get("bound_operation")
+                or frontmatter.get("operation_key")
+                or ""
+            ).strip()
+            entrypoint = str(
+                frontmatter.get("entrypoint") or frontmatter.get("path") or ""
+            ).strip()
+            if operation_key and _safe_python_entrypoint(entrypoint):
                 return True
     return False
+
+
+def _sandbox_script_connection_findings(
+    *,
+    workspace_id: str,
+    ontology_id: str,
+    provider: str,
+    config: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    url = str(config.get("url") or "").strip()
+    finding_base = {
+        "workspace_id": workspace_id,
+        "ontology_id": ontology_id,
+        "provider": provider,
+    }
+    if not _valid_http_url(url):
+        return [{
+            **finding_base,
+            "type": "invalid_sandbox_script_provider_url",
+            "detail": "configure an absolute HTTP(S) provider URL before release",
+        }]
+
+    secret_field = ""
+    if provider == "nl2sql_http":
+        if str(config.get("token") or "").strip():
+            secret_field = "token"
+    elif provider == "mindsdb" and bool(config.get("requires_auth", False)):
+        if not str(config.get("password") or "").strip():
+            return [{
+                **finding_base,
+                "type": "missing_sandbox_script_provider_secret",
+                "field": "password",
+                "detail": "MindsDB authentication requires a configured password",
+            }]
+        secret_field = "password"
+
+    if secret_field and urlparse(url).scheme.lower() == "http":
+        return [{
+            **finding_base,
+            "type": "sandbox_script_plain_http_secret",
+            "field": secret_field,
+            "detail": "bound sandbox scripts must use HTTPS when provider credentials are configured",
+        }]
+    return []
 
 
 def _sandbox_script_provider_findings(runtime_root: Path) -> tuple[list[dict[str, Any]], int]:
@@ -557,19 +691,29 @@ def _sandbox_script_provider_findings(runtime_root: Path) -> tuple[list[dict[str
             if mode != "direct_provider" or not provider:
                 continue
             ontology_root = path.parent / "ontologies" / str(ontology_id)
-            if provider in _SANDBOX_SUPPORTED_SCRIPT_PROVIDERS:
-                continue
             if not _ontology_has_bound_python_script(ontology_root):
                 continue
-            count += 1
-            errors.append({
-                "workspace_id": workspace_id,
-                "ontology_id": str(ontology_id),
-                "provider": provider,
-                "type": "unsupported_sandbox_script_provider",
-                "supported_providers": sorted(_SANDBOX_SUPPORTED_SCRIPT_PROVIDERS),
-                "detail": "migrate the ontology script provider before enabling release sandbox execution",
-            })
+            source_errors: list[dict[str, Any]] = []
+            if provider not in _SANDBOX_SUPPORTED_SCRIPT_PROVIDERS:
+                source_errors.append({
+                    "workspace_id": workspace_id,
+                    "ontology_id": str(ontology_id),
+                    "provider": provider,
+                    "type": "unsupported_sandbox_script_provider",
+                    "supported_providers": sorted(_SANDBOX_SUPPORTED_SCRIPT_PROVIDERS),
+                    "detail": "migrate the ontology script provider before enabling release sandbox execution",
+                })
+            else:
+                raw_config = source.get("config")
+                source_errors.extend(_sandbox_script_connection_findings(
+                    workspace_id=workspace_id,
+                    ontology_id=str(ontology_id),
+                    provider=provider,
+                    config=raw_config if isinstance(raw_config, Mapping) else {},
+                ))
+            if source_errors:
+                count += 1
+                errors.extend(source_errors)
     return errors, count
 
 
