@@ -100,7 +100,7 @@ class _DeclarativeMatcher:
             raise ValueError("sql_matcher.json must contain a top-level object")
 
         version = payload.get("version", 1)
-        if not isinstance(version, int):
+        if type(version) is not int:
             raise ValueError("sql_matcher.json version must be an integer")
         if version != 1:
             raise ValueError("sql_matcher.json only supports version=1")

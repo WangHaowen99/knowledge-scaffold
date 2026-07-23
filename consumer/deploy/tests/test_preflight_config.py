@@ -11,7 +11,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from preflight_config import _load_compose_config_json, validate_config  # noqa: E402
+from preflight_config import (  # noqa: E402
+    _load_compose_config_json,
+    _release_sandbox_structured_source_errors,
+    validate_config,
+)
 
 
 VALID_ENV = """\
@@ -56,17 +60,31 @@ SAFE_BACKEND_ENV = {
 }
 
 
-def _compose_loader(environment: dict[str, str] | None = None):
+def _compose_loader(
+    environment: dict[str, str] | None = None,
+    source_environment: dict[str, str] | list[str] | None = None,
+):
     resolved_environment = dict(SAFE_BACKEND_ENV if environment is None else environment)
+    resolved_source_environment = (
+        dict(SAFE_BACKEND_ENV) if source_environment is None else source_environment
+    )
 
     def _load(_compose_file: Path, _env_file: Path):
-        return {
+        effective_config = {
             "services": {
                 "backend": {
                     "environment": resolved_environment,
                 },
             },
-        }, []
+        }
+        source_config = {
+            "services": {
+                "backend": {
+                    "environment": resolved_source_environment,
+                },
+            },
+        }
+        return effective_config, _release_sandbox_structured_source_errors(source_config)
 
     return _load
 
@@ -85,6 +103,7 @@ class PreflightConfigTests(unittest.TestCase):
         self,
         *,
         compose_environment: dict[str, str] | None = None,
+        compose_source_environment: dict[str, str] | list[str] | None = None,
         pre_migration: bool = False,
     ) -> dict:
         return validate_config(
@@ -92,8 +111,31 @@ class PreflightConfigTests(unittest.TestCase):
             self.root / ".onto-runtime",
             compose_file=self.compose_file,
             pre_migration=pre_migration,
-            compose_config_loader=_compose_loader(compose_environment),
+            compose_config_loader=_compose_loader(
+                compose_environment,
+                compose_source_environment,
+            ),
         )
+
+    def write_bound_script_ontology(self, workspace_id: str, ontology_id: str) -> None:
+        scripts_dir = (
+            self.root
+            / ".onto-runtime"
+            / "workspaces"
+            / workspace_id
+            / "ontologies"
+            / ontology_id
+            / "versions"
+            / "1.0.0"
+            / "scripts"
+        )
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "maintenance.md").write_text(
+            "---\nresource: script\nkey: maintenance\n"
+            "bound_operation: maintenance\nentrypoint: maintenance.py\n---\n",
+            encoding="utf-8",
+        )
+        (scripts_dir / "maintenance.py").write_text("print('ok')\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -106,15 +148,16 @@ class PreflightConfigTests(unittest.TestCase):
             calls.append((command, kwargs))
             if command[-1] == "version":
                 return SimpleNamespace(returncode=0, stdout="Docker Compose v2", stderr="")
+            environment = dict(SAFE_BACKEND_ENV)
+            if "--no-interpolate" not in command:
+                environment["SANDBOX_ENABLED"] = "false"
+                environment["SANDBOX_FALLBACK_LOCAL"] = "true"
             return SimpleNamespace(
                 returncode=0,
                 stdout=json.dumps({
                     "services": {
                         "backend": {
-                            "environment": {
-                                "SANDBOX_ENABLED": "false",
-                                "SANDBOX_FALLBACK_LOCAL": "true",
-                            },
+                            "environment": environment,
                         },
                     },
                 }),
@@ -139,6 +182,48 @@ class PreflightConfigTests(unittest.TestCase):
         self.assertIn("--env-file", compose_command)
         self.assertIn("--format", compose_command)
         self.assertIn("json", compose_command)
+        source_command = calls[2][0]
+        self.assertIn("--no-interpolate", source_command)
+        self.assertIn("--no-env-resolution", source_command)
+
+    def test_compose_config_loader_rejects_nonliteral_structured_source(self) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+
+        def fake_run(command, **kwargs):
+            if command[-1] == "version":
+                return SimpleNamespace(returncode=0, stdout="Docker Compose v2", stderr="")
+            environment = dict(SAFE_BACKEND_ENV)
+            if "--no-interpolate" in command:
+                environment["SANDBOX_ENABLED"] = "${SANDBOX_ENABLED:-false}"
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"services": {"backend": {"environment": environment}}}),
+                stderr="",
+            )
+
+        with patch("preflight_config.subprocess.run", fake_run):
+            _config, errors = _load_compose_config_json(self.compose_file, self.env_file)
+
+        self.assertIn(
+            "unsupported_release_sandbox_setting_source",
+            {item["type"] for item in errors},
+        )
+
+    def test_compose_v1_binary_is_not_used_for_release_preflight(self) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            raise OSError("docker compose v2 unavailable")
+
+        with patch("preflight_config.subprocess.run", fake_run):
+            config, errors = _load_compose_config_json(self.compose_file, self.env_file)
+
+        self.assertIsNone(config)
+        self.assertEqual({item["type"] for item in errors}, {"compose_config_unavailable"})
+        self.assertTrue(calls)
+        self.assertTrue(all(command[:2] == ["docker", "compose"] for command in calls))
 
     def test_valid_config_without_graph_connections(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")
@@ -334,7 +419,11 @@ services:
             encoding="utf-8",
         )
 
-        report = self.validate()
+        report = self.validate(compose_source_environment=[
+            "SANDBOX_ENABLED",
+            "SANDBOX_FALLBACK_LOCAL=false",
+            "SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false",
+        ])
 
         self.assertFalse(report["ok"])
         self.assertIn(
@@ -394,7 +483,11 @@ services:
             encoding="utf-8",
         )
 
-        report = self.validate()
+        report = self.validate(compose_source_environment=[
+            "SANDBOX_ENABLED=true",
+            "SANDBOX_FALLBACK_LOCAL=${SANDBOX_FALLBACK_LOCAL}",
+            "SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false",
+        ])
 
         self.assertFalse(report["ok"])
         self.assertIn(
@@ -444,6 +537,64 @@ services:
         error_types = {item["type"] for item in report["errors"]}
         self.assertEqual(error_types, {"plaintext_graph_secret", "missing_graph_scope_field"})
         self.assertEqual(report["warnings"][0]["field"], "ontology_property")
+
+    def test_preflight_blocks_bound_scripts_using_unsupported_sandbox_provider(self) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        path = self.root / ".onto-runtime" / "workspaces" / "demo" / "ontology-data-sources.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({
+                "version": 2,
+                "sources": {"graph-maintenance": {
+                    "mode": "direct_provider",
+                    "provider": "neo4j",
+                    "config": {
+                        "uri": "bolt://neo4j:7687",
+                        "username": "neo4j",
+                        "password": "enc:v1:ciphertext",
+                        "workspace_property": "workspace_id",
+                        "ontology_property": "ontology_id",
+                    },
+                }},
+            }),
+            encoding="utf-8",
+        )
+        self.write_bound_script_ontology("demo", "graph-maintenance")
+
+        report = self.validate(pre_migration=True)
+
+        self.assertFalse(report["ok"])
+        finding = next(
+            item
+            for item in report["errors"]
+            if item["type"] == "unsupported_sandbox_script_provider"
+        )
+        self.assertEqual(finding["workspace_id"], "demo")
+        self.assertEqual(finding["ontology_id"], "graph-maintenance")
+        self.assertEqual(finding["provider"], "neo4j")
+        self.assertEqual(report["sandbox_incompatible_script_provider_count"], 1)
+
+    def test_preflight_allows_bound_scripts_using_supported_sandbox_provider(self) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        path = self.root / ".onto-runtime" / "workspaces" / "demo" / "ontology-data-sources.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps({
+                "version": 2,
+                "sources": {"sql-maintenance": {
+                    "mode": "direct_provider",
+                    "provider": "nl2sql_http",
+                    "config": {"url": "https://nl2sql.example"},
+                }},
+            }),
+            encoding="utf-8",
+        )
+        self.write_bound_script_ontology("demo", "sql-maintenance")
+
+        report = self.validate(pre_migration=True)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["sandbox_incompatible_script_provider_count"], 0)
 
     def test_pre_migration_defers_persisted_data_validation_to_migration_runner(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")
