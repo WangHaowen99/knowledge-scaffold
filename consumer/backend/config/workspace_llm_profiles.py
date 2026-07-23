@@ -8,7 +8,7 @@ from typing import Any
 
 from utils.security.secrets import decrypt_secret, encrypt_secret
 from workspace.workspaces import WorkspaceNotFoundError, get_workspace_paths, workspace_exists
-from config.ops_config import load_ops_config
+from config.ops_config import resolve_model_profile_max_count
 from config.system_config import (
     SystemConfigValidationError,
     _LLM_PROFILE_DEFAULTS,
@@ -173,7 +173,7 @@ def _normalize_workspace_profiles_section(
         seen_ids.add(profile["id"])
         profiles.append(profile)
 
-    max_profiles = max(1, int(load_ops_config()["limits"]["model_profile_max_count"]))
+    max_profiles = resolve_model_profile_max_count()
     if len(profiles) > max_profiles:
         raise SystemConfigValidationError("工作空间模型数量已达上限: {}".format(max_profiles))
     return {"profiles": profiles}

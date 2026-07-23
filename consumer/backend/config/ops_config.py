@@ -155,3 +155,8 @@ def load_ops_config() -> dict[str, dict[str, Any]]:
             )
             for section in OPS_SECTION_KEYS
         }
+
+
+def resolve_model_profile_max_count() -> int:
+    """Return the canonical model-profile limit used by reads and writes."""
+    return max(1, int(load_ops_config()["limits"]["model_profile_max_count"]))
