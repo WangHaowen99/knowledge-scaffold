@@ -230,7 +230,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM 连接类失败重试次数 | `3` |
 | `AGENT_RUN_TPS` | 单进程全局运行请求 TPS | `50` |
 | `USER_MAX_COUNT` | 最大用户数量 | `10` |
-| `WORKSPACE_MAX_COUNT` | 最大工作空间数量 | `5` |
+| `WORKSPACE_MAX_COUNT` | 最大工作空间数量 | `50` |
 | `ONTOLOGY_MAX_COUNT_PER_WORKSPACE` | 每个 workspace 最大本体数量 | `10` |
 | `ONTOLOGY_OBJECT_MAX_COUNT` | 单本体最大实体数量 | `200` |
 | `ONTOLOGY_OPERATION_MAX_COUNT` | 单本体最大流程数量 | `100` |

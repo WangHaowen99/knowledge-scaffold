@@ -351,7 +351,7 @@ data: { ... }
 | `AGENT_SUB_AGENT_MAX_DEPTH` | 子 Agent 嵌套最大深度 |
 | `AGENT_RUN_TPS` | 单进程全局运行请求 TPS，默认 `50` |
 | `USER_MAX_COUNT` | 最大用户数量，默认 `10` |
-| `WORKSPACE_MAX_COUNT` | 最大工作空间数量，默认 `5` |
+| `WORKSPACE_MAX_COUNT` | 最大工作空间数量，默认 `50` |
 | `ONTOLOGY_MAX_COUNT_PER_WORKSPACE` | 每个 workspace 最大本体数量，默认 `10` |
 | `ONTOLOGY_OBJECT_MAX_COUNT` | 单本体最大实体数量，默认 `200` |
 | `ONTOLOGY_OPERATION_MAX_COUNT` | 单本体最大流程数量，默认 `100` |
