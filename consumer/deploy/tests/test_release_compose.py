@@ -43,6 +43,16 @@ def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
     assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
 
 
+def test_release_lifecycle_requires_compose_v2_and_uses_preflight_env_file():
+    common_text = (DEPLOY_ROOT / "common.sh").read_text(encoding="utf-8")
+
+    assert "docker compose version" in common_text
+    assert "command -v docker-compose" not in common_text
+    assert "printf 'docker-compose'" not in common_text
+    assert 'COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"' in common_text
+    assert common_text.count('--env-file "${COMPOSE_ENV_FILE}"') == 3
+
+
 def test_release_scripts_have_no_legacy_config_directory_plumbing():
     for script_name in (
         "backup.sh",

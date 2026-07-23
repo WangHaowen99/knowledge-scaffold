@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent.tools.business_data.adapters.nl2sql_template_search import (
     NL2SQLTemplateSearchAdapter,
+    _DeclarativeMatcher,
     _DefaultMatcher,
 )
 from shared_capabilities.business_data import AuthSpec, EffectiveConnection
@@ -393,6 +394,24 @@ def test_declarative_matcher_rejects_non_integer_version(tmp_path):
 
     assert captured["url"] == "http://nl2sql.test/api/v1/query"
     assert "模板未命中" in events[1]["content"]
+
+
+def test_declarative_matcher_rejects_boolean_version(tmp_path):
+    matcher_path = tmp_path / "sql_matcher.json"
+    matcher_path.write_text(
+        json.dumps({
+            "version": True,
+            "rules": [{"match": {"type": "exact", "value": "查询零件"}, "sql": "SELECT 1"}],
+        }),
+        encoding="utf-8",
+    )
+
+    try:
+        _DeclarativeMatcher._load_rules(matcher_path)
+    except ValueError as exc:
+        assert "version must be an integer" in str(exc)
+    else:
+        raise AssertionError("boolean sql_matcher.json version must be rejected")
 
 
 def test_declarative_matcher_rejects_non_boolean_ignore_case_and_falls_back(tmp_path, caplog):

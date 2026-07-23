@@ -33,7 +33,7 @@ python3 "${SCRIPT_DIR}/preflight_config.py" \
     --compose-file "${COMPOSE_FILE}" \
     --report "${STATE_DIR}/preflight-config.json" \
     "${PREFLIGHT_ARGS[@]}" \
-    || die "Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
+    || die "Sandbox, Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
 
 host_arch="$(detect_host_arch)"
 release_arch="$(manifest_get release_arch)"
