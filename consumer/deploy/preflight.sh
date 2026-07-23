@@ -27,8 +27,13 @@ ensure_env_files
 require_mcp_token_secret
 
 command -v python3 >/dev/null 2>&1 || die "Python 3 is required for deployment validation"
+PREFLIGHT_COMPOSE_ENV_ARGS=()
+while IFS= read -r compose_env_file; do
+    PREFLIGHT_COMPOSE_ENV_ARGS+=(--compose-env-file "${compose_env_file}")
+done < <(compose_env_files)
 python3 "${SCRIPT_DIR}/preflight_config.py" \
     --env-file "${BUNDLE_ROOT}/backend/.env" \
+    "${PREFLIGHT_COMPOSE_ENV_ARGS[@]}" \
     --runtime-root "${BUNDLE_ROOT}/.onto-runtime" \
     --compose-file "${COMPOSE_FILE}" \
     --report "${STATE_DIR}/preflight-config.json" \

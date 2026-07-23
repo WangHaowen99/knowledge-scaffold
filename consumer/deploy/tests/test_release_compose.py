@@ -1,5 +1,8 @@
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 COMPOSE_PATH = Path(__file__).resolve().parents[1] / "docker-compose.release.yml"
@@ -43,14 +46,66 @@ def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
     assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
 
 
-def test_release_lifecycle_requires_compose_v2_and_uses_preflight_env_file():
+def test_release_lifecycle_requires_compose_v2_and_uses_compatible_env_files():
     common_text = (DEPLOY_ROOT / "common.sh").read_text(encoding="utf-8")
+    preflight_text = (DEPLOY_ROOT / "preflight.sh").read_text(encoding="utf-8")
+    upgrade_text = (DEPLOY_ROOT / "upgrade.sh").read_text(encoding="utf-8")
 
     assert "docker compose version" in common_text
     assert "command -v docker-compose" not in common_text
     assert "printf 'docker-compose'" not in common_text
-    assert 'COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"' in common_text
-    assert common_text.count('--env-file "${COMPOSE_ENV_FILE}"') == 3
+    assert 'BACKEND_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"' in common_text
+    assert 'LEGACY_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/.env"' in common_text
+    assert common_text.count('"${COMPOSE_ENV_ARGS[@]}"') == 3
+    assert '--compose-env-file "${compose_env_file}"' in preflight_text
+    assert 'PROTECTED_ITEMS=".env backend/.env ' in upgrade_text
+
+
+def test_release_lifecycle_preserves_legacy_root_env_port_overrides(tmp_path):
+    deploy_root = tmp_path / "deploy"
+    backend_root = tmp_path / "backend"
+    fake_bin = tmp_path / "bin"
+    deploy_root.mkdir()
+    backend_root.mkdir()
+    fake_bin.mkdir()
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+    (backend_root / ".env").write_text("LOG_LEVEL=INFO\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "BACKEND_PORT=5100\nFRONTEND_PORT=6600\n",
+        encoding="utf-8",
+    )
+    docker_args = tmp_path / "docker-args.txt"
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then
+    exit 0
+fi
+printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["DOCKER_ARGS_FILE"] = str(docker_args)
+
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{deploy_root / "common.sh"}"; compose_up backend frontend auth sandbox',
+        ],
+        env=env,
+        check=True,
+    )
+
+    args = docker_args.read_text(encoding="utf-8").splitlines()
+    first_env = args.index("--env-file")
+    second_env = args.index("--env-file", first_env + 2)
+    assert args[first_env + 1] == str(backend_root / ".env")
+    assert args[second_env + 1] == str(tmp_path / ".env")
+    assert first_env < second_env
 
 
 def test_release_scripts_have_no_legacy_config_directory_plumbing():

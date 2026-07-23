@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import ParseResult, urlparse
 
 
@@ -74,7 +74,11 @@ def _read_json_document(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-ComposeConfigLoader = Callable[[Path, Path], tuple[dict[str, Any] | None, list[dict[str, Any]]]]
+ComposeEnvFiles = Path | Sequence[Path]
+ComposeConfigLoader = Callable[
+    [Path, ComposeEnvFiles],
+    tuple[dict[str, Any] | None, list[dict[str, Any]]],
+]
 _RELEASE_SANDBOX_EXPECTED = {
     "SANDBOX_ENABLED": "true",
     "SANDBOX_FALLBACK_LOCAL": "false",
@@ -94,9 +98,16 @@ def _compose_project_directory(compose_file: Path, env_file: Path) -> Path:
 
 def _load_compose_config_json(
     compose_file: Path,
-    env_file: Path,
+    env_files: ComposeEnvFiles,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    project_dir = _compose_project_directory(compose_file.resolve(), env_file.resolve())
+    resolved_env_files = (
+        (env_files.resolve(),)
+        if isinstance(env_files, Path)
+        else tuple(path.resolve() for path in env_files)
+    )
+    if not resolved_env_files:
+        return None, [{"type": "compose_config_unavailable", "reason": "no env file"}]
+    project_dir = _compose_project_directory(compose_file.resolve(), resolved_env_files[0])
     process_env = os.environ.copy()
     process_env.setdefault("BACKEND_IMAGE", "preflight-backend:latest")
     process_env.setdefault("FRONTEND_IMAGE", "preflight-frontend:latest")
@@ -120,15 +131,15 @@ def _load_compose_config_json(
             last_failure = "compose version check failed"
             continue
 
-        compose_args = [
-            *base_cmd,
-            "--env-file",
-            str(env_file.resolve()),
+        compose_args = [*base_cmd]
+        for env_file in resolved_env_files:
+            compose_args.extend(("--env-file", str(env_file)))
+        compose_args.extend((
             "-f",
             str(compose_file.resolve()),
             "--project-directory",
             str(project_dir),
-        ]
+        ))
         try:
             result = subprocess.run(
                 [*compose_args, "config", "--format", "json"],
@@ -769,6 +780,7 @@ def validate_config(
     compose_file: Path,
     pre_migration: bool = False,
     compose_config_loader: ComposeConfigLoader | None = None,
+    compose_env_files: Sequence[Path] | None = None,
 ) -> dict[str, Any]:
     env = read_env(env_file)
     errors: list[dict[str, Any]] = []
@@ -776,7 +788,10 @@ def validate_config(
     compose_text = compose_file.read_text(encoding="utf-8") if compose_file.exists() else ""
     errors.extend(_duplicate_release_sandbox_source_errors(compose_text))
     loader = compose_config_loader or _load_compose_config_json
-    compose_config, compose_config_errors = loader(compose_file, env_file)
+    compose_config, compose_config_errors = loader(
+        compose_file,
+        tuple(compose_env_files or (env_file,)),
+    )
     sandbox_errors, sandbox_effective = _validate_release_sandbox_env(
         compose_config=compose_config,
         compose_config_errors=compose_config_errors,
@@ -877,6 +892,7 @@ def validate_config(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument("--compose-env-file", type=Path, action="append")
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--compose-file", type=Path, required=True)
     parser.add_argument("--report", type=Path)
@@ -891,6 +907,7 @@ def main(argv: list[str] | None = None) -> int:
         args.runtime_root,
         compose_file=args.compose_file,
         pre_migration=args.pre_migration,
+        compose_env_files=args.compose_env_file,
     )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.report:
