@@ -171,7 +171,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
       setPassword('');
       setRelationDraft(initialRelationDraft(outcome.value.upload));
       setKnownRelationId('');
-      setMessage('Excel 已解析，请新增需要写入的实体关系');
+      setMessage('Excel 已解析，可校验实体数据并按需新增关系');
     } catch (err) {
       if (importContextRef.current === contextKey) setError(err.message);
     } finally {
@@ -420,24 +420,22 @@ export default function GraphImportPanel({ projectId, dataSource }) {
               disabled={controlsDisabled} onChange={changeMapping} onRemove={removeMapping} />
           ))}
 
-          {!!mappings.length && (
-            <div className="gi-actions">
-              <button className="btn" disabled={controlsDisabled} onClick={validate}>
-                {busy === 'validate' ? '校验中…' : '校验映射与数据'}
-              </button>
-              {validation && (
-                <div className="gi-counts">
-                  <b>{validation.counts.nodeCount}</b> 个实例
-                  <b>{validation.counts.relationshipCount}</b> 条关系
-                  <b>{validation.counts.skippedBlankCount}</b> 个空关联值跳过
-                  <b>{validation.counts.skippedUnmatchedCount}</b> 个未匹配关系跳过
-                </div>
-              )}
-              {validation?.warnings?.length > 0 && (
-                <div className="gi-warnings">{validation.warnings.join('；')}</div>
-              )}
-            </div>
-          )}
+          <div className="gi-actions">
+            <button className="btn" disabled={controlsDisabled} onClick={validate}>
+              {busy === 'validate' ? '校验中…' : '校验映射与数据'}
+            </button>
+            {validation && (
+              <div className="gi-counts">
+                <b>{validation.counts.nodeCount}</b> 个实例
+                <b>{validation.counts.relationshipCount}</b> 条关系
+                <b>{validation.counts.skippedBlankCount}</b> 个空关联值跳过
+                <b>{validation.counts.skippedUnmatchedCount}</b> 个未匹配关系跳过
+              </div>
+            )}
+            {validation?.warnings?.length > 0 && (
+              <div className="gi-warnings">{validation.warnings.join('；')}</div>
+            )}
+          </div>
 
           {validation && (
             <div className="gi-execute">

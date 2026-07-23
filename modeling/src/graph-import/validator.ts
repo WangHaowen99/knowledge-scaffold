@@ -10,10 +10,6 @@ import type {
   GraphRelationMapping,
 } from './types.js';
 
-interface EntitySelection {
-  objectKey: string;
-}
-
 interface PrimaryColumn {
   property: string;
   sourceColumn: string;
@@ -21,7 +17,8 @@ interface PrimaryColumn {
 }
 
 export function normalizeGraphImportMapping(mapping: GraphImportMapping): GraphImportMapping {
-  const relations = Array.isArray((mapping as any)?.relations) ? (mapping as any).relations : [];
+  const relations = (mapping as any)?.relations;
+  if (!Array.isArray(relations)) throw new Error('mapping.relations 必须是数组');
   return {
     relations: relations.map((relation: any) => ({
       sourceObject: String(relation?.sourceObject ?? '').trim(),
@@ -91,19 +88,10 @@ function assertCompleteIdentity(objectKey: string, values: string[], propertiesH
   return true;
 }
 
-function selectEntity(
-  selections: Map<string, EntitySelection>,
-  objectKey: string,
-): void {
-  selections.set(objectKey, { objectKey });
-}
-
 function buildEntityPlan(
-  schema: GraphImportPackageSchema,
   tables: DataDictTable[],
-  selection: EntitySelection,
+  object: GraphImportObjectSchema,
 ): { plan: GraphImportEntityPlan; warnings: string[] } {
-  const object = objectByKey(schema, selection.objectKey);
   const table = tableForObject(tables, object);
   const identities = primaryColumns(object, table);
   const warnings: string[] = [];
@@ -223,7 +211,6 @@ export function validateGraphImportMapping(
   mapping: GraphImportMapping,
 ): GraphImportValidation {
   const normalizedMapping = normalizeGraphImportMapping(mapping);
-  if (!normalizedMapping.relations.length) throw new Error('请至少新增一条实体关系');
   const relationKeys = normalizedMapping.relations.map((item) => {
     const name = String(item.relationName ?? '').trim();
     if (!name) throw new Error('关系名称不能为空');
@@ -233,14 +220,11 @@ export function validateGraphImportMapping(
   const duplicate = relationKeys.find((key, index, all) => all.indexOf(key) !== index);
   if (duplicate) throw new Error('相同源实体、关系名称和目标实体的关系不能重复添加');
 
-  const selections = new Map<string, EntitySelection>();
   for (const item of normalizedMapping.relations) {
     objectByKey(schema, item.sourceObject);
     objectByKey(schema, item.targetObject);
-    selectEntity(selections, item.sourceObject);
-    selectEntity(selections, item.targetObject);
   }
-  const builtEntities = [...selections.values()].map((selection) => buildEntityPlan(schema, tables, selection));
+  const builtEntities = schema.objects.map((object) => buildEntityPlan(tables, object));
   const entities = builtEntities.map((item) => item.plan);
   const builtRelations = normalizedMapping.relations.map((item) => relationPlan(schema, tables, item));
   const relations = builtRelations.map((item) => item.plan);
