@@ -67,6 +67,7 @@ def test_runtime_config_read_ignores_unknown_saved_keys(tmp_path, monkeypatch):
 
 def test_create_workspace_rejects_new_workspace_after_limit(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "5")
 
     for index in range(5):
         create_workspace(
