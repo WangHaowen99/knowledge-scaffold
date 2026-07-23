@@ -86,7 +86,7 @@ cp backend/.env.example backend/.env
 ./deploy/deploy.sh
 ```
 
-升级旧安装时，如果安装目录根部已有 `.env`，Compose 会在读取 `backend/.env` 后继续读取该文件，保留其中的 `BACKEND_PORT`、`FRONTEND_PORT` 等宿主部署参数；同名参数以根目录 `.env` 为准。新安装仍统一在 `backend/.env` 中维护配置。
+升级旧安装时，如果安装目录根部已有 `.env`，部署脚本只会保留其中的 `BACKEND_PORT`、`FRONTEND_PORT`、`MCP_SERVER_PORT` 三个宿主端口；其他变量不会传给 Compose。同名端口以根目录 `.env` 为准，新安装仍统一在 `backend/.env` 中维护配置。
 
 部署脚本会自动完成：
 
