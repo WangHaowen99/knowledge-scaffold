@@ -52,7 +52,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
     "limits": {
         "run_tps": {"env": "AGENT_RUN_TPS", "type": "int", "default": 50},
         "user_max_count": {"env": "USER_MAX_COUNT", "type": "int", "default": 10},
-        "workspace_max_count": {"env": "WORKSPACE_MAX_COUNT", "type": "int", "default": 5},
+        "workspace_max_count": {"env": "WORKSPACE_MAX_COUNT", "type": "int", "default": 50},
         "ontology_max_count_per_workspace": {"env": "ONTOLOGY_MAX_COUNT_PER_WORKSPACE", "type": "int", "default": 10},
         "ontology_object_max_count": {"env": "ONTOLOGY_OBJECT_MAX_COUNT", "type": "int", "default": 200},
         "ontology_operation_max_count": {"env": "ONTOLOGY_OPERATION_MAX_COUNT", "type": "int", "default": 100},
