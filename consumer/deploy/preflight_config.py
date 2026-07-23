@@ -10,7 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -30,9 +30,33 @@ def read_env(path: Path) -> dict[str, str]:
     return values
 
 
+def _parse_http_url(value: str) -> ParseResult | None:
+    raw_value = str(value or "")
+    if not raw_value or any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in raw_value
+    ):
+        return None
+    try:
+        parsed = urlparse(raw_value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or authority.endswith(":")
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        return None
+    return parsed
+
+
 def _valid_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    return _parse_http_url(value) is not None
 
 
 def _positive_int(value: str) -> int | None:
@@ -624,6 +648,17 @@ def _ontology_has_bound_python_script(ontology_root: Path) -> bool:
     return False
 
 
+def _normalize_provider_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off", ""}:
+        return False
+    return None
+
+
 def _sandbox_script_connection_findings(
     *,
     workspace_id: str,
@@ -637,7 +672,8 @@ def _sandbox_script_connection_findings(
         "ontology_id": ontology_id,
         "provider": provider,
     }
-    if not _valid_http_url(url):
+    parsed_url = _parse_http_url(url)
+    if parsed_url is None:
         return [{
             **finding_base,
             "type": "invalid_sandbox_script_provider_url",
@@ -648,17 +684,26 @@ def _sandbox_script_connection_findings(
     if provider == "nl2sql_http":
         if str(config.get("token") or "").strip():
             secret_field = "token"
-    elif provider == "mindsdb" and bool(config.get("requires_auth", False)):
-        if not str(config.get("password") or "").strip():
+    elif provider == "mindsdb":
+        requires_auth = _normalize_provider_bool(config.get("requires_auth", False))
+        if requires_auth is None:
+            return [{
+                **finding_base,
+                "type": "invalid_sandbox_script_provider_auth_flag",
+                "field": "requires_auth",
+                "detail": "MindsDB requires_auth must be a boolean value",
+            }]
+        if requires_auth and not str(config.get("password") or "").strip():
             return [{
                 **finding_base,
                 "type": "missing_sandbox_script_provider_secret",
                 "field": "password",
                 "detail": "MindsDB authentication requires a configured password",
             }]
-        secret_field = "password"
+        if requires_auth:
+            secret_field = "password"
 
-    if secret_field and urlparse(url).scheme.lower() == "http":
+    if secret_field and parsed_url.scheme.lower() == "http":
         return [{
             **finding_base,
             "type": "sandbox_script_plain_http_secret",

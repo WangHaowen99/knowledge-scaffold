@@ -701,10 +701,43 @@ services:
                 {"url": "", "token": ""},
                 "invalid_sandbox_script_provider_url",
             ),
+            "invalid-port": (
+                "mindsdb",
+                {
+                    "url": "https://mindsdb.example:bad",
+                    "requires_auth": True,
+                    "password": "enc:v1:test-password",
+                },
+                "invalid_sandbox_script_provider_url",
+            ),
+            "out-of-range-port": (
+                "nl2sql_http",
+                {"url": "https://nl2sql.example:70000", "token": ""},
+                "invalid_sandbox_script_provider_url",
+            ),
+            "malformed-ipv6": (
+                "mindsdb",
+                {
+                    "url": "https://[::1",
+                    "requires_auth": True,
+                    "password": "enc:v1:test-password",
+                },
+                "invalid_sandbox_script_provider_url",
+            ),
+            "url-control-character": (
+                "nl2sql_http",
+                {"url": "https://nl2sql.example\n.invalid", "token": ""},
+                "invalid_sandbox_script_provider_url",
+            ),
             "missing-password": (
                 "mindsdb",
                 {"url": "https://mindsdb.example", "requires_auth": True},
                 "missing_sandbox_script_provider_secret",
+            ),
+            "invalid-auth-flag": (
+                "mindsdb",
+                {"url": "https://mindsdb.example", "requires_auth": "sometimes"},
+                "invalid_sandbox_script_provider_auth_flag",
             ),
         }
         for ontology_id, (provider, config, expected_type) in cases.items():
@@ -732,6 +765,27 @@ services:
         for ontology_id, (provider, config) in cases.items():
             with self.subTest(ontology_id=ontology_id):
                 self.write_data_source("demo", ontology_id, provider, config)
+                self.write_bound_script_ontology("demo", ontology_id)
+
+                report = self.validate(pre_migration=True)
+
+                self.assertTrue(report["ok"])
+                self.assertEqual(report["sandbox_incompatible_script_provider_count"], 0)
+
+    def test_preflight_allows_legacy_false_mindsdb_auth_values_before_migration(self) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        for raw_value in ("false", "0", "off", "no"):
+            with self.subTest(raw_value=raw_value):
+                ontology_id = "legacy-false-{}".format(raw_value)
+                self.write_data_source(
+                    "demo",
+                    ontology_id,
+                    "mindsdb",
+                    {
+                        "url": "http://mindsdb.internal",
+                        "requires_auth": raw_value,
+                    },
+                )
                 self.write_bound_script_ontology("demo", ontology_id)
 
                 report = self.validate(pre_migration=True)
