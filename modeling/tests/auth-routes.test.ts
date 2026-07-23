@@ -338,16 +338,25 @@ test('图导入 API：覆盖上传、校验、密码错误与后台状态映射'
   assert.deepEqual(upload.sheets.map((sheet: any) => sheet.name), ['Part', 'BOMItem']);
   assert.equal(upload.schema.relations[0].relationName, 'contains');
   assert.equal('storedPath' in upload, false);
+  const malformedMapping = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/validate`,
+    headers: { authorization },
+    payload: { mapping: {} },
+  });
+  assert.equal(malformedMapping.statusCode, 400, malformedMapping.body);
+  assert.match(malformedMapping.json().error, /mapping\.relations.*数组/);
+  const entityOnlyMapping = { relations: [] };
   const validated = await app.inject({
     method: 'POST',
     url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/validate`,
     headers: { authorization },
-    payload: { mapping: graphMapping },
+    payload: { mapping: entityOnlyMapping },
   });
   assert.equal(validated.statusCode, 200, validated.body);
   assert.deepEqual(validated.json().validation.counts, {
     nodeCount: 2,
-    relationshipCount: 1,
+    relationshipCount: 0,
     skippedCount: 0,
     skippedBlankCount: 0,
     skippedUnmatchedCount: 0,
@@ -357,7 +366,7 @@ test('图导入 API：覆盖上传、校验、密码错误与后台状态映射'
     method: 'POST',
     url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/execute`,
     headers: { authorization },
-    payload: { mapping: graphMapping, password: '' },
+    payload: { mapping: entityOnlyMapping, password: '' },
   });
   assert.equal(noPassword.statusCode, 400);
   assert.match(noPassword.json().error, /Password/);
@@ -365,7 +374,7 @@ test('图导入 API：覆盖上传、校验、密码错误与后台状态映射'
     method: 'POST',
     url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/execute`,
     headers: { authorization },
-    payload: { mapping: graphMapping, password: 'one-time-secret' },
+    payload: { mapping: entityOnlyMapping, password: 'one-time-secret' },
   });
   assert.equal(started.statusCode, 202, started.body);
   assert.equal(started.json().run.status, 'running');

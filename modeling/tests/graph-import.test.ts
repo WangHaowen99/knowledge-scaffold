@@ -71,6 +71,27 @@ test('graph import mapping：计算节点、关系与空关联跳过数量', () 
   });
 });
 
+test('graph import mapping：无关系映射时仍校验并统计全部实体', () => {
+  const result = validateGraphImportMapping(graphSchema, parseExcel(workbookBuffer({
+    Part: [
+      ['part_id', 'relation_code', 'name'],
+      ['P-001', '', '机翼'],
+      ['P-002', '', '机身'],
+    ],
+    BOMItem: [['item_id', 'parent_code', 'name'], ['I-001', '', '独立 BOM 行']],
+  })), { relations: [] });
+
+  assert.deepEqual({
+    nodes: result.nodeCount,
+    relationships: result.relationshipCount,
+    entities: result.entities.map((entity) => entity.objectKey),
+  }, {
+    nodes: 3,
+    relationships: 0,
+    entities: ['Part', 'BOMItem'],
+  });
+});
+
 test('graph import schema：支持多实体投影并以稳定 key 生成映射', () => {
   const wideSchema = {
     packageVersion: '1.0.0',
@@ -336,6 +357,53 @@ test('graph import Neo4j：节点和关系同事务幂等写入并带双隔离�
   assert.match(driver.calls[3].query, /MERGE \(source\)-\[relationship:`contains`/);
   assert.equal(driver.state.sessionClosed, true);
   assert.equal(driver.state.driverClosed, true);
+});
+
+test('graph import Neo4j：校验、统计和写入包含未参与关系的实体', async () => {
+  const schema = {
+    ...graphSchema,
+    objects: [...graphSchema.objects, {
+      key: 'Standalone', title: '独立实体', label: 'Standalone', defaultSheet: 'Standalone',
+      primaryProperties: ['standalone_id'],
+      propertyMappings: [
+        { property: 'standalone_id', sourceColumn: 'standalone_id' },
+        { property: 'name', sourceColumn: 'name' },
+      ],
+    }],
+  };
+  const plan = validateGraphImportMapping(schema, parseExcel(workbookBuffer({
+    Part: [['part_id', 'relation_code', 'name'], ['P-001', 'R-1', '机翼']],
+    BOMItem: [['item_id', 'parent_code', 'name'], ['I-001', 'R-1', '机翼 BOM 行']],
+    Standalone: [
+      ['standalone_id', 'name'],
+      ['S-001', '独立实例一'],
+      ['S-002', '独立实例二'],
+    ],
+  })), graphMapping);
+
+  assert.equal(plan.nodeCount, 4);
+  assert.deepEqual(plan.entities.map((entity) => entity.objectKey), ['Part', 'BOMItem', 'Standalone']);
+
+  const driver = recordingDriver();
+  const result = await writeGraphImport(
+    plan,
+    neo4jConnection(),
+    { userName: 'alice' },
+    driver.factory,
+  );
+  assert.deepEqual(result, { nodeCount: 4, relationshipCount: 1 });
+  const standaloneWrite = driver.calls.find((call) => /MERGE \(node:`Standalone`/.test(call.query));
+  assert.ok(standaloneWrite);
+  assert.deepEqual(standaloneWrite.params.rows, [
+    {
+      identityValues: ['S-001'],
+      properties: { standalone_id: 'S-001', name: '独立实例一' },
+    },
+    {
+      identityValues: ['S-002'],
+      properties: { standalone_id: 'S-002', name: '独立实例二' },
+    },
+  ]);
 });
 
 test('graph import Neo4j：动态标识符非法时拒绝连接', async () => {
@@ -631,6 +699,7 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   ]);
   const changed = updateRelationMapping(added, 0, 'sourceJoinProperty', 'relation_code');
   assert.deepEqual(graphImportMappingPayload(changed), { relations: changed });
+  assert.deepEqual(graphImportMappingPayload([]), { relations: [] });
   const unavailable = {
     key: 'Unavailable', title: '不可导入实体', label: '不可导入实体', defaultSheet: 'MissingSheet',
     primaryProperties: ['id'], propertyMappings: [{ property: 'id', sourceColumn: 'id' }],

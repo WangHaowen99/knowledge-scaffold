@@ -160,7 +160,6 @@ export function updateRelationMapping(mappings, index, field, value) {
 }
 
 export function graphImportMappingPayload(mappings) {
-  if (!mappings.length) throw new Error('请至少新增一条实体关系');
   const relations = mappings.map((mapping) => Object.fromEntries(
     MAPPING_FIELDS.map((field) => [field, String(mapping[field] ?? '').trim()]),
   ));
