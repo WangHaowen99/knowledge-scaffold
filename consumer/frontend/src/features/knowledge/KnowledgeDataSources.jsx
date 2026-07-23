@@ -4,6 +4,38 @@ import { authFetch } from '../../shared/api/auth';
 import { useAuthContext } from '../auth';
 import { EmptyState, FieldRow, SectionCard, StatusTag } from '../../shared/ui/primitives';
 
+const NOTICE_ICONS = {
+  success: (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M6.5 12.3 2.7 8.5l1.4-1.4 2.4 2.4 5.4-5.4 1.4 1.4z" />
+    </svg>
+  ),
+  error: (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M3.8 3.8 8 8l4.2-4.2 1.4 1.4L9.4 9.4l4.2 4.2-1.4 1.4L8 10.8l-4.2 4.2-1.4-1.4L6.6 9.4 2.4 5.2z" />
+    </svg>
+  ),
+  info: (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M7 7v6h2V7zm0-3v2h2V4z" />
+    </svg>
+  ),
+};
+
+function DataSourceFeedback({ notice }) {
+  if (!notice?.message) return null;
+  const type = notice.type || 'info';
+  return (
+    <div
+      className={`kb-ds-feedback ${type}`}
+      role={type === 'error' ? 'alert' : 'status'}
+    >
+      <span className="kb-ds-feedback-icon">{NOTICE_ICONS[type] || NOTICE_ICONS.info}</span>
+      <span className="kb-ds-feedback-text">{notice.message}</span>
+    </div>
+  );
+}
+
 const configDefaults = (provider) => {
   const defaults = {};
   (provider?.fields || []).forEach((field) => {
@@ -28,7 +60,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
   const [loadingSource, setLoadingSource] = useState(false);
   const [sourceLoadError, setSourceLoadError] = useState(false);
   const [busy, setBusy] = useState('');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(null);
   const loadRequestRef = useRef(0);
   const operationRequestRef = useRef(0);
   const currentScopeRef = useRef({ ontologyId, workspaceId });
@@ -62,7 +94,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       }
       return false;
     }
-    setNotice('');
+    setNotice(null);
     setLoadingProviders(true);
     setLoadingSource(true);
     setConfigured(false);
@@ -85,7 +117,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       setConfig({});
       setSourceLoadError(true);
       setLoadingSource(false);
-      setNotice(error?.message || '加载 Provider 失败');
+      setNotice({ type: 'error', message: error?.message || '加载 Provider 失败' });
       return false;
     } finally {
       if (isCurrentRequest()) setLoadingProviders(false);
@@ -109,7 +141,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       setProvider('');
       setConfig({});
       setSourceLoadError(true);
-      setNotice(error?.message || '加载数据源失败');
+      setNotice({ type: 'error', message: error?.message || '加载数据源失败' });
       return false;
     } finally {
       if (isCurrentRequest()) setLoadingSource(false);
@@ -131,7 +163,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
     const nextProvider = providers.find((item) => item.name === nextProviderName) || null;
     setProvider(nextProviderName);
     setConfig(configDefaults(nextProvider));
-    setNotice('');
+    setNotice(null);
   };
 
   const buildPayload = () => {
@@ -153,7 +185,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       && sameScope(currentScopeRef.current, targetScope)
     );
     setBusy(action);
-    setNotice('');
+    setNotice(null);
     try {
       const suffix = action === 'test' ? '/test' : '';
       const response = await authFetch(
@@ -168,16 +200,26 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       if (!isCurrentOperation()) return;
       if (!response.ok) throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
       if (action === 'test') {
-        setNotice(`${data.success ? '连接成功' : '连接失败'}${data.message ? `：${data.message}` : ''}`);
+        setNotice({
+          type: data.success ? 'success' : 'error',
+          message: data.message
+            ? `${data.success ? '连接成功' : '连接失败'}：${data.message}`
+            : (data.success ? '连接成功：数据源配置有效，可正常查询' : '连接失败：请检查配置后重试'),
+        });
       } else {
         const reloaded = await load();
         if (isCurrentOperation() && reloaded) {
           await Promise.resolve(onDataSourceChanged?.()).catch(() => undefined);
-          if (isCurrentOperation()) setNotice('数据源配置已保存');
+          if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已保存' });
         }
       }
     } catch (error) {
-      if (isCurrentOperation()) setNotice(`操作失败：${error?.message || '未知错误'}`);
+      if (isCurrentOperation()) {
+        const message = action === 'test'
+          ? `连接失败：${error?.message || '未知错误'}`
+          : `操作失败：${error?.message || '未知错误'}`;
+        setNotice({ type: 'error', message });
+      }
     } finally {
       if (isCurrentOperation()) setBusy('');
     }
@@ -191,7 +233,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       && sameScope(currentScopeRef.current, targetScope)
     );
     setBusy('delete');
-    setNotice('');
+    setNotice(null);
     try {
       const response = await authFetch(
         `/agentic/ontologies/${encodeURIComponent(ontologyId)}/data-source`,
@@ -203,10 +245,10 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       const reloaded = await load();
       if (isCurrentOperation() && reloaded) {
         await Promise.resolve(onDataSourceChanged?.()).catch(() => undefined);
-        if (isCurrentOperation()) setNotice('数据源配置已清除');
+        if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已清除' });
       }
     } catch (error) {
-      if (isCurrentOperation()) setNotice(`清除失败：${error?.message || '未知错误'}`);
+      if (isCurrentOperation()) setNotice({ type: 'error', message: `清除失败：${error?.message || '未知错误'}` });
     } finally {
       if (isCurrentOperation()) setBusy('');
     }
@@ -269,7 +311,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
             )}
           </FieldRow>
         ))}
-        {notice && <div className="kb-opnotice">{notice}</div>}
+        <DataSourceFeedback notice={notice} />
         {(canEdit || canTest) && (
           <div className="foot">
             {sourceLoadError && (
@@ -284,7 +326,12 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
             )}
             {canTest && (
               <button className="btn" disabled={Boolean(busy) || !canSubmit} onClick={() => submit('test')}>
-                {busy === 'test' ? '测试中…' : '测试连接'}
+                {busy === 'test' ? (
+                  <span className="kb-ds-btn-loading">
+                    <span className="kb-ds-spinner" aria-hidden="true" />
+                    测试中…
+                  </span>
+                ) : '测试连接'}
               </button>
             )}
             {canEdit && (
