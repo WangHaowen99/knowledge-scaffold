@@ -99,6 +99,17 @@ test('business data progress rows display and wrap their provider event text bef
   assert.equal(tracePanelSource.indexOf('className="trace-node-progress"') < tracePanelSource.indexOf('<ToolOutput'), true);
 });
 
+test('prompt editor and user messages preserve multiline formatting', () => {
+  const promptRule = chatCssSource.match(/\.mwr \.ti-box \.ti-input\s*\{([^}]*)\}/)?.[1] || '';
+  const userBubbleRule = chatCssSource.match(/\.mwr \.msg\.u \.bub\s*\{([^}]*)\}/)?.[1] || '';
+
+  assert.match(promptRule, /white-space:\s*pre-wrap/);
+  assert.match(promptRule, /overflow-wrap:\s*anywhere/);
+  assert.match(promptRule, /resize:\s*none/);
+  assert.match(userBubbleRule, /white-space:\s*pre-wrap/);
+  assert.match(userBubbleRule, /overflow-wrap:\s*anywhere/);
+});
+
 test('new chat navigation is active only for a blank chat session', () => {
   assert.equal(
     appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),
