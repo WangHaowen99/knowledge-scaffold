@@ -14,9 +14,6 @@ services:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
-      - SANDBOX_ENABLED=true
-      - SANDBOX_FALLBACK_LOCAL=false
-      - SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false
       - CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats
       - EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions
       - MCP_SERVER_HOST=mcp

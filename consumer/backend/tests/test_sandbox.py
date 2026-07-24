@@ -16,7 +16,7 @@ from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION
 from integration.sandbox.config import SandboxConfig, load_sandbox_config
 from integration.sandbox.client import JiuwenboxClient
 from integration.sandbox.data_proxy import DataConnectionSecretManager
-from integration.sandbox.env_allowlist import build_script_env, collect_script_config_env
+from integration.sandbox.env_allowlist import build_script_env
 from integration.sandbox.errors import SandboxCreateError, SandboxUnavailableError
 from integration.sandbox.executor import SandboxScriptExecutor
 from integration.sandbox.paths import to_sandbox_script_path
@@ -144,26 +144,6 @@ def test_build_script_env_uses_runtime_sdk_and_ontology_only(tmp_path):
     assert "/backend/.python-deps" not in env["PYTHONPATH"]
 
 
-def test_script_config_env_allows_valid_domain_table_prefix_only():
-    assert collect_script_config_env({}) == {}
-    assert collect_script_config_env({
-        "DOMAIN_TABLE_PREFIX": "custom.example_db",
-        "SECRET_ENCRYPTION_KEY": "must-not-appear",
-    }) == {"DOMAIN_TABLE_PREFIX": "custom.example_db"}
-    assert collect_script_config_env({"DOMAIN_TABLE_PREFIX": "custom.example_db;DROP"}) == {}
-
-    env = build_script_env(
-        env_overrides={
-            "DOMAIN_TABLE_PREFIX": "custom.example_db.",
-            "SECRET_ENCRYPTION_KEY": "must-not-appear",
-        },
-        ontology_dir=None,
-    )
-
-    assert env["DOMAIN_TABLE_PREFIX"] == "custom.example_db."
-    assert "SECRET_ENCRYPTION_KEY" not in env
-
-
 def test_policy_builder_mounts_workspace_and_runtime_same_path(tmp_path):
     workspace_root = tmp_path / ".onto-runtime" / "workspaces" / "ws"
     workspace_root.mkdir(parents=True)
@@ -197,14 +177,13 @@ def test_policy_builder_mounts_workspace_and_runtime_same_path(tmp_path):
     assert policy["network"]["egress"]["blocked_ports"] == [53]
 
 
-def test_executor_mounts_workspace_and_passes_domain_table_prefix(tmp_path, monkeypatch):
+def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkeypatch):
     runtime_root = tmp_path / ".onto-runtime"
     workspace_root = runtime_root / "workspaces" / "ws"
     ontology_dir = workspace_root / "ontologies" / "demo"
     script = ontology_dir / "scripts" / "check.py"
     script.parent.mkdir(parents=True)
     script.write_text("print('ok')", encoding="utf-8")
-    monkeypatch.setenv("DOMAIN_TABLE_PREFIX", "custom.example_db")
 
     monkeypatch.setattr(
         sandbox_executor_module,
@@ -256,7 +235,6 @@ def test_executor_mounts_workspace_and_passes_domain_table_prefix(tmp_path, monk
 
     assert result.returncode == 0
     assert captured["ctx"].workspace_root == workspace_root.resolve()
-    assert captured["env"]["DOMAIN_TABLE_PREFIX"] == "custom.example_db"
     assert captured["workdir"] == str(workspace_root.resolve()).replace("\\", "/")
     assert captured["command"][2] == str(script.resolve()).replace("\\", "/")
     policy = OntoSandboxPolicyBuilder.build(captured["ctx"])

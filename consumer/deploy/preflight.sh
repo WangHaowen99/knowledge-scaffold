@@ -39,7 +39,7 @@ python3 "${SCRIPT_DIR}/preflight_config.py" \
     --compose-file "${COMPOSE_FILE}" \
     --report "${STATE_DIR}/preflight-config.json" \
     "${PREFLIGHT_ARGS[@]}" \
-    || die "Sandbox, Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
+    || die "Auth, MCP, user-limit, or Graph preflight validation failed; inspect ${STATE_DIR}/preflight-config.json"
 
 resolved_host_ports="$(python3 -c '
 import json

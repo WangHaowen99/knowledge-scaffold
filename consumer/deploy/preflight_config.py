@@ -55,11 +55,6 @@ ComposeConfigLoader = Callable[
     [Path, ComposeEnvFiles],
     tuple[dict[str, Any] | None, list[dict[str, Any]]],
 ]
-_RELEASE_SANDBOX_EXPECTED = {
-    "SANDBOX_ENABLED": "true",
-    "SANDBOX_FALLBACK_LOCAL": "false",
-    "SANDBOX_SECRET_ALLOW_PLAIN_HTTP": "false",
-}
 
 
 def _compose_command_candidates() -> tuple[tuple[str, ...], ...]:
@@ -141,38 +136,7 @@ def _load_compose_config_json(
             last_failure = "compose config returned a non-object document"
             continue
 
-        try:
-            source_result = subprocess.run(
-                [
-                    *compose_args,
-                    "config",
-                    "--no-interpolate",
-                    "--no-env-resolution",
-                    "--format",
-                    "json",
-                ],
-                cwd=str(project_dir),
-                env=process_env,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-        except OSError:
-            continue
-        if source_result.returncode != 0:
-            last_failure = "compose config source inspection failed"
-            continue
-        try:
-            source_payload = json.loads(source_result.stdout or "{}")
-        except json.JSONDecodeError:
-            last_failure = "compose config source inspection returned invalid json"
-            continue
-        if not isinstance(source_payload, dict):
-            last_failure = "compose config source inspection returned a non-object document"
-            continue
-        return payload, _release_sandbox_structured_source_errors(source_payload)
+        return payload, []
 
     return None, [{
         "type": "compose_config_unavailable",
@@ -298,166 +262,6 @@ def _release_storage_findings(
     }
 
 
-def _normalize_bool_token(value: str | None) -> str | None:
-    normalized = str(value or "").strip().lower()
-    if not normalized:
-        return None
-    if normalized in {"1", "true", "yes", "y", "on"}:
-        return "true"
-    if normalized in {"0", "false", "no", "n", "off"}:
-        return "false"
-    return None
-
-
-def _duplicate_release_sandbox_source_errors(compose_text: str) -> list[dict[str, Any]]:
-    backend_match = re.search(
-        r"(?ms)^(?P<indent>[ ]+)backend:\s*(?:#.*)?\n(?P<body>.*?)(?=^(?P=indent)\S[^\n]*:\s*(?:#.*)?$|\Z)",
-        compose_text,
-    )
-    if backend_match is None:
-        return []
-    backend_body = "\n".join(
-        line.split("#", 1)[0] for line in backend_match.group("body").splitlines()
-    )
-    errors: list[dict[str, Any]] = []
-    for setting, expected_value in _RELEASE_SANDBOX_EXPECTED.items():
-        if len(re.findall(rf"\b{re.escape(setting)}\b", backend_body)) <= 1:
-            continue
-        errors.append({
-            "type": "duplicate_release_sandbox_setting",
-            "setting": setting,
-            "expected": expected_value,
-            "source": "compose",
-        })
-    return errors
-
-
-def _compose_backend_environment(
-    compose_config: Mapping[str, Any] | None,
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    if not isinstance(compose_config, Mapping):
-        return {}, [{"type": "compose_config_unavailable"}]
-
-    services = compose_config.get("services")
-    if not isinstance(services, Mapping):
-        return {}, [{"type": "missing_compose_services"}]
-
-    backend = services.get("backend")
-    if not isinstance(backend, Mapping):
-        return {}, [{"type": "missing_compose_backend_service"}]
-
-    environment = backend.get("environment")
-    if environment is None:
-        return {}, []
-
-    errors: list[dict[str, Any]] = []
-    values: dict[str, str] = {}
-    if isinstance(environment, Mapping):
-        for key, value in environment.items():
-            name = str(key).strip()
-            if not name:
-                continue
-            values[name] = "" if value is None else str(value)
-        return values, errors
-
-    if isinstance(environment, list):
-        for item in environment:
-            if isinstance(item, str):
-                if "=" not in item:
-                    errors.append({
-                        "type": "unsupported_release_sandbox_setting_source",
-                        "source": "compose_config",
-                        "detail": "bare environment variable reference is not allowed",
-                    })
-                    continue
-                key, value = item.split("=", 1)
-                name = key.strip()
-                if name:
-                    values[name] = value
-                continue
-            if isinstance(item, Mapping):
-                for key, value in item.items():
-                    name = str(key).strip()
-                    if name:
-                        values[name] = "" if value is None else str(value)
-                continue
-            errors.append({
-                "type": "unsupported_release_sandbox_environment",
-                "source": "compose_config",
-            })
-        return values, errors
-
-    return {}, [{
-        "type": "unsupported_release_sandbox_environment",
-        "source": "compose_config",
-    }]
-
-
-def _release_sandbox_structured_source_errors(
-    compose_config: Mapping[str, Any] | None,
-) -> list[dict[str, Any]]:
-    source_env, errors = _compose_backend_environment(compose_config)
-    for setting, expected_value in _RELEASE_SANDBOX_EXPECTED.items():
-        raw_value = source_env.get(setting)
-        stripped = str(raw_value or "").strip()
-        if not stripped or "${" in stripped:
-            errors.append({
-                "type": "unsupported_release_sandbox_setting_source",
-                "setting": setting,
-                "expected": expected_value,
-                "source": "compose_config_no_interpolate",
-                "detail": "sandbox settings must be literal backend environment values",
-            })
-    return errors
-
-
-def _validate_release_sandbox_env(
-    *,
-    compose_config: Mapping[str, Any] | None,
-    compose_config_errors: list[dict[str, Any]] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
-    errors: list[dict[str, Any]] = []
-    effective: dict[str, str | None] = {
-        setting: None for setting in _RELEASE_SANDBOX_EXPECTED
-    }
-    if compose_config_errors:
-        errors.extend(compose_config_errors)
-        return errors, effective
-
-    backend_env, backend_env_errors = _compose_backend_environment(compose_config)
-    errors.extend(backend_env_errors)
-    for setting, expected_value in _RELEASE_SANDBOX_EXPECTED.items():
-        raw_value = backend_env.get(setting)
-        normalized = _normalize_bool_token(raw_value)
-        effective[setting] = normalized
-        if raw_value is None or not str(raw_value).strip():
-            errors.append({
-                "type": "missing_release_sandbox_setting",
-                "setting": setting,
-                "expected": expected_value,
-                "source": "compose_config",
-            })
-            continue
-        if normalized is None:
-            errors.append({
-                "type": "invalid_release_sandbox_setting",
-                "setting": setting,
-                "expected": expected_value,
-                "actual": str(raw_value),
-                "source": "compose_config",
-            })
-            continue
-        if normalized != expected_value:
-            errors.append({
-                "type": "invalid_release_sandbox_setting",
-                "setting": setting,
-                "expected": expected_value,
-                "actual": normalized,
-                "source": "compose_config",
-            })
-    return errors, effective
-
-
 def _graph_data_source_findings(
     runtime_root: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
@@ -547,77 +351,6 @@ def _graph_data_source_findings(
     return errors, warnings, count
 
 
-_SANDBOX_SUPPORTED_SCRIPT_PROVIDERS = {"mindsdb", "nl2sql_http"}
-_FRONTMATTER_BOUND_OPERATION = re.compile(
-    r"^\s*(?:bound_operation|operation_key)\s*:\s*(?![\"']?\s*[\"']?\s*$).+\s*$",
-    re.MULTILINE,
-)
-_FRONTMATTER_PYTHON_ENTRYPOINT = re.compile(
-    r"^\s*(?:entrypoint|path)\s*:\s*[\"']?[^\n#\"']+\.py[\"']?\s*(?:#.*)?$",
-    re.MULTILINE | re.IGNORECASE,
-)
-
-
-def _ontology_has_bound_python_script(ontology_root: Path) -> bool:
-    script_dirs = [ontology_root / "scripts"]
-    versions_dir = ontology_root / "versions"
-    if versions_dir.is_dir():
-        script_dirs.extend(path / "scripts" for path in versions_dir.iterdir() if path.is_dir())
-    for scripts_dir in script_dirs:
-        if not scripts_dir.is_dir():
-            continue
-        for descriptor in scripts_dir.glob("*.md"):
-            try:
-                descriptor_text = descriptor.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            if (
-                _FRONTMATTER_BOUND_OPERATION.search(descriptor_text)
-                and _FRONTMATTER_PYTHON_ENTRYPOINT.search(descriptor_text)
-            ):
-                return True
-    return False
-
-
-def _sandbox_script_provider_findings(runtime_root: Path) -> tuple[list[dict[str, Any]], int]:
-    errors: list[dict[str, Any]] = []
-    count = 0
-    workspaces = runtime_root / "workspaces"
-    if not workspaces.exists():
-        return errors, count
-    for path in sorted(workspaces.glob("*/ontology-data-sources.json")):
-        workspace_id = path.parent.name
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        sources = payload.get("sources") if isinstance(payload, dict) else None
-        if not isinstance(sources, dict):
-            continue
-        for ontology_id, source in sources.items():
-            if not isinstance(source, dict):
-                continue
-            mode = str(source.get("mode") or "direct_provider").strip()
-            provider = str(source.get("provider") or "").strip().lower()
-            if mode != "direct_provider" or not provider:
-                continue
-            ontology_root = path.parent / "ontologies" / str(ontology_id)
-            if provider in _SANDBOX_SUPPORTED_SCRIPT_PROVIDERS:
-                continue
-            if not _ontology_has_bound_python_script(ontology_root):
-                continue
-            count += 1
-            errors.append({
-                "workspace_id": workspace_id,
-                "ontology_id": str(ontology_id),
-                "provider": provider,
-                "type": "unsupported_sandbox_script_provider",
-                "supported_providers": sorted(_SANDBOX_SUPPORTED_SCRIPT_PROVIDERS),
-                "detail": "migrate the ontology script provider before enabling release sandbox execution",
-            })
-    return errors, count
-
-
 def validate_config(
     env_file: Path,
     runtime_root: Path,
@@ -630,18 +363,12 @@ def validate_config(
     env = read_env(env_file)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
-    compose_text = compose_file.read_text(encoding="utf-8") if compose_file.exists() else ""
-    errors.extend(_duplicate_release_sandbox_source_errors(compose_text))
     loader = compose_config_loader or _load_compose_config_json
     compose_config, compose_config_errors = loader(
         compose_file,
         tuple(compose_env_files or (env_file,)),
     )
-    sandbox_errors, sandbox_effective = _validate_release_sandbox_env(
-        compose_config=compose_config,
-        compose_config_errors=compose_config_errors,
-    )
-    errors.extend(sandbox_errors)
+    errors.extend(compose_config_errors)
     host_ports = _release_host_ports(compose_config)
 
     auth_url = env.get("AUTH_SERVER_URL", "").rstrip("/")
@@ -697,22 +424,11 @@ def validate_config(
         graph_errors, graph_warnings, graph_count = _graph_data_source_findings(runtime_root)
     errors.extend(graph_errors)
     warnings.extend(graph_warnings)
-    sandbox_provider_errors, sandbox_incompatible_count = _sandbox_script_provider_findings(
-        runtime_root
-    )
-    errors.extend(sandbox_provider_errors)
     return {
         "schema_version": 1,
         "ok": not errors,
         "phase": "pre_migration" if pre_migration else "strict",
         "persisted_data_validation": "deferred" if pre_migration else "strict",
-        "sandbox": {
-            "enabled": sandbox_effective.get("SANDBOX_ENABLED"),
-            "fallback_local": sandbox_effective.get("SANDBOX_FALLBACK_LOCAL"),
-            "secret_allow_plain_http": sandbox_effective.get(
-                "SANDBOX_SECRET_ALLOW_PLAIN_HTTP"
-            ),
-        },
         "auth": {
             "url": auth_url,
             "issuer": issuer,
@@ -730,7 +446,6 @@ def validate_config(
         },
         "storage": storage_contract,
         "graph_data_source_count": graph_count,
-        "sandbox_incompatible_script_provider_count": sandbox_incompatible_count,
         "errors": errors,
         "warnings": warnings,
     }

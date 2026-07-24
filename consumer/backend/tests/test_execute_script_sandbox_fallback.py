@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 import agent.tools.execute_script as execute_script_module
-from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
 
 
@@ -128,18 +127,12 @@ def test_sandbox_none_result_returns_public_internal_error(tmp_path, monkeypatch
 def test_disabled_sandbox_uses_normal_local_execution(tmp_path, monkeypatch):
     script = _write_script(tmp_path)
     _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
-    local_mode_events = []
     monkeypatch.setattr(
         execute_script_module,
         "log_sandbox_security_fallback",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("explicit local mode is not a sandbox fallback")
         ),
-    )
-    monkeypatch.setattr(
-        execute_script_module,
-        "log_sandbox_local_mode",
-        lambda **kwargs: local_mode_events.append(kwargs),
     )
     monkeypatch.setattr(
         execute_script_module.subprocess,
@@ -154,69 +147,6 @@ def test_disabled_sandbox_uses_normal_local_execution(tmp_path, monkeypatch):
     )
 
     assert result == "normal-local-output"
-    assert local_mode_events[0]["reason"] == "sandbox_disabled"
-
-
-def test_disabled_sandbox_local_execution_uses_minimal_env(tmp_path, monkeypatch):
-    script = _write_script(tmp_path)
-    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "must-not-leak")
-    monkeypatch.setenv("AUTH_SERVER_ADMIN_TOKEN", "must-not-leak")
-    captured = {}
-    local_mode_events = []
-
-    monkeypatch.setattr(
-        execute_script_module,
-        "log_sandbox_local_mode",
-        lambda **kwargs: local_mode_events.append(kwargs),
-    )
-
-    def _fake_run(*args, **kwargs):
-        captured["env"] = kwargs["env"]
-        return _completed("normal-local-output")
-
-    monkeypatch.setattr(execute_script_module.subprocess, "run", _fake_run)
-
-    result = execute_script_module.handle_execute_script_path(
-        script.name,
-        base_path=tmp_path,
-        env_overrides={
-            SCRIPT_BUSINESS_DATA_CONNECTION_ENV: '{"provider":"demo"}',
-            "ONTO_X": "must-not-pass",
-        },
-    )
-
-    assert result == "normal-local-output"
-    assert local_mode_events[0]["reason"] == "sandbox_disabled"
-    assert captured["env"][SCRIPT_BUSINESS_DATA_CONNECTION_ENV] == '{"provider":"demo"}'
-    assert "ONTO_X" not in captured["env"]
-    assert "SECRET_ENCRYPTION_KEY" not in captured["env"]
-    assert "AUTH_SERVER_ADMIN_TOKEN" not in captured["env"]
-    assert "PYTHONPATH" in captured["env"]
-
-
-def test_disabled_sandbox_local_execution_keeps_domain_table_prefix(tmp_path, monkeypatch):
-    script = _write_script(tmp_path)
-    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
-    monkeypatch.setenv("DOMAIN_TABLE_PREFIX", "custom.example_db")
-    captured = {}
-
-    monkeypatch.setattr(
-        execute_script_module.subprocess,
-        "run",
-        lambda *args, **kwargs: (
-            captured.setdefault("env", kwargs["env"]),
-            _completed("normal-local-output"),
-        )[1],
-    )
-
-    result = execute_script_module.handle_execute_script_path(
-        script.name,
-        base_path=tmp_path,
-    )
-
-    assert result == "normal-local-output"
-    assert captured["env"]["DOMAIN_TABLE_PREFIX"] == "custom.example_db"
 
 
 def test_local_none_result_returns_public_internal_error(tmp_path, monkeypatch):
@@ -324,8 +254,6 @@ def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
     _set_sandbox_config(monkeypatch, fallback_local=True)
     monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
     fallback_events = []
-    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", "must-not-leak")
-    captured = {}
 
     class FailingSandboxExecutor:
         def run_script(self, **kwargs):
@@ -340,10 +268,7 @@ def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(
         execute_script_module.subprocess,
         "run",
-        lambda *args, **kwargs: (
-            captured.setdefault("env", kwargs["env"]),
-            _completed("local-after-error"),
-        )[1],
+        lambda *args, **kwargs: _completed("local-after-error"),
     )
 
     result = execute_script_module.handle_execute_script_path(
@@ -354,7 +279,7 @@ def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
 
     assert result == "local-after-error"
     assert fallback_events[0]["reason"] == "sandbox_unavailable"
-    assert "SECRET_ENCRYPTION_KEY" not in captured["env"]
+    assert fallback_events[0]["error"] == "SandboxUnavailableError"
 
 
 def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeypatch):

@@ -106,7 +106,7 @@ docker save -o "${IMAGES_DIR}/onto-agent-auth-server-${VERSION}.tar" "onto-agent
 bash "${SCRIPT_DIR}/build_jiuwenbox.sh" "onto-agent-jiuwenbox:${VERSION}" "${ARCH}"
 docker save -o "${IMAGES_DIR}/onto-agent-jiuwenbox-${VERSION}.tar" "onto-agent-jiuwenbox:${VERSION}"
 
-cp "${PROJECT_ROOT}/backend/.env.release.example" "${BUNDLE_DIR}/backend/.env.example"
+cp "${PROJECT_ROOT}/backend/.env.example" "${BUNDLE_DIR}/backend/.env.example"
 cp "${PROJECT_ROOT}/frontend/.env.example" "${BUNDLE_DIR}/frontend/.env.example"
 cp -r "${PROJECT_ROOT}/deploy/"* "${BUNDLE_DIR}/deploy/"
 rm -rf "${BUNDLE_DIR}/deploy/state" "${BUNDLE_DIR}/deploy/backups" "${BUNDLE_DIR}/deploy/tests"
