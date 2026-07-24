@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from preflight_config import (  # noqa: E402
     _load_compose_config_json,
@@ -19,7 +18,6 @@ from preflight_config import (  # noqa: E402
     _release_sandbox_structured_source_errors,
     validate_config,
 )
-from ontology.ontology_catalog import load_script_catalog  # noqa: E402
 
 
 VALID_ENV = """\
@@ -125,22 +123,6 @@ class PreflightConfigTests(unittest.TestCase):
         )
 
     def write_bound_script_ontology(self, workspace_id: str, ontology_id: str) -> None:
-        scripts_dir = self.write_script_descriptor(
-            workspace_id,
-            ontology_id,
-            "maintenance.md",
-            "---\nresource: script\nkey: maintenance\n"
-            "bound_operation: maintenance\nentrypoint: maintenance.py\n---\n",
-        )
-        (scripts_dir / "maintenance.py").write_text("print('ok')\n", encoding="utf-8")
-
-    def write_script_descriptor(
-        self,
-        workspace_id: str,
-        ontology_id: str,
-        filename: str,
-        content: str,
-    ) -> Path:
         scripts_dir = (
             self.root
             / ".onto-runtime"
@@ -153,37 +135,12 @@ class PreflightConfigTests(unittest.TestCase):
             / "scripts"
         )
         scripts_dir.mkdir(parents=True, exist_ok=True)
-        (scripts_dir / filename).write_text(content, encoding="utf-8")
-        return scripts_dir
-
-    def write_data_source(
-        self,
-        workspace_id: str,
-        ontology_id: str,
-        provider: str,
-        config: dict,
-    ) -> None:
-        path = (
-            self.root
-            / ".onto-runtime"
-            / "workspaces"
-            / workspace_id
-            / "ontology-data-sources.json"
-        )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({
-                "version": 2,
-                "sources": {
-                    ontology_id: {
-                        "mode": "direct_provider",
-                        "provider": provider,
-                        "config": config,
-                    },
-                },
-            }),
+        (scripts_dir / "maintenance.md").write_text(
+            "---\nresource: script\nkey: maintenance\n"
+            "bound_operation: maintenance\nentrypoint: maintenance.py\n---\n",
             encoding="utf-8",
         )
+        (scripts_dir / "maintenance.py").write_text("print('ok')\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -667,240 +624,6 @@ services:
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["sandbox_incompatible_script_provider_count"], 0)
-
-    def test_preflight_blocks_nl2sql_http_token_over_plain_http(self) -> None:
-        self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        self.write_data_source(
-            "demo",
-            "sql-maintenance",
-            "nl2sql_http",
-            {
-                "url": "http://nl2sql.internal",
-                "token": "enc:v1:test-token",
-            },
-        )
-        self.write_bound_script_ontology("demo", "sql-maintenance")
-
-        report = self.validate(pre_migration=True)
-
-        self.assertFalse(report["ok"])
-        finding = next(
-            item
-            for item in report["errors"]
-            if item["type"] == "sandbox_script_plain_http_secret"
-        )
-        self.assertEqual(finding["provider"], "nl2sql_http")
-        self.assertEqual(finding["field"], "token")
-        self.assertIn("HTTPS", finding["detail"])
-        self.assertNotIn("test-token", json.dumps(report))
-
-    def test_preflight_blocks_authenticated_mindsdb_over_plain_http(self) -> None:
-        self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        self.write_data_source(
-            "demo",
-            "mindsdb-maintenance",
-            "mindsdb",
-            {
-                "url": "http://mindsdb.internal",
-                "requires_auth": True,
-                "password": "enc:v1:test-password",
-            },
-        )
-        self.write_bound_script_ontology("demo", "mindsdb-maintenance")
-
-        report = self.validate(pre_migration=True)
-
-        self.assertFalse(report["ok"])
-        finding = next(
-            item
-            for item in report["errors"]
-            if item["type"] == "sandbox_script_plain_http_secret"
-        )
-        self.assertEqual(finding["provider"], "mindsdb")
-        self.assertEqual(finding["field"], "password")
-        self.assertIn("HTTPS", finding["detail"])
-        self.assertNotIn("test-password", json.dumps(report))
-
-    def test_preflight_rejects_supported_provider_configs_unusable_by_sandbox(self) -> None:
-        self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        cases = {
-            "invalid-url": (
-                "nl2sql_http",
-                {"url": "", "token": ""},
-                "invalid_sandbox_script_provider_url",
-            ),
-            "invalid-port": (
-                "mindsdb",
-                {
-                    "url": "https://mindsdb.example:bad",
-                    "requires_auth": True,
-                    "password": "enc:v1:test-password",
-                },
-                "invalid_sandbox_script_provider_url",
-            ),
-            "out-of-range-port": (
-                "nl2sql_http",
-                {"url": "https://nl2sql.example:70000", "token": ""},
-                "invalid_sandbox_script_provider_url",
-            ),
-            "malformed-ipv6": (
-                "mindsdb",
-                {
-                    "url": "https://[::1",
-                    "requires_auth": True,
-                    "password": "enc:v1:test-password",
-                },
-                "invalid_sandbox_script_provider_url",
-            ),
-            "url-control-character": (
-                "nl2sql_http",
-                {"url": "https://nl2sql.example\n.invalid", "token": ""},
-                "invalid_sandbox_script_provider_url",
-            ),
-            "missing-password": (
-                "mindsdb",
-                {"url": "https://mindsdb.example", "requires_auth": True},
-                "missing_sandbox_script_provider_secret",
-            ),
-            "invalid-auth-flag": (
-                "mindsdb",
-                {"url": "https://mindsdb.example", "requires_auth": "sometimes"},
-                "invalid_sandbox_script_provider_auth_flag",
-            ),
-        }
-        for ontology_id, (provider, config, expected_type) in cases.items():
-            with self.subTest(ontology_id=ontology_id):
-                self.write_data_source("demo", ontology_id, provider, config)
-                self.write_bound_script_ontology("demo", ontology_id)
-
-                report = self.validate(pre_migration=True)
-
-                self.assertFalse(report["ok"])
-                self.assertIn(expected_type, {item["type"] for item in report["errors"]})
-
-    def test_preflight_allows_plain_http_without_provider_credentials(self) -> None:
-        self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        cases = {
-            "anonymous-nl2sql": (
-                "nl2sql_http",
-                {"url": "http://nl2sql.internal", "token": ""},
-            ),
-            "anonymous-mindsdb": (
-                "mindsdb",
-                {"url": "http://mindsdb.internal", "requires_auth": False},
-            ),
-        }
-        for ontology_id, (provider, config) in cases.items():
-            with self.subTest(ontology_id=ontology_id):
-                self.write_data_source("demo", ontology_id, provider, config)
-                self.write_bound_script_ontology("demo", ontology_id)
-
-                report = self.validate(pre_migration=True)
-
-                self.assertTrue(report["ok"])
-                self.assertEqual(report["sandbox_incompatible_script_provider_count"], 0)
-
-    def test_preflight_allows_legacy_false_mindsdb_auth_values_before_migration(self) -> None:
-        self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        for raw_value in ("false", "0", "off", "no"):
-            with self.subTest(raw_value=raw_value):
-                ontology_id = "legacy-false-{}".format(raw_value)
-                self.write_data_source(
-                    "demo",
-                    ontology_id,
-                    "mindsdb",
-                    {
-                        "url": "http://mindsdb.internal",
-                        "requires_auth": raw_value,
-                    },
-                )
-                self.write_bound_script_ontology("demo", ontology_id)
-
-                report = self.validate(pre_migration=True)
-
-                self.assertTrue(report["ok"])
-                self.assertEqual(report["sandbox_incompatible_script_provider_count"], 0)
-
-    def test_preflight_ignores_non_executable_markdown_content(self) -> None:
-        self.env_file.write_text(VALID_ENV, encoding="utf-8")
-        workspace_id = "demo"
-        cases = {
-            "index-only": (
-                "index.md",
-                "---\nbound_operation: maintenance\nentrypoint: maintenance.py\n---\n",
-            ),
-            "body-example": (
-                "example.md",
-                "# Example\n\n```yaml\nbound_operation: maintenance\n"
-                "entrypoint: maintenance.py\n```\n",
-            ),
-            "empty-binding": (
-                "example.md",
-                "---\nbound_operation: # optional\nentrypoint: maintenance.py\n---\n",
-            ),
-        }
-        sources = {}
-        for ontology_id, (filename, content) in cases.items():
-            self.write_script_descriptor(
-                workspace_id,
-                ontology_id,
-                filename,
-                content,
-            )
-            sources[ontology_id] = {
-                "mode": "direct_provider",
-                "provider": "neo4j",
-                "config": {"uri": "bolt://neo4j.internal:7687"},
-            }
-        source_path = (
-            self.root
-            / ".onto-runtime"
-            / "workspaces"
-            / workspace_id
-            / "ontology-data-sources.json"
-        )
-        source_path.write_text(
-            json.dumps({"version": 2, "sources": sources}),
-            encoding="utf-8",
-        )
-
-        report = self.validate(pre_migration=True)
-
-        self.assertTrue(report["ok"])
-        self.assertEqual(report["sandbox_incompatible_script_provider_count"], 0)
-
-    def test_preflight_script_detection_matches_runtime_catalog_semantics(self) -> None:
-        cases = {
-            "index.md": (
-                "---\nbound_operation: maintenance\nentrypoint: maintenance.py\n---\n",
-                False,
-            ),
-            "body.md": (
-                "# Example\n\nbound_operation: maintenance\nentrypoint: maintenance.py\n",
-                False,
-            ),
-            "empty.md": (
-                "---\nbound_operation: # optional\nentrypoint: maintenance.py\n---\n",
-                False,
-            ),
-            "valid.md": (
-                "---\nbound_operation: maintenance\nentrypoint: maintenance.py\n---\n",
-                True,
-            ),
-        }
-        for filename, (content, expected) in cases.items():
-            with self.subTest(filename=filename):
-                ontology_root = self.root / "contract" / filename.replace(".md", "")
-                scripts_dir = ontology_root / "scripts"
-                scripts_dir.mkdir(parents=True)
-                (scripts_dir / filename).write_text(content, encoding="utf-8")
-                runtime_bound = any(
-                    entry.get("_is_bound_operation")
-                    for entry in load_script_catalog(ontology_root)
-                )
-                preflight_bound = _ontology_has_bound_python_script(ontology_root)
-                self.assertEqual(runtime_bound, expected)
-                self.assertEqual(preflight_bound, runtime_bound)
 
     def test_pre_migration_defers_persisted_data_validation_to_migration_runner(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")

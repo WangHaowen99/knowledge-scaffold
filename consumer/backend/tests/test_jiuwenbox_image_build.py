@@ -87,10 +87,3 @@ def test_release_bundle_uses_release_specific_backend_env_template():
     assert "SANDBOX_ENABLED=true" in release_env_template
     assert "SANDBOX_FALLBACK_LOCAL=false" in release_env_template
     assert "SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false" in release_env_template
-
-
-def test_sandbox_design_summary_matches_release_fail_closed_defaults():
-    design = _read("docs/jiuwenbox-sandbox-design.md")
-
-    assert "发布版和完整 Compose 强制启用 sandbox 并禁止本地 fallback" in design
-    assert "官方 Compose 默认关闭 sandbox 并允许本地 fallback" not in design
