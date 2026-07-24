@@ -167,7 +167,6 @@ docker_compose_cmd() {
         printf 'docker compose'
         return 0
     fi
-
     return 1
 }
 
