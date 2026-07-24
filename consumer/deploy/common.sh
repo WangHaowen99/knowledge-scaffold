@@ -168,20 +168,6 @@ docker_compose_cmd() {
         return 0
     fi
 
-    if command -v docker-compose >/dev/null 2>&1; then
-        # compose 文件使用 profiles 键（docker-compose >= 1.28 支持）；
-        # 更老的 v1 连 local 模式都无法解析，这里快速失败给出明确指引
-        local ver
-        ver="$(docker-compose version --short 2>/dev/null || true)"
-        case "${ver}" in
-            1.2[0-7].*|1.1?.*|1.?.*|0.*)
-                die "docker-compose ${ver} 过旧（<1.28 不支持 compose profiles），请升级 Docker Compose v2"
-                ;;
-        esac
-        printf 'docker-compose'
-        return 0
-    fi
-
     return 1
 }
 
