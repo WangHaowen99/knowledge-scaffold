@@ -828,13 +828,13 @@ backend 通过共享 UDS `unix:///run/jiuwenbox/jiuwenbox.sock` 调用这些接�
 
 | 环境变量 | 代码默认 | 官方 Compose 默认 | 说明 |
 |---|---:|---:|---|
-| `SANDBOX_ENABLED` | `false` | `release/full-stack: true; backend-only dev: false` | 沙箱总开关。 |
-| `SANDBOX_FALLBACK_LOCAL` | `true` | `release/full-stack: false; backend-only dev: true` | setup/create/exec 失败时是否允许本地 subprocess。 |
+| `SANDBOX_ENABLED` | `false` | `false` | 沙箱总开关。 |
+| `SANDBOX_FALLBACK_LOCAL` | `true` | `true` | setup/create/exec 失败时是否允许本地 subprocess。 |
 | `SANDBOX_MEMORY_MAX` | `512M` | 同代码 | memory cgroup。 |
 | `SANDBOX_CPU_MAX` | `1.0` | 同代码 | CPU cgroup。 |
 | `SANDBOX_PIDS_MAX` | `64` | 同代码 | PID cgroup。 |
 | `SANDBOX_CLIENT_TIMEOUT` | `30.0` | 同代码 | Management API client timeout。 |
-| `SANDBOX_SECRET_ALLOW_PLAIN_HTTP` | `true` | `release/full-stack: false; backend-only dev: false` | 可信内网 HTTP secret gate。 |
+| `SANDBOX_SECRET_ALLOW_PLAIN_HTTP` | `true` | `true` | 可信内网 HTTP secret gate。 |
 
 这些值只从进程环境和代码默认读取，不属于 system-config 热更新范围，修改后需要重启 backend。
 
@@ -864,25 +864,17 @@ SandboxError
 
 ### 16.3 Fail closed 与本地 fallback
 
-backend-only 开发模式与代码默认一致：
+官方 Compose 默认与代码默认一致：
 
 ```text
 SANDBOX_ENABLED=false
 SANDBOX_FALLBACK_LOCAL=true
-SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false
 ```
 
-release 和带 JiuwenBox 的 full-stack Compose 固定为：
+需要沙箱隔离的部署应显式配置 `SANDBOX_ENABLED=true` 和 `SANDBOX_FALLBACK_LOCAL=false`。此时 unsupported Provider、缺少 run id、平台不支持、参数过大、proxy 失败、create 冲突和 exec 失败都返回错误，不在宿主进程执行。
 
-```text
-SANDBOX_ENABLED=true
-SANDBOX_FALLBACK_LOCAL=false
-SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false
-```
+开发环境显式允许 fallback 时，系统记录 `SANDBOX_SECURITY_FALLBACK` / `security_event=sandbox_bypass`，说明脚本已暴露于宿主环境。exec timeout 永不 fallback，防止脚本重复执行产生副作用。
 
-此时 unsupported Provider、缺少 run id、平台不支持、参数过大、proxy 失败、create 冲突和 exec 失败都返回错误，不在宿主进程执行。
-
-开发环境显式允许 fallback 时，系统记录 `SANDBOX_SECURITY_FALLBACK` / `security_event=sandbox_bypass`；当明确以 `SANDBOX_ENABLED=false` 进入本地模式时，系统记录 `SANDBOX_LOCAL_MODE` / `security_event=sandbox_local_mode`。exec timeout 永不 fallback，防止脚本重复执行产生副作用。
 ## 17. 构建、部署与发布
 
 ### 17.1 JiuwenBox 派生镜像
@@ -957,7 +949,7 @@ release bundle 同时包含 backend、frontend、auth-server 和 JiuwenBox 镜�
 | proxy prepare | run_id、route、provider、source/connection id |
 | proxy release | run_id、route、source/connection id、脱敏错误 |
 | HTTP secret gate | provider、source id、target host、允许/阻断 |
-| local fallback / local mode | reason、run/session/turn/tool context、`sandbox_bypass` 或 `sandbox_local_mode` |
+| local fallback | reason、run/session/turn/tool context、安全事件标记 |
 | image build | 固定 JiuwenSwarm commit、架构、基础和派生镜像 |
 
 禁止记录：
@@ -970,7 +962,7 @@ release bundle 同时包含 backend、frontend、auth-server 和 JiuwenBox 镜�
 
 建议生产告警：
 
-- 任意 `sandbox_bypass` 或 `sandbox_local_mode`；
+- 任意 `sandbox_bypass`；
 - sandbox create/exec 连续失败；
 - route start/rollback/delete 失败；
 - 同 run scope 冲突；
@@ -1061,7 +1053,7 @@ PYTHONPATH=backend python -m pytest \
 12. route target 固定，sandbox 不能选择 target host/port。
 13. success、failure、cancel 均释放 sandbox 和 routes；清理失败可观测。
 14. Direct Execution 和 MCP Chat 不产生第二套沙箱生命周期。
-15. release / full-stack Compose 固定为 fail-closed；backend-only 开发模式才允许本地 fallback。
+15. 官方 Compose 默认关闭 sandbox 并允许本地 fallback，与代码默认一致。
 16. JiuwenBox 镜像从固定 commit 构建，只包含白名单 runtime，并通过 import smoke test。
 
 ## 21. Phase 2：Neo4j `run_cypher` Pending

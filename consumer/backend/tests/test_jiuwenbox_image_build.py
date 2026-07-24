@@ -63,27 +63,13 @@ def test_backend_and_compose_do_not_package_or_mount_sandbox_runtime():
 
 
 def test_sandbox_settings_come_from_backend_env_file_in_supported_compose_files():
-    root_compose = _read("docker-compose.yml")
-    release_compose = _read("deploy/docker-compose.release.yml")
-    backend_only_compose = _read("backend/docker-compose.yml")
+    compose_files = [
+        _read("docker-compose.yml"),
+        _read("deploy/docker-compose.release.yml"),
+    ]
 
-    for compose in (root_compose, release_compose):
+    for compose in compose_files:
         assert "env_file:\n      - ./backend/.env" in compose
-        assert "- SANDBOX_ENABLED=true" in compose
-        assert "- SANDBOX_FALLBACK_LOCAL=false" in compose
-        assert "- SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false" in compose
-
-    assert "env_file:\n      - ./.env" in backend_only_compose
-    assert "- SANDBOX_ENABLED=false" in backend_only_compose
-    assert "- SANDBOX_FALLBACK_LOCAL=true" in backend_only_compose
-    assert "- SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false" in backend_only_compose
-
-
-def test_release_bundle_uses_release_specific_backend_env_template():
-    release_script = _read("deploy/build_release.sh")
-    release_env_template = _read("backend/.env.release.example")
-
-    assert 'backend/.env.release.example' in release_script
-    assert "SANDBOX_ENABLED=true" in release_env_template
-    assert "SANDBOX_FALLBACK_LOCAL=false" in release_env_template
-    assert "SANDBOX_SECRET_ALLOW_PLAIN_HTTP=false" in release_env_template
+        assert "SANDBOX_ENABLED" not in compose
+        assert "SANDBOX_FALLBACK_LOCAL" not in compose
+        assert "SANDBOX_SECRET_ALLOW_PLAIN_HTTP" not in compose

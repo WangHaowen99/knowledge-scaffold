@@ -2,8 +2,6 @@
 
 本目录包含 `onto-agent` 的发布、部署、升级、回滚脚本及说明。
 
-发布部署要求使用 Docker Compose v2；`docker-compose` v1 不支持发布预检所需的结构化配置检查，部署脚本会在启动服务前拒绝继续。
-
 ## 本地开发
 
 详细的本地开发指南和环境配置见 `consumer/` 应用目录 [README.md](../README.md) 的「快速开始」章节。

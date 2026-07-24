@@ -35,11 +35,7 @@ from ontology.ontologies import OntologyManifest, OntologyRegistry
 from integration.sandbox.executor import SandboxScriptExecutor
 from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
 from integration.sandbox.config import load_sandbox_config
-from integration.sandbox.alerts import (
-    log_sandbox_local_mode,
-    log_sandbox_security_fallback,
-)
-from integration.sandbox.env_allowlist import build_local_script_env
+from integration.sandbox.alerts import log_sandbox_security_fallback
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
@@ -518,7 +514,7 @@ def _spawn_with_args_file(
 
         # Strip oversized env vars — the loader doesn't need them and they
         # can push the total past ARG_MAX even with minimal CLI args.
-        child_env = env
+        child_env = _strip_child_environ(env)
 
         logger.info(
             "CLI args too large (%d bytes), using tempfile loader: %s -> %s",
@@ -725,20 +721,21 @@ def handle_execute_script_path(
             )
             return "Error: '{}' is not a file".format(script_path)
 
+        child_env = os.environ.copy()
         pythonpath_parts: List[str] = [str(BACKEND_DIR)]
         if extra_pythonpath_dirs:
             for d in extra_pythonpath_dirs:
                 resolved_p = d.resolve()
                 if resolved_p.is_dir():
                     pythonpath_parts.append(str(resolved_p))
-        existing_pp = os.environ.get("PYTHONPATH", "")
+        existing_pp = child_env.get("PYTHONPATH", "")
         if existing_pp:
             pythonpath_parts.append(existing_pp)
-        child_env = build_local_script_env(
-            base_env=os.environ,
-            env_overrides=env_overrides,
-            pythonpath_parts=pythonpath_parts,
-        )
+        child_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
+        child_env.setdefault("PYTHONUTF8", "1")
+        if env_overrides:
+            child_env.update({str(key): str(value) for key, value in env_overrides.items()})
 
         logger.info(
             "Launching python script (%s): resolved_path=%s cwd=%s timeout_seconds=%s",
@@ -835,13 +832,6 @@ def handle_execute_script_path(
                 run_locally = True
 
         if completed is None and run_locally:
-            if not sandbox_config.enabled:
-                log_sandbox_local_mode(
-                    reason="sandbox_disabled",
-                    call_context=call_context,
-                    script_path=script_path,
-                    run_id=run_id,
-                )
             if oversize_args:
                 completed = _spawn_with_args_file(
                     resolved_path=resolved_path,
