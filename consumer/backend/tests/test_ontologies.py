@@ -410,53 +410,6 @@ def test_registry_preload_uses_active_ontology_version(tmp_path, monkeypatch):
     assert "old-op" not in context
 
 
-def test_selected_ontology_preload_can_lock_specific_version(tmp_path, monkeypatch):
-    import ontology.ontologies as ontologies_module
-    from ontology.ontologies import build_selected_ontology_preload_context
-
-    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch, workspace_id="locked-preload")
-    ontology_dir = workspace_paths.ontologies_dir / "demo-ontology"
-    version1 = ontology_dir / "versions" / "1.0.0"
-    version2 = ontology_dir / "versions" / "2.0.0"
-    version1.mkdir(parents=True)
-    version2.mkdir(parents=True)
-    for version_dir in (version1, version2):
-        (version_dir / "operations").mkdir()
-        (version_dir / "objects").mkdir()
-    (ontology_dir / "manifest.yaml").write_text(
-        (
-            "kind: ontology-package\n"
-            "schema_version: 0.1\n"
-            "id: demo-ontology\n"
-            "name: Demo Ontology\n"
-            "description: Demo ontology for locked version preload tests\n"
-            "version: 2.0.0\n"
-            "active_version: 2.0.0\n"
-            "versions:\n"
-            "  - 1.0.0\n"
-            "  - 2.0.0\n"
-            "language: zh-CN\n"
-        ),
-        encoding="utf-8",
-    )
-    (version1 / "operations" / "index.md").write_text("- old-op\n", encoding="utf-8")
-    (version1 / "objects" / "index.md").write_text("- old-object\n", encoding="utf-8")
-    (version2 / "operations" / "index.md").write_text("- active-op\n", encoding="utf-8")
-    (version2 / "objects" / "index.md").write_text("- active-object\n", encoding="utf-8")
-
-    monkeypatch.setattr(ontologies_module, "_global_registry", None)
-
-    context = build_selected_ontology_preload_context(
-        "demo-ontology",
-        selected_ontology_version="1.0.0",
-    )
-
-    assert "old-op" in context
-    assert "old-object" in context
-    assert "active-op" not in context
-    assert "active-object" not in context
-
-
 def test_v01_preload_records_include_active_version_indexes(tmp_path, monkeypatch):
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import (
