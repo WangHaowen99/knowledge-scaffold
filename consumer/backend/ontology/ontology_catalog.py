@@ -335,15 +335,18 @@ def get_ontology_manifest(
         if str(workspace_id or "").strip()
         else get_ontology_registry()
     )
-    ontology = get_runtime_ontology_manifest(
-        normalized_id,
-        version=version,
-        workspace_id=workspace_id,
-    )
+    version_text = str(version or "").strip()
+    if version_text:
+        ontology = get_runtime_ontology_manifest(
+            normalized_id,
+            version=version_text,
+            workspace_id=workspace_id,
+        )
+    else:
+        ontology = registry.get_ontology(normalized_id)
     if ontology is None:
         available = sorted(registry.list_enabled_ontologies())
         suffix = " Available ontologies: {}.".format(", ".join(available)) if available else ""
-        version_text = str(version or "").strip()
         if version_text:
             return None, "Error: Ontology '{}' version '{}' not found.{}".format(
                 normalized_id,

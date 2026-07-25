@@ -1466,10 +1466,11 @@ class ExecuteScriptTool:
             "user_id": context.user_id,
             "workspace_id": context.workspace_id,
             "selected_ontology_id": context.selected_ontology_id,
-            "selected_ontology_version": context.selected_ontology_version,
-            "ontology_version": context.selected_ontology_version,
             "ontology_id": context.selected_ontology_id,
         }
+        if context.selected_ontology_version:
+            call_args["runtime_context"]["selected_ontology_version"] = context.selected_ontology_version
+            call_args["runtime_context"]["ontology_version"] = context.selected_ontology_version
         if context.selected_ontology_id and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip():
             call_args["ontology_version"] = context.selected_ontology_version
         logger.info(

@@ -260,9 +260,6 @@ const useChatSessions = (streamManager) => {
       const selectedOntologyId = typeof options.selectedOntologyId === 'string'
         ? options.selectedOntologyId.trim()
         : '';
-      const selectedOntologyVersion = typeof options.selectedOntologyVersion === 'string'
-        ? options.selectedOntologyVersion.trim()
-        : '';
       const response = await scopedFetch('/agentic/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -271,7 +268,6 @@ const useChatSessions = (streamManager) => {
           ...(modelProfileId ? { model_profile_id: modelProfileId } : {}),
           ...(agentMode ? { agent_mode: agentMode } : {}),
           ...(selectedOntologyId ? { selected_ontology_id: selectedOntologyId } : {}),
-          ...(selectedOntologyVersion ? { selected_ontology_version: selectedOntologyVersion } : {}),
         }),
       }, scope);
       if (!response || !isCurrentScope(scope)) return null;
