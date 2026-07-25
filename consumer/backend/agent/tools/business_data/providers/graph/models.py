@@ -74,6 +74,7 @@ class GraphSearchRuntimeContext:
     provider: str
     workspace_id: str
     ontology_id: str
+    ontology_version: str
     workspace_root: str
     entity: str
     query: str

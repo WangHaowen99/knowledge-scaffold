@@ -410,6 +410,9 @@ const useAgenticStream = ({
     const selectedOntologyId = typeof options?.selectedOntologyId === 'string'
       ? options.selectedOntologyId.trim()
       : '';
+    const selectedOntologyVersion = typeof options?.selectedOntologyVersion === 'string'
+      ? options.selectedOntologyVersion.trim()
+      : '';
     const modelProfileId = typeof options?.modelProfileId === 'string'
       ? options.modelProfileId.trim()
       : '';
@@ -435,6 +438,9 @@ const useAgenticStream = ({
     const contextPayload = {};
     if (selectedOntologyId) {
       contextPayload.selected_ontology_id = selectedOntologyId;
+    }
+    if (selectedOntologyVersion) {
+      contextPayload.selected_ontology_version = selectedOntologyVersion;
     }
     contextPayload.agent_mode = agentMode;
     if (modelProfileId) {

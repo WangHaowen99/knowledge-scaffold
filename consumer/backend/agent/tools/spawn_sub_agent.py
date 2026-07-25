@@ -139,6 +139,7 @@ def handle_spawn_sub_agent(
     parent_workspace_id: Optional[str] = None,
     observer: Any = None,
     parent_selected_ontology_id: Optional[str] = None,
+    parent_selected_ontology_version: Optional[str] = None,
 ) -> str:
     tasks, validation_error = normalize_spawn_sub_agent_args(args)
     if validation_error:
@@ -162,6 +163,7 @@ def handle_spawn_sub_agent(
             tasks=tasks or [],
             observer=observer,
             parent_selected_ontology_id=parent_selected_ontology_id,
+            parent_selected_ontology_version=parent_selected_ontology_version,
         )
         return json.dumps(result, ensure_ascii=False)
     except WorkflowCancelledError:
@@ -210,5 +212,6 @@ class SpawnSubAgentTool:
                 parent_workspace_id=context.workspace_id,
                 observer=context.observer,
                 parent_selected_ontology_id=context.selected_ontology_id,
+                parent_selected_ontology_version=context.selected_ontology_version,
             ),
         )

@@ -302,6 +302,7 @@ def _execute_single_task(
     request_schema = get_tool_schema_for_context(
         spec,
         selected_ontology_id=context.selected_ontology_id,
+        selected_ontology_version=context.selected_ontology_version,
         workspace_id=context.workspace_id,
     )
     validation_error = validate_tool_arguments(spec.name, args, tool_schema=request_schema)

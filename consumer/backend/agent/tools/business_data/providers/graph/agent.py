@@ -174,7 +174,11 @@ def _read_object_definition(context: GraphSearchRuntimeContext) -> str:
     if not ontology_root.is_dir():
         return ""
     try:
-        version_dir = get_ontology_version_dir(ontology_root, create=False) or ontology_root
+        version_dir = get_ontology_version_dir(
+            ontology_root,
+            str(context.ontology_version or "").strip() or None,
+            create=False,
+        ) or ontology_root
     except Exception:
         version_dir = ontology_root
     resolution, error = resolve_object_reference(version_dir, entity)

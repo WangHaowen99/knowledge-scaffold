@@ -59,7 +59,11 @@ class OntologyLoader:
     """Load ontology manifests from ontology directories."""
 
     @staticmethod
-    def load_ontology(ontology_path: Path) -> Optional[OntologyManifest]:
+    def load_ontology(
+        ontology_path: Path,
+        *,
+        version: Optional[str] = None,
+    ) -> Optional[OntologyManifest]:
         manifest_path = ontology_path / "manifest.yaml"
         if not manifest_path.exists():
             logger.warning("Ontology manifest not found: %s", manifest_path)
@@ -76,6 +80,7 @@ class OntologyLoader:
         versions = _normalize_manifest_versions(raw.get("versions"), active_version or manifest_version)
         if not active_version and versions:
             active_version = versions[0]
+        selected_version = str(version or active_version or manifest_version).strip()
 
         required_fields = ["kind", "id", "name", "description", "language"]
         missing_fields = [field for field in required_fields if not raw.get(field)]
@@ -99,11 +104,11 @@ class OntologyLoader:
             return None
 
         try:
-            active_dir = get_ontology_version_dir(ontology_path, active_version, create=False)
+            active_dir = get_ontology_version_dir(ontology_path, selected_version, create=False)
             if active_dir is None:
                 logger.error(
-                    "Ontology active version '%s' not found for manifest: %s",
-                    active_version,
+                    "Ontology version '%s' not found for manifest: %s",
+                    selected_version,
                     manifest_path,
                 )
                 return None
@@ -115,7 +120,7 @@ class OntologyLoader:
                 id=str(raw.get("id")).strip(),
                 name=str(raw.get("name")).strip(),
                 description=str(raw.get("description")).strip(),
-                version=active_version,
+                version=selected_version,
                 active_version=active_version,
                 versions=versions or [active_version],
                 language=str(raw.get("language")).strip(),
@@ -464,6 +469,21 @@ def invalidate_ontology_registry(
             _global_registry = next(iter(_registries.values()), None)
 
 
+def get_runtime_ontology_manifest(
+    ontology_id: str,
+    *,
+    version: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> Optional[OntologyManifest]:
+    normalized_id = str(ontology_id or "").strip()
+    if not normalized_id:
+        return None
+    ontology_dir = get_workspace_ontologies_root(workspace_id) / normalized_id
+    if not ontology_dir.is_dir():
+        return None
+    return OntologyLoader.load_ontology(ontology_dir, version=version)
+
+
 def build_ontologies_section(
     selected_ontology_id: Optional[str] = None,
     *,
@@ -508,14 +528,18 @@ def build_ontologies_section(
 def build_selected_ontology_preload_context(
     selected_ontology_id: Optional[str] = None,
     *,
+    selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Optional[str]:
     selected_id = str(selected_ontology_id or "").strip()
     if not selected_id:
         return None
 
-    registry = get_ontology_registry(workspace_id=workspace_id)
-    ontology = registry.get_ontology(selected_id)
+    ontology = get_runtime_ontology_manifest(
+        selected_id,
+        version=selected_ontology_version,
+        workspace_id=workspace_id,
+    )
     if ontology is None:
         logger.warning("Selected ontology id not found in registry for preload: %s", selected_id)
         return None
@@ -545,6 +569,7 @@ def build_selected_ontology_preload_context(
 def build_selected_ontology_preload_records(
     selected_ontology_id: Optional[str] = None,
     *,
+    selected_ontology_version: Optional[str] = None,
     turn_id: int = 0,
     workspace_id: Optional[str] = None,
 ) -> List[Dict[str, object]]:
@@ -552,8 +577,11 @@ def build_selected_ontology_preload_records(
     if not selected_id:
         return []
 
-    registry = get_ontology_registry(workspace_id=workspace_id)
-    ontology = registry.get_ontology(selected_id)
+    ontology = get_runtime_ontology_manifest(
+        selected_id,
+        version=selected_ontology_version,
+        workspace_id=workspace_id,
+    )
     if ontology is None:
         logger.warning("Selected ontology id not found in registry for preload records: %s", selected_id)
         return []
@@ -582,7 +610,7 @@ def build_selected_ontology_preload_records(
                 source="preload",
                 turn_id=turn_id,
                 iteration=None,
-                ontology_version=str(getattr(ontology, "active_version", "") or "").strip() or None,
+                ontology_version=str(getattr(ontology, "version", "") or "").strip() or None,
             )
         )
     return records

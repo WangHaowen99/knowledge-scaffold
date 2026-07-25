@@ -169,11 +169,13 @@ class GraphSearchRuntime:
     def _build_context(self, *, query: str, entity: str) -> GraphSearchRuntimeContext:
         workspace_id = str(self.provider_config.get("workspace_id") or "").strip()
         ontology_id = str(self.provider_config.get("ontology_id") or "").strip()
+        ontology_version = str(self.provider_config.get("ontology_version") or "").strip()
         workspace_root = str(self.provider_config.get("_workspace_root") or "").strip()
         scope = build_graph_scope(self.provider_config)
         resolver = self.mapping_resolver or GraphMappingResolver(
             workspace_root=workspace_root,
             ontology_id=ontology_id,
+            ontology_version=ontology_version,
             provider=self.provider,
         )
         mapping = resolver.resolve(entity)
@@ -183,6 +185,7 @@ class GraphSearchRuntime:
                 resolver = GraphMappingResolver(
                     workspace_root=workspace_root,
                     ontology_id=ontology_id,
+                    ontology_version=ontology_version,
                     provider=self.provider,
                     schema_labels=schema_labels,
                 )
@@ -191,6 +194,7 @@ class GraphSearchRuntime:
             provider=self.provider,
             workspace_id=workspace_id,
             ontology_id=ontology_id,
+            ontology_version=ontology_version,
             workspace_root=workspace_root,
             entity=entity,
             query=query,
@@ -207,6 +211,7 @@ class GraphSearchRuntime:
                 provider=context.provider,
                 workspace_id=context.workspace_id,
                 ontology_id=context.ontology_id,
+                ontology_version=context.ontology_version,
                 workspace_root=context.workspace_root,
                 entity=context.entity,
                 query=context.query,

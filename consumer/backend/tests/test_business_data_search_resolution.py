@@ -625,9 +625,9 @@ def test_business_data_search_tool_validates_required_text_before_loading_ontolo
 ):
     manifest_called = False
 
-    def fake_get_ontology_manifest(ontology_id, *, workspace_id=None):
+    def fake_get_ontology_manifest(ontology_id, *, version=None, workspace_id=None):
         nonlocal manifest_called
-        del workspace_id
+        del version, workspace_id
         manifest_called = True
         return object(), None
 

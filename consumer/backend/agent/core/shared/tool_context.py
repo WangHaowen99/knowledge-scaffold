@@ -8,7 +8,10 @@ from typing import Any, Optional
 from integration.observability import NOOP_OBSERVER
 from agent.tools.base import ToolContext
 from .modes import resolve_agent_mode
-from .ontology_context import selected_ontology_id_from_state
+from .ontology_context import (
+    selected_ontology_id_from_state,
+    selected_ontology_version_from_state,
+)
 
 
 def build_tool_context(
@@ -48,6 +51,7 @@ def build_tool_context(
         protocol_event_observer=protocol_event_observer,
         read_documents=state.get("read_documents"),
         selected_ontology_id=selected_ontology_id_from_state(state),
+        selected_ontology_version=selected_ontology_version_from_state(state),
         model_profile_id=str(user_context.get("model_profile_id") or "").strip() or None,
         observer=observer or NOOP_OBSERVER,
     )

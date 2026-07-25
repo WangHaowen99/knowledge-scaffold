@@ -1488,6 +1488,105 @@ def test_orchestrator_locks_selected_ontology_for_session(monkeypatch, tmp_path)
         )
 
 
+def test_orchestrator_locks_selected_ontology_version_for_session(monkeypatch, tmp_path):
+    run_store = RunStore()
+    chat_store = ChatStore(str(tmp_path / "chats"))
+    execution_store = ExecutionStore(str(tmp_path / "executions"))
+    observed_contexts = []
+    active_version = {"value": "2.0.0"}
+
+    class _Registry:
+        def get_ontology(self, ontology_id):
+            if ontology_id != "quality-analysis":
+                return None
+            return SimpleNamespace(
+                id="quality-analysis",
+                name="Quality Analysis",
+                enabled=True,
+                active_version=active_version["value"],
+                version=active_version["value"],
+            )
+
+    def fake_runtime_manifest(ontology_id, *, version=None, workspace_id=None):
+        del workspace_id
+        if ontology_id != "quality-analysis":
+            return None
+        resolved_version = str(version or active_version["value"]).strip()
+        if resolved_version not in {"1.0.0", "2.0.0", "3.0.0"}:
+            return None
+        return SimpleNamespace(
+            id="quality-analysis",
+            name="Quality Analysis",
+            enabled=True,
+            version=resolved_version,
+            active_version=active_version["value"],
+            ontology_dir=str(tmp_path / "ontologies" / "quality-analysis" / "versions" / resolved_version),
+            manifest_path=str(tmp_path / "ontologies" / "quality-analysis" / "manifest.yaml"),
+        )
+
+    def _stream_agent_loop(self, initial_state, *, memory_manager, observer=None):
+        del self, memory_manager, observer
+        observed_contexts.append(dict(initial_state.get("user_context") or {}))
+        state = dict(initial_state)
+        state["messages"] = list(state.get("messages") or [])
+        state["messages"].append({"role": "assistant", "content": "done"})
+        state["final_output"] = "done"
+        yield ("values", state)
+
+    monkeypatch.setattr("agent.core.orchestrator.get_ontology_registry", lambda: _Registry())
+    monkeypatch.setattr("agent.core.orchestrator.get_runtime_ontology_manifest", fake_runtime_manifest)
+    monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
+
+    orchestrator = AgenticOrchestrator(
+        run_store=run_store,
+        chat_store=chat_store,
+        execution_store=execution_store,
+        memory_factory=_FakeMemoryFactory(),
+    )
+
+    list(
+        orchestrator.run(
+            user_request="first",
+            session_id="sess-ontology-version-lock",
+            user_context={
+                "selected_ontology_id": "quality-analysis",
+                "selected_ontology_version": "1.0.0",
+            },
+            requested_run_id="run-ontology-version-lock-1",
+        )
+    )
+
+    session = chat_store.get_session("sess-ontology-version-lock")
+    assert session.metadata["selected_ontology_id"] == "quality-analysis"
+    assert session.metadata["selected_ontology_version"] == "1.0.0"
+    assert run_store.get_run("run-ontology-version-lock-1").metadata["selected_ontology_version"] == "1.0.0"
+    assert execution_store.get_turn("sess-ontology-version-lock", 1)["ontology_version"] == "1.0.0"
+
+    active_version["value"] = "3.0.0"
+    list(
+        orchestrator.run(
+            user_request="second",
+            session_id="sess-ontology-version-lock",
+            user_context={},
+            requested_run_id="run-ontology-version-lock-2",
+        )
+    )
+
+    assert observed_contexts[-1]["selected_ontology_id"] == "quality-analysis"
+    assert observed_contexts[-1]["selected_ontology_version"] == "1.0.0"
+    assert run_store.get_run("run-ontology-version-lock-2").metadata["selected_ontology_version"] == "1.0.0"
+    assert execution_store.get_turn("sess-ontology-version-lock", 2)["ontology_version"] == "1.0.0"
+
+    with pytest.raises(ValueError, match="selected_ontology_version is locked"):
+        list(
+            orchestrator.run(
+                user_request="third",
+                session_id="sess-ontology-version-lock",
+                user_context={"selected_ontology_version": "2.0.0"},
+            )
+        )
+
+
 def test_orchestrator_rejects_selected_ontology_after_unselected_first_turn(monkeypatch, tmp_path):
     run_store = RunStore()
     chat_store = ChatStore(str(tmp_path / "chats"))
