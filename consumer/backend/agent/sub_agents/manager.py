@@ -48,6 +48,7 @@ class SubAgentManager:
         tasks: List[SubAgentTaskSpec],
         observer: Any = None,
         parent_selected_ontology_id: Optional[str] = None,
+        parent_selected_ontology_version: Optional[str] = None,
     ) -> Dict[str, Any]:
         group_id = "group_{}".format(uuid.uuid4().hex[:10])
         lineage = dict(lineage or {})
@@ -128,6 +129,7 @@ class SubAgentManager:
                     task_index=task_index_by_id.get(task_spec.id, 0),
                     observer=observer,
                     parent_selected_ontology_id=parent_selected_ontology_id,
+                    parent_selected_ontology_version=parent_selected_ontology_version,
                 )
             finally:
                 if using_borrowed_slot and borrowed_slot:
@@ -231,6 +233,7 @@ class SubAgentManager:
         task_index: int = 0,
         observer: Any = None,
         parent_selected_ontology_id: Optional[str] = None,
+        parent_selected_ontology_version: Optional[str] = None,
     ) -> Dict[str, Any]:
         key_steps: List[str] = []
 
@@ -297,6 +300,7 @@ class SubAgentManager:
                 parent_model_profile_id=parent_model_profile_id,
                 parent_workspace_id=parent_workspace_id,
                 parent_selected_ontology_id=parent_selected_ontology_id,
+                parent_selected_ontology_version=parent_selected_ontology_version,
                 subagent_manager=self,
                 protocol_event_observer=protocol_event_observer,
                 observer=observer,

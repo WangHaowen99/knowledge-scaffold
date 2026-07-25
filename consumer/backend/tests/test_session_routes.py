@@ -418,6 +418,54 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
     assert scope_events == [("enter", "alpha"), ("exit", "alpha")]
 
 
+def test_create_session_locks_selected_ontology_version_in_request_workspace(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path)
+    chat_store = _FakeChatStore()
+    _stub_session_create_dependencies(monkeypatch, chat_store, workspace_id="alpha")
+
+    @contextmanager
+    def fake_workspace_scope(workspace_id):
+        yield workspace_id
+
+    class FakeRegistry:
+        def get_ontology(self, ontology_id):
+            if ontology_id == "demo-ontology":
+                return SimpleNamespace(
+                    id="demo-ontology",
+                    name="Demo Ontology",
+                    enabled=True,
+                    active_version="2.0.0",
+                    version="2.0.0",
+                )
+            return None
+
+    monkeypatch.setattr("api.routes.sessions.workspace_scope", fake_workspace_scope)
+    monkeypatch.setattr("api.routes.sessions.get_ontology_registry", lambda **_kwargs: FakeRegistry())
+    monkeypatch.setattr(
+        "api.routes.sessions.get_runtime_ontology_manifest",
+        lambda ontology_id, *, version=None, workspace_id=None: (
+            SimpleNamespace(id=ontology_id, version=version or "2.0.0")
+            if ontology_id == "demo-ontology" and (version in {None, "1.5.0", "2.0.0"})
+            else None
+        ),
+    )
+
+    response = client.post(
+        "/agentic/sessions",
+        json={
+            "selected_ontology_id": "demo-ontology",
+            "selected_ontology_version": "1.5.0",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    metadata = response.get_json()["metadata"]
+    assert metadata["selected_ontology_id"] == "demo-ontology"
+    assert metadata["selected_ontology_name"] == "Demo Ontology"
+    assert metadata["selected_ontology_version"] == "1.5.0"
+
+
 def test_create_session_omits_empty_selected_ontology_metadata(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path)
     chat_store = _FakeChatStore()

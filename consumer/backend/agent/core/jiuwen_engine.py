@@ -70,6 +70,7 @@ from .shared.ontology_context import (
     get_selected_ontology_context,
     hydrate_selected_ontology_read_documents,
     selected_ontology_id_from_state as _selected_ontology_id_from_state,
+    selected_ontology_version_from_state as _selected_ontology_version_from_state,
 )
 from .shared.prompting import build_main_system_prompt
 from .shared.timing import (
@@ -1293,6 +1294,7 @@ class JiuwenReactLoopEngine:
 
     def _append_selected_ontology_context_to_query(self, state: Mapping[str, Any], query: str) -> str:
         selected_ontology_id = _selected_ontology_id_from_state(state)
+        selected_ontology_version = _selected_ontology_version_from_state(state)
         if not selected_ontology_id:
             return query
         selected_ontology_context = self._get_selected_ontology_context(state)
@@ -1301,8 +1303,20 @@ class JiuwenReactLoopEngine:
             "",
             "<Ontology-Selection-Constraint>",
             'The user explicitly selected ontology_id "{}".'.format(selected_ontology_id),
+            (
+                'The selected ontology version is "{}".'.format(selected_ontology_version)
+                if selected_ontology_version
+                else ""
+            ),
             'Always use ontology_id "{}" when calling ontology_context, business_data_search, or execute_script.'.format(
                 selected_ontology_id
+            ),
+            (
+                'Always use ontology version "{}" for this session; do not follow active_version changes.'.format(
+                    selected_ontology_version
+                )
+                if selected_ontology_version
+                else ""
             ),
             "Do not infer ontology_id from business identifiers in the user request.",
             "Do not switch to another ontology. If the selected ontology is insufficient, say so.",
@@ -1310,7 +1324,7 @@ class JiuwenReactLoopEngine:
         ]
         if selected_ontology_context:
             lines.extend(["", selected_ontology_context])
-        return "\n".join(lines).strip()
+        return "\n".join(line for line in lines if line != "").strip()
 
     def _get_selected_ontology_context(self, state: Mapping[str, Any]) -> Optional[str]:
         return get_selected_ontology_context(state)
@@ -1355,6 +1369,7 @@ class JiuwenReactLoopEngine:
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             selected_ontology_id=_selected_ontology_id_from_state(state),
+            selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
 
@@ -1365,6 +1380,7 @@ class JiuwenReactLoopEngine:
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             selected_ontology_id=_selected_ontology_id_from_state(state),
+            selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
 

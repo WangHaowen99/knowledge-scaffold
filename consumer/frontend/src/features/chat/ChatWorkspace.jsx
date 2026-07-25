@@ -182,6 +182,7 @@ export default function ChatWorkspace({
   const [modelProfileId, setModelProfileId] = useState('');
   const [ontologies, setOntologies] = useState([]);
   const [selectedOntologyId, setSelectedOntologyId] = useState('');
+  const [selectedOntologyVersion, setSelectedOntologyVersion] = useState('');
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
   const TRACE_MIN_W = 300;
   const [traceWidth, setTraceWidth] = useState(
@@ -235,6 +236,14 @@ export default function ChatWorkspace({
     () => ontologies.find((ontology) => ontology.id === selectedOntologyId) || null,
     [ontologies, selectedOntologyId],
   );
+  const selectedOntologyVersions = useMemo(() => {
+    const versions = Array.isArray(selectedOntology?.versions)
+      ? selectedOntology.versions.filter(Boolean)
+      : [];
+    const activeVersion = selectedOntology?.active_version || selectedOntology?.version || '';
+    if (activeVersion && !versions.includes(activeVersion)) versions.unshift(activeVersion);
+    return versions;
+  }, [selectedOntology]);
   const emptyState = useMemo(
     () => getChatDataSourceStatus(selectedOntology),
     [selectedOntology],
@@ -304,14 +313,28 @@ export default function ChatWorkspace({
         storedOntologyId: currentChatId
           ? safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`)
           : '',
+        storedOntologyVersion: '',
         defaultModelProfileId,
       });
       setAgentMode(preferences.agentMode);
       setModelProfileId(preferences.modelProfileId);
       setSelectedOntologyId(preferences.selectedOntologyId);
+      setSelectedOntologyVersion(preferences.selectedOntologyVersion);
     }, 0);
     return () => clearTimeout(timer);
   }, [agentModeKey, current?.metadata, currentChatId, defaultModelProfileId, workspaceId]);
+
+  useEffect(() => {
+    if (!selectedOntologyId) {
+      if (selectedOntologyVersion) setSelectedOntologyVersion('');
+      return;
+    }
+    if (selectedOntologyVersion && selectedOntologyVersions.includes(selectedOntologyVersion)) return;
+    const fallbackVersion = selectedOntology?.active_version || selectedOntology?.version || selectedOntologyVersions[0] || '';
+    if (fallbackVersion !== selectedOntologyVersion) {
+      setSelectedOntologyVersion(fallbackVersion);
+    }
+  }, [selectedOntology, selectedOntologyId, selectedOntologyVersion, selectedOntologyVersions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -352,6 +375,7 @@ export default function ChatWorkspace({
         agentMode,
         modelProfileId,
         selectedOntologyId,
+        selectedOntologyVersion,
         onSessionUpdated: refreshSessionTime,
       });
       if (isNew) void generateSessionTitle(sessionId, text);
@@ -370,6 +394,7 @@ export default function ChatWorkspace({
         modelProfileId,
         agentMode,
         selectedOntologyId,
+        selectedOntologyVersion,
       });
       return session ? startRun(session.id, true) : null;
     });
@@ -437,6 +462,7 @@ export default function ChatWorkspace({
       agentMode,
       modelProfileId,
       selectedOntologyId,
+      selectedOntologyVersion,
       onSessionUpdated: refreshSessionTime,
       interactionResponse: {
         interaction_id: pendingInteraction.id,
@@ -545,9 +571,28 @@ export default function ChatWorkspace({
             </select>
             <select value={selectedOntologyId} title="知识包在会话创建后锁定"
               disabled={sessionLocked || isSubmitting || streamState.isLoading}
-              onChange={(event) => setSelectedOntologyId(event.target.value)}>
+              onChange={(event) => {
+                const nextOntologyId = event.target.value;
+                setSelectedOntologyId(nextOntologyId);
+                const nextOntology = ontologies.find((ontology) => ontology.id === nextOntologyId) || null;
+                setSelectedOntologyVersion(
+                  nextOntologyId
+                    ? (nextOntology?.active_version || nextOntology?.version || '')
+                    : '',
+                );
+              }}>
               <option value="">自动选择知识包</option>
               {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{ontology.name || ontology.id}</option>)}
+            </select>
+            <select value={selectedOntologyVersion} title="版本在会话创建后锁定"
+              disabled={!selectedOntologyId || sessionLocked || isSubmitting || streamState.isLoading}
+              onChange={(event) => setSelectedOntologyVersion(event.target.value)}>
+              {!selectedOntologyId && <option value="">先选择知识包</option>}
+              {selectedOntologyVersions.map((version) => (
+                <option key={version} value={version}>
+                  {version}{version === (selectedOntology?.active_version || selectedOntology?.version || '') ? '（当前激活）' : ''}
+                </option>
+              ))}
             </select>
             {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
           </div>

@@ -21,6 +21,7 @@ class RuntimeContext:
     user_id: Optional[str] = None
     workspace_id: Optional[str] = None
     selected_ontology_id: Optional[str] = None
+    selected_ontology_version: Optional[str] = None
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)

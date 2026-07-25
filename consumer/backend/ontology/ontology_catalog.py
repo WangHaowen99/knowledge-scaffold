@@ -13,7 +13,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
-from ontology.ontologies import OntologyManifest, get_ontology_registry
+from ontology.ontologies import (
+    OntologyManifest,
+    get_ontology_registry,
+    get_runtime_ontology_manifest,
+)
 from ontology.package_browser import (
     PackageBrowserError,
     list_package_files,
@@ -319,6 +323,7 @@ def validate_object_data_mappings(ontology_dir: Path) -> Optional[str]:
 def get_ontology_manifest(
     ontology_id: str,
     *,
+    version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Tuple[Optional[OntologyManifest], Optional[str]]:
     normalized_id = str(ontology_id or "").strip()
@@ -330,10 +335,21 @@ def get_ontology_manifest(
         if str(workspace_id or "").strip()
         else get_ontology_registry()
     )
-    ontology = registry.get_ontology(normalized_id)
+    ontology = get_runtime_ontology_manifest(
+        normalized_id,
+        version=version,
+        workspace_id=workspace_id,
+    )
     if ontology is None:
         available = sorted(registry.list_enabled_ontologies())
         suffix = " Available ontologies: {}.".format(", ".join(available)) if available else ""
+        version_text = str(version or "").strip()
+        if version_text:
+            return None, "Error: Ontology '{}' version '{}' not found.{}".format(
+                normalized_id,
+                version_text,
+                suffix,
+            )
         return None, "Error: Ontology '{}' not found.{}".format(normalized_id, suffix)
     if not ontology.enabled:
         available = sorted(registry.list_enabled_ontologies())

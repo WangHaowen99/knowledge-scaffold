@@ -65,6 +65,7 @@ class _DefaultMatcher:
 def _resolve_ontology_version_dir(
     workspace_root: str,
     ontology_id: str,
+    ontology_version: str = "",
 ) -> Optional[Path]:
     if not workspace_root or not ontology_id:
         return None
@@ -74,7 +75,11 @@ def _resolve_ontology_version_dir(
         return None
 
     try:
-        version_dir = get_ontology_version_dir(ontology_root, create=False)
+        version_dir = get_ontology_version_dir(
+            ontology_root,
+            str(ontology_version or "").strip() or None,
+            create=False,
+        )
     except ValueError:
         version_dir = None
     return version_dir or ontology_root
@@ -83,8 +88,13 @@ def _resolve_ontology_version_dir(
 def _resolve_template_path(
     workspace_root: str,
     ontology_id: str,
+    ontology_version: str = "",
 ) -> Optional[Path]:
-    version_dir = _resolve_ontology_version_dir(workspace_root, ontology_id)
+    version_dir = _resolve_ontology_version_dir(
+        workspace_root,
+        ontology_id,
+        ontology_version,
+    )
     if version_dir is None:
         return None
     return (version_dir / "scripts" / "query_templates.json").resolve()
@@ -111,10 +121,12 @@ class NL2SQLTemplateSearchAdapter:
         *,
         workspace_root: str = "",
         ontology_id: str = "",
+        ontology_version: str = "",
     ):
         self._client = NL2SQLProvider(connection)
         self._session = self._client._session
         self.ontology_id = str(ontology_id or "").strip()
+        self.ontology_version = str(ontology_version or "").strip()
         self._workspace_root = str(workspace_root or "").strip()
 
         # Resolve matcher: external sql_matcher.py or built-in default
@@ -129,7 +141,11 @@ class NL2SQLTemplateSearchAdapter:
         if not self._workspace_root or not self.ontology_id:
             return None
 
-        version_dir = _resolve_ontology_version_dir(self._workspace_root, self.ontology_id)
+        version_dir = _resolve_ontology_version_dir(
+            self._workspace_root,
+            self.ontology_id,
+            self.ontology_version,
+        )
         if version_dir is None:
             return None
 

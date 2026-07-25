@@ -95,6 +95,7 @@ class SubAgent:
         *,
         workspace_id: Optional[str] = None,
         selected_ontology_id: Optional[str] = None,
+        selected_ontology_version: Optional[str] = None,
     ) -> str:
         prompt = SUBAGENT_SYSTEM_PROMPT
         ontologies_section = build_ontologies_section(
@@ -149,6 +150,7 @@ class SubAgent:
         protocol_event_observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         observer: Any = None,
         parent_selected_ontology_id: Optional[str] = None,
+        parent_selected_ontology_version: Optional[str] = None,
     ) -> Dict[str, Any]:
         logger.info("Sub-agent executing task: %s...", task[:100])
         subagent_id = "sub_{}".format(uuid.uuid4().hex[:10])
@@ -197,16 +199,25 @@ class SubAgent:
             # context may carry an ontology_id as data, but cannot establish the
             # selected-ontology scope used by prompts, schemas, and tools.
             task_context.pop("selected_ontology_id", None)
+            task_context.pop("selected_ontology_version", None)
+            task_context.pop("selected_version", None)
             effective_selected_ontology_id = (
                 str(parent_selected_ontology_id or "").strip() or None
+            )
+            effective_selected_ontology_version = (
+                str(parent_selected_ontology_version or "").strip() or None
             )
             if effective_selected_ontology_id:
                 # The parent's selected ontology is a backend scope, not task input.
                 task_context["selected_ontology_id"] = effective_selected_ontology_id
                 task_context["ontology_id"] = effective_selected_ontology_id
+            if effective_selected_ontology_version:
+                task_context["selected_ontology_version"] = effective_selected_ontology_version
+                task_context["selected_version"] = effective_selected_ontology_version
             system_prompt = self._build_system_prompt(
                 workspace_id=effective_workspace_id,
                 selected_ontology_id=effective_selected_ontology_id,
+                selected_ontology_version=effective_selected_ontology_version,
             )
             user_prompt = self._build_user_prompt(task, task_context)
             token_index = {"content": 0, "reasoning": 0}
@@ -233,6 +244,9 @@ class SubAgent:
                 child_user_context["model_profile_id"] = normalized_profile_id
             if effective_selected_ontology_id:
                 child_user_context["selected_ontology_id"] = effective_selected_ontology_id
+            if effective_selected_ontology_version:
+                child_user_context["selected_ontology_version"] = effective_selected_ontology_version
+                child_user_context["selected_version"] = effective_selected_ontology_version
             initial_state = {
                 "run_id": run_id,
                 "session_id": session_id,

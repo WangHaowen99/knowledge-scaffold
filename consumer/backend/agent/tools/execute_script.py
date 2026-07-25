@@ -113,6 +113,7 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
 def build_execute_script_tool_schema(
     selected_ontology_id: Optional[str] = None,
     *,
+    selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build an immutable request-scoped schema from script descriptors.
@@ -128,6 +129,7 @@ def build_execute_script_tool_schema(
     try:
         ontologies, error = _get_schema_ontology_manifests(
             ontology_id,
+            ontology_version=selected_ontology_version,
             workspace_id=workspace_id,
         )
         if error or not ontologies:
@@ -231,6 +233,7 @@ def build_execute_script_tool_schema(
 def _get_schema_ontology_manifests(
     ontology_id: str,
     *,
+    ontology_version: Optional[str],
     workspace_id: Optional[str],
 ) -> tuple[List[OntologyManifest], Optional[str]]:
     """Resolve schema metadata without mutating the process-wide registry."""
@@ -238,7 +241,10 @@ def _get_schema_ontology_manifests(
     if not normalized_workspace_id:
         if not ontology_id:
             return [], None
-        ontology, error = get_ontology_manifest(ontology_id)
+        kwargs = {}
+        if str(ontology_version or "").strip():
+            kwargs["version"] = ontology_version
+        ontology, error = get_ontology_manifest(ontology_id, **kwargs)
         return ([ontology] if ontology is not None else []), error
 
     registry = OntologyRegistry(
@@ -252,13 +258,12 @@ def _get_schema_ontology_manifests(
             if (ontology := registry.get_ontology(item)) is not None
         ], None
 
-    ontology = registry.get_ontology(ontology_id)
+    manifest_kwargs = {"workspace_id": workspace_id}
+    if str(ontology_version or "").strip():
+        manifest_kwargs["version"] = ontology_version
+    ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
     if ontology is None:
-        available = sorted(registry.list_enabled_ontologies())
-        suffix = " Available ontologies: {}.".format(", ".join(available)) if available else ""
-        return [], "Error: Ontology '{}' not found.{}".format(ontology_id, suffix)
-    if not ontology.enabled:
-        return [], "Error: Ontology '{}' is disabled.".format(ontology_id)
+        return [], error or "Error: Ontology '{}' not found.".format(ontology_id)
     return [ontology], None
 
 
@@ -979,6 +984,7 @@ def _extract_public_script_error(stderr: str) -> Optional[str]:
 def handle_execute_script(
     *,
     ontology_id: str,
+    ontology_version: Optional[str] = None,
     operation_key: str,
     arguments: Optional[Mapping[str, Any]] = None,
     base_path: Optional[Path] = None,
@@ -991,10 +997,10 @@ def handle_execute_script(
     workspace_id: Optional[str] = None,
     runtime_context: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    ontology, error = get_ontology_manifest(
-        ontology_id,
-        workspace_id=workspace_id,
-    )
+    manifest_kwargs = {"workspace_id": workspace_id}
+    if str(ontology_version or "").strip():
+        manifest_kwargs["version"] = ontology_version
+    ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
     if error:
         return error
     assert ontology is not None
@@ -1460,12 +1466,16 @@ class ExecuteScriptTool:
             "user_id": context.user_id,
             "workspace_id": context.workspace_id,
             "selected_ontology_id": context.selected_ontology_id,
+            "selected_ontology_version": context.selected_ontology_version,
+            "ontology_version": context.selected_ontology_version,
             "ontology_id": context.selected_ontology_id,
         }
+        if context.selected_ontology_id and context.selected_ontology_id == str(call_args.get("ontology_id") or "").strip():
+            call_args["ontology_version"] = context.selected_ontology_version
         logger.info(
             (
                 "execute_script tool invoked: tool_call_id=%s caller=%s "
-                "run_id=%s session_id=%s turn_id=%s ontology_id=%s operation_key=%s"
+                "run_id=%s session_id=%s turn_id=%s ontology_id=%s ontology_version=%s operation_key=%s"
             ),
             tool_call_id or "n/a",
             context.caller,
@@ -1473,6 +1483,7 @@ class ExecuteScriptTool:
             context.session_id or "n/a",
             context.turn_id,
             call_args.get("ontology_id"),
+            call_args.get("ontology_version") or "n/a",
             call_args.get("operation_key"),
         )
         return ToolOutcome(content=handle_execute_script(**call_args))

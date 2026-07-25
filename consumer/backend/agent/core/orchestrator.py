@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, Generator, List, Optional
 import uuid
 
@@ -47,7 +48,7 @@ from agent.tools.events import tool_output_artifact_writer_context
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
-from ontology.ontologies import get_ontology_registry
+from ontology.ontologies import get_ontology_registry, get_runtime_ontology_manifest
 from utils.streaming import build_agent_event, clear_run_sequence, stream_writer_context
 from workspace.workspaces import workspace_scope
 from agent.exceptions import (
@@ -568,6 +569,9 @@ class AgenticOrchestrator:
         requested_model_profile_id = str(context.get("model_profile_id") or "").strip()
         requested_model_profile_ref = context.get("model_profile_ref") or requested_model_profile_id
         requested_selected_ontology_id = str(context.get("selected_ontology_id") or "").strip()
+        requested_selected_ontology_version = str(
+            context.get("selected_ontology_version") or context.get("selected_version") or ""
+        ).strip()
         requested_agent_mode_raw = str(context.get("agent_mode") or "").strip().lower()
         requested_agent_mode = resolve_agent_mode(context)
 
@@ -575,6 +579,11 @@ class AgenticOrchestrator:
         session = chat_store.get_session(session_id)
         session_metadata = dict(getattr(session, "metadata", {}) or {})
         locked_selected_ontology_id = str(session_metadata.get("selected_ontology_id") or "").strip()
+        locked_selected_ontology_version = str(
+            session_metadata.get("selected_ontology_version")
+            or session_metadata.get("selected_version")
+            or ""
+        ).strip()
         locked_agent_mode = str(session_metadata.get("agent_mode") or "").strip().lower()
         if locked_agent_mode not in VALID_AGENT_MODES:
             locked_agent_mode = ""
@@ -596,13 +605,57 @@ class AgenticOrchestrator:
             raise ValueError(
                 "selected_ontology_id is locked for this session: {}".format(locked_selected_ontology_id)
             )
+        if locked_selected_ontology_version and requested_selected_ontology_version and (
+            requested_selected_ontology_version != locked_selected_ontology_version
+        ):
+            raise ValueError(
+                "selected_ontology_version is locked for this session: {}".format(
+                    locked_selected_ontology_version
+                )
+            )
         if requested_selected_ontology_id and session_turn_count > 0 and not locked_selected_ontology_id:
             raise ValueError("selected_ontology_id can only be set before the first user turn")
+        if (
+            requested_selected_ontology_version
+            and session_turn_count > 0
+            and not locked_selected_ontology_id
+            and not locked_selected_ontology_version
+        ):
+            raise ValueError("selected_ontology_version can only be set before the first user turn")
+        if requested_selected_ontology_version and not (requested_selected_ontology_id or locked_selected_ontology_id):
+            raise ValueError("selected_ontology_version requires selected_ontology_id")
 
         selected_ontology = None
         selected_ontology_id = locked_selected_ontology_id or requested_selected_ontology_id
+        selected_ontology_version = locked_selected_ontology_version or requested_selected_ontology_version
         if locked_selected_ontology_id:
-            context["selected_ontology_id"] = locked_selected_ontology_id
+            selected_ontology = get_runtime_ontology_manifest(
+                locked_selected_ontology_id,
+                version=locked_selected_ontology_version or None,
+                workspace_id=workspace_id,
+            )
+            if selected_ontology is None and not locked_selected_ontology_version:
+                selected_ontology = SimpleNamespace(
+                    id=locked_selected_ontology_id,
+                    name=str(session_metadata.get("selected_ontology_name") or locked_selected_ontology_id),
+                    version="",
+                    active_version="",
+                    enabled=True,
+                )
+            if selected_ontology is None:
+                raise ValueError(
+                    "Locked selected ontology is unavailable: {}{}".format(
+                        locked_selected_ontology_id,
+                        " @ {}".format(locked_selected_ontology_version)
+                        if locked_selected_ontology_version
+                        else "",
+                    )
+                )
+            selected_ontology_id = selected_ontology.id
+            selected_ontology_version = str(getattr(selected_ontology, "version", "") or "").strip()
+            context["selected_ontology_id"] = selected_ontology_id
+            context["selected_ontology_version"] = selected_ontology_version
+            context["selected_version"] = selected_ontology_version
         elif requested_selected_ontology_id:
             registry = (
                 get_ontology_registry(workspace_id=workspace_id)
@@ -614,28 +667,39 @@ class AgenticOrchestrator:
                 raise ValueError("Invalid selected_ontology_id: {}".format(requested_selected_ontology_id))
             if not selected_ontology.enabled:
                 raise ValueError("Disabled selected_ontology_id: {}".format(requested_selected_ontology_id))
-            context["selected_ontology_id"] = selected_ontology.id
+            resolved_requested_version = (
+                requested_selected_ontology_version
+                or str(getattr(selected_ontology, "active_version", "") or getattr(selected_ontology, "version", "") or "").strip()
+            )
+            if resolved_requested_version:
+                selected_ontology = get_runtime_ontology_manifest(
+                    selected_ontology.id,
+                    version=resolved_requested_version,
+                    workspace_id=workspace_id,
+                )
+                if selected_ontology is None:
+                    raise ValueError(
+                        "Invalid selected_ontology_version for {}: {}".format(
+                            requested_selected_ontology_id,
+                            resolved_requested_version,
+                        )
+                    )
+            selected_ontology_id = selected_ontology.id
+            selected_ontology_version = str(getattr(selected_ontology, "version", "") or "").strip()
+            context["selected_ontology_id"] = selected_ontology_id
+            if selected_ontology_version:
+                context["selected_ontology_version"] = selected_ontology_version
+                context["selected_version"] = selected_ontology_version
 
         # Resolve active_version for the per-turn ontology_version stamp. For
         # the locked-ontology branch (selected_ontology not loaded above) read
         # it from the manifest file directly — do NOT re-query the registry,
         # locked sessions must not reload the ontology.
         stamp_ontology_version = None
-        if context.get("selected_ontology_id"):
-            if selected_ontology is not None:
-                stamp_ontology_version = (
-                    str(getattr(selected_ontology, "active_version", "") or "").strip() or None
-                )
-            else:
-                try:
-                    from workspace.workspaces import get_workspace_ontologies_root
-                    from ontology.ontologies import load_ontology_manifest_data
-                    onto_dir = get_workspace_ontologies_root(workspace_id) / context["selected_ontology_id"]
-                    stamp_ontology_version = (
-                        str(load_ontology_manifest_data(onto_dir).get("active_version") or "").strip() or None
-                    )
-                except Exception:
-                    stamp_ontology_version = None
+        if selected_ontology is not None:
+            stamp_ontology_version = (
+                str(getattr(selected_ontology, "version", "") or "").strip() or None
+            )
 
         context["llm_request_mode"] = normalize_llm_request_mode(
             session_metadata.get("llm_request_mode"),
@@ -681,6 +745,7 @@ class AgenticOrchestrator:
                 create_metadata.update({
                     "selected_ontology_id": selected_ontology.id,
                     "selected_ontology_name": selected_ontology.name,
+                    "selected_ontology_version": str(getattr(selected_ontology, "version", "") or "").strip() or None,
                 })
             chat_store.create_session(
                 session_id=session_id,
@@ -699,6 +764,7 @@ class AgenticOrchestrator:
             session_metadata_update.update({
                 "selected_ontology_id": selected_ontology.id,
                 "selected_ontology_name": selected_ontology.name,
+                "selected_ontology_version": str(getattr(selected_ontology, "version", "") or "").strip() or None,
             })
         chat_store.merge_session_metadata(
             session_id,
@@ -740,6 +806,10 @@ class AgenticOrchestrator:
         run_metadata["model_profile_id"] = selected_profile["id"]
         run_metadata["model_profile_ref"] = selected_profile_ref
         run_metadata["model_provider"] = selected_profile.get("provider")
+        if selected_ontology_id:
+            run_metadata["selected_ontology_id"] = selected_ontology_id
+        if selected_ontology_version:
+            run_metadata["selected_ontology_version"] = selected_ontology_version
         if trace_context is not None:
             run_metadata.update({
                 "traceparent": trace_context.value,
@@ -789,6 +859,7 @@ class AgenticOrchestrator:
         if selected_ontology is not None and current_turn_id == 1:
             msg_metadata["selected_ontology_id"] = selected_ontology.id
             msg_metadata["selected_ontology_name"] = selected_ontology.name
+            msg_metadata["selected_ontology_version"] = str(getattr(selected_ontology, "version", "") or "").strip() or None
         if interaction_response:
             msg_metadata["interaction_response"] = interaction_response
         chat_store.add_message(
@@ -821,6 +892,10 @@ class AgenticOrchestrator:
                     "model_profile_id": selected_profile["id"],
                     "model_profile_ref": selected_profile_ref,
                     "selected_ontology_id": str(context.get("selected_ontology_id") or "").strip() or None,
+                    "selected_ontology_version": (
+                        str(context.get("selected_ontology_version") or context.get("selected_version") or "").strip()
+                        or None
+                    ),
                     "agent_mode": resolve_agent_mode(context),
                     "llm_request_mode": str(context.get("llm_request_mode") or "").strip() or None,
                     "traceparent": trace_context.value if trace_context is not None else None,
@@ -900,6 +975,7 @@ class AgenticOrchestrator:
                     user_id=user_id,
                     workspace_id=workspace_id or None,
                     selected_ontology_id=selected_ontology_id or None,
+                    selected_ontology_version=selected_ontology_version or None,
                 )
                 router = OperationDirectRouter(
                     config=direct_config,

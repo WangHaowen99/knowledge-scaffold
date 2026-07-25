@@ -235,8 +235,13 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
         calls["prompt_scope"] = (selected_ontology_id, workspace_id)
         return "selected ontology prompt"
 
-    def fake_execute_script_schema(selected_ontology_id=None, *, workspace_id=None):
-        calls["schema_scope"] = (selected_ontology_id, workspace_id)
+    def fake_execute_script_schema(
+        selected_ontology_id=None,
+        *,
+        selected_ontology_version=None,
+        workspace_id=None,
+    ):
+        calls["schema_scope"] = (selected_ontology_id, selected_ontology_version, workspace_id)
         return {
             "type": "function",
             "function": {
@@ -304,7 +309,7 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
     assert calls["state"]["user_context"]["selected_ontology_id"] == "parent-ontology"
     assert calls["tool_context"].selected_ontology_id == "parent-ontology"
     assert calls["prompt_scope"] == ("parent-ontology", "parent-workspace")
-    assert calls["schema_scope"] == ("parent-ontology", "parent-workspace")
+    assert calls["schema_scope"] == ("parent-ontology", None, "parent-workspace")
     assert "parent-ontology" in calls["user_prompt"]
     assert "task-ontology" not in calls["user_prompt"]
     assert "operation-ontology" not in calls["user_prompt"]

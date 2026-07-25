@@ -8,7 +8,7 @@ from llm import LLMPurpose, get_llm_router
 from config import LimitsConfig
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
 from agent.core.shared.modes import resolve_agent_mode
-from ontology.ontologies import get_ontology_registry
+from ontology.ontologies import get_ontology_registry, get_runtime_ontology_manifest, is_valid_ontology_version
 from utils.logging import get_logger
 from utils.identifiers import validate_session_id
 from llm.llm_request_mode import normalize_llm_request_mode
@@ -55,11 +55,16 @@ def _get_run_registry():
     return get_run_registry()
 
 
-def _resolve_selected_ontology_id(value, *, workspace_id: str):
+def _resolve_selected_ontology_selection(ontology_value, version_value, *, workspace_id: str):
     """Validate and canonicalize the optional session ontology selection."""
-    selected_ontology_id = str(value or "").strip()
+    selected_ontology_id = str(ontology_value or "").strip()
+    selected_ontology_version = str(version_value or "").strip()
     if not selected_ontology_id:
-        return None
+        if selected_ontology_version:
+            raise ValueError("selected_ontology_version requires selected_ontology_id")
+        return None, None, None
+    if selected_ontology_version and not is_valid_ontology_version(selected_ontology_version):
+        raise ValueError("知识包版本不合法: {}".format(selected_ontology_version))
 
     with workspace_scope(workspace_id):
         registry = get_ontology_registry(workspace_id=workspace_id)
@@ -69,7 +74,31 @@ def _resolve_selected_ontology_id(value, *, workspace_id: str):
         raise ValueError("知识包不存在: {}".format(selected_ontology_id))
     if not bool(getattr(ontology, "enabled", False)):
         raise ValueError("知识包已禁用: {}".format(selected_ontology_id))
-    return str(getattr(ontology, "id", selected_ontology_id) or selected_ontology_id)
+    resolved_ontology_id = str(getattr(ontology, "id", selected_ontology_id) or selected_ontology_id)
+    resolved_ontology_version = selected_ontology_version or str(
+        getattr(ontology, "active_version", "") or getattr(ontology, "version", "") or ""
+    ).strip()
+    resolved_manifest = (
+        get_runtime_ontology_manifest(
+            resolved_ontology_id,
+            version=resolved_ontology_version,
+            workspace_id=workspace_id,
+        )
+        if resolved_ontology_version
+        else None
+    )
+    if resolved_ontology_version and resolved_manifest is None:
+        raise ValueError(
+            "知识包版本不存在: {}@{}".format(
+                resolved_ontology_id,
+                resolved_ontology_version,
+            )
+        )
+    if resolved_manifest is not None:
+        resolved_ontology_version = str(resolved_manifest.version or "").strip()
+    return resolved_ontology_id, resolved_ontology_version or None, str(
+        getattr(ontology, "name", resolved_ontology_id) or resolved_ontology_id
+    )
 
 
 def _coerce_seq(value) -> int:
@@ -249,7 +278,8 @@ def create_session():
             "title": "Optional session title",
             "agent_mode": "quick|thinking|multi_agent",
             "llm_request_mode": "stream|sync",
-            "selected_ontology_id": "Optional enabled ontology id"
+            "selected_ontology_id": "Optional enabled ontology id",
+            "selected_ontology_version": "Optional ontology version locked for the session"
         }
     """
     data = request.get_json() or {}
@@ -262,8 +292,9 @@ def create_session():
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     try:
-        selected_ontology_id = _resolve_selected_ontology_id(
+        selected_ontology_id, selected_ontology_version, selected_ontology_name = _resolve_selected_ontology_selection(
             data.get("selected_ontology_id"),
+            data.get("selected_ontology_version") or data.get("selected_version"),
             workspace_id=workspace_id,
         )
     except ValueError as exc:
@@ -286,6 +317,8 @@ def create_session():
     }
     if selected_ontology_id:
         metadata["selected_ontology_id"] = selected_ontology_id
+        metadata["selected_ontology_version"] = selected_ontology_version
+        metadata["selected_ontology_name"] = selected_ontology_name
     session = chat_store.create_session(
         title=title,
         metadata=metadata,

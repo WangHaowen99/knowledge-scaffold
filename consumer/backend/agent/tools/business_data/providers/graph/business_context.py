@@ -21,7 +21,11 @@ def load_graph_business_context(
 ) -> dict[str, Any]:
     """Load bounded operation/rule/script context from the selected ontology package."""
 
-    version_dir = _resolve_ontology_version_dir(context.workspace_root, context.ontology_id)
+    version_dir = _resolve_ontology_version_dir(
+        context.workspace_root,
+        context.ontology_id,
+        context.ontology_version,
+    )
     if version_dir is None:
         return {"operations": [], "rules": [], "scripts": [], "catalogs": []}
 
@@ -49,7 +53,11 @@ def load_graph_business_context(
     }
 
 
-def _resolve_ontology_version_dir(workspace_root: str, ontology_id: str) -> Path | None:
+def _resolve_ontology_version_dir(
+    workspace_root: str,
+    ontology_id: str,
+    ontology_version: str = "",
+) -> Path | None:
     root = str(workspace_root or "").strip()
     ontology = str(ontology_id or "").strip()
     if not root or not ontology:
@@ -58,7 +66,11 @@ def _resolve_ontology_version_dir(workspace_root: str, ontology_id: str) -> Path
     if not ontology_root.is_dir():
         return None
     try:
-        return get_ontology_version_dir(ontology_root, create=False) or ontology_root
+        return get_ontology_version_dir(
+            ontology_root,
+            str(ontology_version or "").strip() or None,
+            create=False,
+        ) or ontology_root
     except Exception:
         return ontology_root
 

@@ -85,6 +85,7 @@ def handle_business_data_search(
     ontology_id: str,
     query: str,
     entity: Optional[str] = None,
+    ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
     event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
     tool_call_id: Optional[str] = None,
@@ -94,13 +95,20 @@ def handle_business_data_search(
     normalized_ontology_id = str(ontology_id or "").strip()
     if not normalized_ontology_id:
         return "Error: ontology_id cannot be empty"
+    manifest_kwargs = {}
+    if str(ontology_version or "").strip():
+        manifest_kwargs["version"] = ontology_version
     if str(workspace_id or "").strip():
         _ontology, ontology_error = get_ontology_manifest(
             normalized_ontology_id,
+            **manifest_kwargs,
             workspace_id=workspace_id,
         )
     else:
-        _ontology, ontology_error = get_ontology_manifest(normalized_ontology_id)
+        _ontology, ontology_error = get_ontology_manifest(
+            normalized_ontology_id,
+            **manifest_kwargs,
+        )
     if ontology_error:
         return ontology_error
 
@@ -139,6 +147,7 @@ def handle_business_data_search(
             ontology_id=normalized_ontology_id,
             entity=normalized_entity,
             query=normalized_query,
+            ontology_version=str(ontology_version or "").strip(),
             provider_runtime_context=dict(provider_runtime_context or {}),
         )
         for event in query_business_data_stream(
@@ -264,9 +273,17 @@ class BusinessDataSearchTool:
         normalized_args["entity"] = normalized_entity
         normalized_args["query"] = normalized_query
 
+        context_selected_ontology_id = str(getattr(context, "selected_ontology_id", None) or "").strip()
+        context_selected_ontology_version = str(getattr(context, "selected_ontology_version", None) or "").strip()
+        manifest_kwargs = {"workspace_id": context.workspace_id}
+        if (
+            str(normalized_args.get("ontology_id") or "").strip() == context_selected_ontology_id
+            and context_selected_ontology_version
+        ):
+            manifest_kwargs["version"] = context_selected_ontology_version
         ontology, ontology_error = get_ontology_manifest(
             str(normalized_args.get("ontology_id") or ""),
-            workspace_id=context.workspace_id,
+            **manifest_kwargs,
         )
         if ontology_error:
             return ToolOutcome(content=ontology_error)
@@ -310,6 +327,11 @@ class BusinessDataSearchTool:
 
         content = handle_business_data_search(
             **normalized_args,
+            ontology_version=(
+                context_selected_ontology_version
+                if str(normalized_args.get("ontology_id") or "").strip() == context_selected_ontology_id
+                else None
+            ),
             workspace_id=context.workspace_id,
             event_emitter=event_emitter,
             tool_call_id=tool_call_id,
@@ -360,9 +382,9 @@ def _build_provider_runtime_context(
     tool_call_id: Optional[str],
 ) -> Dict[str, Any]:
     return {
-        "run_id": context.run_id,
-        "session_id": context.session_id,
-        "turn_id": context.turn_id,
+        "run_id": getattr(context, "run_id", None),
+        "session_id": getattr(context, "session_id", None),
+        "turn_id": getattr(context, "turn_id", None),
         "parent_span_key": _tool_span_key(
             context,
             {
@@ -370,7 +392,8 @@ def _build_provider_runtime_context(
                 "tool_call_id": tool_call_id,
             },
         ),
-        "agent_iteration": context.agent_iteration,
-        "model_profile_id": context.model_profile_id,
-        "_observer": context.observer,
+        "agent_iteration": getattr(context, "agent_iteration", None),
+        "model_profile_id": getattr(context, "model_profile_id", None),
+        "selected_ontology_version": getattr(context, "selected_ontology_version", None),
+        "_observer": getattr(context, "observer", None),
     }

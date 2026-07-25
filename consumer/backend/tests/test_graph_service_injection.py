@@ -35,6 +35,7 @@ def test_service_overrides_persisted_graph_scope_with_request_scope(monkeypatch,
     request = BusinessDataSearchRequest(
         workspace_id="workspace-a",
         ontology_id="ontology-a",
+        ontology_version="1.5.0",
         entity="Part",
         query="query",
         provider_runtime_context={
@@ -61,6 +62,7 @@ def test_service_overrides_persisted_graph_scope_with_request_scope(monkeypatch,
     config = _CapturingProvider.configs[0]["ontology_search"]["neo4j"]
     assert config["workspace_id"] == "workspace-a"
     assert config["ontology_id"] == "ontology-a"
+    assert config["ontology_version"] == "1.5.0"
     assert config["_workspace_root"] == str(tmp_path / "ontologies")
     assert config["parent_span_key"] == "tool:main:2:business_data_search:call-1"
     assert config["_observer"] is observer

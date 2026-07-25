@@ -58,6 +58,7 @@ class ToolContext:
     protocol_event_observer: Optional[Callable[[str, Dict[str, Any]], None]] = None
     read_documents: Optional[Dict[str, Any]] = None
     selected_ontology_id: Optional[str] = None
+    selected_ontology_version: Optional[str] = None
     model_profile_id: Optional[str] = None
     observer: Any = None
 
