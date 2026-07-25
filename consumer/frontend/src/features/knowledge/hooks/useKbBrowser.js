@@ -197,6 +197,14 @@ export default function useKbBrowser() {
   const selectVersion = useCallback((version) => {
     setVersionOverride(version === activeVersion ? null : version);
   }, [activeVersion]);
+  const selectPackageVersion = useCallback((id, version) => {
+    const targetPackage = packages.find((candidate) => candidate.id === id);
+    const targetActiveVersion = targetPackage?.active_version || targetPackage?.version || '';
+    selectionEpochRef.current += 1;
+    setPkgId(id);
+    setVersionOverride(version === targetActiveVersion ? null : version);
+    setOpNotice('');
+  }, [packages]);
   const reloadTree = useCallback(() => setTreeReloadKey((value) => value + 1), []);
 
   // 所有会改变知识包文件内容的入口共用这一刷新边界。revision 让已选中的
@@ -484,7 +492,7 @@ export default function useKbBrowser() {
     cancelImportSelection: cancelImport,
     importPreview: importFlow.result?.preview || null, clearImportPreview, reloadTree,
     knowledgeRevision, refreshKnowledge,
-    viewVersion, viewingActive, versionOverride, selectVersion,
+    viewVersion, viewingActive, versionOverride, selectVersion, selectPackageVersion,
     setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
   };
 }
