@@ -1,5 +1,9 @@
+from types import SimpleNamespace
+
+from flask import Flask
 import pytest
 
+import workspace.workspaces as workspaces_module
 from workspace.workspaces import (
     create_workspace,
     get_workspace_runtime_config,
@@ -10,6 +14,20 @@ from workspace.workspaces import (
 def _create_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
+
+
+def test_runtime_root_reuses_app_config_without_reloading(tmp_path, monkeypatch):
+    expected_root = tmp_path / ".onto-runtime"
+    app = Flask(__name__)
+    app.config["APP_CONFIG"] = SimpleNamespace(project_root=str(expected_root))
+
+    def _unexpected_reload(*_args, **_kwargs):
+        raise AssertionError("AppConfig.from_env should not run inside an initialized app")
+
+    monkeypatch.setattr(workspaces_module.AppConfig, "from_env", _unexpected_reload)
+
+    with app.app_context():
+        assert workspaces_module.get_runtime_root() == expected_root.resolve()
 
 
 def test_runtime_config_rejects_unknown_top_level_key(tmp_path, monkeypatch):

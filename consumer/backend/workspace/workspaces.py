@@ -19,7 +19,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import unquote
 
-from flask import Request, abort, g, has_request_context, jsonify, make_response
+from flask import (
+    Request,
+    abort,
+    current_app,
+    g,
+    has_app_context,
+    has_request_context,
+    jsonify,
+    make_response,
+)
 
 from config import AppConfig, LimitsConfig
 from config.model_profile_refs import model_profile_ref_to_dict, parse_model_profile_ref
@@ -99,6 +108,11 @@ def _utc_now() -> str:
 
 
 def get_runtime_root() -> Path:
+    if has_app_context():
+        app_config = current_app.config.get("APP_CONFIG")
+        project_root = getattr(app_config, "project_root", None)
+        if project_root:
+            return Path(project_root).resolve()
     return Path(AppConfig.from_env().project_root).resolve()
 
 
