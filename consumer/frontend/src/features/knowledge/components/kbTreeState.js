@@ -10,9 +10,29 @@ export const packageExpansionKey = (packageId) => (
   `package:${String(packageId || '').trim()}`
 );
 
-export const directoryExpansionKey = (packageId, path) => (
-  `directory:${String(packageId || '').trim()}:${String(path || '').trim()}`
+export const directoryExpansionKey = (packageId, version, path) => (
+  `directory:${String(packageId || '').trim()}:${String(version || '').trim()}:${String(path || '').trim()}`
 );
+
+export const versionCollapseKey = (packageId, version) => (
+  `version-collapsed:${String(packageId || '').trim()}:${String(version || '').trim()}`
+);
+
+export const isVersionExpanded = (selected, stateKeys, packageId, version) => (
+  selected && !stateKeys.has(versionCollapseKey(packageId, version))
+);
+
+export function packageVersions(pkg) {
+  const activeVersion = String(pkg?.active_version || pkg?.version || '').trim();
+  const versions = [activeVersion, pkg?.version, ...(pkg?.versions || [])]
+    .map((version) => String(version || '').trim())
+    .filter(Boolean);
+  return [...new Set(versions)].sort((left, right) => {
+    if (left === activeVersion) return -1;
+    if (right === activeVersion) return 1;
+    return right.localeCompare(left, undefined, { numeric: true });
+  });
+}
 
 export function readKbTreeExpansion(storage, workspaceId) {
   if (!storage || !normalizedWorkspaceId(workspaceId)) return null;
@@ -47,11 +67,11 @@ export function toggleExpandedKey(expandedKeys, key) {
   return next;
 }
 
-export function buildVisibleTreeRows(entries, expandedKeys, packageId, depth = 0) {
+export function buildVisibleTreeRows(entries, expandedKeys, packageId, version, depth = 0) {
   const rows = [];
   for (const entry of entries || []) {
     const children = Array.isArray(entry.children) ? entry.children : [];
-    const expansionKey = directoryExpansionKey(packageId, entry.path);
+    const expansionKey = directoryExpansionKey(packageId, version, entry.path);
     const hasChildren = entry.type === 'dir' && children.length > 0;
     const expanded = hasChildren && expandedKeys.has(expansionKey);
     rows.push({ entry, depth, expansionKey, expanded, hasChildren });
@@ -60,6 +80,7 @@ export function buildVisibleTreeRows(entries, expandedKeys, packageId, depth = 0
         children,
         expandedKeys,
         packageId,
+        version,
         depth + 1,
       ));
     }
