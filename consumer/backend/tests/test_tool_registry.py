@@ -962,8 +962,21 @@ def test_single_tool_uses_request_scoped_schema_for_server_validation(monkeypatc
     }
     observed_scope = []
 
-    def request_scoped_schema(resolved_spec, *, selected_ontology_id=None, workspace_id=None):
-        observed_scope.append((resolved_spec, selected_ontology_id, workspace_id))
+    def request_scoped_schema(
+        resolved_spec,
+        *,
+        selected_ontology_id=None,
+        selected_ontology_version=None,
+        workspace_id=None,
+    ):
+        observed_scope.append(
+            (
+                resolved_spec,
+                selected_ontology_id,
+                selected_ontology_version,
+                workspace_id,
+            )
+        )
         return request_schema
 
     monkeypatch.setattr(
@@ -988,7 +1001,7 @@ def test_single_tool_uses_request_scoped_schema_for_server_validation(monkeypatc
     )
 
     assert executed == []
-    assert observed_scope == [(spec, "ontology-a", "workspace-a")]
+    assert observed_scope == [(spec, "ontology-a", None, "workspace-a")]
     assert "unexpected field(s): forged" in output["outcome"].content
 
 
