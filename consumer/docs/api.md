@@ -2148,6 +2148,8 @@ MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后�
 
 `omitted.text_fields_truncated` 统计 Trace 文本字段触发截断的次数；同一迭代的流式 `agent_content` 被终态 `final_output` 覆盖时，按最终保留的字段去重计数。
 
+公共工具事件和 MCP Trace 共用结构化、文本双层脱敏，会处理 `access_token`、`client_secret`、`db_password`、`private_key`、JSON 字符串、Bearer/JWT、URI 凭据和 PEM 私钥等常见格式。脱敏在 `tool.started` / `tool.finished` 事件边界执行，不依赖 `include_trace` 是否开启。
+
 `ontology_context` 调用会在 `tools.calls[]` 中附带输入中的 `resource` 和可选 `key`。`business_data_search` 调用会附带最多 8 条脱敏、限长的 `executed_steps`，同时保留 `record_count`、查询摘要和数据库 Provider 等原有字段；schema `5.0` 不输出 `evidence_ids` 和 `reasoning_summaries`，但仍保留 `query_digest`。
 
 `timing.tools_elapsed_ms` 是该迭代工具阶段的墙钟时间；`totals.tool_execution_elapsed_ms` 是每次工具调用耗时之和，并行执行时后者可能更大。`totals.overall_elapsed_ms` 从 MCP workflow bridge 开始处理请求计时，到生成 Trace 快照为止，包含校验、排队、Agent 执行和结果组装。
