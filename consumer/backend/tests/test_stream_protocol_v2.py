@@ -6,6 +6,8 @@ from config import AgentConfig
 from agent.tools.base import ToolInvocation
 from agent.tools.events import (
     build_tool_finished_payload,
+    emit_tool_finished,
+    emit_tool_started,
     tool_output_artifact_writer_context,
 )
 from agent.tools.registry import ToolContext, execute_tool_batch
@@ -122,6 +124,123 @@ def test_tool_finished_does_not_persist_output_that_fits_in_preview():
     assert "output_ref" not in payload
 
 
+def test_tool_finished_redacts_sensitive_preview_projection_error_and_artifact():
+    persisted = []
+    raw_output = json.dumps({
+        "success": True,
+        "provider": "neo4j",
+        "executed_steps": [{
+            "tool": "property_filter",
+            "summary": "access_token=prod-token " + ("x" * 5000),
+        }],
+        "warnings": ["client_secret=prod-secret"],
+        "password": "prod-password",
+    })
+
+    def write_artifact(tool_call_id, output):
+        persisted.append((tool_call_id, output))
+        return {
+            "output_ref": "a" * 32,
+            "output_size": len(output.encode("utf-8")),
+        }
+
+    with tool_output_artifact_writer_context(write_artifact):
+        payload = build_tool_finished_payload(
+            tool_name="business_data_search",
+            tool_call_id="call-sensitive",
+            status="error",
+            raw_output=raw_output,
+            error="db_password=prod-db-pass",
+            elapsed_ms=7,
+        )
+
+    serialized = json.dumps(payload, ensure_ascii=False)
+    persisted_output = persisted[0][1]
+
+    assert "prod-" not in serialized
+    assert "prod-" not in persisted_output
+    assert payload["error"] == "db_password=[REDACTED]"
+    assert payload["output_projection"]["executed_steps"][0]["summary"].startswith(
+        "access_token=[REDACTED]"
+    )
+    assert payload["output_projection"]["warnings"] == [
+        "client_secret=[REDACTED]"
+    ]
+
+
+def test_tool_started_redacts_sensitive_input_without_trace_collector():
+    events = []
+    context = ToolContext(
+        memory_manager=None,
+        messages=[],
+        run_id="run-sensitive-input",
+        session_id="session-sensitive-input",
+        turn_id=1,
+        agent_config=AgentConfig.from_env(),
+        caller="main",
+    )
+
+    with stream_writer_context(events.append):
+        emit_tool_started(
+            context=context,
+            tool_name="business_data_search",
+            tool_call_id="call-sensitive-input",
+            tool_input={
+                "access_token": "prod-token",
+                "query": "client_secret=prod-secret",
+            },
+            message=None,
+        )
+
+    payload = events[0]["data"]["payload"]
+
+    assert payload["input"]["access_token"] == "[REDACTED]"
+    assert payload["input"]["query"] == "client_secret=[REDACTED]"
+
+
+def test_tool_finished_redacts_protocol_and_observability_payloads():
+    protocol_events = []
+    runtime_events = []
+
+    class Observer:
+        enabled = True
+
+        def emit(self, event):
+            runtime_events.append(event)
+            return True
+
+    context = ToolContext(
+        memory_manager=None,
+        messages=[],
+        run_id="run-sensitive-output",
+        session_id="session-sensitive-output",
+        turn_id=1,
+        agent_config=AgentConfig.from_env(),
+        caller="main",
+        agent_iteration=1,
+        observer=Observer(),
+    )
+
+    with stream_writer_context(protocol_events.append):
+        emit_tool_finished(
+            context=context,
+            tool_name="business_data_search",
+            tool_call_id="call-sensitive-output",
+            status="completed",
+            raw_output="access_token=prod-token",
+            error=None,
+            elapsed_ms=9,
+        )
+
+    protocol_payload = protocol_events[0]["data"]["payload"]
+    observability_payload = runtime_events[0].payload
+
+    assert protocol_payload["output_preview"] == "access_token=[REDACTED]"
+    assert observability_payload["output_full"] == "access_token=[REDACTED]"
+    assert "prod-token" not in json.dumps(protocol_payload)
+    assert "prod-token" not in json.dumps(observability_payload)
+
+
 def test_web_search_finished_keeps_bounded_structured_projection_when_preview_is_truncated():
     raw_output = json.dumps({
         "ok": True,
@@ -224,6 +343,54 @@ def test_web_search_projection_deduplicates_normalized_urls():
         "Different path",
     ]
     assert projected[0]["url"] == "https://EXAMPLE.com:443/article#summary"
+
+
+def test_business_data_search_finished_exposes_bounded_execution_projection():
+    raw_output = json.dumps({
+        "success": True,
+        "provider": "neo4j",
+        "entity": "CHANGE_ORDER变更技术修改执行周期",
+        "query": "查询 CHANGE_ORDER-001 的执行周期",
+        "result_count": 1,
+        "records": [{"raw": "x" * 5000}],
+        "evidence": [{
+            "evidence_id": "graph_ev_001",
+            "query_digest": "sha256:query",
+        }],
+        "executed_steps": [
+            {
+                "tool": "property_filter",
+                "summary": "执行内部图工具 property_filter，返回 1 条",
+            },
+            {
+                "tool": "GraphQueryAgent",
+                "summary": "s" * 500,
+            },
+        ],
+    }, ensure_ascii=False)
+
+    payload = build_tool_finished_payload(
+        tool_name="business_data_search",
+        tool_call_id="call-business-long",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=100,
+    )
+
+    projection = payload["output_projection"]
+    assert payload["output_truncated"] is True
+    assert projection["provider"] == "neo4j"
+    assert projection["result_count"] == 1
+    assert projection["query_digest"] == "sha256:query"
+    assert projection["has_evidence"] is True
+    assert projection["executed_steps"][0] == {
+        "tool": "property_filter",
+        "summary": "执行内部图工具 property_filter，返回 1 条",
+    }
+    assert len(projection["executed_steps"][1]["summary"]) == 300
+    assert "records" not in projection
+    assert "evidence" not in projection
 
 
 def test_execute_tool_batch_emits_v2_regular_tool_events():

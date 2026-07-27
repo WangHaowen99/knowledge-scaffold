@@ -103,6 +103,8 @@ def emit_iteration_completed_event(
     tools_elapsed_ms: int,
     total_elapsed_ms: int,
     tool_names: list[str],
+    model_elapsed_ms: Optional[int] = None,
+    setup_elapsed_ms: Optional[int] = None,
     tool_timing_metrics: Optional[Mapping[str, int]] = None,
     tool_calls_count: Optional[int] = None,
     runtime_trace: Optional[AgentRuntimeTrace] = None,
@@ -139,6 +141,11 @@ def emit_iteration_completed_event(
         event_source_node(caller, source_node) if caller != "main" else "main",
         iteration,
     )
+    public_timing: Dict[str, int] = {}
+    if model_elapsed_ms is not None:
+        public_timing["model_elapsed_ms"] = max(0, int(model_elapsed_ms or 0))
+    if setup_elapsed_ms is not None:
+        public_timing["setup_elapsed_ms"] = max(0, int(setup_elapsed_ms or 0))
     emit_agent_event(
         run_id=str(state.get("run_id") or ""),
         session_id=str(state.get("session_id") or ""),
@@ -156,6 +163,7 @@ def emit_iteration_completed_event(
             "total_elapsed_ms": max(0, int(total_elapsed_ms or 0)),
             "tool_calls_count": normalized_tool_calls_count,
             "tool_names": normalized_tool_names,
+            **public_timing,
             **timing_metrics,
         },
         writer=event_writer,

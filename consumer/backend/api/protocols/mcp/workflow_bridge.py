@@ -13,6 +13,8 @@ from persistence.run_store import RunStatus
 from utils.identifiers import validate_session_id
 
 from api.protocols.mcp.schemas import error_result
+from api.protocols.mcp.public_trace import MCPPublicTraceCollector
+from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
 
 
@@ -24,13 +26,23 @@ def execute_mcp_chat_workflow(
     concurrency_limit: int,
     queue_wait_seconds: float,
     execution_timeout_seconds: float,
+    trace_config: MCPRuntimeConfig | None = None,
 ) -> tuple[dict[str, Any], int]:
     from api.routes.workflows import AgenticRunHandle, get_run_registry
 
     data = dict(payload or {})
+    trace_collector = _create_trace_collector(
+        trace_config,
+        include_trace=data.get("include_trace") is True,
+    )
     query = str(data.get("request") or data.get("query") or "").strip()
     if not query:
-        return _bridge_error("INVALID_TOOL_ARGUMENTS", "query 不能为空", status_code=400)
+        return _bridge_error(
+            "INVALID_TOOL_ARGUMENTS",
+            "query 不能为空",
+            status_code=400,
+            trace=_trace_snapshot(trace_collector),
+        )
 
     raw_session_id = str(data.get("session_id") or "").strip()
     if not raw_session_id:
@@ -38,7 +50,12 @@ def execute_mcp_chat_workflow(
     try:
         session_id = validate_session_id(raw_session_id)
     except ValueError as exc:
-        return _bridge_error("INVALID_SESSION_ID", str(exc), status_code=400)
+        return _bridge_error(
+            "INVALID_SESSION_ID",
+            str(exc),
+            status_code=400,
+            trace=_trace_snapshot(trace_collector),
+        )
 
     context = dict(data.get("context") or {})
     requested_profile = str(context.get("model_profile_id") or "").strip()
@@ -49,7 +66,12 @@ def execute_mcp_chat_workflow(
             workspace_id=scope.workspace_id,
         )
     except SystemConfigValidationError as exc:
-        return _bridge_error("INVALID_MODEL_PROFILE", str(exc), status_code=400)
+        return _bridge_error(
+            "INVALID_MODEL_PROFILE",
+            str(exc),
+            status_code=400,
+            trace=_trace_snapshot(trace_collector),
+        )
 
     limiter = getattr(orchestrator, "run_rate_limiter", None)
     try_acquire_rate = getattr(limiter, "try_acquire", None)
@@ -59,6 +81,7 @@ def execute_mcp_chat_workflow(
             "请求过于频繁，请稍后重试",
             status_code=429,
             retriable=True,
+            trace=_trace_snapshot(trace_collector),
         )
 
     admission_queue = getattr(orchestrator, "run_admission_queue", None)
@@ -95,6 +118,7 @@ def execute_mcp_chat_workflow(
         slot_manager=admission_queue,
         slot_limit_user_id=scope.username,
         traceparent=scope.traceparent,
+        event_observer=trace_collector.consume if trace_collector is not None else None,
     )
     registry = get_run_registry()
     admitted = threading.Event()
@@ -149,6 +173,7 @@ def execute_mcp_chat_workflow(
                     retriable=True,
                     run_id=run_id,
                     session_id=session_id,
+                    trace=_trace_snapshot(trace_collector),
                 )
             admitted.wait(timeout=0.1)
 
@@ -161,6 +186,7 @@ def execute_mcp_chat_workflow(
             retriable=True,
             run_id=run_id,
             session_id=session_id,
+            trace=_trace_snapshot(trace_collector),
         )
 
     if not handle.done.wait(timeout=max(0.01, float(execution_timeout_seconds))):
@@ -172,16 +198,10 @@ def execute_mcp_chat_workflow(
             retriable=True,
             run_id=run_id,
             session_id=session_id,
+            trace=_trace_snapshot(trace_collector),
         )
 
-    _sub_id, _queue, replay, _finished = handle.subscribe(after_seq=0)
-    terminal_payload: dict[str, Any] = {}
-    for envelope in replay:
-        if str(envelope.get("type") or "") != "turn.finished":
-            continue
-        candidate = envelope.get("payload")
-        if isinstance(candidate, dict):
-            terminal_payload = dict(candidate)
+    terminal_payload = handle.terminal_payload()
     status = str(terminal_payload.get("status") or "interrupted").strip()
     final_output = terminal_payload.get("final_output")
     result = {
@@ -192,17 +212,19 @@ def execute_mcp_chat_workflow(
         "resumable": status == "awaiting_input",
     }
     if status == "success":
-        return {
+        response = {
             "ok": True,
             "result": result,
             "scope": {"username": scope.username, "workspace_id": scope.workspace_id},
-        }, 200
+        }
+        _attach_trace(response, trace_collector)
+        return response, 200
     if status == "awaiting_input":
         current_run = orchestrator.run_store.get_run(handle.active_run_id or run_id)
         run_result = getattr(current_run, "result", None)
         if isinstance(run_result, dict):
             result["pending_user_interaction"] = run_result.get("pending_user_interaction")
-        return {
+        response = {
             "ok": False,
             "error": {
                 "type": "awaiting_input",
@@ -212,7 +234,9 @@ def execute_mcp_chat_workflow(
             },
             "result": result,
             "scope": {"username": scope.username, "workspace_id": scope.workspace_id},
-        }, 200
+        }
+        _attach_trace(response, trace_collector)
+        return response, 200
     return _bridge_error(
         "MCP_CHAT_WORKFLOW_FAILED",
         str(terminal_payload.get("error") or "MCP chat workflow 未成功完成"),
@@ -221,6 +245,7 @@ def execute_mcp_chat_workflow(
         run_id=handle.active_run_id or run_id,
         session_id=session_id,
         result=result,
+        trace=_trace_snapshot(trace_collector),
     )
 
 
@@ -233,6 +258,7 @@ def _bridge_error(
     run_id: str = "",
     session_id: str = "",
     result: dict[str, Any] | None = None,
+    trace: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
     payload = error_result(
         error_type="workflow_error",
@@ -249,4 +275,35 @@ def _bridge_error(
             "status": "error",
             "resumable": False,
         }
+    if trace is not None:
+        payload["trace"] = trace
     return payload, status_code
+
+
+def _create_trace_collector(
+    config: MCPRuntimeConfig | None,
+    *,
+    include_trace: bool,
+) -> MCPPublicTraceCollector | None:
+    if config is None or not include_trace:
+        return None
+    return MCPPublicTraceCollector(
+        max_events=config.chat_trace_max_events,
+        max_bytes=config.chat_trace_max_bytes,
+        max_text_chars=config.chat_trace_max_text_chars,
+    )
+
+
+def _trace_snapshot(
+    collector: MCPPublicTraceCollector | None,
+) -> dict[str, Any] | None:
+    return collector.snapshot() if collector is not None else None
+
+
+def _attach_trace(
+    response: dict[str, Any],
+    collector: MCPPublicTraceCollector | None,
+) -> None:
+    trace = _trace_snapshot(collector)
+    if trace is not None:
+        response["trace"] = trace

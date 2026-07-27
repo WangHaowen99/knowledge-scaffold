@@ -99,6 +99,24 @@ def test_build_tool_timing_metrics_computes_overlap_and_parallel_execution():
     }
 
 
+def test_build_public_iteration_timing_separates_model_tools_and_setup():
+    from agent.core.shared.timing import build_public_iteration_timing
+
+    assert build_public_iteration_timing(
+        total_elapsed_ms=87786,
+        model_elapsed_ms=3000,
+        tools_elapsed_ms=12,
+    ) == {
+        "model_elapsed_ms": 3000,
+        "setup_elapsed_ms": 84774,
+    }
+    assert build_public_iteration_timing(
+        total_elapsed_ms=10,
+        model_elapsed_ms=None,
+        tools_elapsed_ms=2,
+    ) == {}
+
+
 def test_iteration_event_can_override_main_source_node():
     from agent.core.shared.events import emit_iteration_completed_event
 
@@ -116,7 +134,12 @@ def test_iteration_event_can_override_main_source_node():
         tools_elapsed_ms=3,
         total_elapsed_ms=6,
         tool_names=["tool_a"],
+        model_elapsed_ms=2,
+        setup_elapsed_ms=1,
         source_node="jiuwen_react",
     )
 
     assert events[0]["data"]["source"] == {"node": "jiuwen_react", "component": "iteration"}
+    assert events[0]["data"]["payload"]["model_elapsed_ms"] == 2
+    assert events[0]["data"]["payload"]["setup_elapsed_ms"] == 1
+    assert events[0]["data"]["payload"]["llm_elapsed_ms"] == 2

@@ -2077,6 +2077,83 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
 
+MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后的 `trace`，默认 `false`。当前公共 Trace schema 为 `5.0`：同一逻辑迭代只保留最后一份累计快照，工具调用嵌入对应 iteration，Agent 输出位于 `agent_output`，不返回模型原始思维链或 `reasoning_summaries`。
+
+```json
+{
+  "query": "查询业务数据",
+  "session_id": "optional-session-id",
+  "include_trace": true
+}
+```
+
+`MCP_CHAT_TRACE_MAX_EVENTS`、`MCP_CHAT_TRACE_MAX_BYTES` 和 `MCP_CHAT_TRACE_MAX_TEXT_CHARS` 仅限制开启 Trace 后的响应规模，不会自动开启 Trace。
+
+```json
+{
+  "trace": {
+    "schema_version": "5.0",
+    "level": "summary",
+    "iterations": [
+      {
+        "iteration": 1,
+        "status": "continue",
+        "timing": {
+          "total_elapsed_ms": 1000,
+          "model_elapsed_ms": 700,
+          "tools_elapsed_ms": 250,
+          "setup_elapsed_ms": 50
+        },
+        "agent_output": {
+          "summary": "我需要查询业务实体状态。",
+          "source": "agent_content",
+          "truncated": false
+        },
+        "tools": {
+          "count": 1,
+          "succeeded": 1,
+          "failed": 0,
+          "calls": [
+            {
+              "name": "business_data_search",
+              "status": "completed",
+              "elapsed_ms": 250,
+              "record_count": 1,
+              "executed_steps": [
+                {
+                  "tool": "property_filter",
+                  "summary": "执行内部图工具 property_filter，返回 1 条"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "totals": {
+      "overall_elapsed_ms": 1005,
+      "iterations": 1,
+      "tool_calls": 1,
+      "tool_calls_succeeded": 1,
+      "tool_calls_failed": 0,
+      "tool_execution_elapsed_ms": 250,
+      "retries": 0,
+      "warnings": 0
+    }
+  }
+}
+```
+
+`agent_output.summary` 优先取该迭代 `token.delta(channel=content)` 在前端运行轨迹中展示的“Agent 输出”；最终迭代以 `turn.finished.final_output` 为准。`source` 标明摘要来源，可能为 `agent_content`、`final_output`、`error`、`cancel_reason`、`iteration_event`、`tool_query_summary` 或 `tool_name`；`truncated` 表示摘要是否受 `MCP_CHAT_TRACE_MAX_TEXT_CHARS` 限制而被截断。原始 reasoning token 和 `reasoning.summary` 事件均不会进入公共 Trace。
+
+`omitted.text_fields_truncated` 统计 Trace 文本字段触发截断的次数；同一迭代的流式 `agent_content` 被终态 `final_output` 覆盖时，按最终保留的字段去重计数。
+
+公共工具事件和 MCP Trace 共用结构化、文本双层脱敏，会处理 `access_token`、`client_secret`、`db_password`、`private_key`、JSON 字符串、Bearer/JWT、URI 凭据和 PEM 私钥等常见格式。脱敏在 `tool.started` / `tool.finished` 事件边界执行，不依赖 `include_trace` 是否开启。
+
+`ontology_context` 调用会在 `tools.calls[]` 中附带输入中的 `resource` 和可选 `key`。`business_data_search` 调用会附带最多 8 条脱敏、限长的 `executed_steps`，同时保留 `record_count`、查询摘要和数据库 Provider 等原有字段；schema `5.0` 不输出 `evidence_ids` 和 `reasoning_summaries`，但仍保留 `query_digest`。
+
+`timing.tools_elapsed_ms` 是该迭代工具阶段的墙钟时间；`totals.tool_execution_elapsed_ms` 是每次工具调用耗时之和，并行执行时后者可能更大。`totals.overall_elapsed_ms` 从 MCP workflow bridge 开始处理请求计时，到生成 Trace 快照为止，包含校验、排队、Agent 执行和结果组装。
+
 ---
 
 ## 9. A2A Protocol
