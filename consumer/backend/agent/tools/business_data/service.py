@@ -18,8 +18,8 @@ class BusinessDataSearchRequest:
     ontology_id: str
     entity: str
     query: str
-    ontology_version: str = ""
     provider_runtime_context: Mapping[str, Any] = field(default_factory=dict)
+    ontology_version: str = ""
 
 
 def query_business_data_stream(

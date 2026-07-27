@@ -74,7 +74,6 @@ class GraphSearchRuntimeContext:
     provider: str
     workspace_id: str
     ontology_id: str
-    ontology_version: str
     workspace_root: str
     entity: str
     query: str
@@ -85,3 +84,4 @@ class GraphSearchRuntimeContext:
     provider_config: Dict[str, Any] = field(default_factory=dict)
     business_context: Dict[str, Any] = field(default_factory=dict)
     schema_context: Dict[str, Any] = field(default_factory=dict)
+    ontology_version: str = ""

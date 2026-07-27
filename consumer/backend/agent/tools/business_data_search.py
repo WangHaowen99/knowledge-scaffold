@@ -85,12 +85,13 @@ def handle_business_data_search(
     ontology_id: str,
     query: str,
     entity: Optional[str] = None,
-    ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
     event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
     tool_call_id: Optional[str] = None,
     provider_runtime_context: Optional[Mapping[str, Any]] = None,
     _resolved_connection: Optional[ResolvedBusinessDataSource] = None,
+    *,
+    ontology_version: Optional[str] = None,
 ) -> str:
     normalized_ontology_id = str(ontology_id or "").strip()
     if not normalized_ontology_id:

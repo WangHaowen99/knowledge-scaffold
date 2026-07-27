@@ -28,6 +28,7 @@ def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
     }
     workspace_root = str(config.pop("_workspace_root"))
     ontology_id = str(config.pop("ontology_id"))
+    ontology_version = str(config.pop("ontology_version", ""))
     endpoint = str(config.pop("url")).rstrip("/")
     token = str(config.pop("token"))
     connection = EffectiveConnection(
@@ -41,6 +42,7 @@ def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
         connection,
         workspace_root=workspace_root,
         ontology_id=ontology_id,
+        ontology_version=ontology_version,
     )
 
 
