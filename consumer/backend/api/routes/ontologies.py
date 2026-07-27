@@ -43,6 +43,7 @@ from ontology.package_browser import (
     read_package_text,
 )
 from ontology.package_import import (
+    PackageNormalizationError,
     SUPPORTED_IMPORT_MANIFEST_KINDS,
     has_importable_package_layout,
     inspect_importable_package,
@@ -2123,6 +2124,8 @@ def import_ontology_zip_with_auto_create():
                         "operations": result.get("operations_trimmed", {}).get("warnings", []),
                         "object_aliases": list(alias_validation.warnings),
                     }
+            except PackageNormalizationError as exc:
+                return jsonify({"error": str(exc)}), 400
             except Exception:
                 logger.exception(
                     "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s source_root=%s import_mode=%s",

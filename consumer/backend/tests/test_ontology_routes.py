@@ -822,6 +822,50 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
     assert (version_dir / "scripts" / "demo.py").read_text(encoding="utf-8") == "print('demo')\n"
 
 
+def test_import_converted_ontology_zip_reports_invalid_frontmatter_as_bad_request(
+    tmp_path,
+    monkeypatch,
+):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "invalid-frontmatter/manifest.yaml": (
+            "kind: ontology\n"
+            "id: invalid-frontmatter\n"
+            "name: Invalid Frontmatter\n"
+            "description: Invalid legacy object frontmatter\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "invalid-frontmatter/ONTOLOGY.md": "# Invalid Frontmatter\n",
+        "invalid-frontmatter/objects-list.md": (
+            "| key | title |\n"
+            "| --- | --- |\n"
+            "| Part | Part |\n"
+        ),
+        "invalid-frontmatter/objects/Part.md": (
+            "---\n"
+            "key: [Part\n"
+            "---\n\n"
+            "# Part\n"
+        ),
+        "invalid-frontmatter/operations-list.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "invalid-frontmatter.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": "Invalid frontmatter in objects/Part.md: invalid YAML."
+    }
+    assert not (workspace_paths.ontologies_dir / "invalid-frontmatter").exists()
+
+
 def test_import_ontology_zip_rejects_object_alias_mismatch(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path)

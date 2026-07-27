@@ -25,6 +25,10 @@ from ontology.legacy_package_converter import (
 SUPPORTED_IMPORT_MANIFEST_KINDS = frozenset({"ontology", "ontology-package"})
 
 
+class PackageNormalizationError(ValueError):
+    """A client-visible invalid package error raised during normalization."""
+
+
 @dataclass(frozen=True)
 class ImportableOntologyPackage:
     """Metadata read from an extracted package before runtime installation."""
@@ -131,7 +135,11 @@ def normalize_imported_package(source_root: Path, target_root: Path) -> PackageN
         target.glob("*-list.md")
     )
     if package.source_format == "legacy" or contains_legacy_artifacts:
-        converted, conversion_warnings = convert_legacy_package_in_place(target)
+        try:
+            converted, conversion_warnings = convert_legacy_package_in_place(target)
+        except (OSError, ValueError) as exc:
+            message = str(exc).strip() or "Invalid ontology package"
+            raise PackageNormalizationError(message) from exc
         generated.extend(converted)
         warnings.extend(conversion_warnings)
 
