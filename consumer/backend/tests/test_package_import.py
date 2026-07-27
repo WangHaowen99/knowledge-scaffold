@@ -211,6 +211,195 @@ def test_normalize_legacy_package_converts_lists_and_script_mapping_once(tmp_pat
     ]
 
 
+def test_normalize_legacy_package_projects_aliases_and_removes_empty_field_alias_markers(
+    tmp_path,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_legacy_package(source)
+    (source / "objects-list.md").write_text(
+        "# 实体清单\n\n"
+        "| 中文名称 | 别名 | 业务定义 |\n"
+        "| --- | --- | --- |\n"
+        "| Warehouse | 无 | 仓库对象 |\n"
+        "| Channel | 无 | 渠道对象 |\n"
+        "| Product | 商品、SKU | 产品对象 |\n",
+        encoding="utf-8",
+    )
+    (source / "objects" / "Warehouse.md").write_text(
+        "# 实体属性清单\n\n"
+        "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 区域编号 | region_id | 关联销售区域 | 无 |\n"
+        "| 仓库状态 | warehouse_status | 当前状态 | 无 |\n"
+        "| 仓库编号 | warehouse_id | 唯一标识 | 仓编号 |\n",
+        encoding="utf-8",
+    )
+    (source / "objects" / "Channel.md").write_text(
+        "# 实体属性清单\n",
+        encoding="utf-8",
+    )
+    (source / "objects" / "Product.md").write_text(
+        "# 实体属性清单\n",
+        encoding="utf-8",
+    )
+
+    result = normalize_imported_package(source, target)
+
+    object_index = (target / "objects" / "index.md").read_text(encoding="utf-8")
+    assert "| Warehouse | - | 仓库对象 |" in object_index
+    assert "| Channel | - | 渠道对象 |" in object_index
+    assert "| Product | 商品、SKU | 产品对象 |" in object_index
+
+    object_path = target / "objects" / "Warehouse.md"
+    converted = object_path.read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(converted.split("---", 2)[1])
+    assert frontmatter["resource"] == "object"
+    assert frontmatter["key"] == "Warehouse"
+    assert frontmatter["title"] == "Warehouse"
+    assert frontmatter["description"] == "仓库对象"
+    assert "aliases" not in frontmatter
+    assert "| 区域编号 | region_id | 关联销售区域 |  |" in converted
+    assert "| 仓库状态 | warehouse_status | 当前状态 |  |" in converted
+    assert "| 仓库编号 | warehouse_id | 唯一标识 | 仓编号 |" in converted
+
+    channel_frontmatter = yaml.safe_load(
+        (target / "objects" / "Channel.md")
+        .read_text(encoding="utf-8")
+        .split("---", 2)[1]
+    )
+    assert channel_frontmatter["description"] == "渠道对象"
+    assert "aliases" not in channel_frontmatter
+
+    product_frontmatter = yaml.safe_load(
+        (target / "objects" / "Product.md")
+        .read_text(encoding="utf-8")
+        .split("---", 2)[1]
+    )
+    assert product_frontmatter["description"] == "产品对象"
+    assert product_frontmatter["aliases"] == ["商品", "SKU"]
+    assert "objects/Warehouse.md" in result.generated_files
+    assert validate_imported_object_aliases(target).errors == ()
+
+
+def test_normalize_legacy_package_canonicalizes_outerless_object_catalog(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_legacy_package(source)
+    (source / "objects-list.md").write_text(
+        "key | aliases | description\n"
+        "--- | --- | ---\n"
+        "Part | CatalogAlias | Part object\n",
+        encoding="utf-8",
+    )
+    (source / "objects" / "Part.md").write_text("# Part\n", encoding="utf-8")
+
+    normalize_imported_package(source, target)
+
+    object_index = (target / "objects" / "index.md").read_text(encoding="utf-8")
+    assert "| key | aliases | description |" in object_index
+    assert "| Part | CatalogAlias | Part object |" in object_index
+    frontmatter = yaml.safe_load(
+        (target / "objects" / "Part.md")
+        .read_text(encoding="utf-8")
+        .split("---", 2)[1]
+    )
+    assert frontmatter["aliases"] == ["CatalogAlias"]
+    resolution, error = resolve_object_reference(target, "CatalogAlias")
+    assert error is None
+    assert resolution is not None
+    assert resolution.object_key == "Part"
+
+
+def test_normalize_legacy_package_preserves_unmatched_object_details(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_legacy_package(source)
+    (source / "objects-list.md").write_text(
+        "- Part\n",
+        encoding="utf-8",
+    )
+    original = "---\ncustom: keep-me\n---\n\n# Original object\n"
+    (source / "objects" / "Part.md").write_text(original, encoding="utf-8")
+
+    result = normalize_imported_package(source, target)
+
+    assert (target / "objects" / "Part.md").read_text(encoding="utf-8") == original
+    assert "objects/Part.md" not in result.generated_files
+
+
+@pytest.mark.parametrize(
+    ("raw_frontmatter", "message"),
+    (
+        ("key: [Part\n", "invalid YAML"),
+        ("- key\n", "expected a YAML mapping"),
+    ),
+)
+def test_normalize_legacy_package_rejects_invalid_object_frontmatter(
+    tmp_path,
+    raw_frontmatter,
+    message,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_legacy_package(source)
+    (source / "objects" / "Part.md").write_text(
+        "---\n{}---\n\n# Part\n".format(raw_frontmatter),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid frontmatter in objects/Part\.md: {}".format(message),
+    ):
+        normalize_imported_package(source, target)
+
+
+def test_normalize_legacy_package_limits_field_alias_cleanup_to_markdown_tables(
+    tmp_path,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_legacy_package(source)
+    (source / "objects" / "Part.md").write_text(
+        "---\n"
+        "custom_example: |\n"
+        "  | 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+        "  | --- | --- | --- | --- |\n"
+        "  | Frontmatter示例 | frontmatter_example | 不应修改 | 无 |\n"
+        "---\n\n"
+        "# Part\n\n"
+        "```markdown\n"
+        "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 代码示例 | code_example | 不应修改 | 无 |\n"
+        "```\n\n"
+        "<!--\n"
+        "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 注释示例 | comment_example | 不应修改 | 无 |\n"
+        "-->\n\n"
+        "    | 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+        "    | --- | --- | --- | --- |\n"
+        "    | 缩进示例 | indented_example | 不应修改 | 无 |\n\n"
+        "中文名称 | 英文名称 | 描述 | 属性别名\n"
+        "--- | --- | --- | ---\n"
+        "零件编号 | part_id | 唯一标识 | 无\n",
+        encoding="utf-8",
+    )
+
+    normalize_imported_package(source, target)
+
+    converted = (target / "objects" / "Part.md").read_text(encoding="utf-8")
+    frontmatter = yaml.safe_load(converted.split("---", 2)[1])
+    assert "frontmatter_example | 不应修改 | 无" in frontmatter["custom_example"]
+    assert "| 代码示例 | code_example | 不应修改 | 无 |" in converted
+    assert "| 注释示例 | comment_example | 不应修改 | 无 |" in converted
+    assert "| 缩进示例 | indented_example | 不应修改 | 无 |" in converted
+    assert "零件编号 | part_id | 唯一标识 | " in converted
+    assert "零件编号 | part_id | 唯一标识 | 无" not in converted
+
+
 def test_normalize_legacy_package_preserves_boolean_actions(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"
