@@ -465,13 +465,15 @@ def _build_business_data_search_event_emitter(
     tool_call_id: Optional[str],
     entity: str = "",
     query: str = "",
-) -> Callable[[Dict[str, str]], None]:
-    def emit_business_data_search_event(event: Dict[str, str]) -> None:
+) -> Callable[[Dict[str, Any]], None]:
+    def emit_business_data_search_event(event: Dict[str, Any]) -> None:
         if not stream_event_emitter:
             return
 
         event_type = str(event.get("type") or "").strip().lower()
         content = str(event.get("content") or "")
+        ontology_id = str(event.get("ontology_id") or "").strip()
+        provider = str(event.get("provider") or "").strip()
         message_preview, truncated = _truncate_text(content, limit=100)
         message = "业务数据查询"
         if message_preview:
@@ -491,6 +493,8 @@ def _build_business_data_search_event_emitter(
                 },
                 "entity": entity,
                 "query": query,
+                "ontology_id": ontology_id,
+                "database_provider": provider,
                 "status": "running",
                 "message": message,
                 "progress": {

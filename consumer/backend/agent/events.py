@@ -43,6 +43,8 @@ class TurnFinishedPayload(TypedDict, total=False):
 class IterationCompletedPayload(TypedDict, total=False):
     iteration: int
     status: str
+    model_elapsed_ms: int
+    setup_elapsed_ms: int
     llm_elapsed_ms: int
     llm_stream_elapsed_ms: int
     llm_wall_elapsed_ms: int

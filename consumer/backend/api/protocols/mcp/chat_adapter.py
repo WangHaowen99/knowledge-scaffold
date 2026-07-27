@@ -43,6 +43,7 @@ def execute_chat_tool(
         "session_id": str(payload.get("session_id") or "").strip(),
         "context": dict(payload.get("context") or {}),
         "arguments": payload.get("arguments") if isinstance(payload.get("arguments"), dict) else None,
+        "include_trace": payload.get("include_trace") is True,
     }
     model_profile_id = str(payload.get("model_profile_id") or "").strip()
     if model_profile_id:

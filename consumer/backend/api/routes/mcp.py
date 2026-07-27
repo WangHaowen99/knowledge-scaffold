@@ -177,6 +177,7 @@ def execute_internal_mcp_chat():
         concurrency_limit=100 if str(user.role or "") == "admin" else 1,
         queue_wait_seconds=min(30, max(1, int(cfg.http_timeout_seconds))),
         execution_timeout_seconds=max(1, int(cfg.http_timeout_seconds)),
+        trace_config=cfg,
     )
     return jsonify(body), status_code
 
