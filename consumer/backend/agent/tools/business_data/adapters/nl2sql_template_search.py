@@ -22,8 +22,13 @@ class _DefaultMatcher:
         self,
         workspace_root: str,
         ontology_id: str,
+        ontology_version: str = "",
     ) -> None:
-        self._templates = self._load_templates(workspace_root, ontology_id)
+        self._templates = self._load_templates(
+            workspace_root,
+            ontology_id,
+            ontology_version,
+        )
 
     def __call__(self, query: str) -> tuple[str | None, dict | None]:
         template_data = self._templates.get(query)
@@ -48,8 +53,13 @@ class _DefaultMatcher:
     def _load_templates(
         workspace_root: str,
         ontology_id: str,
+        ontology_version: str = "",
     ) -> dict[str, Any]:
-        template_file = _resolve_template_path(workspace_root, ontology_id)
+        template_file = _resolve_template_path(
+            workspace_root,
+            ontology_id,
+            ontology_version,
+        )
         if template_file is None or not template_file.exists():
             return {}
         try:
@@ -131,7 +141,9 @@ class NL2SQLTemplateSearchAdapter:
 
         # Resolve matcher: external sql_matcher.py or built-in default
         self._matcher: MatcherFn = self._resolve_matcher() or _DefaultMatcher(
-            self._workspace_root, self.ontology_id,
+            self._workspace_root,
+            self.ontology_id,
+            self.ontology_version,
         )
 
     # -- matcher discovery --

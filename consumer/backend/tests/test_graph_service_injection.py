@@ -97,3 +97,21 @@ def test_service_does_not_forward_graph_trace_metadata_to_other_providers(monkey
     assert effective_connection.endpoint == "https://dataagent.example"
     assert "run_id" not in effective_connection.options
     assert "parent_span_key" not in effective_connection.options
+
+
+def test_request_positional_construction_keeps_runtime_context_slot():
+    runtime_context = {"run_id": "run-legacy"}
+    request = BusinessDataSearchRequest(
+        "workspace-a",
+        "ontology-a",
+        "Part",
+        "query",
+        runtime_context,
+    )
+
+    assert request.workspace_id == "workspace-a"
+    assert request.ontology_id == "ontology-a"
+    assert request.entity == "Part"
+    assert request.query == "query"
+    assert request.provider_runtime_context == runtime_context
+    assert request.ontology_version == ""

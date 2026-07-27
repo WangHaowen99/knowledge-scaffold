@@ -11,6 +11,7 @@ from agent.tools.business_data.providers.graph.mapping import GraphMappingResolv
 from agent.tools.business_data.providers.graph.models import GraphEntityMapping, GraphSearchRuntimeContext
 from agent.tools.business_data.providers.graph.scope import GraphScopeError, build_graph_scope
 from agent.tools.business_data.providers.graph.tools.executor import GraphToolExecutor, GraphToolInputError
+from ontology.ontology_catalog import get_ontology_manifest
 from workspace.workspaces import get_workspace, get_workspace_paths, workspace_scope
 from .schemas import error_result
 from integration.mcp.scope import MCPRequestScope
@@ -129,6 +130,19 @@ def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, que
         workspace_id=scope.workspace_id,
         ontology_id=ontology_id,
     )
+    ontology_manifest, ontology_error = get_ontology_manifest(
+        ontology_id,
+        workspace_id=scope.workspace_id,
+    )
+    if ontology_manifest is None:
+        raise BusinessDataConnectionError(
+            str(ontology_error or "Ontology '{}' not found".format(ontology_id)).replace("Error: ", "")
+        )
+    ontology_version = str(
+        getattr(ontology_manifest, "version", "")
+        or getattr(ontology_manifest, "active_version", "")
+        or ""
+    ).strip()
     provider = str(connection.provider or "").strip().lower()
     if provider not in {"neo4j", "hugegraph"}:
         raise BusinessDataConnectionError("/search/mcp 仅支持 neo4j 或 hugegraph provider")
@@ -144,12 +158,14 @@ def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, que
         "workspace_id": scope.workspace_id,
         "workspace_name": workspace_name,
         "ontology_id": ontology_id,
+        "ontology_version": ontology_version,
     }
     backend = Neo4jGraphBackend(provider_config) if provider == "neo4j" else HugeGraphBackend(provider_config)
     graph_scope = build_graph_scope(provider_config)
     mapping = _resolve_mapping(
         workspace_root=str(workspace_paths.ontologies_dir),
         ontology_id=ontology_id,
+        ontology_version=ontology_version,
         provider=provider,
         entity=entity,
     )
@@ -157,6 +173,7 @@ def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, que
         provider=provider,
         workspace_id=scope.workspace_id,
         ontology_id=ontology_id,
+        ontology_version=ontology_version,
         workspace_root=str(workspace_paths.ontologies_dir),
         entity=entity,
         query=query,
@@ -170,11 +187,19 @@ def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, que
     return _SearchRuntimeBundle(provider=provider, backend=backend, context=context, mapping=mapping)
 
 
-def _resolve_mapping(*, workspace_root: str, ontology_id: str, provider: str, entity: str) -> GraphEntityMapping:
+def _resolve_mapping(
+    *,
+    workspace_root: str,
+    ontology_id: str,
+    ontology_version: str = "",
+    provider: str,
+    entity: str,
+) -> GraphEntityMapping:
     if entity:
         resolver = GraphMappingResolver(
             workspace_root=workspace_root,
             ontology_id=ontology_id,
+            ontology_version=ontology_version,
             provider=provider,
         )
         mapping = resolver.resolve(entity)

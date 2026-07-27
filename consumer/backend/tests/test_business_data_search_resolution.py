@@ -180,6 +180,25 @@ def test_business_data_search_uses_workspace_direct_provider(monkeypatch):
     assert [event["type"] for event in captured["events"]] == ["start", "final", "done"]
 
 
+def test_business_data_search_keeps_workspace_id_at_legacy_positional_slot(monkeypatch):
+    captured = _install_search_fakes(monkeypatch)
+
+    result = handle_business_data_search(
+        "demo-ontology",
+        "鏌ヨ TargetItem",
+        "TargetItem",
+        "demo-workspace",
+        captured["events"].append,
+        "tool-1",
+        {"run_id": "run-1"},
+    )
+
+    assert result == "查询结果"
+    assert captured["request"].workspace_id == "demo-workspace"
+    assert captured["request"].provider_runtime_context == {"run_id": "run-1"}
+    assert captured["request"].ontology_version == ""
+
+
 def test_business_data_search_uses_ontology_identity_for_resolved_source(monkeypatch):
     captured = _install_search_fakes(monkeypatch)
 

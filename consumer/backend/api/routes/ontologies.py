@@ -53,8 +53,10 @@ from agent.tools.business_data.ontology_sources_store import (
     build_ontology_business_data_summary,
     clear_ontology_data_source_on_delete,
 )
+from persistence.chat_store import ChatStore
 from ontology.ontology_graph import build_ontology_graph
 from workspace.workspaces import (
+    get_workspace_paths,
     get_workspace_ontologies_root,
     resolve_workspace_id,
     resolve_workspace_owner_or_admin_id,
@@ -401,6 +403,49 @@ def _validate_operations_tree_limits(root_dir: Path) -> Optional[str]:
     return _validate_ontology_tree_limits(root_dir)
 
 
+def _find_sessions_locking_ontology_version(
+    *,
+    workspace_id: str,
+    ontology_id: str,
+    version: str,
+    limit: int = 20,
+) -> tuple[int, list[dict[str, str]]]:
+    paths = get_workspace_paths(workspace_id)
+    users_runtime_dir = paths.users_runtime_dir
+    if not users_runtime_dir.is_dir():
+        return 0, []
+
+    matched: list[dict[str, str]] = []
+    total = 0
+    for user_dir in sorted(
+        (item for item in users_runtime_dir.iterdir() if item.is_dir()),
+        key=lambda item: item.name,
+    ):
+        chats_dir = user_dir / "chats"
+        if not chats_dir.is_dir():
+            continue
+        store = ChatStore(str(chats_dir))
+        for session in store.list_sessions():
+            metadata = dict(getattr(session, "metadata", {}) or {})
+            if str(metadata.get("selected_ontology_id") or "").strip() != ontology_id:
+                continue
+            locked_version = str(
+                metadata.get("selected_ontology_version")
+                or metadata.get("selected_version")
+                or ""
+            ).strip()
+            if locked_version != version:
+                continue
+            total += 1
+            if len(matched) < limit:
+                matched.append({
+                    "session_id": str(getattr(session, "id", "") or ""),
+                    "title": str(getattr(session, "title", "") or ""),
+                    "user_key": user_dir.name,
+                })
+    return total, matched
+
+
 @ontologies_bp.route("/ontologies", methods=["GET"])
 @require_auth()
 def list_ontologies():
@@ -636,6 +681,23 @@ def delete_ontology_version(ontology_id: str, version: str):
                 "version": version,
                 "active_version": active_version,
                 "versions": versions,
+            }), 409
+
+        reference_count, referenced_sessions = _find_sessions_locking_ontology_version(
+            workspace_id=workspace_id,
+            ontology_id=ontology_id,
+            version=version,
+        )
+        if reference_count > 0:
+            return jsonify({
+                "error": "Locked version is still referenced by existing chat sessions and cannot be deleted.",
+                "conflict_type": "session_reference",
+                "ontology_id": ontology_id,
+                "version": version,
+                "active_version": active_version,
+                "versions": versions,
+                "reference_count": reference_count,
+                "referenced_sessions": referenced_sessions,
             }), 409
 
         if len(versions) <= 1:

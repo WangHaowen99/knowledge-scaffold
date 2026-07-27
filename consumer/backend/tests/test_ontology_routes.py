@@ -11,6 +11,7 @@ from flask import Flask
 from api.routes import ontologies as ontologies_module
 from api.routes.ontologies import ontologies_bp
 from api.auth.auth import AuthManager
+from persistence.chat_store import ChatStore
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace
 
 
