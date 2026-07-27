@@ -155,7 +155,7 @@ def test_legacy_runtime_placeholder_cannot_fall_back_to_user_argument():
     assert invalid == ["Runtime context missing 'session_id'"]
 
 
-def test_legacy_unsupported_runtime_placeholder_is_rejected_even_with_context_value():
+def test_legacy_runtime_user_id_uses_backend_context_when_available():
     args, missing, invalid = execute_script_module._build_cli_args(
         script_args=["--user-id", "<runtime.user_id>"],
         script_parameters=[],
@@ -163,9 +163,9 @@ def test_legacy_unsupported_runtime_placeholder_is_rejected_even_with_context_va
         runtime_context={"user_id": "backend-user"},
     )
 
-    assert args == []
+    assert args == ["--user-id", "backend-user"]
     assert missing == []
-    assert invalid == ["Unsupported runtime parameter 'user_id'"]
+    assert invalid == []
 
 
 def test_structured_business_placeholder_resolves_argument_value():
@@ -199,8 +199,10 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
         run_id="run-1",
         session_id="session-1",
         turn_id=2,
+        user_id="user-1",
         workspace_id="workspace-1",
         selected_ontology_id="demo",
+        selected_ontology_version=None,
         caller="main",
         agent_config=SimpleNamespace(execute_script_timeout=30),
     )
@@ -214,7 +216,7 @@ def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_onto
     assert captured["runtime_context"]["ontology_id"] == "demo"
 
 
-def test_unsupported_explicit_runtime_parameter_is_not_user_controlled():
+def test_explicit_runtime_user_id_uses_backend_context():
     args, missing, invalid = _build_cli_args_from_parameters(
         script_parameters=[
             {
@@ -229,6 +231,6 @@ def test_unsupported_explicit_runtime_parameter_is_not_user_controlled():
         runtime_context={"user_id": "real-user"},
     )
 
-    assert args == []
+    assert args == ["--user-id", "real-user"]
     assert missing == []
-    assert invalid == ["Unsupported runtime parameter 'user_id'"]
+    assert invalid == []
