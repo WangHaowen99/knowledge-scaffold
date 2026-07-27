@@ -795,6 +795,7 @@ def get_jiuwen_tool_infos(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     selected_ontology_id: Optional[str] = None,
+    selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> list[Dict[str, Any]]:
     from ...tools.registry import get_tool_schema_for_context, get_tool_specs_for_caller
@@ -804,6 +805,7 @@ def get_jiuwen_tool_infos(
             get_tool_schema_for_context(
                 spec,
                 selected_ontology_id=selected_ontology_id,
+                selected_ontology_version=selected_ontology_version,
                 workspace_id=workspace_id,
             )
         )

@@ -235,8 +235,17 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
         calls["prompt_scope"] = (selected_ontology_id, workspace_id)
         return "selected ontology prompt"
 
-    def fake_execute_script_schema(selected_ontology_id=None, *, workspace_id=None):
-        calls["schema_scope"] = (selected_ontology_id, workspace_id)
+    def fake_execute_script_schema(
+        selected_ontology_id=None,
+        *,
+        selected_ontology_version=None,
+        workspace_id=None,
+    ):
+        calls["schema_scope"] = (
+            selected_ontology_id,
+            selected_ontology_version,
+            workspace_id,
+        )
         return {
             "type": "function",
             "function": {
@@ -267,6 +276,7 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
             get_tools_schema(
                 "subagent",
                 selected_ontology_id=tool_context.selected_ontology_id,
+                selected_ontology_version=tool_context.selected_ontology_version,
                 workspace_id=tool_context.workspace_id,
             )
             return {**state, "final_output": "done", "messages": []}
@@ -297,14 +307,17 @@ def test_sub_agent_inherits_parent_selected_ontology_for_context_prompt_and_sche
         session_id="sess-child",
         parent_workspace_id="parent-workspace",
         parent_selected_ontology_id="parent-ontology",
+        parent_selected_ontology_version="1.2.3",
     )
 
     assert result["_success"] is True
     assert calls["state"]["workspace_id"] == "parent-workspace"
     assert calls["state"]["user_context"]["selected_ontology_id"] == "parent-ontology"
+    assert calls["state"]["user_context"]["selected_ontology_version"] == "1.2.3"
     assert calls["tool_context"].selected_ontology_id == "parent-ontology"
+    assert calls["tool_context"].selected_ontology_version == "1.2.3"
     assert calls["prompt_scope"] == ("parent-ontology", "parent-workspace")
-    assert calls["schema_scope"] == ("parent-ontology", "parent-workspace")
+    assert calls["schema_scope"] == ("parent-ontology", "1.2.3", "parent-workspace")
     assert "parent-ontology" in calls["user_prompt"]
     assert "task-ontology" not in calls["user_prompt"]
     assert "operation-ontology" not in calls["user_prompt"]

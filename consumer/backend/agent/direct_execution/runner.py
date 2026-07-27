@@ -107,10 +107,10 @@ def run_direct_script(
         if base_path is None:
             base_path = BACKEND_DIR.parent.resolve()
 
-        onto_manifest, onto_error = get_ontology_manifest(
-            ontology_id,
-            workspace_id=runtime_context.workspace_id,
-        )
+        manifest_kwargs = {"workspace_id": runtime_context.workspace_id}
+        if str(runtime_context.selected_ontology_version or "").strip():
+            manifest_kwargs["version"] = runtime_context.selected_ontology_version
+        onto_manifest, onto_error = get_ontology_manifest(ontology_id, **manifest_kwargs)
         if onto_error or onto_manifest is None:
             return fail_preflight(
                 onto_error or "Error: Ontology '{}' not found.".format(ontology_id),

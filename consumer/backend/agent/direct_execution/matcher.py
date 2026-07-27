@@ -43,13 +43,14 @@ def _tokenize(text: str) -> set[str]:
 def _get_script_catalog(
     ontology_id: str,
     *,
+    ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """Load and parse the script catalog for an ontology."""
-    ontology, error = get_ontology_manifest(
-        ontology_id,
-        workspace_id=workspace_id,
-    )
+    kwargs = {"workspace_id": workspace_id}
+    if str(ontology_version or "").strip():
+        kwargs["version"] = ontology_version
+    ontology, error = get_ontology_manifest(ontology_id, **kwargs)
     if error or ontology is None:
         return None, error or "Ontology not found"
 
@@ -174,6 +175,7 @@ def find_best_script_operation(
     user_request: str,
     ontology_id: str,
     *,
+    ontology_version: Optional[str] = None,
     confidence_threshold: float = 0.85,
     workspace_id: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str], float]:
@@ -183,7 +185,11 @@ def find_best_script_operation(
     (from the catalog), the operation_key, and a confidence score. When no
     candidate meets the threshold, returns (None, None, 0.0).
     """
-    catalog, error = _get_script_catalog(ontology_id, workspace_id=workspace_id)
+    catalog, error = _get_script_catalog(
+        ontology_id,
+        ontology_version=ontology_version,
+        workspace_id=workspace_id,
+    )
     if error or catalog is None:
         logger.debug("No script catalog for ontology %s: %s", ontology_id, error)
         return None, None, 0.0
@@ -238,6 +244,7 @@ def llm_match_operation(
     ontology_id: str,
     task_llm,
     *,
+    ontology_version: Optional[str] = None,
     confidence_threshold: float = 0.85,
     workspace_id: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str], float]:
@@ -247,7 +254,11 @@ def llm_match_operation(
     Uses the lightweight task_llm to semantically match the user request
     against available script operations.
     """
-    catalog, error = _get_script_catalog(ontology_id, workspace_id=workspace_id)
+    catalog, error = _get_script_catalog(
+        ontology_id,
+        ontology_version=ontology_version,
+        workspace_id=workspace_id,
+    )
     if error or catalog is None:
         logger.debug("LLM preflight: no catalog for ontology %s", ontology_id)
         return None, None, 0.0

@@ -91,12 +91,14 @@ def get_tools_schema(
     include_orchestration: bool = True,
     include_web_search: bool = False,
     selected_ontology_id: Optional[str] = None,
+    selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     return [
         get_tool_schema_for_context(
             spec,
             selected_ontology_id=selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
             workspace_id=workspace_id,
         )
         for spec in get_tool_specs_for_caller(
@@ -113,11 +115,13 @@ def get_tool_schema_for_context(
     spec: BaseTool,
     *,
     selected_ontology_id: Optional[str] = None,
+    selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     if spec.name == "execute_script":
         return build_execute_script_tool_schema(
             selected_ontology_id,
+            selected_ontology_version=selected_ontology_version,
             workspace_id=workspace_id,
         )
     return spec.schema

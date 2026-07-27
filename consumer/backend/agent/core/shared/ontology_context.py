@@ -17,19 +17,34 @@ def selected_ontology_id_from_state(state: Mapping[str, Any]) -> Optional[str]:
     return str(user_context.get("selected_ontology_id") or "").strip() or None
 
 
+def selected_ontology_version_from_state(state: Mapping[str, Any]) -> Optional[str]:
+    user_context = dict(state.get("user_context") or {}) if isinstance(state, Mapping) else {}
+    return (
+        str(
+            user_context.get("selected_ontology_version")
+            or user_context.get("selected_version")
+            or ""
+        ).strip()
+        or None
+    )
+
+
 def get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:
     workspace_id = str(state.get("workspace_id") or "").strip() or None
     if not isinstance(state, dict):
         return build_selected_ontology_preload_context(
             selected_ontology_id=selected_ontology_id_from_state(state),
+            selected_ontology_version=selected_ontology_version_from_state(state),
             workspace_id=workspace_id,
         )
     selected_ontology_id = selected_ontology_id_from_state(state)
-    cache_key = (workspace_id, selected_ontology_id)
+    selected_ontology_version = selected_ontology_version_from_state(state)
+    cache_key = (workspace_id, selected_ontology_id, selected_ontology_version)
     if state.get("_selected_ontology_context_cache_key") == cache_key:
         return state.get("_selected_ontology_context_cache")
     selected_ontology_context = build_selected_ontology_preload_context(
         selected_ontology_id=selected_ontology_id,
+        selected_ontology_version=selected_ontology_version,
         workspace_id=workspace_id,
     )
     state["_selected_ontology_context_cache_key"] = cache_key
@@ -40,6 +55,7 @@ def get_selected_ontology_context(state: Mapping[str, Any]) -> Optional[str]:
 def hydrate_selected_ontology_read_documents(state: Dict[str, Any]) -> None:
     records = build_selected_ontology_preload_records(
         selected_ontology_id=selected_ontology_id_from_state(state),
+        selected_ontology_version=selected_ontology_version_from_state(state),
         turn_id=int(state.get("current_turn_id") or 0),
         workspace_id=str(state.get("workspace_id") or "").strip() or None,
     )

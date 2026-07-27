@@ -182,6 +182,7 @@ export default function ChatWorkspace({
   const [modelProfileId, setModelProfileId] = useState('');
   const [ontologies, setOntologies] = useState([]);
   const [selectedOntologyId, setSelectedOntologyId] = useState('');
+  const [selectedOntologyVersion, setSelectedOntologyVersion] = useState('');
   // Trace 栏宽度：可拖拽分隔条调整，最小 300（初始尺寸），持久化到 localStorage。
   const TRACE_MIN_W = 300;
   const [traceWidth, setTraceWidth] = useState(
@@ -235,6 +236,16 @@ export default function ChatWorkspace({
     () => ontologies.find((ontology) => ontology.id === selectedOntologyId) || null,
     [ontologies, selectedOntologyId],
   );
+  const displayedOntologyVersion = useMemo(() => (
+    String(
+      current?.metadata?.selected_ontology_version
+      || current?.metadata?.selected_version
+      || selectedOntologyVersion
+      || selectedOntology?.active_version
+      || selectedOntology?.version
+      || ''
+    ).trim()
+  ), [current?.metadata, selectedOntology, selectedOntologyVersion]);
   const emptyState = useMemo(
     () => getChatDataSourceStatus(selectedOntology),
     [selectedOntology],
@@ -304,14 +315,26 @@ export default function ChatWorkspace({
         storedOntologyId: currentChatId
           ? safeLocalGet(`mw_session_ontology_${workspaceId}_${currentChatId}`)
           : '',
+        storedOntologyVersion: '',
         defaultModelProfileId,
       });
       setAgentMode(preferences.agentMode);
       setModelProfileId(preferences.modelProfileId);
       setSelectedOntologyId(preferences.selectedOntologyId);
+      setSelectedOntologyVersion(preferences.selectedOntologyVersion);
     }, 0);
     return () => clearTimeout(timer);
   }, [agentModeKey, current?.metadata, currentChatId, defaultModelProfileId, workspaceId]);
+
+  useEffect(() => {
+    if (currentChatId) return;
+    const nextVersion = selectedOntologyId
+      ? String(selectedOntology?.active_version || selectedOntology?.version || '').trim()
+      : '';
+    if (nextVersion !== selectedOntologyVersion) {
+      setSelectedOntologyVersion(nextVersion);
+    }
+  }, [currentChatId, selectedOntology, selectedOntologyId, selectedOntologyVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -551,6 +574,13 @@ export default function ChatWorkspace({
             </select>
             {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
           </div>
+          {displayedOntologyVersion && (
+            <div className="chat-config-locks">
+              <span className="session-lock-note">
+                {sessionLocked ? `Locked version ${displayedOntologyVersion}` : `Current active ${displayedOntologyVersion}`}
+              </span>
+            </div>
+          )}
           {pendingInteraction ? (
             <InteractionComposer
               interaction={pendingInteraction}

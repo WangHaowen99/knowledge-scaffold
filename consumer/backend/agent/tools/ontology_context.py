@@ -75,12 +75,14 @@ def handle_ontology_context(
     ontology_id: str,
     resource: str,
     key: str = "",
+    ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> str:
     return _handle_ontology_context_result(
         ontology_id=ontology_id,
         resource=resource,
         key=key,
+        ontology_version=ontology_version,
         workspace_id=workspace_id,
     ).content
 
@@ -90,12 +92,13 @@ def _handle_ontology_context_result(
     ontology_id: str,
     resource: str,
     key: str = "",
+    ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> _OntologyContextResult:
-    ontology, error = get_ontology_manifest(
-        ontology_id,
-        workspace_id=workspace_id,
-    )
+    manifest_kwargs = {"workspace_id": workspace_id}
+    if str(ontology_version or "").strip():
+        manifest_kwargs["version"] = ontology_version
+    ontology, error = get_ontology_manifest(ontology_id, **manifest_kwargs)
     if error:
         return _OntologyContextResult(content=error)
     assert ontology is not None
@@ -231,6 +234,11 @@ class OntologyContextTool:
         del tool_call_id, event_emitter
         result = _handle_ontology_context_result(
             **args,
+            ontology_version=(
+                context.selected_ontology_version
+                if str(args.get("ontology_id") or "").strip() == str(context.selected_ontology_id or "").strip()
+                else None
+            ),
             workspace_id=context.workspace_id,
         )
         content = result.content
@@ -273,9 +281,15 @@ def _build_read_record(
     ):
         return None
 
+    manifest_kwargs = {"workspace_id": context.workspace_id}
+    if (
+        str(args.get("ontology_id") or "").strip() == str(context.selected_ontology_id or "").strip()
+        and str(context.selected_ontology_version or "").strip()
+    ):
+        manifest_kwargs["version"] = context.selected_ontology_version
     ontology, error = get_ontology_manifest(
         str(args.get("ontology_id") or ""),
-        workspace_id=context.workspace_id,
+        **manifest_kwargs,
     )
     if error or ontology is None:
         return None
@@ -291,7 +305,7 @@ def _build_read_record(
         source="ontology_context",
         turn_id=context.turn_id,
         iteration=context.agent_iteration,
-        ontology_version=str(getattr(ontology, "active_version", "") or "").strip() or None,
+        ontology_version=str(getattr(ontology, "version", "") or "").strip() or None,
     )
 
 

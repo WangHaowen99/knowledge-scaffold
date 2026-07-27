@@ -46,15 +46,18 @@ test('session metadata restores locked model, ontology and agent mode before loc
       agent_mode: 'multi_agent',
       model_profile_id: 'server-model',
       selected_ontology_id: 'server-ontology',
+      selected_ontology_version: '2.0.0',
     },
     storedAgentMode: 'quick',
     storedModelProfileId: 'local-model',
     storedOntologyId: 'local-ontology',
+    storedOntologyVersion: '1.0.0',
     defaultModelProfileId: 'default-model',
   }), {
     agentMode: 'multi_agent',
     modelProfileId: 'server-model',
     selectedOntologyId: 'server-ontology',
+    selectedOntologyVersion: '2.0.0',
   });
 });
 

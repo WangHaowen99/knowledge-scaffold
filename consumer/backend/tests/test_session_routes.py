@@ -399,7 +399,13 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
         def get_ontology(self, ontology_id):
             assert active_workspaces == ["alpha"]
             if ontology_id == "demo-ontology":
-                return SimpleNamespace(id="demo-ontology", enabled=True)
+                return SimpleNamespace(
+                    id="demo-ontology",
+                    name="Demo Ontology",
+                    enabled=True,
+                    active_version="2.1.0",
+                    version="2.1.0",
+                )
             return None
 
     registry = FakeRegistry()
@@ -414,7 +420,11 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
 
     assert response.status_code == 201
     assert response.get_json()["metadata"]["selected_ontology_id"] == "demo-ontology"
+    assert response.get_json()["metadata"]["selected_ontology_version"] == "2.1.0"
+    assert response.get_json()["metadata"]["selected_ontology_name"] == "Demo Ontology"
     assert chat_store.created_sessions[0]["metadata"]["selected_ontology_id"] == "demo-ontology"
+    assert chat_store.created_sessions[0]["metadata"]["selected_ontology_version"] == "2.1.0"
+    assert chat_store.created_sessions[0]["metadata"]["selected_ontology_name"] == "Demo Ontology"
     assert scope_events == [("enter", "alpha"), ("exit", "alpha")]
 
 
