@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from integration.observability.events import RuntimeEvent, RuntimeEventType
 from utils.streaming import emit_agent_event
 from utils.logging import get_logger
+from utils.security.redaction import redact_sensitive_text, redact_sensitive_value
 from agent.tools.base import ToolContext
 
 logger = get_logger("tools.events")
@@ -40,7 +41,7 @@ _FULL_TRACE_OUTPUT_TOOLS = {"ontology_context", "business_data_search"}
 
 
 def _bounded_text(value: Any, limit: int) -> str:
-    return str(value or "").strip()[:limit]
+    return redact_sensitive_text(value).strip()[:limit]
 
 
 def _finite_number(value: Any) -> Optional[Any]:
@@ -242,9 +243,13 @@ def emit_protocol_event(
     if not context.run_id:
         return
 
-    scoped_payload = _inject_subagent_lineage(context, payload)
+    scoped_payload = redact_sensitive_value(
+        _inject_subagent_lineage(context, payload)
+    )
     scoped_observability_payload = (
-        _inject_subagent_lineage(context, observability_payload)
+        redact_sensitive_value(
+            _inject_subagent_lineage(context, observability_payload)
+        )
         if observability_payload is not None
         else scoped_payload
     )
@@ -341,7 +346,7 @@ def build_tool_finished_payload(
     elapsed_ms: int,
 ) -> Dict[str, Any]:
     """Build the bounded public payload and persist its complete output."""
-    text = str(raw_output or "")
+    text = redact_sensitive_text(raw_output)
     preview, truncated = _truncate_text(text, limit=4096)
     normalized_status = str(status or "").strip().lower()
     if normalized_status in {"cancelled", "canceled"}:
@@ -357,7 +362,7 @@ def build_tool_finished_payload(
         "output_preview": preview,
         "output_truncated": truncated,
         "output_size": len(text.encode("utf-8")),
-        "error": error,
+        "error": redact_sensitive_text(error),
         "elapsed_ms": elapsed_ms,
     }
     output_projection = _build_output_projection(tool_name, text)

@@ -6,30 +6,13 @@ import copy
 import hashlib
 import json
 import math
-import re
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from utils.security.redaction import redact_sensitive_text
 
-_SENSITIVE_KEYS = {
-    "authorization",
-    "password",
-    "passwd",
-    "secret",
-    "apikey",
-    "token",
-    "cookie",
-    "credential",
-}
-_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(authorization|api[_-]?key|password|passwd|secret|token|cookie|credential)"
-    r"\b\s*[:=]\s*([^\s,;&]+)"
-)
-_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
-_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+)?\b")
-_URI_CREDENTIAL_RE = re.compile(r"(://)[^/@\s:]+:[^/@\s]+@")
 _TIMING_FIELDS = (
     "total_elapsed_ms",
     "model_elapsed_ms",
@@ -357,6 +340,9 @@ class MCPPublicTraceCollector:
         self._set_text(state, "ontology_id", ontology_id, limit=240)
         self._set_text(state, "entity", entity, limit=240)
         self._set_text(state, "database_provider", provider, limit=120)
+        retry_fingerprint = _query_fingerprint(query)
+        if retry_fingerprint:
+            state.setdefault("_retry_fingerprint", retry_fingerprint)
         if str(state.get("tool_name") or "").strip() == "ontology_context":
             self._set_text(
                 state,
@@ -389,6 +375,10 @@ class MCPPublicTraceCollector:
                 self._set_text(state, "database_provider", provider, limit=120)
             if not state.get("entity"):
                 self._set_text(state, "entity", candidate.get("entity"), limit=240)
+            if not state.get("_retry_fingerprint"):
+                retry_fingerprint = _query_fingerprint(candidate.get("query"))
+                if retry_fingerprint:
+                    state["_retry_fingerprint"] = retry_fingerprint
             if not state.get("query_summary"):
                 query, query_truncated = self._text_with_truncation(candidate.get("query"))
                 if query:
@@ -468,13 +458,14 @@ class MCPPublicTraceCollector:
         return result
 
     def _register_attempt(self, state: Mapping[str, Any]) -> int:
-        if not state.get("query_digest"):
+        query_fingerprint = state.get("_retry_fingerprint") or state.get("query_digest")
+        if not query_fingerprint:
             return 0
         fingerprint_parts = (
             state.get("tool_name"),
             state.get("ontology_id"),
             state.get("entity"),
-            state.get("query_digest"),
+            query_fingerprint,
         )
         fingerprint = "\x1f".join(str(value or "") for value in fingerprint_parts)
         prior_attempts = self._attempt_counts.get(fingerprint, 0)
@@ -840,30 +831,7 @@ def _legacy_agent_output_source(value: Any) -> str:
 
 
 def _safe_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, (dict, list, tuple)):
-        value = json.dumps(_redact_value(value), ensure_ascii=False, separators=(",", ":"))
-    text = str(value).strip()
-    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
-    text = _JWT_RE.sub("[REDACTED_JWT]", text)
-    text = _URI_CREDENTIAL_RE.sub(r"\1[REDACTED]@", text)
-    return _SECRET_ASSIGNMENT_RE.sub(r"\1=[REDACTED]", text)
-
-
-def _redact_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).lower())
-            if any(marker in normalized_key for marker in _SENSITIVE_KEYS):
-                redacted[str(key)] = "[REDACTED]"
-            else:
-                redacted[str(key)] = _redact_value(item)
-        return redacted
-    if isinstance(value, (list, tuple)):
-        return [_redact_value(item) for item in value[:16]]
-    return value
+    return redact_sensitive_text(value, max_collection_items=16).strip()
 
 
 def _non_negative_int(value: Any) -> int | None:
@@ -914,6 +882,28 @@ def _compact_iteration_timing(payload: Mapping[str, Any]) -> dict[str, int]:
 
 def _query_digest(query: str) -> str:
     return "sha256:{}".format(hashlib.sha256(query.encode("utf-8")).hexdigest())
+
+
+def _query_fingerprint(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        query = value.strip()
+    elif isinstance(value, (Mapping, list, tuple)):
+        try:
+            query = json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+                default=str,
+            ).strip()
+        except (TypeError, ValueError):
+            query = str(value).strip()
+    else:
+        query = str(value).strip()
+    return _query_digest(query) if query else ""
 
 
 def _dedupe_text_list(values: list[Any], limit: int) -> list[str]:

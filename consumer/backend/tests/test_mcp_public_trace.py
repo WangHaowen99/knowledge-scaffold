@@ -70,9 +70,9 @@ def test_public_trace_extracts_safe_tool_evidence_and_timings():
                         }],
                         "executed_steps": [{
                             "tool": "property_filter",
-                            "summary": "执行内部图工具 property_filter，返回 2 条，token=step-secret",
+                            "summary": "执行内部图工具 property_filter，返回 2 条，access_token=step-secret",
                         }],
-                        "warnings": ["retry token=warning-secret"],
+                        "warnings": ["retry client_secret=warning-secret"],
                     }),
                 }
             },
@@ -125,7 +125,7 @@ def test_public_trace_extracts_safe_tool_evidence_and_timings():
     iteration = trace["iterations"][0]
     assert "reasoning_summaries" not in iteration
     assert iteration["agent_output"] == {
-        "summary": "检查业务数据，Authorization=[REDACTED] [REDACTED]",
+        "summary": "检查业务数据，Authorization: [REDACTED]",
         "source": "agent_content",
         "truncated": False,
     }
@@ -140,7 +140,7 @@ def test_public_trace_extracts_safe_tool_evidence_and_timings():
     assert tool["record_count"] == 2
     assert tool["executed_steps"] == [{
         "tool": "property_filter",
-        "summary": "执行内部图工具 property_filter，返回 2 条，token=[REDACTED]",
+        "summary": "执行内部图工具 property_filter，返回 2 条，access_token=[REDACTED]",
     }]
     assert "evidence_ids" not in tool
     assert tool["query_digest"] == "sha256:database-query"
@@ -156,7 +156,30 @@ def test_public_trace_extracts_safe_tool_evidence_and_timings():
     assert trace["totals"]["overall_elapsed_ms"] >= 0
     assert "events_observed" not in trace["totals"]
     assert "iteration_elapsed_ms" not in trace["totals"]
-    assert trace["warnings"][0]["message"] == "retry token=[REDACTED]"
+    assert trace["warnings"][0]["message"] == "retry client_secret=[REDACTED]"
+
+
+def test_public_trace_redacts_json_string_and_prefixed_secret_formats():
+    collector = MCPPublicTraceCollector(max_text_chars=1000)
+    collector.consume(_event(
+        "token.delta",
+        {
+            "iteration": 1,
+            "channel": "content",
+            "text": (
+                "access_token=prod-token "
+                "client_secret=prod-secret "
+                "db_password=prod-pass "
+                '{"password":"prod-json-pass"} '
+                "private_key=prod-key"
+            ),
+        },
+    ))
+
+    serialized = json.dumps(collector.snapshot(), ensure_ascii=False)
+
+    assert "prod-" not in serialized
+    assert serialized.count("[REDACTED]") >= 5
 
 
 def test_public_trace_uses_iteration_content_and_final_output_precedence():
@@ -491,6 +514,114 @@ def test_public_trace_drops_stack_traces_and_does_not_infer_non_query_retries():
     calls = trace["iterations"][0]["tools"]["calls"]
     assert all(tool["error_summary"] == "Tool execution failed" for tool in calls)
     assert "private frame" not in serialized
+
+
+def test_public_trace_does_not_treat_long_queries_with_different_suffixes_as_retries():
+    collector = MCPPublicTraceCollector(max_text_chars=500)
+    shared_prefix = "q" * 500
+    for index, suffix in enumerate(("first", "second"), start=1):
+        call_id = "query-{}".format(index)
+        collector.consume(_event(
+            "tool.started",
+            {
+                "iteration": index,
+                "tool_call_id": call_id,
+                "tool_name": "business_data_search",
+                "input": {
+                    "ontology_id": "ontology-1",
+                    "entity": "Product",
+                    "query": shared_prefix + suffix,
+                },
+            },
+        ))
+        collector.consume(_event(
+            "tool.finished",
+            {
+                "iteration": index,
+                "tool_call_id": call_id,
+                "tool_name": "business_data_search",
+                "status": "completed",
+            },
+        ))
+
+    trace = collector.snapshot()
+    calls = [
+        iteration["tools"]["calls"][0]
+        for iteration in trace["iterations"]
+    ]
+    serialized = json.dumps(trace, ensure_ascii=False)
+
+    assert trace["totals"]["retries"] == 0
+    assert all("retry_count" not in call for call in calls)
+    assert all(call["query_summary"] == shared_prefix for call in calls)
+    assert "_retry_fingerprint" not in serialized
+
+
+def test_public_trace_counts_identical_full_queries_as_retries():
+    collector = MCPPublicTraceCollector(max_text_chars=32)
+    query = "same query " + ("x" * 64)
+    for index in range(1, 3):
+        call_id = "retry-{}".format(index)
+        collector.consume(_event(
+            "tool.started",
+            {
+                "tool_call_id": call_id,
+                "tool_name": "business_data_search",
+                "input": {
+                    "ontology_id": "ontology-1",
+                    "entity": "Product",
+                    "query": query,
+                },
+            },
+        ))
+        collector.consume(_event(
+            "tool.finished",
+            {
+                "tool_call_id": call_id,
+                "tool_name": "business_data_search",
+                "status": "completed",
+            },
+        ))
+
+    trace = collector.snapshot()
+    calls = trace["iterations"][0]["tools"]["calls"]
+
+    assert trace["totals"]["retries"] == 1
+    assert "retry_count" not in calls[0]
+    assert calls[1]["retry_count"] == 1
+
+
+def test_public_trace_uses_full_result_query_for_retry_fingerprint():
+    collector = MCPPublicTraceCollector(max_text_chars=32)
+    shared_prefix = "r" * 32
+    for index, suffix in enumerate(("first", "second"), start=1):
+        call_id = "result-query-{}".format(index)
+        collector.consume(_event(
+            "tool.started",
+            {
+                "tool_call_id": call_id,
+                "tool_name": "business_data_search",
+            },
+        ))
+        collector.consume(_event(
+            "tool.finished",
+            {
+                "tool_call_id": call_id,
+                "tool_name": "business_data_search",
+                "status": "completed",
+                "output_projection": {
+                    "query": shared_prefix + suffix,
+                },
+            },
+        ))
+
+    trace = collector.snapshot()
+
+    assert trace["totals"]["retries"] == 0
+    assert all(
+        "retry_count" not in call
+        for call in trace["iterations"][0]["tools"]["calls"]
+    )
 
 
 def test_public_trace_merges_iteration_snapshots_and_reports_wall_time(monkeypatch):
