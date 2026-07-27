@@ -7,10 +7,13 @@ import { fileURLToPath } from 'node:url';
 import {
   buildVisibleTreeRows,
   directoryExpansionKey,
+  isVersionExpanded,
   kbTreeExpansionStorageKey,
   packageExpansionKey,
+  packageVersions,
   readKbTreeExpansion,
   toggleExpandedKey,
+  versionCollapseKey,
   writeKbTreeExpansion,
 } from './kbTreeState.js';
 
@@ -30,7 +33,7 @@ test('tree expansion state is isolated and reloadable per workspace', () => {
   const storage = createStorage();
   const workspaceAKeys = new Set([
     packageExpansionKey('pkg-a'),
-    directoryExpansionKey('pkg-a', 'objects'),
+    directoryExpansionKey('pkg-a', '2.0.0', 'objects'),
   ]);
 
   assert.equal(writeKbTreeExpansion(storage, 'workspace-a', workspaceAKeys), true);
@@ -78,23 +81,50 @@ test('visible rows follow independent expansion state through deep directories',
       }],
     }],
   }];
-  const objectsKey = directoryExpansionKey('pkg-a', 'objects');
-  const equipmentKey = directoryExpansionKey('pkg-a', 'objects/equipment');
+  const objectsKey = directoryExpansionKey('pkg-a', '2.0.0', 'objects');
+  const equipmentKey = directoryExpansionKey('pkg-a', '2.0.0', 'objects/equipment');
 
   assert.deepEqual(
-    buildVisibleTreeRows(tree, new Set(), 'pkg-a').map(({ entry, depth }) => [entry.path, depth]),
+    buildVisibleTreeRows(tree, new Set(), 'pkg-a', '2.0.0').map(({ entry, depth }) => [entry.path, depth]),
     [['objects', 0]],
   );
   assert.deepEqual(
-    buildVisibleTreeRows(tree, new Set([objectsKey]), 'pkg-a')
+    buildVisibleTreeRows(tree, new Set([objectsKey]), 'pkg-a', '2.0.0')
       .map(({ entry, depth }) => [entry.path, depth]),
     [['objects', 0], ['objects/equipment', 1]],
   );
   assert.deepEqual(
-    buildVisibleTreeRows(tree, new Set([objectsKey, equipmentKey]), 'pkg-a')
+    buildVisibleTreeRows(tree, new Set([objectsKey, equipmentKey]), 'pkg-a', '2.0.0')
       .map(({ entry, depth }) => [entry.path, depth]),
     [['objects', 0], ['objects/equipment', 1], ['objects/equipment/A320.md', 2]],
   );
+});
+
+test('package versions keep the active version first and remove duplicates', () => {
+  assert.deepEqual(
+    packageVersions({
+      active_version: '2.0.0',
+      version: '2.0.0',
+      versions: ['1.9.9', '2.0.1', '2.0.0', '2.0.1'],
+    }),
+    ['2.0.0', '2.0.1', '1.9.9'],
+  );
+});
+
+test('directory expansion state is isolated by package version', () => {
+  assert.notEqual(
+    directoryExpansionKey('pkg-a', '2.0.0', 'objects'),
+    directoryExpansionKey('pkg-a', '2.0.1', 'objects'),
+  );
+});
+
+test('selected versions default to expanded and remember an explicit collapse independently', () => {
+  const collapsed200 = versionCollapseKey('pkg-a', '2.0.0');
+
+  assert.equal(isVersionExpanded(false, new Set(), 'pkg-a', '2.0.0'), false);
+  assert.equal(isVersionExpanded(true, new Set(), 'pkg-a', '2.0.0'), true);
+  assert.equal(isVersionExpanded(true, new Set([collapsed200]), 'pkg-a', '2.0.0'), false);
+  assert.equal(isVersionExpanded(true, new Set([collapsed200]), 'pkg-a', '2.0.1'), true);
 });
 
 test('package and directory toggles are accessible and separate from selection', () => {
@@ -102,6 +132,10 @@ test('package and directory toggles are accessible and separate from selection',
   assert.equal(sidebarSource.includes('aria-expanded={row.expanded}'), true);
   assert.equal(sidebarSource.includes('onClick={() => togglePackage(pkg)}'), true);
   assert.equal(sidebarSource.includes('onClick={() => selectPkg(pkg.id)}'), true);
-  assert.equal(sidebarSource.includes('onClick={() => toggleDirectory(pkg.id, entry.path)}'), true);
+  assert.equal(sidebarSource.includes('onClick={() => selectPackageVersion(pkg.id, version)}'), true);
+  assert.equal(sidebarSource.includes("version === activeVersion && <span className=\"kbt-active\">激活</span>"), true);
+  assert.equal(sidebarSource.includes('aria-expanded={versionExpanded}'), true);
+  assert.equal(sidebarSource.includes('onClick={() => toggleVersion(pkg.id, version, selectedVersion)}'), true);
+  assert.equal(sidebarSource.includes('onClick={() => toggleDirectory(pkg.id, version, entry.path)}'), true);
   assert.equal(sidebarSource.includes('onClick={() => selectPackageEntry(pkg.id, entry)}'), true);
 });
