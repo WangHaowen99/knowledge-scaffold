@@ -69,6 +69,69 @@ class _FakeOrchestrator:
         return self.run_store.cancel_run(run_id, metadata={"cancel_reason": reason}) is not None
 
 
+class _TraceOrchestrator(_FakeOrchestrator):
+    def run(self, **kwargs):
+        self.last_run_kwargs = dict(kwargs)
+        run_id = kwargs["requested_run_id"]
+        session_id = kwargs["session_id"]
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "reasoning.summary",
+            "run_id": run_id,
+            "session_id": session_id,
+            "turn_id": 1,
+            "seq": 1,
+            "payload": {"iteration": 1, "summary": "先读取本体，再查询业务实体"},
+        }
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "tool.started",
+            "run_id": run_id,
+            "session_id": session_id,
+            "turn_id": 1,
+            "seq": 2,
+            "payload": {
+                "iteration": 1,
+                "tool_call_id": "call-1",
+                "tool_name": "business_data_search",
+                "input": {
+                    "ontology_id": "equipment",
+                    "entity": "TargetItem",
+                    "query": "查询 TargetItem",
+                },
+            },
+        }
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "tool.finished",
+            "run_id": run_id,
+            "session_id": session_id,
+            "turn_id": 1,
+            "seq": 3,
+            "payload": {
+                "iteration": 1,
+                "tool_call_id": "call-1",
+                "tool_name": "business_data_search",
+                "status": "completed",
+                "elapsed_ms": 20,
+                "output_preview": (
+                    '{"provider":"neo4j","result_count":1,'
+                    '"executed_steps":[{"tool":"property_filter",'
+                    '"summary":"执行内部图工具 property_filter，返回 1 条"}]}'
+                ),
+            },
+        }
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "turn.finished",
+            "run_id": run_id,
+            "session_id": session_id,
+            "turn_id": 1,
+            "seq": 4,
+            "payload": {"status": "success", "final_output": "完成"},
+        }
+
+
 def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp_path):
     captured = {}
 
@@ -93,7 +156,7 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     )
 
     result = execute_chat_tool(
-        {"query": "分析问题", "session_id": "session-1"},
+        {"query": "分析问题", "session_id": "session-1", "include_trace": True},
         scope=scope,
         config=_config(tmp_path / "tokens.json"),
     )
@@ -104,6 +167,7 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     assert captured["headers"]["X-Workspace-Id"] == "workspace-a"
     assert captured["headers"]["traceparent"] == scope.traceparent
     assert captured["json"]["session_id"] == "session-1"
+    assert captured["json"]["include_trace"] is True
 
 
 def test_workflow_bridge_times_out_in_queue_without_bypassing_admission(monkeypatch):
@@ -171,3 +235,137 @@ def test_workflow_bridge_preserves_awaiting_input_and_run_owner(monkeypatch):
     assert run.metadata["workspace_id"] == "workspace-a"
     assert run.metadata["external_trace_id"] == "a" * 32
     assert orchestrator.last_run_kwargs["traceparent"] == scope.traceparent
+
+
+def test_workflow_bridge_trace_requires_explicit_true_request_flag(monkeypatch):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
+
+    for suffix, include_trace in (("default", None), ("false", False)):
+        payload = {
+            "request": "查询",
+            "session_id": "session-trace-{}".format(suffix),
+        }
+        if include_trace is not None:
+            payload["include_trace"] = include_trace
+        body, status_code = execute_mcp_chat_workflow(
+            orchestrator=_TraceOrchestrator(),
+            scope=scope,
+            payload=payload,
+            concurrency_limit=1,
+            queue_wait_seconds=1,
+            execution_timeout_seconds=1,
+            trace_config=_config(Path("tokens.json")),
+        )
+
+        assert status_code == 200
+        assert body["result"]["content"] == "完成"
+        assert "trace" not in body
+
+
+def test_workflow_bridge_adds_trace_without_changing_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
+    config = _config(tmp_path / "tokens.json")
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=_TraceOrchestrator(),
+        scope=scope,
+        payload={
+            "request": "查询",
+            "session_id": "session-trace-on",
+            "include_trace": True,
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+        trace_config=config,
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert body["result"] == {
+        "content": "完成",
+        "session_id": "session-trace-on",
+        "run_id": body["result"]["run_id"],
+        "status": "success",
+        "resumable": False,
+    }
+    assert body["trace"]["schema_version"] == "5.0"
+    assert len(body["trace"]["iterations"]) == 1
+    iteration = body["trace"]["iterations"][0]
+    assert "reasoning_summaries" not in iteration
+    assert iteration["agent_output"] == {
+        "summary": "完成",
+        "source": "final_output",
+        "truncated": False,
+    }
+    assert iteration["tools"]["count"] == 1
+    assert iteration["tools"]["calls"][0]["database_provider"] == "neo4j"
+    assert iteration["tools"]["calls"][0]["record_count"] == 1
+    assert iteration["tools"]["calls"][0]["executed_steps"] == [{
+        "tool": "property_filter",
+        "summary": "执行内部图工具 property_filter，返回 1 条",
+    }]
+    assert "evidence_ids" not in iteration["tools"]["calls"][0]
+    assert body["trace"]["totals"]["iterations"] == 1
+    assert body["trace"]["totals"]["overall_elapsed_ms"] >= 0
+
+
+def test_workflow_bridge_adds_trace_to_awaiting_input_and_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
+    config = _config(tmp_path / "tokens.json")
+
+    awaiting_body, awaiting_status = execute_mcp_chat_workflow(
+        orchestrator=_FakeOrchestrator(terminal_status="awaiting_input"),
+        scope=scope,
+        payload={
+            "request": "查询",
+            "session_id": "session-trace-awaiting",
+            "include_trace": True,
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+        trace_config=config,
+    )
+    failed_body, failed_status = execute_mcp_chat_workflow(
+        orchestrator=_FakeOrchestrator(terminal_status="error"),
+        scope=scope,
+        payload={
+            "request": "查询",
+            "session_id": "session-trace-failed",
+            "include_trace": True,
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+        trace_config=config,
+    )
+
+    assert awaiting_status == 200
+    assert awaiting_body["error"]["error_code"] == "MCP_CHAT_AWAITING_INPUT"
+    assert awaiting_body["trace"]["schema_version"] == "5.0"
+    assert awaiting_body["trace"]["iterations"][0]["agent_output"] == {
+        "summary": "等待输入",
+        "source": "final_output",
+        "truncated": False,
+    }
+    assert failed_status == 500
+    assert failed_body["error"]["error_code"] == "MCP_CHAT_WORKFLOW_FAILED"
+    assert failed_body["trace"]["schema_version"] == "5.0"
+    assert failed_body["trace"]["iterations"][0]["agent_output"] == {
+        "summary": "完成",
+        "source": "final_output",
+        "truncated": False,
+    }

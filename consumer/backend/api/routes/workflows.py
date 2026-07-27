@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from flask import Blueprint, Response, request, jsonify, stream_with_context
 
@@ -222,6 +222,7 @@ class AgenticRunHandle:
         slot_manager: Any,
         slot_limit_user_id: str,
         traceparent: str = "",
+        event_observer: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         self.run_id = run_id
         self.active_run_id = run_id
@@ -235,6 +236,7 @@ class AgenticRunHandle:
         self.slot_manager = slot_manager
         self.slot_limit_user_id = slot_limit_user_id
         self.traceparent = str(traceparent or "")
+        self.event_observer = event_observer
         self.done = threading.Event()
         self._lock = threading.RLock()
         self._subscribers: Dict[str, "queue.Queue[Any]"] = {}
@@ -242,6 +244,7 @@ class AgenticRunHandle:
         self._last_seq = 0
         self._last_turn_id = 0
         self._terminal_status: Optional[str] = None
+        self._terminal_payload: Dict[str, Any] = {}
         self._completed_at: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -277,7 +280,16 @@ class AgenticRunHandle:
                 self._last_seq = seq_int
             if terminal_status:
                 self._terminal_status = terminal_status
+                payload = envelope.get("payload")
+                if isinstance(payload, dict):
+                    self._terminal_payload = dict(payload)
             subscribers = list(self._subscribers.items())
+
+        if self.event_observer is not None:
+            try:
+                self.event_observer(envelope)
+            except Exception:
+                logger.warning("Workflow event observer failed", exc_info=True)
 
         for sub_id, sub_queue in subscribers:
             try:
@@ -398,6 +410,11 @@ class AgenticRunHandle:
                 "status": status,
                 "last_seq": self._last_seq,
             }
+
+    def terminal_payload(self) -> Dict[str, Any]:
+        """Return the terminal envelope payload without rebuilding event replay."""
+        with self._lock:
+            return dict(self._terminal_payload)
 
 
 class AgenticRunRegistry:

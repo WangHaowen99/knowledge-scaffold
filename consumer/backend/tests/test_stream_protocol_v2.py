@@ -226,6 +226,54 @@ def test_web_search_projection_deduplicates_normalized_urls():
     assert projected[0]["url"] == "https://EXAMPLE.com:443/article#summary"
 
 
+def test_business_data_search_finished_exposes_bounded_execution_projection():
+    raw_output = json.dumps({
+        "success": True,
+        "provider": "neo4j",
+        "entity": "CHANGE_ORDER变更技术修改执行周期",
+        "query": "查询 CHANGE_ORDER-001 的执行周期",
+        "result_count": 1,
+        "records": [{"raw": "x" * 5000}],
+        "evidence": [{
+            "evidence_id": "graph_ev_001",
+            "query_digest": "sha256:query",
+        }],
+        "executed_steps": [
+            {
+                "tool": "property_filter",
+                "summary": "执行内部图工具 property_filter，返回 1 条",
+            },
+            {
+                "tool": "GraphQueryAgent",
+                "summary": "s" * 500,
+            },
+        ],
+    }, ensure_ascii=False)
+
+    payload = build_tool_finished_payload(
+        tool_name="business_data_search",
+        tool_call_id="call-business-long",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=100,
+    )
+
+    projection = payload["output_projection"]
+    assert payload["output_truncated"] is True
+    assert projection["provider"] == "neo4j"
+    assert projection["result_count"] == 1
+    assert projection["query_digest"] == "sha256:query"
+    assert projection["has_evidence"] is True
+    assert projection["executed_steps"][0] == {
+        "tool": "property_filter",
+        "summary": "执行内部图工具 property_filter，返回 1 条",
+    }
+    assert len(projection["executed_steps"][1]["summary"]) == 300
+    assert "records" not in projection
+    assert "evidence" not in projection
+
+
 def test_execute_tool_batch_emits_v2_regular_tool_events():
     captured = []
 

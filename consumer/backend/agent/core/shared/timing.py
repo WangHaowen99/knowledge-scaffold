@@ -6,6 +6,24 @@ from collections.abc import Mapping
 from typing import Dict, List, Optional
 
 
+def build_public_iteration_timing(
+    *,
+    total_elapsed_ms: int,
+    model_elapsed_ms: Optional[int],
+    tools_elapsed_ms: int,
+) -> Dict[str, int]:
+    """Build additive public phase timings when direct model timing is available."""
+    if model_elapsed_ms is None:
+        return {}
+    total_ms = max(0, int(total_elapsed_ms or 0))
+    model_ms = max(0, int(model_elapsed_ms or 0))
+    tools_ms = max(0, int(tools_elapsed_ms or 0))
+    return {
+        "model_elapsed_ms": model_ms,
+        "setup_elapsed_ms": max(0, total_ms - model_ms - tools_ms),
+    }
+
+
 def build_tool_timing_metrics(
     tool_intervals_ms: List[Mapping[str, int]],
     *,

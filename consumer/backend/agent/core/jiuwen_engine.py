@@ -73,6 +73,7 @@ from .shared.ontology_context import (
 )
 from .shared.prompting import build_main_system_prompt
 from .shared.timing import (
+    build_public_iteration_timing as _build_public_iteration_timing,
     build_tool_timing_metrics as _build_jiuwen_tool_timing_metrics,
     tool_window_elapsed_ms as _tool_window_elapsed_ms,
 )
@@ -308,6 +309,20 @@ class JiuwenReactLoopEngine:
             "prompt_elapsed_ms": prompt_elapsed_ms,
         }
         terminal_error_signal = _JiuwenTerminalErrorSignal()
+        model_timing_lock = threading.Lock()
+        model_elapsed_ms_by_iteration: Dict[int, int] = {}
+
+        def record_model_timing(iteration: int, elapsed_ms: int) -> None:
+            normalized_iteration = max(1, int(iteration or 1))
+            with model_timing_lock:
+                model_elapsed_ms_by_iteration[normalized_iteration] = (
+                    model_elapsed_ms_by_iteration.get(normalized_iteration, 0)
+                    + max(0, int(elapsed_ms or 0))
+                )
+
+        def model_elapsed_for_iteration(iteration: int) -> Optional[int]:
+            with model_timing_lock:
+                return model_elapsed_ms_by_iteration.get(max(1, int(iteration or 1)))
         cancel_event = _get_jiuwen_cancel_event(state)
         _run_jiuwen_setup_step(runtime_trace, _raise_if_jiuwen_cancelled, cancel_event, state)
         max_iterations = _run_jiuwen_setup_step(
@@ -611,6 +626,11 @@ class JiuwenReactLoopEngine:
             )
             tools_window_elapsed_ms = int(timing_metrics.get("tools_window_elapsed_ms") or 0)
             llm_elapsed_ms = max(0, total_elapsed_ms - tools_window_elapsed_ms)
+            public_timing = _build_public_iteration_timing(
+                total_elapsed_ms=total_elapsed_ms,
+                model_elapsed_ms=model_elapsed_for_iteration(iteration),
+                tools_elapsed_ms=tools_window_elapsed_ms,
+            )
             progress["last_completed_at"] = finished_at
             self._emit_iteration_completed(
                 state,
@@ -625,6 +645,8 @@ class JiuwenReactLoopEngine:
                 tools_elapsed_ms=tools_window_elapsed_ms,
                 total_elapsed_ms=max(0, total_elapsed_ms),
                 tool_names=tool_names,
+                model_elapsed_ms=public_timing.get("model_elapsed_ms"),
+                setup_elapsed_ms=public_timing.get("setup_elapsed_ms"),
                 tool_timing_metrics=timing_metrics,
                 event_source_node=event_source_node,
             )
@@ -645,6 +667,7 @@ class JiuwenReactLoopEngine:
             llm_config=llm_config_for_agent,
             stream_enabled=stream_enabled,
             enable_reasoning=reasoning_enabled,
+            model_timing_observer=record_model_timing,
             prompt_build_ms=prompt_elapsed_ms,
             system_prompt_chars=len(str(system_prompt_for_agent or "")),
             sliding_window_applied=context_engine_managed_window,
@@ -764,6 +787,11 @@ class JiuwenReactLoopEngine:
                     - float(progress.get("active_started_at") or progress.get("last_completed_at") or started_at)
                 ) * 1000
             )
+            public_timing = _build_public_iteration_timing(
+                total_elapsed_ms=final_elapsed_ms,
+                model_elapsed_ms=model_elapsed_for_iteration(completed_iteration),
+                tools_elapsed_ms=0,
+            )
             runtime_trace.iteration_finished(
                 iteration=completed_iteration,
                 status="final_output",
@@ -790,6 +818,8 @@ class JiuwenReactLoopEngine:
                 tools_elapsed_ms=0,
                 total_elapsed_ms=final_elapsed_ms,
                 tool_names=[],
+                model_elapsed_ms=public_timing.get("model_elapsed_ms"),
+                setup_elapsed_ms=public_timing.get("setup_elapsed_ms"),
                 tool_timing_metrics={},
                 event_source_node=event_source_node,
             )
@@ -1389,6 +1419,8 @@ class JiuwenReactLoopEngine:
         tools_elapsed_ms: int,
         total_elapsed_ms: int,
         tool_names: list[str],
+        model_elapsed_ms: Optional[int] = None,
+        setup_elapsed_ms: Optional[int] = None,
         tool_timing_metrics: Optional[Mapping[str, int]] = None,
         event_source_node: Optional[str] = None,
     ) -> None:
@@ -1405,6 +1437,8 @@ class JiuwenReactLoopEngine:
             tools_elapsed_ms=tools_elapsed_ms,
             total_elapsed_ms=total_elapsed_ms,
             tool_names=tool_names,
+            model_elapsed_ms=model_elapsed_ms,
+            setup_elapsed_ms=setup_elapsed_ms,
             tool_timing_metrics=tool_timing_metrics,
             source_node=event_source_node,
         )

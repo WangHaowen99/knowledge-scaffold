@@ -6,12 +6,16 @@ import importlib
 import time
 from collections.abc import Mapping
 from inspect import isawaitable
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from integration.observability import AgentRuntimeTrace
 from llm.provider_adapters import get_provider_adapter
+from utils.logging import get_logger
 from .common import coerce_optional_int, normalize_arguments, object_to_dict, read_field
 from .tools import set_jiuwen_pending_assistant_context
+
+
+logger = get_logger("jiuwen.trace")
 
 
 class JiuwenModelTraceBridge:
@@ -34,6 +38,7 @@ class JiuwenModelTraceBridge:
         stream_enabled: bool,
         enable_reasoning: bool,
         event_class_provider: Any = None,
+        model_timing_observer: Optional[Callable[[int, int], None]] = None,
         prompt_build_ms: int = 0,
         system_prompt_chars: int = 0,
         sliding_window_applied: bool,
@@ -47,6 +52,7 @@ class JiuwenModelTraceBridge:
         self.stream_enabled = bool(stream_enabled)
         self.enable_reasoning = bool(enable_reasoning)
         self.event_class_provider = event_class_provider
+        self.model_timing_observer = model_timing_observer
         self.prompt_build_ms = max(0, int(prompt_build_ms or 0))
         self.system_prompt_chars = max(0, int(system_prompt_chars or 0))
         # Keep the legacy exported name, but store only the static ownership
@@ -58,7 +64,7 @@ class JiuwenModelTraceBridge:
         self._call_counts: Dict[int, int] = {}
 
     async def register(self, agent: Any) -> bool:
-        if not self.runtime_trace.enabled:
+        if not self.runtime_trace.enabled and self.model_timing_observer is None:
             return False
         manager = getattr(agent, "agent_callback_manager", None)
         register_callback = getattr(manager, "register_callback", None)
@@ -146,6 +152,7 @@ class JiuwenModelTraceBridge:
                 reasoning_content=str(read_field(response, "reasoning_content") or ""),
             )
         elapsed_ms = elapsed_ms_since(record.get("started_at"))
+        self._notify_model_timing(int(record["iteration"]), elapsed_ms)
         model_name = resolved_jiuwen_model_name(ctx, self.llm_config, preferred=record.get("model"))
         self.runtime_trace.llm_finished(
             iteration=int(record["iteration"]),
@@ -173,12 +180,27 @@ class JiuwenModelTraceBridge:
         if record is None:
             record = self._start_missing_record(ctx)
         exc = read_field(ctx, "exception")
+        self._notify_model_timing(
+            int(record["iteration"]),
+            elapsed_ms_since(record.get("started_at")),
+        )
         self.runtime_trace.llm_failed(
             iteration=int(record["iteration"]),
             call_index=int(record["call_index"]),
             error_type=type(exc).__name__ if exc is not None else None,
             error_message=str(exc or ""),
         )
+
+    def _notify_model_timing(self, iteration: int, elapsed_ms: int) -> None:
+        if self.model_timing_observer is None:
+            return
+        try:
+            self.model_timing_observer(
+                max(1, int(iteration or 1)),
+                max(0, int(elapsed_ms or 0)),
+            )
+        except Exception:
+            logger.warning("Jiuwen model timing observer failed", exc_info=True)
 
     def _current_iteration(self) -> int:
         if callable(self.iteration_provider):

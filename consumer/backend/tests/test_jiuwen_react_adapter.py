@@ -495,10 +495,12 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
         "results": {},
     }
 
+    protocol_events = []
     engine.run(
         engine_state,
         caller="main",
         observer=observer,
+        event_writer=protocol_events.append,
     )
 
     llm_started = [event for event in observer.events if event.type == RuntimeEventType.LLM_STARTED]
@@ -520,11 +522,85 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
     assert llm_finished[0].payload["reasoning_text"] == "模型思考"
     assert llm_finished[0].payload["tool_calls_count"] == 1
     assert llm_finished[0].payload["usage"]["total_tokens"] == 18
+    iteration_payload = next(
+        event["data"]["payload"]
+        for event in protocol_events
+        if event["data"]["type"] == "iteration.completed"
+    )
+    assert "model_elapsed_ms" in iteration_payload
+    assert "setup_elapsed_ms" in iteration_payload
+    assert "llm_elapsed_ms" in iteration_payload
+    assert iteration_payload["setup_elapsed_ms"] == max(
+        0,
+        iteration_payload["total_elapsed_ms"]
+        - iteration_payload["model_elapsed_ms"]
+        - iteration_payload["tools_elapsed_ms"],
+    )
     assert {event for event, _callback in fake_agent.agent_callback_manager.unregistered} == {
         FakeAgentCallbackEvent.BEFORE_MODEL_CALL,
         FakeAgentCallbackEvent.AFTER_MODEL_CALL,
         FakeAgentCallbackEvent.ON_MODEL_EXCEPTION,
     }
+
+
+def test_jiuwen_model_trace_reports_timing_without_observability(monkeypatch):
+    from integration.observability import AgentRuntimeTrace, NOOP_OBSERVER
+
+    class FakeAgentCallbackEvent:
+        BEFORE_MODEL_CALL = "before_model_call"
+        AFTER_MODEL_CALL = "after_model_call"
+        ON_MODEL_EXCEPTION = "on_model_exception"
+
+    class FakeCallbackManager:
+        def __init__(self):
+            self.callbacks = {}
+
+        async def register_callback(self, event, callback, priority=100):
+            del priority
+            self.callbacks[event] = callback
+
+    class FakeResponse:
+        content = "done"
+        reasoning_content = ""
+        usage_metadata = None
+        finish_reason = "stop"
+        tool_calls = []
+
+    timings = []
+    bridge = _JiuwenModelTraceBridge(
+        runtime_trace=AgentRuntimeTrace(
+            observer=NOOP_OBSERVER,
+            run_id="run-model-timing",
+            session_id="session-model-timing",
+            turn_id=1,
+            caller="main",
+        ),
+        state={"run_id": "run-model-timing"},
+        caller="main",
+        iteration_provider=lambda: 2,
+        model_provider="openai_compatible",
+        stream_enabled=True,
+        enable_reasoning=False,
+        event_class_provider=lambda: FakeAgentCallbackEvent,
+        model_timing_observer=lambda iteration, elapsed_ms: timings.append((iteration, elapsed_ms)),
+        sliding_window_applied=True,
+    )
+    fake_agent = SimpleNamespace(
+        agent_callback_manager=FakeCallbackManager(),
+        _config=SimpleNamespace(model_name="compat-model"),
+    )
+    ctx = SimpleNamespace(
+        agent=fake_agent,
+        inputs=SimpleNamespace(messages=[], tools=[], response=FakeResponse()),
+        exception=None,
+    )
+    monkeypatch.setattr("agent.core.jiuwen.trace.elapsed_ms_since", lambda _started_at: 37)
+
+    assert asyncio.run(bridge.register(fake_agent)) is True
+    asyncio.run(fake_agent.agent_callback_manager.callbacks["before_model_call"](ctx))
+    asyncio.run(fake_agent.agent_callback_manager.callbacks["after_model_call"](ctx))
+
+    assert timings == [(2, 37)]
 
 
 def test_jiuwen_model_trace_stashes_assistant_context_for_tool_calls():
