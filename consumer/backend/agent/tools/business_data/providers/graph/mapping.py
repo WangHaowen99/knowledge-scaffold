@@ -16,14 +16,22 @@ from .models import GraphEntityMapping
 from .scope import sanitize_return_properties, validate_graph_identifier
 
 
-def _resolve_ontology_version_dir(workspace_root: str, ontology_id: str) -> Optional[Path]:
+def _resolve_ontology_version_dir(
+    workspace_root: str,
+    ontology_id: str,
+    ontology_version: str = "",
+) -> Optional[Path]:
     if not workspace_root or not ontology_id:
         return None
     ontology_root = (Path(workspace_root) / ontology_id).resolve()
     if not ontology_root.is_dir():
         return None
     try:
-        version_dir = get_ontology_version_dir(ontology_root, create=False)
+        version_dir = get_ontology_version_dir(
+            ontology_root,
+            str(ontology_version or "").strip() or None,
+            create=False,
+        )
     except ValueError:
         version_dir = None
     return version_dir or ontology_root
@@ -37,11 +45,13 @@ class GraphMappingResolver:
         *,
         workspace_root: str,
         ontology_id: str,
+        ontology_version: str = "",
         provider: str,
         schema_labels: Iterable[str] | None = None,
     ) -> None:
         self.workspace_root = str(workspace_root or "").strip()
         self.ontology_id = str(ontology_id or "").strip()
+        self.ontology_version = str(ontology_version or "").strip()
         self.provider = str(provider or "").strip().lower()
         self.schema_labels = {str(label).strip() for label in (schema_labels or []) if str(label).strip()}
 
@@ -50,7 +60,11 @@ class GraphMappingResolver:
         if not entity_key:
             return None
 
-        version_dir = _resolve_ontology_version_dir(self.workspace_root, self.ontology_id)
+        version_dir = _resolve_ontology_version_dir(
+            self.workspace_root,
+            self.ontology_id,
+            self.ontology_version,
+        )
         if version_dir is None:
             return self._resolve_from_schema(entity_key)
 

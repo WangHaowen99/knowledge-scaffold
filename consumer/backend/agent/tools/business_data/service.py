@@ -19,6 +19,7 @@ class BusinessDataSearchRequest:
     entity: str
     query: str
     provider_runtime_context: Mapping[str, Any] = field(default_factory=dict)
+    ontology_version: str = ""
 
 
 def query_business_data_stream(
@@ -42,6 +43,7 @@ def query_business_data_stream(
                 build_effective_connection(connection, provider_override="nl2sql_http"),
                 workspace_root=workspace_root,
                 ontology_id=request.ontology_id,
+                ontology_version=request.ontology_version,
             )
         else:
             provider = spec.factory(build_effective_connection(connection))
@@ -58,6 +60,7 @@ def query_business_data_stream(
         "_workspace_root": workspace_root,
         "workspace_id": request.workspace_id,
         "ontology_id": request.ontology_id,
+        "ontology_version": request.ontology_version,
     }
     scoped_provider_config.update({
         key: value

@@ -55,11 +55,11 @@ def _get_run_registry():
     return get_run_registry()
 
 
-def _resolve_selected_ontology_id(value, *, workspace_id: str):
+def _resolve_selected_ontology_selection(value, *, workspace_id: str):
     """Validate and canonicalize the optional session ontology selection."""
     selected_ontology_id = str(value or "").strip()
     if not selected_ontology_id:
-        return None
+        return None, None, None
 
     with workspace_scope(workspace_id):
         registry = get_ontology_registry(workspace_id=workspace_id)
@@ -69,7 +69,12 @@ def _resolve_selected_ontology_id(value, *, workspace_id: str):
         raise ValueError("知识包不存在: {}".format(selected_ontology_id))
     if not bool(getattr(ontology, "enabled", False)):
         raise ValueError("知识包已禁用: {}".format(selected_ontology_id))
-    return str(getattr(ontology, "id", selected_ontology_id) or selected_ontology_id)
+    resolved_ontology_id = str(getattr(ontology, "id", selected_ontology_id) or selected_ontology_id)
+    resolved_ontology_version = str(
+        getattr(ontology, "active_version", "") or getattr(ontology, "version", "") or ""
+    ).strip()
+    resolved_ontology_name = str(getattr(ontology, "name", "") or resolved_ontology_id).strip() or resolved_ontology_id
+    return resolved_ontology_id, resolved_ontology_version or None, resolved_ontology_name
 
 
 def _coerce_seq(value) -> int:
@@ -262,7 +267,7 @@ def create_session():
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     try:
-        selected_ontology_id = _resolve_selected_ontology_id(
+        selected_ontology_id, selected_ontology_version, selected_ontology_name = _resolve_selected_ontology_selection(
             data.get("selected_ontology_id"),
             workspace_id=workspace_id,
         )
@@ -286,6 +291,8 @@ def create_session():
     }
     if selected_ontology_id:
         metadata["selected_ontology_id"] = selected_ontology_id
+        metadata["selected_ontology_version"] = selected_ontology_version
+        metadata["selected_ontology_name"] = selected_ontology_name
     session = chat_store.create_session(
         title=title,
         metadata=metadata,

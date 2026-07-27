@@ -84,3 +84,4 @@ class GraphSearchRuntimeContext:
     provider_config: Dict[str, Any] = field(default_factory=dict)
     business_context: Dict[str, Any] = field(default_factory=dict)
     schema_context: Dict[str, Any] = field(default_factory=dict)
+    ontology_version: str = ""

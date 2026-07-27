@@ -69,6 +69,7 @@ export const resolveSessionPreferences = ({
   storedAgentMode = '',
   storedModelProfileId = '',
   storedOntologyId = '',
+  storedOntologyVersion = '',
   defaultModelProfileId = '',
 } = {}) => ({
   agentMode: normalizeAgentMode(metadata.agent_mode || storedAgentMode || 'quick'),
@@ -77,5 +78,8 @@ export const resolveSessionPreferences = ({
   ).trim(),
   selectedOntologyId: String(
     metadata.selected_ontology_id || storedOntologyId || '',
+  ).trim(),
+  selectedOntologyVersion: String(
+    metadata.selected_ontology_version || metadata.selected_version || storedOntologyVersion || '',
   ).trim(),
 });

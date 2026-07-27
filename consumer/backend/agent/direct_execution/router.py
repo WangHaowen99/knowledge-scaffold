@@ -58,6 +58,10 @@ class OperationDirectRouter:
             str(runtime_context.selected_ontology_id or "").strip()
             or str(context.get("selected_ontology_id") or "").strip()
         )
+        selected_ontology_version = (
+            str(runtime_context.selected_ontology_version or "").strip()
+            or str(context.get("selected_ontology_version") or context.get("selected_version") or "").strip()
+        )
 
         if self._config.selected_ontology_only and not selected_ontology_id:
             logger.info(
@@ -79,6 +83,7 @@ class OperationDirectRouter:
         script_entry, operation_key, confidence = find_best_script_operation(
             user_request=user_request,
             ontology_id=selected_ontology_id,
+            ontology_version=selected_ontology_version or None,
             confidence_threshold=self._config.confidence_threshold,
             workspace_id=runtime_context.workspace_id,
         )

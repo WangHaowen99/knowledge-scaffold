@@ -115,6 +115,7 @@ class LocalPerfExporter:
             "model_provider",
             "agent_mode",
             "selected_ontology_id",
+            "selected_ontology_version",
         )
 
     def _run_summary(self, event: RuntimeEvent) -> Dict[str, Any]:

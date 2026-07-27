@@ -58,6 +58,7 @@ def build_run_detail(records: Iterable[dict[str, Any]], *, run_id: str) -> dict[
         "model_provider": labels.get("model_provider"),
         "agent_mode": labels.get("agent_mode"),
         "selected_ontology_id": labels.get("selected_ontology_id"),
+        "selected_ontology_version": labels.get("selected_ontology_version"),
         "total_duration_ms": total_duration_ms,
         "llm_cache_hit_tokens": llm_cache_metrics.get("llm_cache_hit_tokens")
         if llm_cache_metrics
@@ -235,6 +236,7 @@ def _summary_row(record: dict[str, Any]) -> dict[str, Any]:
         "model_provider": labels.get("model_provider"),
         "agent_mode": labels.get("agent_mode"),
         "selected_ontology_id": labels.get("selected_ontology_id"),
+        "selected_ontology_version": labels.get("selected_ontology_version"),
     }
 
 
