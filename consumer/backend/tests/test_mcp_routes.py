@@ -71,6 +71,7 @@ def test_internal_chat_revalidates_mcp_scope_and_preserves_owner(monkeypatch):
     assert captured["required_scope"] == "mcp:chat"
     assert captured["scope"].username == "alice"
     assert captured["payload"]["session_id"] == "session-1"
+    assert captured["trace_config"].http_timeout_seconds == 30
 
 
 def test_internal_chat_rejects_workspace_header_mismatch(monkeypatch):

@@ -149,6 +149,8 @@ def handle_business_data_search(
                 event_emitter=event_emitter,
                 event=event,
                 tool_call_id=tool_call_id,
+                ontology_id=connection.ontology_id,
+                provider=connection.provider,
             )
             event_type = str(event.get("type") or "").strip().lower()
             event_content = str(event.get("content") or "").strip()
@@ -198,12 +200,18 @@ def _emit_business_data_search_event(
     event_emitter: Optional[BusinessDataSearchEventEmitter],
     event: Dict[str, str],
     tool_call_id: Optional[str],
+    ontology_id: str,
+    provider: str,
 ) -> None:
     if not event_emitter:
         return
 
     try:
-        event_emitter(event)
+        event_emitter({
+            **event,
+            "ontology_id": str(ontology_id or "").strip(),
+            "provider": str(provider or "").strip(),
+        })
     except Exception:
         logger.warning(
             "Failed to emit business_data_search event (tool_call_id=%s)",

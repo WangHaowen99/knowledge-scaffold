@@ -62,6 +62,9 @@ class MCPRuntimeConfig:
     http_timeout_seconds: int
     transport: str
     token_store_path: Path
+    chat_trace_max_events: int = 30
+    chat_trace_max_bytes: int = 32768
+    chat_trace_max_text_chars: int = 500
 
     def effective_public_base_url(self) -> str:
         if self.public_base_url:
@@ -103,6 +106,18 @@ def load_mcp_runtime_config() -> MCPRuntimeConfig:
         token_store_path=Path(
             _read_env("MCP_TOKEN_STORE_PATH", str(runtime_root / "mcp-tokens.json"))
         ).resolve(),
+        chat_trace_max_events=min(
+            500,
+            max(1, _read_int_env("MCP_CHAT_TRACE_MAX_EVENTS", 30)),
+        ),
+        chat_trace_max_bytes=min(
+            1024 * 1024,
+            max(1024, _read_int_env("MCP_CHAT_TRACE_MAX_BYTES", 32768)),
+        ),
+        chat_trace_max_text_chars=min(
+            4000,
+            max(32, _read_int_env("MCP_CHAT_TRACE_MAX_TEXT_CHARS", 500)),
+        ),
     )
 
 

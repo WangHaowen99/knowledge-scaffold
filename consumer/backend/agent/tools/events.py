@@ -34,6 +34,8 @@ _SUBAGENT_LINEAGE_FIELDS = (
 _WEB_SEARCH_RESULT_LIMIT = 8
 _WEB_SEARCH_SCAN_LIMIT = 32
 _WEB_SEARCH_URL_LIMIT = 2048
+_BUSINESS_EXECUTED_STEP_LIMIT = 8
+_BUSINESS_EXECUTED_STEP_SUMMARY_LIMIT = 300
 _FULL_TRACE_OUTPUT_TOOLS = {"ontology_context", "business_data_search"}
 
 
@@ -120,9 +122,78 @@ def _build_web_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _build_business_data_search_projection(raw_output: str) -> Optional[Dict[str, Any]]:
+    try:
+        parsed = json.loads(raw_output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    projection: Dict[str, Any] = {
+        "success": parsed.get("success") is True,
+        "provider": _bounded_text(parsed.get("provider"), 100),
+        "entity": _bounded_text(parsed.get("entity"), 240),
+        "query": _bounded_text(parsed.get("query"), 500),
+    }
+    result_count = parsed.get("result_count")
+    if isinstance(result_count, int) and not isinstance(result_count, bool):
+        projection["result_count"] = max(0, result_count)
+
+    executed_steps = []
+    raw_steps = parsed.get("executed_steps")
+    if isinstance(raw_steps, list):
+        for raw_step in raw_steps[:_BUSINESS_EXECUTED_STEP_LIMIT]:
+            if not isinstance(raw_step, dict):
+                continue
+            step = {
+                "tool": _bounded_text(raw_step.get("tool"), 120),
+                "summary": _bounded_text(
+                    raw_step.get("summary"),
+                    _BUSINESS_EXECUTED_STEP_SUMMARY_LIMIT,
+                ),
+            }
+            step = {key: value for key, value in step.items() if value}
+            if step:
+                executed_steps.append(step)
+    if executed_steps:
+        projection["executed_steps"] = executed_steps
+
+    evidence = parsed.get("evidence")
+    if isinstance(evidence, list) and evidence:
+        projection["has_evidence"] = True
+        query_digest = next(
+            (
+                _bounded_text(item.get("query_digest"), 200)
+                for item in evidence
+                if isinstance(item, dict) and item.get("query_digest")
+            ),
+            "",
+        )
+        if query_digest:
+            projection["query_digest"] = query_digest
+
+    error_code = _bounded_text(parsed.get("error_code"), 160)
+    if error_code:
+        projection["error_code"] = error_code
+    warnings = parsed.get("warnings")
+    if isinstance(warnings, list):
+        projected_warnings = [
+            _bounded_text(warning, _BUSINESS_EXECUTED_STEP_SUMMARY_LIMIT)
+            for warning in warnings[:8]
+        ]
+        projected_warnings = [warning for warning in projected_warnings if warning]
+        if projected_warnings:
+            projection["warnings"] = projected_warnings
+    return {key: value for key, value in projection.items() if value not in ("", None)}
+
+
 def _build_output_projection(tool_name: str, raw_output: str) -> Optional[Dict[str, Any]]:
-    if str(tool_name or "").strip().lower() == "web_search":
+    normalized_name = str(tool_name or "").strip().lower()
+    if normalized_name == "web_search":
         return _build_web_search_projection(raw_output)
+    if normalized_name == "business_data_search":
+        return _build_business_data_search_projection(raw_output)
     return None
 
 
