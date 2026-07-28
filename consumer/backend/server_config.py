@@ -13,4 +13,4 @@ SERVER_AUTO_RELOAD = False
 CORS_ORIGINS = ["*"]
 
 # Request limits
-MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max request size
+MAX_CONTENT_LENGTH = 64 * 1024 * 1024

@@ -12,6 +12,7 @@ from typing import Optional
 
 import yaml
 from flask import Blueprint, jsonify, request, send_file
+from werkzeug.datastructures import FileStorage
 
 from skill_parser.pipeline import run as run_skill_ontology_pipeline
 
@@ -101,6 +102,20 @@ ONTOLOGY_IMPORT_PREVIEW_TEXT_EXTENSIONS = {
     ".sql",
     ".xml",
 }
+
+
+def _read_limited_zip_upload(
+    uploaded_file: FileStorage,
+) -> tuple[Optional[bytes], Optional[str]]:
+    try:
+        uploaded_bytes = uploaded_file.stream.read(ONTOLOGY_MAX_ZIP_BYTES + 1)
+    except Exception:
+        return None, "Failed to read uploaded file"
+    if len(uploaded_bytes) > ONTOLOGY_MAX_ZIP_BYTES:
+        return None, "Zip file too large"
+    return uploaded_bytes, None
+
+
 ONTOLOGY_VERSIONED_SKIP_NAMES = {"manifest.yaml", "versions"}
 ONTOLOGY_INTERNAL_MANIFEST_FIELDS = {
     "kind",
@@ -1674,20 +1689,6 @@ def _build_import_preview(source_root: Path, result_root: Path) -> dict[str, obj
     }
 
 
-def _copy_tree_contents(source_root: Path, target_root: Path) -> None:
-    target_root.mkdir(parents=True, exist_ok=True)
-
-    for child in source_root.iterdir():
-        target_path = target_root / child.name
-        if not _is_safe_path(target_root, target_path):
-            raise ValueError("Unsafe target path")
-
-        if child.is_dir():
-            shutil.copytree(child, target_path)
-        else:
-            shutil.copy2(child, target_path)
-
-
 def _copy_versioned_package_contents(source_root: Path, target_root: Path) -> None:
     if target_root.exists():
         shutil.rmtree(target_root)
@@ -1797,35 +1798,6 @@ def _optional_path_str(path: Path) -> Optional[str]:
     return str(path) if path.exists() else None
 
 
-def _remove_path_if_exists(path: Path) -> None:
-    if not path.exists():
-        return
-    if path.is_dir():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
-
-
-def _replace_ontology_dir(staged_dir: Path, ontology_dir: Path) -> None:
-    ontology_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    if not ontology_dir.exists():
-        staged_dir.replace(ontology_dir)
-        return
-
-    with tempfile.TemporaryDirectory(prefix=".ontology-backup-", dir=str(ontology_dir.parent)) as backup_root_str:
-        backup_root = Path(backup_root_str)
-        backup_dir = backup_root / ontology_dir.name
-        ontology_dir.replace(backup_dir)
-
-        try:
-            staged_dir.replace(ontology_dir)
-        except Exception:
-            _remove_path_if_exists(ontology_dir)
-            backup_dir.replace(ontology_dir)
-            raise
-
-
 def _build_source_ontology_package(
     source_root: Path,
     target_root: Path,
@@ -1853,17 +1825,6 @@ def _build_source_ontology_package(
     return result
 
 
-def _import_converted_ontology_package(source_root: Path, ontology_dir: Path) -> None:
-    ontologies_dir = _get_ontologies_dir()
-    ontologies_dir.mkdir(parents=True, exist_ok=True)
-
-    with tempfile.TemporaryDirectory(prefix=".ontology-import-", dir=str(ontologies_dir)) as temp_dir:
-        staged_dir = Path(temp_dir) / ontology_dir.name
-        _copy_tree_contents(source_root, staged_dir)
-
-        _replace_ontology_dir(staged_dir, ontology_dir)
-
-
 @ontologies_bp.route("/ontologies/import-zip", methods=["POST"])
 @require_auth()
 def import_ontology_zip_with_auto_create():
@@ -1884,16 +1845,13 @@ def import_ontology_zip_with_auto_create():
         if not filename.lower().endswith(".zip"):
             return jsonify({"error": "Only .zip package is supported"}), 400
 
-        try:
-            uploaded_bytes = uploaded_file.read()
-        except Exception:
-            return jsonify({"error": "Failed to read uploaded file"}), 400
+        uploaded_bytes, upload_error = _read_limited_zip_upload(uploaded_file)
+        if upload_error:
+            return jsonify({"error": upload_error}), 400
+        assert uploaded_bytes is not None
 
         if not uploaded_bytes:
             return jsonify({"error": "Uploaded file is empty"}), 400
-
-        if len(uploaded_bytes) > ONTOLOGY_MAX_ZIP_BYTES:
-            return jsonify({"error": "Zip file too large"}), 400
 
         with tempfile.TemporaryDirectory(prefix="ontology-import-auto-") as temp_dir:
             extract_root = Path(temp_dir) / "unzipped"

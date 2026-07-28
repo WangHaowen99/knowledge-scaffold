@@ -638,7 +638,7 @@ class ACPTestRunner:
     # Test Group 3: 多语言测试
     # ═══════════════════════════════════════════
 
-    def _run_lang_test(self, lang: str, message: str, expected_script: str = "") -> TestResult:
+    def _run_lang_test(self, lang: str, message: str) -> TestResult:
         r = TestResult(f"多语言: lang={lang} — {message[:30]}", "lang")
         self._set_lang_enabled(True, default_lang="zh")
         time.sleep(0.3)

@@ -1076,7 +1076,6 @@ def _merge_section_update(
     section: str,
     data: dict[str, Any],
     current_raw_section: dict[str, Any],
-    current_effective_section: dict[str, Any],
 ) -> dict[str, Any]:
     allowed_fields = set(_SECTION_FIELDS[section].keys())
     clear_fields = _CLEAR_FIELDS.get(section, {})
@@ -1221,7 +1220,6 @@ def build_effective_section_config(section: str, data: dict[str, Any] | None = N
         normalized_section,
         data or {},
         raw.get(normalized_section, {}),
-        config[normalized_section],
     )
     next_effective = dict(config[normalized_section])
     for field_name in _SECTION_FIELDS[normalized_section]:
@@ -1276,7 +1274,6 @@ def update_system_config_section(section: str, data: dict[str, Any]) -> dict[str
                 normalized_section,
                 data,
                 raw_config[normalized_section],
-                effective[normalized_section],
             )
         _write_config_document_unlocked(raw_config, source_document=document)
 
@@ -1313,7 +1310,6 @@ def import_system_config(config_payload: dict[str, Any]) -> tuple[list[str], dic
                     section,
                     section_data,
                     raw_config[section],
-                    effective[section],
                 )
         _write_config_document_unlocked(raw_config, source_document=document)
 

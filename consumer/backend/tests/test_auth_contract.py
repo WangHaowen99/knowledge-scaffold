@@ -116,6 +116,12 @@ def test_options_preflight_returns_204(app, client):
     assert response.status_code in (200, 204)
 
 
+def test_app_configures_request_content_limit(app):
+    from server_config import MAX_CONTENT_LENGTH
+
+    assert app.config["MAX_CONTENT_LENGTH"] == MAX_CONTENT_LENGTH
+
+
 def test_non_admin_on_admin_route_returns_403(client, auth_manager):
     headers = _admin_headers(client, auth_manager)
     client.post("/auth/users", headers=headers, json={"username": "alice", "password": "Zq7#Wmx2Lp8!"})

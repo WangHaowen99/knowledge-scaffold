@@ -89,6 +89,31 @@ def _build_zip_file(entries: dict[str, str | bytes]) -> io.BytesIO:
     return buffer
 
 
+def test_zip_upload_read_is_bounded_to_configured_limit(monkeypatch):
+    class RecordingStream(io.BytesIO):
+        requested_size = None
+
+        def read(self, size=-1):
+            self.requested_size = size
+            return super().read(size)
+
+    stream = RecordingStream(b"12345")
+    uploaded_file = type("UploadedFile", (), {"stream": stream})()
+    monkeypatch.setattr(ontologies_module, "ONTOLOGY_MAX_ZIP_BYTES", 4)
+
+    uploaded_bytes, error = ontologies_module._read_limited_zip_upload(uploaded_file)
+
+    assert uploaded_bytes is None
+    assert error == "Zip file too large"
+    assert stream.requested_size == 5
+
+
+def test_server_request_limit_exceeds_ontology_zip_limit():
+    from server_config import MAX_CONTENT_LENGTH
+
+    assert MAX_CONTENT_LENGTH > ontologies_module.ONTOLOGY_MAX_ZIP_BYTES
+
+
 def _build_source_ontology_zip(
     *,
     include_scripts: bool,

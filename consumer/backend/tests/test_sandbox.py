@@ -24,7 +24,6 @@ from integration.sandbox.policy_builder import (
     OntoSandboxPolicyBuilder,
     PolicyContext,
     build_egress_allowed_ports,
-    extract_host_from_url,
     extract_port_from_url,
 )
 from integration.sandbox.registry import RunSandboxRegistry, sandbox_id_for_run

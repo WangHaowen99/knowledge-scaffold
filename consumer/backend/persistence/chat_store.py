@@ -22,7 +22,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
 from utils.identifiers import resolve_session_storage_dir, validate_session_id
 from utils.logging import get_logger

@@ -188,7 +188,6 @@ def _load_relevant_items(
 
 
 def _relevance_score(*, relative: str, text: str, keywords: list[str]) -> int:
-    haystack = "{}\n{}".format(relative, text)
     score = 0
     for keyword in keywords:
         if not keyword:
