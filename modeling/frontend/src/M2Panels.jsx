@@ -1,15 +1,16 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   getInterview, startInterview, answerInterview,
-  getCompetency, proposeCompetency, selectCompetency,
+  getCompetency, addCompetency, proposeCompetency, selectCompetency,
   generatePackage, getPackage, getPackageFile, exportPackageUrl, authFetch,
   savePackageFile, resetPackageFile,
 } from './api.js';
 import { BusyButton } from './ui.jsx';
 import PackageCheck from './PackageCheck.jsx';
 import { batchesForNode } from './workflowNodes.js';
+import { PACKAGE_DATA_SOURCE_HELP, PACKAGE_DATA_SOURCE_OPTIONS } from './package-data-source.js';
 
 /* ================= 节点 4 · 知识萃取访谈 ================= */
 
@@ -95,7 +96,8 @@ export function InterviewPanel({ projectId, node, agentBusy, onAdvance, onRefres
       {currentBatches.filter((b) => b.answered).map((b) => (
         <AnsweredBatch key={b.id} batch={b} displayOrdinal={currentBatches.indexOf(b)} />
       ))}
-      {pending && <BatchForm batch={pending} displayOrdinal={currentBatches.indexOf(pending)} busy={busy} onSubmit={submit} />}
+      {pending && <PendingInterviewBatch batch={pending} displayOrdinal={currentBatches.indexOf(pending)}
+        busy={busy} onSubmit={submit} />}
       {finished && !pending && (
         <div style={{ textAlign: 'center', padding: '20px 0' }}>
           <div className="tag tag-ok" style={{ fontSize: 12.5, padding: '5px 16px' }}>✓ 访谈已完成</div>
@@ -107,6 +109,10 @@ export function InterviewPanel({ projectId, node, agentBusy, onAdvance, onRefres
       </>}
     </div>
   );
+}
+
+export function PendingInterviewBatch({ batch, displayOrdinal, busy, onSubmit }) {
+  return <BatchForm key={batch.id} batch={batch} displayOrdinal={displayOrdinal} busy={busy} onSubmit={onSubmit} />;
 }
 
 function AnsweredBatch({ batch, displayOrdinal }) {
@@ -202,6 +208,9 @@ export function DomainQuestionsBlock({ projectId, generating, onCountChange }) {
   const [questions, setQuestions] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [customQuestion, setCustomQuestion] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addErr, setAddErr] = useState('');
 
   const report = (qs) => onCountChange?.(qs.filter((x) => x.selected).length);
   const load = () => getCompetency(projectId).then((d) => { setQuestions(d.questions); report(d.questions); }).catch((e) => setErr(e.message));
@@ -227,22 +236,46 @@ export function DomainQuestionsBlock({ projectId, generating, onCountChange }) {
     });
   };
 
+  const addCustom = async (event) => {
+    event.preventDefault();
+    const question = customQuestion.trim();
+    if (!question) return;
+    setAdding(true); setAddErr('');
+    try {
+      const result = await addCompetency(projectId, question);
+      setQuestions(result.questions);
+      report(result.questions);
+      setCustomQuestion('');
+    } catch (e) { setAddErr(e.message); } finally { setAdding(false); }
+  };
+
   if (err) return <div className="lerr">{err}</div>;
   if (!questions) return <div className="empty" style={{ padding: '14px 0' }}>加载中…</div>;
   const selectedCount = questions.filter((q) => q.selected).length;
+  const customForm = (
+    <form className="cq-add" onSubmit={addCustom}>
+      <input aria-label="自定义领域问题" maxLength={500} placeholder="输入自定义领域问题"
+        value={customQuestion} onChange={(event) => setCustomQuestion(event.target.value)} />
+      <BusyButton type="submit" busy={adding} busyText="添加中" className="btn"
+        disabled={adding || !customQuestion.trim()}>添加并选中</BusyButton>
+      {addErr && <div className="lerr cq-add-error">{addErr}</div>}
+    </form>
+  );
 
   if (!questions.length) {
     if (generating && !busy) {
-      return <div style={{ padding: '6px 0', fontSize: 12.5, color: 'var(--ink2)' }}><span className="spinner" style={{ marginRight: 8 }} />候选生成中（切换页面不影响）…</div>;
+      return <div>{customForm}<div style={{ padding: '6px 0', fontSize: 12.5, color: 'var(--ink2)' }}><span className="spinner" style={{ marginRight: 8 }} />候选生成中（切换页面不影响）…</div></div>;
     }
     return (
       <div style={{ padding: '6px 0' }}>
+        {customForm}
         <BusyButton busy={busy} busyText="生成候选中" expect="约 30~60 秒" className="btn" onClick={propose}>生成领域问题候选</BusyButton>
       </div>
     );
   }
   return (
     <div>
+      {customForm}
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
         <span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>已选 <b>{selectedCount}</b> / {questions.length}</span>
         <BusyButton busy={busy} busyText="重新生成中" className="btn" style={{ marginLeft: 'auto', padding: '4px 12px', fontSize: 12 }} onClick={propose}>重新生成候选</BusyButton>
@@ -251,6 +284,7 @@ export function DomainQuestionsBlock({ projectId, generating, onCountChange }) {
         <button key={q.id} className={`cq-item ${q.selected ? 'on' : ''}`} onClick={() => toggleSel(q)}>
           <span className="cq-check">{q.selected ? '☑' : '☐'}</span>
           <span>{q.question}</span>
+          {q.source === 'custom' && <span className="tag tag-lang cq-source">自定义</span>}
         </button>
       ))}
     </div>
@@ -259,28 +293,60 @@ export function DomainQuestionsBlock({ projectId, generating, onCountChange }) {
 
 /* ================= 节点 5 · 知识包生成 ================= */
 
+const PACKAGE_DATA_SOURCE_HELP_ID = 'package-data-source-resource-help';
+
+export function PackageDataSourceHelp() {
+  return (
+    <span className="pkg-source-help">
+      <button type="button" className="pkg-source-help-icon" aria-label="查看数据源映射说明"
+        aria-describedby={PACKAGE_DATA_SOURCE_HELP_ID}>?</button>
+      <span id={PACKAGE_DATA_SOURCE_HELP_ID} className="pkg-source-tooltip" role="tooltip">
+        {PACKAGE_DATA_SOURCE_HELP}
+      </span>
+    </span>
+  );
+}
+
 export function GeneratePanel({ projectId, node, onRefresh, onAdvance }) {
   const [localResult, setLocalResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [dataSourceType, setDataSourceType] = useState(node?.output?.dataSourceType ?? '');
 
   // 状态从服务端节点复原：切页/回项目列表再进来，进行中与结果都不丢
   const serverRunning = node?.status === 'running';
   const serverResult = !localResult && node?.status === 'done' && node.output ? node.output : null;
   const result = localResult ?? serverResult;
   const running = busy || serverRunning;
+  useEffect(() => {
+    if (node?.output?.dataSourceType) setDataSourceType(node.output.dataSourceType);
+  }, [node?.output?.dataSourceType]);
   // 服务端 running 超过 15 分钟视为疑似中断（进程重启等），允许重新触发
   const runStaleMin = serverRunning && node?.updatedAt ? (Date.now() - new Date(node.updatedAt).getTime()) / 60000 : 0;
 
   const gen = async () => {
+    if (!dataSourceType) { setErr('请选择后续使用的数据源'); return; }
     setBusy(true); setErr('');
-    try { setLocalResult(await generatePackage(projectId)); onRefresh?.(); }
+    try { setLocalResult(await generatePackage(projectId, dataSourceType)); onRefresh?.(); }
     catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
   return (
     <div>
       {err && <div className="lerr">{err}</div>}
+      <div className="field pkg-source-field">
+        <div className="pkg-source-label-row">
+          <label htmlFor="package-data-source">后续使用的数据源</label>
+          <PackageDataSourceHelp />
+        </div>
+        <select id="package-data-source" value={dataSourceType} disabled={running}
+          onChange={(event) => setDataSourceType(event.target.value)}>
+          <option value="" disabled>请选择数据源</option>
+          {PACKAGE_DATA_SOURCE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </div>
       {!result ? (
         <div style={{ textAlign: 'center', padding: '48px 0' }}>
           {serverRunning && !busy ? (
@@ -297,7 +363,8 @@ export function GeneratePanel({ projectId, node, onRefresh, onAdvance }) {
             </div>
           ) : (
             <>
-              <BusyButton busy={busy} busyText="生成中" expect="规格较大时可达数分钟，可切换页面" onClick={gen}>▶ 生成知识包</BusyButton>
+              <BusyButton busy={busy} busyText="生成中" expect="规格较大时可达数分钟，可切换页面"
+                disabled={busy || !dataSourceType} onClick={gen}>▶ 生成知识包</BusyButton>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>基于数据字典、访谈结论与选中的领域问题产出标准包结构</div>
             </>
           )}
@@ -318,7 +385,8 @@ export function GeneratePanel({ projectId, node, onRefresh, onAdvance }) {
             <div key={q} className="cov-row bad">✗ 未覆盖：{q}</div>
           ))}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
-            <BusyButton busy={running} busyText="重新生成中" expect="数分钟" className="btn" onClick={gen}>重新生成</BusyButton>
+            <BusyButton busy={running} busyText="重新生成中" expect="数分钟" className="btn"
+              disabled={running || !dataSourceType} onClick={gen}>重新生成</BusyButton>
             <button className="btn btn-p" onClick={onAdvance}>进入知识包完善 →</button>
           </div>
         </div>

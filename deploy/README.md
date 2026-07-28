@@ -82,7 +82,7 @@ MODELING_LLM_API_KEY=sk-xxx \
 
 ### 3.2 形态 D 附加说明（评测闭环）
 
-`--with-eval` 会启动 `eval-mysql` 并把 `EVAL_DB_URL` 自动接到它（`mysql://root:REPLACE_WITH_STRONG_PASSWORD@eval-mysql:3306`，密码可用 `EVAL_MYSQL_ROOT_PASSWORD` 覆盖）。建模工具会把每个项目上传的 Excel 数据落到该库的 `mw_proj_<项目id>` schema，供查询类评测用例使用。
+`--with-eval` 会启动 `eval-mysql` 并把 `EVAL_DB_URL` 自动接到它（`mysql://root:REPLACE_WITH_STRONG_PASSWORD@eval-mysql:3306`，密码可用 `EVAL_MYSQL_ROOT_PASSWORD` 覆盖）。建模工具和 NL2SQL 服务共用该连接；每个项目以 Scene 区分数据库，可创建固定名称 `mv_shadow_<项目id>`，Excel 会直接写入该数据库供查询类评测用例使用。建库和导入前页面会展示隐藏密码后的连接供确认，也可仅为本次项目操作输入其他 URL；该值不会持久化或覆盖 `EVAL_DB_URL`。
 
 查询类用例还需要一个数据服务（NL2SQL 桥接）供 consumer 侧查询评测库，这是一个宿主进程（暂无容器化），按需启动：
 
@@ -171,7 +171,7 @@ curl -fsS http://127.0.0.1:5100/health            # 预期 HTTP 200
 | `MODELING_TASK_LLM_*` | 空 | 预留项，当前版本未生效（判分/摘要与建模均使用主模型） |
 | `AUTH_ISSUER_URL` | `http://backend:5055` | 登录转发目标（= consumer），部署期固定、页面不可改 |
 | `CONSUMER_API_URL` | `http://backend:5055` | 评测用 consumer 地址默认值（页面可覆盖） |
-| `EVAL_DB_URL` | 空 | 评测库 MySQL；`--with-eval` 时脚本自动设为 `mysql://root:REPLACE_WITH_STRONG_PASSWORD@eval-mysql:3306` |
+| `EVAL_DB_URL` | 空 | NL2SQL 查询与 modeling 建库/Excel 导入共用的 MySQL 连接；`--with-eval` 时脚本自动设为 `mysql://root:REPLACE_WITH_STRONG_PASSWORD@eval-mysql:3306` |
 | `PORT` / `DATA_DIR` | `5100` / `/data`（卷 `modeling-data`） | 服务端口 / SQLite 数据目录 |
 | compose：`MODELING_PORT` / `MODELING_TAG` | `5100` / `latest` | 宿主端口 / 镜像 tag |
 | compose：`CONSUMER_NETWORK` | `consumer_onto-agent-network` | consumer 网络实际名（脚本自动探测注入） |

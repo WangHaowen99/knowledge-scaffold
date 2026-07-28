@@ -15,19 +15,12 @@ export const neo4jInput = (overrides: Record<string, unknown> = {}) => ({
   config: neo4jConfig(overrides),
 });
 
-export const evaluationDatabaseConfig = (overrides: Record<string, unknown> = {}) => ({
-  engine: 'mysql', host: 'mysql.local', port: 3306, database: 'evaluation',
-  username: 'root', password: 'db-secret',
-  ...overrides,
-});
-
 export const nl2sqlInput = (overrides: Record<string, unknown> = {}) => ({
   mode: 'connection' as const,
   provider: 'nl2sql_template' as const,
   config: {
     url: 'http://nl2sql:8080', token: 'token-value', scene: 'evaluation',
     evaluation_workspace_id: 'nl2sql-eval',
-    evaluation_database: evaluationDatabaseConfig(),
     ...overrides,
   },
 });

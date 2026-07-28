@@ -10,6 +10,7 @@ import PackageChat from './PackageChat.jsx';
 import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
 import { latestNodeOf } from './workflowNodes.js';
+import { workbenchAutoFocus } from './workbench-focus.js';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
 // 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
@@ -97,15 +98,16 @@ export default function Workbench({ projectId }) {
     optimize: stageIdx >= STAGE_INDEX.optimize ? 'done' : 'pending',
   };
   // 自动焦点：最靠后的已解锁未完成节点（进入评测阶段后跟随 stage）
-  const autoFocus = !unlocked.analyze ? 'ingest'
-    : !analyzeDone || cqSelected < 5 ? (tables.length ? 'analyze' : 'ingest')
-    : !interviewDone ? 'interview'
-    : !generateDone ? 'generate'
-    : project.stage === 'optimize' ? 'optimize'
-    : project.stage === 'evaluate' ? 'evaluate'
-    : project.stage === 'testcases' ? 'testcases'
-    : project.stage === 'data_source' ? 'data_source'
-    : 'review';
+  const autoFocus = workbenchAutoFocus({
+    analyzeUnlocked: unlocked.analyze,
+    hasTables: tables.length > 0,
+    analyzeDone: !!analyzeDone,
+    interviewUnlocked: unlocked.interview,
+    interviewStarted: !!interviewNode,
+    interviewDone,
+    generateDone: !!generateDone,
+    stage: project.stage,
+  });
   const effFocus = focus && unlocked[focus] ? focus : autoFocus;
 
   const analyzeRunning = analyzing || analyzeNode?.status === 'running';

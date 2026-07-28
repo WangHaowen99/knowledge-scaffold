@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { createProject, getProject, listProjects, setStage } from './projects/repo.js';
+import { deleteProjectLocalData } from './projects/delete-service.js';
 import { insertDocument, listDocuments, getDocument, deleteDocument } from './documents/repo.js';
 import { kindOf, parseDocument } from './documents/parser.js';
 import { latestNodeOf, listNodes, runAnalyze, upsertNode } from './workflow/engine.js';
@@ -15,11 +16,12 @@ import { packageChatPlan, packageChatApply, getOverrides, setOverride, clearOver
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
-import { startEvaluation } from './evaluation/engine.js';
+import { isEvaluationActive, startEvaluation } from './evaluation/engine.js';
 import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
 import type { DataSourceConsumerSync } from './evaluation/data-source-consumer-sync.js';
+import { getRunningEvaluationDatabaseImportRun } from './evaluation/eval-db-import-repo.js';
 import {
   assertProjectEvaluationDatabaseImportAvailable,
   EvaluationDatabaseImportAlreadyRunningError,
@@ -30,8 +32,13 @@ import {
 } from './evaluation/eval-db-import-service.js';
 import {
   createProjectEvaluationDatabase,
+  projectEvaluationDatabaseName,
   type ProjectDatabaseCreationDependencies,
 } from './evaluation/project-evaluation-database.js';
+import {
+  evaluationDatabaseUrlSummary,
+  selectEvaluationDatabaseUrlOverride,
+} from './evaluation/evaluation-database-target.js';
 import {
   cancelGraphImportUpload,
   executeGraphImport,
@@ -42,11 +49,13 @@ import {
   type GraphImportExecutionDependencies,
 } from './graph-import/service.js';
 import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
+import { getRunningGraphImportRun } from './graph-import/repo.js';
 import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
 import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-operations.js';
+import { parsePackageDataSourceType } from './workflow/package-data-source.js';
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -59,27 +68,34 @@ export interface RegisterRoutesOptions {
 async function readEvaluationDatabaseUpload(req: any): Promise<{
   filename: string;
   buffer: Buffer;
-  password: string;
   replaceConfirmed: boolean;
+  databaseUrl?: string;
 }> {
   let filename = '';
   let buffer: Buffer | undefined;
-  let password = '';
   let replaceConfirmed = false;
+  let databaseUrlMode = '';
+  let customDatabaseUrl = '';
   for await (const part of req.parts()) {
     if (part.type === 'file') {
       if (buffer) throw new Error('一次只能上传一个 Excel 文件');
       filename = part.filename;
       buffer = await part.toBuffer();
-    } else if (part.fieldname === 'password') {
-      password = String(part.value ?? '');
     } else if (part.fieldname === 'replace_confirmation') {
       replaceConfirmed = String(part.value ?? '') === 'replace_same_name_tables';
+    } else if (part.fieldname === 'database_url_mode') {
+      databaseUrlMode = String(part.value ?? '');
+    } else if (part.fieldname === 'database_url') {
+      customDatabaseUrl = String(part.value ?? '');
     }
   }
   if (!buffer) throw new Error('缺少 Excel 文件');
-  if (!password.trim()) throw new Error('本次导入的评测库 Password 不能为空');
-  return { filename, buffer, password, replaceConfirmed };
+  return {
+    filename,
+    buffer,
+    replaceConfirmed,
+    databaseUrl: selectEvaluationDatabaseUrlOverride(databaseUrlMode, customDatabaseUrl),
+  };
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
@@ -239,18 +255,20 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/documents', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
-      const file = await (req as any).file();
-      if (!file) return reply.code(400).send({ error: '缺少上传文件' });
-      const buffer = await file.toBuffer();
-      const kind = kindOf(file.filename);
-      const result = await parseDocument(kind, buffer);
-      const doc = insertDocument({
-        projectId: p.id, filename: file.filename, kind,
-        parseStatus: result.error ? 'failed' : 'parsed', parseError: result.error,
-        textContent: result.textContent, tables: result.tables,
+      return withLock(`${p.id}:document-upload`, reply, async () => {
+        const file = await (req as any).file();
+        if (!file) return reply.code(400).send({ error: '缺少上传文件' });
+        const buffer = await file.toBuffer();
+        const kind = kindOf(file.filename);
+        const result = await parseDocument(kind, buffer);
+        const doc = insertDocument({
+          projectId: p.id, filename: file.filename, kind,
+          parseStatus: result.error ? 'failed' : 'parsed', parseError: result.error,
+          textContent: result.textContent, tables: result.tables,
+        });
+        if (p.stage === 'project_setup') setStage(p.id, 'ingest');
+        return reply.code(201).send({ document: doc });
       });
-      if (p.stage === 'project_setup') setStage(p.id, 'ingest');
-      return reply.code(201).send({ document: doc });
     });
 
     r.delete('/api/projects/:id/documents/:docId', async (req, reply) => {
@@ -313,6 +331,34 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
     };
 
+    r.delete('/api/projects/:id', async (req, reply) => {
+      const p = getProject((req.params as any).id);
+      if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
+      if ((req.body as { confirmed?: boolean } | null)?.confirmed !== true) {
+        return reply.code(400).send({ error: '请确认删除项目' });
+      }
+      const runningOperation = inFlight.currentByPrefix(`${p.id}:`)
+        ?? (isEvaluationActive(p.id) ? 'evaluate' : null)
+        ?? (getRunningGraphImportRun(p.id) ? 'graph-import' : null)
+        ?? (getRunningEvaluationDatabaseImportRun(p.id) ? 'evaluation-database-import' : null);
+      if (runningOperation) {
+        return reply.code(409).send({
+          code: 'PROJECT_BUSY',
+          error: '项目正在执行任务，请等待完成后再删除',
+          operation: runningOperation,
+        });
+      }
+      try {
+        if (!deleteProjectLocalData(p.id, req.user!.username)) {
+          return reply.code(404).send({ error: '项目不存在' });
+        }
+        return { deleted: p.id };
+      } catch (error) {
+        req.log.error({ err: error, projectId: p.id }, '删除项目失败');
+        return reply.code(500).send({ error: error instanceof Error ? error.message : '项目删除失败，请稍后重试' });
+      }
+    });
+
     // 取项目 + 数据字典上下文的公共辅助
     const loadCtx = (id: string, username: string) => {
       const p = getProject(id);
@@ -337,11 +383,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const selectedCq = m2repo.listCompetency(c.p.id).filter((q) => q.selected).length;
       if (selectedCq < 5) return reply.code(400).send({ error: `请先在领域分析中勾选至少 5 条领域问题（当前 ${selectedCq} 条）` });
-      try {
-        const res = await m2.startInterview(c.p, c.ctx, c.analysis);
-        setProjectStage(c.p.id, 'interview');
-        return res;
-      } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      return withLock(`${c.p.id}:interview`, reply, async () => {
+        try {
+          const res = await m2.startInterview(c.p, c.ctx, c.analysis);
+          setProjectStage(c.p.id, 'interview');
+          return res;
+        } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      });
     });
 
     r.post('/api/projects/:id/interview/answer', async (req, reply) => {
@@ -349,9 +397,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const { batchId, answers } = (req.body ?? {}) as any;
       if (!batchId || !Array.isArray(answers)) return reply.code(400).send({ error: 'batchId 与 answers 必填' });
-      try {
-        return await m2.answerInterview(c.p, c.ctx, batchId, answers);
-      } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      return withLock(`${c.p.id}:interview`, reply, async () => {
+        try {
+          return await m2.answerInterview(c.p, c.ctx, batchId, answers);
+        } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      });
     });
 
     // ---- 节点 5 胜任力 ----
@@ -359,6 +409,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       return { questions: m2repo.listCompetency(c.p.id) };
+    });
+    r.post('/api/projects/:id/competency', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const question = String((req.body as any)?.question ?? '').trim();
+      if (!question) return reply.code(400).send({ error: '领域问题不能为空' });
+      if (question.length > 500) return reply.code(400).send({ error: '领域问题不能超过 500 个字符' });
+      const added = m2repo.addCustomCompetency(c.p.id, question);
+      return reply.code(201).send({ question: added, questions: m2repo.listCompetency(c.p.id) });
     });
     r.post('/api/projects/:id/competency/propose', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -383,6 +442,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/generate', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      let dataSourceType;
+      try {
+        dataSourceType = parsePackageDataSourceType((req.body as any)?.dataSourceType);
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
       return withLock(`${c.p.id}:generate`, reply, async () => {
       const interviewNode = latestNodeOf(listNodes(c.p.id), 'interview');
       if (interviewNode?.status !== 'done') {
@@ -391,9 +456,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected);
       if (selected.length < 5) return reply.code(400).send({ error: '请先在胜任力问题中至少勾选 5 条' });
       try {
-        const { spec, coverage, version } = await m2.generatePackage(c.p, c.ctx);
+        const { spec, coverage, version } = await m2.generatePackage(c.p, c.ctx, undefined, dataSourceType);
         setProjectStage(c.p.id, 'generate');
-        return { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length };
+        return { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length, dataSourceType };
       } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
       });
     });
@@ -558,55 +623,79 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const token = (req.headers.authorization ?? '').slice(7);
       const input = { ...((req.body ?? {}) as any) };
+      return withLock(`${c.p.id}:data-source`, reply, async () => {
+        try {
+          const dataSource = await configureProjectDataSource({
+            projectId: c.p.id,
+            token,
+            input,
+            testConnection: options.dataSourceConnectionTester,
+            syncConnection: options.dataSourceConsumerSync,
+          });
+          setProjectStage(c.p.id, 'data_source');
+          return { dataSource };
+        } catch (e) {
+          return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+        }
+      });
+    });
+
+    r.get('/api/projects/:id/evaluation-database/target', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
       try {
-        const dataSource = await configureProjectDataSource({
-          projectId: c.p.id,
-          token,
-          input,
-          testConnection: options.dataSourceConnectionTester,
-          syncConnection: options.dataSourceConsumerSync,
-        });
-        setProjectStage(c.p.id, 'data_source');
-        return { dataSource };
-      } catch (e) {
-        return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+        return {
+          database: projectEvaluationDatabaseName(c.p.id),
+          ...evaluationDatabaseUrlSummary(options.evaluationDatabaseDependencies?.databaseUrl),
+        };
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
       }
     });
 
     r.post('/api/projects/:id/evaluation-database/project-database', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      try {
-        const result = await createProjectEvaluationDatabase({
-          projectId: c.p.id,
-          config: req.body,
-        }, options.evaluationDatabaseDependencies);
-        return reply.code(result.created ? 201 : 200).send(result);
-      } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
-      }
+      return withLock(`${c.p.id}:evaluation-database-create`, reply, async () => {
+        try {
+          const body = (req.body ?? {}) as Record<string, unknown>;
+          const databaseUrl = selectEvaluationDatabaseUrlOverride(
+            body.database_url_mode,
+            body.database_url,
+          );
+          const result = await createProjectEvaluationDatabase({
+            projectId: c.p.id,
+            databaseUrl,
+          }, options.evaluationDatabaseDependencies);
+          return reply.code(result.created ? 201 : 200).send(result);
+        } catch (error) {
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      });
     });
 
     r.post('/api/projects/:id/evaluation-database/import', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      try {
-        assertProjectEvaluationDatabaseImportAvailable(c.p.id);
-        const upload = await readEvaluationDatabaseUpload(req);
-        const result = startProjectEvaluationDatabaseImport({
-          projectId: c.p.id,
-          ...upload,
-        }, options.evaluationDatabaseDependencies);
-        return reply.code(202).send(result);
-      } catch (error) {
-        if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
-          return reply.code(409).send({ error: error.message, run: error.run });
+      return withLock(`${c.p.id}:evaluation-database-import`, reply, async () => {
+        try {
+          assertProjectEvaluationDatabaseImportAvailable(c.p.id);
+          const upload = await readEvaluationDatabaseUpload(req);
+          const result = startProjectEvaluationDatabaseImport({
+            projectId: c.p.id,
+            ...upload,
+          }, options.evaluationDatabaseDependencies);
+          return reply.code(202).send(result);
+        } catch (error) {
+          if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
+            return reply.code(409).send({ error: error.message, run: error.run });
+          }
+          if (error instanceof EvaluationDatabaseImportCapacityError) {
+            return reply.code(429).send({ error: error.message });
+          }
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
-        if (error instanceof EvaluationDatabaseImportCapacityError) {
-          return reply.code(429).send({ error: error.message });
-        }
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
-      }
+      });
     });
 
     r.get('/api/projects/:id/evaluation-database/imports', async (req, reply) => {
@@ -620,19 +709,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/graph-import/uploads', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      try {
-        const file = await (req as any).file();
-        if (!file) return reply.code(400).send({ error: '缺少 Excel 文件' });
-        const upload = uploadGraphImportExcel({
-          projectId: c.p.id,
-          owner: req.user!.username,
-          filename: file.filename,
-          buffer: await file.toBuffer(),
-        });
-        return reply.code(201).send({ upload });
-      } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
-      }
+      return withLock(`${c.p.id}:graph-upload`, reply, async () => {
+        try {
+          const file = await (req as any).file();
+          if (!file) return reply.code(400).send({ error: '缺少 Excel 文件' });
+          const upload = uploadGraphImportExcel({
+            projectId: c.p.id,
+            owner: req.user!.username,
+            filename: file.filename,
+            buffer: await file.toBuffer(),
+          });
+          return reply.code(201).send({ upload });
+        } catch (error) {
+          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+      });
     });
 
     r.post('/api/projects/:id/graph-import/uploads/:uploadId/validate', async (req, reply) => {

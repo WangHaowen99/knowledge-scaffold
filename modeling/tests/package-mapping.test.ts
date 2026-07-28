@@ -66,6 +66,30 @@ test('package mapping：对象、字段和主键统一使用稳定 key', () => {
   assert.match(files['objects/DataObject.md'], /mapping:\n  provider_alias: data\n  resource: DataObject/);
 });
 
+test('package mapping：NL2SQL 与 MindsDB 使用来源 Sheet，Neo4j 使用 object key', () => {
+  for (const dataSourceType of ['nl2sql', 'mindsdb'] as const) {
+    const spec = { ...packageSpec(), dataSourceType };
+    const files = renderPackage(spec);
+    const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
+
+    assert.equal(mappings.objects.DataObject.resource, 'DataSheet');
+    assert.equal(mappings.objects.ConceptObject.resource, 'DataSheet');
+    assert.match(files['objects/DataObject.md'], /mapping:\n  provider_alias: data\n  resource: DataSheet/);
+    assert.deepEqual(runFormatChecks(spec, files), []);
+  }
+
+  const neo4j = { ...packageSpec(), dataSourceType: 'neo4j' as const };
+  const neo4jFiles = renderPackage(neo4j);
+  const neo4jMappings = JSON.parse(neo4jFiles['mappings/object-data-mappings.json']);
+  assert.equal(neo4jMappings.objects.DataObject.resource, 'DataObject');
+  assert.deepEqual(runFormatChecks(neo4j, neo4jFiles), []);
+});
+
+test('package mapping：未声明数据源类型的历史规格继续使用 object key', () => {
+  const mappings = JSON.parse(renderPackage(packageSpec())['mappings/object-data-mappings.json']);
+  assert.equal(mappings.objects.DataObject.resource, 'DataObject');
+});
+
 test('package mapping：中文名缺失或重复时稳定 key 不变', () => {
   const variants = [
     (spec: PackageSpec) => { delete spec.objects[0].fields[0].cnName; },

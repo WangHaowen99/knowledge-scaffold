@@ -1,9 +1,5 @@
 import { getProjectDataSource } from './data-source-repo.js';
 import {
-  normalizeEvaluationDatabaseConfig,
-  type EvaluationDataSourceProvider,
-} from './data-source.js';
-import {
   importEvaluationDatabaseExcel,
   validateEvaluationDatabaseExcelUpload,
   type EvaluationDatabaseDependencies,
@@ -17,17 +13,20 @@ import {
   listEvaluationDatabaseImportRuns,
   type EvaluationDatabaseImportRun,
 } from './eval-db-import-repo.js';
+import {
+  redactEvaluationDatabaseError,
+  resolveEvaluationDatabaseTarget,
+  type EvaluationDatabaseTarget,
+} from './evaluation-database-target.js';
 
-const NL2SQL_PROVIDERS = new Set<EvaluationDataSourceProvider>([
-  'nl2sql_template',
-  'nl2sql_http',
-]);
 const MAX_CONCURRENT_EVALUATION_DATABASE_IMPORTS = 1;
+const NL2SQL_PROVIDERS = new Set(['nl2sql_template', 'nl2sql_http']);
 
 export type EvaluationDatabaseImportTaskScheduler = (task: () => Promise<void>) => void;
 
 export interface EvaluationDatabaseImportServiceDependencies
   extends EvaluationDatabaseDependencies {
+  databaseUrl?: string;
   schedule?: EvaluationDatabaseImportTaskScheduler;
   importExcel?: typeof importEvaluationDatabaseExcel;
 }
@@ -54,39 +53,31 @@ const scheduleBackgroundTask: EvaluationDatabaseImportTaskScheduler = (task) => 
   setImmediate(() => { void task().catch(() => undefined); });
 };
 
-function safeError(error: unknown, password: string): string {
-  let message = error instanceof Error ? error.message : String(error);
-  if (password) message = message.split(password).join('[REDACTED]');
-  return message.slice(0, 2_000);
-}
-
-function loadEvaluationDatabaseConfig(projectId: string, password: string) {
+function loadEvaluationDatabaseTarget(
+  projectId: string,
+  databaseUrl?: string,
+): EvaluationDatabaseTarget {
   const dataSource = getProjectDataSource(projectId);
   if (dataSource?.mode !== 'connection'
     || !dataSource.provider
     || !NL2SQL_PROVIDERS.has(dataSource.provider)) {
     throw new Error('请先保存并测试 NL2SQL 数据源配置');
   }
-  const savedDatabase = dataSource.config.evaluation_database;
-  return normalizeEvaluationDatabaseConfig({
-    ...(savedDatabase && typeof savedDatabase === 'object' ? savedDatabase : {}),
-    password,
-  });
+  return resolveEvaluationDatabaseTarget(dataSource.config.scene, databaseUrl);
 }
 
 async function runEvaluationDatabaseImportTask(input: {
   run: EvaluationDatabaseImportRun;
   filename: string;
   buffer: Buffer;
-  password: string;
-  config: ReturnType<typeof loadEvaluationDatabaseConfig>;
+  target: EvaluationDatabaseTarget;
   dependencies: EvaluationDatabaseImportServiceDependencies;
 }): Promise<void> {
   try {
     const importInput = {
       filename: input.filename,
       buffer: input.buffer,
-      config: input.config,
+      target: input.target,
     };
     let result;
     if (input.dependencies.importExcel) {
@@ -105,7 +96,7 @@ async function runEvaluationDatabaseImportTask(input: {
     finishEvaluationDatabaseImportRun(input.run.id, { result });
   } catch (error) {
     finishEvaluationDatabaseImportRun(input.run.id, {
-      error: safeError(error, input.password),
+      error: redactEvaluationDatabaseError(error, input.target).slice(0, 2_000),
     });
   }
 }
@@ -123,8 +114,8 @@ export function startProjectEvaluationDatabaseImport(
     projectId: string;
     filename: string;
     buffer: Buffer;
-    password: string;
     replaceConfirmed: boolean;
+    databaseUrl?: string;
   },
   dependencies: EvaluationDatabaseImportServiceDependencies = {},
 ): { run: EvaluationDatabaseImportRun } {
@@ -133,14 +124,15 @@ export function startProjectEvaluationDatabaseImport(
     throw new Error('请先确认 Excel 中的同名表将替换目标数据库中的现有表');
   }
 
-  const password = String(input.password ?? '');
-  const config = loadEvaluationDatabaseConfig(input.projectId, password);
+  const target = loadEvaluationDatabaseTarget(
+    input.projectId,
+    input.databaseUrl || dependencies.databaseUrl,
+  );
   validateEvaluationDatabaseExcelUpload(input.filename, input.buffer);
   const run = createEvaluationDatabaseImportRun({
     projectId: input.projectId,
     filename: input.filename,
-    engine: config.engine,
-    database: config.database,
+    database: target.database,
   });
   const schedule = dependencies.schedule ?? scheduleBackgroundTask;
   try {
@@ -148,12 +140,13 @@ export function startProjectEvaluationDatabaseImport(
       run,
       filename: input.filename,
       buffer: input.buffer,
-      password,
-      config,
+      target,
       dependencies,
     }));
   } catch (error) {
-    finishEvaluationDatabaseImportRun(run.id, { error: safeError(error, password) });
+    finishEvaluationDatabaseImportRun(run.id, {
+      error: redactEvaluationDatabaseError(error, target).slice(0, 2_000),
+    });
     throw error;
   }
   return { run };

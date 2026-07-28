@@ -3,49 +3,31 @@ export const PROVIDER_OPTIONS = [
   { value: 'nl2sql_http', label: 'NL2SQL HTTP' },
   { value: 'neo4j', label: 'Neo4j' },
 ];
-export const EVALUATION_DATABASE_OPTIONS = [
-  { value: 'mysql', label: 'MySQL', port: '3306' },
-  { value: 'postgresql', label: 'PostgreSQL', port: '5432' },
-];
 
 const CONSUMER_WORKSPACE_ID = /^[a-z][a-z0-9_-]*$/;
 const CONSUMER_WORKSPACE_ID_MAX_LENGTH = 64;
+const NL2SQL_SCENE = /^[a-zA-Z0-9_]{1,60}$/;
 
-export function projectEvaluationDatabaseName(projectId) {
-  const normalizedProjectId = String(projectId || '').trim().replace(/[^a-zA-Z0-9_]/g, '_');
-  return `mv_shadow_${normalizedProjectId}`.slice(0, 60);
+export function applyCreatedProjectDatabaseScene(form, database) {
+  return { ...form, scene: database };
 }
 
-function sceneUsesEvaluationDatabase(form) {
-  const database = String(form.eval_db_database || '').trim();
-  return database && String(form.scene || '').trim() === database;
-}
-
-export function switchEvaluationDatabaseEngine(form, engine) {
-  const option = EVALUATION_DATABASE_OPTIONS.find((candidate) => candidate.value === engine);
-  return {
-    ...form,
-    eval_db_engine: engine,
-    eval_db_port: option?.port || '',
-    eval_db_database: '',
-    scene: sceneUsesEvaluationDatabase(form) ? '' : form.scene,
-  };
-}
-
-export function changeEvaluationDatabaseName(form, database) {
-  return {
-    ...form,
-    eval_db_database: database,
-    scene: sceneUsesEvaluationDatabase(form) ? '' : form.scene,
-  };
-}
-
-export function applyCreatedEvaluationDatabaseName(form, database) {
-  const next = changeEvaluationDatabaseName(form, database);
-  return {
-    ...next,
-    scene: String(next.scene || '').trim() || database,
-  };
+export function evaluationDatabaseUrlSelectionError(mode, customUrl, defaultConfigured) {
+  if (mode === 'default') {
+    return defaultConfigured ? '' : '服务端未配置 EVAL_DB_URL，请选择并填写自定义 MySQL URL';
+  }
+  if (mode !== 'custom') return '请选择要使用的数据库连接';
+  const value = String(customUrl || '').trim();
+  if (!value) return '自定义数据库 URL 不能为空';
+  if (value.length > 2048) return '自定义数据库 URL 不能超过 2048 个字符';
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'mysql:') return '自定义数据库 URL 仅支持 mysql 协议';
+    if (!parsed.hostname) return '自定义数据库 URL 缺少数据库主机';
+  } catch {
+    return '自定义数据库 URL 格式非法';
+  }
+  return '';
 }
 
 export function emptyDataSourceForm(defaults = {}) {
@@ -56,13 +38,6 @@ export function emptyDataSourceForm(defaults = {}) {
     token: defaults.token || '',
     scene: defaults.scene || '',
     evaluation_workspace_id: '',
-    eval_db_engine: 'mysql',
-    eval_db_host: '',
-    eval_db_port: '3306',
-    eval_db_database: '',
-    eval_db_username: '',
-    eval_db_password: '',
-    eval_db_has_password: false,
     uri: '',
     username: '',
     password: '',
@@ -80,23 +55,32 @@ export function dataSourceToForm(dataSource, defaults = {}) {
   const form = emptyDataSourceForm(defaults);
   if (!dataSource) return form;
   const config = dataSource.config || {};
-  const evaluationDatabase = config.evaluation_database || {};
-  return {
+  const common = {
     ...form,
     mode: dataSource.mode || 'connection',
     provider: dataSource.provider || form.provider,
-    ...config,
-    eval_db_engine: evaluationDatabase.engine || 'mysql',
-    eval_db_host: evaluationDatabase.host || '',
-    eval_db_port: String(evaluationDatabase.port || (evaluationDatabase.engine === 'postgresql' ? 5432 : 3306)),
-    eval_db_database: evaluationDatabase.database || '',
-    eval_db_username: evaluationDatabase.username || '',
-    eval_db_password: '',
-    eval_db_has_password: Boolean(evaluationDatabase.has_password),
+  };
+  if (dataSource.provider === 'neo4j') {
+    return {
+      ...common,
+      uri: config.uri || '',
+      username: config.username || '',
+      database: config.database || 'neo4j',
+      workspace_property: config.workspace_property || '',
+      workspace_value: config.workspace_value || '',
+      ontology_property: config.ontology_property || '',
+      ontology_value: config.ontology_value || '',
+      password: '',
+      has_password: Boolean(config.has_password),
+    };
+  }
+  return {
+    ...common,
+    url: config.url || '',
+    scene: config.scene || '',
+    evaluation_workspace_id: config.evaluation_workspace_id || '',
     token: '',
-    password: '',
     has_token: Boolean(config.has_token),
-    has_password: Boolean(config.has_password),
   };
 }
 
@@ -126,39 +110,8 @@ export function dataSourceFormPayload(form) {
       token: form.token,
       scene: form.scene,
       evaluation_workspace_id: form.evaluation_workspace_id,
-      evaluation_database: {
-        engine: form.eval_db_engine,
-        host: form.eval_db_host,
-        port: form.eval_db_port,
-        database: form.eval_db_database,
-        username: form.eval_db_username,
-        password: form.eval_db_password,
-      },
     },
   };
-}
-
-function evaluationDatabaseConnectionError(form, requireDatabase) {
-  if (!EVALUATION_DATABASE_OPTIONS.some((option) => option.value === form.eval_db_engine)) {
-    return '评测库类型仅支持 MySQL 或 PostgreSQL';
-  }
-  if (!String(form.eval_db_host || '').trim()) return '评测库 Host 不能为空';
-  const port = Number(form.eval_db_port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return '评测库端口必须是 1 到 65535 之间的整数';
-  }
-  if (requireDatabase && !String(form.eval_db_database || '').trim()) {
-    return '评测库 Database 不能为空';
-  }
-  if (!String(form.eval_db_username || '').trim()) return '评测库 User 不能为空';
-  if (!String(form.eval_db_password || '').trim()) {
-    return '评测库 Password 每次保存并测试时都必须填写';
-  }
-  return '';
-}
-
-export function evaluationDatabaseServerFormError(form) {
-  return evaluationDatabaseConnectionError(form, false);
 }
 
 export function dataSourceFormError(form) {
@@ -173,9 +126,15 @@ export function dataSourceFormError(form) {
       return '评测工作空间 ID 格式非法：必须以英文小写字母开头，只能包含小写字母、数字、下划线或中划线，且最长 64 个字符';
     }
     if (!String(form.password || '').trim()) {
-      return 'Neo4j Password 每次保存并测试时都必须填写';
+      return 'Neo4j Password 每次保存并测试连接时都必须填写';
     }
     return '';
+  }
+  if (!String(form.url || '').trim()) return '数据服务 URL 不能为空';
+  const scene = String(form.scene || '').trim();
+  if (!scene) return 'Scene 不能为空';
+  if (!NL2SQL_SCENE.test(scene)) {
+    return 'Scene 格式非法：只能包含英文字母、数字或下划线，且最长 60 个字符';
   }
   const workspaceId = String(form.evaluation_workspace_id || '').trim();
   if (!workspaceId) return '评测工作空间 ID 不能为空';
@@ -183,7 +142,7 @@ export function dataSourceFormError(form) {
     || workspaceId.length > CONSUMER_WORKSPACE_ID_MAX_LENGTH) {
     return '评测工作空间 ID 格式非法：必须以英文小写字母开头，只能包含小写字母、数字、下划线或中划线，且最长 64 个字符';
   }
-  return evaluationDatabaseConnectionError(form, true);
+  return '';
 }
 
 export function providerLabel(provider) {

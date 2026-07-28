@@ -1,7 +1,4 @@
-import {
-  EVALUATION_DATABASE_OPTIONS,
-  PROVIDER_OPTIONS,
-} from './data-source-form.js';
+import { PROVIDER_OPTIONS } from './data-source-form.js';
 import {
   DATA_SOURCE_TOUR_TARGETS,
   ONTOLOGY_ID_SYNC_BUTTON_LABEL,
@@ -13,8 +10,6 @@ export default function DataSourceConnectionFields({
   syncingOntologyId,
   onFieldChange,
   onProviderChange,
-  onDatabaseEngineChange,
-  onDatabaseNameChange,
   creatingDatabase,
   onCreateProjectDatabase,
   onSyncOntologyId,
@@ -43,8 +38,6 @@ export default function DataSourceConnectionFields({
           form={form}
           busy={busy}
           onFieldChange={onFieldChange}
-          onDatabaseEngineChange={onDatabaseEngineChange}
-          onDatabaseNameChange={onDatabaseNameChange}
           creatingDatabase={creatingDatabase}
           onCreateProjectDatabase={onCreateProjectDatabase}
         />
@@ -93,70 +86,33 @@ function Nl2SqlFields({
   form,
   busy,
   onFieldChange,
-  onDatabaseEngineChange,
-  onDatabaseNameChange,
   creatingDatabase,
   onCreateProjectDatabase,
 }) {
-  const tokenPlaceholder = form.provider === 'nl2sql_template'
-    ? 'NL2SQL Template 必填，用于连接测试并同步至评测服务'
-    : '服务启用鉴权时填写（可选）';
+  const tokenPlaceholder = '服务启用鉴权时填写（可选）';
   return (
     <>
       <div className="ds-field-grid">
         <Field label="数据服务 URL" value={form.url} onChange={onFieldChange('url')} placeholder="http://localhost:5600"
           tourId={DATA_SOURCE_TOUR_TARGETS.url} />
-        <Field label="Scene" value={form.scene} onChange={onFieldChange('scene')} placeholder="留空使用评测库 Database"
-          tourId={DATA_SOURCE_TOUR_TARGETS.scene} />
+        <Field label="Scene" value={form.scene} onChange={onFieldChange('scene')} placeholder="例如 mv_shadow_project_id"
+          tourId={DATA_SOURCE_TOUR_TARGETS.scene}
+          action={(
+            <button type="button" className="btn" disabled={busy || creatingDatabase}
+              onClick={onCreateProjectDatabase}>
+              {creatingDatabase ? '读取中…' : '使用项目专用数据库'}
+            </button>
+          )} />
         <Field label="Token" type="password" value={form.token} onChange={onFieldChange('token')}
           placeholder={tokenPlaceholder} tourId={DATA_SOURCE_TOUR_TARGETS.token} />
         <Field label="评测工作空间 ID" value={form.evaluation_workspace_id}
           onChange={onFieldChange('evaluation_workspace_id')} placeholder="例如 nl2sql-eval"
           tourId={DATA_SOURCE_TOUR_TARGETS.evaluationWorkspace} />
       </div>
-
-      <div className="ds-section-title">评测库配置</div>
-      <div className="ds-field-grid">
-        <SelectField label="数据库类型" value={form.eval_db_engine}
-          onChange={onDatabaseEngineChange} options={EVALUATION_DATABASE_OPTIONS}
-          tourId={DATA_SOURCE_TOUR_TARGETS.evalDbEngine} />
-        <Field label="Host" value={form.eval_db_host} onChange={onFieldChange('eval_db_host')}
-          placeholder="127.0.0.1" tourId={DATA_SOURCE_TOUR_TARGETS.evalDbHost} />
-        <Field label="Port" type="number" value={form.eval_db_port} onChange={onFieldChange('eval_db_port')}
-          placeholder={form.eval_db_engine === 'postgresql' ? '5432' : '3306'}
-          tourId={DATA_SOURCE_TOUR_TARGETS.evalDbPort} />
-        <Field label="Database" value={form.eval_db_database} onChange={onDatabaseNameChange}
-          placeholder="evaluation" tourId={DATA_SOURCE_TOUR_TARGETS.evalDbDatabase}
-          action={(
-            <button type="button" className="btn" disabled={busy || creatingDatabase}
-              onClick={onCreateProjectDatabase}>
-              {creatingDatabase ? '创建中…' : '新建项目数据库'}
-            </button>
-          )} />
-        <Field label="User" value={form.eval_db_username} onChange={onFieldChange('eval_db_username')}
-          placeholder={form.eval_db_engine === 'postgresql' ? 'postgres' : 'root'}
-          tourId={DATA_SOURCE_TOUR_TARGETS.evalDbUser} />
-        <Field label="Password" type="password" value={form.eval_db_password}
-          onChange={onFieldChange('eval_db_password')} placeholder="每次保存并测试时填写"
-          tourId={DATA_SOURCE_TOUR_TARGETS.evalDbPassword} />
-      </div>
       <div className="ds-field-hint">
-        保存时会同时测试 NL2SQL 服务与评测库；密码不落库。Excel 导入会替换目标 Database 中与 Sheet 同名的表。
+        Scene 对应 MySQL 数据库；使用项目专用数据库和 Excel 导入时，都会先确认服务端连接或仅为本次操作指定其他 URL。
       </div>
     </>
-  );
-}
-
-function SelectField({ label, value, onChange, options, tourId }) {
-  return (
-    <div className="field" data-tour={tourId}>
-      <label>{label}</label>
-      <select value={value} onChange={onChange}>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-    </div>
   );
 }
 

@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
-import type { EvaluationDatabaseEngine } from './data-source.js';
 import type { EvaluationDatabaseImportResult } from './eval-db.js';
 
 export type EvaluationDatabaseImportRunStatus = 'running' | 'done' | 'failed';
@@ -9,7 +8,6 @@ export interface EvaluationDatabaseImportRun {
   id: string;
   projectId: string;
   filename: string;
-  engine: EvaluationDatabaseEngine;
   database: string;
   status: EvaluationDatabaseImportRunStatus;
   tableCount: number;
@@ -25,7 +23,6 @@ function rowToRun(row: any): EvaluationDatabaseImportRun {
     id: row.id,
     projectId: row.project_id,
     filename: row.filename,
-    engine: row.engine,
     database: row.database_name,
     status: row.status,
     tableCount: row.table_count,
@@ -64,14 +61,13 @@ export function getRunningEvaluationDatabaseImportCount(): number {
 export function createEvaluationDatabaseImportRun(input: {
   projectId: string;
   filename: string;
-  engine: EvaluationDatabaseEngine;
   database: string;
 }): EvaluationDatabaseImportRun {
   const id = `edir_${randomUUID().slice(0, 16)}`;
   getDb().prepare(`INSERT INTO evaluation_database_import_runs
-      (id, project_id, filename, engine, database_name, status, created_at)
-    VALUES (?,?,?,?,?,'running',?)`)
-    .run(id, input.projectId, input.filename, input.engine, input.database, nowIso());
+      (id, project_id, filename, database_name, status, created_at)
+    VALUES (?,?,?,?,'running',?)`)
+    .run(id, input.projectId, input.filename, input.database, nowIso());
   return getEvaluationDatabaseImportRun(id)!;
 }
 

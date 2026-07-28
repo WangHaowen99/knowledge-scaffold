@@ -1,31 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  getEvaluationDatabaseTarget,
   importEvaluationDatabase,
   listEvaluationDatabaseImports,
 } from './api.js';
-
-const engineLabel = (engine) => engine === 'postgresql' ? 'PostgreSQL' : 'MySQL';
+import EvaluationDatabaseUrlConfirmModal from './EvaluationDatabaseUrlConfirmModal.jsx';
 
 export default function EvaluationDatabaseImportPanel({
   projectId,
   dataSource,
-  initialPassword = '',
   onContinue,
 }) {
   const [file, setFile] = useState(null);
-  const [password, setPassword] = useState(initialPassword);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [run, setRun] = useState(null);
   const [replaceConfirmed, setReplaceConfirmed] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [targetLoading, setTargetLoading] = useState(false);
+  const [targetRequest, setTargetRequest] = useState(null);
+  const [targetError, setTargetError] = useState('');
   const fileInputRef = useRef(null);
-  const database = dataSource.config?.evaluation_database || {};
+  const database = dataSource.config?.scene || '';
   const contextKey = `${projectId}:${dataSource.updatedAt || ''}`;
   const contextRef = useRef(contextKey);
   contextRef.current = contextKey;
   const running = run?.status === 'running';
-  const controlsDisabled = busy || running || historyLoading;
+  const controlsDisabled = busy || targetLoading || running || historyLoading;
 
   const loadRuns = async (requestContext, preferredRunId = '') => {
     try {
@@ -48,12 +49,14 @@ export default function EvaluationDatabaseImportPanel({
 
   useEffect(() => {
     setFile(null);
-    setPassword(initialPassword);
     setBusy(false);
     setError('');
     setRun(null);
     setReplaceConfirmed(false);
     setHistoryLoading(true);
+    setTargetLoading(false);
+    setTargetRequest(null);
+    setTargetError('');
     if (fileInputRef.current) fileInputRef.current.value = '';
     void loadRuns(contextKey);
   }, [contextKey]);
@@ -68,28 +71,45 @@ export default function EvaluationDatabaseImportPanel({
     return () => window.clearInterval(timer);
   }, [contextKey, run?.id, running]);
 
-  const submit = async () => {
+  const requestSubmit = async () => {
     if (!file) { setError('请选择 Excel 文件'); return; }
-    if (!password.trim()) { setError('本次导入的评测库 Password 不能为空'); return; }
     if (!replaceConfirmed) { setError('请先确认同名表替换规则'); return; }
     const requestContext = contextKey;
-    setBusy(true); setError(''); setRun(null);
+    setTargetLoading(true); setError(''); setTargetError('');
     try {
-      const response = await importEvaluationDatabase(projectId, file, password, true);
+      const response = await getEvaluationDatabaseTarget(projectId);
+      if (contextRef.current === requestContext) setTargetRequest(response);
+    } catch (targetLoadError) {
+      if (contextRef.current === requestContext) {
+        setError(`读取数据库连接失败：${targetLoadError.message}`);
+      }
+    } finally {
+      if (contextRef.current === requestContext) setTargetLoading(false);
+    }
+  };
+
+  const submit = async (selection) => {
+    const requestContext = contextKey;
+    setBusy(true); setError(''); setRun(null);
+    setTargetError('');
+    try {
+      const response = await importEvaluationDatabase(projectId, file, true, selection);
       if (contextRef.current !== requestContext) return;
       setRun(response.run);
       setFile(null);
-      setPassword('');
       setReplaceConfirmed(false);
+      setTargetRequest(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (importError) {
       if (contextRef.current !== requestContext) return;
       if (importError.status === 409 && importError.data?.run) {
         setRun(importError.data.run);
-        setPassword('');
         setReplaceConfirmed(false);
+        setTargetRequest(null);
+        setError(importError.message);
+      } else {
+        setTargetError(importError.message);
       }
-      setError(importError.message);
     } finally {
       if (contextRef.current === requestContext) setBusy(false);
     }
@@ -101,7 +121,7 @@ export default function EvaluationDatabaseImportPanel({
         <div>
           <div className="gi-title">Excel 导入评测库</div>
           <div className="gi-subtitle">
-            {engineLabel(database.engine)} · {database.host}:{database.port}/{database.database}
+            MySQL · {database}
           </div>
         </div>
         <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>
@@ -112,6 +132,7 @@ export default function EvaluationDatabaseImportPanel({
               setReplaceConfirmed(false);
               setError('');
               setRun(null);
+              setTargetRequest(null);
             }} />
         </label>
       </div>
@@ -122,6 +143,7 @@ export default function EvaluationDatabaseImportPanel({
           <div>{(file.size / 1024).toFixed(1)} KB</div>
           <button className="btn btn-sm" disabled={controlsDisabled} onClick={() => {
             setFile(null); setRun(null); setReplaceConfirmed(false);
+            setTargetRequest(null); setTargetError('');
             if (fileInputRef.current) fileInputRef.current.value = '';
           }}>移除</button>
         </div>
@@ -129,12 +151,12 @@ export default function EvaluationDatabaseImportPanel({
       {error && <div className="lerr">{error}</div>}
       {run?.status === 'running' && (
         <div className="gi-message">
-          {run.filename} 正在后台写入 {engineLabel(run.engine)} 数据库 {run.database}，切换步骤或刷新页面不会中断任务。
+          {run.filename} 正在后台写入 MySQL 数据库 {run.database}，切换步骤或刷新页面不会中断任务。
         </div>
       )}
       {run?.status === 'done' && (
         <div className="gi-message">
-          后台导入完成：已写入 {run.tableCount} 张表、{run.rowCount} 行到 {engineLabel(run.engine)} 数据库 {run.database}
+          后台导入完成：已写入 {run.tableCount} 张表、{run.rowCount} 行到 MySQL 数据库 {run.database}
         </div>
       )}
       {run?.status === 'failed' && (
@@ -142,13 +164,8 @@ export default function EvaluationDatabaseImportPanel({
       )}
 
       <div className="gi-execute edi-execute">
-        <div className="field">
-          <label>评测库 Password</label>
-          <input type="password" value={password} autoComplete="off" disabled={controlsDisabled}
-            onChange={(event) => setPassword(event.target.value)} placeholder="密码仅用于本次导入" />
-        </div>
-        <button className="btn btn-p" disabled={controlsDisabled || !file || !replaceConfirmed} onClick={submit}>
-          {busy ? '提交中…' : running ? '后台导入中…' : '开始后台导入'}
+        <button className="btn btn-p" disabled={controlsDisabled || !file || !replaceConfirmed} onClick={requestSubmit}>
+          {targetLoading ? '读取配置中…' : busy ? '提交中…' : running ? '后台导入中…' : '开始后台导入'}
         </button>
       </div>
       <label className="ev-bind-toggle edi-replace-confirmation">
@@ -160,9 +177,23 @@ export default function EvaluationDatabaseImportPanel({
       {onContinue && (
         <div className="gi-continue">
           <span>{running ? '评测库仍在写入，完成后才能运行评测。' : '评测数据可现在导入，也可以稍后回到本步骤继续导入。'}</span>
-          <button className="btn btn-p" disabled={busy || running || historyLoading}
+          <button className="btn btn-p" disabled={busy || targetLoading || running || historyLoading}
             onClick={() => onContinue(dataSource)}>进入评测用例录入 →</button>
         </div>
+      )}
+      {targetRequest && (
+        <EvaluationDatabaseUrlConfirmModal
+          title="确认 Excel 导入数据库"
+          message="请确认服务端 EVAL_DB_URL 是否为当前 NL2SQL 服务实际指向的评测库；也可以仅为本次导入指定其他 MySQL URL。"
+          databaseName={database}
+          configured={targetRequest.configured}
+          databaseUrlPreview={targetRequest.databaseUrlPreview}
+          confirmLabel="确认并开始导入"
+          busy={busy}
+          error={targetError}
+          onCancel={() => { if (!busy) { setTargetRequest(null); setTargetError(''); } }}
+          onConfirm={submit}
+        />
       )}
     </section>
   );

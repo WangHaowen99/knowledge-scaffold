@@ -28,6 +28,10 @@ interface RunOptions {
 const activeProjects = new Set<string>();
 const activeWorkspaces = new Set<string>();
 
+export function isEvaluationActive(projectId: string): boolean {
+  return activeProjects.has(projectId);
+}
+
 export function evaluationWorkspaceForRun(
   projectId: string,
   dataSource: ProjectDataSource,

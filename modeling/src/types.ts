@@ -134,6 +134,7 @@ export interface CompetencyQuestion {
   projectId: string;
   question: string;
   selected: boolean;
+  source: 'generated' | 'custom';
   coveredOperation?: string;
   createdAt: string;
 }
@@ -206,6 +207,7 @@ export interface SpecMetric {
   dimensions?: { key: string; note: string }[];       // 「# 维度」表（推荐）
 }
 export type PackageStatus = 'draft' | 'review' | 'released' | 'deprecated';
+export type PackageDataSourceType = 'nl2sql' | 'mindsdb' | 'neo4j';
 export interface PackageSpec {
   id: string;
   name: string;
@@ -218,6 +220,7 @@ export interface PackageSpec {
   rules?: SpecRule[];     // 可选目录 rules/；空或缺省则不生成目录
   metrics?: SpecMetric[]; // 可选目录 metrics/；空或缺省则不生成目录
   defaultProviderAlias: string;
+  dataSourceType?: PackageDataSourceType; // 缺省仅用于兼容历史版本，沿用 object key resource
 }
 
 export interface CoverageResult {

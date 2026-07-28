@@ -52,17 +52,47 @@ export function getAnswers(batchId: string): { questionId: string; selected: str
 // ---- 胜任力 ----
 export function replaceCompetency(projectId: string, questions: string[]): CompetencyQuestion[] {
   const db = getDb();
-  db.prepare('DELETE FROM competency_questions WHERE project_id = ?').run(projectId);
-  const ins = db.prepare('INSERT INTO competency_questions (id, project_id, question, selected, created_at) VALUES (?,?,?,0,?)');
-  for (const q of questions) ins.run(uid('cq'), projectId, q, nowIso());
+  db.prepare("DELETE FROM competency_questions WHERE project_id = ? AND source = 'generated'").run(projectId);
+  const existing = new Set(listCompetency(projectId).map((item) => item.question));
+  const ins = db.prepare(`INSERT INTO competency_questions
+    (id, project_id, question, selected, source, created_at) VALUES (?,?,?,0,'generated',?)`);
+  for (const rawQuestion of questions) {
+    const question = String(rawQuestion ?? '').trim();
+    if (!question || existing.has(question)) continue;
+    ins.run(uid('cq'), projectId, question, nowIso());
+    existing.add(question);
+  }
   return listCompetency(projectId);
 }
 
 function rowToCq(r: any): CompetencyQuestion {
-  return { id: r.id, projectId: r.project_id, question: r.question, selected: !!r.selected, coveredOperation: r.covered_operation ?? undefined, createdAt: r.created_at };
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    question: r.question,
+    selected: !!r.selected,
+    source: r.source === 'custom' ? 'custom' : 'generated',
+    coveredOperation: r.covered_operation ?? undefined,
+    createdAt: r.created_at,
+  };
 }
 export function listCompetency(projectId: string): CompetencyQuestion[] {
   return getDb().prepare('SELECT * FROM competency_questions WHERE project_id = ? ORDER BY created_at').all(projectId).map(rowToCq);
+}
+export function addCustomCompetency(projectId: string, rawQuestion: string): CompetencyQuestion {
+  const db = getDb();
+  const question = String(rawQuestion ?? '').trim();
+  const existing = db.prepare('SELECT * FROM competency_questions WHERE project_id = ? AND question = ? LIMIT 1')
+    .get(projectId, question) as any;
+  if (existing) {
+    db.prepare('UPDATE competency_questions SET selected = 1 WHERE id = ?').run(existing.id);
+    return rowToCq({ ...existing, selected: 1 });
+  }
+  const id = uid('cq');
+  db.prepare(`INSERT INTO competency_questions
+    (id, project_id, question, selected, source, created_at) VALUES (?,?,?,1,'custom',?)`)
+    .run(id, projectId, question, nowIso());
+  return rowToCq(db.prepare('SELECT * FROM competency_questions WHERE id = ?').get(id));
 }
 export function setCompetencySelection(projectId: string, selectedIds: string[]): void {
   const db = getDb();

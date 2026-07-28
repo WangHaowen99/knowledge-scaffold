@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS competency_questions (
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   question      TEXT NOT NULL,
   selected      INTEGER NOT NULL DEFAULT 0,
+  source        TEXT NOT NULL DEFAULT 'generated', -- generated | custom
   covered_operation TEXT,            -- 生成后回填：覆盖它的 operation key
   created_at    TEXT NOT NULL
 );
@@ -143,7 +144,6 @@ CREATE TABLE IF NOT EXISTS evaluation_database_import_runs (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   filename      TEXT NOT NULL,
-  engine        TEXT NOT NULL,
   database_name TEXT NOT NULL,
   status        TEXT NOT NULL DEFAULT 'running',
   table_count   INTEGER NOT NULL DEFAULT 0,

@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { parseExcel } from '../documents/parser.js';
 import type { DataDictField, DataDictTable } from '../types.js';
-import type {
-  EvaluationDatabaseConfig,
-  EvaluationDatabaseEngine,
-} from './data-source.js';
+import {
+  redactEvaluationDatabaseError,
+  type EvaluationDatabaseTarget,
+} from './evaluation-database-target.js';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const INSERT_BATCH_SIZE = 200;
@@ -16,7 +16,7 @@ export interface EvaluationDatabaseClient {
 }
 
 export type EvaluationDatabaseConnector = (
-  config: EvaluationDatabaseConfig,
+  target: EvaluationDatabaseTarget,
 ) => Promise<EvaluationDatabaseClient>;
 
 export interface EvaluationDatabaseDependencies {
@@ -24,7 +24,6 @@ export interface EvaluationDatabaseDependencies {
 }
 
 export interface EvaluationDatabaseImportResult {
-  engine: EvaluationDatabaseEngine;
   database: string;
   tableCount: number;
   rowCount: number;
@@ -41,76 +40,29 @@ export function validateEvaluationDatabaseExcelUpload(
   if (buffer.byteLength > MAX_FILE_SIZE) throw new Error('Excel 文件不能超过 50MB');
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function safeError(error: unknown, password: string): string {
-  return password
-    ? errorMessage(error).split(password).join('[REDACTED]')
-    : errorMessage(error);
-}
-
 async function defaultConnector(
-  config: EvaluationDatabaseConfig,
+  target: EvaluationDatabaseTarget,
 ): Promise<EvaluationDatabaseClient> {
-  if (config.engine === 'mysql') {
-    const mysql = await import('mysql2/promise');
-    const connection = await mysql.createConnection({
-      host: config.host,
-      port: config.port,
-      user: config.username,
-      password: config.password,
-      database: config.database,
-      connectTimeout: 10_000,
-    });
-    return {
-      query: async (sql, values) => (await connection.query(sql, values))[0],
-      close: async () => { await connection.end(); },
-    };
-  }
-
-  const { Client } = await import('pg');
-  const client = new Client({
-    host: config.host,
-    port: config.port,
-    user: config.username,
-    password: config.password,
-    database: config.database,
-    connectionTimeoutMillis: 10_000,
+  const mysql = await import('mysql2/promise');
+  const connection = await mysql.createConnection({
+    uri: target.connectionUrl,
+    database: target.database,
+    connectTimeout: 10_000,
   });
-  await client.connect();
   return {
-    query: async (sql, values) => (await client.query(sql, values)).rows,
-    close: async () => { await client.end(); },
+    query: async (sql, values) => (await connection.query(sql, values))[0],
+    close: async () => { await connection.end(); },
   };
 }
 
-export async function testEvaluationDatabaseConnection(
-  config: EvaluationDatabaseConfig,
-  dependencies: EvaluationDatabaseDependencies = {},
-): Promise<void> {
-  let client: EvaluationDatabaseClient | undefined;
-  try {
-    client = await (dependencies.connect ?? defaultConnector)(config);
-    await client.query('SELECT 1 AS ok');
-  } catch (error) {
-    throw new Error(`评测库连接测试失败：${safeError(error, config.password)}`);
-  } finally {
-    await client?.close().catch(() => undefined);
-  }
+function quoteIdentifier(value: string): string {
+  return `\`${value.replace(/`/g, '``')}\``;
 }
 
-function quoteIdentifier(engine: EvaluationDatabaseEngine, value: string): string {
-  return engine === 'mysql'
-    ? `\`${value.replace(/`/g, '``')}\``
-    : `"${value.replace(/"/g, '""')}"`;
-}
-
-function columnType(engine: EvaluationDatabaseEngine, field: DataDictField): string {
-  if (field.inferredType === 'number') return engine === 'mysql' ? 'DECIMAL(65, 30)' : 'NUMERIC';
+function columnType(field: DataDictField): string {
+  if (field.inferredType === 'number') return 'DECIMAL(65, 30)';
   if (field.inferredType === 'boolean') return 'BOOLEAN';
-  if (field.inferredType === 'date') return engine === 'mysql' ? 'DATETIME' : 'TIMESTAMP';
+  if (field.inferredType === 'date') return 'DATETIME';
   return 'TEXT';
 }
 
@@ -156,43 +108,31 @@ function coerceValue(value: unknown, field: DataDictField): unknown {
   return content;
 }
 
-function insertSql(
-  engine: EvaluationDatabaseEngine,
-  table: DataDictTable,
-  rowCount: number,
-  targetName = table.name,
-): string {
-  let parameter = 0;
-  const rows = Array.from({ length: rowCount }, () => {
-    const placeholders = table.fields.map(() => {
-      parameter += 1;
-      return engine === 'mysql' ? '?' : `$${parameter}`;
-    });
-    return `(${placeholders.join(', ')})`;
-  });
-  const columns = table.fields.map((field) => quoteIdentifier(engine, field.name)).join(', ');
-  return `INSERT INTO ${quoteIdentifier(engine, targetName)} (${columns}) VALUES ${rows.join(', ')}`;
+function insertSql(table: DataDictTable, rowCount: number, targetName = table.name): string {
+  const rows = Array.from({ length: rowCount }, () => (
+    `(${table.fields.map(() => '?').join(', ')})`
+  ));
+  const columns = table.fields.map((field) => quoteIdentifier(field.name)).join(', ');
+  return `INSERT INTO ${quoteIdentifier(targetName)} (${columns}) VALUES ${rows.join(', ')}`;
 }
 
 async function createAndPopulateTable(
   client: EvaluationDatabaseClient,
-  engine: EvaluationDatabaseEngine,
   table: DataDictTable,
   targetName: string,
 ): Promise<void> {
   validateTable(table);
-  const tableName = quoteIdentifier(engine, targetName);
   const columns = table.fields.map((field) => (
-    `${quoteIdentifier(engine, field.name)} ${columnType(engine, field)}`
+    `${quoteIdentifier(field.name)} ${columnType(field)}`
   ));
-  await client.query(`CREATE TABLE ${tableName} (${columns.join(', ')})`);
+  await client.query(`CREATE TABLE ${quoteIdentifier(targetName)} (${columns.join(', ')})`);
   const rows = table.rows ?? [];
   for (let start = 0; start < rows.length; start += INSERT_BATCH_SIZE) {
     const batch = rows.slice(start, start + INSERT_BATCH_SIZE);
     const values = batch.flatMap((row) => table.fields.map(
       (field, column) => coerceValue(row[column], field),
     ));
-    await client.query(insertSql(engine, table, batch.length, targetName), values);
+    await client.query(insertSql(table, batch.length, targetName), values);
   }
 }
 
@@ -204,17 +144,13 @@ function hasRows(result: unknown): boolean {
   return Array.isArray(result) && result.length > 0;
 }
 
-async function cleanupTables(
-  client: EvaluationDatabaseClient,
-  engine: EvaluationDatabaseEngine,
-  names: string[],
-): Promise<void> {
+async function cleanupTables(client: EvaluationDatabaseClient, names: string[]): Promise<void> {
   for (const name of names) {
-    await client.query(`DROP TABLE IF EXISTS ${quoteIdentifier(engine, name)}`).catch(() => undefined);
+    await client.query(`DROP TABLE IF EXISTS ${quoteIdentifier(name)}`).catch(() => undefined);
   }
 }
 
-async function replaceMysqlTablesAtomically(
+async function replaceTablesAtomically(
   client: EvaluationDatabaseClient,
   database: string,
   tables: DataDictTable[],
@@ -229,8 +165,8 @@ async function replaceMysqlTablesAtomically(
   let swapped = false;
   try {
     for (const entry of swaps) {
-      await cleanupTables(client, 'mysql', [entry.staging, entry.backup]);
-      await createAndPopulateTable(client, 'mysql', entry.table, entry.staging);
+      await cleanupTables(client, [entry.staging, entry.backup]);
+      await createAndPopulateTable(client, entry.table, entry.staging);
     }
     for (const entry of swaps) {
       entry.existing = hasRows(await client.query(
@@ -241,41 +177,24 @@ async function replaceMysqlTablesAtomically(
     }
     const renames = swaps.flatMap((entry) => [
       ...(entry.existing ? [
-        `${quoteIdentifier('mysql', entry.table.name)} TO ${quoteIdentifier('mysql', entry.backup)}`,
+        `${quoteIdentifier(entry.table.name)} TO ${quoteIdentifier(entry.backup)}`,
       ] : []),
-      `${quoteIdentifier('mysql', entry.staging)} TO ${quoteIdentifier('mysql', entry.table.name)}`,
+      `${quoteIdentifier(entry.staging)} TO ${quoteIdentifier(entry.table.name)}`,
     ]);
     await client.query(`RENAME TABLE ${renames.join(', ')}`);
     swapped = true;
   } finally {
     if (swapped) {
-      await cleanupTables(client, 'mysql', swaps.filter((entry) => entry.existing)
+      await cleanupTables(client, swaps.filter((entry) => entry.existing)
         .map((entry) => entry.backup));
     } else {
-      await cleanupTables(client, 'mysql', swaps.flatMap((entry) => [entry.staging, entry.backup]));
+      await cleanupTables(client, swaps.flatMap((entry) => [entry.staging, entry.backup]));
     }
-  }
-}
-
-async function replacePostgresqlTablesInTransaction(
-  client: EvaluationDatabaseClient,
-  tables: DataDictTable[],
-): Promise<void> {
-  await client.query('BEGIN');
-  try {
-    for (const table of tables) {
-      await client.query(`DROP TABLE IF EXISTS ${quoteIdentifier('postgresql', table.name)}`);
-      await createAndPopulateTable(client, 'postgresql', table, table.name);
-    }
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw error;
   }
 }
 
 export async function importEvaluationDatabaseTables(
-  config: EvaluationDatabaseConfig,
+  target: EvaluationDatabaseTarget,
   tables: DataDictTable[],
   dependencies: EvaluationDatabaseDependencies = {},
 ): Promise<EvaluationDatabaseImportResult> {
@@ -283,31 +202,26 @@ export async function importEvaluationDatabaseTables(
   if (!withRows.length) throw new Error('Excel 中没有可导入的数据行');
   let client: EvaluationDatabaseClient | undefined;
   try {
-    client = await (dependencies.connect ?? defaultConnector)(config);
-    if (config.engine === 'mysql') {
-      await replaceMysqlTablesAtomically(client, config.database, withRows);
-    } else {
-      await replacePostgresqlTablesInTransaction(client, withRows);
-    }
+    client = await (dependencies.connect ?? defaultConnector)(target);
+    await replaceTablesAtomically(client, target.database, withRows);
     return {
-      engine: config.engine,
-      database: config.database,
+      database: target.database,
       tableCount: withRows.length,
       rowCount: withRows.reduce((total, table) => total + (table.rows?.length ?? 0), 0),
       tables: withRows.map((table) => ({ name: table.name, rowCount: table.rows?.length ?? 0 })),
     };
   } catch (error) {
-    throw new Error(`Excel 导入评测库失败：${safeError(error, config.password)}`);
+    throw new Error(`Excel 导入评测库失败：${redactEvaluationDatabaseError(error, target)}`);
   } finally {
     await client?.close().catch(() => undefined);
   }
 }
 
 export async function importEvaluationDatabaseExcel(
-  input: { filename: string; buffer: Buffer; config: EvaluationDatabaseConfig },
+  input: { filename: string; buffer: Buffer; target: EvaluationDatabaseTarget },
   dependencies: EvaluationDatabaseDependencies = {},
 ): Promise<EvaluationDatabaseImportResult> {
   validateEvaluationDatabaseExcelUpload(input.filename, input.buffer);
   const tables = parseExcel(input.buffer, { maxRows: null });
-  return importEvaluationDatabaseTables(input.config, tables, dependencies);
+  return importEvaluationDatabaseTables(input.target, tables, dependencies);
 }

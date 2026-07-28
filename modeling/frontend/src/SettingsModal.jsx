@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { getSettings, saveSettings, testLlm, testConsumer } from './api.js';
+
+export function SettingsModalOverlay({ children }) {
+  return <div className="modal-ov">{children}</div>;
+}
 
 // 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测数据源默认值。
 // 优先级统一为：页面配置 > 环境变量。api key 保存后不回显；测试失败展示服务端原始错误便于排障。
@@ -33,14 +37,14 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
 
   if (!s) {
     return (
-      <div className="modal-ov" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <SettingsModalOverlay>
         <div className="modal" style={{ width: 640 }}><h3>配置中心</h3><div className="empty">加载中…</div></div>
-      </div>
+      </SettingsModalOverlay>
     );
   }
 
   return (
-    <div className="modal-ov" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <SettingsModalOverlay>
       <div className="modal" style={{ width: 640 }}>
         <h3>配置中心</h3>
         <div className="cfg-tabs">
@@ -59,7 +63,7 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
           <button className="btn btn-p" disabled={saving} onClick={save}>{saving ? '保存中…' : '保存全部'}</button>
         </div>
       </div>
-    </div>
+    </SettingsModalOverlay>
   );
 }
 
