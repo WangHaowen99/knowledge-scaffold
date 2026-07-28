@@ -7,12 +7,6 @@ export const DATA_SOURCE_TOUR_TARGETS = {
   scene: 'data-source-scene',
   token: 'data-source-token',
   evaluationWorkspace: 'data-source-evaluation-workspace',
-  evalDbEngine: 'data-source-eval-db-engine',
-  evalDbHost: 'data-source-eval-db-host',
-  evalDbPort: 'data-source-eval-db-port',
-  evalDbDatabase: 'data-source-eval-db-database',
-  evalDbUser: 'data-source-eval-db-user',
-  evalDbPassword: 'data-source-eval-db-password',
   neo4jUri: 'data-source-neo4j-uri',
   neo4jDatabase: 'data-source-neo4j-database',
   neo4jUser: 'data-source-neo4j-user',
@@ -29,29 +23,11 @@ const step = (target, title, body) => ({
   body,
 });
 
-const NL2SQL_EVALUATION_STEPS = [
+const NL2SQL_WORKSPACE_STEPS = [
   step(
     DATA_SOURCE_TOUR_TARGETS.evaluationWorkspace,
     '评测工作空间 ID',
     '填写 consumer 中用于运行当前项目评测的工作空间 ID；已存在时复用，不存在时保存配置时自动创建。',
-  ),
-  step(
-    DATA_SOURCE_TOUR_TARGETS.evalDbEngine,
-    '评测库类型',
-    '选择 Excel 评测数据要写入的 MySQL 或 PostgreSQL 数据库。',
-  ),
-  step(DATA_SOURCE_TOUR_TARGETS.evalDbHost, '评测库 Host', '填写 modeling 服务可访问的数据库主机名或 IP。'),
-  step(DATA_SOURCE_TOUR_TARGETS.evalDbPort, '评测库 Port', 'MySQL 默认 3306，PostgreSQL 默认 5432。'),
-  step(
-    DATA_SOURCE_TOUR_TARGETS.evalDbDatabase,
-    '评测库 Database',
-    '可填写已有数据库，或点击“新建项目数据库”创建并复用固定名称 mv_shadow_<project_id>；Scene 留空时同步使用此名称。',
-  ),
-  step(DATA_SOURCE_TOUR_TARGETS.evalDbUser, '评测库 User', '填写对目标 Database 具有读写权限的数据库用户。'),
-  step(
-    DATA_SOURCE_TOUR_TARGETS.evalDbPassword,
-    '评测库 Password',
-    '每次保存并测试连接时填写。密码不会保存在 modeling 中，后续导入 Excel 时需再次提供。',
   ),
 ];
 
@@ -69,14 +45,14 @@ const NL2SQL_TEMPLATE_STEPS = [
   step(
     DATA_SOURCE_TOUR_TARGETS.scene,
     'Scene',
-    '填写 NL2SQL 服务识别的数据源名称，通常就是目标数据库名。留空时系统会使用评测库 Database。',
+    '填写 NL2SQL 服务使用的 MySQL 数据库名，或点击“使用项目专用数据库”，确认数据库 URL 后创建并回填固定名称。',
   ),
   step(
     DATA_SOURCE_TOUR_TARGETS.token,
     'Token',
-    'NL2SQL Template 的 Token 为必填项，填写服务要求的 Bearer Token。密钥只用于本次连接测试并同步到 consumer，modeling 不会保存明文。',
+    '如果 NL2SQL Template 服务启用了 Bearer 鉴权，请填写访问 Token；服务未启用鉴权时可留空。密钥只用于本次连接测试并同步到 consumer，modeling 不会保存明文。',
   ),
-  ...NL2SQL_EVALUATION_STEPS,
+  ...NL2SQL_WORKSPACE_STEPS,
 ];
 
 const NL2SQL_HTTP_STEPS = [
@@ -93,14 +69,14 @@ const NL2SQL_HTTP_STEPS = [
   step(
     DATA_SOURCE_TOUR_TARGETS.scene,
     'Scene',
-    '填写服务端用于选择数据库或业务场景的名称。留空时系统会使用评测库 Database。',
+    '填写 NL2SQL 服务使用的 MySQL 数据库名，或点击“使用项目专用数据库”，确认数据库 URL 后创建并回填固定名称。',
   ),
   step(
     DATA_SOURCE_TOUR_TARGETS.token,
     'Token',
     '如果服务启用了 Bearer 鉴权，请填写访问 Token；服务未启用鉴权时 Token 可留空。明文不会保存在 modeling 中。',
   ),
-  ...NL2SQL_EVALUATION_STEPS,
+  ...NL2SQL_WORKSPACE_STEPS,
 ];
 
 const NEO4J_STEPS = [

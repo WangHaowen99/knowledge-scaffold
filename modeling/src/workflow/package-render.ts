@@ -11,6 +11,7 @@ import {
   mappingObjectName,
   mappingPrimaryNames,
 } from './mapping-contract.js';
+import { packageMappingResource } from './package-data-source.js';
 
 // PackageSpec → 标准知识包文件集（严格对照 examples/corporate-marketing-eval/
 // ontology-package-final-design.md v0.2，保证 consumer 可导入）。
@@ -69,7 +70,7 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
   }
   return {
     provider_alias: spec.defaultProviderAlias,
-    resource: o.key,
+    resource: packageMappingResource(spec, o),
     primary_key: mappingPrimaryNames(o),
     fields,
     // policy（规范 §18 4.6）。规范未给默认值，取保守默认：只读、上限 1000 行；

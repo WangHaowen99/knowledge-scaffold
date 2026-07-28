@@ -49,7 +49,7 @@ NO_PROXY='localhost,127.0.0.1' no_proxy='localhost,127.0.0.1' ./venv/bin/python 
 **约定 scene = 数据库名**（例如 `example_domain` 或项目配置的 `evaluation`）。
 
 ```bash
-cd modeling   # .env 需含 MODELING_LLM_*、EVAL_DB_URL（仅桥接服务使用），可选 NL2SQL_TOKEN/NL2SQL_PORT
+cd modeling   # .env 需含 MODELING_LLM_*、EVAL_DB_URL（与 modeling 服务共用），可选 NL2SQL_TOKEN/NL2SQL_PORT
 npx tsx --env-file=.env scripts/nl2sql-service.ts
 ```
 
@@ -61,7 +61,7 @@ cd modeling   # .env：MODELING_LLM_*、AUTH_ISSUER_URL=http://localhost:5055、
 npx tsx --env-file=.env src/server.ts
 ```
 
-登录用 consumer 账号（issuer 转发）。页面「⚙ 设置」里的 consumer 地址优先于 env——注意别残留冒烟测试的 stub 地址。进入项目“数据源配置”，填写评测工作空间 ID、NL2SQL 服务和 MySQL/PostgreSQL 评测库。可在 Database 右侧点击“新建项目数据库”，确认后使用当前连接幂等创建唯一固定库 `mv_shadow_<project_id>`；账号需具备 `CREATE DATABASE` 权限，库已存在时直接复用。保存并测试通过后上传 Excel，并显式确认 Sheet 同名表替换。上传接口接受文件后立即返回，由独立 Worker Thread 在后台全量解析和写入（无 2000 行上限），页面轮询任务直到成功或失败；PostgreSQL 使用事务，MySQL 使用临时表和原子重命名，因此写入失败不会先删除原表。任务运行期间不能启动评测。
+登录用 consumer 账号（issuer 转发）。页面「⚙ 设置」里的 consumer 地址优先于 env——注意别残留冒烟测试的 stub 地址。进入项目“数据源配置”，填写评测工作空间 ID、NL2SQL 服务和 Scene。可在 Scene 右侧点击“使用项目专用数据库”：弹框展示隐藏密码后的服务端 `EVAL_DB_URL`，确认它与 NL2SQL 服务指向同一 MySQL 服务器，或仅为本次操作输入其他 URL；确认后幂等创建唯一固定库 `mv_shadow_<project_id>` 并回填 Scene，库已存在时直接复用。保存并测试通过后上传 Excel，并显式确认 Sheet 同名表替换；开始导入前会再次显示相同的数据库连接确认框，也可为本次导入输入其他 URL。自定义 URL 只存在于当前请求内，不写项目配置、不修改 `EVAL_DB_URL`，导入历史也不保存它。数据库账号需具备 `CREATE DATABASE`、建表、写入和原子重命名权限。上传接口接受文件后立即返回，由独立 Worker Thread 在后台全量解析和写入（无 2000 行上限），页面轮询任务直到成功或失败。MySQL 使用临时表和原子重命名，因此写入失败不会先删除原表。任务运行期间不能启动评测。
 
 ## 5. 链路验证清单
 
@@ -72,7 +72,7 @@ npx tsx --env-file=.env src/server.ts
 | consumer 就绪 | `GET :5055/api/system-config/readiness` | `ready:true` |
 | consumer 全链路 | 导入示例本体 zip → 为该本体配置 `nl2sql_template` 数据源（url=`http://localhost:5600`）→ `runs/sync` 同上问题 | final_answer 含 `STATION01-工位1` |
 | modeling→consumer | `POST :5100/api/settings/consumer/test` | `reachable/authOk/modelReady` 全 true |
-| modeling→评测库 | 项目“数据源配置”保存并测试 → 上传 Excel → 等待后台任务完成 | 同名 Sheet 表及全部数据行出现在所选 MySQL/PostgreSQL Database |
+| modeling→评测库 | 项目“数据源配置”保存并测试 → 上传 Excel → 等待后台任务完成 | 同名 Sheet 表及全部数据行出现在 `EVAL_DB_URL` 服务器上的 Scene 数据库 |
 
 （`business-query-testcases.json` 13 条业务推理题 + `data-query-testcases.json` 26 条数据查询题，
 字段 `question` / `ground_truth`，可直接录入“评测用例录入”节点）。

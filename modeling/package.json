@@ -34,13 +34,11 @@
     "mysql2": "^3.22.6",
     "neo4j-driver": "^6.2.0",
     "pdf-parse": "^1.1.1",
-    "pg": "^8.22.0",
     "undici": "^8.7.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "@types/pg": "^8.20.0",
     "puppeteer-core": "^25.3.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

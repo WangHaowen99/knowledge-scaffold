@@ -1,12 +1,5 @@
 import neo4j from 'neo4j-driver';
-import type {
-  ConnectionDataSourceInput,
-  EvaluationDatabaseConfig,
-} from './data-source.js';
-import {
-  testEvaluationDatabaseConnection,
-  type EvaluationDatabaseConnector,
-} from './eval-db.js';
+import type { ConnectionDataSourceInput } from './data-source.js';
 
 interface Neo4jTestSession {
   run(query: string): Promise<unknown>;
@@ -31,7 +24,6 @@ export type DataSourceConnectionTester = (
 export interface DataSourceTestDependencies {
   neo4jDriverFactory?: Neo4jDriverFactory;
   request?: typeof fetch;
-  evaluationDatabaseConnector?: EvaluationDatabaseConnector;
 }
 
 function text(value: unknown): string {
@@ -119,9 +111,5 @@ export async function testProjectDataSourceConnection(
     await testNeo4j(source, dependencies.neo4jDriverFactory ?? defaultNeo4jDriverFactory);
     return;
   }
-  await testEvaluationDatabaseConnection(
-    source.config.evaluation_database as EvaluationDatabaseConfig,
-    { connect: dependencies.evaluationDatabaseConnector },
-  );
   await testNl2Sql(source, dependencies.request ?? fetch);
 }

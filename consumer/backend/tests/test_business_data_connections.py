@@ -273,6 +273,59 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
     }]
 
 
+def test_nl2sql_template_allows_empty_token_for_schema_save_and_probe(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"success": True}
+
+    def fake_post(_session, url, headers=None, timeout=None, **request_kwargs):
+        calls.append({
+            "url": url,
+            "headers": headers or {},
+            "json": request_kwargs.get("json"),
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    provider_schemas = client.get("/agentic/business-data/provider-schemas", headers=headers).get_json()
+    template_schema = next(
+        item for item in provider_schemas["providers"] if item["name"] == "nl2sql_template"
+    )
+    token_field = next(field for field in template_schema["fields"] if field["name"] == "token")
+    assert token_field["required"] is False
+
+    config = {
+        "url": "https://nl2sql.example.com/",
+        "token": "",
+        "scene": "example",
+        "timeout_seconds": 120,
+    }
+    saved = client.put(
+        "/agentic/ontologies/demo-ontology/data-source",
+        headers=headers,
+        json={"mode": "direct_provider", "provider": "nl2sql_template", "config": config},
+    )
+    assert saved.status_code == 200
+    assert saved.get_json()["source"]["config"]["has_token"] is False
+
+    tested = _test_candidate(client, headers, "nl2sql_template", config)
+    assert tested.status_code == 200
+    assert tested.get_json()["success"] is True
+    assert calls == [{
+        "url": "https://nl2sql.example.com/api/v1/query",
+        "headers": {"Content-Type": "application/json"},
+        "json": {"question": "连接测试", "scene": "example"},
+        "timeout": 10,
+    }]
+
+
 def test_data_source_test_route_probes_mindsdb_anonymous_service(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, monkeypatch)
     calls = []

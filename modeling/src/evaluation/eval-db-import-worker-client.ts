@@ -1,21 +1,19 @@
 import { Worker } from 'node:worker_threads';
-import type { EvaluationDatabaseConfig } from './data-source.js';
 import type { EvaluationDatabaseImportResult } from './eval-db.js';
+import {
+  redactEvaluationDatabaseError,
+  type EvaluationDatabaseTarget,
+} from './evaluation-database-target.js';
 
 interface ImportWorkerResponse {
   result?: EvaluationDatabaseImportResult;
   error?: string;
 }
 
-function safeError(error: unknown, password: string): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return password ? message.split(password).join('[REDACTED]') : message;
-}
-
 export function importEvaluationDatabaseExcelInWorker(input: {
   filename: string;
   buffer: Buffer;
-  config: EvaluationDatabaseConfig;
+  target: EvaluationDatabaseTarget;
 }): Promise<EvaluationDatabaseImportResult> {
   const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
   const workerModuleUrl = new URL(`./eval-db-import-worker.${extension}`, import.meta.url);
@@ -43,7 +41,7 @@ export function importEvaluationDatabaseExcelInWorker(input: {
       settled = true;
       void worker.terminate();
       if ('result' in outcome) resolve(outcome.result);
-      else reject(new Error(safeError(outcome.error, input.config.password)));
+      else reject(new Error(redactEvaluationDatabaseError(outcome.error, input.target)));
     };
     worker.once('message', (message: ImportWorkerResponse) => {
       if (message.result) finish({ result: message.result });
@@ -62,7 +60,7 @@ export function importEvaluationDatabaseExcelInWorker(input: {
     worker.postMessage({
       filename: input.filename,
       buffer: transferable,
-      config: input.config,
+      target: input.target,
     }, [transferable]);
   });
 }

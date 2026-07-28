@@ -69,6 +69,7 @@ before(async () => {
   process.env.AUTH_JWT_AUDIENCE = AUD;
   process.env.CONSUMER_API_URL = `http://127.0.0.1:${addr.port}`;
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'mtool-route-test-'));
+  process.env.EVAL_DB_URL = 'mysql://root:eval-secret@mysql.local:3306';
 
   const { registerRoutes } = await import('../src/routes.js');
   app = Fastify({ logger: false });
@@ -83,6 +84,7 @@ before(async () => {
       };
     },
     evaluationDatabaseDependencies: {
+      databaseUrl: process.env.EVAL_DB_URL,
       schedule: (task: () => Promise<void>) => { evaluationDatabaseImportTasks.push(task); },
       connectAdmin: async (database: any) => {
         projectDatabaseAdminConnections.push(database);
@@ -147,16 +149,22 @@ function multipartExcel(filename: string, buffer: Buffer) {
 function multipartEvaluationDatabaseExcel(
   filename: string,
   buffer: Buffer,
-  password: string,
   replaceConfirmed = true,
+  databaseUrlMode: 'default' | 'custom' | '' = 'default',
+  databaseUrl = '',
 ) {
   const boundary = `----modeling-eval-${Date.now()}`;
   return {
     headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
     payload: Buffer.concat([
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="password"\r\n\r\n${password}\r\n`),
       ...(replaceConfirmed ? [
         Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="replace_confirmation"\r\n\r\nreplace_same_name_tables\r\n`),
+      ] : []),
+      ...(databaseUrlMode ? [
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="database_url_mode"\r\n\r\n${databaseUrlMode}\r\n`),
+      ] : []),
+      ...(databaseUrl ? [
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="database_url"\r\n\r\n${databaseUrl}\r\n`),
       ] : []),
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`),
       buffer,
@@ -271,6 +279,109 @@ test('/api/me：合法 token → 200；typ=refresh 的 token → 401；无 token
   assert.equal(res.statusCode, 401);
 });
 
+test('项目删除 API：要求明确确认、校验 owner、阻止运行任务并完成删除', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '待删除项目' },
+  });
+  const projectId = created.json().project.id;
+
+  let response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${projectId}`, headers,
+    payload: {},
+  });
+  assert.equal(response.statusCode, 400, response.body);
+
+  const { createProject } = await import('../src/projects/repo.js');
+  const foreignProject = createProject({ owner: 'bob', name: '其他用户项目' });
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${foreignProject.id}`, headers,
+    payload: { confirmed: true },
+  });
+  assert.equal(response.statusCode, 404, response.body);
+
+  const busyProject = createProject({ owner: 'alice', name: '运行中项目' });
+  const { getDb, nowIso } = await import('../src/db/index.js');
+  getDb().prepare(`INSERT INTO graph_import_runs
+    (id, project_id, filename, file_hash, package_version, mapping_json, status, created_at)
+    VALUES ('busy-delete-run', ?, 'source.xlsx', 'hash', '1.0.0', '{}', 'running', ?)`)
+    .run(busyProject.id, nowIso());
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${busyProject.id}`, headers,
+    payload: { confirmed: true },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PROJECT_BUSY');
+  getDb().prepare("UPDATE graph_import_runs SET status = 'failed' WHERE id = 'busy-delete-run'").run();
+
+  const busyEvaluationDatabaseProject = createProject({ owner: 'alice', name: '评测库导入中项目' });
+  const {
+    createEvaluationDatabaseImportRun,
+    finishEvaluationDatabaseImportRun,
+  } = await import('../src/evaluation/eval-db-import-repo.js');
+  const evaluationDatabaseImport = createEvaluationDatabaseImportRun({
+    projectId: busyEvaluationDatabaseProject.id,
+    filename: 'evaluation.xlsx',
+    database: 'mw_busy',
+  });
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${busyEvaluationDatabaseProject.id}`, headers,
+    payload: { confirmed: true },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PROJECT_BUSY');
+  assert.equal(response.json().operation, 'evaluation-database-import');
+  finishEvaluationDatabaseImportRun(evaluationDatabaseImport.id, { error: 'test cleanup' });
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${busyEvaluationDatabaseProject.id}`, headers,
+    payload: { confirmed: true },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${projectId}`, headers,
+    payload: { confirmed: true },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().deleted, projectId);
+  const missing = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(missing.statusCode, 404);
+});
+
+test('领域问题 API：用户可新增并选中自定义问题，生成前必须选择数据源', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '自定义领域问题项目' },
+  });
+  const projectId = created.json().project.id;
+
+  let response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/competency`, headers,
+    payload: { question: '  哪些订单存在交付风险？  ' },
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  assert.equal(response.json().question.question, '哪些订单存在交付风险？');
+  assert.equal(response.json().question.selected, true);
+  assert.equal(response.json().question.source, 'custom');
+
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/competency`, headers,
+    payload: { question: '   ' },
+  });
+  assert.equal(response.statusCode, 400);
+
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/generate`, headers,
+    payload: {},
+  });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /数据源/);
+});
+
 test('项目数据源 API：保存脱敏配置并通过注入依赖推进阶段', async () => {
   consumerRequests.length = 0;
   testedDataSources.length = 0;
@@ -317,7 +428,7 @@ test('项目数据源 API：保存脱敏配置并通过注入依赖推进阶段'
   assert.deepEqual(project.json().dataSource, dataSource);
 });
 
-test('NL2SQL 评测库 API：保存测试通过后导入 Excel 且不持久化密码', async () => {
+test('NL2SQL 评测库 API：使用 EVAL_DB_URL 建库并按已保存 Scene 导入 Excel', async () => {
   evaluationDatabaseImportTasks.length = 0;
   evaluationDatabaseConnections.length = 0;
   evaluationDatabaseQueries.length = 0;
@@ -342,56 +453,77 @@ test('NL2SQL 评测库 API：保存测试通过后导入 Excel 且不持久化�
     '../src/evaluation/project-evaluation-database.js'
   );
   const expectedDatabase = projectEvaluationDatabaseName(projectId);
-  const createPayload = {
-    engine: 'postgresql', host: 'postgres.local', port: 5432,
-    username: 'postgres', password: 'create-secret', database: 'forbidden_override',
-  };
+  const target = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/evaluation-database/target`,
+    headers,
+  });
+  assert.equal(target.statusCode, 200, target.body);
+  assert.deepEqual(target.json(), {
+    database: expectedDatabase,
+    configured: true,
+    databaseUrlPreview: 'mysql://root:******@mysql.local:3306',
+  });
+  assert.doesNotMatch(target.body, /eval-secret/);
+
+  const unconfirmedDatabase = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/evaluation-database/project-database`,
+    headers,
+  });
+  assert.equal(unconfirmedDatabase.statusCode, 400, unconfirmedDatabase.body);
+  assert.match(unconfirmedDatabase.json().error, /确认.*EVAL_DB_URL/);
+
+  const customDatabaseUrl = 'mysql://project:project-secret@project.mysql:3308/original';
   const createdDatabase = await app.inject({
     method: 'POST',
     url: `/api/projects/${projectId}/evaluation-database/project-database`,
     headers,
-    payload: createPayload,
+    payload: { database_url_mode: 'custom', database_url: customDatabaseUrl },
   });
   assert.equal(createdDatabase.statusCode, 201, createdDatabase.body);
   assert.deepEqual(createdDatabase.json(), {
-    engine: 'postgresql', database: expectedDatabase, created: true,
+    database: expectedDatabase, created: true,
   });
   const reusedDatabase = await app.inject({
     method: 'POST',
     url: `/api/projects/${projectId}/evaluation-database/project-database`,
     headers,
-    payload: createPayload,
+    payload: { database_url_mode: 'default' },
   });
   assert.equal(reusedDatabase.statusCode, 200, reusedDatabase.body);
   assert.equal(reusedDatabase.json().created, false);
   assert.equal(projectDatabaseAdminQueries.filter((sql) => sql.startsWith('CREATE DATABASE')).length, 1);
   assert.match(projectDatabaseAdminQueries.join('\n'), new RegExp(expectedDatabase));
-  assert.doesNotMatch(projectDatabaseAdminQueries.join('\n'), /forbidden_override/);
-  assert.equal('database' in projectDatabaseAdminConnections[0], false);
-  assert.doesNotMatch(createdDatabase.body, /create-secret/);
+  assert.deepEqual(projectDatabaseAdminConnections[0], {
+    connectionUrl: 'mysql://project:project-secret@project.mysql:3308/',
+    database: expectedDatabase,
+  });
+  assert.deepEqual(projectDatabaseAdminConnections[1], {
+    connectionUrl: 'mysql://root:eval-secret@mysql.local:3306/',
+    database: expectedDatabase,
+  });
+  assert.doesNotMatch(createdDatabase.body, /project-secret|eval-secret/);
 
   const saved = await app.inject({
     method: 'PUT', url: `/api/projects/${projectId}/data-source`, headers,
-    payload: nl2sqlInput({
-      evaluation_database: {
-        engine: 'postgresql', host: 'postgres.local', port: 5432, database: expectedDatabase,
-        username: 'postgres', password: 'save-secret',
-      },
-    }),
+    payload: nl2sqlInput({ scene: expectedDatabase }),
   });
   assert.equal(saved.statusCode, 200, saved.body);
   assert.equal(saved.json().dataSource.workspaceId, 'nl2sql-eval');
-  assert.equal(saved.json().dataSource.config.evaluation_database.has_password, true);
-  assert.equal('password' in saved.json().dataSource.config.evaluation_database, false);
+  assert.deepEqual(saved.json().dataSource.config, {
+    url: 'http://nl2sql:8080', scene: expectedDatabase,
+    evaluation_workspace_id: 'nl2sql-eval', has_token: true,
+  });
   const raw = getDb().prepare('SELECT public_config_json FROM project_data_sources WHERE project_id = ?')
     .get(projectId) as { public_config_json: string };
-  assert.doesNotMatch(raw.public_config_json, /save-secret/);
+  assert.doesNotMatch(raw.public_config_json, /eval-secret/);
 
   const excel = workbookBuffer({
     orders: [['id', 'active', 'name'], ['1', '是', '测试订单']],
   });
   const unconfirmedForm = multipartEvaluationDatabaseExcel(
-    'unconfirmed.xlsx', excel, 'import-secret', false,
+    'unconfirmed.xlsx', excel, false,
   );
   const unconfirmed = await app.inject({
     method: 'POST',
@@ -403,7 +535,23 @@ test('NL2SQL 评测库 API：保存测试通过后导入 Excel 且不持久化�
   assert.match(unconfirmed.json().error, /确认.*同名表/);
   assert.equal(evaluationDatabaseImportTasks.length, 0);
 
-  const form = multipartEvaluationDatabaseExcel('evaluation.xlsx', excel, 'import-secret');
+  const unconfirmedTargetForm = multipartEvaluationDatabaseExcel(
+    'unconfirmed-target.xlsx', excel, true, '',
+  );
+  const unconfirmedTarget = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/evaluation-database/import`,
+    headers: { authorization: `Bearer ${token}`, ...unconfirmedTargetForm.headers },
+    payload: unconfirmedTargetForm.payload,
+  });
+  assert.equal(unconfirmedTarget.statusCode, 400, unconfirmedTarget.body);
+  assert.match(unconfirmedTarget.json().error, /确认.*EVAL_DB_URL/);
+  assert.equal(evaluationDatabaseImportTasks.length, 0);
+
+  const importDatabaseUrl = 'mysql://importer:import-secret@import.mysql:3309/ignored';
+  const form = multipartEvaluationDatabaseExcel(
+    'evaluation.xlsx', excel, true, 'custom', importDatabaseUrl,
+  );
   const imported = await app.inject({
     method: 'POST',
     url: `/api/projects/${projectId}/evaluation-database/import`,
@@ -417,7 +565,7 @@ test('NL2SQL 评测库 API：保存测试通过后导入 Excel 且不持久化�
   const persistedRun = getDb().prepare(
     'SELECT * FROM evaluation_database_import_runs WHERE id = ?',
   ).get(imported.json().run.id);
-  assert.doesNotMatch(JSON.stringify(persistedRun), /import-secret/);
+  assert.doesNotMatch(JSON.stringify(persistedRun), /eval-secret|import-secret|import\.mysql/);
 
   const running = await app.inject({
     method: 'GET', url: `/api/projects/${projectId}/evaluation-database/imports`, headers,
@@ -425,7 +573,7 @@ test('NL2SQL 评测库 API：保存测试通过后导入 Excel 且不持久化�
   assert.equal(running.statusCode, 200, running.body);
   assert.equal(running.json().imports[0].status, 'running');
 
-  const duplicateForm = multipartEvaluationDatabaseExcel('duplicate.xlsx', excel, 'import-secret');
+  const duplicateForm = multipartEvaluationDatabaseExcel('duplicate.xlsx', excel);
   const duplicate = await app.inject({
     method: 'POST',
     url: `/api/projects/${projectId}/evaluation-database/import`,
@@ -451,10 +599,12 @@ test('NL2SQL 评测库 API：保存测试通过后导入 Excel 且不持久化�
   assert.equal(finished.statusCode, 200, finished.body);
   assert.equal(finished.json().imports[0].status, 'done');
   assert.deepEqual(finished.json().imports[0].tables, [{ name: 'orders', rowCount: 1 }]);
-  assert.equal(evaluationDatabaseConnections[0].engine, 'postgresql');
-  assert.equal(evaluationDatabaseConnections[0].password, 'import-secret');
-  assert.ok(evaluationDatabaseQueries.some((sql) => sql.startsWith('CREATE TABLE "orders"')));
-  assert.doesNotMatch(raw.public_config_json, /import-secret/);
+  assert.deepEqual(evaluationDatabaseConnections[0], {
+    connectionUrl: 'mysql://importer:import-secret@import.mysql:3309/',
+    database: expectedDatabase,
+  });
+  assert.ok(evaluationDatabaseQueries.some((sql) => sql.startsWith('CREATE TABLE `')));
+  assert.doesNotMatch(raw.public_config_json, /eval-secret|project-secret|import-secret/);
 });
 
 test('评测用例 API：手工新增和修改均推进项目阶段', async () => {

@@ -10,6 +10,7 @@ import {
   mappingPrimaryNames,
 } from './mapping-contract.js';
 import { parseObjectIndex } from './object-index.js';
+import { packageMappingResource } from './package-data-source.js';
 import type { PackageFiles } from './package-render.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
 
@@ -278,8 +279,9 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 没有 sourceTable，属于概念实体，不得声明数据 mapping`);
             continue;
           }
-          if (v.resource && v.resource !== object.key) {
-            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping resource 应为 ${object.key}（当前：${v.resource}）`);
+          const expectedResource = packageMappingResource(spec, object);
+          if (v.resource && v.resource !== expectedResource) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping resource 应为 ${expectedResource}（当前：${v.resource}）`);
           }
 
           const expectedPrimary = mappingPrimaryNames(object);

@@ -1,4 +1,4 @@
-import type { DataDictTable, PackageSpec, CoverageResult, InterviewBatch, Project } from '../types.js';
+import type { DataDictTable, PackageSpec, PackageDataSourceType, CoverageResult, InterviewBatch, Project } from '../types.js';
 import { buildLlm, type LlmDeps } from '../llm/provider.js';
 import { buildInterviewTools, buildCompetencyTools, buildGenerateTools, type ToolContext, type InterviewCapture, type CompetencyCapture, type SpecCapture } from './tools.js';
 import { makeAgent, runAgent, runAgentCaptured } from './agent.js';
@@ -135,7 +135,12 @@ export async function proposeCompetency(project: Project, ctx: Ctx, analysis: un
 }
 
 // ---- 节点 6 包生成：agent 产出 spec → 渲染 + 覆盖检查 ----
-export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: LlmDeps): Promise<{ spec: PackageSpec; coverage: CoverageResult; files: Record<string, string>; version: string }> {
+export async function generatePackage(
+  project: Project,
+  ctx: Ctx,
+  llmOverride?: LlmDeps,
+  dataSourceType: PackageDataSourceType = 'neo4j',
+): Promise<{ spec: PackageSpec; coverage: CoverageResult; files: Record<string, string>; version: string }> {
   const selected = repo.listCompetency(project.id).filter((c) => c.selected).map((c) => c.question);
   const batches = repo.listBatches(project.id);
   const interviewSummary = batches.map((b) => summarizeAnswers(b, repo.getAnswers(b.id))).join('\n');
@@ -175,6 +180,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
     operations: raw.operations ?? [],
     rules: raw.rules ?? [],
     metrics: raw.metrics ?? [],
+    dataSourceType,
   };
 
   const spec = normalizeObjectDataMappings(rawSpec, ctx.tables);
@@ -182,7 +188,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   const coverage = checkCoverage(spec, selected);
   const files = renderPackage(spec);
   repo.insertPackageVersion(project.id, version, spec, coverage, node.id);
-  upsertNode({ id: node.id, projectId: project.id, type: 'generate', status: 'done', ordinal: node.ordinal, agentMessages: messages, output: { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length } });
+  upsertNode({ id: node.id, projectId: project.id, type: 'generate', status: 'done', ordinal: node.ordinal, agentMessages: messages, output: { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length, dataSourceType } });
   return { spec, coverage, files, version };
 }
 

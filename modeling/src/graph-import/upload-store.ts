@@ -133,3 +133,19 @@ export function deleteGraphImportUpload(input: {
   removeFile(row.stored_path);
   getDb().prepare('DELETE FROM graph_import_uploads WHERE id = ?').run(input.uploadId);
 }
+
+export function deleteProjectGraphImportUploadFiles(input: {
+  projectId: string;
+  owner: string;
+}): number {
+  const rows = getDb().prepare(`SELECT stored_path FROM graph_import_uploads
+    WHERE project_id = ? AND owner = ?`).all(input.projectId, input.owner) as Array<{ stored_path: string }>;
+  try {
+    for (const row of rows) {
+      if (existsSync(row.stored_path)) unlinkSync(row.stored_path);
+    }
+  } catch {
+    throw new Error('图导入临时文件清理失败，请稍后重试');
+  }
+  return rows.length;
+}

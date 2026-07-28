@@ -1,11 +1,14 @@
 import { parentPort } from 'node:worker_threads';
-import type { EvaluationDatabaseConfig } from './data-source.js';
 import { importEvaluationDatabaseExcel } from './eval-db.js';
+import {
+  redactEvaluationDatabaseError,
+  type EvaluationDatabaseTarget,
+} from './evaluation-database-target.js';
 
 interface ImportWorkerRequest {
   filename: string;
   buffer: ArrayBuffer;
-  config: EvaluationDatabaseConfig;
+  target: EvaluationDatabaseTarget;
 }
 
 interface ImportWorkerResponse {
@@ -23,16 +26,11 @@ workerPort.once('message', async (request: ImportWorkerRequest) => {
       result: await importEvaluationDatabaseExcel({
         filename: request.filename,
         buffer: Buffer.from(request.buffer),
-        config: request.config,
+        target: request.target,
       }),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    response = {
-      error: request.config.password
-        ? message.split(request.config.password).join('[REDACTED]')
-        : message,
-    };
+    response = { error: redactEvaluationDatabaseError(error, request.target) };
   }
   workerPort.postMessage(response);
   workerPort.close();

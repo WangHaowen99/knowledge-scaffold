@@ -5,8 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeDataSourceInput, redactProviderConfig } from '../src/evaluation/data-source.js';
 import {
-  createReadyEvaluationProject, evaluationDatabaseConfig, jsonResponse, neo4jConfig,
-  neo4jInput, nl2sqlInput,
+  createReadyEvaluationProject, jsonResponse, neo4jConfig, neo4jInput, nl2sqlInput,
 } from './helpers/data-source-fixtures.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-data-source-'));
@@ -25,10 +24,12 @@ test('data source：规范化连接输入并校验成对隔离字段', () => {
     mode: 'none', provider: 'neo4j', config: { password: 'must-not-survive' },
   }), { mode: 'none' });
   assert.deepEqual(normalizeDataSourceInput(nl2sqlInput({
-    scene: '',
+    scene: ' evaluation ',
     evaluation_workspace_id: ' nl2sql-eval ',
-    evaluation_database: evaluationDatabaseConfig({ port: '3306' }),
   })), nl2sqlInput());
+  assert.throws(() => normalizeDataSourceInput(nl2sqlInput({ scene: '' })), /Scene 不能为空/);
+  assert.throws(() => normalizeDataSourceInput(nl2sqlInput({ scene: 'invalid-scene' })),
+    /Scene 格式非法/);
 });
 
 test('data source：公开配置移除密钥但保留已配置标记', () => {
@@ -39,13 +40,8 @@ test('data source：公开配置移除密钥但保留已配置标记', () => {
   });
   assert.deepEqual(redactProviderConfig('nl2sql_template', {
     url: 'http://nl2sql:8080', token: 'token-value', scene: 'demo',
-    evaluation_database: evaluationDatabaseConfig(),
   }), {
     url: 'http://nl2sql:8080', scene: 'demo', has_token: true,
-    evaluation_database: {
-      engine: 'mysql', host: 'mysql.local', port: 3306, database: 'evaluation',
-      username: 'root', has_password: true,
-    },
   });
 });
 
@@ -260,23 +256,27 @@ test('direct connection tester：Neo4j 每次要求密码且错误不泄露密�
 test('direct connection tester：NL2SQL 直接调用目标服务而非 consumer', async () => {
   const { testProjectDataSourceConnection } = await import('../src/evaluation/data-source-connection-test.js');
   const calls: Array<{ url: string; init: RequestInit }> = [];
-  const databaseQueries: string[] = [];
-  let databaseClosed = false;
   await testProjectDataSourceConnection(nl2sqlInput({ scene: 'scene-a' }), {
     request: async (url, init) => {
       calls.push({ url: String(url), init: init ?? {} });
       return jsonResponse({ ok: true });
     },
-    evaluationDatabaseConnector: async () => ({
-      query: async (sql) => { databaseQueries.push(sql); },
-      close: async () => { databaseClosed = true; },
-    }),
   });
   assert.equal(calls[0].url, 'http://nl2sql:8080/api/v1/sql');
   assert.equal((calls[0].init.headers as Record<string, string>).Authorization, 'Bearer token-value');
   assert.deepEqual(JSON.parse(String(calls[0].init.body)), { sql: 'SELECT 1 AS ok', scene: 'scene-a' });
-  assert.deepEqual(databaseQueries, ['SELECT 1 AS ok']);
-  assert.equal(databaseClosed, true);
+});
+
+test('direct connection tester：NL2SQL Template 允许不配置 Token', async () => {
+  const { testProjectDataSourceConnection } = await import('../src/evaluation/data-source-connection-test.js');
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  await testProjectDataSourceConnection(nl2sqlInput({ token: '', scene: 'scene-a' }), {
+    request: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return jsonResponse({ ok: true });
+    },
+  });
+  assert.equal((calls[0].init.headers as Record<string, string>).Authorization, undefined);
 });
 
 test('consumer sync：导入当前知识包并写入本体级数据源', async () => {
@@ -364,7 +364,6 @@ test('consumer sync：导包冲突覆盖版本后更新本体级数据源', asyn
       config: {
         url: 'http://nl2sql:8080', token: 'new-token', scene: 'scene-a',
         evaluation_workspace_id: 'nl2sql-eval',
-        evaluation_database: evaluationDatabaseConfig(),
       },
     },
     request,
@@ -458,15 +457,11 @@ test('evaluation：评测库后台导入运行中时禁止启动评测', async (
     ontologyId,
     config: {
       url: 'http://nl2sql:8080', scene: 'evaluation', evaluation_workspace_id: 'nl2sql-eval',
-      evaluation_database: {
-        ...evaluationDatabaseConfig({ password: undefined }), has_password: true,
-      },
     },
   });
   const run = createEvaluationDatabaseImportRun({
     projectId: ready.project.id,
     filename: 'evaluation.xlsx',
-    engine: 'mysql',
     database: 'evaluation',
   });
 
@@ -561,16 +556,13 @@ test('evaluation data source：不使用数据源时清除导入本体的配置'
   }]);
 });
 
-test('data source form：脱敏回填并在保存前校验密码和 Workspace', async () => {
+test('data source form：脱敏回填并校验 Scene 和 Workspace', async () => {
   const {
     dataSourceToForm,
     dataSourceFormPayload,
     dataSourceFormError,
-    evaluationDatabaseServerFormError,
-    projectEvaluationDatabaseName,
-    applyCreatedEvaluationDatabaseName,
-    changeEvaluationDatabaseName,
-    switchEvaluationDatabaseEngine,
+    applyCreatedProjectDatabaseScene,
+    evaluationDatabaseUrlSelectionError,
   } =
     await import('../frontend/src/data-source-form.js');
   const form = dataSourceToForm({
@@ -597,49 +589,31 @@ test('data source form：脱敏回填并在保存前校验密码和 Workspace', 
     workspaceId: 'nl2sql-eval',
     config: {
       url: 'http://nl2sql:8080', scene: 'evaluation', evaluation_workspace_id: 'nl2sql-eval',
-      evaluation_database: {
-        engine: 'postgresql', host: 'postgres.local', port: 5432, database: 'evaluation',
-        username: 'postgres', has_password: true,
-      },
     },
   });
-  assert.equal(nl2sql.eval_db_engine, 'postgresql');
-  assert.equal(nl2sql.eval_db_password, '');
-  assert.match(dataSourceFormError(nl2sql), /评测库 Password.*每次/);
-  const validNl2sql = { ...nl2sql, eval_db_password: 'secret' };
-  assert.equal(dataSourceFormError(validNl2sql), '');
-  assert.equal(evaluationDatabaseServerFormError({
-    ...validNl2sql, eval_db_database: '',
-  }), '');
-  assert.match(evaluationDatabaseServerFormError({
-    ...validNl2sql, eval_db_database: '', eval_db_host: '',
-  }), /Host 不能为空/);
-  assert.equal(projectEvaluationDatabaseName('pj_a-b'), 'mv_shadow_pj_a_b');
-  assert.deepEqual(switchEvaluationDatabaseEngine(validNl2sql, 'mysql'), {
-    ...validNl2sql,
-    eval_db_engine: 'mysql',
-    eval_db_port: '3306',
-    eval_db_database: '',
-    scene: '',
-  });
-  assert.deepEqual(changeEvaluationDatabaseName(validNl2sql, 'new_evaluation'), {
-    ...validNl2sql,
-    eval_db_database: 'new_evaluation',
-    scene: '',
-  });
-  assert.deepEqual(applyCreatedEvaluationDatabaseName(validNl2sql, 'mv_shadow_pj_1'), {
-    ...validNl2sql,
-    eval_db_database: 'mv_shadow_pj_1',
+  assert.equal(dataSourceFormError(nl2sql), '');
+  assert.match(dataSourceFormError({ ...nl2sql, scene: '' }), /Scene 不能为空/);
+  assert.match(dataSourceFormError({ ...nl2sql, scene: 'invalid-scene' }), /Scene 格式非法/);
+  assert.deepEqual(applyCreatedProjectDatabaseScene(nl2sql, 'mv_shadow_pj_1'), {
+    ...nl2sql,
     scene: 'mv_shadow_pj_1',
   });
-  assert.equal(applyCreatedEvaluationDatabaseName({
-    ...validNl2sql, scene: 'intentional_scene',
-  }, 'mv_shadow_pj_1').scene, 'intentional_scene');
-  assert.deepEqual(dataSourceFormPayload(validNl2sql).config.evaluation_database, {
-    engine: 'postgresql', host: 'postgres.local', port: '5432', database: 'evaluation',
-    username: 'postgres', password: 'secret',
+  assert.equal(evaluationDatabaseUrlSelectionError('default', '', true), '');
+  assert.match(evaluationDatabaseUrlSelectionError('default', '', false), /未配置 EVAL_DB_URL/);
+  assert.equal(evaluationDatabaseUrlSelectionError(
+    'custom', 'mysql://user:secret@mysql.local:3306', true,
+  ), '');
+  assert.match(evaluationDatabaseUrlSelectionError('custom', '', true), /不能为空/);
+  assert.match(evaluationDatabaseUrlSelectionError('custom', 'https://mysql.local', true), /mysql 协议/);
+  assert.deepEqual(dataSourceFormPayload(nl2sql), {
+    mode: 'connection',
+    provider: 'nl2sql_http',
+    config: {
+      url: 'http://nl2sql:8080', token: '', scene: 'evaluation',
+      evaluation_workspace_id: 'nl2sql-eval',
+    },
   });
-  assert.match(dataSourceFormError({ ...validNl2sql, evaluation_workspace_id: '' }), /工作空间 ID 不能为空/);
+  assert.match(dataSourceFormError({ ...nl2sql, evaluation_workspace_id: '' }), /工作空间 ID 不能为空/);
 });
 
 test('workflow：数据源配置位于知识包完善与评测用例录入之间', async () => {

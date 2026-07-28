@@ -73,6 +73,9 @@ export const register = (username, email, password) =>
 export const me = () => api('/api/me');
 export const listProjects = () => api('/api/projects');
 export const createProject = (input) => api('/api/projects', { method: 'POST', body: JSON.stringify(input) });
+export const deleteProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`, {
+  method: 'DELETE', body: JSON.stringify({ confirmed: true }),
+});
 export const getProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`);
 export const uploadDocument = (id, file) => {
   const form = new FormData();
@@ -88,9 +91,12 @@ export const getInterview = (id) => api(`${P(id)}/interview`);
 export const startInterview = (id) => api(`${P(id)}/interview/start`, { method: 'POST' });
 export const answerInterview = (id, batchId, answers) => api(`${P(id)}/interview/answer`, { method: 'POST', body: JSON.stringify({ batchId, answers }) });
 export const getCompetency = (id) => api(`${P(id)}/competency`);
+export const addCompetency = (id, question) => api(`${P(id)}/competency`, { method: 'POST', body: JSON.stringify({ question }) });
 export const proposeCompetency = (id) => api(`${P(id)}/competency/propose`, { method: 'POST' });
 export const selectCompetency = (id, selectedIds) => api(`${P(id)}/competency/select`, { method: 'POST', body: JSON.stringify({ selectedIds }) });
-export const generatePackage = (id) => api(`${P(id)}/generate`, { method: 'POST' });
+export const generatePackage = (id, dataSourceType) => api(`${P(id)}/generate`, {
+  method: 'POST', body: JSON.stringify({ dataSourceType }),
+});
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`);
 export const exportPackageUrl = (id) => `${P(id)}/package/export`;
@@ -98,14 +104,22 @@ export const exportPackageUrl = (id) => `${P(id)}/package/export`;
 // ---- M3 评测 ----
 export const getDataSource = (id) => api(`${P(id)}/data-source`);
 export const saveDataSource = (id, input) => api(`${P(id)}/data-source`, { method: 'PUT', body: JSON.stringify(input) });
-export const createProjectEvaluationDatabase = (id, input) => api(
+export const getEvaluationDatabaseTarget = (id) => api(`${P(id)}/evaluation-database/target`);
+export const createProjectEvaluationDatabase = (id, selection) => api(
   `${P(id)}/evaluation-database/project-database`,
-  { method: 'POST', body: JSON.stringify(input) },
+  {
+    method: 'POST',
+    body: JSON.stringify({
+      database_url_mode: selection.mode,
+      database_url: selection.mode === 'custom' ? selection.databaseUrl : undefined,
+    }),
+  },
 );
-export const importEvaluationDatabase = (id, file, password, replaceConfirmed) => {
+export const importEvaluationDatabase = (id, file, replaceConfirmed, selection) => {
   const form = new FormData();
-  form.append('password', password);
   if (replaceConfirmed) form.append('replace_confirmation', 'replace_same_name_tables');
+  form.append('database_url_mode', selection.mode);
+  if (selection.mode === 'custom') form.append('database_url', selection.databaseUrl);
   form.append('file', file);
   return api(`${P(id)}/evaluation-database/import`, { method: 'POST', body: form });
 };

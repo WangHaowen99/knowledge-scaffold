@@ -35,6 +35,11 @@ export function listProjects(owner: string): Project[] {
   return rows.map(rowToProject);
 }
 
+export function deleteProject(id: string, owner: string): boolean {
+  const result = getDb().prepare('DELETE FROM projects WHERE id = ? AND owner = ?').run(id, owner);
+  return Number(result.changes ?? 0) === 1;
+}
+
 export function setStage(id: string, stage: NodeType): void {
   getDb().prepare('UPDATE projects SET stage = ?, updated_at = ? WHERE id = ?').run(stage, nowIso(), id);
 }
