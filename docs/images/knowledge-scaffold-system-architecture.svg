@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="920" viewBox="0 0 1800 920" role="img" aria-labelledby="title desc">
+  <title id="title">knowledge-scaffold 系统架构</title>
+  <desc id="desc">四层能力架构，包括应用与接入层、知识与智能体平台层、平台公共服务层、执行与资源层。</desc>
+  <defs>
+    <linearGradient id="runtimeGradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF8F8"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <filter id="softShadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#17365D" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      text { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; }
+      .layer-title { font-size: 26px; font-weight: 700; fill: #172B4D; }
+      .layer-en { font-size: 13px; font-weight: 700; letter-spacing: 2px; fill: #6B7C93; }
+      .card-title { font-size: 23px; font-weight: 700; fill: #172B4D; }
+      .card-body { font-size: 16px; fill: #52657A; }
+      .card-tag { font-size: 13px; font-weight: 700; fill: #C7000B; letter-spacing: 0.5px; }
+      .number { font-size: 14px; font-weight: 700; fill: #FFFFFF; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="920" fill="#FFFFFF"/>
+
+  <!-- Layer 1: Applications and access -->
+  <g id="layer-access" transform="translate(0,-120)">
+    <rect x="40" y="136" width="1720" height="174" rx="18" fill="#F5F8FC" stroke="#C9D5E8" stroke-width="2"/>
+    <rect x="40" y="136" width="220" height="174" rx="18" fill="#E9F0F8"/>
+    <rect x="40" y="136" width="10" height="174" rx="5" fill="#315A88"/>
+    <text x="76" y="206" class="layer-title">应用与接入层</text>
+    <text x="76" y="236" class="layer-en">EXPERIENCE &amp; ACCESS</text>
+
+    <g filter="url(#softShadow)">
+      <rect x="286" y="165" width="340" height="116" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <circle cx="318" cy="197" r="17" fill="#315A88"/><text x="318" y="202" text-anchor="middle" class="number">01</text>
+      <text x="348" y="204" class="card-title">知识推理工作台</text>
+      <text x="318" y="239" class="card-body">对话 · 知识包 · 数据源</text>
+      <text x="318" y="263" class="card-body">Trace · 工具过程</text>
+
+      <rect x="650" y="165" width="340" height="116" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <circle cx="682" cy="197" r="17" fill="#315A88"/><text x="682" y="202" text-anchor="middle" class="number">02</text>
+      <text x="712" y="204" class="card-title">知识包建模工作台</text>
+      <text x="682" y="239" class="card-body">建模 · 检查 · 评测</text>
+      <text x="682" y="263" class="card-body">优化 · 导出 · 图数据导入</text>
+
+      <rect x="1014" y="165" width="340" height="116" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <circle cx="1046" cy="197" r="17" fill="#315A88"/><text x="1046" y="202" text-anchor="middle" class="number">03</text>
+      <text x="1076" y="204" class="card-title">Agent 评测平台</text>
+      <text x="1046" y="239" class="card-body">用例 · 断言 · 指标</text>
+      <text x="1046" y="263" class="card-body">Trace · 报告 · 回归</text>
+
+      <rect x="1378" y="165" width="340" height="116" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <circle cx="1410" cy="197" r="17" fill="#315A88"/><text x="1410" y="202" text-anchor="middle" class="number">04</text>
+      <text x="1440" y="204" class="card-title">开放接入</text>
+      <text x="1410" y="239" class="card-body">HTTP · SDK · MCP</text>
+      <text x="1410" y="263" class="card-body">A2A · ACP</text>
+    </g>
+  </g>
+
+  <!-- Layer 2: Knowledge and agent platform -->
+  <g id="layer-platform" transform="translate(0,-120)">
+    <rect x="40" y="330" width="1720" height="232" rx="18" fill="#F5F8FC" stroke="#C9D5E8" stroke-width="2"/>
+    <rect x="40" y="330" width="220" height="232" rx="18" fill="#E9F0F8"/>
+    <rect x="40" y="330" width="10" height="232" rx="5" fill="#C7000B"/>
+    <text x="76" y="418" class="layer-title">知识与智能体</text>
+    <text x="76" y="452" class="layer-title">平台层</text>
+    <text x="76" y="484" class="layer-en">KNOWLEDGE PLATFORM</text>
+
+    <g filter="url(#softShadow)">
+      <rect x="286" y="367" width="448" height="158" rx="16" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <rect x="310" y="389" width="88" height="25" rx="12" fill="#EAF1F9"/>
+      <text x="354" y="407" text-anchor="middle" class="layer-en">DESIGN</text>
+      <text x="310" y="449" class="card-title">知识工程引擎</text>
+      <text x="310" y="482" class="card-body">多源材料解析 · 领域分析 · 专家访谈</text>
+      <text x="310" y="508" class="card-body">对象 / 操作 / 脚本 / 映射 · 质量闭环</text>
+
+      <rect x="758" y="367" width="448" height="158" rx="16" fill="url(#runtimeGradient)" stroke="#C7000B" stroke-width="2"/>
+      <rect x="782" y="389" width="190" height="25" rx="12" fill="#FFF0F0"/>
+      <text x="877" y="407" text-anchor="middle" class="card-tag">OPENJIUWEN-BASED</text>
+      <text x="782" y="449" class="card-title">知识驱动 Agent Runtime</text>
+      <text x="782" y="482" class="card-body">ReAct · ContextEngine · 知识上下文</text>
+      <text x="782" y="508" class="card-body">工具 · 子 Agent · 记忆 · 会话版本锁定</text>
+
+      <rect x="1230" y="367" width="488" height="158" rx="16" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <rect x="1254" y="389" width="92" height="25" rx="12" fill="#EAF1F9"/>
+      <text x="1300" y="407" text-anchor="middle" class="layer-en">EXECUTE</text>
+      <text x="1254" y="449" class="card-title">确定性执行编排</text>
+      <text x="1254" y="482" class="card-body">Provider 数据查询 · 知识包脚本路由</text>
+      <text x="1254" y="508" class="card-body">JiuwenBox 执行 · agent-stream.v2 事件</text>
+    </g>
+  </g>
+
+  <!-- Layer 3: Shared platform services -->
+  <g id="layer-services" transform="translate(0,-120)">
+    <rect x="40" y="582" width="1720" height="198" rx="18" fill="#F5F8FC" stroke="#C9D5E8" stroke-width="2"/>
+    <rect x="40" y="582" width="220" height="198" rx="18" fill="#E9F0F8"/>
+    <rect x="40" y="582" width="10" height="198" rx="5" fill="#315A88"/>
+    <text x="76" y="665" class="layer-title">平台公共服务层</text>
+    <text x="76" y="696" class="layer-en">PLATFORM SERVICES</text>
+
+    <g filter="url(#softShadow)">
+      <rect x="286" y="617" width="340" height="128" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="310" y="657" class="card-title">认证与治理</text>
+      <text x="310" y="692" class="card-body">用户 · 工作空间 · 权限</text>
+      <text x="310" y="718" class="card-body">模型 Profile · 配置作用域</text>
+
+      <rect x="650" y="617" width="340" height="128" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="674" y="657" class="card-title">知识包服务</text>
+      <text x="674" y="692" class="card-body">导入 · 存储 · 版本 · 激活</text>
+      <text x="674" y="718" class="card-body">会话锁定 · 兼容转换</text>
+
+      <rect x="1014" y="617" width="340" height="128" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="1038" y="657" class="card-title">数据连接服务</text>
+      <text x="1038" y="692" class="card-body">Provider 配置 · 对象映射</text>
+      <text x="1038" y="718" class="card-body">工作空间 / 本体查询隔离</text>
+
+      <rect x="1378" y="617" width="340" height="128" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="1402" y="657" class="card-title">接口与运行记录</text>
+      <text x="1402" y="692" class="card-body">API · 协议适配 · 会话</text>
+      <text x="1402" y="718" class="card-body">Trace · 日志 · 指标</text>
+    </g>
+  </g>
+
+  <!-- Layer 4: Execution and resources -->
+  <g id="layer-resources" transform="translate(0,-120)">
+    <rect x="40" y="800" width="1720" height="228" rx="18" fill="#F5F8FC" stroke="#C9D5E8" stroke-width="2"/>
+    <rect x="40" y="800" width="220" height="228" rx="18" fill="#E9F0F8"/>
+    <rect x="40" y="800" width="10" height="228" rx="5" fill="#315A88"/>
+    <text x="76" y="896" class="layer-title">执行与资源层</text>
+    <text x="76" y="927" class="layer-en">EXECUTION &amp; INFRA</text>
+
+    <g filter="url(#softShadow)">
+      <rect x="286" y="839" width="340" height="150" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="310" y="881" class="card-title">模型服务</text>
+      <text x="310" y="918" class="card-body">OpenAI-compatible LLM</text>
+      <text x="310" y="946" class="card-body">主模型 · 任务模型</text>
+
+      <rect x="650" y="839" width="340" height="150" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="674" y="881" class="card-title">企业数据</text>
+      <text x="674" y="918" class="card-body">MySQL · Neo4j · HugeGraph</text>
+      <text x="674" y="946" class="card-body">MindsDB · DataAgent</text>
+
+      <rect x="1014" y="839" width="340" height="150" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="1038" y="881" class="card-title">安全执行</text>
+      <text x="1038" y="918" class="card-body">JiuwenBox 脚本沙箱</text>
+      <text x="1038" y="946" class="card-body">只读挂载 · 策略 · 容器隔离</text>
+
+      <rect x="1378" y="839" width="340" height="150" rx="14" fill="#FFFFFF" stroke="#D5DEEB"/>
+      <text x="1402" y="881" class="card-title">平台基础设施</text>
+      <text x="1402" y="918" class="card-body">运行时文件 · SQLite · Docker</text>
+      <text x="1402" y="946" class="card-body">日志 · Langfuse · 可选 MySQL</text>
+    </g>
+  </g>
+
+</svg>

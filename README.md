@@ -1,266 +1,306 @@
-<div align="right">
+# knowledge-scaffold
 
-[English](./docs/README_en-US.md) | 简体中文
+`knowledge-scaffold` 是一个面向企业知识工程的 Agentic AI 平台。它把领域对象、业务规则、确定性脚本、数据映射和评测用例组织成可版本化的**知识包**，让智能体在明确的知识语义、数据边界和执行规则内完成问答、查询与计算。
 
-</div>
+平台解决的核心问题不是“让大模型记住更多内容”，而是减少企业场景中的术语误解、字段猜测、规则编造和数值错算：
 
-# 🔬 什么是 Meta Wise
+- 领域概念、关系和操作由知识包定义；
+- 业务对象通过映射连接真实企业数据；
+- 复杂数值计算可由知识包中的 Python 脚本确定性执行；
+- 推理过程保留知识读取、数据查询、工具调用和脚本执行记录；
+- 知识包支持多版本共存，会话可以锁定创建时使用的知识版本。
 
-**Meta Wise** 是一个面向企业知识工程的 Agentic AI 平台。它针对通用大模型在企业场景中的典型问题——不掌握领域术语、自行虚构指标口径与数据字段——给出工程化解法：将业务领域的对象、操作、计算口径与数据映射沉淀为结构化的**知识包**，并与企业真实数据源绑定。此后智能体基于知识包定义的语义作答、经映射查询真实数据，**输出结果可溯源，不由模型虚构**。
+> 当前仓库包含运行期应用、知识包建模工作台、统一鉴权、Agent 评测和场景样例。完整运行需要配置模型服务、认证参数和业务数据源，推荐在 Linux 或 WSL2 中使用 Docker Compose 部署。
 
-平台按三层分工组织：**设计期造模型**（知识包建模工作台把领域经验结构化为知识包，`modeling/`）、**运行期用模型**（智能体基于知识包提供服务，`consumer/`）、**平台做接线**（连接模型、数据与工具）。运行期主应用位于 `consumer/`：知识工程控制台（React）、Flask 后端、工作区运行时与智能体评测平台，Agent 主循环基于开源 agent 框架 **openjiuwen** 构建；设计期建模工作台位于 `modeling/`，与 consumer 打通「建模 → 评测 → 优化」闭环。
+## 为什么使用 knowledge-scaffold
 
-## 应用场景
+通用大模型擅长语言理解和任务规划，但企业推理还需要可控的知识、数据与计算。knowledge-scaffold 将不同职责放到最适合的执行层：
 
-Meta Wise 面向的是回答必须遵循**领域语义与既定计算口径**、而非模型自由生成的场景：
+| 企业场景中的问题 | knowledge-scaffold 的处理方式 |
+| --- | --- |
+| 模型不了解内部术语和对象关系 | 使用知识包中的对象、关系、别名和操作定义建立领域语义 |
+| 模型猜测数据库表名或字段名 | 使用对象数据映射和独立 Provider 查询真实数据 |
+| 多步数值计算容易漏算、错算 | 将计算交给知识包脚本，在 JiuwenBox 沙箱中执行 |
+| 知识包升级影响已有推理 | 同一知识包多版本共存，会话锁定所使用的版本 |
+| 推理过程难以定位问题 | 通过 SSE Trace、工具调用、脚本记录和评测结果追踪执行链路 |
+
+## 核心组成
+
+| 模块 | 目录 | 作用 |
+| --- | --- | --- |
+| 知识消费与推理 | [`consumer/`](consumer/) | React 控制台、Flask API、openJiuwen Agent Runtime、MCP、SDK 和部署脚本 |
+| 知识包建模 | [`modeling/`](modeling/) | 从业务资料生成、检查、评测、优化和导出知识包，并支持 Neo4j 图数据导入 |
+| 统一鉴权 | [`auth-server/`](auth-server/) | 独立 OAuth2/OIDC 子集服务，供 consumer 与 modeling 共用账号体系 |
+| Agent 评测 | [`evaluation/agent_eval/`](evaluation/agent_eval/) | 独立 Web/CLI 评测平台，管理用例、断言、指标、Trace 和报告 |
+
+## 核心能力
+
+### 知识包建模与版本管理
+
+- 资料上传与解析、领域分析、专家访谈、知识包生成、完善检查、评测、优化和导出；
+- 支持 Excel、Markdown、TXT、DOCX 和 PDF 资料；
+- 支持规则检查、语义检查、人工修订和对话式修缮；
+- 支持同一知识包多个版本共存、激活版本切换和按版本查看内容；
+- 已被会话引用的版本不能直接删除，避免历史会话失去执行语义；
+- 支持旧知识包导入、对象别名和字段别名转换。
+
+### 知识驱动的 Agent 推理
+
+- Agent 主循环基于 `openjiuwen==0.1.14`，使用 ReAct 模式组织规划、工具调用和结果回写；
+- openJiuwen ContextEngine 管理模型上下文窗口；
+- 支持知识读取、业务数据查询、脚本执行、联网搜索、长期记忆和子 Agent 编排；
+- 通过 `agent-stream.v2` SSE 协议输出回答、思考摘要、工具进度、子任务进度和最终状态；
+- 明确选择知识包创建的会话会锁定当时的知识包版本，切换激活版本只影响新会话。
+
+### 企业数据连接
+
+业务数据源按 `workspace_id + ontology_id` 隔离配置。同一知识包的多个版本共享知识包级数据连接；版本锁定的是知识语义，不会复制业务数据。
+
+| Provider | 用途 |
+| --- | --- |
+| `nl2sql_http` | 调用标准 NL2SQL HTTP 服务 |
+| `nl2sql_template` | 优先使用知识包 SQL 模板，未命中时回退 NL2SQL 服务 |
+| `mindsdb` | 调用 MindsDB Agent 或查询能力 |
+| `dataagent` | 调用 DataAgent REST 服务 |
+| `neo4j` | 查询 Neo4j 实体、关系和路径 |
+| `hugegraph` | 查询 HugeGraph 图数据 |
+
+### 安全执行、协议与可观测性
+
+- 知识包脚本通过 `execute_script` 工具提交给独立 JiuwenBox 容器执行；
+- JiuwenBox 使用只读运行时挂载、策略文件、Unix Domain Socket 和容器隔离约束脚本权限；
+- MCP 服务作为独立进程运行，支持 Streamable HTTP 和 SSE；
+- 后端提供 A2A 与 ACP 适配接口，复用同一套编排器和工作空间权限；
+- 支持会话 Trace、工具调用明细、Speedscope 性能诊断和按工作空间配置的 Langfuse 观测。
+
+## 典型场景
+
+### 生产流程生产流程生产规划
+
+生产流程场景覆盖生产装置批次计划、柴油/生产线C路径、装置负荷、逻辑罐容量、产品产出、能耗、成本和综合毛利评估。推理链路将模型擅长的理解与规划和确定性计算分开：
+
+```text
+批次计划结构化输入
+  → 知识包操作路由
+  → Neo4j 权威数据查询
+  → JiuwenBox 确定性脚本计算
+  → 装置负荷、罐容和经营指标结论
+```
 
 
-每个场景均附带知识包源文件（明文目录）、示例数据集与测试用例，打包为 zip 后即可导入 consumer 使用；也可以用建模工作台从自己的领域资料从零构建知识包。
+### 工程变更影响分析
 
-## 核心特性
+示例场景覆盖 CHANGE_ORDER 工程变更、SOURCE_STRUCTURE/STRUCTURE_LIST、物料映射、库存与供应、生产进度、处理成本和切换周期分析：
 
-> ✅ 当前版本可用 · 🚧 规划/建设中
+```text
+CHANGE_ORDER 或物料问题
+  → 知识包对象与字段映射
+  → 企业数据查询
+  → 变更影响、成本和周期分析
+```
 
-- ✅ **知识包驱动的智能体**
-    + 导入知识包后，智能体即获得该领域的业务对象、操作、查询边界与受控脚本。
-    + 知识包内容可在控制台在线浏览（objects / operations / scripts / mappings，Markdown 渲染）。
-- ✅ **统一业务数据入口**
-    + 业务对象经 `mappings/object-data-mappings.json` 映射到真实数据源的表与字段，查询不推测表名或字段。
-    + 可插拔 provider：NL2SQL HTTP、NL2SQL 模板、MindsDB、DataAgent、Neo4j、HugeGraph，按工作空间与本体独立配置。
-- ✅ **多 Agent 编排**
-    + ReAct 主循环组织模型推理、工具调用、结果写回与终止判断；复杂任务可拆分为独立子任务并发 fan-out/fan-in 后汇总。
-    + 全程 SSE 流式输出（`agent-stream.v2`）：模型思考、工具调用、子任务进度实时呈现，配套 Trace 运行轨迹面板。
-- ✅ **长期记忆与知识演化**
-    + 用户级记忆注入与显式记忆沉淀；智能体在运行中提出知识操作演化建议，**经人工评审通过后方可落库**。
-- ✅ **分层配置与访问控制**
-    + 三层配置作用域：**全局**（模型池、联网搜索、平台接入、Agent 参数）→ **工作空间**（模型选用、本体私有数据源、运行参数、观测、MCP）→ **个人**（偏好、主题）。
-    + 模型密钥仅存全局层；工作空间只引用模型 profile，不接触 API Key。
-    + 认证统一由独立鉴权服务提供（`auth-server/`，OAuth2/OIDC 子集）：consumer 与 modeling 共用同一账号体系，后端必填 `AUTH_SERVER_URL` 对接，支持开放注册（一步建号，无邮箱验证码）。
-- ✅ **协议与 SDK 扩展**
-    + A2A、ACP 适配层与 SDK，外部系统可集成同一套运行能力。
-- ✅ **评测平台**
-    + `evaluation/agent_eval/` 基于场景测试用例评测智能体质量：评测执行、trace 回放、能力清单与用例生成。
-- ✅ **知识包建模工作台（设计期）**
-    + 面向领域专家的 Web 建模工具（`modeling/`，Fastify + React + SQLite）：上传 Excel 数据表与业务文档，沿固定主干流程完成一次建模——**项目创建 → 资料上传与解析 → 领域分析 → 知识萃取访谈 → 知识包生成 → 知识包完善 → 评测用例录入 → 评测运行 → 优化建议与应用**。
-    + **访谈式知识萃取**：系统解读资料产出领域概览、候选业务对象与「领域问题」（知识包建成后必须能答对的业务问题），再像顾问一样分批向专家提问，确认对象划分、字段含义与计算口径，回答沉淀为建模依据。
-    + **知识包完善**：知识包体检（规则引擎 + 语义检查双层，发现口径冲突、兜底缺失、路由重复等问题）；文件可直接人工修订（修订稿优先生效）；修缮对话支持用自然语言改包——先给影响分析，确认后才落新版本。
-    + **建模—评测闭环**：知识包经 API 导入 consumer 的影子工作区实测运行评测用例，LLM Judge 判分并支持人工改判；优化器按未通过用例生成结构化改进建议，勾选采纳一键生成新版本（`1.N.0` 递增）再回评验证，逐版本可导出 zip 交付。
-    + **演示模式**：LLM 端点填 `faux` 即可无 API Key 全流程试玩建模。
-- 🚧 **领域知识包（golden）沉淀**
-    + 经专家沉淀、达到标杆质量的知识包，兼作新领域建模的热启动模板与建模调优的标准答案。
+
+## 五分钟快速启动
+
+### 前置条件
+
+- Linux 或 WSL2；
+- Git；
+- Docker 20.10+；
+- Docker Compose v2；
+- 能够访问 GitCode，首次启动会拉取固定版本的 JiuwenSwarm/JiuwenBox 源码；
+- 端口 `5055`、`7488` 和 `8888` 空闲。
+
+### 启动完整运行时
+
+```bash
+git clone https://gitcode.com/knowledge-engine/knowledge-scaffold.git
+cd knowledge-scaffold/consumer
+cp backend/.env.example backend/.env
+```
+
+编辑 `consumer/backend/.env`，至少设置以下参数：
+
+```dotenv
+AUTH_SERVER_URL=http://auth-server:5056
+AUTH_SERVER_ADMIN_TOKEN=<至少16个字符的独立随机值>
+MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
+USER_MAX_COUNT=10
+AUTH_USER_MAX_COUNT=10
+```
+
+启动服务：
+
+```bash
+export AUTH_USER_MAX_COUNT=10
+./run_docker.sh latest all
+```
+
+`run_docker.sh` 会先构建固定提交的 JiuwenBox 镜像，再通过 Compose 启动 backend、frontend、auth-server、MCP 和 JiuwenBox。不要跳过该脚本直接执行 `docker compose up`，否则本地可能缺少 `onto-agent-jiuwenbox` 镜像。
+
+| 服务 | 地址 |
+| --- | --- |
+| 控制台 | `http://localhost:8888` |
+| Consumer API | `http://localhost:5055` |
+| MCP 健康检查 | `http://localhost:7488/health` |
+
+首次登录使用 `admin / <REDACTED_INITIAL_PASSWORD>`，系统会要求立即修改密码。登录后进入“配置中心 → 全局配置 → 模型池”，添加 OpenAI-compatible 模型并设为默认模型。
+
+### 首次完成一次推理
+
+1. 创建或选择工作空间；
+2. 在全局模型池添加模型，并为工作空间选择模型 Profile；
+3. 在知识包工作台导入 `.zip` 知识包；
+4. 为知识包配置数据源并执行连接测试；
+5. 新建对话并选择知识包，然后发送问题；
+6. 在对话右侧查看知识读取、数据查询、工具调用和脚本执行过程。
+
+
+### 可选：启动知识包建模工作台
+
+consumer 启动完成后，在仓库根目录执行：
+
+```bash
+docker compose -p mw-modeling \
+  -f deploy/docker-compose.modeling.yml \
+  --project-directory deploy \
+  up -d --build
+```
+
+访问 `http://localhost:5100`。详细配置与工作流见 [modeling/README.md](modeling/README.md)。
 
 ## 系统架构
 
-```mermaid
-flowchart LR
-  subgraph Design["设计期"]
-    Expert["领域专家"] --> ModelTool["知识包建模工作台（modeling/）"]
-  end
-  ModelTool --> Package["知识包（版本化 / zip）"]
-  User["用户 / 外部系统"] --> Console["知识工程控制台（React）"]
-  User --> SDK["SDK / A2A / ACP"]
-  Package --> Console
-  Console --> API["Flask API"]
-  SDK --> API
-  API --> Loop["Agentic Orchestrator + ReAct Loop（openjiuwen）"]
-  Loop --> Tools["工具注册与执行"]
-  Tools --> Knowledge["知识上下文读取"]
-  Tools --> Data["业务数据检索"]
-  Tools --> Scripts["受控脚本执行"]
-  Tools --> Memory["长期记忆"]
-  Data --> Providers["MindsDB / NL2SQL / 图数据库 Provider"]
-  API --> Workspace["工作区运行时 .onto-runtime"]
-  Evaluation["评测平台"] --> API
-  ModelTool -. 影子工作区评测 · 优化迭代 .-> API
+[![knowledge-scaffold 系统架构](docs/images/knowledge-scaffold-system-architecture.png)](docs/images/knowledge-scaffold-system-architecture.svg)
+
+各层职责如下：
+
+| 层次 | 核心职责 | 主要实现 |
+| --- | --- | --- |
+| 应用与接入层 | 面向使用者、建模人员、评测人员和外部系统提供入口 | Consumer 控制台、Modeling 工作台、Agent Eval、HTTP/SDK/MCP/A2A/ACP |
+| 知识与智能体平台层 | 完成知识包生产、知识增强推理和任务执行编排 | Modeling 知识工程引擎、openJiuwen ReAct Runtime、ContextEngine、工具与子 Agent |
+| 平台公共服务层 | 提供跨应用复用的身份、工作空间、知识包、数据连接、协议和记录服务 | auth-server、Consumer API、知识包版本服务、Provider 管理、Trace 与评测记录 |
+| 执行与资源层 | 提供模型、企业数据、安全计算、持久化和运行基础设施 | 模型服务、Neo4j/MySQL/HugeGraph 等数据源、JiuwenBox、SQLite、Docker、Langfuse |
+
+## 知识包结构与版本语义
+
+当前运行时知识包使用 `kind: ontology-package`、`schema_version: 0.1`：
+
+```text
+<knowledge-package>/
+├── manifest.yaml                   # ID、名称、版本、语言和启用状态
+├── index.md                        # 知识包总入口
+├── objects/                        # 业务对象、属性、别名和数据语义
+├── operations/                     # 业务流程、计算规则和工具路由
+├── scripts/                        # 确定性脚本及调用说明
+└── mappings/
+    └── object-data-mappings.json   # 对象属性到真实数据字段的映射
 ```
 
-一次典型请求：从控制台或协议入口进入 Flask API，由 `AgenticOrchestrator` 创建运行状态，ReAct Loop 调用模型并按需触发工具；工具侧读取知识上下文、查询业务数据、执行受控脚本或派生子 Agent，结果经 SSE 事件流实时返回前端。图中虚线为建模评测闭环：建模工作台把知识包导入 consumer 影子工作区实测评分，评测结果驱动知识包持续迭代。
+导入后，同一知识包的版本存放在工作空间运行时中：
 
-- **控制台**（运行期）：登录、蒙版式新手引导、新建对话（含 Trace 运行轨迹面板）、知识包工作台（整包目录在线浏览）、三层作用域配置中心。
-- **编排器 / ReAct 循环**（运行期）：运行生命周期、轮次限额、取消与用量统计。
-- **工作区运行时**：知识包、数据连接、会话与运行配置在 `.onto-runtime/` 下按工作区隔离。
-- **评测平台**：基于场景测试用例离线评测智能体质量。
-- **知识包建模工作台**（设计期）：从领域资料与专家访谈构建知识包，与 consumer 打通评测闭环；登录与 consumer 共用 auth-server 账号体系。
-- **鉴权服务**：`auth-server/` 提供独立的身份与 token 签发（OAuth2/OIDC 子集），是 consumer 后端的必备依赖（`AUTH_SERVER_URL` 必填）；consumer 与 modeling 共用同一账号体系。
-
-# 📦 安装指导
-
-## 使用 Docker Compose 快速安装
-
-适用于希望直接使用运行期完整系统（后端 + 控制台界面）的用户：
-
-```bash
-cd consumer
-cp backend/.env.example backend/.env
-docker compose up --build
+```text
+.onto-runtime/workspaces/<workspace_id>/ontologies/<ontology_id>/
+├── manifest.yaml                   # active_version 与版本清单
+└── versions/
+    ├── 1.0.0/
+    └── 1.1.0/
 ```
 
-默认服务地址：
+明确选择知识包创建的会话会锁定当时的版本。后续切换激活版本只影响新会话；已有会话继续使用原版本，以保证上下文和执行结果一致。完整格式见 [知识包上传模板](consumer/docs/ontology-upload-template.md) 和 [知识包最终设计](consumer/docs/ontology-package-final-design.md)。
 
-| 服务 | 地址 |
-| --- | --- |
-| 后端 API | `http://localhost:5055` |
-| 前端控制台 | `http://localhost:8888` |
-
-启动前至少需要在 `consumer/backend/.env` 中配置一个 OpenAI-compatible 模型（也可以启动后在控制台的 配置中心 → 全局配置 → 模型池 中配置）：
-
-```bash
-LLM_BASE_URL=<openai-compatible-base-url>
-LLM_MODEL=<model-id>
-LLM_API_KEY=<api-key>
-```
-
-全栈部署（consumer + 建模工作台 + 鉴权服务/评测库）的完整步骤与一键脚本见 [deploy/README.md](deploy/README.md)。
-
-## 启动知识包建模工作台
-
-建模工作台依赖 consumer 提供登录（复用 consumer 账号），请先启动 consumer。需要 Node ≥ 22：
-
-```bash
-cd modeling
-cp .env.example .env    # MODELING_LLM_* 填模型端点；或填 faux 进入无 Key 演示模式
-npm install
-NODE_OPTIONS=--experimental-sqlite node --env-file=.env node_modules/.bin/tsx src/server.ts
-```
-
-启动后访问 `http://localhost:5100`，用 consumer 的账号登录。前端本地开发另起 `cd modeling/frontend && npm install && npm run dev`（端口 6700，代理到 5100）。
-
-## 本地开发安装
-
-后端：
-
-```bash
-cd consumer/backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python run.py
-```
-
-前端：
-
-```bash
-cd consumer/frontend
-npm install
-npm run dev
-```
-
-本地开发默认地址：
-
-| 服务 | 地址 |
-| --- | --- |
-| 后端 API | `http://localhost:5055` |
-| 前端开发服务 | `http://localhost:6600` |
-
-Windows 用户如果遇到 Python 依赖安装路径过长，可以先启用系统长路径支持；详见 [consumer/README.md](consumer/README.md)。
-
-# 🚀 快速上手
-
-## 使用知识包（运行期）
-
-1. **登录** — 首次启动会创建管理员账号，首次登录需修改初始密码。登录后的蒙版式操作向导会一步步带你完成初始化（可跳过，顶栏可随时重新打开）。
-2. **配置模型** — 配置中心 → 全局配置 → 模型池：添加模型（密钥加密存储、仅存全局层）并设置默认。
-3. **导入知识包** — 知识包工作台 → 导入（.zip）。示例知识包源文件见 [examples/](examples/)，打包为 .zip 后导入。
-4. **配置数据源** — 在知识包工作台选择已导入的知识包，打开“数据源”页签，选择 provider、填写配置并测试后保存。数据源只属于当前工作空间下的这个知识包。
-5. **提问** — 新建对话，尝试知识包的典型问题，例如"TargetItem M-3021 对应哪些 SourceItem 版本？"，并可在右侧 Trace 面板查看每一步工具调用明细。
-
-## 构建知识包（设计期）
-
-1. **配置建模工具** — 打开 `http://localhost:5100` 登录后，右上角「⚙ 配置中心」配置大模型（可一键测试有效性）、consumer 服务地址与评测数据；试玩可直接把 LLM Base URL 填 `faux`。
-2. **新建建模项目并上传资料** — Excel 数据表（每个 sheet 一张表、首行字段名、次行可选中文注释）加业务文档（md / docx / pdf / txt）。
-3. **领域分析与知识萃取访谈** — 系统解读资料产出领域概览、候选业务对象与领域问题（勾选 ≥5 条解锁访谈），再分批向你提问确认对象划分、字段含义与口径。
-4. **生成并完善知识包** — 自动生成对象/操作/映射并检查领域问题覆盖；用知识包体检、人工修订和修缮对话打磨内容。
-5. **评测与优化** — 录入评测用例（可从领域问题一键预填），在 consumer 影子工作区实测评分；按优化建议一键生成新版本回评，满意后导出 zip 交付。
-
-**_注意：_**
-
-* **_请使用能力较强的 OpenAI-compatible 模型；模型能力不足可能影响工具调用稳定性与回答质量。_**
-* **_思考类模型分析质量更好但耗时明显增加；对响应速度有要求时建议优先使用非思考模型。_**
-
-# 💻 开发指南
-
-仓库结构：
+## 仓库结构
 
 ```text
 .
-├── consumer/                 # 运行期主应用：后端、前端、部署脚本、SDK 和应用文档
-├── modeling/                 # 设计期知识包建模工作台（Fastify + React + SQLite）
-├── auth-server/              # 独立鉴权服务（OAuth2/OIDC 子集，consumer/modeling 必备）
-├── common/                   # 跨模块共享的轻量公共代码
-├── evaluation/agent_eval/    # 智能体评测平台
-├── examples/                 # 场景案例、知识包和示例脚本
-├── deploy/                   # 全栈部署文档与编排脚本
-└── docs/                     # 仓库级文档（多语言 README 等）
+├── consumer/                 # 运行期主应用、MCP、SDK、沙箱与发布脚本
+│   ├── backend/              # Flask API、openJiuwen Runtime、工具与测试
+│   ├── frontend/             # React + Vite 控制台
+│   ├── deploy/               # 发布、升级、备份和回滚
+│   └── sdk/                  # Python / TypeScript SDK
+├── modeling/                 # Fastify + React + SQLite 知识包建模工作台
+├── auth-server/              # 独立认证与用户服务
+├── evaluation/agent_eval/    # 独立 Agent 评测平台
+├── examples/                 # 场景知识包、数据集和测试用例
+├── common/                   # 跨模块轻量公共代码
+├── deploy/                   # 全栈构建与发布入口
+└── docs/                     # 仓库级设计与说明文档
 ```
 
-开发验证：
+## 开发与验证
+
+各模块使用独立依赖和测试命令。完成依赖安装后，按修改范围执行：
 
 ```bash
-# consumer 后端测试
+# consumer backend
 cd consumer/backend
-pip install pytest   # requirements.txt 不含测试依赖
 PYTHONPATH=. python -m pytest tests
 
-# consumer 前端验证
+# consumer frontend
 cd consumer/frontend
 npm run lint
+npm test
 npm run build
 
-# modeling 类型检查与构建
+# modeling
 cd modeling
-npm run typecheck && npm run build
+npm run typecheck
+npm test
+npm run build
 cd frontend && npm run build
+
+# auth-server
+cd auth-server
+python -m pytest tests -q
 ```
 
-构建与部署（两条独立路径）：
+模块的环境准备、本地启动和测试依赖以各自 README 为准。
 
-```bash
-# 路径一：源码 compose 启动（开发/体验，consumer + modeling）
-./deploy/deploy-stack.sh up
-
-# 路径二：构建全栈离线发布包（生产交付，含 consumer + modeling）
-./deploy/build.sh <version>
-```
-
-全栈部署（含建模工作台）见 [deploy/README.md](deploy/README.md)，consumer 单服务发布包细节见 [consumer/deploy/README.md](consumer/deploy/README.md)。
-
-文档地图：
+## 文档导航
 
 | 文档 | 内容 |
 | --- | --- |
-| [deploy/README.md](deploy/README.md) | 全栈部署手册与一键编排脚本（适合自动化执行） |
-| [consumer/README.md](consumer/README.md) | 主应用完整启动、运行时目录、配置和架构说明 |
-| [consumer/backend/README-CN.md](consumer/backend/README-CN.md) | 后端模块、接口入口、运行配置和测试方式 |
-| [consumer/frontend/README.md](consumer/frontend/README.md) | 前端页面、开发命令、运行流和验证命令 |
-| [consumer/docs/api.md](consumer/docs/api.md) | HTTP API 与事件接口说明 |
-| [consumer/docs/consumer-agent-specs.md](consumer/docs/consumer-agent-specs.md) | Agent 运行规格和行为约束 |
-| [consumer/docs/business-data-provider-extension.md](consumer/docs/business-data-provider-extension.md) | 业务数据 provider 扩展方式 |
-| [consumer/sdk/README.md](consumer/sdk/README.md) | SDK 目录与发布说明 |
-| [consumer/deploy/README.md](consumer/deploy/README.md) | consumer 镜像构建、发布包和安装说明 |
-| [modeling/README.md](modeling/README.md) | 建模工作台启动、验证与 API 说明 |
-| [modeling/docs/design.md](modeling/docs/design.md) | 建模工具设计定稿：定位、工作流、数据模型与评测闭环 |
-| [modeling/docs/real-e2e-setup.md](modeling/docs/real-e2e-setup.md) | 建模—评测真实端到端环境搭建 |
-| [auth-server/README.md](auth-server/README.md) | 独立鉴权服务：端点、配置与运行方式 |
-| [evaluation/agent_eval/docs/architecture.md](evaluation/agent_eval/docs/architecture.md) | 评测平台架构说明 |
+| [consumer/README.md](consumer/README.md) | Consumer 运行时、工具、配置和目录结构 |
+| [consumer/backend/README-CN.md](consumer/backend/README-CN.md) | 后端模块与环境变量参考 |
+| [consumer/frontend/README.md](consumer/frontend/README.md) | 前端架构、开发和验证 |
+| [consumer/docs/api.md](consumer/docs/api.md) | HTTP API、SSE、A2A 和 ACP 接口 |
+| [consumer/docs/consumer-agent-specs.md](consumer/docs/consumer-agent-specs.md) | Agent 规格、限制和运行约束 |
+| [consumer/docs/business-data-provider-extension.md](consumer/docs/business-data-provider-extension.md) | 自定义业务数据 Provider |
+| [consumer/docs/jiuwenbox-sandbox-design.md](consumer/docs/jiuwenbox-sandbox-design.md) | JiuwenBox 脚本沙箱设计 |
+| [consumer/deploy/README.md](consumer/deploy/README.md) | 部署、升级、迁移、备份和回滚 |
+| [modeling/README.md](modeling/README.md) | 建模工作台运行方式和接口 |
+| [modeling/docs/design.md](modeling/docs/design.md) | 建模工作流、数据模型和评测闭环 |
+| [auth-server/README.md](auth-server/README.md) | 鉴权端点、配置和数据目录 |
+| [evaluation/agent_eval/README.md](evaluation/agent_eval/README.md) | Agent 评测平台使用说明 |
 
-# ❓ FAQ
+## 参与贡献
 
-- **控制台能打开但对话失败** — 检查模型是否已配置（配置中心 → 全局配置 → 模型池：确认已添加模型、密钥显示"已配置"且默认模型已选），以及通过 `.env` 启动时 `LLM_*` 变量是否设置。
-- **业务数据查询没有结果** — 知识包只会查询*当前工作空间 + 当前知识包*的数据源；在知识包工作台选择对应知识包，打开“数据源”页签检查配置并重新测试。
-- **建模工作台登录失败** — 建模工具的登录经 consumer 转发（`AUTH_ISSUER_URL`），确认 consumer 已启动且地址配置正确；账号就是 consumer 的账号。
-- **建模评测一直失败** — 到建模工具 配置中心 → consumer 服务 做连通性测试（服务可达 / 认证通过 / 模型就绪三项都要绿）；查询类用例还需要配置评测数据连接。
-- **Windows 安装依赖报路径错误** — 启用系统长路径支持，详见 [consumer/README.md](consumer/README.md)。
+提交 Issue 前，请先搜索是否已有相同问题，并按照仓库模板提供：
 
-# 🤝 贡献方式
+- 问题描述；
+- 现状与证据；
+- 影响；
+- 期望行为；
+- 范围与非目标；
+- 验收标准；
+- 关联与依赖。
 
-欢迎围绕以下方向提交 Issue 和 Pull Request：
+提交 Pull Request 时请保持改动聚焦，并在说明中写清目标、实现方式、实际执行的验证命令、兼容性或迁移影响以及关联 Issue。不要提交真实密钥、客户数据、运行时数据库、日志或构建产物。
 
-- 知识包格式、导入校验和示例案例
-- 业务数据 provider、图数据库 provider 和工具扩展
-- Agent Loop、子智能体编排、记忆与演化策略
-- 知识建模工作台、建模评测闭环与领域知识包沉淀
-- 评测平台、用例生成、trace 回放和质量指标
-- 文档、部署脚本和开发体验改进
+常用提交类型为 `feat:`、`fix:`、`docs:`、`test:` 和 `refactor:`。涉及特定模块时，可以在说明中标明 `consumer`、`modeling` 或 `auth-server`。
 
-提交前请保持改动聚焦，并在 PR 中说明验证方式、影响范围和可能的兼容性变化。
+- [提交 Issue](https://gitcode.com/knowledge-engine/knowledge-scaffold/issues)
+- [查看 Pull Request](https://gitcode.com/knowledge-engine/knowledge-scaffold/pulls)
+
+## 安全问题
+
+请勿在公开 Issue 中粘贴访问令牌、密码、利用细节、客户数据或生产日志。如果问题可能导致认证或授权绕过、跨工作空间数据访问、密钥泄漏、注入、沙箱逃逸或敏感信息暴露，请只提交不包含敏感细节的 `[P0][安全]` 影响摘要，并请求维护者建立私密沟通渠道。
+
+普通功能缺陷和不涉及安全影响的性能问题继续使用 GitCode Issue。
+
+## 版本与变更
+
+- 日常开发与集成以 `develop` 分支为基础；
+- 发布包由仓库部署脚本构建，生产部署、升级和回滚见 [consumer/deploy/README.md](consumer/deploy/README.md)；
+- 用户可感知的行为变化、配置迁移和兼容性影响应记录在对应 Pull Request 中；
+- 版本演进可通过 [提交历史](https://gitcode.com/knowledge-engine/knowledge-scaffold/commits/develop) 和 [Pull Request](https://gitcode.com/knowledge-engine/knowledge-scaffold/pulls) 查询。
