@@ -9,6 +9,7 @@ import { OptimizePanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
 import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
+import { latestNodeOf } from './workflowNodes.js';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
 // 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
@@ -53,18 +54,22 @@ export default function Workbench({ projectId }) {
 
   const { project, documents, nodes, dataSource } = data;
   const stageIdx = STAGE_INDEX[project.stage] ?? 0;
-  const nodeOf = (type) => nodes.find((n) => n.type === type);
+  // 重跑固定节点会保留旧节点作为历史记录；页面状态必须以最高 ordinal 的最新一次执行为准。
+  const nodeOf = (type) => latestNodeOf(nodes, type);
   const analyzeNode = nodeOf('analyze');
   const interviewNode = nodeOf('interview');
   const competencyNode = nodeOf('competency');
   const generateNode = nodeOf('generate');
   const tables = documents.flatMap((d) => d.tables ?? []);
   const parsedDocs = documents.filter((d) => d.parseStatus === 'parsed');
-  const staleTypes = nodes.filter((n) => n.status === 'stale').map((n) => n.type);
+  // 历史执行会保留旧 stale 节点；提示条只反映每类节点最新一次执行的状态。
+  const staleTypes = TRUNK.filter(([type]) => nodeOf(type)?.status === 'stale').map(([type]) => type);
+  const analysisStale = analyzeNode?.status === 'stale';
 
-  const analyzeDone = analyzeNode && analyzeNode.status !== 'running';
+  // stale 产物只作为历史保留，不得解锁下游；资料变更后必须依次重跑分析、访谈和生成。
+  const analyzeDone = analyzeNode?.status === 'done';
   const interviewDone = interviewNode?.status === 'done';
-  const generateDone = generateNode && ['done', 'stale'].includes(generateNode.status);
+  const generateDone = generateNode?.status === 'done';
   const cqSelected = data.competency?.selected ?? 0;
   const legacyBeyondDataSource = !dataSource && stageIdx >= STAGE_INDEX.testcases;
 
@@ -116,6 +121,14 @@ export default function Workbench({ projectId }) {
     finally { setAnalyzing(false); }
   };
 
+  const handleStaleReanalyze = () => {
+    if (effFocus !== 'analyze') {
+      setFocus('analyze');
+      return;
+    }
+    doAnalyze();
+  };
+
   return (
     <div className="wb">
       <Tour scene="workbench" steps={WORKBENCH_STEPS} />
@@ -148,7 +161,7 @@ export default function Workbench({ projectId }) {
       <div className="wb-col wb-mid">
         <div className="wb-h">
           {TITLE[effFocus]}
-          {effFocus === 'analyze' && (!analyzeDone || nodeStatus.analyze === 'stale') && tables.length > 0 && (
+          {effFocus === 'analyze' && (!analyzeDone || nodeStatus.analyze === 'stale') && unlocked.analyze && (
             <BusyButton busy={analyzeRunning} busyText="领域分析中" expect="通常 1~3 分钟，可切换页面"
               style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }} onClick={doAnalyze}>
               ▶ {nodeStatus.analyze === 'stale' ? '重新领域分析' : '开始领域分析'}
@@ -161,11 +174,17 @@ export default function Workbench({ projectId }) {
             <button className="tc-del" title="关闭" onClick={() => setErr('')}>✕</button>
           </div>
         )}
-        {staleTypes.length > 0 && (
+        {analysisStale && staleTypes.length > 0 && (
           <div className="stale-banner">
             ⟳ 资料已变更，{staleTypes.map((t) => TITLE[t] ?? t).join('、')}的结果可能过时（历史评测与版本保留）。
-            <button className="btn" style={{ marginLeft: 10, padding: '3px 12px', fontSize: 12 }}
-              onClick={() => setFocus('analyze')}>去重新分析</button>
+            {unlocked.analyze && (
+              <BusyButton busy={analyzeRunning} busyText="重新分析中" expect="通常 1~3 分钟，可切换页面"
+                className="btn" style={{ marginLeft: 10, padding: '3px 12px', fontSize: 12 }}
+                onClick={handleStaleReanalyze}>去重新分析</BusyButton>
+            )}
+            {!unlocked.analyze && (
+              <span style={{ marginLeft: 10 }}>请先上传可分析的资料</span>
+            )}
           </div>
         )}
         <div className="wb-b">
@@ -180,7 +199,8 @@ export default function Workbench({ projectId }) {
                 onAdvance={() => { load(); setFocus('interview'); }} />
             : <IngestView project={project} documents={documents} onChanged={load} />)}
           {effFocus === 'interview' && (
-            <InterviewPanel projectId={projectId} agentBusy={interviewNode?.status === 'running'}
+            <InterviewPanel projectId={projectId} node={interviewNode} agentBusy={interviewNode?.status === 'running'}
+              onRefresh={load}
               onAdvance={() => { load(); setFocus('generate'); }} />
           )}
           {effFocus === 'generate' && (

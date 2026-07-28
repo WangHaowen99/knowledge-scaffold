@@ -9,20 +9,30 @@ import {
 } from './api.js';
 import { BusyButton } from './ui.jsx';
 import PackageCheck from './PackageCheck.jsx';
+import { batchesForNode } from './workflowNodes.js';
 
 /* ================= 节点 4 · 知识萃取访谈 ================= */
 
-export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
+export function InterviewPanel({ projectId, node, agentBusy, onAdvance, onRefresh }) {
   const [batches, setBatches] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [finished, setFinished] = useState(false);
+  const [activeNodeId, setActiveNodeId] = useState(null);
+  const [locallyFinished, setLocallyFinished] = useState(false);
 
-  const load = () => getInterview(projectId).then((d) => {
-    setBatches(d.batches);
-    if (d.batches.length && d.batches.every((b) => b.answered)) setFinished(true);
-  });
-  useEffect(() => { load(); }, [projectId]);
+  const load = () => getInterview(projectId).then((d) => setBatches(d.batches));
+  useEffect(() => {
+    setActiveNodeId(null);
+    setLocallyFinished(false);
+    load();
+  }, [projectId]);
+  // 领域分析重跑后，旧访谈节点会变为 stale；本地会话状态也必须随之失效。
+  useEffect(() => {
+    if (node?.status === 'stale') {
+      setActiveNodeId(null);
+      setLocallyFinished(false);
+    }
+  }, [node?.id, node?.status]);
   // 服务端 agent 完成出题（running → waiting_user/done）后自动刷新批次
   useEffect(() => { if (!agentBusy) load(); }, [agentBusy]);
 
@@ -30,8 +40,9 @@ export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
     setBusy(true); setErr('');
     try {
       const res = await startInterview(projectId);
-      if (res.finished) setFinished(true);
-      await load();
+      setActiveNodeId(res.nodeId);
+      setLocallyFinished(res.finished);
+      await Promise.all([load(), onRefresh?.()]);
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
@@ -39,24 +50,41 @@ export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
     setBusy(true); setErr('');
     try {
       const res = await answerInterview(projectId, batchId, answers);
-      if (res.finished) { setFinished(true); onAdvance?.(); }
-      await load();
+      setActiveNodeId(res.nodeId);
+      setLocallyFinished(res.finished);
+      await Promise.all([load(), onRefresh?.()]);
+      if (res.finished) onAdvance?.();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
   if (!batches) return <div className="empty">加载中…</div>;
-  const pending = batches.find((b) => !b.answered);
+  const currentNodeId = activeNodeId ?? node?.id;
+  const currentBatches = batchesForNode(batches, currentNodeId);
+  const needsRestart = node?.status === 'stale' && !activeNodeId;
+  const finished = locallyFinished || (node?.id === currentNodeId && node?.status === 'done');
+  const pending = currentBatches.find((b) => !b.answered);
   const serverThinking = agentBusy && !busy && !pending;
 
   return (
     <div>
       {err && <div className="lerr">{err}</div>}
+      {needsRestart && (
+        <div style={{ textAlign: 'center', padding: '42px 0' }}>
+          <div className="lerr" style={{ textAlign: 'left', marginBottom: 18 }}>
+            领域分析已更新，原访谈答案仅作为历史记录保留。请基于最新分析重新进行知识萃取访谈。
+          </div>
+          <BusyButton busy={busy} busyText="agent 出题中" expect="约 30~90 秒" onClick={start}>
+            ▶ 重新开始知识萃取访谈
+          </BusyButton>
+        </div>
+      )}
+      {!needsRestart && <>
       {serverThinking && (
         <div className="empty" style={{ padding: '32px 0' }}>
           <span className="spinner" style={{ marginRight: 8 }} />agent 出题中（服务端执行，切换页面不影响）…
         </div>
       )}
-      {!batches.length && !serverThinking && (
+      {!currentBatches.length && !serverThinking && !finished && (
         <div style={{ textAlign: 'center', padding: '48px 0' }}>
           <BusyButton busy={busy} busyText="agent 出题中" expect="约 30~90 秒" onClick={start}>
             ▶ 开始知识萃取访谈
@@ -64,9 +92,11 @@ export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
           <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>围绕对象划分 / 字段含义 / 关系 / 口径出题，一般 2~3 批</div>
         </div>
       )}
-      {batches.filter((b) => b.answered).map((b) => <AnsweredBatch key={b.id} batch={b} />)}
-      {pending && <BatchForm batch={pending} busy={busy} onSubmit={submit} />}
-      {finished && !pending && batches.length > 0 && (
+      {currentBatches.filter((b) => b.answered).map((b) => (
+        <AnsweredBatch key={b.id} batch={b} displayOrdinal={currentBatches.indexOf(b)} />
+      ))}
+      {pending && <BatchForm batch={pending} displayOrdinal={currentBatches.indexOf(pending)} busy={busy} onSubmit={submit} />}
+      {finished && !pending && (
         <div style={{ textAlign: 'center', padding: '20px 0' }}>
           <div className="tag tag-ok" style={{ fontSize: 12.5, padding: '5px 16px' }}>✓ 访谈已完成</div>
           <div style={{ marginTop: 14 }}>
@@ -74,15 +104,16 @@ export function InterviewPanel({ projectId, agentBusy, onAdvance }) {
           </div>
         </div>
       )}
+      </>}
     </div>
   );
 }
 
-function AnsweredBatch({ batch }) {
+function AnsweredBatch({ batch, displayOrdinal }) {
   const ans = Object.fromEntries((batch.answers ?? []).map((a) => [a.questionId, a]));
   return (
     <div style={{ opacity: .75, marginBottom: 14 }}>
-      <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 6 }}>第 {batch.ordinal + 1} 批 · 已作答</div>
+      <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 6 }}>第 {displayOrdinal + 1} 批 · 已作答</div>
       {batch.questions.map((q) => {
         const a = ans[q.id];
         const text = a?.skipped ? '（跳过）' : [...(a?.selected ?? []), a?.other].filter(Boolean).join('；');
@@ -97,7 +128,7 @@ function AnsweredBatch({ batch }) {
   );
 }
 
-function BatchForm({ batch, busy, onSubmit }) {
+function BatchForm({ batch, displayOrdinal, busy, onSubmit }) {
   const [state, setState] = useState({}); // qid -> {selected:[], other:'', skipped}
   const get = (qid) => state[qid] ?? { selected: [], other: '', skipped: false };
   const set = (qid, patch) => setState((s) => ({ ...s, [qid]: { ...get(qid), ...patch, skipped: false } }));
@@ -121,7 +152,7 @@ function BatchForm({ batch, busy, onSubmit }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)' }}>第 {batch.ordinal + 1} 批访谈题</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)' }}>第 {displayOrdinal + 1} 批访谈题</span>
         <span className="iv-dots">{batch.questions.map((q) => {
           const a = get(q.id); const done = a.selected.length || a.other || a.skipped;
           return <span key={q.id} className={done ? 'on' : ''} />;
