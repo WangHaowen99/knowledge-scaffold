@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import { getDataSource, getPackageFile, getSettings, saveDataSource } from './api.js';
 import {
+  createProjectEvaluationDatabase,
+  getDataSource,
+  getPackageFile,
+  getSettings,
+  saveDataSource,
+} from './api.js';
+import {
+  applyCreatedEvaluationDatabaseName,
+  changeEvaluationDatabaseName,
   dataSourceFormError,
   dataSourceFormPayload,
   dataSourceToForm,
+  evaluationDatabaseServerFormError,
+  projectEvaluationDatabaseName,
   providerLabel,
+  switchEvaluationDatabaseEngine,
 } from './data-source-form.js';
 import { runGraphImportContextRequest } from './graph-import-form.js';
 import { loadLatestKnowledgePackageManifestId } from './knowledge-package-manifest.js';
@@ -13,7 +24,9 @@ import {
   dataSourceTourSteps,
 } from './data-source-tour.js';
 import DataSourceConnectionFields from './DataSourceConnectionFields.jsx';
+import EvaluationDatabaseImportPanel from './EvaluationDatabaseImportPanel.jsx';
 import GraphImportPanel from './GraphImportPanel.jsx';
+import ProjectDatabaseCreateModal from './ProjectDatabaseCreateModal.jsx';
 import Tour from './Tour.jsx';
 
 export function DataSourceSummary({ dataSource }) {
@@ -30,6 +43,7 @@ export function DataSourceSummary({ dataSource }) {
   }
 
   const config = dataSource.config || {};
+  const evaluationDatabase = config.evaluation_database || {};
   const rows = dataSource.provider === 'neo4j'
     ? [
         ['Provider', providerLabel(dataSource.provider)],
@@ -45,6 +59,12 @@ export function DataSourceSummary({ dataSource }) {
         ['数据服务 URL', config.url],
         ['Token', config.has_token ? '已同步至评测服务（modeling 未保存）' : '未提供'],
         ['Scene', config.scene || '—'],
+        ['评测工作空间 ID', config.evaluation_workspace_id],
+        ['评测库类型', evaluationDatabase.engine === 'postgresql' ? 'PostgreSQL' : 'MySQL'],
+        ['评测库地址', `${evaluationDatabase.host || '—'}:${evaluationDatabase.port || '—'}`],
+        ['评测库 Database', evaluationDatabase.database],
+        ['评测库 User', evaluationDatabase.username],
+        ['评测库 Password', evaluationDatabase.has_password ? '已验证（modeling 未保存）' : '未提供'],
       ];
 
   return (
@@ -78,6 +98,9 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
   const [syncingOntologyId, setSyncingOntologyId] = useState(false);
   const [err, setErr] = useState('');
   const [message, setMessage] = useState('');
+  const [databaseCreationRequest, setDatabaseCreationRequest] = useState(null);
+  const [creatingDatabase, setCreatingDatabase] = useState(false);
+  const [databaseCreationError, setDatabaseCreationError] = useState('');
   const projectContextRef = useRef(projectId);
   const providerRevisionRef = useRef(0);
   projectContextRef.current = projectId;
@@ -87,6 +110,7 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
     const contextKey = projectId;
     providerRevisionRef.current += 1;
     setForm(null); setSaved(null); setBusy(false); setSyncingOntologyId(false); setErr(''); setMessage('');
+    setDatabaseCreationRequest(null); setCreatingDatabase(false); setDatabaseCreationError('');
     void runGraphImportContextRequest({
       contextKey,
       isCurrent: (key) => active && projectContextRef.current === key,
@@ -112,8 +136,68 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
     providerRevisionRef.current += 1;
     setForm((current) => ({ ...current, provider }));
     setSyncingOntologyId(false);
+    setDatabaseCreationRequest(null);
+    setDatabaseCreationError('');
     setErr('');
     setMessage('');
+  };
+  const changeDatabaseEngine = (event) => {
+    const engine = event.target.value;
+    setForm((current) => switchEvaluationDatabaseEngine(current, engine));
+    setErr('');
+    setMessage('');
+  };
+  const changeDatabaseName = (event) => {
+    const database = event.target.value;
+    setForm((current) => changeEvaluationDatabaseName(current, database));
+    setErr('');
+    setMessage('');
+  };
+  const requestProjectDatabaseCreation = () => {
+    const validationError = evaluationDatabaseServerFormError(form);
+    if (validationError) {
+      setErr(validationError);
+      return;
+    }
+    setErr('');
+    setMessage('');
+    setDatabaseCreationError('');
+    setDatabaseCreationRequest({ database: projectEvaluationDatabaseName(projectId) });
+  };
+  const cancelProjectDatabaseCreation = () => {
+    if (creatingDatabase) return;
+    setDatabaseCreationRequest(null);
+    setDatabaseCreationError('');
+  };
+  const confirmProjectDatabaseCreation = async () => {
+    const contextKey = projectContextRef.current;
+    const input = {
+      engine: form.eval_db_engine,
+      host: form.eval_db_host,
+      port: form.eval_db_port,
+      username: form.eval_db_username,
+      password: form.eval_db_password,
+    };
+    setCreatingDatabase(true);
+    setDatabaseCreationError('');
+    try {
+      const outcome = await runGraphImportContextRequest({
+        contextKey,
+        isCurrent: (key) => projectContextRef.current === key,
+        request: () => createProjectEvaluationDatabase(contextKey, input),
+      });
+      if (outcome.kind === 'stale') return;
+      const result = outcome.value;
+      setForm((current) => applyCreatedEvaluationDatabaseName(current, result.database));
+      setMessage(result.created
+        ? `项目数据库已创建：${result.database}`
+        : `项目数据库已存在，已直接使用：${result.database}`);
+      setDatabaseCreationRequest(null);
+    } catch (error) {
+      if (projectContextRef.current === contextKey) setDatabaseCreationError(error.message);
+    } finally {
+      if (projectContextRef.current === contextKey) setCreatingDatabase(false);
+    }
   };
   const startConfigurationGuide = () => window.dispatchEvent(new CustomEvent(
     'mw-tour-start',
@@ -158,9 +242,13 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       if (outcome.kind === 'stale') return;
       const result = outcome.value;
       setSaved(result.dataSource);
-      setForm(dataSourceToForm(result.dataSource));
+      const nextForm = dataSourceToForm(result.dataSource);
+      if (submittedForm.provider !== 'neo4j') {
+        nextForm.eval_db_password = submittedForm.eval_db_password;
+      }
+      setForm(nextForm);
       setMessage(submittedForm.mode === 'none' ? '配置已保存' : '连接测试通过，评测连接已同步，配置已保存');
-      if (result.dataSource.mode !== 'connection' || result.dataSource.provider !== 'neo4j') {
+      if (result.dataSource.mode !== 'connection') {
         onAdvance?.(result.dataSource);
       }
     } catch (e) {
@@ -188,6 +276,10 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
           syncingOntologyId={syncingOntologyId}
           onFieldChange={set}
           onProviderChange={changeProvider}
+          onDatabaseEngineChange={changeDatabaseEngine}
+          onDatabaseNameChange={changeDatabaseName}
+          creatingDatabase={creatingDatabase}
+          onCreateProjectDatabase={requestProjectDatabaseCreation}
           onSyncOntologyId={syncOntologyId}
         />
       ) : (
@@ -199,11 +291,11 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 14 }}>
         {message && <span style={{ color: 'var(--good)', fontSize: 12.5 }}>{message}</span>}
         {form.mode === 'connection' && (
-          <button className="btn" disabled={busy || syncingOntologyId} onClick={startConfigurationGuide}>
+          <button className="btn" disabled={busy || syncingOntologyId || creatingDatabase} onClick={startConfigurationGuide}>
             配置引导
           </button>
         )}
-        <button className="btn btn-p" disabled={busy || syncingOntologyId} onClick={submit}>
+        <button className="btn btn-p" disabled={busy || syncingOntologyId || creatingDatabase} onClick={submit}>
           {busy ? '保存并测试中…' : form.mode === 'connection' ? '保存并测试连接' : '保存并继续'}
         </button>
       </div>
@@ -216,6 +308,26 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
             <button className="btn btn-p" onClick={() => onAdvance?.(saved)}>进入评测用例录入 →</button>
           </div>
         </>
+      )}
+      {saved?.mode === 'connection' && ['nl2sql_template', 'nl2sql_http'].includes(saved.provider) && (
+        <>
+          <EvaluationDatabaseImportPanel
+            projectId={projectId}
+            dataSource={saved}
+            initialPassword={form.eval_db_password}
+            onContinue={() => onAdvance?.(saved)}
+          />
+        </>
+      )}
+      {databaseCreationRequest && (
+        <ProjectDatabaseCreateModal
+          databaseName={databaseCreationRequest.database}
+          engine={form.eval_db_engine}
+          busy={creatingDatabase}
+          error={databaseCreationError}
+          onCancel={cancelProjectDatabaseCreation}
+          onConfirm={confirmProjectDatabaseCreation}
+        />
       )}
     </div>
   );

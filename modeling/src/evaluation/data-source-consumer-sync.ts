@@ -29,6 +29,9 @@ function consumerProviderConfig(source: ConnectionDataSourceInput): Record<strin
   if (source.provider === 'neo4j') {
     delete config.workspace_value;
     delete config.ontology_value;
+  } else {
+    delete config.evaluation_workspace_id;
+    delete config.evaluation_database;
   }
   return config;
 }

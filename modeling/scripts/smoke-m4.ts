@@ -13,6 +13,7 @@ import { checkCoverage } from '../src/workflow/m2.js';
 import * as m3repo from '../src/workflow/m3-repo.js';
 import * as m4repo from '../src/workflow/m4-repo.js';
 import { startEvaluation } from '../src/evaluation/engine.js';
+import { configureProjectDataSource } from '../src/evaluation/data-source-service.js';
 import { proposeOptimizations, applyOptimizations } from '../src/evaluation/optimizer.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import { zipPackage } from '../src/workflow/export.js';
@@ -54,6 +55,9 @@ function startStubConsumer(port: number) {
       }
       return send(201, { success: true, ontology_id: 'demo-agent', objects_count: 1, operations_count: Object.keys(importedPkgText).length });
     }
+    if (/^\/agentic\/ontologies\/[^/]+\/data-source$/.test(url) && req.method === 'DELETE') {
+      return send(200, { success: true });
+    }
     if (url === '/agentic/runs/sync') {
       const q = (JSON.parse(body.toString()).request ?? '') as string;
       const qf = frags(q);
@@ -78,7 +82,7 @@ function startStubConsumer(port: number) {
 }
 
 async function runRoundAndWait(projectId: string): Promise<{ passCount: number; total: number; version: string }> {
-  const { roundId } = startEvaluation({ projectId, token: 'stub-token', tables: [] });
+  const { roundId } = startEvaluation({ projectId, token: 'stub-token' });
   for (let i = 0; i < 120; i++) {
     const r = m3repo.getRound(roundId)!;
     if (r.status !== 'running') break;
@@ -118,7 +122,10 @@ async function main() {
   // v1.0.0：只沉淀了 STRUCTURE_LIST 口径 —— 3 条用例只有 1 条答得出
   const spec: PackageSpec = {
     id: 'demo-agent', name: 'DOMAIN 演示', description: 'd', version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'domain',
-    objects: [{ key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: '制造 BOM', fields: [{ key: 'ID' }, { key: 'ParentPart' }] }],
+    objects: [{
+      key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: '制造 BOM', sourceTable: 'STRUCTURE_LIST',
+      fields: [{ key: 'ID', cnName: '标识' }, { key: 'ParentPart', cnName: '父项' }],
+    }],
     operations: [{
       key: 'query_structure_list', title: 'STRUCTURE_LIST 查询', description: 'STRUCTURE_LIST 共有 2 条 STRUCTURE_LIST 记录，父项 A001。',
       inputs: [], outputs: [], flow: ['查询 STRUCTURE_LIST'], relatedObjects: ['STRUCTURE_LIST'],
@@ -131,6 +138,11 @@ async function main() {
   m3repo.addTestcase(project.id, 'STRUCTURE_LIST 有几条记录，父项是什么', '2 条 STRUCTURE_LIST 记录，父项 A001');
   m3repo.addTestcase(project.id, Q2, '需经工艺、质量双会签');
   m3repo.addTestcase(project.id, Q3, '按批次区间 BATCH001-BATCH050 判定');
+  await configureProjectDataSource({
+    projectId: project.id,
+    token: 'stub-token',
+    input: { mode: 'none' },
+  });
 
   // 轮次 1：基线
   const r1 = await runRoundAndWait(project.id);
@@ -168,6 +180,7 @@ async function main() {
     ...spec, version: '9.0.0',
     objects: Array.from({ length: 10 }, (_, i) => ({
       key: `OBJ_${i}`, title: `业务对象${i}`, description: `（回归）第 ${i} 个对象，含较长的中文业务描述用于撑大规格体积。`,
+      sourceTable: 'STRUCTURE_LIST',
       fields: Array.from({ length: 25 }, (_, j) => ({ key: `F_${i}_${j}`, cnName: `字段${j}`, type: 'string', note: `第 ${j} 个字段的业务口径说明` })),
     })),
     operations: spec.operations,

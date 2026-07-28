@@ -138,6 +138,24 @@ CREATE TABLE IF NOT EXISTS graph_import_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_graph_run_project ON graph_import_runs(project_id, created_at);
 
+-- 评测库 Excel 后台导入状态；不保存 Excel 内容或数据库密码。
+CREATE TABLE IF NOT EXISTS evaluation_database_import_runs (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  filename      TEXT NOT NULL,
+  engine        TEXT NOT NULL,
+  database_name TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'running',
+  table_count   INTEGER NOT NULL DEFAULT 0,
+  row_count     INTEGER NOT NULL DEFAULT 0,
+  tables_json   TEXT NOT NULL DEFAULT '[]',
+  error         TEXT,
+  created_at    TEXT NOT NULL,
+  finished_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_eval_db_import_project
+  ON evaluation_database_import_runs(project_id, created_at);
+
 -- ---- M3：评测用例 / 轮次 / 结果 ----
 CREATE TABLE IF NOT EXISTS testcases (
   id            TEXT PRIMARY KEY,

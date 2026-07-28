@@ -11,10 +11,12 @@ import { getDb } from './db/index.js';
 import { registerRoutes } from './routes.js';
 import { cleanupExpiredGraphImportUploads } from './graph-import/upload-store.js';
 import { failRunningGraphImportRuns } from './graph-import/repo.js';
+import { failRunningEvaluationDatabaseImportRuns } from './evaluation/eval-db-import-repo.js';
 
 async function main() {
   getDb(); // 初始化 schema
   failRunningGraphImportRuns('modeling 服务已重启，后台图数据导入已中断，请重新上传 Excel 并重试');
+  failRunningEvaluationDatabaseImportRuns('modeling 服务已重启，后台评测库导入已中断，请重新上传 Excel 并重试');
   cleanupExpiredGraphImportUploads();
   const app = Fastify({ logger: true, bodyLimit: 55 * 1024 * 1024 });
   await app.register(cors, { origin: true });

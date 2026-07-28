@@ -98,6 +98,18 @@ export const exportPackageUrl = (id) => `${P(id)}/package/export`;
 // ---- M3 评测 ----
 export const getDataSource = (id) => api(`${P(id)}/data-source`);
 export const saveDataSource = (id, input) => api(`${P(id)}/data-source`, { method: 'PUT', body: JSON.stringify(input) });
+export const createProjectEvaluationDatabase = (id, input) => api(
+  `${P(id)}/evaluation-database/project-database`,
+  { method: 'POST', body: JSON.stringify(input) },
+);
+export const importEvaluationDatabase = (id, file, password, replaceConfirmed) => {
+  const form = new FormData();
+  form.append('password', password);
+  if (replaceConfirmed) form.append('replace_confirmation', 'replace_same_name_tables');
+  form.append('file', file);
+  return api(`${P(id)}/evaluation-database/import`, { method: 'POST', body: form });
+};
+export const listEvaluationDatabaseImports = (id) => api(`${P(id)}/evaluation-database/imports`);
 export const uploadGraphImport = (id, file) => {
   const form = new FormData();
   form.append('file', file);

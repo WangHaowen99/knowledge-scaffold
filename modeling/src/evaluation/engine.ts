@@ -3,12 +3,11 @@ import { consumerFetch } from '../consumer/client.js';
 import { latestPackageVersion } from '../workflow/m2-repo.js';
 import { renderPackage } from '../workflow/package-render.js';
 import { zipPackage } from '../workflow/export.js';
-import { provisionEvalDb } from './eval-db.js';
 import { judge } from './judge.js';
 import * as repo from '../workflow/m3-repo.js';
-import type { DataDictTable } from '../types.js';
 import { getProjectDataSource, type ProjectDataSource } from './data-source-repo.js';
 import { prepareProjectDataSourceForEvaluation } from './data-source-evaluation-service.js';
+import { getRunningEvaluationDatabaseImportRun } from './eval-db-import-repo.js';
 import { importPackageZip } from './data-source-consumer-sync.js';
 import {
   ensureEvaluationWorkspace,
@@ -24,7 +23,6 @@ export { shadowWorkspaceId } from './shadow-workspace.js';
 interface RunOptions {
   projectId: string;
   token: string; // 专家 token 透传
-  tables: DataDictTable[];
 }
 
 const activeProjects = new Set<string>();
@@ -58,6 +56,10 @@ export function startEvaluation(opts: RunOptions): { roundId: string } {
   if (!testcases.length) throw new Error('没有已填写标准答案的评测用例');
   const dataSource = getProjectDataSource(projectId);
   if (!dataSource) throw new Error('尚未配置数据源，请先完成“数据源配置”步骤');
+  const runningDatabaseImport = getRunningEvaluationDatabaseImportRun(projectId);
+  if (runningDatabaseImport) {
+    throw new Error(`评测库数据仍在后台导入（${runningDatabaseImport.filename}），请等待导入完成后再运行评测`);
+  }
   const workspaceId = evaluationWorkspaceForRun(projectId, dataSource, latest.spec.id);
   if (activeWorkspaces.has(workspaceId)) {
     throw new Error(`评测工作空间 ${workspaceId} 已有评测在运行`);
@@ -87,7 +89,7 @@ async function runRound(
   dataSource: ProjectDataSource,
   workspaceId: string,
 ): Promise<void> {
-  const { projectId, token, tables } = opts;
+  const { projectId, token } = opts;
   const ws = workspaceId;
   const log = (m: string) => repo.roundLog(roundId, m);
 
@@ -99,11 +101,7 @@ async function runRound(
     log(`复用评测工作空间：${ws}`);
   }
 
-  // 2. 评测库落库（best-effort）
-  const db = await provisionEvalDb(projectId, tables);
-  log(db.detail);
-
-  // 3. 导入知识包（已存在则覆盖激活版本；人工修订的文件以修订稿为准）
+  // 2. 导入知识包（已存在则覆盖激活版本；人工修订的文件以修订稿为准）
   const files = renderPackage(latest.spec);
   const { getOverrides } = await import('../workflow/package-chat.js');
   for (const [op, oc] of Object.entries(getOverrides(projectId))) if (op in files) files[op] = oc;
@@ -128,7 +126,7 @@ async function runRound(
     log(`⚠ 激活版本请求异常：${e instanceof Error ? e.message : e}`);
   }
 
-  // 4. 复用“数据源配置”步骤保存的本体级数据源，不在评测运行时传递密钥
+  // 3. 复用“数据源配置”步骤保存的本体级数据源，不在评测运行时传递密钥
   await prepareProjectDataSourceForEvaluation({ token, ontologyId: importResult.ontology_id, dataSource });
   if (dataSource.mode === 'connection') {
     log(`已复用本体数据源：${dataSource.ontologyId}（${dataSource.provider}）`);
@@ -136,7 +134,7 @@ async function runRound(
     log('已按数据源配置清除本体数据源（判断类问题仍可评测）');
   }
 
-  // 5. 逐用例串行运行 + judge
+  // 4. 逐用例串行运行 + judge
   let done = 0;
   let pass = 0;
   for (const tc of testcases) {

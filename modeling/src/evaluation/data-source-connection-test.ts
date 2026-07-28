@@ -1,5 +1,12 @@
 import neo4j from 'neo4j-driver';
-import type { ConnectionDataSourceInput } from './data-source.js';
+import type {
+  ConnectionDataSourceInput,
+  EvaluationDatabaseConfig,
+} from './data-source.js';
+import {
+  testEvaluationDatabaseConnection,
+  type EvaluationDatabaseConnector,
+} from './eval-db.js';
 
 interface Neo4jTestSession {
   run(query: string): Promise<unknown>;
@@ -24,6 +31,7 @@ export type DataSourceConnectionTester = (
 export interface DataSourceTestDependencies {
   neo4jDriverFactory?: Neo4jDriverFactory;
   request?: typeof fetch;
+  evaluationDatabaseConnector?: EvaluationDatabaseConnector;
 }
 
 function text(value: unknown): string {
@@ -79,18 +87,24 @@ async function testNl2Sql(
   if (token) headers.Authorization = `Bearer ${token}`;
 
   try {
-    const response = await request(`${url}/api/v1/query`, {
+    const response = await request(`${url}/api/v1/sql`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        question: '连接测试',
+        sql: 'SELECT 1 AS ok',
         scene: text(source.config.scene),
       }),
       signal: AbortSignal.timeout(10_000),
     });
+    const detail = await response.text().catch(() => '');
     if (!response.ok) {
-      const detail = await response.text().catch(() => '');
       throw new Error(`${response.status}${detail ? `：${detail}` : ''}`);
+    }
+    if (detail) {
+      const payload = JSON.parse(detail) as { success?: boolean; error?: unknown; message?: unknown };
+      if (payload.success === false) {
+        throw new Error(String(payload.error || payload.message || '服务返回失败'));
+      }
     }
   } catch (error) {
     throw new Error(`NL2SQL 连接测试失败：${redact(errorMessage(error), [token])}`);
@@ -105,5 +119,9 @@ export async function testProjectDataSourceConnection(
     await testNeo4j(source, dependencies.neo4jDriverFactory ?? defaultNeo4jDriverFactory);
     return;
   }
+  await testEvaluationDatabaseConnection(
+    source.config.evaluation_database as EvaluationDatabaseConfig,
+    { connect: dependencies.evaluationDatabaseConnector },
+  );
   await testNl2Sql(source, dependencies.request ?? fetch);
 }
