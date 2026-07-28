@@ -384,7 +384,7 @@ export default function AppShell() {
       {wizardOpen && <OnboardingWizard onNavigate={navigate} onOpenNavigation={openMobileNavigation}
         hasNoWorkspace={workspacesLoaded && !workspacesLoading && !workspacesError && workspaces.length === 0}
         onClose={() => setWizardOpen(false)} />}
-      <ToastNotice message={kb.notice} tone={kb.importLocked ? 'info' : undefined}
+      <ToastNotice message={kb.notice} tone={kb.noticeTone}
         duration={kb.importing ? 0 : 5200} />
       <ToastNotice message={workspacesError} tone="error" duration={0} actionLabel="重新加载" onAction={reloadWorkspaces} />
     </div>

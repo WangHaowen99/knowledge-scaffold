@@ -10,14 +10,17 @@ import yaml
 
 from ontology.ontology_catalog import (
     ObjectDataMappingStatus,
+    find_field_alias_matches,
     find_exact_object_data_mapping_result,
     find_script_entry,
     load_script_catalog,
+    resolve_field_reference,
     resolve_object_reference,
 )
 from ontology.package_import import (
     inspect_importable_package,
     normalize_imported_package,
+    validate_imported_field_aliases,
     validate_imported_object_aliases,
 )
 
@@ -911,6 +914,497 @@ def test_object_alias_validation_groups_shared_canonical_conflicts(tmp_path):
     assert validation.errors == (
         "Canonical object key 'sharedcanonical' is shared by: A, B.",
         "Canonical object key 'sharedcanonical' shared by A, B conflicts with key of object 'SharedCanonical'.",
+    )
+
+
+def test_field_alias_resolution_supports_standard_and_legacy_headers(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    standard_path = objects_dir / "affected.md"
+    standard_path.write_text(
+        "---\nresource: object\nkey: Affected\ntitle: 受影响对象\n---\n\n"
+        "# 关系\n\n"
+        "| 关系 | 目标对象 |\n| --- | --- |\n| belongs_to | CHANGE_ORDER |\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 类型 | 别名 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| CHANGE_ORDER_ID | CHANGE_ORDER编码 | string | 变更单号；CHANGE_ORDER编号 |\n"
+        "| MaterialType | 物料变更类型 | string | 物料类型/SourceItem |\n",
+        encoding="utf-8",
+    )
+    legacy_path = objects_dir / "legacy.md"
+    legacy_path.write_text(
+        "# 实体属性清单\n\n"
+        "| 中文名称 | 英文名称 | 描述 | 属性别名 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 受影响编码 | AffectedObjectCode | 编码 | 影响编码 |\n",
+        encoding="utf-8",
+    )
+
+    title_resolution, title_error = resolve_field_reference(
+        standard_path,
+        "CHANGE_ORDER编码",
+    )
+    key_resolution, key_error = resolve_field_reference(
+        standard_path,
+        "eco_id",
+    )
+    alias_resolution, alias_error = resolve_field_reference(
+        standard_path,
+        "变更单号",
+    )
+    slash_resolution, slash_error = resolve_field_reference(
+        standard_path,
+        "物料类型/SourceItem",
+    )
+    legacy_resolution, legacy_error = resolve_field_reference(
+        legacy_path,
+        "影响编码",
+    )
+
+    assert title_error is None
+    assert title_resolution is not None
+    assert title_resolution.field_key == "CHANGE_ORDER_ID"
+    assert title_resolution.matched_by == "title"
+    assert key_error is None
+    assert key_resolution is not None
+    assert key_resolution.field_key == "CHANGE_ORDER_ID"
+    assert key_resolution.matched_by == "key"
+    assert alias_error is None
+    assert alias_resolution is not None
+    assert alias_resolution.field_key == "CHANGE_ORDER_ID"
+    assert slash_error is None
+    assert slash_resolution is not None
+    assert slash_resolution.field_key == "MaterialType"
+    assert legacy_error is None
+    assert legacy_resolution is not None
+    assert legacy_resolution.field_key == "AffectedObjectCode"
+
+
+def test_field_alias_parser_prefers_explicit_field_table_over_generic_table(tmp_path):
+    object_path = tmp_path / "object.md"
+    object_path.write_text(
+        "| key | name |\n"
+        "| --- | --- |\n"
+        "| metadata | 示例元数据 |\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ActualCode | 正式编码 | 业务编号 |\n",
+        encoding="utf-8",
+    )
+
+    resolution, error = resolve_field_reference(object_path, "业务编号")
+
+    assert error is None
+    assert resolution is not None
+    assert resolution.field_key == "ActualCode"
+    assert find_field_alias_matches(object_path, "查询业务编号") == (
+        ("业务编号", "ActualCode"),
+    )
+
+
+def test_field_alias_validation_uses_explicit_field_table_after_generic_table(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    (objects_dir / "object.md").write_text(
+        "| key | name |\n"
+        "| --- | --- |\n"
+        "| metadata | 示例元数据 |\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| FieldA | 字段甲 | 编号 |\n"
+        "| FieldB | 字段乙 | 编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == (
+        "对象“object”的字段名称“编号”同时指向 [FieldA, FieldB]",
+    )
+
+
+def test_field_alias_parser_reads_only_recognized_field_section(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "object.md"
+    object_path.write_text(
+        "# 示例\n\n"
+        "说明：`这里的内容不需要按 Markdown 语法解释。\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ExampleA | 示例字段甲 | 示例编号 |\n"
+        "\n# 已废弃字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| OldCode | 旧字段 | 旧编号 |\n\n"
+        "# 字段\n\n"
+        "    | 字段 key | 中文名 | 别名 |\n"
+        "    | --- | --- | --- |\n"
+        "    | IndentedCode | 缩进示例 | 缩进编号 |\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ActualCode | 正式编码 | 业务编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询业务编号") == (
+        ("业务编号", "ActualCode"),
+    )
+    assert find_field_alias_matches(
+        object_path,
+        "查询示例编号、旧编号和缩进编号",
+    ) == ()
+
+
+def test_field_alias_parser_ignores_fenced_field_heading(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "object.md"
+    object_path.write_text(
+        "```markdown\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ExampleCode | 示例编码 | 示例编号 |\n"
+        "```\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ActualCode | 正式编码 | 业务编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询业务编号") == (
+        ("业务编号", "ActualCode"),
+    )
+    assert find_field_alias_matches(object_path, "查询示例编号") == ()
+
+
+def test_field_alias_parser_ignores_standalone_html_comment_blocks(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "object.md"
+    object_path.write_text(
+        "# 字段\n\n"
+        "<!--\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| OldCodeA | 旧编码甲 | 编号 |\n"
+        "| OldCodeB | 旧编码乙 | 编号 |\n"
+        "-->\n\n"
+        "说明：`<!--` 是正文中的字面量。\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ActualCode | 正式编码 | 业务编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询业务编号") == (
+        ("业务编号", "ActualCode"),
+    )
+    assert find_field_alias_matches(object_path, "查询编号") == ()
+
+
+def test_field_alias_parser_requires_recognized_field_section(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "object.md"
+    object_path.write_text(
+        "# 示例\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ExampleCode | 示例编码 | 示例编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询示例编号") == ()
+
+
+def test_field_alias_parser_supports_display_name_english_name_table(tmp_path):
+    object_path = tmp_path / "product.md"
+    object_path.write_text(
+        "# 字段定义\n\n"
+        "| 显示名称 | 英文名称 | 描述 |\n"
+        "| --- | --- | --- |\n"
+        "| 产品编号 | productid | 产品唯一编号 |\n"
+        "| 产品名称 | productname | 产品名称 |\n",
+        encoding="utf-8",
+    )
+
+    resolution, error = resolve_field_reference(object_path, "产品编号")
+
+    assert error is None
+    assert resolution is not None
+    assert resolution.field_key == "productid"
+    assert find_field_alias_matches(object_path, "查询产品编号") == (
+        ("产品编号", "productid"),
+    )
+
+
+def test_field_alias_validation_checks_display_name_english_name_table(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    (objects_dir / "product.md").write_text(
+        "# 字段定义\n\n"
+        "| 显示名称 | 英文名称 | 描述 |\n"
+        "| --- | --- | --- |\n"
+        "| 产品编号 | productid | 产品唯一编号 |\n"
+        "| 备用编号 | productid | 备用编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == (
+        "对象“product”的字段 key“productid”重复",
+    )
+
+
+def test_field_alias_query_matches_only_declared_names_with_safe_ascii_boundaries(
+    tmp_path,
+):
+    object_path = tmp_path / "object.md"
+    object_path.write_text(
+        "---\nresource: object\nkey: Affected\ntitle: 受影响对象\n---\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| CHANGE_ORDER_ID | CHANGE_ORDER编码 | 变更单号、id |\n"
+        "| MaterialType | 物料变更类型 | 物料类型 |\n"
+        "| CafeName | 咖啡名称 | Cafe\u0301 |\n",
+        encoding="utf-8",
+    )
+
+    matches = find_field_alias_matches(
+        object_path,
+        "查询变更单号为CHANGE_ORDER-001的物料变更类型，忽略order_id",
+    )
+
+    assert matches == (
+        ("变更单号", "CHANGE_ORDER_ID"),
+        ("物料变更类型", "MaterialType"),
+    )
+    assert find_field_alias_matches(object_path, "查询 CHANGE_ORDER_ID") == ()
+    assert find_field_alias_matches(object_path, "查询 Café") == (
+        ("Cafe\u0301", "CafeName"),
+    )
+
+
+def test_field_alias_query_prefers_longest_overlapping_name(tmp_path):
+    object_path = tmp_path / "object.md"
+    object_path.write_text(
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| WorkHour | 工时 | 作业时长 |\n"
+        "| WorkHourUnit | 工时单位 | 作业时长单位 |\n",
+        encoding="utf-8",
+    )
+
+    assert find_field_alias_matches(object_path, "查询工时单位") == (
+        ("工时单位", "WorkHourUnit"),
+    )
+    assert find_field_alias_matches(object_path, "查询工时以及工时单位") == (
+        ("工时", "WorkHour"),
+        ("工时单位", "WorkHourUnit"),
+    )
+    assert find_field_alias_matches(object_path, "查询作业时长单位") == (
+        ("作业时长单位", "WorkHourUnit"),
+    )
+
+
+def test_field_alias_parser_supports_escaped_markdown_pipe(tmp_path):
+    object_path = tmp_path / "object.md"
+    object_path.write_text(
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 描述 | 别名 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| PipeCode | 管道编码 | 业务\\|技术编码 | A\\|B |\n",
+        encoding="utf-8",
+    )
+
+    resolution, error = resolve_field_reference(object_path, "A|B")
+
+    assert error is None
+    assert resolution is not None
+    assert resolution.field_key == "PipeCode"
+    assert find_field_alias_matches(object_path, "查询 A|B") == (
+        ("A|B", "PipeCode"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("header", "separator", "row"),
+    (
+        (
+            "| 字段 key | 中文名 | 别名 |",
+            "| --- | --- | --- |",
+            "| ActualCode | 业务编号 |",
+        ),
+        (
+            "字段 key | 中文名 | 别名 |",
+            "--- | --- | --- |",
+            "ActualCode | 业务编号 |",
+        ),
+        (
+            "| 字段 key | 中文名 | 别名",
+            "| --- | --- | ---",
+            "| ActualCode | 业务编号",
+        ),
+        (
+            "字段 key | 中文名 | 别名",
+            "--- | --- | ---",
+            "ActualCode | 业务编号",
+        ),
+    ),
+)
+def test_field_alias_parser_allows_optional_outer_pipes_and_short_rows(
+    tmp_path,
+    header,
+    separator,
+    row,
+):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "object.md"
+    object_path.write_text(
+        "# 字段\n\n" + "\n".join((header, separator, row)),
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询业务编号") == (
+        ("业务编号", "ActualCode"),
+    )
+
+
+def test_field_alias_parser_stops_at_markdown_block_after_field_table(
+    tmp_path,
+):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "object.md"
+    object_path.write_text(
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| ActualCode | 正式编码 | 业务编号 |\n"
+        "## 说明 | 不是字段 | 伪别名\n"
+        "--- | --- | ---\n"
+        "FakeCode | 示例编码 | 伪别名\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询业务编号") == (
+        ("业务编号", "ActualCode"),
+    )
+    assert find_field_alias_matches(object_path, "查询伪别名") == ()
+
+
+def test_field_alias_query_ignores_definition_without_field_key(tmp_path):
+    object_path = tmp_path / "object.md"
+    object_path.write_text(
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "|  | 编号 | 业务编号 |\n"
+        "| OtherField | 编号 | 其他编号 |\n",
+        encoding="utf-8",
+    )
+
+    assert find_field_alias_matches(object_path, "查询编号和业务编号") == (
+        ("编号", "OtherField"),
+    )
+
+
+def test_field_alias_query_skips_case_insensitive_field_key_ambiguity(tmp_path):
+    object_path = tmp_path / "object.md"
+    object_path.write_text(
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| FieldA | 字段甲 | 编号 |\n"
+        "| fielda | 字段乙 | 编号 |\n",
+        encoding="utf-8",
+    )
+
+    resolution, error = resolve_field_reference(object_path, "编号")
+
+    assert resolution is None
+    assert error == (
+        "Error: field reference '编号' is ambiguous. "
+        "Candidate field keys: FieldA, fielda."
+    )
+    assert find_field_alias_matches(object_path, "查询编号") == ()
+
+
+def test_field_alias_validation_reports_conflicts_and_duplicate_warnings(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    (objects_dir / "conflict.md").write_text(
+        "---\nresource: object\nkey: Conflict\ntitle: 冲突对象\n---\n\n"
+        "# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| FieldA | 字段甲 | 编号、重复、重复 |\n"
+        "| FieldB | 字段乙 | 编号 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == (
+        "对象“冲突对象”的字段名称“编号”同时指向 [FieldA, FieldB]",
+    )
+    assert validation.warnings == (
+        "对象“冲突对象”的字段“FieldA”存在重复别名“重复”",
+    )
+
+
+def test_field_alias_validation_allows_object_without_alias_column(tmp_path):
+    objects_dir = tmp_path / "objects"
+    objects_dir.mkdir()
+    object_path = objects_dir / "legacy.md"
+    object_path.write_text(
+        "# 实体属性清单\n\n"
+        "| 中文名称 | 英文名称 | 描述 |\n"
+        "| --- | --- | --- |\n"
+        "| 受影响编码 | AffectedObjectCode | 编码 |\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_imported_field_aliases(tmp_path)
+
+    assert validation.errors == ()
+    assert validation.warnings == ()
+    assert find_field_alias_matches(object_path, "查询受影响编码") == (
+        ("受影响编码", "AffectedObjectCode"),
     )
 
 

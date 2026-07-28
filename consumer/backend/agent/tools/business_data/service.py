@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Tuple
 
 from agent.tools.business_data.providers.base import OntologySearchEvent
 from workspace.workspaces import get_workspace_paths
@@ -20,6 +20,7 @@ class BusinessDataSearchRequest:
     query: str
     provider_runtime_context: Mapping[str, Any] = field(default_factory=dict)
     ontology_version: str = ""
+    field_alias_mappings: Tuple[Tuple[str, str], ...] = ()
 
 
 def query_business_data_stream(
@@ -47,8 +48,16 @@ def query_business_data_stream(
             )
         else:
             provider = spec.factory(build_effective_connection(connection))
+        provider_query = (
+            _append_field_alias_mappings(
+                request.query,
+                request.field_alias_mappings,
+            )
+            if connection.provider == "mindsdb"
+            else request.query
+        )
         try:
-            yield from provider.search_stream(query=request.query, entity=request.entity)
+            yield from provider.search_stream(query=provider_query, entity=request.entity)
         finally:
             close = getattr(provider, "close", None)
             if callable(close):
@@ -91,3 +100,42 @@ def query_business_data_stream(
         close = getattr(provider, "close", None)
         if callable(close):
             close()
+
+
+def _append_field_alias_mappings(
+    query: str,
+    mappings: Tuple[Tuple[str, str], ...],
+) -> str:
+    normalized_query = str(query or "").strip()
+    valid_mappings = set()
+    for name, field_key in mappings:
+        normalized_name = str(name or "").strip()
+        normalized_key = str(field_key or "").strip()
+        if (
+            normalized_name
+            and normalized_key
+            and len(normalized_name) <= 128
+            and len(normalized_key) <= 128
+        ):
+            valid_mappings.add((normalized_name, normalized_key))
+    normalized_mappings = sorted(
+        valid_mappings,
+        key=lambda item: (
+            item[1].casefold(),
+            item[0].casefold(),
+            item[1],
+            item[0],
+        ),
+    )[:20]
+    if not normalized_mappings:
+        return normalized_query
+    lines = [
+        normalized_query,
+        "",
+        "字段映射（使用右侧正式字段 key）：",
+        *[
+            "- {} -> {}".format(name, field_key)
+            for name, field_key in normalized_mappings
+        ],
+    ]
+    return "\n".join(lines)

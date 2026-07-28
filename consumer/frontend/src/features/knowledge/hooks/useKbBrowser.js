@@ -5,6 +5,7 @@ import {
   IMPORT_PHASE,
   createImportFlowState,
   importFlowNotice,
+  importFlowNoticeTone,
   importRequestFields,
   reduceImportFlow,
 } from '../import/importFlow';
@@ -485,6 +486,7 @@ export default function useKbBrowser() {
     importLocked: [IMPORT_PHASE.CONFIRMING, IMPORT_PHASE.UPLOADING, IMPORT_PHASE.CONFLICT].includes(importFlow.phase)
       || Boolean(importFlow.reconciliationPending),
     notice: importFlowNotice(importFlow),
+    noticeTone: importFlowNoticeTone(importFlow),
     importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
     resolveImportConflict, retryImport,
     reopenImportConflict: () => setImportFlow((current) => reduceImportFlow(current, { type: 'REOPEN_CONFLICT' })),

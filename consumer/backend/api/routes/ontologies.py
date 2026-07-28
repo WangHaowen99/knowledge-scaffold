@@ -48,6 +48,7 @@ from ontology.package_import import (
     has_importable_package_layout,
     inspect_importable_package,
     normalize_imported_package,
+    validate_imported_field_aliases,
     validate_imported_object_aliases,
 )
 from agent.tools.business_data.ontology_sources_store import (
@@ -1910,6 +1911,7 @@ def import_ontology_zip_with_auto_create():
                 "objects_index": [],
                 "operations": [],
                 "object_aliases": [],
+                "field_aliases": [],
             }
 
             try:
@@ -2069,9 +2071,23 @@ def import_ontology_zip_with_auto_create():
                         if validation_error:
                             return jsonify({"error": validation_error}), 400
                         alias_validation = validate_imported_object_aliases(normalization.root)
-                        if alias_validation.errors:
-                            return jsonify({"error": "\n".join(alias_validation.errors)}), 400
+                        field_alias_validation = validate_imported_field_aliases(
+                            normalization.root
+                        )
+                        alias_errors = tuple(
+                            sorted(
+                                set(
+                                    (
+                                        *alias_validation.errors,
+                                        *field_alias_validation.errors,
+                                    )
+                                )
+                            )
+                        )
+                        if alias_errors:
+                            return jsonify({"error": "\n".join(alias_errors)}), 400
                         warnings["object_aliases"] = list(alias_validation.warnings)
+                        warnings["field_aliases"] = list(field_alias_validation.warnings)
                         preview = _build_import_preview(source_root, normalization.root)
                         version_dir = _install_ontology_version_package(
                             source_root=normalization.root,
@@ -2101,8 +2117,21 @@ def import_ontology_zip_with_auto_create():
                         if validation_error:
                             return jsonify({"error": validation_error}), 400
                         alias_validation = validate_imported_object_aliases(staged_dir)
-                        if alias_validation.errors:
-                            return jsonify({"error": "\n".join(alias_validation.errors)}), 400
+                        field_alias_validation = validate_imported_field_aliases(
+                            staged_dir
+                        )
+                        alias_errors = tuple(
+                            sorted(
+                                set(
+                                    (
+                                        *alias_validation.errors,
+                                        *field_alias_validation.errors,
+                                    )
+                                )
+                            )
+                        )
+                        if alias_errors:
+                            return jsonify({"error": "\n".join(alias_errors)}), 400
                         preview = _build_import_preview(source_root, staged_dir)
                         version_dir = _install_ontology_version_package(
                             source_root=staged_dir,
@@ -2123,6 +2152,7 @@ def import_ontology_zip_with_auto_create():
                         "objects_index": result.get("objects_index", {}).get("warnings", []),
                         "operations": result.get("operations_trimmed", {}).get("warnings", []),
                         "object_aliases": list(alias_validation.warnings),
+                        "field_aliases": list(field_alias_validation.warnings),
                     }
             except PackageNormalizationError as exc:
                 return jsonify({"error": str(exc)}), 400

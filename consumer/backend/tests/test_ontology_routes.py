@@ -800,6 +800,7 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
         "objects_index": [],
         "operations": [],
         "object_aliases": [],
+        "field_aliases": [],
     }
     assert payload["preview"]["source"]["total_files"] == 7
     assert payload["preview"]["result"]["total_files"] >= 10
@@ -908,6 +909,159 @@ def test_import_ontology_zip_rejects_object_alias_mismatch(tmp_path, monkeypatch
         "object_a.md = [DetailAlias]"
     )
     assert not (workspace_paths.ontologies_dir / "alias-warning").exists()
+
+
+def test_import_ontology_zip_rejects_field_alias_conflict(tmp_path, monkeypatch):
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "field-alias-error/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: field-alias-error\n"
+            "name: Field Alias Error\n"
+            "description: Field alias validation error\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "field-alias-error/index.md": "# Field Alias Error\n",
+        "field-alias-error/objects/index.md": (
+            "| object key | title |\n"
+            "| --- | --- |\n"
+            "| ObjectA | 对象甲 |\n"
+        ),
+        "field-alias-error/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\ntitle: 对象甲\n---\n\n"
+            "# 字段\n\n"
+            "| 字段 key | 中文名 | 别名 |\n"
+            "| --- | --- | --- |\n"
+            "| FieldA | 字段甲 | 编号 |\n"
+            "| FieldB | 字段乙 | 编号 |\n"
+        ),
+        "field-alias-error/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "field-alias-error.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "error": "对象“对象甲”的字段名称“编号”同时指向 [FieldA, FieldB]"
+    }
+    assert not (workspace_paths.ontologies_dir / "field-alias-error").exists()
+
+
+def test_import_ontology_zip_returns_field_alias_warnings(tmp_path, monkeypatch):
+    _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "field-alias-warning/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: field-alias-warning\n"
+            "name: Field Alias Warning\n"
+            "description: Field alias validation warning\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "field-alias-warning/index.md": "# Field Alias Warning\n",
+        "field-alias-warning/objects/index.md": (
+            "| object key | title |\n"
+            "| --- | --- |\n"
+            "| ObjectA | 对象甲 |\n"
+        ),
+        "field-alias-warning/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\ntitle: 对象甲\n---\n\n"
+            "# 字段\n\n"
+            "| 字段 key | 中文名 | 别名 |\n"
+            "| --- | --- | --- |\n"
+            "| FieldA | 字段甲 | 编号、编号 |\n"
+        ),
+        "field-alias-warning/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "field-alias-warning.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["warnings"]["field_aliases"] == [
+        "对象“对象甲”的字段“FieldA”存在重复别名“编号”"
+    ]
+
+
+def test_import_converted_zip_supports_outerless_catalog_and_short_field_row(
+    tmp_path,
+    monkeypatch,
+):
+    from ontology.ontology_catalog import (
+        find_field_alias_matches,
+        resolve_object_reference,
+    )
+
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    client, headers = _build_test_client(tmp_path)
+    zip_buffer = _build_zip_file({
+        "outerless-demo/manifest.yaml": (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: outerless-demo\n"
+            "name: Outerless Demo\n"
+            "description: Optional outer pipes\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        "outerless-demo/index.md": "# Outerless Demo\n",
+        "outerless-demo/objects/index.md": (
+            "object key | title | aliases\n"
+            "--- | --- | ---\n"
+            "ObjectA | 对象甲 | 目标对象\n"
+        ),
+        "outerless-demo/objects/object_a.md": (
+            "---\nresource: object\nkey: ObjectA\ntitle: 对象甲\n"
+            "aliases:\n  - 目标对象\n---\n\n"
+            "# 字段\n\n"
+            "字段 key | 中文名 | 别名\n"
+            "--- | --- | ---\n"
+            "ActualCode | 业务编号\n"
+        ),
+        "outerless-demo/operations/index.md": "# Operations\n",
+    })
+
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers=headers,
+        data={"file": (zip_buffer, "outerless-demo.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["import_mode"] == "converted"
+    version_dir = (
+        workspace_paths.ontologies_dir
+        / "outerless-demo"
+        / "versions"
+        / "1.0.0"
+    )
+    resolution, error = resolve_object_reference(version_dir, "目标对象")
+    assert error is None
+    assert resolution is not None
+    assert resolution.object_key == "ObjectA"
+    assert find_field_alias_matches(
+        version_dir / "objects" / "object_a.md",
+        "查询业务编号",
+    ) == (("业务编号", "ActualCode"),)
 
 
 def test_import_converted_ontology_zip_handles_unreadable_object_catalog(

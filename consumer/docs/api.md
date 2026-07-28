@@ -1281,7 +1281,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "warnings": {
     "objects": [],
     "objects_index": [],
-    "operations": []
+    "operations": [],
+    "object_aliases": [],
+    "field_aliases": []
   }
 }
 ```
@@ -1291,6 +1293,9 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 - `import_mode=source`：表示上传的是源格式包，服务端已执行格式转换
 - `import_mode=converted`：表示上传的是已转换完成的 ontology 包，服务端直接导入目录内容
 - 新导入 ontology 不继承默认连接，`business_data_configured` 初始为 `false`；需要在导入后显式配置该 ontology 的数据源
+- `warnings.object_aliases`：对象别名中的重复、空值等非阻断问题；不会阻止导入
+- `warnings.field_aliases`：字段别名中的重复、空值等非阻断问题；不会阻止导入
+- 对象或字段名称存在歧义、冲突等 error 时，接口返回 `400` 并在安装版本前终止导入，不会进入上述 warning 列表
 
 ---
 

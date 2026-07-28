@@ -15,6 +15,7 @@ export const IMPORT_ACTION = Object.freeze({
 });
 
 export const ONTOLOGY_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const IMPORT_WARNING_PREVIEW_LIMIT = 10;
 
 export const IMPORT_SAFETY_COPY = Object.freeze({
   title: '确认导入知识包',
@@ -155,15 +156,20 @@ export function reduceImportFlow(state, event) {
       return current.conflict
         ? { ...current, phase: IMPORT_PHASE.CONFLICT, error: '' }
         : current;
-    case 'SUCCESS':
+    case 'SUCCESS': {
+      const result = event.payload || {};
       return {
         ...current,
         phase: IMPORT_PHASE.SUCCESS,
-        result: event.payload || {},
+        result: {
+          ...result,
+          preview: buildImportPreview(result),
+        },
         conflict: null,
         file: null,
         error: '',
       };
+    }
     case 'CLEAR_PREVIEW':
       return current.result
         ? { ...current, result: { ...current.result, preview: null } }
@@ -199,7 +205,13 @@ export function importFlowNotice(state) {
     case IMPORT_PHASE.SUCCESS: {
       const result = state.result || {};
       const activeVersion = result.active_version || result.version || '';
-      return `导入成功：${result.ontology_name || result.ontology_id || '知识包'}（对象 ${result.objects_count ?? '-'} · 操作 ${result.operations_count ?? '-'}${activeVersion ? ` · 激活版本 ${activeVersion}` : ''}）`;
+      const warningMessages = importWarningMessages(importResultWarningDetails(result));
+      const warningPreview = warningMessages.slice(0, IMPORT_WARNING_PREVIEW_LIMIT);
+      const hiddenWarningCount = warningMessages.length - warningPreview.length;
+      const warningNotice = warningMessages.length
+        ? `；警告 ${warningMessages.length} 条：${warningPreview.join('；')}${hiddenWarningCount ? `；其余 ${hiddenWarningCount} 条未展示` : ''}`
+        : '';
+      return `导入成功：${result.ontology_name || result.ontology_id || '知识包'}（对象 ${result.objects_count ?? '-'} · 操作 ${result.operations_count ?? '-'}${activeVersion ? ` · 激活版本 ${activeVersion}` : ''}）${warningNotice}`;
     }
     case IMPORT_PHASE.ERROR:
       return `导入失败：${state.error || '请求异常，请稍后重试'}`;
@@ -211,4 +223,80 @@ export function importFlowNotice(state) {
     default:
       return '';
   }
+}
+
+export function importFlowNoticeTone(state) {
+  switch (state?.phase) {
+    case IMPORT_PHASE.SUCCESS:
+      return 'success';
+    case IMPORT_PHASE.ERROR:
+      return 'error';
+    case IMPORT_PHASE.CONFIRMING:
+    case IMPORT_PHASE.UPLOADING:
+    case IMPORT_PHASE.CONFLICT:
+    case IMPORT_PHASE.CANCELLED:
+      return 'info';
+    default:
+      return undefined;
+  }
+}
+
+function buildImportPreview(result) {
+  const preview = result.preview;
+  const warnings = importResultWarningDetails(result);
+  const hasWarnings = Array.isArray(warnings)
+    ? warnings.length > 0
+    : Object.keys(warnings).length > 0;
+  if (!hasWarnings) return preview || null;
+  if (preview && typeof preview === 'object' && !Array.isArray(preview)) {
+    return { ...preview, warnings };
+  }
+  return {
+    ...(preview ? { preview } : {}),
+    warnings,
+  };
+}
+
+function importResultWarningDetails(result = {}) {
+  const warnings = importWarningDetails(result.warnings);
+  const normalizationWarnings = importWarningMessages(result.normalization_warnings);
+  if (!normalizationWarnings.length) return warnings;
+
+  if (Array.isArray(warnings)) {
+    return {
+      ...(warnings.length ? { general: warnings } : {}),
+      normalization_warnings: normalizationWarnings,
+    };
+  }
+
+  return {
+    ...warnings,
+    normalization_warnings: [
+      ...importWarningMessages(warnings.normalization_warnings),
+      ...normalizationWarnings,
+    ],
+  };
+}
+
+function importWarningMessages(warnings) {
+  const values = Array.isArray(warnings)
+    ? warnings
+    : warnings && typeof warnings === 'object'
+      ? Object.values(warnings).flatMap((value) => (Array.isArray(value) ? value : [value]))
+      : warnings
+        ? [warnings]
+        : [];
+  return values.map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function importWarningDetails(warnings) {
+  if (Array.isArray(warnings)) return importWarningMessages(warnings);
+  if (!warnings || typeof warnings !== 'object') {
+    return importWarningMessages(warnings);
+  }
+  return Object.fromEntries(
+    Object.entries(warnings)
+      .map(([category, values]) => [category, importWarningMessages(values)])
+      .filter(([, values]) => values.length > 0),
+  );
 }
