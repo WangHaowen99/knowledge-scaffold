@@ -11,7 +11,9 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from flask import Blueprint, Response, request, jsonify, stream_with_context
 
+from agent.core.shared.interaction_policy import set_user_interaction_capability
 from api.auth.auth import require_auth, get_current_user
+from api.final_output import coerce_final_output_to_text
 from config.system_config import (
     SystemConfigValidationError,
     get_public_llm_profiles,
@@ -656,7 +658,10 @@ def start_workflow_stream():
     except TraceParentValidationError as exc:
         return _invalid_traceparent_response(exc)
 
-    user_context = data.get("context", {})
+    user_context = set_user_interaction_capability(
+        dict(data.get("context") or {}),
+        supported=True,
+    )
     arguments = data.get("arguments")
     raw_session_id = data.get("session_id")
     requested_run_id = str(data.get("run_id") or "").strip() or None
@@ -964,7 +969,10 @@ def start_workflow_sync():
     if not user_request:
         return jsonify({"error": "Request is required"}), 400
 
-    user_context = data.get("context", {})
+    user_context = set_user_interaction_capability(
+        dict(data.get("context") or {}),
+        supported=False,
+    )
     workspace_id = _get_request_workspace_id()
     requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
     try:
@@ -985,7 +993,6 @@ def start_workflow_sync():
     except TraceParentValidationError as exc:
         return _invalid_traceparent_response(exc)
 
-    user_context = data.get("context", {})
     arguments = data.get("arguments")
     raw_session_id = data.get("session_id")
     try:
@@ -1052,7 +1059,7 @@ def start_workflow_sync():
 
     return jsonify({
         "status": last_status,
-        "final_answer": final_output,
+        "final_answer": coerce_final_output_to_text(final_output),
         "session_id": session_id,
         "run_id": run_id,
     })

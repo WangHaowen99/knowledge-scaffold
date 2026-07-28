@@ -320,6 +320,7 @@ def test_run_sync_returns_429_when_global_tps_is_exhausted(monkeypatch, tmp_path
 
 def test_run_sync_returns_final_answer(monkeypatch, tmp_path):
     client, headers = _build_test_client(tmp_path)
+    captured = {}
 
     class _FakeOrchestrator:
         class _RunStore:
@@ -332,6 +333,7 @@ def test_run_sync_returns_final_answer(monkeypatch, tmp_path):
         slot_manager = RunSlotManager()
 
         def run(self, **kwargs):
+            captured.update(kwargs)
             assert kwargs["user_request"] == "hello"
             assert kwargs["session_id"] == "sync-session"
             yield {
@@ -382,6 +384,62 @@ def test_run_sync_returns_final_answer(monkeypatch, tmp_path):
         "final_answer": "done",
         "session_id": "sync-session",
         "run_id": "run-sync-1",
+    }
+    assert captured["user_context"]["supports_user_interaction"] is False
+
+
+def test_run_sync_coerces_structured_final_output_to_text(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        def run(self, **kwargs):
+            assert kwargs["user_context"]["supports_user_interaction"] is False
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "protocol": "agent-stream.v2",
+                    "event_id": "run-sync-2:1",
+                    "seq": 1,
+                    "ts": 1700000000000,
+                    "session_id": "sync-session-structured",
+                    "run_id": "run-sync-2",
+                    "turn_id": 1,
+                    "type": "turn.finished",
+                    "source": {"node": "test", "component": "unit"},
+                    "payload": {
+                        "status": "awaiting_input",
+                        "final_output": {
+                            "type": "user_interaction",
+                            "text": "请基于业务常识给出建议。",
+                            "options": [{"id": "a", "label": "继续", "value": "continue"}],
+                        },
+                    },
+                },
+            }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={"request": "hello", "session_id": "sync-session-structured"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "awaiting_input",
+        "final_answer": "请基于业务常识给出建议。",
+        "session_id": "sync-session-structured",
+        "run_id": "run-sync-2",
     }
 
 

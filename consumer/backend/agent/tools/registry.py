@@ -65,6 +65,7 @@ def get_tool_specs_for_caller(
     include_memory: bool = True,
     include_orchestration: bool = True,
     include_web_search: bool = False,
+    include_interaction: bool = True,
     workspace_id: Optional[str] = None,
 ) -> List[BaseTool]:
     specs: List[BaseTool] = []
@@ -80,6 +81,8 @@ def get_tool_specs_for_caller(
             continue
         if not include_web_search and spec.category == "web_search":
             continue
+        if not include_interaction and spec.category == "interaction":
+            continue
         specs.append(spec)
     return specs
 
@@ -90,6 +93,7 @@ def get_tools_schema(
     include_memory: bool = True,
     include_orchestration: bool = True,
     include_web_search: bool = False,
+    include_interaction: bool = True,
     selected_ontology_id: Optional[str] = None,
     selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -106,6 +110,7 @@ def get_tools_schema(
             include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
+            include_interaction=include_interaction,
             workspace_id=workspace_id,
         )
     ]
@@ -152,12 +157,14 @@ def get_universal_tools_schema(
     *,
     include_memory: bool = True,
     include_web_search: bool = False,
+    include_interaction: bool = True,
     workspace_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     return get_tools_schema(
         "main",
         include_memory=include_memory,
         include_web_search=include_web_search,
+        include_interaction=include_interaction,
         workspace_id=workspace_id,
     )
 

@@ -64,6 +64,9 @@ from .shared.events import (
     emit_reasoning_summary_event,
     emit_token_delta_event,
 )
+from .shared.interaction_policy import (
+    user_interaction_supported_from_state as _user_interaction_supported_from_state,
+)
 from .shared.messages import append_current_date_reminder_to_text
 from .shared.modes import resolve_agent_mode as _resolve_agent_mode
 from .shared.ontology_context import (
@@ -1393,32 +1396,35 @@ class JiuwenReactLoopEngine:
     def _tools_schema_for_state(self, state: Mapping[str, Any], *, caller: str) -> list[Mapping[str, Any]]:
         from ..tools.registry import get_tools_schema
 
-        schema_caller, include_orchestration, include_web_search = self._tool_visibility_for_state(state, caller=caller)
+        schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
         return get_tools_schema(
             schema_caller,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
+            include_interaction=include_interaction,
             selected_ontology_id=_selected_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
 
     def _jiuwen_tool_infos_for_state(self, state: Mapping[str, Any], *, caller: str) -> list[Mapping[str, Any]]:
-        schema_caller, include_orchestration, include_web_search = self._tool_visibility_for_state(state, caller=caller)
+        schema_caller, include_orchestration, include_web_search, include_interaction = self._tool_visibility_for_state(state, caller=caller)
         return get_jiuwen_tool_infos(
             schema_caller,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
+            include_interaction=include_interaction,
             selected_ontology_id=_selected_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
 
-    def _tool_visibility_for_state(self, state: Mapping[str, Any], *, caller: str) -> tuple[str, bool, bool]:
+    def _tool_visibility_for_state(self, state: Mapping[str, Any], *, caller: str) -> tuple[str, bool, bool, bool]:
         agent_mode = _resolve_agent_mode(state.get("user_context"))
         include_web_search = bool(getattr(getattr(self.agent_config, "web_search", None), "enabled", False))
         schema_caller = "main" if caller == "acp" else caller
-        return schema_caller, agent_mode == "multi_agent", include_web_search
+        include_interaction = _user_interaction_supported_from_state(state)
+        return schema_caller, agent_mode == "multi_agent", include_web_search, include_interaction
 
     def _emit_iteration_completed(
         self,

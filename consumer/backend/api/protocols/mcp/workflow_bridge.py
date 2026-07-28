@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import Any, Mapping
 
+from agent.core.shared.interaction_policy import set_user_interaction_capability
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
 from persistence.run_queue import QueuedRunAdmission, RunAdmissionQueue
 from persistence.run_store import RunStatus
@@ -57,7 +58,10 @@ def execute_mcp_chat_workflow(
             trace=_trace_snapshot(trace_collector),
         )
 
-    context = dict(data.get("context") or {})
+    context = set_user_interaction_capability(
+        dict(data.get("context") or {}),
+        supported=False,
+    )
     requested_profile = str(context.get("model_profile_id") or "").strip()
     try:
         resolve_effective_llm_profile_config(

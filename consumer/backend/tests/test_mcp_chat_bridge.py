@@ -235,6 +235,7 @@ def test_workflow_bridge_preserves_awaiting_input_and_run_owner(monkeypatch):
     assert run.metadata["workspace_id"] == "workspace-a"
     assert run.metadata["external_trace_id"] == "a" * 32
     assert orchestrator.last_run_kwargs["traceparent"] == scope.traceparent
+    assert orchestrator.last_run_kwargs["user_context"]["supports_user_interaction"] is False
 
 
 def test_workflow_bridge_trace_requires_explicit_true_request_flag(monkeypatch):
