@@ -14,6 +14,7 @@ from api.auth.remote_auth import RemoteAuthBackend
 from llm import LLMRouter, configure_llm_router
 from workspace.user_store_manager import UserStoreManager
 from persistence.chat_store import ToolOutputLimits
+from server_config import MAX_CONTENT_LENGTH
 
 
 def build_runtime_services(previous_llm_router=None):
@@ -76,6 +77,7 @@ def create_app() -> Flask:
 
     app = Flask(__name__)
     app.json.ensure_ascii = False
+    app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
     CORS(app, supports_credentials=True, allow_headers=["Content-Type", "Authorization", "X-Workspace-Id"])
     app.config["REFRESH_RUNTIME_SERVICES"] = refresh_runtime_services
     app.config["REFRESH_PLATFORM_CONNECTOR"] = refresh_platform_connector

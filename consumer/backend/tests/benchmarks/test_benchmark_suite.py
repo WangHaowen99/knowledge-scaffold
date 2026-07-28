@@ -718,7 +718,6 @@ def parse_acp_sse_stream(response_text: str) -> dict:
 
     first_event_ts = None
     first_answer_ts = None
-    last_event_ts = None
 
     script_stats: dict[str, dict] = {}
     script_call_details: list[dict] = []
@@ -730,7 +729,6 @@ def parse_acp_sse_stream(response_text: str) -> dict:
         event_ts = data.get("ts") or time.time() * 1000
         if first_event_ts is None:
             first_event_ts = event_ts
-        last_event_ts = event_ts
 
         if event_name in ("run.created", "run.started"):
             run_id = data.get("run_id") or run_id
@@ -967,7 +965,7 @@ def parse_acp_sse_stream(response_text: str) -> dict:
     }
 
 
-def _consume_sse_stream(resp: requests.Response, read_timeout: int = 180) -> str:
+def _consume_sse_stream(resp: requests.Response) -> str:
     terminal_events = {"run.completed", "run.failed", "run.awaiting"}
     buf = ""
     current_event = ""
@@ -1226,7 +1224,6 @@ def parse_sse_stream(response_text: str) -> dict:
     first_token_ts = None
     first_token_latency = 0.0
     token_segments: list[list[int]] = [[]]
-    last_event_ts = None
 
     lines = response_text.split("\n")
     i = 0
@@ -1260,8 +1257,6 @@ def parse_sse_stream(response_text: str) -> dict:
                     status = payload.get("status", "")
                     if status == "error":
                         error = payload.get("error", "unknown error")
-                    if event_ts:
-                        last_event_ts = event_ts
 
                 elif event_type == "iteration.completed":
                     llm_call_count += 1
@@ -1384,8 +1379,6 @@ def parse_sse_stream(response_text: str) -> dict:
 
                 elif event_type == "dag_performance":
                     dag_perf = payload
-                    if event_ts:
-                        last_event_ts = event_ts
             else:
                 i += 1
         else:
@@ -2503,14 +2496,14 @@ def _analyze_think_process(run_ids: list[str], log_baseline: int):
             "clean": False,
         }
 
-    for idx, (linenum, line) in enumerate(lines):
+    for idx, (_, line) in enumerate(lines):
         for rid in run_ids:
             if f"run={rid}" not in line:
                 continue
             if "executor:execute:1130" in line and "[最终输出]" in line:
                 collected = []
                 for j in range(idx, min(idx + 80, len(lines))):
-                    ln, text = lines[j]
+                    _, text = lines[j]
                     if j > idx and ("executor:execute:" in text or "app.api.consume" in text or "app.agent.nodes" in text):
                         break
                     collected.append(text)
@@ -4095,13 +4088,6 @@ def run_tests():
     print(f"\n--- 7、knowledge_graph_tool 返回中文检测 ---")
     print(f"    本次实际使用: Unicode CJK 字符范围扫描 (U+4E00-U+9FFF), 统计 JSON 键值中的中文字符占比")
     if kg_chinese_log:
-        total_kg_calls = sum(
-            1 for entry in chinese_intrusion_log
-            if any(
-                d.get("name") == "knowledge_graph_tool.py"
-                for d in global_script_run_details.get("knowledge_graph_tool.py", [])
-            )
-        )
         total_kg_runs = len(kg_chinese_log)
         all_kg_keys: list[str] = []
         all_kg_values: list[str] = []

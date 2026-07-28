@@ -36,17 +36,12 @@ from workspace.workspaces import (
 )
 from .jiuwen.common import (
     JiuwenBackendUnavailable,
-    coerce_optional_int as _coerce_optional_int,
     format_jiuwen_import_error as _format_jiuwen_import_error,
-    normalize_arguments as _normalize_arguments,
-    object_to_dict as _object_to_dict,
     read_field as _read_field,
     to_mapping as _to_mapping,
 )
 from .jiuwen.patches import patch_jiuwen_openai_reasoning_alias as _patch_jiuwen_openai_reasoning_alias
 from .jiuwen.tools import (
-    CurrentRuntimeToolAdapter,
-    apply_tool_batch_result_to_state,
     clear_jiuwen_pending_assistant_context as _clear_jiuwen_pending_assistant_context,
     first_tool_message_content as _first_tool_message_content,
     build_jiuwen_agent_resource_id as _build_jiuwen_agent_resource_id,
