@@ -119,6 +119,7 @@ def test_background_task_enters_workspace_and_app_context(monkeypatch):
     def run_impl(**kwargs):
         assert kwargs["workspace_id"] == "ws-1"
         assert entered["workspace"] == "ws-1"
+        assert kwargs["user_context"]["supports_user_interaction"] is False
         entered["app_name"] = current_app.name
         yield {"event": "agent.v2", "data": {"run_id": kwargs["requested_run_id"]}}
 

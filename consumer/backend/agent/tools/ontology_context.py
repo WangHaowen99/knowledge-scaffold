@@ -21,6 +21,54 @@ from utils.read_docs import build_read_document_record, normalize_read_documents
 
 logger = get_logger("tools.ontology_context")
 
+_TREASURY_MANAGEMENT_CUES = (
+    "多银行账户",
+    "集团内",
+    "集团账户",
+    "资金归集",
+    "资金调度",
+    "银企直连",
+    "全景可视",
+    "财务成本",
+    "资金成本",
+    "财资管理云",
+    "资金池",
+)
+
+_FEE_COLLECTION_CUES = (
+    "费用收缴",
+    "批量费用收缴",
+    "校服",
+    "学杂费",
+    "缴费",
+    "家长",
+    "学生",
+)
+
+_TREASURY_MANAGEMENT_CUES_UNICODE = (
+    "\u591a\u94f6\u884c\u8d26\u6237",
+    "\u96c6\u56e2\u5185",
+    "\u96c6\u56e2\u8d26\u6237",
+    "\u8d44\u91d1\u5f52\u96c6",
+    "\u8d44\u91d1\u8c03\u5ea6",
+    "\u94f6\u4f01\u76f4\u8fde",
+    "\u5168\u666f\u53ef\u89c6",
+    "\u8d22\u52a1\u6210\u672c",
+    "\u8d44\u91d1\u6210\u672c",
+    "\u8d22\u8d44\u7ba1\u7406\u4e91",
+    "\u8d44\u91d1\u6c60",
+)
+
+_FEE_COLLECTION_CUES_UNICODE = (
+    "\u8d39\u7528\u6536\u7f34",
+    "\u6279\u91cf\u8d39\u7528\u6536\u7f34",
+    "\u6821\u670d",
+    "\u5b66\u6742\u8d39",
+    "\u7f34\u8d39",
+    "\u5bb6\u957f",
+    "\u5b66\u751f",
+)
+
 
 @dataclass(frozen=True)
 class _OntologyContextResult:
@@ -210,6 +258,48 @@ def _build_markdown_result(
     )
 
 
+def _latest_user_message_content(messages: list[Dict[str, Any]] | None) -> str:
+    for message in reversed(list(messages or [])):
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role") or "").strip() != "user":
+            continue
+        return str(message.get("content") or "").strip()
+    return ""
+
+
+def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
+    normalized = str(text or "")
+    return any(phrase in normalized for phrase in phrases)
+
+
+def _build_noninteractive_operation_notice(
+    *,
+    args: Dict[str, Any],
+    context: ToolContext,
+    content: str,
+) -> str | None:
+    if context.supports_user_interaction:
+        return None
+    if str(args.get("resource") or "").strip() != "operation":
+        return None
+    current_request = _latest_user_message_content(context.messages)
+    if not current_request:
+        return None
+    if not _contains_any(current_request, _TREASURY_MANAGEMENT_CUES_UNICODE):
+        return None
+    if not _contains_any(content, _FEE_COLLECTION_CUES_UNICODE):
+        return None
+    return (
+        "operation_key: {key}\n"
+        "applicability: NOT_APPLICABLE\n"
+        "reason: The current request is about group treasury / multi-bank account centralized management, "
+        "while this operation is limited to batch fee-collection scenarios such as school-uniform or tuition payments.\n"
+        "instruction: Do NOT execute or summarize this operation. Treat it as no suitable operation match. "
+        "For non-interactive consultation or recommendation requests, answer directly using business knowledge instead."
+    ).format(key=str(args.get("key") or "").strip() or "<unknown>")
+
+
 @dataclass(frozen=True)
 class OntologyContextTool:
     name: str = "ontology_context"
@@ -242,6 +332,13 @@ class OntologyContextTool:
             workspace_id=context.workspace_id,
         )
         content = result.content
+        notice = _build_noninteractive_operation_notice(
+            args=args,
+            context=context,
+            content=content,
+        )
+        if notice:
+            content = notice
         state_updates: Dict[str, Any] = {}
         resolved_args = dict(args)
         if result.resolved_key and str(args.get("resource") or "").strip() == "object":

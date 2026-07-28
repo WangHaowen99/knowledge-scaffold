@@ -7,6 +7,7 @@ import uuid
 from contextlib import nullcontext
 from typing import Any, Dict, Optional
 
+from agent.core.shared.interaction_policy import set_user_interaction_capability
 from persistence.run_store import RunStatus
 from utils.identifiers import validate_session_id
 from utils.logging import get_logger
@@ -131,6 +132,7 @@ class A2ATaskService:
         context: Dict[str, Any],
     ) -> None:
         try:
+            context = set_user_interaction_capability(context, supported=False)
             app_context = self.flask_app.app_context() if self.flask_app is not None else nullcontext()
             with app_context:
                 with workspace_scope(self.workspace_id):

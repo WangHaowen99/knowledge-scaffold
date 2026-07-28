@@ -15,7 +15,9 @@ from typing import Any, Dict, Generator, List, Optional, Tuple
 from flask import Blueprint, Response, abort, g, jsonify, make_response, request
 
 from agent.core.orchestrator import AgenticOrchestrator
+from agent.core.shared.interaction_policy import set_user_interaction_capability
 from api.auth.auth import get_current_user, require_auth
+from api.final_output import coerce_final_output_to_text
 from persistence.run_store import RunStatus as StoreRunStatus
 from utils.identifiers import validate_session_id
 from utils.logging import bind_log_context, get_logger
@@ -341,6 +343,29 @@ def _build_agent_message(text: str, metadata: Optional[Dict] = None) -> Dict:
     }
 
 
+def _build_await_response(awaiting_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(awaiting_data, dict):
+        return None
+    interaction = awaiting_data.get("interaction")
+    if not isinstance(interaction, dict):
+        interaction = {}
+    await_id = str(
+        awaiting_data.get("tool_call_id")
+        or interaction.get("tool_call_id")
+        or interaction.get("id")
+        or ""
+    ).strip()
+    question = str(awaiting_data.get("question") or "").strip()
+    if not await_id and not question:
+        return None
+    return {
+        "await_id": await_id,
+        "message": _build_agent_message(question),
+        "options": awaiting_data.get("options") or None,
+        "timeout": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Runtime config: suppress patterns
 # ---------------------------------------------------------------------------
@@ -574,7 +599,10 @@ def create_run():
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     user_lang = payload.get("lang")
-    user_context = dict(payload.get("context") or {})
+    user_context = set_user_interaction_capability(
+        dict(payload.get("context") or {}),
+        supported=True,
+    )
     current_user = get_current_user()
 
     with bind_log_context(workspace_id=workspace_id, run_id=run_id, session_id=session_id):
@@ -663,7 +691,10 @@ def execute_run(run_id: str):
     workspace_id = entry["workspace_id"]
     session_id = entry["session_id"]
     user_query = entry["user_query"]
-    user_context = dict(entry.get("user_context") or {})
+    user_context = set_user_interaction_capability(
+        dict(entry.get("user_context") or {}),
+        supported=True,
+    )
     user_lang = entry.get("lang")
     current_user = get_current_user()
 
@@ -687,6 +718,7 @@ def execute_run(run_id: str):
                 final_answer = ""
                 final_status = RunStatus.COMPLETED
                 error_msg = None
+                awaiting_data = None
 
                 for orch_event in orch.run(
                     user_request=user_query,
@@ -716,9 +748,9 @@ def execute_run(run_id: str):
                     elif evt_type == "turn.finished":
                         status = evt_payload.get("status", "")
                         if status == "success":
-                            fo = evt_payload.get("final_output")
-                            if fo and isinstance(fo, str):
-                                final_answer = fo
+                            final_answer = coerce_final_output_to_text(
+                                evt_payload.get("final_output")
+                            )
                         elif status == "error":
                             final_status = RunStatus.FAILED
                             error_msg = evt_payload.get("error", "Turn failed")
@@ -728,20 +760,32 @@ def execute_run(run_id: str):
                                 evt_payload.get("final_output"),
                                 run_id=run_id,
                             )
+                            if not final_answer:
+                                final_answer = coerce_final_output_to_text(
+                                    evt_payload.get("final_output")
+                                )
 
                 # 更新 registry
-                agent_msg = _build_agent_message(final_answer)
-                entry["messages"].append(agent_msg)
+                messages = []
+                if final_answer:
+                    agent_msg = _build_agent_message(final_answer)
+                    entry["messages"].append(agent_msg)
+                    messages.append(agent_msg)
                 entry["status"] = final_status
                 entry["error"] = error_msg
+                if awaiting_data:
+                    entry["awaiting"] = awaiting_data
+                else:
+                    entry.pop("awaiting", None)
                 _persist_to_runstore(run_id, entry)
 
                 result = RunResponse(
                     run_id=run_id,
                     status=final_status,
-                    messages=[agent_msg],
+                    messages=messages,
                     created_at=entry["created_at"],
                     updated_at=datetime.now(timezone.utc),
+                    awaiting=_build_await_response(awaiting_data),
                     error=error_msg,
                 )
 
@@ -908,7 +952,10 @@ def execute_stream():
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     user_lang = payload.get("lang")
-    user_context = dict(payload.get("context") or {})
+    user_context = set_user_interaction_capability(
+        dict(payload.get("context") or {}),
+        supported=True,
+    )
     current_user = get_current_user()
 
     if user_lang:
@@ -978,7 +1025,10 @@ def respond_to_await(run_id: str):
     if not user_response:
         user_response = payload.get("response_text", "")
 
-    user_context = dict(entry.get("user_context") or {})
+    user_context = set_user_interaction_capability(
+        dict(entry.get("user_context") or {}),
+        supported=True,
+    )
     user_context["interaction_response"] = {
         "interaction_id": payload.get("await_id", ""),
         "value": user_response,
@@ -1002,6 +1052,7 @@ def respond_to_await(run_id: str):
                 final_answer = ""
                 final_status = RunStatus.COMPLETED
                 error_msg = None
+                awaiting_data = None
 
                 for orch_event in orch.run(
                     user_request=user_response,
@@ -1031,9 +1082,9 @@ def respond_to_await(run_id: str):
                     elif evt_type == "turn.finished":
                         status = evt_payload.get("status", "")
                         if status == "success":
-                            fo = evt_payload.get("final_output")
-                            if fo and isinstance(fo, str):
-                                final_answer = fo
+                            final_answer = coerce_final_output_to_text(
+                                evt_payload.get("final_output")
+                            )
                         elif status == "error":
                             final_status = RunStatus.FAILED
                             error_msg = evt_payload.get("error", "Turn failed")
@@ -1043,19 +1094,31 @@ def respond_to_await(run_id: str):
                                 evt_payload.get("final_output"),
                                 run_id=run_id,
                             )
+                            if not final_answer:
+                                final_answer = coerce_final_output_to_text(
+                                    evt_payload.get("final_output")
+                                )
 
-                agent_msg = _build_agent_message(final_answer)
-                entry["messages"].append(agent_msg)
+                messages = []
+                if final_answer:
+                    agent_msg = _build_agent_message(final_answer)
+                    entry["messages"].append(agent_msg)
+                    messages.append(agent_msg)
                 entry["status"] = final_status
                 entry["error"] = error_msg
+                if awaiting_data:
+                    entry["awaiting"] = awaiting_data
+                else:
+                    entry.pop("awaiting", None)
                 _persist_to_runstore(run_id, entry)
 
                 result = RunResponse(
                     run_id=run_id,
                     status=final_status,
-                    messages=[agent_msg],
+                    messages=messages,
                     created_at=entry["created_at"],
                     updated_at=datetime.now(timezone.utc),
+                    awaiting=_build_await_response(awaiting_data),
                     error=error_msg,
                 )
 
@@ -1100,7 +1163,10 @@ def interact_stream(run_id: str):
     if not user_response:
         user_response = payload.get("response_text", "")
 
-    user_context = dict(entry.get("user_context") or {})
+    user_context = set_user_interaction_capability(
+        dict(entry.get("user_context") or {}),
+        supported=True,
+    )
     user_context["interaction_response"] = {
         "interaction_id": payload.get("await_id", ""),
         "value": user_response,

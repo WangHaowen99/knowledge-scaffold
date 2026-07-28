@@ -90,6 +90,15 @@ def test_universal_prompt_keeps_tool_usage_rules_general():
     assert "### execute_script" not in prompt
 
 
+def test_universal_prompt_disables_user_interaction_rules_for_non_interactive_runs():
+    prompt = build_universal_system_prompt(allow_user_interaction=False)
+
+    assert "Never call `request_user_interaction`." in prompt
+    assert "consultation, recommendation, explanation, comparison, or solution-advice requests" in prompt
+    assert "do not invent missing identifiers, parameters, or user decisions" in prompt
+    assert "call `request_user_interaction` with `type=\"input\"`" not in prompt
+
+
 def test_universal_prompt_does_not_include_web_search_tool_specific_rules():
     signature = inspect.signature(build_universal_system_prompt)
     prompt = build_universal_system_prompt()
