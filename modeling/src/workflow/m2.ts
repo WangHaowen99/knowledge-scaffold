@@ -81,7 +81,7 @@ function finalizeInterviewStep(projectId: string, nodeId: string, cap: Interview
   }
   // agent 未出题也未结束：只有已经问过至少一批时才宽容地视为结束；
   // 一批都没问过就"完成"是伪成功（实测：模型把题目写成正文），必须显式失败可重试
-  if (repo.listBatches(projectId).length > 0) {
+  if (repo.listBatches(projectId).some((batch) => batch.nodeId === nodeId)) {
     upsertNode({ id: nodeId, projectId, type: 'interview', status: 'done', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
     return { nodeId, batch: null, finished: true };
   }

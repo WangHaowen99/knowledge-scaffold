@@ -4,7 +4,7 @@ import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { createProject, getProject, listProjects, setStage } from './projects/repo.js';
 import { insertDocument, listDocuments, getDocument, deleteDocument } from './documents/repo.js';
 import { kindOf, parseDocument } from './documents/parser.js';
-import { listNodes, runAnalyze, upsertNode } from './workflow/engine.js';
+import { latestNodeOf, listNodes, runAnalyze, upsertNode } from './workflow/engine.js';
 import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
@@ -244,7 +244,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return withLock(`${p.id}:analyze`, reply, async () => {
       try {
         const { node, analysis } = await runAnalyze(p.id, tables, textDocs);
-        setStage(p.id, 'analyze');
+        // 重跑早期节点不能让已到达的项目阶段倒退。
+        setProjectStage(p.id, 'analyze');
         // 领域分析完成即生成「领域问题」候选（勾选后驱动包生成）；失败不阻断分析结果
         let domainQuestions: unknown[] = [];
         try {
@@ -283,7 +284,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const tables: DataDictTable[] = docs.flatMap((d) => d.tables ?? []);
       const textDocs = docs.filter((d) => d.textContent).map((d) => ({ filename: d.filename, textContent: d.textContent }));
       // stale（资料变更后）也返回旧分析——结果仍可用，由前端提示重跑
-      const analyzeNode = listNodes(p.id).find((n) => n.type === 'analyze' && ['done', 'stale'].includes(n.status));
+      const analyzeNode = latestNodeOf(listNodes(p.id), 'analyze', ['done', 'stale']);
       return { p, ctx: { tables, documents: textDocs }, analysis: analyzeNode?.output };
     };
 
@@ -346,6 +347,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       return withLock(`${c.p.id}:generate`, reply, async () => {
+      const interviewNode = latestNodeOf(listNodes(c.p.id), 'interview');
+      if (interviewNode?.status !== 'done') {
+        return reply.code(400).send({ error: '请先基于最新领域分析重新完成知识萃取访谈' });
+      }
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected);
       if (selected.length < 5) return reply.code(400).send({ error: '请先在胜任力问题中至少勾选 5 条' });
       try {

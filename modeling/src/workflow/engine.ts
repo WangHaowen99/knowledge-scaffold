@@ -28,6 +28,17 @@ export function listNodes(projectId: string): WorkflowNode[] {
   return rows.map(rowToNode);
 }
 
+export function latestNodeOf(
+  nodes: WorkflowNode[],
+  type: NodeType,
+  statuses?: NodeStatus[],
+): WorkflowNode | undefined {
+  return nodes.reduce<WorkflowNode | undefined>((latest, node) => {
+    if (node.type !== type || (statuses && !statuses.includes(node.status))) return latest;
+    return !latest || node.ordinal > latest.ordinal ? node : latest;
+  }, undefined);
+}
+
 export function getNode(id: string): WorkflowNode | null {
   const db = getDb();
   const r = db.prepare('SELECT * FROM wf_nodes WHERE id = ?').get(id);
