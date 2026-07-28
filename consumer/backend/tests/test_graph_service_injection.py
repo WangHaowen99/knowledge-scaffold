@@ -13,11 +13,13 @@ from agent.tools.business_data.service import (
 
 class _CapturingProvider:
     configs: list[object] = []
+    queries: list[str] = []
 
     def __init__(self, config: object) -> None:
         self.configs.append(config)
 
     def search_stream(self, *, query: str, entity: str):
+        self.queries.append(query)
         yield {"type": "final", "content": "{}:{}".format(entity, query)}
 
 
@@ -71,6 +73,7 @@ def test_service_overrides_persisted_graph_scope_with_request_scope(monkeypatch,
 
 def test_service_does_not_forward_graph_trace_metadata_to_other_providers(monkeypatch):
     _CapturingProvider.configs.clear()
+    _CapturingProvider.queries.clear()
     monkeypatch.setattr(
         "agent.tools.business_data.service.get_provider_spec",
         lambda _provider: SimpleNamespace(factory=_CapturingProvider),
@@ -97,6 +100,84 @@ def test_service_does_not_forward_graph_trace_metadata_to_other_providers(monkey
     assert effective_connection.endpoint == "https://dataagent.example"
     assert "run_id" not in effective_connection.options
     assert "parent_span_key" not in effective_connection.options
+
+
+def test_service_appends_field_alias_mappings_only_for_mindsdb(monkeypatch):
+    _CapturingProvider.configs.clear()
+    _CapturingProvider.queries.clear()
+    monkeypatch.setattr(
+        "agent.tools.business_data.service.get_provider_spec",
+        lambda _provider: SimpleNamespace(factory=_CapturingProvider),
+    )
+    request = BusinessDataSearchRequest(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        entity="AffectedObject",
+        query="查询变更单号对应的物料变更类型",
+        field_alias_mappings=(
+            ("物料变更类型", "MaterialType"),
+            ("变更单号", "CHANGE_ORDER_ID"),
+        ),
+    )
+
+    mindsdb_connection = ResolvedBusinessDataSource(
+        ontology_id="ontology-a",
+        provider="mindsdb",
+        config={"url": "https://mindsdb.example"},
+    )
+    list(query_business_data_stream(request, connection=mindsdb_connection))
+
+    expected_query = (
+        "查询变更单号对应的物料变更类型\n\n"
+        "字段映射（使用右侧正式字段 key）：\n"
+        "- 变更单号 -> CHANGE_ORDER_ID\n"
+        "- 物料变更类型 -> MaterialType"
+    )
+    assert _CapturingProvider.queries == [expected_query]
+
+    _CapturingProvider.queries.clear()
+    dataagent_connection = ResolvedBusinessDataSource(
+        ontology_id="ontology-a",
+        provider="dataagent",
+        config={"url": "https://dataagent.example"},
+    )
+    list(query_business_data_stream(request, connection=dataagent_connection))
+
+    assert _CapturingProvider.queries == ["查询变更单号对应的物料变更类型"]
+
+
+def test_service_field_alias_mapping_sort_uses_original_text_as_tiebreaker(
+    monkeypatch,
+):
+    _CapturingProvider.queries.clear()
+    monkeypatch.setattr(
+        "agent.tools.business_data.service.get_provider_spec",
+        lambda _provider: SimpleNamespace(factory=_CapturingProvider),
+    )
+    request = BusinessDataSearchRequest(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        entity="AffectedObject",
+        query="查询 Straße 和 STRASSE",
+        field_alias_mappings=(
+            ("Straße", "StreetCode"),
+            ("STRASSE", "StreetCode"),
+        ),
+    )
+    connection = ResolvedBusinessDataSource(
+        ontology_id="ontology-a",
+        provider="mindsdb",
+        config={"url": "https://mindsdb.example"},
+    )
+
+    list(query_business_data_stream(request, connection=connection))
+
+    assert _CapturingProvider.queries == [
+        "查询 Straße 和 STRASSE\n\n"
+        "字段映射（使用右侧正式字段 key）：\n"
+        "- STRASSE -> StreetCode\n"
+        "- Straße -> StreetCode"
+    ]
 
 
 def test_request_positional_construction_keeps_runtime_context_slot():

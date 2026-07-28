@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Set, Tuple
 
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.tools.business_data.resolver import (
@@ -23,6 +23,7 @@ from ontology.ontology_catalog import (
     ObjectDataMappingStatus,
     ObjectReferenceStatus,
     find_exact_object_data_mapping_result,
+    find_field_alias_matches,
     get_ontology_manifest,
     resolve_object_reference_result,
 )
@@ -90,6 +91,7 @@ def handle_business_data_search(
     tool_call_id: Optional[str] = None,
     provider_runtime_context: Optional[Mapping[str, Any]] = None,
     _resolved_connection: Optional[ResolvedBusinessDataSource] = None,
+    _field_alias_mappings: Optional[Tuple[Tuple[str, str], ...]] = None,
     *,
     ontology_version: Optional[str] = None,
 ) -> str:
@@ -148,6 +150,7 @@ def handle_business_data_search(
             ontology_id=normalized_ontology_id,
             entity=normalized_entity,
             query=normalized_query,
+            field_alias_mappings=tuple(_field_alias_mappings or ()),
             ontology_version=str(ontology_version or "").strip(),
             provider_runtime_context=dict(provider_runtime_context or {}),
         )
@@ -273,6 +276,7 @@ class BusinessDataSearchTool:
     ) -> ToolOutcome:
         normalized_args = dict(args)
         normalized_args.pop("_resolved_connection", None)
+        normalized_args.pop("_field_alias_mappings", None)
         normalized_entity = str(normalized_args.get("entity") or "").strip()
         normalized_query = str(normalized_args.get("query") or "").strip()
         if not normalized_entity:
@@ -331,6 +335,14 @@ class BusinessDataSearchTool:
             resolution.object_key if resolution is not None else normalized_entity
         )
         normalized_args["entity"] = resolved_entity
+        field_alias_mappings: Tuple[Tuple[str, str], ...] = ()
+        resolution_path = getattr(resolution, "path", None)
+        if resolution_path is not None:
+            field_alias_mappings = find_field_alias_matches(
+                Path(resolution_path),
+                normalized_query,
+            )
+        normalized_args["_field_alias_mappings"] = field_alias_mappings
         if graph_fallback_connection is not None:
             normalized_args["_resolved_connection"] = graph_fallback_connection
 

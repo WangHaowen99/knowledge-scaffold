@@ -48,8 +48,59 @@ _OBJECT_KEY_HEADERS = ("object key", "object_key", "key", "中文名称")
 _OBJECT_TITLE_HEADERS = ("标题", "title")
 _OBJECT_ALIAS_HEADERS = ("别名", "aliases", "alias")
 _OBJECT_ALIAS_SPLIT_RE = re.compile(r"[,，、;/；]")
+_FIELD_KEY_HEADERS = ("字段 key", "field key", "field_key", "key", "英文名称")
+_FIELD_TITLE_HEADERS = (
+    "中文名",
+    "中文名称",
+    "字段名称",
+    "显示名称",
+    "title",
+    "name",
+)
+_FIELD_ALIAS_HEADERS = ("别名", "aliases", "alias", "属性别名")
+_FIELD_SECTION_TITLES = frozenset(
+    {
+        "字段",
+        "字段定义",
+        "字段清单",
+        "对象字段",
+        "对象字段定义",
+        "对象字段清单",
+        "实体字段",
+        "实体字段定义",
+        "实体字段清单",
+        "属性",
+        "属性定义",
+        "属性清单",
+        "对象属性",
+        "对象属性定义",
+        "对象属性清单",
+        "实体属性",
+        "实体属性定义",
+        "实体属性清单",
+        "field",
+        "fields",
+        "fielddefinition",
+        "fielddefinitions",
+        "fieldlist",
+        "attribute",
+        "attributes",
+        "attributedefinition",
+        "attributedefinitions",
+        "attributelist",
+        "properties",
+        "propertylist",
+    }
+)
+_FIELD_ALIAS_SPLIT_RE = re.compile(r"[,，、;；]")
 _MARKDOWN_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-+:?$")
+_FIELD_SECTION_HEADING_RE = re.compile(
+    r"^[ \t]{0,3}(#{1,6})[ \t]+(.+?)[ \t]*$"
+)
+_FIELD_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 _OBJECT_CANONICAL_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_FIELD_ALIAS_QUERY_LIMIT = 20
+_FIELD_REFERENCE_TEXT_LIMIT = 128
 
 
 @dataclass(frozen=True)
@@ -64,6 +115,19 @@ class ObjectReferenceResolution:
 class ObjectAliasValidationResult:
     errors: Tuple[str, ...] = ()
     warnings: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FieldAliasValidationResult:
+    errors: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FieldReferenceResolution:
+    requested_name: str
+    field_key: str
+    matched_by: str
 
 
 class ObjectReferenceStatus(str, Enum):
@@ -126,6 +190,20 @@ class _ObjectDefinition:
 class _ObjectReferenceIndex:
     definitions: Tuple[_ObjectDefinition, ...]
     matches_by_kind: Dict[str, Dict[str, Tuple[_ObjectDefinition, ...]]]
+
+
+@dataclass(frozen=True)
+class _FieldDefinition:
+    key: str
+    title: str
+    aliases: Tuple[str, ...]
+    raw_aliases: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _FieldReferenceIndex:
+    definitions: Tuple[_FieldDefinition, ...]
+    matches_by_kind: Dict[str, Dict[str, Tuple[_FieldDefinition, ...]]]
 
 
 class _ObjectCatalogReadError(RuntimeError):
@@ -508,6 +586,118 @@ def _split_object_alias_tokens(value: Any) -> Tuple[str, ...]:
     return tuple(item.strip() for item in _OBJECT_ALIAS_SPLIT_RE.split(text))
 
 
+def split_field_aliases(value: Any) -> List[str]:
+    return [
+        alias
+        for alias in _split_field_alias_tokens(value)
+        if alias
+    ]
+
+
+def resolve_field_reference(
+    object_path: Path,
+    requested_name: str,
+) -> Tuple[Optional[FieldReferenceResolution], Optional[str]]:
+    requested = str(requested_name or "").strip()
+    if not requested:
+        return None, "Error: field reference is required."
+    try:
+        index = _load_field_reference_index(Path(object_path))
+    except (OSError, UnicodeDecodeError):
+        return None, "Error: failed to read object field definitions."
+
+    compare = normalize_object_identifier(requested)
+    for matched_by in ("key", "title", "alias"):
+        matches = index.matches_by_kind[matched_by].get(compare, ())
+        if not matches:
+            continue
+        field_keys = sorted(
+            {item.key for item in matches},
+            key=lambda item: (normalize_object_identifier(item), item),
+        )
+        if len(field_keys) > 1:
+            return None, (
+                "Error: field reference '{}' is ambiguous. "
+                "Candidate field keys: {}."
+            ).format(requested, ", ".join(field_keys))
+        return FieldReferenceResolution(
+            requested_name=requested,
+            field_key=field_keys[0],
+            matched_by=matched_by,
+        ), None
+    return None, "Field reference '{}' was not found.".format(requested)
+
+
+def find_field_alias_matches(
+    object_path: Path,
+    query: str,
+    *,
+    limit: int = _FIELD_ALIAS_QUERY_LIMIT,
+) -> Tuple[Tuple[str, str], ...]:
+    normalized_query = unicodedata.normalize("NFC", str(query or "").strip())
+    if not normalized_query:
+        return ()
+    try:
+        index = _load_field_reference_index(Path(object_path))
+    except (OSError, UnicodeDecodeError):
+        return ()
+
+    candidates: List[Tuple[int, int, str, str]] = []
+    for definition in index.definitions:
+        if not definition.key:
+            continue
+        for name in (definition.title, *definition.aliases):
+            display_name = str(name or "").strip()
+            if (
+                not display_name
+                or len(display_name) > _FIELD_REFERENCE_TEXT_LIMIT
+                or len(definition.key) > _FIELD_REFERENCE_TEXT_LIMIT
+                or normalize_object_identifier(display_name)
+                == normalize_object_identifier(definition.key)
+            ):
+                continue
+            compare = normalize_object_identifier(display_name)
+            identifier_keys = _field_identifier_keys(index, compare)
+            if len(identifier_keys) != 1:
+                continue
+            for start, end in _query_field_name_spans(
+                normalized_query,
+                display_name,
+            ):
+                candidates.append(
+                    (start, end, display_name, definition.key)
+                )
+
+    matches: Set[Tuple[str, str]] = set()
+    selected_spans: List[Tuple[int, int]] = []
+    for start, end, display_name, field_key in sorted(
+        candidates,
+        key=lambda item: (
+            -(item[1] - item[0]),
+            item[0],
+            normalize_object_identifier(item[2]),
+            normalize_object_identifier(item[3]),
+        ),
+    ):
+        if any(
+            selected_start <= start and end <= selected_end
+            for selected_start, selected_end in selected_spans
+        ):
+            continue
+        selected_spans.append((start, end))
+        matches.add((display_name, field_key))
+
+    return tuple(
+        sorted(
+            matches,
+            key=lambda item: (
+                normalize_object_identifier(item[1]),
+                normalize_object_identifier(item[0]),
+            ),
+        )[: max(0, int(limit))]
+    )
+
+
 def resolve_object_reference(
     ontology_dir: Path,
     requested_key: str,
@@ -672,6 +862,105 @@ def _build_object_reference_matches(
     }
 
 
+def _load_field_reference_index(object_path: Path) -> _FieldReferenceIndex:
+    path = Path(object_path).resolve()
+    stat_result = path.stat()
+    return _load_field_reference_index_cached(
+        str(path),
+        stat_result.st_mtime_ns,
+        stat_result.st_size,
+    )
+
+
+@lru_cache(maxsize=128)
+def _load_field_reference_index_cached(
+    object_path: str,
+    modified_ns: int,
+    size: int,
+) -> _FieldReferenceIndex:
+    del modified_ns, size
+    definitions, _has_alias_column, _object_name = _load_field_definitions(
+        Path(object_path)
+    )
+    return _FieldReferenceIndex(
+        definitions=definitions,
+        matches_by_kind=_build_field_reference_matches(definitions),
+    )
+
+
+def _build_field_reference_matches(
+    definitions: Tuple[_FieldDefinition, ...],
+) -> Dict[str, Dict[str, Tuple[_FieldDefinition, ...]]]:
+    mutable: Dict[str, Dict[str, List[_FieldDefinition]]] = {
+        kind: {}
+        for kind in ("key", "title", "alias")
+    }
+
+    def add(kind: str, value: str, definition: _FieldDefinition) -> None:
+        compare = normalize_object_identifier(value)
+        if compare:
+            mutable[kind].setdefault(compare, []).append(definition)
+
+    for definition in definitions:
+        if not definition.key:
+            continue
+        add("key", definition.key, definition)
+        add("title", definition.title, definition)
+        for alias in definition.aliases:
+            add("alias", alias, definition)
+
+    return {
+        kind: {
+            compare: tuple(_dedupe_field_definitions(matches))
+            for compare, matches in by_identifier.items()
+        }
+        for kind, by_identifier in mutable.items()
+    }
+
+
+def _field_identifier_keys(
+    index: _FieldReferenceIndex,
+    compare: str,
+) -> Set[str]:
+    return {
+        definition.key
+        for matched_by in ("key", "title", "alias")
+        for definition in index.matches_by_kind[matched_by].get(compare, ())
+        if definition.key
+    }
+
+
+def _query_field_name_spans(
+    query: str,
+    field_name: str,
+) -> Tuple[Tuple[int, int], ...]:
+    normalized_name = unicodedata.normalize("NFC", str(field_name or "").strip())
+    if not normalized_name:
+        return ()
+    if normalized_name.isascii():
+        return tuple(
+            (match.start(), match.end())
+            for match in re.finditer(
+                r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])".format(
+                    re.escape(normalized_name)
+                ),
+                query,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    spans: List[Tuple[int, int]] = []
+    start = 0
+    while True:
+        match_start = query.find(normalized_name, start)
+        if match_start < 0:
+            break
+        match_end = match_start + len(normalized_name)
+        spans.append((match_start, match_end))
+        start = match_start + 1
+    return tuple(spans)
+
+
 def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
     root = Path(ontology_dir).resolve()
     objects_dir = root / "objects"
@@ -796,6 +1085,107 @@ def validate_object_aliases(ontology_dir: Path) -> ObjectAliasValidationResult:
     )
 
 
+def validate_field_aliases(ontology_dir: Path) -> FieldAliasValidationResult:
+    objects_dir = Path(ontology_dir).resolve() / "objects"
+    if not objects_dir.is_dir():
+        return FieldAliasValidationResult()
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    for path in sorted(objects_dir.glob("*.md"), key=lambda item: item.name.lower()):
+        if path.name.lower() == "index.md":
+            continue
+        try:
+            definitions, _has_alias_column, object_name = _load_field_definitions(path)
+        except UnicodeDecodeError:
+            errors.append("对象文件“{}”不是有效的 UTF-8 文本".format(path.name))
+            continue
+        except OSError:
+            errors.append("无法读取对象文件“{}”".format(path.name))
+            continue
+        if not definitions:
+            continue
+
+        keys_by_compare: Dict[str, List[_FieldDefinition]] = {}
+        claims_by_compare: Dict[str, List[Tuple[str, str, str]]] = {}
+        for definition in definitions:
+            if not definition.key:
+                if definition.title or definition.aliases:
+                    errors.append(
+                        "对象“{}”存在未填写字段 key 的字段定义".format(object_name)
+                    )
+                continue
+            key_compare = normalize_object_identifier(definition.key)
+            keys_by_compare.setdefault(key_compare, []).append(definition)
+            for kind, value in (
+                ("key", definition.key),
+                ("中文名", definition.title),
+            ):
+                compare = normalize_object_identifier(value)
+                if compare:
+                    claims_by_compare.setdefault(compare, []).append(
+                        (kind, value, definition.key)
+                    )
+            for alias in definition.aliases:
+                compare = normalize_object_identifier(alias)
+                if compare:
+                    claims_by_compare.setdefault(compare, []).append(
+                        ("别名", alias, definition.key)
+                    )
+
+            warnings.extend(
+                _duplicate_field_alias_warnings(
+                    object_name,
+                    definition.key,
+                    definition.raw_aliases,
+                )
+            )
+            if any(not alias for alias in definition.raw_aliases):
+                warnings.append(
+                    "对象“{}”的字段“{}”包含空别名".format(
+                        object_name,
+                        definition.key,
+                    )
+                )
+
+        for matches in keys_by_compare.values():
+            if len(matches) > 1:
+                errors.append(
+                    "对象“{}”的字段 key“{}”重复".format(
+                        object_name,
+                        matches[0].key,
+                    )
+                )
+
+        claim_priority = {"key": 0, "中文名": 1, "别名": 2}
+        for claims in claims_by_compare.values():
+            field_keys = sorted(
+                {claim[2] for claim in claims},
+                key=lambda item: (normalize_object_identifier(item), item),
+            )
+            if len(field_keys) <= 1:
+                continue
+            display_claim = min(
+                claims,
+                key=lambda claim: (
+                    claim_priority[claim[0]],
+                    normalize_object_identifier(claim[1]),
+                ),
+            )
+            errors.append(
+                "对象“{}”的字段名称“{}”同时指向 [{}]".format(
+                    object_name,
+                    display_claim[1],
+                    ", ".join(field_keys),
+                )
+            )
+
+    return FieldAliasValidationResult(
+        errors=tuple(sorted(set(errors))),
+        warnings=tuple(sorted(set(warnings))),
+    )
+
+
 def _load_object_catalog(
     ontology_dir: Path,
 ) -> Tuple[List[_ObjectCatalogEntry], bool, List[str]]:
@@ -915,6 +1305,263 @@ def _read_object_definition_frontmatter(path: Path) -> Dict[str, Any]:
             invalid_package=True,
         )
     return parsed
+
+
+def _load_field_definitions(
+    object_path: Path,
+) -> Tuple[Tuple[_FieldDefinition, ...], bool, str]:
+    markdown = Path(object_path).read_text(encoding="utf-8")
+    frontmatter, body = split_markdown_frontmatter(markdown)
+    object_name = str(
+        frontmatter.get("title")
+        or frontmatter.get("key")
+        or Path(object_path).stem
+    ).strip()
+
+    selected_headers, selected_rows = _parse_field_definition_table(body)
+    if not selected_headers:
+        return (), False, object_name
+
+    has_alias_column = _has_table_header(selected_headers, _FIELD_ALIAS_HEADERS)
+    definitions: List[_FieldDefinition] = []
+    for row in selected_rows:
+        field_key = _object_row_value(row, _FIELD_KEY_HEADERS)
+        title = _object_row_value(row, _FIELD_TITLE_HEADERS)
+        raw_aliases = (
+            _split_field_alias_tokens(
+                _object_row_value(row, _FIELD_ALIAS_HEADERS)
+            )
+            if has_alias_column
+            else ()
+        )
+        if not field_key and not title and not any(raw_aliases):
+            continue
+        definitions.append(
+            _FieldDefinition(
+                key=field_key,
+                title=title,
+                aliases=tuple(alias for alias in raw_aliases if alias),
+                raw_aliases=raw_aliases,
+            )
+        )
+    return tuple(definitions), has_alias_column, object_name
+
+
+def _split_field_alias_tokens(value: Any) -> Tuple[str, ...]:
+    text = str(value or "").strip()
+    if not text or text == "-":
+        return ()
+    return tuple(item.strip() for item in _FIELD_ALIAS_SPLIT_RE.split(text))
+
+
+def _parse_field_definition_table(
+    markdown: str,
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    for section_lines in _field_definition_sections(markdown):
+        parsed = _parse_first_field_table(section_lines)
+        if parsed is not None:
+            return parsed
+    return [], []
+
+
+def _field_definition_sections(markdown: str) -> List[List[str]]:
+    sections: List[List[str]] = []
+    current: Optional[List[str]] = None
+    section_level = 0
+    fence_char = ""
+    fence_length = 0
+    in_html_comment = False
+
+    for raw_line in str(markdown or "").splitlines():
+        stripped = raw_line.strip()
+        fence_match = _FIELD_FENCE_RE.match(raw_line)
+        if fence_char:
+            if fence_match:
+                marker = fence_match.group(1)
+                if (
+                    marker[0] == fence_char
+                    and len(marker) >= fence_length
+                    and not stripped[len(marker) :].strip()
+                ):
+                    fence_char = ""
+                    fence_length = 0
+            continue
+        if fence_match:
+            marker = fence_match.group(1)
+            fence_char = marker[0]
+            fence_length = len(marker)
+            continue
+
+        if in_html_comment:
+            if "-->" in stripped:
+                in_html_comment = False
+            continue
+        if stripped.startswith("<!--"):
+            if "-->" not in stripped[4:]:
+                in_html_comment = True
+            continue
+
+        heading_match = _FIELD_SECTION_HEADING_RE.match(raw_line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            if current is not None and level <= section_level:
+                sections.append(current)
+                current = None
+            if _is_field_section_title(heading_match.group(2)):
+                if current is not None:
+                    sections.append(current)
+                current = []
+                section_level = level
+            continue
+
+        if current is not None:
+            current.append(raw_line)
+
+    if current is not None:
+        sections.append(current)
+    return sections
+
+
+def _is_field_section_title(value: str) -> bool:
+    title = re.sub(r"[ \t]+#+[ \t]*$", "", str(value or "").strip())
+    title = re.sub(
+        r"^\d+(?:\.\d+)*[.)、:：-]?[ \t]*",
+        "",
+        title,
+    )
+    normalized = _normalize_table_header(title).replace("-", "").replace("_", "")
+    return normalized in _FIELD_SECTION_TITLES
+
+
+def _parse_first_field_table(
+    lines: List[str],
+) -> Optional[Tuple[List[str], List[Dict[str, str]]]]:
+    for index in range(0, len(lines) - 1):
+        raw_header = lines[index]
+        if _leading_markdown_indent(raw_header) >= 4:
+            continue
+        headers = _split_field_table_row(raw_header)
+        if not (
+            _has_table_header(headers, _FIELD_KEY_HEADERS)
+            and (
+                _has_table_header(headers, _FIELD_TITLE_HEADERS)
+                or _has_table_header(headers, _FIELD_ALIAS_HEADERS)
+            )
+        ):
+            continue
+
+        separator = _split_field_table_row(lines[index + 1])
+        if (
+            len(separator) != len(headers)
+            or not separator
+            or not all(
+                _MARKDOWN_TABLE_SEPARATOR_CELL_RE.fullmatch(
+                    cell.replace(" ", "")
+                )
+                for cell in separator
+            )
+        ):
+            continue
+
+        rows: List[Dict[str, str]] = []
+        header_uses_outer_pipe = raw_header.strip().startswith("|")
+        cursor = index + 2
+        while cursor < len(lines) and _is_field_table_data_row(
+            lines[cursor],
+            require_outer_pipe=header_uses_outer_pipe,
+        ):
+            cells = _split_field_table_row(lines[cursor])
+            normalized_cells = cells[: len(headers)]
+            normalized_cells.extend([""] * (len(headers) - len(normalized_cells)))
+            rows.append(
+                {
+                    headers[column]: normalized_cells[column]
+                    for column in range(len(headers))
+                }
+            )
+            cursor += 1
+        return headers, rows
+    return None
+
+
+def _is_field_table_data_row(
+    raw_line: str,
+    *,
+    require_outer_pipe: bool,
+) -> bool:
+    if _leading_markdown_indent(raw_line) >= 4:
+        return False
+    stripped = raw_line.strip()
+    if not stripped:
+        return False
+    if require_outer_pipe and not stripped.startswith("|"):
+        return False
+    if stripped.startswith(("#", ">", "<")):
+        return False
+    return _contains_unescaped_field_table_pipe(stripped)
+
+
+def _split_field_table_row(line: str) -> List[str]:
+    content = str(line or "").strip()
+    if not content:
+        return []
+    if content.startswith("|"):
+        content = content[1:]
+    if content.endswith("|") and not _is_escaped_field_table_char(
+        content,
+        len(content) - 1,
+    ):
+        content = content[:-1]
+
+    cells: List[str] = []
+    current: List[str] = []
+    index = 0
+    while index < len(content):
+        char = content[index]
+        if char == "\\" and index + 1 < len(content):
+            escaped = content[index + 1]
+            if escaped in {"\\", "|"}:
+                current.append(escaped)
+                index += 2
+                continue
+        if char == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _contains_unescaped_field_table_pipe(line: str) -> bool:
+    cursor = line.find("|")
+    while cursor >= 0:
+        if not _is_escaped_field_table_char(line, cursor):
+            return True
+        cursor = line.find("|", cursor + 1)
+    return False
+
+
+def _is_escaped_field_table_char(line: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and line[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
+def _leading_markdown_indent(line: str) -> int:
+    width = 0
+    for char in str(line or ""):
+        if char == " ":
+            width += 1
+        elif char == "\t":
+            width += 4 - (width % 4)
+        else:
+            break
+    return width
 
 
 def _validate_object_identifier_conflicts(
@@ -1054,6 +1701,31 @@ def _duplicate_alias_warnings(
     ]
 
 
+def _duplicate_field_alias_warnings(
+    object_name: str,
+    field_key: str,
+    aliases: Tuple[str, ...],
+) -> List[str]:
+    seen: Set[str] = set()
+    duplicates: Dict[str, str] = {}
+    for alias in aliases:
+        normalized = normalize_object_identifier(alias)
+        if not normalized:
+            continue
+        if normalized in seen:
+            duplicates.setdefault(normalized, alias)
+        else:
+            seen.add(normalized)
+    return [
+        "对象“{}”的字段“{}”存在重复别名“{}”".format(
+            object_name,
+            field_key,
+            duplicates[compare],
+        )
+        for compare in sorted(duplicates)
+    ]
+
+
 def _dedupe_object_definitions(
     definitions: List[_ObjectDefinition],
 ) -> List[_ObjectDefinition]:
@@ -1064,6 +1736,20 @@ def _dedupe_object_definitions(
         if path_key in seen:
             continue
         seen.add(path_key)
+        result.append(definition)
+    return result
+
+
+def _dedupe_field_definitions(
+    definitions: List[_FieldDefinition],
+) -> List[_FieldDefinition]:
+    result: List[_FieldDefinition] = []
+    seen: Set[str] = set()
+    for definition in definitions:
+        field_key = definition.key
+        if not field_key or field_key in seen:
+            continue
+        seen.add(field_key)
         result.append(definition)
     return result
 

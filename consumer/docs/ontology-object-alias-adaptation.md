@@ -235,7 +235,295 @@ content:
 
 校验结果不得更改或自动生成别名，只负责报告问题。
 
-## 4. 兼容策略
+## 4. 端到端方案流程
+
+### 4.1 总体流程和边界
+
+方案分成“导入时治理”和“运行时解析”两部分。导入时负责尽早阻断不一致或损坏的包；运行时只消费已声明的信息，不自动修复、生成或猜测别名。
+
+```text
+本体包 ZIP
+  -> 解压到临时目录
+  -> 标准化为 v0.1 目录
+  -> 校验对象目录、对象详情、别名和 mapping
+  -> error: HTTP 400，正式版本目录不变
+  -> warning: 保留到 warnings.object_aliases
+  -> 校验通过: 安装版本
+
+用户请求
+  -> 定位 workspace 中的活动本体版本
+  -> 构建或复用对象引用索引
+  -> 解析 requested key/entity
+  -> resolved: 返回正式 object key 和详情路径
+  -> not_found/missing_directory: 仅 business_data_search 可进入兼容分支
+  -> read/parse/ambiguous/invalid: 立即终止
+```
+
+职责边界如下：
+
+| 层次 | 负责内容 | 不负责内容 |
+| --- | --- | --- |
+| 包导入 | 别名一致性、标识冲突、文件可读性、mapping 完整性 | 自动修改或补全业务别名 |
+| 对象解析器 | 把 key、canonical key、title、alias、filename 解析为正式 key | 连接数据源、执行查询 |
+| `ontology_context` | 使用正式 key 和已解析路径加载对象详情 | mapping 和图 Schema 兜底 |
+| `business_data_search` | 决定正式对象、旧 mapping 或图 Schema 兼容路径 | 在 Provider 内重复实现别名解析 |
+| Provider | 使用已经确定的对象或 Schema label 查询数据 | 猜测对象别名对应关系 |
+
+### 4.2 导入与校验流程
+
+导入校验发生在版本安装前，source 和 converted 两种模式共用相同的最终校验口径：
+
+1. 将上传包解压到临时目录，确定唯一包根目录。
+2. converted 包先标准化为 v0.1；source 包先生成暂存版本目录。
+3. 读取 `objects/index.md`，识别兼容的 key、title 和 alias 表头。
+4. 逐个读取 `objects/*.md` 的 UTF-8 内容和 YAML frontmatter，建立详情定义集合。
+5. 对目录与详情做一致性校验：
+   - 目录 key 必须精确对应详情 frontmatter `key`。
+   - 只有目录存在别名列时，才比较目录别名与详情 `aliases` 的归一化集合。
+   - 校验 key、canonical key、title 和 alias 的跨对象冲突。
+   - 重复或空别名生成 warning，不一致或歧义生成 error。
+6. 校验 `mappings/object-data-mappings.json`：
+   - 文件不存在按历史包兼容处理。
+   - 文件存在时必须是 UTF-8、合法 JSON，并具有受支持的对象 mapping 结构。
+7. 聚合全部 error 和 warning：
+   - 任一 error：返回 HTTP 400，不执行版本安装。
+   - 只有 warning：继续安装，并写入响应中的 `warnings.object_aliases`。
+   - 无问题：安装新版本或覆盖目标版本。
+
+```text
+临时包
+  |
+  +-- objects/index.md 无别名列
+  |     -> 允许
+  |     -> 不执行“目录别名 = 详情 aliases”比较
+  |     -> 详情 aliases 仍进入运行时索引
+  |
+  +-- objects/index.md 有别名列
+  |     -> 拆分、归一化、去重
+  |     -> 与详情 aliases 集合比较
+  |     -> 不一致则 error
+  |
+  +-- mapping 不存在
+  |     -> 兼容历史包
+  |
+  +-- mapping 存在但损坏
+        -> error
+        -> HTTP 400
+```
+
+版本安装是校验事务边界。错误发生时只删除临时目录，不应留下部分安装的版本，也不应修改当前活动版本。
+
+### 4.3 运行时索引构建与缓存流程
+
+对象引用索引以活动版本的 `objects/` 目录为输入，一次扫描生成以下查找表：
+
+```text
+normalized key           -> object definition[]
+normalized canonical_key -> object definition[]
+normalized title         -> object definition[]
+normalized alias         -> object definition[]
+normalized filename      -> object definition[]
+```
+
+具体流程：
+
+1. 枚举 `objects/*.md`，忽略 `objects/index.md`。
+2. 使用“文件名 + `mtime_ns` + 文件大小”生成目录签名。
+3. 查询有界 LRU 缓存：
+   - 命中相同版本路径和签名：复用索引。
+   - 未命中：重新读取目录和全部详情 frontmatter。
+4. 将详情 key 作为正式身份，将目录 title/alias 投影到对应详情定义。
+5. 对每种标识分别建立归一化后的候选列表，不在构建阶段擅自选择冲突对象。
+6. 索引构建成功后才进入缓存。
+
+读取或解析失败采用“失败不缓存”：
+
+```text
+首次请求
+  -> 文件签名 S
+  -> 读取 object_a.md 失败
+  -> 返回 read_error
+  -> 不写入 LRU 缓存
+
+第二次请求（文件签名仍为 S）
+  -> 缓存中没有成功结果
+  -> 再次读取 object_a.md
+  -> 读取恢复后正常构建索引
+```
+
+这样可以避免短暂文件锁、权限抖动或 I/O 故障被固化成按文件名生成的错误对象定义。
+
+### 4.4 对象引用解析流程
+
+统一入口接收：
+
+```text
+ontology_dir + requested_key
+```
+
+解析器先判断包状态，再按固定优先级匹配。返回值是结构化状态，不要求调用方解析错误字符串。
+
+| 状态 | 触发条件 | 是否可继续 |
+| --- | --- | --- |
+| `resolved` | 某一优先级唯一命中 | 返回正式 key、路径和 `matched_by` |
+| `not_found` | 对象目录和详情可读，但没有任何命中 | `ontology_context` 终止；业务查询可检查兼容路径 |
+| `missing_directory` | 旧包没有 `objects/` | 只有业务查询可检查 mapping/图 Schema |
+| `invalid_request` | 请求值为空 | 立即终止 |
+| `ambiguous` | 最高命中优先级存在多个候选 | 返回全部候选并立即终止 |
+| `read_error` | 目录或详情读取、UTF-8 解码失败 | 立即终止，不缓存 |
+| `invalid_package` | 详情 frontmatter 未闭合、YAML 非法或不是映射 | 立即终止，不缓存 |
+
+匹配过程：
+
+```text
+requested_key
+  -> trim + NFC
+  -> 全 ASCII 时 casefold
+  -> 查询 key 候选
+       -> 有候选：只在 key 层判断唯一或歧义
+       -> 无候选：查询 canonical_key
+       -> 无候选：查询 title
+       -> 无候选：查询 alias
+       -> 无候选：查询 filename
+       -> 全部无候选：not_found
+```
+
+一旦高优先级存在候选，就不再查看低优先级。例如请求值精确等于对象 A 的正式 key，同时也是对象 B 的 alias，运行时选择对象 A；包导入校验负责报告这类跨对象冲突。
+
+成功结果示例：
+
+```text
+status: resolved
+requested_key: 设计变更影响对象
+object_key: CHANGE_ORDER受影响对象
+matched_by: alias
+path: objects/eco_affected_object.md
+```
+
+### 4.5 `ontology_context` 消费流程
+
+`ontology_context(resource="object")` 不包含 mapping 或 Provider 兼容逻辑：
+
+1. 根据 `ontology_id` 定位活动版本目录。
+2. 调用统一对象解析器。
+3. 只有 `resolved` 才读取结果中的 `path`。
+4. 使用 `read_required_text()` 再次读取完整对象内容。
+5. 输出正式 `object_key`；别名、title 或 canonical key 命中时同时输出 `requested_key` 和 `matched_by`。
+6. read ledger 使用解析后的详情路径记录读取事实。
+7. 其他状态直接返回解析器错误，不尝试图 Schema 或 mapping。
+
+```text
+ontology_context(object, "设计变更影响对象")
+  -> resolve: matched_by=alias
+  -> formal key=CHANGE_ORDER受影响对象
+  -> read objects/eco_affected_object.md
+  -> payload.object_key=CHANGE_ORDER受影响对象
+  -> ledger.source_path=objects/eco_affected_object.md
+```
+
+### 4.6 `business_data_search` 决策流程
+
+对象归一化必须在 `BusinessDataSearchTool.execute()` 中完成。完整决策顺序如下：
+
+```text
+entity
+  -> resolve_object_reference_result()
+       |
+       +-- resolved
+       |     -> entity 替换为正式 object key
+       |     -> 调用 Provider
+       |     -> object_context_usage 记录正式 key
+       |
+       +-- invalid_request / ambiguous / read_error / invalid_package
+       |     -> 直接返回错误
+       |     -> 不读取 mapping
+       |     -> 不解析数据源
+       |     -> 不调用 Provider
+       |
+       +-- not_found / missing_directory
+             -> 精确查询 object-data-mappings.json
+                  |
+                  +-- found
+                  |     -> 按精确 mapping key 调用 Provider
+                  |
+                  +-- invalid
+                  |     -> 直接返回 mapping 错误
+                  |
+                  +-- not_found / file_missing
+                        -> 解析数据源
+                             |
+                             +-- Neo4j / HugeGraph
+                             |     -> 将原值作为 Schema label 候选
+                             |     -> 图运行时必须精确命中预取 Schema
+                             |     -> 不写 object_context_usage
+                             |
+                             +-- 其他 Provider 或数据源不可用
+                                   -> 返回原对象解析错误
+```
+
+mapping 查询状态用于区分“没有配置”和“配置损坏”：
+
+| mapping 状态 | 含义 | 运行时行为 |
+| --- | --- | --- |
+| `found` | 存在当前对象的精确 mapping | 使用该 mapping |
+| `not_found` | mapping 文件合法，但没有当前对象 | 可检查图 Schema 兼容路径 |
+| `file_missing` | 历史包没有 mapping 文件 | 可检查图 Schema 兼容路径 |
+| `invalid` | 文件不可读、非 UTF-8、JSON 非法或结构错误 | 立即终止，不允许图兜底 |
+
+图 Schema 路径不是模糊别名解析。请求值必须由图运行时精确命中预取的 label；未命中时返回图映射错误，不能选取相似 label。为了避免两次读取数据源配置，公共入口判定图 Provider 后会把同一连接对象传给后续查询处理。
+
+### 4.7 典型场景
+
+#### 场景 A：目录别名正常命中
+
+```text
+请求 entity = "设计变更影响对象"
+目录 alias -> CHANGE_ORDER受影响对象
+详情 key   -> CHANGE_ORDER受影响对象
+Provider entity = CHANGE_ORDER受影响对象
+object_context_usage.entity_name = CHANGE_ORDER受影响对象
+```
+
+#### 场景 B：旧包没有别名列
+
+```text
+objects/index.md 只有 key/title
+详情 frontmatter 有 aliases -> 仍可通过详情索引命中
+详情也没有 aliases          -> key/title/filename 继续工作
+导入结果                    -> 不因缺少别名列报错
+```
+
+#### 场景 C：同一别名指向多个对象
+
+```text
+alias "制造件" -> ObjectA, ObjectB
+解析状态       -> ambiguous
+返回候选       -> ObjectA, ObjectB
+Provider 调用  -> 不发生
+```
+
+#### 场景 D：对象目录损坏但配置了图数据源
+
+```text
+objects/index.md 非 UTF-8
+解析状态 -> read_error
+mapping  -> 不读取
+图兜底   -> 不执行
+结果     -> 返回稳定的目录解码错误
+```
+
+#### 场景 E：对象仅存在于图 Schema
+
+```text
+对象解析 -> not_found
+mapping  -> not_found
+Provider -> Neo4j
+Schema   -> 精确存在 label "SchemaOnlyEntity"
+结果     -> 允许图查询
+usage    -> 不写入本体对象 object_context_usage
+```
+
+## 5. 兼容策略
 
 - 没有别名列的旧包仍按正式 key、标题和文件名工作。
 - 详情 frontmatter 已有 `aliases`、但目录没有别名的旧包，继续使用详情扫描回退。
@@ -243,9 +531,9 @@ content:
 - 不修改 `mappings/object-data-mappings.json` 结构，mapping key 始终是正式 `object key`。
 - 不要求前端增加新交互才能使用别名。
 
-## 5. 必须增加的测试
+## 6. 必须增加的测试
 
-### 5.1 对象目录和上下文
+### 6.1 对象目录和上下文
 
 1. `objects/index.md` 的别名列进入根 `objects_catalog`。
 2. 通过目录别名加载到正确对象详情。
@@ -255,7 +543,7 @@ content:
 6. `object key`、`object_key`、`key` 和“中文名称”表头都能识别正式 key，未知表头不会静默使用第一列。
 7. 不填写 `canonical_key` 的现有对象仍能正常路由；使用 `canonical_key` 命中时最终仍返回 frontmatter `key`。
 
-### 5.2 歧义和校验
+### 6.2 歧义和校验
 
 1. 同一别名指向多个对象时返回全部候选，不加载任意一个详情。
 2. 别名与其他对象 key、`canonical_key` 或 title 冲突时校验失败。
@@ -266,7 +554,7 @@ content:
 7. 只存在别名重复或空值等 warning 时导入成功，converted 和 source 两种模式的返回体都保持 `warnings` 为对象，并包含 `warnings.object_aliases`。
 8. 没有别名列的旧包仍能加载和查询。
 
-### 5.3 业务数据查询
+### 6.3 业务数据查询
 
 1. `business_data_search` 接收别名时，Provider 最终收到正式 `object key`。
 2. mapping 使用正式 key 正常命中。
@@ -281,7 +569,7 @@ content:
 - `consumer/backend/tests/test_package_import.py`
 - 业务数据查询入参与 Provider mock 相关测试
 
-## 6. 影响文件
+## 7. 影响文件
 
 | 文件 | 必做改动 |
 | --- | --- |
@@ -298,7 +586,7 @@ content:
 
 `consumer/backend/skill_parser/modeling_template.py` 已同时生成目录“别名”列和详情 frontmatter `aliases`，本期不强制修改其列头，由统一解析器兼容“中文名称”等现有列头。`legacy_package_converter.py` 不自动编造旧包中不存在的业务别名。Provider 层由于入参已在公共工具入口归一化，不需要修改别名逻辑。
 
-## 7. 非本期范围
+## 8. 非本期范围
 
 本期不做：
 
@@ -311,7 +599,7 @@ content:
 - 在各个 Provider 内重复实现别名解析。
 - 在没有性能数据前引入持久化别名缓存。
 
-## 8. 验收标准
+## 9. 验收标准
 
 以下条件全部满足后，本需求才算完成：
 

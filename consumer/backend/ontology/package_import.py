@@ -10,7 +10,9 @@ from typing import Optional
 import yaml
 
 from ontology.ontology_catalog import (
+    FieldAliasValidationResult,
     ObjectAliasValidationResult,
+    validate_field_aliases,
     validate_object_aliases,
     validate_object_data_mappings,
 )
@@ -60,6 +62,11 @@ def validate_imported_object_aliases(root: Path) -> ObjectAliasValidationResult:
         errors=tuple(sorted(set((*validation.errors, mapping_error)))),
         warnings=validation.warnings,
     )
+
+
+def validate_imported_field_aliases(root: Path) -> FieldAliasValidationResult:
+    """Validate object field aliases before installation."""
+    return validate_field_aliases(Path(root))
 
 
 def has_importable_package_layout(root: Path) -> bool:

@@ -83,7 +83,11 @@ def _write_object_alias_package(tmp_path, *, ambiguous=False):
         encoding="utf-8",
     )
     (objects_dir / "formal_object.md").write_text(
-        "---\nresource: object\nkey: 正式对象\naliases:\n  - 制造件\n---\n",
+        "---\nresource: object\nkey: 正式对象\naliases:\n  - 制造件\n---\n"
+        "\n# 字段\n\n"
+        "| 字段 key | 中文名 | 别名 |\n"
+        "| --- | --- | --- |\n"
+        "| MaterialCode | 物料编码 | 料号 |\n",
         encoding="utf-8",
     )
     if ambiguous:
@@ -323,6 +327,47 @@ def test_business_data_search_tool_normalizes_alias_before_provider(tmp_path, mo
     assert outcome.state_updates["object_context_usage"] == [
         {"entity_name": "正式对象", "iteration": 2}
     ]
+
+
+def test_business_data_search_tool_passes_matched_field_aliases_internally(
+    tmp_path,
+    monkeypatch,
+):
+    _write_object_alias_package(tmp_path)
+    captured = {}
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.get_ontology_manifest",
+        lambda ontology_id, *, workspace_id=None: (
+            SimpleNamespace(ontology_dir=str(tmp_path)),
+            None,
+        ),
+    )
+
+    def fake_handle_business_data_search(**kwargs):
+        captured.update(kwargs)
+        return "查询结果"
+
+    monkeypatch.setattr(
+        "agent.tools.business_data_search.handle_business_data_search",
+        fake_handle_business_data_search,
+    )
+
+    outcome = BusinessDataSearchTool().execute(
+        args={
+            "ontology_id": "demo-ontology",
+            "entity": "制造件",
+            "query": "查询料号对应的物料编码",
+        },
+        context=_business_data_tool_context(),
+    )
+
+    assert outcome.content == "查询结果"
+    assert captured["entity"] == "正式对象"
+    assert captured["query"] == "查询料号对应的物料编码"
+    assert captured["_field_alias_mappings"] == (
+        ("料号", "MaterialCode"),
+        ("物料编码", "MaterialCode"),
+    )
 
 
 def test_business_data_search_tool_stops_before_provider_for_ambiguous_alias(

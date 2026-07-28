@@ -8,6 +8,7 @@ import {
   IMPORT_STOP_WAITING_COPY,
   createImportFlowState,
   importFlowNotice,
+  importFlowNoticeTone,
   importRequestFields,
   normalizeImportConflict,
   reduceImportFlow,
@@ -139,4 +140,149 @@ test('success notice identifies the version that became active', () => {
     payload: { ontology_id: 'demo', active_version: '2.0.0', objects_count: 1, operations_count: 2 },
   });
   assert.match(importFlowNotice(state), /激活版本 2\.0\.0/);
+});
+
+test('success notice displays categorized import warnings', () => {
+  const state = reduceImportFlow(createImportFlowState(), {
+    type: 'SUCCESS',
+    payload: {
+      ontology_id: 'demo',
+      objects_count: 1,
+      operations_count: 2,
+      warnings: {
+        object_aliases: ['对象别名重复'],
+        field_aliases: ['字段别名包含空值'],
+      },
+    },
+  });
+  const notice = importFlowNotice(state);
+  assert.match(notice, /警告 2 条/);
+  assert.match(notice, /对象别名重复/);
+  assert.match(notice, /字段别名包含空值/);
+});
+
+test('success notice and preview include normalization warnings', () => {
+  const state = reduceImportFlow(createImportFlowState(), {
+    type: 'SUCCESS',
+    payload: {
+      ontology_id: 'demo',
+      objects_count: 1,
+      operations_count: 2,
+      normalization_warnings: ['脚本路径已规范化'],
+    },
+  });
+
+  const notice = importFlowNotice(state);
+  assert.match(notice, /警告 1 条/);
+  assert.match(notice, /脚本路径已规范化/);
+  assert.deepEqual(state.result.preview, {
+    warnings: {
+      normalization_warnings: ['脚本路径已规范化'],
+    },
+  });
+});
+
+test('success notice and preview merge import and normalization warnings', () => {
+  const state = reduceImportFlow(createImportFlowState(), {
+    type: 'SUCCESS',
+    payload: {
+      ontology_id: 'demo',
+      objects_count: 1,
+      operations_count: 2,
+      preview: { source: { total_files: 2 } },
+      warnings: {
+        object_aliases: ['对象别名重复'],
+      },
+      normalization_warnings: ['脚本路径已规范化'],
+    },
+  });
+
+  const notice = importFlowNotice(state);
+  assert.match(notice, /警告 2 条/);
+  assert.match(notice, /对象别名重复/);
+  assert.match(notice, /脚本路径已规范化/);
+  assert.deepEqual(state.result.preview, {
+    source: { total_files: 2 },
+    warnings: {
+      object_aliases: ['对象别名重复'],
+      normalization_warnings: ['脚本路径已规范化'],
+    },
+  });
+});
+
+test('success notice tone is not inferred from warning text', () => {
+  const state = reduceImportFlow(createImportFlowState(), {
+    type: 'SUCCESS',
+    payload: {
+      ontology_id: 'demo',
+      objects_count: 1,
+      operations_count: 2,
+      warnings: {
+        operations: ['parameters声明解析失败: invalid YAML'],
+      },
+    },
+  });
+
+  assert.match(importFlowNotice(state), /解析失败/);
+  assert.equal(importFlowNoticeTone(state), 'success');
+});
+
+test('import notice tone follows the import phase', () => {
+  assert.equal(importFlowNoticeTone({ phase: IMPORT_PHASE.ERROR }), 'error');
+  assert.equal(importFlowNoticeTone({ phase: IMPORT_PHASE.UPLOADING }), 'info');
+  assert.equal(importFlowNoticeTone({ phase: IMPORT_PHASE.CANCELLED }), 'info');
+  assert.equal(importFlowNoticeTone({ phase: IMPORT_PHASE.IDLE }), undefined);
+});
+
+test('import preview retains all categorized warnings', () => {
+  const warnings = Array.from(
+    { length: 12 },
+    (_, index) => `警告项${String(index + 1).padStart(2, '0')}`,
+  );
+  const state = reduceImportFlow(createImportFlowState(), {
+    type: 'SUCCESS',
+    payload: {
+      preview: {
+        source: { total_files: 2 },
+        result: { total_files: 3 },
+      },
+      warnings: {
+        field_aliases: warnings,
+        object_aliases: [],
+      },
+    },
+  });
+
+  assert.deepEqual(state.result.preview, {
+    source: { total_files: 2 },
+    result: { total_files: 3 },
+    warnings: { field_aliases: warnings },
+  });
+
+  const cleared = reduceImportFlow(state, { type: 'CLEAR_PREVIEW' });
+  assert.equal(cleared.result.preview, null);
+});
+
+test('success notice displays at most ten import warnings', () => {
+  const warnings = Array.from(
+    { length: 12 },
+    (_, index) => `警告项${String(index + 1).padStart(2, '0')}`,
+  );
+  const state = reduceImportFlow(createImportFlowState(), {
+    type: 'SUCCESS',
+    payload: {
+      ontology_id: 'demo',
+      objects_count: 1,
+      operations_count: 2,
+      warnings: { field_aliases: warnings },
+    },
+  });
+
+  const notice = importFlowNotice(state);
+  assert.match(notice, /警告 12 条/);
+  assert.match(notice, /警告项01/);
+  assert.match(notice, /警告项10/);
+  assert.doesNotMatch(notice, /警告项11/);
+  assert.doesNotMatch(notice, /警告项12/);
+  assert.match(notice, /其余 2 条未展示/);
 });

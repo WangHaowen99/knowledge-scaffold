@@ -14,14 +14,14 @@
 
 ```text
 <ontology_id>/
-  manifest.yaml
-  index.md
+  manifest.yaml                  # 必选
+  index.md                       # 必选
 
-  objects/
+  objects/                       # 必选
     index.md
     <object_key>.md
 
-  operations/
+  operations/                    # 必选
     index.md
     <operation_key>.md
 
@@ -38,8 +38,8 @@
     <script_key>.md
     <script_file>.py
 
-  mappings/
-    object-data-mappings.json    # 仅当启用 business_data_search 时需要
+  mappings/                      # 条件必选：仅当启用 business_data_search 时需要
+    object-data-mappings.json
 
   assets/                        # 可选
     <asset_key>
@@ -47,9 +47,32 @@
 
 首版把 `objects/` 和 `operations/` 作为必选消费资源，把 `rules/`、`metrics/`、`scripts/`、`assets/` 作为可选能力资源。没有 rules、metrics、scripts 的本体包，仍然可以用于基础对象理解和操作说明。`assets/` 只用于共享文本、配置样例或少量辅助材料，不替代对象、操作、规则、指标和 mapping。暂不把 `references/`、`graph/`、`imports/`、`evals/` 纳入必备目录。
 
-## 2. 必选和可选
+## 2. 目录结构必选和可选说明
 
-### 2.1 必选文件
+### 2.1 基本概念边界
+
+| 概念 | 首版定义 |
+| --- | --- |
+| 本体包 | 一个业务域的语义消费单元 |
+| object | 业务对象，不等于数据库表 |
+| operation | 用户问题可映射到的一类业务任务 |
+| rule | 可复用的业务判断条件 |
+| metric | 有明确口径、公式和边界的业务指标 |
+| script | 已注册、可受控执行的确定性脚本 |
+| field | 业务字段，不等于真实数据字段 |
+| mapping | object 到真实数据资源的映射，不包含连接密钥 |
+| provider alias | 本体包中的逻辑数据源别名，由 workspace 绑定到真实连接 |
+
+硬边界：
+
+```text
+本体包不保存真实业务数据；
+本体包不保存 URL、账号、token；
+Agent 不读取任意文件路径，只通过 resource + key 消费；
+真实查询必须先确定 object，再走 mapping 和 provider。
+```
+
+### 2.2 必选文件
 
 这些文件缺失时，本体包不能被 Agent 稳定消费。
 
@@ -62,9 +85,9 @@
 | `operations/index.md` | 操作目录，列出可执行或可分析的业务任务 |
 | `operations/<operation_key>.md` | 操作详情，定义输入、输出、流程和涉及对象 |
 
-### 2.2 可选能力文件
+### 2.3 可选能力文件
 
-这些目录按业务复杂度增加。一旦启用目录，就应提供对应 `index.md`，目录索引声明的详情文件必须存在。本体包校验会把 `index.md` 中声明但找不到详情文件、以及详情文件未进入目录索引的情况标为 warning，避免 root 阶段导航目录与真实资源脱节。
+这些目录按业务复杂度增加。一旦启用目录，就应提供对应 `index.md`，目录索引声明的详情文件必须存在。本体包导入时做强校验：`index.md` 中声明但找不到详情文件、以及详情文件未进入目录索引都会导致导入失败，避免 root 阶段导航目录与真实资源脱节。运行时若检测到这两类不一致（例如包被绕过导入直接修改），降级为 warning 并记录，不阻断已加载本体的消费。
 
 | 路径 | 启用条件 | 职责 |
 | --- | --- | --- |
@@ -77,7 +100,7 @@
 | `scripts/<script_file>.py` | 声明可执行脚本 | 脚本实现，由后端受控执行，默认不进入模型上下文 |
 | `assets/<asset_key>` | 需要共享辅助文本 | 可按 key 读取的辅助材料；不保存密钥，不作为语义主干 |
 
-### 2.3 条件必选文件
+### 2.4 条件必选文件
 
 只有启用真实业务数据查询时，才需要 mapping。
 
@@ -87,7 +110,7 @@
 
 如果本体包只用于语义问答、对象理解、操作说明，不查真实业务数据，可以没有 `mappings/`。
 
-### 2.4 首版暂不定义
+### 2.5 首版暂不定义
 
 这些能力有价值，但不是第一版消费必需。
 
@@ -174,36 +197,34 @@ Markdown 命中会返回 `section` 和携带 `section` 的 `next_action`，用�
 
 `ontology_context` 也支持可选参数 `section`。当 resource 是 `operation`、`object`、`rule`、`metric` 或 `script` 时，`section` 可以是 `frontmatter` 或 Markdown 标题名，返回内容只包含该片段，并在 `context_meta.section` 标明本次加载范围。找不到章节时返回明确错误，不退回整篇文档。
 
-## 4. 基本概念边界
+## 4. Key 规范
 
-| 概念 | 首版定义 |
-| --- | --- |
-| 本体包 | 一个业务域的语义消费单元 |
-| object | 业务对象，不等于数据库表 |
-| operation | 用户问题可映射到的一类业务任务 |
-| rule | 可复用的业务判断条件 |
-| metric | 有明确口径、公式和边界的业务指标 |
-| script | 已注册、可受控执行的确定性脚本 |
-| field | 业务字段，不等于真实数据字段 |
-| mapping | object 到真实数据资源的映射，不包含连接密钥 |
-| provider alias | 本体包中的逻辑数据源别名，由 workspace 绑定到真实连接 |
+本节定义本体包录结构中所有可消费资源的 key 规范，作用范围包括（范围内的这些文件如果涉及key，都必须符合本节的规范）：
 
-硬边界：
+| 资源类型 | 角色 | 对应 frontmatter `resource` | 路径 |
+| --- | --- | --- | --- |
+| 根目录索引 | 目录 | `root` | `index.md`，`key` 固定为 `root` |
+| 对象 | 目录 | `object_index` | `objects/index.md` |
+| 对象 | 详情 | `object` | `objects/<object_key>.md` |
+| 操作 | 目录 | `operation_index` | `operations/index.md` |
+| 操作 | 详情 | `operation` | `operations/<operation_key>.md` |
+| 规则 | 目录 | `rule_index` | `rules/index.md` |
+| 规则 | 详情 | `rule` | `rules/<rule_key>.md` |
+| 指标 | 目录 | `metric_index` | `metrics/index.md` |
+| 指标 | 详情 | `metric` | `metrics/<metric_key>.md` |
+| 脚本 | 目录 | `script_index` | `scripts/index.md` |
+| 脚本 | 详情 | `script` | `scripts/<script_key>.md` |
+| 辅助资产 | 详情 | `asset` | `assets/<asset_key>` |
 
-```text
-本体包不保存真实业务数据；
-本体包不保存 URL、账号、token；
-Agent 不读取任意文件路径，只通过 resource + key 消费；
-真实查询必须先确定 object，再走 mapping 和 provider。
-```
+`manifest.yaml` 自身的 `id` 属于本体包身份标识，不走本节的资源 key 规范；`mappings/` 是数据映射文件，不使用资源 key，按 object/metric/rule 的 key 索引。
 
-## 5. Key 规范
+这些 key 是第 3 节消费链路里 Agent 唯一可用的稳定引用：`ontology_context`、`execute_script`、`business_data_search` 只接受 `resource + key`，不接收文件路径。`uses.objects`、`bound_operation`、mapping 等跨资源引用也都以 key 为准。因此 key 的稳定性、合法字符和文件名规则必须统一约束，不能由各目录各自约定。
 
-首版要求所有可消费资源都有稳定 key，但不能假设业务团队一定先提供英文 key。
+首版要求上述可消费资源都有稳定 key，但不能假设业务团队一定先提供英文 key。
 
 中文场景下，很多业务对象、操作、规则、指标和脚本的中文术语本身就是稳定名称。首版允许中文 key，同时推荐在条件成熟时补充 ASCII slug，方便跨系统集成、URL、日志和代码引用。
 
-### 5.1 Key 分层
+### 4.1 Key 分层
 
 | 字段 | 是否必需 | 说明 | 示例 |
 | --- | --- | --- | --- |
@@ -214,7 +235,7 @@ Agent 不读取任意文件路径，只通过 resource + key 消费；
 
 首版工具应以 `key` 为主，同时允许通过 `title`、`aliases`、`canonical_key` 做解析和召回。包校验中的 operation 引用和 mapping key 也按同一组等价标识判断，避免中文主 key 与 ASCII `canonical_key` 并存时误报资源缺失。
 
-### 5.2 合法 key 字符
+### 4.2 合法 key 字符
 
 为了兼顾中文可读性和路径安全，`key` 允许：
 
@@ -238,7 +259,7 @@ Agent 不读取任意文件路径，只通过 resource + key 消费；
 
 建议长度不超过 80 个字符。导入时应做 Unicode 规范化，避免视觉相同但编码不同的 key。
 
-### 5.3 文件名规则
+### 4.3 文件名规则
 
 首版推荐文件名与 `key` 一致：
 
@@ -264,7 +285,7 @@ aliases:
 
 此时导入器需要建立 `key -> 文件路径` 的索引，不能只靠文件名推断 key。
 
-### 5.4 推荐策略
+### 4.4 推荐策略
 
 | 场景 | 推荐 key | 说明 |
 | --- | --- | --- |
@@ -282,7 +303,7 @@ aliases 用于自然语言匹配，不作为唯一标识；
 canonical_key 是工程友好补充，不应替代业务 key 的语义。
 ```
 
-## 6. Manifest
+## 5. Manifest
 
 `manifest.yaml` 是系统识别本体包的入口。
 
@@ -312,9 +333,9 @@ status: draft
 | `language` | 推荐 | 主要语言 |
 | `status` | 推荐 | `draft`、`review`、`released`、`deprecated` |
 
-## 7. Root Index
+## 6. Root Index
 
-`index.md` 是 `ontology_context(root)` 的主要来源。
+本体包根目录层的`index.md` 是 本体包的入口，包含本体包的元数据、领域范围、典型问题、目录结构等。
 
 它只做压缩索引，不承载长篇业务细节。
 
@@ -351,7 +372,7 @@ title: 示例业务 DOMAIN 设计变更影响分析本体
 查询真实数据前必须先加载相关 object；判断类问题优先加载相关 rule，没有规则目录时回到 operation 的业务说明；计算类问题优先加载相关 metric，没有指标目录时不得编造指标口径。
 ```
 
-## 8. Object 目录
+## 7. Object 目录
 
 `objects/index.md` 列出可被 Agent 加载的业务对象。
 
@@ -373,13 +394,13 @@ title: 对象目录
 | source_item_version | SourceItem版本 | 设计件版本、SourceItem版次 | 设计件版本 |
 ```
 
-别名列用于对象路由，多个别名使用中文顿号“、”分隔；没有别名时填 `-`。加载 `objects/index.md` 后，运行时应一次性建立 `object key`、标题和别名到对象的候选映射；当用户问题命中别名时，先定位对象 `key`，再加载对象详情，不需要为识别对象而遍历所有详情文件。
+别名列用于对象路由，多个别名使用 `[,，、;/；]` 任一分隔（英文逗号、中文逗号、顿号、英文分号、斜杠、中文分号）；没有别名时填 `-`。运行时惰性构建并缓存对象候选映射，覆盖 `key`、`canonical_key`、`title`、`alias`、文件名五种标识；当用户问题命中别名时，先定位对象 `key`，再加载对象详情。查找阶段为 O(1) 字典查找，不遍历详情文件；建索引时会遍历所有 `objects/*.md` 读取 frontmatter（`key`、`title`、`aliases`、`canonical_key`）作为权威来源，`objects/index.md` 的别名列只是路由投影，仅靠目录无法完成路由。
 
-目录中的别名是对象详情 frontmatter `aliases` 的路由投影，两处应保持一致；对象详情仍是完整定义的权威来源。导入或校验时应报告目录与详情之间的别名缺失、多余或指向冲突。别名不是唯一标识；同一别名命中多个对象时，必须保留全部候选并结合问题上下文消歧，不得任意选择一个。
+目录中的别名是对象详情 frontmatter `aliases` 的路由投影，两处应保持一致；对象详情仍是完整定义的权威来源。导入时应报告目录与详情之间的别名缺失、多余或指向冲突，运行时不再校验一致性。别名不是唯一标识；同一别名命中多个对象时，必须保留全部候选并返回给 Agent，由 Agent 结合问题上下文消歧，不得任意选择一个。
 
 目录只放对象路由所需的摘要和别名，不放字段全文。目录命中只表示找到候选对象，不等于已加载对象详情。
 
-## 9. Object 详情
+## 8. Object 详情
 
 每个业务对象一个 Markdown 文件。
 
@@ -434,13 +455,16 @@ CHANGE_ORDER受影响对象表示某个 CHANGE_ORDER 变更涉及的设计对象
 | 内容 | 是否必需 |
 | --- | --- |
 | frontmatter `resource/key/title` | 必需 |
+| frontmatter `description` | 推荐 |
+| frontmatter `aliases` | 推荐 |
+| frontmatter `canonical_key` | 推荐 |
+| frontmatter `mapping` | 推荐 |
 | 业务定义 | 必需 |
 | 字段表 | 必需 |
 | 查询边界 | 推荐 |
 | 关系表 | 推荐 |
-| `mapping` | 仅启用业务数据查询时需要 |
 
-## 10. Operation 目录
+## 9. Operation 目录
 
 `operations/index.md` 列出用户问题可映射到的业务任务。
 
@@ -460,7 +484,7 @@ title: 操作目录
 | eco_change_impact_analysis | CHANGE_ORDER变更影响分析 | eco_id | 受影响物料、版本变化和风险摘要 |
 ```
 
-## 11. Operation 详情
+## 10. Operation 详情
 
 每个业务操作一个 Markdown 文件。
 
@@ -532,13 +556,16 @@ Operation 详情必须有：
 | 内容 | 是否必需 | 说明 |
 | --- | --- | --- |
 | frontmatter `resource/key/title` | 必需 | `resource` 固定为 `operation`，`key` 是稳定引用 |
+| frontmatter `description` | 推荐 | 概述 Operation 覆盖范围 |
+| frontmatter `canonical_key` | 推荐 | ASCII 稳定 key，用于系统集成 |
+| frontmatter `intent_examples` | 推荐 | 用户问题示例，辅助意图路由 |
 | frontmatter `uses.objects` | 必需 | 声明 Operation 直接依赖的业务对象，必须是数组 |
+| frontmatter `uses.rules` / `uses.metrics` | 按需必需 | 涉及可复用规则或指标时必须声明 |
+| frontmatter `script` | 按需必需 | 绑定受控脚本时必须声明 |
 | 业务目标 | 必需 | 说明 Operation 要解决的业务问题 |
 | 输入 | 必需 | 定义输入参数和必填约束；无输入时应显式说明 |
 | 输出 | 必需 | 定义输出结果及其语义 |
 | 流程 | 必需 | 说明对象加载、查询、判断或计算步骤 |
-| `uses.rules` / `uses.metrics` | 按需必需 | 涉及可复用规则或指标时必须声明 |
-| `script` | 按需必需 | 绑定受控脚本时必须声明 |
 
 `uses.objects` 用于在执行 Operation 前确定应加载的对象详情。只要 Operation 涉及业务对象、对象字段或真实业务数据查询，`uses.objects` 就必须包含至少一个对象。不依赖任何业务对象的纯说明或纯流程控制 Operation，也必须显式声明：
 
@@ -551,7 +578,7 @@ uses:
 
 Operation 可以引用 rule 和 metric，但不应把可复用规则和指标口径长期埋在 operation 正文里。
 
-## 12. Rule 目录
+## 11. Rule 目录
 
 `rules/index.md` 列出可被 Agent 加载的业务规则。
 
@@ -571,7 +598,7 @@ title: 规则目录
 | change_effectivity_rule | 变更生效批次判断规则 | 判断设计变更从哪个批次开始生效 |
 ```
 
-## 13. Rule 详情
+## 12. Rule 详情
 
 每个业务规则一个 Markdown 文件。
 
@@ -617,12 +644,14 @@ applies_to:
 | 内容 | 是否必需 |
 | --- | --- |
 | frontmatter `resource/key/title` | 必需 |
+| frontmatter `description` | 推荐 |
+| frontmatter `canonical_key` | 推荐 |
+| frontmatter `applies_to` | 推荐 |
 | 规则内容 | 必需 |
 | 判断条件 | 推荐 |
 | 例外 | 推荐 |
-| 适用对象 | 推荐 |
 
-## 14. Metric 目录
+## 13. Metric 目录
 
 `metrics/index.md` 列出可被 Agent 加载的业务指标。
 
@@ -642,7 +671,7 @@ title: 指标目录
 | handling_inventory_cost | 库存处理成本 | 因设计变更导致旧物料不可用时的库存处理成本 |
 ```
 
-## 15. Metric 详情
+## 14. Metric 详情
 
 每个业务指标一个 Markdown 文件。
 
@@ -697,12 +726,16 @@ uses:
 | 内容 | 是否必需 |
 | --- | --- |
 | frontmatter `resource/key/title` | 必需 |
+| frontmatter `description` | 推荐 |
+| frontmatter `unit` | 推荐 |
+| frontmatter `grain` | 推荐 |
+| frontmatter `uses.objects` | 按需必需 |
 | 业务口径 | 必需 |
 | 计算边界 | 必需 |
 | 空值策略 | 推荐 |
 | 维度 | 推荐 |
 
-## 16. Script 目录
+## 15. Script 目录
 
 `scripts/index.md` 列出可被 Agent 识别、由后端受控执行的脚本。
 
@@ -732,7 +765,7 @@ title: 脚本目录
 当前本体包暂无已注册脚本。
 ```
 
-## 17. Script 详情
+## 16. Script 详情
 
 每个可执行脚本一个 Markdown 说明文件，脚本实现文件由后端执行，不直接进入 Agent 上下文。
 
@@ -806,9 +839,11 @@ print(json.dumps({
 | 内容 | 是否必需 |
 | --- | --- |
 | frontmatter `resource/key/title` | 必需 |
-| `bound_operation` | 推荐 |
-| `runtime` | 必需 |
-| `entrypoint` | 必需 |
+| frontmatter `description` | 推荐 |
+| frontmatter `bound_operation` | 推荐 |
+| frontmatter `runtime` | 必需 |
+| frontmatter `entrypoint` | 必需 |
+| frontmatter `timeout_seconds` | 推荐 |
 | 输入参数表 | 必需 |
 | 输出说明 | 推荐 |
 | 执行边界 | 必需 |
@@ -824,7 +859,7 @@ print(json.dumps({
 | 源码不进上下文 | Agent 只看脚本说明，不看脚本实现 |
 | 审批策略受控 | 当 `policy.requires_approval: true` 时，`execute_script` 必须提供 `approval_ref`，并把批准引用写入 Runtime Facts |
 
-## 18. Mapping
+## 17. Mapping
 
 只有当本体包需要支持 `business_data_search` 时，才需要 mapping。
 
@@ -912,9 +947,47 @@ mappings/object-data-mappings.json
 }
 ```
 
+字段说明：
+
+| 字段路径 | 类型 | 是否必需 | 说明 |
+| --- | --- | --- | --- |
+| `schema_version` | string | 必需 | 当前 mapping 文件的结构版本，与知识包版本相互独立；首版固定为 `0.1` |
+| `default_provider_alias` | string | 推荐 | 默认逻辑数据源别名；资源映射未声明 `provider_alias` 时继承该值 |
+| `objects` | object | 条件必选 | object key 到对象数据映射的字典；当业务对象需要查询真实业务数据时，必须提供相应映射 |
+| `metrics` | object | 可选 | metric key 到物化指标数据映射的字典；仅用于具有独立数据资源或物化结果的指标 |
+| `rules` | object | 可选 | rule key 到规则事实、规则参数或物化判定结果数据映射的字典；规则定义本身不通过此字段映射 |
+| `<category>.<resource_key>.provider_alias` | string | 条件必选 | 当前资源使用的逻辑数据源别名；未声明时必须能够继承 `default_provider_alias` |
+| `<category>.<resource_key>.resource` | string | 必需 | 该资源在 Provider 中的标识，例如数据库表、视图、索引、图节点 label、图关系 type 或 API 资源名；具体语义由 Provider 定义 |
+| `<category>.<resource_key>.primary_key` | array<string> | 推荐 | 唯一标识一条记录的业务字段 key 有序列表；复合主键包含多个字段，字段必须在当前映射的 `fields` 中声明 |
+| `<category>.<resource_key>.fields` | object | 必需 | 业务字段到 Provider 字段的映射字典；key 为知识包资源中声明的业务字段 key |
+| `<category>.<resource_key>.fields.<field_key>.source` | string | 必需 | 该业务字段在 Provider 数据资源中对应的字段标识，例如数据库列名、图属性名、JSON 路径或 API 字段名 |
+| `<category>.<resource_key>.fields.<field_key>.type` | string | 必需 | 字段的统一业务逻辑类型，用于参数校验、值转换和结果序列化，例如 `string`、`number`、`boolean`、`date`、`datetime` |
+| `<category>.<resource_key>.fields.<field_key>.required` | boolean | 可选 | 该业务字段在数据记录中是否必须存在且非空，默认 `false`；不表示查询时必须使用该字段作为过滤条件 |
+| `<category>.<resource_key>.policy` | object | 推荐 | 当前数据资源的访问方式、查询范围和数据安全策略 |
+| `<category>.<resource_key>.policy.read_only` | boolean | 推荐 | 是否禁止通过该映射执行写操作；首版只允许设置为 `true` |
+| `<category>.<resource_key>.policy.max_rows` | integer | 推荐 | 单次查询允许返回的最大记录数，是该资源不可被调用参数放大的返回上限 |
+| `<category>.<resource_key>.policy.require_user_filter` | array<string> | 可选 | 用户查询必须显式提供的过滤字段候选集合；查询条件必须至少命中其中一个业务字段 key |
+| `<category>.<resource_key>.policy.row_level_security` | object | 可选 | 行级可见性策略，定义可信用户或会话属性与资源业务字段之间的绑定关系，详见下文 |
+
+其中：
+
+- `<category>` 可以是 `objects`、`metrics` 或 `rules`。
+- `<resource_key>` 是对应 Object、Metric 或 Rule 的稳定资源 key。
+- `<field_key>` 是知识包资源中声明的业务字段 key。
+- `fields.<field_key>` 必须能在对应资源定义中找到。
+- `primary_key`、`require_user_filter` 和行级安全策略引用的都是业务字段 key，不得填写 Provider 物理字段名。
+- `source` 是 Provider 侧字段标识，不要求与业务字段 key 同名。
+
+对于不同资源类型：
+
+- `objects` 的 `<field_key>` 对应 Object 详情中的字段 key。
+- `metrics` 的 `<field_key>` 对应 Metric 声明的维度、输入字段或物化结果字段。
+- `rules` 的 `<field_key>` 对应 Rule 声明的输入事实、规则参数或物化判定结果字段。
+- 纯公式 Metric 和纯语义 Rule 不需要数据映射。
+
 `policy.require_user_filter` 是运行时硬约束。只要 mapping 声明了该字段，`business_data_search` 必须在结构化 `filters` 中提供至少一个命中的业务字段；完全不传 filters 或只传其他字段都会被拒绝。该约束用于防止 Agent 对大表做无边界扫描。
 
-`policy.row_level_security` 用于声明行级可见性边界。首版支持 `mode=mandatory_filter`：`subject_attribute` 必须是 `fields` 中的业务字段，运行时 `filters` 必须包含该字段，否则返回 `RLS_FILTER_REQUIRED`；`mode=session_attribute` 预留给后续 Provider 会话变量注入，未配置主体解析时返回 `RLS_SUBJECT_UNRESOLVED`。
+`policy.row_level_security` 用于声明行级可见性边界。首版支持 `mode=mandatory_filter`：`resource_field` 必须是 `fields` 中声明的业务字段 key，`subject_attribute` 指向可信认证上下文中的主体属性；运行时必须把 `resource_field` 约束为该主体属性的值，缺少对应过滤条件时返回 `RLS_FILTER_REQUIRED`，无法解析主体属性时返回 `RLS_SUBJECT_UNRESOLVED`。`mode=session_attribute` 预留给后续 Provider 会话变量注入。
 
 `ontology_context(resource="object"|"metric"|"rule")` 加载详情时，可以附带安全的 `data_mapping_summary`，只暴露 `provider_alias`、`resource`、`primary_key`、`field_keys` 和 `policy`。真实字段 `source`、mapping 文件路径、workspace connection、账号和密钥不会进入模型上下文。
 
@@ -930,7 +1003,7 @@ mappings/object-data-mappings.json
 | 大段 SQL | 后续如需要再引入受控 query template |
 | 跨资源或复杂 metric / rule 映射 | 首版 metric/rule 只支持和 object 一样的受控字段映射；复杂 SQL、跨表计算和模板后续扩展 |
 
-## 19. Workspace Binding
+## 18. Workspace Binding
 
 本体包只保存 provider alias，不保存真实连接。
 
