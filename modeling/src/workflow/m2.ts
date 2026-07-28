@@ -4,7 +4,7 @@ import { buildInterviewTools, buildCompetencyTools, buildGenerateTools, type Too
 import { makeAgent, runAgent, runAgentCaptured } from './agent.js';
 import { upsertNode, getNode, nextOrdinal, listNodes } from './engine.js';
 import * as repo from './m2-repo.js';
-import { assertObjectDataMappings } from './data-mapping.js';
+import { assertObjectDataMappings, normalizeObjectDataMappings } from './data-mapping.js';
 import { renderPackage } from './package-render.js';
 
 type Ctx = { tables: DataDictTable[]; documents: { filename: string; textContent?: string }[] };
@@ -164,7 +164,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
   const raw = (cap.spec as any) ?? { objects: [], operations: [] };
   const versions = repo.listPackageVersions(project.id);
   const version = `1.${versions.length}.0`;
-  const spec: PackageSpec = {
+  const rawSpec: PackageSpec = {
     id: `${slug(project.name)}-agent`,
     name: project.name,
     description: project.background || project.domain || project.name,
@@ -177,6 +177,7 @@ export async function generatePackage(project: Project, ctx: Ctx, llmOverride?: 
     metrics: raw.metrics ?? [],
   };
 
+  const spec = normalizeObjectDataMappings(rawSpec, ctx.tables);
   assertObjectDataMappings(spec, ctx.tables);
   const coverage = checkCoverage(spec, selected);
   const files = renderPackage(spec);

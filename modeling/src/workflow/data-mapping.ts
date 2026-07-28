@@ -5,6 +5,36 @@ export interface ObjectDataMappingProblem {
   message: string;
 }
 
+export function normalizeObjectDataMappings(
+  spec: PackageSpec,
+  tables: DataDictTable[],
+): PackageSpec {
+  const tableByName = new Map(tables.map((table) => [table.name, table]));
+  return {
+    ...spec,
+    objects: (spec.objects ?? []).map((object) => {
+      const table = object.sourceTable ? tableByName.get(object.sourceTable) : undefined;
+      if (!table) return object;
+
+      const exactColumns = new Set(table.fields.map((field) => field.name));
+      const columnsByLowerName = new Map<string, string[]>();
+      for (const field of table.fields) {
+        const lowerName = field.name.toLowerCase();
+        columnsByLowerName.set(lowerName, [...(columnsByLowerName.get(lowerName) ?? []), field.name]);
+      }
+      const fields = (object.fields ?? []).map((field) => {
+        const sourceColumn = field.sourceColumn || field.key;
+        if (exactColumns.has(sourceColumn)) return field;
+        const matches = columnsByLowerName.get(sourceColumn.toLowerCase()) ?? [];
+        return matches.length === 1 ? { ...field, sourceColumn: matches[0] } : field;
+      });
+      return fields.some((field, index) => field !== object.fields[index])
+        ? { ...object, fields }
+        : object;
+    }),
+  };
+}
+
 export function findObjectDataMappingProblems(
   spec: PackageSpec,
   tables: DataDictTable[],
