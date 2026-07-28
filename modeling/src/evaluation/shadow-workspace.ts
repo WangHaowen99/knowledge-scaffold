@@ -1,4 +1,5 @@
 import { consumerFetch } from '../consumer/client.js';
+import { normalizeEvaluationWorkspaceId } from './data-source.js';
 
 export type ConsumerRequest = (
   token: string,
@@ -12,22 +13,8 @@ interface EvaluationWorkspaceSource {
   config?: Record<string, unknown>;
 }
 
-const CONSUMER_WORKSPACE_ID = /^[a-z][a-z0-9_-]*$/;
-const CONSUMER_WORKSPACE_ID_MAX_LENGTH = 64;
-
 export function shadowWorkspaceId(projectId: string): string {
   return `mw-shadow-${projectId.replace(/[^a-zA-Z0-9-]/g, '-')}`.slice(0, 60);
-}
-
-function assertConsumerWorkspaceId(value: unknown): string {
-  const id = String(value ?? '').trim();
-  if (!id) {
-    throw new Error('Neo4j Workspace 隔离值不能为空，因为该值同时作为评测工作空间 ID');
-  }
-  if (!CONSUMER_WORKSPACE_ID.test(id) || id.length > CONSUMER_WORKSPACE_ID_MAX_LENGTH) {
-    throw new Error('评测工作空间 ID 格式非法：必须以英文小写字母开头，只能包含小写字母、数字、下划线或中划线，且最长 64 个字符');
-  }
-  return id;
 }
 
 export function evaluationWorkspaceId(
@@ -35,7 +22,15 @@ export function evaluationWorkspaceId(
   source: EvaluationWorkspaceSource,
 ): string {
   if (source.mode === 'connection' && source.provider === 'neo4j') {
-    return assertConsumerWorkspaceId(source.config?.workspace_value);
+    const value = String(source.config?.workspace_value ?? '').trim();
+    if (!value) {
+      throw new Error('Neo4j Workspace 隔离值不能为空，因为该值同时作为评测工作空间 ID');
+    }
+    return normalizeEvaluationWorkspaceId(value);
+  }
+  if (source.mode === 'connection'
+    && (source.provider === 'nl2sql_template' || source.provider === 'nl2sql_http')) {
+    return normalizeEvaluationWorkspaceId(source.config?.evaluation_workspace_id);
   }
   return shadowWorkspaceId(projectId);
 }
@@ -61,7 +56,7 @@ export async function ensureEvaluationWorkspace({
   request?: ConsumerRequest;
 }): Promise<{ id: string; created: boolean }> {
   const defaultId = shadowWorkspaceId(projectId);
-  const id = workspaceId ? assertConsumerWorkspaceId(workspaceId) : defaultId;
+  const id = workspaceId ? normalizeEvaluationWorkspaceId(workspaceId) : defaultId;
   const list = await responseJson(
     await request(token, '/agentic/workspaces'),
     '读取评测工作空间',

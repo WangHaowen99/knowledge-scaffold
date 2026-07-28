@@ -34,11 +34,6 @@ export function getLlmSettings(): LlmSettings {
   };
 }
 
-// 评测库地址：页面设置优先，env EVAL_DB_URL 兜底。
-export function getEvalDbUrl(): string {
-  return (getSetting('eval_db_url') || config.evalDbUrl || '').trim();
-}
-
 // 评测数据源默认值（评测运行面板预填，减少每轮手输）。
 export interface EvalBindingDefaults { provider: string; url: string; token: string; scene: string; }
 export function getEvalBindingDefaults(): EvalBindingDefaults {

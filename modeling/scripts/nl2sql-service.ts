@@ -3,7 +3,7 @@
  *   POST /api/v1/query  {question, scene?}  → LLM 生成 SELECT → 查 MySQL → {success,data,row_count,sql}
  *   POST /api/v1/sql    {sql, scene?}       → 直接执行（仅 SELECT/WITH）
  *   GET  /health
- * 约定：scene = MySQL 数据库名（如 example_domain 或 modeling 评测库 mw_proj_*）。
+ * 约定：scene = MySQL 数据库名（如 example_domain 或项目评测库 mv_shadow_*）。
  * 鉴权：设了 NL2SQL_TOKEN 时校验 Authorization: Bearer <token>。
  * 业务错误一律 200 + {success:false,error}（consumer 只对 5xx 重试，避免重试风暴）。
  * 启动：tsx --env-file=.env scripts/nl2sql-service.ts

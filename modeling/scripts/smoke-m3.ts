@@ -72,7 +72,7 @@ async function main() {
   const stub = startStubConsumer(5581);
   setSetting('consumer_api_url', 'http://127.0.0.1:5581');
 
-  // 造项目 + 数据字典（含 rows，验证评测库路径的“无 EVAL_DB_URL 跳过”日志）
+  // 造项目 + 数据字典；评测数据写入已由“数据源配置”步骤负责。
   const project = createProject({ owner: 'smoke', name: 'M3 演示', domain: 'DOMAIN', background: 'x' });
   insertDocument({
     projectId: project.id, filename: 'd.xlsx', kind: 'excel', parseStatus: 'parsed',
@@ -115,10 +115,7 @@ async function main() {
     testConnection: async () => {},
   });
 
-  const { roundId } = startEvaluation({
-    projectId: project.id, token: 'stub-token',
-    tables: [], // 评测库 provisioning 走“跳过”分支
-  });
+  const { roundId } = startEvaluation({ projectId: project.id, token: 'stub-token' });
   ok(!!roundId, `轮次已启动：${roundId}`);
 
   // 轮询直到完成（引擎为后台任务）
@@ -147,7 +144,7 @@ async function main() {
   const failed = results.filter((r) => r.verdict === 'fail').length;
   ok(passed === 1 && failed === 1, `judge 判定：pass=${passed} fail=${failed}（预期 1/1）`);
   ok(round.passCount === 1 && round.progressDone === 2, `轮次统计：通过 ${round.passCount}/${round.progressTotal}`);
-  ok(round.log.includes('跳过') || round.log.includes('评测库'), '评测库 best-effort 日志存在');
+  ok(!/(评测库就绪|评测库落库失败|跳过落库)/.test(round.log), '评测运行不再执行评测库写入');
 
   // 人工改判
   const failedResult = results.find((r) => r.verdict === 'fail')!;

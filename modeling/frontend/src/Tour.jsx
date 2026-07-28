@@ -22,7 +22,7 @@ export const CONFIG_STEPS = [
   {
     sel: '[data-tour="cfg-eval"]', enter: openSettings('eval'),
     title: '配置中心 · 评测数据',
-    body: '上面是评测库 MySQL 地址：上传的 Excel 数据会自动落到这个库，供查询类用例使用。下面是评测数据源的默认值（provider、数据服务 URL、token、scene），开评测时会自动预填。改完记得点「保存全部」。',
+    body: '这里维护评测数据源的默认值（provider、数据服务 URL、token、scene），进入数据源配置时会自动预填。评测库连接和 Excel 导入按项目在“数据源配置”步骤完成。改完记得点「保存全部」。',
   },
 ];
 

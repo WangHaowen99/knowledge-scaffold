@@ -10,17 +10,28 @@ import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
-import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalDbUrl, getEvalBindingDefaults } from './settings/repo.js';
+import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
 import { packageChatPlan, packageChatApply, getOverrides, setOverride, clearOverride } from './workflow/package-chat.js';
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { startEvaluation } from './evaluation/engine.js';
-import { evalSchemaName } from './evaluation/eval-db.js';
 import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
 import type { DataSourceConsumerSync } from './evaluation/data-source-consumer-sync.js';
+import {
+  assertProjectEvaluationDatabaseImportAvailable,
+  EvaluationDatabaseImportAlreadyRunningError,
+  EvaluationDatabaseImportCapacityError,
+  getProjectEvaluationDatabaseImports,
+  startProjectEvaluationDatabaseImport,
+  type EvaluationDatabaseImportServiceDependencies,
+} from './evaluation/eval-db-import-service.js';
+import {
+  createProjectEvaluationDatabase,
+  type ProjectDatabaseCreationDependencies,
+} from './evaluation/project-evaluation-database.js';
 import {
   cancelGraphImportUpload,
   executeGraphImport,
@@ -40,7 +51,35 @@ import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-op
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
   dataSourceConsumerSync?: DataSourceConsumerSync;
+  evaluationDatabaseDependencies?: EvaluationDatabaseImportServiceDependencies
+    & ProjectDatabaseCreationDependencies;
   graphImportExecutionDependencies?: GraphImportExecutionDependencies;
+}
+
+async function readEvaluationDatabaseUpload(req: any): Promise<{
+  filename: string;
+  buffer: Buffer;
+  password: string;
+  replaceConfirmed: boolean;
+}> {
+  let filename = '';
+  let buffer: Buffer | undefined;
+  let password = '';
+  let replaceConfirmed = false;
+  for await (const part of req.parts()) {
+    if (part.type === 'file') {
+      if (buffer) throw new Error('一次只能上传一个 Excel 文件');
+      filename = part.filename;
+      buffer = await part.toBuffer();
+    } else if (part.fieldname === 'password') {
+      password = String(part.value ?? '');
+    } else if (part.fieldname === 'replace_confirmation') {
+      replaceConfirmed = String(part.value ?? '') === 'replace_same_name_tables';
+    }
+  }
+  if (!buffer) throw new Error('缺少 Excel 文件');
+  if (!password.trim()) throw new Error('本次导入的评测库 Password 不能为空');
+  return { filename, buffer, password, replaceConfirmed };
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
@@ -112,7 +151,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           apiKeySet: !!llm.apiKey, // key 不回显
           source: getSetting('llm_base_url') ? 'settings' : 'env',
         },
-        evalDbUrl: getEvalDbUrl(),
         evalBinding: binding,
       };
     });
@@ -134,7 +172,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       put('llm_max_tokens', b.llmMaxTokens);
       if (b.llmApiKey !== undefined && String(b.llmApiKey) !== '') put('llm_api_key', b.llmApiKey); // key 留空 = 保持不变
       if (b.llmApiKeyClear === true) deleteSetting('llm_api_key');
-      put('eval_db_url', b.evalDbUrl);
       put('eval_binding_provider', b.evalBindingProvider);
       put('eval_binding_url', b.evalBindingUrl);
       put('eval_binding_token', b.evalBindingToken);
@@ -521,10 +558,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const token = (req.headers.authorization ?? '').slice(7);
       const input = { ...((req.body ?? {}) as any) };
-      if (input.mode !== 'none' && ['nl2sql_template', 'nl2sql_http'].includes(String(input.provider ?? '').toLowerCase())) {
-        input.config = { ...(input.config ?? {}) };
-        if (!String(input.config.scene ?? '').trim()) input.config.scene = evalSchemaName(c.p.id);
-      }
       try {
         const dataSource = await configureProjectDataSource({
           projectId: c.p.id,
@@ -538,6 +571,48 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       } catch (e) {
         return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
       }
+    });
+
+    r.post('/api/projects/:id/evaluation-database/project-database', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      try {
+        const result = await createProjectEvaluationDatabase({
+          projectId: c.p.id,
+          config: req.body,
+        }, options.evaluationDatabaseDependencies);
+        return reply.code(result.created ? 201 : 200).send(result);
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    r.post('/api/projects/:id/evaluation-database/import', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      try {
+        assertProjectEvaluationDatabaseImportAvailable(c.p.id);
+        const upload = await readEvaluationDatabaseUpload(req);
+        const result = startProjectEvaluationDatabaseImport({
+          projectId: c.p.id,
+          ...upload,
+        }, options.evaluationDatabaseDependencies);
+        return reply.code(202).send(result);
+      } catch (error) {
+        if (error instanceof EvaluationDatabaseImportAlreadyRunningError) {
+          return reply.code(409).send({ error: error.message, run: error.run });
+        }
+        if (error instanceof EvaluationDatabaseImportCapacityError) {
+          return reply.code(429).send({ error: error.message });
+        }
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
+    r.get('/api/projects/:id/evaluation-database/imports', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { imports: getProjectEvaluationDatabaseImports(c.p.id) };
     });
 
 
@@ -674,7 +749,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const token = (req.headers.authorization ?? '').slice(7);
       try {
-        const { roundId } = startEvaluation({ projectId: c.p.id, token, tables: c.ctx.tables });
+        const { roundId } = startEvaluation({ projectId: c.p.id, token });
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {

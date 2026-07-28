@@ -44,7 +44,8 @@ export async function parseDocument(kind: DocKind, buffer: Buffer): Promise<Pars
 
 // Excel 语义（design.md 决策 5）：sheet=表，首行=字段名，次行可选注释，余行=样例数据。
 export interface ParseExcelOptions {
-  maxRows?: number;
+  /** null 表示保留全部数据行；未传时沿用普通文档解析的 2000 行上限。 */
+  maxRows?: number | null;
   rejectOverflow?: boolean;
 }
 
@@ -93,11 +94,12 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
       };
     });
 
-    const maxRows = options.maxRows ?? 2000;
-    if (options.rejectOverflow && dataRows.length > maxRows) {
+    const maxRows = options.maxRows === undefined ? 2000 : options.maxRows;
+    if (maxRows !== null && options.rejectOverflow && dataRows.length > maxRows) {
       throw new Error(`Sheet「${sheetName}」数据行数 ${dataRows.length} 超过上限 ${maxRows}`);
     }
-    const rowMatrix = dataRows.slice(0, maxRows).map((r) =>
+    const selectedRows = maxRows === null ? dataRows : dataRows.slice(0, maxRows);
+    const rowMatrix = selectedRows.map((r) =>
       header.map((_, col) => String((r[col] ?? '')).trim()));
     tables.push({ name: sheetName, fields, rowCount: dataRows.length, rows: rowMatrix });
   }
@@ -106,12 +108,21 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
 
 function inferType(values: string[]): DataDictField['inferredType'] {
   if (!values.length) return 'unknown';
-  const sample = values.slice(0, 20);
   // 前导零编码（0001 之类）是字符串不是数字——按 number 落库会丢前导零（0002→2）
-  if (sample.some((v) => /^0\d/.test(v))) return 'string';
-  if (sample.every((v) => /^-?\d+(\.\d+)?$/.test(v))) return 'number';
-  if (sample.every((v) => /^(true|false|是|否|yes|no|0|1)$/i.test(v))) return 'boolean';
-  if (sample.every((v) => /^\d{4}[-/]\d{1,2}([-/]\d{1,2})?/.test(v))) return 'date';
+  if (values.some((v) => /^-?0\d/.test(v))) return 'string';
+  if (values.every((v) => /^-?\d+(\.\d+)?$/.test(v))) {
+    const hasUnsafeInteger = values.some((value) => /^-?\d+$/.test(value)
+      && !Number.isSafeInteger(Number(value)));
+    // MySQL 使用 DECIMAL(65,30)：超出 35 位整数或 30 位小数时按文本保存，
+    // 避免全量导入在后段数据上失败，同时保留原始精度。
+    const exceedsPortableDecimal = values.some((value) => {
+      const [integer, fraction = ''] = value.replace(/^-/, '').split('.');
+      return integer.length > 35 || fraction.length > 30 || integer.length + fraction.length > 65;
+    });
+    return hasUnsafeInteger || exceedsPortableDecimal ? 'string' : 'number';
+  }
+  if (values.every((v) => /^(true|false|是|否|yes|no|0|1)$/i.test(v))) return 'boolean';
+  if (values.every((v) => /^\d{4}[-/]\d{1,2}([-/]\d{1,2})?/.test(v))) return 'date';
   return 'string';
 }
 

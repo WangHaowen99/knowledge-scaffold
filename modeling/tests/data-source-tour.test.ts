@@ -14,6 +14,13 @@ test('数据源配置引导：不同 Provider 覆盖各自全部可见配置控�
     DATA_SOURCE_TOUR_TARGETS.url,
     DATA_SOURCE_TOUR_TARGETS.scene,
     DATA_SOURCE_TOUR_TARGETS.token,
+    DATA_SOURCE_TOUR_TARGETS.evaluationWorkspace,
+    DATA_SOURCE_TOUR_TARGETS.evalDbEngine,
+    DATA_SOURCE_TOUR_TARGETS.evalDbHost,
+    DATA_SOURCE_TOUR_TARGETS.evalDbPort,
+    DATA_SOURCE_TOUR_TARGETS.evalDbDatabase,
+    DATA_SOURCE_TOUR_TARGETS.evalDbUser,
+    DATA_SOURCE_TOUR_TARGETS.evalDbPassword,
   ];
   const neo4jTargets = [
     DATA_SOURCE_TOUR_TARGETS.provider,
@@ -50,6 +57,8 @@ test('数据源配置引导：Provider 说明不同且包含关键填写约束',
   assert.match(templateText, /Token.*必填/);
   assert.match(httpText, /直接调用/);
   assert.match(httpText, /Token.*可留空/);
+  assert.match(templateText, /MySQL.*PostgreSQL/);
+  assert.match(httpText, /工作空间 ID/);
   assert.equal(ONTOLOGY_ID_SYNC_BUTTON_LABEL, '同步知识包id');
   assert.match(neo4jText, /“同步知识包id”/);
   assert.doesNotMatch(neo4jText, /自动同步知识包id/);

@@ -18,7 +18,6 @@ services:
       - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}
       - AUTH_JWT_AUDIENCE=${AUTH_JWT_AUDIENCE:-meta-wise}
       - CONSUMER_API_URL=${CONSUMER_API_URL:-http://backend:5055}
-      - EVAL_DB_URL=${EVAL_DB_URL:-}
     volumes:
       - modeling-data:/data
     networks:

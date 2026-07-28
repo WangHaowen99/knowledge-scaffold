@@ -14,14 +14,14 @@
 | 2 | 技术栈 | modeling = 仓库首个 **Node 全栈服务**：Fastify + pi-agent-core（同进程）+ React 前端；与 consumer（Python）仅经 HTTP 协作 |
 | 3 | 认证 | **直连独立 auth-server**（`AUTH_ISSUER_URL` 指向 auth-server；2026-07-10 起移除 introspect 模式，单一路径避免部署歧义）：登录/续期走 OAuth2 `/token`（password/refresh grant），JWKS 本地 RS256 验签（`AUTH_JWT_ISSUER`/`AUTH_JWT_AUDIENCE` 配期望 claims，锁死 alg、强制 `typ=access`）；注册经本服务一步转发 auth-server 的 `/register`（一步建正式用户、无邮箱验证码，带 X-Forwarded-For 供限流）；强制改密用户（pwd_cr）拒绝进入（403 PASSWORD_CHANGE_REQUIRED，modeling 无改密入口）。前端 401 单飞静默续期，对齐 consumer ADR D6 方案 a。评测闭环的 consumer 业务 API（`CONSUMER_API_URL`）为另一服务，须信任同一 auth-server 才能接受透传的专家 token |
 | 4 | 与 consumer 闭环 | **全自动 API 直连**（专家 token 透传）：配置时 `import-zip` → `PUT ontology data-source`，评测时 `import-zip` → 复用 ontology data-source → 逐用例 `runs/sync`；评测跑在**建模影子工作区**（普通 workspace，靠 X-Workspace-Id 隔离，专用命名 + 用后可清理）；导出 zip 仅作兜底 |
-| 5 | Excel 语义 | 一个 xlsx=一个库；**sheet=表**（sheet 名=表名），首行=字段名，次行可选注释，余行=样例数据。三段用途：① 入项目数据字典（驱动访谈与映射）② 推导 objects 字段与 `object-data-mappings.json`；每个 object 必须绑定真实 Sheet、字段必须存在于该 Sheet，同一 Sheet 可映射多个 object，`objects/index.md` 的 `来源Sheet` 是 Excel 图导入选表依据 ③ **自动落评测 MySQL**（每项目一 schema，自动 DDL+灌数据+在影子工作区配置 ontology 私有数据源） |
+| 5 | Excel 语义 | 一个 xlsx=一个库；**sheet=表**（sheet 名=表名），首行=字段名，次行可选注释，余行=数据。三段用途：① 入项目数据字典（驱动访谈与映射）② 推导 objects 字段与 `object-data-mappings.json`；每个 object 必须绑定真实 Sheet、字段必须存在于该 Sheet，同一 Sheet 可映射多个 object，`objects/index.md` 的 `来源Sheet` 是 Excel 图导入选表依据 ③ 在数据源配置步骤全量、异步写入项目连接的 MySQL 或 PostgreSQL 评测库；可用具备建库权限的账号幂等创建固定名称 `mv_shadow_<project_id>` |
 | 6 | 访谈交互 | 三种题型（单选/多选/选项+自由文本），每题带「其他」「跳过」；**按节点批次出题（1~5 题/批）**；聚焦四类决策点（对象划分/字段含义/关系/口径），场景背景在建项目时一次性填写；**支持回溯修改**，改后从该节点重新规划（仍有效的后续答案保留预填） |
 | 7 | 胜任力问题 | **建模↔评测之桥**：候选 10~20 条 → 专家勾选/编辑/补充（至少 5 条方可进入生成）；双重落地——operations 必须覆盖选中问题（生成后覆盖检查，未覆盖标红）+ 自动预填评测用例 `question` |
 | 8 | 评测与优化 | **LLM Judge** 判分（通过/部分/失败+理由，专家可改判）→ 优化器输出**结构化建议**（精确到文件段落、预期修复的用例）→ 逐条采纳后 agent 改包、**版本递增、自动重评**；首版内置轻量评测，不接 `evaluation/agent_eval` |
 | 9 | 持久化 | **SQLite**（项目/workflow 状态/访谈/用例/评测轮次/建议）+ **文件系统**（原始文档、解析产物、包各版本工作副本），compose 挂卷；会话断点恢复；项目仅 owner 可见；与评测 MySQL 严格分离 |
 | 10 | LLM 配置 | modeling 独立 `.env`（`MODELING_LLM_BASE_URL/MODEL/API_KEY` + 可选轻量模型），OpenAI-compatible 直喂 pi；**不**从 consumer 取密钥（不破坏「密钥永不出全局层」） |
 | 11 | workflow 节点 | 固定主干 10 节点（下文），1~6 顺行+可回溯、7~10 自由往返；**动态节点限 4 类**（追问访谈/深读文档/数据探查/冲突消解），每次插入产出可见节点卡片说明理由 |
-| 12 | 前端 | 复用控制台 `.mwr` 设计体系（首版拷贝 tokens）；四页面：项目列表 / 建模工作台（三栏）/ 包评审（可编辑）/ 评测中心；部署默认：compose 服务名 `modeling`，后端 5100、前端 dev 6700，评测库 `modeling-eval-db` |
+| 12 | 前端 | 复用控制台 `.mwr` 设计体系（首版拷贝 tokens）；四页面：项目列表 / 建模工作台（三栏）/ 包评审（可编辑）/ 评测中心；部署默认：compose 服务名 `modeling`，后端 5100、前端 dev 6700；NL2SQL 评测库按项目连接 MySQL 或 PostgreSQL |
 
 ## 2. 系统架构
 
@@ -101,10 +101,12 @@ AUTH_ISSUER_URL=http://auth-server:5056   # 直连独立 auth-server（登录/�
 # AUTH_JWT_ISSUER=http://auth-server:5056   # 验签期望 iss（=auth-server 的 AUTH_SERVER_ISSUER）
 # AUTH_JWT_AUDIENCE=meta-wise               # 验签期望 aud
 CONSUMER_API_URL=http://consumer:5055     # 评测业务 API（另一服务，须信任同一 auth-server）
-EVAL_DB_URL=mysql://...@modeling-eval-db:3306
+# 评测库连接不使用全局环境变量，在项目“数据源配置”中保存公开字段并测试连接
 ```
 
-compose：`modeling`（Node，5100，挂 `modeling-data` 卷）+ `modeling-eval-db`（MySQL 8）；前端 dev 6700，生产由 modeling 服务托管静态产物。
+compose：`modeling`（Node，5100，挂 `modeling-data` 卷）；前端 dev 6700，生产由 modeling 服务托管静态产物。NL2SQL 项目可连接外部 MySQL 或 PostgreSQL 评测库。
+
+评测库导入由独立 Worker Thread 执行 Excel 解析和数据库写入，单实例同时只运行一个任务，避免阻塞 HTTP 事件循环并限制大文件并发占用。导入不设置 2000 行截断；用户必须显式确认同名表替换。PostgreSQL 在事务中替换，MySQL 先完整写入临时表，再用单条原子 `RENAME TABLE` 切换，失败时保留原表。运行中的导入会阻止启动评测。
 
 ## 8. 里程碑
 
@@ -112,7 +114,7 @@ compose：`modeling`（Node，5100，挂 `modeling-data` 卷）+ `modeling-eval-
 | --- | --- | --- |
 | **M1 ✅** | 服务骨架 + AuthClient + 项目/上传/解析（含 excel→数据字典）+ workflow 引擎与恢复 + **前端骨架** | 传入样例资料可走到节点 3 —— **已达成**。后端：`scripts/smoke-nodes.ts` 通过（节点 1→3 端到端、Excel 数据字典、快照序列化恢复），HTTP 服务启动、认证门控、build/typecheck 通过。前端：登录 → 项目列表 → 建模工作台三栏（时间线 / 上传解析 / 数据字典）端到端联调通过（puppeteer 截图验证），build 通过 |
 | **M2 ✅** | 访谈（批次/挂起恢复）+ 胜任力（候选/勾选/覆盖）+ 包生成（spec→标准包渲染）+ 导出 zip + **前端四面板** | 产出的包可被 consumer 成功导入 —— **已达成**。后端：`scripts/smoke-m2.ts` 通过（访谈跨节点挂起/恢复、胜任力 5/5 覆盖、包渲染），并用 consumer 的 `_has_converted_ontology_structure` 真实校验生成的 zip。前端：访谈答题卡（三题型/topic/其他/跳过/进度点）、胜任力勾选（≥5 门控）、生成（覆盖明细）、包评审（文件树 + Markdown 渲染/源码 + 导出 zip）——puppeteer 全新项目端到端（真实上传 xlsx → 生成 → 评审）截图验证。新增 `MODELING_LLM_BASE_URL=faux` 演示模式（脚本化假建模者，无 key 可全流程试玩）。遗留：动态节点 deepread/probe/conflict、包评审编辑 |
-| **M3 ✅** | 评测闭环（影子工作区/评测库落地/runs·sync/Judge/结果页） | 端到端出分 —— **已达成**（stub consumer 层面）。后端：`scripts/smoke-m3.ts` 通过（影子工作区创建、import-zip 409→overwrite_version 重试、本体级评测数据源配置与复用、runs/sync 429 退避、faux Judge 判分、轮次统计、人工改判同步 pass_count）。评测库落地 `evaluation/eval-db.ts`（Excel 全量行→MySQL `mw_proj_<id>`，best-effort，服务外部 NL2SQL/MindsDB 数据链路）。前端：用例录入（胜任力预填/增删改）+ 数据源配置 + 评测运行（数据源摘要、进度条轮询、日志、结果卡改判、轮次历史）。遗留：真实 consumer + example 13 条用例端到端验收（依赖真实环境） |
+| **M3 ✅** | 评测闭环（评测工作空间/评测库/runs·sync/Judge/结果页） | 端到端出分 —— **已达成**（stub consumer 层面）。后端：`scripts/smoke-m3.ts` 通过（工作空间创建、import-zip 409→overwrite_version 重试、本体级评测数据源配置与复用、runs/sync 429 退避、faux Judge 判分、轮次统计、人工改判同步 pass_count）。NL2SQL 数据源保存时同步测试服务与 MySQL/PostgreSQL 评测库，随后在数据源步骤上传 Excel 并由后台任务全量写入；评测运行仅复用已准备的数据。前端：用例录入（胜任力预填/增删改）+ 数据源配置与 Excel 后台导入状态轮询 + 评测运行（数据源摘要、进度条轮询、日志、结果卡改判、轮次历史）。遗留：真实 consumer + example 13 条用例端到端验收（依赖真实环境） |
 | **M4 ✅** | 优化器 + 版本迭代 + 评测中心完整 UI + 导出交付 | 两轮优化后通过率可见提升 —— **已达成**。后端：`scripts/smoke-m4.ts` 通过（内容感知 stub consumer：回答质量取决于导入包内容），两轮优化通过率 1/3 → 2/3 → 3/3；优化器 `evaluation/optimizer.ts`（propose：未通过用例 → 结构化建议 submit_suggestions；apply：采纳建议 → 修订规格 submit_revised_spec → 版本 1.N.0 递增 + 覆盖重算）；建议状态机 pending/applied/rejected（`workflow/m4-repo.ts`）；package 路由支持 `?version=` 历史版本查看/导出；`/versions` 聚合各版本评测通过率。前端：节点 10 优化面板（建议卡勾选采纳/忽略、应用生成新版本、去评测验证）+ 版本历史与交付表（通过率趋势 ↑提升 标记、逐版本导出 zip）——puppeteer 端到端（建议生成 → 应用 v1.1.0 → 复评 2/2 → 版本表提升标记）截图验证。遗留：真实 consumer + example 样例端到端验收（依赖真实环境） |
 
 ## 8.5 真实场景验收记录

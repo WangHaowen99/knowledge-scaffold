@@ -14,7 +14,7 @@ NL2SQL 服务 (:5600，scripts/nl2sql-service.ts，LLM 生成 SELECT)
   ▼
 MySQL (:3306，Docker mw-eval-mysql)
   ├─ example_domain         示例样例 48 表（examples 数据集）
-  └─ mw_proj_<项目id>     modeling 评测库落库（EVAL_DB_URL）
+  └─ evaluation           在“数据源配置”中连接并上传 Excel 的项目评测库
 ```
 
 ## 1. MySQL（Docker）
@@ -46,10 +46,10 @@ NO_PROXY='localhost,127.0.0.1' no_proxy='localhost,127.0.0.1' ./venv/bin/python 
 
 兼容 consumer `nl2sql_template` / `nl2sql_http` provider 契约
 （`POST /api/v1/query|sql`、`GET /health`、Bearer 鉴权、`{success,data,row_count}`）。
-**约定 scene = MySQL 数据库名**（`example_domain` 或 modeling 落库的 `mw_proj_*`）。
+**约定 scene = 数据库名**（例如 `example_domain` 或项目配置的 `evaluation`）。
 
 ```bash
-cd modeling   # .env 需含 MODELING_LLM_*、EVAL_DB_URL，可选 NL2SQL_TOKEN/NL2SQL_PORT
+cd modeling   # .env 需含 MODELING_LLM_*、EVAL_DB_URL（仅桥接服务使用），可选 NL2SQL_TOKEN/NL2SQL_PORT
 npx tsx --env-file=.env scripts/nl2sql-service.ts
 ```
 
@@ -57,12 +57,11 @@ npx tsx --env-file=.env scripts/nl2sql-service.ts
 
 ```bash
 cd modeling   # .env：MODELING_LLM_*、AUTH_ISSUER_URL=http://localhost:5055、
-              #       CONSUMER_API_URL=http://localhost:5055、EVAL_DB_URL=mysql://root:REPLACE_WITH_STRONG_PASSWORD@127.0.0.1:3306
+              #       CONSUMER_API_URL=http://localhost:5055
 npx tsx --env-file=.env src/server.ts
 ```
 
-登录用 consumer 账号（issuer 转发）。页面「⚙ 设置」里的 consumer 地址
-优先于 env——注意别残留冒烟测试的 stub 地址。
+登录用 consumer 账号（issuer 转发）。页面「⚙ 设置」里的 consumer 地址优先于 env——注意别残留冒烟测试的 stub 地址。进入项目“数据源配置”，填写评测工作空间 ID、NL2SQL 服务和 MySQL/PostgreSQL 评测库。可在 Database 右侧点击“新建项目数据库”，确认后使用当前连接幂等创建唯一固定库 `mv_shadow_<project_id>`；账号需具备 `CREATE DATABASE` 权限，库已存在时直接复用。保存并测试通过后上传 Excel，并显式确认 Sheet 同名表替换。上传接口接受文件后立即返回，由独立 Worker Thread 在后台全量解析和写入（无 2000 行上限），页面轮询任务直到成功或失败；PostgreSQL 使用事务，MySQL 使用临时表和原子重命名，因此写入失败不会先删除原表。任务运行期间不能启动评测。
 
 ## 5. 链路验证清单
 
@@ -73,6 +72,7 @@ npx tsx --env-file=.env src/server.ts
 | consumer 就绪 | `GET :5055/api/system-config/readiness` | `ready:true` |
 | consumer 全链路 | 导入示例本体 zip → 为该本体配置 `nl2sql_template` 数据源（url=`http://localhost:5600`）→ `runs/sync` 同上问题 | final_answer 含 `STATION01-工位1` |
 | modeling→consumer | `POST :5100/api/settings/consumer/test` | `reachable/authOk/modelReady` 全 true |
+| modeling→评测库 | 项目“数据源配置”保存并测试 → 上传 Excel → 等待后台任务完成 | 同名 Sheet 表及全部数据行出现在所选 MySQL/PostgreSQL Database |
 
 （`business-query-testcases.json` 13 条业务推理题 + `data-query-testcases.json` 26 条数据查询题，
-字段 `question` / `ground_truth`，可直接录入节点 8）。
+字段 `question` / `ground_truth`，可直接录入“评测用例录入”节点）。
