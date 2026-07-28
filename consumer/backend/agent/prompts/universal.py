@@ -73,11 +73,10 @@ Before executing in any mode, ensure every required input the chosen path needs 
 
 
 _STEP3_INTERACTION_POLICY_DISABLED = """\
-Before executing in any mode, remember this caller cannot resume a user interaction. Never call `request_user_interaction`.
-- If a candidate operation's documented scope, applicability, constraints, exclusions, or required scene conflicts with the user's actual scenario, treat that operation as not applicable. Do not force-fit it, do not execute it, and do not let it override direct-answer fallback.
-- If a candidate operation requires user-provided inputs that are missing, do not pretend those inputs were provided. Do not fabricate a company name, identifier, choice, approval, or other required parameter.
-- If no ontology matches, no suitable operation matches, or a matched operation is not applicable, answer directly in conversation for consultation, recommendation, explanation, comparison, or solution-advice requests using available business knowledge. Clearly label uncertainty.
-- If the task is execution, approval, or depends on exact identifiers, user decisions, or missing required parameters, do not guess or continue execution. Return a concise text response explaining what is missing or why execution cannot continue."""
+This caller cannot resume a user interaction. Never call `request_user_interaction`.
+- If no suitable operation applies, or a candidate operation conflicts with the user's actual scenario or misses required user inputs, treat it as not applicable.
+- For consultation or recommendation requests, answer directly in text using available business knowledge and label uncertainty.
+- For execution, approval, or required-input tasks, do not guess missing identifiers, parameters, or user decisions; return a concise text explanation instead."""
 
 
 _INTERACTION_TOOL_RULES_ALLOWED = """\
@@ -87,11 +86,10 @@ _INTERACTION_TOOL_RULES_ALLOWED = """\
 
 
 _INTERACTION_TOOL_RULES_DISABLED = """\
-- This run does not support multi-turn user interaction or resume. Never call `request_user_interaction`.
-- If an operation is only superficially similar but its documented scene or constraints conflict with the user's scenario, treat it as not applicable instead of partially following it.
-- If an operation cannot run because required user inputs are missing, do not claim those inputs exist and do not continue the operation. For consultation, recommendation, explanation, comparison, or solution-advice requests, switch to direct-answer fallback instead.
-- For consultation, recommendation, explanation, comparison, or solution-advice requests, if ontology matching or operation constraints do not yield an applicable path, answer directly in text using available business knowledge and label uncertainty.
-- For execution, approval, or required-input tasks, do not invent missing identifiers, parameters, or user decisions. Return a concise text explanation of what is missing or why execution cannot continue."""
+- This run does not support multi-turn interaction or resume. Never call `request_user_interaction`.
+- If an operation is inapplicable or misses required user inputs, do not continue it.
+- For consultation or recommendation requests, fall back to a direct text answer.
+- For execution, approval, or required-input tasks, return a concise text explanation instead of guessing."""
 
 
 UNIVERSAL_AGENT_SYSTEM_PROMPT = """\
