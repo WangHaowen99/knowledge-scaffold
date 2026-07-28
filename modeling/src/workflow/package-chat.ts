@@ -2,7 +2,7 @@ import { Type } from '@earendil-works/pi-ai';
 import { getDb, nowIso } from '../db/index.js';
 import { buildLlm } from '../llm/provider.js';
 import { makeAgent, runAgent } from './agent.js';
-import { assertObjectDataMappings } from './data-mapping.js';
+import { assertObjectDataMappings, normalizeObjectDataMappings } from './data-mapping.js';
 import { checkCoverage } from './m2.js';
 import * as repo from './m2-repo.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
@@ -153,7 +153,10 @@ export async function packageChatApply(
   }
 
   const version = `1.${repo.listPackageVersions(project.id).length}.0`;
-  const newSpec: PackageSpec = { ...spec, version, objects: cap.revised.objects, operations: cap.revised.operations };
+  const newSpec = normalizeObjectDataMappings(
+    { ...spec, version, objects: cap.revised.objects, operations: cap.revised.operations },
+    tables,
+  );
   assertObjectDataMappings(newSpec, tables);
   const selected = repo.listCompetency(project.id).filter((q) => q.selected).map((q) => q.question);
   repo.insertPackageVersion(project.id, version, newSpec, checkCoverage(newSpec, selected), `包修缮对话：${plan.summary.slice(0, 60)}`);

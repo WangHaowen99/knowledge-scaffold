@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractGraphImportSchema } from '../src/graph-import/package-schema.js';
-import { assertObjectDataMappings, findObjectDataMappingProblems } from '../src/workflow/data-mapping.js';
+import {
+  assertObjectDataMappings,
+  findObjectDataMappingProblems,
+  normalizeObjectDataMappings,
+} from '../src/workflow/data-mapping.js';
 import { runFormatChecks } from '../src/workflow/package-check.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import type { DataDictTable, PackageSpec } from '../src/types.js';
@@ -155,6 +159,48 @@ test('package mapping：显式数据映射必须匹配真实 Sheet、字段和�
   assert.throws(
     () => assertObjectDataMappings(missingTable, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]),
     /知识包数据映射无效.*MissingSheet/,
+  );
+});
+
+test('package mapping：字段名仅大小写不同时规范化为 Excel 真实列名', () => {
+  const source = packageSpec();
+  source.objects[0].fields[0].sourceColumn = 'id';
+  delete source.objects[0].fields[1].sourceColumn;
+  source.objects[1].fields[0].sourceColumn = 'code';
+
+  const normalized = normalizeObjectDataMappings(
+    source,
+    [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])],
+  );
+
+  assert.deepEqual(
+    normalized.objects.flatMap((object) => object.fields.map((field) => field.sourceColumn)),
+    ['ID', 'NAME', 'CODE'],
+  );
+  assert.equal(source.objects[0].fields[0].sourceColumn, 'id');
+  assert.equal(source.objects[0].fields[1].sourceColumn, undefined);
+  assert.deepEqual(findObjectDataMappingProblems(normalized, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]), []);
+
+  const graphSchema = extractGraphImportSchema(normalized, renderPackage(normalized));
+  assert.deepEqual(
+    graphSchema.objects.flatMap((object) => object.propertyMappings.map((mapping) => mapping.sourceColumn)),
+    ['ID', 'NAME', 'CODE'],
+  );
+});
+
+test('package mapping：仅大小写不同的重名列存在歧义时不自动选择', () => {
+  const source = packageSpec();
+  source.objects[0].fields[0].sourceColumn = 'Id';
+
+  const normalized = normalizeObjectDataMappings(
+    source,
+    [dataTable('DataSheet', ['ID', 'id', 'NAME', 'CODE'])],
+  );
+
+  assert.equal(normalized.objects[0].fields[0].sourceColumn, 'Id');
+  assert.match(
+    findObjectDataMappingProblems(normalized, [dataTable('DataSheet', ['ID', 'id', 'NAME', 'CODE'])])[0].message,
+    /来源字段.*Id.*不存在/,
   );
 });
 
