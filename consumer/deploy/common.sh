@@ -163,10 +163,38 @@ check_port_available() {
 }
 
 docker_compose_cmd() {
+    if [ -n "${DOCKER_COMPOSE_CMD:-}" ]; then
+        case "${DOCKER_COMPOSE_CMD}" in
+            "docker compose"|"docker-compose")
+                printf '%s' "${DOCKER_COMPOSE_CMD}"
+                return 0
+                ;;
+            *)
+                unset DOCKER_COMPOSE_CMD
+                ;;
+        esac
+    fi
+
     if docker compose version >/dev/null 2>&1; then
-        printf 'docker compose'
+        export DOCKER_COMPOSE_CMD='docker compose'
+        printf '%s' "${DOCKER_COMPOSE_CMD}"
         return 0
     fi
+
+    if command -v docker-compose >/dev/null 2>&1; then
+        # The release compose file uses profiles; older v1 builds cannot parse it.
+        local legacy_version
+        legacy_version="$(docker-compose version --short 2>/dev/null || true)"
+        case "${legacy_version}" in
+            1.2[0-7].*|1.1?.*|1.?.*|0.*)
+                die "docker-compose ${legacy_version:-<unknown>} is too old (<1.28) and cannot run this release compose file; upgrade Docker Compose"
+                ;;
+        esac
+        export DOCKER_COMPOSE_CMD='docker-compose'
+        printf '%s' "${DOCKER_COMPOSE_CMD}"
+        return 0
+    fi
+
     return 1
 }
 
@@ -244,7 +272,7 @@ build_compose_env_args() {
 
 compose_up() {
     local compose_cmd
-    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available (tried 'docker compose' and 'docker-compose')"
     build_compose_env_args
 
     # shellcheck disable=SC2086
@@ -257,7 +285,7 @@ compose_up() {
 
 compose_down() {
     local compose_cmd
-    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available (tried 'docker compose' and 'docker-compose')"
     build_compose_env_args
 
     # shellcheck disable=SC2086
@@ -270,7 +298,7 @@ compose_down() {
 
 compose_stop() {
     local compose_cmd
-    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available"
+    compose_cmd="$(docker_compose_cmd)" || die "Docker Compose is not available (tried 'docker compose' and 'docker-compose')"
     build_compose_env_args
 
     # shellcheck disable=SC2086

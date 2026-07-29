@@ -19,7 +19,13 @@ require_file "${SCRIPT_DIR}/jiuwenbox-policy.yaml"
 
 command -v docker >/dev/null 2>&1 || die "Docker is required but not installed"
 docker info >/dev/null 2>&1 || die "Docker daemon is not reachable"
-docker_compose_cmd >/dev/null 2>&1 || die "Docker Compose is required but not available"
+compose_probe_output=""
+if ! compose_probe_output="$(docker_compose_cmd 2>&1 >/dev/null)"; then
+    if [ -n "${compose_probe_output}" ]; then
+        printf '%s\n' "${compose_probe_output}" >&2
+    fi
+    die "Docker Compose is required but not available (tried 'docker compose' and 'docker-compose')"
+fi
 [ "$(uname -s)" = "Linux" ] || die "JiuwenBox sandbox deployment requires Linux"
 
 ensure_runtime_layout
