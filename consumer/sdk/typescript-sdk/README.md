@@ -90,7 +90,7 @@ for await (const event of resumed) {
 
 ## MCP 与 Graph
 
-MCP 默认独立监听 `7488`：Streamable HTTP 地址为 `/search/mcp`、`/chat/mcp`。通过 `/agentic/mcp/tokens` 创建 workspace 专用 token，搜索和聊天分别要求 `mcp:search`、`mcp:chat` scope；不要复用 consumer access token。
+MCP 默认独立监听 `7488`，Streamable HTTP 地址包含工作空间专属的持久化路由标识：`/<mcp_endpoint_id>/search/mcp`、`/<mcp_endpoint_id>/chat/mcp`。通过 `/agentic/mcp/runtime/status` 读取当前 workspace 的完整 URL，再通过 `/agentic/mcp/tokens` 创建 workspace 专用 token。搜索和聊天分别要求 `mcp:search`、`mcp:chat` scope；URL Endpoint 与 token workspace 必须一致，不要复用 consumer access token。
 
 Graph 连接按 workspace 配置并显式绑定 ontology。Neo4j 配置 `uri/database/username/password`，HugeGraph 配置 `url/graph/graph_space` 以及可选凭据；SDK 不从本地环境推断 Graph provider。
 

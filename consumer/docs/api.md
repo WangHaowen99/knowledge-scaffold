@@ -2045,7 +2045,24 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 #### `GET /agentic/mcp/runtime/status`
 
-返回独立进程的连通状态、transport、外部地址和 search/chat 服务卡片。外部地址来自 `MCP_PUBLIC_BASE_URL`，部署时应设置为客户端实际可达的域名或 IP。
+返回当前工作空间的 `mcp_endpoint_id`、独立进程连通状态、transport、外部地址和 search/chat 服务卡片。`services[].active_url` 是客户端应直接使用的完整 URL。外部基础地址来自 `MCP_PUBLIC_BASE_URL`，该变量只配置协议、域名、端口和可选网关前缀。
+
+```json
+{
+  "workspace_id": "corporate",
+  "mcp_endpoint_id": "cdd181f5b6cb47a9",
+  "running": true,
+  "transport": "both",
+  "services": [
+    {
+      "toolset": "chat",
+      "active_url": "https://mcp.example.com/cdd181f5b6cb47a9/chat/mcp",
+      "streamable_http_url": "https://mcp.example.com/cdd181f5b6cb47a9/chat/mcp",
+      "sse_url": "https://mcp.example.com/cdd181f5b6cb47a9/chat/sse"
+    }
+  ]
+}
+```
 
 #### `GET /agentic/mcp/tokens`
 
@@ -2065,8 +2082,8 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 | scope | 允许的服务 |
 | --- | --- |
-| `mcp:search` | `/search/mcp`、`/search/sse`，只执行原子图查询，不调用 LLM |
-| `mcp:chat` | `/chat/mcp`、`/chat/sse`，进入标准 workflow 和 run admission queue |
+| `mcp:search` | `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/search/sse`，只执行原子图查询，不调用 LLM |
+| `mcp:chat` | `/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/chat/sse`，进入标准 workflow 和 run admission queue |
 
 未传 scopes 时默认同时授予两项。响应 `201` 只在创建时返回一次 `token` 明文；token 固定绑定 `sub` 和 `workspace_id`，不能用请求头切换到其他 workspace。
 
@@ -2074,13 +2091,13 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 吊销当前用户、当前 workspace 下的 token。MCP token 注册表默认位于 `.onto-runtime/mcp-tokens.json`，备份和恢复必须与 workspace 数据同步完成。
 
-独立服务默认地址：
+独立服务地址格式：
 
-- Streamable HTTP：`http://<host>:7488/search/mcp`、`http://<host>:7488/chat/mcp`
-- SSE：`http://<host>:7488/search/sse`、`http://<host>:7488/chat/sse`
+- Streamable HTTP：`http://<host>:7488/{mcp_endpoint_id}/search/mcp`、`http://<host>:7488/{mcp_endpoint_id}/chat/mcp`
+- SSE：`http://<host>:7488/{mcp_endpoint_id}/search/sse`、`http://<host>:7488/{mcp_endpoint_id}/chat/sse`
 - 健康检查：`http://<host>:7488/health`
 
-search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
+`mcp_endpoint_id` 是稳定的公开路由标识，不是凭证。URL 中的 Endpoint ID 必须与 MCP Token 绑定的 workspace 一致；不一致时工具返回 `MCP_WORKSPACE_ENDPOINT_MISMATCH`。每个 MCP transport session 同时绑定到首次使用的 Endpoint，`Mcp-Session-Id` 或 SSE `session_id` 不能跨工作空间 URL 复用；跨 Endpoint 使用按未知会话返回 HTTP 404 `Session not found`。MCP 服务重启后原 transport session 失效，客户端需要重新 initialize。search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。旧 `/search/mcp`、`/chat/mcp`、`/search/sse`、`/chat/sse` 路由均不可用。
 
 MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后的 `trace`，默认 `false`。当前公共 Trace schema 为 `5.0`：同一逻辑迭代只保留最后一份累计快照，工具调用嵌入对应 iteration，Agent 输出位于 `agent_output`，不返回模型原始思维链或 `reasoning_summaries`。
 

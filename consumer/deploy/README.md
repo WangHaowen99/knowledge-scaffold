@@ -231,8 +231,8 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 - Flask 管理接口：`/agentic/mcp/*`
 - MCP endpoint 按 `MCP_TRANSPORT` 暴露相应协议；默认 `both` 同时提供：
-  - `streamable-http`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/mcp`、`/chat/mcp`
-  - `sse`：`http://<host>:${MCP_SERVER_PORT:-7488}/search/sse`、`/chat/sse`
+  - `streamable-http`：`http://<host>:${MCP_SERVER_PORT:-7488}/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`
+  - `sse`：`http://<host>:${MCP_SERVER_PORT:-7488}/{mcp_endpoint_id}/search/sse`、`/{mcp_endpoint_id}/chat/sse`
 - 健康检查：`http://127.0.0.1:7488/health`
 
-`MCP_SERVER_HOST` 在 Compose 内部由服务覆盖：`backend` 容器使用 `mcp` 探测独立 MCP 容器，`mcp` 容器使用 `0.0.0.0` 监听。外部客户端展示地址不要依赖该字段，应使用 `MCP_PUBLIC_BASE_URL`。
+`mcp_endpoint_id` 在启动迁移中写入各工作空间的 `workspace.json`，之后保持不变。完整客户端 URL 从管理页面或 `GET /agentic/mcp/runtime/status` 获取；旧固定路由不再提供。`MCP_SERVER_HOST` 在 Compose 内部由服务覆盖：`backend` 容器使用 `mcp` 探测独立 MCP 容器，`mcp` 容器使用 `0.0.0.0` 监听。外部客户端展示地址不要依赖该字段，应使用 `MCP_PUBLIC_BASE_URL`。

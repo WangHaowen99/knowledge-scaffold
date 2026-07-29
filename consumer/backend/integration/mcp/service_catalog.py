@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from api.protocols.mcp.tool_contracts import CHAT_TOOL_DESCRIPTION, list_search_tools
+from workspace.workspaces import validate_mcp_endpoint_id
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -156,8 +157,13 @@ def _normalize_tags(value: Any) -> list[str]:
     return result
 
 
-def list_mcp_service_cards(config: Any) -> list[dict[str, Any]]:
+def list_mcp_service_cards(
+    config: Any,
+    *,
+    mcp_endpoint_id: str,
+) -> list[dict[str, Any]]:
     base_url = config.effective_public_base_url()
+    endpoint_id = validate_mcp_endpoint_id(mcp_endpoint_id)
     transport = _normalize_transport(getattr(config, "transport", "both"))
     streamable_enabled = transport in {"both", "streamable-http"}
     sse_enabled = transport in {"both", "sse"}
@@ -168,12 +174,20 @@ def list_mcp_service_cards(config: Any) -> list[dict[str, Any]]:
     cards = []
     for item in load_mcp_service_catalog():
         streamable_http_url = (
-            "{}{}/mcp".format(base_url, item.endpoint_prefix)
+            "{}/{}{}/mcp".format(
+                base_url,
+                endpoint_id,
+                item.endpoint_prefix,
+            )
             if streamable_enabled
             else ""
         )
         sse_url = (
-            "{}{}/sse".format(base_url, item.endpoint_prefix)
+            "{}/{}{}/sse".format(
+                base_url,
+                endpoint_id,
+                item.endpoint_prefix,
+            )
             if sse_enabled
             else ""
         )
