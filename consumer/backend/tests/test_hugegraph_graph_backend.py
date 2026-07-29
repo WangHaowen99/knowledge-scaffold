@@ -21,6 +21,15 @@ def _scope():
     )
 
 
+def _workspace_only_scope():
+    return GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="",
+        ontology_value="",
+    )
+
+
 def _vertex(vertex_id, entity_name, properties, *, workspace="workspace-a", ontology="onto-a"):
     merged = {
         "entity_name": entity_name,
@@ -215,6 +224,24 @@ def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_d
     assert calls[0]["url"] == "http://hugegraph.test/graphspaces/DEFAULT/graphs/demo/schema"
     assert calls[0]["headers"] == {"Authorization": "Bearer token"}
     assert calls[0]["auth"] == ("user", "secret")
+
+
+def test_hugegraph_property_filter_supports_workspace_only_scope(monkeypatch):
+    _install_hugegraph_http(monkeypatch)
+    backend = HugeGraphBackend({"url": "http://hugegraph.test", "graph": "demo"})
+
+    result = backend.property_filter(
+        element_class="TargetItem",
+        element_type="NODE",
+        filter_dict={"TargetItemCode": "M-001"},
+        return_properties=["TargetItemCode"],
+        limit=10,
+        offset=0,
+        scope=_workspace_only_scope(),
+    )
+
+    assert result.total == 1
+    assert result.records[0]["properties"] == {"TargetItemCode": "M-001"}
 
 
 def test_hugegraph_uses_separate_connection_and_query_timeouts(monkeypatch):
