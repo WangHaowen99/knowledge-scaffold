@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createServer } from 'vite';
 
-const frontendRoot = fileURLToPath(new URL('../../../', import.meta.url));
+const frontendRoot = fileURLToPath(new URL('../', import.meta.url));
 const vite = await createServer({
   root: frontendRoot,
   appType: 'custom',
