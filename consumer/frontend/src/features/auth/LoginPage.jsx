@@ -15,6 +15,7 @@ const VIOLATION_LABELS = {
 };
 
 const NO_REG_ERROR = { message: '', violations: [] };
+const REGISTER_VALIDATION_MESSAGE = '请先完成表单必填项和格式校验后再注册';
 
 const parseRegisterError = (status, data) => {
   if (status === 503) return { message: '注册功能未开启', violations: [] };
@@ -89,7 +90,16 @@ export default function LoginPage() {
 
   const submitRegister = async (e) => {
     e.preventDefault();
-    if (!regUsername || !regEmail || !regPassword || regBusy) return;
+    if (regBusy) return;
+    const form = e.currentTarget;
+    const invalidForm = typeof form?.checkValidity === 'function'
+      ? !form.checkValidity()
+      : !regUsername || !regEmail || !regPassword;
+    if (invalidForm) {
+      if (typeof form?.reportValidity === 'function') form.reportValidity();
+      setRegError({ message: REGISTER_VALIDATION_MESSAGE, violations: [] });
+      return;
+    }
     setRegBusy(true);
     setRegError(NO_REG_ERROR);
     try {
@@ -117,7 +127,7 @@ export default function LoginPage() {
   };
 
   const regErrorBox = regError.message && (
-    <div className="lerr">
+    <div className="lerr" role="alert">
       {regError.message}
       {regError.violations.length > 0 && (
         <ul>
@@ -162,15 +172,15 @@ export default function LoginPage() {
         <div className="ld">创建你的 知识工程工具 账号</div>
         <div className="lfield">
           <label htmlFor="register-username">用户名</label>
-          <input id="register-username" value={regUsername} onChange={(e) => setRegUsername(e.target.value)} autoFocus autoComplete="username" />
+          <input id="register-username" value={regUsername} onChange={(e) => setRegUsername(e.target.value)} autoFocus autoComplete="username" required />
         </div>
         <div className="lfield">
           <label htmlFor="register-email">邮箱</label>
-          <input id="register-email" type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} autoComplete="email" />
+          <input id="register-email" type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} autoComplete="email" required />
         </div>
         <div className="lfield">
           <label htmlFor="register-password">密码</label>
-          <input id="register-password" type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" />
+          <input id="register-password" type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} autoComplete="new-password" required />
         </div>
         {regErrorBox}
         <button className="lbtn" type="submit" disabled={regBusy}>
