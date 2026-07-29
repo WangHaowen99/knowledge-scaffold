@@ -61,6 +61,7 @@ class ToolContext:
     selected_ontology_version: Optional[str] = None
     model_profile_id: Optional[str] = None
     observer: Any = None
+    supports_user_interaction: bool = True
 
 
 @dataclass
