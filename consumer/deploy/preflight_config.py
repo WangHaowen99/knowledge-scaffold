@@ -58,13 +58,123 @@ ComposeConfigLoader = Callable[
 
 
 def _compose_command_candidates() -> tuple[tuple[str, ...], ...]:
-    return (("docker", "compose"),)
+    candidates: list[tuple[str, ...]] = []
+    preferred = os.environ.get("DOCKER_COMPOSE_CMD", "").strip()
+    if preferred == "docker compose":
+        candidates.append(("docker", "compose"))
+    elif preferred == "docker-compose":
+        candidates.append(("docker-compose",))
+
+    for candidate in (("docker", "compose"), ("docker-compose",)):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return tuple(candidates)
 
 
 def _compose_project_directory(compose_file: Path, env_file: Path) -> Path:
     if env_file.parent.name == "backend":
         return env_file.parent.parent
     return compose_file.parent
+
+
+def _merged_compose_env_values(env_files: Sequence[Path]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for env_file in env_files:
+        merged.update(read_env(env_file))
+    return merged
+
+
+def _service_block(compose_text: str, service_name: str) -> str | None:
+    match = re.search(
+        rf"(?ms)^  {re.escape(service_name)}:\s*(?:#.*)?\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*(?:#.*)?$|^\S|\Z)",
+        compose_text,
+    )
+    return match.group("body") if match is not None else None
+
+
+def _strip_optional_quotes(value: str) -> str:
+    stripped = value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1]
+    return stripped
+
+
+def _resolve_port_token(token: str, env_values: Mapping[str, str]) -> int | None:
+    stripped = _strip_optional_quotes(token)
+    if stripped.isdigit():
+        return int(stripped)
+
+    match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-|-)([0-9]+)\}", stripped)
+    if match is None:
+        return None
+
+    name, default = match.groups()
+    resolved = env_values.get(name, default).strip()
+    return int(resolved) if resolved.isdigit() else None
+
+
+def _resolve_service_published_port(
+    compose_text: str,
+    service_name: str,
+    target_port: int,
+    env_values: Mapping[str, str],
+) -> int | None:
+    body = _service_block(compose_text, service_name)
+    if body is None:
+        return None
+
+    in_ports = False
+    ports_indent = 0
+    for raw_line in body.splitlines():
+        if not raw_line.strip():
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        stripped = raw_line.strip()
+        if not in_ports:
+            if stripped == "ports:":
+                in_ports = True
+                ports_indent = indent
+            continue
+        if indent <= ports_indent:
+            break
+        if not stripped.startswith("- "):
+            continue
+        entry = _strip_optional_quotes(stripped[2:].strip())
+        match = re.fullmatch(r"(.+):([0-9]+)(?:/(?:tcp|udp))?", entry)
+        if match is None:
+            continue
+        published_token, target_token = match.groups()
+        if target_token != str(target_port):
+            continue
+        return _resolve_port_token(published_token, env_values)
+    return None
+
+
+def _fallback_release_port_config(
+    compose_file: Path,
+    env_files: Sequence[Path],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not compose_file.exists():
+        return None, "compose file not found"
+
+    compose_text = compose_file.read_text(encoding="utf-8")
+    env_values = _merged_compose_env_values(env_files)
+    services: dict[str, dict[str, list[dict[str, str]]]] = {}
+
+    for service_name, target_port in (("backend", 5055), ("mcp", 7488), ("frontend", 80)):
+        published_port = _resolve_service_published_port(
+            compose_text,
+            service_name,
+            target_port,
+            env_values,
+        )
+        if published_port is None:
+            return None, f"release compose fallback could not resolve {service_name} host port"
+        services[service_name] = {
+            "ports": [{"target": target_port, "published": str(published_port)}],
+        }
+
+    return {"services": services}, None
 
 
 def _load_compose_config_json(
@@ -125,7 +235,34 @@ def _load_compose_config_json(
         except OSError:
             continue
         if result.returncode != 0:
-            last_failure = "compose config json failed"
+            if base_cmd == ("docker-compose",):
+                try:
+                    legacy_result = subprocess.run(
+                        [*compose_args, "config"],
+                        cwd=str(project_dir),
+                        env=process_env,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        check=False,
+                    )
+                except OSError:
+                    legacy_result = None
+                if legacy_result is not None and legacy_result.returncode == 0:
+                    payload, parse_failure = _fallback_release_port_config(
+                        compose_file,
+                        resolved_env_files,
+                    )
+                    if payload is not None:
+                        return payload, []
+                    last_failure = parse_failure or "compose config fallback parse failed"
+                    continue
+            last_failure = (
+                "compose config failed"
+                if base_cmd == ("docker-compose",)
+                else "compose config json failed"
+            )
             continue
         try:
             payload = json.loads(result.stdout or "{}")

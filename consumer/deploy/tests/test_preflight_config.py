@@ -40,6 +40,8 @@ class PreflightConfigTests(unittest.TestCase):
             """\
 services:
   backend:
+    ports:
+      - "${BACKEND_PORT:-5100}:5055"
     volumes:
       - ./.onto-runtime:/app/.onto-runtime
     environment:
@@ -47,12 +49,17 @@ services:
       - CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats
       - EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions
   mcp:
+    ports:
+      - "${MCP_SERVER_PORT:-9000}:7488"
     volumes:
       - ./.onto-runtime:/app/.onto-runtime
     environment:
       - PROJECT_ROOT=/app/.onto-runtime
       - CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats
       - EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions
+  frontend:
+    ports:
+      - "${FRONTEND_PORT:-6600}:80"
 """,
             encoding="utf-8",
         )
@@ -104,6 +111,78 @@ services:
         self.assertEqual(len(env_indexes), 2)
         self.assertEqual(compose_command[env_indexes[0] + 1], str(self.env_file.resolve()))
         self.assertEqual(compose_command[env_indexes[1] + 1], str(legacy_env_file.resolve()))
+
+    def test_compose_config_loader_falls_back_to_docker_compose_when_plugin_is_unavailable(
+        self,
+    ) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        legacy_env_file = self.root / ".env"
+        legacy_env_file.write_text(
+            "BACKEND_PORT=5100\nFRONTEND_PORT=6600\nMCP_SERVER_PORT=9000\n",
+            encoding="utf-8",
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if command[:2] == ["docker", "compose"] and command[-1] == "version":
+                return SimpleNamespace(returncode=1, stdout="", stderr="missing plugin")
+            if command[0] == "docker-compose" and command[-1] == "version":
+                return SimpleNamespace(returncode=0, stdout="docker-compose version 1.29.2, build test", stderr="")
+            if command[0] == "docker-compose" and "config" in command and "--format" in command:
+                return SimpleNamespace(returncode=1, stdout="", stderr="unknown flag: --format")
+            if command[0] == "docker-compose" and "config" in command:
+                return SimpleNamespace(returncode=0, stdout="services:\n  backend:\n    ports:\n      - 5100:5055/tcp\n", stderr="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("preflight_config.subprocess.run", fake_run):
+            config, errors = _load_compose_config_json(
+                self.compose_file,
+                (self.env_file, legacy_env_file),
+            )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(config, self.compose_config)
+        self.assertEqual(calls[0], ["docker", "compose", "version"])
+        self.assertEqual(calls[1], ["docker-compose", "version"])
+        self.assertEqual(calls[2][0], "docker-compose")
+        self.assertIn("--format", calls[2])
+        self.assertEqual(calls[3][0], "docker-compose")
+        self.assertIn("config", calls[3])
+
+    def test_compose_config_loader_reports_failure_when_legacy_compose_config_validation_fails(
+        self,
+    ) -> None:
+        self.env_file.write_text(VALID_ENV, encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if command[:2] == ["docker", "compose"] and command[-1] == "version":
+                return SimpleNamespace(returncode=1, stdout="", stderr="missing plugin")
+            if command[0] == "docker-compose" and command[-1] == "version":
+                return SimpleNamespace(returncode=0, stdout="docker-compose version 1.29.2, build test", stderr="")
+            if command[0] == "docker-compose" and "config" in command and "--format" in command:
+                return SimpleNamespace(returncode=1, stdout="", stderr="unknown flag: --format")
+            if command[0] == "docker-compose" and "config" in command:
+                return SimpleNamespace(returncode=1, stdout="", stderr="compose file invalid")
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch("preflight_config.subprocess.run", fake_run):
+            config, errors = _load_compose_config_json(
+                self.compose_file,
+                self.env_file,
+            )
+
+        self.assertIsNone(config)
+        self.assertEqual(errors[0]["type"], "compose_config_unavailable")
+        self.assertEqual(errors[0]["detail"], "compose config failed")
+        self.assertEqual(calls[0], ["docker", "compose", "version"])
+        self.assertEqual(calls[1], ["docker-compose", "version"])
+        self.assertEqual(calls[2][0], "docker-compose")
+        self.assertIn("--format", calls[2])
+        self.assertEqual(calls[3][0], "docker-compose")
+        self.assertIn("config", calls[3])
 
     def test_release_host_ports_use_resolved_compose_mappings(self) -> None:
         self.assertEqual(

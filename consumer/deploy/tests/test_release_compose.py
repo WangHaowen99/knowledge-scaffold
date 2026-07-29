@@ -50,18 +50,21 @@ def test_release_compose_pins_persistent_storage_dirs_inside_runtime_volume():
     assert "EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions" in compose_text
 
 
-def test_release_lifecycle_requires_compose_v2_and_uses_compatible_env_files():
+def test_release_lifecycle_supports_legacy_docker_compose_and_uses_compatible_env_files():
     common_text = (DEPLOY_ROOT / "common.sh").read_text(encoding="utf-8")
     preflight_text = (DEPLOY_ROOT / "preflight.sh").read_text(encoding="utf-8")
     upgrade_text = (DEPLOY_ROOT / "upgrade.sh").read_text(encoding="utf-8")
 
     assert "docker compose version" in common_text
-    assert "command -v docker-compose" not in common_text
-    assert "printf 'docker-compose'" not in common_text
+    assert "command -v docker-compose" in common_text
+    assert "export DOCKER_COMPOSE_CMD='docker compose'" in common_text
+    assert "export DOCKER_COMPOSE_CMD='docker-compose'" in common_text
+    assert "<1.28" in common_text
     assert 'BACKEND_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/backend/.env"' in common_text
     assert 'LEGACY_COMPOSE_ENV_FILE="${BUNDLE_ROOT}/.env"' in common_text
     assert 'LEGACY_COMPOSE_HOST_ENV_FILE="${STATE_DIR}/legacy-compose-host.env"' in common_text
     assert common_text.count('"${COMPOSE_ENV_ARGS[@]}"') == 3
+    assert "compose_probe_output" in preflight_text
     assert '--compose-env-file "${compose_env_file}"' in preflight_text
     assert 'check_port_available "${MCP_HOST_PORT}"' in preflight_text
     assert 'http://127.0.0.1:${MCP_HOST_PORT}/health' in preflight_text
@@ -272,6 +275,132 @@ exit 1
         "mcp": 9000,
         "frontend": 6600,
     }
+
+
+def test_preflight_supports_docker_compose_v1_fallback_for_release_port_resolution(
+    tmp_path,
+):
+    bundle_root = tmp_path / "consumer"
+    deploy_root = bundle_root / "deploy"
+    backend_root = bundle_root / "backend"
+    fake_bin = tmp_path / "bin"
+    deploy_root.mkdir(parents=True)
+    backend_root.mkdir()
+    fake_bin.mkdir()
+
+    for filename in (
+        "common.sh",
+        "preflight.sh",
+        "preflight_config.py",
+        "jiuwenbox-policy.yaml",
+        "docker-compose.release.yml",
+    ):
+        shutil.copy2(DEPLOY_ROOT / filename, deploy_root / filename)
+
+    (backend_root / ".env").write_text(
+        "AUTH_SERVER_URL=http://auth-server:5056\n"
+        "AUTH_SERVER_ADMIN_TOKEN=test-admin-token-with-sufficient-length\n"
+        "MCP_SERVER_PORT=7488\n"
+        "MCP_TOKEN_SECRET=test-mcp-token-secret-with-sufficient-length\n"
+        "USER_MAX_COUNT=10\n"
+        "AUTH_USER_MAX_COUNT=10\n",
+        encoding="utf-8",
+    )
+    (bundle_root / ".env").write_text(
+        "BACKEND_PORT=5100\nFRONTEND_PORT=6600\nMCP_SERVER_PORT=9000\n",
+        encoding="utf-8",
+    )
+
+    release_arch = {
+        "x86_64": "amd64",
+        "aarch64": "arm64",
+    }.get(platform.machine(), platform.machine())
+    image_tars = {
+        "backend_image_tar": "backend.tar",
+        "frontend_image_tar": "frontend.tar",
+        "jiuwenbox_image_tar": "jiuwenbox.tar",
+        "auth_server_image_tar": "auth.tar",
+    }
+    for filename in image_tars.values():
+        (bundle_root / filename).touch()
+    (deploy_root / "manifest.json").write_text(
+        json.dumps({"release_arch": release_arch, **image_tars}, indent=2),
+        encoding="utf-8",
+    )
+
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/bin/sh
+if [ "$1" = "info" ]; then
+    exit 0
+fi
+if [ "$1" = "inspect" ]; then
+    case "$*" in
+        *onto-agent-mcp*) printf 'healthy\\n' ;;
+    esac
+    exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_docker_compose = fake_bin / "docker-compose"
+    fake_docker_compose.write_text(
+        """#!/bin/sh
+if [ "$1" = "version" ] && [ "$2" = "--short" ]; then
+    printf '1.29.2\\n'
+    exit 0
+fi
+if [ "$1" = "version" ]; then
+    printf 'docker-compose version 1.29.2, build test\\n'
+    exit 0
+fi
+args=" $* "
+case "$args" in
+    *" config --format json "*) exit 1 ;;
+    *" config "*) exit 0 ;;
+esac
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CURL_ARGS_FILE\"\n",
+        encoding="utf-8",
+    )
+    fake_ss = fake_bin / "ss"
+    fake_ss.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SS_ARGS_FILE\"\n",
+        encoding="utf-8",
+    )
+    for executable in (fake_docker, fake_docker_compose, fake_curl, fake_ss):
+        executable.chmod(0o755)
+
+    curl_args_file = tmp_path / "curl-args.txt"
+    ss_args_file = tmp_path / "ss-args.txt"
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["bash", str(deploy_root / "preflight.sh"), "--pre-migration"],
+        cwd=bundle_root,
+        env={
+            **env,
+            "CURL_ARGS_FILE": str(curl_args_file),
+            "SS_ARGS_FILE": str(ss_args_file),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    curl_args = curl_args_file.read_text(encoding="utf-8")
+    assert "http://127.0.0.1:9000/health" in curl_args
+    checked_ports = ss_args_file.read_text(encoding="utf-8")
+    assert ":5100 " in checked_ports
+    assert ":9000 " in checked_ports
+    assert ":6600 " in checked_ports
 
 def test_release_scripts_have_no_legacy_config_directory_plumbing():
     for script_name in (
