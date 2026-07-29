@@ -6,12 +6,14 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import Union, get_origin
 from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from preflight_config import (  # noqa: E402
+    ComposeEnvFiles,
     _load_compose_config_json,
     _release_host_ports,
     validate_config,
@@ -79,6 +81,9 @@ services:
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_runtime_type_aliases_are_python39_compatible(self) -> None:
+        self.assertIs(get_origin(ComposeEnvFiles), Union)
 
     def test_compose_config_loader_uses_all_release_env_files(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")

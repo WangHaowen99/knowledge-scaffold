@@ -151,6 +151,7 @@ def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch
     assert neo4j_fields["graph_query_timeout_seconds"]["default"] == 30
     assert neo4j_fields["graph_agent_timeout_seconds"]["default"] == 120
     assert hugegraph_fields["token"]["secret"] is True
+    assert neo4j_fields["ontology_property"]["default"] == "d2o_ontology_id"
     assert hugegraph_fields["ontology_property"]["default"] == "d2o_ontology_id"
     assert hugegraph_fields["graph_connect_timeout_seconds"]["default"] == 10
     assert hugegraph_fields["graph_query_timeout_seconds"]["default"] == 30

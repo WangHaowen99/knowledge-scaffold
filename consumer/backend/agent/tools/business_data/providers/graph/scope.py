@@ -27,19 +27,19 @@ class GraphScopeError(ValueError):
 def build_graph_scope(provider_config: Mapping[str, Any]) -> GraphScope:
     workspace_property = str(provider_config.get("workspace_property") or "d2o_workspace_id").strip()
     workspace_id = str(provider_config.get("workspace_id") or "").strip()
-    ontology_property = str(provider_config.get("ontology_property") or "d2o_ontology_id").strip()
-    ontology_id = str(provider_config.get("ontology_id") or "").strip()
+    ontology_property = str(provider_config.get("ontology_property") or "").strip()
+    ontology_id = str(provider_config.get("ontology_id") or "").strip() if ontology_property else ""
 
     if not workspace_property:
         raise GraphScopeError("workspace_property 不能为空")
     if not workspace_id:
         raise GraphScopeError("workspace_id 不能为空，无法执行带 scope 的图查询")
-    if not ontology_property:
-        raise GraphScopeError("ontology_property 不能为空")
-    if not ontology_id:
-        raise GraphScopeError("ontology_id 不能为空，无法执行带 scope 的图查询")
     validate_graph_identifier(workspace_property, "workspace_property")
-    validate_graph_identifier(ontology_property, "ontology_property")
+
+    if ontology_property:
+        if not ontology_id:
+            raise GraphScopeError("ontology_id 不能为空，无法执行带 scope 的图查询")
+        validate_graph_identifier(ontology_property, "ontology_property")
 
     return GraphScope(
         workspace_property=workspace_property,

@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from urllib.parse import urlparse
 
 
@@ -50,10 +50,10 @@ def _read_json_document(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-ComposeEnvFiles = Path | Sequence[Path]
+ComposeEnvFiles = Union[Path, Sequence[Path]]
 ComposeConfigLoader = Callable[
     [Path, ComposeEnvFiles],
-    tuple[dict[str, Any] | None, list[dict[str, Any]]],
+    Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]],
 ]
 
 
