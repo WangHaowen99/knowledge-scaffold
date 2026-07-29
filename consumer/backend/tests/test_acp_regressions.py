@@ -6,7 +6,12 @@ from llm import LLMPurpose
 from api.protocols.acp import server as acp_server
 import utils.lang as lang_module
 from api.protocols.acp.models import RunStatus
-from api.protocols.acp.server import _claim_acp_run, _map_orch_event_to_acp_sse
+from api.protocols.acp.server import (
+    _build_await_response,
+    _claim_acp_run,
+    _map_orch_event_to_acp_sse,
+    _merge_terminal_answer,
+)
 from agent.core.orchestrator import _resolve_run_id
 from persistence.run_store import RunStore
 from persistence.run_store import RunStatus as StoreRunStatus
@@ -79,6 +84,22 @@ def test_acp_pending_run_is_claimed_for_execution():
     assert detail is None
     assert status_code is None
     assert entry["status"] == RunStatus.RUNNING
+
+
+def test_acp_build_await_response_preserves_prompt_and_interaction_id():
+    awaiting = _build_await_response(
+        {
+            "question": "请选择处理方式",
+            "tool_call_id": "interaction_1",
+            "options": [{"id": "a", "label": "方案A", "value": "A"}],
+            "interaction": {"id": "interaction_1"},
+        }
+    )
+
+    assert awaiting is not None
+    assert awaiting["await_id"] == "interaction_1"
+    assert awaiting["message"]["parts"][0]["content"] == "请选择处理方式"
+    assert awaiting["options"] == [{"id": "a", "label": "方案A", "value": "A"}]
 
 
 def test_acp_persist_new_pending_run_keeps_store_status_pending(monkeypatch):
@@ -245,3 +266,32 @@ def test_language_translation_uses_task_llm_router(monkeypatch):
     assert calls[0]["stream"] is False
     assert calls[0]["enable_reasoning"] is False
     assert calls[0]["request_label"] == "language_translate"
+
+
+def test_acp_stream_emits_answer_for_structured_success_output():
+    event = {
+        "event": "agent.v2",
+        "data": {
+            "type": "turn.finished",
+            "payload": {
+                "status": "success",
+                "final_output": {"type": "report", "text": "Structured final answer"},
+            },
+        },
+    }
+
+    mapped = list(_map_orch_event_to_acp_sse(event, "run_1", {}, []))
+
+    assert mapped == [
+        ("answer", {"type": "answer", "text": "Structured final answer", "run_id": "run_1"}),
+    ]
+
+
+def test_merge_terminal_answer_preserves_streamed_text_when_final_output_is_empty():
+    assert _merge_terminal_answer("streamed answer", None) == "streamed answer"
+    assert _merge_terminal_answer("streamed answer", "") == "streamed answer"
+    assert _merge_terminal_answer("streamed answer", {"type": "report", "text": ""}) == "streamed answer"
+
+
+def test_merge_terminal_answer_prefers_non_empty_terminal_text():
+    assert _merge_terminal_answer("streamed answer", {"type": "report", "text": "final answer"}) == "final answer"

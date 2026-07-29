@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from agent.core.shared.interaction_policy import set_user_interaction_capability
 from api.protocols.a2a.mapper import map_agent_v2_event_to_a2a_update
 from api.protocols.a2a.models import A2ATaskCreateRequest
 from api.protocols.a2a.service import A2ATaskService
@@ -151,7 +152,10 @@ def create_task():
         message=message,
         session_id=payload.get("session_id") or None,
         task_id=str(payload.get("task_id") or "").strip() or None,
-        context=dict(payload.get("context") or {}),
+        context=set_user_interaction_capability(
+            dict(payload.get("context") or {}),
+            supported=False,
+        ),
     )
 
     service = _build_task_service()
@@ -255,7 +259,10 @@ def create_task_and_stream():
 
     task_id = str(payload.get("task_id") or "").strip() or None
     session_id = str(payload.get("session_id") or "").strip()
-    context = dict(payload.get("context") or {})
+    context = set_user_interaction_capability(
+        dict(payload.get("context") or {}),
+        supported=False,
+    )
 
     if not session_id:
         return jsonify({"error": "session_id is required"}), 400

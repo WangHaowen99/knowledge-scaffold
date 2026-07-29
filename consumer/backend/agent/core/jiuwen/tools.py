@@ -794,6 +794,7 @@ def get_jiuwen_tool_infos(
     include_memory: bool = True,
     include_orchestration: bool = True,
     include_web_search: bool = False,
+    include_interaction: bool = True,
     selected_ontology_id: Optional[str] = None,
     selected_ontology_version: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -814,6 +815,7 @@ def get_jiuwen_tool_infos(
             include_memory=include_memory,
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
+            include_interaction=include_interaction,
             workspace_id=workspace_id,
         )
     ]
