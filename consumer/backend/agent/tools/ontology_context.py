@@ -279,25 +279,8 @@ def _build_noninteractive_operation_notice(
     context: ToolContext,
     content: str,
 ) -> str | None:
-    if context.supports_user_interaction:
-        return None
-    if str(args.get("resource") or "").strip() != "operation":
-        return None
-    current_request = _latest_user_message_content(context.messages)
-    if not current_request:
-        return None
-    if not _contains_any(current_request, _TREASURY_MANAGEMENT_CUES_UNICODE):
-        return None
-    if not _contains_any(content, _FEE_COLLECTION_CUES_UNICODE):
-        return None
-    return (
-        "operation_key: {key}\n"
-        "applicability: NOT_APPLICABLE\n"
-        "reason: The current request is about group treasury / multi-bank account centralized management, "
-        "while this operation is limited to batch fee-collection scenarios such as school-uniform or tuition payments.\n"
-        "instruction: Do NOT execute or summarize this operation. Treat it as no suitable operation match. "
-        "For non-interactive consultation or recommendation requests, answer directly using business knowledge instead."
-    ).format(key=str(args.get("key") or "").strip() or "<unknown>")
+    del args, context, content
+    return None
 
 
 @dataclass(frozen=True)
@@ -332,13 +315,6 @@ class OntologyContextTool:
             workspace_id=context.workspace_id,
         )
         content = result.content
-        notice = _build_noninteractive_operation_notice(
-            args=args,
-            context=context,
-            content=content,
-        )
-        if notice:
-            content = notice
         state_updates: Dict[str, Any] = {}
         resolved_args = dict(args)
         if result.resolved_key and str(args.get("resource") or "").strip() == "object":

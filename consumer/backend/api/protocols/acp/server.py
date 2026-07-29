@@ -17,7 +17,7 @@ from flask import Blueprint, Response, abort, g, jsonify, make_response, request
 from agent.core.orchestrator import AgenticOrchestrator
 from agent.core.shared.interaction_policy import set_user_interaction_capability
 from api.auth.auth import get_current_user, require_auth
-from api.final_output import coerce_final_output_to_text
+from api.final_output import coerce_final_output_to_text, extract_final_output_text
 from persistence.run_store import RunStatus as StoreRunStatus
 from utils.identifiers import validate_session_id
 from utils.logging import bind_log_context, get_logger
@@ -366,6 +366,11 @@ def _build_await_response(awaiting_data: Optional[Dict[str, Any]]) -> Optional[D
     }
 
 
+def _merge_terminal_answer(existing_answer: str, final_output: Any) -> str:
+    final_text = extract_final_output_text(final_output)
+    return final_text or str(existing_answer or "")
+
+
 # ---------------------------------------------------------------------------
 # Runtime config: suppress patterns
 # ---------------------------------------------------------------------------
@@ -509,9 +514,9 @@ def _map_orch_event_to_acp_sse(
             if awaiting:
                 yield ("run.awaiting", awaiting)
         elif status == "success":
-            fo = payload.get("final_output")
-            if fo and isinstance(fo, str) and fo.strip():
-                yield ("answer", {"type": "answer", "text": fo, "run_id": run_id})
+            final_text = coerce_final_output_to_text(payload.get("final_output"))
+            if final_text:
+                yield ("answer", {"type": "answer", "text": final_text, "run_id": run_id})
 
     # ── dag_performance → progress ───────────────────────────────
     elif event_type == "dag_performance":
@@ -748,8 +753,9 @@ def execute_run(run_id: str):
                     elif evt_type == "turn.finished":
                         status = evt_payload.get("status", "")
                         if status == "success":
-                            final_answer = coerce_final_output_to_text(
-                                evt_payload.get("final_output")
+                            final_answer = _merge_terminal_answer(
+                                final_answer,
+                                evt_payload.get("final_output"),
                             )
                         elif status == "error":
                             final_status = RunStatus.FAILED
@@ -1082,8 +1088,9 @@ def respond_to_await(run_id: str):
                     elif evt_type == "turn.finished":
                         status = evt_payload.get("status", "")
                         if status == "success":
-                            final_answer = coerce_final_output_to_text(
-                                evt_payload.get("final_output")
+                            final_answer = _merge_terminal_answer(
+                                final_answer,
+                                evt_payload.get("final_output"),
                             )
                         elif status == "error":
                             final_status = RunStatus.FAILED

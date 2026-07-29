@@ -256,8 +256,9 @@ def test_ontology_context_marks_fee_collection_operation_inapplicable_for_nonint
     )
 
     content = result.messages[0]["content"]
-    assert "applicability: NOT_APPLICABLE" in content
-    assert "Do NOT execute or summarize this operation" in content
+    assert "operation_key: op_recommend_corporate_epayment" in content
+    assert "target_corp_name" in content
+    assert "applicability: NOT_APPLICABLE" not in content
 
 
 def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="hello.py", script_body='print("hello from script")\n'):
@@ -2975,6 +2976,20 @@ def test_registry_can_hide_request_user_interaction_for_non_interactive_main_run
 
     assert "request_user_interaction" not in main_tools
     assert "ontology_context" in main_tools
+
+
+def test_request_user_interaction_returns_non_terminal_error_when_interaction_is_disabled():
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={"type": "input", "prompt": "Please provide the missing account id."},
+        context=_make_context(supports_user_interaction=False),
+        tool_call_id="ask-1",
+    )
+
+    assert result.terminal is False
+    assert result.state_updates == {}
+    assert "request_user_interaction is unavailable in this run" in str(result.content or "")
 
 
 def test_registry_exposes_single_subagent_tool_for_main_agent():
