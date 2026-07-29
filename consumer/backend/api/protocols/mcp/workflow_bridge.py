@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Mapping
 
 from agent.core.shared.interaction_policy import set_user_interaction_capability
+from api.final_output import coerce_final_output_to_text
 from config.system_config import SystemConfigValidationError, resolve_effective_llm_profile_config
 from persistence.run_queue import QueuedRunAdmission, RunAdmissionQueue
 from persistence.run_store import RunStatus
@@ -209,7 +210,7 @@ def execute_mcp_chat_workflow(
     status = str(terminal_payload.get("status") or "interrupted").strip()
     final_output = terminal_payload.get("final_output")
     result = {
-        "content": final_output,
+        "content": coerce_final_output_to_text(final_output),
         "session_id": session_id,
         "run_id": handle.active_run_id or run_id,
         "status": status,

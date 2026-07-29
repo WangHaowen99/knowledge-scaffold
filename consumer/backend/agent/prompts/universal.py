@@ -75,6 +75,7 @@ Before executing in any mode, ensure every required input the chosen path needs 
 _STEP3_INTERACTION_POLICY_DISABLED = """\
 This caller cannot resume a user interaction. Never call `request_user_interaction`.
 - If no suitable operation applies, or a candidate operation conflicts with the user's actual scenario or misses required user inputs, treat it as not applicable.
+- A candidate operation is not applicable when any required input is missing, when its documented scene is narrower than the user's real scenario, or when its exclusions would rule out the solution the user actually needs.
 - For consultation or recommendation requests, answer directly in text using available business knowledge and label uncertainty.
 - For execution, approval, or required-input tasks, do not guess missing identifiers, parameters, or user decisions; return a concise text explanation instead."""
 
@@ -88,6 +89,7 @@ _INTERACTION_TOOL_RULES_ALLOWED = """\
 _INTERACTION_TOOL_RULES_DISABLED = """\
 - This run does not support multi-turn interaction or resume. Never call `request_user_interaction`.
 - If an operation is inapplicable or misses required user inputs, do not continue it.
+- Once you decide an operation is not applicable, discard it. Do not summarize it, do not recommend its product, and do not carry its restrictions into the final answer.
 - For consultation or recommendation requests, fall back to a direct text answer.
 - For execution, approval, or required-input tasks, return a concise text explanation instead of guessing."""
 
