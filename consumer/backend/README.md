@@ -170,7 +170,7 @@ The MCP service runs as a separate FastMCP process. Start it from `consumer/back
 PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The Flask app exposes MCP management APIs under `/agentic/mcp/*`; the standalone process exposes `/search/mcp`, `/chat/mcp`, `/search/sse`, and `/chat/sse` by default. Search tools require an explicit `ontology_id` and execute graph tools without LLM calls. Chat revalidates the MCP token in the backend and enters the canonical Jiuwen workflow and admission queue.
+Docker Compose deployment starts a separate `mcp` container that reuses the backend image and `.onto-runtime` mount. The Flask app exposes MCP management APIs under `/agentic/mcp/*`. Each workspace has one persistent random `mcp_endpoint_id`, and the standalone process exposes `/{mcp_endpoint_id}/search/mcp`, `/{mcp_endpoint_id}/chat/mcp`, `/{mcp_endpoint_id}/search/sse`, and `/{mcp_endpoint_id}/chat/sse`. Get the complete URLs from `GET /agentic/mcp/runtime/status`; the old fixed routes are not available. Search tools require an explicit `ontology_id` and execute graph tools without LLM calls. Chat revalidates the MCP token, workspace ACL, and the current request URL endpoint binding before entering the canonical Jiuwen workflow and admission queue. Each MCP transport session is pinned to its first endpoint and cannot be reused across workspace URLs; clients must initialize a new session after the MCP service restarts.
 
 ## Tests
 
@@ -213,7 +213,7 @@ Important variables:
 | `AUTH_TOKEN_TTL` | JWT TTL in seconds | `43200` |
 | `MCP_SERVER_HOST` | Standalone MCP server host; Docker Compose overrides this to `mcp` in the Flask container for internal probing and to `0.0.0.0` in the MCP container for binding | `0.0.0.0` |
 | `MCP_SERVER_PORT` | Standalone MCP server port; Docker Compose maps host `${MCP_SERVER_PORT:-7488}` to container `7488` | `7488` |
-| `MCP_PUBLIC_BASE_URL` | Externally reachable base URL shown in the console MCP page and copied client configs; set this explicitly to the server IP or domain in Docker deployments | derived from host/port |
+| `MCP_PUBLIC_BASE_URL` | Externally reachable protocol, host, port, and optional gateway prefix. Workspace endpoint IDs and service paths are appended automatically | derived from host/port |
 | `MCP_TRANSPORT` | `both` exposes Streamable HTTP and SSE; a single transport may be selected explicitly | `both` |
 | `MCP_SERVICES_CONFIG_FILE` | Optional YAML service catalog path; relative paths resolve from `consumer/backend` | `config/mcp_services.yaml` when present |
 | `MCP_TOKEN_SECRET` | MCP JWT signing secret (required, at least 32 characters; do not reuse another service secret) | no default |

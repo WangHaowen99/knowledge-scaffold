@@ -124,7 +124,7 @@ MCP 服务作为独立 FastMCP 进程运行。安装依赖后在 `consumer/backe
 PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。Flask 主服务提供 `/agentic/mcp/*` 管理 API；独立进程默认同时暴露 `/search/mcp`、`/chat/mcp`、`/search/sse`、`/chat/sse`。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会在 backend 重新校验 MCP Token，并进入统一 Jiuwen workflow 和 admission queue。
+Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。Flask 主服务提供 `/agentic/mcp/*` 管理 API。每个工作空间持久化一个随机 `mcp_endpoint_id`，独立进程暴露 `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/search/sse` 和 `/{mcp_endpoint_id}/chat/sse`。完整 URL 通过 `GET /agentic/mcp/runtime/status` 获取；旧固定路由不再提供。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会重新校验 MCP Token、工作空间 ACL 和当前请求 URL Endpoint 绑定，再进入统一 Jiuwen workflow 和 admission queue。MCP transport session 同时绑定到首次使用的 Endpoint，不能跨工作空间 URL 复用；服务重启后客户端需要重新 initialize。
 
 说明：
 
@@ -212,7 +212,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AUTH_TOKEN_TTL` | JWT 有效期，单位秒 | `43200` |
 | `MCP_SERVER_HOST` | 独立 MCP Server 监听地址；Docker Compose 中 Flask 容器会覆盖为 `mcp` 用于内部探测，MCP 容器会覆盖为 `0.0.0.0` 用于监听 | `0.0.0.0` |
 | `MCP_SERVER_PORT` | 独立 MCP Server 端口；Docker Compose 默认将宿主机 `${MCP_SERVER_PORT:-7488}` 映射到容器 `7488` | `7488` |
-| `MCP_PUBLIC_BASE_URL` | 前端 MCP 页面展示和客户端配置复制使用的外部可访问地址，Docker 部署建议显式配置为服务器 IP 或域名 | 根据 host/port 推导 |
+| `MCP_PUBLIC_BASE_URL` | 外部可访问的协议、域名、端口和可选网关前缀；工作空间 Endpoint ID 和服务路径由系统自动拼接 | 根据 host/port 推导 |
 | `MCP_TRANSPORT` | `both` 同时暴露 Streamable HTTP 和 SSE，也可显式选择单一 transport | `both` |
 | `MCP_SERVICES_CONFIG_FILE` | 可选 YAML 服务目录路径；相对路径按 `consumer/backend` 解析 | 存在时使用 `config/mcp_services.yaml` |
 | `MCP_TOKEN_SECRET` | MCP JWT 签名密钥（必填，至少 32 个字符；不要与其他服务共用） | 无默认值 |

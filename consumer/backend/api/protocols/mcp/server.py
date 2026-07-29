@@ -3,24 +3,182 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import inspect
+import logging
 import os
+import threading
 import warnings
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Annotated, Any, Callable, Mapping
+from urllib.parse import parse_qs
 
 from pydantic import Field
 
 from .chat_adapter import execute_chat_tool
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config, validate_mcp_runtime_config
-from integration.mcp.scope import MCPRequestScope, auth_error_payload, extract_bearer_token, resolve_mcp_scope_from_token
+from integration.mcp.scope import (
+    MCPRequestScope,
+    auth_error_payload,
+    bind_mcp_endpoint_id,
+    extract_bearer_token,
+    get_bound_mcp_endpoint_id,
+    resolve_mcp_scope_from_token,
+)
 from .search_adapter import execute_search_tool
 from integration.mcp.service_catalog import load_mcp_service_catalog
+from workspace.workspaces import validate_mcp_endpoint_id
 
 StringListInput = list[str] | str | None
 DictInput = dict[str, Any] | str | None
 DictListInput = list[dict[str, Any]] | str
 PathPatternInput = list[Any] | str
+_MCP_ENDPOINT_STATE_KEY = "meta_wise_mcp_endpoint_id"
+_MCP_SESSION_ID_HEADER = b"mcp-session-id"
+logger = logging.getLogger(__name__)
+
+
+class _WorkspaceEndpointSessionBindings:
+    """Keep FastMCP transport sessions on the endpoint that created them."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._endpoint_by_session_id: dict[str, str] = {}
+
+    def bind_or_validate(self, session_id: str, endpoint_id: str) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return True
+        with self._lock:
+            bound_endpoint_id = self._endpoint_by_session_id.setdefault(
+                normalized_session_id,
+                endpoint_id,
+            )
+        matches = hmac.compare_digest(bound_endpoint_id, endpoint_id)
+        if not matches:
+            logger.warning(
+                "Rejecting MCP session %s on a different workspace endpoint",
+                normalized_session_id[:16],
+            )
+        return matches
+
+    def release(self, session_id: str, endpoint_id: str) -> None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return
+        with self._lock:
+            bound_endpoint_id = self._endpoint_by_session_id.get(
+                normalized_session_id,
+            )
+            if bound_endpoint_id is not None and hmac.compare_digest(
+                bound_endpoint_id,
+                endpoint_id,
+            ):
+                self._endpoint_by_session_id.pop(normalized_session_id, None)
+
+
+def _request_mcp_session_id(scope: Mapping[str, Any]) -> str:
+    for raw_name, raw_value in scope.get("headers") or []:
+        if bytes(raw_name).lower() == _MCP_SESSION_ID_HEADER:
+            return bytes(raw_value).decode("latin-1").strip()
+    raw_query = bytes(scope.get("query_string") or b"")
+    if not raw_query:
+        return ""
+    query = parse_qs(raw_query.decode("latin-1"), keep_blank_values=False)
+    return str((query.get("session_id") or [""])[0]).strip()
+
+
+def _response_mcp_session_id(message: Mapping[str, Any]) -> str:
+    if message.get("type") != "http.response.start":
+        return ""
+    for raw_name, raw_value in message.get("headers") or []:
+        if bytes(raw_name).lower() == _MCP_SESSION_ID_HEADER:
+            return bytes(raw_value).decode("latin-1").strip()
+    return ""
+
+
+class _WorkspaceEndpointBindingApp:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        session_bindings: _WorkspaceEndpointSessionBindings,
+        rewrite_to_mount_root: bool = False,
+    ) -> None:
+        self.app = app
+        self.session_bindings = session_bindings
+        self.rewrite_to_mount_root = bool(rewrite_to_mount_root)
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        from starlette.responses import JSONResponse
+
+        raw_endpoint_id = str(
+            (scope.get("path_params") or {}).get("mcp_endpoint_id") or ""
+        ).strip()
+        try:
+            endpoint_id = validate_mcp_endpoint_id(raw_endpoint_id)
+        except ValueError:
+            response = JSONResponse({"detail": "Not Found"}, status_code=404)
+            await response(scope, receive, send)
+            return
+
+        request_session_id = _request_mcp_session_id(scope)
+        if not self.session_bindings.bind_or_validate(
+            request_session_id,
+            endpoint_id,
+        ):
+            response = JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "server-error",
+                    "error": {
+                        "code": -32600,
+                        "message": "Session not found",
+                    },
+                },
+                status_code=404,
+            )
+            await response(scope, receive, send)
+            return
+
+        child_scope = dict(scope)
+        child_state = dict(scope.get("state") or {})
+        child_state[_MCP_ENDPOINT_STATE_KEY] = endpoint_id
+        child_scope["state"] = child_state
+        if self.rewrite_to_mount_root:
+            request_path = str(scope.get("path") or "").rstrip("/")
+            existing_root_path = str(scope.get("root_path") or "").rstrip("/")
+            child_scope["root_path"] = "{}{}".format(
+                existing_root_path,
+                request_path,
+            )
+            child_scope["path"] = "/"
+            child_scope["raw_path"] = b"/"
+
+        response_status = 0
+        response_session_id = ""
+
+        async def send_with_session_binding(message: dict[str, Any]) -> None:
+            nonlocal response_status, response_session_id
+            if message.get("type") == "http.response.start":
+                response_status = int(message.get("status") or 0)
+                response_session_id = _response_mcp_session_id(message)
+                if 200 <= response_status < 300 and response_session_id:
+                    self.session_bindings.bind_or_validate(
+                        response_session_id,
+                        endpoint_id,
+                    )
+            await send(message)
+
+        with bind_mcp_endpoint_id(endpoint_id):
+            await self.app(child_scope, receive, send_with_session_binding)
+
+        should_release = response_status == 404 or (
+            child_scope.get("method") == "DELETE"
+            and 200 <= response_status < 300
+        )
+        if request_session_id and should_release:
+            self.session_bindings.release(request_session_id, endpoint_id)
 
 
 def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = "search") -> Any:
@@ -234,10 +392,17 @@ def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[M
 def _resolve_scope(cfg: MCPRuntimeConfig, *, required_scope: str) -> MCPRequestScope:
     headers = _get_headers_best_effort()
     token = extract_bearer_token(headers) or os.getenv("MCP_BEARER_TOKEN", "").strip()
+    request_endpoint_id = _get_request_mcp_endpoint_id_best_effort()
+    endpoint_id = (
+        get_bound_mcp_endpoint_id()
+        if request_endpoint_id is None
+        else request_endpoint_id
+    )
     return resolve_mcp_scope_from_token(
         token,
         required_scope=required_scope,
         traceparent=str(headers.get("traceparent") or "").strip(),
+        mcp_endpoint_id=endpoint_id,
     )
 
 
@@ -257,6 +422,26 @@ def _get_headers_best_effort() -> Mapping[str, str]:
     return {}
 
 
+def _get_request_mcp_endpoint_id_best_effort() -> str | None:
+    get_http_request = _load_get_http_request()
+    if get_http_request is None:
+        return None
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        return None
+    try:
+        endpoint_id = (request.scope.get("state") or {}).get(_MCP_ENDPOINT_STATE_KEY)
+        return validate_mcp_endpoint_id(endpoint_id)
+    except Exception as exc:
+        from integration.mcp.token_service import MCPTokenAuthError
+
+        raise MCPTokenAuthError(
+            "MCP_WORKSPACE_ENDPOINT_INVALID",
+            "当前 MCP 请求缺少有效的 Endpoint 上下文",
+        ) from exc
+
+
 def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transport: str | None = None):
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
@@ -271,9 +456,29 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
             server = create_mcp_server(cfg, toolset=item.toolset)
             subapp = server.http_app(path="/", transport=normalized_transport)
             mounted_apps.append(subapp)
+            session_bindings = _WorkspaceEndpointSessionBindings()
+            public_path = "/{{mcp_endpoint_id}}{}{}".format(
+                item.endpoint_prefix,
+                endpoint_path,
+            )
+            routes.append(Route(
+                public_path,
+                endpoint=_WorkspaceEndpointBindingApp(
+                    subapp,
+                    session_bindings=session_bindings,
+                    rewrite_to_mount_root=True,
+                ),
+                name="{}-{}-exact".format(
+                    item.service_id,
+                    normalized_transport,
+                ),
+            ))
             routes.append(Mount(
-                "{}{}".format(item.endpoint_prefix, endpoint_path),
-                app=subapp,
+                public_path,
+                app=_WorkspaceEndpointBindingApp(
+                    subapp,
+                    session_bindings=session_bindings,
+                ),
                 name="{}-{}".format(item.service_id, normalized_transport),
             ))
 
@@ -305,8 +510,10 @@ def _normalize_http_transports(value: str | None) -> tuple[str, ...]:
 
 def run_server(config: MCPRuntimeConfig | None = None) -> None:
     import uvicorn
+    from migrations.runner import run_startup_migrations
 
     cfg = config or load_mcp_runtime_config()
+    run_startup_migrations()
     app = create_mcp_http_root_app(cfg, transport=cfg.transport)
     uvicorn.run(app, host=cfg.server_host, port=cfg.server_port)
 
@@ -334,6 +541,15 @@ def _load_get_http_headers():
     except Exception:  # pragma: no cover - depends on fastmcp version
         return None
     return get_http_headers
+
+
+def _load_get_http_request():
+    _suppress_fastmcp_authlib_deprecation_warning()
+    try:
+        from fastmcp.server.dependencies import get_http_request
+    except Exception:  # pragma: no cover - depends on fastmcp version
+        return None
+    return get_http_request
 
 
 def _suppress_fastmcp_authlib_deprecation_warning() -> None:
