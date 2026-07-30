@@ -13,8 +13,10 @@ test('规范流程图文档为缺失的连线补充稳定 ID', () => {
     diagrams: [{
       id: 'approval',
       title: '授信审批',
-      trigger: '收到授信申请',
-      actors: ['客户经理'],
+      processMeta: {
+        trigger: '收到授信申请',
+        actors: ['客户经理'],
+      },
       nodes: [
         { id: 'start', label: '申请', kind: 'start' },
         { id: 'review', label: '审核资料', kind: 'action' },
@@ -31,6 +33,23 @@ test('规范流程图文档为缺失的连线补充稳定 ID', () => {
   assert.match(first.diagrams[0].edges[0].id, /^edge_[0-9a-f]{16}$/);
   assert.equal(first.diagrams[0].edges[0].kind, 'sequence');
   assert.equal(first.diagrams[0].edges[0].id, second.diagrams[0].edges[0].id);
+});
+
+test('只接受 processMeta 作为流程元数据结构', () => {
+  const document = normalizeFlowchartDocument({
+    diagrams: [{
+      id: 'single-model', title: '唯一模型', actors: ['旧结构角色'],
+      nodes: [
+        { id: 'start', label: '开始', kind: 'start' },
+        { id: 'end', label: '完成', kind: 'end' },
+      ],
+      edges: [{ id: 'edge', from: 'start', to: 'end', kind: 'sequence' }],
+    }],
+  });
+
+  assert.equal(document.diagrams[0].processMeta?.actors, undefined);
+  assert.equal(document.diagrams[0].processMeta?.trigger, '开始');
+  assert.deepEqual(document.diagrams[0].processMeta?.outputs, ['完成']);
 });
 
 test('可以在已有文档末尾追加空白流程图', () => {

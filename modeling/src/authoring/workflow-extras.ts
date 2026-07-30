@@ -79,12 +79,14 @@ export function buildFlowchart(
           ...(description ? { description } : {}),
           nodes,
           edges: uniqueEdges(edges),
-          trigger: process.trigger,
-          actors: process.actors,
-          inputs: process.inputs,
-          exceptions: process.exceptions,
-          outputs: process.outputs,
-          handoffs: process.handoffs,
+          processMeta: {
+            trigger: process.trigger,
+            actors: process.actors,
+            inputs: process.inputs,
+            exceptions: process.exceptions,
+            outputs: process.outputs,
+            handoffs: process.handoffs,
+          },
         };
       }),
     });

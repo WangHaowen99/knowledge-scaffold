@@ -271,6 +271,27 @@ CREATE TABLE IF NOT EXISTS flowchart_draft_submissions (
     REFERENCES flowchart_draft_revisions(project_id, interaction_id, revision) ON DELETE CASCADE
 );
 
+-- Git 不能参加 SQLite 事务，先记录流程图提交意图，服务重试时可继续收敛交互状态。
+CREATE TABLE IF NOT EXISTS flowchart_review_finalizations (
+  project_id           TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  interaction_id       TEXT NOT NULL,
+  draft_revision       INTEGER NOT NULL CHECK (draft_revision > 0),
+  request_id           TEXT NOT NULL,
+  response_json        TEXT NOT NULL,
+  actor_username       TEXT NOT NULL,
+  package_revision_oid TEXT,
+  status               TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'completed')),
+  created_at           TEXT NOT NULL,
+  completed_at         TEXT,
+  PRIMARY KEY (interaction_id, draft_revision),
+  UNIQUE (project_id, request_id),
+  FOREIGN KEY (project_id, interaction_id, draft_revision)
+    REFERENCES flowchart_draft_revisions(project_id, interaction_id, revision) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_flowchart_review_finalizations_project
+  ON flowchart_review_finalizations(project_id, status, created_at);
+
 CREATE TRIGGER IF NOT EXISTS trg_flowchart_revisions_immutable
 BEFORE UPDATE ON flowchart_draft_revisions
 BEGIN
