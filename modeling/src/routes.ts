@@ -45,7 +45,11 @@ import {
 } from './workflow/package-version-lifecycle.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
-import { cancelEvaluation, isEvaluationActive, startCurrentEvaluation } from './evaluation/engine.js';
+import {
+  cancelEvaluation,
+  cancelEvaluationsForProject,
+  startCurrentEvaluation,
+} from './evaluation/engine.js';
 import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
@@ -574,7 +578,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return reply.code(400).send({ error: '请确认删除项目' });
       }
       const runningOperation = inFlight.currentByPrefix(`${p.id}:`)
-        ?? (isEvaluationActive(p.id) ? 'evaluate' : null)
         ?? (getRunningEvaluationDatabaseImportRun(p.id) ? 'evaluation-database-import' : null);
       if (runningOperation) {
         return reply.code(409).send({
@@ -585,6 +588,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       try {
         await cancelGraphImportsForProject(p.id);
+        await cancelEvaluationsForProject(p.id);
         if (!deleteProjectLocalData(p.id, req.user!.username)) {
           return reply.code(404).send({ error: '项目不存在' });
         }

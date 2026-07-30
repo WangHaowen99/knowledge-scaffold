@@ -62,11 +62,12 @@ export async function judgeEvaluationAnswer(
   groundTruth: string,
   finalAnswer: string,
   judgeAnswer: typeof judge = judge,
+  signal?: AbortSignal,
 ): Promise<Verdict> {
   if (!groundTruth.trim()) {
     return { verdict: 'partial', reason: '缺少参考答案，等待人工判定' };
   }
-  return judgeAnswer(question, groundTruth, finalAnswer);
+  return judgeAnswer(question, groundTruth, finalAnswer, undefined, signal);
 }
 
 export async function activateEvaluationPackageVersion(input: {
@@ -74,6 +75,7 @@ export async function activateEvaluationPackageVersion(input: {
   workspaceId: string;
   ontologyId: string;
   version: string;
+  signal?: AbortSignal;
   request?: typeof consumerFetch;
 }): Promise<void> {
   const request = input.request ?? consumerFetch;
@@ -87,6 +89,7 @@ export async function activateEvaluationPackageVersion(input: {
         workspaceId: input.workspaceId,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version: input.version }),
+        signal: input.signal,
       },
     );
   } catch (error) {
@@ -115,18 +118,24 @@ interface RunOptions {
   };
 }
 
+export interface EvaluationExecutionDependencies {
+  runRound?: (input: {
+    roundId: string;
+    projectId: string;
+    signal: AbortSignal;
+  }) => Promise<void>;
+}
+
 const activeProjects = new Set<string>();
 const activeWorkspaces = new Set<string>();
-const activeEvaluations = new Map<string, { roundId: string; controller: AbortController }>();
+const activeEvaluations = new Map<string, {
+  roundId: string;
+  controller: AbortController;
+  completion: Promise<void>;
+}>();
 
 function assertEvaluationNotCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw new Error('本轮评测已由用户停止');
-}
-
-async function waitForEvaluationRelease(projectId: string): Promise<void> {
-  for (let attempt = 0; attempt < 100 && activeProjects.has(projectId); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
 }
 
 export async function cancelEvaluation(projectId: string, roundId?: string): Promise<repo.EvalRound> {
@@ -139,8 +148,20 @@ export async function cancelEvaluation(projectId: string, roundId?: string): Pro
   repo.roundLog(active.roundId, '用户从评测页面停止本轮；已保留当前完成结果，可重新启动正式评测');
   repo.finishRound(active.roundId, 'failed');
   active.controller.abort(new Error('本轮评测已由用户停止'));
-  await waitForEvaluationRelease(projectId);
+  await active.completion;
   return repo.getRound(active.roundId)!;
+}
+
+export async function cancelEvaluationsForProject(projectId: string): Promise<void> {
+  const active = activeEvaluations.get(projectId);
+  if (!active) return;
+  const round = repo.getRound(active.roundId);
+  if (round?.status === 'running') {
+    repo.roundLog(active.roundId, '项目删除，本轮评测已停止');
+    repo.finishRound(active.roundId, 'failed');
+  }
+  active.controller.abort(new Error('项目删除，本轮评测已停止'));
+  await active.completion;
 }
 
 export function isEvaluationActive(projectId: string): boolean {
@@ -166,7 +187,10 @@ export function evaluationWorkspaceForRun(
   return expectedWorkspaceId;
 }
 
-export function startEvaluation(opts: RunOptions): { roundId: string } {
+export function startEvaluation(
+  opts: RunOptions,
+  dependencies: EvaluationExecutionDependencies = {},
+): { roundId: string } {
   const { projectId } = opts;
   if (activeProjects.has(projectId)) throw new Error('该项目已有评测在运行');
   const latest = opts.packageSnapshot ?? latestPackageVersion(projectId);
@@ -195,9 +219,14 @@ export function startEvaluation(opts: RunOptions): { roundId: string } {
   activeProjects.add(projectId);
   activeWorkspaces.add(workspaceId);
   const controller = new AbortController();
-  activeEvaluations.set(projectId, { roundId: round.id, controller });
   // 后台执行（单进程内异步任务；进度与日志写库供轮询）
-  void runRound(round.id, opts, latest, testcases, dataSource, workspaceId, controller.signal)
+  const roundExecution = Promise.resolve().then(() => {
+    assertEvaluationNotCancelled(controller.signal);
+    return dependencies.runRound
+      ? dependencies.runRound({ roundId: round.id, projectId, signal: controller.signal })
+      : runRound(round.id, opts, latest, testcases, dataSource, workspaceId, controller.signal);
+  });
+  const completion = roundExecution
     .catch((e) => {
       if (controller.signal.aborted) return;
       repo.roundLog(round.id, `轮次失败：${e instanceof Error ? e.message : e}`);
@@ -208,10 +237,15 @@ export function startEvaluation(opts: RunOptions): { roundId: string } {
       activeProjects.delete(projectId);
       activeWorkspaces.delete(workspaceId);
     });
+  activeEvaluations.set(projectId, { roundId: round.id, controller, completion });
+  void completion;
   return { roundId: round.id };
 }
 
-export async function startCurrentEvaluation(opts: Omit<RunOptions, 'packageSnapshot'>): Promise<{ roundId: string }> {
+export async function startCurrentEvaluation(
+  opts: Omit<RunOptions, 'packageSnapshot'>,
+  dependencies: EvaluationExecutionDependencies = {},
+): Promise<{ roundId: string }> {
   const snapshot = await getPackageArtifactStore().readPackageFiles(opts.projectId);
   return startEvaluation({
     ...opts,
@@ -221,7 +255,7 @@ export async function startCurrentEvaluation(opts: Omit<RunOptions, 'packageSnap
       files: snapshot.files,
       revisionOid: snapshot.revision.oid,
     },
-  });
+  }, dependencies);
 }
 
 async function runRound(
@@ -242,6 +276,7 @@ async function runRound(
   // 1. 评测工作空间
   const workspace = await ensureEvaluationWorkspace({
     projectId, workspaceId: ws, owner, token: await auth.getAccessToken(),
+    signal,
   });
   assertEvaluationNotCancelled(signal);
   if (workspace.created) {
@@ -263,6 +298,7 @@ async function runRound(
     workspaceId: ws,
     ontologyId: latest.spec.id,
     zip,
+    signal,
   });
   assertEvaluationNotCancelled(signal);
   log(`知识包已导入评测工作空间：${importResult.ontology_id}（对象 ${importResult.objects_count ?? '-'} / 操作 ${importResult.operations_count ?? '-'}）`);
@@ -272,6 +308,7 @@ async function runRound(
     workspaceId: ws,
     ontologyId: importResult.ontology_id,
     version: latest.spec.version,
+    signal,
   });
   log(`已激活并确认版本：${latest.spec.version}`);
 
@@ -279,6 +316,7 @@ async function runRound(
   repo.roundPhase(roundId, 'data_source');
   await prepareProjectDataSourceForEvaluation({
     token: await auth.getAccessToken(), ontologyId: importResult.ontology_id, dataSource,
+    signal,
   });
   assertEvaluationNotCancelled(signal);
   if (dataSource.mode === 'connection') {
@@ -300,12 +338,14 @@ async function runRound(
     let reason = '';
     try {
       const run = await runCase(auth, ws, tc.question, signal);
+      assertEvaluationNotCancelled(signal);
       finalAnswer = run.finalAnswer;
       trace = run.trace;
       if (trace.status === 'unavailable') {
         log(`⚠ [${done + 1}/${testcases.length}] Trace 不可用：${trace.error ?? '未知错误'}`);
       }
-      const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, finalAnswer);
+      const v = await judgeEvaluationAnswer(tc.question, tc.groundTruth, finalAnswer, judge, signal);
+      assertEvaluationNotCancelled(signal);
       verdict = v.verdict;
       reason = v.reason;
       repo.addResult(roundId, {
@@ -313,15 +353,18 @@ async function runRound(
         finalAnswer, verdict, reason, trace,
       });
     } catch (e) {
+      if (signal.aborted) throw signal.reason;
       reason = `运行失败：${e instanceof Error ? e.message : e}`;
       repo.addResult(roundId, { testcaseId: tc.id, question: tc.question, groundTruth: tc.groundTruth, finalAnswer, verdict, reason, trace });
     }
+    assertEvaluationNotCancelled(signal);
     done++;
     if (verdict === 'pass') pass++;
     repo.roundProgress(roundId, done, pass);
     log(`[${done}/${testcases.length}] ${verdict} · ${tc.question.slice(0, 40)}`);
   }
 
+  assertEvaluationNotCancelled(signal);
   repo.finishRound(roundId, 'done');
   log(`轮次完成：通过 ${pass}/${testcases.length}`);
 }
@@ -365,6 +408,7 @@ async function runCase(
     const runId = String(data.run_id || '');
     const trace = traceFromSyncResponse(data) ?? await fetchEvaluationRunTrace({
       workspaceId: ws, sessionId: resolvedSessionId, runId,
+      signal,
     });
     return { finalAnswer: evaluationFinalAnswer(data), trace };
   }

@@ -54,6 +54,7 @@ export async function judge(
   groundTruth: string,
   finalAnswer: string,
   llmOverride?: LlmDeps,
+  signal?: AbortSignal,
 ): Promise<Verdict> {
   const cap: { verdict?: Verdict } = {};
   const submitVerdict = {
@@ -76,6 +77,8 @@ export async function judge(
     buildJudgeUserPrompt(question, groundTruth, finalAnswer),
     () => Boolean(cap.verdict),
     '不要继续输出判分说明正文。请立即调用 submit_verdict 提交 verdict 和 reason；未通过工具提交的结论不会被保存。',
+    undefined,
+    { signal },
   );
   if (!cap.verdict) throw new Error('评测判分服务未按协议提交结论');
   return cap.verdict;

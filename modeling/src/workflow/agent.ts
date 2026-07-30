@@ -3,7 +3,7 @@ import type { LlmDeps } from '../llm/provider.js';
 import type { AgentTool } from './types.js';
 
 export type AgentEventObserver = (event: unknown) => void;
-export interface RunAgentOptions { timeoutMs?: number; }
+export interface RunAgentOptions { timeoutMs?: number; signal?: AbortSignal; }
 
 export class AgentRunTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
@@ -44,28 +44,40 @@ export async function runAgent(
   observe?: AgentEventObserver,
   options: RunAgentOptions = {},
 ): Promise<unknown[]> {
+  if (options.signal?.aborted) {
+    throw options.signal.reason instanceof Error ? options.signal.reason : new Error('模型任务已取消');
+  }
   let turns = 0;
   let timeout: NodeJS.Timeout | undefined;
+  let run: Promise<void> | undefined;
+  let removeAbortListener: () => void = () => {};
   const unsub = agent.subscribe((event: any) => {
     observe?.(event);
     if (event?.type === 'turn_end' && ++turns >= MAX_TURNS) agent.abort();
   });
   try {
-    const run = (async () => {
+    run = (async () => {
       await agent.prompt(prompt);
       await agent.waitForIdle();
     })();
+    const contenders: Promise<unknown>[] = [run];
     const timeoutMs = Number(options.timeoutMs ?? 0);
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-      await Promise.race([
-        run,
-        new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(() => reject(new AgentRunTimeoutError(timeoutMs)), timeoutMs);
-        }),
-      ]);
-    } else {
-      await run;
+      contenders.push(new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new AgentRunTimeoutError(timeoutMs)), timeoutMs);
+      }));
     }
+    if (options.signal) {
+      contenders.push(new Promise<never>((_resolve, reject) => {
+        const onAbort = () => {
+          try { agent.abort(); } catch { /* 中断原因优先 */ }
+          reject(options.signal?.reason instanceof Error ? options.signal.reason : new Error('模型任务已取消'));
+        };
+        options.signal!.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = () => options.signal?.removeEventListener('abort', onAbort);
+      }));
+    }
+    await Promise.race(contenders);
     const providerFailure: any = [...(agent.state?.messages ?? [])].reverse().find((message: any) => (
       message?.role === 'assistant' && message?.stopReason === 'error'
     ));
@@ -75,9 +87,18 @@ export async function runAgent(
     if (error instanceof AgentRunTimeoutError) {
       try { agent.abort(); } catch { /* 超时错误优先 */ }
     }
+    if (options.signal?.aborted) {
+      try { agent.abort(); } catch { /* 中断原因优先 */ }
+      // abort 只发起停止动作；等待底层 provider 流真正退出，避免取消接口返回后仍有回调继续运行。
+      await run?.catch(() => undefined);
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error('模型任务已取消');
+    }
     throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
+    removeAbortListener();
     unsub();
   }
   return agent.state.messages as unknown[];
@@ -98,8 +119,9 @@ export async function runAgentCaptured(
   captured: () => boolean,
   nudge: string,
   observe?: AgentEventObserver,
+  options: RunAgentOptions = {},
 ): Promise<unknown[]> {
-  let messages = await runAgent(agent, prompt, observe);
-  if (!captured()) messages = await runAgent(agent, nudge, observe);
+  let messages = await runAgent(agent, prompt, observe, options);
+  if (!captured()) messages = await runAgent(agent, nudge, observe, options);
   return messages;
 }

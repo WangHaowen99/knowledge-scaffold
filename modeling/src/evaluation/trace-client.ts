@@ -18,9 +18,24 @@ export interface FetchEvaluationRunTraceOptions {
   runId: string;
   serviceOptions?: ModelingServiceRequestOptions;
   retryDelaysMs?: number[];
+  signal?: AbortSignal;
 }
 
-const sleep = (delayMs: number) => new Promise((resolve) => setTimeout(resolve, delayMs));
+const sleep = (delayMs: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(signal.reason);
+    return;
+  }
+  const onAbort = () => {
+    clearTimeout(timer);
+    reject(signal?.reason ?? new Error('评测已取消'));
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener('abort', onAbort);
+    resolve();
+  }, delayMs);
+  signal?.addEventListener('abort', onAbort, { once: true });
+});
 
 export function traceFromSyncResponse(data: any): EvaluationExecutionTrace | undefined {
   const rawCalls = data?.execution_trace?.tool_calls;
@@ -49,6 +64,7 @@ export async function fetchEvaluationRunTrace({
   runId,
   serviceOptions,
   retryDelaysMs = [250, 750],
+  signal,
 }: FetchEvaluationRunTraceOptions): Promise<EvaluationExecutionTrace> {
   const fallback = (error: string): EvaluationExecutionTrace => ({
     sessionId,
@@ -66,7 +82,7 @@ export async function fetchEvaluationRunTrace({
     try {
       const response = await modelingServiceFetch(
         path,
-        { workspaceId },
+        { workspaceId, signal },
         serviceOptions,
       );
       const data = (await response.json().catch(() => ({}))) as any;
@@ -84,10 +100,11 @@ export async function fetchEvaluationRunTrace({
       lastError = `Trace 接口返回 ${response.status}：${data.error || data.detail || '未知错误'}`;
       if (![404, 429, 503].includes(response.status)) break;
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       lastError = `Trace 请求失败：${error instanceof Error ? error.message : error}`;
     }
     const delay = retryDelaysMs[attempt];
-    if (delay !== undefined) await sleep(delay);
+    if (delay !== undefined) await sleep(delay, signal);
   }
   return fallback(lastError || 'Trace 获取失败');
 }
