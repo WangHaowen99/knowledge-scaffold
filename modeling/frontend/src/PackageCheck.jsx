@@ -6,7 +6,7 @@ import { BusyButton } from './ui.jsx';
 // 每条发现可一键把修复指令预填进右栏修缮对话。
 const SEV_TAG = { 错误: 'tag-err', 警告: 'tag-draft', 提示: 'tag-lang' };
 
-export default function PackageCheck({ projectId, onOpenFile }) {
+export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
   const [check, setCheck] = useState(null);   // { version, findings, createdAt } | null
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -17,6 +17,7 @@ export default function PackageCheck({ projectId, onOpenFile }) {
   }, [projectId]);
 
   const run = async () => {
+    if (packageDraft) return;
     setBusy(true); setErr('');
     try {
       const d = await runPackageCheck(projectId);
@@ -43,7 +44,8 @@ export default function PackageCheck({ projectId, onOpenFile }) {
   return (
     <div className="pcheck">
       <div className="pcheck-bar">
-        <BusyButton busy={busy} busyText="体检中" expect="含语义检查约 1~3 分钟" className="btn" onClick={run}>
+        <BusyButton busy={busy} busyText="体检中" expect="含语义检查约 1~3 分钟" className="btn"
+          disabled={!!packageDraft} title={packageDraft ? '请先发布或放弃人工编辑草稿' : ''} onClick={run}>
           🩺 知识包体检
         </BusyButton>
         {counts && (
@@ -55,7 +57,9 @@ export default function PackageCheck({ projectId, onOpenFile }) {
             <span style={{ color: 'var(--muted)' }}>{open ? '收起 ▾' : '展开 ▸'}</span>
           </button>
         )}
-        {!counts && !busy && <span style={{ fontSize: 12, color: 'var(--muted)' }}>检查口径冲突、兜底缺失、路由重复等规格问题</span>}
+        {packageDraft
+          ? <span className="draft-inline-gate">请先发布或放弃人工编辑草稿，再运行知识包体检</span>
+          : !counts && !busy && <span style={{ fontSize: 12, color: 'var(--muted)' }}>检查口径冲突、兜底缺失、路由重复等规格问题</span>}
         {err && <span className="lerr" style={{ margin: 0 }}>{err}</span>}
       </div>
       {open && check && (
@@ -68,7 +72,8 @@ export default function PackageCheck({ projectId, onOpenFile }) {
               <button className="pcheck-target" title="定位到该文件" onClick={() => onOpenFile?.(f.target)}>{f.target}</button>
               <div className="pcheck-msg">{f.message}</div>
               {f.suggestion && (
-                <button className="btn" style={{ padding: '2px 10px', fontSize: 11.5, flex: 'none' }} onClick={() => toChat(f)}>
+                <button className="btn" style={{ padding: '2px 10px', fontSize: 11.5, flex: 'none' }}
+                  disabled={!!packageDraft} title={packageDraft ? '请先发布或放弃人工编辑草稿' : ''} onClick={() => toChat(f)}>
                   交给修缮对话 →
                 </button>
               )}

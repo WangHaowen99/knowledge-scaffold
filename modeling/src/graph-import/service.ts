@@ -1,7 +1,6 @@
 import { parseExcel } from '../documents/parser.js';
 import { getProjectDataSource } from '../evaluation/data-source-repo.js';
 import { latestPackageVersion } from '../workflow/m2-repo.js';
-import { getOverrides } from '../workflow/package-chat.js';
 import { renderPackage } from '../workflow/package-render.js';
 import { extractGraphImportSchema } from './package-schema.js';
 import {
@@ -104,9 +103,6 @@ function loadPackage(projectId: string): {
   const latest = latestPackageVersion(projectId);
   if (!latest) throw new Error('请先生成知识包，再导入图数据');
   const files = renderPackage(latest.spec);
-  for (const [path, content] of Object.entries(getOverrides(projectId))) {
-    if (path in files) files[path] = content;
-  }
   const schema = extractGraphImportSchema(latest.spec, files);
   return { version: latest.version, schema };
 }

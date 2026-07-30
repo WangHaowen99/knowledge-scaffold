@@ -105,10 +105,8 @@ async function runRound(
     log(`复用评测工作空间：${ws}`);
   }
 
-  // 2. 导入知识包（已存在则覆盖激活版本；人工修订的文件以修订稿为准）
+  // 2. 导入当前正式知识包版本（已存在则覆盖激活版本）
   const files = renderPackage(latest.spec);
-  const { getOverrides } = await import('../workflow/package-chat.js');
-  for (const [op, oc] of Object.entries(getOverrides(projectId))) if (op in files) files[op] = oc;
   const zip = zipPackage(files);
   const importResult = await importPackageZip({
     token,

@@ -12,7 +12,8 @@ import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
-import { packageChatPlan, packageChatApply, getOverrides, setOverride, clearOverride } from './workflow/package-chat.js';
+import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
+import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
@@ -56,6 +57,17 @@ import { config } from './config.js';
 import type { DataDictTable } from './types.js';
 import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-operations.js';
 import { parsePackageDataSourceType } from './workflow/package-data-source.js';
+import {
+  assertNoActivePackageDraft,
+  createOrGetPackageDraft,
+  discardPackageDraft,
+  getActivePackageDraft,
+  getPackageDraftFile,
+  PackageDraftError,
+  publishPackageDraft,
+  revertPackageDraftFile,
+  savePackageDraftFile,
+} from './workflow/package-draft.js';
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -63,6 +75,33 @@ export interface RegisterRoutesOptions {
   evaluationDatabaseDependencies?: EvaluationDatabaseImportServiceDependencies
     & ProjectDatabaseCreationDependencies;
   graphImportExecutionDependencies?: GraphImportExecutionDependencies;
+  packageChatPlan?: typeof packageChatPlan;
+  packageChatApply?: typeof packageChatApply;
+}
+
+function parseDraftRevision(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) ? revision : null;
+}
+
+function sendPackageDraftError(reply: any, error: unknown) {
+  if (!(error instanceof PackageDraftError)) throw error;
+  return reply.code(error.statusCode).send({
+    code: error.code,
+    error: error.message,
+    ...error.details,
+  });
+}
+
+function blockForActivePackageDraft(reply: any, projectId: string, operation: string) {
+  try {
+    assertNoActivePackageDraft(projectId, operation);
+    return null;
+  } catch (error) {
+    return sendPackageDraftError(reply, error);
+  }
 }
 
 async function readEvaluationDatabaseUpload(req: any): Promise<{
@@ -99,6 +138,15 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
+  const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
+  const runPackageChatApply = options.packageChatApply ?? packageChatApply;
+  const legacyMigration = migrateLegacyPackageOverrides();
+  if (legacyMigration.projectCount) {
+    const log = legacyMigration.failedCount || legacyMigration.pendingReviewCount
+      ? app.log.warn.bind(app.log)
+      : app.log.info.bind(app.log);
+    log({ legacyMigration }, '旧版知识包人工覆盖迁移完成');
+  }
   app.get('/health', async () => ({ status: 'ok' }));
 
   // ---- 认证：登录/刷新/注册转发给 issuer ----
@@ -330,6 +378,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         throw error;
       }
     };
+    const blockForActivePackageRepair = (reply: any, projectId: string) => {
+      const operation = inFlight.current(`${projectId}:chat`);
+      if (!operation) return null;
+      return reply.code(409).send({
+        code: 'PACKAGE_REPAIR_IN_PROGRESS',
+        error: '知识包修缮正在进行中，暂不能人工编辑',
+        operation,
+      });
+    };
 
     r.delete('/api/projects/:id', async (req, reply) => {
       const p = getProject((req.params as any).id);
@@ -442,6 +499,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/generate', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'generate');
+      if (blocked) return blocked;
       let dataSourceType;
       try {
         dataSourceType = parsePackageDataSourceType((req.body as any)?.dataSourceType);
@@ -475,11 +534,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const pv = pickVersion(c.p.id, req);
       if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
       const files = renderPackage(pv.spec);
-      const overrides = getOverrides(c.p.id);
       return {
         version: pv.version, coverage: pv.coverage,
         files: Object.keys(files).sort(),
-        overriddenPaths: Object.keys(overrides).filter((k) => k in files).sort(),
         versions: m2repo.listPackageVersions(c.p.id),
       };
     });
@@ -491,84 +548,207 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const files = renderPackage(pv.spec);
       const path = String((req.query as any).path || '');
       if (!(path in files)) return reply.code(404).send({ error: '文件不存在' });
-      const overrides = getOverrides(c.p.id);
-      return { path, content: overrides[path] ?? files[path], overridden: path in overrides, rendered: files[path] };
+      return { path, content: files[path] };
     });
 
-    // 人工修订包文件（覆盖渲染产物；对导出与后续版本渲染持续生效，直至清除）
-    // 写入前过渲染产物层格式校验：override 改坏 frontmatter/索引/manifest/mapping 时拒绝落库
+    // 人工编辑草稿后端。草稿发布后固化为一个正式版本；活动草稿期间消费与修缮入口统一门禁。
+    r.get('/api/projects/:id/package/draft', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { draft: getActivePackageDraft(c.p.id) };
+    });
+    r.post('/api/projects/:id/package/draft', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      try {
+        const result = createOrGetPackageDraft(c.p.id, req.user!.username);
+        return reply.code(result.created ? 201 : 200).send(result);
+      } catch (error) {
+        return sendPackageDraftError(reply, error);
+      }
+    });
+    r.get('/api/projects/:id/package/draft/file', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const path = String((req.query as any).path ?? '').trim();
+      if (!path) return reply.code(400).send({ error: 'path 必填' });
+      try {
+        return { file: getPackageDraftFile(c.p.id, path) };
+      } catch (error) {
+        return sendPackageDraftError(reply, error);
+      }
+    });
+    r.put('/api/projects/:id/package/draft/file', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const { path, content, revision, expectedContentHash, draftId } = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = parseDraftRevision(revision);
+      if (typeof path !== 'string' || !path.trim()) return reply.code(400).send({ error: 'path 必填' });
+      if (typeof content !== 'string') return reply.code(400).send({ error: 'content 必填' });
+      if (expectedRevision == null) return reply.code(400).send({ error: 'revision 必须是非负整数' });
+      if (expectedContentHash !== undefined
+        && (typeof expectedContentHash !== 'string' || !/^[a-f0-9]{64}$/.test(expectedContentHash))) {
+        return reply.code(400).send({ error: 'expectedContentHash 必须是 SHA-256 十六进制字符串' });
+      }
+      if (draftId !== undefined && (typeof draftId !== 'string' || !draftId.trim())) {
+        return reply.code(400).send({ error: 'draftId 必须是非空字符串' });
+      }
+      try {
+        return savePackageDraftFile({
+          projectId: c.p.id,
+          path: path.trim(),
+          content,
+          expectedRevision,
+          expectedContentHash: typeof expectedContentHash === 'string' ? expectedContentHash : undefined,
+          expectedDraftId: typeof draftId === 'string' ? draftId.trim() : undefined,
+        });
+      } catch (error) {
+        return sendPackageDraftError(reply, error);
+      }
+    });
+    r.delete('/api/projects/:id/package/draft/file', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const path = String((req.query as any).path ?? '').trim();
+      const expectedRevision = parseDraftRevision((req.query as any).revision);
+      const expectedDraftId = String((req.query as any).draftId ?? '').trim() || undefined;
+      if (!path) return reply.code(400).send({ error: 'path 必填' });
+      if (expectedRevision == null) return reply.code(400).send({ error: 'revision 必须是非负整数' });
+      try {
+        return revertPackageDraftFile({ projectId: c.p.id, path, expectedRevision, expectedDraftId });
+      } catch (error) {
+        return sendPackageDraftError(reply, error);
+      }
+    });
+    r.delete('/api/projects/:id/package/draft', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const { confirmed, revision, draftId } = (req.body ?? {}) as Record<string, unknown>;
+      if (confirmed !== true) return reply.code(400).send({ error: '请确认放弃人工编辑草稿' });
+      const expectedRevision = parseDraftRevision(revision);
+      if (expectedRevision == null) return reply.code(400).send({ error: 'revision 必须是非负整数' });
+      if (draftId !== undefined && (typeof draftId !== 'string' || !draftId.trim())) {
+        return reply.code(400).send({ error: 'draftId 必须是非空字符串' });
+      }
+      try {
+        return { discarded: discardPackageDraft({
+          projectId: c.p.id,
+          expectedRevision,
+          expectedDraftId: typeof draftId === 'string' ? draftId.trim() || undefined : undefined,
+        }) };
+      } catch (error) {
+        return sendPackageDraftError(reply, error);
+      }
+    });
+    r.post('/api/projects/:id/package/draft/publish', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const { confirmed, revision, summary, draftId } = (req.body ?? {}) as Record<string, unknown>;
+      if (confirmed !== true) return reply.code(400).send({ error: '请确认发布人工编辑草稿' });
+      const expectedRevision = parseDraftRevision(revision);
+      if (expectedRevision == null) return reply.code(400).send({ error: 'revision 必须是非负整数' });
+      if (draftId !== undefined && (typeof draftId !== 'string' || !draftId.trim())) {
+        return reply.code(400).send({ error: 'draftId 必须是非空字符串' });
+      }
+      if (summary !== undefined && typeof summary !== 'string') {
+        return reply.code(400).send({ error: 'summary 必须是字符串' });
+      }
+      if (typeof summary === 'string' && summary.length > 500) {
+        return reply.code(400).send({ error: 'summary 不能超过 500 个字符' });
+      }
+      return withLock(`${c.p.id}:package-draft-publish`, reply, async () => {
+        try {
+          const selectedQuestions = m2repo.listCompetency(c.p.id)
+            .filter((question) => question.selected)
+            .map((question) => question.question);
+          const published = publishPackageDraft({
+            projectId: c.p.id,
+            expectedRevision,
+            expectedDraftId: typeof draftId === 'string' ? draftId.trim() || undefined : undefined,
+            tables: c.ctx.tables,
+            selectedQuestions,
+            summary: typeof summary === 'string' ? summary : undefined,
+          });
+          return reply.code(201).send({ published });
+        } catch (error) {
+          return sendPackageDraftError(reply, error);
+        }
+      });
+    });
+
+    // 旧版 override 写接口已停用。保留 410 响应，避免旧客户端误以为修改成功。
     r.put('/api/projects/:id/package/file', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const { path, content } = (req.body ?? {}) as { path?: string; content?: string };
-      const latest = m2repo.latestPackageVersion(c.p.id);
-      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
-      const files = renderPackage(latest.spec);
-      if (!path || !(path in files)) return reply.code(400).send({ error: 'path 不存在于当前包' });
-      if (typeof content !== 'string') return reply.code(400).send({ error: 'content 必填' });
-      // 以「全部 override 合并 + 本次修订」的最终产物做校验（导出看到的就是这份）
-      for (const [op, oc] of Object.entries(getOverrides(c.p.id))) if (op in files) files[op] = oc;
-      files[path] = content;
-      const bad = runFormatChecks(latest.spec, files).filter((f) => f.severity === '错误');
-      if (bad.length) {
-        return reply.code(400).send({
-          error: `修订内容未通过包格式校验，未保存：${bad.map((f) => f.message).join('；')}`,
-          findings: bad,
-        });
-      }
-      setOverride(c.p.id, path, content);
-      return { ok: true, path, overridden: true };
+      return reply.code(410).send({
+        code: 'PACKAGE_FILE_OVERRIDE_REMOVED',
+        error: '旧版单文件覆盖接口已停用，请通过人工编辑草稿修改并发布新版本',
+      });
     });
     r.delete('/api/projects/:id/package/file', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const path = String((req.query as any).path || '');
-      clearOverride(c.p.id, path);
-      const latest = m2repo.latestPackageVersion(c.p.id);
-      const files = latest ? renderPackage(latest.spec) : {};
-      return { ok: true, path, content: (files as Record<string, string>)[path] ?? '' };
+      return reply.code(410).send({
+        code: 'PACKAGE_FILE_OVERRIDE_REMOVED',
+        error: '旧版单文件覆盖接口已停用；历史覆盖已由升级迁移处理',
+      });
     });
 
     // 包修缮 agent 对话·两段式：① plan 影响分析（咨询直接回答）② 专家确认后 apply 落新版本
     r.post('/api/projects/:id/package/chat', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-chat');
+      if (blocked) return blocked;
       return withLock(`${c.p.id}:chat`, reply, async () => {
       const { message, history } = (req.body ?? {}) as { message?: string; history?: { role: 'user' | 'assistant'; text: string }[] };
       if (!message?.trim()) return reply.code(400).send({ error: 'message 必填' });
       try {
-        return await packageChatPlan(c.p, history ?? [], message.trim());
+        return await runPackageChatPlan(c.p, history ?? [], message.trim());
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
-      });
+      }, 'package-chat');
     });
     r.post('/api/projects/:id/package/chat/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-chat-apply');
+      if (blocked) return blocked;
       return withLock(`${c.p.id}:chat`, reply, async () => {
       const { message, history, plan } = (req.body ?? {}) as any;
       if (!plan?.changes?.length) return reply.code(400).send({ error: 'plan 必填（先调用 chat 获取修缮计划）' });
       try {
-        return await packageChatApply(c.p, history ?? [], String(message ?? ''), plan, c.ctx.tables);
+        return await runPackageChatApply(c.p, history ?? [], String(message ?? ''), plan, c.ctx.tables);
       } catch (e) {
         return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
       }
-      });
+      }, 'package-chat-apply');
     });
 
     // 包体检：规则引擎（确定性）+ 语义检查（LLM）；结果落库供回看
     r.post('/api/projects/:id/package/check', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-check');
+      if (blocked) return blocked;
       return withLock(`${c.p.id}:check`, reply, async () => {
       const latest = m2repo.latestPackageVersion(c.p.id);
       if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
       try {
-        // 双层体检：spec 语义层（规则 + LLM 语义）+ 渲染产物层（含 override 后的最终文件）
+        // 双层体检：spec 语义层（规则 + LLM 语义）+ 正式版本渲染产物层。
         const rendered = renderPackage(latest.spec);
-        for (const [op, oc] of Object.entries(getOverrides(c.p.id))) if (op in rendered) rendered[op] = oc;
         const formatFindings = runFormatChecks(latest.spec, rendered);
         const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, selected);
         const semanticFindings = await runSemanticCheck(c.p, latest.spec);
@@ -593,16 +773,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.get('/api/projects/:id/package/export', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-export');
+      if (blocked) return blocked;
       const pv = pickVersion(c.p.id, req);
       if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
       const rendered = renderPackage(pv.spec);
-      const overrides = getOverrides(c.p.id);
-      for (const [op, oc] of Object.entries(overrides)) if (op in rendered) rendered[op] = oc;
-      // 导出前过渲染产物层格式校验：override 改坏的包不得原样交付
+      // 导出前仍执行确定性渲染格式校验，防止异常规格产出无效交付包。
       const bad = runFormatChecks(pv.spec, rendered).filter((f) => f.severity === '错误');
       if (bad.length) {
         return reply.code(400).send({
-          error: `导出中止：包格式校验未通过——${bad.map((f) => f.message).join('；')}（请修正人工修订稿或清除对应 override 后重试）`,
+          error: `导出中止：包格式校验未通过——${bad.map((f) => f.message).join('；')}`,
           findings: bad,
         });
       }
@@ -621,6 +801,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.put('/api/projects/:id/data-source', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'data-source-update');
+      if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
       const input = { ...((req.body ?? {}) as any) };
       return withLock(`${c.p.id}:data-source`, reply, async () => {
@@ -709,6 +891,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/graph-import/uploads', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'graph-import-upload');
+      if (blocked) return blocked;
       return withLock(`${c.p.id}:graph-upload`, reply, async () => {
         try {
           const file = await (req as any).file();
@@ -729,6 +913,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/graph-import/uploads/:uploadId/validate', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'graph-import-validate');
+      if (blocked) return blocked;
       const { mapping } = (req.body ?? {}) as any;
       if (!mapping) return reply.code(400).send({ error: 'mapping 必填' });
       try {
@@ -747,6 +933,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/graph-import/uploads/:uploadId/execute', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'graph-import-execute');
+      if (blocked) return blocked;
       const { mapping, password, replaceExisting } = (req.body ?? {}) as any;
       if (!mapping) return reply.code(400).send({ error: 'mapping 必填' });
       return withLock(`${c.p.id}:graph-import`, reply, async () => {
@@ -838,6 +1026,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/evaluate', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'evaluate');
+      if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
       try {
         const { roundId } = startEvaluation({ projectId: c.p.id, token });
@@ -872,6 +1062,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/optimize/propose', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'optimize-propose');
+      if (blocked) return blocked;
       return withLock(`${c.p.id}:optimize`, reply, async () => {
       const { roundId } = (req.body ?? {}) as any;
       const round = roundId ? m3repo.getRound(roundId) : m3repo.listRounds(c.p.id).find((x) => x.status === 'done');
@@ -923,6 +1115,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/optimize/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'optimize-apply');
+      if (blocked) return blocked;
       return withLock(`${c.p.id}:optimize`, reply, async () => {
       const { suggestionIds } = (req.body ?? {}) as any;
       if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: 'suggestionIds 必填' });

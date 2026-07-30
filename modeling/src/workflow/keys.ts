@@ -78,7 +78,7 @@ export function validateSpecKeys(spec: PackageSpec): PackageSpec {
   return { ...spec, objects, operations, rules, metrics };
 }
 
-// zip 打包前的二次断言：条目路径不得越界（renderPackage 已保证，此处防御 override/未来调用方）。
+// zip 打包前的二次断言：条目路径不得越界（renderPackage 已保证，此处防御未来调用方）。
 export function assertSafeZipPath(path: string): void {
   if (!path) throw new Error('zip 条目路径不能为空');
   if (path.startsWith('/') || path.includes('\\') || CONTROL_CHARS.test(path)) {
