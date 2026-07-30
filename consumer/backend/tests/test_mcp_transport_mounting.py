@@ -479,6 +479,197 @@ def test_workspace_endpoint_binding_app_pins_and_releases_http_session():
     ]
 
 
+def test_workspace_endpoint_session_bindings_expire_after_idle_timeout():
+    now = [0.0]
+    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+        idle_timeout_seconds=10,
+        max_active_sessions=2,
+        clock=lambda: now[0],
+    )
+
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+    assert bindings.active_count() == 1
+
+    now[0] = 9
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+    now[0] = 18
+    assert bindings.expire_idle() == 0
+    assert bindings.active_count() == 1
+
+    now[0] = 19
+    assert bindings.expire_idle() == 1
+    assert bindings.active_count() == 0
+
+
+def test_workspace_endpoint_session_bindings_expire_in_last_seen_order():
+    now = [0.0]
+    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+        idle_timeout_seconds=10,
+        max_active_sessions=3,
+        clock=lambda: now[0],
+    )
+
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+    now[0] = 1
+    assert bindings.bind_or_validate("session-b", ENDPOINT_ID) is True
+    now[0] = 5
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+
+    now[0] = 11
+    assert bindings.expire_idle() == 1
+    assert bindings.active_count() == 1
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+
+
+def test_workspace_endpoint_session_bindings_reject_capacity_without_eviction():
+    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+        idle_timeout_seconds=60,
+        max_active_sessions=1,
+    )
+
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+    with pytest.raises(mcp_server._MCPActiveSessionLimitError):
+        bindings.reserve_new_session(ENDPOINT_ID)
+    with pytest.raises(mcp_server._MCPActiveSessionLimitError):
+        bindings.bind_or_validate("session-b", ENDPOINT_ID)
+
+    assert bindings.bind_or_validate("session-a", OTHER_ENDPOINT_ID) is False
+    assert bindings.active_count() == 1
+
+
+def test_workspace_endpoint_binding_app_returns_503_at_session_capacity():
+    child_calls: list[str] = []
+    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+        idle_timeout_seconds=60,
+        max_active_sessions=1,
+    )
+    assert bindings.bind_or_validate("session-a", ENDPOINT_ID) is True
+
+    async def child_app(scope, receive, send):
+        child_calls.append(scope["path"])
+
+    binding_app = mcp_server._WorkspaceEndpointBindingApp(
+        child_app,
+        session_bindings=bindings,
+    )
+
+    async def exercise_binding():
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await binding_app(
+            {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/",
+                "raw_path": b"/",
+                "query_string": b"",
+                "headers": [],
+                "client": ("test", 1),
+                "server": ("test", 80),
+                "path_params": {"mcp_endpoint_id": ENDPOINT_ID},
+            },
+            receive,
+            send,
+        )
+        start = next(
+            message
+            for message in messages
+            if message["type"] == "http.response.start"
+        )
+        body = next(
+            message["body"]
+            for message in messages
+            if message["type"] == "http.response.body"
+        )
+        assert start["status"] == 503
+        assert json.loads(body)["error"]["message"] == (
+            "Server session capacity reached"
+        )
+
+    asyncio.run(exercise_binding())
+    assert child_calls == []
+
+
+def test_workspace_endpoint_binding_tracks_session_from_error_response():
+    bindings = mcp_server._WorkspaceEndpointSessionBindings(
+        idle_timeout_seconds=60,
+        max_active_sessions=1,
+    )
+
+    async def child_app(scope, receive, send):
+        from starlette.responses import JSONResponse
+
+        response = JSONResponse({"error": "bad request"}, status_code=400)
+        response.headers["mcp-session-id"] = "session-from-error"
+        await response(scope, receive, send)
+
+    binding_app = mcp_server._WorkspaceEndpointBindingApp(
+        child_app,
+        session_bindings=bindings,
+    )
+
+    async def exercise_binding():
+        messages = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        await binding_app(
+            {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/",
+                "raw_path": b"/",
+                "query_string": b"",
+                "headers": [],
+                "client": ("test", 1),
+                "server": ("test", 80),
+                "path_params": {"mcp_endpoint_id": ENDPOINT_ID},
+            },
+            receive,
+            send,
+        )
+        start = next(
+            message
+            for message in messages
+            if message["type"] == "http.response.start"
+        )
+        assert start["status"] == 400
+
+    asyncio.run(exercise_binding())
+
+    assert bindings.active_count() == 1
+    with pytest.raises(mcp_server._MCPActiveSessionLimitError):
+        bindings.reserve_new_session(ENDPOINT_ID)
+
+
+def test_configure_streamable_http_session_idle_timeout():
+    session_manager = SimpleNamespace(session_idle_timeout=None)
+    app = SimpleNamespace(
+        routes=[SimpleNamespace(app=SimpleNamespace(session_manager=session_manager))],
+    )
+
+    mcp_server._configure_streamable_http_session_idle_timeout(
+        app,
+        mcp_server._MCP_SESSION_IDLE_TIMEOUT_SECONDS,
+    )
+
+    assert session_manager.session_idle_timeout == 1800.0
+
+
 def test_resolve_scope_prefers_current_http_request_endpoint(monkeypatch, tmp_path):
     captured_endpoint_ids: list[str] = []
 
@@ -743,6 +934,9 @@ def test_real_fastmcp_sse_uses_dynamic_message_path_and_endpoint_context(
             await asyncio.wait_for(sse_task, timeout=5)
 
         assert mcp_server.get_bound_mcp_endpoint_id() == ""
+        registries = app.state.mcp_session_binding_registries
+        assert len(registries) == 1
+        assert registries[0].active_count() == 0
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

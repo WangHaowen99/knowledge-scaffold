@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Mapping, Tuple
 
 from agent.tools.business_data.providers.base import OntologySearchEvent
-from workspace.workspaces import get_workspace_paths
+from workspace.workspaces import get_workspace, get_workspace_paths
 from agent.tools.business_data.effective_connection import build_effective_connection
 from agent.tools.business_data.provider_registry import get_provider_spec
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
@@ -71,6 +71,16 @@ def query_business_data_stream(
         "ontology_id": request.ontology_id,
         "ontology_version": request.ontology_version,
     }
+    workspace_property = str(
+        scoped_provider_config.get("workspace_property") or "d2o_workspace_id",
+    ).strip()
+    if workspace_property == "workspace_name":
+        try:
+            scoped_provider_config["workspace_name"] = str(
+                get_workspace(request.workspace_id).get("name") or "",
+            ).strip()
+        except Exception:
+            scoped_provider_config["workspace_name"] = ""
     scoped_provider_config.update({
         key: value
         for key, value in dict(request.provider_runtime_context or {}).items()

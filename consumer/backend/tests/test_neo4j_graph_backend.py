@@ -259,6 +259,34 @@ def test_neo4j_property_filter_forces_workspace_scope(monkeypatch):
     ]
 
 
+def test_neo4j_property_filter_can_disable_ontology_scope(monkeypatch):
+    calls = []
+    backend = _backend()
+    monkeypatch.setattr(backend, "_get_driver", lambda: _FakeDriver(calls))
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="",
+        ontology_value="",
+    )
+
+    backend.property_filter(
+        element_class="ChangeOrderAffectedObject",
+        element_type="NODE",
+        filter_dict={"eco_id": "CHANGE_ORDER-001"},
+        return_properties=["eco_id"],
+        limit=10,
+        offset=0,
+        scope=scope,
+    )
+
+    query, params = calls[1]
+    query_text = str(query)
+    assert "e.`d2o_workspace_id` = $scope_workspace_value" in query_text
+    assert "scope_ontology_value" not in query_text
+    assert "scope_ontology_value" not in params
+
+
 def test_neo4j_schema_methods_return_sanitized_metadata(monkeypatch):
     calls = []
     backend = _backend()
