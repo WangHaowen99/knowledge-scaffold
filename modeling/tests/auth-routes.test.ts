@@ -156,6 +156,18 @@ function multipartExcel(filename: string, buffer: Buffer) {
   };
 }
 
+function multipartFile(filename: string, buffer: Buffer, contentType = 'text/plain') {
+  const boundary = `----modeling-material-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return {
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    payload: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`),
+      buffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]),
+  };
+}
+
 function multipartEvaluationDatabaseExcel(
   filename: string,
   buffer: Buffer,
@@ -630,6 +642,52 @@ test('活动人工草稿统一门禁：修缮、重新生成和知识消费入�
   });
   assert.equal(generateResponse.statusCode, 400, generateResponse.body);
   assert.match(generateResponse.json().error, /数据源/);
+});
+
+test('资料上传 API 保留不可变修订，仅格式变化不传播失效', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers, payload: { name: '资料修订项目' },
+  });
+  const projectId = created.json().project.id;
+  const firstForm = multipartFile('policy.md', Buffer.from('规则 A\n阈值 10'));
+  const first = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/documents`,
+    headers: { ...headers, ...firstForm.headers }, payload: firstForm.payload,
+  });
+  const nextForm = multipartFile('policy.md', Buffer.from('  规则 A  \r\n\r\n 阈值   10  '));
+  const next = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/documents`,
+    headers: { ...headers, ...nextForm.headers }, payload: nextForm.payload,
+  });
+
+  assert.equal(first.statusCode, 201, first.body);
+  assert.equal(next.statusCode, 201, next.body);
+  assert.equal(next.json().document.revisionNo, 2);
+  assert.equal(next.json().materialRevision.changeKind, 'format_only');
+  assert.equal(next.json().materialRevision.semanticChanged, false);
+  assert.deepEqual(next.json().materialImpact.affectedResources, []);
+
+  const history = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/documents/revisions?sourceKey=${encodeURIComponent(first.json().document.sourceKey)}`,
+    headers,
+  });
+  assert.equal(history.statusCode, 200, history.body);
+  assert.deepEqual(history.json().revisions.map((item: any) => [item.revisionNo, item.lifecycleStatus]), [
+    [2, 'active'], [1, 'superseded'],
+  ]);
+
+  const removed = await app.inject({
+    method: 'DELETE', url: `/api/projects/${projectId}/documents/${next.json().document.id}`, headers,
+  });
+  assert.equal(removed.statusCode, 200, removed.body);
+  assert.deepEqual(removed.json().documents, []);
+  const retiredHistory = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/documents/revisions`, headers,
+  });
+  assert.equal(retiredHistory.json().revisions[0].lifecycleStatus, 'deleted');
 });
 
 test('包修缮运行期间人工草稿只读，所有写接口统一返回 409', async () => {

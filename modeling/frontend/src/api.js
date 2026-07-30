@@ -103,6 +103,9 @@ export const uploadDocument = (id, file) => {
   return api(`/api/projects/${encodeURIComponent(id)}/documents`, { method: 'POST', body: form });
 };
 export const deleteDocument = (id, docId) => api(`/api/projects/${encodeURIComponent(id)}/documents/${encodeURIComponent(docId)}`, { method: 'DELETE' });
+export const listMaterialRevisions = (id, sourceKey = '') => api(
+  `/api/projects/${encodeURIComponent(id)}/documents/revisions${sourceKey ? `?sourceKey=${encodeURIComponent(sourceKey)}` : ''}`,
+);
 export const runAnalyze = (id) => api(`/api/projects/${encodeURIComponent(id)}/analyze`, { method: 'POST' });
 
 // ---- M2 ----

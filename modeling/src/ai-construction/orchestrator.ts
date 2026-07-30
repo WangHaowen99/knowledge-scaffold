@@ -485,6 +485,7 @@ export class AiConstructionOrchestrator {
         && !['stale', 'cancelled'].includes(item.status)
       ));
       if (!task) throw new Error('当前任务图没有资料分析任务');
+      const impactReanalysis = task.milestoneId !== 'materials_ready';
       const after = task.status === 'completed'
         ? before
         : this.graph.apply(projectId, {
@@ -505,8 +506,8 @@ export class AiConstructionOrchestrator {
         blocks: [
           {
             type: 'status',
-            title: '资料分析已完成',
-            summary: '资料范围和分析结果等待您确认',
+            title: impactReanalysis ? '资料变更影响复核已完成' : '资料分析已完成',
+            summary: impactReanalysis ? '已更新受影响知识的分析依据' : '资料范围和分析结果等待您确认',
             milestoneId: task.milestoneId,
             taskId: task.id,
             progress: after.progress.percent,
@@ -518,16 +519,23 @@ export class AiConstructionOrchestrator {
           },
           {
             type: 'text',
-            text: `${input.analysis.domainOverview}\n\n已整理 ${goalCount} 个候选业务目标、${processCount} 个候选核心流程、${candidateCount} 个候选对象，以及 ${questionCount} 个待确认问题。确认资料范围后，我会优先让您从这些候选中选择，仅在没有合适选项时再补充输入。`,
+            text: impactReanalysis
+              ? `${input.analysis.domainOverview}\n\n已根据新资料修订重新整理分析依据。接下来只重新生成受影响知识，未受影响的目标和流程确认继续保留。`
+              : `${input.analysis.domainOverview}\n\n已整理 ${goalCount} 个候选业务目标、${processCount} 个候选核心流程、${candidateCount} 个候选对象，以及 ${questionCount} 个待确认问题。确认资料范围后，我会优先让您从这些候选中选择，仅在没有合适选项时再补充输入。`,
           },
           ...(evidenceItems.length ? [{ type: 'evidence' as const, title: '资料分析依据', items: evidenceItems }] : []),
           {
             type: 'next_actions',
             title: '请确认下一步',
-            actions: [
-              { id: 'confirm_materials', label: '确认资料范围', style: 'primary' },
-              { id: 'upload_materials', label: '继续补充资料', style: 'secondary' },
-            ],
+            actions: impactReanalysis
+              ? [
+                { id: 'generate_knowledge_structure', label: '重建受影响知识', style: 'primary' },
+                { id: 'review_materials', label: '查看影响分析', style: 'secondary' },
+              ]
+              : [
+                { id: 'confirm_materials', label: '确认资料范围', style: 'primary' },
+                { id: 'upload_materials', label: '继续补充资料', style: 'secondary' },
+              ],
           },
         ],
       });

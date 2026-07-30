@@ -10,11 +10,31 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 let _db: DatabaseSync | null = null;
 
+function hasTable(db: DatabaseSync, table: string): boolean {
+  return Boolean(db.prepare(`SELECT 1 FROM sqlite_schema
+    WHERE type = 'table' AND name = ?`).get(table));
+}
+
 function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   if (!columns.some((item) => item.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+/**
+ * 资料修订索引依赖新列，因此旧库必须在执行完整 schema 前先补列。
+ */
+export function ensureDocumentRevisionColumns(db: DatabaseSync): void {
+  if (!hasTable(db, 'documents')) return;
+  ensureColumn(db, 'documents', 'source_key', 'TEXT');
+  ensureColumn(db, 'documents', 'revision_no', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'documents', 'content_hash', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'documents', 'semantic_hash', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'documents', 'lifecycle_status', "TEXT NOT NULL DEFAULT 'active'");
+  ensureColumn(db, 'documents', 'supersedes_id', 'TEXT');
+  ensureColumn(db, 'documents', 'retired_at', 'TEXT');
+  db.exec("UPDATE documents SET source_key = id WHERE source_key IS NULL OR source_key = ''");
 }
 
 export function getDb(): DatabaseSync {
@@ -26,6 +46,7 @@ export function getDb(): DatabaseSync {
   db.exec('PRAGMA foreign_keys = ON');
   // schema.sql 随源码走：dev 从 src/db 读，编译后 build 脚本拷到 dist/db。
   const schema = readFileSync(join(here, 'schema.sql'), 'utf8');
+  ensureDocumentRevisionColumns(db);
   db.exec(schema);
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
@@ -51,6 +72,11 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'opt_suggestions', 'candidate_feedback', 'TEXT');
   ensureColumn(db, 'opt_suggestions', 'applied_revision_oid', 'TEXT');
   ensureColumn(db, 'failure_diagnoses', 'based_revision_oid', "TEXT NOT NULL DEFAULT ''");
+  ensureDocumentRevisionColumns(db);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_source_history
+    ON documents(project_id, source_key, revision_no)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source
+    ON documents(project_id, source_key) WHERE lifecycle_status = 'active'`);
   const competencyColumns = db.prepare('PRAGMA table_info(competency_questions)').all() as Array<{ name: string }>;
   if (!competencyColumns.some((column) => column.name === 'source')) {
     db.exec("ALTER TABLE competency_questions ADD COLUMN source TEXT NOT NULL DEFAULT 'generated'");

@@ -1,9 +1,23 @@
 import type { FastifyInstance } from 'fastify';
+import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
+import { getDb } from './db/index.js';
 import { createProject, getProject, listProjects, setStage } from './projects/repo.js';
 import { deleteProjectLocalData } from './projects/delete-service.js';
-import { insertDocument, listDocuments, getDocument, deleteDocument } from './documents/repo.js';
+import {
+  insertDocumentRevision,
+  listDocuments,
+  listDocumentRevisions,
+  getDocument,
+  deleteDocument,
+} from './documents/repo.js';
+import {
+  analyzeMaterialImpact,
+  applyMaterialInvalidation,
+  listMaterialImpacts,
+  storeMaterialImpact,
+} from './documents/material-impact.js';
 import { kindOf, parseDocument } from './documents/parser.js';
 import { latestNodeOf, listNodes, runAnalyze, upsertNode } from './workflow/engine.js';
 import * as m2 from './workflow/m2.js';
@@ -192,6 +206,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
   const packageArtifacts = getPackageArtifactStore();
+  const aiConstructionOrchestrator = new AiConstructionOrchestrator();
   const legacyMigration = migrateLegacyPackageOverrides();
   if (legacyMigration.projectCount) {
     const log = legacyMigration.failedCount || legacyMigration.pendingReviewCount
@@ -352,6 +367,18 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     });
 
     // ---- 资料上传与解析（节点 2）----
+    r.get('/api/projects/:id/documents/revisions', async (req, reply) => {
+      const project = getProject((req.params as any).id);
+      if (!project || project.owner !== req.user!.username) {
+        return reply.code(404).send({ error: '项目不存在' });
+      }
+      const sourceKey = String((req.query as any)?.sourceKey ?? '').trim() || undefined;
+      return {
+        revisions: listDocumentRevisions(project.id, sourceKey),
+        impacts: listMaterialImpacts(getDb(), project.id),
+      };
+    });
+
     r.post('/api/projects/:id/documents', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
@@ -361,13 +388,37 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const buffer = await file.toBuffer();
         const kind = kindOf(file.filename);
         const result = await parseDocument(kind, buffer);
-        const doc = insertDocument({
+        const revision = insertDocumentRevision({
           projectId: p.id, filename: file.filename, kind,
           parseStatus: result.error ? 'failed' : 'parsed', parseError: result.error,
-          textContent: result.textContent, tables: result.tables,
+          textContent: result.textContent, tables: result.tables, rawContent: buffer,
         });
+        const doc = revision.document;
+        const currentPackage = await packageArtifacts.current(p.id);
+        const impactAnalysis = analyzeMaterialImpact(revision.change, currentPackage?.spec);
+        const materialImpact = storeMaterialImpact(getDb(), p.id, revision.change, impactAnalysis);
+        const invalidation = applyMaterialInvalidation(getDb(), p.id, impactAnalysis);
         if (p.stage === 'project_setup') setStage(p.id, 'ingest');
-        return reply.code(201).send({ document: doc });
+        const materialUpdate = aiConstructionOrchestrator.materialsUploaded(
+          p.id,
+          doc,
+          listDocuments(p.id),
+        );
+        return reply.code(201).send({
+          document: doc,
+          materialRevision: {
+            sourceKey: doc.sourceKey,
+            revisionNo: doc.revisionNo,
+            changeKind: revision.change.kind,
+            semanticChanged: revision.change.semanticChanged,
+          },
+          materialImpact,
+          invalidation,
+          ...(materialUpdate ? {
+            aiConstruction: materialUpdate.aiConstruction,
+            aiConstructionMessage: materialUpdate.message,
+          } : {}),
+        });
       });
     });
 
@@ -376,16 +427,19 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
       const doc = getDocument((req.params as any).docId);
       if (!doc || doc.projectId !== p.id) return reply.code(404).send({ error: '文档不存在' });
-      deleteDocument(doc.id);
-      // 资料变更使下游产物「可能过时」：已完成节点标记 stale，由专家决定何时重跑（不强制清数据）
-      const stale: string[] = [];
-      for (const n of listNodes(p.id)) {
-        if (n.status === 'done' && ['analyze', 'interview', 'competency', 'generate'].includes(n.type)) {
-          upsertNode({ id: n.id, projectId: p.id, type: n.type, status: 'stale', ordinal: n.ordinal });
-          stale.push(n.type);
-        }
-      }
-      return { deleted: doc.id, staleNodes: stale, documents: listDocuments(p.id) };
+      return withLock(`${p.id}:document-delete`, reply, async () => {
+        const change = deleteDocument(doc.id);
+        const currentPackage = await packageArtifacts.current(p.id);
+        const impactAnalysis = analyzeMaterialImpact(change, currentPackage?.spec);
+        const materialImpact = storeMaterialImpact(getDb(), p.id, change, impactAnalysis);
+        const invalidation = applyMaterialInvalidation(getDb(), p.id, impactAnalysis);
+        return {
+          deleted: doc.id,
+          documents: listDocuments(p.id),
+          materialImpact,
+          invalidation,
+        };
+      });
     });
 
     // ---- 初步分析（节点 3）----

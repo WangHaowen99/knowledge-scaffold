@@ -147,15 +147,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_construction_messages_key
 CREATE TABLE IF NOT EXISTS documents (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_key    TEXT,
+  revision_no   INTEGER NOT NULL DEFAULT 1,
   filename      TEXT NOT NULL,
   kind          TEXT NOT NULL,
   parse_status  TEXT NOT NULL DEFAULT 'pending',
   parse_error   TEXT,
   text_content  TEXT,
   tables_json   TEXT,               -- DataDictTable[] JSON（excel）
-  created_at    TEXT NOT NULL
+  content_hash  TEXT NOT NULL DEFAULT '',
+  semantic_hash TEXT NOT NULL DEFAULT '',
+  lifecycle_status TEXT NOT NULL DEFAULT 'active'
+                  CHECK (lifecycle_status IN ('active', 'superseded', 'deleted')),
+  supersedes_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+  created_at    TEXT NOT NULL,
+  retired_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
+CREATE INDEX IF NOT EXISTS idx_documents_source_history
+  ON documents(project_id, source_key, revision_no);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_active_source
+  ON documents(project_id, source_key) WHERE lifecycle_status = 'active';
+
+CREATE TABLE IF NOT EXISTS material_revision_impacts (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_key        TEXT NOT NULL,
+  previous_document_id TEXT,
+  current_document_id  TEXT,
+  change_kind       TEXT NOT NULL CHECK (change_kind IN ('added', 'replaced', 'deleted', 'format_only')),
+  semantic_changed  INTEGER NOT NULL CHECK (semantic_changed IN (0, 1)),
+  affected_json     TEXT NOT NULL DEFAULT '{}',
+  created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_material_revision_impacts_project
+  ON material_revision_impacts(project_id, created_at);
 
 CREATE TABLE IF NOT EXISTS wf_nodes (
   id            TEXT PRIMARY KEY,

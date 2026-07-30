@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getProject, getPackageDraft, uploadDocument, deleteDocument, runAnalyze } from './api.js';
+import {
+  getProject, getPackageDraft, uploadDocument, deleteDocument, listMaterialRevisions, runAnalyze,
+} from './api.js';
 import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from './M2Panels.jsx';
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 import DataSourcePanel from './DataSourcePanel.jsx';
@@ -378,18 +380,26 @@ export default function Workbench({ projectId }) {
 
 /* ---- 节点 2：资料上传（配图说明 + 删除） ---- */
 
-function IngestView({ project, documents, onChanged }) {
+export function IngestView({ project, documents, onChanged }) {
   const inputRef = useRef(null);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [history, setHistory] = useState(null);
 
   const upload = async (files) => {
     if (!files?.length) return;
     setBusy(true); setMsg('');
     try {
-      for (const f of files) await uploadDocument(project.id, f);
-      setMsg(`已上传 ${files.length} 个文件`);
+      const results = [];
+      for (const f of files) results.push(await uploadDocument(project.id, f));
+      const changed = results.filter((result) => result.materialImpact?.affectedResources?.length).length;
+      const formatOnly = results.filter((result) => result.materialRevision?.changeKind === 'format_only').length;
+      setMsg([
+        `已上传 ${files.length} 个文件并保存为不可变资料修订`,
+        ...(changed ? [`${changed} 份资料影响已确认知识，相关步骤已标记需复核`] : []),
+        ...(formatOnly ? [`${formatOnly} 份仅格式变化，不影响现有知识`] : []),
+      ].join('；'));
       onChanged();
     } catch (e) { setMsg(`上传失败：${e.message}`); }
     finally { setBusy(false); }
@@ -398,7 +408,13 @@ function IngestView({ project, documents, onChanged }) {
   const remove = async (doc) => {
     if (!window.confirm(`删除「${doc.filename}」？\n\n删除后已完成的领域分析/访谈/生成结果会标记为「可能过时」，建议之后重新执行领域分析。已录入的评测用例与历史评测不受影响。`)) return;
     setBusy(true); setMsg('');
-    try { await deleteDocument(project.id, doc.id); setMsg(`已删除 ${doc.filename}`); onChanged(); }
+    try {
+      const result = await deleteDocument(project.id, doc.id);
+      const affected = result.materialImpact?.affectedResources?.length ?? 0;
+      setMsg(`已停用 ${doc.filename} 的当前修订并保留历史${affected ? `；${affected} 项知识需复核` : ''}`);
+      setHistory(null);
+      onChanged();
+    }
     catch (e) { setMsg(`删除失败：${e.message}`); }
     finally { setBusy(false); }
   };
@@ -454,12 +470,37 @@ function IngestView({ project, documents, onChanged }) {
             <div key={d.id} className="doc-row">
               <span>{d.kind === 'excel' ? '📊' : '📄'}</span>
               <span className="dn">{d.filename}</span>
+              <span className="tag tag-lang">修订 {d.revisionNo ?? 1}</span>
               {d.parseStatus === 'parsed' && <span className="tag tag-ok">已解析{d.tables ? ` · ${d.tables.length} 表` : ''}</span>}
               {d.parseStatus === 'failed' && <span className="tag tag-err" title={d.parseError}>解析失败</span>}
+              <button className="btn" style={{ padding: '2px 8px', fontSize: 11.5 }} disabled={busy}
+                onClick={async () => {
+                  try {
+                    const result = await listMaterialRevisions(project.id, d.sourceKey);
+                    setHistory({ sourceKey: d.sourceKey, filename: d.filename, ...result });
+                  } catch (error) { setMsg(`读取修订历史失败：${error.message}`); }
+                }}>历史</button>
               <button className="tc-del" title="删除该资料" disabled={busy} onClick={() => remove(d)}>✕</button>
             </div>
           ))}
         </div>
+      )}
+      {history && (
+        <section className="material-revision-history" aria-label={`${history.filename} 修订历史`}>
+          <div className="material-revision-history-head">
+            <strong>{history.filename} · 修订历史</strong>
+            <button className="tc-del" title="关闭" onClick={() => setHistory(null)}>✕</button>
+          </div>
+          {(history.revisions ?? []).map((revision) => (
+            <div key={revision.id} className="material-revision-row">
+              <span>修订 {revision.revisionNo}</span>
+              <span className={`tag ${revision.lifecycleStatus === 'active' ? 'tag-ok' : 'tag-lang'}`}>
+                {revision.lifecycleStatus === 'active' ? '当前' : revision.lifecycleStatus === 'deleted' ? '已停用' : '历史'}
+              </span>
+              <time>{new Date(revision.createdAt).toLocaleString()}</time>
+            </div>
+          ))}
+        </section>
       )}
     </div>
   );
