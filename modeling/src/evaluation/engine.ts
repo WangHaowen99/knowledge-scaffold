@@ -69,6 +69,39 @@ export async function judgeEvaluationAnswer(
   return judgeAnswer(question, groundTruth, finalAnswer);
 }
 
+export async function activateEvaluationPackageVersion(input: {
+  token: string;
+  workspaceId: string;
+  ontologyId: string;
+  version: string;
+  request?: typeof consumerFetch;
+}): Promise<void> {
+  const request = input.request ?? consumerFetch;
+  let response: Response;
+  try {
+    response = await request(
+      input.token,
+      `/agentic/ontologies/${encodeURIComponent(input.ontologyId)}/active-version`,
+      {
+        method: 'PUT',
+        workspaceId: input.workspaceId,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: input.version }),
+      },
+    );
+  } catch (error) {
+    throw new Error(`激活评测目标版本失败：${error instanceof Error ? error.message : error}`);
+  }
+  const data = (await response.json().catch(() => ({}))) as any;
+  if (!response.ok) {
+    throw new Error(`激活评测目标版本失败（${response.status}）：${data.error ?? data.detail ?? '未知错误'}`);
+  }
+  const activeVersion = String(data.active_version ?? '').trim();
+  if (activeVersion !== input.version) {
+    throw new Error(`评测工作空间激活版本不一致：期望 ${input.version}，实际 ${activeVersion || '未返回'}`);
+  }
+}
+
 interface RunOptions {
   projectId: string;
   owner?: string;
@@ -234,17 +267,13 @@ async function runRound(
   assertEvaluationNotCancelled(signal);
   log(`知识包已导入评测工作空间：${importResult.ontology_id}（对象 ${importResult.objects_count ?? '-'} / 操作 ${importResult.operations_count ?? '-'}）`);
   // 导入 ≠ 生效：consumer 可能仍激活旧版本（实测吃过亏）。显式激活本次版本并确认。
-  try {
-    const act = await consumerFetch(await auth.getAccessToken(), `/agentic/ontologies/${encodeURIComponent(importResult.ontology_id)}/active-version`, {
-      method: 'PUT', workspaceId: ws, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version: latest.spec.version }),
-    });
-    const actData = (await act.json().catch(() => ({}))) as any;
-    if (act.ok) log(`已激活版本：${latest.spec.version}`);
-    else log(`⚠ 激活版本失败（${act.status}）：${actData.error ?? actData.detail ?? ''}——评测可能运行旧版本`);
-  } catch (e) {
-    log(`⚠ 激活版本请求异常：${e instanceof Error ? e.message : e}`);
-  }
+  await activateEvaluationPackageVersion({
+    token: await auth.getAccessToken(),
+    workspaceId: ws,
+    ontologyId: importResult.ontology_id,
+    version: latest.spec.version,
+  });
+  log(`已激活并确认版本：${latest.spec.version}`);
 
   // 4. 复用“数据源配置”步骤保存的本体级数据源，不在评测运行时传递密钥
   repo.roundPhase(roundId, 'data_source');

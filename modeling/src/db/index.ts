@@ -38,6 +38,19 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'eval_result_traces', 'tool_failures_json', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'eval_result_traces', 'trace_status', "TEXT NOT NULL DEFAULT 'complete'");
   ensureColumn(db, 'eval_result_traces', 'trace_error', 'TEXT');
+  ensureColumn(db, 'eval_results', 'original_verdict', 'TEXT');
+  ensureColumn(db, 'eval_results', 'override_reason', 'TEXT');
+  ensureColumn(db, 'eval_results', 'override_actor', 'TEXT');
+  ensureColumn(db, 'eval_results', 'overridden_at', 'TEXT');
+  ensureColumn(db, 'opt_suggestions', 'diagnosis_ids_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'opt_suggestions', 'evidence_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'opt_suggestions', 'generalization_plan', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'opt_suggestions', 'validation_plan', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'opt_suggestions', 'based_revision_oid', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'opt_suggestions', 'candidate_revision_id', 'TEXT');
+  ensureColumn(db, 'opt_suggestions', 'candidate_feedback', 'TEXT');
+  ensureColumn(db, 'opt_suggestions', 'applied_revision_oid', 'TEXT');
+  ensureColumn(db, 'failure_diagnoses', 'based_revision_oid', "TEXT NOT NULL DEFAULT ''");
   const competencyColumns = db.prepare('PRAGMA table_info(competency_questions)').all() as Array<{ name: string }>;
   if (!competencyColumns.some((column) => column.name === 'source')) {
     db.exec("ALTER TABLE competency_questions ADD COLUMN source TEXT NOT NULL DEFAULT 'generated'");

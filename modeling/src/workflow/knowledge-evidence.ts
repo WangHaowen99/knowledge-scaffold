@@ -18,6 +18,16 @@ function unique(values: Array<string | undefined>): string[] {
   return [...new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))];
 }
 
+const EVALUATION_EVIDENCE = /(?:标准答案|参考答案|地面真值|(?:智能体|模型)(?:回答|答案|输出原文)|评测(?:答案|结果|得分|通过率)|(?:当前|本次|该条|单个|全部|所有)用例)/u;
+
+function mergeChangedEvidence(existing: string[] | undefined, additions: string[]): string[] {
+  return unique([...(existing ?? []), ...additions]).filter((item) => {
+    if (EVALUATION_EVIDENCE.test(item)) return false;
+    return !item.startsWith('diagnosis:')
+      || /^diagnosis:dg[_-][A-Za-z0-9][A-Za-z0-9_-]*$/u.test(item);
+  });
+}
+
 function identity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase('zh-CN').replace(/[^\p{Letter}\p{Number}]+/gu, '');
 }
@@ -173,19 +183,18 @@ export function attachKnowledgeChangeEvidence(
       ...object,
       relations: object.relations?.map((relation) => ({
         ...relation,
-        evidence: unique([...(relation.evidence ?? []), ...evidence]),
+        evidence: mergeChangedEvidence(relation.evidence, evidence),
       })),
     };
   });
-  const mergeResource = <T extends { key: string; evidence?: string[] }>(
-    kind: string,
-    resources: T[] | undefined,
-  ) => resources?.map((resource) => {
-    const evidence = byTarget.get(`${kind}:${resource.key}`) ?? [];
-    return evidence.length
-      ? { ...resource, evidence: unique([...(resource.evidence ?? []), ...evidence]) }
-      : resource;
-  });
+  const mergeResource = <T extends { key: string; evidence?: string[] }>(kind: string, resources: T[] | undefined) => (
+    resources?.map((resource) => {
+      const evidence = byTarget.get(`${kind}:${resource.key}`) ?? [];
+      return evidence.length
+        ? { ...resource, evidence: mergeChangedEvidence(resource.evidence, evidence) }
+        : resource;
+    })
+  );
   return {
     ...spec,
     objects,

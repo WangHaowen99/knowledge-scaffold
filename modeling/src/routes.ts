@@ -17,7 +17,7 @@ import { migrateLegacyPackageOverrides } from './workflow/package-override-migra
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
-import { isEvaluationActive, startCurrentEvaluation } from './evaluation/engine.js';
+import { cancelEvaluation, isEvaluationActive, startCurrentEvaluation } from './evaluation/engine.js';
 import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
@@ -52,7 +52,31 @@ import {
   type GraphImportExecutionDependencies,
 } from './graph-import/service.js';
 import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
-import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from './evaluation/optimizer.js';
+import {
+  applyOptimizations,
+  normalizeOptimizationSuggestionTargets,
+  OptimizationExpertReviewRequiredError,
+  proposeOptimizations,
+  validateOptimizationSuggestions,
+} from './evaluation/optimizer.js';
+import { diagnoseEvaluationFailures, hasOptimizableDiagnoses } from './evaluation/failure-diagnosis.js';
+import * as diagnosisRepo from './evaluation/failure-diagnosis-repo.js';
+import { diagnosisResolutionPlan } from './evaluation/diagnosis-resolution.js';
+import {
+  completeOptimizationCandidateTask,
+  failOptimizationApplyTask,
+  latestOptimizationApplyTask,
+  markOptimizationCandidateSaving,
+  recordOptimizationApplyProgress,
+  resolveOptimizationExpertReview,
+  startOptimizationApplyTask,
+  waitOptimizationExpertReview,
+} from './evaluation/optimization-apply-progress.js';
+import {
+  createOptimizationCandidate,
+  type OptimizationCandidateStore,
+} from './evaluation/optimization-candidate.js';
+import { buildLlm } from './llm/provider.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
@@ -72,6 +96,9 @@ import {
 import { registerArtifactRoutes } from './artifacts/routes.js';
 import { registerAuthoringRoutes } from './authoring/routes.js';
 import { getAuthoringState } from './authoring/state.js';
+import { getPackageArtifactStore } from './artifacts/runtime.js';
+import { ArtifactRepositoryError } from './artifacts/repository.js';
+import { validateSpecIntegrity } from './workflow/spec-validation.js';
 import {
   GenerationWaitingForExpert,
   resolveGenerationContinuation,
@@ -163,6 +190,9 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
+  const packageArtifacts = getPackageArtifactStore();
+  // PR8 在旧基线上可独立校验；叠加 PR7 后使用通用 ArtifactChange 候选契约。
+  const candidateArtifacts = packageArtifacts as unknown as OptimizationCandidateStore;
   const legacyMigration = migrateLegacyPackageOverrides();
   if (legacyMigration.projectCount) {
     const log = legacyMigration.failedCount || legacyMigration.pendingReviewCount
@@ -447,6 +477,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       // stale（资料变更后）也返回旧分析——结果仍可用，由前端提示重跑
       const analyzeNode = latestNodeOf(listNodes(p.id), 'analyze', ['done', 'stale']);
       return { p, ctx: { tables, documents: textDocs }, analysis: analyzeNode?.output };
+    };
+    const packageForRound = async (projectId: string, round: m3repo.EvalRound) => {
+      if (!round.artifactRevision) return null;
+      const snapshot = await packageArtifacts.readPackageFiles(projectId, round.artifactRevision);
+      return {
+        version: snapshot.spec.version,
+        spec: snapshot.spec,
+        coverage: snapshot.coverage,
+        revisionOid: snapshot.revision.oid,
+      };
     };
 
     // ---- 节点 4 访谈 ----
@@ -1069,6 +1109,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       setProjectStage(c.p.id, 'testcases');
       return { testcase };
     });
+    r.post('/api/projects/:id/testcases/batch', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { cases } = (req.body ?? {}) as { cases?: Array<{ question?: string; groundTruth?: string }> };
+      if (!Array.isArray(cases)) return reply.code(400).send({ error: '请提供真实评测用例数组' });
+      try {
+        const result = m3repo.addTestcases(c.p.id, cases.map((item) => ({
+          question: String(item?.question ?? ''),
+          groundTruth: String(item?.groundTruth ?? ''),
+        })));
+        setProjectStage(c.p.id, 'testcases');
+        return result;
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
     r.post('/api/projects/:id/testcases/prefill', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -1098,12 +1154,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'evaluate');
       if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
+      const { refresh_token: refreshToken } = (req.body ?? {}) as { refresh_token?: string };
       try {
-        const { roundId } = await startCurrentEvaluation({ projectId: c.p.id, token });
+        const { roundId } = await startCurrentEvaluation({
+          projectId: c.p.id,
+          owner: req.user!.username,
+          token,
+          refreshToken,
+        });
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {
         return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
+      }
+    });
+    r.post('/api/projects/:id/evaluate/cancel', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const roundId = String((req.body as any)?.roundId ?? '').trim() || undefined;
+      if (roundId) {
+        const round = m3repo.getRound(roundId);
+        if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+      }
+      try {
+        return { round: await cancelEvaluation(c.p.id, roundId) };
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
       }
     });
     r.get('/api/projects/:id/rounds', async (req, reply) => {
@@ -1121,55 +1197,204 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.patch('/api/projects/:id/results/:resultId', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const { verdict } = (req.body ?? {}) as any;
-      if (!['pass', 'partial', 'fail'].includes(verdict)) return reply.code(400).send({ error: 'verdict 非法' });
-      const res = m3repo.overrideVerdict((req.params as any).resultId, verdict);
-      return { result: res };
+      const { verdict, reason } = (req.body ?? {}) as any;
+      if (!['pass', 'partial', 'fail'].includes(verdict)) return reply.code(400).send({ error: '评测结果不正确' });
+      const resultId = String((req.params as any).resultId);
+      if (!m3repo.resultBelongsToProject(resultId, c.p.id)) {
+        return reply.code(404).send({ error: '评测结果不存在' });
+      }
+      try {
+        const res = m3repo.overrideVerdict(resultId, verdict, {
+          reason: String(reason ?? ''), actor: req.user!.username,
+        });
+        return { result: res };
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
 
-    // ---- 节点 11 优化建议与应用 ----
+    // ---- 节点 11 失败诊断 → 优化建议 → 候选修订确认 ----
+    r.post('/api/projects/:id/optimize/diagnose', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return withLock(`${c.p.id}:optimize`, reply, async () => {
+        const { roundId } = (req.body ?? {}) as any;
+        const round = roundId
+          ? m3repo.getRound(roundId)
+          : m3repo.listRounds(c.p.id).find((item) => ['done', 'failed'].includes(item.status));
+        if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+        if (!['done', 'failed'].includes(round.status)) return reply.code(400).send({ error: '该轮评测尚未完成' });
+        const version = await packageForRound(c.p.id, round);
+        if (!version) return reply.code(409).send({ error: '该轮评测未记录工件修订，不能据此生成诊断' });
+        const failed = m3repo.listResults(round.id).filter((item) => item.verdict !== 'pass');
+        if (round.status === 'done' && !failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需诊断' });
+        const analyzeNode = latestNodeOf(listNodes(c.p.id), 'analyze', ['done', 'stale']);
+        const qualityGaps = ((analyzeNode?.output as any)?.quality?.gaps ?? []) as any[];
+        try {
+          const report = await diagnoseEvaluationFailures({
+            projectId: c.p.id,
+            results: failed,
+            spec: version.spec,
+            qualityGaps,
+            traces: m3repo.listResultTraces(round.id),
+            tables: c.ctx.tables,
+            documents: c.ctx.documents,
+            roundFailure: round.status === 'failed' ? round.log : undefined,
+          }, buildLlm());
+          const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
+            c.p.id, round.id, round.packageVersion, version.revisionOid, report.diagnoses,
+          );
+          // 重跑诊断会换一组稳定 ID；旧建议不得继续绕过最新证据门禁。
+          m4repo.rejectPendingSuggestionsForRound(c.p.id, round.id);
+          return { diagnoses, canProposeOptimizations: report.canProposeOptimizations };
+        } catch (error) {
+          return reply.code(500).send({ error: `失败原因分析失败：${error instanceof Error ? error.message : error}` });
+        }
+      }, 'diagnose');
+    });
+    r.get('/api/projects/:id/optimize/diagnoses', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const roundId = (req.query as any).roundId ? String((req.query as any).roundId) : undefined;
+      const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, roundId);
+      return { diagnoses, canProposeOptimizations: hasOptimizableDiagnoses(diagnoses) };
+    });
+    r.post('/api/projects/:id/optimize/diagnoses/:diagnosisId/resolve', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const diagnosisId = String((req.params as any).diagnosisId ?? '');
+      const { action, note } = (req.body ?? {}) as {
+        action?: diagnosisRepo.DiagnosisResolutionAction;
+        note?: string;
+      };
+      const allowed: diagnosisRepo.DiagnosisResolutionAction[] = [
+        'confirm_rule', 'clarify_semantics', 'data_updated', 'not_applicable', 'defer',
+      ];
+      if (!action || !allowed.includes(action)) return reply.code(400).send({ error: '专家处置动作不正确' });
+      const expertNote = String(note ?? '').trim();
+      if (['confirm_rule', 'clarify_semantics', 'not_applicable'].includes(action) && !expertNote) {
+        return reply.code(400).send({ error: '请填写专家确认的规则、语义或不适用原因' });
+      }
+      try {
+        const stored = diagnosisRepo.listFailureDiagnoses(c.p.id)
+          .find((item) => item.id === diagnosisId);
+        if (!stored) return reply.code(404).send({ error: '失败诊断不存在' });
+        const current = await packageArtifacts.current(c.p.id);
+        if (!current || stored.basedRevisionOid !== current.revision.oid) {
+          return reply.code(409).send({ error: '失败诊断基于旧工件修订，请对当前修订重新评测并诊断' });
+        }
+        const plan = diagnosisResolutionPlan(action);
+        const diagnosis = diagnosisRepo.resolveFailureDiagnosis({
+          projectId: c.p.id,
+          diagnosisId,
+          action,
+          note: expertNote,
+          actor: req.user!.username,
+          payload: { ...plan },
+        });
+        const staleTypes = new Set<string>(plan.staleSteps);
+        for (const node of listNodes(c.p.id)) {
+          if (node.status === 'done' && staleTypes.has(node.type)) {
+            upsertNode({
+              id: node.id,
+              projectId: node.projectId,
+              type: node.type,
+              status: 'stale',
+              ordinal: node.ordinal,
+            });
+          }
+        }
+        try {
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: c.p.id,
+            type: 'diagnosis.expert_resolution.recorded',
+            payload: {
+              diagnosisId,
+              action,
+              note: expertNote,
+              nextSteps: plan.nextSteps,
+              staleSteps: plan.staleSteps,
+            },
+          });
+        } catch { /* 兼容尚未启用事件消费的 PR5 环境 */ }
+        const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, diagnosis.roundId);
+        return {
+          diagnosis,
+          diagnoses,
+          canProposeOptimizations: hasOptimizableDiagnoses(diagnoses),
+          nextSteps: plan.nextSteps,
+          staleSteps: plan.staleSteps,
+        };
+      } catch (error) {
+        return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
     r.post('/api/projects/:id/optimize/propose', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'optimize-propose');
       if (blocked) return blocked;
       return withLock(`${c.p.id}:optimize`, reply, async () => {
-      const { roundId } = (req.body ?? {}) as any;
-      const round = roundId ? m3repo.getRound(roundId) : m3repo.listRounds(c.p.id).find((x) => x.status === 'done');
-      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
-      if (round.status !== 'done') return reply.code(400).send({ error: '该轮评测尚未完成' });
-      const pv = m2repo.getPackageVersion(c.p.id, round.packageVersion) ?? m2repo.latestPackageVersion(c.p.id);
-      if (!pv) return reply.code(404).send({ error: '尚未生成知识包' });
-      const failed = m3repo.listResults(round.id).filter((x) => x.verdict !== 'pass');
-      if (!failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需优化' });
-      // 回退标注：上一轮通过、本轮未通过的用例——多为新增/修改操作抢答相邻场景（边界侵蚀）
-      const prevRound = m3repo.listRounds(c.p.id).filter((x) => x.status === 'done' && x.id !== round.id)[0];
-      if (prevRound) {
-        const prevPass = new Set(m3repo.listResults(prevRound.id).filter((x) => x.verdict === 'pass').map((x) => x.question));
-        for (const f of failed) {
-          if (prevPass.has(f.question)) f.reason = `【回退：上一轮（${prevRound.packageVersion}）曾通过】${f.reason ?? ''}`;
+        const { roundId } = (req.body ?? {}) as any;
+        const round = roundId
+          ? m3repo.getRound(roundId)
+          : m3repo.listRounds(c.p.id).find((item) => ['done', 'failed'].includes(item.status));
+        if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+        if (!['done', 'failed'].includes(round.status)) return reply.code(400).send({ error: '该轮评测尚未完成' });
+        const pv = await packageForRound(c.p.id, round);
+        if (!pv) return reply.code(409).send({ error: '该轮评测未记录工件修订，不能据此生成优化建议' });
+        const current = await packageArtifacts.current(c.p.id);
+        if (!current || current.revision.oid !== pv.revisionOid) {
+          return reply.code(409).send({ error: '该轮评测基于旧工件修订，请对当前修订重新评测并诊断' });
         }
-      }
-      try {
-        // 包体检确定性发现：直接转建议（不经 LLM），同时作为优化器的诊断上下文
-        const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
-        const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, selected);
-        const checkSuggestions = findingsToSuggestions(ruleFindings);
-        const raw = await proposeOptimizations(c.p, pv.spec, failed, undefined, ruleFindings);
-        // 幂等：同一问题/同一体检发现已有未拒绝的建议则跳过，防重复点击累积重复建议
-        const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
-          .filter((s) => s.status !== 'rejected').map((s) => s.relatedQuestion ?? s.title));
-        const fresh = [...checkSuggestions, ...raw].filter((s) => {
-          const k = s.relatedQuestion ?? s.title;
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        });
-        const suggestions = m4repo.insertSuggestions(c.p.id, round.id, round.packageVersion, fresh);
-        return { suggestions };
-      } catch (e) {
-        return reply.code(500).send({ error: `优化建议生成失败：${e instanceof Error ? e.message : e}` });
-      }
+        const failed = m3repo.listResults(round.id).filter((item) => item.verdict !== 'pass');
+        if (!failed.length) return reply.code(400).send({ error: '该轮评测全部通过，无需优化' });
+        const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id)
+          .filter((item) => item.basedRevisionOid === pv.revisionOid);
+        if (!diagnoses.length) return reply.code(409).send({ error: '请先分析该轮评测的失败原因' });
+        const eligibleDiagnoses = diagnoses.filter((item) => item.packageOptimizable && !item.blocking);
+        const eligibleResultIds = new Set(eligibleDiagnoses.flatMap((item) => item.resultIds));
+        const optimizableFailures = failed.filter((item) => eligibleResultIds.has(item.id));
+        if (!optimizableFailures.length) {
+          return reply.code(409).send({
+            error: '当前失败原因需要先修正用例、运行环境或数据，暂不应修改知识包',
+            diagnoses,
+          });
+        }
+        const prevRound = m3repo.listRounds(c.p.id)
+          .find((item) => item.status === 'done' && item.id !== round.id);
+        if (prevRound) {
+          const prevPass = new Set(m3repo.listResults(prevRound.id)
+            .filter((item) => item.verdict === 'pass').map((item) => item.question));
+          for (const failure of optimizableFailures) {
+            if (prevPass.has(failure.question)) {
+              failure.reason = `【回退：上一轮（${prevRound.packageVersion}）曾通过】${failure.reason ?? ''}`;
+            }
+          }
+        }
+        try {
+          const selected = m2repo.listCompetency(c.p.id).filter((item) => item.selected).map((item) => item.question);
+          const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, selected);
+          const raw = await proposeOptimizations(
+            c.p, pv.spec, optimizableFailures, undefined, ruleFindings, diagnoses,
+          );
+          const seen = new Set(m4repo.listSuggestions(c.p.id, round.id)
+            .filter((item) => item.status !== 'rejected')
+            .map((item) => `${(item.diagnosisIds ?? []).slice().sort().join(',')}|${item.kind}|${item.target ?? ''}|${item.relatedQuestion ?? item.title}`));
+          const fresh = raw.filter((item) => {
+            const key = `${(item.diagnosisIds ?? []).slice().sort().join(',')}|${item.kind}|${item.target ?? ''}|${item.relatedQuestion ?? item.title}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          const suggestions = m4repo.insertSuggestions(
+            c.p.id, round.id, round.packageVersion, pv.revisionOid, fresh,
+          );
+          return { suggestions };
+        } catch (error) {
+          return reply.code(500).send({ error: `优化建议生成失败：${error instanceof Error ? error.message : error}` });
+        }
       }, 'propose');
     });
     r.get('/api/projects/:id/optimize/suggestions', async (req, reply) => {
@@ -1179,7 +1404,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return {
         suggestions: m4repo.listSuggestions(c.p.id, roundId),
         runningOperation: inFlight.current(`${c.p.id}:optimize`),
+        runningTask: inFlight.status(`${c.p.id}:optimize`),
       };
+    });
+    r.get('/api/projects/:id/optimize/apply-status', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      return { task: latestOptimizationApplyTask(c.p.id) };
     });
     r.post('/api/projects/:id/optimize/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -1187,33 +1418,178 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'optimize-apply');
       if (blocked) return blocked;
       return withLock(`${c.p.id}:optimize`, reply, async () => {
-      const { suggestionIds } = (req.body ?? {}) as any;
-      if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: 'suggestionIds 必填' });
-      const adopted = m4repo.getSuggestions(suggestionIds).filter((s) => s.projectId === c.p.id && s.status === 'pending');
-      if (!adopted.length) return reply.code(400).send({ error: '没有可应用的建议（可能已应用过）' });
-      const latest = m2repo.latestPackageVersion(c.p.id);
-      if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
-      try {
-        const revised = await applyOptimizations(c.p, latest.spec, adopted);
-        const version = `1.${m2repo.listPackageVersions(c.p.id).length}.0`;
-        const spec = { ...latest.spec, version, objects: revised.objects, operations: revised.operations };
-        const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
-        const coverage = m2.checkCoverage(spec, selected);
-        m2repo.insertPackageVersion(c.p.id, version, spec, coverage,
-          `优化迭代：基于 ${adopted[0].basedVersion} 应用 ${adopted.length} 条建议`);
-        m4repo.markApplied(adopted.map((s) => s.id), version);
-        setProjectStage(c.p.id, 'optimize');
-        return { version, applied: adopted.length, coverage };
-      } catch (e) {
-        return reply.code(500).send({ error: `优化应用失败：${e instanceof Error ? e.message : e}` });
-      }
+        const { suggestionIds } = (req.body ?? {}) as any;
+        if (!Array.isArray(suggestionIds) || !suggestionIds.length) {
+          return reply.code(400).send({ error: '请选择建议' });
+        }
+        const uniqueSuggestionIds = [...new Set(suggestionIds.map((id: unknown) => String(id)))];
+        let adopted = m4repo.getSuggestions(uniqueSuggestionIds)
+          .filter((item) => item.projectId === c.p.id && item.status === 'pending');
+        if (!adopted.length) return reply.code(400).send({ error: '没有可应用的建议（可能已应用过）' });
+        const latest = await packageArtifacts.current(c.p.id);
+        if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
+        if (adopted.some((item) => item.basedRevisionOid !== latest.revision.oid)) {
+          return reply.code(409).send({ error: '优化建议基于旧工件修订生成，请对当前修订重新评测并分析失败原因' });
+        }
+        try {
+          adopted = normalizeOptimizationSuggestionTargets(adopted, latest.spec);
+        } catch (error) {
+          return reply.code(409).send({
+            error: `优化建议的修复目标无法定位：${error instanceof Error ? error.message : error}。请重新生成建议`,
+          });
+        }
+        const roundId = adopted[0].roundId;
+        if (adopted.some((item) => item.roundId !== roundId)) {
+          return reply.code(400).send({ error: '不能同时应用不同评测轮次的优化建议' });
+        }
+        const currentDiagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, roundId)
+          .filter((item) => item.basedRevisionOid === latest.revision.oid);
+        const currentDiagnosisIds = new Set(currentDiagnoses.map((item) => item.id));
+        if (!currentDiagnoses.length || adopted.some((item) => !(item.diagnosisIds ?? []).length
+          || item.diagnosisIds!.some((id) => !currentDiagnosisIds.has(id)))) {
+          return reply.code(409).send({ error: '优化建议来自旧的失败分析，已过期；请重新分析失败原因并生成优化建议' });
+        }
+        const round = m3repo.getRound(roundId);
+        if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+        const failed = m3repo.listResults(roundId).filter((item) => item.verdict !== 'pass');
+        try {
+          validateOptimizationSuggestions(adopted, currentDiagnoses, failed, latest.spec);
+        } catch (error) {
+          return reply.code(409).send({
+            error: `优化建议已过期或未通过防过拟合校验：${error instanceof Error ? error.message : error}。请重新生成优化建议`,
+          });
+        }
+        if (typeof candidateArtifacts.createCandidateRevision !== 'function'
+          || typeof candidateArtifacts.rejectCandidateRevision !== 'function') {
+          return reply.code(503).send({
+            code: 'CANDIDATE_REVISION_UNAVAILABLE',
+            error: '候选修订能力尚未启用；请在叠加 PR7 后再应用优化建议',
+          });
+        }
+        const resourceCount = latest.spec.objects.length + latest.spec.operations.length
+          + (latest.spec.rules?.length ?? 0) + (latest.spec.metrics?.length ?? 0) + (latest.spec.scripts?.length ?? 0);
+        const task = startOptimizationApplyTask(
+          c.p.id,
+          adopted.map((item) => item.id),
+          resourceCount,
+        );
+        try {
+          const revised = await applyOptimizations(
+            c.p,
+            latest.spec,
+            adopted,
+            undefined,
+            (event) => { recordOptimizationApplyProgress(task.id, event); },
+            failed,
+            currentDiagnoses,
+          );
+          markOptimizationCandidateSaving(task.id);
+          const spec = { ...latest.spec, ...revised, version: latest.spec.version };
+          const selected = m2repo.listCompetency(c.p.id).filter((item) => item.selected).map((item) => item.question);
+          validateSpecIntegrity(spec, selected);
+          const coverage = m2.checkCoverage(spec, selected);
+          const current = await packageArtifacts.readPackageFiles(c.p.id, latest.revision.oid);
+          const candidate = await createOptimizationCandidate({
+            store: candidateArtifacts,
+            projectId: c.p.id,
+            current,
+            spec,
+            coverage,
+            suggestionIds: adopted.map((item) => item.id),
+            summary: `优化候选：${adopted.map((item) => item.title).join('；')}`.slice(0, 500),
+            linkCandidate: (candidateId) => m4repo.markCandidateRevision(
+              c.p.id, adopted.map((item) => item.id), candidateId,
+            ),
+          });
+          try {
+            getAuthoringState().apply({
+              kind: 'publish_event',
+              projectId: c.p.id,
+              type: 'package.candidate.created',
+              payload: {
+                candidateId: candidate.id,
+                cause: 'optimization',
+                basedRevision: latest.revision.oid,
+                suggestionCount: adopted.length,
+              },
+            });
+          } catch { /* 候选本身已经持久化，事件失败不回滚候选 */ }
+          setProjectStage(c.p.id, 'optimize');
+          completeOptimizationCandidateTask(task.id, candidate.id, adopted.length);
+          return {
+            candidateId: candidate.id,
+            status: candidate.status,
+            selected: adopted.length,
+            basedRevisionOid: latest.revision.oid,
+            coverage,
+          };
+        } catch (error) {
+          if (error instanceof OptimizationExpertReviewRequiredError) {
+            waitOptimizationExpertReview(task.id, error.message, error.validationErrors);
+            return reply.code(202).send({
+              status: 'waiting_expert',
+              taskId: task.id,
+              validationErrors: error.validationErrors,
+              suggestionIds: adopted.map((item) => item.id),
+            });
+          }
+          failOptimizationApplyTask(task.id, error instanceof Error ? error.message : String(error));
+          if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
+            return reply.code(409).send({ code: error.code, error: error.message });
+          }
+          return reply.code(500).send({ error: `优化候选生成失败：${error instanceof Error ? error.message : error}` });
+        }
       }, 'apply');
+    });
+    r.post('/api/projects/:id/optimize/apply-review', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { taskId, action, note } = (req.body ?? {}) as {
+        taskId?: string;
+        action?: 'retry' | 'skip';
+        note?: string;
+      };
+      if (!taskId || !['retry', 'skip'].includes(String(action))) {
+        return reply.code(400).send({ error: '请选择“带反馈重试”或“确认跳过”' });
+      }
+      const decision = action as 'retry' | 'skip';
+      const task = latestOptimizationApplyTask(c.p.id);
+      if (!task || task.node.id !== taskId) return reply.code(404).send({ error: '待处理的优化任务不存在' });
+      const state = task.node.output as any;
+      if (task.node.status !== 'waiting_user' || state?.phase !== 'expert_review') {
+        return reply.code(409).send({ error: '当前任务不在等待专家决策状态' });
+      }
+      const pendingIds = (state.suggestionIds ?? []).filter((id: string) => (
+        m4repo.getSuggestions([id]).some((item) => item.projectId === c.p.id && item.status === 'pending')
+      ));
+      if (!pendingIds.length) return reply.code(409).send({ error: '所选优化建议已不再待处理' });
+      const expertNote = String(note ?? '').trim();
+      if (decision === 'retry') {
+        const feedback = [
+          '【上次自动修复未通过的服务端校验】',
+          ...(state.validationErrors ?? []).map((item: string) => `- ${item}`),
+          ...(expertNote ? ['【专家补充】', expertNote] : []),
+        ].join('\n');
+        m4repo.appendPendingSuggestionFeedback(c.p.id, pendingIds, feedback);
+      } else {
+        m4repo.markRejected(pendingIds, c.p.id);
+      }
+      resolveOptimizationExpertReview(task.node.id, decision, expertNote);
+      try {
+        getAuthoringState().apply({
+          kind: 'publish_event',
+          projectId: c.p.id,
+          type: 'optimization.expert_review.resolved',
+          payload: { taskId, action: decision, note: expertNote, suggestionIds: pendingIds },
+        });
+      } catch { /* 兼容 PR5 事件面 */ }
+      return { status: decision === 'retry' ? 'retry_ready' : 'skipped', suggestionIds: pendingIds };
     });
     r.post('/api/projects/:id/optimize/reject', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const { suggestionIds } = (req.body ?? {}) as any;
-      if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: 'suggestionIds 必填' });
+      if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: '请选择建议' });
       m4repo.markRejected(suggestionIds, c.p.id);
       return { suggestions: m4repo.listSuggestions(c.p.id) };
     });
