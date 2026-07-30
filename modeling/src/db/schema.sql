@@ -84,9 +84,29 @@ CREATE TABLE IF NOT EXISTS package_versions (
   spec_json     TEXT NOT NULL,       -- PackageSpec（对象/操作/映射结构化规格）
   coverage_json TEXT,                -- 胜任力覆盖检查结果
   note          TEXT,                -- 变更说明
+  revision_oid  TEXT,                -- 对应的 Git 修订
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pkgver_project ON package_versions(project_id, created_at);
+
+-- Git 修订的轻量索引。文件内容仍以每个项目的 Git 仓库为准。
+CREATE TABLE IF NOT EXISTS artifact_revisions (
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  oid               TEXT NOT NULL,
+  parent_oid        TEXT,
+  sequence          INTEGER NOT NULL,
+  cause             TEXT NOT NULL,
+  summary           TEXT NOT NULL,
+  actor_kind        TEXT NOT NULL,
+  actor_name        TEXT NOT NULL,
+  package_version   TEXT,
+  changed_paths_json TEXT NOT NULL DEFAULT '[]',
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (project_id, oid),
+  UNIQUE (project_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_revisions_project
+  ON artifact_revisions(project_id, sequence DESC);
 
 -- ---- M3：服务设置（键值，页面可配置） ----
 CREATE TABLE IF NOT EXISTS settings (
