@@ -8,7 +8,6 @@ export interface GraphImportObjectSchema {
   title: string;
   label: string;
   defaultSheet: string;
-  primaryProperties: string[];
   propertyMappings: GraphImportPropertyMapping[];
 }
 
@@ -26,20 +25,41 @@ export interface GraphImportPackageSchema {
   relations: GraphImportRelationSchema[];
 }
 
-export interface GraphRelationMapping {
+export type GraphRelationMatchMode = 'same_row' | 'field_match';
+
+interface GraphRelationMappingBase {
   sourceObject: string;
   relationName: string;
   targetObject: string;
+  matchMode: GraphRelationMatchMode;
+}
+
+export interface GraphSameRowRelationMapping extends GraphRelationMappingBase {
+  matchMode: 'same_row';
+}
+
+export interface GraphFieldMatchRelationMapping extends GraphRelationMappingBase {
+  matchMode: 'field_match';
   sourceJoinProperty: string;
   targetJoinProperty: string;
 }
+
+export type GraphRelationMapping = GraphSameRowRelationMapping | GraphFieldMatchRelationMapping;
 
 export interface GraphImportMapping {
   relations: GraphRelationMapping[];
 }
 
+export type GraphImportPropertyType =
+  | 'string'
+  | 'integer'
+  | 'float'
+  | 'boolean'
+  | 'date'
+  | 'local_datetime';
+
 export interface GraphImportEntityRow {
-  identityValues: string[];
+  recordKey: string;
   properties: Record<string, string>;
 }
 
@@ -47,24 +67,22 @@ export interface GraphImportEntityPlan {
   objectKey: string;
   label: string;
   sheet: string;
-  identityProperties: string[];
   propertyNames: string[];
+  propertyTypes: Record<string, GraphImportPropertyType>;
   rows: GraphImportEntityRow[];
 }
 
 export interface GraphImportRelationshipPair {
-  sourceIdentityValues: string[];
-  targetIdentityValues: string[];
+  sourceRecordKey: string;
+  targetRecordKey: string;
 }
 
 export interface GraphImportRelationPlan {
   relationName: string;
   sourceObject: string;
   sourceLabel: string;
-  sourceIdentityProperties: string[];
   targetObject: string;
   targetLabel: string;
-  targetIdentityProperties: string[];
   pairs: GraphImportRelationshipPair[];
 }
 

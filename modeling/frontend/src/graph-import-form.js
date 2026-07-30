@@ -1,7 +1,12 @@
-const MAPPING_FIELDS = [
+const RELATION_FIELDS = [
   'sourceObject',
   'relationName',
   'targetObject',
+];
+
+const MAPPING_FIELDS = [
+  ...RELATION_FIELDS,
+  'matchMode',
   'sourceJoinProperty',
   'targetJoinProperty',
 ];
@@ -88,13 +93,8 @@ export function objectImportIssue(preview, objectOrKey) {
   if (!object) return '知识包中不存在该实体';
   const sheet = sheetByName(preview, object.defaultSheet);
   if (!sheet) return `固定 Sheet「${object.defaultSheet}」不存在于 Excel`;
-  if (!object.primaryProperties?.length) return '知识包未声明主键';
-  for (const property of object.primaryProperties) {
-    const mapping = object.propertyMappings?.find((item) => item.property === property);
-    if (!mapping) return `主键属性「${property}」未声明字段映射`;
-    if (!sheet.columns.includes(mapping.sourceColumn)) {
-      return `主键属性「${property}」对应字段「${mapping.sourceColumn}」不存在`;
-    }
+  if (!(object.propertyMappings || []).some((mapping) => sheet.columns.includes(mapping.sourceColumn))) {
+    return `固定 Sheet「${object.defaultSheet}」不包含该实体任何映射字段`;
   }
   return '';
 }
@@ -115,9 +115,13 @@ export function joinPropertyOptions(preview, objectKey) {
 
 function defaultJoinProperty(preview, object) {
   const options = joinPropertyOptions(preview, object?.key);
-  return object?.primaryProperties?.find((property) => options.some((option) => option.value === property))
-    || options[0]?.value
-    || '';
+  return options[0]?.value || '';
+}
+
+export function relationCanMatchSameRow(preview, relation) {
+  const source = objectByKey(preview, relation?.sourceObject);
+  const target = objectByKey(preview, relation?.targetObject);
+  return Boolean(source?.defaultSheet && source.defaultSheet === target?.defaultSheet);
 }
 
 export function relationDraftFromKnown(relation) {
@@ -143,28 +147,71 @@ export function addRelationMapping(mappings, draft, preview) {
     && item.relationName === relationName && item.targetObject === targetObject.key)) {
     throw new Error('相同源实体、关系名称和目标实体的关系不能重复添加');
   }
-  return [...mappings, {
+  const relation = {
     sourceObject: sourceObject.key,
     relationName,
     targetObject: targetObject.key,
+  };
+  if (relationCanMatchSameRow(preview, relation)) {
+    return [...mappings, { ...relation, matchMode: 'same_row' }];
+  }
+  return [...mappings, {
+    ...relation,
+    matchMode: 'field_match',
     sourceJoinProperty: defaultJoinProperty(preview, sourceObject),
     targetJoinProperty: defaultJoinProperty(preview, targetObject),
   }];
 }
 
-export function updateRelationMapping(mappings, index, field, value) {
+export function updateRelationMapping(mappings, index, field, value, preview) {
   if (!MAPPING_FIELDS.includes(field)) throw new Error(`未知映射字段：${field}`);
-  return mappings.map((mapping, currentIndex) => (
-    currentIndex === index ? { ...mapping, [field]: value } : mapping
-  ));
+  return mappings.map((mapping, currentIndex) => {
+    if (currentIndex !== index) return mapping;
+    if (field !== 'matchMode') return { ...mapping, [field]: value };
+    if (value === 'same_row') {
+      if (!relationCanMatchSameRow(preview, mapping)) {
+        throw new Error('仅同一 Sheet 的实体支持同一数据行关联');
+      }
+      return {
+        sourceObject: mapping.sourceObject,
+        relationName: mapping.relationName,
+        targetObject: mapping.targetObject,
+        matchMode: 'same_row',
+      };
+    }
+    if (value !== 'field_match') throw new Error(`未知的关系关联方式：${value}`);
+    const sourceObject = objectByKey(preview, mapping.sourceObject);
+    const targetObject = objectByKey(preview, mapping.targetObject);
+    return {
+      ...mapping,
+      matchMode: 'field_match',
+      sourceJoinProperty: mapping.sourceJoinProperty || defaultJoinProperty(preview, sourceObject),
+      targetJoinProperty: mapping.targetJoinProperty || defaultJoinProperty(preview, targetObject),
+    };
+  });
 }
 
 export function graphImportMappingPayload(mappings) {
-  const relations = mappings.map((mapping) => Object.fromEntries(
-    MAPPING_FIELDS.map((field) => [field, String(mapping[field] ?? '').trim()]),
-  ));
-  if (relations.some((relation) => MAPPING_FIELDS.some((field) => !relation[field]))) {
-    throw new Error('请完整配置每条关系的实体、关系名称和关联属性');
+  const relations = mappings.map((mapping) => {
+    const relation = Object.fromEntries(
+      RELATION_FIELDS.map((field) => [field, String(mapping[field] ?? '').trim()]),
+    );
+    const matchMode = String(mapping.matchMode ?? '').trim() || 'field_match';
+    if (matchMode === 'same_row') return { ...relation, matchMode };
+    if (matchMode !== 'field_match') throw new Error(`未知的关系关联方式：${matchMode}`);
+    return {
+      ...relation,
+      matchMode,
+      sourceJoinProperty: String(mapping.sourceJoinProperty ?? '').trim(),
+      targetJoinProperty: String(mapping.targetJoinProperty ?? '').trim(),
+    };
+  });
+  if (relations.some((relation) => RELATION_FIELDS.some((field) => !relation[field]))) {
+    throw new Error('请完整配置每条关系的源实体、关系名称和目标实体');
+  }
+  if (relations.some((relation) => relation.matchMode === 'field_match'
+    && (!relation.sourceJoinProperty || !relation.targetJoinProperty))) {
+    throw new Error('按字段值匹配时，请完整配置源和目标关联属性');
   }
   return { relations };
 }
@@ -172,5 +219,6 @@ export function graphImportMappingPayload(mappings) {
 export function graphRelationLabel(relation, preview) {
   const source = objectByKey(preview, relation.sourceObject);
   const target = objectByKey(preview, relation.targetObject);
-  return `${source?.title || relation.sourceObject} -[${relation.relationName}]-> ${target?.title || relation.targetObject}`;
+  const suffix = relation.matchMode === 'same_row' ? '（同 Sheet 同行）' : '';
+  return `${source?.title || relation.sourceObject} -[${relation.relationName}]-> ${target?.title || relation.targetObject}${suffix}`;
 }

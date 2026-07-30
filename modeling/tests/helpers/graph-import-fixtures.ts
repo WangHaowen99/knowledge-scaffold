@@ -15,7 +15,6 @@ export const graphSchema: GraphImportPackageSchema = {
   objects: [
     {
       key: 'Part', title: '零件', label: '设备零件', defaultSheet: 'Part',
-      primaryProperties: ['part_id'],
       propertyMappings: [
         { property: 'part_id', sourceColumn: 'part_id' },
         { property: 'relation_code', sourceColumn: 'relation_code' },
@@ -24,7 +23,6 @@ export const graphSchema: GraphImportPackageSchema = {
     },
     {
       key: 'BOMItem', title: 'BOM 行', label: 'BOM 行', defaultSheet: 'BOMItem',
-      primaryProperties: ['item_id'],
       propertyMappings: [
         { property: 'item_id', sourceColumn: 'item_id' },
         { property: 'parent_code', sourceColumn: 'parent_code' },
@@ -41,6 +39,7 @@ export const graphSchema: GraphImportPackageSchema = {
 export const graphMapping: GraphImportMapping = {
   relations: [{
     sourceObject: 'Part', relationName: 'contains', targetObject: 'BOMItem',
+    matchMode: 'field_match',
     sourceJoinProperty: 'relation_code', targetJoinProperty: 'parent_code',
   }],
 };
