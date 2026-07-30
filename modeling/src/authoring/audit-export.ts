@@ -11,8 +11,8 @@ export interface BuildProjectAuditOptions {
 
 type AuditFiles = Record<string, string>;
 
-const SENSITIVE_KEY = /(?:password|passphrase|secret|credential|token|api[_-]?key|apikey)/iu;
-const SENSITIVE_COLUMN = /^(?:stored_path|password|passphrase|secret|credential|token|access_token|refresh_token|api_key)$/iu;
+const SENSITIVE_KEY = /(?:password|passphrase|secret|credential|token|api[_-]?key|apikey|authorization|cookie|private[_-]?key)/iu;
+const SENSITIVE_COLUMN = /^(?:stored_path|password|passphrase|secret|credential|token|access_token|refresh_token|api_key|authorization|cookie|private_key)$/iu;
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -138,6 +138,7 @@ export function buildProjectAuditFiles(
     notes: [
       '该归档用于建模过程审计，不是 Consumer 运行包。',
       '连接凭据、认证信息和宿主机文件路径已脱敏或排除。',
+      '知识包快照作为原始证据保留，不改写其内容；导出前应确认包内未包含运行凭据。',
     ],
   });
 

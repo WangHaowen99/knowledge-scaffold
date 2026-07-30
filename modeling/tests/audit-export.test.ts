@@ -27,7 +27,12 @@ function dbWithProject() {
     .run(JSON.stringify({
       url: 'http://provider:5600',
       token: 'must-not-export',
-      nested: { apiKey: 'hidden' },
+      nested: {
+        apiKey: 'hidden',
+        authorization: 'Bearer must-not-export',
+        cookie: 'session=must-not-export',
+        private_key: 'must-not-export',
+      },
     }), now, now);
   db.prepare(`INSERT INTO eval_rounds
     (id, project_id, package_version, status, progress_done, progress_total, pass_count,
