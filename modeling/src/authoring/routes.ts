@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
+import { ArtifactRepositoryError } from '../artifacts/repository.js';
+import { PackageArtifactStoreError } from '../artifacts/package-store.js';
 import {
   AiConstructionTaskEditor,
   type AiConstructionTaskEditRequest,
@@ -12,11 +14,16 @@ import {
 } from '../ai-construction/task-graph.js';
 import { getProject } from '../projects/repo.js';
 import {
+  ASSISTED_WRITE_LEASE_TTL_MS,
   ProjectLeaseError,
   ProjectOperationLease,
   runWithProjectLease,
   SHORT_WRITE_LEASE_TTL_MS,
 } from './lease.js';
+import {
+  ControlledRepairController,
+  ControlledRepairControllerError,
+} from './controlled-repair-controller.js';
 import { getAuthoringState, onProjectEventAppended } from './state.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 
@@ -44,6 +51,23 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       || error.code === 'INTERACTION_NOT_FOUND'
       ? 404
       : error.code === 'INVALID_INPUT' ? 400 : 409;
+    return reply.code(status).send({ error: error.message, code: error.code });
+  }
+  if (error instanceof ControlledRepairControllerError) {
+    return reply.code(error.code === 'revision_conflict' ? 409 : 400)
+      .send({ error: error.message, code: error.code });
+  }
+  if (error instanceof ArtifactRepositoryError) {
+    const status = error.code === 'revision_conflict' ? 409
+      : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;
+    return reply.code(status).send({ error: error.message, code: error.code });
+  }
+  if (error instanceof PackageArtifactStoreError) {
+    const status = error.code === 'project_not_found'
+      || error.code === 'package_not_found'
+      || error.code === 'file_not_found'
+      || error.code === 'revision_has_no_package'
+      ? 404 : error.code === 'commit_in_progress' ? 409 : 400;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
   if (error instanceof AiConstructionTaskGraphError) {
@@ -77,6 +101,7 @@ export function registerAuthoringRoutes(app: FastifyInstance): void {
   const graph = new AiConstructionTaskGraph();
   const editor = new AiConstructionTaskEditor();
   const leases = new ProjectOperationLease();
+  const controlledRepair = new ControlledRepairController({ state, graph });
 
   app.get('/api/projects/:id/session', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
@@ -249,6 +274,21 @@ export function registerAuthoringRoutes(app: FastifyInstance): void {
     }
   });
 
+  app.post('/api/projects/:id/ai-construction/knowledge/repair', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      return await runWithProjectLease(leases, {
+        projectId: project.id,
+        operation: '受控修复知识包校验问题',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+      }, () => controlledRepair.run(project));
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
   app.post('/api/projects/:id/interactions/:interactionId/respond', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -259,11 +299,30 @@ export function registerAuthoringRoutes(app: FastifyInstance): void {
     if (!requestId?.trim() || !response || typeof response !== 'object' || Array.isArray(response)) {
       return reply.code(400).send({ error: '回答内容不完整', code: 'INVALID_INPUT' });
     }
+    const interactionId = String((req.params as any).interactionId);
     try {
+      const repairInteraction = controlledRepair.interaction(project.id, interactionId);
+      if (repairInteraction) {
+        const approving = repairInteraction.type === 'change_plan' && response.action === 'approve';
+        return await runWithProjectLease(leases, {
+          projectId: project.id,
+          operation: repairInteraction.type === 'question_batch'
+            ? '确认知识包修复业务决策'
+            : approving ? '应用知识包修复方案' : '取消知识包修复方案',
+          owner: `${req.user!.username}:${req.id}`,
+          ttlMs: approving ? ASSISTED_WRITE_LEASE_TTL_MS : SHORT_WRITE_LEASE_TTL_MS,
+        }, () => controlledRepair.respond(
+          project,
+          repairInteraction,
+          requestId,
+          response,
+          req.user!.username,
+        ));
+      }
       const result = state.apply({
         kind: 'respond_interaction',
         projectId: project.id,
-        interactionId: String((req.params as any).interactionId),
+        interactionId,
         responseId: requestId,
         response,
       });
