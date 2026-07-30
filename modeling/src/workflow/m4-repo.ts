@@ -76,6 +76,16 @@ export function getSuggestions(ids: string[]): OptSuggestion[] {
     .filter(Boolean).map((r) => rowToSug(r as any));
 }
 
+export function listCandidateSuggestions(
+  projectId: string,
+  candidateRevisionId: string,
+): OptSuggestion[] {
+  const rows = getDb().prepare(`SELECT * FROM opt_suggestions
+    WHERE project_id = ? AND candidate_revision_id = ? ORDER BY created_at`)
+    .all(projectId, candidateRevisionId);
+  return rows.map(rowToSug);
+}
+
 export function markCandidateRevision(projectId: string, ids: string[], candidateRevisionId: string): void {
   const uniqueIds = [...new Set(ids)];
   if (!uniqueIds.length || !candidateRevisionId.trim()) throw new Error('候选修订关联信息不完整');
@@ -115,7 +125,7 @@ export function returnCandidateRevision(projectId: string, candidateRevisionId: 
     WHERE candidate_revision_id = ? AND project_id = ? AND status = 'candidate'`)
     .all(candidateRevisionId, projectId) as { id: string; candidate_feedback?: string | null }[];
   const update = db.prepare(`UPDATE opt_suggestions
-    SET status = 'pending', candidate_revision_id = NULL, candidate_feedback = ?
+    SET status = 'pending', candidate_feedback = ?
     WHERE id = ? AND project_id = ? AND status = 'candidate'`);
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -139,7 +149,7 @@ export function returnCandidateRevision(projectId: string, candidateRevisionId: 
 
 export function rejectCandidateRevision(projectId: string, candidateRevisionId: string): number {
   const result = getDb().prepare(`UPDATE opt_suggestions SET status = 'rejected'
-    WHERE candidate_revision_id = ? AND project_id = ? AND status = 'candidate'`)
+    WHERE candidate_revision_id = ? AND project_id = ? AND status IN ('pending', 'candidate')`)
     .run(candidateRevisionId, projectId);
   return Number(result.changes);
 }
@@ -179,9 +189,9 @@ export function appendPendingSuggestionFeedback(projectId: string, ids: string[]
   }
 }
 
-export function rejectPendingSuggestionsForRound(projectId: string, roundId: string): number {
+export function rejectOpenSuggestionsForRound(projectId: string, roundId: string): number {
   const result = getDb().prepare(`UPDATE opt_suggestions
     SET status = 'rejected'
-    WHERE project_id = ? AND round_id = ? AND status = 'pending'`).run(projectId, roundId);
+    WHERE project_id = ? AND round_id = ? AND status IN ('pending', 'candidate')`).run(projectId, roundId);
   return Number(result.changes);
 }

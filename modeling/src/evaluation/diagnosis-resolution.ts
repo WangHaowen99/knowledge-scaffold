@@ -1,28 +1,26 @@
 import type { DiagnosisResolutionAction } from './failure-diagnosis-repo.js';
-import type { NodeType } from '../types.js';
 
-export type DiagnosisWorkflowStepId = Extract<NodeType, 'data_source' | 'evaluate' | 'optimize'>;
+export type DiagnosisNextStep =
+  | 'review_data_source'
+  | 'rerun_evaluation'
+  | 'generate_optimization_suggestions';
 
 export interface DiagnosisResolutionPlan {
-  nextSteps: DiagnosisWorkflowStepId[];
-  staleSteps: DiagnosisWorkflowStepId[];
+  nextSteps: DiagnosisNextStep[];
 }
 
 export function diagnosisResolutionPlan(action: DiagnosisResolutionAction): DiagnosisResolutionPlan {
   if (action === 'data_updated') {
     return {
-      nextSteps: ['data_source', 'evaluate'],
-      staleSteps: ['data_source', 'evaluate', 'optimize'],
+      nextSteps: ['review_data_source', 'rerun_evaluation'],
     };
   }
   if (action === 'confirm_rule' || action === 'clarify_semantics') {
     return {
-      nextSteps: ['optimize', 'evaluate'],
-      staleSteps: ['evaluate', 'optimize'],
+      nextSteps: ['generate_optimization_suggestions', 'rerun_evaluation'],
     };
   }
   return {
-    nextSteps: ['evaluate'],
-    staleSteps: [],
+    nextSteps: ['rerun_evaluation'],
   };
 }

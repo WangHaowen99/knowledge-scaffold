@@ -521,7 +521,7 @@ CREATE TABLE IF NOT EXISTS eval_result_traces (
   trace_error    TEXT
 );
 
--- ---- M4：优化建议（Judge 失败结果 → 结构化建议 → 采纳 → 版本迭代） ----
+-- ---- M4：优化建议（Judge 失败结果 → 结构化建议 → 候选修订 → 专家采纳） ----
 CREATE TABLE IF NOT EXISTS opt_suggestions (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -537,10 +537,10 @@ CREATE TABLE IF NOT EXISTS opt_suggestions (
   evidence_json TEXT NOT NULL DEFAULT '[]',      -- 支持该建议的独立证据
   generalization_plan TEXT NOT NULL DEFAULT '',  -- 如何避免只适配当前用例
   validation_plan TEXT NOT NULL DEFAULT '',      -- 如何用样例外场景验证
-  candidate_revision_id TEXT,          -- PR7 候选修订 ID；不直接关联正式版本
+  candidate_revision_id TEXT,          -- 最近一次 PR7 候选修订 ID；退回后保留审计关联
   candidate_feedback TEXT,             -- 候选被退回后带入下一次修订的调整要求
   status        TEXT NOT NULL DEFAULT 'pending',  -- pending | candidate | applied | rejected
-  applied_version TEXT,              -- 应用产生的新版本号
+  applied_version TEXT,              -- 接受候选时的 spec.version；工件修订通常不提升语义版本
   applied_revision_oid TEXT,         -- 接受候选后形成的正式 Git 修订
   created_at    TEXT NOT NULL
 );

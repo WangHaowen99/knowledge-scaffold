@@ -37,14 +37,12 @@ test('优化修订两次失败后持久化为等待专家决策', () => {
   assert.match((stored.node.output as any).expertNote, /operation/);
 });
 
-test('专家处置只将受影响的下游步骤标记为需重做', () => {
+test('专家处置只返回真实下一步提示，不宣称已修改工作流状态', () => {
   assert.deepEqual(diagnosisResolutionPlan('clarify_semantics'), {
-    nextSteps: ['optimize', 'evaluate'],
-    staleSteps: ['evaluate', 'optimize'],
+    nextSteps: ['generate_optimization_suggestions', 'rerun_evaluation'],
   });
   assert.deepEqual(diagnosisResolutionPlan('data_updated'), {
-    nextSteps: ['data_source', 'evaluate'],
-    staleSteps: ['data_source', 'evaluate', 'optimize'],
+    nextSteps: ['review_data_source', 'rerun_evaluation'],
   });
-  assert.deepEqual(diagnosisResolutionPlan('defer'), { nextSteps: ['evaluate'], staleSteps: [] });
+  assert.deepEqual(diagnosisResolutionPlan('defer'), { nextSteps: ['rerun_evaluation'] });
 });

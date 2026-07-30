@@ -59,7 +59,7 @@ import {
   proposeOptimizations,
   validateOptimizationSuggestions,
 } from './evaluation/optimizer.js';
-import { diagnoseEvaluationFailures, hasOptimizableDiagnoses } from './evaluation/failure-diagnosis.js';
+import { diagnoseEvaluationFailures } from './evaluation/failure-diagnosis.js';
 import * as diagnosisRepo from './evaluation/failure-diagnosis-repo.js';
 import { diagnosisResolutionPlan } from './evaluation/diagnosis-resolution.js';
 import {
@@ -74,7 +74,8 @@ import {
 } from './evaluation/optimization-apply-progress.js';
 import {
   createOptimizationCandidate,
-  type OptimizationCandidateStore,
+  optimizationCandidateApplyResponse,
+  retireOptimizationCandidatesForDiagnosisRerun,
 } from './evaluation/optimization-candidate.js';
 import { buildLlm } from './llm/provider.js';
 import { testConsumerConnectivity } from './consumer/client.js';
@@ -191,8 +192,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
   const packageArtifacts = getPackageArtifactStore();
-  // PR8 在旧基线上可独立校验；叠加 PR7 后使用通用 ArtifactChange 候选契约。
-  const candidateArtifacts = packageArtifacts as unknown as OptimizationCandidateStore;
   const legacyMigration = migrateLegacyPackageOverrides();
   if (legacyMigration.projectCount) {
     const log = legacyMigration.failedCount || legacyMigration.pendingReviewCount
@@ -1244,9 +1243,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const diagnoses = diagnosisRepo.replaceFailureDiagnoses(
             c.p.id, round.id, round.packageVersion, version.revisionOid, report.diagnoses,
           );
-          // 重跑诊断会换一组稳定 ID；旧建议不得继续绕过最新证据门禁。
-          m4repo.rejectPendingSuggestionsForRound(c.p.id, round.id);
-          return { diagnoses, canProposeOptimizations: report.canProposeOptimizations };
+          // 重跑诊断会换一组诊断 ID；同步关闭只由该轮优化建议关联的旧候选。
+          await retireOptimizationCandidatesForDiagnosisRerun({
+            store: packageArtifacts,
+            projectId: c.p.id,
+            roundId: round.id,
+          });
+          return {
+            diagnoses,
+            canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
+          };
         } catch (error) {
           return reply.code(500).send({ error: `失败原因分析失败：${error instanceof Error ? error.message : error}` });
         }
@@ -1257,7 +1263,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const roundId = (req.query as any).roundId ? String((req.query as any).roundId) : undefined;
       const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, roundId);
-      return { diagnoses, canProposeOptimizations: hasOptimizableDiagnoses(diagnoses) };
+      return {
+        diagnoses,
+        canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
+      };
     });
     r.post('/api/projects/:id/optimize/diagnoses/:diagnosisId/resolve', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -1292,18 +1301,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           actor: req.user!.username,
           payload: { ...plan },
         });
-        const staleTypes = new Set<string>(plan.staleSteps);
-        for (const node of listNodes(c.p.id)) {
-          if (node.status === 'done' && staleTypes.has(node.type)) {
-            upsertNode({
-              id: node.id,
-              projectId: node.projectId,
-              type: node.type,
-              status: 'stale',
-              ordinal: node.ordinal,
-            });
-          }
-        }
         try {
           getAuthoringState().apply({
             kind: 'publish_event',
@@ -1314,7 +1311,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               action,
               note: expertNote,
               nextSteps: plan.nextSteps,
-              staleSteps: plan.staleSteps,
             },
           });
         } catch { /* 兼容尚未启用事件消费的 PR5 环境 */ }
@@ -1322,9 +1318,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return {
           diagnosis,
           diagnoses,
-          canProposeOptimizations: hasOptimizableDiagnoses(diagnoses),
+          canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
           nextSteps: plan.nextSteps,
-          staleSteps: plan.staleSteps,
         };
       } catch (error) {
         return reply.code(404).send({ error: error instanceof Error ? error.message : String(error) });
@@ -1353,7 +1348,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id)
           .filter((item) => item.basedRevisionOid === pv.revisionOid);
         if (!diagnoses.length) return reply.code(409).send({ error: '请先分析该轮评测的失败原因' });
-        const eligibleDiagnoses = diagnoses.filter((item) => item.packageOptimizable && !item.blocking);
+        const eligibleDiagnoses = diagnoses.filter((item) => item.resolutionStatus === 'confirmed'
+          && item.packageOptimizable
+          && !item.blocking);
         const eligibleResultIds = new Set(eligibleDiagnoses.flatMap((item) => item.resultIds));
         const optimizableFailures = failed.filter((item) => eligibleResultIds.has(item.id));
         if (!optimizableFailures.length) {
@@ -1459,13 +1456,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             error: `优化建议已过期或未通过防过拟合校验：${error instanceof Error ? error.message : error}。请重新生成优化建议`,
           });
         }
-        if (typeof candidateArtifacts.createCandidateRevision !== 'function'
-          || typeof candidateArtifacts.rejectCandidateRevision !== 'function') {
-          return reply.code(503).send({
-            code: 'CANDIDATE_REVISION_UNAVAILABLE',
-            error: '候选修订能力尚未启用；请在叠加 PR7 后再应用优化建议',
-          });
-        }
         const resourceCount = latest.spec.objects.length + latest.spec.operations.length
           + (latest.spec.rules?.length ?? 0) + (latest.spec.metrics?.length ?? 0) + (latest.spec.scripts?.length ?? 0);
         const task = startOptimizationApplyTask(
@@ -1490,7 +1480,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const coverage = m2.checkCoverage(spec, selected);
           const current = await packageArtifacts.readPackageFiles(c.p.id, latest.revision.oid);
           const candidate = await createOptimizationCandidate({
-            store: candidateArtifacts,
+            store: packageArtifacts,
             projectId: c.p.id,
             current,
             spec,
@@ -1516,13 +1506,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           } catch { /* 候选本身已经持久化，事件失败不回滚候选 */ }
           setProjectStage(c.p.id, 'optimize');
           completeOptimizationCandidateTask(task.id, candidate.id, adopted.length);
-          return {
-            candidateId: candidate.id,
-            status: candidate.status,
-            selected: adopted.length,
-            basedRevisionOid: latest.revision.oid,
-            coverage,
-          };
+          return optimizationCandidateApplyResponse(candidate, adopted.length, latest.revision.oid);
         } catch (error) {
           if (error instanceof OptimizationExpertReviewRequiredError) {
             waitOptimizationExpertReview(task.id, error.message, error.validationErrors);
