@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { getProject, uploadDocument, deleteDocument, runAnalyze } from './api.js';
+import { getProject, getPackageDraft, uploadDocument, deleteDocument, runAnalyze } from './api.js';
 import { InterviewPanel, GeneratePanel, ReviewPanel, DomainQuestionsBlock } from './M2Panels.jsx';
 import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 import DataSourcePanel from './DataSourcePanel.jsx';
@@ -11,6 +11,7 @@ import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
 import { latestNodeOf } from './workflowNodes.js';
 import { workbenchAutoFocus } from './workbench-focus.js';
+import { packageDraftOperationLabel } from './package-draft-ui.js';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
 // 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
@@ -36,10 +37,37 @@ export default function Workbench({ projectId }) {
   const [ctxTab, setCtxTab] = useState('dict');
   const [analyzing, setAnalyzing] = useState(false);
   const [focus, setFocus] = useState(null); // null=自动跟随 stage；点时间线可切换
+  const [packageDraft, setPackageDraft] = useState(null);
+  const [packageRepairBusy, setPackageRepairBusy] = useState(''); // '' | plan | apply
+  const [draftGate, setDraftGate] = useState(null);
 
   const load = useCallback(() =>
     getProject(projectId).then(setData).catch((e) => setErr(e.message)), [projectId]);
   useEffect(() => { load(); }, [load]);
+  const refreshPackageDraft = useCallback(() => getPackageDraft(projectId).then((d) => {
+    setPackageDraft(d.draft);
+    return d.draft;
+  }), [projectId]);
+  useEffect(() => {
+    let active = true;
+    setPackageDraft(null);
+    setDraftGate(null);
+    setFocus(null);
+    getPackageDraft(projectId).then((d) => {
+      if (!active) return;
+      setPackageDraft(d.draft);
+      if (d.draft) setFocus('review');
+    }).catch((e) => { if (active) setErr(e.message); });
+    return () => { active = false; };
+  }, [projectId]);
+  useEffect(() => {
+    const handleDraftRequired = (event) => {
+      setDraftGate(event.detail ?? {});
+      refreshPackageDraft().catch((e) => setErr(e.message));
+    };
+    window.addEventListener('mw-package-draft-required', handleDraftRequired);
+    return () => window.removeEventListener('mw-package-draft-required', handleDraftRequired);
+  }, [refreshPackageDraft]);
   // 长任务（分析/出题/生成…）在服务端执行并落节点状态；只要有节点 running 就轮询，
   // 切走再回来、甚至回项目列表再进来，进行中/已完成状态都能接上
   const anyRunning = (data?.nodes ?? []).some((n) => n.status === 'running');
@@ -80,7 +108,7 @@ export default function Workbench({ projectId }) {
     analyze: tables.length > 0 || parsedDocs.length > 0,
     interview: !!analyzeDone && cqSelected >= 5,
     generate: interviewDone && !!competencyNode,
-    review: !!generateDone,
+    review: !!generateDone || !!packageDraft,
     data_source: !!generateDone,
     testcases: !!generateDone && (!!dataSource || legacyBeyondDataSource),
     evaluate: !!generateDone && (!!dataSource || legacyBeyondDataSource),
@@ -210,7 +238,9 @@ export default function Workbench({ projectId }) {
               onAdvance={() => { load(); setFocus('review'); }} />
           )}
           {effFocus === 'review' && (
-            <ReviewPanel projectId={projectId} onAdvance={() => setFocus('data_source')} />
+            <ReviewPanel projectId={projectId} packageDraft={packageDraft}
+              packageRepairBusy={packageRepairBusy}
+              onDraftChange={setPackageDraft} onAdvance={() => setFocus('data_source')} />
           )}
           {effFocus === 'data_source' && (
             <DataSourcePanel projectId={projectId} onAdvance={() => { load(); setFocus('testcases'); }} />
@@ -228,7 +258,8 @@ export default function Workbench({ projectId }) {
       {/* 右：上下文面板；包完善时切换为修缮对话 */}
       <div className="wb-col wb-right" data-tour="context">
         {effFocus === 'review' ? (
-          <PackageChat projectId={projectId} />
+          <PackageChat projectId={projectId} packageDraft={packageDraft}
+            busy={packageRepairBusy} onBusyChange={setPackageRepairBusy} />
         ) : (
           <>
             <div className="ctx-tabs">
@@ -268,6 +299,28 @@ export default function Workbench({ projectId }) {
           </>
         )}
       </div>
+      {draftGate && (
+        <div className="modal-ov" role="presentation">
+          <div className="modal draft-gate-modal" role="dialog" aria-modal="true" aria-labelledby="draft-gate-title">
+            <h3 id="draft-gate-title">请先发布人工编辑草稿</h3>
+            <p>
+              当前知识包有一份基于 v{draftGate.baseVersion ?? packageDraft?.baseVersion ?? '—'} 的未发布草稿，
+              为保证知识包内容一致，暂不能执行“{packageDraftOperationLabel(draftGate.operation)}”。
+            </p>
+            <div className="draft-gate-meta">
+              <span>修改文件：{draftGate.changedFileCount ?? packageDraft?.changedFileCount ?? 0} 个</span>
+              <span>草稿 revision：{draftGate.revision ?? packageDraft?.revision ?? '—'}</span>
+              {(draftGate.stale ?? packageDraft?.stale) && <span className="tag tag-err">基线已过时</span>}
+            </div>
+            <div className="foot">
+              <button className="btn" onClick={() => setDraftGate(null)}>稍后处理</button>
+              <button className="btn btn-p" onClick={() => { setFocus('review'); setDraftGate(null); }}>
+                返回知识包完善
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -7,7 +7,7 @@ import { assertSafeZipPath } from './keys.js';
 export function zipPackage(files: PackageFiles, rootDir = 'ontology'): Uint8Array {
   const entries: Record<string, Uint8Array> = {};
   for (const [path, content] of Object.entries(files)) {
-    // 二次断言：拼 zip 条目前确认路径不越界（renderPackage 已校验 key，这里防御 override/其他调用方）
+    // 二次断言：拼 zip 条目前确认路径不越界（renderPackage 已校验 key，这里防御其他调用方）
     assertSafeZipPath(path);
     entries[`${rootDir}/${path}`] = strToU8(content);
   }
