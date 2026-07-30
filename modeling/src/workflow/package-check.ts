@@ -18,9 +18,9 @@ import type { DataDictTable, PackageSpec, Project } from '../types.js';
 // ① spec 语义层——规则引擎（确定性，代码直查）+ 语义检查（LLM agent）。
 //    规则集基于既有知识包检查实践整理，
 //    rule-check / semantic-check / coverage-check agent，按本工具的 objects/operations 格式适配。
-// ② 渲染产物层（runFormatChecks）——对最终 files（含 override 后内容）校验包格式：
+// ② 渲染产物层（runFormatChecks）——对正式版本或待发布草稿生成的 files 校验包格式：
 //    必选文件、frontmatter、索引-详情一致性、manifest/mappings 结构、key 合法性。
-//    override 写入与导出前都过这层（routes.ts），人工改坏的包不再原样导出。
+//    草稿发布与导出前都过这层，异常规格不会生成或交付无效包。
 
 export type Severity = '错误' | '警告' | '提示';
 export interface CheckFinding {
@@ -119,10 +119,10 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
   return out;
 }
 
-// ---- 渲染产物层格式校验（对最终 files——含 override 后内容） ----
+// ---- 渲染产物层格式校验（对正式版本或待发布草稿的最终 files） ----
 // 覆盖：必选文件存在、全部 .md frontmatter 完整（resource/key/title 且 resource 与路径匹配）、
 // 索引声明的详情文件存在、manifest 可解析且必选字段齐、mappings JSON 结构合法、key 合法性。
-// 纯渲染产物由构造保证通过；这层的目标是拦截 override 改坏的内容（routes 写入与导出前调用）。
+// 纯渲染产物通常由构造保证通过；这里保留独立断言，防止异常规格或草稿解析结果进入交付链路。
 
 const REQUIRED_FILES = ['manifest.yaml', 'index.md', 'objects/index.md', 'operations/index.md'];
 const MANIFEST_REQUIRED = ['kind', 'schema_version', 'id', 'name', 'description', 'version'];

@@ -88,6 +88,37 @@ CREATE TABLE IF NOT EXISTS package_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_pkgver_project ON package_versions(project_id, created_at);
 
+-- 人工编辑草稿。草稿只绑定一个不可变的基线版本；同一项目同一时间最多存在一个活动草稿。
+CREATE TABLE IF NOT EXISTS package_drafts (
+  id                      TEXT PRIMARY KEY,
+  project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  base_package_version_id TEXT NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
+  base_version            TEXT NOT NULL,
+  status                  TEXT NOT NULL DEFAULT 'active'
+                            CHECK (status IN ('active', 'published', 'discarded')),
+  revision                INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+  created_by              TEXT NOT NULL,
+  created_at              TEXT NOT NULL,
+  updated_at              TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_package_drafts_one_active
+  ON package_drafts(project_id) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_package_drafts_project
+  ON package_drafts(project_id, updated_at);
+
+-- 草稿只保存相对基线版本发生变化的文件；恢复为基线内容时删除对应行。
+CREATE TABLE IF NOT EXISTS package_draft_files (
+  draft_id          TEXT NOT NULL REFERENCES package_drafts(id) ON DELETE CASCADE,
+  path              TEXT NOT NULL,
+  content           TEXT NOT NULL,
+  base_content_hash TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  PRIMARY KEY (draft_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_package_draft_files_draft
+  ON package_draft_files(draft_id, updated_at);
+
 -- ---- M3：服务设置（键值，页面可配置） ----
 CREATE TABLE IF NOT EXISTS settings (
   key           TEXT PRIMARY KEY,
@@ -220,7 +251,7 @@ CREATE TABLE IF NOT EXISTS package_checks (
   created_at    TEXT NOT NULL
 );
 
--- ---- 包文件人工修订（覆盖渲染产物；重新生成/优化出新版本后仍生效，直至清除） ----
+-- ---- 旧版包文件覆盖（仅作为升级迁移源；运行时不再读写） ----
 CREATE TABLE IF NOT EXISTS package_overrides (
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   path          TEXT NOT NULL,       -- 包内相对路径（如 operations/OP-001.md）
@@ -228,3 +259,22 @@ CREATE TABLE IF NOT EXISTS package_overrides (
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (project_id, path)
 );
+
+-- 旧 override 迁移审计。原始内容完整保留，避免自动迁移、忽略失效路径或人工放弃草稿时不可追溯。
+CREATE TABLE IF NOT EXISTS package_override_migration_archive (
+  project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  path                    TEXT NOT NULL,
+  content                 TEXT NOT NULL,
+  original_updated_at     TEXT NOT NULL,
+  base_package_version_id TEXT REFERENCES package_versions(id) ON DELETE SET NULL,
+  base_version            TEXT,
+  draft_id                TEXT REFERENCES package_drafts(id) ON DELETE SET NULL,
+  disposition             TEXT NOT NULL,
+  target_package_version_id TEXT REFERENCES package_versions(id) ON DELETE SET NULL,
+  target_version          TEXT,
+  detail                  TEXT,
+  migrated_at             TEXT NOT NULL,
+  PRIMARY KEY (project_id, path, original_updated_at)
+);
+CREATE INDEX IF NOT EXISTS idx_package_override_archive_project
+  ON package_override_migration_archive(project_id, migrated_at);

@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   listRounds, proposeOptimize, listSuggestions, applyOptimize, rejectSuggestions,
-  listVersions, exportVersionUrl, authFetch,
+  listVersions, exportVersionUrl, authFetch, requireOkResponse,
 } from './api.js';
 import {
   normalizeOptimizeOperation,
@@ -229,8 +229,7 @@ export function VersionTable({ projectId, versions }) {
   const download = async (version) => {
     setDlErr('');
     try {
-      const res = await authFetch(exportVersionUrl(projectId, version));
-      if (!res.ok) { setDlErr(`导出失败（${res.status}）`); return; }
+      const res = await requireOkResponse(await authFetch(exportVersionUrl(projectId, version)));
       const blob = await res.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
