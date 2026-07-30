@@ -65,6 +65,13 @@ export interface SavePackageFileInput {
   action: PackageRevisionAction;
 }
 
+export interface SavePackageFilesInput {
+  expectedRevision: string;
+  files: Record<string, string>;
+  deletePaths?: string[];
+  action: PackageRevisionAction;
+}
+
 export interface ResetPackageFileInput {
   expectedRevision: string;
   path: string;
@@ -355,6 +362,61 @@ export class PackageArtifactStore {
         this.recordRevision(projectId, savedRevision, action, [path]);
       });
       return this.readFileFromSnapshot(await this.repository.snapshot(projectId, revision.oid), path);
+    });
+  }
+
+  /** 在同一个 Git 修订中原子更新一组知识包文件。 */
+  async saveFiles(projectId: string, input: SavePackageFilesInput): Promise<PackageArtifactView> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      await this.ensureProjectUnlocked(projectId);
+      const entries = Object.entries(input.files);
+      const deletePaths = [...new Set(input.deletePaths ?? [])];
+      if ((!entries.length && !deletePaths.length) || entries.length + deletePaths.length > 100) {
+        throw new PackageArtifactStoreError('invalid_input', '批量文件必须包含 1 到 100 个文件');
+      }
+      const current = await this.repository.snapshot(projectId);
+      const currentView = this.viewFromSnapshot(current);
+      const currentFiles = new Map(current.files.map((file) => [file.path, file.content]));
+      const encoder = new TextEncoder();
+      const writes: ArtifactChange[] = entries.map(([rawPath, content]) => {
+        const path = validatePackagePath(rawPath);
+        if (!path.startsWith(PACKAGE_PREFIX)) {
+          throw new PackageArtifactStoreError('invalid_input', '只能批量保存知识包文件');
+        }
+        if (typeof content !== 'string') {
+          throw new PackageArtifactStoreError('invalid_input', `文件内容不正确：${path}`);
+        }
+        return { kind: 'write' as const, path, content: encoder.encode(content) };
+      }).filter((change) => {
+        const before = currentFiles.get(change.path);
+        return before === undefined || !bytesEqual(before, change.content);
+      });
+      const writePaths = new Set(writes.map((change) => change.path));
+      const deletes: ArtifactChange[] = deletePaths.flatMap((rawPath) => {
+        const path = validatePackagePath(rawPath);
+        if (!path.startsWith(PACKAGE_PREFIX)) {
+          throw new PackageArtifactStoreError('invalid_input', '只能批量删除知识包文件');
+        }
+        if (writePaths.has(path)) {
+          throw new PackageArtifactStoreError('invalid_input', `同一文件不能同时写入和删除：${path}`);
+        }
+        return currentFiles.has(path) ? [{ kind: 'delete' as const, path }] : [];
+      });
+      const changes = [...writes, ...deletes].sort((left, right) => compareNames(left.path, right.path));
+      if (!changes.length) return currentView;
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
+        projectId,
+        input.expectedRevision,
+        changes,
+        gitMetadata(action),
+      ), (savedRevision) => {
+        this.recordRevision(projectId, savedRevision, action, changes.map((change) => change.path));
+      });
+      return this.viewFromSnapshot(
+        await this.repository.snapshot(projectId, revision.oid),
+        currentView.packageVersion,
+      );
     });
   }
 

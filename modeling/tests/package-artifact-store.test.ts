@@ -273,6 +273,45 @@ test('人工修改要求当前版本，撤销后恢复生成内容', async (t) =
   assert.deepEqual((await store.history(projectId)).slice(0, 2).map((item) => item.packageVersion), [undefined, undefined]);
 });
 
+test('多文件写入和过期流程图删除共用一个原子修订', async (t) => {
+  const { projectId, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: spec('1.0.0'),
+    coverage,
+    action: { cause: 'generate', summary: '生成内容', actorKind: 'agent', actorName: '智能助手' },
+  });
+  const withOldDiagram = await store.saveFiles(projectId, {
+    expectedRevision: generated.revision.oid,
+    files: {
+      'package/diagrams/processes.json': '{"diagrams":[]}',
+      'package/diagrams/process_2.mmd': 'flowchart TD\n  old --> end\n',
+    },
+    action: userAction('写入旧流程图'),
+  });
+
+  const updated = await store.saveFiles(projectId, {
+    expectedRevision: withOldDiagram.revision.oid,
+    files: {
+      'package/diagrams/processes.json': '{"diagrams":[{"id":"new"}]}',
+      'package/diagrams/process_1.mmd': 'flowchart TD\n  start --> end\n',
+    },
+    deletePaths: ['package/diagrams/process_2.mmd'],
+    action: userAction('确认新流程图'),
+  });
+  const files = await store.readPackageFiles(projectId, updated.revision.oid);
+
+  assert.equal(files.files['diagrams/processes.json'], '{"diagrams":[{"id":"new"}]}');
+  assert.match(files.files['diagrams/process_1.mmd'], /start --> end/u);
+  assert.equal(files.files['diagrams/process_2.mmd'], undefined);
+  assert.deepEqual((await store.history(projectId))[0].changedPaths, [
+    'package/diagrams/process_1.mmd',
+    'package/diagrams/process_2.mmd',
+    'package/diagrams/processes.json',
+  ]);
+});
+
 test('人工修订可保存为补丁版本且不覆盖修改内容', async (t) => {
   const { db, projectId, store } = await fixture(t);
   const initial = await store.ensureProject(projectId);

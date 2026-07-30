@@ -261,7 +261,8 @@ function stableEdgeId(identity: string, occurrence: number): string {
 }
 
 function normalizeProcessMeta(raw: Record<string, unknown>): FlowchartProcessMeta | undefined {
-  const source = raw.processMeta === undefined ? raw : asRecord(raw.processMeta, '流程元数据');
+  if (raw.processMeta === undefined) return undefined;
+  const source = asRecord(raw.processMeta, '流程元数据');
   const meta: FlowchartProcessMeta = {};
   const trigger = optionalText(source.trigger);
   if (trigger) meta.trigger = trigger;
