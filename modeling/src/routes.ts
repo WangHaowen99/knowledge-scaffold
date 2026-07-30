@@ -25,6 +25,7 @@ import * as m2 from './workflow/m2.js';
 import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
+import { parsePackageArchive } from './workflow/package-import.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
@@ -366,6 +367,58 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         background: b.background, targetUsers: b.targetUsers, glossaryPrefs: b.glossaryPrefs,
       });
       return reply.code(201).send({ project });
+    });
+
+    r.post('/api/package-workspaces/import', async (req, reply) => {
+      const file = await (req as any).file();
+      if (!file) return reply.code(400).send({ error: '请选择知识包 ZIP' });
+      if (!String(file.filename || '').toLowerCase().endsWith('.zip')) {
+        return reply.code(400).send({ error: '仅支持 .zip 知识包' });
+      }
+
+      let imported: ReturnType<typeof parsePackageArchive>;
+      try {
+        imported = parsePackageArchive(new Uint8Array(await file.toBuffer()));
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+
+      const project = createProject({
+        owner: req.user!.username,
+        kind: 'package',
+        name: imported.spec.name,
+        domain: '已有知识包',
+        background: `从 ${file.filename} 导入，进入知识包工作区继续检查和改进。`,
+      });
+      try {
+        const initial = await packageArtifacts.ensureProject(project.id);
+        const saved = await packageArtifacts.importPackageVersion(project.id, {
+          expectedRevision: initial.oid,
+          spec: imported.spec,
+          coverage: imported.coverage,
+          files: imported.rawFiles,
+          note: `导入 ${file.filename}`,
+          action: {
+            cause: 'package_import',
+            summary: `导入知识包 ${imported.spec.name}`,
+            actorKind: 'user',
+            actorName: req.user!.username,
+          },
+        });
+        setStage(project.id, 'review');
+        const findings = runFormatChecks(imported.spec, imported.files);
+        saveCheck(project.id, saved.packageVersion, findings, saved.revision.oid);
+        return reply.code(201).send({
+          project: getProject(project.id),
+          version: saved.packageVersion,
+          revision: saved.revision.oid,
+          findings,
+          warnings: imported.warnings,
+        });
+      } catch (error) {
+        req.log.error({ err: error, projectId: project.id }, '导入知识包失败');
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
 
     r.get('/api/projects/:id', async (req, reply) => {

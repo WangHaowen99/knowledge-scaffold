@@ -1,0 +1,422 @@
+import { unzipSync } from 'fflate';
+import { parse as parseYaml } from 'yaml';
+
+import type {
+  CoverageResult,
+  DocumentSourceRef,
+  PackageSpec,
+  SourceRef,
+  SpecField,
+  SpecMetric,
+  SpecObject,
+  SpecOperation,
+  SpecRule,
+  SpecScript,
+} from '../types.js';
+
+const MAX_ZIP_BYTES = 50 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const MAX_ARCHIVE_FILES = 2_000;
+const MODEL_SPEC_PATH = 'model/package-spec.json';
+const MODEL_COVERAGE_PATH = 'model/coverage.json';
+
+export interface ImportedPackageArchive {
+  spec: PackageSpec;
+  coverage: CoverageResult;
+  /** 可供检查和编辑的 UTF-8 文本文件。 */
+  files: Record<string, string>;
+  /** 原始包文件；二进制资产必须按字节保留。 */
+  rawFiles: Record<string, Uint8Array>;
+  warnings: string[];
+}
+
+type Frontmatter = Record<string, any>;
+
+function safeArchivePath(value: string): string {
+  const normalized = String(value || '').replaceAll('\\', '/').replace(/^\.\//, '');
+  const parts = normalized.split('/');
+  if (
+    !normalized
+    || normalized.startsWith('/')
+    || normalized.includes('\0')
+    || parts.some((part) => !part || part === '.' || part === '..')
+  ) {
+    throw new Error(`知识包 ZIP 路径不安全：${value || '空路径'}`);
+  }
+  return parts.join('/');
+}
+
+function text(bytes: Uint8Array, path: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`知识包文件不是 UTF-8 文本：${path}`);
+  }
+}
+
+const BINARY_EXTENSIONS = new Set([
+  '.bmp', '.doc', '.docx', '.gif', '.gz', '.ico', '.jpeg', '.jpg', '.pdf', '.png',
+  '.tar', '.webp', '.xls', '.xlsx', '.zip',
+]);
+
+function optionalText(bytes: Uint8Array, path: string): string | null {
+  const dot = path.lastIndexOf('.');
+  const suffix = dot >= 0 ? path.slice(dot).toLowerCase() : '';
+  if (BINARY_EXTENSIONS.has(suffix)) return null;
+  try {
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(decoded) ? null : decoded;
+  } catch {
+    return null;
+  }
+}
+
+function archiveFiles(bytes: Uint8Array): {
+  files: Record<string, string>;
+  rawFiles: Record<string, Uint8Array>;
+} {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) throw new Error('知识包 ZIP 为空');
+  if (bytes.byteLength > MAX_ZIP_BYTES) throw new Error('知识包 ZIP 超过 50 MB');
+
+  let entries: Record<string, Uint8Array>;
+  try {
+    entries = unzipSync(bytes);
+  } catch {
+    throw new Error('知识包 ZIP 无法解压');
+  }
+  const rawFiles = Object.entries(entries).filter(([path]) => !path.endsWith('/'));
+  if (!rawFiles.length) throw new Error('知识包 ZIP 中没有文件');
+  if (rawFiles.length > MAX_ARCHIVE_FILES) throw new Error('知识包 ZIP 文件数量过多');
+
+  let total = 0;
+  const normalized = new Map<string, Uint8Array>();
+  for (const [rawPath, content] of rawFiles) {
+    const path = safeArchivePath(rawPath);
+    if (path.startsWith('__MACOSX/') || path.endsWith('/.DS_Store')) continue;
+    total += content.byteLength;
+    if (total > MAX_ARCHIVE_BYTES) throw new Error('知识包 ZIP 解压后超过 64 MB');
+    if (normalized.has(path)) throw new Error(`知识包 ZIP 包含重复文件：${path}`);
+    normalized.set(path, content);
+  }
+
+  const manifests = [...normalized.keys()]
+    .filter((path) => path === 'manifest.yaml' || path.endsWith('/manifest.yaml'))
+    .sort((left, right) => left.split('/').length - right.split('/').length || left.localeCompare(right));
+  if (!manifests.length) throw new Error('知识包 ZIP 缺少 manifest.yaml');
+  const depth = manifests[0].split('/').length;
+  const shallowest = manifests.filter((path) => path.split('/').length === depth);
+  if (shallowest.length > 1) throw new Error('知识包 ZIP 中包含多个知识包根目录');
+  const root = manifests[0] === 'manifest.yaml' ? '' : manifests[0].slice(0, -'manifest.yaml'.length);
+
+  const files: Record<string, string> = {};
+  const packageBytes: Record<string, Uint8Array> = {};
+  for (const [path, content] of normalized) {
+    if (root && !path.startsWith(root)) continue;
+    const relative = root ? path.slice(root.length) : path;
+    if (!relative) continue;
+    packageBytes[relative] = new Uint8Array(content);
+    const decoded = optionalText(content, relative);
+    if (decoded !== null) files[relative] = decoded;
+  }
+  if (!files['manifest.yaml']) text(packageBytes['manifest.yaml'], 'manifest.yaml');
+  return { files, rawFiles: packageBytes };
+}
+
+function parseJson<T>(value: string | undefined, label: string): T | undefined {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    throw new Error(`${label} 不是合法 JSON`);
+  }
+}
+
+function frontmatter(markdown: string, path: string): { data: Frontmatter; body: string } {
+  const normalized = markdown.replaceAll('\r\n', '\n');
+  const match = normalized.match(/^---\n([\s\S]*?)\n---\s*\n?/);
+  if (!match) throw new Error(`${path} 缺少 frontmatter`);
+  try {
+    const data = parseYaml(match[1]) as Frontmatter;
+    return { data: data && typeof data === 'object' ? data : {}, body: normalized.slice(match[0].length) };
+  } catch {
+    throw new Error(`${path} 的 frontmatter 不是合法 YAML`);
+  }
+}
+
+function section(markdown: string, heading: string): string {
+  const lines = markdown.replaceAll('\r\n', '\n').split('\n');
+  const start = lines.findIndex((line) => line.trim() === `# ${heading}`);
+  if (start < 0) return '';
+  const result: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^#\s+/.test(lines[index])) break;
+    result.push(lines[index]);
+  }
+  return result.join('\n').trim();
+}
+
+function paragraph(value: string): string {
+  return value.split(/\n\s*\n/).map((item) => item.trim()).find(Boolean) ?? '';
+}
+
+function listItems(value: string): string[] {
+  return value.split('\n')
+    .map((line) => line.trim().match(/^[-*]\s+(.+)$/)?.[1]?.trim())
+    .filter((item): item is string => Boolean(item));
+}
+
+function numberedItems(value: string): string[] {
+  return value.split('\n')
+    .map((line) => line.trim().match(/^\d+[.)]\s+(.+)$/)?.[1]?.trim())
+    .filter((item): item is string => Boolean(item));
+}
+
+function splitTableRow(line: string): string[] {
+  const source = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells: string[] = [];
+  let current = '';
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+    } else if (char === '\\') {
+      escaped = true;
+    } else if (char === '|') {
+      cells.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function tableRows(value: string): string[][] {
+  const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
+  const header = lines.findIndex((line) => line.startsWith('|'));
+  if (header < 0 || !/^\|?\s*:?-{3}/.test(lines[header + 1] ?? '')) return [];
+  return lines.slice(header + 2).filter((line) => line.startsWith('|')).map(splitTableRow);
+}
+
+function strings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean);
+}
+
+function parseSource(value: string): SourceRef | null {
+  if (value.startsWith('表格：')) return { kind: 'table', table: value.slice('表格：'.length).trim() };
+  if (!value.startsWith('文档：')) return null;
+  const [filename, heading] = value.slice('文档：'.length).split(' / ', 2).map((item) => item.trim());
+  const source: DocumentSourceRef = { kind: 'document', filename };
+  if (heading) source.anchors = [{ heading }];
+  return source;
+}
+
+function required(value: string): boolean {
+  return ['是', 'true', 'yes', 'required'].includes(value.trim().toLowerCase());
+}
+
+function parseObject(path: string, markdown: string, mapping: any): SpecObject {
+  const { data, body } = frontmatter(markdown, path);
+  const key = String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? '').trim();
+  const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
+    key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
+    required: required(row[3] ?? ''), note: row[4] || undefined, alias: row[5] || undefined,
+  })).filter((field) => field.key && field.key !== '—');
+  const relations = tableRows(section(body, '关系')).map((row) => ({
+    relation: row[0] ?? '', target: row[1] ?? '', note: row[2] || undefined,
+    ...(row[3] ? { evidence: row[3].split('；').map((item) => item.trim()).filter(Boolean) } : {}),
+  })).filter((item) => item.relation && item.target);
+  const sourceRefs = strings(data.sources).map(parseSource).filter((item): item is SourceRef => Boolean(item));
+  const objectMapping = mapping?.objects?.[key];
+  return {
+    key,
+    title: String(data.title ?? key),
+    description: String(data.description ?? paragraph(section(body, '业务定义')) ?? ''),
+    fields,
+    ...(strings(data.aliases).length ? { aliases: strings(data.aliases) } : {}),
+    ...(section(body, '查询边界') ? { queryBoundary: paragraph(section(body, '查询边界')) } : {}),
+    ...(relations.length ? { relations } : {}),
+    ...(sourceRefs.length ? { sourceRefs } : {}),
+    ...(Array.isArray(objectMapping?.primary_key) ? { primaryKey: strings(objectMapping.primary_key) } : {}),
+  };
+}
+
+function parseOperation(path: string, markdown: string): SpecOperation {
+  const { data, body } = frontmatter(markdown, path);
+  const inputs = tableRows(section(body, '输入')).map((row) => ({
+    param: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || 'string',
+    required: required(row[3] ?? ''), note: row[4] || undefined,
+  })).filter((item) => item.param && item.param !== '—');
+  const outputs = tableRows(section(body, '输出')).map((row) => ({
+    field: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || 'string', note: row[3] || undefined,
+  })).filter((item) => item.field && item.field !== '—');
+  const notes = listItems(section(body, '规则、指标和注意事项'))
+    .filter((item) => !item.startsWith('相关规则：') && !item.startsWith('相关指标：') && item !== '暂无');
+  const intent = strings(data.intent_examples)[0];
+  const evidence = strings(data.evidence).length ? strings(data.evidence) : listItems(section(body, '知识证据'));
+  return {
+    key: String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? ''),
+    title: String(data.title ?? ''),
+    description: String(data.description ?? paragraph(section(body, '业务目标')) ?? ''),
+    inputs,
+    outputs,
+    flow: numberedItems(section(body, '流程')),
+    relatedObjects: strings(data.uses?.objects),
+    ...(strings(data.uses?.rules).length ? { usesRules: strings(data.uses.rules) } : {}),
+    ...(strings(data.uses?.metrics).length ? { usesMetrics: strings(data.uses.metrics) } : {}),
+    ...(notes.length ? { notes } : {}),
+    ...(data.script?.key ? { script: { key: String(data.script.key), required: Boolean(data.script.required) } } : {}),
+    ...(intent ? { competencyQuestion: intent } : {}),
+    ...(evidence.length ? { evidence } : {}),
+  };
+}
+
+function parseRule(path: string, markdown: string): SpecRule {
+  const { data, body } = frontmatter(markdown, path);
+  const conditions = tableRows(section(body, '判断条件')).map((row) => ({
+    condition: row[0] ?? '', conclusion: row[1] ?? '',
+  })).filter((item) => item.condition && item.conclusion);
+  const exceptions = listItems(section(body, '例外'));
+  const evidence = strings(data.evidence).length ? strings(data.evidence) : listItems(section(body, '知识证据'));
+  return {
+    key: String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? ''),
+    title: String(data.title ?? ''),
+    description: data.description == null ? undefined : String(data.description),
+    content: section(body, '规则内容'),
+    ...(strings(data.applies_to?.objects).length ? { appliesToObjects: strings(data.applies_to.objects) } : {}),
+    ...(conditions.length ? { conditions } : {}),
+    ...(exceptions.length ? { exceptions } : {}),
+    ...(evidence.length ? { evidence } : {}),
+  };
+}
+
+function parseMetric(path: string, markdown: string): SpecMetric {
+  const { data, body } = frontmatter(markdown, path);
+  const nullPolicy = tableRows(section(body, '空值策略')).map((row) => ({ field: row[0] ?? '', handling: row[1] ?? '' }))
+    .filter((item) => item.field && item.handling);
+  const dimensions = tableRows(section(body, '维度')).map((row) => ({ key: row[0] ?? '', note: row[1] ?? '' }))
+    .filter((item) => item.key);
+  const evidence = strings(data.evidence).length ? strings(data.evidence) : listItems(section(body, '知识证据'));
+  return {
+    key: String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? ''),
+    title: String(data.title ?? ''),
+    description: data.description == null ? undefined : String(data.description),
+    unit: data.unit == null ? undefined : String(data.unit),
+    grain: data.grain == null ? undefined : String(data.grain),
+    caliber: section(body, '业务口径'),
+    boundaries: listItems(section(body, '计算边界')),
+    ...(strings(data.uses?.objects).length ? { usesObjects: strings(data.uses.objects) } : {}),
+    ...(nullPolicy.length ? { nullPolicy } : {}),
+    ...(dimensions.length ? { dimensions } : {}),
+    ...(evidence.length ? { evidence } : {}),
+  };
+}
+
+function parseScript(path: string, markdown: string, files: Record<string, string>): SpecScript {
+  const { data, body } = frontmatter(markdown, path);
+  const inputSection = section(body, '输入参数');
+  const hasDefaultColumn = /\|\s*默认值\s*\|/.test(inputSection);
+  const parameters = tableRows(inputSection).map((row) => ({
+    name: row[0] ?? '', flag: row[1] ?? '', type: row[2] || 'string', required: required(row[3] ?? ''),
+    ...(hasDefaultColumn && row[4] && row[4] !== '—' ? { defaultValue: parseParameterDefault(row[4]) } : {}),
+    description: row[hasDefaultColumn ? 5 : 4] || undefined,
+  })).filter((item) => item.name && item.name !== '—');
+  const outputs = tableRows(section(body, '输出')).map((row) => ({
+    key: row[0] ?? '', type: row[1] || 'string', description: row[2] || undefined,
+  })).filter((item) => item.key && item.key !== '—');
+  const entrypoint = String(data.entrypoint ?? '');
+  const evidence = strings(data.evidence).length ? strings(data.evidence) : listItems(section(body, '知识证据'));
+  return {
+    key: String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? ''),
+    title: String(data.title ?? ''),
+    description: String(data.description ?? ''),
+    boundOperation: String(data.bound_operation ?? ''),
+    runtime: 'python',
+    entrypoint,
+    timeoutSeconds: Number(data.timeout_seconds ?? 30),
+    parameters,
+    outputs,
+    boundaries: listItems(section(body, '执行边界')),
+    ...(evidence.length ? { evidence } : {}),
+    sourceCode: files[`scripts/${entrypoint}`] ?? '',
+  };
+}
+
+function parseParameterDefault(value: string): string | number | boolean {
+  const text = String(value ?? '').trim();
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  if (/^-?(?:\d+\.?\d*|\.\d+)$/.test(text)) return Number(text);
+  return text;
+}
+
+function parseRenderedSpec(files: Record<string, string>): PackageSpec {
+  let manifest: any;
+  try {
+    manifest = parseYaml(files['manifest.yaml']);
+  } catch {
+    throw new Error('manifest.yaml 不是合法 YAML');
+  }
+  if (!manifest || manifest.kind !== 'ontology-package') throw new Error('manifest.yaml 不是知识包');
+  const mapping = parseJson<any>(files['mappings/object-data-mappings.json'], '数据映射') ?? {};
+  const detailPaths = (folder: string) => Object.keys(files)
+    .filter((path) => path.startsWith(`${folder}/`) && path.endsWith('.md') && path !== `${folder}/index.md`)
+    .sort();
+  const objects = detailPaths('objects').map((path) => parseObject(path, files[path], mapping));
+  const operations = detailPaths('operations').map((path) => parseOperation(path, files[path]));
+  const rules = detailPaths('rules').map((path) => parseRule(path, files[path]));
+  const metrics = detailPaths('metrics').map((path) => parseMetric(path, files[path]));
+  const scripts = detailPaths('scripts').map((path) => parseScript(path, files[path], files));
+  return {
+    id: String(manifest.id ?? '').trim(),
+    name: String(manifest.name ?? manifest.id ?? '').trim(),
+    description: String(manifest.description ?? '').trim(),
+    version: String(manifest.version ?? '').trim(),
+    language: String(manifest.language ?? 'zh-CN').trim(),
+    status: ['draft', 'review', 'released', 'deprecated'].includes(String(manifest.status))
+      ? manifest.status
+      : 'draft',
+    defaultProviderAlias: String(mapping.default_provider_alias ?? 'default'),
+    objects,
+    operations,
+    ...(rules.length ? { rules } : {}),
+    ...(metrics.length ? { metrics } : {}),
+    ...(scripts.length ? { scripts } : {}),
+  };
+}
+
+function inferredCoverage(spec: PackageSpec): CoverageResult {
+  return {
+    covered: spec.operations
+      .filter((operation) => operation.competencyQuestion)
+      .map((operation) => ({ question: operation.competencyQuestion!, operation: operation.key })),
+    uncovered: [],
+  };
+}
+
+export function parsePackageArchive(bytes: Uint8Array): ImportedPackageArchive {
+  const archive = archiveFiles(bytes);
+  const allFiles = archive.files;
+  const embeddedSpec = parseJson<PackageSpec>(allFiles[MODEL_SPEC_PATH], '结构化知识包规格');
+  const embeddedCoverage = parseJson<CoverageResult>(allFiles[MODEL_COVERAGE_PATH], '知识包覆盖结果');
+  const files = Object.fromEntries(Object.entries(allFiles).filter(([path]) => !path.startsWith('model/')));
+  const rawFiles = Object.fromEntries(Object.entries(archive.rawFiles).filter(([path]) => !path.startsWith('model/')));
+  const spec = embeddedSpec ?? parseRenderedSpec(files);
+  if (!spec.id || !spec.name || !spec.version || !spec.objects || !spec.operations) {
+    throw new Error('知识包缺少 id、name、version、objects 或 operations');
+  }
+  return {
+    spec,
+    coverage: embeddedCoverage ?? inferredCoverage(spec),
+    files,
+    rawFiles,
+    warnings: [
+      ...(embeddedSpec ? [] : ['该知识包未携带结构化规格，已从标准目录和 Markdown 内容重建。']),
+      ...(Object.keys(rawFiles).length > Object.keys(files).length
+        ? ['包内二进制附件已原样保留，可随知识包导出，但不支持在线编辑。'] : []),
+    ],
+  };
+}

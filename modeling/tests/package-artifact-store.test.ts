@@ -148,6 +148,36 @@ test('新包版本同时写入 Git 和 SQLite，并冻结历史内容', async (t
   assert.equal((await store.current(projectId))?.spec.description, '新版说明');
 });
 
+test('导入知识包保留原始文本和二进制附件并建立版本索引', async (t) => {
+  const { db, projectId, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  const importedSpec = spec('2.0.0', '导入知识包');
+  const binary = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff]);
+
+  const imported = await store.importPackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: importedSpec,
+    coverage,
+    files: {
+      ...renderPackage(importedSpec),
+      'notes/manual.md': '# 人工说明\n',
+      'assets/logo.png': binary,
+    },
+    note: '导入已有知识包',
+    action: {
+      cause: 'package_import', summary: '导入知识包', actorKind: 'user', actorName: '张经理',
+    },
+  });
+
+  assert.equal(imported.packageVersion, '2.0.0');
+  assert.equal((await store.readFile(projectId, 'package/notes/manual.md')).content, '# 人工说明\n');
+  const snapshot = await store.readPackageArchiveFiles(projectId, imported.revision.oid);
+  assert.deepEqual(snapshot.files['assets/logo.png'], binary);
+  assert.equal((db.prepare(`SELECT revision_oid FROM package_versions
+    WHERE project_id = ? AND version = '2.0.0'`).get(projectId) as any).revision_oid,
+  imported.revision.oid);
+});
+
 test('SQLite 索引写入失败时回滚 Git，不留下半提交且可直接重试', async (t) => {
   const { db, projectId, repository, store } = await fixture(t);
   const initial = await store.ensureProject(projectId);

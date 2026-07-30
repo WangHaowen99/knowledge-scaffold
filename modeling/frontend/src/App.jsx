@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { getToken, getRefreshToken, clearSession, me } from './api.js';
+import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
 import Workbench from './Workbench.jsx';
@@ -13,7 +13,11 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('llm');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [importingPackage, setImportingPackage] = useState(false);
+  const [importError, setImportError] = useState('');
+  const [importNotice, setImportNotice] = useState('');
   const userRef = useRef(null);
+  const packageInputRef = useRef(null);
 
   useEffect(() => {
     if (!getToken()) { setStatus('out'); return; }
@@ -38,6 +42,20 @@ export default function App() {
   }, [menuOpen]);
 
   const logout = () => { clearSession(); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false); };
+
+  const importPackage = async (file) => {
+    if (!file) return;
+    setImportingPackage(true); setImportError(''); setImportNotice('');
+    try {
+      const result = await importPackageWorkspace(file);
+      setImportNotice((result.warnings ?? []).join('；'));
+      setProjectId(result.project.id);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : '知识包导入失败');
+    } finally {
+      setImportingPackage(false);
+    }
+  };
 
   // 操作引导联动：引导步骤可打开配置中心并切换 tab；引导结束时收起弹窗
   useEffect(() => {
@@ -65,6 +83,20 @@ export default function App() {
             : '项目'}
         </span>
         <div className="right">
+          {!projectId && (
+            <>
+              <button className="tb-btn" disabled={importingPackage}
+                onClick={() => packageInputRef.current?.click()}>
+                {importingPackage ? '导入中…' : '导入已有知识包'}
+              </button>
+              <input ref={packageInputRef} type="file" accept=".zip" hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  void importPackage(file);
+                }} />
+            </>
+          )}
           <button className="tb-btn" title="功能引导"
             onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start', { detail: { scene: projectId ? 'workbench' : 'projects' } }))}>❓ 引导</button>
           <button className="tb-btn" data-tour="config" onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
@@ -92,6 +124,8 @@ export default function App() {
         </div>
       </div>
       <div className="main">
+        {!projectId && importError && <div className="lerr">知识包导入失败：{importError}</div>}
+        {!projectId && importNotice && <div className="saved">{importNotice}</div>}
         {projectId
           ? <Workbench projectId={projectId} onBack={() => setProjectId(null)} />
           : <ProjectList onOpen={setProjectId} />}
