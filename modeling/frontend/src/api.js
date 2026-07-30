@@ -16,11 +16,13 @@ export const clearSession = () => {
 };
 
 const doFetch = (path, options = {}) => {
-  const headers = { ...(options.headers || {}) };
+  const { bodyFactory, ...requestOptions } = options;
+  const body = typeof bodyFactory === 'function' ? bodyFactory() : requestOptions.body;
+  const headers = { ...(requestOptions.headers || {}) };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
-  return fetch(path, { ...options, headers });
+  if (body && !(body instanceof FormData)) headers['Content-Type'] = 'application/json';
+  return fetch(path, { ...requestOptions, body, headers });
 };
 
 // 静默续期并发去重：同一时刻只发一个 refresh 请求，其余 401 请求共用其结果
@@ -182,19 +184,70 @@ export const cancelGraphImportRun = (id, runId) => api(
 export const listGraphImports = (id) => api(`${P(id)}/graph-imports`);
 export const listTestcases = (id) => api(`${P(id)}/testcases`);
 export const addTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases`, { method: 'POST', body: JSON.stringify({ question, groundTruth }) });
+export const addTestcases = (id, cases) => api(`${P(id)}/testcases/batch`, { method: 'POST', body: JSON.stringify({ cases }) });
 export const prefillTestcases = (id) => api(`${P(id)}/testcases/prefill`, { method: 'POST', body: '{}' });
 export const updateTestcase = (id, tcId, patch) => api(`${P(id)}/testcases/${encodeURIComponent(tcId)}`, { method: 'PATCH', body: JSON.stringify(patch) });
 export const deleteTestcase = (id, tcId) => api(`${P(id)}/testcases/${encodeURIComponent(tcId)}`, { method: 'DELETE' });
-export const startEvaluate = (id) => api(`${P(id)}/evaluate`, { method: 'POST', body: '{}' });
+export const startEvaluate = (id) => api(`${P(id)}/evaluate`, {
+  method: 'POST',
+  bodyFactory: () => JSON.stringify({ refresh_token: getRefreshToken() }),
+});
+export const cancelEvaluate = (id, roundId) => api(`${P(id)}/evaluate/cancel`, {
+  method: 'POST', body: JSON.stringify({ roundId }),
+});
 export const listRounds = (id) => api(`${P(id)}/rounds`);
 export const getRound = (id, roundId) => api(`${P(id)}/rounds/${encodeURIComponent(roundId)}`);
-export const overrideVerdict = (id, resultId, verdict) => api(`${P(id)}/results/${encodeURIComponent(resultId)}`, { method: 'PATCH', body: JSON.stringify({ verdict }) });
+export const overrideVerdict = (id, resultId, verdict, reason) => api(`${P(id)}/results/${encodeURIComponent(resultId)}`, { method: 'PATCH', body: JSON.stringify({ verdict, reason }) });
 
 // ---- M4 优化与版本 ----
-export const proposeOptimize = (id, roundId) => api(`${P(id)}/optimize/propose`, { method: 'POST', body: JSON.stringify(roundId ? { roundId } : {}) });
+const optimizeTasks = new Map();
+
+const runOptimizeTask = (id, kind, request) => {
+  const current = optimizeTasks.get(id);
+  if (current) {
+    if (current.kind === kind) return current.promise;
+    return Promise.reject(new Error('该项目已有优化任务正在进行中'));
+  }
+
+  const task = { kind, startedAt: new Date().toISOString(), promise: Promise.resolve(request()) };
+  task.promise = task.promise.finally(() => {
+    if (optimizeTasks.get(id) === task) optimizeTasks.delete(id);
+  });
+  optimizeTasks.set(id, task);
+  return task.promise;
+};
+
+// 优化面板切换阶段会卸载；任务放在 API 模块中，重新挂载后可继续等待并刷新结果。
+export const getOptimizeTask = (id) => optimizeTasks.get(id) ?? null;
+export const diagnoseOptimize = (id, roundId) => runOptimizeTask(id, 'diagnose', () =>
+  api(`${P(id)}/optimize/diagnose`, { method: 'POST', body: JSON.stringify(roundId ? { roundId } : {}) }));
+export const listDiagnoses = (id, roundId) => api(`${P(id)}/optimize/diagnoses${roundId ? `?roundId=${encodeURIComponent(roundId)}` : ''}`);
+export const resolveDiagnosis = (id, diagnosisId, action, note = '') =>
+  api(`${P(id)}/optimize/diagnoses/${encodeURIComponent(diagnosisId)}/resolve`, {
+    method: 'POST', body: JSON.stringify({ action, note }),
+  });
+export const proposeOptimize = (id, roundId) => runOptimizeTask(id, 'propose', () =>
+  api(`${P(id)}/optimize/propose`, { method: 'POST', body: JSON.stringify(roundId ? { roundId } : {}) }));
 export const listSuggestions = (id, roundId) => api(`${P(id)}/optimize/suggestions${roundId ? `?roundId=${encodeURIComponent(roundId)}` : ''}`);
-export const applyOptimize = (id, suggestionIds) => api(`${P(id)}/optimize/apply`, { method: 'POST', body: JSON.stringify({ suggestionIds }) });
+export const getOptimizeApplyStatus = (id) => api(`${P(id)}/optimize/apply-status`);
+export const applyOptimize = (id, suggestionIds) => runOptimizeTask(id, 'apply', () =>
+  api(`${P(id)}/optimize/apply`, { method: 'POST', body: JSON.stringify({ suggestionIds }) }));
+export const reviewOptimizeApply = (id, taskId, action, note = '') =>
+  api(`${P(id)}/optimize/apply-review`, {
+    method: 'POST', body: JSON.stringify({ taskId, action, note }),
+  });
 export const rejectSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/reject`, { method: 'POST', body: JSON.stringify({ suggestionIds }) });
+export const listCandidateRevisions = (id) => api(`${P(id)}/candidate-revisions`);
+export const previewCandidateRevision = (id, candidateId, selectedGroupIds) => {
+  const groups = Array.isArray(selectedGroupIds) && selectedGroupIds.length
+    ? `?groups=${encodeURIComponent(selectedGroupIds.join(','))}`
+    : '';
+  return api(`${P(id)}/candidate-revisions/${encodeURIComponent(candidateId)}/preview${groups}`);
+};
+export const respondCandidateRevision = (id, candidateId, action, selectedGroupIds, note = '') => api(
+  `${P(id)}/candidate-revisions/${encodeURIComponent(candidateId)}/respond`,
+  { method: 'POST', body: JSON.stringify({ action, selectedGroupIds, note }) },
+);
 export const listVersions = (id) => api(`${P(id)}/versions`);
 export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;
 

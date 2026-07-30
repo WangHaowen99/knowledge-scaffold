@@ -5,6 +5,7 @@ import {
 } from './api.js';
 import { AutoTextarea } from './ui.jsx';
 import { DataSourceSummary } from './DataSourcePanel.jsx';
+import { requireOverrideReason } from './optimization-flow.js';
 
 /* ================= 节点 9 · 评测用例录入 ================= */
 
@@ -203,7 +204,7 @@ function RoundDetail({ projectId, data, onChanged }) {
 
       {results.map((r) => (
         <ResultCard key={r.id} r={r}
-          onOverride={(verdict) => overrideVerdict(projectId, r.id, verdict).then(onChanged)} />
+          onOverride={(verdict, reason) => overrideVerdict(projectId, r.id, verdict, reason).then(onChanged)} />
       ))}
       {round.status === 'running' && results.length < round.progressTotal && (
         <div className="empty" style={{ padding: '16px 0' }}>剩余 {round.progressTotal - results.length} 条用例排队中…</div>
@@ -218,7 +219,18 @@ const VERDICT_META = {
 
 function ResultCard({ r, onOverride }) {
   const [open, setOpen] = useState(false);
+  const [overrideErr, setOverrideErr] = useState('');
   const [cls, label] = VERDICT_META[r.verdict] ?? ['tag-lang', '—'];
+  const submitOverride = async (verdict) => {
+    const input = window.prompt('请填写人工改判理由（将记录操作审计）', '');
+    if (input === null) return;
+    try {
+      setOverrideErr('');
+      await onOverride(verdict, requireOverrideReason(input));
+    } catch (error) {
+      setOverrideErr(error.message);
+    }
+  };
   return (
     <div className="ev-result">
       <div className="ev-result-head" onClick={() => setOpen((v) => !v)}>
@@ -231,11 +243,18 @@ function ResultCard({ r, onOverride }) {
           <div className="ev-kv"><b>标准答案</b><div>{r.groundTruth}</div></div>
           <div className="ev-kv"><b>智能体回答</b><div>{r.finalAnswer || '（无回答）'}</div></div>
           {r.reason && <div className="ev-kv"><b>判分理由</b><div>{r.reason}</div></div>}
+          {r.overridden && (
+            <div className="ev-kv"><b>改判审计</b><div>
+              原判定：{VERDICT_META[r.originalVerdict]?.[1] ?? r.originalVerdict ?? '—'}；
+              理由：{r.overrideReason || '—'}；操作人：{r.overrideActor || '—'}
+            </div></div>
+          )}
+          {overrideErr && <div className="lerr">{overrideErr}</div>}
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--muted)', alignSelf: 'center' }}>人工改判：</span>
             {['pass', 'partial', 'fail'].map((v) => (
               <button key={v} className="btn" style={{ padding: '3px 12px', fontSize: 12 }}
-                disabled={r.verdict === v} onClick={() => onOverride(v)}>
+                disabled={r.verdict === v || r.verdict === 'error'} onClick={() => submitOverride(v)}>
                 {VERDICT_META[v][1]}
               </button>
             ))}
