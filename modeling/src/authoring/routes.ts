@@ -29,7 +29,9 @@ import { FlowchartDraftError, FlowchartDraftStore } from '../flowchart/draft-sto
 import { renderDiagramFiles } from '../flowchart/projection.js';
 import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
 import { getProject } from '../projects/repo.js';
+import { findKnowledgeEvidenceProblems } from '../workflow/knowledge-evidence.js';
 import { getCheck } from '../workflow/package-check.js';
+import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { getPackageWarningReview } from '../workflow/warning-acceptance.js';
 import {
   ControlledRepairController,
@@ -156,7 +158,8 @@ export interface AuthoringRouteOptions {
   graph?: AiConstructionTaskGraph;
   orchestrator?: Pick<AiConstructionOrchestrator,
     'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'>;
-  packages?: Pick<PackageArtifactStore, 'current' | 'readPackageFiles' | 'saveFiles'>;
+  packages?: Pick<PackageArtifactStore,
+    'current' | 'readPackageFiles' | 'saveFiles' | 'saveCurrentAsPackageVersion'>;
   flowchartDrafts?: FlowchartDraftStore;
   processDraftGenerator?: typeof generateProcessDraft;
 }
@@ -295,15 +298,103 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         operation: '更新建模任务图',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: SHORT_WRITE_LEASE_TTL_MS,
-      }, () => {
-        const aiConstruction = graph.apply(project.id, command);
+      }, async () => {
+        let appliedCommand = command;
+        let validationCandidate: Awaited<ReturnType<PackageArtifactStore['current']>> = null;
+        if (command.type === 'confirm_milestone' && command.milestoneId === 'construction_completed') {
+          const currentGraph = graph.snapshot(project.id);
+          if (!currentGraph || currentGraph.revision !== command.expectedRevision) {
+            throw new AiConstructionTaskGraphError(
+              currentGraph ? 'REVISION_CONFLICT' : 'GRAPH_NOT_FOUND',
+              currentGraph
+                ? `任务图已更新，请基于 revision ${currentGraph.revision} 重试`
+                : `项目尚未初始化 AI 辅助构建：${project.id}`,
+            );
+          }
+          const currentPackage = await packages.current(project.id);
+          if (!currentPackage) {
+            return reply.code(409).send({
+              error: '当前项目没有可确认的知识包修订', code: 'PACKAGE_NOT_FOUND',
+            });
+          }
+          const check = getCheck(project.id);
+          if (!check || check.revision !== currentPackage.revision.oid) {
+            return reply.code(409).send({
+              error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
+              code: 'PACKAGE_CHECK_REQUIRED',
+            });
+          }
+          const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
+          if (errorCount > 0) {
+            return reply.code(409).send({
+              error: `知识包检查还有 ${errorCount} 个错误，请修复后再完成建模`,
+              code: 'PACKAGE_CHECK_FAILED',
+            });
+          }
+          const evidenceProblems = findKnowledgeEvidenceProblems(currentPackage.spec);
+          if (evidenceProblems.length > 0) {
+            return reply.code(409).send({
+              error: `还有 ${evidenceProblems.length} 项确认知识缺少可追溯证据`,
+              code: 'KNOWLEDGE_EVIDENCE_REQUIRED',
+              problems: evidenceProblems,
+            });
+          }
+          const pendingInteractions = state.snapshot(project.id).pendingInteractions.length;
+          if (pendingInteractions > 0) {
+            return reply.code(409).send({
+              error: `还有 ${pendingInteractions} 个待确认事项未处理`,
+              code: 'PENDING_INTERACTIONS',
+            });
+          }
+          const version = nextValidationCandidateVersion({
+            currentVersion: currentPackage.packageVersion,
+            currentStatus: currentPackage.spec.status ?? 'draft',
+          });
+          validationCandidate = await packages.saveCurrentAsPackageVersion(project.id, {
+            expectedRevision: currentPackage.revision.oid,
+            version,
+            status: 'review',
+            note: 'AI 辅助构建完成，创建验证基线',
+            action: {
+              cause: 'validation_candidate',
+              summary: `创建验证候选 ${version}`,
+              actorKind: 'user',
+              actorName: req.user!.username,
+            },
+          });
+          appliedCommand = { ...command, packageRevisionOid: validationCandidate.revision.oid };
+        }
+
+        const aiConstruction = graph.apply(project.id, appliedCommand);
+        if (validationCandidate) {
+          state.apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'package.revision.created',
+            payload: {
+              revisionId: validationCandidate.revision.oid,
+              cause: 'validation_candidate',
+              packageVersion: validationCandidate.packageVersion,
+            },
+          });
+        }
         state.apply({
           kind: 'publish_event',
           projectId: project.id,
           type: 'ai_construction.graph.updated',
-          payload: { ...commandEvent(command), revision: aiConstruction.revision },
+          payload: { ...commandEvent(appliedCommand), revision: aiConstruction.revision },
         });
-        return { aiConstruction, cursor: state.snapshot(project.id).lastEventSeq };
+        return {
+          aiConstruction,
+          ...(validationCandidate ? {
+            package: {
+              version: validationCandidate.packageVersion,
+              revision: validationCandidate.revision.oid,
+              status: validationCandidate.spec.status ?? 'draft',
+            },
+          } : {}),
+          cursor: state.snapshot(project.id).lastEventSeq,
+        };
       });
     } catch (error) {
       return sendStateError(reply, error);
