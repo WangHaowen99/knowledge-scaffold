@@ -12,9 +12,11 @@ import { registerRoutes } from './routes.js';
 import { cleanupExpiredGraphImportUploads } from './graph-import/upload-store.js';
 import { failRunningGraphImportRuns } from './graph-import/repo.js';
 import { failRunningEvaluationDatabaseImportRuns } from './evaluation/eval-db-import-repo.js';
+import { recoverInterruptedAuthoringWork } from './authoring/restart-recovery.js';
 
 async function main() {
-  getDb(); // 初始化 schema
+  const db = getDb(); // 初始化 schema
+  recoverInterruptedAuthoringWork(db);
   failRunningGraphImportRuns('modeling 服务已重启，后台图数据导入已中断，请重新上传 Excel 并重试');
   failRunningEvaluationDatabaseImportRuns('modeling 服务已重启，后台评测库导入已中断，请重新上传 Excel 并重试');
   cleanupExpiredGraphImportUploads();

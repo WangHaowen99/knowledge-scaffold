@@ -1,4 +1,5 @@
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
+import { config } from '../config.js';
 import { getLlmSettings } from '../settings/repo.js';
 
 // pi agent 的 LLM 依赖：一个 model 对象 + streamFn + getApiKey。
@@ -40,6 +41,38 @@ export function buildLlm(): LlmDeps {
   };
 }
 
+export interface TaskLlmOptions {
+  maxTokensCap?: number;
+}
+
+/**
+ * 领域分析和知识生成优先使用部署侧任务模型；未单独配置时回退页面主模型。
+ * 部分配置直接报错，避免后台任务静默跑到错误端点。
+ */
+export function buildTaskLlm(options: TaskLlmOptions = {}): LlmDeps {
+  const task = config.taskLlm;
+  const configured = Boolean(task.baseUrl || task.model || task.apiKey);
+  if (!configured) {
+    const llm = buildLlm();
+    return options.maxTokensCap
+      ? { ...llm, model: { ...llm.model, maxTokens: Math.min(llm.model.maxTokens, options.maxTokensCap) } }
+      : llm;
+  }
+  if (!task.baseUrl || !task.model) {
+    throw new Error('任务 LLM 配置不完整（MODELING_TASK_LLM_BASE_URL 和 MODELING_TASK_LLM_MODEL 必须同时设置）');
+  }
+  if (task.baseUrl === 'faux') return buildFauxModeler();
+  const configuredMaxTokens = getLlmSettings().maxTokens;
+  const maxTokens = options.maxTokensCap
+    ? Math.min(configuredMaxTokens, options.maxTokensCap)
+    : configuredMaxTokens;
+  return {
+    model: buildModel(task.baseUrl, task.model, maxTokens),
+    streamFn: streamSimple,
+    getApiKey: () => task.apiKey || undefined,
+  };
+}
+
 // ---- faux 演示模式：脚本化"假建模者"，无需真实 key 即可端到端走完建模流程 ----
 // 按 system prompt 关键词识别所处节点，按回合产出合理的工具调用。
 async function loadFaux() {
@@ -65,6 +98,20 @@ function parseNumberedList(prompt: string): string[] {
   return prompt.split('\n').map((l) => l.match(/^\d+\.\s*(.+)$/)?.[1]?.trim()).filter(Boolean) as string[];
 }
 
+function latestUserJson(messages: any[]): any {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user') continue;
+    const raw = typeof message.content === 'string'
+      ? message.content
+      : Array.isArray(message.content)
+        ? message.content.map((part: any) => part?.text ?? '').join('')
+        : '';
+    try { return JSON.parse(raw); } catch { return undefined; }
+  }
+  return undefined;
+}
+
 export function buildFauxModeler(): LlmDeps {
   // 动态 import 是 ESM 顶层限制的折衷：faux 只在演示模式加载
   let handle: any = null;
@@ -72,6 +119,40 @@ export function buildFauxModeler(): LlmDeps {
     const sys: string = context.systemPrompt ?? '';
     const { fauxAssistantMessage, fauxToolCall } = fx;
     const hasToolResult = (name: string) => (context.messages ?? []).some((m: any) => m?.role === 'toolResult' && m.toolName === name);
+
+    if (sys.includes('submit_modeling_goal_brief')) {
+      const goal = String(latestUserJson(context.messages ?? [])?.modelingGoal ?? '').trim();
+      const problem = goal.split(/[，,。；;]/u).map((part) => part.trim()).find(Boolean);
+      return fauxAssistantMessage([fauxToolCall('submit_modeling_goal_brief', {
+        problem: problem || '建立业务申请处理知识模型',
+        targetUsers: '业务经办人员、审核人员',
+        scenarios: '根据申请资料、业务规则和异常条件形成可执行处理方案',
+        successCriteria: '生成可执行、可追溯且约束明确的业务处理方案',
+      })]);
+    }
+
+    if (sys.includes('submit_process_draft')) {
+      const candidate = latestUserJson(context.messages ?? [])?.candidateProcess;
+      return fauxAssistantMessage([fauxToolCall('submit_process_draft', candidate ? {
+        title: candidate.title,
+        trigger: candidate.trigger,
+        actors: candidate.actors,
+        inputs: candidate.inputs,
+        steps: candidate.steps,
+        exceptions: candidate.exceptions,
+        outputs: candidate.outputs,
+        handoffs: candidate.handoffs,
+      } : {
+        title: '业务申请处理流程',
+        trigger: '收到业务申请',
+        actors: ['业务经办人员', '审核人员'],
+        inputs: ['业务申请资料', '适用规则和处理约束'],
+        steps: ['校验申请资料', '按规则生成候选处理方案', '审核并确认处理结果'],
+        exceptions: ['关键约束缺失时标记待确认'],
+        outputs: ['已确认的业务处理结果'],
+        handoffs: ['业务经办人员提交审核人员确认'],
+      })]);
+    }
 
     if (sys.includes('submit_analysis')) {
       if (!hasToolResult('list_tables')) return fauxAssistantMessage([fauxToolCall('list_tables', {})]);

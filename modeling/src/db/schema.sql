@@ -128,6 +128,22 @@ CREATE TABLE IF NOT EXISTS ai_construction_task_edits (
 CREATE INDEX IF NOT EXISTS idx_ai_construction_task_edits_project
   ON ai_construction_task_edits(project_id, created_at);
 
+CREATE TABLE IF NOT EXISTS ai_construction_messages (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id       TEXT REFERENCES ai_construction_tasks(id) ON DELETE SET NULL,
+  message_key   TEXT,
+  seq           INTEGER NOT NULL,
+  role          TEXT NOT NULL CHECK (role IN ('assistant', 'user', 'system')),
+  blocks_json   TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  UNIQUE (project_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_messages_project
+  ON ai_construction_messages(project_id, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_construction_messages_key
+  ON ai_construction_messages(project_id, message_key) WHERE message_key IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS documents (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -155,6 +171,22 @@ CREATE TABLE IF NOT EXISTS wf_nodes (
   updated_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_wf_nodes_project ON wf_nodes(project_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS workflow_trace_events (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  node_id       TEXT NOT NULL REFERENCES wf_nodes(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,
+  phase         TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  summary       TEXT,
+  details_json  TEXT,
+  created_at    TEXT NOT NULL,
+  UNIQUE(node_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_trace_node ON workflow_trace_events(node_id, seq);
 
 -- ---- 统一建模运行 / 待办交互 / 项目事件 ----
 
