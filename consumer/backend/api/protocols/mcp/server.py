@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hmac
 import inspect
 import logging
 import os
+import re
 import threading
+import time
 import warnings
+from collections import OrderedDict
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from typing import Annotated, Any, Callable, Mapping
 from urllib.parse import parse_qs
 
@@ -35,26 +40,116 @@ DictListInput = list[dict[str, Any]] | str
 PathPatternInput = list[Any] | str
 _MCP_ENDPOINT_STATE_KEY = "meta_wise_mcp_endpoint_id"
 _MCP_SESSION_ID_HEADER = b"mcp-session-id"
+_MCP_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60
+_MCP_BINDING_CLEANUP_GRACE_SECONDS = 60
+_MCP_BINDING_CLEANUP_INTERVAL_SECONDS = 60
+_MCP_MAX_ACTIVE_SESSIONS = 10_000
+_MCP_SESSION_CAPACITY_WARNING_RATIO = 0.8
+_SSE_SESSION_ID_PATTERN = re.compile(
+    rb"(?:[?&])session_id=([0-9a-fA-F]{32})(?:[^0-9a-fA-F]|$)",
+)
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _WorkspaceEndpointSessionBinding:
+    endpoint_id: str
+    last_seen_at: float
+
+
+class _MCPActiveSessionLimitError(RuntimeError):
+    pass
 
 
 class _WorkspaceEndpointSessionBindings:
     """Keep FastMCP transport sessions on the endpoint that created them."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        idle_timeout_seconds: float | None = (
+            _MCP_SESSION_IDLE_TIMEOUT_SECONDS
+            + _MCP_BINDING_CLEANUP_GRACE_SECONDS
+        ),
+        max_active_sessions: int = _MCP_MAX_ACTIVE_SESSIONS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if idle_timeout_seconds is not None and idle_timeout_seconds <= 0:
+            raise ValueError("idle_timeout_seconds 必须为正数")
+        if max_active_sessions <= 0:
+            raise ValueError("max_active_sessions 必须为正整数")
         self._lock = threading.Lock()
-        self._endpoint_by_session_id: dict[str, str] = {}
+        self._bindings: OrderedDict[
+            str,
+            _WorkspaceEndpointSessionBinding,
+        ] = OrderedDict()
+        self._reservations: dict[int, str] = {}
+        self._next_reservation_id = 1
+        self._idle_timeout_seconds = idle_timeout_seconds
+        self._max_active_sessions = int(max_active_sessions)
+        self._clock = clock
+        self._capacity_warning_emitted = False
 
-    def bind_or_validate(self, session_id: str, endpoint_id: str) -> bool:
+    def reserve_new_session(self, endpoint_id: str) -> int:
+        now = self._clock()
+        with self._lock:
+            self._expire_idle_locked(now)
+            if self._active_count_locked() >= self._max_active_sessions:
+                raise _MCPActiveSessionLimitError(
+                    "MCP active session limit reached",
+                )
+            reservation_id = self._next_reservation_id
+            self._next_reservation_id += 1
+            self._reservations[reservation_id] = endpoint_id
+            self._warn_if_near_capacity_locked()
+            return reservation_id
+
+    def bind_or_validate(
+        self,
+        session_id: str,
+        endpoint_id: str,
+        *,
+        reservation_id: int | None = None,
+    ) -> bool:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             return True
+        now = self._clock()
         with self._lock:
-            bound_endpoint_id = self._endpoint_by_session_id.setdefault(
-                normalized_session_id,
-                endpoint_id,
-            )
-        matches = hmac.compare_digest(bound_endpoint_id, endpoint_id)
+            self._expire_idle_locked(now)
+            binding = self._bindings.get(normalized_session_id)
+            if binding is None:
+                reserved_endpoint_id = None
+                if reservation_id is not None:
+                    reserved_endpoint_id = self._reservations.pop(
+                        reservation_id,
+                        None,
+                    )
+                if reserved_endpoint_id is not None and not hmac.compare_digest(
+                    reserved_endpoint_id,
+                    endpoint_id,
+                ):
+                    return False
+                if (
+                    reserved_endpoint_id is None
+                    and self._active_count_locked() >= self._max_active_sessions
+                ):
+                    raise _MCPActiveSessionLimitError(
+                        "MCP active session limit reached",
+                    )
+                binding = _WorkspaceEndpointSessionBinding(
+                    endpoint_id=endpoint_id,
+                    last_seen_at=now,
+                )
+                self._bindings[normalized_session_id] = binding
+                self._warn_if_near_capacity_locked()
+            else:
+                if reservation_id is not None:
+                    self._reservations.pop(reservation_id, None)
+                if hmac.compare_digest(binding.endpoint_id, endpoint_id):
+                    binding.last_seen_at = now
+                    self._bindings.move_to_end(normalized_session_id)
+        matches = hmac.compare_digest(binding.endpoint_id, endpoint_id)
         if not matches:
             logger.warning(
                 "Rejecting MCP session %s on a different workspace endpoint",
@@ -67,14 +162,69 @@ class _WorkspaceEndpointSessionBindings:
         if not normalized_session_id:
             return
         with self._lock:
-            bound_endpoint_id = self._endpoint_by_session_id.get(
+            binding = self._bindings.get(
                 normalized_session_id,
             )
-            if bound_endpoint_id is not None and hmac.compare_digest(
-                bound_endpoint_id,
+            if binding is not None and hmac.compare_digest(
+                binding.endpoint_id,
                 endpoint_id,
             ):
-                self._endpoint_by_session_id.pop(normalized_session_id, None)
+                self._bindings.pop(normalized_session_id, None)
+                self._reset_capacity_warning_locked()
+
+    def release_reservation(self, reservation_id: int | None) -> None:
+        if reservation_id is None:
+            return
+        with self._lock:
+            self._reservations.pop(reservation_id, None)
+            self._reset_capacity_warning_locked()
+
+    def expire_idle(self) -> int:
+        with self._lock:
+            expired = self._expire_idle_locked(self._clock())
+            self._reset_capacity_warning_locked()
+            return expired
+
+    def active_count(self) -> int:
+        with self._lock:
+            return self._active_count_locked()
+
+    def _active_count_locked(self) -> int:
+        return len(self._bindings) + len(self._reservations)
+
+    def _expire_idle_locked(self, now: float) -> int:
+        if self._idle_timeout_seconds is None:
+            return 0
+        expired = 0
+        while self._bindings:
+            _, binding = next(iter(self._bindings.items()))
+            if now - binding.last_seen_at < self._idle_timeout_seconds:
+                break
+            self._bindings.popitem(last=False)
+            expired += 1
+        return expired
+
+    def _warn_if_near_capacity_locked(self) -> None:
+        active_count = self._active_count_locked()
+        warning_threshold = max(
+            1,
+            int(self._max_active_sessions * _MCP_SESSION_CAPACITY_WARNING_RATIO),
+        )
+        if active_count >= warning_threshold and not self._capacity_warning_emitted:
+            logger.warning(
+                "MCP active sessions reached %s/%s",
+                active_count,
+                self._max_active_sessions,
+            )
+            self._capacity_warning_emitted = True
+
+    def _reset_capacity_warning_locked(self) -> None:
+        warning_threshold = max(
+            1,
+            int(self._max_active_sessions * _MCP_SESSION_CAPACITY_WARNING_RATIO),
+        )
+        if self._active_count_locked() < warning_threshold:
+            self._capacity_warning_emitted = False
 
 
 def _request_mcp_session_id(scope: Mapping[str, Any]) -> str:
@@ -103,10 +253,12 @@ class _WorkspaceEndpointBindingApp:
         app: Any,
         *,
         session_bindings: _WorkspaceEndpointSessionBindings,
+        release_session_on_disconnect: bool = False,
         rewrite_to_mount_root: bool = False,
     ) -> None:
         self.app = app
         self.session_bindings = session_bindings
+        self.release_session_on_disconnect = bool(release_session_on_disconnect)
         self.rewrite_to_mount_root = bool(rewrite_to_mount_root)
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -123,10 +275,34 @@ class _WorkspaceEndpointBindingApp:
             return
 
         request_session_id = _request_mcp_session_id(scope)
-        if not self.session_bindings.bind_or_validate(
-            request_session_id,
-            endpoint_id,
-        ):
+        reservation_id: int | None = None
+        try:
+            if request_session_id:
+                session_matches = self.session_bindings.bind_or_validate(
+                    request_session_id,
+                    endpoint_id,
+                )
+            else:
+                reservation_id = self.session_bindings.reserve_new_session(
+                    endpoint_id,
+                )
+                session_matches = True
+        except _MCPActiveSessionLimitError:
+            response = JSONResponse(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "server-error",
+                    "error": {
+                        "code": -32000,
+                        "message": "Server session capacity reached",
+                    },
+                },
+                status_code=503,
+            )
+            await response(scope, receive, send)
+            return
+
+        if not session_matches:
             response = JSONResponse(
                 {
                     "jsonrpc": "2.0",
@@ -157,21 +333,56 @@ class _WorkspaceEndpointBindingApp:
 
         response_status = 0
         response_session_id = ""
+        connection_session_id = ""
+        sse_response_buffer = bytearray()
+        release_session_on_disconnect = (
+            self.release_session_on_disconnect
+            and child_scope.get("method") == "GET"
+        )
 
         async def send_with_session_binding(message: dict[str, Any]) -> None:
-            nonlocal response_status, response_session_id
+            nonlocal connection_session_id, reservation_id
+            nonlocal response_session_id, response_status
             if message.get("type") == "http.response.start":
                 response_status = int(message.get("status") or 0)
                 response_session_id = _response_mcp_session_id(message)
-                if 200 <= response_status < 300 and response_session_id:
+                if response_session_id:
                     self.session_bindings.bind_or_validate(
                         response_session_id,
                         endpoint_id,
+                        reservation_id=reservation_id,
                     )
+                    reservation_id = None
+            elif (
+                release_session_on_disconnect
+                and not connection_session_id
+                and message.get("type") == "http.response.body"
+                and message.get("body")
+            ):
+                if len(sse_response_buffer) < 8192:
+                    sse_response_buffer.extend(bytes(message["body"]))
+                match = _SSE_SESSION_ID_PATTERN.search(sse_response_buffer)
+                if match is not None:
+                    candidate_session_id = match.group(1).decode("ascii").lower()
+                    if self.session_bindings.bind_or_validate(
+                        candidate_session_id,
+                        endpoint_id,
+                        reservation_id=reservation_id,
+                    ):
+                        connection_session_id = candidate_session_id
+                        reservation_id = None
             await send(message)
 
-        with bind_mcp_endpoint_id(endpoint_id):
-            await self.app(child_scope, receive, send_with_session_binding)
+        try:
+            with bind_mcp_endpoint_id(endpoint_id):
+                await self.app(child_scope, receive, send_with_session_binding)
+        finally:
+            self.session_bindings.release_reservation(reservation_id)
+            if connection_session_id:
+                self.session_bindings.release(
+                    connection_session_id,
+                    endpoint_id,
+                )
 
         should_release = response_status == 404 or (
             child_scope.get("method") == "DELETE"
@@ -449,14 +660,30 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
 
     cfg = config or load_mcp_runtime_config()
     mounted_apps = []
+    session_binding_registries: list[_WorkspaceEndpointSessionBindings] = []
     routes = []
     for item in load_mcp_service_catalog():
         for normalized_transport in _normalize_http_transports(transport or cfg.transport):
             endpoint_path = "/sse" if normalized_transport == "sse" else "/mcp"
             server = create_mcp_server(cfg, toolset=item.toolset)
             subapp = server.http_app(path="/", transport=normalized_transport)
+            if normalized_transport == "streamable-http":
+                _configure_streamable_http_session_idle_timeout(
+                    subapp,
+                    _MCP_SESSION_IDLE_TIMEOUT_SECONDS,
+                )
             mounted_apps.append(subapp)
-            session_bindings = _WorkspaceEndpointSessionBindings()
+            session_bindings = _WorkspaceEndpointSessionBindings(
+                idle_timeout_seconds=(
+                    None
+                    if normalized_transport == "sse"
+                    else (
+                        _MCP_SESSION_IDLE_TIMEOUT_SECONDS
+                        + _MCP_BINDING_CLEANUP_GRACE_SECONDS
+                    )
+                ),
+            )
+            session_binding_registries.append(session_bindings)
             public_path = "/{{mcp_endpoint_id}}{}{}".format(
                 item.endpoint_prefix,
                 endpoint_path,
@@ -466,6 +693,9 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
                 endpoint=_WorkspaceEndpointBindingApp(
                     subapp,
                     session_bindings=session_bindings,
+                    release_session_on_disconnect=(
+                        normalized_transport == "sse"
+                    ),
                     rewrite_to_mount_root=True,
                 ),
                 name="{}-{}-exact".format(
@@ -478,6 +708,9 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
                 app=_WorkspaceEndpointBindingApp(
                     subapp,
                     session_bindings=session_bindings,
+                    release_session_on_disconnect=(
+                        normalized_transport == "sse"
+                    ),
                 ),
                 name="{}-{}".format(item.service_id, normalized_transport),
             ))
@@ -492,9 +725,52 @@ def create_mcp_http_root_app(config: MCPRuntimeConfig | None = None, *, transpor
         async with AsyncExitStack() as stack:
             for app in mounted_apps:
                 await stack.enter_async_context(app.router.lifespan_context(app))
-            yield
+            cleanup_task = asyncio.create_task(
+                _run_session_binding_cleanup(session_binding_registries),
+            )
+            try:
+                yield
+            finally:
+                cleanup_task.cancel()
+                try:
+                    await cleanup_task
+                except asyncio.CancelledError:
+                    pass
 
-    return Starlette(routes=routes, lifespan=lifespan)
+    root_app = Starlette(routes=routes, lifespan=lifespan)
+    root_app.state.mcp_session_binding_registries = tuple(
+        session_binding_registries,
+    )
+    return root_app
+
+
+def _configure_streamable_http_session_idle_timeout(
+    app: Any,
+    idle_timeout_seconds: float,
+) -> None:
+    for route in getattr(app, "routes", []):
+        session_manager = getattr(
+            getattr(route, "app", None),
+            "session_manager",
+            None,
+        )
+        if session_manager is not None:
+            session_manager.session_idle_timeout = float(idle_timeout_seconds)
+            return
+    if type(app).__module__.startswith("fastmcp."):
+        raise RuntimeError(
+            "FastMCP Streamable HTTP app 缺少可配置的 session manager",
+        )
+
+
+async def _run_session_binding_cleanup(
+    registries: list[_WorkspaceEndpointSessionBindings],
+) -> None:
+    while True:
+        await asyncio.sleep(_MCP_BINDING_CLEANUP_INTERVAL_SECONDS)
+        expired = sum(registry.expire_idle() for registry in registries)
+        if expired:
+            logger.info("Expired %s idle MCP session endpoint bindings", expired)
 
 
 def _normalize_http_transports(value: str | None) -> tuple[str, ...]:

@@ -23,11 +23,11 @@ def test_build_graph_scope_uses_runtime_workspace_id():
 
     assert scope.workspace_property == "d2o_workspace_id"
     assert scope.workspace_value == "workspace-a"
-    assert scope.ontology_property == "d2o_ontology_id"
-    assert scope.ontology_value == "demo-ontology"
+    assert scope.ontology_property == ""
+    assert scope.ontology_value == ""
 
 
-def test_build_graph_scope_always_uses_workspace_id_as_scope_value():
+def test_build_graph_scope_uses_workspace_name_for_workspace_name_property():
     scope = build_graph_scope({
         "workspace_id": "workspace-a",
         "ontology_id": "demo-ontology",
@@ -36,21 +36,48 @@ def test_build_graph_scope_always_uses_workspace_id_as_scope_value():
     })
 
     assert scope.workspace_property == "workspace_name"
-    assert scope.workspace_value == "workspace-a"
-    assert scope.ontology_property == "d2o_ontology_id"
-    assert scope.ontology_value == "demo-ontology"
+    assert scope.workspace_value == "示例工程变更空间"
+    assert scope.ontology_property == ""
+    assert scope.ontology_value == ""
+
+
+def test_build_graph_scope_requires_runtime_workspace_name_for_name_property():
+    with pytest.raises(GraphScopeError, match="workspace_name"):
+        build_graph_scope({
+            "workspace_id": "workspace-a",
+            "ontology_id": "demo-ontology",
+            "workspace_property": "workspace_name",
+        })
 
 
 def test_build_graph_scope_requires_ontology_id():
     with pytest.raises(GraphScopeError, match="ontology_id"):
         build_graph_scope({
             "workspace_id": "workspace-a",
+            "ontology_property": "d2o_ontology_id",
         })
-    with pytest.raises(ValueError, match="workspace and ontology scope"):
+
+
+def test_build_graph_scope_disables_ontology_scope_for_explicit_blank_property():
+    scope = build_graph_scope({
+        "workspace_id": "workspace-a",
+        "ontology_id": "demo-ontology",
+        "ontology_property": "",
+    })
+
+    assert scope.workspace_property == "d2o_workspace_id"
+    assert scope.workspace_value == "workspace-a"
+    assert scope.ontology_property == ""
+    assert scope.ontology_value == ""
+    assert scope.is_enabled() is True
+
+
+def test_graph_scope_rejects_partial_ontology_scope():
+    with pytest.raises(ValueError, match="configured together"):
         GraphScope(
             workspace_property="d2o_workspace_id",
             workspace_value="workspace-a",
-            ontology_property="",
+            ontology_property="d2o_ontology_id",
             ontology_value="",
         )
 
