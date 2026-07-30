@@ -261,6 +261,9 @@ html, body, #root { height: 100%; }
 .mwr .mdv code { background: #f1f0e9; border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, monospace; font-size: 12px; }
 .mwr .mdv ul, .mwr .mdv ol { padding-left: 22px; margin: 6px 0; }
 .package-version-actions { display: flex; justify-content: flex-end; padding: 12px 16px 0; }
+.pcheck-warning-acceptance { margin: 12px 0 2px; padding: 12px; border: 1px solid #efd49a; border-radius: 10px; background: #fff9eb; }
+.pcheck-warning-acceptance p { margin: 5px 0 9px; color: #72571f; font-size: 12px; line-height: 1.55; }
+.pcheck-warning-acceptance textarea { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; border: 1px solid #d9c38d; border-radius: 7px; padding: 7px 9px; background: #fff; resize: vertical; }
 
 /* ---- M3 评测 ---- */
 .mwr .tc-row { border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: #fff; }

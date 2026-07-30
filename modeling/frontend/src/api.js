@@ -249,6 +249,11 @@ export const packageChat = (id, message, history) => api(`${P(id)}/package/chat`
 export const packageChatApply = (id, message, history, plan) => api(`${P(id)}/package/chat/apply`, { method: 'POST', body: JSON.stringify({ message, history, plan }) });
 export const runPackageCheck = (id) => api(`${P(id)}/package/check`, { method: 'POST', body: '{}' });
 export const getPackageCheck = (id) => api(`${P(id)}/package/check`);
+export const acceptPackageWarnings = (id, revision, fingerprints, note, phase) => api(
+  `${P(id)}/package/warnings/accept`, {
+    method: 'POST', body: JSON.stringify({ revision, fingerprints, note, phase }),
+  },
+);
 
 // ---- 配置中心 ----
 export const getSettings = () => api('/api/settings');
