@@ -302,20 +302,6 @@ test('项目删除 API：要求明确确认、校验 owner、阻止运行任务�
   });
   assert.equal(response.statusCode, 404, response.body);
 
-  const busyProject = createProject({ owner: 'alice', name: '运行中项目' });
-  const { getDb, nowIso } = await import('../src/db/index.js');
-  getDb().prepare(`INSERT INTO graph_import_runs
-    (id, project_id, filename, file_hash, package_version, mapping_json, status, created_at)
-    VALUES ('busy-delete-run', ?, 'source.xlsx', 'hash', '1.0.0', '{}', 'running', ?)`)
-    .run(busyProject.id, nowIso());
-  response = await app.inject({
-    method: 'DELETE', url: `/api/projects/${busyProject.id}`, headers,
-    payload: { confirmed: true },
-  });
-  assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'PROJECT_BUSY');
-  getDb().prepare("UPDATE graph_import_runs SET status = 'failed' WHERE id = 'busy-delete-run'").run();
-
   const busyEvaluationDatabaseProject = createProject({ owner: 'alice', name: '评测库导入中项目' });
   const {
     createEvaluationDatabaseImportRun,
@@ -635,7 +621,7 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
   assert.equal(project.json().project.stage, 'testcases');
 });
-test('图导入 API：覆盖上传、校验、密码错误与后台状态映射', async () => {
+test('图导入 API：支持取消后台任务并在删除项目时等待任务退出', async () => {
   graphImportTasks.length = 0;
   const token = await signToken();
   const authorization = `Bearer ${token}`;
@@ -723,9 +709,39 @@ test('图导入 API：覆盖上传、校验、密码错误与后台状态映射'
     method: 'GET', url: `/api/projects/${projectId}/graph-imports`, headers: { authorization },
   });
   assert.equal(runningHistory.json().imports[0].status, 'running');
+  const cancelled = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-imports/${started.json().run.id}/cancel`,
+    headers: { authorization },
+  });
+  assert.equal(cancelled.statusCode, 200, cancelled.body);
+  assert.equal(cancelled.json().run.status, 'cancelled');
   await graphImportTasks.shift()!();
-  const finishedHistory = await app.inject({
+  const cancelledHistory = await app.inject({
     method: 'GET', url: `/api/projects/${projectId}/graph-imports`, headers: { authorization },
   });
-  assert.equal(finishedHistory.json().imports[0].status, 'done');
+  assert.equal(cancelledHistory.json().imports[0].status, 'cancelled');
+
+  const restarted = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/graph-import/uploads/${upload.id}/execute`,
+    headers: { authorization },
+    payload: { mapping: entityOnlyMapping, password: 'one-time-secret' },
+  });
+  assert.equal(restarted.statusCode, 202, restarted.body);
+  assert.equal(graphImportTasks.length, 1);
+
+  const deleted = await app.inject({
+    method: 'DELETE',
+    url: `/api/projects/${projectId}`,
+    headers: { authorization },
+    payload: { confirmed: true },
+  });
+  assert.equal(deleted.statusCode, 200, deleted.body);
+  assert.equal(deleted.json().deleted, projectId);
+  await graphImportTasks.shift()!();
+  const missing = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}`, headers: { authorization },
+  });
+  assert.equal(missing.statusCode, 404);
 });

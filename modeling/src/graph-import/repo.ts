@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
 import type { GraphImportMapping } from './types.js';
 
-export type GraphImportRunStatus = 'running' | 'done' | 'failed';
+export type GraphImportRunStatus = 'running' | 'done' | 'failed' | 'cancelled';
 
 export interface GraphImportRun {
   id: string;
