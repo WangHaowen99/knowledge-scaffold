@@ -484,6 +484,8 @@ def _graph_data_source_findings(
                     "provider": provider,
                     "type": "missing_optional_graph_scope_field",
                     "field": "ontology_property",
+                    "reason": "missing" if "ontology_property" not in config else "blank",
+                    "effect": "ontology_scope_disabled",
                 })
     return errors, warnings, count
 

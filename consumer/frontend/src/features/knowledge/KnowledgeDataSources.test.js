@@ -69,6 +69,11 @@ test('saving or clearing a data source refreshes the knowledge package summary',
   assert.equal(workbenchSource.includes('onDataSourceChanged={retryPackages}'), true);
 });
 
+test('opening the Markdown picker clears stale package-operation notices first', () => {
+  assert.equal(kbBrowserSource.includes("const clearOperationNotice = useCallback(() => setOpNotice(''), []);"), true);
+  assert.equal(workbenchSource.includes('clearOperationNotice();\n    markdownUploadPicker.open();'), true);
+});
+
 test('knowledge write permissions are split by operation', () => {
   assert.equal(kbBrowserSource.includes("const canImport = can('ws.kb.import');"), true);
   assert.equal(kbBrowserSource.includes("const canActivate = can('ws.kb.activate');"), true);

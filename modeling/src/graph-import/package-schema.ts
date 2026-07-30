@@ -1,10 +1,6 @@
 import { assertGraphIdentifier } from '../evaluation/data-source.js';
 import type { PackageSpec } from '../types.js';
-import {
-  mappingFieldName,
-  mappingObjectName,
-  mappingPrimaryNames,
-} from '../workflow/mapping-contract.js';
+import { mappingFieldName, mappingObjectName } from '../workflow/mapping-contract.js';
 import {
   markdownTableCells,
   parseObjectIndex,
@@ -82,29 +78,11 @@ function objectSchema(
         throw new Error(`对象 ${object.key} 的 mapping 包含对象规格未声明的字段 key ${fieldName}`);
       }
     }
-    const mappingPrimary = Array.isArray(mapping.primary_key)
-      ? mapping.primary_key.map((key: unknown) => String(key ?? '').trim()).filter(Boolean)
-      : [];
-    const expectedMappingPrimary = mappingPrimaryNames(object);
-    if (JSON.stringify(mappingPrimary) !== JSON.stringify(expectedMappingPrimary)) {
-      throw new Error(`对象 ${object.key} 的 primary_key 与字段 key 不一致`);
-    }
-    const primary = object.primaryKey?.length
-      ? object.primaryKey
-      : propertyMappings.slice(0, 1).map((item) => item.property);
-    const primaryProperties = (primary.length ? primary : propertyMappings.slice(0, 1).map((item) => item.property))
-      .map((key: string) => {
-        const property = propertyMappings.find((item) => item.property === key)?.property;
-        if (!property) throw new Error(`对象 ${object.key} 的主键 ${key} 不是该 object 声明且已映射的属性`);
-        return property;
-      });
-    for (const property of primaryProperties) assertGraphIdentifier(property, `对象 ${object.key} 的主键 Property`);
     return {
       key: object.key,
       title: object.title,
       label: indexEntry.key,
       defaultSheet: indexEntry.sourceSheet,
-      primaryProperties,
       propertyMappings,
     };
   });

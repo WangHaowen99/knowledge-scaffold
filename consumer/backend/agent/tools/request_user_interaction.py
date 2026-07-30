@@ -91,7 +91,16 @@ class RequestUserInteractionTool:
         tool_call_id: Optional[str] = None,
         event_emitter: Optional[Any] = None,
     ) -> ToolOutcome:
-        del context, event_emitter
+        del event_emitter
+        if not getattr(context, "supports_user_interaction", True):
+            return ToolOutcome(
+                content=(
+                    "Error: request_user_interaction is unavailable in this run. "
+                    "Return a direct text answer for consultation or recommendation requests, "
+                    "or explain the missing required input for execution or approval requests."
+                ),
+                terminal=False,
+            )
         interaction = build_user_interaction(args, tool_call_id=tool_call_id)
         final_output = {
             "type": "user_interaction",

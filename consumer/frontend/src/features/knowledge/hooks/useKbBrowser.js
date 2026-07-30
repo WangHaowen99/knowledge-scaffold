@@ -14,6 +14,11 @@ import {
   reconcileTreeSelection,
   resolveKnowledgeVersionOverride,
 } from '../import/knowledgeRefresh';
+import {
+  describeZipDownload,
+  resolveZipDownloadFileName,
+  startBlobDownload,
+} from '../lib/browserInterop';
 import { useAuthContext } from '../../auth';
 
 // 知识包浏览的共享状态：侧边栏目录树（AppShell 内）与工作台内容区共用。
@@ -457,25 +462,17 @@ export default function useKbBrowser() {
       const blob = await res.blob();
       if (requestScope !== scopeRef.current) return;
       const disposition = res.headers.get('Content-Disposition') || '';
-      const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
-      const fileName = match
-        ? decodeURIComponent(match[1])
-        : `${pkgId}${viewVersion ? `-${viewVersion}` : ''}.zip`;
-      const objectUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(objectUrl);
-      setOpNotice(`已下载：${fileName}`);
+      const fileName = resolveZipDownloadFileName(pkgId, viewVersion, disposition);
+      startBlobDownload(blob, fileName);
+      setOpNotice(describeZipDownload(fileName));
     } catch (error) {
       if (requestScope === scopeRef.current) setOpNotice(friendlyRequestError(error, '知识包下载失败'));
     } finally {
       if (requestScope === scopeRef.current) setOpBusy('');
     }
   }, [pkgId, viewVersion]);
+
+  const clearOperationNotice = useCallback(() => setOpNotice(''), []);
 
   return {
     canImport, canActivate, canManage, packages, pkgsLoading, packagesError, retryPackages: loadPackages,
@@ -495,7 +492,8 @@ export default function useKbBrowser() {
     importPreview: importFlow.result?.preview || null, clearImportPreview, reloadTree,
     knowledgeRevision, refreshKnowledge,
     viewVersion, viewingActive, versionOverride, selectVersion, selectPackageVersion,
-    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
+    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
+    clearOperationNotice, opBusy, opNotice,
   };
 }
 

@@ -19,6 +19,8 @@ html, body, #root { height: 100%; }
 .mwr .btn:hover { border-color: #c9c8c1; }
 .mwr .btn-p { background: var(--blue); border-color: var(--blue); color: #fff; }
 .mwr .btn-p:hover { background: var(--blue-d); }
+.mwr .btn-danger { background: #a8322c; border-color: #a8322c; color: #fff; }
+.mwr .btn-danger:hover { background: #8f2722; border-color: #8f2722; }
 .mwr .btn:disabled { opacity: .45; cursor: not-allowed; }
 .mwr .tag { font-size: 11px; border-radius: 99px; padding: 2px 9px; font-weight: 600; }
 .mwr .tag-draft { background: #fbf0d7; color: #7a5200; }
@@ -223,14 +225,17 @@ html, body, #root { height: 100%; }
 /* ---- M2 · 包评审 ---- */
 .mwr .rv { display: flex; gap: 14px; height: 100%; min-height: 0; }
 .mwr .rv-files { width: 250px; flex: none; overflow: auto; }
-.mwr .rv-file { display: block; width: 100%; text-align: left; border: none; background: none;
+.mwr .rv-file { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: none; background: none;
   padding: 6px 10px; border-radius: 8px; font-size: 12.5px; font-family: ui-monospace, monospace; color: var(--ink2); }
 .mwr .rv-file:hover { background: #f2f4f7; }
 .mwr .rv-file.on { background: var(--blue-ll); color: var(--blue-dd); font-weight: 650; }
+.mwr .rv-file-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .rv-file-draft-tag { flex: none; margin-left: auto; }
 .mwr .rv-view { flex: 1; min-width: 0; overflow: auto; }
 .mwr .viewtog { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; }
 .mwr .viewtog button { border: none; background: #fff; font-size: 11.5px; padding: 4px 13px; color: var(--muted); font-weight: 600; }
 .mwr .viewtog button.on { background: #e3ecfa; color: var(--blue-dd); }
+.mwr .viewtog button:disabled { opacity: .45; cursor: not-allowed; }
 .mwr .srcview { background: #fbfbf8; border: 1px solid #eceae2; border-radius: 10px; padding: 13px 15px;
   font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.7; white-space: pre-wrap; color: #3c3b36; }
 .mwr .mdv { font-size: 13.5px; line-height: 1.8; color: #26251f; }
@@ -342,8 +347,45 @@ html, body, #root { height: 100%; }
 .mwr .lg-tab { background: #dcebfb; border: 1px solid #a9c8ee; }
 
 /* ---- 包完善：编辑器 ---- */
+.mwr .draft-status-bar { display: flex; justify-content: space-between; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;
+  border: 1px solid #b9d3f2; background: #f3f8fe; border-radius: 11px; padding: 10px 12px; }
+.mwr .draft-status-bar.stale { border-color: #efc5c1; background: #fdf2f1; }
+.mwr .draft-status-main, .mwr .draft-status-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.mwr .draft-status-main { min-width: 0; font-size: 12px; color: var(--ink2); }
+.mwr .draft-status-main b { color: var(--blue-dd); font-size: 12.5px; }
+.mwr .draft-status-actions { justify-content: flex-end; flex: none; }
+.mwr .draft-status-actions .btn { padding: 4px 11px; font-size: 11.5px; }
+.mwr .draft-save-state { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.mwr .draft-save-state.saving, .mwr .draft-save-state.unsaved { color: #7a5200; }
+.mwr .draft-save-state.saved { color: #0e6b4a; }
+.mwr .draft-save-state.error { color: var(--crit); }
+.mwr .legacy-migration-warning { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 12px;
+  border: 1px solid #ecd9a0; background: #fdf7e7; border-radius: 10px; padding: 9px 12px; color: #6b4e00; font-size: 12px; line-height: 1.6; }
+.mwr .legacy-migration-warning b { font-size: 12.5px; }
+.mwr .rv-file.readonly { color: #aaa8a1; }
+.mwr .rv-file-legend { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 10.5px; color: var(--muted); line-height: 1.6; margin-top: 8px; }
 .mwr .rv-editor { width: 100%; min-height: 420px; border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.7; background: #fff; resize: vertical; }
 .mwr .rv-editor:focus { outline: none; border-color: var(--blue-l); }
+.mwr .draft-save-message { min-width: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.mwr .draft-save-message.error { color: var(--crit); }
+.mwr .draft-revision-conflict { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap;
+  margin-top: 9px; border: 1px solid #efc5c1; background: #fdf2f1; border-radius: 9px; padding: 9px 11px; color: #8f302b; }
+.mwr .draft-revision-conflict > div:first-child { display: flex; flex-direction: column; gap: 3px; font-size: 12px; line-height: 1.5; }
+.mwr .draft-revision-conflict b { font-size: 12.5px; }
+.mwr .draft-revision-conflict-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mwr .draft-revision-conflict-actions .btn { padding: 4px 11px; font-size: 11.5px; }
+.mwr .draft-view-message { margin-top: 10px; font-size: 12px; color: var(--ink2); }
+.mwr .legacy-migration-file-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px;
+  border: 1px solid #ecd9a0; background: #fdfaf2; border-radius: 9px; font-size: 12px; color: #6b4e00; }
+.mwr .draft-inline-gate { font-size: 12px; color: #7a5200; }
+.mwr .draft-chat-gate { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; border: 1px solid #ecd9a0;
+  background: #fdf7e7; border-radius: 10px; padding: 10px 12px; color: #6b4e00; font-size: 12px; line-height: 1.6; }
+.mwr .draft-chat-gate b { font-size: 12.5px; }
+.mwr .pchat-input textarea:disabled { background: #f4f3ef; color: var(--muted); cursor: not-allowed; }
+.mwr .draft-publish-modal, .mwr .draft-publish-conflict-modal, .mwr .draft-discard-modal, .mwr .draft-gate-modal { width: min(520px, calc(100vw - 32px)); }
+.mwr .draft-publish-modal p, .mwr .draft-publish-conflict-modal p, .mwr .draft-discard-modal p, .mwr .draft-gate-modal p { color: var(--ink2); font-size: 13px; line-height: 1.7; margin-bottom: 14px; }
+.mwr .draft-publish-modal .field > span { display: block; font-size: 12.5px; font-weight: 650; color: var(--ink2); margin-bottom: 6px; }
+.mwr .draft-gate-meta { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 
 /* ---- 包修缮对话 ---- */
 .mwr .pchat { display: flex; flex-direction: column; height: 100%; }
@@ -471,6 +513,17 @@ html, body, #root { height: 100%; }
 .mwr .gi-relation { border: 1px solid var(--hair); border-radius: 11px; background: #fff; margin-bottom: 10px; overflow: hidden; }
 .mwr .gi-relation-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #fafaf8; border-bottom: 1px solid #eeede8; font-size: 12.5px; }
 .mwr .gi-relation-head b { flex: 1; font-family: ui-monospace, monospace; }
+.mwr .gi-match-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px 0; flex-wrap: wrap; }
+.mwr .gi-match-label { color: var(--ink2); font-size: 12px; font-weight: 700; }
+.mwr .gi-match-mode { display: grid; grid-template-columns: repeat(2, minmax(112px, 1fr)); border: 1px solid #dcd9cf; border-radius: 8px; overflow: hidden; }
+.mwr .gi-match-mode button { min-height: 32px; border: 0; border-right: 1px solid #dcd9cf; border-radius: 0; padding: 6px 10px; background: #fff; color: var(--ink2); font-size: 12px; cursor: pointer; }
+.mwr .gi-match-mode button:last-child { border-right: 0; }
+.mwr .gi-match-mode button.active { background: var(--blue-d); color: #fff; }
+.mwr .gi-match-mode button:disabled { cursor: not-allowed; opacity: .65; }
+.mwr .gi-match-hint { flex: 1 1 280px; min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.mwr .gi-same-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin: 10px 12px 12px; padding: 11px 12px; border: 1px solid #eceae2; border-radius: 8px; background: #fcfcfa; color: var(--muted); font-size: 12px; }
+.mwr .gi-same-row b { color: var(--ink); overflow-wrap: anywhere; }
+.mwr .gi-same-row span:last-child { color: var(--blue-d); font-weight: 700; }
 .mwr .gi-sides { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr); align-items: center; gap: 8px; padding: 12px; }
 .mwr .gi-side { min-width: 0; border: 1px solid #eceae2; background: #fcfcfa; border-radius: 9px; padding: 10px; }
 .mwr .gi-side-title { font-size: 12px; font-weight: 700; color: var(--blue-d); margin-bottom: 8px; }

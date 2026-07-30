@@ -9,11 +9,10 @@ const loadTurns = (projectId) => {
   try { return JSON.parse(sessionStorage.getItem(chatKey(projectId)) || '[]'); } catch { return []; }
 };
 
-export default function PackageChat({ projectId }) {
+export default function PackageChat({ projectId, packageDraft, busy, onBusyChange }) {
   // 会话存 sessionStorage：切页/回项目列表再进来对话不丢（关浏览器标签才清）
   const [turns, setTurns] = useState(() => loadTurns(projectId));
   const [input, setInput] = useState('');
-  const [busy, setBusy] = useState('');   // '' | plan | apply
   const sec = useElapsed(!!busy);
   const bodyRef = useRef(null);
 
@@ -37,10 +36,10 @@ export default function PackageChat({ projectId }) {
 
   const send = async () => {
     const message = input.trim();
-    if (!message || busy) return;
+    if (!message || busy || packageDraft) return;
     setInput('');
     setTurns((t) => [...t, { role: 'user', text: message }]);
-    setBusy('plan');
+    onBusyChange('plan');
     try {
       const d = await packageChat(projectId, message, historyForApi());
       if (d.plan) {
@@ -50,12 +49,13 @@ export default function PackageChat({ projectId }) {
       }
     } catch (e) {
       setTurns((t) => [...t, { role: 'assistant', text: `出错了：${e.message}` }]);
-    } finally { setBusy(''); }
+    } finally { onBusyChange(''); }
   };
 
   const confirmPlan = async (idx) => {
+    if (busy || packageDraft) return;
     const turn = turns[idx];
-    setBusy('apply');
+    onBusyChange('apply');
     try {
       const d = await packageChatApply(projectId, turn.planMessage, historyForApi(), turn.plan);
       setTurns((t) => t.map((x, i) => (i === idx ? { ...x, planState: 'applied' } : x))
@@ -63,7 +63,7 @@ export default function PackageChat({ projectId }) {
       if (d.version) window.dispatchEvent(new CustomEvent('mw-package-updated'));
     } catch (e) {
       setTurns((t) => [...t, { role: 'assistant', text: `应用失败：${e.message}` }]);
-    } finally { setBusy(''); }
+    } finally { onBusyChange(''); }
   };
 
   const cancelPlan = (idx) =>
@@ -73,6 +73,12 @@ export default function PackageChat({ projectId }) {
     <div className="pchat">
       <div className="ctx-tabs"><button className="on">🛠 包修缮对话</button></div>
       <div className="pchat-body" ref={bodyRef}>
+        {packageDraft && (
+          <div className="draft-chat-gate">
+            <b>人工编辑草稿尚未发布</b>
+            <span>请先在“知识包完善”中发布或放弃草稿，再使用修缮对话。</span>
+          </div>
+        )}
         {!turns.length && (
           <div className="pchat-hint">
             用自然语言修缮知识包：先出<b>影响分析计划</b>，确认后落新版本。<br />
@@ -101,7 +107,7 @@ export default function PackageChat({ projectId }) {
                   )}
                   {t.planState === 'pending' && (
                     <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                      <button className="btn btn-p" style={{ padding: '4px 14px', fontSize: 12 }} disabled={!!busy}
+                      <button className="btn btn-p" style={{ padding: '4px 14px', fontSize: 12 }} disabled={!!busy || !!packageDraft}
                         onClick={() => confirmPlan(i)}>✔ 确认应用</button>
                       <button className="btn" style={{ padding: '4px 14px', fontSize: 12 }} disabled={!!busy}
                         onClick={() => cancelPlan(i)}>取消</button>
@@ -122,10 +128,12 @@ export default function PackageChat({ projectId }) {
         )}
       </div>
       <div className="pchat-input">
-        <textarea rows={2} value={input} placeholder="描述要修缮的内容，Enter 发送（Shift+Enter 换行）"
+        <textarea rows={2} value={input}
+          disabled={!!packageDraft}
+          placeholder={packageDraft ? '请先发布或放弃人工编辑草稿' : '描述要修缮的内容，Enter 发送（Shift+Enter 换行）'}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
-        <button className="btn btn-p" disabled={!!busy || !input.trim()} onClick={send}>发送</button>
+        <button className="btn btn-p" disabled={!!busy || !!packageDraft || !input.trim()} onClick={send}>发送</button>
       </div>
     </div>
   );

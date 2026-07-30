@@ -2,9 +2,11 @@ import neo4j from 'neo4j-driver';
 import { assertGraphIdentifier } from '../evaluation/data-source.js';
 import type { GraphImportValidation } from './types.js';
 import { quoteGraphLabel } from './graph-label.js';
+import { neo4jEntityRows } from './neo4j-values.js';
 
 const BATCH_SIZE = 500;
 const USER_ID_PROPERTY = 'd2o_user_id';
+const RECORD_KEY_PROPERTY = '_d2o_record_key';
 
 export interface Neo4jGraphImportConnection {
   uri: string;
@@ -38,6 +40,7 @@ export type Neo4jDriverFactory = (
 export interface Neo4jGraphImportWriteOptions {
   replaceExisting?: boolean;
   userName?: string;
+  signal?: AbortSignal;
 }
 
 export interface GraphIsolationCounts {
@@ -80,13 +83,16 @@ function validateConnection(connection: Neo4jGraphImportConnection): void {
   if (connection.workspaceProperty === connection.ontologyProperty) {
     throw new Error('Workspace 与 Ontology 隔离字段不能相同');
   }
+  const reservedCollision = [connection.workspaceProperty, connection.ontologyProperty]
+    .find((property) => property === USER_ID_PROPERTY || property === RECORD_KEY_PROPERTY);
+  if (reservedCollision) {
+    throw new Error(`隔离字段「${reservedCollision}」不能使用系统保留字段`);
+  }
 }
 
-function identityPattern(properties: string[], rowField: string, label: string): string {
-  if (!properties.length) throw new Error(`${label}缺少唯一标识属性`);
-  return properties.map((property, index) => (
-    `${quoteIdentifier(property, `${label}唯一标识字段`)}: row.${rowField}[${index}]`
-  )).join(',\n            ');
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('图数据导入已取消');
 }
 
 function integerValue(value: any): number {
@@ -163,23 +169,23 @@ export async function writeGraphImport(
   options: Neo4jGraphImportWriteOptions = {},
   driverFactory: Neo4jDriverFactory = defaultDriverFactory,
 ): Promise<{ nodeCount: number; relationshipCount: number }> {
+  throwIfAborted(options.signal);
   validateConnection(connection);
 
   const workspaceProperty = quoteIdentifier(connection.workspaceProperty, 'Workspace 隔离字段');
   const ontologyProperty = quoteIdentifier(connection.ontologyProperty, 'Ontology 隔离字段');
   const userIdProperty = quoteIdentifier(USER_ID_PROPERTY, '用户标识字段');
+  const recordKeyProperty = quoteIdentifier(RECORD_KEY_PROPERTY, '行实例标识字段');
   const userName = String(options.userName ?? '').trim();
   if (!userName) throw new Error('执行导入的用户名称不能为空');
 
   for (const entity of plan.entities) {
     quoteGraphLabel(entity.label, `${entity.objectKey} Label`);
-    for (const property of entity.identityProperties) {
-      quoteIdentifier(property, `${entity.objectKey} 唯一标识字段`);
-    }
     const reserved = new Set([
       connection.workspaceProperty,
       connection.ontologyProperty,
       USER_ID_PROPERTY,
+      RECORD_KEY_PROPERTY,
     ]);
     const collision = entity.propertyNames.find((property) => reserved.has(property));
     if (collision) {
@@ -190,19 +196,20 @@ export async function writeGraphImport(
     quoteIdentifier(relation.relationName, '关系名称');
     quoteGraphLabel(relation.sourceLabel, `${relation.sourceObject} Label`);
     quoteGraphLabel(relation.targetLabel, `${relation.targetObject} Label`);
-    for (const property of relation.sourceIdentityProperties) {
-      quoteIdentifier(property, `${relation.sourceObject} 唯一标识字段`);
-    }
-    for (const property of relation.targetIdentityProperties) {
-      quoteIdentifier(property, `${relation.targetObject} 唯一标识字段`);
-    }
   }
 
   const driver = await driverFactory(connection);
   let session: SessionLike | undefined;
+  const closeForAbort = () => {
+    void Promise.resolve(session?.close()).catch(() => undefined);
+    void Promise.resolve(driver.close()).catch(() => undefined);
+  };
+  options.signal?.addEventListener('abort', closeForAbort, { once: true });
   try {
+    throwIfAborted(options.signal);
     session = driver.session({ database: connection.database });
     await session.executeWrite(async (transaction) => {
+      throwIfAborted(options.signal);
       const isolationParams = {
         workspaceValue: connection.workspaceValue,
         ontologyValue: connection.ontologyValue,
@@ -213,16 +220,19 @@ export async function writeGraphImport(
         ontologyProperty,
         connection,
       );
+      throwIfAborted(options.signal);
       if ((existing.nodeCount || existing.relationshipCount) && !options.replaceExisting) {
         throw new GraphIsolationDataExistsError(existing);
       }
       if (existing.nodeCount || existing.relationshipCount) {
+        throwIfAborted(options.signal);
         await transaction.run(`
           MATCH ()-[relationship]->()
           WHERE relationship.${workspaceProperty} = $workspaceValue
             AND relationship.${ontologyProperty} = $ontologyValue
           DELETE relationship
         `, isolationParams);
+        throwIfAborted(options.signal);
         // Intentionally avoid DETACH DELETE: a cross-isolation relationship must make the
         // transaction fail instead of being removed as a side effect.
         await transaction.run(`
@@ -231,30 +241,33 @@ export async function writeGraphImport(
             AND node.${ontologyProperty} = $ontologyValue
           DELETE node
         `, isolationParams);
+        throwIfAborted(options.signal);
       }
 
       for (const entity of plan.entities) {
         const label = quoteGraphLabel(entity.label, `${entity.objectKey} Label`);
-        const identities = identityPattern(entity.identityProperties, 'identityValues', entity.objectKey);
         const query = `
           UNWIND $rows AS row
           MERGE (node:${label} {
             ${workspaceProperty}: $workspaceValue,
             ${ontologyProperty}: $ontologyValue,
-            ${identities}
+            ${recordKeyProperty}: row.recordKey
           })
           SET node += row.properties,
               node.${workspaceProperty} = $workspaceValue,
               node.${ontologyProperty} = $ontologyValue,
+              node.${recordKeyProperty} = row.recordKey,
               node.${userIdProperty} = $userName
         `;
         for (const rows of batches(entity.rows)) {
+          throwIfAborted(options.signal);
           await transaction.run(query, {
-            rows,
+            rows: neo4jEntityRows(entity, rows),
             workspaceValue: connection.workspaceValue,
             ontologyValue: connection.ontologyValue,
             userName,
           });
+          throwIfAborted(options.signal);
         }
       }
 
@@ -262,27 +275,17 @@ export async function writeGraphImport(
         const relationName = quoteIdentifier(relation.relationName, '关系名称');
         const sourceLabel = quoteGraphLabel(relation.sourceLabel, `${relation.sourceObject} Label`);
         const targetLabel = quoteGraphLabel(relation.targetLabel, `${relation.targetObject} Label`);
-        const sourceIdentity = identityPattern(
-          relation.sourceIdentityProperties,
-          'sourceIdentityValues',
-          relation.sourceObject,
-        );
-        const targetIdentity = identityPattern(
-          relation.targetIdentityProperties,
-          'targetIdentityValues',
-          relation.targetObject,
-        );
         const query = `
           UNWIND $rows AS row
           MATCH (source:${sourceLabel} {
             ${workspaceProperty}: $workspaceValue,
             ${ontologyProperty}: $ontologyValue,
-            ${sourceIdentity}
+            ${recordKeyProperty}: row.sourceRecordKey
           })
           MATCH (target:${targetLabel} {
             ${workspaceProperty}: $workspaceValue,
             ${ontologyProperty}: $ontologyValue,
-            ${targetIdentity}
+            ${recordKeyProperty}: row.targetRecordKey
           })
           MERGE (source)-[relationship:${relationName} {
             ${workspaceProperty}: $workspaceValue,
@@ -294,16 +297,20 @@ export async function writeGraphImport(
               relationship.${userIdProperty} = $userName
         `;
         for (const rows of batches(relation.pairs)) {
+          throwIfAborted(options.signal);
           await transaction.run(query, {
             rows,
             workspaceValue: connection.workspaceValue,
             ontologyValue: connection.ontologyValue,
             userName,
           });
+          throwIfAborted(options.signal);
         }
       }
     });
+    throwIfAborted(options.signal);
   } finally {
+    options.signal?.removeEventListener('abort', closeForAbort);
     try {
       await session?.close();
     } finally {

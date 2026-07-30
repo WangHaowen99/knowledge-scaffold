@@ -9,24 +9,49 @@ import type {
   GraphImportValidation,
   GraphRelationMapping,
 } from './types.js';
+import {
+  graphImportCellValue,
+  inferGraphImportColumns,
+  type GraphImportColumnProfile,
+  type GraphImportInferenceIssue,
+} from './value-inference.js';
 
-interface PrimaryColumn {
+interface MappedColumn {
   property: string;
   sourceColumn: string;
   index: number;
+}
+
+interface TypedMappedColumn extends MappedColumn {
+  profile: GraphImportColumnProfile;
+}
+
+interface BuiltEntity {
+  plan: GraphImportEntityPlan;
+  warnings: string[];
+  recordKeyByRowIndex: Map<number, string>;
 }
 
 export function normalizeGraphImportMapping(mapping: GraphImportMapping): GraphImportMapping {
   const relations = (mapping as any)?.relations;
   if (!Array.isArray(relations)) throw new Error('mapping.relations 必须是数组');
   return {
-    relations: relations.map((relation: any) => ({
-      sourceObject: String(relation?.sourceObject ?? '').trim(),
-      relationName: String(relation?.relationName ?? '').trim(),
-      targetObject: String(relation?.targetObject ?? '').trim(),
-      sourceJoinProperty: String(relation?.sourceJoinProperty ?? '').trim(),
-      targetJoinProperty: String(relation?.targetJoinProperty ?? '').trim(),
-    })),
+    relations: relations.map((relation: any) => {
+      const base = {
+        sourceObject: String(relation?.sourceObject ?? '').trim(),
+        relationName: String(relation?.relationName ?? '').trim(),
+        targetObject: String(relation?.targetObject ?? '').trim(),
+      };
+      const matchMode = String(relation?.matchMode ?? '').trim() || 'field_match';
+      if (matchMode === 'same_row') return { ...base, matchMode };
+      if (matchMode !== 'field_match') throw new Error(`未知的关系关联方式「${matchMode}」`);
+      return {
+        ...base,
+        matchMode,
+        sourceJoinProperty: String(relation?.sourceJoinProperty ?? '').trim(),
+        targetJoinProperty: String(relation?.targetJoinProperty ?? '').trim(),
+      };
+    }),
   };
 }
 
@@ -45,24 +70,11 @@ function objectByKey(schema: GraphImportPackageSchema, key: string): GraphImport
   return object;
 }
 
-function primaryColumns(object: GraphImportObjectSchema, table: DataDictTable): PrimaryColumn[] {
-  if (!object.primaryProperties.length) throw new Error(`实体「${object.key}」未声明主键`);
-  return object.primaryProperties.map((property) => {
-    const mapping = object.propertyMappings.find((item) => item.property === property);
-    if (!mapping) throw new Error(`实体「${object.key}」主键属性「${property}」未声明字段映射`);
-    const index = table.fields.findIndex((field) => field.name === mapping.sourceColumn);
-    if (index < 0) {
-      throw new Error(`实体「${object.key}」主键属性「${property}」对应的 Excel 字段「${mapping.sourceColumn}」不存在`);
-    }
-    return { property, sourceColumn: mapping.sourceColumn, index };
-  });
-}
-
 function joinColumn(
   object: GraphImportObjectSchema,
   table: DataDictTable,
   property: string,
-): PrimaryColumn {
+): MappedColumn {
   const mapping = object.propertyMappings.find((item) => item.property === property);
   if (!mapping) throw new Error(`关系关联属性「${property}」不属于实体「${object.key}」`);
   const index = table.fields.findIndex((field) => field.name === mapping.sourceColumn);
@@ -74,60 +86,68 @@ function joinColumn(
   return { property, sourceColumn: mapping.sourceColumn, index };
 }
 
-function rowIdentity(row: unknown[], columns: PrimaryColumn[]): string[] {
-  return columns.map((column) => String(row[column.index] ?? '').trim());
+function recordKey(objectKey: string, rowIndex: number): string {
+  return `node:${objectKey}:${String(rowIndex + 1).padStart(8, '0')}`;
 }
 
-function assertCompleteIdentity(objectKey: string, values: string[], propertiesHaveValue: boolean): boolean {
-  const emptyCount = values.filter((value) => !value).length;
-  if (emptyCount === values.length) {
-    if (!propertiesHaveValue) return false;
-    throw new Error(`实体「${objectKey}」存在空主键`);
+function inferenceWarning(
+  objectKey: string,
+  property: string,
+  issue: GraphImportInferenceIssue,
+): string {
+  const prefix = `实体「${objectKey}」属性 ${property}`;
+  if (issue === 'mixed_types') return `${prefix} 对应列包含混合类型，已按字符串导入`;
+  if (issue === 'integer_out_of_range') {
+    return `${prefix} 存在超出 Neo4j 64 位整数范围的值，已按字符串导入`;
   }
-  if (emptyCount) throw new Error(`实体「${objectKey}」复合主键存在部分空值`);
-  return true;
+  if (issue === 'unsafe_excel_integer') {
+    return `${prefix} 存在超出 JavaScript 安全整数范围的 Excel 数值，已按字符串导入`;
+  }
+  return `${prefix} 存在超过 Neo4j FLOAT 精度的数值，已按字符串导入`;
 }
 
 function buildEntityPlan(
   tables: DataDictTable[],
+  profilesBySheet: Map<string, GraphImportColumnProfile[]>,
   object: GraphImportObjectSchema,
-): { plan: GraphImportEntityPlan; warnings: string[] } {
+): BuiltEntity {
   const table = tableForObject(tables, object);
-  const identities = primaryColumns(object, table);
+  const columnProfiles = profilesBySheet.get(table.name)!;
   const warnings: string[] = [];
-  const available = object.propertyMappings.flatMap((mapping) => {
+  const available: TypedMappedColumn[] = object.propertyMappings.flatMap((mapping) => {
     const index = table.fields.findIndex((field) => field.name === mapping.sourceColumn);
-    if (index >= 0) return [{ ...mapping, index }];
-    if (!object.primaryProperties.includes(mapping.property)) {
-      warnings.push(`实体「${object.key}」属性 ${mapping.property} 对应的 Excel 字段「${mapping.sourceColumn}」不存在，已忽略`);
+    if (index >= 0) {
+      const profile = columnProfiles[index];
+      warnings.push(...profile.issues.map((issue) => inferenceWarning(object.key, mapping.property, issue)));
+      return [{ ...mapping, index, profile }];
     }
+    warnings.push(
+      `实体「${object.key}」属性 ${mapping.property} 对应的 Excel 字段「${mapping.sourceColumn}」不存在，已忽略`,
+    );
     return [];
   });
-  const unique = new Map<string, { identityValues: string[]; properties: Record<string, string> }>();
-  for (const row of table.rows!) {
+  const rows: GraphImportEntityPlan['rows'] = [];
+  const recordKeyByRowIndex = new Map<number, string>();
+  for (const [rowIndex, row] of table.rows!.entries()) {
     const properties = Object.fromEntries(available.map((mapping) => [
       mapping.property,
-      String(row[mapping.index] ?? '').trim(),
+      graphImportCellValue(table, rowIndex, mapping.index, mapping.profile.type),
     ]));
-    const identityValues = rowIdentity(row, identities);
-    const hasObjectValue = Object.values(properties).some(Boolean);
-    if (!assertCompleteIdentity(object.key, identityValues, hasObjectValue)) continue;
-    const identityKey = JSON.stringify(identityValues);
-    const previous = unique.get(identityKey);
-    if (previous && JSON.stringify(previous.properties) !== JSON.stringify(properties)) {
-      throw new Error(`实体「${object.key}」唯一键 ${identityValues.join(' + ')} 对应的属性冲突`);
-    }
-    unique.set(identityKey, { identityValues, properties });
+    if (!Object.values(properties).some(Boolean)) continue;
+    const key = recordKey(object.key, rowIndex);
+    rows.push({ recordKey: key, properties });
+    recordKeyByRowIndex.set(rowIndex, key);
   }
   return {
     warnings,
+    recordKeyByRowIndex,
     plan: {
       objectKey: object.key,
       label: object.label,
       sheet: table.name,
-      identityProperties: identities.map((item) => item.property),
       propertyNames: available.map((item) => item.property),
-      rows: [...unique.values()],
+      propertyTypes: Object.fromEntries(available.map((item) => [item.property, item.profile.type])),
+      rows,
     },
   };
 }
@@ -135,6 +155,7 @@ function buildEntityPlan(
 function relationPlan(
   schema: GraphImportPackageSchema,
   tables: DataDictTable[],
+  builtEntities: Map<string, BuiltEntity>,
   mapping: GraphRelationMapping,
 ): {
   plan: GraphImportRelationPlan;
@@ -146,43 +167,65 @@ function relationPlan(
   const targetObject = objectByKey(schema, mapping.targetObject);
   const source = tableForObject(tables, sourceObject);
   const target = tableForObject(tables, targetObject);
-  const sourceIdentities = primaryColumns(sourceObject, source);
-  const targetIdentities = primaryColumns(targetObject, target);
+  const sourceBuilt = builtEntities.get(sourceObject.key)!;
+  const targetBuilt = builtEntities.get(targetObject.key)!;
+  if (mapping.matchMode === 'same_row') {
+    if (source.name !== target.name) {
+      throw new Error(`关系「${mapping.relationName}」仅同一 Sheet 的实体支持同一数据行关联`);
+    }
+    const pairs = [...sourceBuilt.recordKeyByRowIndex.entries()].flatMap(([rowIndex, sourceRecordKey]) => {
+      const targetRecordKey = targetBuilt.recordKeyByRowIndex.get(rowIndex);
+      return targetRecordKey ? [{ sourceRecordKey, targetRecordKey }] : [];
+    });
+    return {
+      skippedBlank: 0,
+      skippedUnmatched: 0,
+      warnings: [],
+      plan: {
+        relationName: mapping.relationName,
+        sourceObject: sourceObject.key,
+        sourceLabel: sourceObject.label,
+        targetObject: targetObject.key,
+        targetLabel: targetObject.label,
+        pairs,
+      },
+    };
+  }
+  if (!mapping.sourceJoinProperty || !mapping.targetJoinProperty) {
+    throw new Error(`关系「${mapping.relationName}」按字段值匹配时必须配置源和目标关联属性`);
+  }
   const sourceJoinIndex = joinColumn(sourceObject, source, mapping.sourceJoinProperty).index;
   const targetJoinIndex = joinColumn(targetObject, target, mapping.targetJoinProperty).index;
 
-  const targetsByJoin = new Map<string, Map<string, string[]>>();
-  for (const row of target.rows!) {
+  const targetsByJoin = new Map<string, string[]>();
+  for (const [rowIndex, row] of target.rows!.entries()) {
+    const targetRecordKey = targetBuilt.recordKeyByRowIndex.get(rowIndex);
+    if (!targetRecordKey) continue;
     const join = String(row[targetJoinIndex] ?? '').trim();
     if (!join) continue;
-    const identityValues = rowIdentity(row, targetIdentities);
-    if (!assertCompleteIdentity(targetObject.key, identityValues, true)) continue;
-    const identities = targetsByJoin.get(join) ?? new Map<string, string[]>();
-    identities.set(JSON.stringify(identityValues), identityValues);
-    targetsByJoin.set(join, identities);
+    const targetRecordKeys = targetsByJoin.get(join) ?? [];
+    targetRecordKeys.push(targetRecordKey);
+    targetsByJoin.set(join, targetRecordKeys);
   }
 
-  const pairs = new Map<string, {
-    sourceIdentityValues: string[];
-    targetIdentityValues: string[];
-  }>();
+  const pairs: GraphImportRelationPlan['pairs'] = [];
   let skippedBlank = 0;
   let skippedUnmatched = 0;
-  for (const row of source.rows!) {
+  for (const [rowIndex, row] of source.rows!.entries()) {
+    const sourceRecordKey = sourceBuilt.recordKeyByRowIndex.get(rowIndex);
+    if (!sourceRecordKey) continue;
     const join = String(row[sourceJoinIndex] ?? '').trim();
-    if (!join) { skippedBlank++; continue; }
-    const sourceIdentityValues = rowIdentity(row, sourceIdentities);
-    if (!assertCompleteIdentity(sourceObject.key, sourceIdentityValues, true)) continue;
-    const targetIdentityValues = targetsByJoin.get(join);
-    if (!targetIdentityValues?.size) {
+    if (!join) {
+      skippedBlank++;
+      continue;
+    }
+    const targetRecordKeys = targetsByJoin.get(join);
+    if (!targetRecordKeys?.length) {
       skippedUnmatched++;
       continue;
     }
-    for (const identityValues of targetIdentityValues.values()) {
-      pairs.set(JSON.stringify([sourceIdentityValues, identityValues]), {
-        sourceIdentityValues,
-        targetIdentityValues: identityValues,
-      });
+    for (const targetRecordKey of targetRecordKeys) {
+      pairs.push({ sourceRecordKey, targetRecordKey });
     }
   }
   const warnings = skippedUnmatched
@@ -196,11 +239,9 @@ function relationPlan(
       relationName: mapping.relationName,
       sourceObject: sourceObject.key,
       sourceLabel: sourceObject.label,
-      sourceIdentityProperties: sourceIdentities.map((item) => item.property),
       targetObject: targetObject.key,
       targetLabel: targetObject.label,
-      targetIdentityProperties: targetIdentities.map((item) => item.property),
-      pairs: [...pairs.values()],
+      pairs,
     },
   };
 }
@@ -224,9 +265,15 @@ export function validateGraphImportMapping(
     objectByKey(schema, item.sourceObject);
     objectByKey(schema, item.targetObject);
   }
-  const builtEntities = schema.objects.map((object) => buildEntityPlan(tables, object));
-  const entities = builtEntities.map((item) => item.plan);
-  const builtRelations = normalizedMapping.relations.map((item) => relationPlan(schema, tables, item));
+  const profilesBySheet = new Map(tables.map((table) => [table.name, inferGraphImportColumns(table)]));
+  const builtEntityList = schema.objects.map((object) => (
+    buildEntityPlan(tables, profilesBySheet, object)
+  ));
+  const builtEntities = new Map(builtEntityList.map((item) => [item.plan.objectKey, item]));
+  const entities = builtEntityList.map((item) => item.plan);
+  const builtRelations = normalizedMapping.relations.map((item) => (
+    relationPlan(schema, tables, builtEntities, item)
+  ));
   const relations = builtRelations.map((item) => item.plan);
   return {
     nodeCount: entities.reduce((sum, entity) => sum + entity.rows.length, 0),
@@ -234,7 +281,7 @@ export function validateGraphImportMapping(
     skippedBlankJoinCount: builtRelations.reduce((sum, item) => sum + item.skippedBlank, 0),
     skippedUnmatchedJoinCount: builtRelations.reduce((sum, item) => sum + item.skippedUnmatched, 0),
     warnings: [...new Set([
-      ...builtEntities.flatMap((item) => item.warnings),
+      ...builtEntityList.flatMap((item) => item.warnings),
       ...builtRelations.flatMap((item) => item.warnings),
     ])],
     entities,

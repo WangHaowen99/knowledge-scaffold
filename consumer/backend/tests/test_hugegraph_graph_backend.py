@@ -81,7 +81,12 @@ class _FakeResponse:
         return self._payload
 
 
-def _install_hugegraph_http(monkeypatch, *, include_competing_path=False):
+def _install_hugegraph_http(
+    monkeypatch,
+    *,
+    include_competing_path=False,
+    include_other_ontology=False,
+):
     vertices = [
         _vertex(
             "v-m1",
@@ -97,6 +102,15 @@ def _install_hugegraph_http(monkeypatch, *, include_competing_path=False):
         _vertex("v-e1", "SourceItemVersion", {"SourceItemVersionID": "VERSION0001", "SourceItemCode": "101000-001", "SourceItemVersion": "A"}),
         _vertex("v-other", "TargetItem", {"TargetItemCode": "M-999"}, workspace="workspace-b"),
     ]
+    if include_other_ontology:
+        vertices.append(
+            _vertex(
+                "v-other-ontology",
+                "TargetItem",
+                {"TargetItemCode": "M-002"},
+                ontology="onto-b",
+            ),
+        )
     edges = [
         _edge("e-rel-1", "v-e1", "v-m1", "PROCESS_TO", {"Qty": 2}),
         _edge("e-other", "v-other", "v-m1", "PROCESS_TO", workspace="workspace-b"),
@@ -136,6 +150,35 @@ def _install_hugegraph_http(monkeypatch, *, include_competing_path=False):
 
     monkeypatch.setattr("requests.request", fake_request)
     return calls
+
+
+def test_hugegraph_property_filter_can_disable_ontology_scope(monkeypatch):
+    _install_hugegraph_http(monkeypatch, include_other_ontology=True)
+    backend = HugeGraphBackend({
+        "url": "http://hugegraph.test",
+        "graph": "demo",
+    })
+    scope = GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="",
+        ontology_value="",
+    )
+
+    result = backend.property_filter(
+        element_class="TargetItem",
+        element_type="NODE",
+        filter_dict={},
+        return_properties=["TargetItemCode"],
+        limit=10,
+        offset=0,
+        scope=scope,
+    )
+
+    assert [
+        record["properties"]["TargetItemCode"]
+        for record in result.records
+    ] == ["M-001", "M-002"]
 
 
 def test_hugegraph_backend_executes_schema_property_count_aggregate_sorted_and_detail(monkeypatch):

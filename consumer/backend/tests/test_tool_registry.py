@@ -203,6 +203,64 @@ def test_tool_context_keeps_run_cancellation_out_of_tool_boundary():
     assert "cancel_event" not in ToolContext.__dataclass_fields__
 
 
+def test_ontology_context_marks_fee_collection_operation_inapplicable_for_noninteractive_treasury_request(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_scripted_ontology(tmp_path, operation_key="op_recommend_corporate_epayment")
+    operation_path = ontology_dir / "operations" / "op_recommend_corporate_epayment.md"
+    operation_path.write_text(
+        "\n".join(
+            [
+                "---",
+                "resource: operation",
+                "key: op_recommend_corporate_epayment",
+                "title: 企业缴费产品推荐",
+                "description: 针对费用收缴场景推荐企业缴费",
+                "---",
+                "",
+                "# 业务目标",
+                "仅适用于批量费用收缴场景，例如校服费、学杂费等。",
+                "",
+                "# 输入",
+                "| 参数 key | 中文名 | 类型 | 必填 | 说明 |",
+                "| --- | --- | --- | --- | --- |",
+                "| target_corp_name | 目标企业名称 | string | 是 | 存在批量费用收缴需求的企业名称 |",
+                "",
+                "# 流程",
+                "1. 推荐企业缴费",
+                "2. 禁止推荐其他产品（如财资管理云、资金池等）",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _patch_test_ontology_registry(monkeypatch, tmp_path)
+
+    result = execute_tool_batch(
+        [
+            _build_tool_call(
+                "ontology_context",
+                {"ontology_id": "demo", "resource": "operation", "key": "op_recommend_corporate_epayment"},
+            )
+        ],
+        _make_context(
+            project_root=str(tmp_path),
+            messages=[
+                {
+                    "role": "user",
+                    "content": "集团内多银行账户集中管理、资金归集、银企直连和降低资金成本应该推荐什么方案？",
+                }
+            ],
+            supports_user_interaction=False,
+        ),
+    )
+
+    content = result.messages[0]["content"]
+    assert "operation_key: op_recommend_corporate_epayment" in content
+    assert "target_corp_name" in content
+    assert "applicability: NOT_APPLICABLE" not in content
+
+
 def _write_scripted_ontology(tmp_path, *, operation_key="流程A", script_name="hello.py", script_body='print("hello from script")\n'):
     ontology_dir = tmp_path / "ontologies" / "demo"
     script_path = ontology_dir / "scripts" / script_name
@@ -2908,6 +2966,30 @@ def test_registry_exposes_request_user_interaction_to_main_only():
 
     assert "request_user_interaction" in main_tools
     assert "request_user_interaction" not in subagent_tools
+
+
+def test_registry_can_hide_request_user_interaction_for_non_interactive_main_runs():
+    main_tools = [
+        tool["function"]["name"]
+        for tool in get_tools_schema("main", include_interaction=False)
+    ]
+
+    assert "request_user_interaction" not in main_tools
+    assert "ontology_context" in main_tools
+
+
+def test_request_user_interaction_returns_non_terminal_error_when_interaction_is_disabled():
+    tool = TOOL_SPECS["request_user_interaction"]
+
+    result = tool.execute(
+        args={"type": "input", "prompt": "Please provide the missing account id."},
+        context=_make_context(supports_user_interaction=False),
+        tool_call_id="ask-1",
+    )
+
+    assert result.terminal is False
+    assert result.state_updates == {}
+    assert "request_user_interaction is unavailable in this run" in str(result.content or "")
 
 
 def test_registry_exposes_single_subagent_tool_for_main_agent():

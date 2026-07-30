@@ -95,10 +95,6 @@ async function currentPackageZip(projectId: string, ontologyId: string): Promise
     throw new Error('同步本体数据源失败：知识包 ID 已变化，请重新保存数据源配置');
   }
   const files = renderPackage(latest.spec);
-  const { getOverrides } = await import('../workflow/package-chat.js');
-  for (const [path, content] of Object.entries(getOverrides(projectId))) {
-    if (path in files) files[path] = content;
-  }
   return zipPackage(files);
 }
 

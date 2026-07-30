@@ -27,7 +27,7 @@ def test_build_graph_scope_uses_runtime_workspace_id():
     assert scope.ontology_value == ""
 
 
-def test_build_graph_scope_always_uses_workspace_id_as_scope_value():
+def test_build_graph_scope_uses_workspace_name_for_workspace_name_property():
     scope = build_graph_scope({
         "workspace_id": "workspace-a",
         "ontology_id": "demo-ontology",
@@ -36,9 +36,18 @@ def test_build_graph_scope_always_uses_workspace_id_as_scope_value():
     })
 
     assert scope.workspace_property == "workspace_name"
-    assert scope.workspace_value == "workspace-a"
+    assert scope.workspace_value == "示例工程变更空间"
     assert scope.ontology_property == ""
     assert scope.ontology_value == ""
+
+
+def test_build_graph_scope_requires_runtime_workspace_name_for_name_property():
+    with pytest.raises(GraphScopeError, match="workspace_name"):
+        build_graph_scope({
+            "workspace_id": "workspace-a",
+            "ontology_id": "demo-ontology",
+            "workspace_property": "workspace_name",
+        })
 
 
 def test_build_graph_scope_requires_ontology_id_when_enabled():
@@ -49,10 +58,10 @@ def test_build_graph_scope_requires_ontology_id_when_enabled():
         })
 
 
-def test_build_graph_scope_allows_explicitly_disabled_ontology_scope():
+def test_build_graph_scope_disables_ontology_scope_for_explicit_blank_property():
     scope = build_graph_scope({
         "workspace_id": "workspace-a",
-        "ontology_id": "ignored-ontology",
+        "ontology_id": "demo-ontology",
         "ontology_property": "",
     })
 

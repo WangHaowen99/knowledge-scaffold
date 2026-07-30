@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import hmac
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Iterator, Mapping
 
-from workspace.workspaces import evaluate_workspace_subject_access
+from workspace.workspaces import (
+    WorkspaceMCPEndpointError,
+    WorkspaceNotFoundError,
+    evaluate_workspace_subject_access,
+    get_workspace_mcp_endpoint_id,
+)
 from integration.observability.trace_context import (
     TraceParentValidationError,
     normalize_traceparent,
 )
 from .token_service import MCPTokenAuthError, verify_mcp_token
+
+
+_mcp_endpoint_id_var: ContextVar[str] = ContextVar("mcp_endpoint_id", default="")
 
 
 @dataclass(frozen=True)
@@ -21,6 +32,20 @@ class MCPRequestScope:
     source: str = "bearer_header"
     token: str = field(default="", repr=False, compare=False)
     traceparent: str = ""
+
+
+@contextmanager
+def bind_mcp_endpoint_id(endpoint_id: str) -> Iterator[str]:
+    normalized = str(endpoint_id or "").strip()
+    token = _mcp_endpoint_id_var.set(normalized)
+    try:
+        yield normalized
+    finally:
+        _mcp_endpoint_id_var.reset(token)
+
+
+def get_bound_mcp_endpoint_id() -> str:
+    return str(_mcp_endpoint_id_var.get() or "").strip()
 
 
 def extract_bearer_token(headers: Mapping[str, str] | None) -> str:
@@ -40,6 +65,7 @@ def resolve_mcp_scope_from_token(
     required_scope: str | None = None,
     source: str = "bearer_header",
     traceparent: str = "",
+    mcp_endpoint_id: str = "",
 ) -> MCPRequestScope:
     if not str(token or "").strip():
         raise MCPTokenAuthError("AUTH_TOKEN_MISSING", "未检测到 Bearer Token")
@@ -58,6 +84,27 @@ def resolve_mcp_scope_from_token(
             username=payload["username"],
             workspace_id=payload["workspace_id"],
         )
+    requested_endpoint_id = str(mcp_endpoint_id or "").strip()
+    if requested_endpoint_id:
+        try:
+            expected_endpoint_id = get_workspace_mcp_endpoint_id(
+                payload["workspace_id"],
+            )
+        except WorkspaceNotFoundError as exc:
+            raise MCPTokenAuthError(
+                "MCP_WORKSPACE_NOT_FOUND",
+                "Token 绑定的工作空间不存在",
+            ) from exc
+        except WorkspaceMCPEndpointError as exc:
+            raise MCPTokenAuthError(
+                "MCP_WORKSPACE_ENDPOINT_INVALID",
+                "Token 绑定工作空间的 MCP Endpoint 元数据无效",
+            ) from exc
+        if not hmac.compare_digest(requested_endpoint_id, expected_endpoint_id):
+            raise MCPTokenAuthError(
+                "MCP_WORKSPACE_ENDPOINT_MISMATCH",
+                "MCP Endpoint 与 Token 工作空间不匹配",
+            )
     return MCPRequestScope(
         username=payload["username"],
         workspace_id=payload["workspace_id"],

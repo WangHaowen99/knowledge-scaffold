@@ -10,6 +10,7 @@ from utils.lang import detect_language
 from ontology.ontologies import build_ontologies_section
 from utils.skills import build_skills_section
 from workspace.workspaces import get_current_workspace_runtime_config, get_workspace_runtime_config
+from .interaction_policy import user_interaction_supported_from_state
 from .ontology_context import selected_ontology_id_from_state
 
 
@@ -50,4 +51,5 @@ def build_main_system_prompt(state: Mapping[str, Any], *, include_orchestration:
         memory_context=state.get("memory_context") if isinstance(state, Mapping) else None,
         include_orchestration=include_orchestration,
         lang_instruction=lang_instruction,
+        allow_user_interaction=user_interaction_supported_from_state(state),
     )

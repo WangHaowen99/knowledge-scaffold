@@ -7,8 +7,14 @@ import { useAuthContext } from '../auth';
 import ImportFlowDialog from './import/ImportFlowDialog';
 import KnowledgeDataSources from './KnowledgeDataSources';
 import OntologyGraphPanel from './graph/OntologyGraphPanel';
+import {
+  MARKDOWN_UPLOAD_CANCEL_NOTICE,
+  resolveKnowledgeWorkbenchNotices,
+  useNativeFilePicker,
+} from './lib/browserInterop';
 import { DIR_ICONS, DIR_LABELS, findDirEntries } from './hooks/useKbBrowser';
 import Markdown from '../../shared/ui/Markdown';
+import { ToastNotice } from '../../shared/ui/feedback';
 import { EmptyState, Modal, ScopeTabs, StatusTag } from '../../shared/ui/primitives';
 import './knowledge.css';
 
@@ -25,7 +31,8 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const {
     pkg, pkgId, tree, treeLoading, sel, selectDir, selectFile,
     canActivate, canManage, viewVersion, viewingActive, versionOverride, selectVersion,
-    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg, opBusy, opNotice,
+    setPkgEnabled, activateVersion, deleteVersion, deletePackage, downloadPkg,
+    clearOperationNotice, opBusy, opNotice,
     importPreview, clearImportPreview, reloadTree, knowledgeRevision, refreshKnowledge, retryPackages,
     importFlow, setImportAcknowledged, confirmImportSafety, setImportNewVersion,
     resolveImportConflict, retryImport, reopenImportConflict, cancelImport,
@@ -40,7 +47,6 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
   const [editContent, setEditContent] = useState('');
   const [fileBusy, setFileBusy] = useState('');
   const [fileNotice, setFileNotice] = useState('');
-  const uploadRef = useRef(null);
   const fileAbortRef = useRef(null);
   const fileScopeRef = useRef('');
   fileScopeRef.current = `${workspaceId || ''}:${pkgId || ''}:${sel.file || ''}:${versionOverride || ''}`;
@@ -135,21 +141,12 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
       onReopenConflict={reopenImportConflict} onCancel={cancelImport} />
   );
 
-  if (!pkg) {
-    return (
-      <>
-        <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、数据源、本体图和进化任务将在这里统一管理。" /></div>
-        {importDialog}
-      </>
-    );
-  }
-
   const shown = entries.filter((entry) => !filter || entry.name.toLowerCase().includes(filter.toLowerCase()));
   const ext = sel.file ? sel.file.slice(sel.file.lastIndexOf('.')).toLowerCase() : '';
   const isMd = ext === '.md';
   const crumbs = sel.dir ? sel.dir.split('/') : [];
-  const versions = [...(pkg.versions || [])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-  const activeVersion = pkg.active_version || pkg.version || '';
+  const versions = [...(pkg?.versions || [])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  const activeVersion = pkg?.active_version || pkg?.version || '';
   const parts = sel.file?.split('/') || [];
   const editableFolder = parts.length === 2 && ['objects', 'operations'].includes(parts[0]) ? parts[0] : '';
   const canEditFile = canManage && viewingActive && isMd && Boolean(editableFolder);
@@ -236,6 +233,26 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
     }
   };
 
+  const markdownUploadPicker = useNativeFilePicker({
+    onSelect: uploadFile,
+    onCancel: () => setFileNotice(MARKDOWN_UPLOAD_CANCEL_NOTICE),
+  });
+  const workbenchNotices = resolveKnowledgeWorkbenchNotices(fileNotice, opNotice);
+  const openMarkdownUploadPicker = () => {
+    setFileNotice('');
+    clearOperationNotice();
+    markdownUploadPicker.open();
+  };
+
+  if (!pkg) {
+    return (
+      <>
+        <div className="kbx"><EmptyState title={treeLoading ? '加载中…' : '请选择或导入知识包'} description="知识包内容、数据源、本体图和进化任务将在这里统一管理。" /></div>
+        {importDialog}
+      </>
+    );
+  }
+
   return (
     <div className="kbwrap">
       <div className="kb-toolbar">
@@ -250,13 +267,13 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
           </label>
         )}
         <span className="kb-tb-sp" />
-        <button className="btn" disabled={Boolean(opBusy)} onClick={downloadPkg}>{opBusy === 'download' ? '打包中…' : '下载 ZIP'}</button>
+        <button className="btn" disabled={Boolean(opBusy)} onClick={() => { setFileNotice(''); downloadPkg(); }}>{opBusy === 'download' ? '打包中…' : '下载 ZIP'}</button>
         {canManage && <button className="btn" disabled={Boolean(opBusy)} onClick={onToggleEnabled}>{opBusy === 'status' ? '处理中…' : pkg.enabled ? '禁用' : '启用'}</button>}
         {canActivate && !viewingActive && <button className="btn btn-p" disabled={Boolean(opBusy)} onClick={activateVersion}>{opBusy === 'activate' ? '激活中…' : '设为激活版本'}</button>}
         {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy) || viewingActive || versions.length <= 1} onClick={onDeleteVersion}>{opBusy === 'deleteVersion' ? '删除中…' : '删除版本'}</button>}
         {canManage && <button className="btn btn-danger" disabled={Boolean(opBusy)} onClick={onDeletePackage}>{opBusy === 'deletePackage' ? '删除中…' : '删除知识包'}</button>}
       </div>
-      {(opNotice || fileNotice) && <div className="kb-opnotice">{fileNotice || opNotice}</div>}
+      {workbenchNotices.inlineMessage && <div className="kb-opnotice">{workbenchNotices.inlineMessage}</div>}
       <div className="kb-tabs"><ScopeTabs items={KB_TABS} value={activeTab} onChange={setActiveTab} ariaLabel="知识包工作台页签" /></div>
 
       {activeTab === 'files' && (
@@ -271,8 +288,9 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
             </div>
             <div className="kb-file-tools">
               <input className="kb-search" placeholder="筛选文件…" value={filter} onChange={(event) => setFilter(event.target.value)} />
-              {canManage && viewingActive && uploadFolder && <button className="btn" disabled={Boolean(fileBusy)} onClick={() => uploadRef.current?.click()}>＋ 上传 Markdown</button>}
-              <input ref={uploadRef} hidden type="file" accept=".md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadFile(file); event.target.value = ''; }} />
+              {canManage && viewingActive && uploadFolder && <button className="btn" disabled={Boolean(fileBusy)} onClick={openMarkdownUploadPicker}>＋ 上传 Markdown</button>}
+              <input ref={markdownUploadPicker.inputRef} hidden type="file" accept=".md,text/markdown"
+                onChange={markdownUploadPicker.handleChange} />
             </div>
             {!viewingActive && <div className="ro-banner">历史版本只读。需要修改时先设为激活版本。</div>}
             {sel.dir === 'assets' && <div className="ro-banner">Assets 支持浏览和下载，在线编辑与上传已关闭。</div>}
@@ -329,6 +347,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
           <ImportPreview preview={importPreview} />
         </Modal>
       )}
+      <ToastNotice message={workbenchNotices.toastMessage} tone={workbenchNotices.toastTone} duration={5200} />
       {importDialog}
     </div>
   );

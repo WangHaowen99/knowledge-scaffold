@@ -1,5 +1,4 @@
 import { Type } from '@earendil-works/pi-ai';
-import { getDb, nowIso } from '../db/index.js';
 import { buildLlm } from '../llm/provider.js';
 import { makeAgent, runAgent } from './agent.js';
 import { assertObjectDataMappings, normalizeObjectDataMappings } from './data-mapping.js';
@@ -162,18 +161,4 @@ export async function packageChatApply(
   repo.insertPackageVersion(project.id, version, newSpec, checkCoverage(newSpec, selected), `包修缮对话：${plan.summary.slice(0, 60)}`);
   const note = (cap as any).partialNote ? `\n${(cap as any).partialNote}` : '';
   return { reply: `已按计划修订并生成新版本 v${version}（对象 ${newSpec.objects.length} / 操作 ${newSpec.operations.length}）。左侧文件树已是最新内容。${note}`, version };
-}
-
-// ---- 包文件人工修订（覆盖渲染产物）----
-export function getOverrides(projectId: string): Record<string, string> {
-  const rows = getDb().prepare('SELECT path, content FROM package_overrides WHERE project_id = ?').all(projectId) as any[];
-  return Object.fromEntries(rows.map((r) => [r.path, r.content]));
-}
-export function setOverride(projectId: string, path: string, content: string): void {
-  getDb().prepare(`INSERT INTO package_overrides (project_id, path, content, updated_at) VALUES (?,?,?,?)
-    ON CONFLICT(project_id, path) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`)
-    .run(projectId, path, content, nowIso());
-}
-export function clearOverride(projectId: string, path: string): void {
-  getDb().prepare('DELETE FROM package_overrides WHERE project_id = ? AND path = ?').run(projectId, path);
 }

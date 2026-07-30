@@ -41,6 +41,7 @@ def _write_workspace(
     owner,
     members,
     metadata_id: str | None = None,
+    mcp_endpoint_id: str | None = None,
 ) -> Path:
     workspace_dir = runtime_root / "workspaces" / workspace_id
     workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +56,11 @@ def _write_workspace(
                 "updated_at": "2026-07-13T00:00:00+00:00",
                 "owner": owner,
                 "members": members,
+                **(
+                    {"mcp_endpoint_id": mcp_endpoint_id}
+                    if mcp_endpoint_id is not None
+                    else {}
+                ),
             }
         ),
         encoding="utf-8",
@@ -219,3 +225,34 @@ def test_mcp_scope_reports_missing_workspace_explicitly(tmp_path, monkeypatch):
         resolve_mcp_scope_from_token(token)
 
     assert exc_info.value.code == "MCP_WORKSPACE_NOT_FOUND"
+
+
+def test_mcp_scope_requires_endpoint_to_match_token_workspace(tmp_path, monkeypatch):
+    runtime_root = tmp_path / ".onto-runtime"
+    monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
+    cfg = _config(tmp_path / "tokens.json")
+    _configure_mcp(monkeypatch, cfg)
+    endpoint_id = "cdd181f5b6cb47a9"
+    _write_workspace(
+        runtime_root,
+        "team-space",
+        owner=None,
+        members=[],
+        mcp_endpoint_id=endpoint_id,
+    )
+    token = _create_token(cfg, username="user", workspace_id="team-space")
+
+    scope = resolve_mcp_scope_from_token(
+        token,
+        required_scope="mcp:search",
+        mcp_endpoint_id=endpoint_id,
+    )
+
+    assert scope.workspace_id == "team-space"
+    with pytest.raises(MCPTokenAuthError) as exc_info:
+        resolve_mcp_scope_from_token(
+            token,
+            required_scope="mcp:search",
+            mcp_endpoint_id="a" * 16,
+        )
+    assert exc_info.value.code == "MCP_WORKSPACE_ENDPOINT_MISMATCH"

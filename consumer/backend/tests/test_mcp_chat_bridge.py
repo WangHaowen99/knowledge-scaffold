@@ -131,6 +131,26 @@ class _TraceOrchestrator(_FakeOrchestrator):
             "payload": {"status": "success", "final_output": "完成"},
         }
 
+class _StructuredSuccessOrchestrator(_FakeOrchestrator):
+    def run(self, **kwargs):
+        self.last_run_kwargs = dict(kwargs)
+        run_id = kwargs["requested_run_id"]
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "turn.finished",
+            "run_id": run_id,
+            "session_id": kwargs["session_id"],
+            "turn_id": 1,
+            "seq": 1,
+            "payload": {
+                "status": "success",
+                "final_output": {
+                    "type": "report",
+                    "text": "Structured final answer",
+                },
+            },
+        }
+
 
 def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp_path):
     captured = {}
@@ -235,6 +255,7 @@ def test_workflow_bridge_preserves_awaiting_input_and_run_owner(monkeypatch):
     assert run.metadata["workspace_id"] == "workspace-a"
     assert run.metadata["external_trace_id"] == "a" * 32
     assert orchestrator.last_run_kwargs["traceparent"] == scope.traceparent
+    assert orchestrator.last_run_kwargs["user_context"]["supports_user_interaction"] is False
 
 
 def test_workflow_bridge_trace_requires_explicit_true_request_flag(monkeypatch):
@@ -316,6 +337,27 @@ def test_workflow_bridge_adds_trace_without_changing_result(monkeypatch, tmp_pat
     assert "evidence_ids" not in iteration["tools"]["calls"][0]
     assert body["trace"]["totals"]["iterations"] == 1
     assert body["trace"]["totals"]["overall_elapsed_ms"] >= 0
+
+
+def test_workflow_bridge_coerces_structured_success_output_to_text(monkeypatch):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=_StructuredSuccessOrchestrator(),
+        scope=scope,
+        payload={"request": "query", "session_id": "session-structured-success"},
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert body["result"]["content"] == "Structured final answer"
 
 
 def test_workflow_bridge_adds_trace_to_awaiting_input_and_failure(monkeypatch, tmp_path):

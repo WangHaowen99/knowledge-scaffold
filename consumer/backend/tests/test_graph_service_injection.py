@@ -71,6 +71,44 @@ def test_service_overrides_persisted_graph_scope_with_request_scope(monkeypatch,
     assert "untrusted" not in config
 
 
+def test_service_injects_trusted_workspace_name_for_graph_scope(monkeypatch, tmp_path):
+    _CapturingProvider.configs.clear()
+    monkeypatch.setattr(
+        "agent.tools.business_data.service.get_workspace_paths",
+        lambda _workspace_id: SimpleNamespace(ontologies_dir=tmp_path / "ontologies"),
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data.service.get_workspace",
+        lambda workspace_id: {"id": workspace_id, "name": "示例工程变更空间"},
+    )
+    monkeypatch.setattr(
+        "agent.tools.business_data.service.get_provider_spec",
+        lambda _provider: SimpleNamespace(factory=_CapturingProvider),
+    )
+    request = BusinessDataSearchRequest(
+        workspace_id="workspace-a",
+        ontology_id="ontology-a",
+        entity="Part",
+        query="query",
+    )
+    connection = ResolvedBusinessDataSource(
+        ontology_id="ontology-a",
+        provider="neo4j",
+        config={
+            "uri": "bolt://graph",
+            "workspace_property": "workspace_name",
+            "workspace_name": "persisted-untrusted-name",
+        },
+    )
+
+    assert list(query_business_data_stream(request, connection=connection)) == [
+        {"type": "final", "content": "Part:query"}
+    ]
+    config = _CapturingProvider.configs[0]["ontology_search"]["neo4j"]
+    assert config["workspace_id"] == "workspace-a"
+    assert config["workspace_name"] == "示例工程变更空间"
+
+
 def test_service_does_not_forward_graph_trace_metadata_to_other_providers(monkeypatch):
     _CapturingProvider.configs.clear()
     _CapturingProvider.queries.clear()

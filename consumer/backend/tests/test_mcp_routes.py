@@ -20,6 +20,59 @@ def test_internal_chat_bridge_path_is_registered():
     assert MCP_INTERNAL_CHAT_PATH in rules
 
 
+def test_runtime_status_returns_workspace_specific_mcp_urls(monkeypatch):
+    endpoint_id = "cdd181f5b6cb47a9"
+    app = _app()
+    app.config["AUTH_MANAGER"] = SimpleNamespace(
+        verify_token=lambda _token: SimpleNamespace(
+            username="alice",
+            role="user",
+            password_change_required=False,
+        ),
+    )
+    config = SimpleNamespace(
+        transport="both",
+        effective_public_base_url=lambda: "https://api.example.com/mcp",
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "_resolve_workspace_or_response",
+        lambda: ("workspace-a", None),
+    )
+    monkeypatch.setattr(mcp_routes, "load_mcp_runtime_config", lambda: config)
+    monkeypatch.setattr(
+        mcp_routes,
+        "get_workspace_mcp_endpoint_id",
+        lambda workspace_id: endpoint_id if workspace_id == "workspace-a" else "",
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "_probe_mcp_runtime_status",
+        lambda _config: {
+            "running": True,
+            "probe_url": "http://mcp:7488/health",
+            "detail": "",
+        },
+    )
+
+    response = app.test_client().get(
+        "/agentic/mcp/runtime/status",
+        headers={"Authorization": "Bearer access-token"},
+    )
+
+    payload = response.get_json()
+    assert response.status_code == 200
+    assert payload["workspace_id"] == "workspace-a"
+    assert payload["mcp_endpoint_id"] == endpoint_id
+    assert {
+        service["toolset"]: service["streamable_http_url"]
+        for service in payload["services"]
+    } == {
+        "search": "https://api.example.com/mcp/{}/search/mcp".format(endpoint_id),
+        "chat": "https://api.example.com/mcp/{}/chat/mcp".format(endpoint_id),
+    }
+
+
 def test_internal_chat_revalidates_mcp_scope_and_preserves_owner(monkeypatch):
     captured = {}
     scope = MCPRequestScope(

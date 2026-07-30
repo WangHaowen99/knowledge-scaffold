@@ -1,16 +1,23 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   getInterview, startInterview, answerInterview,
   getCompetency, addCompetency, proposeCompetency, selectCompetency,
   generatePackage, getPackage, getPackageFile, exportPackageUrl, authFetch,
-  savePackageFile, resetPackageFile,
+  requireOkResponse,
+  createPackageDraft, getPackageDraft, getPackageDraftFile, savePackageDraftFile,
+  revertPackageDraftFile, discardPackageDraft, publishPackageDraft,
 } from './api.js';
 import { BusyButton } from './ui.jsx';
 import PackageCheck from './PackageCheck.jsx';
 import { batchesForNode } from './workflowNodes.js';
 import { PACKAGE_DATA_SOURCE_HELP, PACKAGE_DATA_SOURCE_OPTIONS } from './package-data-source.js';
+import {
+  isPackageDraftEditablePath,
+  isPackageDraftRevisionConflict,
+  latestChangedPackageDraftPath,
+} from './package-draft-ui.js';
 
 /* ================= 节点 4 · 知识萃取访谈 ================= */
 
@@ -401,57 +408,431 @@ function Stat({ v, k }) {
 
 /* ================= 节点 6 · 知识包完善（查看 / 编辑 / 导出；右栏为修缮对话） ================= */
 
-export function ReviewPanel({ projectId, onAdvance }) {
+const PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE = '知识包修缮正在进行中，暂不能人工编辑';
+
+export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraftChange, onAdvance }) {
   const [pkg, setPkg] = useState(null);
   const [err, setErr] = useState('');
   const [path, setPath] = useState(null);
-  const [file, setFile] = useState(null); // { content, overridden, rendered }
-  const [view, setView] = useState('view'); // view | edit（查看：md 渲染 / 其他文件原文）
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [file, setFile] = useState(null);
+  const [view, setView] = useState('view');
+  const [editorContent, setEditorContent] = useState('');
+  const [saveState, setSaveState] = useState('idle'); // idle | unsaved | saving | saved | error
+  const [actionBusy, setActionBusy] = useState('');
   const [msg, setMsg] = useState('');
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const [publishSummary, setPublishSummary] = useState('');
+  const [fileReloadKey, setFileReloadKey] = useState(0);
+  const [revisionConflict, setRevisionConflict] = useState(null);
+  const [publishRevisionConflict, setPublishRevisionConflict] = useState(false);
+  const draftRef = useRef(packageDraft);
+  const pathRef = useRef(path);
+  const editorContentRef = useRef(editorContent);
+  const savedContentRef = useRef('');
+  const savedContentHashRef = useRef('');
+  const saveTimerRef = useRef(null);
+  const savePromiseRef = useRef(Promise.resolve());
+  const handledDraftRef = useRef(null);
+  const repairInProgress = !!packageRepairBusy;
 
-  const loadPkg = () => getPackage(projectId).then((d) => {
-    setPkg(d);
-    setPath((p) => (p && d.files.includes(p) ? p : (d.files.includes('index.md') ? 'index.md' : d.files[0])));
-  }).catch((e) => setErr(e.message));
-  useEffect(() => { loadPkg(); }, [projectId]);
-  // 右栏修缮对话生成新版本后自动刷新文件树与当前文件
+  useEffect(() => { draftRef.current = packageDraft; }, [packageDraft]);
+  useEffect(() => { pathRef.current = path; }, [path]);
+  useEffect(() => { editorContentRef.current = editorContent; }, [editorContent]);
   useEffect(() => {
-    const h = () => { loadPkg(); if (path) getPackageFile(projectId, path).then((d) => { setFile(d); setDraft(d.content); }).catch(() => {}); };
-    window.addEventListener('mw-package-updated', h);
-    return () => window.removeEventListener('mw-package-updated', h);
-  }, [projectId, path]);
+    if (!repairInProgress) return;
+    clearTimeout(saveTimerRef.current);
+    setPublishOpen(false);
+    setDiscardOpen(false);
+    setView('view');
+  }, [repairInProgress]);
 
-  const loadFile = () => {
-    if (!path) return;
-    getPackageFile(projectId, path).then((d) => { setFile(d); setDraft(d.content); }).catch((e) => setErr(e.message));
-  };
-  useEffect(() => { loadFile(); setView('view'); setMsg(''); }, [projectId, path]);
+  const notifyDraftChange = useCallback((nextDraft) => {
+    draftRef.current = nextDraft;
+    onDraftChange?.(nextDraft);
+  }, [onDraftChange]);
 
-  const save = async () => {
-    setSaving(true); setMsg('');
+  const loadPkg = useCallback(async () => {
+    const data = await getPackage(projectId);
+    setPkg(data);
+    setPath((current) => (current && data.files.includes(current)
+      ? current
+      : (data.files.includes('index.md') ? 'index.md' : data.files[0])));
+    return data;
+  }, [projectId]);
+
+  useEffect(() => {
+    setPkg(null);
+    setPath(null);
+    setFile(null);
+    setView('view');
+    setErr('');
+    setMsg('');
+    setRevisionConflict(null);
+    setPublishRevisionConflict(false);
+    handledDraftRef.current = null;
+    loadPkg().catch((e) => setErr(e.message));
+  }, [loadPkg]);
+
+  // 右栏修缮对话生成新版本、或人工草稿发布后，刷新文件树与当前文件。
+  useEffect(() => {
+    const handlePackageUpdated = () => {
+      loadPkg().catch((e) => setErr(e.message));
+      setFileReloadKey((key) => key + 1);
+    };
+    window.addEventListener('mw-package-updated', handlePackageUpdated);
+    return () => window.removeEventListener('mw-package-updated', handlePackageUpdated);
+  }, [loadPkg]);
+
+  // 已有活动草稿时优先恢复最近修改的文件；无变更的空草稿恢复到第一个可编辑详情文件。
+  useEffect(() => {
+    if (!packageDraft || !pkg || handledDraftRef.current === packageDraft.id) return;
+    handledDraftRef.current = packageDraft.id;
+    const target = latestChangedPackageDraftPath(packageDraft)
+      ?? pkg.files.find(isPackageDraftEditablePath);
+    if (target) {
+      setPath(target);
+      setView('edit');
+      setMsg(`已恢复基于 v${packageDraft.baseVersion} 的未发布草稿`);
+    }
+  }, [packageDraft, pkg]);
+
+  useEffect(() => {
+    if (!path) return undefined;
+    let active = true;
+    setFile(null);
+    const request = draftRef.current
+      ? getPackageDraftFile(projectId, path).then((data) => data.file)
+      : getPackageFile(projectId, path);
+    request.then((nextFile) => {
+      if (!active) return;
+      setFile(nextFile);
+      setEditorContent(nextFile.content);
+      savedContentRef.current = nextFile.content;
+      savedContentHashRef.current = nextFile.contentHash ?? '';
+      setRevisionConflict(null);
+      setSaveState('idle');
+      if (!isPackageDraftEditablePath(path)) setView('view');
+    }).catch((e) => { if (active) setErr(e.message); });
+    return () => { active = false; };
+  }, [projectId, path, packageDraft?.id, fileReloadKey]);
+
+  const persistDraftFile = useCallback((targetPath, content, quiet = false, expectedFile = null) => {
+    const save = async () => {
+      const activeDraft = draftRef.current;
+      if (!activeDraft) return null;
+      const expectedRevision = expectedFile?.revision ?? activeDraft.revision;
+      const expectedContentHash = (expectedFile?.contentHash ?? savedContentHashRef.current) || undefined;
+      const expectedDraftId = expectedFile?.draftId ?? activeDraft.id;
+      setSaveState('saving');
+      try {
+        const result = await savePackageDraftFile(
+          projectId,
+          targetPath,
+          content,
+          expectedRevision,
+          expectedContentHash,
+          expectedDraftId,
+        );
+        notifyDraftChange(result.draft);
+        if (pathRef.current === targetPath) {
+          savedContentRef.current = result.file.content;
+          savedContentHashRef.current = result.file.contentHash;
+          setFile((current) => ({ ...(current ?? {}), ...result.file }));
+          if (editorContentRef.current === content) setEditorContent(result.file.content);
+        }
+        setRevisionConflict((current) => (current?.path === targetPath ? null : current));
+        setSaveState(editorContentRef.current === content ? 'saved' : 'unsaved');
+        if (!quiet) setMsg('✓ 已保存到人工编辑草稿');
+        return result;
+      } catch (e) {
+        setSaveState('error');
+        if (isPackageDraftRevisionConflict(e)) {
+          try {
+            const latest = await getPackageDraft(projectId);
+            if (!latest.draft) {
+              notifyDraftChange(null);
+              setRevisionConflict(null);
+              setView('view');
+              setFileReloadKey((key) => key + 1);
+              setMsg('当前草稿已在其他页面发布或放弃，已恢复正式版本内容。');
+            } else {
+              const latestFile = await getPackageDraftFile(projectId, targetPath);
+              const conflictScope = e.data?.conflictScope === 'draft' ? 'draft' : 'file';
+              setRevisionConflict({ path: targetPath, draft: latest.draft, file: latestFile.file, scope: conflictScope });
+              notifyDraftChange(latest.draft);
+              setPublishOpen(false);
+              setDiscardOpen(false);
+              setMsg(conflictScope === 'draft'
+                ? '原草稿已在其他页面发布或放弃，自动保存已暂停。请确认是否将当前输入写入新草稿。'
+                : '检测到同文件并发修改，自动保存已暂停。请选择保留当前内容或加载其他页面版本。');
+            }
+          } catch {
+            setMsg('保存冲突：无法刷新草稿状态。当前输入仍保留，请稍后重试。');
+          }
+        } else {
+          setMsg(`保存失败：${e.message}`);
+        }
+        throw e;
+      }
+    };
+    const queued = savePromiseRef.current.catch(() => {}).then(save);
+    savePromiseRef.current = queued;
+    return queued;
+  }, [notifyDraftChange, projectId]);
+
+  useEffect(() => {
+    clearTimeout(saveTimerRef.current);
+    if (repairInProgress || revisionConflict?.path === path
+      || !packageDraft || view !== 'edit' || !path || !file) return undefined;
+    if (editorContent === savedContentRef.current) return undefined;
+    setSaveState('unsaved');
+    saveTimerRef.current = setTimeout(() => {
+      persistDraftFile(path, editorContent, true).catch(() => {});
+    }, 800);
+    return () => clearTimeout(saveTimerRef.current);
+  }, [editorContent, file, packageDraft, path, persistDraftFile, repairInProgress, revisionConflict, view]);
+
+  const hasUnsavedContent = !!packageDraft && view === 'edit'
+    && editorContent !== savedContentRef.current;
+  useEffect(() => {
+    if (!hasUnsavedContent && saveState !== 'saving' && !revisionConflict) return undefined;
+    const warnBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [hasUnsavedContent, revisionConflict, saveState]);
+
+  const flushCurrentFile = useCallback(async () => {
+    clearTimeout(saveTimerRef.current);
+    if (repairInProgress) {
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return false;
+    }
+    if (revisionConflict?.path === pathRef.current) {
+      setMsg('请先处理当前文件的保存冲突');
+      return false;
+    }
     try {
-      await savePackageFile(projectId, path, draft);
-      setMsg('✓ 修订已保存（导出与评测将使用修订稿）');
-      await loadPkg(); loadFile();
-    } catch (e) { setMsg(`保存失败：${e.message}`); } finally { setSaving(false); }
+      await savePromiseRef.current.catch(() => {});
+      const activeDraft = draftRef.current;
+      const currentPath = pathRef.current;
+      const currentContent = editorContentRef.current;
+      if (activeDraft && view === 'edit' && currentPath
+        && currentContent !== savedContentRef.current) {
+        await persistDraftFile(currentPath, currentContent, true);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, [persistDraftFile, repairInProgress, revisionConflict, view]);
+
+  const selectFile = async (nextPath) => {
+    if (repairInProgress) {
+      setPath(nextPath);
+      setView('view');
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    if (revisionConflict?.path === path) {
+      setMsg('请先处理当前文件的保存冲突，再切换文件');
+      return;
+    }
+    if (nextPath === path) {
+      if (packageDraft && isPackageDraftEditablePath(nextPath)) setView('edit');
+      return;
+    }
+    if (!(await flushCurrentFile())) return;
+    setPath(nextPath);
+    setView(packageDraft && isPackageDraftEditablePath(nextPath) ? 'edit' : 'view');
+    setMsg('');
   };
-  const reset = async () => {
-    if (!window.confirm('恢复为系统渲染稿？你的人工修订将被删除。')) return;
-    setSaving(true); setMsg('');
+
+  const startEditing = async () => {
+    if (repairInProgress) {
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    if (!path || !isPackageDraftEditablePath(path)) return;
+    if (packageDraft) {
+      setView('edit');
+      return;
+    }
+    setActionBusy('create');
+    setMsg('');
     try {
-      await resetPackageFile(projectId, path);
-      setMsg('已恢复渲染稿');
-      await loadPkg(); loadFile();
-    } catch (e) { setMsg(`恢复失败：${e.message}`); } finally { setSaving(false); }
+      const result = await createPackageDraft(projectId);
+      handledDraftRef.current = result.draft.id;
+      notifyDraftChange(result.draft);
+      const data = await getPackageDraftFile(projectId, path);
+      setFile(data.file);
+      setEditorContent(data.file.content);
+      savedContentRef.current = data.file.content;
+      savedContentHashRef.current = data.file.contentHash;
+      setRevisionConflict(null);
+      setView('edit');
+      setSaveState('idle');
+      setMsg(result.created ? `已创建基于 v${result.draft.baseVersion} 的人工编辑草稿` : '已恢复未发布草稿');
+    } catch (e) { setMsg(`无法开始编辑：${e.message}`); }
+    finally { setActionBusy(''); }
+  };
+
+  const showRenderedView = async () => {
+    if (repairInProgress) {
+      setView('view');
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    if (await flushCurrentFile()) setView('view');
+  };
+
+  const saveNow = async () => {
+    if (repairInProgress) {
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    if (revisionConflict?.path === path) {
+      setMsg('请通过冲突提示选择要保留的版本');
+      return;
+    }
+    if (editorContent === savedContentRef.current) {
+      setMsg('当前文件已保存到草稿');
+      return;
+    }
+    if (await flushCurrentFile()) setMsg('✓ 已保存到人工编辑草稿');
+  };
+
+  const loadOtherPageVersion = () => {
+    const conflict = revisionConflict;
+    if (!conflict || conflict.path !== path) return;
+    if (!window.confirm('加载其他页面版本将丢弃当前尚未保存的输入，是否继续？')) return;
+    notifyDraftChange(conflict.draft);
+    setFile(conflict.file);
+    setEditorContent(conflict.file.content);
+    savedContentRef.current = conflict.file.content;
+    savedContentHashRef.current = conflict.file.contentHash;
+    setRevisionConflict(null);
+    setSaveState('idle');
+    setMsg('已加载其他页面保存的最新内容');
+  };
+
+  const overwriteRevisionConflict = async () => {
+    const conflict = revisionConflict;
+    if (!conflict || conflict.path !== path) return;
+    if (!window.confirm('确定以当前输入覆盖其他页面对该文件的修改？')) return;
+    setActionBusy('conflict-overwrite');
+    setMsg('');
+    try {
+      await persistDraftFile(path, editorContentRef.current, false, {
+        revision: conflict.draft.revision,
+        contentHash: conflict.file.contentHash,
+        draftId: conflict.draft.id,
+      });
+    } catch { /* persistDraftFile 会刷新并展示最新冲突 */ }
+    finally { setActionBusy(''); }
+  };
+
+  const revertDraftFile = async () => {
+    if (repairInProgress) {
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    if (revisionConflict?.path === path) {
+      setMsg('请先处理当前文件的保存冲突');
+      return;
+    }
+    if (!window.confirm(`撤销「${path}」在本次草稿中的全部修改？`)) return;
+    setActionBusy('revert');
+    setMsg('');
+    clearTimeout(saveTimerRef.current);
+    try {
+      await savePromiseRef.current.catch(() => {});
+      const activeDraft = draftRef.current;
+      if (!activeDraft) return;
+      const result = await revertPackageDraftFile(projectId, path, activeDraft.revision, activeDraft.id);
+      notifyDraftChange(result.draft);
+      setFile(result.file);
+      setEditorContent(result.file.content);
+      savedContentRef.current = result.file.content;
+      savedContentHashRef.current = result.file.contentHash;
+      setRevisionConflict(null);
+      setSaveState('idle');
+      setMsg('已撤销当前文件在草稿中的修改');
+    } catch (e) { setMsg(`撤销失败：${e.message}`); }
+    finally { setActionBusy(''); }
+  };
+
+  const doPublish = async () => {
+    if (repairInProgress) {
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    setActionBusy('publish');
+    setMsg('');
+    try {
+      if (!(await flushCurrentFile())) return;
+      const activeDraft = draftRef.current;
+      if (!activeDraft?.changedFileCount) {
+        setMsg('草稿没有待发布的文件变更；如需退出编辑，请放弃草稿。');
+        return;
+      }
+      const result = await publishPackageDraft(projectId, activeDraft.revision, publishSummary.trim(), activeDraft.id);
+      notifyDraftChange(null);
+      handledDraftRef.current = null;
+      setPublishOpen(false);
+      setPublishSummary('');
+      setView('view');
+      setMsg(`✓ 已发布为正式版本 v${result.published.version}`);
+      await loadPkg();
+      setFileReloadKey((key) => key + 1);
+      window.dispatchEvent(new CustomEvent('mw-package-updated'));
+    } catch (e) {
+      if (isPackageDraftRevisionConflict(e)) {
+        setPublishOpen(false);
+        setPublishRevisionConflict(true);
+        setMsg('检测到有其他修改已应用到当前草稿，请刷新页面后重新发布。');
+      } else {
+        if (e.data?.path && pkg?.files.includes(e.data.path)) setPath(e.data.path);
+        setMsg(`发布失败：${e.message}`);
+      }
+    } finally { setActionBusy(''); }
+  };
+
+  const doDiscard = async () => {
+    if (repairInProgress) {
+      setMsg(PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE);
+      return;
+    }
+    if (revisionConflict) {
+      setMsg('请先处理当前文件的保存冲突');
+      return;
+    }
+    setActionBusy('discard');
+    setMsg('');
+    clearTimeout(saveTimerRef.current);
+    try {
+      await savePromiseRef.current.catch(() => {});
+      const activeDraft = draftRef.current;
+      if (!activeDraft) return;
+      await discardPackageDraft(projectId, activeDraft.revision, activeDraft.id);
+      notifyDraftChange(null);
+      handledDraftRef.current = null;
+      setDiscardOpen(false);
+      setView('view');
+      setMsg('已放弃人工编辑草稿，恢复正式版本内容');
+      await loadPkg();
+      setFileReloadKey((key) => key + 1);
+    } catch (e) { setMsg(`放弃失败：${e.message}`); }
+    finally { setActionBusy(''); }
   };
 
   const download = async () => {
     setMsg('');
     try {
-      const res = await authFetch(exportPackageUrl(projectId));
-      if (!res.ok) { setMsg(`导出失败（${res.status}）`); return; }
+      const res = await requireOkResponse(await authFetch(exportPackageUrl(projectId)));
       const blob = await res.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -464,19 +845,66 @@ export function ReviewPanel({ projectId, onAdvance }) {
   if (err) return <div className="empty">{err}</div>;
   if (!pkg) return <div className="empty">加载中…</div>;
   const isMd = path?.endsWith('.md');
-  const overriddenSet = new Set(pkg.overriddenPaths ?? []);
+  const draftChangedSet = new Set((packageDraft?.changedFiles ?? []).map((changed) => changed.path));
   const content = file?.content ?? '';
+  const editable = isPackageDraftEditablePath(path);
+  const currentDraftChanged = !!file?.changed || draftChangedSet.has(path);
+  const nonPublishableDraftPaths = [...draftChangedSet].filter((changedPath) => !isPackageDraftEditablePath(changedPath));
+  const migratedLegacyDraft = packageDraft?.createdBy === 'legacy-override-migration';
   // 体检发现的 target（对象/操作 key）→ 包内文件路径
   const openByTarget = (target) => {
     const hit = pkg.files.find((f) => f === target)
       ?? pkg.files.find((f) => f.endsWith(`/${target}.md`))
       ?? pkg.files.find((f) => f.includes(target));
-    if (hit) setPath(hit);
+    if (hit) selectFile(hit);
   };
 
   return (
     <div>
-    <PackageCheck projectId={projectId} onOpenFile={openByTarget} />
+    {repairInProgress && (
+      <div className="draft-chat-gate">
+        <b>{PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE}</b>
+        <span>{packageRepairBusy === 'apply' ? '正在应用修缮计划并生成新版本。' : '正在分析修缮影响。'}完成后可继续编辑。</span>
+      </div>
+    )}
+    {packageDraft && (
+      <div className={`draft-status-bar ${packageDraft.stale ? 'stale' : ''}`}>
+        <div className="draft-status-main">
+          <b>人工编辑草稿</b>
+          <span>基线 v{packageDraft.baseVersion}</span>
+          <span>已修改 {packageDraft.changedFileCount} 个文件</span>
+          <span>revision {packageDraft.revision}</span>
+          {migratedLegacyDraft && <span className="tag tag-draft">由旧版人工编辑内容迁移</span>}
+          {packageDraft.stale && <span className="tag tag-err">基线已过时，请放弃后重新编辑</span>}
+        </div>
+        <div className="draft-status-actions">
+          <span className={`draft-save-state ${saveState}`}>
+            {{ idle: '草稿已同步', unsaved: '等待自动保存', saving: '自动保存中…', saved: '已自动保存', error: '保存失败' }[saveState]}
+          </span>
+          <button className="btn" disabled={repairInProgress || !!revisionConflict || !!actionBusy}
+            title={revisionConflict ? '请先处理当前文件的保存冲突' : ''}
+            onClick={() => setDiscardOpen(true)}>放弃草稿</button>
+          <button className="btn btn-p" disabled={repairInProgress || !!revisionConflict || !!actionBusy || (!packageDraft.changedFileCount && !hasUnsavedContent) || packageDraft.stale || nonPublishableDraftPaths.length > 0}
+            title={repairInProgress
+              ? PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE
+              : revisionConflict
+                ? '请先处理当前文件的保存冲突'
+              : packageDraft.stale
+              ? '草稿基线已过时，请放弃后基于最新版重新编辑'
+              : nonPublishableDraftPaths.length
+                ? '请先撤销迁移草稿中的派生文件覆盖'
+                : !packageDraft.changedFileCount && !hasUnsavedContent ? '草稿暂无文件变更' : ''}
+            onClick={() => setPublishOpen(true)}>发布新版本</button>
+        </div>
+      </div>
+    )}
+    {nonPublishableDraftPaths.length > 0 && (
+      <div className="legacy-migration-warning">
+        <b>迁移草稿包含 {nonPublishableDraftPaths.length} 个派生文件覆盖</b>
+        <span>这些文件现在由正式规格自动生成，不能直接发布。请在文件树中选择带“草稿”标记的派生文件，审阅后撤销对应修改，再发布其余详情文件。</span>
+      </div>
+    )}
+    <PackageCheck projectId={projectId} onOpenFile={openByTarget} packageDraft={packageDraft} />
     <div className="rv">
       <div className="rv-files">
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
@@ -484,39 +912,131 @@ export function ReviewPanel({ projectId, onAdvance }) {
           <button className="btn" style={{ marginLeft: 'auto', padding: '3px 10px', fontSize: 11.5 }} onClick={download}>导出 zip</button>
         </div>
         {pkg.files.map((f) => (
-          <button key={f} className={`rv-file ${f === path ? 'on' : ''}`} onClick={() => setPath(f)}>
-            {f}{overriddenSet.has(f) ? ' ✎' : ''}
+          <button key={f} className={`rv-file ${f === path ? 'on' : ''} ${isPackageDraftEditablePath(f) ? '' : 'readonly'}`}
+            title={isPackageDraftEditablePath(f) ? '' : '派生文件，只读'} onClick={() => selectFile(f)}>
+            <span className="rv-file-path">{f}</span>
+            {draftChangedSet.has(f) && <span className="tag tag-draft rv-file-draft-tag">草稿</span>}
           </button>
         ))}
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>✎ 已修订</div>
+        <div className="rv-file-legend">
+          <span className="tag tag-draft">草稿</span>
+          <span>表示草稿已修改 · 灰色为派生只读文件</span>
+        </div>
       </div>
       <div className="rv-view">
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--muted)' }}>
-            {path}{file?.overridden ? <span className="tag tag-draft" style={{ marginLeft: 8 }}>人工修订稿</span> : null}
+            {path}
+            {!editable && <span className="tag tag-lang" style={{ marginLeft: 8 }}>派生文件 · 只读</span>}
+            {currentDraftChanged && <span className="tag tag-draft" style={{ marginLeft: 8 }}>草稿已修改</span>}
           </span>
           <span className="viewtog" style={{ marginLeft: 'auto' }}>
-            <button className={view === 'view' ? 'on' : ''} onClick={() => setView('view')}>查看</button>
-            <button className={view === 'edit' ? 'on' : ''} onClick={() => { setDraft(content); setView('edit'); }}>编辑</button>
+            <button className={view === 'view' ? 'on' : ''} onClick={showRenderedView}>查看</button>
+            <button className={view === 'edit' ? 'on' : ''} disabled={repairInProgress || !editable || actionBusy === 'create'}
+              title={repairInProgress ? PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE : !editable ? '派生文件不能人工编辑' : ''}
+              onClick={startEditing}>{actionBusy === 'create' ? '进入编辑中…' : '编辑'}</button>
           </span>
         </div>
         {view === 'edit' ? (
           <div>
-            <textarea className="rv-editor" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+            <textarea className="rv-editor" value={editorContent} disabled={repairInProgress}
+              onChange={(e) => setEditorContent(e.target.value)} spellCheck={false} />
+            {revisionConflict?.path === path && (
+              <div className="draft-revision-conflict" role="alert">
+                <div>
+                  <b>{revisionConflict.scope === 'draft' ? '原草稿已被其他页面替换' : '检测到同文件并发修改'}</b>
+                  <span>{revisionConflict.scope === 'draft'
+                    ? '当前项目已有另一份活动草稿。自动保存已暂停，当前输入仍保留。'
+                    : '其他页面已保存了此文件。自动保存已暂停，当前输入仍保留。'}</span>
+                </div>
+                <div className="draft-revision-conflict-actions">
+                  <button className="btn" disabled={!!actionBusy} onClick={loadOtherPageVersion}>加载其他页面版本</button>
+                  <button className="btn btn-p" disabled={!!actionBusy} onClick={overwriteRevisionConflict}>
+                    {actionBusy === 'conflict-overwrite' ? '覆盖保存中…' : '保留当前内容并覆盖'}
+                  </button>
+                </div>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-              <button className="btn btn-p" disabled={saving || draft === content} onClick={save}>{saving ? '保存中…' : '保存修订'}</button>
-              {file?.overridden && <button className="btn" disabled={saving} onClick={reset}>恢复渲染稿</button>}
-              <span style={{ fontSize: 12, color: 'var(--muted)' }}>{msg || '修订对导出与评测生效，新版本生成后仍保留'}</span>
+              <button className="btn btn-p" disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving' || editorContent === savedContentRef.current}
+                onClick={saveNow}>{saveState === 'saving' ? '保存中…' : '保存到草稿'}</button>
+              {(currentDraftChanged || editorContent !== file?.baseContent) && (
+                <button className="btn" disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'} onClick={revertDraftFile}>
+                  {actionBusy === 'revert' ? '撤销中…' : '撤销此文件修改'}
+                </button>
+              )}
+              <span className={`draft-save-message ${saveState === 'error' ? 'error' : ''}`}>
+                {msg || '修改会自动保存到草稿；发布后才会生成正式版本并用于消费'}
+              </span>
             </div>
           </div>
         ) : isMd
           ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown></div>
           : <pre className="srcview">{content}</pre>}
+        {view === 'view' && currentDraftChanged && !editable && (
+          <div className="legacy-migration-file-actions">
+            <button className="btn" disabled={repairInProgress || !!actionBusy} onClick={revertDraftFile}>
+              {actionBusy === 'revert' ? '撤销中…' : '撤销该派生文件覆盖'}
+            </button>
+            <span>{msg || '派生文件会由规格重新生成；撤销后可继续发布其余详情文件修改'}</span>
+          </div>
+        )}
+        {view === 'view' && msg && !(currentDraftChanged && !editable) && <div className="draft-view-message">{msg}</div>}
       </div>
     </div>
     <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-      <button className="btn btn-p" onClick={onAdvance}>进入数据源配置 →</button>
+      <button className="btn btn-p" disabled={!!packageDraft}
+        title={packageDraft ? '请先发布或放弃人工编辑草稿' : ''} onClick={onAdvance}>进入数据源配置 →</button>
     </div>
+    {publishOpen && packageDraft && (
+      <div className="modal-ov" role="presentation">
+        <div className="modal draft-publish-modal" role="dialog" aria-modal="true" aria-labelledby="draft-publish-title">
+          <h3 id="draft-publish-title">发布人工编辑草稿</h3>
+          <p>将基于 v{packageDraft.baseVersion} 的 {packageDraft.changedFileCount} 个文件修改合并为一个正式新版本。发布成功后，导出、修缮和评测都会使用新版本。</p>
+          <label className="field">
+            <span>发布说明（可选）</span>
+            <textarea rows={3} maxLength={500} value={publishSummary}
+              disabled={repairInProgress}
+              placeholder="例如：补充订单取消规则并修正金额口径"
+              onChange={(event) => setPublishSummary(event.target.value)} />
+          </label>
+          <div className="foot">
+            <button className="btn" disabled={actionBusy === 'publish'} onClick={() => setPublishOpen(false)}>取消</button>
+            <button className="btn btn-p" disabled={repairInProgress || !!revisionConflict || actionBusy === 'publish'} onClick={doPublish}>
+              {actionBusy === 'publish' ? '发布并校验中…' : '确认发布新版本'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {publishRevisionConflict && (
+      <div className="modal-ov" role="presentation">
+        <div className="modal draft-publish-conflict-modal" role="alertdialog" aria-modal="true"
+          aria-labelledby="draft-publish-conflict-title" aria-describedby="draft-publish-conflict-description">
+          <h3 id="draft-publish-conflict-title">当前草稿已被更新</h3>
+          <p id="draft-publish-conflict-description">
+            检测到有其他修改已应用到当前草稿，当前页面的 revision 已过期。请刷新页面加载最新草稿，确认修改后再重新发布新版本。
+          </p>
+          <div className="foot">
+            <button className="btn btn-p" onClick={() => window.location.reload()}>刷新页面</button>
+          </div>
+        </div>
+      </div>
+    )}
+    {discardOpen && packageDraft && (
+      <div className="modal-ov" role="presentation">
+        <div className="modal draft-discard-modal" role="dialog" aria-modal="true" aria-labelledby="draft-discard-title">
+          <h3 id="draft-discard-title">放弃人工编辑草稿</h3>
+          <p>将丢弃本次草稿中 {packageDraft.changedFileCount} 个文件的修改，并恢复正式版本 v{pkg.version}。此操作无法撤销。</p>
+          <div className="foot">
+            <button className="btn" disabled={actionBusy === 'discard'} onClick={() => setDiscardOpen(false)}>继续编辑</button>
+            <button className="btn btn-danger" disabled={repairInProgress || !!revisionConflict || actionBusy === 'discard'} onClick={doDiscard}>
+              {actionBusy === 'discard' ? '放弃中…' : '确认放弃草稿'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </div>
   );
 }

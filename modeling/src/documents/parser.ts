@@ -1,7 +1,12 @@
 import { extname } from 'node:path';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx';
 import mammoth from 'mammoth';
-import type { DataDictField, DataDictTable, DocumentRecord } from '../types.js';
+import type {
+  DataDictCell,
+  DataDictField,
+  DataDictTable,
+  DocumentRecord,
+} from '../types.js';
 
 export type DocKind = DocumentRecord['kind'];
 
@@ -47,17 +52,107 @@ export interface ParseExcelOptions {
   /** null 表示保留全部数据行；未传时沿用普通文档解析的 2000 行上限。 */
   maxRows?: number | null;
   rejectOverflow?: boolean;
+  /** 图导入使用：额外保留单元格原始类型与 Excel 展示值。 */
+  includeCellMetadata?: boolean;
+}
+
+interface ExcelDateTimeParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+interface ExcelSheetRow {
+  raw: unknown[];
+  formatted?: unknown[];
+  sheetRow: number;
+}
+
+function padDatePart(value: number, length = 2): string {
+  return String(value).padStart(length, '0');
+}
+
+function excelDateTimeParts(
+  cell: XLSX.CellObject | undefined,
+  date1904: boolean,
+): ExcelDateTimeParts | null {
+  if (!cell || cell.t !== 'n' || typeof cell.v !== 'number' || cell.z == null
+    || !XLSX.SSF.is_date(String(cell.z))) return null;
+  const parsed = XLSX.SSF.parse_date_code(cell.v, { date1904 });
+  if (!parsed) return null;
+  return {
+    year: parsed.y,
+    month: parsed.m,
+    day: parsed.d,
+    hour: parsed.H,
+    minute: parsed.M,
+    second: parsed.S,
+  };
+}
+
+function localDateTimeValue(parts: ExcelDateTimeParts): string {
+  return `${padDatePart(parts.year, 4)}-${padDatePart(parts.month)}-${padDatePart(parts.day)}`
+    + `T${padDatePart(parts.hour)}:${padDatePart(parts.minute)}:${padDatePart(parts.second)}`;
+}
+
+function dateValue(parts: ExcelDateTimeParts): string {
+  return localDateTimeValue(parts).slice(0, 10);
+}
+
+function worksheetCell(sheet: XLSX.WorkSheet, row: number, column: number): XLSX.CellObject | undefined {
+  return sheet[XLSX.utils.encode_cell({ r: row, c: column })] as XLSX.CellObject | undefined;
+}
+
+function documentCellValue(
+  raw: unknown,
+  cell: XLSX.CellObject | undefined,
+  date1904: boolean,
+): unknown {
+  const dateTime = excelDateTimeParts(cell, date1904);
+  if (dateTime) return dateValue(dateTime);
+  return raw instanceof Date ? raw.toISOString().slice(0, 10) : raw;
 }
 
 export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): DataDictTable[] {
-  // cellDates：银行/企业表常见日期列，避免 agent 面对 46152 这类 Excel 序列号
-  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+  const includeCellMetadata = options.includeCellMetadata === true;
+  // 图导入保留 Excel 日期序列，避免无时区时间被 JavaScript Date 转成 UTC。
+  const wb = XLSX.read(buffer, {
+    type: 'buffer',
+    cellDates: !includeCellMetadata,
+    cellNF: includeCellMetadata,
+  });
+  const date1904 = Boolean(wb.Workbook?.WBProps?.date1904);
   const tables: DataDictTable[] = [];
   for (const sheetName of wb.SheetNames) {
     const sheet = wb.Sheets[sheetName];
-    const rawRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
-    const fmt = (c: unknown) => c instanceof Date ? c.toISOString().slice(0, 10) : c;
-    const rows = rawRows.map((r) => (r as unknown[]).map(fmt));
+    const reference = sheet['!ref'];
+    if (!reference) continue;
+    const range = XLSX.utils.decode_range(reference);
+    const rawRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      blankrows: includeCellMetadata,
+      raw: true,
+    });
+    const formattedRows = includeCellMetadata
+      ? XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+        header: 1,
+        blankrows: true,
+        raw: false,
+      })
+      : undefined;
+    const sheetRows: ExcelSheetRow[] = rawRows.map((raw, index) => ({
+      raw,
+      formatted: formattedRows?.[index],
+      sheetRow: range.s.r + index,
+    })).filter((row) => !includeCellMetadata || row.raw.some((value) => value != null));
+    const rows = sheetRows.map((row) => row.raw.map((value, column) => documentCellValue(
+      value,
+      includeCellMetadata ? worksheetCell(sheet, row.sheetRow, range.s.c + column) : undefined,
+      date1904,
+    )));
     if (!rows.length) continue;
     const header = (rows[0] as unknown[]).map((c) => String(c ?? '').trim());
     if (!header.some((h) => h)) continue;
@@ -101,9 +196,60 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
     const selectedRows = maxRows === null ? dataRows : dataRows.slice(0, maxRows);
     const rowMatrix = selectedRows.map((r) =>
       header.map((_, col) => String((r[col] ?? '')).trim()));
-    tables.push({ name: sheetName, fields, rowCount: dataRows.length, rows: rowMatrix });
+    const cellRows = includeCellMetadata
+      ? sheetRows.slice(dataStart, dataStart + selectedRows.length).map((row) => (
+        header.map((_, column) => cellMetadata(
+          row.raw[column],
+          row.formatted?.[column],
+          worksheetCell(sheet, row.sheetRow, range.s.c + column),
+          date1904,
+        ))
+      ))
+      : undefined;
+    tables.push({
+      name: sheetName,
+      fields,
+      rowCount: dataRows.length,
+      rows: rowMatrix,
+      ...(cellRows ? { cellRows } : {}),
+    });
   }
   return tables;
+}
+
+function cellMetadata(
+  raw: unknown,
+  formatted: unknown,
+  cell: XLSX.CellObject | undefined,
+  date1904: boolean,
+): DataDictCell {
+  const formattedText = String(formatted ?? '').trim();
+  if (raw == null || raw === '') return { kind: 'blank', value: '', formatted: formattedText };
+  const dateTime = excelDateTimeParts(cell, date1904);
+  if (dateTime) {
+    return { kind: 'date', value: localDateTimeValue(dateTime), formatted: formattedText };
+  }
+  if (raw instanceof Date) {
+    return {
+      kind: 'date',
+      value: localDateTimeValue({
+        year: raw.getFullYear(),
+        month: raw.getMonth() + 1,
+        day: raw.getDate(),
+        hour: raw.getHours(),
+        minute: raw.getMinutes(),
+        second: raw.getSeconds(),
+      }),
+      formatted: formattedText,
+    };
+  }
+  if (typeof raw === 'number') {
+    return { kind: 'number', value: String(raw), formatted: formattedText };
+  }
+  if (typeof raw === 'boolean') {
+    return { kind: 'boolean', value: String(raw), formatted: formattedText };
+  }
+  return { kind: 'string', value: String(raw).trim(), formatted: formattedText };
 }
 
 function inferType(values: string[]): DataDictField['inferredType'] {

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseExcel } from '../src/documents/parser.js';
-import { validateGraphImportMapping } from '../src/graph-import/validator.js';
+import { normalizeGraphImportMapping, validateGraphImportMapping } from '../src/graph-import/validator.js';
 import { extractGraphImportSchema } from '../src/graph-import/package-schema.js';
 import {
   GraphIsolationDataExistsError, inspectGraphIsolation, writeGraphImport,
@@ -64,7 +64,7 @@ test('graph import mapping：计算节点、关系与空关联跳过数量', () 
     blanks: result.skippedBlankJoinCount,
   }, { nodes: 3, relationships: 1, blanks: 1 });
   assert.deepEqual(result.relations[0].pairs[0], {
-    sourceIdentityValues: ['P-001'], targetIdentityValues: ['I-001'],
+    sourceRecordKey: 'node:Part:00000001', targetRecordKey: 'node:BOMItem:00000001',
   });
   assert.deepEqual(result.entities[0].rows[0].properties, {
     part_id: 'P-001', relation_code: 'R-1', name: '机翼',
@@ -98,7 +98,6 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
     objects: [
       {
         key: 'Customer', title: '客户', label: 'Customer', defaultSheet: 'Wide',
-        primaryProperties: ['customerId'],
         propertyMappings: [
           { property: 'customerId', sourceColumn: 'customer_id' },
           { property: 'customerName', sourceColumn: 'customer_name' },
@@ -106,7 +105,6 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
       },
       {
         key: 'Order', title: '订单', label: 'Order', defaultSheet: 'Wide',
-        primaryProperties: ['customerId', 'orderId'],
         propertyMappings: [
           { property: 'customerId', sourceColumn: 'customer_id' },
           { property: 'orderId', sourceColumn: 'order_id' },
@@ -126,17 +124,27 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
   }), { maxRows: 50_000, rejectOverflow: true }), {
     relations: [{
       sourceObject: 'Customer', relationName: '拥有订单', targetObject: 'Order',
+      matchMode: 'field_match',
       sourceJoinProperty: 'customerId', targetJoinProperty: 'customerId',
     }],
   });
-  assert.equal(result.nodeCount, 3);
-  assert.equal(result.relationshipCount, 2);
-  assert.equal(result.entities[0].rows.length, 1);
-  assert.deepEqual(result.entities[1].identityProperties, ['customerId', 'orderId']);
+  assert.equal(result.nodeCount, 4);
+  assert.equal(result.relationshipCount, 4);
+  assert.equal(result.entities[0].rows.length, 2);
+  assert.deepEqual(result.entities[0].rows.map((row) => row.recordKey), [
+    'node:Customer:00000001',
+    'node:Customer:00000002',
+  ]);
   assert.deepEqual(result.entities[1].rows[0], {
-    identityValues: ['C-1', 'O-1'],
+    recordKey: 'node:Order:00000001',
     properties: { customerId: 'C-1', orderId: 'O-1', amount: '100' },
   });
+  assert.deepEqual(result.relations[0].pairs, [
+    { sourceRecordKey: 'node:Customer:00000001', targetRecordKey: 'node:Order:00000001' },
+    { sourceRecordKey: 'node:Customer:00000001', targetRecordKey: 'node:Order:00000002' },
+    { sourceRecordKey: 'node:Customer:00000002', targetRecordKey: 'node:Order:00000001' },
+    { sourceRecordKey: 'node:Customer:00000002', targetRecordKey: 'node:Order:00000002' },
+  ]);
   assert.deepEqual(result.warnings, [
     '实体「Order」属性 optionalNote 对应的 Excel 字段「optional_note」不存在，已忽略',
   ]);
@@ -180,7 +188,7 @@ test('graph import schema：支持多实体投影并以稳定 key 生成映射',
   }), /objects\/index\.md 缺少 来源Sheet 列/);
 });
 
-test('graph import mapping：拒绝无匹配、属性冲突、非法关联字段和缺失 Sheet', () => {
+test('graph import mapping：保留重复行并拒绝非法关联字段和缺失 Sheet', () => {
   const tables = parseExcel(workbookBuffer({
     Part: [
       ['part_id', 'relation_code', 'name', 'table_only'],
@@ -201,25 +209,44 @@ test('graph import mapping：拒绝无匹配、属性冲突、非法关联字段
       },
     },
     {
-      label: '唯一键属性冲突',
-      run: () => assert.throws(() => validateGraphImportMapping(
-        graphSchema,
-        parseExcel(workbookBuffer({
+      label: '重复业务键逐行实例化',
+      run: () => {
+        const result = validateGraphImportMapping(graphSchema, parseExcel(workbookBuffer({
           Part: [
             ['part_id', 'relation_code', 'name'],
             ['P-001', 'R-1', '机翼'],
             ['P-001', 'R-1', '机身'],
           ],
           BOMItem: [['item_id', 'parent_code'], ['I-001', 'R-1']],
-        }), { maxRows: 50_000, rejectOverflow: true }),
-        graphMapping,
-      ), /P-001.*属性冲突/),
+        }), { maxRows: 50_000, rejectOverflow: true }), graphMapping);
+        assert.equal(result.nodeCount, 3);
+        assert.equal(result.relationshipCount, 2);
+        assert.deepEqual(result.entities[0].rows, [
+          {
+            recordKey: 'node:Part:00000001',
+            properties: { part_id: 'P-001', relation_code: 'R-1', name: '机翼' },
+          },
+          {
+            recordKey: 'node:Part:00000002',
+            properties: { part_id: 'P-001', relation_code: 'R-1', name: '机身' },
+          },
+        ]);
+      },
     },
     {
       label: '非实体关联字段',
       run: () => assert.throws(() => validateGraphImportMapping(graphSchema, tables, {
         relations: [{ ...graphMapping.relations[0], sourceJoinProperty: 'table_only' }],
       }), /table_only.*不属于实体/),
+    },
+    {
+      label: '跨 Sheet 不允许同行关联',
+      run: () => assert.throws(() => validateGraphImportMapping(graphSchema, tables, {
+        relations: [{
+          sourceObject: 'Part', relationName: 'contains', targetObject: 'BOMItem',
+          matchMode: 'same_row',
+        }],
+      }), /同一 Sheet/),
     },
     {
       label: '知识包 Sheet 缺失',
@@ -232,6 +259,83 @@ test('graph import mapping：拒绝无匹配、属性冲突、非法关联字段
     },
   ];
   for (const check of checks) assert.doesNotThrow(check.run, check.label);
+});
+
+test('graph import mapping：同 Sheet 多实体按同行关联并跳过全空投影', () => {
+  const schema = {
+    packageVersion: '1.0.0',
+    objects: [
+      {
+        key: 'Customer', title: '客户', label: 'Customer', defaultSheet: 'Wide',
+        propertyMappings: [
+          { property: 'customer_id', sourceColumn: 'customer_id' },
+          { property: 'name', sourceColumn: 'name' },
+        ],
+      },
+      {
+        key: 'Order', title: '订单', label: 'Order', defaultSheet: 'Wide',
+        propertyMappings: [
+          { property: 'customer_id', sourceColumn: 'customer_id' },
+          { property: 'order_id', sourceColumn: 'order_id' },
+        ],
+      },
+    ],
+    relations: [],
+  };
+  const result = validateGraphImportMapping(schema, parseExcel(workbookBuffer({
+    Wide: [
+      ['customer_id', 'name', 'order_id'],
+      ['C-1', 'Alice', 'O-1'],
+      ['C-1', 'Alice', 'O-1'],
+      ['', '', 'O-2'],
+      ['', 'Bob', ''],
+    ],
+  })), { relations: [{
+    sourceObject: 'Customer', relationName: '下单', targetObject: 'Order',
+    matchMode: 'same_row',
+  }] });
+
+  assert.equal(result.nodeCount, 6);
+  assert.equal(result.relationshipCount, 2);
+  assert.deepEqual(result.entities[0].rows.map((row) => row.recordKey), [
+    'node:Customer:00000001',
+    'node:Customer:00000002',
+    'node:Customer:00000004',
+  ]);
+  assert.deepEqual(result.entities[1].rows.map((row) => row.recordKey), [
+    'node:Order:00000001',
+    'node:Order:00000002',
+    'node:Order:00000003',
+  ]);
+  assert.deepEqual(result.entities[1].rows[0].properties, {
+    customer_id: 'C-1', order_id: 'O-1',
+  });
+  assert.deepEqual(result.entities[0].rows[2].properties, {
+    customer_id: '', name: 'Bob',
+  });
+  assert.deepEqual(result.relations[0].pairs, [
+    { sourceRecordKey: 'node:Customer:00000001', targetRecordKey: 'node:Order:00000001' },
+    { sourceRecordKey: 'node:Customer:00000002', targetRecordKey: 'node:Order:00000002' },
+  ]);
+});
+
+test('graph import mapping：历史字段关联缺省模式保持兼容且同行模式移除隐藏字段', () => {
+  const legacy = {
+    relations: [{
+      sourceObject: 'Part', relationName: 'contains', targetObject: 'BOMItem',
+      sourceJoinProperty: 'relation_code', targetJoinProperty: 'parent_code',
+    }],
+  };
+  assert.deepEqual(normalizeGraphImportMapping(legacy as any), graphMapping);
+  assert.deepEqual(normalizeGraphImportMapping({
+    relations: [{
+      ...legacy.relations[0], matchMode: 'same_row',
+    }],
+  } as any), {
+    relations: [{
+      sourceObject: 'Part', relationName: 'contains', targetObject: 'BOMItem', matchMode: 'same_row',
+    }],
+  });
 });
 
 test('graph import upload：临时文件按项目和用户隔离并可立即删除', async () => {
@@ -348,13 +452,16 @@ test('graph import Neo4j：节点和关系同事务幂等写入并带双隔离�
     assert.doesNotMatch(`${call.query}${JSON.stringify(call.params)}`, /super-secret/);
   }
   assert.match(driver.calls[1].query, /MERGE \(node:`设备零件`/);
+  assert.match(driver.calls[1].query, /`_d2o_record_key`: row\.recordKey/);
   assert.match(driver.calls[1].query, /node\.`d2o_user_id` = \$userName/);
   assert.equal(driver.calls[1].params.userName, 'alice');
   assert.deepEqual((driver.calls[1].params.rows as any[])[0], {
-    identityValues: ['P-001'],
+    recordKey: 'node:Part:00000001',
     properties: { part_id: 'P-001', relation_code: 'R-1', name: '机翼' },
   });
   assert.match(driver.calls[3].query, /MERGE \(source\)-\[relationship:`contains`/);
+  assert.match(driver.calls[3].query, /`_d2o_record_key`: row\.sourceRecordKey/);
+  assert.match(driver.calls[3].query, /`_d2o_record_key`: row\.targetRecordKey/);
   assert.equal(driver.state.sessionClosed, true);
   assert.equal(driver.state.driverClosed, true);
 });
@@ -364,7 +471,6 @@ test('graph import Neo4j：校验、统计和写入包含未参与关系的实�
     ...graphSchema,
     objects: [...graphSchema.objects, {
       key: 'Standalone', title: '独立实体', label: 'Standalone', defaultSheet: 'Standalone',
-      primaryProperties: ['standalone_id'],
       propertyMappings: [
         { property: 'standalone_id', sourceColumn: 'standalone_id' },
         { property: 'name', sourceColumn: 'name' },
@@ -396,11 +502,11 @@ test('graph import Neo4j：校验、统计和写入包含未参与关系的实�
   assert.ok(standaloneWrite);
   assert.deepEqual(standaloneWrite.params.rows, [
     {
-      identityValues: ['S-001'],
+      recordKey: 'node:Standalone:00000001',
       properties: { standalone_id: 'S-001', name: '独立实例一' },
     },
     {
-      identityValues: ['S-002'],
+      recordKey: 'node:Standalone:00000002',
       properties: { standalone_id: 'S-002', name: '独立实例二' },
     },
   ]);
@@ -421,6 +527,20 @@ test('graph import Neo4j：动态标识符非法时拒绝连接', async () => {
     throw new Error('不应连接');
   }), /Workspace 隔离字段.*格式非法/);
   assert.equal(connected, false);
+
+  await assert.rejects(() => writeGraphImport({
+    nodeCount: 0,
+    relationshipCount: 0,
+    skippedBlankJoinCount: 0,
+    skippedUnmatchedJoinCount: 0,
+    warnings: [],
+    entities: [],
+    relations: [],
+  }, neo4jConnection({ workspaceProperty: '_d2o_record_key' }), { userName: 'alice' }, () => {
+    connected = true;
+    throw new Error('不应连接');
+  }), /系统保留字段/);
+  assert.equal(connected, false);
 });
 
 test('graph import Neo4j：事务失败时仍关闭 session 和 driver', async () => {
@@ -429,6 +549,52 @@ test('graph import Neo4j：事务失败时仍关闭 session 和 driver', async (
     { userName: 'alice' }, driver.factory), /write failed/);
   assert.equal(driver.state.sessionClosed, true);
   assert.equal(driver.state.driverClosed, true);
+});
+
+test('graph import Neo4j：取消信号会关闭会话并中断当前事务', async () => {
+  const controller = new AbortController();
+  let notifyWriteStarted = () => {};
+  const writeStarted = new Promise<void>((resolve) => { notifyWriteStarted = resolve; });
+  let rejectActiveRun: ((error: Error) => void) | undefined;
+  const state = { sessionClosed: false, driverClosed: false };
+  let callCount = 0;
+  const factory = async () => ({
+    session() {
+      return {
+        async executeWrite(work: (transaction: any) => Promise<unknown>) {
+          return work({
+            async run() {
+              callCount += 1;
+              if (callCount === 1) {
+                return { records: [{ get: () => 0 }] };
+              }
+              notifyWriteStarted();
+              return new Promise((_resolve, reject) => { rejectActiveRun = reject; });
+            },
+          });
+        },
+        async close() {
+          state.sessionClosed = true;
+          rejectActiveRun?.(new Error('Neo4j 会话已关闭'));
+        },
+      };
+    },
+    async close() {
+      state.driverClosed = true;
+      rejectActiveRun?.(new Error('Neo4j Driver 已关闭'));
+    },
+  });
+
+  const writing = writeGraphImport(importPlan(), neo4jConnection(), {
+    userName: 'alice',
+    signal: controller.signal,
+  }, factory);
+  await writeStarted;
+  controller.abort(new Error('用户取消图数据导入'));
+
+  await assert.rejects(writing, /已关闭|用户取消/);
+  assert.equal(state.sessionClosed, true);
+  assert.equal(state.driverClosed, true);
 });
 
 test('graph import Neo4j：已有双隔离数据时中止并要求显式确认', async () => {
@@ -479,6 +645,9 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
     projectId: project.id, owner: 'alice', filename: 'graph.xlsx', buffer: importBuffer(),
   });
   assert.deepEqual(preview.sheets.map((sheet) => sheet.name), ['Part', 'BOMItem']);
+  assert.deepEqual(preview.sheets[0].columnTypes, {
+    part_id: 'string', relation_code: 'string', name: 'string',
+  });
   assert.equal('storedPath' in preview, false);
   const validated = validateGraphImportUpload({
     projectId: project.id, owner: 'alice', uploadId: preview.id, mapping: graphMapping,
@@ -510,7 +679,11 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
         ontologyProperty: 'd2o_ontology_id',
         ontologyValue: 'ontology-001',
       });
-      assert.deepEqual(options, { replaceExisting: false, userName: 'alice' });
+      assert.equal(options.signal instanceof AbortSignal, true);
+      assert.deepEqual(
+        { replaceExisting: options.replaceExisting, userName: options.userName },
+        { replaceExisting: false, userName: 'alice' },
+      );
       return { nodeCount: plan.nodeCount, relationshipCount: plan.relationshipCount };
     },
   };
@@ -630,6 +803,100 @@ test('graph import service：失败审计脱敏并保留临时文件供重试', 
   assert.doesNotMatch(JSON.stringify(failed), /leaked-password/);
 });
 
+test('graph import service：取消后台写入时等待 writer 完成中断清理', async () => {
+  const {
+    cancelGraphImportRun,
+    cancelGraphImportUpload,
+    executeGraphImport,
+    getGraphImportHistory,
+    uploadGraphImportExcel,
+  } = await import('../src/graph-import/service.js');
+  const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
+  const project = await createGraphImportProject('图导入取消测试');
+  const preview = uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'cancel.xlsx', buffer: importBuffer(),
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  let notifyAbort = () => {};
+  const abortObserved = new Promise<void>((resolve) => { notifyAbort = resolve; });
+  let releaseCleanup = () => {};
+  const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+  let cleanupFinished = false;
+  const started = await executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'cancel-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+    schedule: (task) => { scheduled.push(task); },
+    writer: async (_plan, _connection, options) => new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', async () => {
+        notifyAbort();
+        await cleanupGate;
+        cleanupFinished = true;
+        reject(options.signal?.reason);
+      }, { once: true });
+    }),
+  });
+
+  const background = scheduled[0]();
+  let cancellationFinished = false;
+  const cancellation = cancelGraphImportRun(project.id, started.run.id)
+    .finally(() => { cancellationFinished = true; });
+  await abortObserved;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(cancellationFinished, false);
+  assert.equal(getGraphImportHistory(project.id)[0].status, 'running');
+
+  releaseCleanup();
+  const cancelled = await cancellation;
+  await background;
+  assert.equal(cleanupFinished, true);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(getGraphImportHistory(project.id)[0].status, 'cancelled');
+  assert.equal(getGraphImportUpload({
+    uploadId: preview.id, projectId: project.id, owner: 'alice',
+  }).id, preview.id);
+  await cancelGraphImportUpload({ projectId: project.id, owner: 'alice', uploadId: preview.id });
+});
+
+test('graph import service：任务尚未开始时取消不会再调用 writer', async () => {
+  const {
+    cancelGraphImportRun,
+    executeGraphImport,
+    getGraphImportHistory,
+    uploadGraphImportExcel,
+  } = await import('../src/graph-import/service.js');
+  const project = await createGraphImportProject('图导入排队取消测试');
+  const preview = uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'queued.xlsx', buffer: importBuffer(),
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  let writerCalls = 0;
+  const started = await executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'queued-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+    schedule: (task) => { scheduled.push(task); },
+    writer: async () => {
+      writerCalls += 1;
+      return { nodeCount: 0, relationshipCount: 0 };
+    },
+  });
+
+  const cancelled = await cancelGraphImportRun(project.id, started.run.id);
+  await scheduled[0]();
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(getGraphImportHistory(project.id)[0].status, 'cancelled');
+  assert.equal(writerCalls, 0);
+});
+
 test('graph import service：冲突仅提示，确认后才记录替换导入', async () => {
   const { uploadGraphImportExcel, executeGraphImport, getGraphImportHistory } = await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
@@ -665,7 +932,11 @@ test('graph import service：冲突仅提示，确认后才记录替换导入', 
     inspectIsolation: async () => { throw new Error('已确认替换时不需要重复预检'); },
     schedule: (task) => { scheduled.push(task); },
     writer: async (plan, _connection, options) => {
-      assert.deepEqual(options, { replaceExisting: true, userName: 'alice' });
+      assert.equal(options.signal instanceof AbortSignal, true);
+      assert.deepEqual(
+        { replaceExisting: options.replaceExisting, userName: options.userName },
+        { replaceExisting: true, userName: 'alice' },
+      );
       return { nodeCount: plan.nodeCount, relationshipCount: plan.relationshipCount };
     },
   });
@@ -678,7 +949,7 @@ test('graph import service：冲突仅提示，确认后才记录替换导入', 
 test('graph import form：固定知识包 Sheet 且关联字段只使用实体属性', async () => {
   const {
     GRAPH_ISOLATION_EXISTS_PROMPT, addRelationMapping, graphImportMappingPayload,
-    hasRunningGraphImport, isGraphIsolationConflict, joinPropertyOptions,
+    graphRelationLabel, hasRunningGraphImport, isGraphIsolationConflict, joinPropertyOptions,
     objectImportIssue, updateRelationMapping,
   } = await import('../frontend/src/graph-import-form.js');
   const preview = {
@@ -691,7 +962,7 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   const draft = { sourceObject: 'Part', relationName: 'contains', targetObject: 'BOMItem' };
   const added = addRelationMapping([], draft, preview);
   assert.deepEqual(added, [{
-    ...draft, sourceJoinProperty: 'part_id', targetJoinProperty: 'item_id',
+    ...draft, matchMode: 'field_match', sourceJoinProperty: 'part_id', targetJoinProperty: 'item_id',
   }]);
   assert.throws(() => addRelationMapping(added, draft, preview), /不能重复添加/);
   assert.deepEqual(joinPropertyOptions(preview, 'Part').map((option) => option.value), [
@@ -702,7 +973,7 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   assert.deepEqual(graphImportMappingPayload([]), { relations: [] });
   const unavailable = {
     key: 'Unavailable', title: '不可导入实体', label: '不可导入实体', defaultSheet: 'MissingSheet',
-    primaryProperties: ['id'], propertyMappings: [{ property: 'id', sourceColumn: 'id' }],
+    propertyMappings: [{ property: 'id', sourceColumn: 'id' }],
   };
   const unavailablePreview = {
     ...preview,
@@ -712,6 +983,112 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   assert.equal(GRAPH_ISOLATION_EXISTS_PROMPT, '当前您所选的隔离字段值在图数据库中已存在数据，是否要清空旧数据，并写入新数据？');
   assert.equal(isGraphIsolationConflict({ status: 409, data: { code: 'GRAPH_ISOLATION_DATA_EXISTS' } }), true);
   assert.equal(hasRunningGraphImport([{ status: 'done' }, { status: 'running' }]), true);
+
+  const sameSheetPreview = {
+    schema: {
+      objects: [
+        {
+          key: 'Customer', title: '客户', defaultSheet: 'Wide',
+          propertyMappings: [{ property: 'customer_id', sourceColumn: 'customer_id' }],
+        },
+        {
+          key: 'Order', title: '订单', defaultSheet: 'Wide',
+          propertyMappings: [
+            { property: 'customer_id', sourceColumn: 'customer_id' },
+            { property: 'order_id', sourceColumn: 'order_id' },
+          ],
+        },
+      ],
+      relations: [],
+    },
+    sheets: [{
+      name: 'Wide', columns: ['customer_id', 'order_id'], rowCount: 2, sampleRows: [],
+    }],
+  };
+  const sameSheetDraft = {
+    sourceObject: 'Customer', relationName: '下单', targetObject: 'Order',
+  };
+  const sameSheetAdded = addRelationMapping([], sameSheetDraft, sameSheetPreview);
+  assert.deepEqual(sameSheetAdded, [{ ...sameSheetDraft, matchMode: 'same_row' }]);
+  const sameRow = sameSheetAdded;
+  assert.deepEqual(sameRow, [{ ...sameSheetDraft, matchMode: 'same_row' }]);
+  assert.equal(graphRelationLabel(sameRow[0], sameSheetPreview), '客户 -[下单]-> 订单（同 Sheet 同行）');
+  assert.deepEqual(graphImportMappingPayload(sameRow), { relations: sameRow });
+
+  const fieldMatched = updateRelationMapping(sameRow, 0, 'matchMode', 'field_match', sameSheetPreview);
+  assert.deepEqual(fieldMatched, [{
+    ...sameSheetDraft,
+    matchMode: 'field_match',
+    sourceJoinProperty: 'customer_id',
+    targetJoinProperty: 'customer_id',
+  }]);
+  assert.deepEqual(
+    updateRelationMapping(fieldMatched, 0, 'matchMode', 'same_row', sameSheetPreview),
+    sameRow,
+  );
+});
+
+test('graph import form：同行模式显示关联方式并隐藏关联字段', async () => {
+  const { RelationCard } = await import('../frontend/src/GraphImportPanel.jsx');
+  const preview = {
+    schema: {
+      objects: [
+        {
+          key: 'Customer', title: '客户', defaultSheet: 'Wide',
+          propertyMappings: [{ property: 'customer_id', sourceColumn: 'customer_id' }],
+        },
+        {
+          key: 'Order', title: '订单', defaultSheet: 'Wide',
+          propertyMappings: [{ property: 'order_id', sourceColumn: 'order_id' }],
+        },
+      ],
+    },
+    sheets: [{ name: 'Wide', columns: ['customer_id', 'order_id'] }],
+  };
+  const card = RelationCard({
+    index: 0,
+    mapping: {
+      sourceObject: 'Customer', relationName: '下单', targetObject: 'Order', matchMode: 'same_row',
+    },
+    preview,
+    disabled: false,
+    onChange: () => {},
+    onRemove: () => {},
+  });
+  const elementText = (value: any): string => {
+    if (value == null || typeof value === 'boolean') return '';
+    if (typeof value === 'string' || typeof value === 'number') return String(value);
+    if (Array.isArray(value)) return value.map(elementText).join('');
+    return elementText(value.props?.children);
+  };
+  const classNames = (value: any): string[] => {
+    if (value == null || typeof value !== 'object') return [];
+    if (Array.isArray(value)) return value.flatMap(classNames);
+    return [value.props?.className, ...classNames(value.props?.children)].filter(Boolean);
+  };
+  const text = elementText(card);
+
+  assert.match(text, /客户 -\[下单\]-> 订单（同 Sheet 同行）/);
+  assert.match(text, /关联方式/);
+  assert.match(text, /同一数据行/);
+  assert.match(text, /按字段值匹配/);
+  assert.match(text, /来源于同表的两个实体关联方式可以选择同一数据行，或者自由选择某一关联字段关联。/);
+  assert.doesNotMatch(text, /关系关联属性/);
+  assert.ok(classNames(card).includes('gi-same-row'));
+
+  const fieldCard = RelationCard({
+    index: 0,
+    mapping: {
+      sourceObject: 'Customer', relationName: '下单', targetObject: 'Order',
+      matchMode: 'field_match', sourceJoinProperty: 'customer_id', targetJoinProperty: 'order_id',
+    },
+    preview,
+    disabled: false,
+    onChange: () => {},
+    onRemove: () => {},
+  });
+  assert.ok(classNames(fieldCard).includes('gi-sides'));
+  assert.equal(classNames(fieldCard).includes('gi-same-row'), false);
 });
 
 test('graph import execution：数据源上下文变化后忽略延迟冲突', async () => {

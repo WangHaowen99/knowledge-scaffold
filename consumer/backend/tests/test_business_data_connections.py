@@ -159,6 +159,25 @@ def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch
     assert hugegraph_fields["max_retries"]["default"] == 1
 
 
+def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
+    from agent.tools.business_data.provider_registry import normalize_provider_config
+
+    base_config = {
+        "uri": "bolt://neo4j.example.local:7687",
+        "username": "neo4j",
+        "password": "secret-password",
+    }
+
+    defaulted = normalize_provider_config("neo4j", base_config)
+    disabled = normalize_provider_config(
+        "neo4j",
+        {**base_config, "ontology_property": ""},
+    )
+
+    assert defaulted["ontology_property"] == "d2o_ontology_id"
+    assert disabled["ontology_property"] == ""
+
+
 def test_legacy_graph_timeout_is_publicized_without_widening_stricter_limits():
     from agent.tools.business_data.provider_registry import publicize_provider_config
 
