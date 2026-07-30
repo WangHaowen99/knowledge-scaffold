@@ -42,6 +42,7 @@ test('旧数据库自动补充版本关联列', () => {
 
   assert.ok(columns('package_versions').includes('revision_oid'));
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifact_revisions'").get());
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifact_commit_intents'").get());
 });
 
 test('同一项目的版本序号递增并按新到旧读取', () => {

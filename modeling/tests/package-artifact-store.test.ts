@@ -148,6 +148,96 @@ test('新包版本同时写入 Git 和 SQLite，并冻结历史内容', async (t
   assert.equal((await store.current(projectId))?.spec.description, '新版说明');
 });
 
+test('SQLite 索引写入失败时回滚 Git，不留下半提交且可直接重试', async (t) => {
+  const { db, projectId, repository, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  db.exec(`CREATE TRIGGER fail_generated_revision
+    BEFORE INSERT ON artifact_revisions
+    WHEN NEW.cause = 'generate'
+    BEGIN SELECT RAISE(ABORT, '模拟索引写入失败'); END`);
+
+  const input = {
+    expectedRevision: initial.oid,
+    spec: spec('1.0.0'),
+    coverage,
+    note: '首次生成',
+    action: {
+      cause: 'generate', summary: '生成第一版', actorKind: 'agent' as const, actorName: '智能助手',
+    },
+  };
+  await assert.rejects(store.savePackageVersion(projectId, input), /模拟索引写入失败/);
+
+  assert.equal((await repository.current(projectId)).oid, initial.oid);
+  assert.equal((await repository.snapshot(projectId)).files.length, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM package_versions WHERE project_id = ?')
+    .get(projectId) as any).count, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM artifact_commit_intents WHERE project_id = ?')
+    .get(projectId) as any).count, 0);
+  assert.deepEqual((await store.history(projectId)).map((item) => item.cause), ['project_created']);
+
+  db.exec('DROP TRIGGER fail_generated_revision');
+  const retried = await store.savePackageVersion(projectId, input);
+  assert.equal(retried.packageVersion, '1.0.0');
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM package_versions WHERE project_id = ?')
+    .get(projectId) as any).count, 1);
+  assert.deepEqual((await store.history(projectId)).map((item) => item.cause), ['generate', 'project_created']);
+});
+
+test('进程在 Git 提交后中断时，下次访问回滚未建立 SQLite 索引的提交', async (t) => {
+  const { db, projectId, repository, revisions, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  db.prepare(`INSERT INTO artifact_commit_intents
+    (project_id, base_revision_oid, created_at) VALUES (?,?,?)`)
+    .run(projectId, initial.oid, '2026-01-01T00:00:00.000Z');
+  const interrupted = await repository.commit(projectId, initial.oid, [{
+    kind: 'write', path: 'package/index.md', content: '# 尚未建立索引的内容\n',
+  }], { message: '模拟进程在 SQLite 提交前退出' });
+  assert.equal((await repository.current(projectId)).oid, interrupted.oid);
+
+  const restarted = new PackageArtifactStore({ db, repository, revisions });
+  const recovered = await restarted.ensureProject(projectId);
+
+  assert.equal(recovered.oid, initial.oid);
+  assert.equal((await repository.current(projectId)).oid, initial.oid);
+  assert.equal((await repository.snapshot(projectId)).files.length, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM artifact_commit_intents WHERE project_id = ?')
+    .get(projectId) as any).count, 0);
+  assert.deepEqual((await restarted.history(projectId)).map((item) => item.cause), ['project_created']);
+});
+
+test('并发请求不会把刚刚开始的跨存储提交误判为中断任务', async (t) => {
+  const { db, projectId, repository, revisions, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  db.prepare(`INSERT INTO artifact_commit_intents
+    (project_id, base_revision_oid, created_at) VALUES (?,?,?)`)
+    .run(projectId, initial.oid, new Date().toISOString());
+
+  const concurrentReader = new PackageArtifactStore({ db, repository, revisions });
+  await assert.rejects(
+    concurrentReader.ensureProject(projectId),
+    (error) => error instanceof PackageArtifactStoreError
+      && error.code === 'commit_in_progress',
+  );
+
+  assert.equal((await repository.current(projectId)).oid, initial.oid);
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM artifact_commit_intents WHERE project_id = ?')
+    .get(projectId) as any).count, 1);
+});
+
+test('升级后首次访问也会回滚无意图、无索引的 Git 尾部提交', async (t) => {
+  const { projectId, repository, revisions, store, db } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  await repository.commit(projectId, initial.oid, [{
+    kind: 'write', path: 'package/index.md', content: '# 升级前中断的内容\n',
+  }], { message: '模拟旧版本中断' });
+
+  const restarted = new PackageArtifactStore({ db, repository, revisions });
+  const recovered = await restarted.ensureProject(projectId);
+
+  assert.equal(recovered.oid, initial.oid);
+  assert.equal((await repository.current(projectId)).oid, initial.oid);
+});
+
 test('人工修改要求当前版本，撤销后恢复生成内容', async (t) => {
   const { db, projectId, store } = await fixture(t);
   const initial = await store.ensureProject(projectId);
