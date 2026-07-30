@@ -118,6 +118,46 @@ export interface WaitForKnowledgeStructureDecisionInput {
   interactionId: string;
 }
 
+export interface StartKnowledgeRepairInput {
+  inputRevisionOid: string;
+  messageKey?: string;
+}
+
+export interface CompleteKnowledgeRepairInput {
+  packageRevisionOid: string;
+  messageKey: string;
+  version: string;
+  summary: string;
+  validation: {
+    errors: number;
+    warnings: number;
+    hints: number;
+    findings?: Array<{
+      severity: '错误' | '警告' | '提示';
+      category: string;
+      message: string;
+      target?: string;
+    }>;
+  };
+}
+
+export interface WaitForKnowledgeRepairInput {
+  messageKey: string;
+  authority: 'approval_required' | 'expert_decision';
+  finding: {
+    category: string;
+    message: string;
+    target?: string;
+  };
+}
+
+export interface StopKnowledgeRepairInput {
+  messageKey: string;
+  reason: string;
+  attempts?: string[];
+  retryable?: boolean;
+}
+
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
 }
@@ -1013,6 +1053,334 @@ export class AiConstructionOrchestrator {
         ],
       });
       return { aiConstruction: current, message };
+    });
+  }
+
+  startKnowledgeRepair(
+    projectId: string,
+    input: StartKnowledgeRepairInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      let task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      if (!task) {
+        const knowledgeTask = current.tasks.find((item) => item.kind === 'knowledge_extraction'
+          && item.milestoneId === 'knowledge_confirmed'
+          && item.status === 'completed');
+        current = this.graph.apply(projectId, {
+          type: 'plan_task', expectedRevision: current.revision,
+          task: {
+            kind: 'package_repair', milestoneId: 'knowledge_confirmed',
+            title: '受控修复知识包校验问题',
+            goal: '按权限修复阻断问题并重新执行知识结构里程碑校验。',
+            required: false,
+            reason: '知识包校验存在阻断错误；原校验任务继续承担里程碑门禁',
+            inputRevisionOid: input.inputRevisionOid,
+            dependsOn: knowledgeTask ? [knowledgeTask.id] : [],
+          },
+        });
+        task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+          && item.milestoneId === 'knowledge_confirmed');
+      }
+      if (!task) throw new Error('知识包修复任务创建失败');
+      if (task.status !== 'running') {
+        current = this.graph.apply(projectId, {
+          type: 'start_task', expectedRevision: current.revision, taskId: task.id,
+        });
+      }
+      const activeTask = current.tasks.find((item) => item.id === task!.id)!;
+      const blocks = [
+        {
+          type: 'status' as const,
+          title: '正在受控修复知识包',
+          summary: '先处理可唯一确定的结构问题，再按权限暂停在人工确认点',
+          milestoneId: 'knowledge_confirmed', taskId: activeTask.id,
+          progress: current.progress.percent,
+          eta: {
+            minMinutes: current.progress.eta.minMinutes,
+            maxMinutes: current.progress.eta.maxMinutes,
+            confidence: current.progress.eta.confidence,
+          },
+        },
+        {
+          type: 'text' as const,
+          text: '安全结构问题会形成独立修订；知识语义修改先展示方案；阈值、分支、口径和冲突必须由专家明确回答。',
+        },
+      ];
+      const message = input.messageKey
+        ? this.messages.ensure(projectId, {
+          key: input.messageKey, role: 'assistant', taskId: activeTask.id, blocks,
+        })
+        : this.messages.append(projectId, {
+          role: 'assistant', taskId: activeTask.id, blocks,
+        });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  waitForKnowledgeRepair(
+    projectId: string,
+    input: WaitForKnowledgeRepairInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      const task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+        && item.milestoneId === 'knowledge_confirmed'
+        && ['running', 'waiting_user'].includes(item.status));
+      if (!task) throw new Error('当前没有正在执行的知识包修复任务');
+      if (task.status === 'running') {
+        current = this.graph.apply(projectId, {
+          type: 'wait_for_user', expectedRevision: current.revision, taskId: task.id,
+        });
+      }
+      const title = input.authority === 'expert_decision'
+        ? '知识包修复等待专家决策'
+        : '知识包语义修复方案等待确认';
+      const summary = input.authority === 'expert_decision'
+        ? '系统不会代替专家选择业务口径、阈值或流程分支'
+        : '确认方案前不会修改当前知识包';
+      const message = this.messages.ensure(projectId, {
+        key: input.messageKey, role: 'assistant', taskId: task.id,
+        blocks: [
+          {
+            type: 'status', title, summary,
+            milestoneId: 'knowledge_confirmed', taskId: task.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: `${input.finding.category}${input.finding.target ? ` · ${input.finding.target}` : ''}\n${input.finding.message}`,
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  completeKnowledgeRepair(
+    projectId: string,
+    input: CompleteKnowledgeRepairInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      let repairTask = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      if (!repairTask) throw new Error('知识包修复任务不存在');
+      if (repairTask.status !== 'running') {
+        current = this.graph.apply(projectId, {
+          type: 'start_task', expectedRevision: current.revision, taskId: repairTask.id,
+        });
+        repairTask = current.tasks.find((item) => item.id === repairTask!.id)!;
+      }
+      current = this.graph.apply(projectId, {
+        type: 'complete_task', expectedRevision: current.revision,
+        taskId: repairTask.id, outputRevisionOid: input.packageRevisionOid,
+      });
+
+      let validationTask = [...current.tasks].reverse().find((item) => item.kind === 'package_validation'
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
+      if (!validationTask) throw new Error('知识包校验任务不存在');
+      if (validationTask.status === 'completed'
+        && validationTask.outputRevisionOid !== input.packageRevisionOid) {
+        current = this.graph.apply(projectId, {
+          type: 'plan_task', expectedRevision: current.revision,
+          task: {
+            kind: 'package_validation', milestoneId: 'knowledge_confirmed',
+            title: '重新校验修复后的知识包',
+            goal: '基于最新修订重新检查知识包结构、引用、数据映射和语义完整性。',
+            required: true,
+            reason: '知识包修订已经变化，旧校验结果不能继续作为里程碑门禁',
+            inputRevisionOid: input.packageRevisionOid,
+            dependsOn: [repairTask.id],
+          },
+        });
+        validationTask = [...current.tasks].reverse().find((item) => item.kind === 'package_validation'
+          && item.milestoneId === 'knowledge_confirmed'
+          && !['cancelled', 'stale'].includes(item.status));
+        if (!validationTask) throw new Error('修复后知识包校验任务创建失败');
+      }
+      if (input.validation.errors === 0 && validationTask.status !== 'completed') {
+        if (validationTask.status !== 'running') {
+          current = this.graph.apply(projectId, {
+            type: 'start_task', expectedRevision: current.revision, taskId: validationTask.id,
+          });
+        }
+        current = this.graph.apply(projectId, {
+          type: 'complete_task', expectedRevision: current.revision,
+          taskId: validationTask.id, outputRevisionOid: input.packageRevisionOid,
+        });
+      } else if (input.validation.errors > 0 && validationTask.status !== 'failed') {
+        if (validationTask.status !== 'running') {
+          current = this.graph.apply(projectId, {
+            type: 'start_task', expectedRevision: current.revision, taskId: validationTask.id,
+          });
+        }
+        current = this.graph.apply(projectId, {
+          type: 'fail_task', expectedRevision: current.revision, taskId: validationTask.id,
+        });
+      }
+
+      const validationSummary = `错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const message = this.messages.ensure(projectId, {
+        key: input.messageKey, role: 'assistant', taskId: repairTask.id,
+        blocks: [
+          {
+            type: 'status',
+            title: input.validation.errors === 0 ? '知识包修复已通过校验' : '本轮修复已完成，仍需继续处理',
+            summary: `v${input.version} · ${validationSummary}`,
+            milestoneId: 'knowledge_confirmed', taskId: repairTask.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          { type: 'text', text: input.summary },
+          {
+            type: 'validation', title: '修复后里程碑校验', scope: 'milestone',
+            counts: {
+              errors: input.validation.errors,
+              warnings: input.validation.warnings,
+              hints: input.validation.hints,
+            },
+            ...(input.validation.findings?.length ? {
+              findings: input.validation.findings.slice(0, 8).map((finding) => ({
+                severity: finding.severity === '错误' ? 'error' as const
+                  : finding.severity === '警告' ? 'warning' as const : 'hint' as const,
+                title: finding.category,
+                summary: finding.message,
+                ...(finding.target ? { target: finding.target } : {}),
+              })),
+            } : {}),
+          },
+          {
+            type: 'next_actions', title: '选择下一步',
+            actions: input.validation.errors === 0
+              ? [
+                { id: 'confirm_knowledge', label: '确认知识结构', style: 'primary' },
+                { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
+              ]
+              : [
+                { id: 'repair_knowledge_structure', label: '继续受控修复', style: 'primary' },
+                { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
+              ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  stopKnowledgeRepair(
+    projectId: string,
+    input: StopKnowledgeRepairInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      let task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+        && item.milestoneId === 'knowledge_confirmed'
+        && ['running', 'waiting_user', 'failed'].includes(item.status));
+      if (!task) throw new Error('当前没有可停止的知识包修复任务');
+      if (task.status === 'waiting_user') {
+        current = this.graph.apply(projectId, {
+          type: 'start_task', expectedRevision: current.revision, taskId: task.id,
+        });
+        task = current.tasks.find((item) => item.id === task!.id)!;
+      }
+      if (task.status === 'running') {
+        current = this.graph.apply(projectId, {
+          type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        });
+      }
+      const attemptText = input.attempts?.length
+        ? `\n已尝试动作：\n${input.attempts.map((item, index) => `${index + 1}. ${item}`).join('\n')}`
+        : '';
+      const message = this.messages.ensure(projectId, {
+        key: input.messageKey, role: 'assistant', taskId: task.id,
+        blocks: [
+          {
+            type: 'status', title: '受控修复已停止',
+            summary: '当前知识包仍保留原修订和完整尝试记录',
+            milestoneId: 'knowledge_confirmed', taskId: task.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          { type: 'text', text: `${input.reason}${attemptText}` },
+          {
+            type: 'next_actions', title: '可以这样继续', actions: [
+              ...(input.retryable ? [{
+                id: 'repair_knowledge_structure', label: '重新执行受控修复', style: 'primary' as const,
+              }] : []),
+              {
+                id: 'review_knowledge_files', label: '人工检查知识文件',
+                style: input.retryable ? 'secondary' : 'primary',
+              },
+              { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
+            ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  supersedeKnowledgeRepair(
+    projectId: string,
+    input: { messageKey: string; reason: string },
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      const task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      if (!task) throw new Error('当前没有可失效的知识包修复任务');
+      current = this.graph.apply(projectId, {
+        type: 'complete_task', expectedRevision: current.revision, taskId: task.id,
+      });
+      const message = this.messages.ensure(projectId, {
+        key: input.messageKey, role: 'assistant', taskId: task.id,
+        blocks: [
+          {
+            type: 'status', title: '旧修复待办已失效',
+            summary: '知识包修订已经变化，将基于最新版本重新分类校验问题',
+            milestoneId: 'knowledge_confirmed', taskId: task.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          { type: 'text', text: input.reason },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  failKnowledgeRepair(projectId: string, reason: string): AiConstructionMaterialUpdate {
+    return this.stopKnowledgeRepair(projectId, {
+      messageKey: `knowledge.repair.failed.${Date.now()}`,
+      reason: reason.trim().slice(0, 3_000) || '知识包修复意外中断，请检查后重试。',
     });
   }
 
