@@ -260,6 +260,7 @@ html, body, #root { height: 100%; }
 .mwr .mdv td { border: 1px solid #eceae2; padding: 6px 10px; }
 .mwr .mdv code { background: #f1f0e9; border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, monospace; font-size: 12px; }
 .mwr .mdv ul, .mwr .mdv ol { padding-left: 22px; margin: 6px 0; }
+.package-version-actions { display: flex; justify-content: flex-end; padding: 12px 16px 0; }
 
 /* ---- M3 评测 ---- */
 .mwr .tc-row { border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: #fff; }
