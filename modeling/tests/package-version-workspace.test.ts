@@ -52,3 +52,11 @@ test('建模工作台在协作区和版本工作区之间切换', () => {
   assert.match(source, />版本</);
   assert.match(source, /ctxTab === 'versions'/);
 });
+
+test('版本工作区提供发布警告确认和正式发布入口', () => {
+  const source = readFileSync(new URL('../frontend/src/PackageVersionWorkspace.jsx', import.meta.url), 'utf8');
+  assert.match(source, /发布警告与已知限制/);
+  assert.match(source, /acceptPackageWarnings/);
+  assert.match(source, /releasePackage/);
+  assert.match(source, /正式发布当前候选/);
+});

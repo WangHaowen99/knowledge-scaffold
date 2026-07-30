@@ -399,7 +399,7 @@ test('项目删除 API：要求明确确认、校验 owner、阻止运行任务�
   assert.equal(missing.statusCode, 404);
 });
 
-test('验证候选通过当前修订门禁后提升为对应稳定版本', async () => {
+test('验证候选完成发布警告确认后提升为对应稳定版本并固化已知限制', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
   const created = await app.inject({
@@ -408,11 +408,18 @@ test('验证候选通过当前修订门禁后提升为对应稳定版本', async
   });
   assert.equal(created.statusCode, 201, created.body);
   const projectId = created.json().project.id;
-  const [{ getDb }, { getPackageArtifactStore }, m3repo, { saveCheck }] = await Promise.all([
+  const [
+    { getDb },
+    { getPackageArtifactStore },
+    m3repo,
+    { saveCheck },
+    { getReleaseKnownLimitations },
+  ] = await Promise.all([
     import('../src/db/index.js'),
     import('../src/artifacts/runtime.js'),
     import('../src/workflow/m3-repo.js'),
     import('../src/workflow/package-check.js'),
+    import('../src/workflow/warning-acceptance.js'),
   ]);
   getDb().prepare("UPDATE projects SET kind = 'package' WHERE id = ?").run(projectId);
   const store = getPackageArtifactStore();
@@ -447,7 +454,24 @@ test('验证候选通过当前修订门禁后提升为对应稳定版本', async
       actorKind: 'user', actorName: 'alice',
     },
   });
-  saveCheck(projectId, candidate.packageVersion, [], candidate.revision.oid);
+  saveCheck(projectId, candidate.packageVersion, [{
+    id: 'warning-release', source: 'rule', severity: '警告', category: '口径待确认',
+    target: 'metrics/score.md', message: '边界口径将在后续版本继续收敛',
+  }], candidate.revision.oid);
+  const checked = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/check`, headers,
+  });
+  const warning = checked.json().warningReview.items[0];
+  const accepted = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/warnings/accept`, headers,
+    payload: {
+      revision: candidate.revision.oid,
+      fingerprints: [warning.fingerprint],
+      note: '已确认只影响边界说明，不改变当前主流程结论',
+      phase: 'validation',
+    },
+  });
+  assert.equal(accepted.statusCode, 200, accepted.body);
   const testcase = m3repo.addTestcase(projectId, '如何处理申请？', '按确认流程处理');
   const round = m3repo.createRound(
     projectId, candidate.packageVersion, 1, candidate.revision.oid,
@@ -462,6 +486,23 @@ test('验证候选通过当前修订门禁后提升为对应稳定版本', async
   m3repo.roundProgress(round.id, 1, 1);
   m3repo.finishRound(round.id, 'done');
 
+  const blocked = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/release`, headers,
+  });
+  assert.equal(blocked.statusCode, 409, blocked.body);
+  assert.equal(blocked.json().gates.find((gate: any) => gate.id === 'warning_review').passed, false);
+
+  const releaseConfirmed = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/warnings/accept`, headers,
+    payload: {
+      revision: candidate.revision.oid,
+      fingerprints: [warning.fingerprint],
+      note: '同意作为本次正式版本的已知限制并在后续修复',
+      phase: 'release',
+    },
+  });
+  assert.equal(releaseConfirmed.statusCode, 200, releaseConfirmed.body);
+
   const response = await app.inject({
     method: 'POST', url: `/api/projects/${projectId}/release`, headers,
   });
@@ -471,6 +512,7 @@ test('验证候选通过当前修订门禁后提升为对应稳定版本', async
   const released = await store.current(projectId);
   assert.equal(released?.packageVersion, '1.3.0');
   assert.equal(released?.spec.status, 'released');
+  assert.equal(getReleaseKnownLimitations(projectId, '1.3.0').length, 1);
 });
 
 test('人工编辑草稿 API：创建恢复、文件保存、revision 冲突、撤销与放弃', async () => {

@@ -1,4 +1,4 @@
-export type ReleaseGateId = 'package_check' | 'flowchart' | 'construction' | 'evaluation';
+export type ReleaseGateId = 'package_check' | 'warning_review' | 'flowchart' | 'construction' | 'evaluation';
 
 export interface ReleaseGate {
   id: ReleaseGateId;
@@ -12,6 +12,13 @@ export interface ReleaseReadinessInput {
   packageCheck?: {
     revision?: string;
     findings: Array<{ severity: string }>;
+  } | null;
+  warningReview?: {
+    warningTotal: number;
+    pendingValidation: number;
+    pendingReleaseConfirmation: number;
+    releaseBlocking: number;
+    readyForRelease: boolean;
   } | null;
   flowchartConfirmed?: boolean;
   flowchartRequired?: boolean;
@@ -92,6 +99,22 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
           : !checkIsCurrent
             ? '内容有改动，请重查'
             : `${checkErrors} 个错误`,
+    },
+    {
+      id: 'warning_review',
+      label: '警告与已知限制',
+      passed: input.warningReview?.readyForRelease === true,
+      detail: input.warningReview?.readyForRelease === true
+        ? input.warningReview.warningTotal > 0
+          ? `${input.warningReview.warningTotal} 条非阻断警告已确认为已知限制`
+          : '当前修订没有警告'
+        : !input.warningReview
+          ? '尚未检查当前修订警告'
+          : input.warningReview.releaseBlocking > 0
+            ? `${input.warningReview.releaseBlocking} 条发布阻断警告必须修复`
+            : input.warningReview.pendingValidation > 0
+              ? `${input.warningReview.pendingValidation} 条警告尚未在验证阶段接受`
+              : `${input.warningReview.pendingReleaseConfirmation} 条警告尚未确认为发布已知限制`,
     },
     ...(input.flowchartRequired === false ? [] : [{
       id: 'flowchart' as const,

@@ -264,6 +264,7 @@ export const acceptPackageWarnings = (id, revision, fingerprints, note, phase) =
     method: 'POST', body: JSON.stringify({ revision, fingerprints, note, phase }),
   },
 );
+export const releasePackage = (id) => api(`${P(id)}/release`, { method: 'POST', body: '{}' });
 
 // ---- 配置中心 ----
 export const getSettings = () => api('/api/settings');
