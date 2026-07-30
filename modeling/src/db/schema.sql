@@ -678,6 +678,35 @@ CREATE TABLE IF NOT EXISTS package_checks (
   created_at    TEXT NOT NULL
 );
 
+-- 非阻断警告的显式接受记录。接受只对指定知识包修订有效；发布前需再次确认。
+CREATE TABLE IF NOT EXISTS package_warning_acceptances (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision_oid        TEXT NOT NULL,
+  finding_fingerprint TEXT NOT NULL,
+  finding_json        TEXT NOT NULL,
+  impact_note         TEXT NOT NULL,
+  accepted_by         TEXT NOT NULL,
+  accepted_role       TEXT NOT NULL,
+  accepted_at         TEXT NOT NULL,
+  release_note        TEXT,
+  release_confirmed_by TEXT,
+  release_confirmed_role TEXT,
+  release_confirmed_at TEXT,
+  PRIMARY KEY (project_id, revision_oid, finding_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_package_warning_acceptances_project
+  ON package_warning_acceptances(project_id, revision_oid, accepted_at);
+
+CREATE TABLE IF NOT EXISTS package_release_records (
+  project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  version             TEXT NOT NULL,
+  revision_oid        TEXT NOT NULL,
+  known_limitations_json TEXT NOT NULL DEFAULT '[]',
+  released_by         TEXT NOT NULL,
+  released_at         TEXT NOT NULL,
+  PRIMARY KEY (project_id, version)
+);
+
 -- 受控修复逐次审计。root_revision_oid 把自动重试绑定到同一修订链；
 -- 用户或其他流程产生的新修订不会沿用上一条链的重试额度。
 CREATE TABLE IF NOT EXISTS package_repair_attempts (

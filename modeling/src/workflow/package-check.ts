@@ -32,6 +32,8 @@ export interface CheckFinding {
   target: string;       // 对象/操作 key 或包内路径
   message: string;
   suggestion?: string;  // 可直接交给修缮对话的修复指令
+  /** 发布时必须修复，不能作为已知限制带入发布。 */
+  releaseBlocking?: boolean;
 }
 
 let seq = 0;

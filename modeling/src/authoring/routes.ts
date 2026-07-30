@@ -29,6 +29,8 @@ import { FlowchartDraftError, FlowchartDraftStore } from '../flowchart/draft-sto
 import { renderDiagramFiles } from '../flowchart/projection.js';
 import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
 import { getProject } from '../projects/repo.js';
+import { getCheck } from '../workflow/package-check.js';
+import { getPackageWarningReview } from '../workflow/warning-acceptance.js';
 import {
   ControlledRepairController,
   ControlledRepairControllerError,
@@ -256,6 +258,37 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         },
       } as AiConstructionTaskGraphCommand
       : rawCommand;
+    if (command.type === 'confirm_milestone' && command.milestoneId === 'construction_completed') {
+      const currentPackage = await packages.current(project.id);
+      if (!currentPackage) {
+        return reply.code(409).send({
+          error: '当前项目没有可确认的知识包修订',
+          code: 'PACKAGE_NOT_FOUND',
+        });
+      }
+      const check = getCheck(project.id);
+      if (!check || check.revision !== currentPackage.revision.oid) {
+        return reply.code(409).send({
+          error: '请先对当前知识包修订重新运行体检',
+          code: 'PACKAGE_CHECK_OUTDATED',
+        });
+      }
+      const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
+      if (errorCount > 0) {
+        return reply.code(409).send({
+          error: `知识包检查还有 ${errorCount} 个错误，请修复后再完成建模`,
+          code: 'PACKAGE_CHECK_FAILED',
+        });
+      }
+      const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
+      if (!warningReview.readyForValidation) {
+        return reply.code(409).send({
+          error: `还有 ${warningReview.pendingValidation} 条非阻断警告尚未查看影响并接受`,
+          code: 'PACKAGE_WARNINGS_UNREVIEWED',
+          warningReview,
+        });
+      }
+    }
     try {
       return await runWithProjectLease(leases, {
         projectId: project.id,

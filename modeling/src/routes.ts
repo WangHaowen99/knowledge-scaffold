@@ -29,6 +29,11 @@ import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSetting
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
+import {
+  acceptPackageWarnings,
+  getPackageWarningReview,
+  type WarningAcceptancePhase,
+} from './workflow/warning-acceptance.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { cancelEvaluation, isEvaluationActive, startCurrentEvaluation } from './evaluation/engine.js';
@@ -895,7 +900,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-check');
       if (blocked) return blocked;
       return withLock(`${c.p.id}:check`, reply, async () => {
-      const latest = m2repo.latestPackageVersion(c.p.id);
+      const latest = await packageArtifacts.current(c.p.id);
       if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
       try {
@@ -906,12 +911,18 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const semanticFindings = await runSemanticCheck(c.p, latest.spec);
         const findings = [...formatFindings, ...ruleFindings, ...semanticFindings]
           .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
-        saveCheck(c.p.id, latest.version, findings);
-        return { version: latest.version, findings, counts: {
+        saveCheck(c.p.id, latest.packageVersion, findings, latest.revision.oid);
+        return {
+          version: latest.packageVersion,
+          revision: latest.revision.oid,
+          findings,
+          warningReview: getPackageWarningReview(c.p.id, latest.revision.oid),
+          counts: {
           错误: findings.filter((f) => f.severity === '错误').length,
           警告: findings.filter((f) => f.severity === '警告').length,
           提示: findings.filter((f) => f.severity === '提示').length,
-        } };
+          },
+        };
       } catch (e) {
         return reply.code(500).send({ error: `体检失败：${e instanceof Error ? e.message : e}` });
       }
@@ -920,7 +931,44 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.get('/api/projects/:id/package/check', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      return { check: getCheck(c.p.id) };
+      const check = getCheck(c.p.id);
+      return {
+        check,
+        warningReview: check?.revision ? getPackageWarningReview(c.p.id, check.revision) : null,
+      };
+    });
+    r.post('/api/projects/:id/package/warnings/accept', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+      const body = (req.body ?? {}) as any;
+      const revision = String(body.revision ?? '');
+      const fingerprints = Array.isArray(body.fingerprints)
+        ? body.fingerprints.map(String).filter(Boolean)
+        : [];
+      const phase = String(body.phase ?? '') as WarningAcceptancePhase;
+      if (revision !== current.revision.oid) {
+        return reply.code(409).send({ error: '知识包内容已更新，请重新检查警告' });
+      }
+      if (!['validation', 'release'].includes(phase)) {
+        return reply.code(400).send({ error: '警告确认阶段不正确' });
+      }
+      try {
+        return {
+          warningReview: acceptPackageWarnings({
+            projectId: c.p.id,
+            revision,
+            fingerprints,
+            note: String(body.note ?? ''),
+            actor: req.user!.username,
+            actorRole: 'project_owner',
+            phase,
+          }),
+        };
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
     r.get('/api/projects/:id/package/export', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
