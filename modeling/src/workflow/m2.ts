@@ -809,13 +809,14 @@ function confirmedDiagramMeta(diagram: ConfirmedDiagram): {
   outputs?: string[];
   handoffs?: string[];
 } {
+  const meta = diagram.processMeta ?? {};
   return {
-    trigger: diagram.trigger,
-    actors: diagram.actors,
-    inputs: diagram.inputs,
-    exceptions: diagram.exceptions,
-    outputs: diagram.outputs,
-    handoffs: diagram.handoffs,
+    trigger: meta.trigger,
+    actors: meta.actors,
+    inputs: meta.inputs,
+    exceptions: meta.exceptions,
+    outputs: meta.outputs,
+    handoffs: meta.handoffs,
   };
 }
 
