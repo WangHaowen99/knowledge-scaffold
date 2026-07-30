@@ -31,6 +31,7 @@ import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSetting
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
+import { getPackageErrorDeferral } from './workflow/package-error-deferral.js';
 import {
   acceptPackageWarnings,
   getPackageWarningReview,
@@ -976,6 +977,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           version: latest.packageVersion,
           revision: latest.revision.oid,
           findings,
+          errorDeferral: getPackageErrorDeferral(c.p.id, latest.revision.oid),
           warningReview: getPackageWarningReview(c.p.id, latest.revision.oid),
           counts: {
           错误: findings.filter((f) => f.severity === '错误').length,
@@ -994,6 +996,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const check = getCheck(c.p.id);
       return {
         check,
+        errorDeferral: check?.revision ? getPackageErrorDeferral(c.p.id, check.revision) : null,
         warningReview: check?.revision ? getPackageWarningReview(c.p.id, check.revision) : null,
       };
     });

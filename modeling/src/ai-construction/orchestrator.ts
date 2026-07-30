@@ -158,6 +158,13 @@ export interface StopKnowledgeRepairInput {
   retryable?: boolean;
 }
 
+export interface DeferKnowledgeErrorsInput {
+  packageRevisionOid: string;
+  errorCount: number;
+  reason: string;
+  actor: string;
+}
+
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
 }
@@ -889,6 +896,7 @@ export class AiConstructionOrchestrator {
               ]
               : [
                 { id: 'generate_knowledge_structure', label: '重新生成知识结构', style: 'primary' },
+                { id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' },
                 { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
               ],
           },
@@ -1283,8 +1291,92 @@ export class AiConstructionOrchestrator {
               ]
               : [
                 { id: 'repair_knowledge_structure', label: '继续受控修复', style: 'primary' },
+                { id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' },
                 { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
               ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  deferKnowledgeErrors(
+    projectId: string,
+    input: DeferKnowledgeErrorsInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      const reason = input.reason.trim();
+      if (!reason || input.errorCount < 1) throw new Error('请说明需要暂缓的阻断错误和原因');
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      let repairTask = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      if (repairTask?.status === 'running') {
+        current = this.graph.apply(projectId, {
+          type: 'fail_task', expectedRevision: current.revision, taskId: repairTask.id,
+        });
+        repairTask = current.tasks.find((item) => item.id === repairTask!.id);
+      }
+      if (repairTask
+        && ['pending', 'ready', 'failed', 'waiting_user', 'waiting_confirmation'].includes(repairTask.status)) {
+        current = this.graph.adjust(projectId, {
+          expectedRevision: current.revision,
+          taskId: repairTask.id,
+          action: 'skip',
+          actor: input.actor,
+          reason,
+        }).graph;
+      }
+      const validationTask = [...current.tasks].reverse().find((item) => item.kind === 'package_validation'
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
+      if (!validationTask) throw new Error('知识包校验任务不存在');
+      if (validationTask.status !== 'completed') {
+        current = this.graph.apply(projectId, {
+          type: 'complete_task', expectedRevision: current.revision,
+          taskId: validationTask.id, outputRevisionOid: input.packageRevisionOid,
+        });
+      }
+      for (const run of this.state.snapshot(projectId).activeRuns) {
+        if (run.state?.purpose !== 'controlled_repair') continue;
+        this.state.apply({
+          kind: 'update_run', projectId, runId: run.id, status: 'cancelled',
+          result: {
+            purpose: 'controlled_repair', deferred: true,
+            packageRevisionOid: input.packageRevisionOid, errorCount: input.errorCount,
+          },
+        });
+      }
+      const message = this.messages.ensure(projectId, {
+        key: `knowledge.errors.deferred.${input.packageRevisionOid.slice(0, 24)}`,
+        role: 'assistant', taskId: validationTask.id,
+        blocks: [
+          {
+            type: 'status', title: '已暂缓知识包错误修复',
+            summary: `保留 ${input.errorCount} 个阻断错误，先进入验证闭环`,
+            milestoneId: 'knowledge_confirmed', taskId: validationTask.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: `${reason}\n这些错误仅对当前修订暂缓；验证和改进可以继续，正式发布前仍必须消除阻断错误。`,
+          },
+          {
+            type: 'validation', title: '暂缓进入验证的已知阻断项', scope: 'milestone',
+            counts: { errors: input.errorCount, warnings: 0, hints: 0 },
+          },
+          {
+            type: 'next_actions', title: '选择下一步', actions: [
+              { id: 'confirm_knowledge', label: '确认知识结构', style: 'primary' },
+              { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
+            ],
           },
         ],
       });
@@ -1338,6 +1430,9 @@ export class AiConstructionOrchestrator {
                 id: 'repair_knowledge_structure', label: '重新执行受控修复', style: 'primary' as const,
               }] : []),
               {
+                id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' as const,
+              },
+              {
                 id: 'review_knowledge_files', label: '人工检查知识文件',
                 style: input.retryable ? 'secondary' : 'primary',
               },
@@ -1379,6 +1474,13 @@ export class AiConstructionOrchestrator {
             },
           },
           { type: 'text', text: input.reason },
+          {
+            type: 'next_actions', title: '选择下一步', actions: [
+              { id: 'repair_knowledge_structure', label: '重新校验并继续修复', style: 'primary' },
+              { id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' },
+              { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
+            ],
+          },
         ],
       });
       return { aiConstruction: current, message };

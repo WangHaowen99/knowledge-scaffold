@@ -254,6 +254,11 @@ export const packageChat = (id, message, history) => api(`${P(id)}/package/chat`
 export const packageChatApply = (id, message, history, plan) => api(`${P(id)}/package/chat/apply`, { method: 'POST', body: JSON.stringify({ message, history, plan }) });
 export const runPackageCheck = (id) => api(`${P(id)}/package/check`, { method: 'POST', body: '{}' });
 export const getPackageCheck = (id) => api(`${P(id)}/package/check`);
+export const deferPackageValidationErrors = (id, reason) => api(
+  `${P(id)}/ai-construction/knowledge/defer-errors`, {
+    method: 'POST', body: JSON.stringify({ reason }),
+  },
+);
 export const acceptPackageWarnings = (id, revision, fingerprints, note, phase) => api(
   `${P(id)}/package/warnings/accept`, {
     method: 'POST', body: JSON.stringify({ revision, fingerprints, note, phase }),
