@@ -1071,8 +1071,14 @@ def start_workflow_sync():
                         if isinstance(value, str):
                             final_output = value
                         elif last_status == "awaiting_input" and isinstance(value, dict):
-                            pending_user_interaction = value
-                            final_output = ""
+                            legacy_text = value.get("text")
+                            has_structured_prompt = bool(value.get("id") or value.get("prompt"))
+                            if isinstance(legacy_text, str) and not has_structured_prompt:
+                                final_output = legacy_text
+                                pending_user_interaction = None
+                            else:
+                                pending_user_interaction = value
+                                final_output = ""
                         elif value is None:
                             final_output = ""
                         else:
