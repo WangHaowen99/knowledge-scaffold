@@ -13,6 +13,7 @@ import LoginPage from '../features/auth/LoginPage';
 import { requiresWorkspaceData } from '../features/auth/accessState';
 import { useAuthContext } from '../features/auth/useAuthContext';
 import KbSidebarTree from '../features/knowledge/components/KbSidebarTree';
+import { useNativeFilePicker } from '../features/knowledge/lib/browserInterop';
 import useKbBrowser from '../features/knowledge/hooks/useKbBrowser';
 import { SkeletonState, ToastNotice } from '../shared/ui/feedback';
 import { EmptyState } from '../shared/ui/primitives';
@@ -56,11 +57,14 @@ export default function AppShell() {
     scopeKey: workspaceId,
   });
   const kb = useKbBrowser();
+  const kbImportPicker = useNativeFilePicker({
+    onSelect: kb.importZip,
+    onCancel: kb.cancelImportSelection,
+  });
   const currentTraceMetadata = chat.sessions.find((session) => session.id === chat.currentChatId)?.metadata
     || EMPTY_TRACE_METADATA;
   const wsMenuRef = useRef(null);
   const userMenuRef = useRef(null);
-  const kbImportRef = useRef(null);
   const mobileNavRef = useRef(null);
   const mobileMenuButtonRef = useRef(null);
   const wizardOpenRef = useRef(wizardOpen);
@@ -302,12 +306,11 @@ export default function AppShell() {
           {surface === 'kb' && workspaceDataReady && kb.canImport && (
             <>
               <button className="btn btn-p" data-wiz="kb-import" disabled={kb.importLocked}
-                onClick={() => kbImportRef.current?.click()}>
+                onClick={() => kbImportPicker.open()}>
                 <Upload size={14} />{kb.importing ? '导入中…' : kb.importReconciling ? '核对结果中…' : '导入知识包'}
               </button>
-              <input ref={kbImportRef} type="file" accept=".zip" style={{ display: 'none' }}
-                onCancel={kb.cancelImportSelection}
-                onChange={(e) => { const f = e.target.files?.[0]; kb.importZip(f); e.target.value = ''; }} />
+              <input ref={kbImportPicker.inputRef} type="file" accept=".zip" style={{ display: 'none' }}
+                onChange={kbImportPicker.handleChange} />
             </>
           )}
           <button className="iconbtn" title="操作向导" aria-label="打开操作向导"
