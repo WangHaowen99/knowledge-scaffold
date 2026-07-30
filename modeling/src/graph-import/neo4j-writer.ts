@@ -2,9 +2,11 @@ import neo4j from 'neo4j-driver';
 import { assertGraphIdentifier } from '../evaluation/data-source.js';
 import type { GraphImportValidation } from './types.js';
 import { quoteGraphLabel } from './graph-label.js';
+import { neo4jEntityRows } from './neo4j-values.js';
 
 const BATCH_SIZE = 500;
 const USER_ID_PROPERTY = 'd2o_user_id';
+const RECORD_KEY_PROPERTY = '_d2o_record_key';
 
 export interface Neo4jGraphImportConnection {
   uri: string;
@@ -80,13 +82,11 @@ function validateConnection(connection: Neo4jGraphImportConnection): void {
   if (connection.workspaceProperty === connection.ontologyProperty) {
     throw new Error('Workspace 与 Ontology 隔离字段不能相同');
   }
-}
-
-function identityPattern(properties: string[], rowField: string, label: string): string {
-  if (!properties.length) throw new Error(`${label}缺少唯一标识属性`);
-  return properties.map((property, index) => (
-    `${quoteIdentifier(property, `${label}唯一标识字段`)}: row.${rowField}[${index}]`
-  )).join(',\n            ');
+  const reservedCollision = [connection.workspaceProperty, connection.ontologyProperty]
+    .find((property) => property === USER_ID_PROPERTY || property === RECORD_KEY_PROPERTY);
+  if (reservedCollision) {
+    throw new Error(`隔离字段「${reservedCollision}」不能使用系统保留字段`);
+  }
 }
 
 function integerValue(value: any): number {
@@ -168,18 +168,17 @@ export async function writeGraphImport(
   const workspaceProperty = quoteIdentifier(connection.workspaceProperty, 'Workspace 隔离字段');
   const ontologyProperty = quoteIdentifier(connection.ontologyProperty, 'Ontology 隔离字段');
   const userIdProperty = quoteIdentifier(USER_ID_PROPERTY, '用户标识字段');
+  const recordKeyProperty = quoteIdentifier(RECORD_KEY_PROPERTY, '行实例标识字段');
   const userName = String(options.userName ?? '').trim();
   if (!userName) throw new Error('执行导入的用户名称不能为空');
 
   for (const entity of plan.entities) {
     quoteGraphLabel(entity.label, `${entity.objectKey} Label`);
-    for (const property of entity.identityProperties) {
-      quoteIdentifier(property, `${entity.objectKey} 唯一标识字段`);
-    }
     const reserved = new Set([
       connection.workspaceProperty,
       connection.ontologyProperty,
       USER_ID_PROPERTY,
+      RECORD_KEY_PROPERTY,
     ]);
     const collision = entity.propertyNames.find((property) => reserved.has(property));
     if (collision) {
@@ -190,12 +189,6 @@ export async function writeGraphImport(
     quoteIdentifier(relation.relationName, '关系名称');
     quoteGraphLabel(relation.sourceLabel, `${relation.sourceObject} Label`);
     quoteGraphLabel(relation.targetLabel, `${relation.targetObject} Label`);
-    for (const property of relation.sourceIdentityProperties) {
-      quoteIdentifier(property, `${relation.sourceObject} 唯一标识字段`);
-    }
-    for (const property of relation.targetIdentityProperties) {
-      quoteIdentifier(property, `${relation.targetObject} 唯一标识字段`);
-    }
   }
 
   const driver = await driverFactory(connection);
@@ -235,22 +228,22 @@ export async function writeGraphImport(
 
       for (const entity of plan.entities) {
         const label = quoteGraphLabel(entity.label, `${entity.objectKey} Label`);
-        const identities = identityPattern(entity.identityProperties, 'identityValues', entity.objectKey);
         const query = `
           UNWIND $rows AS row
           MERGE (node:${label} {
             ${workspaceProperty}: $workspaceValue,
             ${ontologyProperty}: $ontologyValue,
-            ${identities}
+            ${recordKeyProperty}: row.recordKey
           })
           SET node += row.properties,
               node.${workspaceProperty} = $workspaceValue,
               node.${ontologyProperty} = $ontologyValue,
+              node.${recordKeyProperty} = row.recordKey,
               node.${userIdProperty} = $userName
         `;
         for (const rows of batches(entity.rows)) {
           await transaction.run(query, {
-            rows,
+            rows: neo4jEntityRows(entity, rows),
             workspaceValue: connection.workspaceValue,
             ontologyValue: connection.ontologyValue,
             userName,
@@ -262,27 +255,17 @@ export async function writeGraphImport(
         const relationName = quoteIdentifier(relation.relationName, '关系名称');
         const sourceLabel = quoteGraphLabel(relation.sourceLabel, `${relation.sourceObject} Label`);
         const targetLabel = quoteGraphLabel(relation.targetLabel, `${relation.targetObject} Label`);
-        const sourceIdentity = identityPattern(
-          relation.sourceIdentityProperties,
-          'sourceIdentityValues',
-          relation.sourceObject,
-        );
-        const targetIdentity = identityPattern(
-          relation.targetIdentityProperties,
-          'targetIdentityValues',
-          relation.targetObject,
-        );
         const query = `
           UNWIND $rows AS row
           MATCH (source:${sourceLabel} {
             ${workspaceProperty}: $workspaceValue,
             ${ontologyProperty}: $ontologyValue,
-            ${sourceIdentity}
+            ${recordKeyProperty}: row.sourceRecordKey
           })
           MATCH (target:${targetLabel} {
             ${workspaceProperty}: $workspaceValue,
             ${ontologyProperty}: $ontologyValue,
-            ${targetIdentity}
+            ${recordKeyProperty}: row.targetRecordKey
           })
           MERGE (source)-[relationship:${relationName} {
             ${workspaceProperty}: $workspaceValue,

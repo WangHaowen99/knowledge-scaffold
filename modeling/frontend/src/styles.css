@@ -471,6 +471,17 @@ html, body, #root { height: 100%; }
 .mwr .gi-relation { border: 1px solid var(--hair); border-radius: 11px; background: #fff; margin-bottom: 10px; overflow: hidden; }
 .mwr .gi-relation-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #fafaf8; border-bottom: 1px solid #eeede8; font-size: 12.5px; }
 .mwr .gi-relation-head b { flex: 1; font-family: ui-monospace, monospace; }
+.mwr .gi-match-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px 0; flex-wrap: wrap; }
+.mwr .gi-match-label { color: var(--ink2); font-size: 12px; font-weight: 700; }
+.mwr .gi-match-mode { display: grid; grid-template-columns: repeat(2, minmax(112px, 1fr)); border: 1px solid #dcd9cf; border-radius: 8px; overflow: hidden; }
+.mwr .gi-match-mode button { min-height: 32px; border: 0; border-right: 1px solid #dcd9cf; border-radius: 0; padding: 6px 10px; background: #fff; color: var(--ink2); font-size: 12px; cursor: pointer; }
+.mwr .gi-match-mode button:last-child { border-right: 0; }
+.mwr .gi-match-mode button.active { background: var(--blue-d); color: #fff; }
+.mwr .gi-match-mode button:disabled { cursor: not-allowed; opacity: .65; }
+.mwr .gi-match-hint { flex: 1 1 280px; min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.mwr .gi-same-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin: 10px 12px 12px; padding: 11px 12px; border: 1px solid #eceae2; border-radius: 8px; background: #fcfcfa; color: var(--muted); font-size: 12px; }
+.mwr .gi-same-row b { color: var(--ink); overflow-wrap: anywhere; }
+.mwr .gi-same-row span:last-child { color: var(--blue-d); font-weight: 700; }
 .mwr .gi-sides { display: grid; grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr); align-items: center; gap: 8px; padding: 12px; }
 .mwr .gi-side { min-width: 0; border: 1px solid #eceae2; background: #fcfcfa; border-radius: 9px; padding: 10px; }
 .mwr .gi-side-title { font-size: 12px; font-weight: 700; color: var(--blue-d); margin-bottom: 8px; }

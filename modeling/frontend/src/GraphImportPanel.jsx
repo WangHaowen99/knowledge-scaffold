@@ -16,6 +16,7 @@ import {
   hasRunningGraphImport,
   joinPropertyOptions,
   objectImportIssue,
+  relationCanMatchSameRow,
   relationDraftFromKnown,
   runGraphImportContextRequest,
   startGraphImportExecution,
@@ -383,7 +384,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
             {preview.schema.relations.length > 0 && (
               <select value={knownRelationId} disabled={controlsDisabled}
                 onChange={(event) => chooseKnownRelation(event.target.value)}>
-                <option value="">选择已有关系（可选）</option>
+                <option value="">选择知识包中的关系（可选）</option>
                 {preview.schema.relations.map((relation) => (
                   <option key={relation.id} value={relation.id}>{graphRelationLabel(relation, preview)}</option>
                 ))}
@@ -512,24 +513,50 @@ export function GraphIsolationConflictModal({ busy, dialogRef, onCancel, onConfi
   );
 }
 
-function RelationCard({ index, mapping, preview, disabled, onChange, onRemove }) {
+export function RelationCard({ index, mapping, preview, disabled, onChange, onRemove }) {
   const sourceObject = preview.schema.objects.find((item) => item.key === mapping.sourceObject);
   const targetObject = preview.schema.objects.find((item) => item.key === mapping.targetObject);
+  const canMatchSameRow = relationCanMatchSameRow(preview, mapping);
+  const sameRow = mapping.matchMode === 'same_row';
   return (
     <div className="gi-relation">
       <div className="gi-relation-head">
         <b>{graphRelationLabel(mapping, preview)}</b>
         <button className="tc-del" disabled={disabled} onClick={() => onRemove(index)}>移除</button>
       </div>
-      <div className="gi-sides">
-        <RelationSide title={`源实体：${sourceObject?.title || mapping.sourceObject}`} side="source"
-          mapping={mapping} preview={preview} disabled={disabled}
-          onChange={(field, value) => onChange(index, field, value)} />
-        <div className="gi-arrow">→</div>
-        <RelationSide title={`目标实体：${targetObject?.title || mapping.targetObject}`} side="target"
-          mapping={mapping} preview={preview} disabled={disabled}
-          onChange={(field, value) => onChange(index, field, value)} />
-      </div>
+      {canMatchSameRow && (
+        <div className="gi-match-row">
+          <span className="gi-match-label">关联方式</span>
+          <div className="gi-match-mode" role="radiogroup" aria-label="关联方式">
+            <button type="button" role="radio" aria-checked={sameRow}
+              className={sameRow ? 'active' : ''} disabled={disabled}
+              onClick={() => onChange(index, 'matchMode', 'same_row')}>同一数据行</button>
+            <button type="button" role="radio" aria-checked={!sameRow}
+              className={!sameRow ? 'active' : ''} disabled={disabled}
+              onClick={() => onChange(index, 'matchMode', 'field_match')}>按字段值匹配</button>
+          </div>
+          <span className="gi-match-hint" role="note">
+            来源于同表的两个实体关联方式可以选择同一数据行，或者自由选择某一关联字段关联。
+          </span>
+        </div>
+      )}
+      {sameRow ? (
+        <div className="gi-same-row">
+          <span>固定 Sheet</span>
+          <b>{sourceObject?.defaultSheet || '-'}</b>
+          <span>同一数据行</span>
+        </div>
+      ) : (
+        <div className="gi-sides">
+          <RelationSide title={`源实体：${sourceObject?.title || mapping.sourceObject}`} side="source"
+            mapping={mapping} preview={preview} disabled={disabled}
+            onChange={(field, value) => onChange(index, field, value)} />
+          <div className="gi-arrow">→</div>
+          <RelationSide title={`目标实体：${targetObject?.title || mapping.targetObject}`} side="target"
+            mapping={mapping} preview={preview} disabled={disabled}
+            onChange={(field, value) => onChange(index, field, value)} />
+        </div>
+      )}
     </div>
   );
 }

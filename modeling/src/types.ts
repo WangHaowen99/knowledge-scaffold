@@ -66,12 +66,24 @@ export interface DataDictField {
   distinctRatio: number; // 唯一值比例，接近 1 提示可能是主键
 }
 
+export type DataDictCellKind = 'blank' | 'string' | 'number' | 'boolean' | 'date';
+
+export interface DataDictCell {
+  kind: DataDictCellKind;
+  /** 未格式化值的稳定文本表示；date 使用 ISO 8601。 */
+  value: string;
+  /** Excel 展示值，用于识别 0001 这类带格式编码。 */
+  formatted: string;
+}
+
 export interface DataDictTable {
   name: string; // sheet 名 = 表名
   fields: DataDictField[];
   rowCount: number;
   // 数据行（按 fields 顺序的字符串矩阵）；保留数量由具体解析场景决定。
   rows?: string[][];
+  // 图导入按需保留的原始单元格类型信息；不改变通用 rows 的字符串契约。
+  cellRows?: DataDictCell[][];
 }
 
 export interface DocumentRecord {

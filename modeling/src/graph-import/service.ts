@@ -27,9 +27,11 @@ import {
 import type {
   GraphImportMapping,
   GraphImportPackageSchema,
+  GraphImportPropertyType,
   GraphImportValidation,
 } from './types.js';
 import { normalizeGraphImportMapping, validateGraphImportMapping } from './validator.js';
+import { inferGraphImportColumns } from './value-inference.js';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_ROWS_PER_SHEET = 50_000;
@@ -37,6 +39,7 @@ const MAX_ROWS_PER_SHEET = 50_000;
 export interface GraphImportSheetPreview {
   name: string;
   columns: string[];
+  columnTypes: Record<string, GraphImportPropertyType>;
   rowCount: number;
   sampleRows: Record<string, string>[];
 }
@@ -146,19 +149,27 @@ function parseUpload(input: { projectId: string; owner: string; uploadId: string
   const tables = parseExcel(buffer, {
     maxRows: MAX_ROWS_PER_SHEET,
     rejectOverflow: true,
+    includeCellMetadata: true,
   });
   return { upload, tables };
 }
 
 function sheetPreviews(tables: ReturnType<typeof parseExcel>): GraphImportSheetPreview[] {
-  return tables.map((table) => ({
-    name: table.name,
-    columns: table.fields.map((field) => field.name),
-    rowCount: table.rowCount,
-    sampleRows: (table.rows ?? []).slice(0, 3).map((row) => Object.fromEntries(
-      table.fields.map((field, index) => [field.name, String(row[index] ?? '')]),
-    )),
-  }));
+  return tables.map((table) => {
+    const profiles = inferGraphImportColumns(table);
+    return {
+      name: table.name,
+      columns: table.fields.map((field) => field.name),
+      columnTypes: Object.fromEntries(table.fields.map((field, index) => [
+        field.name,
+        profiles[index].type,
+      ])),
+      rowCount: table.rowCount,
+      sampleRows: (table.rows ?? []).slice(0, 3).map((row) => Object.fromEntries(
+        table.fields.map((field, index) => [field.name, String(row[index] ?? '')]),
+      )),
+    };
+  });
 }
 
 function counts(plan: GraphImportValidation): GraphImportCounts {
@@ -190,6 +201,7 @@ export function uploadGraphImportExcel(input: {
   const tables = parseExcel(input.buffer, {
     maxRows: MAX_ROWS_PER_SHEET,
     rejectOverflow: true,
+    includeCellMetadata: true,
   });
   if (!tables.length) throw new Error('Excel 中没有可导入的 Sheet');
   const upload = saveGraphImportUpload(input);
