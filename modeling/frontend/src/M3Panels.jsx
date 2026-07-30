@@ -1,13 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  listTestcases, addTestcase, prefillTestcases, updateTestcase, deleteTestcase,
+  listTestcases, addTestcase, addTestcases, prefillTestcases, updateTestcase, deleteTestcase,
   startEvaluate, listRounds, getRound, overrideVerdict, getDataSource,
 } from './api.js';
 import { AutoTextarea } from './ui.jsx';
 import { DataSourceSummary } from './DataSourcePanel.jsx';
 import { requireOverrideReason } from './optimization-flow.js';
+import { parseTestcaseImport } from './testcase-import.js';
 
 /* ================= 节点 9 · 评测用例录入 ================= */
+
+export function TestcaseImportPreview({ cases, filename, busy = false, onConfirm, onCancel }) {
+  const referenced = cases.filter((item) => item.groundTruth.trim()).length;
+  return (
+    <section className="tc-import-preview" aria-label="评测用例导入预览">
+      <div className="tc-import-icon" aria-hidden="true">导</div>
+      <div className="tc-import-body">
+        <strong>待导入 {cases.length} 条真实用例</strong>
+        <span>{filename} · {referenced} 条含参考答案 · {cases.length - referenced} 条需人工判定</span>
+      </div>
+      <div className="tc-import-actions">
+        <button type="button" className="btn btn-p" disabled={busy} onClick={onConfirm}>{busy ? '导入中…' : '确认导入'}</button>
+        <button type="button" className="btn" disabled={busy} onClick={onCancel}>取消</button>
+      </div>
+    </section>
+  );
+}
 
 export function TestcasesPanel({ projectId, onAdvance }) {
   const [cases, setCases] = useState(null);
@@ -15,6 +33,9 @@ export function TestcasesPanel({ projectId, onAdvance }) {
   const [err, setErr] = useState('');
   const [q, setQ] = useState('');
   const [gt, setGt] = useState('');
+  const [importPreview, setImportPreview] = useState(null);
+  const [importNotice, setImportNotice] = useState('');
+  const importInputRef = useRef(null);
 
   const load = () => listTestcases(projectId).then((d) => setCases(d.testcases)).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, [projectId]);
@@ -24,13 +45,47 @@ export function TestcasesPanel({ projectId, onAdvance }) {
     try { await fn(); await load(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
+  const chooseImportFile = async (file) => {
+    if (!file) return;
+    setErr(''); setImportNotice('');
+    try {
+      const imported = parseTestcaseImport(await file.text());
+      setImportPreview({ cases: imported, filename: file.name });
+    } catch (error) {
+      setImportPreview(null);
+      setErr(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!importPreview || busy) return;
+    setBusy(true); setErr('');
+    try {
+      const result = await addTestcases(projectId, importPreview.cases);
+      setCases(result.testcases);
+      setImportNotice(`已导入 ${result.added} 条${result.skipped ? `，跳过 ${result.skipped} 条重复问题` : ''}`);
+      setImportPreview(null);
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : String(error));
+    } finally { setBusy(false); }
+  };
+
   if (!cases) return <div className="empty">加载中…</div>;
   const ready = cases.filter((c) => c.groundTruth.trim()).length;
 
   return (
     <div>
       {err && <div className="lerr">{err}</div>}
+      {importNotice && <div className="tc-import-notice">{importNotice}</div>}
+      <input ref={importInputRef} type="file" hidden accept=".json,application/json" aria-label="批量导入真实评测用例"
+        onChange={(event) => {
+          void chooseImportFile(event.target.files?.[0]);
+          event.target.value = '';
+        }} />
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <button className="btn" disabled={busy} onClick={() => importInputRef.current?.click()}>
+          批量导入 JSON
+        </button>
         <button className="btn" disabled={busy} onClick={() => run(() => prefillTestcases(projectId))}>
           ⤓ 从领域问题预填
         </button>
@@ -38,6 +93,14 @@ export function TestcasesPanel({ projectId, onAdvance }) {
           共 {cases.length} 条 · 已填标准答案 {ready} 条
         </span>
       </div>
+
+      {importPreview && <TestcaseImportPreview
+        cases={importPreview.cases}
+        filename={importPreview.filename}
+        busy={busy}
+        onConfirm={() => { void confirmImport(); }}
+        onCancel={() => setImportPreview(null)}
+      />}
 
       {cases.map((c) => (
         <CaseRow key={c.id} c={c} busy={busy}

@@ -1118,6 +1118,29 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   assert.equal(project.json().project.stage, 'testcases');
 });
 
+test('评测用例批量导入 API 去重并一次推进项目阶段', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '批量评测用例项目' },
+  });
+  const projectId = created.json().project.id;
+  const imported = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/testcases/batch`, headers,
+    payload: { cases: [
+      { question: '真实问题 A', groundTruth: '答案 A' },
+      { question: '真实问题 B', groundTruth: '' },
+      { question: '  真实问题 A  ', groundTruth: '不覆盖' },
+    ] },
+  });
+
+  assert.equal(imported.statusCode, 200, imported.body);
+  assert.deepEqual({ added: imported.json().added, skipped: imported.json().skipped }, { added: 2, skipped: 1 });
+  assert.equal(imported.json().testcases.filter((item: any) => item.source === 'manual').length, 2);
+  const project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
+  assert.equal(project.json().project.stage, 'testcases');
+});
 test('专家处置只记录下一步提示且不会改写 legacy 工作流节点', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
