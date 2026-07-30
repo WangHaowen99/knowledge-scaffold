@@ -175,6 +175,10 @@ export const cancelGraphImport = (id, uploadId) => api(
   `${P(id)}/graph-import/uploads/${encodeURIComponent(uploadId)}`,
   { method: 'DELETE' },
 );
+export const cancelGraphImportRun = (id, runId) => api(
+  `${P(id)}/graph-imports/${encodeURIComponent(runId)}/cancel`,
+  { method: 'POST', body: '{}' },
+);
 export const listGraphImports = (id) => api(`${P(id)}/graph-imports`);
 export const listTestcases = (id) => api(`${P(id)}/testcases`);
 export const addTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases`, { method: 'POST', body: JSON.stringify({ question, groundTruth }) });

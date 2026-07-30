@@ -40,6 +40,7 @@ export type Neo4jDriverFactory = (
 export interface Neo4jGraphImportWriteOptions {
   replaceExisting?: boolean;
   userName?: string;
+  signal?: AbortSignal;
 }
 
 export interface GraphIsolationCounts {
@@ -87,6 +88,11 @@ function validateConnection(connection: Neo4jGraphImportConnection): void {
   if (reservedCollision) {
     throw new Error(`隔离字段「${reservedCollision}」不能使用系统保留字段`);
   }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('图数据导入已取消');
 }
 
 function integerValue(value: any): number {
@@ -163,6 +169,7 @@ export async function writeGraphImport(
   options: Neo4jGraphImportWriteOptions = {},
   driverFactory: Neo4jDriverFactory = defaultDriverFactory,
 ): Promise<{ nodeCount: number; relationshipCount: number }> {
+  throwIfAborted(options.signal);
   validateConnection(connection);
 
   const workspaceProperty = quoteIdentifier(connection.workspaceProperty, 'Workspace 隔离字段');
@@ -193,9 +200,16 @@ export async function writeGraphImport(
 
   const driver = await driverFactory(connection);
   let session: SessionLike | undefined;
+  const closeForAbort = () => {
+    void Promise.resolve(session?.close()).catch(() => undefined);
+    void Promise.resolve(driver.close()).catch(() => undefined);
+  };
+  options.signal?.addEventListener('abort', closeForAbort, { once: true });
   try {
+    throwIfAborted(options.signal);
     session = driver.session({ database: connection.database });
     await session.executeWrite(async (transaction) => {
+      throwIfAborted(options.signal);
       const isolationParams = {
         workspaceValue: connection.workspaceValue,
         ontologyValue: connection.ontologyValue,
@@ -206,16 +220,19 @@ export async function writeGraphImport(
         ontologyProperty,
         connection,
       );
+      throwIfAborted(options.signal);
       if ((existing.nodeCount || existing.relationshipCount) && !options.replaceExisting) {
         throw new GraphIsolationDataExistsError(existing);
       }
       if (existing.nodeCount || existing.relationshipCount) {
+        throwIfAborted(options.signal);
         await transaction.run(`
           MATCH ()-[relationship]->()
           WHERE relationship.${workspaceProperty} = $workspaceValue
             AND relationship.${ontologyProperty} = $ontologyValue
           DELETE relationship
         `, isolationParams);
+        throwIfAborted(options.signal);
         // Intentionally avoid DETACH DELETE: a cross-isolation relationship must make the
         // transaction fail instead of being removed as a side effect.
         await transaction.run(`
@@ -224,6 +241,7 @@ export async function writeGraphImport(
             AND node.${ontologyProperty} = $ontologyValue
           DELETE node
         `, isolationParams);
+        throwIfAborted(options.signal);
       }
 
       for (const entity of plan.entities) {
@@ -242,12 +260,14 @@ export async function writeGraphImport(
               node.${userIdProperty} = $userName
         `;
         for (const rows of batches(entity.rows)) {
+          throwIfAborted(options.signal);
           await transaction.run(query, {
             rows: neo4jEntityRows(entity, rows),
             workspaceValue: connection.workspaceValue,
             ontologyValue: connection.ontologyValue,
             userName,
           });
+          throwIfAborted(options.signal);
         }
       }
 
@@ -277,16 +297,20 @@ export async function writeGraphImport(
               relationship.${userIdProperty} = $userName
         `;
         for (const rows of batches(relation.pairs)) {
+          throwIfAborted(options.signal);
           await transaction.run(query, {
             rows,
             workspaceValue: connection.workspaceValue,
             ontologyValue: connection.ontologyValue,
             userName,
           });
+          throwIfAborted(options.signal);
         }
       }
     });
+    throwIfAborted(options.signal);
   } finally {
+    options.signal?.removeEventListener('abort', closeForAbort);
     try {
       await session?.close();
     } finally {

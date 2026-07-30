@@ -42,6 +42,8 @@ import {
 } from './evaluation/evaluation-database-target.js';
 import {
   cancelGraphImportUpload,
+  cancelGraphImportRun,
+  cancelGraphImportsForProject,
   executeGraphImport,
   GraphImportAlreadyRunningError,
   getGraphImportHistory,
@@ -50,7 +52,6 @@ import {
   type GraphImportExecutionDependencies,
 } from './graph-import/service.js';
 import { GraphIsolationDataExistsError } from './graph-import/neo4j-writer.js';
-import { getRunningGraphImportRun } from './graph-import/repo.js';
 import { proposeOptimizations, applyOptimizations, findingsToSuggestions } from './evaluation/optimizer.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
@@ -396,7 +397,6 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       const runningOperation = inFlight.currentByPrefix(`${p.id}:`)
         ?? (isEvaluationActive(p.id) ? 'evaluate' : null)
-        ?? (getRunningGraphImportRun(p.id) ? 'graph-import' : null)
         ?? (getRunningEvaluationDatabaseImportRun(p.id) ? 'evaluation-database-import' : null);
       if (runningOperation) {
         return reply.code(409).send({
@@ -406,6 +406,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       }
       try {
+        await cancelGraphImportsForProject(p.id);
         if (!deleteProjectLocalData(p.id, req.user!.username)) {
           return reply.code(404).send({ error: '项目不存在' });
         }
@@ -971,12 +972,23 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.delete('/api/projects/:id/graph-import/uploads/:uploadId', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      cancelGraphImportUpload({
+      await cancelGraphImportUpload({
         projectId: c.p.id,
         owner: req.user!.username,
         uploadId: (req.params as any).uploadId,
       });
       return { ok: true };
+    });
+
+    r.post('/api/projects/:id/graph-imports/:runId/cancel', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      try {
+        const run = await cancelGraphImportRun(c.p.id, (req.params as any).runId);
+        return { run };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
     });
 
     r.get('/api/projects/:id/graph-imports', async (req, reply) => {
