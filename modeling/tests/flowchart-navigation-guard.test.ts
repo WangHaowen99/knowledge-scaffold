@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   confirmFlowchartNavigation,
+  confirmUnsavedNavigation,
   protectFlowchartBeforeUnload,
+  protectUnsavedBeforeUnload,
 } from '../frontend/src/flowchartNavigationGuard.js';
 
 test('流程图没有未保存修改时直接允许切换步骤', () => {
@@ -29,4 +31,21 @@ test('流程图有未保存修改时阻止浏览器直接卸载', () => {
   assert.equal(protectFlowchartBeforeUnload(event, true), true);
   assert.equal(prevented, true);
   assert.equal(event.returnValue, '');
+});
+
+test('通用工作区保护同时适用于文本和图形草稿', () => {
+  let message = '';
+  assert.equal(confirmUnsavedNavigation(true, (value) => {
+    message = value;
+    return false;
+  }), false);
+  assert.match(message, /工作区还有未保存修改/);
+
+  let prevented = false;
+  const event = {
+    returnValue: undefined,
+    preventDefault() { prevented = true; },
+  };
+  assert.equal(protectUnsavedBeforeUnload(event, true), true);
+  assert.equal(prevented, true);
 });

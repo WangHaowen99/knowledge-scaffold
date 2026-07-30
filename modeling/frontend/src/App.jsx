@@ -5,6 +5,10 @@ import ProjectList from './ProjectList.jsx';
 import Workbench from './Workbench.jsx';
 import SettingsModal from './SettingsModal.jsx';
 import Tour, { PROJECT_STEPS } from './Tour.jsx';
+import {
+  confirmUnsavedNavigation,
+  protectUnsavedBeforeUnload,
+} from './flowchartNavigationGuard.js';
 
 export default function App() {
   const [status, setStatus] = useState('checking'); // checking | out | in
@@ -16,6 +20,7 @@ export default function App() {
   const [importingPackage, setImportingPackage] = useState(false);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
+  const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const userRef = useRef(null);
   const packageInputRef = useRef(null);
 
@@ -41,7 +46,23 @@ export default function App() {
     return () => { document.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', onKey); };
   }, [menuOpen]);
 
-  const logout = () => { clearSession(); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false); };
+  useEffect(() => {
+    const beforeUnload = (event) => { protectUnsavedBeforeUnload(event, workspaceDirty); };
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => window.removeEventListener('beforeunload', beforeUnload);
+  }, [workspaceDirty]);
+
+  const logout = () => {
+    if (!confirmUnsavedNavigation(workspaceDirty)) return;
+    clearSession(); setStatus('out'); setUser(null); setProjectId(null); setMenuOpen(false);
+    setWorkspaceDirty(false);
+  };
+
+  const closeProject = () => {
+    if (!confirmUnsavedNavigation(workspaceDirty)) return;
+    setProjectId(null);
+    setWorkspaceDirty(false);
+  };
 
   const importPackage = async (file) => {
     if (!file) return;
@@ -79,7 +100,7 @@ export default function App() {
         <div className="logo"><span className="mk">知</span>知识包建模工具</div>
         <span className="crumb">
           {projectId
-            ? <><a onClick={() => setProjectId(null)}>项目</a> / 建模工作台</>
+            ? <><a onClick={closeProject}>项目</a> / 建模工作台</>
             : '项目'}
         </span>
         <div className="right">
@@ -127,7 +148,7 @@ export default function App() {
         {!projectId && importError && <div className="lerr">知识包导入失败：{importError}</div>}
         {!projectId && importNotice && <div className="saved">{importNotice}</div>}
         {projectId
-          ? <Workbench projectId={projectId} onBack={() => setProjectId(null)} />
+          ? <Workbench projectId={projectId} onUnsavedChange={setWorkspaceDirty} />
           : <ProjectList onOpen={setProjectId} />}
       </div>
       {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}
