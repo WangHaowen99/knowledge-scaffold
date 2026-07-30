@@ -1059,6 +1059,110 @@ test('评测用例 API：手工新增和修改均推进项目阶段', async () =
   project = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
   assert.equal(project.json().project.stage, 'testcases');
 });
+
+test('专家处置只记录下一步提示且不会改写 legacy 工作流节点', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '专家处置节点隔离项目' },
+  });
+  const projectId = created.json().project.id;
+  const [{ getPackageArtifactStore }, diagnosisRepo, { upsertNode, getNode }] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/evaluation/failure-diagnosis-repo.js'),
+    import('../src/workflow/engine.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'diagnosis-resolution-route', name: '专家处置节点隔离', description: '测试专家处置',
+      version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'data', objects: [], operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    action: { cause: 'generate', summary: '生成测试知识包', actorKind: 'agent', actorName: '助手' },
+  });
+  const legacyNode = upsertNode({
+    projectId, type: 'evaluate', status: 'done', ordinal: 900,
+  });
+  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(
+    projectId, 'round-resolution-route', '1.0.0', generated.revision.oid, [{
+      category: 'data_gap', title: '业务口径待确认', summary: '需要专家确认业务口径',
+      evidence: ['业务规则文档'], confidence: 'high', blocking: true,
+      repairScope: 'data', packageOptimizable: false, resultIds: ['result-1'],
+      relatedQuestions: ['如何处理？'], suggestedAction: '请专家确认口径',
+    }],
+  );
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${projectId}/optimize/diagnoses/${diagnosis.id}/resolve`,
+    headers,
+    payload: { action: 'clarify_semantics', note: '确认该口径适用于所有同类业务。' },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json().nextSteps, [
+    'generate_optimization_suggestions', 'rerun_evaluation',
+  ]);
+  assert.equal('staleSteps' in response.json(), false);
+  assert.equal(getNode(legacyNode.id)?.status, 'done');
+});
+
+test('优化应用专家复核可由状态接口恢复，并支持带反馈重试或跳过', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '优化应用专家复核项目' },
+  });
+  const projectId = created.json().project.id;
+  const [m4repo, progress] = await Promise.all([
+    import('../src/workflow/m4-repo.js'),
+    import('../src/evaluation/optimization-apply-progress.js'),
+  ]);
+  const suggestions = m4repo.insertSuggestions(
+    projectId, 'round-review', '1.0.0', 'revision-review', [{
+      title: '补充规则边界', detail: '补充失败场景所需规则', kind: 'modify_rule',
+    }, {
+      title: '跳过无效建议', detail: '该建议不应继续应用', kind: 'modify_object',
+    }],
+  );
+  const retryTask = progress.startOptimizationApplyTask(projectId, [suggestions[0].id], 2);
+  progress.waitOptimizationExpertReview(retryTask.id, '自动修订两次失败', ['修订未覆盖目标']);
+
+  const restored = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/optimize/apply-status`, headers,
+  });
+  assert.equal(restored.statusCode, 200, restored.body);
+  assert.equal(restored.json().task.node.id, retryTask.id);
+  assert.equal(restored.json().task.node.status, 'waiting_user');
+  assert.equal(restored.json().task.node.output.phase, 'expert_review');
+
+  const retried = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/apply-review`, headers,
+    payload: { taskId: retryTask.id, action: 'retry', note: '必须覆盖退款边界。' },
+  });
+  assert.equal(retried.statusCode, 200, retried.body);
+  assert.deepEqual(retried.json(), { status: 'retry_ready', suggestionIds: [suggestions[0].id] });
+  const retriedSuggestion = m4repo.getSuggestions([suggestions[0].id])[0];
+  assert.equal(retriedSuggestion.status, 'pending');
+  assert.match(retriedSuggestion.candidateFeedback ?? '', /修订未覆盖目标/);
+  assert.match(retriedSuggestion.candidateFeedback ?? '', /必须覆盖退款边界/);
+
+  const skipTask = progress.startOptimizationApplyTask(projectId, [suggestions[1].id], 2);
+  progress.waitOptimizationExpertReview(skipTask.id, '自动修订两次失败', ['目标已不适用']);
+  const skipped = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/apply-review`, headers,
+    payload: { taskId: skipTask.id, action: 'skip', note: '确认不再处理。' },
+  });
+  assert.equal(skipped.statusCode, 200, skipped.body);
+  assert.deepEqual(skipped.json(), { status: 'skipped', suggestionIds: [suggestions[1].id] });
+  assert.equal(m4repo.getSuggestions([suggestions[1].id])[0].status, 'rejected');
+});
+
 test('图导入 API：支持取消后台任务并在删除项目时等待任务退出', async () => {
   graphImportTasks.length = 0;
   const token = await signToken();

@@ -103,6 +103,14 @@ export function listFailureDiagnoses(projectId: string, roundId?: string): Store
   return (rows as any[]).map(rowToDiagnosis);
 }
 
+export function hasConfirmedOptimizableDiagnoses(
+  diagnoses: readonly StoredFailureDiagnosis[],
+): boolean {
+  return diagnoses.some((diagnosis) => diagnosis.resolutionStatus === 'confirmed'
+    && diagnosis.packageOptimizable
+    && !diagnosis.blocking);
+}
+
 export function resolveFailureDiagnosis(input: {
   projectId: string;
   diagnosisId: string;

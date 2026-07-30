@@ -7,7 +7,9 @@ import {
   SHORT_WRITE_LEASE_TTL_MS,
 } from '../authoring/lease.js';
 import { getAuthoringState } from '../authoring/state.js';
+import { optimizationCandidateDiagnosisLinkState } from '../evaluation/optimization-candidate.js';
 import { getProject } from '../projects/repo.js';
+import * as m4repo from '../workflow/m4-repo.js';
 import { runFormatChecks } from '../workflow/package-check.js';
 import { ArtifactRepositoryError, type ArtifactFileDiff } from './repository.js';
 import {
@@ -285,9 +287,22 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: SHORT_WRITE_LEASE_TTL_MS,
       }, async () => {
+        const existing = await store.getCandidateRevision(project.id, candidateId);
+        if (existing.status === 'superseded') {
+          m4repo.rejectCandidateRevision(project.id, candidateId);
+          return reply.code(409).send({
+            code: 'revision_conflict',
+            error: '候选修订基线已经变化，请基于当前修订重新生成候选',
+          });
+        }
         if (action === 'accept') {
-          const existing = await store.getCandidateRevision(project.id, candidateId);
           if (existing.status === 'accepted') {
+            if (existing.acceptedRevision) {
+              const acceptedSnapshot = await store.readPackageFiles(project.id, existing.acceptedRevision);
+              m4repo.markCandidateRevisionApplied(
+                project.id, candidateId, acceptedSnapshot.spec.version, existing.acceptedRevision,
+              );
+            }
             return {
               candidate: publicCandidate(existing),
               selection: {
@@ -300,6 +315,32 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
             };
           }
           const preview = await store.previewCandidateRevision(project.id, candidateId, selectedGroupIds);
+          const current = await store.current(project.id);
+          if (current?.revision.oid === existing.baseRevision) {
+            const diagnosisLink = optimizationCandidateDiagnosisLinkState({
+              projectId: project.id,
+              candidateId,
+              baseRevisionOid: existing.baseRevision,
+            });
+            if (diagnosisLink.linked && !diagnosisLink.current) {
+              const rejected = await store.rejectCandidateRevision(project.id, {
+                candidateId,
+                note: diagnosisLink.reason,
+                action: {
+                  cause: 'optimization_diagnosis_stale',
+                  summary: '关闭失效的优化候选',
+                  actorKind: 'system',
+                  actorName: '建模系统',
+                },
+              });
+              m4repo.rejectCandidateRevision(project.id, candidateId);
+              return reply.code(409).send({
+                code: 'optimization_diagnosis_stale',
+                error: `${diagnosisLink.reason}，请基于当前诊断重新生成优化建议`,
+                candidate: publicCandidate(rejected),
+              });
+            }
+          }
           const formatErrors = runFormatChecks(preview.spec, preview.files)
             .filter((finding) => finding.severity === '错误');
           if (formatErrors.length > 0) {
@@ -320,6 +361,9 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
               actorName: req.user!.username,
             },
           });
+          m4repo.markCandidateRevisionApplied(
+            project.id, candidateId, preview.spec.version, accepted.revision.oid,
+          );
           getAuthoringState().apply({
             kind: 'publish_event',
             projectId: project.id,
@@ -333,6 +377,12 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
           };
         }
         if (action === 'revise') {
+          if (existing.status === 'revision_requested') {
+            m4repo.returnCandidateRevision(
+              project.id, candidateId, existing.decision?.note ?? String(note ?? ''),
+            );
+            return { candidate: publicCandidate(existing), replayed: true };
+          }
           const candidate = await store.returnCandidateRevision(project.id, {
             candidateId,
             selectedGroupIds,
@@ -344,7 +394,12 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
               actorName: req.user!.username,
             },
           });
+          m4repo.returnCandidateRevision(project.id, candidateId, String(note ?? ''));
           return { candidate: publicCandidate(candidate) };
+        }
+        if (existing.status === 'rejected') {
+          m4repo.rejectCandidateRevision(project.id, candidateId);
+          return { candidate: publicCandidate(existing), replayed: true };
         }
         const candidate = await store.rejectCandidateRevision(project.id, {
           candidateId,
@@ -356,9 +411,18 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
             actorName: req.user!.username,
           },
         });
+        m4repo.rejectCandidateRevision(project.id, candidateId);
         return { candidate: publicCandidate(candidate) };
       });
     } catch (error) {
+      if (error instanceof ArtifactRepositoryError && error.code === 'revision_conflict') {
+        try {
+          const candidate = await store.getCandidateRevision(project.id, candidateId);
+          if (candidate.status === 'superseded') {
+            m4repo.rejectCandidateRevision(project.id, candidateId);
+          }
+        } catch { /* 原始 revision_conflict 优先返回 */ }
+      }
       return sendArtifactError(reply, error);
     }
   });

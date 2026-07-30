@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { diagnoseEvaluationFailures } from '../src/evaluation/failure-diagnosis.js';
 import {
+  hasConfirmedOptimizableDiagnoses,
   listFailureDiagnoses,
   replaceFailureDiagnoses,
   resolveFailureDiagnosis,
@@ -1066,11 +1067,12 @@ test('专家可将数据阻断诊断转为可验证的知识包修复并保留�
     confidence: 'high', blocking: true, repairScope: 'data', packageOptimizable: false,
     resultIds: ['result-1'], relatedQuestions: ['如何计算收益？'], suggestedAction: '请专家澄清。',
   }]);
+  assert.equal(hasConfirmedOptimizableDiagnoses([diagnosis]), false);
 
   const resolved = resolveFailureDiagnosis({
     projectId: project.id, diagnosisId: diagnosis.id, action: 'clarify_semantics',
     note: '价格指不含税吨价，以计划批次生效日口径计算。', actor: 'expert-user',
-    payload: { nextSteps: ['optimize', 'evaluate'] },
+    payload: { nextSteps: ['generate_optimization_suggestions', 'rerun_evaluation'] },
   });
 
   assert.equal(resolved.resolutionStatus, 'confirmed');
@@ -1080,7 +1082,10 @@ test('专家可将数据阻断诊断转为可验证的知识包修复并保留�
   assert.equal(resolved.packageOptimizable, true);
   assert.equal(resolved.repairScope, 'package');
   assert.match(resolved.suggestedAction, /不含税吨价/);
-  assert.deepEqual(resolved.resolutionPayload, { nextSteps: ['optimize', 'evaluate'] });
+  assert.deepEqual(resolved.resolutionPayload, {
+    nextSteps: ['generate_optimization_suggestions', 'rerun_evaluation'],
+  });
+  assert.equal(hasConfirmedOptimizableDiagnoses([resolved]), true);
 });
 
 test('优化建议持久化根因、证据、通用化和验证方案', () => {

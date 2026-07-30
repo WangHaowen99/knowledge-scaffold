@@ -15,7 +15,7 @@ import { DATA_PROVIDER_SCRIPT_CONTRACT } from '../workflow/script-safety.js';
 // ① proposeOptimizations —— 读未通过的评测结果 + 当前规格，产出结构化优化建议；
 //    诊断维度含「执行痕迹」：从 finalAnswer 提取实际引用的操作 vs 认领该问题的操作，
 //    区分三类根因——知识缺失（add）/ 知识在包里但没被走到（改路由与交叉引用）/ 知识写错（改内容）。
-// ② applyOptimizations —— 把专家采纳的建议应用到规格上，产出修订版（版本号由调用方递增）。
+// ② applyOptimizations —— 把专家采纳的建议应用到规格上，产出候选内容；调用方以工件修订区分候选，不旁路提升语义版本。
 // 另有 findingsToSuggestions —— 把包体检的确定性发现直接转成建议（不经 LLM）。
 
 export interface RawSuggestion {
