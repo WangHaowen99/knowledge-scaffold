@@ -51,6 +51,10 @@ export interface SavePackageVersionInput {
   action: PackageRevisionAction;
 }
 
+export interface ImportPackageVersionInput extends SavePackageVersionInput {
+  files: Readonly<Record<string, string | Uint8Array>>;
+}
+
 export interface SaveCurrentAsPackageVersionInput {
   expectedRevision: string;
   version: string;
@@ -216,6 +220,14 @@ export interface PackageArtifactFiles {
   spec: PackageSpec;
   coverage: CoverageResult;
   files: Record<string, string>;
+  binaryFiles: string[];
+}
+
+export interface PackageArtifactArchiveFiles {
+  revision: ArtifactRevision;
+  spec: PackageSpec;
+  coverage: CoverageResult;
+  files: Record<string, Uint8Array>;
 }
 
 export interface PackageArtifactStoreOptions {
@@ -275,6 +287,53 @@ export class PackageArtifactStore {
       const note = optionalText(input.note, '版本备注', 1000);
       const current = await this.repository.snapshot(projectId);
       const target = packageFiles(input.spec, input.coverage);
+      const changes = changesForManagedFiles(current.files, target);
+      const id = `pv_${randomUUID().slice(0, 12)}`;
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
+        projectId,
+        input.expectedRevision,
+        changes,
+        gitMetadata(action),
+      ), (savedRevision) => {
+        this.db.prepare(`INSERT INTO package_versions
+          (id, project_id, version, spec_json, coverage_json, note, revision_oid, created_at)
+          VALUES (?,?,?,?,?,?,?,?)`)
+          .run(
+            id,
+            projectId,
+            packageVersion,
+            JSON.stringify(input.spec),
+            JSON.stringify(input.coverage),
+            note,
+            savedRevision.oid,
+            savedRevision.createdAt,
+          );
+        this.recordRevision(
+          projectId,
+          savedRevision,
+          action,
+          changes.map((change) => change.path),
+          packageVersion,
+        );
+      });
+      return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid), packageVersion);
+    });
+  }
+
+  /** 导入已有知识包，保留包内原始文件，同时建立结构化规格与版本索引。 */
+  async importPackageVersion(
+    projectId: string,
+    input: ImportPackageVersionInput,
+  ): Promise<PackageArtifactView> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      await this.ensureProjectUnlocked(projectId);
+      validatePackageSpec(input.spec);
+      validateCoverage(input.coverage);
+      const packageVersion = requiredText(input.spec.version, '包版本', 100);
+      const note = optionalText(input.note, '版本备注', 1000);
+      const current = await this.repository.snapshot(projectId);
+      const target = importedPackageFiles(input.spec, input.coverage, input.files);
       const changes = changesForManagedFiles(current.files, target);
       const id = `pv_${randomUUID().slice(0, 12)}`;
       const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
@@ -448,9 +507,36 @@ export class PackageArtifactStore {
       const snapshot = await this.repository.snapshot(projectId, revision);
       const view = this.viewFromSnapshot(snapshot);
       const files: Record<string, string> = {};
+      const binaryFiles: string[] = [];
       for (const file of snapshot.files) {
         if (!file.path.startsWith(PACKAGE_PREFIX)) continue;
-        files[file.path.slice(PACKAGE_PREFIX.length)] = decodeText(file.content);
+        const path = file.path.slice(PACKAGE_PREFIX.length);
+        const content = tryDecodeText(file.content);
+        if (content === null) binaryFiles.push(path);
+        else files[path] = content;
+      }
+      return {
+        revision: snapshot.revision,
+        spec: view.spec,
+        coverage: view.coverage,
+        files,
+        binaryFiles: binaryFiles.sort(compareNames),
+      };
+    });
+  }
+
+  async readPackageArchiveFiles(
+    projectId: string,
+    revision?: string,
+  ): Promise<PackageArtifactArchiveFiles> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      const snapshot = await this.repository.snapshot(projectId, revision);
+      const view = this.viewFromSnapshot(snapshot);
+      const files: Record<string, Uint8Array> = {};
+      for (const file of snapshot.files) {
+        if (!file.path.startsWith(PACKAGE_PREFIX)) continue;
+        files[file.path.slice(PACKAGE_PREFIX.length)] = new Uint8Array(file.content);
       }
       return { revision: snapshot.revision, spec: view.spec, coverage: view.coverage, files };
     });
@@ -1638,6 +1724,32 @@ function packageFiles(spec: PackageSpec, coverage: CoverageResult): Map<string, 
   ]);
   for (const [path, content] of Object.entries(renderPackage(spec))) {
     files.set(`${PACKAGE_PREFIX}${path}`, encoder.encode(content));
+  }
+  return files;
+}
+
+function importedPackageFiles(
+  spec: PackageSpec,
+  coverage: CoverageResult,
+  imported: Readonly<Record<string, string | Uint8Array>>,
+): Map<string, Uint8Array> {
+  const manifest = imported?.['manifest.yaml'];
+  if (!imported || typeof imported !== 'object'
+    || (typeof manifest !== 'string' && !(manifest instanceof Uint8Array))) {
+    throw new PackageArtifactStoreError('invalid_package', '知识包缺少 manifest.yaml');
+  }
+  if (manifest instanceof Uint8Array) decodeText(manifest);
+  const encoder = new TextEncoder();
+  const files = new Map<string, Uint8Array>([
+    [SPEC_PATH, encoder.encode(`${JSON.stringify(spec, null, 2)}\n`)],
+    [COVERAGE_PATH, encoder.encode(`${JSON.stringify(coverage, null, 2)}\n`)],
+  ]);
+  for (const [relativePath, content] of Object.entries(imported)) {
+    if (typeof content !== 'string' && !(content instanceof Uint8Array)) {
+      throw new PackageArtifactStoreError('invalid_package', `知识包文件内容不正确：${relativePath}`);
+    }
+    const path = validatePackagePath(`${PACKAGE_PREFIX}${relativePath}`);
+    files.set(path, typeof content === 'string' ? encoder.encode(content) : new Uint8Array(content));
   }
   return files;
 }

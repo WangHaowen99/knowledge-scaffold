@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { generateKeyPair, exportJWK, SignJWT, type CryptoKey } from 'jose';
+import { renderPackage } from '../src/workflow/package-render.js';
+import { zipPackage } from '../src/workflow/export.js';
+import type { PackageSpec } from '../src/types.js';
 import { neo4jInput, nl2sqlInput } from './helpers/data-source-fixtures.js';
 import {
   graphMapping,
@@ -168,6 +171,10 @@ function multipartFile(filename: string, buffer: Buffer, contentType = 'text/pla
   };
 }
 
+function multipartZip(filename: string, buffer: Buffer) {
+  return multipartFile(filename, buffer, 'application/zip');
+}
+
 function multipartEvaluationDatabaseExcel(
   filename: string,
   buffer: Buffer,
@@ -299,6 +306,40 @@ test('/api/me：合法 token → 200；typ=refresh 的 token → 401；无 token
 
   res = await app.inject({ method: 'GET', url: '/api/me' });
   assert.equal(res.statusCode, 401);
+});
+
+test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和原始文件快照', async () => {
+  const token = await signToken();
+  const authorization = `Bearer ${token}`;
+  const spec: PackageSpec = {
+    id: 'route-import-demo', name: '路由导入演示', description: '导入已有知识包',
+    version: '1.0.0', language: 'zh-CN', status: 'review', defaultProviderAlias: 'default',
+    objects: [],
+    operations: [{
+      key: 'answer_demo', title: '回答问题', description: '回答演示问题',
+      inputs: [], outputs: [], flow: ['读取知识包。'], relatedObjects: [],
+      competencyQuestion: '如何使用知识包？',
+    }],
+  };
+  const upload = multipartZip('demo.zip', Buffer.from(zipPackage(renderPackage(spec), spec.id)));
+  const imported = await app.inject({
+    method: 'POST', url: '/api/package-workspaces/import',
+    headers: { authorization, ...upload.headers }, payload: upload.payload,
+  });
+
+  assert.equal(imported.statusCode, 201, imported.body);
+  assert.equal(imported.json().project.kind, 'package');
+  assert.equal(imported.json().project.stage, 'review');
+  assert.equal(imported.json().version, '1.0.0');
+  assert.ok(imported.json().revision);
+
+  const projectId = imported.json().project.id;
+  const pkg = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package`, headers: { authorization },
+  });
+  assert.equal(pkg.statusCode, 200, pkg.body);
+  assert.equal(pkg.json().version, '1.0.0');
+  assert.ok(pkg.json().files.includes('operations/answer_demo.md'));
 });
 
 test('项目删除 API：要求明确确认、校验 owner、阻止运行任务并完成删除', async () => {

@@ -96,6 +96,11 @@ export const createProject = (input) => api('/api/projects', { method: 'POST', b
 export const deleteProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`, {
   method: 'DELETE', body: JSON.stringify({ confirmed: true }),
 });
+export const importPackageWorkspace = (file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api('/api/package-workspaces/import', { method: 'POST', body: form });
+};
 export const getProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`);
 export const uploadDocument = (id, file) => {
   const form = new FormData();
