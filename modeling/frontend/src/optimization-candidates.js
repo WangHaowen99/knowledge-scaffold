@@ -16,12 +16,11 @@ export function linkedOptimizationCandidates(suggestions = [], candidates = []) 
   return (candidates ?? []).filter((candidate) => linkedIds.has(candidate.id));
 }
 
-export function candidateStatusLabel(candidate) {
-  return ({
-    pending: '待确认',
-    accepted: '已接受',
-    revision_requested: '已退回',
-    rejected: '已拒绝',
-    superseded: '已过期',
-  })[candidate?.status] ?? String(candidate?.status ?? '未知状态');
+export function pendingLinkedOptimizationCandidates(suggestions = [], candidates = []) {
+  const pendingIds = new Set((suggestions ?? [])
+    .filter((suggestion) => suggestion.status === 'candidate')
+    .map((suggestion) => suggestion.candidateRevisionId)
+    .filter(Boolean));
+  return (candidates ?? []).filter((candidate) => candidate.status === 'pending'
+    && pendingIds.has(candidate.id));
 }

@@ -3,20 +3,29 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   listRounds, diagnoseOptimize, listDiagnoses, resolveDiagnosis, proposeOptimize,
-  listSuggestions, applyOptimize, rejectSuggestions, listCandidateRevisions,
-  previewCandidateRevision, respondCandidateRevision,
+  listSuggestions, getOptimizeApplyStatus, applyOptimize, reviewOptimizeApply, rejectSuggestions,
   listVersions, exportVersionUrl, authFetch, requireOkResponse,
 } from './api.js';
+import { listCandidateRevisions } from './authoring-api.js';
+import CandidateRevisionPanel, { CandidateRevisionCanvas } from './CandidateRevisionPanel.jsx';
 import {
   normalizeOptimizeOperation,
   shouldPollOptimizeOperation,
 } from './optimize-running-state.js';
 import { latestDiagnosableRound } from './evaluation-followup.js';
-import { canProposeFromDiagnoses, diagnosesForRound } from './optimization-flow.js';
 import {
-  candidateStatusLabel,
+  canProposeFromDiagnoses,
+  diagnoseAndRefresh,
+  diagnosesForRound,
+  optimizationExpertReviewForRound,
+  optimizationExpertReviewState,
+  pendingSuggestionIdsForRound,
+  suggestionsForRound,
+} from './optimization-flow.js';
+import {
   linkedOptimizationCandidates,
   optimizationCandidateNotice,
+  pendingLinkedOptimizationCandidates,
 } from './optimization-candidates.js';
 
 /* ================= 节点 11 · 优化建议与应用 ================= */
@@ -101,29 +110,41 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
   const [candidates, setCandidates] = useState([]);
   const [sel, setSel] = useState(new Set());
   const [busy, setBusy] = useState('');   // '' | diagnose | propose | apply
-  const [candidateBusy, setCandidateBusy] = useState('');
   const [err, setErr] = useState('');
   const [candidateResult, setCandidateResult] = useState(null);
+  const [applyReview, setApplyReview] = useState(null);
   const [preview, setPreview] = useState(null);
   const pollRef = useRef(null);
 
-  const load = () => Promise.all([
-    listRounds(projectId).then((d) => { setRounds(d.rounds); return d.rounds; }),
-    listVersions(projectId).then((d) => setVersions(d.versions)),
-    listDiagnoses(projectId).then((d) => setDiagnoses(d.diagnoses)),
-    listSuggestions(projectId).then((d) => {
-      const runningOperation = normalizeOptimizeOperation(d.runningOperation);
+  const load = async () => {
+    try {
+      const roundData = await listRounds(projectId);
+      const nextTargetRound = latestDiagnosableRound(roundData.rounds);
+      const roundId = nextTargetRound?.id;
+      const [versionData, diagnosisData, suggestionData, candidateData, applyStatus] = await Promise.all([
+        listVersions(projectId),
+        listDiagnoses(projectId, roundId),
+        listSuggestions(projectId, roundId),
+        listCandidateRevisions(projectId),
+        getOptimizeApplyStatus(projectId),
+      ]);
+      const roundSuggestions = suggestionsForRound(suggestionData.suggestions, roundId);
+      const runningOperation = normalizeOptimizeOperation(suggestionData.runningOperation);
+      setRounds(roundData.rounds);
+      setVersions(versionData.versions);
+      setDiagnoses(diagnosesForRound(diagnosisData.diagnoses, roundId));
+      setSuggestions(roundSuggestions);
+      setSel(new Set(pendingSuggestionIdsForRound(roundSuggestions, roundId)));
+      setCandidates(candidateData.candidates);
+      setApplyReview(optimizationExpertReviewForRound(applyStatus, roundSuggestions, roundId));
       setBusy(runningOperation);
-      setSuggestions(d.suggestions);
-      setSel(new Set(d.suggestions.filter((s) => s.status === 'pending').map((s) => s.id)));
+      setErr('');
       return runningOperation;
-    }),
-    listCandidateRevisions(projectId).then((d) => setCandidates(d.candidates)),
-  ]).then(([, , , runningOperation]) => {
-    setErr('');
-    return runningOperation;
-  })
-    .catch((e) => { setErr(e.message); return undefined; });
+    } catch (e) {
+      setErr(e.message);
+      return undefined;
+    }
+  };
   useEffect(() => {
     let cancelled = false;
     const refreshUntilIdle = async () => {
@@ -144,16 +165,17 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
   const roundDiagnoses = diagnosesForRound(diagnoses, targetRound?.id);
   const canPropose = canProposeFromDiagnoses(roundDiagnoses);
   const pending = suggestions.filter((s) => s.status === 'pending');
-  const optimizationCandidates = linkedOptimizationCandidates(suggestions, candidates);
+  const linkedCandidates = linkedOptimizationCandidates(suggestions, candidates);
+  const optimizationCandidates = pendingLinkedOptimizationCandidates(suggestions, candidates);
+  const hasAcceptedOptimization = linkedCandidates.some((candidate) => candidate.status === 'accepted');
 
   const diagnose = async () => {
     setBusy('diagnose'); setErr(''); setCandidateResult(null);
     try {
-      const d = await diagnoseOptimize(projectId, targetRound?.id);
-      setDiagnoses((previous) => [
-        ...previous.filter((item) => item.roundId !== targetRound?.id),
-        ...d.diagnoses,
-      ]);
+      await diagnoseAndRefresh(
+        () => diagnoseOptimize(projectId, targetRound?.id),
+        async () => { setPreview(null); await load(); },
+      );
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
@@ -174,28 +196,59 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
     setBusy('propose'); setErr(''); setCandidateResult(null);
     try {
       const d = await proposeOptimize(projectId, targetRound?.id);
-      setSuggestions((prev) => {
-        const known = new Set(prev.map((s) => s.id));
-        return [...prev, ...d.suggestions.filter((s) => !known.has(s.id))];
-      });
-      setSel(new Set(d.suggestions.filter((s) => s.status === 'pending').map((s) => s.id)));
+      const roundSuggestions = suggestionsForRound(d.suggestions, targetRound?.id);
+      setSuggestions(roundSuggestions);
+      setSel(new Set(pendingSuggestionIdsForRound(roundSuggestions, targetRound?.id)));
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
   const apply = async () => {
     setBusy('apply'); setErr('');
     try {
-      const d = await applyOptimize(projectId, [...sel]);
-      setCandidateResult(optimizationCandidateNotice(d));
+      const selectedSuggestionIds = pendingSuggestionIdsForRound(suggestions, targetRound?.id)
+        .filter((id) => sel.has(id));
+      if (!selectedSuggestionIds.length) throw new Error('请选择当前评测轮次的待处理建议');
+      const d = await applyOptimize(projectId, selectedSuggestionIds);
+      const review = optimizationExpertReviewState(d);
+      if (review) {
+        setApplyReview(review);
+        setCandidateResult(null);
+      } else {
+        setApplyReview(null);
+        setCandidateResult(optimizationCandidateNotice(d));
+      }
+      await load();
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const reviewApply = async (action) => {
+    if (!applyReview) return;
+    let note = '';
+    if (action === 'retry') {
+      const input = window.prompt('可选：补充本次重试必须满足的约束', '');
+      if (input === null) return;
+      note = input.trim();
+    } else if (!window.confirm('确认跳过本次所选优化建议？')) return;
+    setBusy('apply'); setErr(''); setCandidateResult(null);
+    try {
+      const reviewed = await reviewOptimizeApply(
+        projectId, applyReview.taskId, action, note,
+      );
+      setApplyReview(null);
+      if (action === 'retry') {
+        const d = await applyOptimize(projectId, reviewed.suggestionIds);
+        const nextReview = optimizationExpertReviewState(d);
+        if (nextReview) setApplyReview(nextReview);
+        else setCandidateResult(optimizationCandidateNotice(d));
+      }
       await load();
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
   const reject = async (id) => {
     try {
-      const d = await rejectSuggestions(projectId, [id]);
-      setSuggestions(d.suggestions);
-      setSel((prev) => { const n = new Set(prev); n.delete(id); return n; });
+      await rejectSuggestions(projectId, [id]);
+      await load();
     } catch (e) { setErr(e.message); }
   };
 
@@ -204,33 +257,6 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
     n.has(id) ? n.delete(id) : n.add(id);
     return n;
   });
-
-  const openCandidate = async (candidate) => {
-    setCandidateBusy(candidate.id); setErr('');
-    try { setPreview(await previewCandidateRevision(projectId, candidate.id)); }
-    catch (e) { setErr(e.message); }
-    finally { setCandidateBusy(''); }
-  };
-
-  const respondCandidate = async (candidate, action) => {
-    let note = '';
-    if (action === 'revise') {
-      const input = window.prompt('请填写退回修改说明', '');
-      if (input === null || !input.trim()) return;
-      note = input.trim();
-    } else if (action === 'reject') {
-      const input = window.prompt('可选：填写拒绝原因', '');
-      if (input === null) return;
-      note = input.trim();
-    }
-    setCandidateBusy(candidate.id); setErr('');
-    try {
-      await respondCandidateRevision(projectId, candidate.id, action, undefined, note);
-      setPreview(null);
-      await load();
-    } catch (e) { setErr(e.message); }
-    finally { setCandidateBusy(''); }
-  };
 
   return (
     <div>
@@ -291,7 +317,7 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
       )}
 
       {/* 建议列表 */}
-      {suggestions.length > 0 && (
+      {(suggestions.length > 0 || applyReview) && (
         <div style={{ marginTop: 16 }}>
           <div className="sg-bar">
             <span className="sg-bar-t">优化建议</span>
@@ -308,7 +334,25 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
             <SuggestionCard key={s.id} s={s} checked={sel.has(s.id)}
               onToggle={() => toggle(s.id)} onReject={() => reject(s.id)} />
           ))}
-          {pending.length > 0 && (
+          {applyReview && (
+            <div className="sg-card" style={{ marginTop: 10 }}>
+              <div className="sg-head">
+                <span className="tag tag-draft">等待专家决策</span>
+                <span className="sg-title">自动修订两次未通过服务端校验</span>
+              </div>
+              <div className="sg-body">
+                {applyReview.error && <div>{applyReview.error}</div>}
+                {applyReview.validationErrors.length > 0 && (
+                  <ul>{applyReview.validationErrors.map((message) => <li key={message}>{message}</li>)}</ul>
+                )}
+                <button className="btn btn-p" disabled={!!busy}
+                  onClick={() => reviewApply('retry')}>带反馈重试</button>
+                <button className="btn" style={{ marginLeft: 8 }} disabled={!!busy}
+                  onClick={() => reviewApply('skip')}>跳过所选建议</button>
+              </div>
+            </div>
+          )}
+          {pending.length > 0 && !applyReview && (
             <button className="btn btn-p" style={{ marginTop: 8 }} disabled={!!busy || !sel.size} onClick={apply}>
               {busy === 'apply' ? '正在生成待确认候选…' : `④ 生成包含 ${sel.size} 条建议的待确认候选`}
             </button>
@@ -323,47 +367,22 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
         </div>
       )}
 
-      {optimizationCandidates.length > 0 && (
+      {(optimizationCandidates.length > 0 || hasAcceptedOptimization) && (
         <div style={{ marginTop: 22 }}>
-          <div className="sg-bar"><span className="sg-bar-t">⑤ 候选预览与决策</span></div>
-          {optimizationCandidates.map((candidate) => (
-            <div key={candidate.id} className="sg-card">
-              <div className="sg-head">
-                <span className={`tag ${candidate.status === 'accepted' ? 'tag-ok' : 'tag-lang'}`}>
-                  {candidateStatusLabel(candidate)}
-                </span>
-                <span className="sg-title">{candidate.summary}</span>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{candidate.id}</span>
-              </div>
-              <div className="sg-body">
-                <button className="btn" disabled={candidateBusy === candidate.id} onClick={() => openCandidate(candidate)}>
-                  {candidateBusy === candidate.id ? '加载中…' : '预览变更'}
-                </button>
-                {candidate.status === 'pending' && (
-                  <span style={{ marginLeft: 8 }}>
-                    <button className="btn btn-p" disabled={!!candidateBusy}
-                      onClick={() => respondCandidate(candidate, 'accept')}>接受并形成正式修订</button>
-                    <button className="btn" disabled={!!candidateBusy} style={{ marginLeft: 6 }}
-                      onClick={() => respondCandidate(candidate, 'revise')}>退回修改</button>
-                    <button className="btn" disabled={!!candidateBusy} style={{ marginLeft: 6 }}
-                      onClick={() => respondCandidate(candidate, 'reject')}>拒绝</button>
-                  </span>
-                )}
-                {candidate.status === 'accepted' && (
-                  <button className="btn btn-p" style={{ marginLeft: 8 }} onClick={onGoEvaluate}>去评测当前修订 →</button>
-                )}
-                {preview?.candidate?.id === candidate.id && (
-                  <div style={{ marginTop: 10 }}>
-                    <b style={{ fontSize: 12 }}>变更文件</b>
-                    <ul>{preview.files.map((file) => <li key={file.path}>{file.status} · {file.path}</li>)}</ul>
-                    {preview.candidate.groups.flatMap((group) => group.validation.errors || []).map((message) => (
-                      <div key={message} className="lerr">{message}</div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+          {optimizationCandidates.length > 0 && (
+            <CandidateRevisionPanel projectId={projectId} candidates={optimizationCandidates}
+              title="⑤ 优化候选预览与决策"
+              subtitle="接受前不推进正式修订；退回、拒绝或失效会同步优化建议状态"
+              onPreview={setPreview} onChanged={async () => {
+                setPreview(null);
+                setCandidateResult(null);
+                await load();
+              }} onError={setErr} />
+          )}
+          <CandidateRevisionCanvas preview={preview} onClose={() => setPreview(null)} />
+          {hasAcceptedOptimization && (
+            <button className="btn btn-p" style={{ marginTop: 8 }} onClick={onGoEvaluate}>去评测当前修订 →</button>
+          )}
         </div>
       )}
 

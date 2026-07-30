@@ -89,6 +89,23 @@ export function respondToInteraction(id, interactionId, response, requestId) {
 
 export const listRevisions = (id) => api(`${projectPath(id)}/revisions`);
 
+export const listCandidateRevisions = (id, status = '') => {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return api(`${projectPath(id)}/candidate-revisions${query}`);
+};
+
+export const previewCandidateRevision = (id, candidateId, groupIds = []) => {
+  const query = groupIds.length
+    ? `?groups=${encodeURIComponent(groupIds.join(','))}`
+    : '';
+  return api(`${projectPath(id)}/candidate-revisions/${encodeURIComponent(candidateId)}/preview${query}`);
+};
+
+export const respondCandidateRevision = (id, candidateId, response) => api(
+  `${projectPath(id)}/candidate-revisions/${encodeURIComponent(candidateId)}/respond`,
+  { method: 'POST', body: JSON.stringify(response) },
+);
+
 export const getRevisionDiff = (id, from, to) => api(
   `${projectPath(id)}/revisions/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 );

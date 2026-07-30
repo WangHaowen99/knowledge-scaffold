@@ -237,17 +237,6 @@ export const reviewOptimizeApply = (id, taskId, action, note = '') =>
     method: 'POST', body: JSON.stringify({ taskId, action, note }),
   });
 export const rejectSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/reject`, { method: 'POST', body: JSON.stringify({ suggestionIds }) });
-export const listCandidateRevisions = (id) => api(`${P(id)}/candidate-revisions`);
-export const previewCandidateRevision = (id, candidateId, selectedGroupIds) => {
-  const groups = Array.isArray(selectedGroupIds) && selectedGroupIds.length
-    ? `?groups=${encodeURIComponent(selectedGroupIds.join(','))}`
-    : '';
-  return api(`${P(id)}/candidate-revisions/${encodeURIComponent(candidateId)}/preview${groups}`);
-};
-export const respondCandidateRevision = (id, candidateId, action, selectedGroupIds, note = '') => api(
-  `${P(id)}/candidate-revisions/${encodeURIComponent(candidateId)}/respond`,
-  { method: 'POST', body: JSON.stringify({ action, selectedGroupIds, note }) },
-);
 export const listVersions = (id) => api(`${P(id)}/versions`);
 export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;
 
