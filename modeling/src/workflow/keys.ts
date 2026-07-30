@@ -59,6 +59,7 @@ export function validateSpecKeys(spec: PackageSpec): PackageSpec {
     relatedObjects: (op.relatedObjects ?? []).map(normalizeKey),
     usesRules: op.usesRules?.map(normalizeKey),
     usesMetrics: op.usesMetrics?.map(normalizeKey),
+    script: op.script ? { ...op.script, key: normalizeKey(op.script.key) } : undefined,
   }));
   const rules = spec.rules?.map((r) => ({
     ...r,
@@ -70,12 +71,18 @@ export function validateSpecKeys(spec: PackageSpec): PackageSpec {
     key: validateKey(m.key, '指标'),
     usesObjects: m.usesObjects?.map(normalizeKey),
   }));
+  const scripts = spec.scripts?.map((script) => ({
+    ...script,
+    key: validateKey(script.key, '脚本'),
+    boundOperation: normalizeKey(script.boundOperation),
+  }));
   assertUnique('对象', objects.map((o) => o.key));
   assertUnique('操作', operations.map((o) => o.key));
   if (rules) assertUnique('规则', rules.map((r) => r.key));
   if (metrics) assertUnique('指标', metrics.map((m) => m.key));
+  if (scripts) assertUnique('脚本', scripts.map((script) => script.key));
   for (const o of objects) assertUnique(`对象「${o.key}」的字段`, o.fields.map((f) => f.key));
-  return { ...spec, objects, operations, rules, metrics };
+  return { ...spec, objects, operations, rules, metrics, scripts };
 }
 
 // zip 打包前的二次断言：条目路径不得越界（renderPackage 已保证，此处防御未来调用方）。

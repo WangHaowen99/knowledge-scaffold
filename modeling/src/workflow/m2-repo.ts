@@ -29,8 +29,11 @@ export function getBatch(id: string): InterviewBatch | null {
   return r ? rowToBatch(r as any) : null;
 }
 
-export function listBatches(projectId: string): InterviewBatch[] {
-  return getDb().prepare('SELECT * FROM interview_batches WHERE project_id = ? ORDER BY ordinal').all(projectId).map(rowToBatch);
+export function listBatches(projectId: string, nodeId?: string): InterviewBatch[] {
+  const rows = nodeId
+    ? getDb().prepare('SELECT * FROM interview_batches WHERE project_id = ? AND node_id = ? ORDER BY ordinal').all(projectId, nodeId)
+    : getDb().prepare('SELECT * FROM interview_batches WHERE project_id = ? ORDER BY ordinal').all(projectId);
+  return rows.map(rowToBatch);
 }
 
 export function saveAnswers(batchId: string, answers: { questionId: string; selected: string[]; other?: string; skipped?: boolean }[]): void {

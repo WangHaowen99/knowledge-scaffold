@@ -190,6 +190,29 @@ function assertSections(path: string, sections: Map<string, string[]>, allowed: 
   }
 }
 
+function assertReadonlyFrontmatter(
+  path: string,
+  parsed: ParsedMarkdown,
+  baseParsed: ParsedMarkdown,
+  key: string,
+  label: string,
+): void {
+  if (JSON.stringify(parsed.frontmatter[key]) !== JSON.stringify(baseParsed.frontmatter[key])) {
+    fail(path, `${label}是生成链路记录的只读字段，不能在详情文件中修改`);
+  }
+}
+
+function assertReadonlySection(
+  path: string,
+  parsed: ParsedMarkdown,
+  baseParsed: ParsedMarkdown,
+  name: string,
+): void {
+  const content = parsed.sections.get(name)?.join('\n').trim() ?? '';
+  const baseContent = baseParsed.sections.get(name)?.join('\n').trim() ?? '';
+  if (content !== baseContent) fail(path, `章节「${name}」记录生成依据，不能在详情文件中修改`);
+}
+
 function sectionLines(path: string, parsed: ParsedMarkdown, name: string, required = true): string[] {
   const lines = parsed.sections.get(name);
   if (!lines) {
@@ -293,12 +316,13 @@ function numberedList(path: string, lines: string[], label: string): string[] {
 function parseObject(path: string, content: string, base: SpecObject, baseContent: string): SpecObject {
   const parsed = parseMarkdown(path, content);
   const baseParsed = parseMarkdown(path, baseContent);
-  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'aliases', 'mapping'], '对象 frontmatter ');
+  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'aliases', 'mapping', 'sources'], '对象 frontmatter ');
   assertResource(path, parsed, 'object', base.key);
   assertSections(path, parsed.sections, ['业务定义', '字段', '关系', '查询边界']);
   if (JSON.stringify(parsed.frontmatter.mapping) !== JSON.stringify(baseParsed.frontmatter.mapping)) {
     fail(path, 'mapping 是由对象数据来源派生的只读字段，不能在详情文件中修改');
   }
+  assertReadonlyFrontmatter(path, parsed, baseParsed, 'sources', 'frontmatter.sources');
 
   const frontmatterDescription = asString(path, parsed.frontmatter.description, 'frontmatter.description');
   const bodyDescription = sectionText(path, parsed, '业务定义');
@@ -320,9 +344,10 @@ function parseObject(path: string, content: string, base: SpecObject, baseConten
   if (new Set(fields.map((field) => field.key)).size !== fields.length) fail(path, '字段 key 不能重复');
 
   const relationLines = sectionLines(path, parsed, '关系', false);
-  const relations = relationLines.length ? tableRows(path, relationLines, ['关系', '目标对象', '说明']).map((row) => {
+  const relations = relationLines.length ? tableRows(path, relationLines, ['关系', '目标对象', '说明', '证据']).map((row) => {
     if (!row[0] || !row[1]) fail(path, '关系和目标对象不能为空');
-    return { relation: row[0], target: row[1], note: optionalCell(row[2]) };
+    const evidence = optionalCell(row[3])?.split('；').map((item) => item.trim()).filter(Boolean);
+    return { relation: row[0], target: row[1], note: optionalCell(row[2]), evidence };
   }) : undefined;
   const queryBoundaryText = sectionText(path, parsed, '查询边界');
   const baseBoundaryText = sectionText(path, baseParsed, '查询边界');
@@ -338,11 +363,14 @@ function parseObject(path: string, content: string, base: SpecObject, baseConten
   };
 }
 
-function parseOperation(path: string, content: string, base: SpecOperation): SpecOperation {
+function parseOperation(path: string, content: string, base: SpecOperation, baseContent: string): SpecOperation {
   const parsed = parseMarkdown(path, content);
-  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'intent_examples', 'uses', 'script'], '操作 frontmatter ');
+  const baseParsed = parseMarkdown(path, baseContent);
+  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'intent_examples', 'uses', 'script', 'evidence'], '操作 frontmatter ');
   assertResource(path, parsed, 'operation', base.key);
-  assertSections(path, parsed.sections, ['业务目标', '输入', '输出', '流程', '规则、指标和注意事项']);
+  assertSections(path, parsed.sections, ['业务目标', '输入', '输出', '流程', '规则、指标和注意事项', '知识证据']);
+  assertReadonlyFrontmatter(path, parsed, baseParsed, 'evidence', 'frontmatter.evidence');
+  assertReadonlySection(path, parsed, baseParsed, '知识证据');
 
   const uses = asMap(path, parsed.frontmatter.uses, 'frontmatter.uses');
   if (uses) assertKeys(path, uses, ['objects', 'rules', 'metrics'], 'frontmatter.uses ');
@@ -404,11 +432,14 @@ function parseOperation(path: string, content: string, base: SpecOperation): Spe
   };
 }
 
-function parseRule(path: string, content: string, base: SpecRule): SpecRule {
+function parseRule(path: string, content: string, base: SpecRule, baseContent: string): SpecRule {
   const parsed = parseMarkdown(path, content);
-  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'applies_to'], '规则 frontmatter ');
+  const baseParsed = parseMarkdown(path, baseContent);
+  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'applies_to', 'evidence'], '规则 frontmatter ');
   assertResource(path, parsed, 'rule', base.key);
-  assertSections(path, parsed.sections, ['规则内容', '判断条件', '例外']);
+  assertSections(path, parsed.sections, ['规则内容', '判断条件', '例外', '知识证据']);
+  assertReadonlyFrontmatter(path, parsed, baseParsed, 'evidence', 'frontmatter.evidence');
+  assertReadonlySection(path, parsed, baseParsed, '知识证据');
   const appliesTo = asMap(path, parsed.frontmatter.applies_to, 'frontmatter.applies_to');
   if (appliesTo) assertKeys(path, appliesTo, ['objects'], 'frontmatter.applies_to ');
   const conditionLines = sectionLines(path, parsed, '判断条件', false);
@@ -430,9 +461,11 @@ function parseRule(path: string, content: string, base: SpecRule): SpecRule {
 function parseMetric(path: string, content: string, base: SpecMetric, baseContent: string): SpecMetric {
   const parsed = parseMarkdown(path, content);
   const baseParsed = parseMarkdown(path, baseContent);
-  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'unit', 'grain', 'uses'], '指标 frontmatter ');
+  assertKeys(path, parsed.frontmatter, ['resource', 'key', 'title', 'description', 'unit', 'grain', 'uses', 'evidence'], '指标 frontmatter ');
   assertResource(path, parsed, 'metric', base.key);
-  assertSections(path, parsed.sections, ['业务口径', '计算边界', '空值策略', '维度']);
+  assertSections(path, parsed.sections, ['业务口径', '计算边界', '空值策略', '维度', '知识证据']);
+  assertReadonlyFrontmatter(path, parsed, baseParsed, 'evidence', 'frontmatter.evidence');
+  assertReadonlySection(path, parsed, baseParsed, '知识证据');
   const uses = asMap(path, parsed.frontmatter.uses, 'frontmatter.uses');
   if (uses) assertKeys(path, uses, ['objects'], 'frontmatter.uses ');
   const boundaryItems = bulletList(path, sectionLines(path, parsed, '计算边界'), '计算边界');
@@ -485,11 +518,11 @@ export function applyPackageDraftFiles(
     } else if (kind === 'operations') {
       const index = operations.findIndex((item) => item.key === key);
       if (index < 0) fail(file.path, `操作 ${key} 不存在于草稿基线版本`);
-      operations[index] = parseOperation(file.path, file.content, operations[index]);
+      operations[index] = parseOperation(file.path, file.content, operations[index], baseContent);
     } else if (kind === 'rules') {
       const index = rules.findIndex((item) => item.key === key);
       if (index < 0) fail(file.path, `规则 ${key} 不存在于草稿基线版本`);
-      rules[index] = parseRule(file.path, file.content, rules[index]);
+      rules[index] = parseRule(file.path, file.content, rules[index], baseContent);
     } else {
       const index = metrics.findIndex((item) => item.key === key);
       if (index < 0) fail(file.path, `指标 ${key} 不存在于草稿基线版本`);

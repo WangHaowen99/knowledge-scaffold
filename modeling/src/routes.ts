@@ -71,6 +71,11 @@ import {
 } from './workflow/package-draft.js';
 import { registerArtifactRoutes } from './artifacts/routes.js';
 import { registerAuthoringRoutes } from './authoring/routes.js';
+import { getAuthoringState } from './authoring/state.js';
+import {
+  GenerationWaitingForExpert,
+  resolveGenerationContinuation,
+} from './workflow/generation-gate.js';
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -87,6 +92,21 @@ function parseDraftRevision(value: unknown): number | null {
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
   const revision = Number(value);
   return Number.isSafeInteger(revision) ? revision : null;
+}
+
+function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
+  tables: DataDictTable[];
+  documents: Array<{ id: string; filename: string; textContent: string }>;
+} {
+  return {
+    tables: documents.flatMap((document) => (document.tables ?? []).map((table) => ({
+      ...table,
+      documentId: document.id,
+    }))),
+    documents: documents.flatMap((document) => document.textContent
+      ? [{ id: document.id, filename: document.filename, textContent: document.textContent }]
+      : []),
+  };
 }
 
 function sendPackageDraftError(reply: any, error: unknown) {
@@ -344,8 +364,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
       const docs = listDocuments(p.id);
-      const tables: DataDictTable[] = docs.flatMap((d) => d.tables ?? []);
-      const textDocs = docs.filter((d) => d.textContent).map((d) => ({ filename: d.filename, textContent: d.textContent }));
+      const { tables, documents: textDocs } = buildMaterialContext(docs);
       if (!tables.length && !textDocs.length) return reply.code(400).send({ error: '尚无可分析的资料，请先上传文档' });
       return withLock(`${p.id}:analyze`, reply, async () => {
       try {
@@ -424,8 +443,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const p = getProject(id);
       if (!p || p.owner !== username) return null;
       const docs = listDocuments(p.id);
-      const tables: DataDictTable[] = docs.flatMap((d) => d.tables ?? []);
-      const textDocs = docs.filter((d) => d.textContent).map((d) => ({ filename: d.filename, textContent: d.textContent }));
+      const { tables, documents: textDocs } = buildMaterialContext(docs);
       // stale（资料变更后）也返回旧分析——结果仍可用，由前端提示重跑
       const analyzeNode = latestNodeOf(listNodes(p.id), 'analyze', ['done', 'stale']);
       return { p, ctx: { tables, documents: textDocs }, analysis: analyzeNode?.output };
@@ -504,11 +522,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'generate');
       if (blocked) return blocked;
+      const body = (req.body ?? {}) as any;
       let dataSourceType;
       try {
-        dataSourceType = parsePackageDataSourceType((req.body as any)?.dataSourceType);
+        dataSourceType = parsePackageDataSourceType(body.dataSourceType);
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+      const authoringState = getAuthoringState();
+      const interactionId = String(body.interactionId ?? '').trim();
+      let generationOptions = {};
+      if (interactionId) {
+        try {
+          generationOptions = resolveGenerationContinuation(
+            authoringState.interaction(c.p.id, interactionId),
+          );
+        } catch (error) {
+          return reply.code(400).send({
+            code: 'INVALID_GENERATION_CONTINUATION',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } else if (authoringState.snapshot(c.p.id).activeRuns.some((run) => run.intent === '生成知识包')) {
+        return reply.code(409).send({
+          code: 'GENERATION_DECISION_REQUIRED',
+          error: '当前知识生成任务正在等待处理，请先回答待办并携带 interactionId 继续',
+        });
       }
       return withLock(`${c.p.id}:generate`, reply, async () => {
       const interviewNode = latestNodeOf(listNodes(c.p.id), 'interview');
@@ -518,10 +557,26 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected);
       if (selected.length < 5) return reply.code(400).send({ error: '请先在胜任力问题中至少勾选 5 条' });
       try {
-        const { spec, coverage, version } = await m2.generatePackage(c.p, c.ctx, undefined, dataSourceType);
+        const { spec, coverage, version } = await m2.generatePackage(
+          c.p,
+          c.ctx,
+          undefined,
+          dataSourceType,
+          generationOptions,
+        );
         setProjectStage(c.p.id, 'generate');
         return { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length, dataSourceType };
-      } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
+      } catch (e) {
+        if (e instanceof GenerationWaitingForExpert) {
+          return reply.code(409).send({
+            code: 'GENERATION_WAITING_FOR_EXPERT',
+            error: e.message,
+            failure: e.failure,
+            interaction: e.interaction,
+          });
+        }
+        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
+      }
       });
     });
 

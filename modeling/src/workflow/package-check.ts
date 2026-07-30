@@ -11,6 +11,7 @@ import {
 } from './mapping-contract.js';
 import { parseObjectIndex } from './object-index.js';
 import { packageMappingResource } from './package-data-source.js';
+import { tableSourceFor } from './source-references.js';
 import type { PackageFiles } from './package-render.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
 
@@ -259,8 +260,9 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
         const specObjects = new Map((spec.objects ?? []).map((object) => [mappingObjectName(object), object]));
         for (const object of spec.objects ?? []) {
           const objectKey = mappingObjectName(object);
-          if (object.sourceTable && !Object.hasOwn(j.objects, objectKey)) {
-            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 声明了 sourceTable「${object.sourceTable}」，但最终 mapping 中缺少 object key ${objectKey}`);
+          const tableSource = tableSourceFor(object);
+          if (tableSource && !Object.hasOwn(j.objects, objectKey)) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 声明了来源表「${tableSource.table}」，但最终 mapping 中缺少 object key ${objectKey}`);
           }
         }
         for (const [objectKey, v] of Object.entries<any>(j.objects)) {
@@ -275,8 +277,8 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
             add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `最终 mapping 声明了规格中不存在的 object key ${objectKey}`);
             continue;
           }
-          if (!object.sourceTable) {
-            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 没有 sourceTable，属于概念实体，不得声明数据 mapping`);
+          if (!tableSourceFor(object)) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 没有表格来源，属于概念实体，不得声明数据 mapping`);
             continue;
           }
           const expectedResource = packageMappingResource(spec, object);
