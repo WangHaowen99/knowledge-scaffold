@@ -6,6 +6,7 @@ import {
   restoreRevision,
   subscribeProjectEvents,
 } from './authoring-api.js';
+import { authFetch, exportModelingAuditUrl, requireOkResponse } from './api.js';
 import VersionPanel from './VersionPanel.jsx';
 
 export default function PackageVersionWorkspace({ projectId }) {
@@ -15,6 +16,7 @@ export default function PackageVersionWorkspace({ projectId }) {
   const [loading, setLoading] = useState(true);
   const [diffLoading, setDiffLoading] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [auditExporting, setAuditExporting] = useState(false);
   const [error, setError] = useState('');
   const [diffError, setDiffError] = useState('');
   const refreshTimerRef = useRef(null);
@@ -87,8 +89,34 @@ export default function PackageVersionWorkspace({ projectId }) {
     }
   };
 
+  const exportAudit = async () => {
+    if (auditExporting) return;
+    setAuditExporting(true);
+    setError('');
+    try {
+      const response = await requireOkResponse(await authFetch(exportModelingAuditUrl(projectId)));
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = response.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]
+        ?? `${projectId}-modeling-audit.zip`;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '建模审计包导出失败');
+    } finally {
+      setAuditExporting(false);
+    }
+  };
+
   return (
     <div className="wb-b" data-testid="package-version-workspace">
+      <div className="package-version-actions">
+        <button type="button" className="btn" disabled={auditExporting} onClick={() => { void exportAudit(); }}>
+          {auditExporting ? '导出中…' : '导出建模审计包'}
+        </button>
+      </div>
       <VersionPanel
         versions={revisionData.versions}
         currentVersionId={revisionData.currentRevision}

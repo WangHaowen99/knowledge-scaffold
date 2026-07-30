@@ -123,6 +123,7 @@ export const generatePackage = (id, dataSourceType) => api(`${P(id)}/generate`, 
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`);
 export const exportPackageUrl = (id) => `${P(id)}/package/export`;
+export const exportModelingAuditUrl = (id) => `${P(id)}/audit/export`;
 export const getPackageDraft = (id) => api(`${P(id)}/package/draft`);
 export const createPackageDraft = (id) => api(`${P(id)}/package/draft`, { method: 'POST', body: '{}' });
 export const getPackageDraftFile = (id, path) => api(`${P(id)}/package/draft/file?path=${encodeURIComponent(path)}`);

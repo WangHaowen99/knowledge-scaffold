@@ -110,6 +110,7 @@ import {
 } from './workflow/package-draft.js';
 import { registerArtifactRoutes } from './artifacts/routes.js';
 import { registerAuthoringRoutes } from './authoring/routes.js';
+import { buildProjectAuditFiles } from './authoring/audit-export.js';
 import { getAuthoringState } from './authoring/state.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
@@ -940,6 +941,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const zip = zipPackage(rendered);
       reply.header('Content-Type', 'application/zip');
       reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.version}.zip"`);
+      return reply.send(Buffer.from(zip));
+    });
+    r.get('/api/projects/:id/audit/export', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const current = await packageArtifacts.current(c.p.id);
+      const snapshot = current
+        ? await packageArtifacts.readPackageFiles(c.p.id, current.revision.oid)
+        : null;
+      const files = buildProjectAuditFiles(getDb(), c.p.id, {
+        ...(current ? { packageRevision: current.revision.oid } : {}),
+        packageFiles: snapshot?.files ?? {},
+      });
+      const zip = zipPackage(files, `modeling-audit-${c.p.id}`);
+      reply.header('Content-Type', 'application/zip');
+      reply.header('Content-Disposition', `attachment; filename="${c.p.id}-modeling-audit.zip"`);
       return reply.send(Buffer.from(zip));
     });
 
