@@ -159,6 +159,38 @@ def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatc
     assert captured["workspace_id"] == "ws-a"
 
 
+def test_modeling_service_can_read_run_trace_without_user_access_token(tmp_path, monkeypatch):
+    client, _headers = _build_test_client(tmp_path, role="user")
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    captured = {}
+    monkeypatch.setattr(
+        "api.routes.performance.analyze_run_detail",
+        lambda run_id, **kwargs: captured.update(kwargs)
+        or {"run": {"run_id": run_id}, "timeline": [{"event": "run.finished"}], "tools": []},
+    )
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "mw-shadow-project-1")
+
+    response = client.get(
+        "/agentic/internal/modeling/performance/runs/run-a?session_id=session-a",
+        headers={"Authorization": "Bearer {}".format("s" * 32), "X-Workspace-Id": "mw-shadow-project-1"},
+    )
+
+    assert response.status_code == 200
+    assert captured["workspace_id"] == "mw-shadow-project-1"
+
+
+def test_modeling_trace_endpoint_rejects_an_invalid_service_token(tmp_path, monkeypatch):
+    client, _headers = _build_test_client(tmp_path, role="user")
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+
+    response = client.get(
+        "/agentic/internal/modeling/performance/runs/run-a",
+        headers={"Authorization": "Bearer invalid", "X-Workspace-Id": "mw-shadow-project-1"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_local_observability_overview_requires_admin(tmp_path):
     client, headers = _build_test_client(tmp_path, role="user")
 

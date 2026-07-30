@@ -1302,6 +1302,70 @@ def test_regular_user_ontology_writes_still_enforce_workspace_access(tmp_path, m
         assert response.get_json() == {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 
 
+def test_shadow_workspace_owner_can_import_evaluation_package(tmp_path, monkeypatch):
+    from api.routes.workspaces import workspaces_bp
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager.create_user("alice", "UserStrong123!", role="user")
+    alice = auth_manager.change_password("alice", "UserStrong123!", "ChangedStrong123!")
+    app.config["AUTH_MANAGER"] = auth_manager
+    app.register_blueprint(workspaces_bp)
+    app.register_blueprint(ontologies_bp)
+    client = app.test_client()
+
+    provisioned = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+    assert provisioned.status_code == 201
+
+    zip_buffer = _build_zip_file({
+        "evaluation-demo/manifest.yaml": (
+            "kind: ontology\n"
+            "id: evaluation-demo\n"
+            "name: Evaluation Demo\n"
+            "description: Shadow workspace package\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+            "scope: []\n"
+        ),
+        "evaluation-demo/ONTOLOGY.md": "# Evaluation Demo\n",
+        "evaluation-demo/objects-list.md": "- 实体A\n",
+        "evaluation-demo/operations-list.md": "- 流程A\n",
+        "evaluation-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
+        "evaluation-demo/operations/流程A.md": "流程说明\n",
+    })
+    response = client.post(
+        "/agentic/ontologies/import-zip",
+        headers={
+            "Authorization": "Bearer {}".format(auth_manager.issue_token(alice)),
+            "X-Workspace-Id": "mw-shadow-pj-demo-123",
+        },
+        data={"file": (zip_buffer, "evaluation-demo.zip")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["ontology_id"] == "evaluation-demo"
+
+    activated = client.put(
+        "/agentic/ontologies/evaluation-demo/active-version",
+        headers={
+            "Authorization": "Bearer {}".format(auth_manager.issue_token(alice)),
+            "X-Workspace-Id": "mw-shadow-pj-demo-123",
+        },
+        json={"version": "1.0.0"},
+    )
+    assert activated.status_code == 200
+    assert activated.get_json()["active_version"] == "1.0.0"
+
+
 def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path, username="admin", password="admin123")

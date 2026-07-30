@@ -435,6 +435,98 @@ def _write_legacy_workspace(tmp_path, workspace_id="legacy-ws"):
     )
 
 
+def test_modeling_service_can_ensure_owned_shadow_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["created"] is True
+    assert body["workspace"]["id"] == "mw-shadow-pj-demo-123"
+    assert body["workspace"]["owner"] == "alice"
+
+    visible = client.get(
+        "/agentic/workspaces/mw-shadow-pj-demo-123",
+        headers=headers["alice"],
+    )
+    assert visible.status_code == 200
+    assert visible.get_json()["role"] == "admin"
+
+
+def test_modeling_shadow_workspace_is_not_blocked_by_user_workspace_limit(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    monkeypatch.setenv("WORKSPACE_MAX_COUNT", "1")
+    client, headers = _build_env(tmp_path, monkeypatch)
+
+    ordinary = client.post(
+        "/agentic/workspaces",
+        json={"name": "Ordinary", "id": "ordinary"},
+        headers=headers["admin"],
+    )
+    assert ordinary.status_code == 201
+
+    response = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["workspace"]["id"] == "mw-shadow-pj-demo-123"
+
+    over_limit = client.post(
+        "/agentic/workspaces",
+        json={"name": "Second ordinary", "id": "second-ordinary"},
+        headers=headers["admin"],
+    )
+    assert over_limit.status_code == 400
+    assert "工作空间数量已达上限" in over_limit.get_json()["detail"]
+
+
+def test_modeling_shadow_workspace_provisioning_rejects_bad_token_and_owner_takeover(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    client, _ = _build_env(tmp_path, monkeypatch)
+
+    rejected = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("x" * 32)},
+    )
+    assert rejected.status_code == 403
+
+    created = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+    assert created.status_code == 201
+
+    repeated = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+    assert repeated.status_code == 200
+    assert repeated.get_json()["created"] is False
+
+    takeover = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "bob"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+    assert takeover.status_code == 409
+
+
 def test_legacy_workspace_without_owner_fields_still_works(tmp_path, monkeypatch):
     client, headers = _build_env(tmp_path, monkeypatch)
     _setup_shared_and_owned(client, headers)
