@@ -567,7 +567,7 @@ export async function generatePackage(
         const sys = [
           '你是知识包操作建模助手。本阶段只生成 operation。',
           '当前批次的每个已确认流程都必须生成一个 operation，只填写给定的 competencyQuestionId；目标描述由服务端回填。',
-          'operation 给出输入、输出、逐步流程和关联对象；流程引用对象写 object:<key>。',
+          'operation 给出输入、输出、逐步流程和关联对象；flow 数组每项只写步骤正文，不要添加 1.、2. 等序号；流程引用对象写 object:<key>。',
           '需要判断条件或口径时优先引用已有 rule/metric，所有 relatedObjects、usesRules 和 usesMetrics 只能使用下方明确列出的 key。',
           '不得引用未声明的 key，也不得把缺少材料依据的阈值写进流程。',
           '用 submit_operations 一次提交当前批次全部结果，最多 4 个 operation。',
