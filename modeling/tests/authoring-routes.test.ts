@@ -56,6 +56,70 @@ test('会话快照、任务图命令和事件回放保持同一游标', async (t
   assert.equal(replay.json().events[0].payload.command, 'start_task');
 });
 
+test('完成建模确认时固化验证候选并让任务图引用候选修订', async (t) => {
+  const project = createProject({ owner: 'alice', name: '验证候选生命周期' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  let savedInput: any;
+  let appliedCommand: any;
+  const packages = {
+    async current() {
+      return {
+        revision: { oid: 'pkg-draft' },
+        packageVersion: '0.1.0',
+        spec: { status: 'draft', objects: [], operations: [] },
+      };
+    },
+    async saveCurrentAsPackageVersion(_projectId: string, input: any) {
+      savedInput = input;
+      return {
+        revision: { oid: 'pkg-rc-1' },
+        packageVersion: input.version,
+        spec: { status: input.status, objects: [], operations: [] },
+      };
+    },
+  };
+  const graph = {
+    snapshot: () => ({ revision: 6 }),
+    apply: (_projectId: string, command: any) => {
+      appliedCommand = command;
+      return { revision: 7, status: 'completed' };
+    },
+  };
+  const orchestrator = {
+    latestMaterialAnalysis: () => null,
+    latestConfirmedModelingBrief: () => null,
+    completeProcessReview: () => { throw new Error('测试不应进入流程确认'); },
+  };
+  const app = routeApp(t, 'alice', { packages, graph, orchestrator });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/commands`,
+    payload: {
+      command: {
+        type: 'confirm_milestone',
+        expectedRevision: 6,
+        milestoneId: 'construction_completed',
+        packageRevisionOid: 'pkg-draft',
+        actor: { username: 'ignored', role: 'validator' },
+      },
+    },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual(response.json().package, {
+    version: '1.0.0-rc.1', revision: 'pkg-rc-1', status: 'review',
+  });
+  assert.equal(savedInput.expectedRevision, 'pkg-draft');
+  assert.equal(savedInput.version, '1.0.0-rc.1');
+  assert.equal(savedInput.status, 'review');
+  assert.equal(appliedCommand.packageRevisionOid, 'pkg-rc-1');
+  assert.equal(appliedCommand.actor.username, 'alice');
+  assert.equal(response.json().cursor, 2);
+});
+
 test('待办回答支持请求号幂等并在会话中恢复运行态', async (t) => {
   const project = createProject({ owner: 'alice', name: '待办恢复' });
   const state = getAuthoringState();

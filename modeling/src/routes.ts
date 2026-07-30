@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
+import { AiConstructionTaskGraph } from './ai-construction/task-graph.js';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { getDb } from './db/index.js';
@@ -34,6 +35,11 @@ import {
   getPackageWarningReview,
   type WarningAcceptancePhase,
 } from './workflow/warning-acceptance.js';
+import { buildReleaseReadiness, nextPatchVersion } from './workflow/release.js';
+import {
+  isReleaseCandidateVersion,
+  promoteReleaseCandidate,
+} from './workflow/package-version-lifecycle.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
 import { cancelEvaluation, isEvaluationActive, startCurrentEvaluation } from './evaluation/engine.js';
@@ -113,7 +119,7 @@ import {
   revertPackageDraftFile,
   savePackageDraftFile,
 } from './workflow/package-draft.js';
-import { registerArtifactRoutes } from './artifacts/routes.js';
+import { registerArtifactRoutes, sendArtifactError } from './artifacts/routes.js';
 import { registerAuthoringRoutes } from './authoring/routes.js';
 import { buildProjectAuditFiles } from './authoring/audit-export.js';
 import { getAuthoringState } from './authoring/state.js';
@@ -212,6 +218,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
   const packageArtifacts = getPackageArtifactStore();
+  const aiConstruction = new AiConstructionTaskGraph();
   const aiConstructionOrchestrator = new AiConstructionOrchestrator();
   const legacyMigration = migrateLegacyPackageOverrides();
   if (legacyMigration.projectCount) {
@@ -1695,6 +1702,101 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!Array.isArray(suggestionIds) || !suggestionIds.length) return reply.code(400).send({ error: '请选择建议' });
       m4repo.markRejected(suggestionIds, c.p.id);
       return { suggestions: m4repo.listSuggestions(c.p.id) };
+    });
+
+    r.post('/api/projects/:id/release', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'release');
+      if (blocked) return blocked;
+      return withLock(`${c.p.id}:release`, reply, async () => {
+        try {
+          const current = await packageArtifacts.current(c.p.id);
+          if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+
+          const latestRound = m3repo.listRounds(c.p.id)[0];
+          const latestResults = latestRound ? m3repo.listResults(latestRound.id) : [];
+          const requiredTestcases = m3repo.listTestcases(c.p.id)
+            .filter((testcase) => testcase.source === 'manual');
+          const constructionRequired = c.p.kind !== 'package';
+          const constructionSnapshot = constructionRequired
+            ? aiConstruction.snapshot(c.p.id)
+            : null;
+          const pendingRequiredTasks = constructionSnapshot?.tasks.filter((task) => (
+            task.required && !['completed', 'skipped', 'cancelled'].includes(task.status)
+          )).length ?? 0;
+          const pendingCandidateChanges = (await packageArtifacts.candidateRevisionOverview(
+            c.p.id, 'pending', 1,
+          )).pendingCount;
+          const readiness = buildReleaseReadiness({
+            currentRevision: current.revision.oid,
+            packageCheck: getCheck(c.p.id),
+            flowchartRequired: constructionRequired,
+            flowchartConfirmed: constructionSnapshot?.milestones.some((milestone) => (
+              milestone.id === 'process_confirmed' && milestone.status === 'confirmed'
+            )),
+            constructionRequired,
+            constructionCompleted: constructionSnapshot?.status === 'completed'
+              && constructionSnapshot.milestones.some((milestone) => (
+                milestone.id === 'construction_completed' && milestone.status === 'confirmed'
+              )),
+            pendingRequiredTasks,
+            pendingCandidateChanges,
+            latestRound,
+            latestResults,
+            requiredTestcases,
+          });
+          if (!readiness.ready) {
+            return reply.code(409).send({ error: '发布条件未满足', gates: readiness.gates });
+          }
+
+          const latestRevision = (await packageArtifacts.history(c.p.id, 1))[0];
+          const isManualReviewVersion = latestRevision?.oid === current.revision.oid
+            && latestRevision.cause === 'manual_version'
+            && latestRevision.packageVersion === current.packageVersion;
+          const releaseCandidate = current.spec.status === 'review'
+            && isReleaseCandidateVersion(current.packageVersion);
+          const version = releaseCandidate
+            ? promoteReleaseCandidate(current.packageVersion)
+            : isManualReviewVersion ? current.packageVersion : nextPatchVersion(current.packageVersion);
+          const action = {
+            cause: 'release',
+            summary: `发布 ${version}`,
+            actorKind: 'user' as const,
+            actorName: req.user!.username,
+          };
+          const saved = isManualReviewVersion && !releaseCandidate
+            ? await packageArtifacts.finalizeCurrentPackageVersion(c.p.id, {
+              expectedRevision: current.revision.oid,
+              status: 'released',
+              note: '正式发布',
+              action,
+            })
+            : await packageArtifacts.saveCurrentAsPackageVersion(c.p.id, {
+              expectedRevision: current.revision.oid,
+              version,
+              status: 'released',
+              note: '正式发布',
+              action,
+            });
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: c.p.id,
+            type: 'package.revision.created',
+            payload: {
+              revisionId: saved.revision.oid,
+              cause: 'release',
+              packageVersion: version,
+            },
+          });
+          return { version, revision: saved.revision.oid };
+        } catch (error) {
+          if (error instanceof Error && error.message === '知识包版本不正确') {
+            return reply.code(400).send({ error: error.message });
+          }
+          return sendArtifactError(reply, error);
+        }
+      }, 'release');
     });
 
     // ---- 版本与评测汇总（评测中心 / 交付选版） ----

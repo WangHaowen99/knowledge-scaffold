@@ -44,7 +44,7 @@ function publicRevision(revision: any) {
   };
 }
 
-function sendArtifactError(reply: FastifyReply, error: unknown) {
+export function sendArtifactError(reply: FastifyReply, error: unknown) {
   if (error instanceof ProjectLeaseError) {
     const status = error.code === 'project_not_found' ? 404
       : error.code === 'busy' || error.code === 'expired' || error.code === 'not_owner' ? 409 : 400;

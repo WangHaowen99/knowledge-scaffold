@@ -358,6 +358,80 @@ test('项目删除 API：要求明确确认、校验 owner、阻止运行任务�
   assert.equal(missing.statusCode, 404);
 });
 
+test('验证候选通过当前修订门禁后提升为对应稳定版本', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '发布候选转正式版' },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const projectId = created.json().project.id;
+  const [{ getDb }, { getPackageArtifactStore }, m3repo, { saveCheck }] = await Promise.all([
+    import('../src/db/index.js'),
+    import('../src/artifacts/runtime.js'),
+    import('../src/workflow/m3-repo.js'),
+    import('../src/workflow/package-check.js'),
+  ]);
+  getDb().prepare("UPDATE projects SET kind = 'package' WHERE id = ?").run(projectId);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const generated = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'release-candidate-package',
+      name: '发布候选知识包',
+      description: '用于验证发布候选提升为稳定版本的知识包',
+      version: '1.2.0',
+      language: 'zh-CN',
+      status: 'draft',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '生成发布基线',
+    action: {
+      cause: 'generation', summary: '生成发布基线',
+      actorKind: 'agent', actorName: '智能助手',
+    },
+  });
+  const candidate = await store.saveCurrentAsPackageVersion(projectId, {
+    expectedRevision: generated.revision.oid,
+    version: '1.3.0-rc.2',
+    status: 'review',
+    note: '验证候选',
+    action: {
+      cause: 'validation_candidate', summary: '创建验证候选',
+      actorKind: 'user', actorName: 'alice',
+    },
+  });
+  saveCheck(projectId, candidate.packageVersion, [], candidate.revision.oid);
+  const testcase = m3repo.addTestcase(projectId, '如何处理申请？', '按确认流程处理');
+  const round = m3repo.createRound(
+    projectId, candidate.packageVersion, 1, candidate.revision.oid,
+  );
+  m3repo.addResult(round.id, {
+    testcaseId: testcase.id,
+    question: testcase.question,
+    groundTruth: testcase.groundTruth,
+    finalAnswer: '按确认流程处理',
+    verdict: 'pass',
+  });
+  m3repo.roundProgress(round.id, 1, 1);
+  m3repo.finishRound(round.id, 'done');
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/release`, headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().version, '1.3.0');
+  assert.match(response.json().revision, /^[0-9a-f]{40}$/);
+  const released = await store.current(projectId);
+  assert.equal(released?.packageVersion, '1.3.0');
+  assert.equal(released?.spec.status, 'released');
+});
+
 test('人工编辑草稿 API：创建恢复、文件保存、revision 冲突、撤销与放弃', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
