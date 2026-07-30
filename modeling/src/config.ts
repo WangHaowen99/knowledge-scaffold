@@ -31,6 +31,7 @@ export const config = {
   },
 
   consumerApiUrl: env('CONSUMER_API_URL', 'http://localhost:5055'),
+  modelingServiceToken: env('MODELING_SERVICE_TOKEN'),
   evalDbUrl: env('EVAL_DB_URL'),
 };
 

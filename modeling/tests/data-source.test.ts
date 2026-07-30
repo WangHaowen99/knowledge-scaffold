@@ -473,6 +473,62 @@ test('evaluation：评测库后台导入运行中时禁止启动评测', async (
   finishEvaluationDatabaseImportRun(run.id, { error: '测试清理' });
 });
 
+test('evaluation：存量脚本只有 SDK 执行契约问题时仍创建正式评测轮次', async () => {
+  const { startEvaluation } = await import('../src/evaluation/engine.js');
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  const { setSetting } = await import('../src/settings/repo.js');
+  const ready = await createReadyEvaluationProject({ name: '存量脚本评测' });
+  insertPackageVersion(ready.project.id, '2.0.0', {
+    id: `${ready.project.id}-ontology`,
+    name: '存量脚本评测',
+    description: '只有执行契约问题的存量知识包',
+    version: '2.0.0',
+    language: 'zh-CN',
+    defaultProviderAlias: 'graph',
+    objects: [], rules: [], metrics: [],
+    operations: [{
+      key: 'analyze_plan', title: '分析计划', description: '分析计划',
+      inputs: [], outputs: [], flow: ['执行确定性脚本'], relatedObjects: [],
+      script: { key: 'calculate_plan', required: true },
+    }],
+    scripts: [{
+      key: 'calculate_plan', title: '计算计划', description: '计算计划',
+      boundOperation: 'analyze_plan', runtime: 'python', entrypoint: 'calculate_plan.py',
+      timeoutSeconds: 30,
+      parameters: [{
+        name: 'input_json', flag: '--input-json', type: 'string', required: true,
+        description: '结构化计划 JSON',
+      }],
+      outputs: [{ key: 'result', type: 'object', description: '计算结果' }],
+      boundaries: ['不得内置评测答案。'],
+      sourceCode: `
+import argparse
+import json
+from shared_capabilities.ontology_script_sdk import DataProviderClient
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    args = parser.parse_args()
+    with DataProviderClient() as client:
+        rows = client.query("orders", filters={"status": "open"})
+    print(json.dumps({"rows": rows, "input": json.loads(args.input_json)}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
+`,
+    }],
+  }, { covered: [], uncovered: [] });
+  setSetting('consumer_api_url', 'http://127.0.0.1:1');
+
+  const round = startEvaluation({ projectId: ready.project.id, token: 'token' });
+  assert.ok(round.roundId);
+  assert.equal(ready.m3repo.listRounds(ready.project.id).length, 1);
+  for (let index = 0; index < 50 && ready.m3repo.getRound(round.roundId)?.status === 'running'; index++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+});
+
 test('evaluation：连接工作空间必须与数据源 Workspace 隔离值一致', async () => {
   const { evaluationWorkspaceForRun } = await import('../src/evaluation/engine.js');
   const dataSource = {

@@ -31,6 +31,13 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'package_versions', 'revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
+  ensureColumn(db, 'eval_rounds', 'artifact_revision_oid', 'TEXT');
+  ensureColumn(db, 'eval_rounds', 'phase', "TEXT NOT NULL DEFAULT 'workspace'");
+  ensureColumn(db, 'eval_rounds', 'phase_started_at', 'TEXT');
+  ensureColumn(db, 'eval_rounds', 'current_item_started_at', 'TEXT');
+  ensureColumn(db, 'eval_result_traces', 'tool_failures_json', "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'eval_result_traces', 'trace_status', "TEXT NOT NULL DEFAULT 'complete'");
+  ensureColumn(db, 'eval_result_traces', 'trace_error', 'TEXT');
   const competencyColumns = db.prepare('PRAGMA table_info(competency_questions)').all() as Array<{ name: string }>;
   if (!competencyColumns.some((column) => column.name === 'source')) {
     db.exec("ALTER TABLE competency_questions ADD COLUMN source TEXT NOT NULL DEFAULT 'generated'");
@@ -41,6 +48,10 @@ export function getDb(): DatabaseSync {
   if (importColumns.some((column) => column.name === 'engine')) {
     db.exec('ALTER TABLE evaluation_database_import_runs DROP COLUMN engine');
   }
+  db.exec(`UPDATE eval_rounds
+    SET phase = status
+    WHERE status IN ('done', 'failed') AND phase = 'workspace' AND phase_started_at IS NULL`);
+  db.exec('UPDATE eval_rounds SET phase_started_at = created_at WHERE phase_started_at IS NULL');
   _db = db;
   return db;
 }

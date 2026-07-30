@@ -35,12 +35,14 @@ function assertEvaluationGraphScope(
 
 export async function configureProjectDataSource({
   projectId,
+  owner,
   token,
   input,
   testConnection = testProjectDataSourceConnection,
   syncConnection = syncProjectDataSourceToConsumer,
 }: {
   projectId: string;
+  owner?: string;
   token: string;
   input: DataSourceInput;
   testConnection?: DataSourceConnectionTester;
@@ -61,13 +63,15 @@ export async function configureProjectDataSource({
   const ontologyId = String(latest.spec.id ?? '').trim();
   assertEvaluationGraphScope(ontologyId, normalized);
   await testConnection(normalized);
-  const reference = await syncConnection({
+  const syncOptions = {
     projectId,
     workspaceId,
     ontologyId,
     token,
     source: normalized,
-  });
+    ...(owner ? { owner } : {}),
+  };
+  const reference = await syncConnection(syncOptions);
   return saveProjectDataSource({
     projectId,
     mode: 'connection',
