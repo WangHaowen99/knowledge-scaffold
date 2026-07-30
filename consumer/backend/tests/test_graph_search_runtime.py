@@ -94,6 +94,7 @@ def _provider_config():
         "ontology_id": "demo-ontology",
         "_workspace_root": "/tmp/ontologies",
         "workspace_property": "d2o_workspace_id",
+        "ontology_property": "d2o_ontology_id",
     }
 
 

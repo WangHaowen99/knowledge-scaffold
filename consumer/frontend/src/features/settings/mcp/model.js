@@ -46,10 +46,20 @@ export function normalizeMcpStatus(payload = {}, expectedWorkspaceId = '') {
       services: [],
     };
   }
+  const mcpEndpointId = text(payload.mcp_endpoint_id);
+  if (!/^[0-9a-f]{16}$/.test(mcpEndpointId)) {
+    return {
+      valid: false,
+      error: 'MCP 状态响应缺少有效的工作空间 Endpoint ID',
+      workspaceId,
+      services: [],
+    };
+  }
   return {
     valid: true,
     error: '',
     workspaceId,
+    mcpEndpointId,
     running: Boolean(payload.running),
     transport: text(payload.transport),
     publicBaseUrl: text(payload.public_base_url),

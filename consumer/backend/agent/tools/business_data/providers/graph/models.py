@@ -16,21 +16,20 @@ class GraphScope:
     def __post_init__(self) -> None:
         if not all(
             str(value or "").strip()
-            for value in (
-                self.workspace_property,
-                self.workspace_value,
-                self.ontology_property,
-                self.ontology_value,
-            )
+            for value in (self.workspace_property, self.workspace_value)
         ):
-            raise ValueError("GraphScope requires workspace and ontology scope")
+            raise ValueError("GraphScope requires workspace scope")
+        has_ontology_property = bool(str(self.ontology_property or "").strip())
+        has_ontology_value = bool(str(self.ontology_value or "").strip())
+        if has_ontology_property != has_ontology_value:
+            raise ValueError(
+                "GraphScope ontology property and value must be configured together",
+            )
 
     def is_enabled(self) -> bool:
         return bool(
             self.workspace_property
             and self.workspace_value
-            and self.ontology_property
-            and self.ontology_value
         )
 
 

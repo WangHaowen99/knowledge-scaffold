@@ -76,6 +76,12 @@ class RegisteredMigration:
 # with its module when the supported compatibility window closes.
 REGISTERED_MIGRATIONS = (
     RegisteredMigration(
+        migration_id="workspace-mcp-endpoint-id-v1",
+        module="migrations.workspace_mcp_endpoint_id_v1",
+        phase=MigrationPhase.STARTUP,
+        failure_policy=MigrationFailurePolicy.BLOCKING,
+    ),
+    RegisteredMigration(
         migration_id="ontology-data-sources-direct-v2",
         module="migrations.ontology_data_sources_direct_v2",
         phase=MigrationPhase.STARTUP,

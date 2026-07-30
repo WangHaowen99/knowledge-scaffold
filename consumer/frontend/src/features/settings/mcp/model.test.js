@@ -44,6 +44,24 @@ test('runtime status fails closed on workspace mismatch', () => {
   assert.deepEqual(status.services, []);
 });
 
+test('runtime status requires and preserves a workspace MCP endpoint id', () => {
+  const valid = normalizeMcpStatus({
+    workspace_id: 'alpha',
+    mcp_endpoint_id: 'cdd181f5b6cb47a9',
+    services: [{ id: 'search', active_url: 'https://mcp/cdd181f5b6cb47a9/search/mcp' }],
+  }, 'alpha');
+  const invalid = normalizeMcpStatus({
+    workspace_id: 'alpha',
+    mcp_endpoint_id: 'invalid',
+    services: [],
+  }, 'alpha');
+
+  assert.equal(valid.valid, true);
+  assert.equal(valid.mcpEndpointId, 'cdd181f5b6cb47a9');
+  assert.equal(valid.services[0].active_url, 'https://mcp/cdd181f5b6cb47a9/search/mcp');
+  assert.equal(invalid.valid, false);
+});
+
 test('MCP is authenticated self service and client config contains only the supplied placeholder', () => {
   assert.equal(canUseMcpSelfService({ authenticated: true, capability: true }), true);
   assert.equal(canUseMcpSelfService({ authenticated: false, capability: true }), false);

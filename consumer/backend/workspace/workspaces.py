@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import threading
 import unicodedata
@@ -33,15 +34,24 @@ from flask import (
 from config import AppConfig, LimitsConfig
 from config.model_profile_refs import model_profile_ref_to_dict, parse_model_profile_ref
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows development fallback
+    fcntl = None  # type: ignore[assignment]
+
 
 WORKSPACE_HEADER = "X-Workspace-Id"
 LEGACY_DEFAULT_WORKSPACE_ID = "default"
 _WORKSPACE_ID_MAX_LEN = 64
 _WORKSPACE_MEMBERS_MAX_COUNT = 64
+_MCP_ENDPOINT_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
+_MCP_ENDPOINT_LOCK_FILE = "workspace-mcp-endpoints.lock"
+_MCP_ENDPOINT_BACKUP_SUFFIX = "pre-workspace-mcp-endpoint-id-v1.bak"
 _UNCHANGED = object()
 _INVALID_WORKSPACE_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 _workspace_var: ContextVar[Optional[str]] = ContextVar("workspace_id", default=None)
 _workspace_metadata_lock = threading.RLock()
+_workspace_endpoint_process_lock = threading.Lock()
 
 
 class WorkspaceNotFoundError(KeyError):
@@ -81,6 +91,16 @@ class WorkspaceOwnershipConflictError(ValueError):
 
 class WorkspaceAuthorizationError(PermissionError):
     """Raised when a workspace metadata mutation is not authorized."""
+
+
+class WorkspaceMCPEndpointError(ValueError):
+    """Raised when persisted MCP endpoint identity is missing or invalid."""
+
+    def __init__(self, code: str, detail: str, *, workspace_id: str = "") -> None:
+        self.code = str(code or "WORKSPACE_MCP_ENDPOINT_INVALID")
+        self.detail = str(detail or "工作空间 MCP Endpoint 无效")
+        self.workspace_id = str(workspace_id or "")
+        super().__init__(self.detail)
 
 
 @dataclass(frozen=True)
@@ -128,6 +148,30 @@ def get_workspace_settings_path() -> Path:
     return get_runtime_root() / "workspace-settings.json"
 
 
+def _resolve_runtime_root(runtime_root: Path | None = None) -> Path:
+    return Path(runtime_root).expanduser().resolve() if runtime_root else get_runtime_root()
+
+
+@contextmanager
+def _workspace_endpoint_file_lock(runtime_root: Path) -> Iterator[Path]:
+    root = Path(runtime_root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / _MCP_ENDPOINT_LOCK_FILE
+    with _workspace_endpoint_process_lock:
+        with lock_path.open("a+b") as lock_file:
+            try:
+                lock_path.chmod(0o600)
+            except OSError:
+                pass
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield lock_path
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _ensure_runtime_layout() -> None:
     get_runtime_root().mkdir(parents=True, exist_ok=True)
     get_workspaces_root().mkdir(parents=True, exist_ok=True)
@@ -156,6 +200,26 @@ def validate_workspace_id(workspace_id: str) -> str:
         raise ValueError(f"工作空间 ID 过长，最多 {_WORKSPACE_ID_MAX_LEN} 个字符")
 
     return value
+
+
+def validate_mcp_endpoint_id(value: str) -> str:
+    endpoint_id = str(value or "").strip()
+    if not endpoint_id:
+        raise ValueError("mcp_endpoint_id 不能为空")
+    if not _MCP_ENDPOINT_ID_PATTERN.fullmatch(endpoint_id):
+        raise ValueError("mcp_endpoint_id 必须是16位小写十六进制字符串")
+    return endpoint_id
+
+
+def generate_mcp_endpoint_id(existing_ids: set[str]) -> str:
+    normalized_existing = {
+        validate_mcp_endpoint_id(value)
+        for value in existing_ids
+    }
+    while True:
+        candidate = secrets.token_hex(8)
+        if candidate not in normalized_existing:
+            return candidate
 
 
 def _slugify_workspace_name(name: str) -> str:
@@ -278,6 +342,258 @@ def _validate_workspace_metadata_identity(
     return actual
 
 
+def _workspace_dirs_for_runtime_root(runtime_root: Path) -> List[Path]:
+    workspaces_root = runtime_root / "workspaces"
+    if not workspaces_root.exists():
+        return []
+    return sorted(
+        [
+            entry
+            for entry in workspaces_root.iterdir()
+            if entry.is_dir() and (entry / "workspace.json").is_file()
+        ],
+        key=lambda item: item.name,
+    )
+
+
+def _scan_workspace_mcp_endpoints(
+    runtime_root: Path,
+) -> tuple[list[tuple[str, Path, Dict[str, Any]]], dict[str, str], list[dict[str, str]]]:
+    workspaces: list[tuple[str, Path, Dict[str, Any]]] = []
+    endpoint_owners: dict[str, str] = {}
+    errors: list[dict[str, str]] = []
+    for workspace_dir in _workspace_dirs_for_runtime_root(runtime_root):
+        workspace_id = workspace_dir.name
+        metadata_path = workspace_dir / "workspace.json"
+        try:
+            payload = _read_workspace_metadata_raw(metadata_path)
+            resolved_workspace_id = _validate_workspace_metadata_identity(
+                workspace_id,
+                payload,
+            )
+        except Exception as exc:
+            errors.append({
+                "code": "WORKSPACE_METADATA_INVALID",
+                "workspace_id": workspace_id,
+                "detail": str(exc),
+            })
+            continue
+
+        workspaces.append((resolved_workspace_id, metadata_path, payload))
+        raw_endpoint_id = payload.get("mcp_endpoint_id")
+        if raw_endpoint_id in (None, ""):
+            continue
+        try:
+            endpoint_id = validate_mcp_endpoint_id(raw_endpoint_id)
+        except ValueError as exc:
+            errors.append({
+                "code": "WORKSPACE_MCP_ENDPOINT_INVALID",
+                "workspace_id": resolved_workspace_id,
+                "detail": str(exc),
+            })
+            continue
+        prior_owner = endpoint_owners.get(endpoint_id)
+        if prior_owner is not None:
+            errors.append({
+                "code": "WORKSPACE_MCP_ENDPOINT_DUPLICATE",
+                "workspace_id": resolved_workspace_id,
+                "detail": "mcp_endpoint_id 与工作空间 {} 重复".format(prior_owner),
+            })
+            errors.append({
+                "code": "WORKSPACE_MCP_ENDPOINT_DUPLICATE",
+                "workspace_id": prior_owner,
+                "detail": "mcp_endpoint_id 与工作空间 {} 重复".format(resolved_workspace_id),
+            })
+            continue
+        endpoint_owners[endpoint_id] = resolved_workspace_id
+    return workspaces, endpoint_owners, errors
+
+
+def _write_backup_once(path: Path, payload: bytes) -> None:
+    if path.exists():
+        return
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as backup_file:
+            descriptor = -1
+            backup_file.write(payload)
+            backup_file.flush()
+            os.fsync(backup_file.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def get_workspace_mcp_endpoint_id(workspace_id: str) -> str:
+    resolved_workspace_id = validate_workspace_id(workspace_id)
+    paths = get_workspace_paths(resolved_workspace_id)
+    with _workspace_metadata_lock:
+        if not paths.metadata_path.exists():
+            raise WorkspaceNotFoundError(resolved_workspace_id)
+        try:
+            payload = _read_workspace_metadata_raw(paths.metadata_path)
+            _validate_workspace_metadata_identity(resolved_workspace_id, payload)
+            endpoint_id = validate_mcp_endpoint_id(payload.get("mcp_endpoint_id"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise WorkspaceMCPEndpointError(
+                "WORKSPACE_MCP_ENDPOINT_INVALID",
+                "工作空间 {} 的 mcp_endpoint_id 无效: {}".format(
+                    resolved_workspace_id,
+                    exc,
+                ),
+                workspace_id=resolved_workspace_id,
+            ) from exc
+
+        try:
+            _, _, endpoint_errors = _scan_workspace_mcp_endpoints(get_runtime_root())
+        except OSError as exc:
+            raise WorkspaceMCPEndpointError(
+                "WORKSPACE_MCP_ENDPOINT_READ_FAILED",
+                "工作空间 MCP Endpoint 元数据读取失败",
+                workspace_id=resolved_workspace_id,
+            ) from exc
+        duplicate_error = next(
+            (
+                item
+                for item in endpoint_errors
+                if item["workspace_id"] == resolved_workspace_id
+                and item["code"] == "WORKSPACE_MCP_ENDPOINT_DUPLICATE"
+            ),
+            None,
+        )
+        if duplicate_error is not None:
+            raise WorkspaceMCPEndpointError(
+                duplicate_error["code"],
+                duplicate_error["detail"],
+                workspace_id=resolved_workspace_id,
+            )
+        return endpoint_id
+
+
+def ensure_all_workspace_mcp_endpoint_ids(
+    runtime_root: Path | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    resolved_root = _resolve_runtime_root(runtime_root)
+
+    @contextmanager
+    def mutation_scope() -> Iterator[None]:
+        if dry_run:
+            yield
+            return
+        with _workspace_endpoint_file_lock(resolved_root):
+            yield
+
+    with mutation_scope():
+        with _workspace_metadata_lock:
+            workspaces, endpoint_owners, errors = _scan_workspace_mcp_endpoints(
+                resolved_root,
+            )
+            failed_ids = sorted({item["workspace_id"] for item in errors})
+            if errors:
+                return {
+                    "ok": False,
+                    "dry_run": bool(dry_run),
+                    "counts": {
+                        "workspaces": len(workspaces),
+                        "existing": len(endpoint_owners),
+                        "created": 0,
+                    },
+                    "updated_workspace_ids": [],
+                    "backup_paths": [],
+                    "failed_object_ids": failed_ids,
+                    "error_codes": sorted({item["code"] for item in errors}),
+                    "errors": [item["detail"] for item in errors],
+                }
+
+            existing_ids = set(endpoint_owners)
+            planned: list[tuple[str, Path, Dict[str, Any], str]] = []
+            for workspace_id, metadata_path, payload in workspaces:
+                if payload.get("mcp_endpoint_id") not in (None, ""):
+                    continue
+                endpoint_id = generate_mcp_endpoint_id(existing_ids)
+                existing_ids.add(endpoint_id)
+                planned.append((workspace_id, metadata_path, payload, endpoint_id))
+
+            backup_paths: list[str] = []
+            updated_ids: list[str] = []
+            if not dry_run:
+                try:
+                    for workspace_id, metadata_path, payload, endpoint_id in planned:
+                        original_bytes = metadata_path.read_bytes()
+                        backup_path = metadata_path.with_name(
+                            "{}.{}".format(
+                                metadata_path.name,
+                                _MCP_ENDPOINT_BACKUP_SUFFIX,
+                            )
+                        )
+                        _write_backup_once(backup_path, original_bytes)
+                        payload["mcp_endpoint_id"] = endpoint_id
+                        _write_json_atomic(metadata_path, payload)
+                        persisted = _read_workspace_metadata_raw(metadata_path)
+                        _validate_workspace_metadata_identity(workspace_id, persisted)
+                        if validate_mcp_endpoint_id(
+                            persisted.get("mcp_endpoint_id")
+                        ) != endpoint_id:
+                            raise ValueError("mcp_endpoint_id 写入后校验失败")
+                        backup_paths.append(str(backup_path))
+                        updated_ids.append(workspace_id)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "dry_run": False,
+                        "counts": {
+                            "workspaces": len(workspaces),
+                            "existing": len(endpoint_owners),
+                            "created": len(updated_ids),
+                        },
+                        "updated_workspace_ids": updated_ids,
+                        "backup_paths": backup_paths,
+                        "failed_object_ids": [workspace_id],
+                        "error_codes": ["WORKSPACE_MCP_ENDPOINT_WRITE_FAILED"],
+                        "errors": [str(exc)],
+                    }
+
+                _, _, persisted_errors = _scan_workspace_mcp_endpoints(resolved_root)
+                if persisted_errors:
+                    return {
+                        "ok": False,
+                        "dry_run": False,
+                        "counts": {
+                            "workspaces": len(workspaces),
+                            "existing": len(endpoint_owners),
+                            "created": len(updated_ids),
+                        },
+                        "updated_workspace_ids": updated_ids,
+                        "backup_paths": backup_paths,
+                        "failed_object_ids": sorted({
+                            item["workspace_id"] for item in persisted_errors
+                        }),
+                        "error_codes": sorted({
+                            item["code"] for item in persisted_errors
+                        }),
+                        "errors": [item["detail"] for item in persisted_errors],
+                    }
+
+            return {
+                "ok": True,
+                "dry_run": bool(dry_run),
+                "counts": {
+                    "workspaces": len(workspaces),
+                    "existing": len(endpoint_owners),
+                    "created": len(planned),
+                },
+                "updated_workspace_ids": (
+                    [item[0] for item in planned] if dry_run else updated_ids
+                ),
+                "backup_paths": backup_paths,
+                "failed_object_ids": [],
+                "error_codes": [],
+                "errors": [],
+            }
+
+
 def _workspace_to_public(
     data: Dict[str, Any], *, default_workspace_id: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -326,12 +642,14 @@ def _init_workspace_layout(
     name: str,
     description: str = "",
     owner: Optional[str] = None,
+    mcp_endpoint_id: str,
 ) -> Dict[str, Any]:
     now = _utc_now()
     payload = {
         "id": paths.workspace_id,
         "name": _normalize_workspace_name(name),
         "description": str(description or "").strip(),
+        "mcp_endpoint_id": validate_mcp_endpoint_id(mcp_endpoint_id),
         "created_at": now,
         "updated_at": now,
         "owner": _normalize_workspace_owner(owner),
@@ -542,28 +860,55 @@ def create_workspace(
     _ensure_workspace_state()
     normalized_name = _normalize_workspace_name(name)
     normalized_owner = _normalize_workspace_owner(owner)
+    runtime_root = get_runtime_root()
 
-    with _workspace_metadata_lock:
-        if workspace_id:
-            candidate = validate_workspace_id(workspace_id)
-            if workspace_exists(candidate):
-                raise ValueError(f"工作空间 ID '{candidate}' 已存在")
-        else:
-            candidate = _slugify_workspace_name(normalized_name)
-            while workspace_exists(candidate):
-                candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
+    with _workspace_endpoint_file_lock(runtime_root):
+        with _workspace_metadata_lock:
+            workspaces, endpoint_owners, endpoint_errors = _scan_workspace_mcp_endpoints(
+                runtime_root,
+            )
+            if endpoint_errors:
+                first_error = endpoint_errors[0]
+                raise WorkspaceMCPEndpointError(
+                    first_error["code"],
+                    first_error["detail"],
+                    workspace_id=first_error["workspace_id"],
+                )
+            if len(endpoint_owners) != len(workspaces):
+                missing_workspace_id = next(
+                    workspace_id
+                    for workspace_id, _metadata_path, payload in workspaces
+                    if payload.get("mcp_endpoint_id") in (None, "")
+                )
+                raise WorkspaceMCPEndpointError(
+                    "WORKSPACE_MCP_ENDPOINT_MISSING",
+                    "工作空间 {} 尚未完成 MCP Endpoint ID 迁移".format(
+                        missing_workspace_id,
+                    ),
+                    workspace_id=missing_workspace_id,
+                )
+            if workspace_id:
+                candidate = validate_workspace_id(workspace_id)
+                if workspace_exists(candidate):
+                    raise ValueError(f"工作空间 ID '{candidate}' 已存在")
+            else:
+                candidate = _slugify_workspace_name(normalized_name)
+                while workspace_exists(candidate):
+                    candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
 
-        max_workspaces = LimitsConfig.from_env().workspace_max_count
-        if len(list_workspaces()) >= max_workspaces:
-            raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
+            max_workspaces = LimitsConfig.from_env().workspace_max_count
+            if len(workspaces) >= max_workspaces:
+                raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
 
-        paths = get_workspace_paths(candidate)
-        _init_workspace_layout(
-            paths,
-            name=normalized_name,
-            description=description,
-            owner=normalized_owner,
-        )
+            endpoint_id = generate_mcp_endpoint_id(set(endpoint_owners))
+            paths = get_workspace_paths(candidate)
+            _init_workspace_layout(
+                paths,
+                name=normalized_name,
+                description=description,
+                owner=normalized_owner,
+                mcp_endpoint_id=endpoint_id,
+            )
     if set_as_default or (auto_set_default and get_default_workspace_id() is None):
         set_default_workspace(candidate)
     return get_workspace(candidate)

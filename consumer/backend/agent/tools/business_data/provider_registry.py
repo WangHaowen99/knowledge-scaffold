@@ -111,7 +111,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
             ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
             ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
-            ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
+            ProviderField("ontology_property", "Ontology 隔离字段"),
         ],
     ),
     "hugegraph": BusinessDataProviderSpec(
@@ -134,7 +134,7 @@ PROVIDER_SPECS: Dict[str, BusinessDataProviderSpec] = {
             ProviderField("max_result_rows", "最大返回行数", type="int", default=100),
             ProviderField("max_iterations", "图检索 Agent 最大轮次", type="int", default=4),
             ProviderField("workspace_property", "Workspace 隔离字段", default="d2o_workspace_id"),
-            ProviderField("ontology_property", "Ontology 隔离字段", default="d2o_ontology_id"),
+            ProviderField("ontology_property", "Ontology 隔离字段"),
         ],
     ),
 }
