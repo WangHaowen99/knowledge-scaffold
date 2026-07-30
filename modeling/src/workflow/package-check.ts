@@ -317,6 +317,42 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
 }
 
 // ---- 语义检查（LLM agent，checklist 源自 semantic-check-agent） ----
+export function buildSemanticCheckPrompt(project: Project, spec: PackageSpec) {
+  const system = [
+    '你是知识包语义体检员（package_check）。逐项检查规格并用 submit_findings 提交结构化发现。',
+    '对每个操作检查：',
+    '1) 逻辑步骤完整性——流程是否缺分支、缺异常路径、条件不完整；',
+    '2) 输入参数使用——输入表中的参数是否都在流程中被用到；',
+    '3) 输出可推导性——输出能否由流程步骤推导出来；',
+    '4) 兜底完整性——流程中引用其他操作/查询数据时，结果可能为空/0/失败的（转换型/判断型/数值计算型/查询型四类），是否有显式兜底（跳过/空值传递/估算/默认值）或天然保护（上游已过滤、成熟态数据、纯查询不触发动作）；两者皆无报「警告/兜底缺失」；',
+    '5) 空值语义——确定性空值（业务真为零）与未知性空值（未读到/未同步）是否被混同代入计算；混同报「错误/空值语义模糊」；',
+    '6) 口径一致性——同一业务量（如成本、周期、数量）在不同操作间的计算口径是否互相矛盾；矛盾报「错误/口径冲突」，并指出冲突双方。',
+    '7) 参数化与泛化——规则、操作和脚本是否把一次示例中的主体、批次、日期、数量或答案写成固定知识；不得把示例中的具体输入或答案写成通用规则。发现这种情况报「错误/样例硬编码」。',
+    '8) 变体覆盖——流程是否能处理边界、异常和未见过的输入组合；只复述单一路径、没有适用范围或缺少必要分支时，报「警告/泛化边界不足」。',
+    '9) 证据与假设边界——阈值、公式、枚举、流程分支和对象关系是否有资料、确认流程或专家决策依据；模型推测被写成确定事实时，报「错误/无证据知识」。',
+    '10) 确定性能力——多步骤计算、聚合、排序、分配或格式转换是否通过参数化 script 执行，并声明输入输出、边界和失败处理；只在文字中给出不可验证计算时，报「警告/确定性能力缺失」。',
+    '对每个对象检查：字段描述歧义、关联对象是否有字段/外键支撑、业务定义是否自洽。',
+    'target 填对象/操作的 key；suggestion 写成可直接执行的修缮指令；确无问题就提交空数组，不要为凑数报告风格偏好。',
+    `项目背景：${project.background || project.domain || project.name}`,
+  ].join('\n');
+
+  const body = [
+    '【当前规格】',
+    JSON.stringify({
+      objects: spec.objects,
+      operations: spec.operations,
+      rules: spec.rules ?? [],
+      metrics: spec.metrics ?? [],
+      scripts: (spec.scripts ?? []).map((script) => ({
+        ...script,
+        sourceCode: script.sourceCode.slice(0, 20_000),
+      })),
+    }),
+    '请完成语义体检并提交发现。',
+  ].join('\n');
+  return { system, body };
+}
+
 export async function runSemanticCheck(project: Project, spec: PackageSpec): Promise<CheckFinding[]> {
   const cap: { findings?: Omit<CheckFinding, 'id' | 'source'>[] } = {};
   const submitFindings = {
@@ -338,23 +374,9 @@ export async function runSemanticCheck(project: Project, spec: PackageSpec): Pro
     },
   };
 
-  const sys = [
-    '你是知识包语义体检员（package_check）。逐项检查规格并用 submit_findings 提交结构化发现。',
-    '对每个操作检查：',
-    '1) 逻辑步骤完整性——流程是否缺分支、缺异常路径、条件不完整；',
-    '2) 输入参数使用——输入表中的参数是否都在流程中被用到；',
-    '3) 输出可推导性——输出能否由流程步骤推导出来；',
-    '4) 兜底完整性——流程中引用其他操作/查询数据时，结果可能为空/0/失败的（转换型/判断型/数值计算型/查询型四类），是否有显式兜底（跳过/空值传递/估算/默认值）或天然保护（上游已过滤、成熟态数据、纯查询不触发动作）；两者皆无报「警告/兜底缺失」；',
-    '5) 空值语义——确定性空值（业务真为零）与未知性空值（未读到/未同步）是否被混同代入计算；混同报「错误/空值语义模糊」；',
-    '6) 口径一致性——同一业务量（如成本、周期、数量）在不同操作间的计算口径是否互相矛盾；矛盾报「错误/口径冲突」，并指出冲突双方。',
-    '对每个对象检查：字段描述歧义、关联对象是否有字段/外键支撑、业务定义是否自洽。',
-    'target 填对象/操作的 key；suggestion 写成可直接执行的修缮指令；确无问题就提交空数组，不要为凑数报告风格偏好。',
-    `项目背景：${project.background || project.domain || project.name}`,
-  ].join('\n');
-
-  const body = ['【当前规格】', JSON.stringify({ objects: spec.objects, operations: spec.operations }), '请完成语义体检并提交发现。'].join('\n');
-  const agent = makeAgent(buildLlm(), sys, [submitFindings] as any);
-  await runAgent(agent, body);
+  const prompt = buildSemanticCheckPrompt(project, spec);
+  const agent = makeAgent(buildLlm(), prompt.system, [submitFindings] as any);
+  await runAgent(agent, prompt.body);
   return (cap.findings ?? []).map((f) => ({ ...f, id: fid(), source: 'semantic' as const }));
 }
 

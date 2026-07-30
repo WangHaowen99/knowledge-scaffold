@@ -18,6 +18,7 @@
     "smoke:m3": "MODELING_LLM_BASE_URL=faux tsx scripts/smoke-m3.ts",
     "smoke:m4": "MODELING_LLM_BASE_URL=faux tsx scripts/smoke-m4.ts",
     "smoke:check": "MODELING_LLM_BASE_URL=faux tsx scripts/smoke-check.ts",
+    "check:anti-overfit": "tsx scripts/anti-overfit-guard.ts",
     "check:llm": "tsx --env-file=.env scripts/check-llm.ts",
     "smoke:real": "tsx --env-file=.env scripts/smoke-real.ts"
   },
