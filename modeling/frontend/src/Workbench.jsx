@@ -8,11 +8,14 @@ import DataSourcePanel from './DataSourcePanel.jsx';
 import { OptimizePanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
 import PackageVersionWorkspace from './PackageVersionWorkspace.jsx';
+import FlowchartReviewPanel from './FlowchartReviewPanel.jsx';
 import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
 import { latestNodeOf } from './workflowNodes.js';
 import { workbenchAutoFocus } from './workbench-focus.js';
 import { packageDraftOperationLabel } from './package-draft-ui.js';
+import { getProjectSession, subscribeProjectEvents } from './authoring-api.js';
+import { confirmFlowchartNavigation } from './flowchartNavigationGuard.js';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
 // 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
@@ -41,6 +44,8 @@ export default function Workbench({ projectId }) {
   const [packageDraft, setPackageDraft] = useState(null);
   const [packageRepairBusy, setPackageRepairBusy] = useState(''); // '' | plan | apply
   const [draftGate, setDraftGate] = useState(null);
+  const [processReview, setProcessReview] = useState(null);
+  const [flowchartDirty, setFlowchartDirty] = useState(false);
 
   const load = useCallback(() =>
     getProject(projectId).then(setData).catch((e) => setErr(e.message)), [projectId]);
@@ -61,6 +66,29 @@ export default function Workbench({ projectId }) {
     }).catch((e) => { if (active) setErr(e.message); });
     return () => { active = false; };
   }, [projectId]);
+  const loadAuthoringSession = useCallback(async () => {
+    const session = await getProjectSession(projectId);
+    const review = session.authoring?.pendingInteractions?.find((interaction) => (
+      interaction.type === 'flowchart_review' && interaction.payload?.purpose === 'process_review'
+    ));
+    setProcessReview(review ?? null);
+    if (!review) setFlowchartDirty(false);
+    return session;
+  }, [projectId]);
+  useEffect(() => {
+    let active = true;
+    setProcessReview(null);
+    setFlowchartDirty(false);
+    void loadAuthoringSession().catch((e) => { if (active) setErr(e.message); });
+    const unsubscribe = subscribeProjectEvents(projectId, {
+      onEvent: (event) => {
+        if (!['authoring.interaction.opened', 'authoring.interaction.answered', 'flowchart.review.completed']
+          .includes(event.type)) return;
+        void loadAuthoringSession().catch((e) => { if (active) setErr(e.message); });
+      },
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [loadAuthoringSession, projectId]);
   useEffect(() => {
     const handleDraftRequired = (event) => {
       setDraftGate(event.detail ?? {});
@@ -174,7 +202,9 @@ export default function Workbench({ projectId }) {
             return (
               <div key={key} data-tour={`node-${key}`}
                 className={`tl-node ${st === 'done' ? 'done' : ''} ${st === 'stale' ? 'stale' : ''} ${st === 'running' ? 'running' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
-                onClick={() => canGo && setFocus(key)}>
+                onClick={() => {
+                  if (canGo && confirmFlowchartNavigation(flowchartDirty)) setFocus(key);
+                }}>
                 <div className="th">
                   <span className="no">{st === 'done' ? '✓' : st === 'stale' ? '⟳' : st === 'running' ? <span className="spinner" /> : i + 1}</span>
                   <span className="tt" style={!canGo ? { color: 'var(--muted)' } : undefined}>{title}</span>
@@ -191,7 +221,7 @@ export default function Workbench({ projectId }) {
       {/* 中：当前节点交互区（按 effFocus 路由） */}
       <div className="wb-col wb-mid">
         <div className="wb-h">
-          {TITLE[effFocus]}
+          {processReview ? '业务流程图确认' : TITLE[effFocus]}
           {effFocus === 'analyze' && (!analyzeDone || nodeStatus.analyze === 'stale') && unlocked.analyze && (
             <BusyButton busy={analyzeRunning} busyText="领域分析中" expect="通常 1~3 分钟，可切换页面"
               style={{ marginLeft: 'auto', padding: '5px 14px', fontSize: 12.5 }} onClick={doAnalyze}>
@@ -218,41 +248,53 @@ export default function Workbench({ projectId }) {
             )}
           </div>
         )}
-        <div className="wb-b">
-          {(effFocus === 'ingest' || effFocus === 'project_setup') && (
-            <IngestView project={project} documents={documents} onChanged={load} />
-          )}
-          {effFocus === 'analyze' && (analyzeNode
-            ? <AnalysisView projectId={projectId} analysis={analyzeNode.output} stale={nodeStatus.analyze === 'stale'}
-                onReanalyze={doAnalyze} analyzing={analyzeRunning} onQuestionsChange={load}
-                questionsGenerating={competencyNode?.status === 'running'}
-                tableCount={tables.length} docCount={parsedDocs.length}
-                onAdvance={() => { load(); setFocus('interview'); }} />
-            : <IngestView project={project} documents={documents} onChanged={load} />)}
-          {effFocus === 'interview' && (
-            <InterviewPanel projectId={projectId} node={interviewNode} agentBusy={interviewNode?.status === 'running'}
-              onRefresh={load}
-              onAdvance={() => { load(); setFocus('generate'); }} />
-          )}
-          {effFocus === 'generate' && (
-            <GeneratePanel projectId={projectId} node={generateNode} onRefresh={load}
-              onAdvance={() => { load(); setFocus('review'); }} />
-          )}
-          {effFocus === 'review' && (
-            <ReviewPanel projectId={projectId} packageDraft={packageDraft}
-              packageRepairBusy={packageRepairBusy}
-              onDraftChange={setPackageDraft} onAdvance={() => setFocus('data_source')} />
-          )}
-          {effFocus === 'data_source' && (
-            <DataSourcePanel projectId={projectId} onAdvance={() => { load(); setFocus('testcases'); }} />
-          )}
-          {effFocus === 'testcases' && (
-            <TestcasesPanel projectId={projectId} onAdvance={() => { load(); setFocus('evaluate'); }} />
-          )}
-          {effFocus === 'evaluate' && <EvaluatePanel projectId={projectId} onProjectChanged={load} />}
-          {effFocus === 'optimize' && (
-            <OptimizePanel projectId={projectId} onGoEvaluate={() => { load(); setFocus('evaluate'); }} />
-          )}
+        <div className={`wb-b${processReview ? ' flowchart-review-host' : ''}`}>
+          {processReview ? (
+            <FlowchartReviewPanel
+              projectId={projectId}
+              interaction={processReview}
+              onDirtyChange={setFlowchartDirty}
+              onCompleted={async () => {
+                await Promise.allSettled([loadAuthoringSession(), load(), refreshPackageDraft()]);
+                window.dispatchEvent(new CustomEvent('mw-package-updated'));
+              }}
+            />
+          ) : <>
+            {(effFocus === 'ingest' || effFocus === 'project_setup') && (
+              <IngestView project={project} documents={documents} onChanged={load} />
+            )}
+            {effFocus === 'analyze' && (analyzeNode
+              ? <AnalysisView projectId={projectId} analysis={analyzeNode.output} stale={nodeStatus.analyze === 'stale'}
+                  onReanalyze={doAnalyze} analyzing={analyzeRunning} onQuestionsChange={load}
+                  questionsGenerating={competencyNode?.status === 'running'}
+                  tableCount={tables.length} docCount={parsedDocs.length}
+                  onAdvance={() => { load(); setFocus('interview'); }} />
+              : <IngestView project={project} documents={documents} onChanged={load} />)}
+            {effFocus === 'interview' && (
+              <InterviewPanel projectId={projectId} node={interviewNode} agentBusy={interviewNode?.status === 'running'}
+                onRefresh={load}
+                onAdvance={() => { load(); setFocus('generate'); }} />
+            )}
+            {effFocus === 'generate' && (
+              <GeneratePanel projectId={projectId} node={generateNode} onRefresh={load}
+                onAdvance={() => { load(); setFocus('review'); }} />
+            )}
+            {effFocus === 'review' && (
+              <ReviewPanel projectId={projectId} packageDraft={packageDraft}
+                packageRepairBusy={packageRepairBusy}
+                onDraftChange={setPackageDraft} onAdvance={() => setFocus('data_source')} />
+            )}
+            {effFocus === 'data_source' && (
+              <DataSourcePanel projectId={projectId} onAdvance={() => { load(); setFocus('testcases'); }} />
+            )}
+            {effFocus === 'testcases' && (
+              <TestcasesPanel projectId={projectId} onAdvance={() => { load(); setFocus('evaluate'); }} />
+            )}
+            {effFocus === 'evaluate' && <EvaluatePanel projectId={projectId} onProjectChanged={load} />}
+            {effFocus === 'optimize' && (
+              <OptimizePanel projectId={projectId} onGoEvaluate={() => { load(); setFocus('evaluate'); }} />
+            )}
+          </>}
         </div>
       </div>
 

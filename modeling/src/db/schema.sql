@@ -234,6 +234,76 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_interactions_response
   ON authoring_interactions(project_id, response_id)
   WHERE response_id IS NOT NULL;
 
+-- 可编辑流程草稿。当前修订只保存在头记录中，文档内容按修订不可变保存。
+CREATE TABLE IF NOT EXISTS flowchart_drafts (
+  interaction_id    TEXT PRIMARY KEY REFERENCES authoring_interactions(id) ON DELETE CASCADE,
+  project_id        TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  current_revision  INTEGER NOT NULL CHECK (current_revision >= 1),
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE (project_id, interaction_id)
+);
+CREATE INDEX IF NOT EXISTS idx_flowchart_drafts_project
+  ON flowchart_drafts(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS flowchart_draft_revisions (
+  project_id        TEXT NOT NULL,
+  interaction_id    TEXT NOT NULL,
+  revision          INTEGER NOT NULL CHECK (revision >= 1),
+  document_json     TEXT NOT NULL,
+  warnings_json     TEXT NOT NULL DEFAULT '[]',
+  actor_username    TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (interaction_id, revision),
+  UNIQUE (project_id, interaction_id, revision),
+  FOREIGN KEY (project_id, interaction_id)
+    REFERENCES flowchart_drafts(project_id, interaction_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS flowchart_draft_submissions (
+  project_id        TEXT NOT NULL,
+  interaction_id    TEXT NOT NULL,
+  revision          INTEGER NOT NULL,
+  actor_username    TEXT NOT NULL,
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (interaction_id, revision),
+  FOREIGN KEY (project_id, interaction_id, revision)
+    REFERENCES flowchart_draft_revisions(project_id, interaction_id, revision) ON DELETE CASCADE
+);
+
+-- Git 不能参加 SQLite 事务，先记录流程图提交意图，服务重试时可继续收敛交互状态。
+CREATE TABLE IF NOT EXISTS flowchart_review_finalizations (
+  project_id           TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  interaction_id       TEXT NOT NULL,
+  draft_revision       INTEGER NOT NULL CHECK (draft_revision > 0),
+  request_id           TEXT NOT NULL,
+  response_json        TEXT NOT NULL,
+  actor_username       TEXT NOT NULL,
+  package_revision_oid TEXT,
+  status               TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'completed')),
+  created_at           TEXT NOT NULL,
+  completed_at         TEXT,
+  PRIMARY KEY (interaction_id, draft_revision),
+  UNIQUE (project_id, request_id),
+  FOREIGN KEY (project_id, interaction_id, draft_revision)
+    REFERENCES flowchart_draft_revisions(project_id, interaction_id, revision) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_flowchart_review_finalizations_project
+  ON flowchart_review_finalizations(project_id, status, created_at);
+
+CREATE TRIGGER IF NOT EXISTS trg_flowchart_revisions_immutable
+BEFORE UPDATE ON flowchart_draft_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'flowchart draft revisions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_flowchart_submissions_immutable
+BEFORE UPDATE ON flowchart_draft_submissions
+BEGIN
+  SELECT RAISE(ABORT, 'flowchart draft submissions are immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS project_events (
   id              TEXT PRIMARY KEY,
   project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
