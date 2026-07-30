@@ -53,6 +53,7 @@ export interface ShadowWorkspaceProvisionResult {
 interface ShadowWorkspaceProvisionOptions {
   baseUrl?: string;
   serviceToken?: string;
+  signal?: AbortSignal;
 }
 
 export interface ModelingServiceRequestOptions {
@@ -97,6 +98,7 @@ export async function provisionShadowWorkspace(
   owner: string,
   options: ShadowWorkspaceProvisionOptions = {},
 ): Promise<ShadowWorkspaceProvisionResult> {
+  const { signal, ...serviceOptions } = options;
   const response = await modelingServiceFetch(
     '/agentic/internal/modeling/shadow-workspaces/ensure',
     {
@@ -105,8 +107,9 @@ export async function provisionShadowWorkspace(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ project_id: projectId, owner }),
+      signal,
     },
-    options,
+    serviceOptions,
   );
   const data = (await response.json().catch(() => ({}))) as any;
   if (!response.ok) {

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   listTestcases, addTestcase, addTestcases, prefillTestcases, updateTestcase, deleteTestcase,
-  startEvaluate, listRounds, getRound, overrideVerdict, getDataSource,
+  startEvaluate, cancelEvaluate, listRounds, getRound, overrideVerdict, getDataSource,
 } from './api.js';
 import { AutoTextarea } from './ui.jsx';
 import { DataSourceSummary } from './DataSourcePanel.jsx';
@@ -208,6 +208,16 @@ export function EvaluatePanel({ projectId, onProjectChanged }) {
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
+  const stop = async () => {
+    if (!current?.round?.id || !window.confirm('确定停止本轮评测吗？已完成的用例结果会保留。')) return;
+    setBusy(true); setErr('');
+    try {
+      await cancelEvaluate(projectId, current.round.id);
+      clearTimeout(pollRef.current);
+      await Promise.all([loadRounds(), openRound(current.round.id)]);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
   if (!rounds) return <div className="empty">加载中…</div>;
   const running = current?.round.status === 'running';
 
@@ -221,6 +231,11 @@ export function EvaluatePanel({ projectId, onProjectChanged }) {
         <button className="btn btn-p" disabled={busy || running || !dataSource} onClick={start}>
           {running ? '评测运行中…' : '▶ 开始新一轮评测'}
         </button>
+        {running && (
+          <button className="btn" style={{ marginLeft: 8 }} disabled={busy} onClick={stop}>
+            {busy ? '停止中…' : '■ 停止本轮评测'}
+          </button>
+        )}
         {dataSource === null && (
           <span style={{ color: 'var(--crit)', fontSize: 12, marginLeft: 10 }}>请先完成“数据源配置”步骤</span>
         )}

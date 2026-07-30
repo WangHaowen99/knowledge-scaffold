@@ -59,12 +59,14 @@ export async function importPackageZip({
   workspaceId,
   ontologyId,
   zip,
+  signal,
   request = consumerFetch,
 }: {
   token: string;
   workspaceId: string;
   ontologyId: string;
   zip: Uint8Array;
+  signal?: AbortSignal;
   request?: ConsumerRequest;
 }): Promise<any> {
   const attempt = (action?: string) => {
@@ -75,6 +77,7 @@ export async function importPackageZip({
       method: 'POST',
       workspaceId,
       body: form as any,
+      signal,
     });
   };
 

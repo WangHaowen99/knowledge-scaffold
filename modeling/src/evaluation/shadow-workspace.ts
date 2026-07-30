@@ -49,25 +49,27 @@ export async function ensureEvaluationWorkspace({
   workspaceId,
   owner,
   token,
+  signal,
   request = consumerFetch,
 }: {
   projectId: string;
   workspaceId?: string;
   owner?: string;
   token: string;
+  signal?: AbortSignal;
   request?: ConsumerRequest;
 }): Promise<{ id: string; created: boolean }> {
   const defaultId = shadowWorkspaceId(projectId);
   const id = workspaceId ? normalizeEvaluationWorkspaceId(workspaceId) : defaultId;
   if (id === defaultId && owner && request === consumerFetch) {
-    const provisioned = await provisionShadowWorkspace(projectId, owner);
+    const provisioned = await provisionShadowWorkspace(projectId, owner, { signal });
     if (provisioned.workspace.id !== id || provisioned.workspace.owner !== owner) {
       throw new Error('影子工作区 provisioning 返回了不匹配的 id 或 owner');
     }
     return { id, created: provisioned.created };
   }
   const list = await responseJson(
-    await request(token, '/agentic/workspaces'),
+    await request(token, '/agentic/workspaces', { signal }),
     '读取评测工作空间',
   );
   if ((list.workspaces ?? []).some((workspace: any) => workspace.id === id)) {
@@ -82,6 +84,7 @@ export async function ensureEvaluationWorkspace({
       name: id === defaultId ? `建模影子·${projectId}` : id,
       description: `知识包建模工具评测使用，来源项目 ${projectId}`,
     }),
+    signal,
   });
   if (!createResponse.ok && createResponse.status === 400) {
     const detail = await createResponse.clone().json().catch(() => ({})) as any;
