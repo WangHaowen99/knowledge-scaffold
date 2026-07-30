@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   cancelGraphImport,
+  cancelGraphImportRun,
   executeGraphImport,
   listGraphImports,
   uploadGraphImport,
@@ -23,7 +24,7 @@ import {
   updateRelationMapping,
 } from './graph-import-form.js';
 
-const statusLabel = { running: '执行中', done: '成功', failed: '失败' };
+const statusLabel = { running: '执行中', done: '成功', failed: '失败', cancelled: '已取消' };
 
 function initialRelationDraft(preview) {
   const objects = (preview?.schema?.objects || []).filter((object) => !objectImportIssue(preview, object));
@@ -56,6 +57,9 @@ export default function GraphImportPanel({ projectId, dataSource }) {
   importContextRef.current = currentImportContextKey;
   const hasRunningImport = hasRunningGraphImport(history);
   const activeRun = activeGraphImportRun(history, activeRunId);
+  const runningRun = activeRun?.status === 'running'
+    ? activeRun
+    : history.find((item) => item?.status === 'running') || null;
   const controlsDisabled = Boolean(busy || hasRunningImport || activeRunId || replacementRequest);
 
   const loadHistory = async (
@@ -137,9 +141,35 @@ export default function GraphImportPanel({ projectId, dataSource }) {
       setMessage(`后台导入成功：${activeRun.nodeCount} 个实例 / ${activeRun.relationshipCount} 条关系`);
       return;
     }
-    setError(`后台导入失败${activeRun.error ? `：${activeRun.error}` : ''}`);
-    setMessage('临时 Excel 和映射已保留，可重新输入密码后重试');
+    if (activeRun.status === 'cancelled') {
+      setError('');
+      setMessage('后台导入已取消；临时 Excel 和映射已保留，可按需重新执行');
+    } else {
+      setError(`后台导入失败${activeRun.error ? `：${activeRun.error}` : ''}`);
+      setMessage('临时 Excel 和映射已保留，可重新输入密码后重试');
+    }
   }, [activeRun, activeRunId]);
+
+  const cancelRunning = async () => {
+    if (!runningRun || busy) return;
+    const contextKey = importContextRef.current;
+    setBusy('cancel-run'); setError('');
+    try {
+      const outcome = await runGraphImportContextRequest({
+        contextKey,
+        isCurrent: (key) => importContextRef.current === key,
+        request: () => cancelGraphImportRun(projectId, runningRun.id),
+      });
+      if (outcome.kind === 'stale') return;
+      setActiveRunId('');
+      setMessage('后台导入已取消；已等待图数据库事务停止');
+      await loadHistory(contextKey);
+    } catch (err) {
+      if (importContextRef.current === contextKey) setError(err.message);
+    } finally {
+      if (importContextRef.current === contextKey) setBusy('');
+    }
+  };
 
   const invalidate = () => {
     setValidation(null);
@@ -366,7 +396,12 @@ export default function GraphImportPanel({ projectId, dataSource }) {
       {error && <div className="lerr">{error}</div>}
           {message && <div className="gi-message">{message}</div>}
       {(activeRunId || hasRunningImport) && (
-        <div className="gi-message">图数据正在后台写入，切换步骤或刷新页面不会中断任务。</div>
+        <div className="gi-message">
+          图数据正在后台写入，切换步骤或刷新页面不会中断任务。
+          <button type="button" className="btn" disabled={Boolean(busy)} onClick={cancelRunning}>
+            {busy === 'cancel-run' ? '正在停止…' : '停止后台导入'}
+          </button>
+        </div>
       )}
 
       {preview && (
