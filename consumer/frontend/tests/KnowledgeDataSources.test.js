@@ -28,7 +28,7 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-async function withRenderedDataSource(run) {
+async function withRenderedDataSource(fetchImpl, run) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
@@ -56,6 +56,7 @@ async function withRenderedDataSource(run) {
       value,
     });
   }
+  globalThis.fetch = fetchImpl;
 
   const { createRoot } = await import('react-dom/client');
   const root = createRoot(document.getElementById('root'));
@@ -129,7 +130,7 @@ test('cancel keeps the current data source and confirm sends the delete request'
   let configured = true;
   let deleteCalls = 0;
   let refreshCalls = 0;
-  globalThis.fetch = async (url, options = {}) => {
+  const fetchImpl = async (url, options = {}) => {
     const method = options.method || 'GET';
     if (url === '/agentic/business-data/provider-schemas') {
       return jsonResponse({
@@ -159,7 +160,7 @@ test('cancel keeps the current data source and confirm sends the delete request'
     throw new Error(`Unexpected request: ${method} ${url}`);
   };
 
-  await withRenderedDataSource(async ({ dom, renderPanel, flush, waitFor }) => {
+  await withRenderedDataSource(fetchImpl, async ({ dom, renderPanel, flush, waitFor }) => {
     await renderPanel({
       onDataSourceChanged: () => {
         refreshCalls += 1;
@@ -183,6 +184,7 @@ test('cancel keeps the current data source and confirm sends the delete request'
     assert.equal(deleteCalls, 0);
     assert.equal(document.querySelector('.ui-dialog'), null);
     assert.ok(document.querySelector('.btn.btn-danger'));
+    assert.match(document.querySelector('.tag').textContent, /已配置/);
 
     await click(dom, document.querySelector('.btn.btn-danger'));
     assert.ok(document.querySelector('.ui-dialog'));
@@ -192,6 +194,7 @@ test('cancel keeps the current data source and confirm sends the delete request'
       assert.equal(deleteCalls, 1);
       assert.equal(document.querySelector('.ui-dialog'), null);
       assert.equal(document.querySelector('.btn.btn-danger'), null);
+      assert.match(document.querySelector('.tag').textContent, /未配置/);
       assert.equal(refreshCalls, 1);
     });
   });
