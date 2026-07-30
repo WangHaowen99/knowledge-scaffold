@@ -221,6 +221,15 @@ def _scope():
     )
 
 
+def _workspace_only_scope():
+    return GraphScope(
+        workspace_property="d2o_workspace_id",
+        workspace_value="workspace-a",
+        ontology_property="",
+        ontology_value="",
+    )
+
+
 def test_neo4j_property_filter_forces_workspace_scope(monkeypatch):
     calls = []
     backend = _backend()
@@ -259,16 +268,10 @@ def test_neo4j_property_filter_forces_workspace_scope(monkeypatch):
     ]
 
 
-def test_neo4j_property_filter_can_disable_ontology_scope(monkeypatch):
+def test_neo4j_property_filter_supports_workspace_only_scope(monkeypatch):
     calls = []
     backend = _backend()
     monkeypatch.setattr(backend, "_get_driver", lambda: _FakeDriver(calls))
-    scope = GraphScope(
-        workspace_property="d2o_workspace_id",
-        workspace_value="workspace-a",
-        ontology_property="",
-        ontology_value="",
-    )
 
     backend.property_filter(
         element_class="ChangeOrderAffectedObject",
@@ -277,13 +280,12 @@ def test_neo4j_property_filter_can_disable_ontology_scope(monkeypatch):
         return_properties=["eco_id"],
         limit=10,
         offset=0,
-        scope=scope,
+        scope=_workspace_only_scope(),
     )
 
     query, params = calls[1]
-    query_text = str(query)
-    assert "e.`d2o_workspace_id` = $scope_workspace_value" in query_text
-    assert "scope_ontology_value" not in query_text
+    assert "e.`d2o_workspace_id` = $scope_workspace_value" in str(query)
+    assert "scope_ontology_value" not in str(query)
     assert "scope_ontology_value" not in params
 
 

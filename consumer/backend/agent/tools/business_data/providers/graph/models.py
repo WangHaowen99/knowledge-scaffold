@@ -27,9 +27,10 @@ class GraphScope:
             )
 
     def is_enabled(self) -> bool:
+        """Return whether Workspace isolation is enabled; Ontology isolation is optional."""
         return bool(
-            self.workspace_property
-            and self.workspace_value
+            str(self.workspace_property or "").strip()
+            and str(self.workspace_value or "").strip()
         )
 
 
