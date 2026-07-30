@@ -82,12 +82,18 @@ This caller cannot resume a user interaction. Never call `request_user_interacti
 
 _INTERACTION_TOOL_RULES_ALLOWED = """\
 - If a required input for the chosen tool or execution path is missing during manual ontology execution, call `request_user_interaction` with `type="input"` instead of guessing.
+- If `execute_script` reports a current-request argument consistency error, the script did not run. Rebuild the complete collection from the current user request, preserve its item order, and retry the complete call until `execute_script` returns a successful result. Do not patch values from ontology examples, earlier requests, or memory. If you cannot obtain a successful result, report the blocker without calculated conclusions; you must not claim that the script ran or provide computed results.
+- Once `execute_script` returns a successful result, treat that deterministic result as authoritative and continue to the final answer. Do not rerun the same operation merely to change rounding, display precision, informational fields, or to make the result resemble an expected answer. A second execution is allowed only to correct concrete inputs after an explicit error or to evaluate a distinct scenario explicitly requested by the user.
+- If `execute_script` reports any other runtime error, stop and report the blocker. You must not fall back to `ontology_context`, `business_data_search`, or another execution path, and you must not calculate or replay the operation manually. A script-backed operation has one authoritative execution path; a failed script cannot be replaced with an improvised result.
 - If the operation lists choices and requires the user to choose exactly one, call `request_user_interaction` with `type="single_choice"` and pass those choices as options.
 - If the operation reaches a checkpoint where the user must review progress before continuing, call `request_user_interaction` with `type="approval"`, `executed_summary`, and `next_plan`."""
 
 
 _INTERACTION_TOOL_RULES_DISABLED = """\
 - This run does not support multi-turn interaction or resume. Never call `request_user_interaction`.
+- If `execute_script` reports a current-request argument consistency error, the script did not run. Rebuild the complete collection from the current user request, preserve its item order, and retry the complete call until `execute_script` returns a successful result. Do not patch values from ontology examples, earlier requests, or memory. If you cannot obtain a successful result, report the blocker without calculated conclusions; you must not claim that the script ran or provide computed results.
+- Once `execute_script` returns a successful result, treat that deterministic result as authoritative and continue to the final answer. Do not rerun the same operation merely to change rounding, display precision, informational fields, or to make the result resemble an expected answer. A second execution is allowed only to correct concrete inputs after an explicit error or to evaluate a distinct scenario explicitly requested by the user.
+- If `execute_script` reports any other runtime error, stop and report the blocker. You must not fall back to `ontology_context`, `business_data_search`, or another execution path, and you must not calculate or replay the operation manually. A script-backed operation has one authoritative execution path; a failed script cannot be replaced with an improvised result.
 - If an operation is inapplicable or misses required user inputs, do not continue it.
 - Once you decide an operation is not applicable, discard it. Do not summarize it, do not recommend its product, and do not carry its restrictions into the final answer.
 - For consultation or recommendation requests, fall back to a direct text answer.
@@ -117,6 +123,10 @@ Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_ca
 4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.
 ### Step 3: Choose Execution Mode
 {STEP3_INTERACTION_POLICY}
+Runtime argument source policy:
+- Ontology intent examples describe matching semantics only; they are never a source of runtime argument values.
+- Derive runtime values only from the current user request or an explicit authoritative context field for this task. Never copy values from intent examples, earlier requests, memory, or defaults.
+- For collection arguments, preserve the collection's item count and order, and verify every item against the current request before calling a tool.
 {EXECUTION_MODE_SECTION}
 ### Step 4: Result Organization
 - State which operations and object definitions were used.

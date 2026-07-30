@@ -287,8 +287,7 @@ def _build_direct_cli_args_from_parameters(
                 break
             continue
 
-        parameter_type = str(parameter.get("type") or "string").strip().lower()
-        if isinstance(value, (list, tuple, set)) and parameter_type not in {"array"}:
+        if isinstance(value, (list, tuple, set, dict)) and not _accepts_structured_value(parameter):
             system_error = "{} does not accept multiple values".format(name)
             break
         converted, error = _convert_parameter_value(value, parameter)
@@ -506,6 +505,45 @@ def _convert_parameter_value(
     Returns (converted_value, error).  Exactly one is None.
     """
     param_type = str(parameter.get("type") or "string").strip().lower()
+    if param_type == "string" and isinstance(value, (list, tuple, set, dict)):
+        serializable = list(value) if isinstance(value, (tuple, set)) else value
+        try:
+            return json.dumps(serializable, ensure_ascii=False, separators=(",", ":")), None
+        except (TypeError, ValueError):
+            return None, "expected string or JSON-serializable structured value"
+    if param_type in {"array", "list"} or param_type.endswith("[]"):
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None, "expected array"
+        if isinstance(parsed, (tuple, set)):
+            parsed = list(parsed)
+        if not isinstance(parsed, list):
+            return None, "expected array"
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+    if param_type in {"object", "dict"}:
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None, "expected object"
+        if not isinstance(parsed, dict):
+            return None, "expected object"
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+    if param_type == "json":
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None, "expected JSON"
+        try:
+            return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+        except (TypeError, ValueError):
+            return None, "expected JSON"
     if param_type in ("int", "integer"):
         try:
             return str(int(value)), None
@@ -525,22 +563,21 @@ def _convert_parameter_value(
         if normalized in {"false", "0", "no", "n"}:
             return "false", None
         return None, "expected boolean"
-    if param_type in {"object", "array"}:
-        candidate = value
-        if isinstance(candidate, str):
-            try:
-                candidate = json.loads(candidate)
-            except (TypeError, ValueError):
-                return None, "expected valid JSON {}".format(param_type)
-        if param_type == "object" and not isinstance(candidate, Mapping):
-            return None, "expected object"
-        if param_type == "array":
-            if isinstance(candidate, tuple):
-                candidate = list(candidate)
-            if not isinstance(candidate, list):
-                return None, "expected array"
-        try:
-            return json.dumps(candidate, ensure_ascii=False), None
-        except (TypeError, ValueError):
-            return None, "expected JSON-serializable {}".format(param_type)
     return str(value), None
+
+
+def _is_json_collection_parameter(parameter: Mapping[str, Any]) -> bool:
+    param_type = str(parameter.get("type") or "string").strip().lower()
+    return param_type in {"array", "list", "object", "dict", "json"} or param_type.endswith("[]")
+
+
+def _accepts_structured_value(parameter: Mapping[str, Any]) -> bool:
+    param_type = str(parameter.get("type") or "string").strip().lower()
+    return param_type == "string" or _is_json_collection_parameter(parameter)
+
+
+def _append_cli_argument(result: List[str], *, flag: str, value: str) -> None:
+    """Append a flag-value pair to the CLI argument list."""
+    if flag:
+        result.append(flag)
+    result.append(value)

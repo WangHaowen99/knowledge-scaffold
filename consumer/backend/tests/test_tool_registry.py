@@ -1122,6 +1122,23 @@ def test_registry_executes_script_from_ontology_operation(tmp_path, monkeypatch)
     assert "hello from script" in result.messages[0]["content"]
 
 
+def test_ontology_context_resolves_bound_operation_key_to_script_spec(tmp_path, monkeypatch):
+    _write_scripted_ontology(tmp_path)
+    _patch_test_ontology_registry(monkeypatch, tmp_path)
+
+    result = execute_tool_batch(
+        [_build_tool_call("ontology_context", {
+            "ontology_id": "demo",
+            "resource": "script",
+            "key": "流程A",
+        })],
+        _make_context(project_root=str(tmp_path)),
+    )
+
+    assert "script_key: hello" in result.messages[0]["content"]
+    assert "entrypoint: hello.py" in result.messages[0]["content"]
+
+
 def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
     _write_scripted_ontology(
         tmp_path,
@@ -1514,6 +1531,135 @@ def test_execute_script_tool_overwrites_server_owned_context_even_without_regist
     assert captured["timeout_seconds"] == context.agent_config.execute_script_timeout
     assert str(captured["base_path"]) == "/trusted/project"
     assert captured["session_id"] == context.session_id
+
+
+def test_execute_script_tool_blocks_cross_item_values_before_running_script(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "ok",
+    )
+    context = _make_context(
+        messages=[{
+            "role": "user",
+            "content": (
+                "Record 1: sample-a, quantity 12.5, category red;\n"
+                "Record 2: sample-b, quantity 7.25, category blue;\n"
+                "Record 3: sample-c, quantity 4.75, category green."
+            ),
+        }],
+    )
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {
+                "records": [
+                    {"name": "sample-a", "quantity": 12.5, "category": "red"},
+                    {"name": "sample-b", "quantity": 7.25, "category": "red"},
+                    {"name": "sample-c", "quantity": 4.75, "category": "green"},
+                ],
+            },
+        },
+        context=context,
+        tool_call_id="call-consistency",
+    )
+
+    assert called == []
+    assert "argument consistency check failed" in outcome.content
+    assert "item 2" in outcome.content
+    assert "The script did not run" in outcome.content
+    assert "Do not provide computed results or claim success" in outcome.content
+
+
+def test_execute_script_allows_structured_rows_from_current_business_query(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "ok",
+    )
+    context = _make_context(messages=[
+        {
+            "role": "user",
+            "content": (
+                "第1批：示例原料A，2.574万吨，周期1.5天，减一线去生产线B；\n"
+                "第2批：示例原料B，4.437万吨，周期2.75天，减一线去生产线C。"
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "business_data_search",
+            "content": (
+                '[{"ProductName":"常一线","Yield_1_Percent":1.81,'
+                '"RefineryUnitID":10,"LogicTankID":21},'
+                '{"ProductName":"减一线","Yield_1_Percent":11.6,'
+                '"RefineryUnitID":10,"LogicTankID":21}]'
+            ),
+        },
+    ])
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {
+                "batchPlans": [
+                    {"name": "示例原料A", "quantity": 2.574, "days": 1.5, "route": "生产线B"},
+                    {"name": "示例原料B", "quantity": 4.437, "days": 2.75, "route": "生产线C"},
+                ],
+                "productYieldData": [
+                    {"ProductName": "常一线", "Yield_1_Percent": 1.81, "RefineryUnitID": 10, "LogicTankID": 21},
+                    {"ProductName": "减一线", "Yield_1_Percent": 11.6, "RefineryUnitID": 10, "LogicTankID": 21},
+                ],
+            },
+        },
+        context=context,
+        tool_call_id="call-query-grounded",
+    )
+
+    assert outcome.content == "ok"
+    assert len(called) == 1
+
+
+def test_execute_script_still_rejects_mixed_user_rows_with_business_query_evidence(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        "agent.tools.execute_script.handle_execute_script",
+        lambda **kwargs: called.append(kwargs) or "ok",
+    )
+    context = _make_context(messages=[
+        {
+            "role": "user",
+            "content": (
+                "Record 1: sample-a, quantity 12.5, category red;\n"
+                "Record 2: sample-b, quantity 7.25, category blue;\n"
+                "Record 3: sample-c, quantity 4.75, category green."
+            ),
+        },
+        {
+            "role": "tool",
+            "name": "business_data_search",
+            "content": '[{"ProductName":"常一线","Yield_1_Percent":1.81}]',
+        },
+    ])
+
+    outcome = TOOL_SPECS["execute_script"].execute(
+        args={
+            "ontology_id": "demo",
+            "operation_key": "process_records",
+            "arguments": {"records": [
+                {"name": "sample-a", "quantity": 12.5, "category": "red"},
+                {"name": "sample-b", "quantity": 7.25, "category": "red"},
+                {"name": "sample-c", "quantity": 4.75, "category": "green"},
+            ]},
+        },
+        context=context,
+        tool_call_id="call-user-mix",
+    )
+
+    assert called == []
+    assert "argument consistency check failed" in outcome.content
 
 
 def test_terminal_interaction_skips_later_tool_calls(monkeypatch):

@@ -156,6 +156,39 @@ def test_inspect_importable_package_accepts_v01_without_recommended_language(tmp
     assert package.source_format == "v0.1"
 
 
+def test_script_catalog_keeps_parameter_when_description_contains_union_pipe(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "monthly.py").write_text("print('ok')\n", encoding="utf-8")
+    (scripts / "monthly.md").write_text(
+        """---
+resource: script
+key: monthly
+title: 月度排产
+bound_operation: 月度排产
+entrypoint: monthly.py
+---
+
+# 输入参数
+
+| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| batchPlans | --batchPlans | string | 是 |  | JSON 数组，去向为 '生产线B'|'生产线C' |
+| productYieldData | --productYieldData | string | 是 |  | JSON 收率数据 |
+""",
+        encoding="utf-8",
+    )
+
+    entry = find_script_entry(load_script_catalog(tmp_path), "月度排产")
+
+    assert entry is not None
+    assert [item["name"] for item in entry["parameters"]] == [
+        "batchPlans",
+        "productYieldData",
+    ]
+    assert entry["parameters"][0]["description"].endswith("'生产线B' | '生产线C'")
+
+
 def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"

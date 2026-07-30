@@ -664,17 +664,18 @@ def _write_script_descriptor(
         "",
         "# 输入参数",
         "",
-        "| 参数 key | CLI 参数 | 类型 | 必填 | 是否多值 | 说明 | 别名 | Action |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 是否多值 | 说明 | 别名 | Action |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for parameter in parameters:
         aliases = parameter.get("aliases") or []
         lines.append(
-            "| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                 _table_cell(parameter.get("name")),
                 _table_cell(parameter.get("flag")),
                 _table_cell(parameter.get("type") or "string"),
                 "是" if parameter.get("required", True) else "否",
+                _table_cell(_format_parameter_default(parameter)),
                 "是" if parameter.get("multiple", False) else "否",
                 _table_cell(parameter.get("description")),
                 _table_cell("，".join(str(alias) for alias in aliases)),
@@ -787,6 +788,8 @@ def _normalize_legacy_parameters(value: Any) -> list[dict[str, Any]]:
         description = str(item.get("description") or "").strip()
         if description:
             parameter["description"] = description
+        if "default" in item and item.get("default") is not None:
+            parameter["default"] = item.get("default")
         aliases = item.get("aliases")
         if isinstance(aliases, list):
             clean_aliases = [str(alias).strip() for alias in aliases if str(alias or "").strip()]
@@ -797,6 +800,15 @@ def _normalize_legacy_parameters(value: Any) -> list[dict[str, Any]]:
             parameter["action"] = action
         parameters.append(parameter)
     return parameters
+
+
+def _format_parameter_default(parameter: dict[str, Any]) -> str:
+    if "default" not in parameter or parameter.get("default") is None:
+        return ""
+    value = parameter.get("default")
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _legacy_args_to_parameters(args: list[str]) -> list[dict[str, Any]]:

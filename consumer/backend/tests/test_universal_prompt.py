@@ -135,6 +135,42 @@ def test_universal_prompt_prefers_script_backed_execution():
     assert "execute_python_script" not in prompt
 
 
+def test_script_arguments_only_use_runtime_values_from_the_current_request():
+    prompt = build_universal_system_prompt()
+    subagent_source = (
+        Path(__file__).resolve().parents[1]
+        / "agent"
+        / "sub_agents"
+        / "base.py"
+    ).read_text(encoding="utf-8")
+
+    for content in (prompt, subagent_source):
+        assert "intent examples describe matching semantics only" in content
+        assert "runtime values only from the current user request" in content
+        assert "preserve the collection's item count and order" in content
+        assert "until `execute_script` returns a successful result" in content
+        assert "must not claim that the script ran" in content
+
+
+def test_script_runtime_failure_stops_without_manual_fallback():
+    for include_orchestration in (True, False):
+        prompt = build_universal_system_prompt(
+            include_orchestration=include_orchestration,
+        )
+
+        assert "any other runtime error" in prompt
+        assert "stop and report the blocker" in prompt
+        assert "must not fall back to `ontology_context`, `business_data_search`" in prompt
+        assert "must not calculate or replay the operation manually" in prompt
+
+
+def test_successful_deterministic_script_result_is_reused_without_reexecution():
+    prompt = build_universal_system_prompt()
+
+    assert "Once `execute_script` returns a successful result" in prompt
+    assert "Do not rerun the same operation merely to change rounding" in prompt
+
+
 def test_main_and_subagent_prompts_follow_v01_ontology_loading_flow():
     prompt = build_universal_system_prompt()
     assert "operations_catalog`, `objects_catalog`, `rules_catalog`, `metrics_catalog`, and `script_catalog`" in prompt
