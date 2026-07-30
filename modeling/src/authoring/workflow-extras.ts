@@ -1,35 +1,16 @@
 import type { AnalysisResult, InterviewProcess, PackageSpec } from '../types.js';
+import { normalizeFlowchartDocument } from '../flowchart/document.js';
+import type {
+  FlowchartDocument,
+  FlowchartEdge,
+  FlowchartNode,
+} from '../flowchart/types.js';
 
-export interface FlowchartNode {
-  id: string;
-  label: string;
-  kind: 'object' | 'action' | 'decision' | 'start' | 'end';
-  detail?: string;
-}
+export type { FlowchartDiagram, FlowchartEdge, FlowchartNode } from '../flowchart/types.js';
+export type FlowchartOutput = FlowchartDocument;
 
-export interface FlowchartEdge {
-  from: string;
-  to: string;
-  label?: string;
-}
-
-export interface FlowchartDiagram {
-  id: string;
-  title: string;
-  description?: string;
-  nodes: FlowchartNode[];
-  edges: FlowchartEdge[];
-  trigger?: string;
-  actors?: string[];
-  inputs?: string[];
-  exceptions?: string[];
-  outputs?: string[];
-  handoffs?: string[];
-}
-
-export interface FlowchartOutput {
-  diagrams: FlowchartDiagram[];
-}
+type FlowchartEdgeDraft = Pick<FlowchartEdge, 'from' | 'to'>
+  & Partial<Pick<FlowchartEdge, 'id' | 'kind' | 'label' | 'conditionText'>>;
 
 export interface ScenarioDraft {
   name: string;
@@ -51,7 +32,7 @@ export function buildFlowchart(
   interviewProcesses: InterviewProcess[] = [],
 ): FlowchartOutput {
   if (interviewProcesses.length) {
-    return {
+    return normalizeFlowchartDocument({
       diagrams: interviewProcesses.map((process, processIndex) => {
         const prefix = process.id || `process-${processIndex + 1}`;
         const stepIds = new Set(process.steps.map((step) => step.id));
@@ -87,7 +68,7 @@ export function buildFlowchart(
             to: `step:${prefix}:${transition.to}`,
             ...(transition.label ? { label: transition.label } : {}),
           }));
-        const edges: FlowchartEdge[] = [
+        const edges: FlowchartEdgeDraft[] = [
           ...(firstStep ? [{ from: `start:${prefix}`, to: `step:${prefix}:${firstStep.id}` }] : []),
           ...transitions,
           ...terminalSteps.map((step) => ({ from: `step:${prefix}:${step.id}`, to: `end:${prefix}` })),
@@ -98,19 +79,21 @@ export function buildFlowchart(
           ...(description ? { description } : {}),
           nodes,
           edges: uniqueEdges(edges),
-          trigger: process.trigger,
-          actors: process.actors,
-          inputs: process.inputs,
-          exceptions: process.exceptions,
-          outputs: process.outputs,
-          handoffs: process.handoffs,
+          processMeta: {
+            trigger: process.trigger,
+            actors: process.actors,
+            inputs: process.inputs,
+            exceptions: process.exceptions,
+            outputs: process.outputs,
+            handoffs: process.handoffs,
+          },
         };
       }),
-    };
+    });
   }
   if (spec?.operations.length) {
     const objectsByKey = new Map(spec.objects.map((object) => [object.key, object]));
-    return {
+    return normalizeFlowchartDocument({
       diagrams: spec.operations.map((operation) => {
         const relatedObjects = (operation.relatedObjects ?? [])
           .map((key) => objectsByKey.get(key))
@@ -142,7 +125,7 @@ export function buildFlowchart(
           })),
           { id: `end:${operation.key}`, label: '输出', detail: outputDetail, kind: 'end' },
         ];
-        const edges: FlowchartEdge[] = [
+        const edges: FlowchartEdgeDraft[] = [
           { from: `start:${operation.key}`, to: firstStepId },
           ...relatedObjects.map((object) => ({
             from: `object:${operation.key}:${object.key}`,
@@ -163,11 +146,11 @@ export function buildFlowchart(
           edges: uniqueEdges(edges),
         };
       }),
-    };
+    });
   }
 
   const candidates = analysis?.candidateObjects ?? [];
-  return {
+  return normalizeFlowchartDocument({
     diagrams: candidates.length ? [{
       id: 'domain-objects',
       title: '领域对象',
@@ -178,7 +161,7 @@ export function buildFlowchart(
       })),
       edges: [],
     }] : [],
-  };
+  });
 }
 
 export function buildScenarioDrafts(spec: PackageSpec): ScenarioDraft[] {
@@ -227,7 +210,7 @@ export function buildScenarioDrafts(spec: PackageSpec): ScenarioDraft[] {
   });
 }
 
-function uniqueEdges(edges: FlowchartEdge[]): FlowchartEdge[] {
+function uniqueEdges(edges: FlowchartEdgeDraft[]): FlowchartEdgeDraft[] {
   const seen = new Set<string>();
   return edges.filter((edge) => {
     const key = `${edge.from}\u0000${edge.to}\u0000${edge.label ?? ''}`;

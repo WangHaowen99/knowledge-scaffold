@@ -126,6 +126,15 @@ html, body, #root { height: 100%; }
 .mwr .wb-right { width: 320px; flex: none; }
 .mwr .wb-h { padding: 13px 16px; font-size: 12.5px; font-weight: 700; letter-spacing: .5px; color: var(--ink2); border-bottom: 1px solid #f0efec; flex: none; display: flex; align-items: center; gap: 8px; }
 .mwr .wb-b { flex: 1; overflow: auto; padding: 14px 16px; }
+.mwr .wb-b.flowchart-review-host { padding: 0; overflow: hidden; }
+.mwr .flowchart-review-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; background: #fff; }
+.mwr .flowchart-review-panel__editor { flex: 1; min-height: 0; }
+.mwr .flowchart-review-panel__footer { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding: 9px 16px; border-top: 1px solid #e3e6ec; background: #fff; }
+.mwr .flowchart-review-panel__footer > div { min-width: 0; }
+.mwr .flowchart-review-panel__warning { color: #a8322c; font-size: 12px; }
+.mwr .flowchart-review-panel__ack { display: flex; align-items: center; gap: 7px; color: #505a6a; font-size: 12px; line-height: 1.45; }
+.mwr .flowchart-review-panel__ack input { flex: none; }
+.mwr .flowchart-review-panel__footer .btn { flex: none; }
 
 /* 时间线节点 */
 .mwr .tl-node { border: 1px solid #eceae2; border-radius: 11px; padding: 10px 12px; margin-bottom: 9px; background: #fff; }

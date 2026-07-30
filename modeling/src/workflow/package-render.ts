@@ -15,6 +15,7 @@ import {
 import { validateGeneratedScriptSafety } from './script-safety.js';
 import { sourceLabelsFor, tableSourceFor } from './source-references.js';
 import { packageMappingResource } from './package-data-source.js';
+import { canonicalizePackageSpec } from './package-spec.js';
 
 // PackageSpec → 标准知识包文件集（严格对照 examples/corporate-marketing-eval/
 // ontology-package-final-design.md v0.2，保证 consumer 可导入）。
@@ -351,7 +352,7 @@ function mappingsJson(spec: PackageSpec): string {
 
 export function renderPackage(spec: PackageSpec, options: RenderPackageOptions = {}): PackageFiles {
   // 渲染入包前强制校验：key 清洗（NFC+trim）、非法字符/长度、包内同类唯一；不合法直接抛错
-  const s = validateSpecKeys(spec);
+  const s = validateSpecKeys(canonicalizePackageSpec(spec));
   for (const script of s.scripts ?? []) validateGeneratedScriptSafety(script);
   const rules = s.rules ?? [];
   const metrics = s.metrics ?? [];

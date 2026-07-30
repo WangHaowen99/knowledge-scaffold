@@ -76,6 +76,7 @@ export interface SavePackageFileInput {
 export interface SavePackageFilesInput {
   expectedRevision: string;
   files: Readonly<Record<string, string>>;
+  deletePaths?: readonly string[];
   action: PackageRevisionAction;
 }
 
@@ -485,44 +486,60 @@ export class PackageArtifactStore {
       const action = validateAction(input.action);
       await this.ensureProjectUnlocked(projectId);
       const entries = Object.entries(input.files ?? {});
-      if (entries.length < 1 || entries.length > MAX_CANDIDATE_CHANGES) {
-        throw new PackageArtifactStoreError('invalid_input', '请提交 1 到 500 个知识包文件');
+      const deletePaths = [...new Set(input.deletePaths ?? [])];
+      if ((!entries.length && !deletePaths.length)
+        || entries.length + deletePaths.length > MAX_CANDIDATE_CHANGES) {
+        throw new PackageArtifactStoreError('invalid_input', '请提交 1 到 500 个知识包文件变更');
       }
       const current = await this.repository.snapshot(projectId);
       assertExpectedRevision(input.expectedRevision, current.revision.oid);
-      const changes: ArtifactChange[] = entries.map(([rawPath, content]) => {
+      const currentView = this.viewFromSnapshot(current);
+      const currentFiles = new Map(current.files.map((file) => [file.path, file.content]));
+      const encoder = new TextEncoder();
+      const writes: ArtifactChange[] = entries.map(([rawPath, content]) => {
         const path = validatePackagePath(rawPath);
         if (typeof content !== 'string') {
           throw new PackageArtifactStoreError('invalid_input', `文件内容不正确：${path}`);
         }
         return { kind: 'write' as const, path, content };
-      }).sort((left, right) => compareNames(left.path, right.path));
-      if (new Set(changes.map((change) => change.path)).size !== changes.length) {
-        throw new PackageArtifactStoreError('invalid_input', '不能重复提交同一文件');
-      }
-      const changed = changes.filter((change) => {
-        if (change.kind !== 'write') return false;
-        const before = current.files.find((file) => file.path === change.path)?.content;
-        return before === undefined || !bytesEqual(before, new TextEncoder().encode(String(change.content)));
       });
-      if (!changed.length) {
+      const writePaths = new Set(writes.map((change) => change.path));
+      const changedWrites = writes.filter((change) => {
+        if (change.kind !== 'write') return false;
+        const before = currentFiles.get(change.path);
+        return before === undefined || !bytesEqual(before, encoder.encode(String(change.content)));
+      });
+      const deletes: ArtifactChange[] = deletePaths.flatMap((rawPath) => {
+        const path = validatePackagePath(rawPath);
+        if (writePaths.has(path)) {
+          throw new PackageArtifactStoreError('invalid_input', `同一文件不能同时写入和删除：${path}`);
+        }
+        return currentFiles.has(path) ? [{ kind: 'delete' as const, path }] : [];
+      });
+      const changes = [...changedWrites, ...deletes]
+        .sort((left, right) => compareNames(left.path, right.path));
+      if (!changes.length && action.cause === 'flowchart.confirm') return currentView;
+      if (!changes.length) {
         throw new PackageArtifactStoreError('invalid_input', '提交内容没有实际变化');
       }
-      this.viewFromSnapshot(applyCandidateChanges(current, changed));
+      this.viewFromSnapshot(applyCandidateChanges(current, changes), currentView.packageVersion);
       const revision = await this.commitAndIndex(
         projectId,
         input.expectedRevision,
         () => this.repository.commit(
           projectId,
           input.expectedRevision,
-          changed,
+          changes,
           gitMetadata(action),
         ),
         (savedRevision) => {
-          this.recordRevision(projectId, savedRevision, action, changed.map((change) => change.path));
+          this.recordRevision(projectId, savedRevision, action, changes.map((change) => change.path));
         },
       );
-      return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid));
+      return this.viewFromSnapshot(
+        await this.repository.snapshot(projectId, revision.oid),
+        currentView.packageVersion,
+      );
     });
   }
 
