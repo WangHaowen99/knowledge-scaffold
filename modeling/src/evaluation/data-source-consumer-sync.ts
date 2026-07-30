@@ -1,9 +1,8 @@
 import { FormData } from 'undici';
 import { consumerFetch } from '../consumer/client.js';
-import { latestPackageVersion } from '../workflow/m2-repo.js';
-import { renderPackage } from '../workflow/package-render.js';
 import { zipPackage } from '../workflow/export.js';
 import type { ConnectionDataSourceInput } from './data-source.js';
+import { getPackageArtifactStore } from '../artifacts/runtime.js';
 import { ensureEvaluationWorkspace, type ConsumerRequest } from './shadow-workspace.js';
 
 export interface ConsumerDataSourceReference {
@@ -13,6 +12,7 @@ export interface ConsumerDataSourceReference {
 
 export interface SyncProjectDataSourceOptions {
   projectId: string;
+  owner?: string;
   workspaceId: string;
   ontologyId: string;
   token: string;
@@ -89,13 +89,11 @@ export async function importPackageZip({
 }
 
 async function currentPackageZip(projectId: string, ontologyId: string): Promise<Uint8Array> {
-  const latest = latestPackageVersion(projectId);
-  if (!latest) throw new Error('同步本体数据源失败：尚未生成知识包');
-  if (String(latest.spec.id ?? '').trim() !== ontologyId) {
+  const current = await getPackageArtifactStore().readPackageFiles(projectId);
+  if (String(current.spec.id ?? '').trim() !== ontologyId) {
     throw new Error('同步本体数据源失败：知识包 ID 已变化，请重新保存数据源配置');
   }
-  const files = renderPackage(latest.spec);
-  return zipPackage(files);
+  return zipPackage(current.files);
 }
 
 export async function syncProjectDataSourceToConsumer(
@@ -103,6 +101,7 @@ export async function syncProjectDataSourceToConsumer(
 ): Promise<ConsumerDataSourceReference> {
   const {
     projectId,
+    owner,
     workspaceId,
     ontologyId,
     token,
@@ -112,6 +111,7 @@ export async function syncProjectDataSourceToConsumer(
   const workspace = await ensureEvaluationWorkspace({
     projectId,
     workspaceId,
+    owner,
     token,
     request,
   }).catch((error) => {

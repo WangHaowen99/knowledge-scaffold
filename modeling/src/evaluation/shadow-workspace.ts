@@ -1,4 +1,4 @@
-import { consumerFetch } from '../consumer/client.js';
+import { consumerFetch, provisionShadowWorkspace } from '../consumer/client.js';
 import { normalizeEvaluationWorkspaceId } from './data-source.js';
 
 export type ConsumerRequest = (
@@ -47,16 +47,25 @@ async function responseJson(response: Response, action: string): Promise<any> {
 export async function ensureEvaluationWorkspace({
   projectId,
   workspaceId,
+  owner,
   token,
   request = consumerFetch,
 }: {
   projectId: string;
   workspaceId?: string;
+  owner?: string;
   token: string;
   request?: ConsumerRequest;
 }): Promise<{ id: string; created: boolean }> {
   const defaultId = shadowWorkspaceId(projectId);
   const id = workspaceId ? normalizeEvaluationWorkspaceId(workspaceId) : defaultId;
+  if (id === defaultId && owner && request === consumerFetch) {
+    const provisioned = await provisionShadowWorkspace(projectId, owner);
+    if (provisioned.workspace.id !== id || provisioned.workspace.owner !== owner) {
+      throw new Error('影子工作区 provisioning 返回了不匹配的 id 或 owner');
+    }
+    return { id, created: provisioned.created };
+  }
   const list = await responseJson(
     await request(token, '/agentic/workspaces'),
     '读取评测工作空间',

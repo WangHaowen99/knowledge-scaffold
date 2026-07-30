@@ -17,7 +17,7 @@ import { migrateLegacyPackageOverrides } from './workflow/package-override-migra
 import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
 import * as m3repo from './workflow/m3-repo.js';
 import * as m4repo from './workflow/m4-repo.js';
-import { isEvaluationActive, startEvaluation } from './evaluation/engine.js';
+import { isEvaluationActive, startCurrentEvaluation } from './evaluation/engine.js';
 import { getProjectDataSource } from './evaluation/data-source-repo.js';
 import { configureProjectDataSource } from './evaluation/data-source-service.js';
 import type { DataSourceConnectionTester } from './evaluation/data-source-connection-test.js';
@@ -1099,7 +1099,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (blocked) return blocked;
       const token = (req.headers.authorization ?? '').slice(7);
       try {
-        const { roundId } = startEvaluation({ projectId: c.p.id, token });
+        const { roundId } = await startCurrentEvaluation({ projectId: c.p.id, token });
         setProjectStage(c.p.id, 'evaluate');
         return { roundId };
       } catch (e) {
@@ -1116,7 +1116,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const round = m3repo.getRound((req.params as any).roundId);
       if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '轮次不存在' });
-      return { round, results: m3repo.listResults(round.id) };
+      return m3repo.getRoundDetails(round.id);
     });
     r.patch('/api/projects/:id/results/:resultId', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);

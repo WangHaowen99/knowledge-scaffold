@@ -483,7 +483,11 @@ CREATE TABLE IF NOT EXISTS eval_rounds (
   progress_done INTEGER NOT NULL DEFAULT 0,
   progress_total INTEGER NOT NULL DEFAULT 0,
   pass_count    INTEGER NOT NULL DEFAULT 0,
+  phase         TEXT NOT NULL DEFAULT 'workspace',
+  phase_started_at TEXT,
+  current_item_started_at TEXT,
   log           TEXT NOT NULL DEFAULT '',        -- 轮次执行日志（换行分隔）
+  artifact_revision_oid TEXT,                    -- 本轮固定使用的 Git 修订
   created_at    TEXT NOT NULL,
   finished_at   TEXT
 );
@@ -502,6 +506,16 @@ CREATE TABLE IF NOT EXISTS eval_results (
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_res_round ON eval_results(round_id);
+
+CREATE TABLE IF NOT EXISTS eval_result_traces (
+  result_id      TEXT PRIMARY KEY REFERENCES eval_results(id) ON DELETE CASCADE,
+  run_id         TEXT,
+  session_id     TEXT,
+  tool_calls_json TEXT NOT NULL DEFAULT '[]',
+  tool_failures_json TEXT NOT NULL DEFAULT '[]',
+  trace_status   TEXT NOT NULL DEFAULT 'complete',
+  trace_error    TEXT
+);
 
 -- ---- M4：优化建议（Judge 失败结果 → 结构化建议 → 采纳 → 版本迭代） ----
 CREATE TABLE IF NOT EXISTS opt_suggestions (
