@@ -2,6 +2,8 @@
 CREATE TABLE IF NOT EXISTS projects (
   id            TEXT PRIMARY KEY,
   owner         TEXT NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'modeling'
+                CHECK (kind IN ('modeling', 'package')),
   name          TEXT NOT NULL,
   domain        TEXT NOT NULL DEFAULT '',
   background    TEXT NOT NULL DEFAULT '',
@@ -11,6 +13,120 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
+
+-- 唯一的可恢复建模任务图。新项目创建时初始化，存量项目首次读取时自动投影。
+CREATE TABLE IF NOT EXISTS ai_construction_graphs (
+  project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  revision      INTEGER NOT NULL DEFAULT 1,
+  status        TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'completed', 'superseded')),
+  source        TEXT NOT NULL DEFAULT 'new'
+                CHECK (source IN ('new', 'legacy_projection', 'package_import')),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_construction_milestones (
+  project_id    TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  milestone_id  TEXT NOT NULL,
+  ordinal       INTEGER NOT NULL,
+  title         TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'active', 'confirmed', 'stale')),
+  confirmed_revision_oid TEXT,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, milestone_id),
+  UNIQUE (project_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS ai_construction_tasks (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  task_kind     TEXT NOT NULL CHECK (task_kind IN (
+                  'material_analysis', 'package_baseline_review', 'modeling_brief',
+                  'process_interview', 'process_diagram', 'process_review',
+                  'operation_extraction', 'knowledge_extraction', 'script_decision',
+                  'script_generation', 'package_validation', 'package_repair',
+                  'evaluation_repair', 'completion_review'
+                )),
+  milestone_id  TEXT NOT NULL,
+  ordinal       INTEGER NOT NULL,
+  title         TEXT NOT NULL,
+  goal          TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN (
+                  'pending', 'ready', 'running', 'waiting_user', 'waiting_confirmation',
+                  'completed', 'failed', 'skipped', 'stale', 'cancelled'
+                )),
+  required      INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0, 1)),
+  reason        TEXT,
+  input_revision_oid TEXT,
+  output_revision_oid TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  FOREIGN KEY (project_id, milestone_id)
+    REFERENCES ai_construction_milestones(project_id, milestone_id) ON DELETE CASCADE,
+  UNIQUE (project_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_tasks_project
+  ON ai_construction_tasks(project_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS ai_construction_task_dependencies (
+  project_id       TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  task_id          TEXT NOT NULL REFERENCES ai_construction_tasks(id) ON DELETE CASCADE,
+  depends_on_task_id TEXT NOT NULL REFERENCES ai_construction_tasks(id) ON DELETE CASCADE,
+  PRIMARY KEY (project_id, task_id, depends_on_task_id),
+  CHECK (task_id <> depends_on_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS ai_construction_confirmations (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  milestone_id          TEXT NOT NULL,
+  graph_revision        INTEGER NOT NULL,
+  package_revision_oid  TEXT NOT NULL,
+  actor_username        TEXT NOT NULL,
+  actor_role            TEXT NOT NULL CHECK (actor_role IN (
+                          'project_owner', 'modeler', 'domain_expert', 'validator'
+                        )),
+  note                  TEXT,
+  created_at            TEXT NOT NULL,
+  FOREIGN KEY (project_id, milestone_id)
+    REFERENCES ai_construction_milestones(project_id, milestone_id) ON DELETE CASCADE,
+  UNIQUE (project_id, milestone_id, graph_revision)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_confirmations_project
+  ON ai_construction_confirmations(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ai_construction_task_adjustments (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  task_id               TEXT NOT NULL,
+  action                TEXT NOT NULL CHECK (action IN ('skip', 'resume', 'defer', 'redo')),
+  graph_revision_before INTEGER NOT NULL,
+  graph_revision_after  INTEGER NOT NULL,
+  actor_username        TEXT NOT NULL,
+  reason                TEXT NOT NULL,
+  impact_json           TEXT NOT NULL,
+  created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_task_adjustments_project
+  ON ai_construction_task_adjustments(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ai_construction_task_edits (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  action                TEXT NOT NULL CHECK (action IN ('add', 'reorder', 'split', 'merge')),
+  edit_json             TEXT NOT NULL,
+  graph_revision_before INTEGER NOT NULL,
+  graph_revision_after  INTEGER NOT NULL,
+  actor_username        TEXT NOT NULL,
+  reason                TEXT NOT NULL,
+  impact_json           TEXT NOT NULL,
+  created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_task_edits_project
+  ON ai_construction_task_edits(project_id, created_at);
 
 CREATE TABLE IF NOT EXISTS documents (
   id            TEXT PRIMARY KEY,
@@ -39,6 +155,78 @@ CREATE TABLE IF NOT EXISTS wf_nodes (
   updated_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_wf_nodes_project ON wf_nodes(project_id, ordinal);
+
+-- ---- 统一建模运行 / 待办交互 / 项目事件 ----
+
+CREATE TABLE IF NOT EXISTS authoring_runs (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  intent          TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'running'
+                  CHECK (status IN ('queued', 'running', 'waiting', 'completed', 'failed', 'cancelled')),
+  base_revision   TEXT,
+  state_json      TEXT NOT NULL DEFAULT '{}',
+  result_json     TEXT,
+  error           TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  finished_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_authoring_runs_project
+  ON authoring_runs(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_authoring_runs_active
+  ON authoring_runs(project_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS authoring_interactions (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id          TEXT NOT NULL REFERENCES authoring_runs(id) ON DELETE CASCADE,
+  type            TEXT NOT NULL CHECK (type IN (
+                    'question_batch', 'change_plan', 'decision', 'artifact_review',
+                    'finding_review', 'knowledge_conflict', 'flowchart_review', 'scenario_review'
+                  )),
+  status          TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'answered', 'cancelled')),
+  base_revision   TEXT,
+  payload_json    TEXT NOT NULL,
+  response_id     TEXT,
+  response_json   TEXT,
+  created_at      TEXT NOT NULL,
+  responded_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_authoring_interactions_pending
+  ON authoring_interactions(project_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_authoring_interactions_run
+  ON authoring_interactions(run_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_interactions_response
+  ON authoring_interactions(project_id, response_id)
+  WHERE response_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS project_events (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  seq             INTEGER NOT NULL,
+  type            TEXT NOT NULL,
+  run_id          TEXT REFERENCES authoring_runs(id) ON DELETE SET NULL,
+  interaction_id  TEXT REFERENCES authoring_interactions(id) ON DELETE SET NULL,
+  payload_json    TEXT NOT NULL DEFAULT '{}',
+  created_at      TEXT NOT NULL,
+  UNIQUE(project_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_project_events_replay
+  ON project_events(project_id, seq);
+
+CREATE TABLE IF NOT EXISTS project_operation_leases (
+  project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  operation         TEXT NOT NULL,
+  owner             TEXT NOT NULL,
+  token             TEXT NOT NULL,
+  acquired_at       TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  expires_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_operation_leases_expiry
+  ON project_operation_leases(expires_at);
 
 -- ---- M2：访谈 / 胜任力 / 包版本 ----
 

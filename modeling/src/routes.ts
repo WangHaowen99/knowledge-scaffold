@@ -69,6 +69,8 @@ import {
   revertPackageDraftFile,
   savePackageDraftFile,
 } from './workflow/package-draft.js';
+import { registerArtifactRoutes } from './artifacts/routes.js';
+import { registerAuthoringRoutes } from './authoring/routes.js';
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -1173,5 +1175,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }));
       return { versions };
     });
+
+    registerAuthoringRoutes(r);
+    registerArtifactRoutes(r);
   });
 }

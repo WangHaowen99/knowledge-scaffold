@@ -7,6 +7,7 @@ import { TestcasesPanel, EvaluatePanel } from './M3Panels.jsx';
 import DataSourcePanel from './DataSourcePanel.jsx';
 import { OptimizePanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
+import PackageVersionWorkspace from './PackageVersionWorkspace.jsx';
 import Tour, { WORKBENCH_STEPS } from './Tour.jsx';
 import { BusyButton } from './ui.jsx';
 import { latestNodeOf } from './workflowNodes.js';
@@ -255,19 +256,27 @@ export default function Workbench({ projectId }) {
         </div>
       </div>
 
-      {/* 右：上下文面板；包完善时切换为修缮对话 */}
+      {/* 右：上下文面板；包完善时可在协作与版本工作区之间切换 */}
       <div className="wb-col wb-right" data-tour="context">
         {effFocus === 'review' ? (
-          <PackageChat projectId={projectId} packageDraft={packageDraft}
-            busy={packageRepairBusy} onBusyChange={setPackageRepairBusy} />
+          <>
+            <div className="ctx-tabs">
+              <button className={ctxTab !== 'versions' ? 'on' : ''} onClick={() => setCtxTab('collaboration')}>协作</button>
+              <button className={ctxTab === 'versions' ? 'on' : ''} onClick={() => setCtxTab('versions')}>版本</button>
+            </div>
+            {ctxTab === 'versions'
+              ? <PackageVersionWorkspace projectId={projectId} />
+              : <PackageChat projectId={projectId} packageDraft={packageDraft}
+                  busy={packageRepairBusy} onBusyChange={setPackageRepairBusy} />}
+          </>
         ) : (
           <>
             <div className="ctx-tabs">
-              <button className={ctxTab === 'dict' ? 'on' : ''} onClick={() => setCtxTab('dict')}>数据字典（{tables.length}）</button>
+              <button className={ctxTab !== 'docs' ? 'on' : ''} onClick={() => setCtxTab('dict')}>数据字典（{tables.length}）</button>
               <button className={ctxTab === 'docs' ? 'on' : ''} onClick={() => setCtxTab('docs')}>文档（{parsedDocs.length}）</button>
             </div>
             <div className="wb-b">
-              {ctxTab === 'dict' && (tables.length
+              {ctxTab !== 'docs' && (tables.length
                 ? tables.map((t) => (
                   <div key={t.name} className="dict-table">
                     <div className="tn">▤ {t.name} <span className="tag tag-lang">{t.rowCount} 行</span></div>

@@ -5,6 +5,8 @@ export interface AuthUser {
   role: string;
 }
 
+export type ProjectKind = 'modeling' | 'package';
+
 // ---- workflow ----
 // 固定主干 11 节点 + 4 类动态节点（见 docs/design.md §3）。
 export type NodeType =
@@ -109,6 +111,7 @@ export interface AnalysisResult {
 export interface Project {
   id: string;
   owner: string;
+  kind: ProjectKind;
   name: string;
   domain: string;
   background: string; // 场景背景（节点 1 一次性表单）
