@@ -145,7 +145,7 @@ def _build_runtime(*, scope: MCPRequestScope, ontology_id: str, entity: str, que
     ).strip()
     provider = str(connection.provider or "").strip().lower()
     if provider not in {"neo4j", "hugegraph"}:
-        raise BusinessDataConnectionError("/search/mcp 仅支持 neo4j 或 hugegraph provider")
+        raise BusinessDataConnectionError("MCP Search 仅支持 neo4j 或 hugegraph provider")
     workspace_paths = get_workspace_paths(scope.workspace_id)
     workspace_name = ""
     try:

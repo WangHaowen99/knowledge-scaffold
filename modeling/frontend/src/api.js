@@ -59,11 +59,29 @@ export async function authFetch(path, options = {}) {
   return doFetch(path, options);
 }
 
+const dispatchPackageDraftRequired = (data) => {
+  if (data?.code !== 'PACKAGE_DRAFT_REQUIRES_PUBLISH') return;
+  if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('mw-package-draft-required', { detail: data }));
+};
+
+const responseError = (res, data) => {
+  dispatchPackageDraftRequired(data);
+  return Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
+};
+
 export async function api(path, options = {}) {
   const res = await authFetch(path, options);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
+  if (!res.ok) throw responseError(res, data);
   return data;
+}
+
+// zip 等二进制请求也要走统一错误解析，否则活动草稿门禁只能显示一个无上下文的 HTTP 状态码。
+export async function requireOkResponse(res) {
+  if (res.ok) return res;
+  const data = await res.json().catch(() => ({}));
+  throw responseError(res, data);
 }
 
 export const login = (username, password) =>
@@ -100,6 +118,22 @@ export const generatePackage = (id, dataSourceType) => api(`${P(id)}/generate`, 
 export const getPackage = (id) => api(`${P(id)}/package`);
 export const getPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`);
 export const exportPackageUrl = (id) => `${P(id)}/package/export`;
+export const getPackageDraft = (id) => api(`${P(id)}/package/draft`);
+export const createPackageDraft = (id) => api(`${P(id)}/package/draft`, { method: 'POST', body: '{}' });
+export const getPackageDraftFile = (id, path) => api(`${P(id)}/package/draft/file?path=${encodeURIComponent(path)}`);
+export const savePackageDraftFile = (id, path, content, revision, expectedContentHash, draftId) => api(`${P(id)}/package/draft/file`, {
+  method: 'PUT', body: JSON.stringify({ path, content, revision, expectedContentHash, draftId }),
+});
+export const revertPackageDraftFile = (id, path, revision, draftId) => api(
+  `${P(id)}/package/draft/file?path=${encodeURIComponent(path)}&revision=${encodeURIComponent(revision)}${draftId ? `&draftId=${encodeURIComponent(draftId)}` : ''}`,
+  { method: 'DELETE' },
+);
+export const discardPackageDraft = (id, revision, draftId) => api(`${P(id)}/package/draft`, {
+  method: 'DELETE', body: JSON.stringify({ confirmed: true, revision, draftId }),
+});
+export const publishPackageDraft = (id, revision, summary, draftId) => api(`${P(id)}/package/draft/publish`, {
+  method: 'POST', body: JSON.stringify({ confirmed: true, revision, summary, draftId }),
+});
 
 // ---- M3 评测 ----
 export const getDataSource = (id) => api(`${P(id)}/data-source`);
@@ -141,6 +175,10 @@ export const cancelGraphImport = (id, uploadId) => api(
   `${P(id)}/graph-import/uploads/${encodeURIComponent(uploadId)}`,
   { method: 'DELETE' },
 );
+export const cancelGraphImportRun = (id, runId) => api(
+  `${P(id)}/graph-imports/${encodeURIComponent(runId)}/cancel`,
+  { method: 'POST', body: '{}' },
+);
 export const listGraphImports = (id) => api(`${P(id)}/graph-imports`);
 export const listTestcases = (id) => api(`${P(id)}/testcases`);
 export const addTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases`, { method: 'POST', body: JSON.stringify({ question, groundTruth }) });
@@ -160,9 +198,7 @@ export const rejectSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/r
 export const listVersions = (id) => api(`${P(id)}/versions`);
 export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;
 
-// ---- 包完善（人工修订 + 修缮对话）----
-export const savePackageFile = (id, path, content) => api(`${P(id)}/package/file`, { method: 'PUT', body: JSON.stringify({ path, content }) });
-export const resetPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+// ---- 包完善（人工编辑统一走版本草稿）----
 export const packageChat = (id, message, history) => api(`${P(id)}/package/chat`, { method: 'POST', body: JSON.stringify({ message, history }) });
 export const packageChatApply = (id, message, history, plan) => api(`${P(id)}/package/chat/apply`, { method: 'POST', body: JSON.stringify({ message, history, plan }) });
 export const runPackageCheck = (id) => api(`${P(id)}/package/check`, { method: 'POST', body: '{}' });

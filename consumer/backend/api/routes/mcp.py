@@ -25,7 +25,12 @@ from integration.mcp.scope import (
     resolve_mcp_scope_from_token,
 )
 from integration.mcp.token_service import MCPTokenAuthError
-from workspace.workspaces import resolve_workspace_id, workspace_scope
+from workspace.workspaces import (
+    WorkspaceMCPEndpointError,
+    get_workspace_mcp_endpoint_id,
+    resolve_workspace_id,
+    workspace_scope,
+)
 
 
 mcp_bp = Blueprint("mcp", __name__, url_prefix=MCP_API_PREFIX)
@@ -47,8 +52,15 @@ def mcp_runtime_status():
     if error_response:
         return error_response
     cfg = load_mcp_runtime_config()
+    try:
+        mcp_endpoint_id = get_workspace_mcp_endpoint_id(workspace_id)
+    except WorkspaceMCPEndpointError as exc:
+        return jsonify({"detail": exc.detail, "code": exc.code}), 503
     runtime_status = _probe_mcp_runtime_status(cfg)
-    services = list_mcp_service_cards(cfg)
+    services = list_mcp_service_cards(
+        cfg,
+        mcp_endpoint_id=mcp_endpoint_id,
+    )
     for item in services:
         item["running"] = runtime_status["running"]
         item["status_label"] = "在线" if runtime_status["running"] else "离线"
@@ -59,6 +71,7 @@ def mcp_runtime_status():
         "probe_url": runtime_status["probe_url"],
         "detail": runtime_status["detail"],
         "workspace_id": workspace_id,
+        "mcp_endpoint_id": mcp_endpoint_id,
         "services": services,
     })
 

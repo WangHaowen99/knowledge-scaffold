@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 
@@ -71,11 +72,18 @@ def _run_startup_in_process(runtime_root, secret_key):
     return run_startup_migrations(runtime_root)
 
 
+def _migration_report(report, migration_id):
+    return next(
+        item for item in report["migrations"] if item["migration_id"] == migration_id
+    )
+
+
 def test_shared_runner_registers_explicit_phase_and_failure_policy():
     from migrations.observability_workspace_config_v1 import MIGRATION_ID as OBSERVABILITY_ID
     from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID as DATA_SOURCE_ID
     from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_CONFIG_ID
     from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_CONFIG_ID
+    from migrations.workspace_mcp_endpoint_id_v1 import MIGRATION_ID as WORKSPACE_MCP_ID
     from migrations.runner import (
         REGISTERED_MIGRATIONS,
         MigrationFailurePolicy,
@@ -83,6 +91,7 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
     )
 
     assert [migration.migration_id for migration in REGISTERED_MIGRATIONS] == [
+        WORKSPACE_MCP_ID,
         DATA_SOURCE_ID,
         OBSERVABILITY_ID,
         MODEL_CONFIG_ID,
@@ -93,8 +102,10 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
+        MigrationPhase.STARTUP,
     ]
     assert [migration.failure_policy for migration in REGISTERED_MIGRATIONS] == [
+        MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.NON_BLOCKING,
         MigrationFailurePolicy.BLOCKING,
@@ -144,7 +155,10 @@ def test_startup_runner_skips_fresh_workspace_without_marker(tmp_path):
 
     report = run_startup_migrations(runtime_root)
 
-    workspace_report = report["migrations"][0]["workspaces"]["demo"]
+    workspace_report = _migration_report(
+        report,
+        "ontology-data-sources-direct-v2",
+    )["workspaces"]["demo"]
     assert report["ok"] is True
     assert workspace_report["skipped"] is True
     assert not (workspace_dir / MARKER_FILE).exists()
@@ -167,7 +181,10 @@ def test_startup_runner_migrates_legacy_connection_and_binding(tmp_path):
 
     source_text = (workspace_dir / "ontology-data-sources.json").read_text(encoding="utf-8")
     source = json.loads(source_text)["sources"]["demo-ontology"]
-    workspace_report = report["migrations"][0]["workspaces"]["demo"]
+    workspace_report = _migration_report(
+        report,
+        "ontology-data-sources-direct-v2",
+    )["workspaces"]["demo"]
     connection_backup = workspace_dir / "data-connections.json.pre-direct-v2.bak"
     bindings_backup = workspace_dir / "ontology-bindings.json.pre-direct-v2.bak"
     assert report["ok"] is True
@@ -387,9 +404,18 @@ def test_concurrent_process_startup_is_serialized_and_idempotent(tmp_path):
     assert "observability" not in json.loads(config_path.read_text(encoding="utf-8"))
     marker = json.loads((runtime_root / MARKER_RELATIVE_PATH).read_text(encoding="utf-8"))
     assert marker["status"] == "completed"
+    endpoint_ids = set()
     for workspace_id in ("alpha", "beta"):
         target = runtime_root / "workspaces" / workspace_id / "observability_config.json"
         assert json.loads(target.read_text(encoding="utf-8"))["local"]["retention_days"] == 8
+        workspace_metadata = json.loads(
+            (runtime_root / "workspaces" / workspace_id / "workspace.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        endpoint_ids.add(workspace_metadata["mcp_endpoint_id"])
+    assert len(endpoint_ids) == 2
+    assert all(re.fullmatch(r"[0-9a-f]{16}", value) for value in endpoint_ids)
 
 
 def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
@@ -438,6 +464,7 @@ def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
     report = run_startup_migrations(runtime_root)
 
     assert [item["migration_id"] for item in report["migrations"]] == [
+        "workspace-mcp-endpoint-id-v1",
         "ontology-data-sources-direct-v2",
         "observability-workspace-config-v1",
         "system-config-model-profiles-v1",

@@ -5,6 +5,8 @@ export interface AuthUser {
   role: string;
 }
 
+export type ProjectKind = 'modeling' | 'package';
+
 // ---- workflow ----
 // 固定主干 11 节点 + 4 类动态节点（见 docs/design.md §3）。
 export type NodeType =
@@ -66,12 +68,24 @@ export interface DataDictField {
   distinctRatio: number; // 唯一值比例，接近 1 提示可能是主键
 }
 
+export type DataDictCellKind = 'blank' | 'string' | 'number' | 'boolean' | 'date';
+
+export interface DataDictCell {
+  kind: DataDictCellKind;
+  /** 未格式化值的稳定文本表示；date 使用 ISO 8601。 */
+  value: string;
+  /** Excel 展示值，用于识别 0001 这类带格式编码。 */
+  formatted: string;
+}
+
 export interface DataDictTable {
   name: string; // sheet 名 = 表名
   fields: DataDictField[];
   rowCount: number;
   // 数据行（按 fields 顺序的字符串矩阵）；保留数量由具体解析场景决定。
   rows?: string[][];
+  // 图导入按需保留的原始单元格类型信息；不改变通用 rows 的字符串契约。
+  cellRows?: DataDictCell[][];
 }
 
 export interface DocumentRecord {
@@ -97,6 +111,7 @@ export interface AnalysisResult {
 export interface Project {
   id: string;
   owner: string;
+  kind: ProjectKind;
   name: string;
   domain: string;
   background: string; // 场景背景（节点 1 一次性表单）

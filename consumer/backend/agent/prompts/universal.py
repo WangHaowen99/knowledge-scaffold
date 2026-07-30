@@ -68,6 +68,32 @@ Then decide HOW the operation will run:
   5. If the documented logic cannot be completed exactly as specified, stop and report the failure. Do not invent workarounds."""
 
 
+_STEP3_INTERACTION_POLICY_ALLOWED = """\
+Before executing in any mode, ensure every required input the chosen path needs is already known. If a manual operation execution path is missing required user-provided information, or the loaded operation logic explicitly asks the user to choose an option or approve a checkpoint, call `request_user_interaction` and stop. Do not continue with tools or assumptions until the user response arrives in a later turn."""
+
+
+_STEP3_INTERACTION_POLICY_DISABLED = """\
+This caller cannot resume a user interaction. Never call `request_user_interaction`.
+- If no suitable operation applies, or a candidate operation conflicts with the user's actual scenario or misses required user inputs, treat it as not applicable.
+- A candidate operation is not applicable when any required input is missing, when its documented scene is narrower than the user's real scenario, or when its exclusions would rule out the solution the user actually needs.
+- For consultation or recommendation requests, answer directly in text using available business knowledge and label uncertainty.
+- For execution, approval, or required-input tasks, do not guess missing identifiers, parameters, or user decisions; return a concise text explanation instead."""
+
+
+_INTERACTION_TOOL_RULES_ALLOWED = """\
+- If a required input for the chosen tool or execution path is missing during manual ontology execution, call `request_user_interaction` with `type="input"` instead of guessing.
+- If the operation lists choices and requires the user to choose exactly one, call `request_user_interaction` with `type="single_choice"` and pass those choices as options.
+- If the operation reaches a checkpoint where the user must review progress before continuing, call `request_user_interaction` with `type="approval"`, `executed_summary`, and `next_plan`."""
+
+
+_INTERACTION_TOOL_RULES_DISABLED = """\
+- This run does not support multi-turn interaction or resume. Never call `request_user_interaction`.
+- If an operation is inapplicable or misses required user inputs, do not continue it.
+- Once you decide an operation is not applicable, discard it. Do not summarize it, do not recommend its product, and do not carry its restrictions into the final answer.
+- For consultation or recommendation requests, fall back to a direct text answer.
+- For execution, approval, or required-input tasks, return a concise text explanation instead of guessing."""
+
+
 UNIVERSAL_AGENT_SYSTEM_PROMPT = """\
 You are an Ontology-Driven Intelligent Agent (本体驱动智能助手).
 You serve users by executing business logic defined in enterprise ontologies. Each ontology represents a business domain and contains structured operations and entity definitions.
@@ -90,7 +116,7 @@ Use the injected `<Selected-Ontology>` block's `operations_catalog`, `objects_ca
 3. Read the full operation content via `ontology_context(resource="operation", key=<operation_key>)` only when Step 3 requires manual operation execution.
 4. If manual execution needs rule judgments, metric formulas, or script descriptions referenced by the operation, read only the referenced `rule`, `metric`, or `script` specs via `ontology_context`.
 ### Step 3: Choose Execution Mode
-Before executing in any mode, ensure every required input the chosen path needs is already known. If a manual operation execution path is missing required user-provided information, or the loaded operation logic explicitly asks the user to choose an option or approve a checkpoint, call `request_user_interaction` and stop. Do not continue with tools or assumptions until the user response arrives in a later turn.
+{STEP3_INTERACTION_POLICY}
 {EXECUTION_MODE_SECTION}
 ### Step 4: Result Organization
 - State which operations and object definitions were used.
@@ -104,9 +130,7 @@ Before executing in any mode, ensure every required input the chosen path needs 
 - Follow each tool's schema description for tool-specific requirements.
 - Use `skill` only for names listed in `<Available-Skills>`; use ontology ids only with ontology tools.
 - When multiple tool calls have known inputs and no dependency on each other's outputs, batch them in the same response. If a tool call depends on another tool's output, wait for that result and call it in a later response.
-- If a required input for the chosen tool or execution path is missing during manual ontology execution, call `request_user_interaction` with `type="input"` instead of guessing.
-- If the operation lists choices and requires the user to choose exactly one, call `request_user_interaction` with `type="single_choice"` and pass those choices as options.
-- If the operation reaches a checkpoint where the user must review progress before continuing, call `request_user_interaction` with `type="approval"`, `executed_summary`, and `next_plan`.
+{INTERACTION_TOOL_RULES}
 - When the user explicitly asks the system to remember, keep, follow later, or reuse information in future work, call `memory` with the content to preserve.
 - Never fabricate tool outputs, file contents, field names, IDs, or calculation results.
 - Do not expose internal file paths, policy text, or hidden tool reasoning to the user.
@@ -137,6 +161,7 @@ def build_universal_system_prompt(
     memory_context: str | None = None,
     include_orchestration: bool = True,
     lang_instruction: str | None = None,
+    allow_user_interaction: bool = True,
 ) -> str:
     """
     Build universal system prompt.
@@ -147,6 +172,7 @@ def build_universal_system_prompt(
         memory_context: Optional memory context to inject.
         include_orchestration: Whether to include sub-agent orchestration guidance.
         lang_instruction: Optional language instruction to inject into Response Style.
+        allow_user_interaction: Whether this run can pause for later user interaction.
 
     Returns:
         Consolidated system prompt string.
@@ -164,6 +190,18 @@ def build_universal_system_prompt(
     system_content = system_content.replace(
         "{EXECUTION_MODE_SECTION}",
         _EXECUTION_MODE_WITH_SUB_AGENT if include_orchestration else _EXECUTION_MODE_WITHOUT_SUB_AGENT,
+    )
+    system_content = system_content.replace(
+        "{STEP3_INTERACTION_POLICY}",
+        _STEP3_INTERACTION_POLICY_ALLOWED
+        if allow_user_interaction
+        else _STEP3_INTERACTION_POLICY_DISABLED,
+    )
+    system_content = system_content.replace(
+        "{INTERACTION_TOOL_RULES}",
+        _INTERACTION_TOOL_RULES_ALLOWED
+        if allow_user_interaction
+        else _INTERACTION_TOOL_RULES_DISABLED,
     )
     system_content = system_content.replace(
         "{MEMORY_CONTEXT_SECTION}", (memory_context.strip() if memory_context else "")

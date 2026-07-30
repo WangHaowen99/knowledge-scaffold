@@ -33,6 +33,13 @@ test('project deletion: removes local project data and temporary uploads', async
   db.prepare(`INSERT INTO package_versions
     (id, project_id, version, spec_json, coverage_json, created_at)
     VALUES ('package-delete', ?, '1.0.0', '{}', '{}', ?)`).run(project.id, now);
+  db.prepare(`INSERT INTO package_drafts
+    (id, project_id, base_package_version_id, base_version, status, revision, created_by, created_at, updated_at)
+    VALUES ('draft-delete', ?, 'package-delete', '1.0.0', 'active', 1, 'alice', ?, ?)`)
+    .run(project.id, now, now);
+  db.prepare(`INSERT INTO package_draft_files
+    (draft_id, path, content, base_content_hash, created_at, updated_at)
+    VALUES ('draft-delete', 'objects/Order.md', 'content', 'hash', ?, ?)`).run(now, now);
   db.prepare(`INSERT INTO project_data_sources
     (project_id, mode, provider, workspace_id, ontology_id, public_config_json, created_at, updated_at)
     VALUES (?, 'none', NULL, 'workspace-delete', NULL, '{}', ?, ?)`).run(project.id, now, now);
@@ -66,6 +73,12 @@ test('project deletion: removes local project data and temporary uploads', async
     (project_id, version, findings_json, created_at) VALUES (?, '1.0.0', '[]', ?)`).run(project.id, now);
   db.prepare(`INSERT INTO package_overrides
     (project_id, path, content, updated_at) VALUES (?, 'manifest.yaml', 'content', ?)`).run(project.id, now);
+  db.prepare(`INSERT INTO package_override_migration_archive
+    (project_id, path, content, original_updated_at, base_package_version_id, base_version,
+      draft_id, disposition, migrated_at)
+    VALUES (?, 'objects/Order.md', 'archived', ?, 'package-delete', '1.0.0',
+      'draft-delete', 'drafted', ?)`)
+    .run(project.id, now, now);
   db.prepare(`INSERT INTO settings (key, value, updated_at)
     VALUES ('project-deletion-global', 'keep', ?)`).run(now);
 
@@ -76,14 +89,16 @@ test('project deletion: removes local project data and temporary uploads', async
 
   const projectTables = [
     'documents', 'wf_nodes', 'interview_batches', 'competency_questions', 'package_versions',
+    'package_drafts',
     'project_data_sources', 'graph_import_uploads', 'graph_import_runs',
     'evaluation_database_import_runs', 'testcases', 'eval_rounds', 'opt_suggestions',
-    'package_checks', 'package_overrides',
+    'package_checks', 'package_overrides', 'package_override_migration_archive',
   ];
   for (const table of projectTables) {
     const row = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE project_id = ?`).get(project.id) as { count: number };
     assert.equal(row.count, 0, `${table} should be deleted`);
   }
+  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM package_draft_files').get() as any).count, 0);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM interview_answers').get() as any).count, 0);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM eval_results').get() as any).count, 0);
   assert.equal((db.prepare("SELECT value FROM settings WHERE key = 'project-deletion-global'").get() as any).value, 'keep');

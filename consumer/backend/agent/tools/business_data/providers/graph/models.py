@@ -16,21 +16,18 @@ class GraphScope:
     def __post_init__(self) -> None:
         if not all(
             str(value or "").strip()
-            for value in (
-                self.workspace_property,
-                self.workspace_value,
-            )
+            for value in (self.workspace_property, self.workspace_value)
         ):
             raise ValueError("GraphScope requires workspace scope")
-
-        if bool(str(self.ontology_property or "").strip()) != bool(
-            str(self.ontology_value or "").strip()
-        ):
+        has_ontology_property = bool(str(self.ontology_property or "").strip())
+        has_ontology_value = bool(str(self.ontology_value or "").strip())
+        if has_ontology_property != has_ontology_value:
             raise ValueError(
-                "GraphScope ontology property and value must be configured together"
+                "GraphScope ontology property and value must be configured together",
             )
 
     def is_enabled(self) -> bool:
+        """Return whether Workspace isolation is enabled; Ontology isolation is optional."""
         return bool(
             str(self.workspace_property or "").strip()
             and str(self.workspace_value or "").strip()

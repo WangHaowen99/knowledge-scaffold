@@ -3,7 +3,7 @@
  * 覆盖 2026-07 格式缺漏审计的 17 个修复点（H1-H4 / M1-M8 / L1-L5）：
  * 构造覆盖全部资源类型（对象/操作/规则/指标/脚本目录/映射）的 sample spec → 渲染 →
  * 逐项断言 frontmatter、表格列数、key 校验、manifest 转义、mapping 一致性、
- * 渲染产物层体检对 override 坏内容的拦截等。
+ * 渲染产物层体检对异常文件内容的拦截等。
  * 运行：npx tsx scripts/verify-format-fix.ts（纯内存，不依赖 DB/LLM）。
  */
 import { renderPackage } from '../src/workflow/package-render.js';
@@ -146,12 +146,12 @@ function main() {
   const policy = mapping.objects['CHANGE_ORDER受影响对象'].policy;
   ok(policy?.read_only === true && policy?.max_rows === 1000 && Array.isArray(policy?.require_user_filter), 'policy 块齐全（read_only=true / max_rows=1000 / require_user_filter 数组）');
 
-  // ---- M3 渲染产物层体检（拦截 override 坏内容）----
+  // ---- M3 渲染产物层体检（拦截异常文件内容）----
   console.log('· M3 渲染产物层体检');
   ok(runFormatChecks(SPEC, files).length === 0, '纯渲染产物 0 发现（由构造保证）');
   const withOverride = (path: string, content: string) => ({ ...files, [path]: content });
   const cats = (fs2: ReturnType<typeof runFormatChecks>) => fs2.map((f) => f.category);
-  ok(cats(runFormatChecks(SPEC, withOverride('objects/CHANGE_ORDER受影响对象.md', '# 被人工改坏：没有 frontmatter\n'))).includes('frontmatter 缺失'), '拦截：override 删掉 frontmatter');
+  ok(cats(runFormatChecks(SPEC, withOverride('objects/CHANGE_ORDER受影响对象.md', '# 被人工改坏：没有 frontmatter\n'))).includes('frontmatter 缺失'), '拦截：文件缺少 frontmatter');
   ok(cats(runFormatChecks(SPEC, withOverride('objects/index.md', files['objects/index.md'] + '| ghost_obj | 幽灵 | 索引声明但详情不存在 | CHANGE_ORDER_AFFECTED_OBJECT |\n'))).includes('索引与详情不一致'), '拦截：索引声明了不存在的详情文件');
   ok(cats(runFormatChecks(SPEC, withOverride('manifest.yaml', 'kind: something-else\n'))).includes('manifest 非法'), '拦截：manifest kind/必选字段被改坏');
   ok(cats(runFormatChecks(SPEC, withOverride('mappings/object-data-mappings.json', '{ broken'))).includes('mapping 非法'), '拦截：mappings JSON 不可解析');
