@@ -35,6 +35,7 @@ import { getPackageErrorDeferral } from './workflow/package-error-deferral.js';
 import {
   acceptPackageWarnings,
   getPackageWarningReview,
+  saveReleaseKnownLimitations,
   type WarningAcceptancePhase,
 } from './workflow/warning-acceptance.js';
 import { buildReleaseReadiness, nextPatchVersion } from './workflow/release.js';
@@ -1784,9 +1785,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const pendingCandidateChanges = (await packageArtifacts.candidateRevisionOverview(
             c.p.id, 'pending', 1,
           )).pendingCount;
+          const warningReview = getPackageWarningReview(c.p.id, current.revision.oid);
           const readiness = buildReleaseReadiness({
             currentRevision: current.revision.oid,
             packageCheck: getCheck(c.p.id),
+            warningReview,
             flowchartRequired: constructionRequired,
             flowchartConfirmed: constructionSnapshot?.milestones.some((milestone) => (
               milestone.id === 'process_confirmed' && milestone.status === 'confirmed'
@@ -1844,6 +1847,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               cause: 'release',
               packageVersion: version,
             },
+          });
+          saveReleaseKnownLimitations({
+            projectId: c.p.id,
+            version,
+            revision: saved.revision.oid,
+            knownLimitations: warningReview.knownLimitations,
+            actor: req.user!.username,
           });
           return { version, revision: saved.revision.oid };
         } catch (error) {
