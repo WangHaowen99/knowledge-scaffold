@@ -277,6 +277,12 @@ export class PackageArtifactStore {
     return this.runExclusive(projectId, () => this.ensureProjectUnlocked(projectId));
   }
 
+  async removeProjectArtifacts(projectId: string): Promise<void> {
+    return this.runExclusive(projectId, async () => {
+      await this.repository.removeProject?.(projectId);
+    });
+  }
+
   async savePackageVersion(projectId: string, input: SavePackageVersionInput): Promise<PackageArtifactView> {
     return this.runExclusive(projectId, async () => {
       const action = validateAction(input.action);
@@ -287,6 +293,7 @@ export class PackageArtifactStore {
       const note = optionalText(input.note, '版本备注', 1000);
       const current = await this.repository.snapshot(projectId);
       const target = packageFiles(input.spec, input.coverage);
+      preserveImportedExtras(current.files, target);
       const changes = changesForManagedFiles(current.files, target);
       const id = `pv_${randomUUID().slice(0, 12)}`;
       const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
@@ -1752,6 +1759,38 @@ function importedPackageFiles(
     files.set(path, typeof content === 'string' ? encoder.encode(content) : new Uint8Array(content));
   }
   return files;
+}
+
+/** 规格化更新保留导入包的附件和扩展目录，同时允许删除旧规格生成的详情文件。 */
+function preserveImportedExtras(
+  current: readonly ArtifactFile[],
+  target: Map<string, Uint8Array>,
+): void {
+  const previousSpecFile = current.find((file) => file.path === SPEC_PATH);
+  if (!previousSpecFile) return;
+
+  let previousManaged: ReadonlySet<string>;
+  try {
+    const previousSpec = parseSpec(decodeText(previousSpecFile.content));
+    previousManaged = new Set(
+      Object.keys(renderPackage(previousSpec)).map((path) => `${PACKAGE_PREFIX}${path}`),
+    );
+  } catch {
+    // 无法可靠恢复旧规格的管理边界时保守保留，避免升级校验器后静默删除导入资产。
+    for (const file of current) {
+      if (file.path.startsWith(PACKAGE_PREFIX) && !target.has(file.path)) {
+        target.set(file.path, new Uint8Array(file.content));
+      }
+    }
+    return;
+  }
+
+  for (const file of current) {
+    if (!file.path.startsWith(PACKAGE_PREFIX)
+      || previousManaged.has(file.path)
+      || target.has(file.path)) continue;
+    target.set(file.path, new Uint8Array(file.content));
+  }
 }
 
 function metadataChanges(current: readonly ArtifactFile[], spec: PackageSpec): ArtifactChange[] {

@@ -46,6 +46,8 @@ export interface ArtifactDiff {
 
 export interface ArtifactRepository {
   initialize(projectId: string): Promise<ArtifactRevision>;
+  /** 创建或删除项目失败时清理对应的工件仓库。 */
+  removeProject?(projectId: string): Promise<void>;
   current(projectId: string): Promise<ArtifactRevision>;
   snapshot(projectId: string, revision?: string): Promise<ArtifactSnapshot>;
   commit(
