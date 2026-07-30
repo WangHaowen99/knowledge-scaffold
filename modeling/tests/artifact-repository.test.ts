@@ -157,6 +157,31 @@ test('恢复旧内容时创建新版本', async (t) => {
   ]);
 });
 
+test('索引写入失败时可以按当前 HEAD 安全回滚刚形成的提交', async (t) => {
+  const { rootDir, repository } = await fixture(t);
+  const initial = await repository.initialize('pj_bank');
+  const saved = await repository.commit('pj_bank', initial.oid, [
+    { kind: 'write', path: 'package/index.md', content: '# 待建立索引的内容\n' },
+  ], { message: '保存待建立索引的内容' });
+
+  const rolledBack = await repository.rollbackCommit('pj_bank', saved.oid);
+
+  assert.equal(rolledBack.oid, initial.oid);
+  assert.equal((await repository.current('pj_bank')).oid, initial.oid);
+  assert.equal(text(await repository.snapshot('pj_bank'), 'package/index.md'), undefined);
+  await assert.rejects(readFile(join(rootDir, 'pj_bank', 'package', 'index.md')));
+  assert.deepEqual((await repository.history('pj_bank')).map((item) => item.oid), [initial.oid]);
+
+  await expectRepositoryError(
+    () => repository.rollbackCommit('pj_bank', saved.oid),
+    'revision_conflict',
+  );
+  await expectRepositoryError(
+    () => repository.rollbackCommit('pj_bank', initial.oid),
+    'invalid_input',
+  );
+});
+
 test('拒绝越界项目和文件路径', async (t) => {
   const { rootDir, repository } = await fixture(t);
 

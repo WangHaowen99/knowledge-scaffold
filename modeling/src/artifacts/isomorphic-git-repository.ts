@@ -117,6 +117,32 @@ export class IsomorphicGitArtifactRepository implements ArtifactRepository {
     });
   }
 
+  async rollbackCommit(projectId: string, expectedRevision: string): Promise<ArtifactRevision> {
+    return this.runExclusive(projectId, async () => {
+      const dir = this.existingProjectDirectory(projectId);
+      await this.assertInitialized(dir);
+      const currentOid = await this.resolveHead(dir);
+      assertExpectedRevision(expectedRevision, currentOid);
+      const current = await this.readSnapshot(dir, currentOid);
+      const parentOid = current.revision.parentOid;
+      if (!parentOid) {
+        throw new ArtifactRepositoryError('invalid_input', '初始修订不能回滚');
+      }
+      const parent = await this.readSnapshot(dir, parentOid);
+      const branch = await git.currentBranch({ fs, dir, fullname: true });
+      if (!branch) throw new ArtifactRepositoryError('invalid_repository', '版本库状态不正确');
+
+      await this.materialize(dir, parent.files, current.files);
+      try {
+        await git.writeRef({ fs, dir, ref: branch, value: parentOid, force: true });
+      } catch (error) {
+        await this.materialize(dir, current.files).catch(() => undefined);
+        throw error;
+      }
+      return parent.revision;
+    });
+  }
+
   async history(projectId: string, limit = 50): Promise<ArtifactRevision[]> {
     return this.runExclusive(projectId, async () => {
       const dir = this.existingProjectDirectory(projectId);

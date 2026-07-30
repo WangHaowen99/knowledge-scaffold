@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS artifact_revisions (
 CREATE INDEX IF NOT EXISTS idx_artifact_revisions_project
   ON artifact_revisions(project_id, sequence DESC);
 
+-- Git 与 SQLite 跨存储提交的持久化意图。正常完成时与索引同事务删除；
+-- 进程中断后首次访问会把未建立索引的单个 Git 提交回退到 base_revision_oid。
+CREATE TABLE IF NOT EXISTS artifact_commit_intents (
+  project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  base_revision_oid TEXT NOT NULL,
+  created_at        TEXT NOT NULL
+);
+
 -- ---- M3：服务设置（键值，页面可配置） ----
 CREATE TABLE IF NOT EXISTS settings (
   key           TEXT PRIMARY KEY,

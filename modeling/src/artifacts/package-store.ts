@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { ArtifactRepositoryError } from './repository.js';
 import type {
   ArtifactChange,
   ArtifactDiff,
@@ -23,6 +24,7 @@ const COVERAGE_PATH = 'model/coverage.json';
 const PACKAGE_PREFIX = 'package/';
 const CAUSE_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
 const ACTOR_KINDS = new Set<ArtifactRevisionActorKind>(['user', 'agent', 'system']);
+const INTERRUPTED_COMMIT_GRACE_MS = 30_000;
 
 export interface PackageRevisionAction {
   cause: string;
@@ -108,7 +110,8 @@ export type PackageArtifactStoreErrorCode =
   | 'package_not_found'
   | 'file_not_found'
   | 'revision_has_no_package'
-  | 'invalid_package';
+  | 'invalid_package'
+  | 'commit_in_progress';
 
 export class PackageArtifactStoreError extends Error {
   constructor(
@@ -150,15 +153,13 @@ export class PackageArtifactStore {
       const current = await this.repository.snapshot(projectId);
       const target = packageFiles(input.spec, input.coverage);
       const changes = changesForManagedFiles(current.files, target);
-      const revision = await this.repository.commit(
+      const id = `pv_${randomUUID().slice(0, 12)}`;
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
         projectId,
         input.expectedRevision,
         changes,
         gitMetadata(action),
-      );
-
-      const id = `pv_${randomUUID().slice(0, 12)}`;
-      this.transaction(() => {
+      ), (savedRevision) => {
         this.db.prepare(`INSERT INTO package_versions
           (id, project_id, version, spec_json, coverage_json, note, revision_oid, created_at)
           VALUES (?,?,?,?,?,?,?,?)`)
@@ -169,10 +170,16 @@ export class PackageArtifactStore {
             JSON.stringify(input.spec),
             JSON.stringify(input.coverage),
             note,
-            revision.oid,
-            revision.createdAt,
+            savedRevision.oid,
+            savedRevision.createdAt,
           );
-        this.recordRevision(projectId, revision, action, changes.map((change) => change.path), packageVersion);
+        this.recordRevision(
+          projectId,
+          savedRevision,
+          action,
+          changes.map((change) => change.path),
+          packageVersion,
+        );
       });
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid), packageVersion);
     });
@@ -200,15 +207,13 @@ export class PackageArtifactStore {
       };
       validatePackageSpec(spec);
       const changes = metadataChanges(current.files, spec);
-      const revision = await this.repository.commit(
+      const id = `pv_${randomUUID().slice(0, 12)}`;
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
         projectId,
         input.expectedRevision,
         changes,
         gitMetadata(action),
-      );
-
-      const id = `pv_${randomUUID().slice(0, 12)}`;
-      this.transaction(() => {
+      ), (savedRevision) => {
         this.db.prepare(`INSERT INTO package_versions
           (id, project_id, version, spec_json, coverage_json, note, revision_oid, created_at)
           VALUES (?,?,?,?,?,?,?,?)`)
@@ -219,10 +224,16 @@ export class PackageArtifactStore {
             JSON.stringify(spec),
             JSON.stringify(currentView.coverage),
             note,
-            revision.oid,
-            revision.createdAt,
+            savedRevision.oid,
+            savedRevision.createdAt,
           );
-        this.recordRevision(projectId, revision, action, changes.map((change) => change.path), packageVersion);
+        this.recordRevision(
+          projectId,
+          savedRevision,
+          action,
+          changes.map((change) => change.path),
+          packageVersion,
+        );
       });
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid), packageVersion);
     });
@@ -241,14 +252,12 @@ export class PackageArtifactStore {
       const currentView = this.viewFromSnapshot(current);
       const spec: PackageSpec = { ...currentView.spec, status: input.status };
       const changes = metadataChanges(current.files, spec);
-      const revision = await this.repository.commit(
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
         projectId,
         input.expectedRevision,
         changes,
         gitMetadata(action),
-      );
-
-      this.transaction(() => {
+      ), (savedRevision) => {
         const row = this.db.prepare(`SELECT id FROM package_versions
           WHERE project_id = ? AND version = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
           .get(projectId, currentView.packageVersion) as { id: string } | undefined;
@@ -260,14 +269,14 @@ export class PackageArtifactStore {
             JSON.stringify(spec),
             JSON.stringify(currentView.coverage),
             note,
-            revision.oid,
-            revision.createdAt,
+            savedRevision.oid,
+            savedRevision.createdAt,
             row.id,
             projectId,
           );
         this.recordRevision(
           projectId,
-          revision,
+          savedRevision,
           action,
           changes.map((change) => change.path),
           currentView.packageVersion,
@@ -337,13 +346,14 @@ export class PackageArtifactStore {
         throw new PackageArtifactStoreError('file_not_found', '文件不存在');
       }
       const changes: ArtifactChange[] = [{ kind: 'write', path, content: input.content }];
-      const revision = await this.repository.commit(
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
         projectId,
         input.expectedRevision,
         changes,
         gitMetadata(action),
-      );
-      this.recordRevision(projectId, revision, action, [path]);
+      ), (savedRevision) => {
+        this.recordRevision(projectId, savedRevision, action, [path]);
+      });
       return this.readFileFromSnapshot(await this.repository.snapshot(projectId, revision.oid), path);
     });
   }
@@ -359,13 +369,14 @@ export class PackageArtifactStore {
       const generated = rendered[path.slice(PACKAGE_PREFIX.length)];
       if (generated === undefined) throw new PackageArtifactStoreError('file_not_found', '文件不存在');
       const changes: ArtifactChange[] = [{ kind: 'write', path, content: generated }];
-      const revision = await this.repository.commit(
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.commit(
         projectId,
         input.expectedRevision,
         changes,
         gitMetadata(action),
-      );
-      this.recordRevision(projectId, revision, action, [path]);
+      ), (savedRevision) => {
+        this.recordRevision(projectId, savedRevision, action, [path]);
+      });
       return this.readFileFromSnapshot(await this.repository.snapshot(projectId, revision.oid), path);
     });
   }
@@ -398,22 +409,25 @@ export class PackageArtifactStore {
         input.expectedRevision,
         input.targetRevision,
       )).files.map((file) => file.path);
-      const revision = await this.repository.restore(
+      const revision = await this.commitAndIndex(projectId, input.expectedRevision, () => this.repository.restore(
         projectId,
         input.targetRevision,
         input.expectedRevision,
         gitMetadata(action),
-      );
-      this.recordRevision(projectId, revision, action, changedPaths);
+      ), (savedRevision) => {
+        this.recordRevision(projectId, savedRevision, action, changedPaths);
+      });
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid));
     });
   }
 
   private async ensureProjectUnlocked(projectId: string): Promise<ArtifactRevision> {
     this.assertProject(projectId);
-    const initialized = await this.repository.initialize(projectId);
+    await this.repository.initialize(projectId);
+    await this.recoverInterruptedCommit(projectId);
+    const currentAfterRecovery = await this.repository.current(projectId);
     if (!this.revisions.latest(projectId)) {
-      let initial = initialized;
+      let initial = currentAfterRecovery;
       while (initial.parentOid) {
         initial = (await this.repository.snapshot(projectId, initial.parentOid)).revision;
       }
@@ -430,15 +444,15 @@ export class PackageArtifactStore {
       });
     }
 
+    const recovered = await this.rollbackUnindexedCommits(projectId, currentAfterRecovery);
     const legacyRows = this.db.prepare(`SELECT rowid AS source_rowid, * FROM package_versions
       WHERE project_id = ? ORDER BY created_at, rowid`).all(projectId) as any[];
-    const current = await this.repository.snapshot(projectId);
+    const current = await this.repository.snapshot(projectId, recovered.oid);
     const needsMigration = legacyRows.some((row) => !row.revision_oid)
       || (legacyRows.length > 0 && !current.files.some((file) => file.path === SPEC_PATH));
     if (!needsMigration) return current.revision;
 
     let head = current;
-    const pendingLinks: Array<{ id: string; oid: string }> = [];
     for (const row of legacyRows) {
       if (row.revision_oid) continue;
       const spec = parseSpec(row.spec_json);
@@ -449,32 +463,69 @@ export class PackageArtifactStore {
       let revision = head.revision;
       if (changes.length > 0) {
         const createdAt = optionalDate(row.created_at);
-        revision = await this.repository.commit(projectId, head.revision.oid, changes, {
-          message: optionalText(row.note, '版本备注', 1000) ?? `导入版本 ${row.version}`,
-          ...(createdAt ? { createdAt } : {}),
-        });
-        this.revisions.record({
+        const summary = optionalText(row.note, '版本备注', 1000) ?? `导入版本 ${row.version}`;
+        revision = await this.commitAndIndex(projectId, head.revision.oid, () => this.repository.commit(
           projectId,
-          oid: revision.oid,
-          parentOid: revision.parentOid,
-          cause: 'migration',
-          summary: optionalText(row.note, '版本备注', 1000) ?? `导入版本 ${row.version}`,
-          actorKind: 'system',
-          actorName: '历史数据',
-          packageVersion,
-          changedPaths: changes.map((change) => change.path),
-          createdAt: revision.createdAt,
+          head.revision.oid,
+          changes,
+          {
+            message: summary,
+            ...(createdAt ? { createdAt } : {}),
+          },
+        ), (savedRevision) => {
+          this.revisions.record({
+            projectId,
+            oid: savedRevision.oid,
+            parentOid: savedRevision.parentOid,
+            cause: 'migration',
+            summary,
+            actorKind: 'system',
+            actorName: '历史数据',
+            packageVersion,
+            changedPaths: changes.map((change) => change.path),
+            createdAt: savedRevision.createdAt,
+          });
+          this.db.prepare('UPDATE package_versions SET revision_oid = ? WHERE id = ? AND project_id = ?')
+            .run(savedRevision.oid, row.id, projectId);
         });
         head = await this.repository.snapshot(projectId, revision.oid);
+      } else {
+        this.db.prepare('UPDATE package_versions SET revision_oid = ? WHERE id = ? AND project_id = ?')
+          .run(revision.oid, row.id, projectId);
       }
-      pendingLinks.push({ id: row.id, oid: revision.oid });
+    }
+    return head.revision;
+  }
+
+  private async recoverInterruptedCommit(projectId: string): Promise<void> {
+    const intent = this.db.prepare(`SELECT base_revision_oid, created_at FROM artifact_commit_intents
+      WHERE project_id = ?`).get(projectId) as {
+        base_revision_oid: string;
+        created_at: string;
+      } | undefined;
+    if (!intent) return;
+    if (isWithinRecoveryGrace(intent.created_at)) {
+      throw new PackageArtifactStoreError('commit_in_progress', '知识包正在保存，请稍后重试');
     }
 
-    this.transaction(() => {
-      const update = this.db.prepare('UPDATE package_versions SET revision_oid = ? WHERE id = ? AND project_id = ?');
-      for (const link of pendingLinks) update.run(link.oid, link.id, projectId);
-    });
-    return head.revision;
+    const current = await this.repository.snapshot(projectId);
+    if (this.revisions.get(projectId, current.revision.oid)) {
+      this.deleteCommitIntent(projectId);
+      return;
+    }
+    if (current.revision.oid === intent.base_revision_oid) {
+      this.deleteCommitIntent(projectId);
+      return;
+    }
+    if (current.revision.parentOid !== intent.base_revision_oid) {
+      throw new PackageArtifactStoreError(
+        'invalid_package',
+        '检测到未完成的知识包提交，但 Git HEAD 已继续变化，已拒绝自动改写历史',
+      );
+    }
+
+    await this.repository.rollbackCommit(projectId, current.revision.oid);
+    this.deleteCommitIntent(projectId);
   }
 
   private optionalViewFromSnapshot(snapshot: ArtifactSnapshot): PackageArtifactView | null {
@@ -526,6 +577,99 @@ export class PackageArtifactStore {
   private assertProject(projectId: string): void {
     const row = this.db.prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId);
     if (!row) throw new PackageArtifactStoreError('project_not_found', '项目不存在');
+  }
+
+  /**
+   * SQLite 中的修订索引是跨存储提交的完成标记。如果进程在 Git 提交后、
+   * SQLite 事务提交前退出，下次访问会丢弃这些未建立索引的尾部提交。
+   */
+  private async rollbackUnindexedCommits(
+    projectId: string,
+    current: ArtifactRevision,
+  ): Promise<ArtifactRevision> {
+    const indexed = this.revisions.latest(projectId);
+    if (!indexed || indexed.oid === current.oid) return current;
+    if (isWithinRecoveryGrace(current.createdAt)) {
+      throw new PackageArtifactStoreError('commit_in_progress', '知识包正在保存，请稍后重试');
+    }
+
+    const dangling: ArtifactRevision[] = [];
+    let cursor = current;
+    while (cursor.oid !== indexed.oid) {
+      if (!cursor.parentOid) {
+        throw new ArtifactRepositoryError(
+          'invalid_repository',
+          'Git 当前修订与 SQLite 修订索引不在同一历史链',
+        );
+      }
+      dangling.push(cursor);
+      cursor = (await this.repository.snapshot(projectId, cursor.parentOid)).revision;
+    }
+
+    let recovered = current;
+    for (const revision of dangling) {
+      recovered = await this.repository.rollbackCommit(projectId, revision.oid);
+    }
+    return recovered;
+  }
+
+  /**
+   * Git 和 SQLite 无法参加同一个底层事务。因此所有正式修订都在项目串行队列内
+   * 先形成 Git 提交，再用单个 SQLite 事务写入索引；索引失败时将 HEAD
+   * 按 CAS 规则退回刚才的父修订，避免对外暴露“有文件、无索引”的半提交。
+   */
+  private async commitAndIndex(
+    projectId: string,
+    baseRevision: string,
+    commit: () => Promise<ArtifactRevision>,
+    index: (revision: ArtifactRevision) => void,
+  ): Promise<ArtifactRevision> {
+    const createdAt = new Date().toISOString();
+    try {
+      this.db.prepare(`INSERT INTO artifact_commit_intents
+        (project_id, base_revision_oid, created_at) VALUES (?,?,?)`)
+        .run(projectId, baseRevision, createdAt);
+    } catch (error) {
+      if (this.db.prepare('SELECT 1 FROM artifact_commit_intents WHERE project_id = ?').get(projectId)) {
+        throw new PackageArtifactStoreError('commit_in_progress', '知识包正在保存，请稍后重试');
+      }
+      throw error;
+    }
+
+    let revision: ArtifactRevision;
+    try {
+      revision = await commit();
+    } catch (commitError) {
+      this.deleteCommitIntent(projectId);
+      throw commitError;
+    }
+
+    try {
+      this.transaction(() => {
+        index(revision);
+        const deleted = this.db.prepare('DELETE FROM artifact_commit_intents WHERE project_id = ?')
+          .run(projectId);
+        if (Number(deleted.changes) !== 1) {
+          throw new Error('知识包提交意图不存在');
+        }
+      });
+      return revision;
+    } catch (indexError) {
+      try {
+        await this.repository.rollbackCommit(projectId, revision.oid);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [indexError, rollbackError],
+          `知识包索引写入失败，且 Git 修订 ${revision.oid} 无法自动回滚`,
+        );
+      }
+      this.deleteCommitIntent(projectId);
+      throw indexError;
+    }
+  }
+
+  private deleteCommitIntent(projectId: string): void {
+    this.db.prepare('DELETE FROM artifact_commit_intents WHERE project_id = ?').run(projectId);
   }
 
   private transaction<T>(task: () => T): T {
@@ -756,4 +900,9 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 
 function compareNames(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left), Buffer.from(right));
+}
+
+function isWithinRecoveryGrace(createdAt: string): boolean {
+  const timestamp = Date.parse(createdAt);
+  return Number.isFinite(timestamp) && Date.now() - timestamp < INTERRUPTED_COMMIT_GRACE_MS;
 }

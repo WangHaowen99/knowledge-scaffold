@@ -54,6 +54,11 @@ export interface ArtifactRepository {
     changes: readonly ArtifactChange[],
     metadata: ArtifactCommitMetadata,
   ): Promise<ArtifactRevision>;
+  /**
+   * 仅用于跨存储提交失败时的补偿：当 expectedRevision 仍是 HEAD 时，
+   * 丢弃这个刚刚形成的修订并恢复到它的直接父修订。
+   */
+  rollbackCommit(projectId: string, expectedRevision: string): Promise<ArtifactRevision>;
   history(projectId: string, limit?: number): Promise<ArtifactRevision[]>;
   diff(projectId: string, fromRevision: string, toRevision: string): Promise<ArtifactDiff>;
   restore(
