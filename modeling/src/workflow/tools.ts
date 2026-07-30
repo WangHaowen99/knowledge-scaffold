@@ -401,7 +401,7 @@ export const specOperationSchema = (competencyQuestionIds: string[] = []) => Typ
   key: KeyString(), title: Type.String(), description: Type.String(),
   inputs: Type.Array(Type.Object({ param: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), required: Type.Boolean(), note: Type.Optional(Type.String()) })),
   outputs: Type.Array(Type.Object({ field: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), note: Type.Optional(Type.String()) })),
-  flow: Type.Array(Type.String({ description: '流程步骤；引用对象写 object:<key>，引用脚本写 script:<key>' })),
+  flow: Type.Array(Type.String({ description: '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；引用对象写 object:<key>，引用脚本写 script:<key>' })),
   relatedObjects: Type.Array(Type.String()),
   usesRules: Type.Optional(Type.Array(Type.String({ description: '引用的规则 key（须在 rules 中声明）' }))),
   usesMetrics: Type.Optional(Type.Array(Type.String({ description: '引用的指标 key（须在 metrics 中声明）' }))),

@@ -87,6 +87,26 @@ export function respondToInteraction(id, interactionId, response, requestId) {
   });
 }
 
+export const getFlowchartDraft = (id, interactionId) => api(
+  `${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/flowchart-draft`,
+);
+
+export const saveFlowchartDraft = (id, interactionId, expectedRevision, document) => api(
+  `${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/flowchart-draft`,
+  {
+    method: 'PUT',
+    body: JSON.stringify({ expectedRevision, document }),
+  },
+);
+
+export const addFlowchartDiagram = (id, interactionId, input) => api(
+  `${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/flowchart-draft/diagrams`,
+  {
+    method: 'POST',
+    body: JSON.stringify(input),
+  },
+);
+
 export const listRevisions = (id) => api(`${projectPath(id)}/revisions`);
 
 export const listCandidateRevisions = (id, status = '') => {
