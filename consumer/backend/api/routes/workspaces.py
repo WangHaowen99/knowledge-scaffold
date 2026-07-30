@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from flask import Blueprint, jsonify, request
 
 from config.system_config import SystemConfigValidationError
@@ -18,6 +20,7 @@ from integration.observability.workspace_config import (
     update_workspace_observability_config,
 )
 from api.auth.auth import get_current_user, require_auth, require_role
+from api.auth.service_auth import modeling_service_authorized
 from workspace.workspaces import (
     WorkspaceAuthorizationError,
     create_workspace,
@@ -30,6 +33,7 @@ from workspace.workspaces import (
     list_workspaces,
     resolve_workspace_id,
     set_default_workspace,
+    update_workspace,
     update_workspace_authorized,
     update_workspace_runtime_config,
     user_can_access_workspace,
@@ -38,6 +42,8 @@ from api.routes.errors import not_found_response
 
 
 workspaces_bp = Blueprint("workspaces", __name__, url_prefix="/agentic")
+
+_MODELING_PROJECT_ID_PATTERN = re.compile(r"^pj_[A-Za-z0-9_-]{1,48}$")
 
 
 def _workspace_forbidden():
@@ -63,6 +69,47 @@ def _enforce_direct_workspace_access(workspace_id: str):
         return None, not_found_response(exc)
     except ValueError as exc:
         return None, (jsonify({"detail": str(exc)}), 400)
+
+
+def _shadow_workspace_id(project_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9-]", "-", project_id).lower()
+    return "mw-shadow-{}".format(normalized)[:60]
+
+
+@workspaces_bp.route("/internal/modeling/shadow-workspaces/ensure", methods=["POST"])
+def ensure_modeling_shadow_workspace_api():
+    if not modeling_service_authorized(request):
+        return jsonify({"error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    project_id = str(payload.get("project_id") or "").strip()
+    owner = str(payload.get("owner") or "").strip()
+    if not _MODELING_PROJECT_ID_PATTERN.fullmatch(project_id):
+        return jsonify({"detail": "project_id 不合法"}), 400
+    if not owner:
+        return jsonify({"detail": "owner 不能为空"}), 400
+
+    workspace_id = _shadow_workspace_id(project_id)
+    try:
+        current = get_workspace(workspace_id)
+    except KeyError:
+        created = create_workspace(
+            name="建模影子·{}".format(project_id),
+            description="知识包建模工具评测专用，自动管理",
+            workspace_id=workspace_id,
+            owner=owner,
+            enforce_workspace_limit=False,
+        )
+        return jsonify({"created": True, "workspace": created}), 201
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
+
+    current_owner = current.get("owner")
+    if current_owner not in (None, owner):
+        return jsonify({"detail": "影子工作区已属于其他用户"}), 409
+    if current_owner is None:
+        current = update_workspace(workspace_id, owner=owner)
+    return jsonify({"created": False, "workspace": current})
 
 
 @workspaces_bp.route("/workspaces", methods=["GET"])

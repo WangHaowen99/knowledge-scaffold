@@ -137,6 +137,70 @@ def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
     assert resolved.config["token"] == "secret-token"
 
 
+def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkeypatch):
+    from api.routes.business_data import business_data_bp
+    from api.routes.workspaces import workspaces_bp
+
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
+
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
+    auth_manager.create_user("alice", "UserStrong123!", role="user")
+    alice = auth_manager.change_password("alice", "UserStrong123!", "ChangedStrong123!")
+    app.config["AUTH_MANAGER"] = auth_manager
+    app.register_blueprint(workspaces_bp)
+    app.register_blueprint(business_data_bp)
+    client = app.test_client()
+
+    provisioned = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json={"project_id": "pj_demo-123", "owner": "alice"},
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+    assert provisioned.status_code == 201
+
+    ontology_dir = (
+        get_workspace_paths("mw-shadow-pj-demo-123").ontologies_dir
+        / "evaluation-demo"
+    )
+    ontology_dir.mkdir(parents=True)
+    (ontology_dir / "manifest.yaml").write_text(
+        (
+            "kind: ontology-package\n"
+            "schema_version: 0.1\n"
+            "id: evaluation-demo\n"
+            "name: Evaluation Demo\n"
+            "description: Evaluation package\n"
+            "version: 1.0.0\n"
+            "language: zh-CN\n"
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.put(
+        "/agentic/ontologies/evaluation-demo/data-source",
+        headers={
+            "Authorization": "Bearer {}".format(auth_manager.issue_token(alice)),
+            "X-Workspace-Id": "mw-shadow-pj-demo-123",
+        },
+        json={
+            "mode": "direct_provider",
+            "provider": "nl2sql_http",
+            "config": {
+                "url": "http://nl2sql:5600",
+                "token": "secret-token",
+                "scene": "mw_proj_demo",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["source"]["provider"] == "nl2sql_http"
+
+
 def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, monkeypatch)
     response = client.get("/agentic/business-data/provider-schemas", headers=headers)

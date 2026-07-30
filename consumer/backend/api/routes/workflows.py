@@ -965,6 +965,7 @@ def start_workflow_sync():
     """
     data = request.get_json() or {}
     user_request = data.get("request", "").strip()
+    include_trace = data.get("include_trace") is True
 
     if not user_request:
         return jsonify({"error": "Request is required"}), 400
@@ -1018,8 +1019,12 @@ def start_workflow_sync():
         }), 503
 
     final_output = ""
+    pending_user_interaction = None
     run_id = None
     last_status = "success"
+    last_error = ""
+    tool_calls = []
+    tool_failures = []
 
     try:
         with workspace_scope(workspace_id):
@@ -1040,11 +1045,38 @@ def start_workflow_sync():
                 if event_run_id:
                     run_id = event_run_id
 
+                if include_trace and event_data.get("type") == "tool.started":
+                    payload = event_data.get("payload", {})
+                    tool_name = str(payload.get("tool_name") or "").strip()
+                    if tool_name:
+                        tool_calls.append(tool_name)
+
+                if include_trace and event_data.get("type") == "tool.finished":
+                    payload = event_data.get("payload", {})
+                    if str(payload.get("status") or "").strip().lower() == "error":
+                        tool_name = str(payload.get("tool_name") or "").strip()
+                        error = str(payload.get("error") or "").strip()
+                        if tool_name and error:
+                            tool_failures.append({
+                                "tool_name": tool_name,
+                                "error": error[:1024],
+                            })
+
                 if event_data.get("type") == "turn.finished":
                     payload = event_data.get("payload", {})
                     last_status = payload.get("status", "success")
+                    last_error = str(payload.get("error") or "").strip()
                     if "final_output" in payload:
-                        final_output = payload["final_output"]
+                        value = payload["final_output"]
+                        if isinstance(value, str):
+                            final_output = value
+                        elif last_status == "awaiting_input" and isinstance(value, dict):
+                            pending_user_interaction = value
+                            final_output = ""
+                        elif value is None:
+                            final_output = ""
+                        else:
+                            final_output = json.dumps(value, ensure_ascii=False)
     except Exception as exc:
         logger.exception("Error in workflow sync")
         return jsonify({
@@ -1057,9 +1089,18 @@ def start_workflow_sync():
     finally:
         slot_manager.release(current_user.username)
 
-    return jsonify({
+    response_body = {
         "status": last_status,
         "final_answer": coerce_final_output_to_text(final_output),
         "session_id": session_id,
         "run_id": run_id,
-    })
+    }
+    if last_error:
+        response_body["error"] = last_error
+    if pending_user_interaction is not None:
+        response_body["pending_user_interaction"] = pending_user_interaction
+    if include_trace:
+        response_body["execution_trace"] = {"tool_calls": tool_calls}
+        if tool_failures:
+            response_body["execution_trace"]["tool_failures"] = tool_failures
+    return jsonify(response_body)

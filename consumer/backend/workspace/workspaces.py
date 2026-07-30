@@ -856,6 +856,7 @@ def create_workspace(
     set_as_default: bool = False,
     auto_set_default: bool = True,
     owner: Optional[str] = None,
+    enforce_workspace_limit: bool = True,
 ) -> Dict[str, str]:
     _ensure_workspace_state()
     normalized_name = _normalize_workspace_name(name)
@@ -896,9 +897,10 @@ def create_workspace(
                 while workspace_exists(candidate):
                     candidate = _with_suffix(candidate, uuid.uuid4().hex[:4])
 
-            max_workspaces = LimitsConfig.from_env().workspace_max_count
-            if len(workspaces) >= max_workspaces:
-                raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
+            if enforce_workspace_limit:
+                max_workspaces = LimitsConfig.from_env().workspace_max_count
+                if len(workspaces) >= max_workspaces:
+                    raise ValueError("工作空间数量已达上限: {}".format(max_workspaces))
 
             endpoint_id = generate_mcp_endpoint_id(set(endpoint_owners))
             paths = get_workspace_paths(candidate)

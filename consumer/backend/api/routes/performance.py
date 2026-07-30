@@ -18,6 +18,7 @@ from utils.perf_analysis.service import (
     parse_query_window,
 )
 from api.auth.auth import get_current_user, require_auth, require_role
+from api.auth.service_auth import modeling_service_authorized
 from workspace.workspaces import resolve_workspace_id
 
 performance_bp = Blueprint("performance", __name__)
@@ -92,6 +93,32 @@ def get_run_performance(run_id: str):
     else:
         workspace_id = get_request_workspace_id()
     body = analyze_run_detail(run_id, start_ms=start_ms, end_ms=end_ms, workspace_id=workspace_id)
+    if not body.get("timeline"):
+        return jsonify({"error": "Run not found"}), 404
+    return jsonify(body)
+
+
+@performance_bp.route(
+    "/agentic/internal/modeling/performance/runs/<run_id>", methods=["GET"]
+)
+def get_modeling_run_performance(run_id: str):
+    """Return one workspace-scoped trace to the trusted Modeling service.
+
+    Evaluation may outlive the user's access token. This endpoint uses the
+    deployment-fixed service credential and never accepts a workspace through
+    the URL or request body.
+    """
+    if not modeling_service_authorized(request):
+        return jsonify({"error": "Forbidden"}), 403
+
+    workspace_id = get_request_workspace_id()
+    start_ms, end_ms = parse_query_window(request.args)
+    body = analyze_run_detail(
+        run_id,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        workspace_id=workspace_id,
+    )
     if not body.get("timeline"):
         return jsonify({"error": "Run not found"}), 404
     return jsonify(body)

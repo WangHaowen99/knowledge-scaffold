@@ -443,6 +443,212 @@ def test_run_sync_coerces_structured_final_output_to_text(monkeypatch, tmp_path)
     }
 
 
+def test_run_sync_preserves_terminal_error_details(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        def run(self, **kwargs):
+            del kwargs
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "run_id": "run-sync-error",
+                    "type": "turn.finished",
+                    "payload": {
+                        "status": "error",
+                        "error": "模型额度已耗尽",
+                    },
+                },
+            }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={"request": "hello", "session_id": "sync-error"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "error",
+        "error": "模型额度已耗尽",
+        "final_answer": "",
+        "session_id": "sync-error",
+        "run_id": "run-sync-error",
+    }
+
+
+def test_run_sync_returns_pending_interaction_without_object_string(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+    interaction = {
+        "id": "interaction-1",
+        "type": "single_choice",
+        "prompt": "请选择处理模式",
+        "options": [{"id": "a", "label": "模式 A"}],
+    }
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        def run(self, **kwargs):
+            del kwargs
+            yield {
+                "event": "agent.v2",
+                "data": {
+                    "run_id": "run-awaiting-1",
+                    "type": "turn.finished",
+                    "payload": {
+                        "status": "awaiting_input",
+                        "final_output": interaction,
+                    },
+                },
+            }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={"request": "process records", "session_id": "sync-awaiting"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "status": "awaiting_input",
+        "final_answer": "",
+        "pending_user_interaction": interaction,
+        "session_id": "sync-awaiting",
+        "run_id": "run-awaiting-1",
+    }
+
+
+def test_run_sync_can_return_tool_trace_in_the_same_authenticated_response(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        def run(self, **kwargs):
+            del kwargs
+            for seq, event_type, payload in (
+                (1, "turn.started", {"user_preview": "hello"}),
+                (2, "tool.started", {"tool_name": "business_data_search"}),
+                (3, "tool.started", {"tool_name": "execute_script"}),
+                (4, "turn.finished", {"status": "success", "final_output": "done"}),
+            ):
+                yield {
+                    "event": "agent.v2",
+                    "data": {
+                        "protocol": "agent-stream.v2",
+                        "event_id": "run-sync-trace:{}".format(seq),
+                        "seq": seq,
+                        "ts": 1700000000000 + seq,
+                        "session_id": "sync-session-trace",
+                        "run_id": "run-sync-trace",
+                        "turn_id": 1,
+                        "type": event_type,
+                        "source": {"node": "test", "component": "unit"},
+                        "payload": payload,
+                    },
+                }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={"request": "hello", "session_id": "sync-session-trace", "include_trace": True},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["execution_trace"] == {
+        "tool_calls": ["business_data_search", "execute_script"],
+    }
+
+
+def test_run_sync_trace_includes_bounded_tool_failures(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path)
+
+    class _FakeOrchestrator:
+        class _RunStore:
+            @staticmethod
+            def list_runs(limit=1000):
+                del limit
+                return []
+
+        run_store = _RunStore()
+        slot_manager = RunSlotManager()
+
+        def run(self, **kwargs):
+            del kwargs
+            for seq, event_type, payload in (
+                (1, "tool.started", {"tool_name": "execute_script"}),
+                (2, "tool.finished", {
+                    "tool_name": "execute_script",
+                    "status": "error",
+                    "error": "TypeError: query() got an unexpected keyword argument 'filters'",
+                    "output_preview": "sensitive output must not be copied into evaluation trace",
+                }),
+                (3, "turn.finished", {"status": "success", "final_output": "blocked"}),
+            ):
+                yield {
+                    "event": "agent.v2",
+                    "data": {
+                        "protocol": "agent-stream.v2",
+                        "event_id": f"run-sync-tool-failure:{seq}",
+                        "seq": seq,
+                        "ts": 1700000000000 + seq,
+                        "session_id": "sync-session-tool-failure",
+                        "run_id": "run-sync-tool-failure",
+                        "turn_id": 1,
+                        "type": event_type,
+                        "source": {"node": "test", "component": "unit"},
+                        "payload": payload,
+                    },
+                }
+
+    monkeypatch.setattr("api.routes.workflows._get_orchestrator", lambda: _FakeOrchestrator())
+
+    response = client.post(
+        "/agentic/runs/sync",
+        json={"request": "hello", "session_id": "sync-session-tool-failure", "include_trace": True},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["execution_trace"] == {
+        "tool_calls": ["execute_script"],
+        "tool_failures": [{
+            "tool_name": "execute_script",
+            "error": "TypeError: query() got an unexpected keyword argument 'filters'",
+        }],
+    }
+
+
 def test_run_sync_requires_request(tmp_path):
     client, headers = _build_test_client(tmp_path)
 
