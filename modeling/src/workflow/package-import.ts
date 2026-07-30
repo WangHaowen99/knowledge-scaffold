@@ -38,6 +38,7 @@ function safeArchivePath(value: string): string {
   if (
     !normalized
     || normalized.startsWith('/')
+    || /^[A-Za-z]:\//u.test(normalized)
     || normalized.includes('\0')
     || parts.some((part) => !part || part === '.' || part === '..')
   ) {
@@ -79,9 +80,31 @@ function archiveFiles(bytes: Uint8Array): {
   if (bytes.byteLength > MAX_ZIP_BYTES) throw new Error('知识包 ZIP 超过 50 MB');
 
   let entries: Record<string, Uint8Array>;
+  let declaredFileCount = 0;
+  let declaredTotalBytes = 0;
+  const declaredPaths = new Set<string>();
   try {
-    entries = unzipSync(bytes);
-  } catch {
+    entries = unzipSync(bytes, {
+      filter(file) {
+        const rawName = String(file.name ?? '').replaceAll('\\', '/');
+        const directory = rawName.endsWith('/');
+        const path = safeArchivePath(directory ? rawName.slice(0, -1) : rawName);
+        if (directory) return false;
+
+        declaredFileCount += 1;
+        if (declaredFileCount > MAX_ARCHIVE_FILES) throw new Error('知识包 ZIP 文件数量过多');
+        if (!Number.isSafeInteger(file.originalSize) || file.originalSize < 0) {
+          throw new Error(`知识包 ZIP 文件大小不正确：${path}`);
+        }
+        declaredTotalBytes += file.originalSize;
+        if (declaredTotalBytes > MAX_ARCHIVE_BYTES) throw new Error('知识包 ZIP 解压后超过 64 MB');
+        if (declaredPaths.has(path)) throw new Error(`知识包 ZIP 包含重复文件：${path}`);
+        declaredPaths.add(path);
+        return !(path.startsWith('__MACOSX/') || path.endsWith('/.DS_Store') || path === '.DS_Store');
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('知识包 ZIP')) throw error;
     throw new Error('知识包 ZIP 无法解压');
   }
   const rawFiles = Object.entries(entries).filter(([path]) => !path.endsWith('/'));

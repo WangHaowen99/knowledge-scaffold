@@ -178,6 +178,47 @@ test('导入知识包保留原始文本和二进制附件并建立版本索引',
   imported.revision.oid);
 });
 
+test('导入包规格化更新保留扩展附件并删除过期生成文件', async (t) => {
+  const { projectId, store } = await fixture(t);
+  const initial = await store.ensureProject(projectId);
+  const importedSpec = spec('2.0.0', '导入知识包');
+  const binary = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff]);
+  const imported = await store.importPackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: importedSpec,
+    coverage,
+    files: {
+      ...renderPackage(importedSpec),
+      'notes/manual.md': '# 人工说明\n',
+      'assets/logo.png': binary,
+    },
+    action: {
+      cause: 'package_import', summary: '导入知识包', actorKind: 'user', actorName: '张经理',
+    },
+  });
+  const updatedSpec = spec('2.1.0', '规格化更新');
+  updatedSpec.operations = [{
+    ...updatedSpec.operations[0],
+    key: 'recommend_v2',
+    title: '新版产品推荐',
+  }];
+
+  const updated = await store.savePackageVersion(projectId, {
+    expectedRevision: imported.revision.oid,
+    spec: updatedSpec,
+    coverage,
+    action: {
+      cause: 'optimization', summary: '规格化更新知识包', actorKind: 'agent', actorName: '智能助手',
+    },
+  });
+  const snapshot = await store.readPackageArchiveFiles(projectId, updated.revision.oid);
+
+  assert.equal(new TextDecoder().decode(snapshot.files['notes/manual.md']), '# 人工说明\n');
+  assert.deepEqual(snapshot.files['assets/logo.png'], binary);
+  assert.equal(snapshot.files['operations/recommend.md'], undefined);
+  assert.ok(snapshot.files['operations/recommend_v2.md']);
+});
+
 test('SQLite 索引写入失败时回滚 Git，不留下半提交且可直接重试', async (t) => {
   const { db, projectId, repository, store } = await fixture(t);
   const initial = await store.ensureProject(projectId);

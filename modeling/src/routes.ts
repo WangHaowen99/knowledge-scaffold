@@ -419,6 +419,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       } catch (error) {
         req.log.error({ err: error, projectId: project.id }, '导入知识包失败');
+        deleteProjectLocalData(project.id, req.user!.username);
+        try {
+          await packageArtifacts.removeProjectArtifacts(project.id);
+        } catch (cleanupError) {
+          req.log.error({ err: cleanupError, projectId: project.id }, '清理失败的知识包工件仓库失败');
+        }
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
       }
     });
@@ -581,6 +587,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         await cancelGraphImportsForProject(p.id);
         if (!deleteProjectLocalData(p.id, req.user!.username)) {
           return reply.code(404).send({ error: '项目不存在' });
+        }
+        try {
+          await packageArtifacts.removeProjectArtifacts(p.id);
+        } catch (cleanupError) {
+          req.log.warn({ err: cleanupError, projectId: p.id }, '项目已删除，但知识包工件仓库清理失败');
         }
         return { deleted: p.id };
       } catch (error) {

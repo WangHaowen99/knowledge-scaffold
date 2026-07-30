@@ -82,6 +82,13 @@ export class IsomorphicGitArtifactRepository implements ArtifactRepository {
     });
   }
 
+  async removeProject(projectId: string): Promise<void> {
+    return this.runExclusive(projectId, async () => {
+      const dir = this.existingProjectDirectory(projectId);
+      await rm(dir, { recursive: true, force: true });
+    });
+  }
+
   async current(projectId: string): Promise<ArtifactRevision> {
     return this.runExclusive(projectId, async () => this.readCurrent(this.existingProjectDirectory(projectId)));
   }

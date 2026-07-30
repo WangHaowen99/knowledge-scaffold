@@ -152,3 +152,26 @@ test('ZIP 导入拒绝路径穿越和缺少 manifest 的压缩包', () => {
     /manifest\.yaml/,
   );
 });
+
+test('ZIP 导入在解压前拒绝危险盘符、规范化重复路径和超大展开体积', () => {
+  assert.throws(
+    () => parsePackageArchive(zipSync({ 'C:/pkg/manifest.yaml': strToU8('name: bad') })),
+    /路径不安全/,
+  );
+  assert.throws(
+    () => parsePackageArchive(zipSync({
+      'pkg/manifest.yaml': strToU8('name: demo'),
+      'pkg\\manifest.yaml': strToU8('name: duplicate'),
+    })),
+    /重复文件/,
+  );
+
+  const oversized = new Uint8Array((64 * 1024 * 1024) + 1);
+  assert.throws(
+    () => parsePackageArchive(zipSync({
+      'pkg/manifest.yaml': strToU8('name: demo'),
+      'pkg/assets/oversized.bin': oversized,
+    }, { level: 9 })),
+    /解压后超过 64 MB/,
+  );
+});
