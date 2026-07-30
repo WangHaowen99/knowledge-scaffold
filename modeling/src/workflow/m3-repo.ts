@@ -21,7 +21,10 @@ export interface EvalResult {
   id: string; roundId: string; testcaseId: string;
   question: string; groundTruth: string; finalAnswer?: string;
   verdict?: 'pass' | 'partial' | 'fail' | 'error';
-  reason?: string; overridden: boolean; createdAt: string;
+  reason?: string; overridden: boolean;
+  originalVerdict?: 'pass' | 'partial' | 'fail' | 'error';
+  overrideReason?: string; overrideActor?: string; overriddenAt?: string;
+  createdAt: string;
 }
 
 // ---- 用例 ----
@@ -38,6 +41,38 @@ export function addTestcase(projectId: string, question: string, groundTruth = '
   getDb().prepare('INSERT INTO testcases (id, project_id, question, ground_truth, source, created_at) VALUES (?,?,?,?,?,?)')
     .run(id, projectId, question, groundTruth, source, nowIso());
   return rowToTc(getDb().prepare('SELECT * FROM testcases WHERE id = ?').get(id));
+}
+export function addTestcases(
+  projectId: string,
+  cases: Array<{ question: string; groundTruth?: string }>,
+): { added: number; skipped: number; testcases: Testcase[] } {
+  if (!Array.isArray(cases) || !cases.length) throw new Error('请提供至少一条真实评测用例');
+  if (cases.length > 500) throw new Error('一次最多导入 500 条真实评测用例');
+  const normalized = (question: string) => question.trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN');
+  const existing = new Set(listTestcases(projectId).map((item) => normalized(item.question)));
+  let added = 0;
+  let skipped = 0;
+  const db = getDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const [index, item] of cases.entries()) {
+      const question = String(item?.question ?? '').trim();
+      if (!question) throw new Error(`第 ${index + 1} 条缺少问题`);
+      const key = normalized(question);
+      if (existing.has(key)) {
+        skipped += 1;
+        continue;
+      }
+      addTestcase(projectId, question, String(item.groundTruth ?? '').trim(), 'manual');
+      existing.add(key);
+      added += 1;
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  return { added, skipped, testcases: listTestcases(projectId) };
 }
 export function updateTestcase(id: string, patch: { question?: string; groundTruth?: string }): void {
   const cur = getDb().prepare('SELECT * FROM testcases WHERE id = ?').get(id) as any;
@@ -114,11 +149,26 @@ export function finishRound(id: string, status: 'done' | 'failed'): void {
     .run(status, status, finishedAt, finishedAt, id);
 }
 
+export function failInterruptedEvaluationRounds(reason: string): number {
+  const detail = String(reason ?? '').trim() || '服务重启，本轮评测已中断';
+  const finishedAt = nowIso();
+  const result = getDb().prepare(`UPDATE eval_rounds
+    SET status = 'failed', phase = 'failed', phase_started_at = ?,
+      current_item_started_at = NULL, finished_at = ?, log = log || ?
+    WHERE status = 'running'`).run(finishedAt, finishedAt, `${detail}\n`);
+  return Number(result.changes);
+}
+
 const rowToResult = (r: any): EvalResult => ({
   id: r.id, roundId: r.round_id, testcaseId: r.testcase_id, question: r.question,
   groundTruth: r.ground_truth, finalAnswer: r.final_answer ?? undefined,
   verdict: r.verdict ?? undefined, reason: r.reason ?? undefined,
-  overridden: !!r.overridden, createdAt: r.created_at,
+  overridden: !!r.overridden,
+  originalVerdict: r.original_verdict ?? undefined,
+  overrideReason: r.override_reason ?? undefined,
+  overrideActor: r.override_actor ?? undefined,
+  overriddenAt: r.overridden_at ?? undefined,
+  createdAt: r.created_at,
 });
 
 export function addResult(roundId: string, input: {
@@ -150,14 +200,21 @@ export function listResults(roundId: string): EvalResult[] {
   return getDb().prepare('SELECT * FROM eval_results WHERE round_id = ? ORDER BY created_at').all(roundId).map(rowToResult);
 }
 
+export function resultBelongsToProject(resultId: string, projectId: string): boolean {
+  return Boolean(getDb().prepare(`SELECT 1 FROM eval_results result
+    JOIN eval_rounds round ON round.id = result.round_id
+    WHERE result.id = ? AND round.project_id = ?`).get(resultId, projectId));
+}
+
 function rowToTrace(row: any): EvaluationExecutionTrace {
+  const toolFailures = JSON.parse(row.tool_failures_json || '[]');
   return {
     runId: row.run_id ?? undefined,
     sessionId: row.session_id ?? undefined,
     status: row.trace_status ?? 'complete',
     ...(row.trace_error ? { error: row.trace_error } : {}),
     toolCalls: JSON.parse(row.tool_calls_json || '[]'),
-    toolFailures: JSON.parse(row.tool_failures_json || '[]'),
+    ...(toolFailures.length ? { toolFailures } : {}),
   };
 }
 
@@ -182,10 +239,25 @@ export function getRoundDetails(roundId: string): {
   if (!round) return null;
   return { round, results: listResults(round.id), traces: listResultTraces(round.id) };
 }
-export function overrideVerdict(resultId: string, verdict: 'pass' | 'partial' | 'fail'): EvalResult | null {
-  getDb().prepare('UPDATE eval_results SET verdict = ?, overridden = 1 WHERE id = ?').run(verdict, resultId);
+export function overrideVerdict(
+  resultId: string,
+  verdict: 'pass' | 'partial' | 'fail',
+  audit: { reason: string; actor: string },
+): EvalResult | null {
+  const current = getDb().prepare('SELECT * FROM eval_results WHERE id = ?').get(resultId) as any;
+  if (!current) return null;
+  const reason = String(audit?.reason ?? '').trim();
+  const actor = String(audit?.actor ?? '').trim();
+  if (!reason) throw new Error('请填写人工改判理由');
+  if (reason.length > 1_000) throw new Error('人工改判理由不能超过 1000 字');
+  if (!actor) throw new Error('人工改判操作人不能为空');
+  if (current.verdict === 'error') throw new Error('运行错误不能人工改判，请先修复运行环境后重试');
+  getDb().prepare(`UPDATE eval_results
+    SET verdict = ?, overridden = 1,
+      original_verdict = COALESCE(original_verdict, verdict),
+      override_reason = ?, override_actor = ?, overridden_at = ?
+    WHERE id = ?`).run(verdict, reason, actor, nowIso(), resultId);
   const r = getDb().prepare('SELECT * FROM eval_results WHERE id = ?').get(resultId);
-  if (!r) return null;
   // 同步轮次通过数
   const res = rowToResult(r as any);
   const round = getDb().prepare("SELECT COUNT(*) AS c FROM eval_results WHERE round_id = ? AND verdict = 'pass'").get(res.roundId) as { c: number };

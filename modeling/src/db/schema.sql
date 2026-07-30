@@ -503,6 +503,10 @@ CREATE TABLE IF NOT EXISTS eval_results (
   verdict       TEXT,               -- pass | partial | fail | error
   reason        TEXT,
   overridden    INTEGER NOT NULL DEFAULT 0,  -- 人工改判标记
+  original_verdict TEXT,                     -- 首次人工改判前的自动判定
+  override_reason TEXT,                      -- 人工改判理由
+  override_actor TEXT,                       -- 人工改判操作人
+  overridden_at TEXT,                        -- 最后一次人工改判时间
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_res_round ON eval_results(round_id);
@@ -523,16 +527,51 @@ CREATE TABLE IF NOT EXISTS opt_suggestions (
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   round_id      TEXT NOT NULL,       -- 基于哪一轮评测产生
   based_version TEXT NOT NULL,       -- 基于的包版本
+  based_revision_oid TEXT NOT NULL DEFAULT '', -- 基于的 Git 修订；同版本号仍可精确判陈旧
   title         TEXT NOT NULL,
   detail        TEXT NOT NULL,       -- 建议详情（含要沉淀进包的业务规则）
-  kind          TEXT NOT NULL,       -- add_operation | modify_operation | add_object | modify_object | clarify_description
-  target        TEXT,                -- 目标对象/操作 key（新增类可空）
+  kind          TEXT NOT NULL,       -- add/modify: operation | object | rule | metric | script；或 clarify_description
+  target        TEXT,                -- 目标对象/操作/规则/指标/脚本 key（新增类可空）
   related_question TEXT,             -- 关联的未通过用例问题
-  status        TEXT NOT NULL DEFAULT 'pending',  -- pending | applied | rejected
+  diagnosis_ids_json TEXT NOT NULL DEFAULT '[]', -- 建议依据的失败诊断 ID
+  evidence_json TEXT NOT NULL DEFAULT '[]',      -- 支持该建议的独立证据
+  generalization_plan TEXT NOT NULL DEFAULT '',  -- 如何避免只适配当前用例
+  validation_plan TEXT NOT NULL DEFAULT '',      -- 如何用样例外场景验证
+  candidate_revision_id TEXT,          -- PR7 候选修订 ID；不直接关联正式版本
+  candidate_feedback TEXT,             -- 候选被退回后带入下一次修订的调整要求
+  status        TEXT NOT NULL DEFAULT 'pending',  -- pending | candidate | applied | rejected
   applied_version TEXT,              -- 应用产生的新版本号
+  applied_revision_oid TEXT,         -- 接受候选后形成的正式 Git 修订
   created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opt_project ON opt_suggestions(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS failure_diagnoses (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  round_id           TEXT NOT NULL,
+  based_version      TEXT NOT NULL,
+  based_revision_oid TEXT NOT NULL DEFAULT '',
+  category           TEXT NOT NULL,
+  title              TEXT NOT NULL,
+  summary            TEXT NOT NULL,
+  evidence_json      TEXT NOT NULL DEFAULT '[]',
+  confidence         TEXT NOT NULL,
+  blocking           INTEGER NOT NULL DEFAULT 0,
+  repair_scope       TEXT NOT NULL,
+  package_optimizable INTEGER NOT NULL DEFAULT 0,
+  result_ids_json    TEXT NOT NULL DEFAULT '[]',
+  related_questions_json TEXT NOT NULL DEFAULT '[]',
+  suggested_action   TEXT NOT NULL,
+  resolution_status  TEXT NOT NULL DEFAULT 'pending',
+  resolution_action  TEXT,
+  resolution_note    TEXT,
+  resolution_actor   TEXT,
+  resolution_payload_json TEXT NOT NULL DEFAULT '{}',
+  resolved_at        TEXT,
+  created_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_diag_project_round ON failure_diagnoses(project_id, round_id, created_at);
 
 -- ---- 包体检（最近一次结果；规则引擎 + 语义 agent 的结构化发现） ----
 CREATE TABLE IF NOT EXISTS package_checks (

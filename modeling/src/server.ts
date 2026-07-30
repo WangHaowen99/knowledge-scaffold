@@ -13,10 +13,14 @@ import { cleanupExpiredGraphImportUploads } from './graph-import/upload-store.js
 import { failRunningGraphImportRuns } from './graph-import/repo.js';
 import { failRunningEvaluationDatabaseImportRuns } from './evaluation/eval-db-import-repo.js';
 import { recoverInterruptedAuthoringWork } from './authoring/restart-recovery.js';
+import { failInterruptedEvaluationRounds } from './workflow/m3-repo.js';
+import { failInterruptedOptimizationApplyTasks } from './evaluation/optimization-apply-progress.js';
 
 async function main() {
   const db = getDb(); // 初始化 schema
+  failInterruptedOptimizationApplyTasks();
   recoverInterruptedAuthoringWork(db);
+  failInterruptedEvaluationRounds('modeling 服务已重启，本轮评测已中断，请重新运行正式评测');
   failRunningGraphImportRuns('modeling 服务已重启，后台图数据导入已中断，请重新上传 Excel 并重试');
   failRunningEvaluationDatabaseImportRuns('modeling 服务已重启，后台评测库导入已中断，请重新上传 Excel 并重试');
   cleanupExpiredGraphImportUploads();
