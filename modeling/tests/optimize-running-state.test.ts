@@ -13,6 +13,9 @@ test('in-flight operation：运行期间暴露操作类型、拒绝重入并在�
   ));
 
   assert.equal(operations.current('project-1:optimize'), 'propose');
+  const status = operations.status('project-1:optimize');
+  assert.equal(status?.operation, 'propose');
+  assert.ok(Number.isFinite(Date.parse(status?.startedAt ?? '')));
   await assert.rejects(
     operations.run('project-1:optimize', 'apply', async () => {}),
     OperationAlreadyRunningError,
@@ -35,6 +38,7 @@ test('optimize panel：只恢复服务端支持的运行操作', async () => {
   assert.equal(typeof shouldPollOptimizeOperation, 'function');
   assert.equal(normalizeOptimizeOperation('propose'), 'propose');
   assert.equal(normalizeOptimizeOperation('apply'), 'apply');
+  assert.equal(normalizeOptimizeOperation('diagnose'), 'diagnose');
   assert.equal(normalizeOptimizeOperation(null), '');
   assert.equal(normalizeOptimizeOperation('unknown'), '');
   assert.equal(shouldPollOptimizeOperation('propose'), true);

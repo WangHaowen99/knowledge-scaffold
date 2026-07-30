@@ -1,5 +1,5 @@
 export function normalizeOptimizeOperation(operation) {
-  return operation === 'propose' || operation === 'apply' ? operation : '';
+  return ['diagnose', 'propose', 'apply'].includes(operation) ? operation : '';
 }
 
 export function shouldPollOptimizeOperation(operation) {
