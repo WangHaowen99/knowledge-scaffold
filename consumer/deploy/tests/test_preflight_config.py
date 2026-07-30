@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from collections.abc import Callable as CallableABC
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from typing import Union, get_origin
 from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from preflight_config import (  # noqa: E402
+    ComposeConfigLoader,
+    ComposeEnvFiles,
     _load_compose_config_json,
     _release_host_ports,
     validate_config,
@@ -79,6 +83,10 @@ services:
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_runtime_type_aliases_are_python39_compatible(self) -> None:
+        self.assertIs(get_origin(ComposeEnvFiles), Union)
+        self.assertIs(get_origin(ComposeConfigLoader), CallableABC)
 
     def test_compose_config_loader_uses_all_release_env_files(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")
@@ -254,6 +262,24 @@ services:
         error_types = {item["type"] for item in report["errors"]}
         self.assertEqual(error_types, {"plaintext_graph_secret", "missing_graph_scope_field"})
         self.assertEqual(report["warnings"][0]["field"], "ontology_property")
+        self.assertEqual(report["warnings"][0]["reason"], "missing")
+        self.assertEqual(report["warnings"][0]["effect"], "ontology_scope_disabled")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["sources"]["demo-ontology"]["config"]["ontology_property"] = ""
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        blank_report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+
+        self.assertEqual(blank_report["warnings"][0]["reason"], "blank")
+        self.assertEqual(
+            blank_report["warnings"][0]["effect"],
+            "ontology_scope_disabled",
+        )
 
     def test_pre_migration_defers_persisted_data_validation_to_migration_runner(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")

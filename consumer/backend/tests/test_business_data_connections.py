@@ -151,14 +151,15 @@ def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch
     assert neo4j_fields["graph_query_timeout_seconds"]["default"] == 30
     assert neo4j_fields["graph_agent_timeout_seconds"]["default"] == 120
     assert hugegraph_fields["token"]["secret"] is True
-    assert hugegraph_fields["ontology_property"]["default"] == ""
+    assert neo4j_fields["ontology_property"]["default"] == "d2o_ontology_id"
+    assert hugegraph_fields["ontology_property"]["default"] == "d2o_ontology_id"
     assert hugegraph_fields["graph_connect_timeout_seconds"]["default"] == 10
     assert hugegraph_fields["graph_query_timeout_seconds"]["default"] == 30
     assert hugegraph_fields["graph_agent_timeout_seconds"]["default"] == 120
     assert hugegraph_fields["max_retries"]["default"] == 1
 
 
-def test_graph_provider_defaults_missing_ontology_property_to_disabled():
+def test_graph_provider_defaults_and_explicitly_disables_ontology_scope():
     from agent.tools.business_data.provider_registry import normalize_provider_config
 
     base_config = {
@@ -173,7 +174,7 @@ def test_graph_provider_defaults_missing_ontology_property_to_disabled():
         {**base_config, "ontology_property": ""},
     )
 
-    assert defaulted["ontology_property"] == ""
+    assert defaulted["ontology_property"] == "d2o_ontology_id"
     assert disabled["ontology_property"] == ""
 
 

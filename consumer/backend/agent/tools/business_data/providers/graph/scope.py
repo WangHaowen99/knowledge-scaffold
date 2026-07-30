@@ -29,7 +29,7 @@ def build_graph_scope(provider_config: Mapping[str, Any]) -> GraphScope:
     workspace_id = str(provider_config.get("workspace_id") or "").strip()
     workspace_name = str(provider_config.get("workspace_name") or "").strip()
     ontology_property = str(provider_config.get("ontology_property") or "").strip()
-    ontology_id = str(provider_config.get("ontology_id") or "").strip()
+    ontology_id = str(provider_config.get("ontology_id") or "").strip() if ontology_property else ""
 
     if not workspace_property:
         raise GraphScopeError("workspace_property 不能为空")
