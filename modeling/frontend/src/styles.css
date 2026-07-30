@@ -312,6 +312,45 @@ html, body, #root { height: 100%; }
 .mwr .sg-toggle:hover { background: #f7fafd; }
 
 .mwr .sg-applied { border: 1px solid #bfe3d2; background: #f0faf5; border-radius: 10px; padding: 12px 16px; margin-top: 14px; font-size: 13px; display: flex; align-items: center; }
+
+/* 候选修订：选择原子变更组并预览完整文件差异。 */
+.mwr .candidate-revision-panel { overflow: auto; margin-top: 10px; border: 1px solid #cfe0f5; border-radius: 13px; background: linear-gradient(180deg, #f8fbff 0%, #fff 38%); box-shadow: 0 6px 18px rgba(29, 80, 136, .08); }
+.mwr .candidate-revision-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #dce8f6; background: #f8fbff; }
+.mwr .candidate-revision-panel-title > div { min-width: 0; display: grid; gap: 2px; }
+.mwr .candidate-revision-panel-title strong { color: #164f8b; font-size: 12.5px; }
+.mwr .candidate-revision-panel-title span { color: #71839a; font-size: 10px; line-height: 1.4; }
+.mwr .candidate-revision-panel-title em { min-width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 999px; color: #fff; background: #2878d0; font-size: 11px; font-style: normal; font-weight: 800; }
+.mwr .candidate-revision-card { padding: 11px 12px 12px; border-bottom: 1px solid #e7edf5; }
+.mwr .candidate-revision-card:last-child { border-bottom: 0; }
+.mwr .candidate-revision-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; }
+.mwr .candidate-revision-card-head > div { min-width: 0; display: grid; gap: 3px; }
+.mwr .candidate-revision-eyebrow { color: #5580ad; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.mwr .candidate-revision-card-head strong { color: #203b59; font-size: 12px; line-height: 1.45; }
+.mwr .candidate-revision-card-head small, .mwr .candidate-revision-card > small { display: block; margin-top: 5px; color: #8391a2; font-size: 9.5px; }
+.mwr .candidate-revision-status { flex: none; padding: 2px 7px; border-radius: 999px; color: #1664ad; background: #eaf4ff; font-size: 9.5px; font-weight: 750; }
+.mwr .candidate-revision-groups { display: grid; gap: 6px; margin: 10px 0; }
+.mwr .candidate-revision-group { display: flex; align-items: flex-start; gap: 7px; padding: 7px 8px; border: 1px solid #e0e7f0; border-radius: 9px; background: #fff; cursor: pointer; }
+.mwr .candidate-revision-group.auto-included { border-style: dashed; background: #f5f8fc; cursor: default; }
+.mwr .candidate-revision-group input { margin: 2px 0 0; accent-color: #2878d0; }
+.mwr .candidate-revision-group-body { min-width: 0; display: grid; gap: 3px; flex: 1; }
+.mwr .candidate-revision-group-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mwr .candidate-revision-group-title strong { color: #334d69; font-size: 10.5px; line-height: 1.35; }
+.mwr .candidate-revision-group-title small, .mwr .candidate-revision-deps, .mwr .candidate-revision-auto { color: #7c8b9d; font-size: 9px; line-height: 1.4; }
+.mwr .candidate-revision-auto { color: #2d6da7; }
+.mwr .candidate-revision-validation { display: flex; gap: 5px; }
+.mwr .candidate-revision-validation em { border-radius: 999px; padding: 1px 5px; font-size: 8.5px; font-style: normal; font-weight: 750; }
+.mwr .candidate-revision-validation .error { color: #b42318; background: #fef3f2; }
+.mwr .candidate-revision-validation .warning { color: #8a5a00; background: #fff7e2; }
+.mwr .candidate-revision-card textarea { width: 100%; min-height: 48px; box-sizing: border-box; resize: vertical; border: 1px solid #d8e1eb; border-radius: 8px; padding: 7px 8px; color: #334d69; background: #fff; font: inherit; font-size: 10px; line-height: 1.45; }
+.mwr .candidate-revision-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.mwr .candidate-revision-actions .btn { min-height: 28px; padding: 4px 9px; font-size: 9.5px; }
+.mwr .candidate-revision-reject { color: #a43c35; }
+.mwr .candidate-revision-error { margin-top: 7px; padding: 7px 8px; border-radius: 7px; color: #a12e26; background: #fef3f2; font-size: 10px; line-height: 1.45; }
+.mwr .candidate-revision-canvas { display: grid; gap: 12px; margin-top: 12px; padding: 12px; border: 1px solid #dce8f6; border-radius: 13px; background: #fff; }
+.mwr .candidate-revision-canvas > header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.mwr .candidate-revision-canvas > header span { color: #5080b1; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.mwr .candidate-revision-canvas h3 { margin: 3px 0 0; color: #203b59; font-size: 17px; }
+.mwr .candidate-revision-selection-summary { color: #71839a; font-size: 11px; text-align: right; }
 .mwr .sg-up { color: #0e6b4a; font-weight: 700; font-size: 11.5px; }
 
 /* ---- 通用：长任务进度 ---- */
