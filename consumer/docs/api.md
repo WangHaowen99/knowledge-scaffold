@@ -1494,10 +1494,10 @@ Graph provider 配置：
 
 | Provider | 必填配置 | 可选配置 | 隔离要求 |
 | --- | --- | --- | --- |
-| `neo4j` | `uri`、`username`、`password` | `database=neo4j`、超时/重试/结果上限 | `workspace_property=d2o_workspace_id`，建议显式配置 `ontology_property=d2o_ontology_id` |
-| `hugegraph` | `url` | `graph=hugegraph`、`graph_space`、`username/password/token`、超时/重试/结果上限 | 同样配置 workspace/ontology 属性 |
+| `neo4j` | `uri`、`username`、`password` | `database=neo4j`、超时/重试/结果上限 | `workspace_property=d2o_workspace_id`；`ontology_property` 默认为空，留空时不执行 Ontology 隔离 |
+| `hugegraph` | `url` | `graph=hugegraph`、`graph_space`、`username/password/token`、超时/重试/结果上限 | 同样强制 Workspace 隔离；仅在 `ontology_property` 非空时执行 Ontology 隔离 |
 
-密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。可先用候选配置调用 test，确认可用后再保存；MCP search 只接受已配置的 `neo4j` 或 `hugegraph` 数据源。
+密码和 token 加密落盘，对外读取只返回 `has_password` / `has_token`。如需按本体隔离，应显式配置 `ontology_property`，例如 `d2o_ontology_id`；其过滤值始终为当前 `ontology_id`。可先用候选配置调用 test，确认可用后再保存；MCP search 只接受已配置的 `neo4j` 或 `hugegraph` 数据源。
 
 新增业务数据 provider 的开发步骤见 [`docs/business-data-provider-extension.md`](business-data-provider-extension.md)。
 
@@ -2045,7 +2045,24 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 #### `GET /agentic/mcp/runtime/status`
 
-返回独立进程的连通状态、transport、外部地址和 search/chat 服务卡片。外部地址来自 `MCP_PUBLIC_BASE_URL`，部署时应设置为客户端实际可达的域名或 IP。
+返回当前工作空间的 `mcp_endpoint_id`、独立进程连通状态、transport、外部地址和 search/chat 服务卡片。`services[].active_url` 是客户端应直接使用的完整 URL。外部基础地址来自 `MCP_PUBLIC_BASE_URL`，该变量只配置协议、域名、端口和可选网关前缀。
+
+```json
+{
+  "workspace_id": "corporate",
+  "mcp_endpoint_id": "cdd181f5b6cb47a9",
+  "running": true,
+  "transport": "both",
+  "services": [
+    {
+      "toolset": "chat",
+      "active_url": "https://mcp.example.com/cdd181f5b6cb47a9/chat/mcp",
+      "streamable_http_url": "https://mcp.example.com/cdd181f5b6cb47a9/chat/mcp",
+      "sse_url": "https://mcp.example.com/cdd181f5b6cb47a9/chat/sse"
+    }
+  ]
+}
+```
 
 #### `GET /agentic/mcp/tokens`
 
@@ -2065,8 +2082,8 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 | scope | 允许的服务 |
 | --- | --- |
-| `mcp:search` | `/search/mcp`、`/search/sse`，只执行原子图查询，不调用 LLM |
-| `mcp:chat` | `/chat/mcp`、`/chat/sse`，进入标准 workflow 和 run admission queue |
+| `mcp:search` | `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/search/sse`，只执行原子图查询，不调用 LLM |
+| `mcp:chat` | `/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/chat/sse`，进入标准 workflow 和 run admission queue |
 
 未传 scopes 时默认同时授予两项。响应 `201` 只在创建时返回一次 `token` 明文；token 固定绑定 `sub` 和 `workspace_id`，不能用请求头切换到其他 workspace。
 
@@ -2074,13 +2091,13 @@ MCP 管理接口走 backend `5055`，要求 consumer access token 和 `X-Workspa
 
 吊销当前用户、当前 workspace 下的 token。MCP token 注册表默认位于 `.onto-runtime/mcp-tokens.json`，备份和恢复必须与 workspace 数据同步完成。
 
-独立服务默认地址：
+独立服务地址格式：
 
-- Streamable HTTP：`http://<host>:7488/search/mcp`、`http://<host>:7488/chat/mcp`
-- SSE：`http://<host>:7488/search/sse`、`http://<host>:7488/chat/sse`
+- Streamable HTTP：`http://<host>:7488/{mcp_endpoint_id}/search/mcp`、`http://<host>:7488/{mcp_endpoint_id}/chat/mcp`
+- SSE：`http://<host>:7488/{mcp_endpoint_id}/search/sse`、`http://<host>:7488/{mcp_endpoint_id}/chat/sse`
 - 健康检查：`http://<host>:7488/health`
 
-search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。
+`mcp_endpoint_id` 是稳定的公开路由标识，不是凭证。URL 中的 Endpoint ID 必须与 MCP Token 绑定的 workspace 一致；不一致时工具返回 `MCP_WORKSPACE_ENDPOINT_MISMATCH`。每个 MCP transport session 同时绑定到首次使用的 Endpoint，`Mcp-Session-Id` 或 SSE `session_id` 不能跨工作空间 URL 复用；跨 Endpoint 使用按未知会话返回 HTTP 404 `Session not found`。Streamable HTTP Session 默认空闲 30 分钟后失效，Endpoint 绑定在额外 60 秒安全宽限后清理；SSE 连接断开时立即清理。每个服务 transport 固定最多保留 10000 个活动 Session，达到上限返回 HTTP 503 `Server session capacity reached`，不会淘汰活动 Session。MCP 服务重启后原 transport session 失效，客户端需要重新 initialize。search 服务要求 ontology 已配置 `neo4j` 或 `hugegraph` 数据源。所有 MCP 调用应传 `Authorization: Bearer <mcp_token>`；consumer access token 不可替代 MCP token。旧 `/search/mcp`、`/chat/mcp`、`/search/sse`、`/chat/sse` 路由均不可用。
 
 MCP `chat` 工具通过请求参数 `include_trace` 控制是否返回脱敏后的 `trace`，默认 `false`。当前公共 Trace schema 为 `5.0`：同一逻辑迭代只保留最后一份累计快照，工具调用嵌入对应 iteration，Agent 输出位于 `agent_output`，不返回模型原始思维链或 `reasoning_summaries`。
 
