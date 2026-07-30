@@ -74,5 +74,6 @@ test('stale interview cannot unlock or bypass package generation', () => {
   assert.match(workbench, /const interviewDone = interviewNode\?\.status === 'done'/);
   assert.match(workbench, /const generateDone = generateNode\?\.status === 'done'/);
   assert.match(generateRoute, /interviewNode\?\.status !== 'done'/);
-  assert.match(m2, /some\(\(batch\) => batch\.nodeId === nodeId\)/);
+  assert.match(m2, /interviewNode\?\.status === 'done'/);
+  assert.match(m2, /repo\.listBatches\(project\.id, interviewNode\.id\)/);
 });

@@ -2,6 +2,16 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import type { LlmDeps } from '../llm/provider.js';
 import type { AgentTool } from './types.js';
 
+export type AgentEventObserver = (event: unknown) => void;
+export interface RunAgentOptions { timeoutMs?: number; }
+
+export class AgentRunTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`模型任务执行超时（${Math.ceil(timeoutMs / 1_000)} 秒），本轮未应用任何修改，请重试`);
+    this.name = 'AgentRunTimeoutError';
+  }
+}
+
 // pi 集成层：构造 agent、跑一轮、拿可序列化快照。
 // 关键（spike 已验证）：可恢复状态 = agent.state.messages 数组，纯 JSON。
 export function makeAgent(
@@ -28,15 +38,46 @@ export function makeAgent(
 // 防死循环保险；长文档探索（大纲→检索→分页精读）需要更多回合，可用 env 调
 const MAX_TURNS = Number(process.env.MODELING_AGENT_MAX_TURNS ?? 12);
 
-export async function runAgent(agent: Agent, prompt: string): Promise<unknown[]> {
+export async function runAgent(
+  agent: Agent,
+  prompt: string,
+  observe?: AgentEventObserver,
+  options: RunAgentOptions = {},
+): Promise<unknown[]> {
   let turns = 0;
+  let timeout: NodeJS.Timeout | undefined;
   const unsub = agent.subscribe((event: any) => {
+    observe?.(event);
     if (event?.type === 'turn_end' && ++turns >= MAX_TURNS) agent.abort();
   });
   try {
-    await agent.prompt(prompt);
-    await agent.waitForIdle();
+    const run = (async () => {
+      await agent.prompt(prompt);
+      await agent.waitForIdle();
+    })();
+    const timeoutMs = Number(options.timeoutMs ?? 0);
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      await Promise.race([
+        run,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new AgentRunTimeoutError(timeoutMs)), timeoutMs);
+        }),
+      ]);
+    } else {
+      await run;
+    }
+    const providerFailure: any = [...(agent.state?.messages ?? [])].reverse().find((message: any) => (
+      message?.role === 'assistant' && message?.stopReason === 'error'
+    ));
+    const providerError = String(providerFailure?.errorMessage ?? '').trim();
+    if (providerError) throw new Error(providerError);
+  } catch (error) {
+    if (error instanceof AgentRunTimeoutError) {
+      try { agent.abort(); } catch { /* 超时错误优先 */ }
+    }
+    throw error;
   } finally {
+    if (timeout) clearTimeout(timeout);
     unsub();
   }
   return agent.state.messages as unknown[];
@@ -56,8 +97,9 @@ export async function runAgentCaptured(
   prompt: string,
   captured: () => boolean,
   nudge: string,
+  observe?: AgentEventObserver,
 ): Promise<unknown[]> {
-  let messages = await runAgent(agent, prompt);
-  if (!captured()) messages = await runAgent(agent, nudge);
+  let messages = await runAgent(agent, prompt, observe);
+  if (!captured()) messages = await runAgent(agent, nudge, observe);
   return messages;
 }

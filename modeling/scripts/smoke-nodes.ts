@@ -1,7 +1,7 @@
 /**
  * M1 冒烟：验证 workflow 节点 1→3 端到端跑通（验收「传入样例资料走到节点 3」）。
  * 用 faux LLM（无需真实 key），造一个测试 Excel，走：建项目 → 解析入数据字典 →
- * agent 初步分析（读表 → submit_analysis）。同时验证快照可序列化恢复。
+ * agent 初步分析（读表 → submit_analysis → submit_artifact_analysis）。同时验证快照可序列化恢复。
  *
  * 运行：MODELING_LLM_BASE_URL=x MODELING_LLM_MODEL=x DATA_DIR=./data/smoke npx tsx scripts/smoke-nodes.ts
  */
@@ -35,7 +35,7 @@ function buildTestXlsx(): Buffer {
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
-// faux LLM：预设 agent 探查 → 提交分析的响应序列。
+// faux LLM：预设 agent 探查 → 提交领域分析 → 提交材料分类的响应序列。
 function buildFauxLlm(): LlmDeps {
   const faux = createFauxCore({ provider: 'faux', models: [{ id: 'faux-1' }] });
   faux.setResponses([
@@ -53,6 +53,22 @@ function buildFauxLlm(): LlmDeps {
         ],
       }),
     ]),
+    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
+      materialAssessments: [
+        { source: 'STRUCTURE_LIST', sourceType: 'table', suitableFor: ['object'], rationale: '制造清单提供对象和字段映射依据。' },
+        { source: 'CHANGE_ORDER', sourceType: 'table', suitableFor: ['object'], rationale: '工程变更单提供对象和字段映射依据。' },
+      ],
+      candidateArtifacts: [
+        {
+          kind: 'object', name: 'STRUCTURE_LIST', rationale: '制造清单可直接建模为业务对象。',
+          sources: ['STRUCTURE_LIST'], evidence: 'ID / ParentPart / ChildPart', readiness: 'extractable',
+        },
+        {
+          kind: 'object', name: 'CHANGE_ORDER', rationale: '工程变更单可直接建模为业务对象。',
+          sources: ['CHANGE_ORDER'], evidence: 'ChangeOrderCode / Title / Status', readiness: 'extractable',
+        },
+      ],
+    })]),
   ]);
   return { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' };
 }
@@ -80,7 +96,7 @@ async function main() {
   });
   ok(listDocuments(project.id).length === 1, '文档入库');
 
-  // 节点 3：初步分析（faux agent 跑通 tool 调用 → submit_analysis）
+  // 节点 3：初步分析（faux agent 跑通领域分析与材料分类工具调用）
   const tables = listDocuments(project.id).flatMap((d) => d.tables ?? []);
   const { node, analysis } = await runAnalyze(project.id, tables, [], buildFauxLlm());
   ok(node.status === 'done', `节点 3 状态=${node.status}`);

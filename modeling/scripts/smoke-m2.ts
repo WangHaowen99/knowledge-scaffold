@@ -39,6 +39,15 @@ async function main() {
     fauxAssistantMessage([fauxToolCall('submit_analysis', {
       domainOverview: 'DOMAIN 域', candidateObjects: [{ name: 'STRUCTURE_LIST', rationale: '制造清单', sourceTables: ['STRUCTURE_LIST'] }], openQuestions: [{ topic: 'Effective 语义', why: '需澄清' }],
     })]),
+    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
+      materialAssessments: [{
+        source: 'STRUCTURE_LIST', sourceType: 'table', suitableFor: ['object'], rationale: 'STRUCTURE_LIST 提供制造清单对象及字段映射。',
+      }],
+      candidateArtifacts: [{
+        kind: 'object', name: 'STRUCTURE_LIST', rationale: '制造清单数据表可直接建模为业务对象。',
+        sources: ['STRUCTURE_LIST'], evidence: 'ID / Effective 字段', readiness: 'extractable',
+      }],
+    })]),
   ]));
 
   // 节点 4：访谈启动（agent 出第一批题 → 挂起）
@@ -54,7 +63,20 @@ async function main() {
   const s2 = await m2.answerInterview(project as any, ctx, s1.batch!.id, [
     { questionId: s1.batch!.questions[0].id, selected: ['批次区间'] },
   ], faux([
-    fauxAssistantMessage([fauxToolCall('finish_interview', { summary: 'Effective=批次区间，已澄清' })]),
+    fauxAssistantMessage([fauxToolCall('finish_interview', {
+      summary: 'Effective=批次区间，已澄清',
+      processes: [{
+        id: 'structure_list-query', title: 'STRUCTURE_LIST 查询流程', trigger: '收到 BOM 查询请求', actors: ['工程人员'],
+        inputs: ['物料或批次条件'],
+        steps: [
+          { id: 'read', label: '读取 STRUCTURE_LIST', kind: 'action' },
+          { id: 'filter', label: '判断 Effective 批次区间', kind: 'decision' },
+          { id: 'return', label: '返回适用 BOM 行', kind: 'action' },
+        ],
+        transitions: [{ from: 'read', to: 'filter' }, { from: 'filter', to: 'return', label: '适用' }],
+        exceptions: ['批次条件缺失时返回待补充'], outputs: ['适用 BOM 行'], handoffs: [],
+      }],
+    })]),
   ]));
   ok(s2.finished, '专家应答后从快照恢复、agent 结束访谈（跨节点挂起/恢复成立）');
   const answers = m2repo.getAnswers(s1.batch!.id);
@@ -71,17 +93,25 @@ async function main() {
   m2repo.setCompetencySelection(project.id, cqs.map((q) => q.id));
   ok(m2repo.listCompetency(project.id).filter((q) => q.selected).length === 5, '勾选 5 条');
 
-  // 节点 6：包生成（agent 产出 spec，每个胜任力问题被 operation 覆盖）
+  // 节点 6：对象 → 规则/指标 → operation 分阶段生成，每个胜任力问题被 operation 覆盖
+  const object = {
+    candidateId: 'candidate_1', key: 'STRUCTURE_LIST', title: '制造物料清单', description: '制造物料清单',
+    sourceTable: 'STRUCTURE_LIST', primaryKey: ['ID'],
+    fields: [
+      { key: 'ID', cnName: '行编号', type: 'string', required: true, note: '行编码' },
+      { key: 'Effective', cnName: '有效性', type: 'string', note: '批次区间' },
+    ],
+  };
+  const operations = cqs.map((q, i) => ({
+    key: `op_${i}`, title: `操作${i}`, description: q.question,
+    inputs: [{ param: 'x', type: 'string', required: true }], outputs: [{ field: 'y', type: 'string' }],
+    flow: ['查询 object:STRUCTURE_LIST', '返回结果'], relatedObjects: ['STRUCTURE_LIST'], competencyQuestionId: q.id,
+  }));
   const gen = await m2.generatePackage(project as any, ctx, faux([
-    fauxAssistantMessage([fauxToolCall('submit_package_spec', {
-      objects: [{ key: 'STRUCTURE_LIST', title: '制造物料清单', description: '制造物料清单', sourceTable: 'STRUCTURE_LIST', primaryKey: ['ID'],
-        fields: [{ key: 'ID', cnName: '行编号', type: 'string', required: true, note: '行编码' }, { key: 'Effective', cnName: '有效性', type: 'string', note: '批次区间' }] }],
-      operations: cqs.map((q, i) => ({
-        key: `op_${i}`, title: `操作${i}`, description: q.question,
-        inputs: [{ param: 'x', type: 'string', required: true }], outputs: [{ field: 'y', type: 'string' }],
-        flow: ['查询 STRUCTURE_LIST', '返回结果'], relatedObjects: ['STRUCTURE_LIST'], competencyQuestion: q.question,
-      })),
-    })]),
+    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
+    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(0, 3) })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(3) })]),
   ]));
   ok(gen.spec.objects.length === 1 && gen.spec.operations.length === 5, `生成 ${gen.spec.objects.length} 对象 / ${gen.spec.operations.length} 操作，版本 ${gen.version}`);
   ok(gen.coverage.uncovered.length === 0, `胜任力覆盖检查：${gen.coverage.covered.length}/5 覆盖，${gen.coverage.uncovered.length} 未覆盖`);

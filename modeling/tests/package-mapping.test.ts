@@ -106,11 +106,13 @@ test('package mapping：中文名缺失或重复时稳定 key 不变', () => {
   }
 });
 
-test('package mapping：新生成规格仍要求字段中文名，但不把中文名作为 mapping key', async () => {
+test('package mapping：新生成规格允许多类来源且仍要求字段中文名', async () => {
   const { specObjectSchema } = await import('../src/workflow/tools.js');
   const schema = specObjectSchema() as any;
   const fieldSchema = schema.properties.fields.items;
-  assert.ok(schema.required.includes('sourceTable'));
+  assert.equal(schema.required.includes('sourceTable'), false);
+  assert.ok(schema.properties.sourceTable);
+  assert.ok(schema.properties.sourceRefs);
   assert.ok(fieldSchema.required.includes('cnName'));
 });
 
@@ -149,15 +151,15 @@ test('package mapping format：对象索引必须保留来源 Sheet 列和值', 
   assert.ok(runFormatChecks(spec, missingValue).some((finding) => /DataObject.*缺少 来源Sheet/.test(finding.message)));
 });
 
-test('package mapping：显式数据映射必须匹配真实 Sheet、字段和主键', () => {
+test('package mapping：已声明的数据映射必须匹配真实 Sheet、字段和主键', () => {
   const valid = packageSpec();
   assert.deepEqual(findObjectDataMappingProblems(valid, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]), []);
 
   const missingSource = packageSpec();
   delete missingSource.objects[0].sourceTable;
-  assert.match(
-    findObjectDataMappingProblems(missingSource, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])])[0].message,
-    /必须声明来源 Sheet/,
+  assert.deepEqual(
+    findObjectDataMappingProblems(missingSource, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]),
+    [],
   );
 
   const missingTable = packageSpec();

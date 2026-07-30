@@ -1,4 +1,5 @@
 import type { PackageDataSourceType, PackageSpec, SpecObject } from '../types.js';
+import { tableSourceFor } from './source-references.js';
 
 const DATA_SOURCE_TYPES = new Set<PackageDataSourceType>(['nl2sql', 'mindsdb', 'neo4j']);
 
@@ -12,7 +13,7 @@ export function parsePackageDataSourceType(value: unknown): PackageDataSourceTyp
 
 export function packageMappingResource(spec: PackageSpec, object: SpecObject): string {
   if (spec.dataSourceType === 'nl2sql' || spec.dataSourceType === 'mindsdb') {
-    return object.sourceTable || object.key;
+    return tableSourceFor(object)?.table || object.key;
   }
   return object.key;
 }

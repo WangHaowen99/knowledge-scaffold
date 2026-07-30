@@ -4,6 +4,7 @@ import type {
   SpecOperation,
   SpecRule,
   SpecMetric,
+  SpecScript,
 } from '../types.js';
 import { validateSpecKeys } from './keys.js';
 import {
@@ -11,14 +12,19 @@ import {
   mappingObjectName,
   mappingPrimaryNames,
 } from './mapping-contract.js';
+import { validateGeneratedScriptSafety } from './script-safety.js';
+import { sourceLabelsFor, tableSourceFor } from './source-references.js';
 import { packageMappingResource } from './package-data-source.js';
 
 // PackageSpec → 标准知识包文件集（严格对照 examples/corporate-marketing-eval/
 // ontology-package-final-design.md v0.2，保证 consumer 可导入）。
 // 返回 { path: content } 映射，供落盘或打 zip。
-// 兼容性：库里存量 spec 没有后加字段（sourceColumn/relations/rules/metrics/status…）。
-// 新规格要求每个对象声明 sourceTable；旧规格缺失时仍可渲染，但不会生成数据 mapping。
+// 兼容性：库里存量 spec 没有后加字段（sourceRefs/sourceColumn/relations/rules/metrics/status…）。
+// 只有绑定数据表的对象生成 mapping；文档语义对象仍可被 Agent 正常消费。
 export type PackageFiles = Record<string, string>;
+export interface RenderPackageOptions {
+  includeDraftTemplate?: boolean;
+}
 
 // YAML 标量转义：含特殊字符 / 首尾空白 / 空串时用 JSON 双引号形式（JSON 字符串是合法 YAML 标量）。
 const yamlEscape = (s: string) =>
@@ -56,6 +62,9 @@ function frontmatter(m: FmMap): string {
 
 // markdown 表格单元格：清掉会破坏表格结构的 | 与换行
 const cell = (s: string | undefined) => (s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
+const evidenceSection = (evidence: string[] | undefined) => (
+  evidence?.length ? ['# 知识证据', '', ...evidence.map((item) => `- ${item}`), ''] : []
+);
 
 // ---- mapping 单一来源：对象 frontmatter mapping 块与 mappings json 同源生成，保证两处一致 ----
 function objectMapping(spec: PackageSpec, o: SpecObject) {
@@ -80,18 +89,18 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
 }
 
 function objectMd(spec: PackageSpec, o: SpecObject): string {
-  const m = o.sourceTable ? objectMapping(spec, o) : undefined;
+  const tableSource = tableSourceFor(o);
+  const m = tableSource ? objectMapping(spec, o) : undefined;
   const fm = frontmatter({
     resource: 'object', key: o.key, title: o.title, description: o.description,
     aliases: o.aliases,
-    // 新规格均绑定真实来源表；条件分支仅用于兼容尚未声明 sourceTable 的旧规格。
-    // 与 mappings/object-data-mappings.json 同源（objectMapping），两处一致。
     mapping: m ? { provider_alias: m.provider_alias, resource: m.resource } : undefined,
+    sources: sourceLabelsFor(o),
   });
   const rows = o.fields.map((f) =>
     `| ${cell(f.key)} | ${cell(f.cnName)} | ${cell(f.type ?? '未声明')} | ${f.required == null ? '未声明' : f.required ? '是' : '否'} | ${cell(f.note)} | ${cell(f.alias)} |`);
   const relations = (o.relations ?? []).map((r) =>
-    `| ${cell(r.relation)} | ${cell(r.target)} | ${cell(r.note)} |`);
+    `| ${cell(r.relation)} | ${cell(r.target)} | ${cell(r.note)} | ${cell(r.evidence?.join('；'))} |`);
   return [
     fm,
     '# 业务定义', '', o.description, '',
@@ -100,9 +109,11 @@ function objectMd(spec: PackageSpec, o: SpecObject): string {
     '| --- | --- | --- | --- | --- | --- |',
     ...rows, '',
     // 「# 关系」推荐章节（规范 §9）：无关系数据时省略整节
-    ...(relations.length ? ['# 关系', '', '| 关系 | 目标对象 | 说明 |', '| --- | --- | --- |', ...relations, ''] : []),
+    ...(relations.length ? ['# 关系', '', '| 关系 | 目标对象 | 说明 | 证据 |', '| --- | --- | --- | --- |', ...relations, ''] : []),
     '# 查询边界', '',
-    o.queryBoundary || '真实数据查询应通过 mappings/object-data-mappings.json 解析 provider 与字段；未声明的类型/必填性不得自行推断。',
+    o.queryBoundary || (tableSource
+      ? '真实数据查询应通过 mappings/object-data-mappings.json 解析数据源和字段；未声明的信息不得自行推断。'
+      : '该对象来自业务资料，只能按已给出的定义和证据使用；缺少的信息不得自行补充。'),
     '',
   ].join('\n');
 }
@@ -117,6 +128,7 @@ function operationMd(op: SpecOperation): string {
       metrics: op.usesMetrics?.length ? op.usesMetrics : undefined,
     },
     script: op.script ? { key: op.script.key, required: !!op.script.required } : undefined,
+    evidence: op.evidence,
   });
   const inputs = op.inputs.map((i) =>
     `| ${cell(i.param)} | ${cell(i.cnName)} | ${cell(i.type)} | ${i.required ? '是' : '否'} | ${cell(i.note)} |`);
@@ -141,6 +153,7 @@ function operationMd(op: SpecOperation): string {
     ...op.flow.map((s, i) => `${i + 1}. ${s}`), '',
     '# 规则、指标和注意事项', '',
     ...(ruleNotes.length ? ruleNotes : ['- 暂无']), '',
+    ...evidenceSection(op.evidence),
   ].join('\n');
 }
 
@@ -149,7 +162,10 @@ function objectsIndex(objects: SpecObject[]): string {
     frontmatter({ resource: 'object_index', key: 'objects', title: '对象目录' }),
     '# 对象目录', '',
     '| object key | 标题 | 说明 | 来源Sheet |', '| --- | --- | --- | --- |',
-    ...objects.map((o) => `| ${cell(o.key)} | ${cell(o.title)} | ${cell(o.description)} | ${cell(o.sourceTable)} |`), '',
+    ...objects.map((o) => {
+      const source = tableSourceFor(o)?.table ?? sourceLabelsFor(o).join('；');
+      return `| ${cell(o.key)} | ${cell(o.title)} | ${cell(o.description)} | ${cell(source)} |`;
+    }), '',
   ].join('\n');
 }
 
@@ -177,6 +193,7 @@ function ruleMd(r: SpecRule): string {
   const fm = frontmatter({
     resource: 'rule', key: r.key, title: r.title, description: r.description,
     applies_to: { objects: r.appliesToObjects?.length ? r.appliesToObjects : undefined },
+    evidence: r.evidence,
   });
   const conditions = (r.conditions ?? []).map((c) => `| ${cell(c.condition)} | ${cell(c.conclusion)} |`);
   const exceptions = (r.exceptions ?? []).map((e) => `- ${e}`);
@@ -185,6 +202,7 @@ function ruleMd(r: SpecRule): string {
     '# 规则内容', '', r.content || r.description || '', '',
     ...(conditions.length ? ['# 判断条件', '', '| 条件 | 结论 |', '| --- | --- |', ...conditions, ''] : []),
     ...(exceptions.length ? ['# 例外', '', ...exceptions, ''] : []),
+    ...evidenceSection(r.evidence),
   ].join('\n');
 }
 
@@ -203,6 +221,7 @@ function metricMd(m: SpecMetric): string {
     resource: 'metric', key: m.key, title: m.title, description: m.description,
     unit: m.unit, grain: m.grain,
     uses: { objects: m.usesObjects?.length ? m.usesObjects : undefined },
+    evidence: m.evidence,
   });
   const nullPolicy = (m.nullPolicy ?? []).map((n) => `| ${cell(n.field)} | ${cell(n.handling)} |`);
   const dims = (m.dimensions ?? []).map((d) => `| ${cell(d.key)} | ${cell(d.note)} |`);
@@ -213,22 +232,53 @@ function metricMd(m: SpecMetric): string {
     ...((m.boundaries ?? []).length ? m.boundaries.map((b) => `- ${b}`) : ['- 未声明计算边界。']), '',
     ...(nullPolicy.length ? ['# 空值策略', '', '| 字段 | 处理 |', '| --- | --- |', ...nullPolicy, ''] : []),
     ...(dims.length ? ['# 维度', '', '| 维度 key | 说明 |', '| --- | --- |', ...dims, ''] : []),
+    ...evidenceSection(m.evidence),
   ].join('\n');
 }
 
-// ---- scripts/ 目录：生成链暂无受控脚本，保留空目录 ----
+// ---- scripts/ 目录：受控 Python 脚本，由 operation 显式绑定 ----
 // 规范 §16 的空目录示例（L643-649）没有 frontmatter，但 §16 模板（3.11.1）要求
 // resource: script_index frontmatter——两处矛盾，按 3.11.1 为准（示例视为规范疏漏），
 // 空目录也统一带 frontmatter，保证 Agent 恒可按 resource+key 消费。
-function scriptsIndex(): string {
+function scriptsIndex(scripts: SpecScript[]): string {
+  const rows = scripts.map((script) =>
+    `| ${cell(script.key)} | ${cell(script.title)} | operation:${cell(script.boundOperation)} | ${cell(script.parameters.map((item) => item.name).join('、') || '—')} |`);
   return [
     frontmatter({ resource: 'script_index', key: 'scripts', title: '脚本目录' }),
     '# 脚本目录', '',
-    '当前本体包暂无已注册脚本。', '',
+    ...(rows.length
+      ? ['| script key | 标题 | 绑定操作 | 参数摘要 |', '| --- | --- | --- | --- |', ...rows]
+      : ['当前本体包暂无已注册脚本。']), '',
   ].join('\n');
 }
 
-function rootIndex(spec: PackageSpec): string {
+function scriptMd(script: SpecScript): string {
+  const fm = frontmatter({
+    resource: 'script', key: script.key, title: script.title, description: script.description,
+    bound_operation: script.boundOperation, runtime: script.runtime,
+    entrypoint: script.entrypoint, timeout_seconds: script.timeoutSeconds,
+    evidence: script.evidence,
+  });
+  const parameters = script.parameters.map((item) =>
+    `| ${cell(item.name)} | ${cell(item.flag)} | ${cell(item.type)} | ${item.required ? '是' : '否'} | ${cell(item.defaultValue == null ? '' : String(item.defaultValue))} | ${cell(item.description)} |`);
+  const outputs = script.outputs.map((item) =>
+    `| ${cell(item.key)} | ${cell(item.type)} | ${cell(item.description)} |`);
+  return [
+    fm,
+    '# 脚本用途', '', script.description, '',
+    '# 输入参数', '',
+    '| 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |', '| --- | --- | --- | --- | --- | --- |',
+    ...(parameters.length ? parameters : ['| — | — | — | — | — | — |']), '',
+    '# 输出', '',
+    '| 输出 key | 类型 | 说明 |', '| --- | --- | --- |',
+    ...(outputs.length ? outputs : ['| — | — | — |']), '',
+    '# 执行边界', '',
+    ...script.boundaries.map((item) => `- ${item}`), '',
+    ...evidenceSection(script.evidence),
+  ].join('\n');
+}
+
+function rootIndex(spec: PackageSpec, includeDiagrams = false): string {
   const typical = spec.operations
     .filter((o) => o.competencyQuestion)
     .map((o) => `| ${cell(o.competencyQuestion)} | operation:${cell(o.key)} |`);
@@ -240,6 +290,7 @@ function rootIndex(spec: PackageSpec): string {
     ...(typical.length ? typical : ['| — | — |']), '',
     // 「# 目录」按规范模板列五行，后三行标（可选）——rules/metrics 目录仅在有内容时生成
     '# 目录', '',
+    ...(includeDiagrams ? ['- 流程图目录：diagrams/index.md'] : []),
     '- 对象目录：objects/index.md',
     '- 操作目录：operations/index.md',
     '- 规则目录：rules/index.md（可选）',
@@ -249,10 +300,19 @@ function rootIndex(spec: PackageSpec): string {
     '| 能力 | 状态 | 说明 |', '| --- | --- | --- |',
     '| 对象语义理解 | enabled | 通过 objects/index.md 和对象详情加载业务对象、字段和查询边界。 |',
     '| 操作流程理解 | enabled | 通过 operations/index.md 加载输入、输出、流程和关联对象。 |',
-    '| 业务数据查询 | enabled | 通过 mappings/object-data-mappings.json 将对象映射到 provider alias、SQL 资源和字段。 |', '',
+    `| 受控脚本执行 | ${spec.scripts?.length ? 'enabled' : 'disabled'} | ${spec.scripts?.length ? '通过 operation.script 绑定 scripts/ 中的结构化计算脚本。' : '当前包未注册计算脚本。'} |`,
+    `| 业务数据查询 | ${spec.objects.some((object) => !!tableSourceFor(object)) ? 'enabled' : 'disabled'} | ${spec.objects.some((object) => !!tableSourceFor(object)) ? '通过 mappings/object-data-mappings.json 将对象映射到数据源和字段。' : '当前包没有绑定业务数据表。'} |`, '',
     '# 消费边界', '',
     // 规范 §7 原文表述：判断类优先 rule、计算类优先 metric，无对应目录时按规范回退
     '查询真实数据前必须先加载相关 object；判断类问题优先加载相关 rule，没有规则目录时回到 operation 的业务说明；计算类问题优先加载相关 metric，没有指标目录时不得编造指标口径。', '',
+  ].join('\n');
+}
+
+function diagramsIndex(): string {
+  return [
+    frontmatter({ resource: 'diagram_index', key: 'diagrams', title: '流程图目录' }),
+    '# 流程图目录', '',
+    '当前知识包尚未生成业务流程图。AI 辅助构建会在流程确认后为每个业务流程创建独立的 Mermaid 文件。', '',
   ].join('\n');
 }
 
@@ -280,7 +340,7 @@ function manifest(spec: PackageSpec): string {
 function mappingsJson(spec: PackageSpec): string {
   const objects: Record<string, unknown> = {};
   for (const o of spec.objects) {
-    if (o.sourceTable) objects[mappingObjectName(o)] = objectMapping(spec, o);
+    if (tableSourceFor(o)) objects[mappingObjectName(o)] = objectMapping(spec, o);
   }
   return JSON.stringify({
     schema_version: '0.1',
@@ -289,24 +349,32 @@ function mappingsJson(spec: PackageSpec): string {
   }, null, 2);
 }
 
-export function renderPackage(spec: PackageSpec): PackageFiles {
+export function renderPackage(spec: PackageSpec, options: RenderPackageOptions = {}): PackageFiles {
   // 渲染入包前强制校验：key 清洗（NFC+trim）、非法字符/长度、包内同类唯一；不合法直接抛错
   const s = validateSpecKeys(spec);
+  for (const script of s.scripts ?? []) validateGeneratedScriptSafety(script);
+  const rules = s.rules ?? [];
+  const metrics = s.metrics ?? [];
   const files: PackageFiles = {};
   files['manifest.yaml'] = manifest(s);
-  files['index.md'] = rootIndex(s);
+  files['index.md'] = rootIndex(s, options.includeDraftTemplate === true);
+  if (options.includeDraftTemplate) files['diagrams/index.md'] = diagramsIndex();
   files['objects/index.md'] = objectsIndex(s.objects);
   files['operations/index.md'] = operationsIndex(s.operations);
   // 可选目录语义：无规则/指标时不生成目录（规范 §2.2）
-  if (s.rules?.length) {
-    files['rules/index.md'] = rulesIndex(s.rules);
-    for (const r of s.rules) files[`rules/${r.key}.md`] = ruleMd(r);
+  if (options.includeDraftTemplate || rules.length) {
+    files['rules/index.md'] = rulesIndex(rules);
+    for (const r of rules) files[`rules/${r.key}.md`] = ruleMd(r);
   }
-  if (s.metrics?.length) {
-    files['metrics/index.md'] = metricsIndex(s.metrics);
-    for (const m of s.metrics) files[`metrics/${m.key}.md`] = metricMd(m);
+  if (options.includeDraftTemplate || metrics.length) {
+    files['metrics/index.md'] = metricsIndex(metrics);
+    for (const m of metrics) files[`metrics/${m.key}.md`] = metricMd(m);
   }
-  files['scripts/index.md'] = scriptsIndex();
+  files['scripts/index.md'] = scriptsIndex(s.scripts ?? []);
+  for (const script of s.scripts ?? []) {
+    files[`scripts/${script.key}.md`] = scriptMd(script);
+    files[`scripts/${script.entrypoint}`] = script.sourceCode.endsWith('\n') ? script.sourceCode : `${script.sourceCode}\n`;
+  }
   files['mappings/object-data-mappings.json'] = mappingsJson(s);
   for (const o of s.objects) files[`objects/${o.key}.md`] = objectMd(s, o);
   for (const op of s.operations) files[`operations/${op.key}.md`] = operationMd(op);
