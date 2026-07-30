@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   attachGeneratedKnowledgeEvidence,
+  attachKnowledgeChangeEvidence,
   findKnowledgeEvidenceProblems,
 } from '../src/workflow/knowledge-evidence.js';
 import { renderPackage } from '../src/workflow/package-render.js';
@@ -115,6 +116,21 @@ test('人工编辑业务正文时保留生成链路记录的知识证据', () =>
 
   assert.equal(updated.operations[0].flow[0], '接收并登记 object:Request');
   assert.deepEqual(updated.operations[0].evidence, spec.operations[0].evidence);
+});
+
+test('受控修改把用户决策证据合并到对应知识资源', () => {
+  const spec = attachKnowledgeChangeEvidence(baseSpec(), [{
+    targetKind: 'object', targetKey: 'Request', evidence: ['user-decision:调整请求定义'],
+  }, {
+    targetKind: 'operation', targetKey: 'HandleRequest', evidence: ['user-decision:调整处理流程'],
+  }, {
+    targetKind: 'rule', targetKey: 'Eligibility', evidence: ['user-decision:调整适用规则'],
+  }]);
+
+  assert.deepEqual(spec.objects[0].relations?.[0].evidence, ['user-decision:调整请求定义']);
+  assert.deepEqual(spec.operations[0].evidence, ['user-decision:调整处理流程']);
+  assert.deepEqual(spec.rules?.[0].evidence, ['user-decision:调整适用规则']);
+  assert.equal(spec.objects[1].relations, undefined);
 });
 
 test('operation 按 competencyQuestionId 在不同流程图输入中稳定绑定且允许一图多操作', () => {

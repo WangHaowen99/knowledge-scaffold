@@ -5,6 +5,8 @@ import { getDb, nowIso } from '../db/index.js';
 import type { JsonObject } from '../authoring/types.js';
 import type { AiConstructionTaskGraphSnapshot } from './task-graph.js';
 
+export const MAX_CHANGE_PLAN_DESCRIPTION_LENGTH = 6_000;
+
 export type AiConstructionMessageRole = 'assistant' | 'user' | 'system';
 
 export interface AiConstructionStatusBlock {

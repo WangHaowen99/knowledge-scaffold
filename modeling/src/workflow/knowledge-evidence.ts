@@ -153,6 +153,49 @@ export function attachGeneratedKnowledgeEvidence(
   };
 }
 
+export function attachKnowledgeChangeEvidence(
+  spec: PackageSpec,
+  changes: Array<{
+    targetKind: 'object' | 'operation' | 'rule' | 'metric' | 'script';
+    targetKey: string;
+    evidence: string[];
+  }>,
+): PackageSpec {
+  const byTarget = new Map<string, string[]>();
+  for (const change of changes) {
+    const target = `${change.targetKind}:${change.targetKey}`;
+    byTarget.set(target, unique([...(byTarget.get(target) ?? []), ...change.evidence]));
+  }
+  const objects = spec.objects.map((object) => {
+    const evidence = byTarget.get(`object:${object.key}`) ?? [];
+    if (!evidence.length) return object;
+    return {
+      ...object,
+      relations: object.relations?.map((relation) => ({
+        ...relation,
+        evidence: unique([...(relation.evidence ?? []), ...evidence]),
+      })),
+    };
+  });
+  const mergeResource = <T extends { key: string; evidence?: string[] }>(
+    kind: string,
+    resources: T[] | undefined,
+  ) => resources?.map((resource) => {
+    const evidence = byTarget.get(`${kind}:${resource.key}`) ?? [];
+    return evidence.length
+      ? { ...resource, evidence: unique([...(resource.evidence ?? []), ...evidence]) }
+      : resource;
+  });
+  return {
+    ...spec,
+    objects,
+    operations: mergeResource('operation', spec.operations) ?? [],
+    rules: mergeResource('rule', spec.rules),
+    metrics: mergeResource('metric', spec.metrics),
+    scripts: mergeResource('script', spec.scripts),
+  };
+}
+
 export function findKnowledgeEvidenceProblems(spec: PackageSpec): string[] {
   const problems: string[] = [];
   for (const object of spec.objects) {
