@@ -103,3 +103,86 @@ test('版本接口不向其他项目所有者暴露修订', async (t) => {
   const response = await app.inject({ method: 'GET', url: `/api/projects/${project.id}/revisions` });
   assert.equal(response.statusCode, 404);
 });
+
+test('候选修订接口支持预览、接受和幂等重放且禁止修改内部模型文件', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选修订接口' });
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(project.id);
+  const generated = await store.savePackageVersion(project.id, {
+    expectedRevision: initial.oid,
+    spec: spec('1.0.0', '候选修订基线'),
+    coverage,
+    action: { cause: 'generate', summary: '生成候选基线', actorKind: 'agent', actorName: '助手' },
+  });
+  const index = (await store.readFile(project.id, 'package/index.md')).content;
+  const app = routeApp(t);
+
+  const internalPath = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/candidate-revisions`,
+    payload: {
+      expectedRevision: generated.revision.oid,
+      summary: '尝试修改内部模型',
+      groups: [{
+        id: 'invalid-model', summary: '修改内部模型',
+        changes: [{ kind: 'write', path: 'model/package-spec.json', content: '{}' }],
+      }],
+    },
+  });
+  assert.equal(internalPath.statusCode, 400, internalPath.body);
+
+  const created = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/candidate-revisions`,
+    payload: {
+      expectedRevision: generated.revision.oid,
+      summary: '补充候选说明',
+      groups: [{
+        id: 'description', summary: '补充知识包说明',
+        changes: [{ kind: 'write', path: 'index.md', content: `${index}\n候选接口说明\n` }],
+      }],
+    },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const candidateId = created.json().candidate.id;
+
+  const listed = await app.inject({
+    method: 'GET', url: `/api/projects/${project.id}/candidate-revisions`,
+  });
+  assert.equal(listed.statusCode, 200, listed.body);
+  assert.equal(listed.json().pendingCount, 1);
+  assert.equal(listed.json().hasPending, true);
+  assert.equal(listed.json().candidates[0].id, candidateId);
+
+  const preview = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/candidate-revisions/${candidateId}/preview`,
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.match(preview.json().package.files['index.md'], /候选接口说明/u);
+  assert.equal((await store.current(project.id))?.revision.oid, generated.revision.oid);
+
+  const acceptRequest = {
+    method: 'POST' as const,
+    url: `/api/projects/${project.id}/candidate-revisions/${candidateId}/respond`,
+    payload: { action: 'accept' },
+  };
+  const accepted = await app.inject(acceptRequest);
+  assert.equal(accepted.statusCode, 200, accepted.body);
+  assert.notEqual(accepted.json().currentRevision, generated.revision.oid);
+  assert.equal(accepted.json().candidate.status, 'accepted');
+
+  const replayed = await app.inject(acceptRequest);
+  assert.equal(replayed.statusCode, 200, replayed.body);
+  assert.equal(replayed.json().replayed, true);
+  assert.equal(replayed.json().currentRevision, accepted.json().currentRevision);
+});
+
+test('候选修订接口不向其他项目所有者暴露待处理内容', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选权限隔离' });
+  const app = routeApp(t, 'bob');
+  const response = await app.inject({
+    method: 'GET', url: `/api/projects/${project.id}/candidate-revisions`,
+  });
+  assert.equal(response.statusCode, 404);
+});

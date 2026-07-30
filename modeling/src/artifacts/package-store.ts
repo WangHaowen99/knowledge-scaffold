@@ -4,14 +4,15 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
 import { renderPackage } from '../workflow/package-render.js';
-import { ArtifactRepositoryError } from './repository.js';
-import type {
-  ArtifactChange,
-  ArtifactDiff,
-  ArtifactFile,
-  ArtifactRepository,
-  ArtifactRevision,
-  ArtifactSnapshot,
+import {
+  ArtifactRepositoryError,
+  type ArtifactChange,
+  type ArtifactDiff,
+  type ArtifactFile,
+  type ArtifactFileDiff,
+  type ArtifactRepository,
+  type ArtifactRevision,
+  type ArtifactSnapshot,
 } from './repository.js';
 import {
   ArtifactRevisionRepo,
@@ -23,8 +24,15 @@ const SPEC_PATH = 'model/package-spec.json';
 const COVERAGE_PATH = 'model/coverage.json';
 const PACKAGE_PREFIX = 'package/';
 const CAUSE_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
+const GROUP_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
 const ACTOR_KINDS = new Set<ArtifactRevisionActorKind>(['user', 'agent', 'system']);
 const INTERRUPTED_COMMIT_GRACE_MS = 30_000;
+const CANDIDATE_STATUSES = new Set<PackageCandidateRevisionStatus>([
+  'pending', 'accepted', 'revision_requested', 'rejected', 'superseded',
+]);
+const MAX_CANDIDATE_GROUPS = 50;
+const MAX_CANDIDATE_CHANGES = 500;
+const MAX_CANDIDATE_BYTES = 10 * 1024 * 1024;
 
 export interface PackageRevisionAction {
   cause: string;
@@ -65,6 +73,12 @@ export interface SavePackageFileInput {
   action: PackageRevisionAction;
 }
 
+export interface SavePackageFilesInput {
+  expectedRevision: string;
+  files: Readonly<Record<string, string>>;
+  action: PackageRevisionAction;
+}
+
 export interface ResetPackageFileInput {
   expectedRevision: string;
   path: string;
@@ -75,6 +89,111 @@ export interface RestorePackageInput {
   expectedRevision: string;
   targetRevision: string;
   action: PackageRevisionAction;
+}
+
+export type PackageCandidateRevisionStatus =
+  | 'pending'
+  | 'accepted'
+  | 'revision_requested'
+  | 'rejected'
+  | 'superseded';
+
+export interface PackageCandidateValidationInput {
+  errors?: readonly string[];
+  warnings?: readonly string[];
+}
+
+export interface PackageCandidateValidation {
+  errors: string[];
+  warnings: string[];
+}
+
+export interface PackageCandidateChangeGroupInput {
+  id: string;
+  summary: string;
+  dependsOn?: readonly string[];
+  changes: readonly ArtifactChange[];
+  validation?: PackageCandidateValidationInput;
+}
+
+export interface PackageCandidateChangeGroup {
+  id: string;
+  summary: string;
+  dependsOn: string[];
+  changes: ArtifactChange[];
+  validation: PackageCandidateValidation;
+}
+
+export interface CreatePackageCandidateRevisionInput {
+  expectedRevision: string;
+  groups: readonly PackageCandidateChangeGroupInput[];
+  action: PackageRevisionAction;
+}
+
+export interface DecidePackageCandidateRevisionInput {
+  candidateId: string;
+  action: PackageRevisionAction;
+  note?: string;
+}
+
+export interface AcceptPackageCandidateRevisionInput extends DecidePackageCandidateRevisionInput {
+  selectedGroupIds?: readonly string[];
+}
+
+export interface ReturnPackageCandidateRevisionInput extends DecidePackageCandidateRevisionInput {
+  selectedGroupIds?: readonly string[];
+}
+
+export interface PackageCandidateDecision {
+  cause: string;
+  summary: string;
+  actorKind: ArtifactRevisionActorKind;
+  actorName: string;
+  note?: string;
+  decidedAt: string;
+}
+
+export interface PackageCandidateRevision {
+  id: string;
+  projectId: string;
+  baseRevision: string;
+  status: PackageCandidateRevisionStatus;
+  cause: string;
+  summary: string;
+  actorKind: ArtifactRevisionActorKind;
+  actorName: string;
+  groups: PackageCandidateChangeGroup[];
+  selectedGroupIds: string[];
+  acceptedRevision?: string;
+  decision?: PackageCandidateDecision;
+  createdAt: string;
+}
+
+export interface PackageCandidateSelection {
+  requestedGroupIds: string[];
+  selectedGroupIds: string[];
+  autoIncludedGroupIds: string[];
+}
+
+export interface PackageCandidatePreview {
+  candidate: PackageCandidateRevision;
+  selection: PackageCandidateSelection;
+  spec: PackageSpec;
+  coverage: CoverageResult;
+  files: Record<string, string>;
+  binaryFiles: string[];
+  diff: ArtifactFileDiff[];
+}
+
+export interface PackageCandidateRevisionOverview {
+  candidates: PackageCandidateRevision[];
+  pendingCount: number;
+}
+
+export interface AcceptedPackageCandidateRevision {
+  candidate: PackageCandidateRevision;
+  selection: PackageCandidateSelection;
+  revision: ArtifactRevision;
 }
 
 export interface PackageArtifactView {
@@ -111,7 +230,10 @@ export type PackageArtifactStoreErrorCode =
   | 'file_not_found'
   | 'revision_has_no_package'
   | 'invalid_package'
-  | 'commit_in_progress';
+  | 'commit_in_progress'
+  | 'candidate_not_found'
+  | 'candidate_not_pending'
+  | 'candidate_validation_failed';
 
 export class PackageArtifactStoreError extends Error {
   constructor(
@@ -358,6 +480,52 @@ export class PackageArtifactStore {
     });
   }
 
+  async saveFiles(projectId: string, input: SavePackageFilesInput): Promise<PackageArtifactView> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      await this.ensureProjectUnlocked(projectId);
+      const entries = Object.entries(input.files ?? {});
+      if (entries.length < 1 || entries.length > MAX_CANDIDATE_CHANGES) {
+        throw new PackageArtifactStoreError('invalid_input', '请提交 1 到 500 个知识包文件');
+      }
+      const current = await this.repository.snapshot(projectId);
+      assertExpectedRevision(input.expectedRevision, current.revision.oid);
+      const changes: ArtifactChange[] = entries.map(([rawPath, content]) => {
+        const path = validatePackagePath(rawPath);
+        if (typeof content !== 'string') {
+          throw new PackageArtifactStoreError('invalid_input', `文件内容不正确：${path}`);
+        }
+        return { kind: 'write' as const, path, content };
+      }).sort((left, right) => compareNames(left.path, right.path));
+      if (new Set(changes.map((change) => change.path)).size !== changes.length) {
+        throw new PackageArtifactStoreError('invalid_input', '不能重复提交同一文件');
+      }
+      const changed = changes.filter((change) => {
+        if (change.kind !== 'write') return false;
+        const before = current.files.find((file) => file.path === change.path)?.content;
+        return before === undefined || !bytesEqual(before, new TextEncoder().encode(String(change.content)));
+      });
+      if (!changed.length) {
+        throw new PackageArtifactStoreError('invalid_input', '提交内容没有实际变化');
+      }
+      this.viewFromSnapshot(applyCandidateChanges(current, changed));
+      const revision = await this.commitAndIndex(
+        projectId,
+        input.expectedRevision,
+        () => this.repository.commit(
+          projectId,
+          input.expectedRevision,
+          changed,
+          gitMetadata(action),
+        ),
+        (savedRevision) => {
+          this.recordRevision(projectId, savedRevision, action, changed.map((change) => change.path));
+        },
+      );
+      return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid));
+    });
+  }
+
   async resetFile(projectId: string, input: ResetPackageFileInput): Promise<PackageArtifactFile> {
     return this.runExclusive(projectId, async () => {
       const action = validateAction(input.action);
@@ -419,6 +587,309 @@ export class PackageArtifactStore {
       });
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, revision.oid));
     });
+  }
+
+  /**
+   * 保存不影响当前确认版本的候选修订。变更组在创建后不可变，接受时才会形成 Git 修订。
+   */
+  async createCandidateRevision(
+    projectId: string,
+    input: CreatePackageCandidateRevisionInput,
+  ): Promise<PackageCandidateRevision> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      await this.ensureProjectUnlocked(projectId);
+      const current = await this.repository.snapshot(projectId);
+      assertExpectedRevision(input.expectedRevision, current.revision.oid);
+      const groups = normalizeCandidateGroups(input.groups, current.files);
+      const selection = resolveCandidateSelection(groups);
+      const target = applyCandidateChanges(current, selectedCandidateChanges(groups, selection.selectedGroupIds));
+      this.viewFromSnapshot(target);
+
+      const candidate: PackageCandidateRevision = {
+        id: `cr_${randomUUID().slice(0, 12)}`,
+        projectId,
+        baseRevision: current.revision.oid,
+        status: 'pending',
+        cause: action.cause,
+        summary: action.summary,
+        actorKind: action.actorKind,
+        actorName: action.actorName,
+        groups,
+        selectedGroupIds: [],
+        createdAt: (action.createdAt ?? new Date()).toISOString(),
+      };
+      this.db.prepare(`INSERT INTO artifact_candidate_revisions (
+        id, project_id, base_revision_oid, status, cause, summary, actor_kind, actor_name,
+        groups_json, selected_group_ids_json, created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+        candidate.id,
+        projectId,
+        candidate.baseRevision,
+        candidate.status,
+        candidate.cause,
+        candidate.summary,
+        candidate.actorKind,
+        candidate.actorName,
+        serializeCandidateGroups(groups),
+        '[]',
+        candidate.createdAt,
+      );
+      return cloneCandidate(candidate);
+    });
+  }
+
+  async getCandidateRevision(projectId: string, candidateId: string): Promise<PackageCandidateRevision> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      return this.candidateRevisionUnlocked(projectId, candidateId);
+    });
+  }
+
+  async listCandidateRevisions(
+    projectId: string,
+    status?: PackageCandidateRevisionStatus,
+    limit = 100,
+  ): Promise<PackageCandidateRevision[]> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      const normalizedLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 100));
+      if (status !== undefined && !CANDIDATE_STATUSES.has(status)) {
+        throw new PackageArtifactStoreError('invalid_input', '候选修订状态不正确');
+      }
+      const rows = status
+        ? this.db.prepare(`SELECT * FROM artifact_candidate_revisions
+          WHERE project_id = ? AND status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+          .all(projectId, status, normalizedLimit)
+        : this.db.prepare(`SELECT * FROM artifact_candidate_revisions
+          WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+          .all(projectId, normalizedLimit);
+      return (rows as any[]).map(candidateFromRow);
+    });
+  }
+
+  async candidateRevisionOverview(
+    projectId: string,
+    status?: PackageCandidateRevisionStatus,
+    limit = 100,
+  ): Promise<PackageCandidateRevisionOverview> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      const normalizedLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 100));
+      if (status !== undefined && !CANDIDATE_STATUSES.has(status)) {
+        throw new PackageArtifactStoreError('invalid_input', '候选修订状态不正确');
+      }
+      const rows = status
+        ? this.db.prepare(`SELECT * FROM artifact_candidate_revisions
+          WHERE project_id = ? AND status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+          .all(projectId, status, normalizedLimit)
+        : this.db.prepare(`SELECT * FROM artifact_candidate_revisions
+          WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+          .all(projectId, normalizedLimit);
+      return {
+        candidates: (rows as any[]).map(candidateFromRow),
+        pendingCount: this.pendingCandidateRevisionCountUnlocked(projectId),
+      };
+    });
+  }
+
+  async hasPendingCandidateRevisions(projectId: string): Promise<boolean> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      return this.pendingCandidateRevisionCountUnlocked(projectId) > 0;
+    });
+  }
+
+  async countPendingCandidateRevisions(projectId: string): Promise<number> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      return this.pendingCandidateRevisionCountUnlocked(projectId);
+    });
+  }
+
+  async previewCandidateRevision(
+    projectId: string,
+    candidateId: string,
+    selectedGroupIds?: readonly string[],
+  ): Promise<PackageCandidatePreview> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      const candidate = this.candidateRevisionUnlocked(projectId, candidateId);
+      const selection = resolveCandidateSelection(candidate.groups, selectedGroupIds);
+      return this.previewCandidateUnlocked(candidate, selection);
+    });
+  }
+
+  async acceptCandidateRevision(
+    projectId: string,
+    input: AcceptPackageCandidateRevisionInput,
+  ): Promise<AcceptedPackageCandidateRevision> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      const note = optionalText(input.note, '处理备注', 1000) ?? undefined;
+      await this.ensureProjectUnlocked(projectId);
+      const candidate = this.candidateRevisionUnlocked(projectId, input.candidateId);
+      assertPendingCandidate(candidate);
+      const selection = resolveCandidateSelection(candidate.groups, input.selectedGroupIds);
+      assertCandidateValidation(candidate.groups, selection.selectedGroupIds);
+
+      const current = await this.repository.snapshot(projectId);
+      if (current.revision.oid !== candidate.baseRevision) {
+        this.decideCandidate(candidate, 'superseded', {
+          ...action,
+          cause: 'candidate_superseded',
+          summary: '候选修订因基线变化失效',
+        }, selection.selectedGroupIds,
+          note ?? '当前确认版本已经变化');
+        throw new ArtifactRepositoryError(
+          'revision_conflict',
+          '当前确认版本已经变化，请基于最新版本重新创建候选修订',
+          { expectedRevision: candidate.baseRevision, actualRevision: current.revision.oid },
+        );
+      }
+
+      const changes = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
+      const target = applyCandidateChanges(current, changes);
+      this.viewFromSnapshot(target);
+      const revision = await this.commitAndIndex(
+        projectId,
+        candidate.baseRevision,
+        () => this.repository.commit(
+          projectId,
+          candidate.baseRevision,
+          changes,
+          gitMetadata(action),
+        ),
+        (savedRevision) => {
+          this.recordRevision(projectId, savedRevision, action, changes.map((change) => change.path));
+          this.decideCandidate(
+            candidate,
+            'accepted',
+            action,
+            selection.selectedGroupIds,
+            note,
+            savedRevision.oid,
+          );
+        },
+      );
+      return {
+        candidate: this.candidateRevisionUnlocked(projectId, candidate.id),
+        selection,
+        revision,
+      };
+    });
+  }
+
+  async rejectCandidateRevision(
+    projectId: string,
+    input: DecidePackageCandidateRevisionInput,
+  ): Promise<PackageCandidateRevision> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      const note = optionalText(input.note, '处理备注', 1000) ?? undefined;
+      await this.ensureProjectUnlocked(projectId);
+      const candidate = this.candidateRevisionUnlocked(projectId, input.candidateId);
+      assertPendingCandidate(candidate);
+      this.decideCandidate(candidate, 'rejected', action, [], note);
+      return this.candidateRevisionUnlocked(projectId, candidate.id);
+    });
+  }
+
+  async returnCandidateRevision(
+    projectId: string,
+    input: ReturnPackageCandidateRevisionInput,
+  ): Promise<PackageCandidateRevision> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      const note = requiredText(input.note ?? '', '退回说明', 1000);
+      await this.ensureProjectUnlocked(projectId);
+      const candidate = this.candidateRevisionUnlocked(projectId, input.candidateId);
+      assertPendingCandidate(candidate);
+      const selection = resolveCandidateSelection(candidate.groups, input.selectedGroupIds);
+      this.decideCandidate(
+        candidate,
+        'revision_requested',
+        action,
+        selection.requestedGroupIds,
+        note,
+      );
+      return this.candidateRevisionUnlocked(projectId, candidate.id);
+    });
+  }
+
+  private candidateRevisionUnlocked(projectId: string, candidateId: string): PackageCandidateRevision {
+    const id = requiredText(candidateId, '候选修订 ID', 100);
+    const row = this.db.prepare(`SELECT * FROM artifact_candidate_revisions
+      WHERE id = ? AND project_id = ?`).get(id, projectId) as any;
+    if (!row) throw new PackageArtifactStoreError('candidate_not_found', '候选修订不存在');
+    return candidateFromRow(row);
+  }
+
+  private pendingCandidateRevisionCountUnlocked(projectId: string): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM artifact_candidate_revisions
+      WHERE project_id = ? AND status = 'pending'`).get(projectId) as { count: number };
+    return Number(row.count);
+  }
+
+  private async previewCandidateUnlocked(
+    candidate: PackageCandidateRevision,
+    selection: PackageCandidateSelection,
+  ): Promise<PackageCandidatePreview> {
+    const base = await this.repository.snapshot(candidate.projectId, candidate.baseRevision);
+    const target = applyCandidateChanges(
+      base,
+      selectedCandidateChanges(candidate.groups, selection.selectedGroupIds),
+    );
+    const view = this.viewFromSnapshot(target);
+    const files: Record<string, string> = {};
+    const binaryFiles: string[] = [];
+    for (const file of target.files) {
+      if (!file.path.startsWith(PACKAGE_PREFIX)) continue;
+      const path = file.path.slice(PACKAGE_PREFIX.length);
+      const content = tryDecodeText(file.content);
+      if (content === null) binaryFiles.push(path);
+      else files[path] = content;
+    }
+    return {
+      candidate: cloneCandidate(candidate),
+      selection,
+      spec: view.spec,
+      coverage: view.coverage,
+      files,
+      binaryFiles: binaryFiles.sort(compareNames),
+      diff: diffCandidateSnapshots(base, target),
+    };
+  }
+
+  private decideCandidate(
+    candidate: PackageCandidateRevision,
+    status: Exclude<PackageCandidateRevisionStatus, 'pending'>,
+    action: NormalizedAction,
+    selectedGroupIds: readonly string[],
+    note?: string,
+    acceptedRevision?: string,
+  ): void {
+    const decidedAt = (action.createdAt ?? new Date()).toISOString();
+    const result = this.db.prepare(`UPDATE artifact_candidate_revisions SET
+      status = ?, selected_group_ids_json = ?, accepted_revision_oid = ?,
+      decision_cause = ?, decision_summary = ?, decision_actor_kind = ?, decision_actor_name = ?,
+      decision_note = ?, decided_at = ?
+      WHERE id = ? AND project_id = ? AND status = 'pending'`).run(
+        status,
+        JSON.stringify(selectedGroupIds),
+        acceptedRevision ?? null,
+        action.cause,
+        action.summary,
+        action.actorKind,
+        action.actorName,
+        note ?? null,
+        decidedAt,
+        candidate.id,
+        candidate.projectId,
+      );
+    if (Number(result.changes) !== 1) {
+      throw new PackageArtifactStoreError('candidate_not_pending', '候选修订已经处理');
+    }
   }
 
   private async ensureProjectUnlocked(projectId: string): Promise<ArtifactRevision> {
@@ -708,6 +1179,413 @@ interface NormalizedAction extends PackageRevisionAction {
   actorName: string;
 }
 
+interface StoredCandidateChangeGroup {
+  id: string;
+  summary: string;
+  dependsOn: string[];
+  changes: Array<
+    | { kind: 'write'; path: string; contentBase64: string }
+    | { kind: 'delete'; path: string }
+  >;
+  validation: PackageCandidateValidation;
+}
+
+function normalizeCandidateGroups(
+  value: readonly PackageCandidateChangeGroupInput[],
+  baseFiles: readonly ArtifactFile[],
+): PackageCandidateChangeGroup[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CANDIDATE_GROUPS) {
+    throw new PackageArtifactStoreError(
+      'invalid_input',
+      `候选修订必须包含 1 到 ${MAX_CANDIDATE_GROUPS} 个原子变更组`,
+    );
+  }
+  const encoder = new TextEncoder();
+  const base = new Map(baseFiles.map((file) => [file.path, file.content]));
+  const groupIds = new Set<string>();
+  const changedPaths = new Set<string>();
+  let changeCount = 0;
+  let contentBytes = 0;
+
+  const groups = value.map((rawGroup) => {
+    if (!rawGroup || typeof rawGroup !== 'object') {
+      throw new PackageArtifactStoreError('invalid_input', '原子变更组不正确');
+    }
+    const id = requiredText(rawGroup.id, '变更组 ID', 64);
+    if (!GROUP_ID_PATTERN.test(id) || groupIds.has(id)) {
+      throw new PackageArtifactStoreError('invalid_input', `变更组 ID 不正确或重复：${id}`);
+    }
+    groupIds.add(id);
+    if (!Array.isArray(rawGroup.changes) || rawGroup.changes.length < 1) {
+      throw new PackageArtifactStoreError('invalid_input', `变更组 ${id} 没有文件修改`);
+    }
+    const changes = rawGroup.changes.map((rawChange: ArtifactChange): ArtifactChange => {
+      if (!rawChange || typeof rawChange !== 'object') {
+        throw new PackageArtifactStoreError('invalid_input', `变更组 ${id} 的文件修改不正确`);
+      }
+      const path = validateReadablePath(rawChange.path);
+      if (changedPaths.has(path)) {
+        throw new PackageArtifactStoreError('invalid_input', `多个变更组不能同时修改同一文件：${path}`);
+      }
+      changedPaths.add(path);
+      changeCount += 1;
+      if (changeCount > MAX_CANDIDATE_CHANGES) {
+        throw new PackageArtifactStoreError(
+          'invalid_input',
+          `候选修订最多包含 ${MAX_CANDIDATE_CHANGES} 个文件修改`,
+        );
+      }
+      if (rawChange.kind === 'delete') {
+        if (!base.has(path)) {
+          throw new PackageArtifactStoreError('invalid_input', `候选删除没有实际变化：${path}`);
+        }
+        return { kind: 'delete', path };
+      }
+      if (rawChange.kind !== 'write'
+        || (typeof rawChange.content !== 'string' && !(rawChange.content instanceof Uint8Array))) {
+        throw new PackageArtifactStoreError('invalid_input', `候选文件内容不正确：${path}`);
+      }
+      const content = typeof rawChange.content === 'string'
+        ? encoder.encode(rawChange.content)
+        : new Uint8Array(rawChange.content);
+      contentBytes += content.byteLength;
+      if (contentBytes > MAX_CANDIDATE_BYTES) {
+        throw new PackageArtifactStoreError('invalid_input', '候选修订文件内容不能超过 10 MiB');
+      }
+      const before = base.get(path);
+      if (before !== undefined && bytesEqual(before, content)) {
+        throw new PackageArtifactStoreError('invalid_input', `候选写入没有实际变化：${path}`);
+      }
+      return { kind: 'write', path, content };
+    }).sort((left: ArtifactChange, right: ArtifactChange) => compareNames(left.path, right.path));
+    return {
+      id,
+      summary: requiredText(rawGroup.summary, '变更组说明', 500),
+      dependsOn: normalizeCandidateDependencies(rawGroup.dependsOn, id),
+      changes,
+      validation: {
+        errors: normalizeCandidateMessages(rawGroup.validation?.errors, '校验错误'),
+        warnings: normalizeCandidateMessages(rawGroup.validation?.warnings, '校验警告'),
+      },
+    };
+  });
+
+  for (const group of groups) {
+    for (const dependency of group.dependsOn) {
+      if (!groupIds.has(dependency)) {
+        throw new PackageArtifactStoreError(
+          'invalid_input',
+          `变更组 ${group.id} 引用了不存在的依赖：${dependency}`,
+        );
+      }
+    }
+  }
+  assertCandidateDependencyGraph(groups);
+  return groups;
+}
+
+function normalizeCandidateDependencies(value: readonly string[] | undefined, groupId: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_CANDIDATE_GROUPS) {
+    throw new PackageArtifactStoreError('invalid_input', `变更组 ${groupId} 的依赖不正确`);
+  }
+  const dependencies: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const dependency = requiredText(raw, '变更组依赖', 64);
+    if (!GROUP_ID_PATTERN.test(dependency) || dependency === groupId) {
+      throw new PackageArtifactStoreError('invalid_input', `变更组 ${groupId} 的依赖不正确`);
+    }
+    if (!seen.has(dependency)) dependencies.push(dependency);
+    seen.add(dependency);
+  }
+  return dependencies;
+}
+
+function normalizeCandidateMessages(value: readonly string[] | undefined, label: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) {
+    throw new PackageArtifactStoreError('invalid_input', `${label}不正确`);
+  }
+  return value.map((message) => requiredText(message, label, 1000));
+}
+
+function assertCandidateDependencyGraph(groups: readonly PackageCandidateChangeGroup[]): void {
+  const byId = new Map(groups.map((group) => [group.id, group]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visiting.has(id)) {
+      throw new PackageArtifactStoreError('invalid_input', `原子变更组依赖形成循环：${id}`);
+    }
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dependency of byId.get(id)?.dependsOn ?? []) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const group of groups) visit(group.id);
+}
+
+function resolveCandidateSelection(
+  groups: readonly PackageCandidateChangeGroup[],
+  selectedGroupIds?: readonly string[],
+): PackageCandidateSelection {
+  if (selectedGroupIds !== undefined && (!Array.isArray(selectedGroupIds) || selectedGroupIds.length < 1)) {
+    throw new PackageArtifactStoreError('invalid_input', '请至少选择一个原子变更组');
+  }
+  const byId = new Map(groups.map((group) => [group.id, group]));
+  const requested = new Set<string>();
+  for (const rawId of selectedGroupIds ?? groups.map((group) => group.id)) {
+    const id = requiredText(rawId, '变更组 ID', 64);
+    if (!byId.has(id)) {
+      throw new PackageArtifactStoreError('invalid_input', `候选修订不包含变更组：${id}`);
+    }
+    requested.add(id);
+  }
+  const included = new Set<string>();
+  const include = (id: string) => {
+    if (included.has(id)) return;
+    const group = byId.get(id);
+    if (!group) throw new PackageArtifactStoreError('invalid_input', `候选修订不包含变更组：${id}`);
+    for (const dependency of group.dependsOn) include(dependency);
+    included.add(id);
+  };
+  for (const id of requested) include(id);
+  const requestedGroupIds = groups.filter((group) => requested.has(group.id)).map((group) => group.id);
+  const resolvedGroupIds = groups.filter((group) => included.has(group.id)).map((group) => group.id);
+  return {
+    requestedGroupIds,
+    selectedGroupIds: resolvedGroupIds,
+    autoIncludedGroupIds: resolvedGroupIds.filter((id) => !requested.has(id)),
+  };
+}
+
+function selectedCandidateChanges(
+  groups: readonly PackageCandidateChangeGroup[],
+  selectedGroupIds: readonly string[],
+): ArtifactChange[] {
+  const selected = new Set(selectedGroupIds);
+  return groups
+    .filter((group) => selected.has(group.id))
+    .flatMap((group) => group.changes.map(cloneArtifactChange));
+}
+
+function assertCandidateValidation(
+  groups: readonly PackageCandidateChangeGroup[],
+  selectedGroupIds: readonly string[],
+): void {
+  const selected = new Set(selectedGroupIds);
+  const errors = groups
+    .filter((group) => selected.has(group.id))
+    .flatMap((group) => group.validation.errors.map((error) => `${group.summary}：${error}`));
+  if (errors.length > 0) {
+    throw new PackageArtifactStoreError(
+      'candidate_validation_failed',
+      `候选修订校验未通过：${errors.join('；')}`,
+    );
+  }
+}
+
+function applyCandidateChanges(
+  base: ArtifactSnapshot,
+  changes: readonly ArtifactChange[],
+): ArtifactSnapshot {
+  const files = new Map(base.files.map((file) => [file.path, new Uint8Array(file.content)]));
+  const encoder = new TextEncoder();
+  for (const change of changes) {
+    if (change.kind === 'delete') files.delete(change.path);
+    else files.set(
+      change.path,
+      typeof change.content === 'string' ? encoder.encode(change.content) : new Uint8Array(change.content),
+    );
+  }
+  return {
+    revision: base.revision,
+    files: [...files.entries()]
+      .sort(([left], [right]) => compareNames(left, right))
+      .map(([path, content]) => ({ path, content })),
+  };
+}
+
+function diffCandidateSnapshots(base: ArtifactSnapshot, target: ArtifactSnapshot): ArtifactFileDiff[] {
+  const before = new Map(base.files.map((file) => [file.path, file.content]));
+  const after = new Map(target.files.map((file) => [file.path, file.content]));
+  const paths = [...new Set([...before.keys(), ...after.keys()])].sort(compareNames);
+  const diff: ArtifactFileDiff[] = [];
+  for (const path of paths) {
+    const previous = before.get(path);
+    const next = after.get(path);
+    if (previous !== undefined && next !== undefined && bytesEqual(previous, next)) continue;
+    if (previous === undefined && next !== undefined) {
+      diff.push({ path, kind: 'added', after: new Uint8Array(next) });
+    } else if (previous !== undefined && next === undefined) {
+      diff.push({ path, kind: 'deleted', before: new Uint8Array(previous) });
+    } else if (previous !== undefined && next !== undefined) {
+      diff.push({
+        path,
+        kind: 'modified',
+        before: new Uint8Array(previous),
+        after: new Uint8Array(next),
+      });
+    }
+  }
+  return diff;
+}
+
+function serializeCandidateGroups(groups: readonly PackageCandidateChangeGroup[]): string {
+  const stored: StoredCandidateChangeGroup[] = groups.map((group) => ({
+    id: group.id,
+    summary: group.summary,
+    dependsOn: [...group.dependsOn],
+    validation: {
+      errors: [...group.validation.errors],
+      warnings: [...group.validation.warnings],
+    },
+    changes: group.changes.map((change) => change.kind === 'delete'
+      ? { kind: 'delete', path: change.path }
+      : {
+        kind: 'write',
+        path: change.path,
+        contentBase64: Buffer.from(
+          typeof change.content === 'string' ? new TextEncoder().encode(change.content) : change.content,
+        ).toString('base64'),
+      }),
+  }));
+  return JSON.stringify(stored);
+}
+
+function deserializeCandidateGroups(value: unknown): PackageCandidateChangeGroup[] {
+  try {
+    const stored = JSON.parse(String(value ?? '')) as StoredCandidateChangeGroup[];
+    if (!Array.isArray(stored) || stored.length < 1 || stored.length > MAX_CANDIDATE_GROUPS) throw new Error();
+    const ids = new Set<string>();
+    const paths = new Set<string>();
+    const groups = stored.map((group) => {
+      if (!group || !GROUP_ID_PATTERN.test(group.id) || ids.has(group.id) || !Array.isArray(group.changes)) {
+        throw new Error();
+      }
+      ids.add(group.id);
+      const changes = group.changes.map((change): ArtifactChange => {
+        const path = validateReadablePath(change.path);
+        if (paths.has(path)) throw new Error();
+        paths.add(path);
+        if (change.kind === 'delete') return { kind: 'delete', path };
+        if (change.kind !== 'write' || typeof change.contentBase64 !== 'string') throw new Error();
+        return { kind: 'write', path, content: new Uint8Array(Buffer.from(change.contentBase64, 'base64')) };
+      });
+      return {
+        id: group.id,
+        summary: requiredText(group.summary, '变更组说明', 500),
+        dependsOn: normalizeCandidateDependencies(group.dependsOn, group.id),
+        changes,
+        validation: {
+          errors: normalizeCandidateMessages(group.validation?.errors, '校验错误'),
+          warnings: normalizeCandidateMessages(group.validation?.warnings, '校验警告'),
+        },
+      };
+    });
+    for (const group of groups) {
+      if (group.dependsOn.some((dependency) => !ids.has(dependency))) throw new Error();
+    }
+    assertCandidateDependencyGraph(groups);
+    return groups;
+  } catch (error) {
+    if (error instanceof PackageArtifactStoreError && error.code === 'invalid_package') throw error;
+    throw new PackageArtifactStoreError('invalid_package', '候选修订内容不正确');
+  }
+}
+
+function candidateFromRow(row: any): PackageCandidateRevision {
+  const status = String(row.status ?? '') as PackageCandidateRevisionStatus;
+  const actorKind = String(row.actor_kind ?? '') as ArtifactRevisionActorKind;
+  if (!CANDIDATE_STATUSES.has(status) || !ACTOR_KINDS.has(actorKind)) {
+    throw new PackageArtifactStoreError('invalid_package', '候选修订内容不正确');
+  }
+  let selectedGroupIds: string[];
+  try {
+    const selected = JSON.parse(String(row.selected_group_ids_json ?? '[]'));
+    if (!Array.isArray(selected) || selected.some((id) => typeof id !== 'string')) throw new Error();
+    selectedGroupIds = selected;
+  } catch {
+    throw new PackageArtifactStoreError('invalid_package', '候选修订内容不正确');
+  }
+  let decision: PackageCandidateDecision | undefined;
+  if (row.decided_at) {
+    const decisionActorKind = String(row.decision_actor_kind ?? '') as ArtifactRevisionActorKind;
+    if (!ACTOR_KINDS.has(decisionActorKind)) {
+      throw new PackageArtifactStoreError('invalid_package', '候选修订处理记录不正确');
+    }
+    decision = {
+      cause: requiredText(row.decision_cause, '处理原因', 64),
+      summary: requiredText(row.decision_summary, '处理说明', 500),
+      actorKind: decisionActorKind,
+      actorName: requiredText(row.decision_actor_name, '处理人', 100),
+      ...(row.decision_note ? { note: String(row.decision_note) } : {}),
+      decidedAt: String(row.decided_at),
+    };
+  }
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    baseRevision: String(row.base_revision_oid),
+    status,
+    cause: String(row.cause),
+    summary: String(row.summary),
+    actorKind,
+    actorName: String(row.actor_name),
+    groups: deserializeCandidateGroups(row.groups_json),
+    selectedGroupIds,
+    ...(row.accepted_revision_oid ? { acceptedRevision: String(row.accepted_revision_oid) } : {}),
+    ...(decision ? { decision } : {}),
+    createdAt: String(row.created_at),
+  };
+}
+
+function cloneArtifactChange(change: ArtifactChange): ArtifactChange {
+  return change.kind === 'delete'
+    ? { kind: 'delete', path: change.path }
+    : {
+      kind: 'write',
+      path: change.path,
+      content: typeof change.content === 'string' ? change.content : new Uint8Array(change.content),
+    };
+}
+
+function cloneCandidate(candidate: PackageCandidateRevision): PackageCandidateRevision {
+  return {
+    ...candidate,
+    groups: candidate.groups.map((group) => ({
+      ...group,
+      dependsOn: [...group.dependsOn],
+      changes: group.changes.map(cloneArtifactChange),
+      validation: {
+        errors: [...group.validation.errors],
+        warnings: [...group.validation.warnings],
+      },
+    })),
+    selectedGroupIds: [...candidate.selectedGroupIds],
+    ...(candidate.decision ? { decision: { ...candidate.decision } } : {}),
+  };
+}
+
+function assertExpectedRevision(expectedRevision: string, actualRevision: string): void {
+  const expected = requiredText(expectedRevision, '基线版本', 200);
+  if (expected !== actualRevision) {
+    throw new ArtifactRepositoryError(
+      'revision_conflict',
+      '当前确认版本已经变化，请刷新后重试',
+      { expectedRevision: expected, actualRevision },
+    );
+  }
+}
+
+function assertPendingCandidate(candidate: PackageCandidateRevision): void {
+  if (candidate.status !== 'pending') {
+    throw new PackageArtifactStoreError('candidate_not_pending', '候选修订已经处理');
+  }
+}
+
 function validateAction(action: PackageRevisionAction): NormalizedAction {
   if (!action || !CAUSE_PATTERN.test(action.cause)) {
     throw new PackageArtifactStoreError('invalid_input', '修改原因不正确');
@@ -865,6 +1743,14 @@ function decodeText(content: Uint8Array): string {
     return new TextDecoder('utf-8', { fatal: true }).decode(content);
   } catch {
     throw new PackageArtifactStoreError('invalid_package', '文件内容不是文本');
+  }
+}
+
+function tryDecodeText(content: Uint8Array): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(content);
+  } catch {
+    return null;
   }
 }
 

@@ -30,6 +30,7 @@ export function getDb(): DatabaseSync {
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'package_versions', 'revision_oid', 'TEXT');
+  ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   const competencyColumns = db.prepare('PRAGMA table_info(competency_questions)').all() as Array<{ name: string }>;
   if (!competencyColumns.some((column) => column.name === 'source')) {
     db.exec("ALTER TABLE competency_questions ADD COLUMN source TEXT NOT NULL DEFAULT 'generated'");
