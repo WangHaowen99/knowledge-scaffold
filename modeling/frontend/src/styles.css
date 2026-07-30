@@ -152,6 +152,11 @@ html, body, #root { height: 100%; }
 .mwr .dropzone:hover, .mwr .dropzone.drag { border-color: var(--blue-l); color: var(--blue-d); background: #f6faff; }
 .mwr .doc-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-bottom: 1px solid #f0efec; font-size: 13px; }
 .mwr .doc-row .dn { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mwr .material-revision-history { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; }
+.mwr .material-revision-history-head, .mwr .material-revision-row { display: flex; align-items: center; gap: 10px; }
+.mwr .material-revision-history-head { justify-content: space-between; margin-bottom: 8px; }
+.mwr .material-revision-row { min-height: 34px; border-top: 1px solid #e5ebf3; font-size: 12px; }
+.mwr .material-revision-row time { margin-left: auto; color: var(--muted); }
 
 /* 分析结果卡 */
 .mwr .an-sec { margin-bottom: 18px; }

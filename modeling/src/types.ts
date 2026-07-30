@@ -123,6 +123,8 @@ export interface DataDictTable {
 export interface DocumentRecord {
   id: string;
   projectId: string;
+  sourceKey?: string;
+  revisionNo?: number;
   filename: string;
   kind: 'markdown' | 'text' | 'pdf' | 'word' | 'excel' | 'unknown';
   parseStatus: 'pending' | 'parsed' | 'failed';
@@ -130,7 +132,12 @@ export interface DocumentRecord {
   // 文本类：提取的正文；excel：数据字典
   textContent?: string;
   tables?: DataDictTable[];
+  contentHash?: string;
+  semanticHash?: string;
+  lifecycleStatus?: 'active' | 'superseded' | 'deleted';
+  supersedesId?: string;
   createdAt: string;
+  retiredAt?: string;
 }
 
 // ---- 初步分析产物（节点 3）----
