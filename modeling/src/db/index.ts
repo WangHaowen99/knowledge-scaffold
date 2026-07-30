@@ -27,7 +27,8 @@ export function getDb(): DatabaseSync {
   // schema.sql 随源码走：dev 从 src/db 读，编译后 build 脚本拷到 dist/db。
   const schema = readFileSync(join(here, 'schema.sql'), 'utf8');
   db.exec(schema);
-  // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；保持正式版本可关联 Git 修订。
+  // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
+  ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'package_versions', 'revision_oid', 'TEXT');
   const competencyColumns = db.prepare('PRAGMA table_info(competency_questions)').all() as Array<{ name: string }>;
   if (!competencyColumns.some((column) => column.name === 'source')) {
