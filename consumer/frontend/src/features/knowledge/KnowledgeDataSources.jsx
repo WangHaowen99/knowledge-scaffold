@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '../../shared/api/auth';
 import { useAuthContext } from '../auth';
+import { ConfirmDialog } from '../../shared/ui/feedback';
 import { EmptyState, FieldRow, SectionCard, StatusTag } from '../../shared/ui/primitives';
 
 const NOTICE_ICONS = {
@@ -60,6 +61,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
   const [loadingSource, setLoadingSource] = useState(false);
   const [sourceLoadError, setSourceLoadError] = useState(false);
   const [busy, setBusy] = useState('');
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const [notice, setNotice] = useState(null);
   const loadRequestRef = useRef(0);
   const operationRequestRef = useRef(0);
@@ -151,6 +153,7 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
   useEffect(() => {
     operationRequestRef.current += 1;
     setBusy('');
+    setRemoveConfirmOpen(false);
     const timer = setTimeout(load, 0);
     return () => {
       clearTimeout(timer);
@@ -242,13 +245,17 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
       const data = await response.json().catch(() => ({}));
       if (!isCurrentOperation()) return;
       if (!response.ok) throw new Error(data.detail || data.error || `请求失败（${response.status}）`);
+      setRemoveConfirmOpen(false);
       const reloaded = await load();
       if (isCurrentOperation() && reloaded) {
         await Promise.resolve(onDataSourceChanged?.()).catch(() => undefined);
         if (isCurrentOperation()) setNotice({ type: 'success', message: '数据源配置已清除' });
       }
     } catch (error) {
-      if (isCurrentOperation()) setNotice({ type: 'error', message: `清除失败：${error?.message || '未知错误'}` });
+      if (isCurrentOperation()) {
+        setRemoveConfirmOpen(false);
+        setNotice({ type: 'error', message: `清除失败：${error?.message || '未知错误'}` });
+      }
     } finally {
       if (isCurrentOperation()) setBusy('');
     }
@@ -320,7 +327,11 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
               </button>
             )}
             {configured && canEdit && (
-              <button className="btn btn-danger" disabled={Boolean(busy)} onClick={remove}>
+              <button
+                className="btn btn-danger"
+                disabled={Boolean(busy)}
+                onClick={() => setRemoveConfirmOpen(true)}
+              >
                 {busy === 'delete' ? '清除中…' : '清除配置'}
               </button>
             )}
@@ -342,6 +353,18 @@ export default function KnowledgeDataSources({ ontologyId, onDataSourceChanged }
           </div>
         )}
       </SectionCard>
+      <ConfirmDialog
+        open={removeConfirmOpen}
+        title="清除数据源配置"
+        description="确认清除当前知识包的数据源配置？清除后当前知识包将变为“未配置”，相关查询将不可用。"
+        confirmLabel="确认清除"
+        danger
+        busy={busy === 'delete'}
+        onConfirm={remove}
+        onCancel={() => {
+          if (busy !== 'delete') setRemoveConfirmOpen(false);
+        }}
+      />
     </div>
   );
 }
