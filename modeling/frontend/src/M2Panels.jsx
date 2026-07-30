@@ -410,7 +410,9 @@ function Stat({ v, k }) {
 
 const PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE = '知识包修缮正在进行中，暂不能人工编辑';
 
-export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraftChange, onAdvance }) {
+export function ReviewPanel({
+  projectId, packageDraft, packageRepairBusy, onDraftChange, onDirtyChange, onAdvance,
+}) {
   const [pkg, setPkg] = useState(null);
   const [err, setErr] = useState('');
   const [path, setPath] = useState(null);
@@ -434,6 +436,8 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
   const saveTimerRef = useRef(null);
   const savePromiseRef = useRef(Promise.resolve());
   const handledDraftRef = useRef(null);
+  const localChangeRef = useRef(false);
+  const deferredPackageRefreshRef = useRef(false);
   const repairInProgress = !!packageRepairBusy;
 
   useEffect(() => { draftRef.current = packageDraft; }, [packageDraft]);
@@ -455,13 +459,22 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
   const loadPkg = useCallback(async () => {
     const data = await getPackage(projectId);
     setPkg(data);
-    setPath((current) => (current && data.files.includes(current)
+    setPath((current) => (localChangeRef.current && current
+      ? current
+      : current && data.files.includes(current)
       ? current
       : (data.files.includes('index.md') ? 'index.md' : data.files[0])));
     return data;
   }, [projectId]);
 
+  const refreshPackageView = useCallback(() => {
+    loadPkg().catch((e) => setErr(e.message));
+    setFileReloadKey((key) => key + 1);
+  }, [loadPkg]);
+
   useEffect(() => {
+    localChangeRef.current = false;
+    deferredPackageRefreshRef.current = false;
     setPkg(null);
     setPath(null);
     setFile(null);
@@ -477,12 +490,16 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
   // 右栏修缮对话生成新版本、或人工草稿发布后，刷新文件树与当前文件。
   useEffect(() => {
     const handlePackageUpdated = () => {
-      loadPkg().catch((e) => setErr(e.message));
-      setFileReloadKey((key) => key + 1);
+      if (localChangeRef.current) {
+        deferredPackageRefreshRef.current = true;
+        setMsg('检测到后台更新；当前文件有未保存修改，已保留你的输入');
+        return;
+      }
+      refreshPackageView();
     };
     window.addEventListener('mw-package-updated', handlePackageUpdated);
     return () => window.removeEventListener('mw-package-updated', handlePackageUpdated);
-  }, [loadPkg]);
+  }, [refreshPackageView]);
 
   // 已有活动草稿时优先恢复最近修改的文件；无变更的空草稿恢复到第一个可编辑详情文件。
   useEffect(() => {
@@ -499,6 +516,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
 
   useEffect(() => {
     if (!path) return undefined;
+    if (localChangeRef.current) return undefined;
     let active = true;
     setFile(null);
     const request = draftRef.current
@@ -510,6 +528,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
       setEditorContent(nextFile.content);
       savedContentRef.current = nextFile.content;
       savedContentHashRef.current = nextFile.contentHash ?? '';
+      localChangeRef.current = false;
       setRevisionConflict(null);
       setSaveState('idle');
       if (!isPackageDraftEditablePath(path)) setView('view');
@@ -541,6 +560,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
           setFile((current) => ({ ...(current ?? {}), ...result.file }));
           if (editorContentRef.current === content) setEditorContent(result.file.content);
         }
+        if (editorContentRef.current === content) localChangeRef.current = false;
         setRevisionConflict((current) => (current?.path === targetPath ? null : current));
         setSaveState(editorContentRef.current === content ? 'saved' : 'unsaved');
         if (!quiet) setMsg('✓ 已保存到人工编辑草稿');
@@ -595,15 +615,26 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
 
   const hasUnsavedContent = !!packageDraft && view === 'edit'
     && editorContent !== savedContentRef.current;
+  const hasPendingLocalChanges = hasUnsavedContent || saveState === 'saving' || !!revisionConflict;
   useEffect(() => {
-    if (!hasUnsavedContent && saveState !== 'saving' && !revisionConflict) return undefined;
+    localChangeRef.current = hasPendingLocalChanges;
+    onDirtyChange?.(hasPendingLocalChanges);
+  }, [hasPendingLocalChanges, onDirtyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
+  useEffect(() => {
+    if (hasPendingLocalChanges || !deferredPackageRefreshRef.current) return;
+    deferredPackageRefreshRef.current = false;
+    refreshPackageView();
+  }, [hasPendingLocalChanges, refreshPackageView]);
+  useEffect(() => {
+    if (!hasPendingLocalChanges) return undefined;
     const warnBeforeUnload = (event) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warnBeforeUnload);
     return () => window.removeEventListener('beforeunload', warnBeforeUnload);
-  }, [hasUnsavedContent, revisionConflict, saveState]);
+  }, [hasPendingLocalChanges]);
 
   const flushCurrentFile = useCallback(async () => {
     clearTimeout(saveTimerRef.current);
@@ -672,6 +703,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
       setEditorContent(data.file.content);
       savedContentRef.current = data.file.content;
       savedContentHashRef.current = data.file.contentHash;
+      localChangeRef.current = false;
       setRevisionConflict(null);
       setView('edit');
       setSaveState('idle');
@@ -714,6 +746,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
     setEditorContent(conflict.file.content);
     savedContentRef.current = conflict.file.content;
     savedContentHashRef.current = conflict.file.contentHash;
+    localChangeRef.current = false;
     setRevisionConflict(null);
     setSaveState('idle');
     setMsg('已加载其他页面保存的最新内容');
@@ -758,6 +791,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
       setEditorContent(result.file.content);
       savedContentRef.current = result.file.content;
       savedContentHashRef.current = result.file.contentHash;
+      localChangeRef.current = false;
       setRevisionConflict(null);
       setSaveState('idle');
       setMsg('已撤销当前文件在草稿中的修改');
@@ -781,6 +815,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
       }
       const result = await publishPackageDraft(projectId, activeDraft.revision, publishSummary.trim(), activeDraft.id);
       notifyDraftChange(null);
+      localChangeRef.current = false;
       handledDraftRef.current = null;
       setPublishOpen(false);
       setPublishSummary('');
@@ -819,6 +854,7 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
       if (!activeDraft) return;
       await discardPackageDraft(projectId, activeDraft.revision, activeDraft.id);
       notifyDraftChange(null);
+      localChangeRef.current = false;
       handledDraftRef.current = null;
       setDiscardOpen(false);
       setView('view');
@@ -940,7 +976,10 @@ export function ReviewPanel({ projectId, packageDraft, packageRepairBusy, onDraf
         {view === 'edit' ? (
           <div>
             <textarea className="rv-editor" value={editorContent} disabled={repairInProgress}
-              onChange={(e) => setEditorContent(e.target.value)} spellCheck={false} />
+              onChange={(e) => {
+                localChangeRef.current = e.target.value !== savedContentRef.current;
+                setEditorContent(e.target.value);
+              }} spellCheck={false} />
             {revisionConflict?.path === path && (
               <div className="draft-revision-conflict" role="alert">
                 <div>

@@ -49,6 +49,7 @@ export default function PackageChat({ projectId, packageDraft, busy, onBusyChang
       }
     } catch (e) {
       setTurns((t) => [...t, { role: 'assistant', text: `出错了：${e.message}` }]);
+      setInput((current) => current.trim() ? current : message);
     } finally { onBusyChange(''); }
   };
 

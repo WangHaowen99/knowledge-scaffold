@@ -17,7 +17,7 @@ import { latestNodeOf } from './workflowNodes.js';
 import { workbenchAutoFocus } from './workbench-focus.js';
 import { packageDraftOperationLabel } from './package-draft-ui.js';
 import { getProjectSession, subscribeProjectEvents } from './authoring-api.js';
-import { confirmFlowchartNavigation } from './flowchartNavigationGuard.js';
+import { confirmUnsavedNavigation } from './flowchartNavigationGuard.js';
 
 // 建模工作台三栏：左 workflow 时间线 · 中 当前节点交互区 · 右 上下文面板（包完善时切换为修缮对话）。
 // 「领域分析」= 原初步分析 + 领域问题候选（原胜任力问题，分析完成后自动生成）。
@@ -37,7 +37,7 @@ const TITLE = {
   project_setup: '项目信息',
 };
 
-export default function Workbench({ projectId }) {
+export default function Workbench({ projectId, onUnsavedChange }) {
   const [data, setData] = useState(null); // { project, documents, nodes }
   const [err, setErr] = useState('');
   const [ctxTab, setCtxTab] = useState('dict');
@@ -48,6 +48,11 @@ export default function Workbench({ projectId }) {
   const [draftGate, setDraftGate] = useState(null);
   const [processReview, setProcessReview] = useState(null);
   const [flowchartDirty, setFlowchartDirty] = useState(false);
+  const [packageEditorDirty, setPackageEditorDirty] = useState(false);
+  const workspaceDirty = flowchartDirty || packageEditorDirty;
+
+  useEffect(() => { onUnsavedChange?.(workspaceDirty); }, [onUnsavedChange, workspaceDirty]);
+  useEffect(() => () => { onUnsavedChange?.(false); }, [onUnsavedChange]);
 
   const load = useCallback(() =>
     getProject(projectId).then(setData).catch((e) => setErr(e.message)), [projectId]);
@@ -61,6 +66,7 @@ export default function Workbench({ projectId }) {
     setPackageDraft(null);
     setDraftGate(null);
     setFocus(null);
+    setPackageEditorDirty(false);
     getPackageDraft(projectId).then((d) => {
       if (!active) return;
       setPackageDraft(d.draft);
@@ -205,7 +211,7 @@ export default function Workbench({ projectId }) {
               <div key={key} data-tour={`node-${key}`}
                 className={`tl-node ${st === 'done' ? 'done' : ''} ${st === 'stale' ? 'stale' : ''} ${st === 'running' ? 'running' : ''} ${active ? 'active' : ''} ${canGo ? 'clickable' : ''}`}
                 onClick={() => {
-                  if (canGo && confirmFlowchartNavigation(flowchartDirty)) setFocus(key);
+                  if (canGo && confirmUnsavedNavigation(workspaceDirty)) setFocus(key);
                 }}>
                 <div className="th">
                   <span className="no">{st === 'done' ? '✓' : st === 'stale' ? '⟳' : st === 'running' ? <span className="spinner" /> : i + 1}</span>
@@ -284,7 +290,8 @@ export default function Workbench({ projectId }) {
             {effFocus === 'review' && (
               <ReviewPanel projectId={projectId} packageDraft={packageDraft}
                 packageRepairBusy={packageRepairBusy}
-                onDraftChange={setPackageDraft} onAdvance={() => setFocus('data_source')} />
+                onDraftChange={setPackageDraft} onDirtyChange={setPackageEditorDirty}
+                onAdvance={() => setFocus('data_source')} />
             )}
             {effFocus === 'data_source' && (
               <DataSourcePanel projectId={projectId} onAdvance={() => { load(); setFocus('testcases'); }} />
