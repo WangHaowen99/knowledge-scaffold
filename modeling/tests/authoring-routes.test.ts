@@ -120,6 +120,56 @@ test('完成建模确认时固化验证候选并让任务图引用候选修订',
   assert.equal(response.json().cursor, 2);
 });
 
+test('暂缓当前修订阻断错误时持久化审计记录并推进编排状态', async (t) => {
+  const project = createProject({ owner: 'alice', name: '暂缓错误继续验证' });
+  const [{ saveCheck }, { getPackageErrorDeferral }] = await Promise.all([
+    import('../src/workflow/package-check.js'),
+    import('../src/workflow/package-error-deferral.js'),
+  ]);
+  saveCheck(project.id, '0.1.0', [{
+    id: 'error-1', source: 'semantic', severity: '错误', category: '口径冲突',
+    target: 'operation:CalculateScore', message: '指标口径尚未统一',
+  }], 'pkg-current');
+
+  let deferredInput: any;
+  const packages = {
+    async current() {
+      return {
+        revision: { oid: 'pkg-current' },
+        packageVersion: '0.1.0',
+        spec: { status: 'draft', objects: [], operations: [] },
+      };
+    },
+  };
+  const orchestrator = {
+    latestMaterialAnalysis: () => null,
+    latestConfirmedModelingBrief: () => null,
+    completeProcessReview: () => { throw new Error('测试不应进入流程确认'); },
+    deferKnowledgeErrors: (_projectId: string, input: any) => {
+      deferredInput = input;
+      return { aiConstruction: { revision: 8 }, message: { id: 'msg-deferred' } };
+    },
+  };
+  const app = routeApp(t, 'alice', { packages, orchestrator });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/knowledge/defer-errors`,
+    payload: { reason: '先跑完真实评测，再统一修复当前口径问题' },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().deferral.valid, true);
+  assert.equal(response.json().deferral.errorCount, 1);
+  assert.deepEqual(deferredInput, {
+    packageRevisionOid: 'pkg-current',
+    errorCount: 1,
+    reason: '先跑完真实评测，再统一修复当前口径问题',
+    actor: 'alice',
+  });
+  assert.equal(getPackageErrorDeferral(project.id, 'pkg-current')?.actor, 'alice');
+});
+
 test('待办回答支持请求号幂等并在会话中恢复运行态', async (t) => {
   const project = createProject({ owner: 'alice', name: '待办恢复' });
   const state = getAuthoringState();

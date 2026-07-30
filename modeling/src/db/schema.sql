@@ -697,6 +697,22 @@ CREATE TABLE IF NOT EXISTS package_warning_acceptances (
 CREATE INDEX IF NOT EXISTS idx_package_warning_acceptances_project
   ON package_warning_acceptances(project_id, revision_oid, accepted_at);
 
+-- 用户可显式暂缓当前修订的阻断错误以先进入验证；记录只对指定错误集合有效，正式发布仍要求错误清零。
+CREATE TABLE IF NOT EXISTS package_error_deferrals (
+  project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision_oid     TEXT NOT NULL,
+  error_count      INTEGER NOT NULL CHECK (error_count > 0),
+  error_fingerprints_json TEXT NOT NULL,
+  findings_json    TEXT NOT NULL,
+  reason           TEXT NOT NULL,
+  deferred_by      TEXT NOT NULL,
+  deferred_role    TEXT NOT NULL,
+  deferred_at      TEXT NOT NULL,
+  PRIMARY KEY (project_id, revision_oid)
+);
+CREATE INDEX IF NOT EXISTS idx_package_error_deferrals_project
+  ON package_error_deferrals(project_id, deferred_at);
+
 CREATE TABLE IF NOT EXISTS package_release_records (
   project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   version             TEXT NOT NULL,

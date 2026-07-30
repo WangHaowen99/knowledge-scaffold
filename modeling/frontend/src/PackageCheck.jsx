@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
-import { acceptPackageWarnings, runPackageCheck, getPackageCheck } from './api.js';
+import {
+  acceptPackageWarnings,
+  deferPackageValidationErrors,
+  runPackageCheck,
+  getPackageCheck,
+} from './api.js';
 import { BusyButton } from './ui.jsx';
 
 // 知识包体检面板（知识包完善页顶部）：规则引擎 + 语义 agent 的结构化发现。
@@ -14,10 +19,14 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
   const [warningReview, setWarningReview] = useState(null);
   const [acceptanceNote, setAcceptanceNote] = useState('');
   const [accepting, setAccepting] = useState(false);
+  const [errorDeferral, setErrorDeferral] = useState(null);
+  const [deferralReason, setDeferralReason] = useState('');
+  const [deferring, setDeferring] = useState(false);
 
   useEffect(() => {
     getPackageCheck(projectId).then((d) => {
       setCheck(d.check);
+      setErrorDeferral(d.errorDeferral);
       setWarningReview(d.warningReview);
     }).catch(() => {});
   }, [projectId]);
@@ -33,8 +42,10 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
         findings: d.findings,
         createdAt: new Date().toISOString(),
       });
+      setErrorDeferral(d.errorDeferral);
       setWarningReview(d.warningReview);
       setAcceptanceNote('');
+      setDeferralReason('');
       setOpen(true);
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
@@ -74,6 +85,21 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
       setErr(error instanceof Error ? error.message : '警告确认失败');
     } finally {
       setAccepting(false);
+    }
+  };
+
+  const deferErrors = async () => {
+    if (!check?.revision || !counts?.错误 || deferring || packageDraft) return;
+    setDeferring(true);
+    setErr('');
+    try {
+      const result = await deferPackageValidationErrors(projectId, deferralReason);
+      setErrorDeferral(result.deferral);
+      setDeferralReason('');
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : '错误暂缓失败');
+    } finally {
+      setDeferring(false);
     }
   };
 
@@ -118,6 +144,36 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
               )}
             </div>
           ))}
+          {counts.错误 > 0 && (
+            <div className="pcheck-warning-acceptance">
+              <strong>暂缓阻断错误进入验证</strong>
+              {errorDeferral?.valid && errorDeferral.revision === check.revision ? (
+                <>
+                  <p>当前修订的 {errorDeferral.errorCount} 个错误已记录暂缓原因，可继续验证；正式发布仍要求错误清零。</p>
+                  <p className="muted">暂缓说明：{errorDeferral.reason}</p>
+                </>
+              ) : (
+                <>
+                  <p>仅允许当前错误集合先进入验证闭环。内容或错误变化后记录自动失效，正式发布仍会阻断。</p>
+                  <textarea
+                    rows={2}
+                    value={deferralReason}
+                    placeholder="说明暂缓原因和后续处理计划（必填）"
+                    disabled={!!packageDraft}
+                    onChange={(event) => setDeferralReason(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={deferring || !!packageDraft || deferralReason.trim().length < 4}
+                    onClick={() => { void deferErrors(); }}
+                  >
+                    {deferring ? '记录中…' : `暂缓 ${counts.错误} 个错误`}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {pendingWarnings.length > 0 && (
             <div className="pcheck-warning-acceptance">
               <strong>接受非阻断警告进入验证</strong>

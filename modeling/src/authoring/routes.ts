@@ -20,6 +20,7 @@ import {
   PackageArtifactStoreError,
 } from '../artifacts/index.js';
 import type { PackageArtifactStore } from '../artifacts/index.js';
+import { getDb } from '../db/index.js';
 import {
   appendBlankFlowchartDiagram,
   appendFlowchartDiagram,
@@ -31,6 +32,7 @@ import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js'
 import { getProject } from '../projects/repo.js';
 import { findKnowledgeEvidenceProblems } from '../workflow/knowledge-evidence.js';
 import { getCheck } from '../workflow/package-check.js';
+import { deferPackageErrors, getPackageErrorDeferral } from '../workflow/package-error-deferral.js';
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { getPackageWarningReview } from '../workflow/warning-acceptance.js';
 import {
@@ -157,7 +159,8 @@ export interface AuthoringRouteOptions {
   state?: AuthoringState;
   graph?: AiConstructionTaskGraph;
   orchestrator?: Pick<AiConstructionOrchestrator,
-    'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'>;
+    'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'
+    | 'deferKnowledgeErrors'>;
   packages?: Pick<PackageArtifactStore,
     'current' | 'readPackageFiles' | 'saveFiles' | 'saveCurrentAsPackageVersion'>;
   flowchartDrafts?: FlowchartDraftStore;
@@ -261,37 +264,6 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         },
       } as AiConstructionTaskGraphCommand
       : rawCommand;
-    if (command.type === 'confirm_milestone' && command.milestoneId === 'construction_completed') {
-      const currentPackage = await packages.current(project.id);
-      if (!currentPackage) {
-        return reply.code(409).send({
-          error: '当前项目没有可确认的知识包修订',
-          code: 'PACKAGE_NOT_FOUND',
-        });
-      }
-      const check = getCheck(project.id);
-      if (!check || check.revision !== currentPackage.revision.oid) {
-        return reply.code(409).send({
-          error: '请先对当前知识包修订重新运行体检',
-          code: 'PACKAGE_CHECK_OUTDATED',
-        });
-      }
-      const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
-      if (errorCount > 0) {
-        return reply.code(409).send({
-          error: `知识包检查还有 ${errorCount} 个错误，请修复后再完成建模`,
-          code: 'PACKAGE_CHECK_FAILED',
-        });
-      }
-      const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
-      if (!warningReview.readyForValidation) {
-        return reply.code(409).send({
-          error: `还有 ${warningReview.pendingValidation} 条非阻断警告尚未查看影响并接受`,
-          code: 'PACKAGE_WARNINGS_UNREVIEWED',
-          warningReview,
-        });
-      }
-    }
     try {
       return await runWithProjectLease(leases, {
         projectId: project.id,
@@ -326,9 +298,20 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
           if (errorCount > 0) {
+            const deferral = getPackageErrorDeferral(project.id, currentPackage.revision.oid);
+            if (!deferral?.valid) {
+              return reply.code(409).send({
+                error: `知识包检查还有 ${errorCount} 个错误，请修复或明确暂缓后再完成建模`,
+                code: 'PACKAGE_CHECK_FAILED',
+              });
+            }
+          }
+          const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
+          if (!warningReview.readyForValidation) {
             return reply.code(409).send({
-              error: `知识包检查还有 ${errorCount} 个错误，请修复后再完成建模`,
-              code: 'PACKAGE_CHECK_FAILED',
+              error: `还有 ${warningReview.pendingValidation} 条非阻断警告尚未查看影响并接受`,
+              code: 'PACKAGE_WARNINGS_UNREVIEWED',
+              warningReview,
             });
           }
           const evidenceProblems = findKnowledgeEvidenceProblems(currentPackage.spec);
@@ -523,6 +506,69 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
       }, () => controlledRepair.run(project));
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/ai-construction/knowledge/defer-errors', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const reason = String((req.body as any)?.reason ?? '').trim();
+    if (reason.length < 4 || reason.length > 2_000) {
+      return reply.code(400).send({ error: '请填写有效的暂缓原因', code: 'INVALID_INPUT' });
+    }
+    try {
+      return await runWithProjectLease(leases, {
+        projectId: project.id,
+        operation: '暂缓知识包阻断错误',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+      }, async () => {
+        const currentPackage = await packages.current(project.id);
+        if (!currentPackage) {
+          return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+        }
+        const check = getCheck(project.id);
+        if (!check || check.revision !== currentPackage.revision.oid) {
+          return reply.code(409).send({
+            error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
+            code: 'PACKAGE_CHECK_REQUIRED',
+          });
+        }
+        const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
+        if (!errorCount) {
+          return reply.code(409).send({ error: '当前知识包没有阻断错误', code: 'NO_BLOCKING_ERRORS' });
+        }
+        const db = getDb();
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          const result = orchestrator.deferKnowledgeErrors(project.id, {
+            packageRevisionOid: currentPackage.revision.oid,
+            errorCount,
+            reason,
+            actor: req.user!.username,
+          });
+          const deferral = deferPackageErrors({
+            projectId: project.id,
+            revision: currentPackage.revision.oid,
+            reason,
+            actor: req.user!.username,
+            actorRole: 'project_owner',
+          });
+          state.apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'package.validation.errors.deferred',
+            payload: { revision: deferral.revision, errorCount: deferral.errorCount },
+          });
+          db.exec('COMMIT');
+          return { ...result, deferral };
+        } catch (error) {
+          if (db.isTransaction) db.exec('ROLLBACK');
+          throw error;
+        }
+      });
     } catch (error) {
       return sendStateError(reply, error);
     }

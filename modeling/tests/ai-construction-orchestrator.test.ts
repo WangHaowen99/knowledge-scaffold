@@ -109,6 +109,98 @@ test('新项目确认建模目标后才规划资料分析', () => {
   ]);
 });
 
+test('用户显式暂缓阻断错误后关闭修复待办并允许确认知识结构', () => {
+  const project = createMaterialFirstProject('暂缓错误进入验证');
+  const graph = new AiConstructionTaskGraph(getDb());
+  const state = new AuthoringState(getDb());
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb(), graph, state });
+  let snapshot = graph.snapshot(project.id)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: snapshot.tasks[0].id, outputRevisionOid: 'revision-current',
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'materials_ready', packageRevisionOid: 'revision-current',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  for (const [milestoneId, kind] of [
+    ['goal_confirmed', 'modeling_brief'],
+    ['process_confirmed', 'process_review'],
+  ] as const) {
+    snapshot = graph.apply(project.id, {
+      type: 'plan_task', expectedRevision: snapshot.revision,
+      task: { kind, milestoneId, title: kind, goal: kind, required: true, dependsOn: [] },
+    });
+    const task = snapshot.tasks.at(-1)!;
+    snapshot = graph.apply(project.id, {
+      type: 'complete_task', expectedRevision: snapshot.revision,
+      taskId: task.id, outputRevisionOid: 'revision-current',
+    });
+    snapshot = graph.apply(project.id, {
+      type: 'confirm_milestone', expectedRevision: snapshot.revision,
+      milestoneId, packageRevisionOid: 'revision-current',
+      actor: { username: 'alice', role: 'project_owner' },
+    });
+  }
+  for (const kind of ['operation_extraction', 'knowledge_extraction', 'package_validation'] as const) {
+    snapshot = graph.apply(project.id, {
+      type: 'plan_task', expectedRevision: snapshot.revision,
+      task: { kind, milestoneId: 'knowledge_confirmed', title: kind, goal: kind, required: true, dependsOn: [] },
+    });
+  }
+  for (const kind of ['operation_extraction', 'knowledge_extraction'] as const) {
+    const task = snapshot.tasks.find((item) => item.kind === kind)!;
+    snapshot = graph.apply(project.id, {
+      type: 'complete_task', expectedRevision: snapshot.revision,
+      taskId: task.id, outputRevisionOid: 'revision-current',
+    });
+  }
+  const validationTask = snapshot.tasks.find((item) => item.kind === 'package_validation')!;
+  snapshot = graph.apply(project.id, {
+    type: 'start_task', expectedRevision: snapshot.revision, taskId: validationTask.id,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'fail_task', expectedRevision: snapshot.revision, taskId: validationTask.id,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'package_repair', milestoneId: 'knowledge_confirmed', title: '受控修复', goal: '修复阻断错误',
+      required: false, dependsOn: [],
+    },
+  });
+  const repairTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'start_task', expectedRevision: snapshot.revision, taskId: repairTask.id,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'wait_for_user', expectedRevision: snapshot.revision, taskId: repairTask.id,
+  });
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '落实专家修复决策',
+    baseRevision: 'revision-current', state: { purpose: 'controlled_repair', taskId: repairTask.id },
+  });
+  assert.equal(run.kind, 'run');
+  if (run.kind !== 'run') throw new Error('未创建受控修复运行');
+  state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: run.run.id, type: 'change_plan',
+    baseRevision: 'revision-current', payload: { purpose: 'controlled_repair' },
+  });
+
+  const deferred = orchestrator.deferKnowledgeErrors(project.id, {
+    packageRevisionOid: 'revision-current', errorCount: 2,
+    reason: '先完成验证闭环，再依据真实评测统一修复', actor: 'alice',
+  });
+
+  assert.equal(deferred.aiConstruction.tasks.find((item) => item.kind === 'package_validation')?.status, 'completed');
+  assert.equal(deferred.aiConstruction.tasks.find((item) => item.kind === 'package_repair')?.status, 'skipped');
+  assert.equal(state.snapshot(project.id).pendingInteractions.length, 0);
+  assert.deepEqual((deferred.message.blocks.at(-1) as any).actions.map((item: any) => item.id), [
+    'confirm_knowledge', 'view_validation',
+  ]);
+});
+
 test('新项目只接受携带当前已确认目标的资料分析结果', () => {
   const project = createProject({ owner: 'alice', name: '资料分析目标门禁' });
   const graph = new AiConstructionTaskGraph(getDb());
@@ -613,7 +705,7 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     (item) => item.kind === 'package_validation',
   )?.status, 'failed');
   assert.deepEqual((rejected.message.blocks[3] as any).actions.map((item: any) => item.id), [
-    'generate_knowledge_structure', 'view_validation',
+    'generate_knowledge_structure', 'defer_validation_errors', 'view_validation',
   ]);
   const validationRetried = orchestrator.startKnowledgeStructure(project.id);
   assert.equal(validationRetried.aiConstruction.tasks.find(
