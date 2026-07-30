@@ -36,6 +36,8 @@ const evaluationDatabaseQueries: string[] = [];
 const projectDatabaseAdminConnections: any[] = [];
 const projectDatabaseAdminQueries: string[] = [];
 let projectDatabaseExists = false;
+let packageChatPlanTask: (() => Promise<any>) | null = null;
+let packageChatApplyTask: (() => Promise<any>) | null = null;
 
 before(async () => {
   const pair = await generateKeyPair('RS256');
@@ -113,6 +115,14 @@ before(async () => {
         nodeCount: plan.nodeCount,
         relationshipCount: plan.relationshipCount,
       }),
+    },
+    packageChatPlan: async () => {
+      if (!packageChatPlanTask) throw new Error('测试未配置包修缮计划任务');
+      return packageChatPlanTask();
+    },
+    packageChatApply: async () => {
+      if (!packageChatApplyTask) throw new Error('测试未配置包修缮应用任务');
+      return packageChatApplyTask();
     },
   });
   await app.ready();
@@ -348,6 +358,434 @@ test('项目删除 API：要求明确确认、校验 owner、阻止运行任务�
   assert.equal(response.json().deleted, projectId);
   const missing = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
   assert.equal(missing.statusCode, 404);
+});
+
+test('人工编辑草稿 API：创建恢复、文件保存、revision 冲突、撤销与放弃', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '人工编辑草稿项目' },
+  });
+  const projectId = created.json().project.id;
+
+  let response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_DRAFT_BASE_VERSION_REQUIRED');
+
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'draft-route-package', name: '草稿路由包', description: '草稿路由包', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'Order', title: '订单', description: '订单对象', sourceTable: 'Orders',
+      fields: [{ key: 'id', cnName: '订单ID', type: 'string', required: true }],
+    }],
+    operations: [{
+      key: 'query_order', title: '查询订单', description: '查询订单',
+      inputs: [], outputs: [], flow: ['查询 object:Order'], relatedObjects: ['Order'],
+    }],
+  }, { covered: [], uncovered: [] });
+
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  const draft = response.json().draft;
+  assert.equal(response.json().created, true);
+  assert.equal(draft.baseVersion, '1.0.0');
+  assert.equal(draft.revision, 0);
+
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().created, false);
+  assert.equal(response.json().draft.id, draft.id);
+
+  response = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/package/draft/file?path=${encodeURIComponent('operations/query_order.md')}`,
+    headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  const baseContent = response.json().file.baseContent;
+  const baseContentHash = response.json().file.contentHash;
+  const editedContent = baseContent.replace('查询订单', '查询最新订单');
+
+  response = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/package/draft/file`, headers,
+    payload: { path: 'operations/query_order.md', content: editedContent, revision: 0 },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().draft.revision, 1);
+  assert.equal(response.json().draft.changedFileCount, 1);
+  assert.equal(response.json().file.content, editedContent);
+  const editedContentHash = response.json().file.contentHash;
+
+  response = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/package/draft/file`, headers,
+    payload: {
+      path: 'operations/query_order.md', content: `${editedContent}\n过期覆盖`, revision: 0,
+      expectedContentHash: baseContentHash,
+    },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_DRAFT_REVISION_CONFLICT');
+  assert.equal(response.json().currentRevision, 1);
+  assert.equal(response.json().conflictScope, 'file');
+
+  response = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/package/draft/file`, headers,
+    payload: {
+      path: 'operations/query_order.md', content: `${editedContent}\n旧草稿覆盖`, revision: 1,
+      expectedContentHash: editedContentHash,
+      draftId: 'pd_replaced_draft',
+    },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_DRAFT_REVISION_CONFLICT');
+  assert.equal(response.json().conflictScope, 'draft');
+  assert.equal(response.json().currentDraftId, draft.id);
+
+  response = await app.inject({
+    method: 'DELETE',
+    url: `/api/projects/${projectId}/package/draft/file?path=${encodeURIComponent('operations/query_order.md')}&revision=1`,
+    headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().draft.revision, 2);
+  assert.equal(response.json().draft.changedFileCount, 0);
+  assert.equal(response.json().file.changed, false);
+
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${projectId}/package/draft`, headers,
+    payload: { revision: 2 },
+  });
+  assert.equal(response.statusCode, 400, response.body);
+
+  response = await app.inject({
+    method: 'DELETE', url: `/api/projects/${projectId}/package/draft`, headers,
+    payload: { confirmed: true, revision: 2 },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().discarded.status, 'discarded');
+  assert.equal(response.json().discarded.revision, 3);
+
+  response = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().draft, null);
+
+  const { createProject } = await import('../src/projects/repo.js');
+  const foreignProject = createProject({ owner: 'bob', name: '其他用户草稿项目' });
+  response = await app.inject({
+    method: 'GET', url: `/api/projects/${foreignProject.id}/package/draft`, headers,
+  });
+  assert.equal(response.statusCode, 404, response.body);
+});
+
+test('人工编辑草稿发布 API：确认后一次生成正式版本并恢复读取与导出', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '人工草稿发布项目' },
+  });
+  const projectId = created.json().project.id;
+  const [{ insertPackageVersion }, { insertDocument }] = await Promise.all([
+    import('../src/workflow/m2-repo.js'),
+    import('../src/documents/repo.js'),
+  ]);
+  insertDocument({
+    projectId,
+    filename: 'orders.xlsx',
+    kind: 'excel',
+    parseStatus: 'parsed',
+    tables: [{
+      name: 'Orders', rowCount: 1,
+      fields: [{
+        name: 'order_id', inferredType: 'string', sampleValues: ['O-1'], distinctRatio: 1,
+      }],
+    }],
+  });
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'draft-publish-route', name: '人工草稿发布项目', description: '人工草稿发布项目', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'data',
+    objects: [{
+      key: 'Order', title: '订单', description: '用于查询订单详情的业务对象', sourceTable: 'Orders', primaryKey: ['id'],
+      fields: [{ key: 'id', cnName: '订单ID', type: 'string', required: true, sourceColumn: 'order_id' }],
+    }],
+    operations: [{
+      key: 'query_order', title: '查询订单', description: '根据订单ID查询订单详情',
+      inputs: [{ param: 'id', cnName: '订单ID', type: 'string', required: true }],
+      outputs: [{ field: 'order', cnName: '订单', type: 'object' }],
+      flow: ['根据 id 查询 object:Order'], relatedObjects: ['Order'],
+    }],
+  }, { covered: [], uncovered: [] });
+
+  let response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  response = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/package/draft/file?path=${encodeURIComponent('operations/query_order.md')}`,
+    headers,
+  });
+  const edited = response.json().file.content.replaceAll('根据订单ID查询订单详情', '根据订单编号查询最新订单详情');
+  response = await app.inject({
+    method: 'PUT', url: `/api/projects/${projectId}/package/draft/file`, headers,
+    payload: { path: 'operations/query_order.md', content: edited, revision: 0 },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft/publish`, headers,
+    payload: { revision: 1 },
+  });
+  assert.equal(response.statusCode, 400, response.body);
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft/publish`, headers,
+    payload: { confirmed: true, revision: 0 },
+  });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_DRAFT_REVISION_CONFLICT');
+  response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft/publish`, headers,
+    payload: { confirmed: true, revision: 1, summary: '修订订单查询说明' },
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  assert.equal(response.json().published.version, '1.1.0');
+  assert.equal(response.json().published.draft.status, 'published');
+  assert.deepEqual(response.json().published.changedFiles, ['operations/query_order.md']);
+
+  response = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(response.json().draft, null);
+  response = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${projectId}/package/file?version=1.1.0&path=${encodeURIComponent('operations/query_order.md')}`,
+    headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.match(response.json().content, /根据订单编号查询最新订单详情/);
+  response = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/export?version=1.1.0`, headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers['content-type'], 'application/zip');
+});
+
+test('活动人工草稿统一门禁：修缮、重新生成和知识消费入口均要求先发布或放弃', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '人工草稿统一门禁项目' },
+  });
+  const projectId = created.json().project.id;
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'draft-gate-route', name: '人工草稿统一门禁项目', description: '人工草稿统一门禁项目', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'data', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+  const draftResponse = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+  });
+  assert.equal(draftResponse.statusCode, 201, draftResponse.body);
+
+  const gatedRequests: Array<{ method: any; url: string; payload?: unknown; operation: string }> = [
+    { method: 'POST', url: `/api/projects/${projectId}/generate`, payload: {}, operation: 'generate' },
+    { method: 'POST', url: `/api/projects/${projectId}/package/chat`, payload: {}, operation: 'package-chat' },
+    { method: 'POST', url: `/api/projects/${projectId}/package/chat/apply`, payload: {}, operation: 'package-chat-apply' },
+    { method: 'POST', url: `/api/projects/${projectId}/package/check`, payload: {}, operation: 'package-check' },
+    { method: 'GET', url: `/api/projects/${projectId}/package/export`, operation: 'package-export' },
+    { method: 'PUT', url: `/api/projects/${projectId}/data-source`, payload: {}, operation: 'data-source-update' },
+    { method: 'POST', url: `/api/projects/${projectId}/graph-import/uploads`, payload: {}, operation: 'graph-import-upload' },
+    { method: 'POST', url: `/api/projects/${projectId}/graph-import/uploads/missing/validate`, payload: {}, operation: 'graph-import-validate' },
+    { method: 'POST', url: `/api/projects/${projectId}/graph-import/uploads/missing/execute`, payload: {}, operation: 'graph-import-execute' },
+    { method: 'POST', url: `/api/projects/${projectId}/evaluate`, payload: {}, operation: 'evaluate' },
+    { method: 'POST', url: `/api/projects/${projectId}/optimize/propose`, payload: {}, operation: 'optimize-propose' },
+    { method: 'POST', url: `/api/projects/${projectId}/optimize/apply`, payload: {}, operation: 'optimize-apply' },
+  ];
+  for (const request of gatedRequests) {
+    const response = await app.inject({
+      method: request.method,
+      url: request.url,
+      headers,
+      payload: request.payload,
+    });
+    assert.equal(response.statusCode, 409, `${request.operation}: ${response.body}`);
+    const body = response.json();
+    assert.equal(body.code, 'PACKAGE_DRAFT_REQUIRES_PUBLISH');
+    assert.equal(body.operation, request.operation);
+    assert.equal(body.baseVersion, '1.0.0');
+    assert.equal(body.revision, 0);
+    assert.equal(body.changedFileCount, 0);
+    assert.deepEqual(body.changedFiles, []);
+  }
+
+  const discarded = await app.inject({
+    method: 'DELETE', url: `/api/projects/${projectId}/package/draft`, headers,
+    payload: { confirmed: true, revision: 0 },
+  });
+  assert.equal(discarded.statusCode, 200, discarded.body);
+  const exportResponse = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/export?version=1.0.0`, headers,
+  });
+  assert.equal(exportResponse.statusCode, 200, exportResponse.body);
+  const generateResponse = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/generate`, headers, payload: {},
+  });
+  assert.equal(generateResponse.statusCode, 400, generateResponse.body);
+  assert.match(generateResponse.json().error, /数据源/);
+});
+
+test('包修缮运行期间人工草稿只读，所有写接口统一返回 409', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '包修缮期间禁止人工编辑项目' },
+  });
+  const projectId = created.json().project.id;
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'repair-edit-gate', name: '包修缮期间禁止人工编辑', description: '包修缮期间禁止人工编辑', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'data', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+
+  let startPlan!: () => void;
+  let releasePlan!: () => void;
+  const planStarted = new Promise<void>((resolve) => { startPlan = resolve; });
+  const planBlocked = new Promise<void>((resolve) => { releasePlan = resolve; });
+  packageChatPlanTask = async () => {
+    startPlan();
+    await planBlocked;
+    return { reply: '修缮影响分析完成' };
+  };
+  const planRequest = app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/chat`, headers,
+    payload: { message: '检查需要修缮的内容', history: [] },
+  });
+  await planStarted;
+  try {
+    const readablePackage = await app.inject({
+      method: 'GET', url: `/api/projects/${projectId}/package`, headers,
+    });
+    assert.equal(readablePackage.statusCode, 200, readablePackage.body);
+    const readableDraft = await app.inject({
+      method: 'GET', url: `/api/projects/${projectId}/package/draft`, headers,
+    });
+    assert.equal(readableDraft.statusCode, 200, readableDraft.body);
+    assert.equal(readableDraft.json().draft, null);
+
+    const blockedRequests: Array<{ method: any; url: string; payload?: unknown }> = [
+      { method: 'POST', url: `/api/projects/${projectId}/package/draft`, payload: {} },
+      {
+        method: 'PUT', url: `/api/projects/${projectId}/package/draft/file`,
+        payload: { path: 'operations/query_order.md', content: '修改内容', revision: 0 },
+      },
+      {
+        method: 'DELETE',
+        url: `/api/projects/${projectId}/package/draft/file?path=${encodeURIComponent('operations/query_order.md')}&revision=0`,
+      },
+      {
+        method: 'DELETE', url: `/api/projects/${projectId}/package/draft`,
+        payload: { confirmed: true, revision: 0 },
+      },
+      {
+        method: 'POST', url: `/api/projects/${projectId}/package/draft/publish`,
+        payload: { confirmed: true, revision: 0 },
+      },
+    ];
+    for (const request of blockedRequests) {
+      const response = await app.inject({ ...request, headers } as any);
+      assert.equal(response.statusCode, 409, response.body);
+      assert.equal(response.json().code, 'PACKAGE_REPAIR_IN_PROGRESS');
+      assert.equal(response.json().error, '知识包修缮正在进行中，暂不能人工编辑');
+      assert.equal(response.json().operation, 'package-chat');
+    }
+  } finally {
+    releasePlan();
+    const response = await planRequest;
+    packageChatPlanTask = null;
+    assert.equal(response.statusCode, 200, response.body);
+  }
+
+  let startApply!: () => void;
+  let releaseApply!: () => void;
+  const applyStarted = new Promise<void>((resolve) => { startApply = resolve; });
+  const applyBlocked = new Promise<void>((resolve) => { releaseApply = resolve; });
+  packageChatApplyTask = async () => {
+    startApply();
+    await applyBlocked;
+    return { reply: '修缮计划应用完成', version: '1.1.0' };
+  };
+  const applyRequest = app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/chat/apply`, headers,
+    payload: {
+      message: '应用修缮计划', history: [],
+      plan: {
+        summary: '测试修缮计划',
+        changes: [{ targetKind: 'operation', targetKey: 'query_order', action: 'modify', description: '测试' }],
+      },
+    },
+  });
+  await applyStarted;
+  try {
+    const response = await app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+      payload: {},
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().code, 'PACKAGE_REPAIR_IN_PROGRESS');
+    assert.equal(response.json().operation, 'package-chat-apply');
+  } finally {
+    releaseApply();
+    const response = await applyRequest;
+    packageChatApplyTask = null;
+    assert.equal(response.statusCode, 200, response.body);
+  }
+
+  const draftAfterRepair = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
+    payload: {},
+  });
+  assert.equal(draftAfterRepair.statusCode, 201, draftAfterRepair.body);
+});
+
+test('旧版单文件 override 写接口已永久停用且不会落库', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '旧 override 接口停用项目' },
+  });
+  const projectId = created.json().project.id;
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  const { getDb } = await import('../src/db/index.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'override-removed', name: '旧接口停用', description: '旧接口停用', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'data', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+
+  for (const request of [
+    { method: 'PUT', url: `/api/projects/${projectId}/package/file`, payload: { path: 'index.md', content: 'changed' } },
+    { method: 'DELETE', url: `/api/projects/${projectId}/package/file?path=index.md` },
+  ]) {
+    const response = await app.inject({ ...request, headers } as any);
+    assert.equal(response.statusCode, 410, response.body);
+    assert.equal(response.json().code, 'PACKAGE_FILE_OVERRIDE_REMOVED');
+  }
+  assert.equal((getDb().prepare(
+    'SELECT COUNT(*) AS count FROM package_overrides WHERE project_id = ?',
+  ).get(projectId) as { count: number }).count, 0);
 });
 
 test('领域问题 API：用户可新增并选中自定义问题，生成前必须选择数据源', async () => {
