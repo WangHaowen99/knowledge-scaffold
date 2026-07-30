@@ -336,6 +336,35 @@ CREATE TABLE IF NOT EXISTS artifact_commit_intents (
   created_at        TEXT NOT NULL
 );
 
+-- 尚未成为当前确认版本的修改提案。内容以不可变变更组保存，接受时才写入 Git。
+CREATE TABLE IF NOT EXISTS artifact_candidate_revisions (
+  id                      TEXT PRIMARY KEY,
+  project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  base_revision_oid       TEXT NOT NULL,
+  status                  TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN (
+                            'pending', 'accepted', 'revision_requested', 'rejected', 'superseded'
+                          )),
+  cause                   TEXT NOT NULL,
+  summary                 TEXT NOT NULL,
+  actor_kind              TEXT NOT NULL,
+  actor_name              TEXT NOT NULL,
+  groups_json             TEXT NOT NULL,
+  selected_group_ids_json TEXT NOT NULL DEFAULT '[]',
+  accepted_revision_oid   TEXT,
+  decision_cause          TEXT,
+  decision_summary        TEXT,
+  decision_actor_kind     TEXT,
+  decision_actor_name     TEXT,
+  decision_note           TEXT,
+  created_at              TEXT NOT NULL,
+  decided_at              TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_candidates_project
+  ON artifact_candidate_revisions(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifact_candidates_pending
+  ON artifact_candidate_revisions(project_id, status, created_at DESC);
+
 -- 人工编辑草稿。草稿只绑定一个不可变的基线版本；同一项目同一时间最多存在一个活动草稿。
 CREATE TABLE IF NOT EXISTS package_drafts (
   id                      TEXT PRIMARY KEY,
@@ -496,8 +525,35 @@ CREATE TABLE IF NOT EXISTS package_checks (
   project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
   version       TEXT NOT NULL,       -- 体检时的包版本
   findings_json TEXT NOT NULL,
+  artifact_revision_oid TEXT,        -- 体检时使用的 Git 修订
   created_at    TEXT NOT NULL
 );
+
+-- 受控修复逐次审计。root_revision_oid 把自动重试绑定到同一修订链；
+-- 用户或其他流程产生的新修订不会沿用上一条链的重试额度。
+CREATE TABLE IF NOT EXISTS package_repair_attempts (
+  id                   TEXT PRIMARY KEY,
+  project_id           TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  root_revision_oid    TEXT NOT NULL,
+  input_revision_oid   TEXT NOT NULL,
+  output_revision_oid  TEXT,
+  authority            TEXT NOT NULL CHECK (
+                         authority IN ('automatic', 'approval_required', 'expert_decision')
+                       ),
+  status               TEXT NOT NULL CHECK (
+                         status IN ('running', 'completed', 'waiting_user', 'stopped', 'failed')
+                       ),
+  findings_before_json TEXT NOT NULL DEFAULT '[]',
+  findings_after_json  TEXT NOT NULL DEFAULT '[]',
+  actions_json         TEXT NOT NULL DEFAULT '[]',
+  error                TEXT,
+  created_at           TEXT NOT NULL,
+  completed_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_package_repair_attempts_chain
+  ON package_repair_attempts(project_id, root_revision_oid, created_at);
+CREATE INDEX IF NOT EXISTS idx_package_repair_attempts_output
+  ON package_repair_attempts(project_id, output_revision_oid);
 
 -- ---- 旧版包文件覆盖（仅作为升级迁移源；运行时不再读写） ----
 CREATE TABLE IF NOT EXISTS package_overrides (

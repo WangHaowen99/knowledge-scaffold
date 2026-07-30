@@ -359,12 +359,31 @@ export async function runSemanticCheck(project: Project, spec: PackageSpec): Pro
 }
 
 // ---- 结果存取（最近一次） ----
-export function saveCheck(projectId: string, version: string, findings: CheckFinding[]): void {
-  getDb().prepare(`INSERT INTO package_checks (project_id, version, findings_json, created_at) VALUES (?,?,?,?)
-    ON CONFLICT(project_id) DO UPDATE SET version = excluded.version, findings_json = excluded.findings_json, created_at = excluded.created_at`)
-    .run(projectId, version, JSON.stringify(findings), nowIso());
+export function saveCheck(
+  projectId: string,
+  version: string,
+  findings: CheckFinding[],
+  revision?: string,
+): void {
+  getDb().prepare(`INSERT INTO package_checks
+    (project_id, version, findings_json, artifact_revision_oid, created_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(project_id) DO UPDATE SET version = excluded.version,
+      findings_json = excluded.findings_json,
+      artifact_revision_oid = excluded.artifact_revision_oid,
+      created_at = excluded.created_at`)
+    .run(projectId, version, JSON.stringify(findings), revision ?? null, nowIso());
 }
-export function getCheck(projectId: string): { version: string; findings: CheckFinding[]; createdAt: string } | null {
+export function getCheck(projectId: string): {
+  version: string;
+  revision?: string;
+  findings: CheckFinding[];
+  createdAt: string;
+} | null {
   const r = getDb().prepare('SELECT * FROM package_checks WHERE project_id = ?').get(projectId) as any;
-  return r ? { version: r.version, findings: JSON.parse(r.findings_json), createdAt: r.created_at } : null;
+  return r ? {
+    version: r.version,
+    revision: r.artifact_revision_oid ?? undefined,
+    findings: JSON.parse(r.findings_json),
+    createdAt: r.created_at,
+  } : null;
 }
