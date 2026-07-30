@@ -10,10 +10,12 @@ from agent.evolution import build_near_point_block
 from utils.logging import get_logger
 from ontology.ontology_catalog import (
     build_root_payload,
+    find_script_entry,
     find_markdown_file,
     format_markdown_payload_compact,
     format_root_payload_compact,
     get_ontology_manifest,
+    load_script_catalog,
     read_required_text,
     resolve_object_reference,
 )
@@ -52,7 +54,7 @@ ONTOLOGY_CONTEXT_TOOL_SCHEMA: Dict[str, Any] = {
                         "The ontology resource to load: root returns ontology metadata and catalogs; "
                         "operation returns operation content by key; object returns object/entity definition by key; "
                         "rule returns rule content by key; metric returns metric content by key; "
-                        "script returns registered script description by key."
+                        "script returns registered script description by key or bound operation key."
                     ),
                 },
                 "key": {
@@ -161,11 +163,12 @@ def _handle_ontology_context_result(
             key_field="metric_key",
         )
     if normalized_resource == "script":
+        resolved_key = _resolve_script_resource_key(ontology_dir, key)
         return _build_markdown_result(
             ontology_id=ontology.id,
             ontology_dir=ontology_dir,
             directory=ontology_dir / "scripts",
-            key=key,
+            key=resolved_key,
             resource_name="script",
             key_field="script_key",
         )
@@ -174,6 +177,13 @@ def _handle_ontology_context_result(
             "Error: Unsupported ontology_context resource '{}'. Use root, operation, object, rule, metric, or script."
         ).format(normalized_resource)
     )
+
+
+def _resolve_script_resource_key(ontology_dir: Path, key: str) -> str:
+    entry = find_script_entry(load_script_catalog(ontology_dir), key)
+    if not entry:
+        return str(key or "").strip()
+    return str(entry.get("script_key") or key or "").strip()
 
 
 def _build_root_payload(*, ontology: Any, ontology_dir: Path) -> str:

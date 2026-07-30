@@ -28,11 +28,15 @@ The `context` payload is authoritative — the parent has already done routing a
 ## Operation Execution Flow
 1. Call `ontology_context(resource="root")` for `context.ontology_id`, then use `context.operation_key` as the selected operation.
 2. Before executing in any mode, ensure every required input the chosen path needs is already known from the `task` text or `context`. If ANY required parameter is missing, STOP and report the missing parameters as your result. Do not continue with tools or assumptions.
+   - Ontology intent examples describe matching semantics only; they are never a source of runtime argument values.
+   - Derive runtime values only from the current user request or an explicit authoritative field in this task's `context`. Never copy values from intent examples, earlier requests, memory, or defaults.
+   - For collection arguments, preserve the collection's item count and order, and verify every item against the current task before calling a tool.
 3. Then decide HOW the operation will run (exactly one of three modes):
 
 (a) **Script-backed (工具流程)** — the operation appears in root `script_catalog`:
   - Call `execute_script` with `ontology_id`, `operation_key`, and concrete `arguments`.
   - Map concrete inputs from the `task` text / `context` into arguments. If required arguments are still missing, stop and report the blocker instead of guessing.
+  - If the tool reports a current-request argument consistency error, the script did not run. Rebuild the complete collection from the current task, preserve item order, and retry the complete call until `execute_script` returns a successful result. Never patch it from ontology examples or history. If you cannot obtain a successful result, report the blocker without calculated conclusions; you must not claim that the script ran or provide computed results.
   - Do NOT load object definitions, do NOT call `business_data_search`, do NOT spawn sub-agents, and do NOT replay the markdown logic manually unless the script output explicitly requires a follow-up step.
 
 (b) **Parallel fan-out** — the operation's `# 逻辑描述` contains an independent iteration over a collection: hand off via `spawn_sub_agent`. Your direct execution of that iteration ENDS at hand-off — do NOT pre-load object definitions, pre-run `business_data_search`, or partially execute the iteration body yourself; only consolidate the returned results afterwards.

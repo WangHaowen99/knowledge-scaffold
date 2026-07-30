@@ -559,6 +559,8 @@ def parse_markdown_table(markdown: str) -> List[Dict[str, str]]:
         if not headers:
             headers = cells
             continue
+        if len(cells) > len(headers):
+            cells = cells[:len(headers) - 1] + [" | ".join(cells[len(headers) - 1:])]
         if len(cells) != len(headers):
             continue
         rows.append({headers[index]: cells[index] for index in range(len(headers))})
@@ -1910,6 +1912,7 @@ def _parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]
         description = _first_row_value(row, "说明", "描述", "description", "Description")
         param_type = _first_row_value(row, "类型", "type", "Type") or "string"
         required_text = _first_row_value(row, "必填", "required", "Required")
+        default_text = _first_row_value(row, "默认值", "默认", "default", "Default")
         aliases_text = _first_row_value(row, "别名", "aliases", "Aliases")
         action_text = _first_row_value(row, "Action", "action")
         runtime_text = _first_row_value(row, "runtime", "Runtime")
@@ -1926,6 +1929,8 @@ def _parse_script_parameters_from_markdown(markdown: str) -> List[Dict[str, Any]
         }
         if description:
             parameter["description"] = description
+        if default_text:
+            parameter["default"] = _parse_script_parameter_default(default_text)
         aliases = _split_aliases(aliases_text)
         if aliases:
             parameter["aliases"] = aliases
@@ -1987,6 +1992,8 @@ def _normalize_script_parameters(value: Any) -> List[Dict[str, Any]]:
         }
         if description:
             parameter["description"] = description
+        if "default" in item and item.get("default") is not None:
+            parameter["default"] = item.get("default")
         aliases = item.get("aliases")
         if isinstance(aliases, list):
             clean_aliases = [
@@ -2036,6 +2043,8 @@ def _public_script_parameters(parameters: Any) -> List[Dict[str, Any]]:
         description = str(item.get("description") or "").strip()
         if description:
             parameter["description"] = description
+        if "default" in item and item.get("default") is not None:
+            parameter["default"] = item.get("default")
         aliases = item.get("aliases")
         if isinstance(aliases, list):
             clean_aliases = [
@@ -2060,6 +2069,14 @@ def _normalize_boolean_action(value: Any) -> str:
 def _name_from_flag(value: str) -> str:
     text = str(value or "").strip().lstrip("-")
     return text.replace("-", "_") if text else ""
+
+
+def _parse_script_parameter_default(value: str) -> Any:
+    text = str(value or "").strip()
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return text
 
 
 def _as_bool(value: Any, *, default: bool) -> bool:
@@ -2251,9 +2268,17 @@ def _format_script_parameter(parameter: Dict[str, Any]) -> str:
     if parameter.get("multiple"):
         param_type = "{}[]".format(param_type)
     description = _compact_inline_text(parameter.get("description"))
+    default_text = ""
+    if "default" in parameter and parameter.get("default") is not None:
+        default_value = parameter.get("default")
+        if isinstance(default_value, str):
+            default_text = default_value
+        else:
+            default_text = json.dumps(default_value, ensure_ascii=False, separators=(",", ":"))
+    suffix = " default={}".format(default_text) if default_text else ""
     if description and description != name:
-        return "{}={} {} {}".format(name, description, required, param_type)
-    return "{} {} {}".format(name, required, param_type)
+        return "{}={} {} {}{}".format(name, description, required, param_type, suffix)
+    return "{} {} {}{}".format(name, required, param_type, suffix)
 
 
 def _catalog_columns(rows: List[Dict[str, Any]]) -> List[str]:

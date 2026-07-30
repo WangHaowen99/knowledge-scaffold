@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -49,6 +50,9 @@ logger = get_logger("tools.execute_script")
 
 # backend/agentic/tools/execute_script.py -> parents[2] == backend/
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+LOG_ARG_PREVIEW_LIMIT = 8
+LOG_OUTPUT_PREVIEW_LIMIT = 240
+MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION = 4
 
 # Linux ARG_MAX is typically 2 MB. When env + cmdline exceeds this,
 # we offload CLI args to a temp file to bypass the kernel limit.
@@ -77,6 +81,8 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
         "description": (
             "Execute the maintained script implementation for an ontology operation. "
             "Use this only when the operation appears in the ontology root `script_catalog`. "
+            "A successful result is authoritative: reuse it instead of rerunning the same "
+            "operation to change rounding, display precision, or informational fields. "
             "If required script arguments are unknown, stop and report the missing "
             "parameters instead of reading object definitions or manually replaying a "
             "script-backed operation."
@@ -99,8 +105,10 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
                     "description": (
                         "Concrete operation input values keyed by the parameter names from "
                         "`script_catalog.parameters`. Required, optional, and multiple-value "
-                        "parameters are declared in that catalog. For `multiple: true` "
-                        "parameters, pass an array of values."
+                        "parameters are declared in that catalog; omitted parameters with a "
+                        "declared `default` use that value. For `multiple: true` "
+                        "parameters, pass an array of values. Runtime values must come "
+                        "from the current user request, not ontology examples or history."
                     ),
                 },
             },
@@ -322,6 +330,76 @@ def _merge_script_parameter_property_schema(
     if descriptions:
         merged["description"] = " / ".join(descriptions)
     return merged
+
+
+def _parse_tool_call_arguments(raw: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return dict(parsed) if isinstance(parsed, Mapping) else None
+
+
+def _is_successful_script_output(content: Any) -> bool:
+    text = str(content or "").strip()
+    if not text or text.lower().startswith("error:"):
+        return False
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return True
+    return not (isinstance(payload, Mapping) and payload.get("error"))
+
+
+def _prior_successful_operation_calls(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    ontology_id: str,
+    operation_key: str,
+    current_tool_call_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    outputs = {
+        str(message.get("tool_call_id") or "").strip(): str(message.get("content") or "")
+        for message in messages
+        if message.get("role") == "tool"
+        and message.get("name") == "execute_script"
+        and str(message.get("tool_call_id") or "").strip()
+    }
+    successful: List[Dict[str, Any]] = []
+    current_id = str(current_tool_call_id or "").strip()
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, Mapping):
+                continue
+            call_id = str(tool_call.get("id") or "").strip()
+            if not call_id or call_id == current_id:
+                continue
+            function = tool_call.get("function")
+            function = function if isinstance(function, Mapping) else tool_call
+            if str(function.get("name") or "").strip() != "execute_script":
+                continue
+            arguments = _parse_tool_call_arguments(function.get("arguments"))
+            if not arguments:
+                continue
+            if str(arguments.get("ontology_id") or "").strip() != ontology_id:
+                continue
+            if str(arguments.get("operation_key") or "").strip() != operation_key:
+                continue
+            output = outputs.get(call_id)
+            if output is None or not _is_successful_script_output(output):
+                continue
+            successful.append({"arguments": arguments, "content": output})
+    return successful
+
+
+def _canonical_tool_arguments(arguments: Mapping[str, Any]) -> str:
+    return json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _format_call_context(
@@ -952,6 +1030,325 @@ def _combine_process_output(*, stdout: str, stderr: str) -> str:
     return ""
 
 
+_REQUEST_ITEM_SPLIT_PATTERN = re.compile(r"[\r\n;；]+")
+_EVIDENCE_NOISE_PATTERN = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def _normalize_argument_evidence(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return _EVIDENCE_NOISE_PATTERN.sub("", normalized)
+
+
+def _flatten_item_evidence(value: Any) -> List[str]:
+    values: List[str] = []
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            values.extend(_flatten_item_evidence(nested))
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            values.extend(_flatten_item_evidence(nested))
+    elif value is not None and not isinstance(value, bool):
+        normalized = _normalize_argument_evidence(value)
+        if len(normalized) >= 2:
+            values.append(normalized)
+    return list(dict.fromkeys(values))
+
+
+def _flatten_item_field_evidence(
+    value: Any,
+    path: str = "",
+) -> List[tuple[str, str]]:
+    fields: List[tuple[str, str]] = []
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            child_path = "{}.{}".format(path, key) if path else str(key)
+            fields.extend(_flatten_item_field_evidence(nested, child_path))
+    elif isinstance(value, (list, tuple)):
+        child_path = "{}[]".format(path) if path else "[]"
+        for nested in value:
+            fields.extend(_flatten_item_field_evidence(nested, child_path))
+    elif value is not None and not isinstance(value, bool):
+        normalized = _normalize_argument_evidence(value)
+        if path and len(normalized) >= 2:
+            fields.append((path, normalized))
+    return list(dict.fromkeys(fields))
+
+
+def _structured_collections(
+    value: Any,
+    path: str = "arguments",
+) -> List[tuple[str, List[Mapping[str, Any]]]]:
+    collections: List[tuple[str, List[Mapping[str, Any]]]] = []
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            child_path = "{}.{}".format(path, key)
+            parsed = nested
+            if isinstance(nested, str) and nested.lstrip().startswith("["):
+                try:
+                    parsed = json.loads(nested)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = nested
+            if (
+                isinstance(parsed, list)
+                and len(parsed) >= 2
+                and all(isinstance(item, Mapping) for item in parsed)
+            ):
+                collections.append((child_path, list(parsed)))
+            else:
+                collections.extend(_structured_collections(parsed, child_path))
+    return collections
+
+
+def _validate_structured_arguments_against_request(
+    arguments: Mapping[str, Any],
+    request_text: str,
+    trusted_tool_evidence: str = "",
+) -> List[str]:
+    """Reject cross-item value pairing when the current request enumerates a collection.
+
+    The check is deliberately conservative: it activates only when multiple scalar
+    values from most items locate a unique request segment. It then verifies fields
+    shared by the collection against each located segment. Collections built from
+    internal data, or requests without item-level evidence, are ignored.
+    """
+    full_request = _normalize_argument_evidence(request_text)
+    if not full_request:
+        return []
+    raw_segments = [
+        part.strip()
+        for part in _REQUEST_ITEM_SPLIT_PATTERN.split(request_text)
+        if _normalize_argument_evidence(part)
+    ]
+    segments = [_normalize_argument_evidence(part) for part in raw_segments]
+    if len(segments) < 2:
+        return []
+
+    normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
+    errors: List[str] = []
+    for path, items in _structured_collections(arguments):
+        if normalized_tool_evidence and all(
+            _item_is_grounded_in_tool_evidence(item, normalized_tool_evidence)
+            for item in items
+        ):
+            continue
+        item_fields = [_flatten_item_field_evidence(item) for item in items]
+        anchored: List[tuple[int, int, List[tuple[str, str]]]] = []
+        for index, fields in enumerate(item_fields):
+            grounded_values = list(
+                dict.fromkeys(value for _field, value in fields if value in full_request)
+            )
+            if len(grounded_values) < 2:
+                continue
+            scores = [
+                sum(1 for value in grounded_values if value in segment)
+                for segment in segments
+            ]
+            best_score = max(scores, default=0)
+            if best_score < 2:
+                continue
+            best_positions = [
+                position for position, score in enumerate(scores) if score == best_score
+            ]
+            if len(best_positions) == 1:
+                anchored.append((index, best_positions[0], fields))
+
+        minimum_anchor_count = max(2, (len(items) + 1) // 2)
+        if len(anchored) >= minimum_anchor_count:
+            field_item_counts: Dict[str, int] = {}
+            field_segment_support: Set[str] = set()
+            field_cross_segment_support: Dict[str, int] = {}
+            field_values: Dict[str, Set[str]] = {}
+            anchor_segment_positions = {position for _index, position, _fields in anchored}
+            for _index, segment_position, fields in anchored:
+                item_field_paths = {field for field, _value in fields}
+                for field in item_field_paths:
+                    field_item_counts[field] = field_item_counts.get(field, 0) + 1
+                segment = segments[segment_position]
+                field_segment_support.update(
+                    field for field, value in fields if value in segment
+                )
+                cross_supported_fields: Set[str] = set()
+                for field, value in fields:
+                    field_values.setdefault(field, set()).add(value)
+                    if value in segment:
+                        continue
+                    if any(
+                        value in segments[other_position]
+                        for other_position in anchor_segment_positions
+                        if other_position != segment_position
+                    ):
+                        cross_supported_fields.add(field)
+                for field in cross_supported_fields:
+                    field_cross_segment_support[field] = (
+                        field_cross_segment_support.get(field, 0) + 1
+                    )
+
+            comparable_fields = {
+                field
+                for field, item_count in field_item_counts.items()
+                if item_count >= 2
+                and (
+                    field in field_segment_support
+                    or (
+                        field_cross_segment_support.get(field, 0) >= 2
+                        and len(field_values.get(field, set())) >= 2
+                    )
+                )
+            }
+            conflicting_items: List[tuple[int, int]] = []
+            conflicting_fields: Set[str] = set()
+            for index, segment_position, fields in anchored:
+                segment = segments[segment_position]
+                mismatched = {
+                    field
+                    for field, value in fields
+                    if field in comparable_fields and value not in segment
+                }
+                if mismatched:
+                    conflicting_items.append((index + 1, segment_position))
+                    conflicting_fields.update(mismatched)
+
+            if conflicting_items:
+                request_evidence = " | ".join(
+                    "item {}: {}".format(
+                        item_number,
+                        raw_segments[segment_position].replace("\n", " ")[:240],
+                    )
+                    for item_number, segment_position in conflicting_items
+                )
+                errors.append(
+                    "{} item {} fields {} conflict with the corresponding "
+                    "current-request items. Request evidence: {}".format(
+                        path,
+                        ", ".join(str(index) for index, _position in conflicting_items),
+                        ", ".join(sorted(conflicting_fields)),
+                        request_evidence,
+                    )
+                )
+                continue
+
+            anchored_positions = [
+                position
+                for _index, position, _fields in sorted(
+                    anchored,
+                    key=lambda entry: entry[0],
+                )
+            ]
+            if any(
+                current <= previous
+                for previous, current in zip(
+                    anchored_positions,
+                    anchored_positions[1:],
+                )
+            ):
+                errors.append("{} item order conflicts with the current request".format(path))
+                continue
+
+        evidenced: List[tuple[int, List[int]]] = []
+        for index, item in enumerate(items):
+            values = [value for value in _flatten_item_evidence(item) if value in full_request]
+            if len(values) < 2:
+                continue
+            candidates = [
+                segment_index
+                for segment_index, segment in enumerate(segments)
+                if all(value in segment for value in values)
+            ]
+            evidenced.append((index, candidates))
+
+        if len(evidenced) < 2:
+            continue
+        matched_count = sum(1 for _index, candidates in evidenced if candidates)
+        unmatched = [index + 1 for index, candidates in evidenced if not candidates]
+        if unmatched and matched_count >= max(1, (len(evidenced) + 1) // 2):
+            errors.append(
+                "{} item {} combines values that do not co-occur in the current request".format(
+                    path,
+                    ", ".join(str(index) for index in unmatched),
+                )
+            )
+            continue
+        if unmatched:
+            continue
+
+        candidate_positions = {position for _index, candidates in evidenced for position in candidates}
+        if len(candidate_positions) < len(evidenced):
+            continue
+        previous = -1
+        ordered = True
+        for _index, candidates in evidenced:
+            next_position = next((position for position in candidates if position > previous), None)
+            if next_position is None:
+                ordered = False
+                break
+            previous = next_position
+        if not ordered:
+            errors.append("{} item order conflicts with the current request".format(path))
+    return errors
+
+
+def _item_is_grounded_in_tool_evidence(
+    item: Mapping[str, Any],
+    normalized_evidence: str,
+) -> bool:
+    """Return whether a structured item is substantially present in trusted tool output.
+
+    Business query results are legitimate script inputs even when they do not occur in
+    the user's prose. Requiring every usable scalar avoids treating a collection as
+    trusted merely because it shares generic IDs or labels with a query result.
+    """
+    values = _flatten_item_evidence(item)
+    if len(values) < 2:
+        return False
+    supported = sum(1 for value in values if value in normalized_evidence)
+    return supported / len(values) >= 0.75
+
+
+def _current_turn_business_data_evidence(
+    messages: Sequence[Mapping[str, Any]],
+) -> str:
+    """Collect business-data tool output produced after the latest user request."""
+    latest_user_index = -1
+    for index, message in enumerate(messages):
+        if str(message.get("role") or "").lower() == "user":
+            latest_user_index = index
+
+    evidence: List[str] = []
+    for message in messages[latest_user_index + 1:]:
+        if str(message.get("role") or "").lower() != "tool":
+            continue
+        tool_name = str(message.get("name") or message.get("tool_name") or "")
+        if tool_name != "business_data_search":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            evidence.append(content)
+        elif isinstance(content, list):
+            evidence.extend(
+                str(item.get("text") or item.get("content") or "")
+                for item in content
+                if isinstance(item, Mapping)
+            )
+    return "\n".join(part for part in evidence if part)
+
+
+def _latest_user_request(messages: Sequence[Mapping[str, Any]]) -> str:
+    for message in reversed(messages):
+        if str(message.get("role") or "").lower() != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                str(item.get("text") or "")
+                for item in content
+                if isinstance(item, Mapping) and item.get("type") in {None, "text"}
+            ]
+            return "\n".join(part for part in parts if part)
+    return ""
+
+
 def _extract_public_script_error(stderr: str) -> Optional[str]:
     """Read the script's explicit, bounded public error contract."""
     for raw_line in str(stderr or "").splitlines():
@@ -1293,9 +1690,14 @@ def _build_cli_args_from_parameters(
             if runtime_field:
                 if required:
                     invalid.append("Runtime context missing '{}'".format(runtime_field))
+                continue
+            if "default" in parameter and parameter.get("default") is not None:
+                value = parameter.get("default")
             elif required:
                 missing.append(_parameter_label(parameter))
-            continue
+                continue
+            else:
+                continue
 
         if multiple:
             values = _coerce_multiple_values(value)
@@ -1316,8 +1718,7 @@ def _build_cli_args_from_parameters(
                 )
             continue
 
-        parameter_type = str(parameter.get("type") or "string").strip().lower()
-        if isinstance(value, (list, tuple, set)) and parameter_type not in {"array"}:
+        if isinstance(value, (list, tuple, set, dict)) and not _accepts_structured_value(parameter):
             invalid.append("{} does not accept multiple values".format(name))
             continue
         converted, error = _convert_parameter_value(value, parameter)
@@ -1379,7 +1780,46 @@ def _convert_parameter_value(
     Returns (converted_value, error).  Exactly one is None.
     """
     param_type = str(parameter.get("type") or "string").lower()
+    if param_type == "string" and isinstance(value, (list, tuple, set, dict)):
+        serializable = list(value) if isinstance(value, (tuple, set)) else value
+        try:
+            return json.dumps(serializable, ensure_ascii=False, separators=(",", ":")), None
+        except (TypeError, ValueError):
+            return None, "expected string or JSON-serializable structured value"
     raw = str(value)
+    if param_type in {"array", "list"} or param_type.endswith("[]"):
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None, "expected array"
+        if isinstance(parsed, (tuple, set)):
+            parsed = list(parsed)
+        if not isinstance(parsed, list):
+            return None, "expected array"
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+    if param_type in {"object", "dict"}:
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None, "expected object"
+        if not isinstance(parsed, dict):
+            return None, "expected object"
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+    if param_type == "json":
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None, "expected JSON"
+        try:
+            return json.dumps(parsed, ensure_ascii=False, separators=(",", ":")), None
+        except (TypeError, ValueError):
+            return None, "expected JSON"
     if param_type in ("int", "integer"):
         try:
             return str(int(value)), None
@@ -1399,25 +1839,24 @@ def _convert_parameter_value(
         if normalized in {"false", "0", "no"}:
             return "false", None
         return None, "expected boolean"
-    if param_type in {"object", "array"}:
-        candidate = value
-        if isinstance(candidate, str):
-            try:
-                candidate = json.loads(candidate)
-            except (TypeError, ValueError):
-                return None, "expected valid JSON {}".format(param_type)
-        if param_type == "object" and not isinstance(candidate, Mapping):
-            return None, "expected object"
-        if param_type == "array":
-            if isinstance(candidate, tuple):
-                candidate = list(candidate)
-            if not isinstance(candidate, list):
-                return None, "expected array"
-        try:
-            return json.dumps(candidate, ensure_ascii=False), None
-        except (TypeError, ValueError):
-            return None, "expected JSON-serializable {}".format(param_type)
     return raw, None
+
+
+def _is_json_collection_parameter(parameter: Mapping[str, Any]) -> bool:
+    param_type = str(parameter.get("type") or "string").strip().lower()
+    return param_type in {"array", "list", "object", "dict", "json"} or param_type.endswith("[]")
+
+
+def _accepts_structured_value(parameter: Mapping[str, Any]) -> bool:
+    param_type = str(parameter.get("type") or "string").strip().lower()
+    return param_type == "string" or _is_json_collection_parameter(parameter)
+
+
+def _append_cli_argument(result: List[str], *, flag: str, value: str) -> None:
+    """Append a flag-value pair to the CLI argument list."""
+    if flag:
+        result.append(flag)
+    result.append(value)
 
 
 @dataclass(frozen=True)
@@ -1442,6 +1881,60 @@ class ExecuteScriptTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         del event_emitter
+        ontology_id = str(args.get("ontology_id") or "").strip()
+        operation_key = str(args.get("operation_key") or "").strip()
+        if ontology_id and operation_key:
+            successful_calls = _prior_successful_operation_calls(
+                context.messages,
+                ontology_id=ontology_id,
+                operation_key=operation_key,
+                current_tool_call_id=tool_call_id,
+            )
+            current_fingerprint = _canonical_tool_arguments(args)
+            repeated_identically = any(
+                _canonical_tool_arguments(call["arguments"]) == current_fingerprint
+                for call in successful_calls
+            )
+            if repeated_identically:
+                logger.warning(
+                    "blocked identical successful execute_script replay: run_id=%s operation_key=%s",
+                    context.run_id or "n/a",
+                    operation_key,
+                )
+                return ToolOutcome(content=(
+                    "This deterministic operation already succeeded with exactly the same inputs. "
+                    "Reuse the previous successful tool result and produce the final user answer now. "
+                    "Do not call execute_script again for rounding, formatting, or verification."
+                ))
+            if len(successful_calls) >= MAX_SUCCESSFUL_EXECUTIONS_PER_OPERATION:
+                logger.warning(
+                    "blocked excessive successful execute_script replays: run_id=%s operation_key=%s count=%s",
+                    context.run_id or "n/a",
+                    operation_key,
+                    len(successful_calls),
+                )
+                return ToolOutcome(content=(
+                    "This deterministic operation has already returned successful results multiple times. "
+                    "Stop changing informational or display-only inputs. Reuse the latest successful "
+                    "result and produce the final user answer now. Only a new, explicitly requested "
+                    "independent scenario justifies another execution."
+                ))
+        argument_values = args.get("arguments")
+        if isinstance(argument_values, Mapping):
+            consistency_errors = _validate_structured_arguments_against_request(
+                argument_values,
+                _latest_user_request(context.messages),
+                _current_turn_business_data_evidence(context.messages),
+            )
+            if consistency_errors:
+                return ToolOutcome(content=(
+                    "Error: Script argument consistency check failed: {}. "
+                    "The script did not run. "
+                    "Rebuild the complete collection from the current user request, "
+                    "preserve item order, and retry the complete call without using "
+                    "ontology examples or history. Do not provide computed results or "
+                    "claim success until execute_script returns a successful result."
+                ).format("; ".join(consistency_errors)))
         call_args = {
             key: args[key]
             for key in ("ontology_id", "operation_key", "arguments")
