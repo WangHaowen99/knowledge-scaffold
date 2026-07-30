@@ -25,3 +25,15 @@ export type {
   ProjectEventPage,
   AuthoringStateErrorCode,
 } from './types.js';
+export { buildFlowchart, buildScenarioDrafts } from './workflow-extras.js';
+export type {
+  FlowchartEdge,
+  FlowchartNode,
+  FlowchartOutput,
+  ScenarioDraft,
+} from './workflow-extras.js';
+export { recoverInterruptedAuthoringWork } from './restart-recovery.js';
+export type {
+  AuthoringRestartRecoveryOptions,
+  AuthoringRestartRecoveryResult,
+} from './restart-recovery.js';

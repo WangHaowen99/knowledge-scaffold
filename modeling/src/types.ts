@@ -32,7 +32,38 @@ export type NodeStatus =
   | 'running' // agent 执行中
   | 'waiting_user' // 挂起等待专家应答
   | 'done' // 完成
-  | 'stale'; // 上游变更导致需重规划
+  | 'stale' // 上游变更导致需重规划
+  | 'failed'; // 执行失败，可重试且保留原因与轨迹
+
+export type TraceStatus = 'running' | 'done' | 'warning' | 'error';
+
+export type TraceKind =
+  | 'phase_started'
+  | 'phase_completed'
+  | 'tool_started'
+  | 'tool_completed'
+  | 'model_summary'
+  | 'validation_warning'
+  | 'analysis_failed'
+  | 'analysis_completed'
+  | 'generation_failed'
+  | 'generation_completed'
+  | 'repair_started'
+  | 'repair_completed';
+
+export interface WorkflowTraceEvent {
+  id: string;
+  projectId: string;
+  nodeId: string;
+  seq: number;
+  phase: string;
+  kind: TraceKind;
+  status: TraceStatus;
+  title: string;
+  summary?: string;
+  details?: Record<string, unknown>;
+  createdAt: string;
+}
 
 export const FIXED_TRUNK: NodeType[] = [
   'project_setup', 'ingest', 'analyze', 'interview',
@@ -80,6 +111,7 @@ export interface DataDictCell {
 
 export interface DataDictTable {
   name: string; // sheet 名 = 表名
+  documentId?: string; // 来源资料修订 ID；用于精确追踪知识证据
   fields: DataDictField[];
   rowCount: number;
   // 数据行（按 fields 顺序的字符串矩阵）；保留数量由具体解析场景决定。
@@ -102,10 +134,62 @@ export interface DocumentRecord {
 }
 
 // ---- 初步分析产物（节点 3）----
+export type KnowledgeArtifactKind = 'object' | 'rule' | 'operation' | 'metric';
+
+export interface MaterialAssessment {
+  source: string;
+  sourceType: 'table' | 'document';
+  suitableFor: KnowledgeArtifactKind[];
+  rationale: string;
+}
+
+export interface ArtifactCandidate {
+  kind: KnowledgeArtifactKind;
+  name: string;
+  rationale: string;
+  sources: string[];
+  evidence?: string;
+  readiness: 'extractable' | 'needs_clarification';
+}
+
+export interface ModelingBrief {
+  problem: string;
+  targetUsers: string;
+  scenarios: string;
+  successCriteria: string;
+}
+
+export interface CandidateBusinessGoal {
+  title: string;
+  problem: string;
+  targetUsers: string[];
+  scenarios: string[];
+  successCriteria: string[];
+  rationale: string;
+}
+
+export interface CandidateBusinessProcess {
+  candidateId?: string;
+  title: string;
+  trigger: string;
+  actors: string[];
+  inputs: string[];
+  steps: string[];
+  exceptions: string[];
+  outputs: string[];
+  handoffs: string[];
+  rationale: string;
+}
+
 export interface AnalysisResult {
   domainOverview: string;
+  modelingBrief?: ModelingBrief;
   candidateObjects: { name: string; rationale: string; sourceTables: string[] }[];
   openQuestions: { topic: string; why: string }[];
+  candidateGoals?: CandidateBusinessGoal[];
+  candidateProcesses?: CandidateBusinessProcess[];
+  materialAssessments?: MaterialAssessment[];
+  candidateArtifacts?: ArtifactCandidate[];
 }
 
 export interface Project {
@@ -130,7 +214,38 @@ export interface InterviewQuestion {
   kind: QuestionKind;
   q: string;
   options: string[]; // text 型可空
-  topic: string; // 四类决策点之一：对象划分/字段含义/关系/口径
+  topic: string; // 流程决策点之一：触发/角色/输入/步骤/判断/异常/输出/交接
+}
+
+export interface InterviewProcessStep {
+  id: string;
+  label: string;
+  kind: 'action' | 'decision';
+  detail?: string;
+}
+
+export interface InterviewProcessTransition {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface InterviewProcess {
+  id: string;
+  title: string;
+  trigger: string;
+  actors: string[];
+  inputs: string[];
+  steps: InterviewProcessStep[];
+  transitions: InterviewProcessTransition[];
+  exceptions: string[];
+  outputs: string[];
+  handoffs: string[];
+}
+
+export interface InterviewOutcome {
+  summary: string;
+  processes: InterviewProcess[];
 }
 
 export interface InterviewBatch {
@@ -170,8 +285,28 @@ export interface SpecRelation {
   relation: string; // 关系名（如 belongs_to / references）
   target: string;   // 目标对象 key
   note?: string;
+  evidence?: string[];
 }
+export interface TableSourceRef {
+  kind: 'table';
+  documentId?: string;
+  table: string;
+  columns?: string[];
+}
+export interface DocumentSourceAnchor {
+  heading?: string;
+  offset?: number;
+  quote?: string;
+}
+export interface DocumentSourceRef {
+  kind: 'document';
+  documentId?: string;
+  filename: string;
+  anchors?: DocumentSourceAnchor[];
+}
+export type SourceRef = TableSourceRef | DocumentSourceRef;
 export interface SpecObject {
+  candidateId?: string;
   key: string;
   title: string;
   description: string;
@@ -179,6 +314,7 @@ export interface SpecObject {
   aliases?: string[];        // 自然语言别名（frontmatter aliases，规范 §5.1）
   queryBoundary?: string;
   relations?: SpecRelation[]; // 「# 关系」表（规范 §9，推荐）
+  sourceRefs?: SourceRef[];
   sourceTable?: string; // 新生成对象必填：对应数据字典的真实 Sheet 名；可选仅为兼容存量 spec
   primaryKey?: string[];
 }
@@ -196,7 +332,9 @@ export interface SpecOperation {
   // 绑定脚本（frontmatter script 块，规范 §11）。生成链暂不产出脚本（脚本必须注册，
   // 规范 §17 边界），此字段仅为渲染兼容保留。
   script?: { key: string; required?: boolean };
+  competencyQuestionId?: string;
   competencyQuestion?: string; // 该 operation 覆盖的胜任力问题
+  evidence?: string[];
 }
 // 规则（规范 §12-13）：可复用的业务判断条件
 export interface SpecRule {
@@ -207,6 +345,7 @@ export interface SpecRule {
   content: string;             // 「# 规则内容」（必需）
   conditions?: { condition: string; conclusion: string }[]; // 「# 判断条件」表（推荐）
   exceptions?: string[];       // 「# 例外」列表（推荐）
+  evidence?: string[];
 }
 // 指标（规范 §14-15）：有明确口径、公式和边界的业务指标
 export interface SpecMetric {
@@ -220,6 +359,29 @@ export interface SpecMetric {
   boundaries: string[];    // 「# 计算边界」列表（必需）
   nullPolicy?: { field: string; handling: string }[]; // 「# 空值策略」表（推荐）
   dimensions?: { key: string; note: string }[];       // 「# 维度」表（推荐）
+  evidence?: string[];
+}
+export interface SpecScript {
+  key: string;
+  title: string;
+  description: string;
+  boundOperation: string;
+  runtime: 'python';
+  entrypoint: string;
+  timeoutSeconds: number;
+  parameters: {
+    name: string;
+    flag: string;
+    type: string;
+    required: boolean;
+    defaultValue?: string | number | boolean;
+    description?: string;
+    multiple?: boolean;
+  }[];
+  outputs: { key: string; type: string; description?: string }[];
+  boundaries: string[];
+  evidence?: string[];
+  sourceCode: string;
 }
 export type PackageStatus = 'draft' | 'review' | 'released' | 'deprecated';
 export type PackageDataSourceType = 'nl2sql' | 'mindsdb' | 'neo4j';
@@ -234,6 +396,7 @@ export interface PackageSpec {
   operations: SpecOperation[];
   rules?: SpecRule[];     // 可选目录 rules/；空或缺省则不生成目录
   metrics?: SpecMetric[]; // 可选目录 metrics/；空或缺省则不生成目录
+  scripts?: SpecScript[]; // 可选受控 Python 脚本；须绑定包内 operation
   defaultProviderAlias: string;
   dataSourceType?: PackageDataSourceType; // 缺省仅用于兼容历史版本，沿用 object key resource
 }
