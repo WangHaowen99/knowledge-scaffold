@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
-import { ArtifactRepositoryError } from '../artifacts/repository.js';
-import { PackageArtifactStoreError } from '../artifacts/package-store.js';
+import { AiConstructionOrchestrator } from '../ai-construction/orchestrator.js';
+import { generateProcessDraft } from '../ai-construction/process-draft-generator.js';
+import { buildInterviewOutcomeFromCandidates } from '../ai-construction/process-interview.js';
 import {
   AiConstructionTaskEditor,
   type AiConstructionTaskEditRequest,
@@ -12,7 +14,27 @@ import {
   type AiConstructionTaskAdjustmentAction,
   type AiConstructionTaskGraphCommand,
 } from '../ai-construction/task-graph.js';
+import { ArtifactRepositoryError } from '../artifacts/repository.js';
+import {
+  getPackageArtifactStore,
+  PackageArtifactStoreError,
+} from '../artifacts/index.js';
+import type { PackageArtifactStore } from '../artifacts/index.js';
+import {
+  appendBlankFlowchartDiagram,
+  appendFlowchartDiagram,
+  normalizeFlowchartDocument,
+} from '../flowchart/document.js';
+import { FlowchartDraftError, FlowchartDraftStore } from '../flowchart/draft-store.js';
+import { renderDiagramFiles } from '../flowchart/projection.js';
+import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
 import { getProject } from '../projects/repo.js';
+import {
+  ControlledRepairController,
+  ControlledRepairControllerError,
+} from './controlled-repair-controller.js';
+import { PiAuthoringAdapter } from './pi-adapter.js';
+import { ProcessReviewFinalizer } from './process-review-finalizer.js';
 import {
   ASSISTED_WRITE_LEASE_TTL_MS,
   ProjectLeaseError,
@@ -20,12 +42,9 @@ import {
   runWithProjectLease,
   SHORT_WRITE_LEASE_TTL_MS,
 } from './lease.js';
-import {
-  ControlledRepairController,
-  ControlledRepairControllerError,
-} from './controlled-repair-controller.js';
-import { getAuthoringState, onProjectEventAppended } from './state.js';
+import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
+import { buildFlowchart } from './workflow-extras.js';
 
 const EVENT_POLL_FALLBACK_MS = 2_000;
 const HEARTBEAT_MS = 15_000;
@@ -62,14 +81,6 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
-  if (error instanceof PackageArtifactStoreError) {
-    const status = error.code === 'project_not_found'
-      || error.code === 'package_not_found'
-      || error.code === 'file_not_found'
-      || error.code === 'revision_has_no_package'
-      ? 404 : error.code === 'commit_in_progress' ? 409 : 400;
-    return reply.code(status).send({ error: error.message, code: error.code });
-  }
   if (error instanceof AiConstructionTaskGraphError) {
     const status = error.code === 'PROJECT_NOT_FOUND'
       || error.code === 'GRAPH_NOT_FOUND'
@@ -79,7 +90,49 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       : error.code === 'INVALID_TASK_PLAN' ? 400 : 409;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
+  if (error instanceof FlowchartDraftError) {
+    const status = error.code === 'not_found' ? 404
+      : error.code === 'invalid_document' ? 400 : 409;
+    return reply.code(status).send({
+      error: error.message,
+      code: error.code,
+      ...(error.issues.length ? { issues: error.issues } : {}),
+    });
+  }
+  if (error instanceof PackageArtifactStoreError) {
+    const status = error.code === 'project_not_found'
+      || error.code === 'package_not_found'
+      || error.code === 'file_not_found'
+      || error.code === 'revision_has_no_package'
+      ? 404
+      : error.code === 'commit_in_progress' ? 409 : 400;
+    return reply.code(status).send({ error: error.message, code: error.code });
+  }
   throw error;
+}
+
+function rekeyFlowchartDiagram(diagram: FlowchartDiagram): FlowchartDiagram {
+  const nodeIds = new Map(diagram.nodes.map((node) => [node.id, `node-${randomUUID()}`]));
+  return {
+    ...diagram,
+    id: `diagram-${randomUUID()}`,
+    nodes: diagram.nodes.map((node) => ({ ...node, id: nodeIds.get(node.id)! })),
+    edges: diagram.edges.map((edge) => ({
+      ...edge,
+      id: `edge-${randomUUID()}`,
+      from: nodeIds.get(edge.from) ?? edge.from,
+      to: nodeIds.get(edge.to) ?? edge.to,
+    })),
+    ...(diagram.layout ? {
+      layout: {
+        ...diagram.layout,
+        positions: Object.fromEntries(Object.entries(diagram.layout.positions).flatMap(([nodeId, position]) => {
+          const nextId = nodeIds.get(nodeId);
+          return nextId ? [[nextId, position]] : [];
+        })),
+      },
+    } : {}),
+  };
 }
 
 function writeEvent(stream: NodeJS.WritableStream, event: ProjectEvent): void {
@@ -96,12 +149,74 @@ function commandEvent(command: AiConstructionTaskGraphCommand) {
   };
 }
 
-export function registerAuthoringRoutes(app: FastifyInstance): void {
-  const state = getAuthoringState();
-  const graph = new AiConstructionTaskGraph();
+export interface AuthoringRouteOptions {
+  state?: AuthoringState;
+  graph?: AiConstructionTaskGraph;
+  orchestrator?: Pick<AiConstructionOrchestrator,
+    'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'>;
+  packages?: Pick<PackageArtifactStore, 'current' | 'readPackageFiles' | 'saveFiles'>;
+  flowchartDrafts?: FlowchartDraftStore;
+  processDraftGenerator?: typeof generateProcessDraft;
+}
+
+export function registerAuthoringRoutes(app: FastifyInstance, options: AuthoringRouteOptions = {}): void {
+  const state = options.state ?? getAuthoringState();
+  const graph = options.graph ?? new AiConstructionTaskGraph();
   const editor = new AiConstructionTaskEditor();
   const leases = new ProjectOperationLease();
   const controlledRepair = new ControlledRepairController({ state, graph });
+  const packages = options.packages ?? getPackageArtifactStore();
+  const flowchartDrafts = options.flowchartDrafts ?? new FlowchartDraftStore();
+  const adapter = new PiAuthoringAdapter(state);
+  const orchestrator = options.orchestrator ?? new AiConstructionOrchestrator({ graph, state });
+  const processDraftGenerator = options.processDraftGenerator ?? generateProcessDraft;
+  const processReviewFinalizer = new ProcessReviewFinalizer({
+    drafts: flowchartDrafts,
+    adapter,
+    orchestrator,
+  });
+
+  const ensureFlowchartDraft = (
+    projectId: string,
+    interactionId: string,
+    actorUsername: string,
+  ) => {
+    const existing = flowchartDrafts.get(projectId, interactionId);
+    if (existing) return existing;
+    const interaction = state.interaction(projectId, interactionId);
+    if (!interaction || interaction.status !== 'pending'
+      || interaction.type !== 'flowchart_review'
+      || interaction.payload.purpose !== 'process_review') {
+      throw new FlowchartDraftError('not_found', '流程图确认交互不存在');
+    }
+    return flowchartDrafts.create({
+      projectId,
+      interactionId,
+      actorUsername,
+      document: { diagrams: Array.isArray(interaction.payload.diagrams) ? interaction.payload.diagrams : [] },
+    });
+  };
+
+  const availableFlowchartCandidates = (projectId: string, document: FlowchartDocument) => {
+    const existingTitles = new Set(document.diagrams.map((diagram) => diagram.title.trim()));
+    const usedCandidateIds = new Set(document.diagrams
+      .map((diagram) => diagram.sourceCandidateId?.trim())
+      .filter((candidateId): candidateId is string => Boolean(candidateId)));
+    return (orchestrator.latestMaterialAnalysis(projectId)?.candidateProcesses ?? [])
+      .filter((candidate) => candidate.candidateId
+        ? !usedCandidateIds.has(candidate.candidateId) && !existingTitles.has(candidate.title.trim())
+        : !existingTitles.has(candidate.title.trim()));
+  };
+
+  const publicFlowchartDraft = (projectId: string, snapshot: NonNullable<ReturnType<FlowchartDraftStore['get']>>) => ({
+    draftRevision: snapshot.revision,
+    document: snapshot.document,
+    warnings: snapshot.warnings,
+    submittedRevision: snapshot.submittedRevision ?? null,
+    availableCandidates: availableFlowchartCandidates(projectId, snapshot.document),
+    modelingGoal: orchestrator.latestConfirmedModelingBrief(projectId),
+    updatedAt: snapshot.updatedAt,
+  });
 
   app.get('/api/projects/:id/session', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
@@ -289,6 +404,152 @@ export function registerAuthoringRoutes(app: FastifyInstance): void {
     }
   });
 
+  app.get('/api/projects/:id/interactions/:interactionId/flowchart-draft', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      const interactionId = String((req.params as any).interactionId ?? '');
+      return publicFlowchartDraft(
+        project.id,
+        ensureFlowchartDraft(project.id, interactionId, req.user!.username),
+      );
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.put('/api/projects/:id/interactions/:interactionId/flowchart-draft', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      return await runWithProjectLease(leases, {
+        projectId: project.id,
+        operation: '保存流程图草稿',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+      }, () => {
+        const interactionId = String((req.params as any).interactionId ?? '');
+        ensureFlowchartDraft(project.id, interactionId, req.user!.username);
+        const saved = flowchartDrafts.save({
+          projectId: project.id,
+          interactionId,
+          actorUsername: req.user!.username,
+          expectedRevision: Number(body.expectedRevision),
+          document: body.document,
+        });
+        state.apply({
+          kind: 'publish_event',
+          projectId: project.id,
+          type: 'flowchart.draft.saved',
+          payload: {
+            interactionId,
+            draftRevision: saved.revision,
+            warningCount: saved.warnings.length,
+          },
+        });
+        return publicFlowchartDraft(project.id, saved);
+      });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/interactions/:interactionId/flowchart-draft/diagrams', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      return await runWithProjectLease(leases, {
+        projectId: project.id,
+        operation: '继续添加流程图',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+      }, async () => {
+        const interactionId = String((req.params as any).interactionId ?? '');
+        const draft = ensureFlowchartDraft(project.id, interactionId, req.user!.username);
+        const expectedRevision = Number(body.expectedRevision);
+        if (!Number.isInteger(expectedRevision) || expectedRevision !== draft.revision) {
+          throw new FlowchartDraftError('conflict', '流程图草稿已被其他修改更新');
+        }
+        const mode = String(body.mode ?? '');
+        if (!['candidate', 'ai', 'blank'].includes(mode)) {
+          return reply.code(400).send({ error: '流程图添加方式不正确', code: 'INVALID_INPUT' });
+        }
+
+        let document = draft.document;
+        if (mode === 'blank') {
+          document = appendBlankFlowchartDiagram(document, {
+            id: `diagram-${randomUUID()}`,
+            title: String(body.title ?? '').trim() || '未命名流程',
+          });
+        } else {
+          const modelingBrief = orchestrator.latestConfirmedModelingBrief(project.id);
+          if (!modelingBrief) {
+            return reply.code(409).send({
+              error: '请先确认建模目标，再继续添加流程图',
+              code: 'MODELING_GOAL_NOT_CONFIRMED',
+            });
+          }
+          const candidates = availableFlowchartCandidates(project.id, document);
+          const candidateId = String(body.candidateId ?? '').trim();
+          const candidateTitle = String(body.candidateTitle ?? '').trim();
+          const sourceCandidate = mode === 'candidate'
+            ? candidates.find((candidate) => candidateId
+              ? candidate.candidateId === candidateId
+              : candidate.title === candidateTitle)
+            : undefined;
+          if (mode === 'candidate' && !sourceCandidate) {
+            return reply.code(409).send({
+              error: '该候选流程不存在或已经添加',
+              code: 'FLOWCHART_CANDIDATE_UNAVAILABLE',
+            });
+          }
+          const instruction = String(body.instruction ?? '').trim();
+          const description = sourceCandidate
+            ? [
+              '请根据以下资料分析候选，围绕已确认建模目标整理成完整流程草稿。',
+              JSON.stringify(sourceCandidate),
+              ...(instruction ? [`补充要求：${instruction}`] : []),
+            ].join('\n')
+            : instruction
+              || `请围绕“${modelingBrief.problem}”及场景“${modelingBrief.scenarios}”推荐一个尚未覆盖的核心业务流程。`;
+          const candidate = await processDraftGenerator({
+            description,
+            ...(sourceCandidate ? { candidateProcess: sourceCandidate } : {}),
+            existingProcessTitles: document.diagrams.map((diagram) => diagram.title),
+            modelingBrief,
+          });
+          const outcome = buildInterviewOutcomeFromCandidates([candidate]);
+          const generated = normalizeFlowchartDocument(buildFlowchart(undefined, undefined, outcome.processes));
+          const diagram = generated.diagrams[0];
+          if (!diagram) throw new Error('没有生成可编辑的流程图');
+          document = appendFlowchartDiagram(document, {
+            ...rekeyFlowchartDiagram(diagram),
+            ...(sourceCandidate?.candidateId ? { sourceCandidateId: sourceCandidate.candidateId } : {}),
+          });
+        }
+
+        const saved = flowchartDrafts.save({
+          projectId: project.id,
+          interactionId,
+          actorUsername: req.user!.username,
+          expectedRevision,
+          document,
+        });
+        state.apply({
+          kind: 'publish_event',
+          projectId: project.id,
+          type: 'flowchart.diagram.added',
+          payload: { interactionId, draftRevision: saved.revision, mode },
+        });
+        return publicFlowchartDraft(project.id, saved);
+      });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
   app.post('/api/projects/:id/interactions/:interactionId/respond', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -318,6 +579,128 @@ export function registerAuthoringRoutes(app: FastifyInstance): void {
           response,
           req.user!.username,
         ));
+      }
+      const interaction = state.interaction(project.id, interactionId);
+      if (interaction?.type === 'flowchart_review' && interaction.payload.purpose === 'process_review') {
+        return await runWithProjectLease(leases, {
+          projectId: project.id,
+          operation: '提交业务流程图',
+          owner: `${req.user!.username}:${req.id}`,
+          ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+        }, async () => {
+          if (String(response.action ?? '') !== 'accept') {
+            return reply.code(409).send({
+              error: '请直接在流程图画布中修改并保存，再提交确认',
+              code: 'FLOWCHART_DIRECT_EDIT_REQUIRED',
+            });
+          }
+          const draftRevision = Number(response.draftRevision);
+          if (!Number.isInteger(draftRevision) || draftRevision < 1) {
+            return reply.code(400).send({ error: '请先保存流程图草稿', code: 'INVALID_INPUT' });
+          }
+          const currentDraft = ensureFlowchartDraft(project.id, interactionId, req.user!.username);
+          if (currentDraft.revision !== draftRevision) {
+            return reply.code(409).send({
+              error: '流程图草稿有更新，请提交最新已保存版本',
+              code: 'FLOWCHART_DRAFT_OUTDATED',
+            });
+          }
+          if (!currentDraft.document.diagrams.length) {
+            return reply.code(409).send({
+              error: '请至少新建并保存一个业务流程后再提交',
+              code: 'FLOWCHART_EMPTY_DOCUMENT',
+            });
+          }
+          if (currentDraft.warnings.length && response.acknowledgeWarnings !== true) {
+            return reply.code(409).send({
+              error: '流程图草稿仍有业务完整性提醒，请确认后再提交',
+              code: 'FLOWCHART_WARNINGS_NOT_ACKNOWLEDGED',
+              warnings: currentDraft.warnings,
+            });
+          }
+
+          const attempt = processReviewFinalizer.begin({
+            projectId: project.id,
+            interactionId,
+            draftRevision,
+            requestId,
+            response,
+            actorUsername: req.user!.username,
+          });
+          if (attempt.status === 'completed') {
+            return {
+              interaction: state.interaction(project.id, interactionId),
+              replayed: true,
+              packageRevision: attempt.packageRevisionOid,
+              aiConstruction: graph.snapshot(project.id),
+              cursor: state.snapshot(project.id).lastEventSeq,
+            };
+          }
+
+          let packageRevisionOid = attempt.packageRevisionOid;
+          if (!packageRevisionOid) {
+            const currentPackage = await packages.current(project.id);
+            if (!currentPackage) {
+              throw new AuthoringStateError('INVALID_TRANSITION', '当前项目没有知识包草稿');
+            }
+            if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+              throw new AuthoringStateError('INVALID_TRANSITION', '知识包已更新，请重新生成并确认流程图');
+            }
+            const projected = renderDiagramFiles(currentDraft.document);
+            const files = Object.fromEntries(Object.entries(projected)
+              .map(([path, content]) => [`package/${path}`, content]));
+            const currentFiles = await packages.readPackageFiles(project.id, currentPackage.revision.oid);
+            const projectedPaths = new Set(Object.keys(projected));
+            const deletePaths = Object.keys(currentFiles.files)
+              .filter((path) => /^diagrams\/process_\d+\.mmd$/u.test(path) && !projectedPaths.has(path))
+              .map((path) => `package/${path}`);
+            const saved = await packages.saveFiles(project.id, {
+              expectedRevision: currentPackage.revision.oid,
+              files,
+              deletePaths,
+              action: {
+                cause: 'flowchart.confirm',
+                summary: '确认可编辑业务流程',
+                actorKind: 'user',
+                actorName: req.user!.username,
+              },
+            });
+            packageRevisionOid = saved.revision.oid;
+            processReviewFinalizer.recordPackageSaved(
+              project.id,
+              interactionId,
+              draftRevision,
+              packageRevisionOid,
+            );
+          }
+
+          const finalized = processReviewFinalizer.finalize({
+            projectId: project.id,
+            interactionId,
+            draftRevision,
+            requestId,
+            response,
+            actorUsername: req.user!.username,
+            packageRevisionOid,
+            taskId: String(interaction.payload.taskId ?? ''),
+            document: currentDraft.document,
+          });
+          state.apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'flowchart.review.completed',
+            payload: { interactionId, draftRevision, packageRevisionOid },
+          });
+          return {
+            interaction: finalized.answered.interaction,
+            run: finalized.completedRun,
+            replayed: finalized.answered.replayed,
+            aiConstruction: finalized.construction.aiConstruction,
+            aiConstructionMessage: finalized.construction.message,
+            packageRevision: packageRevisionOid,
+            cursor: state.snapshot(project.id).lastEventSeq,
+          };
+        });
       }
       const result = state.apply({
         kind: 'respond_interaction',
