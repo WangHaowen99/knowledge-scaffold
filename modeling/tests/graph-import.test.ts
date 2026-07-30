@@ -551,6 +551,52 @@ test('graph import Neo4j：事务失败时仍关闭 session 和 driver', async (
   assert.equal(driver.state.driverClosed, true);
 });
 
+test('graph import Neo4j：取消信号会关闭会话并中断当前事务', async () => {
+  const controller = new AbortController();
+  let notifyWriteStarted = () => {};
+  const writeStarted = new Promise<void>((resolve) => { notifyWriteStarted = resolve; });
+  let rejectActiveRun: ((error: Error) => void) | undefined;
+  const state = { sessionClosed: false, driverClosed: false };
+  let callCount = 0;
+  const factory = async () => ({
+    session() {
+      return {
+        async executeWrite(work: (transaction: any) => Promise<unknown>) {
+          return work({
+            async run() {
+              callCount += 1;
+              if (callCount === 1) {
+                return { records: [{ get: () => 0 }] };
+              }
+              notifyWriteStarted();
+              return new Promise((_resolve, reject) => { rejectActiveRun = reject; });
+            },
+          });
+        },
+        async close() {
+          state.sessionClosed = true;
+          rejectActiveRun?.(new Error('Neo4j 会话已关闭'));
+        },
+      };
+    },
+    async close() {
+      state.driverClosed = true;
+      rejectActiveRun?.(new Error('Neo4j Driver 已关闭'));
+    },
+  });
+
+  const writing = writeGraphImport(importPlan(), neo4jConnection(), {
+    userName: 'alice',
+    signal: controller.signal,
+  }, factory);
+  await writeStarted;
+  controller.abort(new Error('用户取消图数据导入'));
+
+  await assert.rejects(writing, /已关闭|用户取消/);
+  assert.equal(state.sessionClosed, true);
+  assert.equal(state.driverClosed, true);
+});
+
 test('graph import Neo4j：已有双隔离数据时中止并要求显式确认', async () => {
   const driver = recordingDriver(() => ({
     records: [{ get: (key: string) => (key === 'nodeCount' ? 2 : 1) }],
@@ -633,7 +679,11 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
         ontologyProperty: 'd2o_ontology_id',
         ontologyValue: 'ontology-001',
       });
-      assert.deepEqual(options, { replaceExisting: false, userName: 'alice' });
+      assert.equal(options.signal instanceof AbortSignal, true);
+      assert.deepEqual(
+        { replaceExisting: options.replaceExisting, userName: options.userName },
+        { replaceExisting: false, userName: 'alice' },
+      );
       return { nodeCount: plan.nodeCount, relationshipCount: plan.relationshipCount };
     },
   };
@@ -753,6 +803,100 @@ test('graph import service：失败审计脱敏并保留临时文件供重试', 
   assert.doesNotMatch(JSON.stringify(failed), /leaked-password/);
 });
 
+test('graph import service：取消后台写入时等待 writer 完成中断清理', async () => {
+  const {
+    cancelGraphImportRun,
+    cancelGraphImportUpload,
+    executeGraphImport,
+    getGraphImportHistory,
+    uploadGraphImportExcel,
+  } = await import('../src/graph-import/service.js');
+  const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
+  const project = await createGraphImportProject('图导入取消测试');
+  const preview = uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'cancel.xlsx', buffer: importBuffer(),
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  let notifyAbort = () => {};
+  const abortObserved = new Promise<void>((resolve) => { notifyAbort = resolve; });
+  let releaseCleanup = () => {};
+  const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+  let cleanupFinished = false;
+  const started = await executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'cancel-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+    schedule: (task) => { scheduled.push(task); },
+    writer: async (_plan, _connection, options) => new Promise((_resolve, reject) => {
+      options.signal?.addEventListener('abort', async () => {
+        notifyAbort();
+        await cleanupGate;
+        cleanupFinished = true;
+        reject(options.signal?.reason);
+      }, { once: true });
+    }),
+  });
+
+  const background = scheduled[0]();
+  let cancellationFinished = false;
+  const cancellation = cancelGraphImportRun(project.id, started.run.id)
+    .finally(() => { cancellationFinished = true; });
+  await abortObserved;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(cancellationFinished, false);
+  assert.equal(getGraphImportHistory(project.id)[0].status, 'running');
+
+  releaseCleanup();
+  const cancelled = await cancellation;
+  await background;
+  assert.equal(cleanupFinished, true);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(getGraphImportHistory(project.id)[0].status, 'cancelled');
+  assert.equal(getGraphImportUpload({
+    uploadId: preview.id, projectId: project.id, owner: 'alice',
+  }).id, preview.id);
+  await cancelGraphImportUpload({ projectId: project.id, owner: 'alice', uploadId: preview.id });
+});
+
+test('graph import service：任务尚未开始时取消不会再调用 writer', async () => {
+  const {
+    cancelGraphImportRun,
+    executeGraphImport,
+    getGraphImportHistory,
+    uploadGraphImportExcel,
+  } = await import('../src/graph-import/service.js');
+  const project = await createGraphImportProject('图导入排队取消测试');
+  const preview = uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'queued.xlsx', buffer: importBuffer(),
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  let writerCalls = 0;
+  const started = await executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'queued-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+    schedule: (task) => { scheduled.push(task); },
+    writer: async () => {
+      writerCalls += 1;
+      return { nodeCount: 0, relationshipCount: 0 };
+    },
+  });
+
+  const cancelled = await cancelGraphImportRun(project.id, started.run.id);
+  await scheduled[0]();
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(getGraphImportHistory(project.id)[0].status, 'cancelled');
+  assert.equal(writerCalls, 0);
+});
+
 test('graph import service：冲突仅提示，确认后才记录替换导入', async () => {
   const { uploadGraphImportExcel, executeGraphImport, getGraphImportHistory } = await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
@@ -788,7 +932,11 @@ test('graph import service：冲突仅提示，确认后才记录替换导入', 
     inspectIsolation: async () => { throw new Error('已确认替换时不需要重复预检'); },
     schedule: (task) => { scheduled.push(task); },
     writer: async (plan, _connection, options) => {
-      assert.deepEqual(options, { replaceExisting: true, userName: 'alice' });
+      assert.equal(options.signal instanceof AbortSignal, true);
+      assert.deepEqual(
+        { replaceExisting: options.replaceExisting, userName: options.userName },
+        { replaceExisting: true, userName: 'alice' },
+      );
       return { nodeCount: plan.nodeCount, relationshipCount: plan.relationshipCount };
     },
   });
