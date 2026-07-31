@@ -16,6 +16,7 @@ import {
   resolveChangePlanTargets,
   resolvePackageApplyTimeoutMs,
   runCandidateQualityLoop,
+  validatePackageApplyCandidate,
   type AtomicResourcePatch,
   type ChangePlan,
 } from '../src/workflow/package-chat.js';
@@ -473,6 +474,22 @@ function spec(): PackageSpec {
     scripts: [],
   };
 }
+
+test('候选删除仍被引用的对象时将完整性问题归为专家可调整的校验失败', () => {
+  const current = spec();
+  const dangling: PackageSpec = {
+    ...current,
+    objects: current.objects
+      .filter((object) => object.key !== 'Order')
+      .map((object) => ({ ...object, sourceRefs: undefined })),
+  };
+
+  assert.throws(
+    () => validatePackageApplyCandidate(dangling, []),
+    (error: unknown) => error instanceof PackageCandidateValidationError
+      && /操作 FindOrder 引用了不存在的对象 Order/u.test(error.message),
+  );
+});
 
 test('修改计划可用资源标题解析到稳定 key', () => {
   const resolved = resolveChangePlanTargets(spec(), {
