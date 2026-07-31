@@ -1,3 +1,4 @@
+import React, { useId } from 'react';
 import { PROVIDER_OPTIONS } from './data-source-form.js';
 import {
   DATA_SOURCE_TOUR_TARGETS,
@@ -14,11 +15,12 @@ export default function DataSourceConnectionFields({
   onCreateProjectDatabase,
   onSyncOntologyId,
 }) {
+  const providerId = useId();
   return (
     <div className="ev-launch">
       <div className="field" data-tour={DATA_SOURCE_TOUR_TARGETS.provider}>
-        <label>Provider</label>
-        <select value={form.provider} onChange={onProviderChange}>
+        <label htmlFor={providerId}>Provider</label>
+        <select id={providerId} aria-label="Provider" value={form.provider} onChange={onProviderChange}>
           {PROVIDER_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
@@ -117,10 +119,12 @@ function Nl2SqlFields({
 }
 
 function Field({ label, type = 'text', value, onChange, placeholder = '', action = null, tourId }) {
-  const input = <input type={type} value={value ?? ''} onChange={onChange} placeholder={placeholder} autoComplete="off" />;
+  const inputId = useId();
+  const input = <input id={inputId} aria-label={label} type={type} value={value ?? ''}
+    onChange={onChange} placeholder={placeholder} autoComplete="off" />;
   return (
     <div className="field" data-tour={tourId}>
-      <label>{label}</label>
+      <label htmlFor={inputId}>{label}</label>
       {action ? <div className="field-control-row">{input}{action}</div> : input}
     </div>
   );

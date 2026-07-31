@@ -10,6 +10,7 @@ export interface GraphImportRun {
   filename: string;
   fileHash: string;
   packageVersion: string;
+  packageRevisionOid?: string;
   mapping: GraphImportMapping;
   status: GraphImportRunStatus;
   nodeCount: number;
@@ -27,6 +28,7 @@ function rowToRun(row: any): GraphImportRun {
     filename: row.filename,
     fileHash: row.file_hash,
     packageVersion: row.package_version,
+    packageRevisionOid: row.package_revision_oid || undefined,
     mapping: JSON.parse(row.mapping_json),
     status: row.status,
     nodeCount: row.node_count,
@@ -65,15 +67,16 @@ export function createGraphImportRun(input: {
   filename: string;
   fileHash: string;
   packageVersion: string;
+  packageRevisionOid: string;
   mapping: GraphImportMapping;
 }): GraphImportRun {
   const id = `gir_${randomUUID().slice(0, 16)}`;
   getDb().prepare(`INSERT INTO graph_import_runs
-      (id, project_id, filename, file_hash, package_version, mapping_json, status,
+      (id, project_id, filename, file_hash, package_version, package_revision_oid, mapping_json, status,
        node_count, relationship_count, skipped_count, created_at)
-    VALUES (?,?,?,?,?,?,'running',0,0,0,?)`)
+    VALUES (?,?,?,?,?,?,?,'running',0,0,0,?)`)
     .run(id, input.projectId, input.filename, input.fileHash, input.packageVersion,
-      JSON.stringify(input.mapping), nowIso());
+      input.packageRevisionOid, JSON.stringify(input.mapping), nowIso());
   return getGraphImportRun(id)!;
 }
 

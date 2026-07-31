@@ -9,19 +9,21 @@ CREATE TABLE IF NOT EXISTS projects (
   background    TEXT NOT NULL DEFAULT '',
   target_users  TEXT,
   glossary_prefs TEXT,
+  sensitivity_level TEXT NOT NULL DEFAULT 'standard',
+  workflow_profile_json TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}',
   stage         TEXT NOT NULL DEFAULT 'project_setup',
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
 
--- 唯一的可恢复建模任务图。新项目创建时初始化，存量项目首次读取时自动投影。
+-- 唯一的可恢复建模任务图。由项目创建或会话推进入口显式初始化。
 CREATE TABLE IF NOT EXISTS ai_construction_graphs (
   project_id    TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
   revision      INTEGER NOT NULL DEFAULT 1,
   status        TEXT NOT NULL DEFAULT 'active'
                 CHECK (status IN ('active', 'completed', 'superseded')),
   source        TEXT NOT NULL DEFAULT 'new'
-                CHECK (source IN ('new', 'legacy_projection', 'package_import')),
+                CHECK (source IN ('new', 'package_import')),
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -198,6 +200,16 @@ CREATE TABLE IF NOT EXISTS wf_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_wf_nodes_project ON wf_nodes(project_id, ordinal);
 
+CREATE TABLE IF NOT EXISTS workflow_step_progress (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  step_id       TEXT NOT NULL,
+  status        TEXT NOT NULL CHECK (status IN ('running', 'waiting_answer', 'waiting_review', 'completed', 'skipped', 'stale', 'failed')),
+  output_json   TEXT NOT NULL DEFAULT '{}',
+  revision_oid  TEXT,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (project_id, step_id)
+);
+
 CREATE TABLE IF NOT EXISTS workflow_trace_events (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -356,41 +368,7 @@ CREATE TABLE IF NOT EXISTS project_operation_leases (
 CREATE INDEX IF NOT EXISTS idx_project_operation_leases_expiry
   ON project_operation_leases(expires_at);
 
--- ---- M2：访谈 / 胜任力 / 包版本 ----
-
--- 访谈批次（一个节点可产生多批；动态追问也记为批）
-CREATE TABLE IF NOT EXISTS interview_batches (
-  id            TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  node_id       TEXT,               -- 归属的 wf_node
-  ordinal       INTEGER NOT NULL,
-  questions_json TEXT NOT NULL,      -- [{id, kind(single|multi|text), q, options[], topic}]
-  answered      INTEGER NOT NULL DEFAULT 0,
-  created_at    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_batches_project ON interview_batches(project_id, ordinal);
-
--- 访谈答案（专家应答，支持回溯修改）
-CREATE TABLE IF NOT EXISTS interview_answers (
-  id            TEXT PRIMARY KEY,
-  batch_id      TEXT NOT NULL REFERENCES interview_batches(id) ON DELETE CASCADE,
-  question_id   TEXT NOT NULL,
-  answer_json   TEXT NOT NULL,       -- {selected[], other, skipped}
-  created_at    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_answers_batch ON interview_answers(batch_id);
-
--- 胜任力问题（候选 → 勾选；双落地：operation 覆盖 + 评测预填）
-CREATE TABLE IF NOT EXISTS competency_questions (
-  id            TEXT PRIMARY KEY,
-  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  question      TEXT NOT NULL,
-  selected      INTEGER NOT NULL DEFAULT 0,
-  source        TEXT NOT NULL DEFAULT 'generated', -- generated | custom
-  covered_operation TEXT,            -- 生成后回填：覆盖它的 operation key
-  created_at    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_cq_project ON competency_questions(project_id);
+-- ---- M2：包版本 ----
 
 -- 知识包版本（每次生成/优化产出一版；spec_json 是结构化规格，files_json 是渲染产物索引）
 CREATE TABLE IF NOT EXISTS package_versions (
@@ -461,12 +439,13 @@ CREATE INDEX IF NOT EXISTS idx_artifact_candidates_project
 CREATE INDEX IF NOT EXISTS idx_artifact_candidates_pending
   ON artifact_candidate_revisions(project_id, status, created_at DESC);
 
--- 人工编辑草稿。草稿只绑定一个不可变的基线版本；同一项目同一时间最多存在一个活动草稿。
+-- 人工编辑草稿。Git revision 是事实基线；语义版本字段只用于展示和历史追踪。
 CREATE TABLE IF NOT EXISTS package_drafts (
   id                      TEXT PRIMARY KEY,
   project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   base_package_version_id TEXT NOT NULL REFERENCES package_versions(id) ON DELETE CASCADE,
   base_version            TEXT NOT NULL,
+  base_revision_oid       TEXT NOT NULL,
   status                  TEXT NOT NULL DEFAULT 'active'
                             CHECK (status IN ('active', 'published', 'discarded')),
   revision                INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
@@ -520,6 +499,7 @@ CREATE TABLE IF NOT EXISTS graph_import_uploads (
   stored_path   TEXT NOT NULL,
   file_hash     TEXT NOT NULL,
   size_bytes    INTEGER NOT NULL,
+  package_revision_oid TEXT NOT NULL,
   expires_at    TEXT NOT NULL,
   created_at    TEXT NOT NULL
 );
@@ -532,6 +512,7 @@ CREATE TABLE IF NOT EXISTS graph_import_runs (
   filename           TEXT NOT NULL,
   file_hash          TEXT NOT NULL,
   package_version    TEXT NOT NULL,
+  package_revision_oid TEXT NOT NULL,
   mapping_json       TEXT NOT NULL,
   status             TEXT NOT NULL DEFAULT 'running',
   node_count         INTEGER NOT NULL DEFAULT 0,
@@ -721,6 +702,25 @@ CREATE TABLE IF NOT EXISTS package_release_records (
   released_by         TEXT NOT NULL,
   released_at         TEXT NOT NULL,
   PRIMARY KEY (project_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS package_check_revisions (
+  project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  artifact_revision_oid TEXT NOT NULL,
+  version               TEXT NOT NULL,
+  findings_json         TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  PRIMARY KEY (project_id, artifact_revision_oid)
+);
+CREATE INDEX IF NOT EXISTS idx_package_check_revisions_project
+  ON package_check_revisions(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS package_semantic_check_cache (
+  project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  semantic_hash  TEXT NOT NULL,
+  findings_json  TEXT NOT NULL,
+  created_at     TEXT NOT NULL,
+  PRIMARY KEY (project_id, semantic_hash)
 );
 
 -- 受控修复逐次审计。root_revision_oid 把自动重试绑定到同一修订链；

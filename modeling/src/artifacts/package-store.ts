@@ -51,6 +51,14 @@ export interface SavePackageVersionInput {
   action: PackageRevisionAction;
 }
 
+export interface InitializeDraftPackageInput {
+  id: string;
+  name: string;
+  description: string;
+  language?: string;
+  defaultProviderAlias?: string;
+}
+
 export interface ImportPackageVersionInput extends SavePackageVersionInput {
   files: Readonly<Record<string, string | Uint8Array>>;
 }
@@ -61,6 +69,28 @@ export interface SaveCurrentAsPackageVersionInput {
   status?: PackageSpec['status'];
   note?: string;
   action: PackageRevisionAction;
+}
+
+export interface PublishDraftPackageVersionInput {
+  expectedRevision: string;
+  draftId: string;
+  expectedDraftRevision: number;
+  spec: PackageSpec;
+  coverage: CoverageResult;
+  note?: string;
+  action: PackageRevisionAction;
+}
+
+export interface PublishedDraftPackageVersion {
+  package: PackageArtifactView;
+  packageVersionId: string;
+  changedPaths: string[];
+  draft: {
+    id: string;
+    status: 'published';
+    revision: number;
+    updatedAt: string;
+  };
 }
 
 export interface FinalizeCurrentPackageVersionInput {
@@ -277,6 +307,80 @@ export class PackageArtifactStore {
     return this.runExclusive(projectId, () => this.ensureProjectUnlocked(projectId));
   }
 
+  /** 首次进入统一建模工作台时创建最小知识包草稿；重复调用保持幂等。 */
+  async initializeDraftPackage(
+    projectId: string,
+    input: InitializeDraftPackageInput,
+  ): Promise<PackageArtifactView> {
+    return this.runExclusive(projectId, async () => {
+      await this.ensureProjectUnlocked(projectId);
+      const current = await this.repository.snapshot(projectId);
+      const existing = this.optionalViewFromSnapshot(current);
+      if (existing) return existing;
+
+      const spec: PackageSpec = {
+        id: requiredText(input.id, '知识包 ID', 200),
+        name: requiredText(input.name, '知识包名称', 200),
+        description: requiredText(input.description, '知识包说明', 2_000),
+        version: '0.1.0',
+        language: optionalText(input.language, '知识包语言', 50) ?? 'zh-CN',
+        status: 'draft',
+        objects: [],
+        operations: [],
+        rules: [],
+        metrics: [],
+        scripts: [],
+        defaultProviderAlias: optionalText(
+          input.defaultProviderAlias,
+          '默认数据源别名',
+          100,
+        ) ?? 'data',
+      };
+      const coverage: CoverageResult = { covered: [], uncovered: [] };
+      validatePackageSpec(spec);
+      const target = packageFiles(spec, coverage, true);
+      const changes = changesForManagedFiles(current.files, target);
+      const action: NormalizedAction = {
+        cause: 'draft_initialized',
+        summary: '初始化知识包草稿',
+        actorKind: 'system',
+        actorName: '建模系统',
+      };
+      const id = `pv_${randomUUID().slice(0, 12)}`;
+      const revision = await this.commitAndIndex(
+        projectId,
+        current.revision.oid,
+        () => this.repository.commit(projectId, current.revision.oid, changes, gitMetadata(action)),
+        (savedRevision) => {
+          this.db.prepare(`INSERT INTO package_versions
+            (id, project_id, version, spec_json, coverage_json, note, revision_oid, created_at)
+            VALUES (?,?,?,?,?,?,?,?)`)
+            .run(
+              id,
+              projectId,
+              spec.version,
+              JSON.stringify(spec),
+              JSON.stringify(coverage),
+              '统一建模工作台初始化草稿',
+              savedRevision.oid,
+              savedRevision.createdAt,
+            );
+          this.recordRevision(
+            projectId,
+            savedRevision,
+            action,
+            changes.map((change) => change.path),
+            spec.version,
+          );
+        },
+      );
+      return this.viewFromSnapshot(
+        await this.repository.snapshot(projectId, revision.oid),
+        spec.version,
+      );
+    });
+  }
+
   async removeProjectArtifacts(projectId: string): Promise<void> {
     return this.runExclusive(projectId, async () => {
       await this.repository.removeProject?.(projectId);
@@ -428,6 +532,109 @@ export class PackageArtifactStore {
     });
   }
 
+  /**
+   * 将绑定 Git 基线的人工草稿发布为新版本。Git 提交、版本索引、修订索引和
+   * 草稿状态在同一个补偿提交单元内完成；任一 SQLite 写入失败都会回滚 Git HEAD。
+   */
+  async publishDraftPackageVersion(
+    projectId: string,
+    input: PublishDraftPackageVersionInput,
+  ): Promise<PublishedDraftPackageVersion> {
+    return this.runExclusive(projectId, async () => {
+      const action = validateAction(input.action);
+      await this.ensureProjectUnlocked(projectId);
+      validatePackageSpec(input.spec);
+      validateCoverage(input.coverage);
+      const packageVersion = requiredText(input.spec.version, '包版本', 100);
+      const note = optionalText(input.note, '版本备注', 1000);
+      const draftId = requiredText(input.draftId, '人工草稿 ID', 100);
+      if (!Number.isSafeInteger(input.expectedDraftRevision) || input.expectedDraftRevision < 0) {
+        throw new PackageArtifactStoreError('invalid_input', '人工草稿修订号不正确');
+      }
+
+      const current = await this.repository.snapshot(projectId);
+      assertExpectedRevision(input.expectedRevision, current.revision.oid);
+      const currentView = this.viewFromSnapshot(current);
+      const target = draftPackageFiles(current, currentView, input.spec, input.coverage);
+      const changes = changesForManagedFiles(current.files, target);
+      if (!changes.length) {
+        throw new PackageArtifactStoreError('invalid_input', '人工草稿没有可发布的实际变化');
+      }
+      this.viewFromSnapshot(applyCandidateChanges(current, changes), packageVersion);
+
+      const packageVersionId = `pv_${randomUUID().slice(0, 12)}`;
+      const revision = await this.commitAndIndex(
+        projectId,
+        input.expectedRevision,
+        () => this.repository.commit(
+          projectId,
+          input.expectedRevision,
+          changes,
+          gitMetadata(action),
+        ),
+        (savedRevision) => {
+          this.db.prepare(`INSERT INTO package_versions
+            (id, project_id, version, spec_json, coverage_json, note, revision_oid, created_at)
+            VALUES (?,?,?,?,?,?,?,?)`)
+            .run(
+              packageVersionId,
+              projectId,
+              packageVersion,
+              JSON.stringify(input.spec),
+              JSON.stringify(input.coverage),
+              note,
+              savedRevision.oid,
+              savedRevision.createdAt,
+            );
+          const updated = this.db.prepare(`UPDATE package_drafts
+            SET status = 'published', revision = revision + 1, updated_at = ?
+            WHERE id = ? AND project_id = ? AND status = 'active' AND revision = ?
+              AND base_revision_oid = ?`)
+            .run(
+              savedRevision.createdAt,
+              draftId,
+              projectId,
+              input.expectedDraftRevision,
+              input.expectedRevision,
+            );
+          if (Number(updated.changes) !== 1) {
+            throw new ArtifactRepositoryError(
+              'revision_conflict',
+              '人工草稿已更新、已结束或基线修订发生变化，请刷新后重试',
+            );
+          }
+          this.recordRevision(
+            projectId,
+            savedRevision,
+            action,
+            changes.map((change) => change.path),
+            packageVersion,
+          );
+        },
+      );
+      const draft = this.db.prepare(`SELECT id, revision, updated_at FROM package_drafts
+        WHERE id = ? AND project_id = ?`).get(draftId, projectId) as {
+          id: string;
+          revision: number;
+          updated_at: string;
+        };
+      return {
+        package: this.viewFromSnapshot(
+          await this.repository.snapshot(projectId, revision.oid),
+          packageVersion,
+        ),
+        packageVersionId,
+        changedPaths: changes.map((change) => change.path),
+        draft: {
+          id: draft.id,
+          status: 'published',
+          revision: draft.revision,
+          updatedAt: draft.updated_at,
+        },
+      };
+    });
+  }
+
   /** 更新当前语义版本的状态，保留所有人工修订文件和修订历史。 */
   async finalizeCurrentPackageVersion(
     projectId: string,
@@ -448,7 +655,7 @@ export class PackageArtifactStore {
         gitMetadata(action),
       ), (savedRevision) => {
         const row = this.db.prepare(`SELECT id FROM package_versions
-          WHERE project_id = ? AND version = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`)
+          WHERE project_id = ? AND version = ? ORDER BY rowid DESC LIMIT 1`)
           .get(projectId, currentView.packageVersion) as { id: string } | undefined;
         if (!row) throw new PackageArtifactStoreError('invalid_package', '当前知识包版本不存在');
         this.db.prepare(`UPDATE package_versions
@@ -491,7 +698,7 @@ export class PackageArtifactStore {
       const normalizedVersion = requiredText(version, '包版本', 100);
       const row = this.db.prepare(`SELECT version, revision_oid FROM package_versions
         WHERE project_id = ? AND version = ? AND revision_oid IS NOT NULL
-        ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId, normalizedVersion) as any;
+        ORDER BY rowid DESC LIMIT 1`).get(projectId, normalizedVersion) as any;
       if (!row?.revision_oid) return null;
       return this.viewFromSnapshot(await this.repository.snapshot(projectId, row.revision_oid), row.version);
     });
@@ -1027,7 +1234,7 @@ export class PackageArtifactStore {
 
     const recovered = await this.rollbackUnindexedCommits(projectId, currentAfterRecovery);
     const legacyRows = this.db.prepare(`SELECT rowid AS source_rowid, * FROM package_versions
-      WHERE project_id = ? ORDER BY created_at, rowid`).all(projectId) as any[];
+      WHERE project_id = ? ORDER BY rowid`).all(projectId) as any[];
     const current = await this.repository.snapshot(projectId, recovered.oid);
     const needsMigration = legacyRows.some((row) => !row.revision_oid)
       || (legacyRows.length > 0 && !current.files.some((file) => file.path === SPEC_PATH));
@@ -1040,6 +1247,9 @@ export class PackageArtifactStore {
       const coverage = parseCoverage(row.coverage_json);
       const packageVersion = requiredText(String(row.version ?? ''), '包版本', 100);
       const target = packageFiles(spec, coverage);
+      // 历史版本补建 revision_oid 时，当前 Git HEAD 可能已含流程图、
+      // 导入附件或扩展目录。这些不属于规格派生文件，迁移不得删除。
+      preserveImportedExtras(head.files, target);
       const changes = changesForManagedFiles(head.files, target);
       let revision = head.revision;
       if (changes.length > 0) {
@@ -1723,16 +1933,44 @@ function gitMetadata(action: NormalizedAction) {
   };
 }
 
-function packageFiles(spec: PackageSpec, coverage: CoverageResult): Map<string, Uint8Array> {
+function packageFiles(
+  spec: PackageSpec,
+  coverage: CoverageResult,
+  includeDraftTemplate = false,
+): Map<string, Uint8Array> {
   const encoder = new TextEncoder();
   const files = new Map<string, Uint8Array>([
     [SPEC_PATH, encoder.encode(`${JSON.stringify(spec, null, 2)}\n`)],
     [COVERAGE_PATH, encoder.encode(`${JSON.stringify(coverage, null, 2)}\n`)],
   ]);
-  for (const [path, content] of Object.entries(renderPackage(spec))) {
+  for (const [path, content] of Object.entries(renderPackage(spec, { includeDraftTemplate }))) {
     files.set(`${PACKAGE_PREFIX}${path}`, encoder.encode(content));
   }
   return files;
+}
+
+/**
+ * 人工草稿只覆盖由本次结构化规格变化影响的标准文件。当前修订中已经存在的
+ * 流程图、导入附件、扩展目录，以及没有被本次规格变化触及的受控人工修订都保留。
+ */
+function draftPackageFiles(
+  current: ArtifactSnapshot,
+  currentView: PackageArtifactView,
+  spec: PackageSpec,
+  coverage: CoverageResult,
+): Map<string, Uint8Array> {
+  const previousCanonical = packageFiles(currentView.spec, currentView.coverage);
+  const target = packageFiles(spec, coverage);
+  preserveImportedExtras(current.files, target);
+
+  for (const file of current.files) {
+    const previous = previousCanonical.get(file.path);
+    const next = target.get(file.path);
+    if (previous && next && bytesEqual(previous, next)) {
+      target.set(file.path, new Uint8Array(file.content));
+    }
+  }
+  return target;
 }
 
 function importedPackageFiles(

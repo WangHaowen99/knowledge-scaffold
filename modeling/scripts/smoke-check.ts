@@ -8,7 +8,8 @@
 import * as XLSX from 'xlsx';
 import { parseDocument } from '../src/documents/parser.js';
 import { createProject, getProject } from '../src/projects/repo.js';
-import { insertPackageVersion, listPackageVersions } from '../src/workflow/m2-repo.js';
+import { getPackageVersion, listPackageVersions } from '../src/workflow/m2-repo.js';
+import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
 import { runRuleChecks, runSemanticCheck } from '../src/workflow/package-check.js';
 import { packageChatPlan, packageChatApply } from '../src/workflow/package-chat.js';
 import { findingsToSuggestions, extractCitedKeys } from '../src/evaluation/optimizer.js';
@@ -29,9 +30,39 @@ const BAD: PackageSpec = {
     { key: 'GHOST_SRC', title: '幽灵表对象', description: '来源表不存在于数据字典的对象', sourceTable: 'NOT_A_TABLE', fields: [{ key: 'X' }] },
   ],
   operations: [
-    { key: 'OP-A', title: '甲', description: 'd', inputs: [{ param: 'eco_id', type: 'string', required: true }], outputs: [], flow: ['查 STRUCTURE_LIST'], relatedObjects: ['STRUCTURE_LIST'], competencyQuestion: '问题一' },
+    { key: 'OP-A', title: '甲', description: 'd', inputs: [{ param: 'eco_id', type: 'string', required: true }], outputs: [], flow: ['查 STRUCTURE_LIST'], relatedObjects: ['STRUCTURE_LIST'], usesRules: ['MISSING-RULE'], competencyQuestion: '问题一' },
     { key: 'OP-B', title: '乙', description: 'd', inputs: [], outputs: [], flow: [], relatedObjects: ['DANGLING'], competencyQuestion: '问题一' },
   ],
+  rules: [{ key: 'KEEP-RULE', title: '保留规则', content: '修缮操作时不得丢失。', appliesToObjects: ['STRUCTURE_LIST'] }],
+  metrics: [{ key: 'KEEP-METRIC', title: '保留指标', caliber: '记录数', boundaries: ['STRUCTURE_LIST 表'], usesObjects: ['STRUCTURE_LIST'] }],
+};
+
+const CHAT: PackageSpec = {
+  ...BAD,
+  status: 'released',
+  objects: [{
+    key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: '用于修缮对话回归的完整业务对象。',
+    sourceTable: 'STRUCTURE_LIST', primaryKey: ['ID'], fields: [{ key: 'ID' }],
+  }],
+  operations: [{
+    key: 'OP-A', title: '甲', description: '查询 STRUCTURE_LIST 记录', inputs: [], outputs: [{ field: 'result', type: 'array' }],
+    flow: ['查询 object:STRUCTURE_LIST', '执行 script:keep_script', '返回结果'], relatedObjects: ['STRUCTURE_LIST'], competencyQuestion: '问题一',
+    script: { key: 'keep_script', required: true },
+  }],
+  scripts: [{
+    key: 'keep_script', title: '保留脚本', description: '修缮其他资源时不得丢失。', boundOperation: 'OP-A',
+    runtime: 'python', entrypoint: 'keep_script.py', timeoutSeconds: 30,
+    parameters: [{ name: 'input_json', flag: '--input-json', type: 'string', required: true }],
+    outputs: [{ key: 'result', type: 'object' }], boundaries: ['仅处理结构化输入'],
+    sourceCode: [
+      'import argparse',
+      'import json',
+      'parser = argparse.ArgumentParser()',
+      'parser.add_argument("--input-json", required=True)',
+      'args = parser.parse_args()',
+      'print(json.dumps({"result": json.loads(args.input_json)}))',
+    ].join('\n'),
+  }],
 };
 
 const CHAT_SPEC: PackageSpec = {
@@ -110,12 +141,20 @@ async function main() {
   ok(has('数据映射失效'), '规则：来源表不在数据字典');
   ok(has('输入未使用'), '规则：必填输入未在流程中引用');
   ok(has('描述过简'), '规则：对象描述过短');
+  const shortClaim: PackageSpec = {
+    ...CHAT,
+    operations: [{ ...CHAT.operations[0], competencyQuestion: '产品' }],
+  };
+  ok(runRuleChecks(shortClaim, TABLES, ['应该推荐什么产品？']).some((f) => f.category === '领域问题未覆盖'),
+    '规则：短子串不能虚假覆盖完整领域问题');
 
   // ①b 体检发现 → 优化建议（确定性转换）
   const sugs = findingsToSuggestions(fs);
   ok(sugs.length > 0 && sugs.every((s) => s.title.startsWith('[体检]')), `体检发现转建议 ${sugs.length} 条（带 [体检] 前缀）`);
   ok(!sugs.some((s) => s.detail.includes('描述过短')), '提示级发现不转建议（过滤噪音）');
   ok(sugs.find((s) => s.title.includes('典型问题重复认领'))?.kind === 'modify_operation', '重复认领 → modify_operation');
+  const missingRule = sugs.find((s) => s.kind === 'add_rule');
+  ok(missingRule?.target === 'MISSING-RULE', '缺失规则引用 → add_rule，目标是缺失的 rule key');
 
   // ①c 执行痕迹提取
   const cited = extractCitedKeys('本次通过 OP-A 查询，并参考对象 STRUCTURE_LIST 的字段；OP-Z 未出现', BAD);
@@ -127,7 +166,20 @@ async function main() {
   ok(sem.length >= 1 && sem[0].source === 'semantic' && !!sem[0].suggestion, `语义检查（faux）产出 ${sem.length} 条发现且带修复建议`);
 
   // ③ 两段式修缮
-  insertPackageVersion(project.id, '1.0.0', CHAT_SPEC, { covered: [], uncovered: [] });
+  const artifacts = getPackageArtifactStore();
+  const initialRevision = await artifacts.ensureProject(project.id);
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialRevision.oid,
+    spec: CHAT,
+    coverage: { covered: [], uncovered: [] },
+    note: '包体检冒烟基线',
+    action: {
+      cause: 'smoke_check_baseline',
+      summary: '创建包体检冒烟基线',
+      actorKind: 'system',
+      actorName: '冒烟脚本',
+    },
+  });
   const consult = await packageChatPlan(getProject(project.id)!, [], '解释一下 OP-A 是干什么的');
   ok(!!consult.reply && !consult.plan, '咨询类：直接文字回复，不出计划');
 
@@ -135,25 +187,45 @@ async function main() {
   ok(!!planRes.plan && planRes.plan.changes.length >= 1, `修改类：返回计划（${planRes.plan?.changes.length} 条 change，含风险 ${planRes.plan?.risks?.length ?? 0} 条）`);
 
   const applied = await packageChatApply(getProject(project.id)!, [], '增加一个查询 CHANGE_ORDER 的操作', planRes.plan!, TABLES);
-  ok(applied.version === '1.1.0', `确认应用：生成 v${applied.version}`);
+  ok(applied.version === '1.0.1-rc.1', `确认应用：生成 v${applied.version}`);
   ok(listPackageVersions(project.id).length === 2, '版本历史 +1');
+  const revised = getPackageVersion(project.id, '1.0.1-rc.1')?.spec;
+  ok(revised?.status === 'review', '修缮版本进入发布候选评审状态');
+  ok(revised?.rules?.some((r) => r.key === 'KEEP-RULE') === true, '修缮对话保留已有规则');
+  ok(revised?.metrics?.some((m) => m.key === 'KEEP-METRIC') === true, '修缮对话保留已有指标');
+  ok(revised?.scripts?.some((script) => script.key === 'keep_script') === true, '修缮对话保留已有脚本');
+
+  const rulePlan: any = {
+    summary: '修改保留规则',
+    changes: [{ targetKind: 'rule', targetKey: 'KEEP-RULE', action: 'modify', description: '补充规则的适用条件' }],
+  };
+  const ruleApplied = await packageChatApply(
+    getProject(project.id)!, [], '修改 KEEP-RULE，补充适用条件', rulePlan, TABLES,
+  );
+  ok(ruleApplied.version === '1.0.1-rc.2', `规则修缮：生成 v${ruleApplied.version}`);
+  const revisedRule = getPackageVersion(project.id, '1.0.1-rc.2')?.spec.rules?.find((r) => r.key === 'KEEP-RULE');
+  ok(revisedRule?.content !== BAD.rules?.[0].content, '修缮对话可以实际修改规则');
 
   // 删除计划：数量收缩被计划豁免
   const delPlan = await packageChatPlan(getProject(project.id)!, [], '删除第一个操作');
   ok(delPlan.plan?.changes.some((c) => c.action === 'remove'), '删除类：计划含 remove 条目');
-  const delApplied = await packageChatApply(getProject(project.id)!, [], '删除第一个操作', delPlan.plan!, TABLES);
-  ok(delApplied.version === '1.2.0', `计划内删除放行：生成 v${delApplied.version}`);
+  const delApplied = await packageChatApply(
+    getProject(project.id)!, [], '删除第一个操作', delPlan.plan!, TABLES,
+  );
+  ok(delApplied.version === '1.0.1-rc.3', `计划内删除放行：生成 v${delApplied.version}`);
 
-  // 计划外丢失：伪造一个「只 add 却导致收缩」的计划 → 应被拒绝
-  const evilPlan = { summary: '伪造', changes: [{ targetKind: 'operation' as const, targetKey: 'x', action: 'remove' as const, description: '' }, { targetKind: 'object' as const, targetKey: BAD.objects[0].key, action: 'remove' as const, description: '' }] };
-  // faux apply 只会按 remove 移除指名 key；objects remove 的 targetKey 是真实对象 → 收缩 1 对象 1 操作，计划允许 → 放行。
-  // 反向用 add-only 计划配 faux 的 remove 行为无法构造，改为直接验证防护函数逻辑：
-  const addOnly = { summary: 'add-only', changes: [{ targetKind: 'operation' as const, targetKey: 'OP-A', action: 'remove' as const, description: '' }] };
-  const guarded = await packageChatApply(getProject(project.id)!, [], '删除 OP-A 与一个对象', addOnly, TABLES)
+  // 已删除目标不能再次形成空转版本。
+  const stalePlan = { summary: 'stale-remove', changes: [{ targetKind: 'operation' as const, targetKey: 'OP-A', action: 'remove' as const, description: '再次删除 OP-A' }] };
+  const versionCountBeforeStaleApply = listPackageVersions(project.id).length;
+  const guarded = await packageChatApply(getProject(project.id)!, [], '再次删除 OP-A', stalePlan, TABLES)
     .then((r) => ({ okApplied: true as const, r }))
     .catch((e) => ({ okApplied: false as const, msg: String(e?.message ?? e) }));
-  // addOnly 只允许删 1 个操作、0 个对象；faux 只删操作 → 应放行
-  ok(guarded.okApplied, '防护：计划内收缩放行（操作 -1）');
+  ok(
+    !guarded.okApplied
+      && /目标不存在|修订未完整落实/.test(guarded.msg)
+      && listPackageVersions(project.id).length === versionCountBeforeStaleApply,
+    '防护：计划目标已不存在时拒绝空转版本',
+  );
 
   console.log(`\n=== 冒烟${process.exitCode ? '存在失败' : '通过'} ===\n`);
 }

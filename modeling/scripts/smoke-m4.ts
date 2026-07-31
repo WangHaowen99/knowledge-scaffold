@@ -5,23 +5,33 @@
  * 验收（design.md M4）：两轮优化后通过率可见提升 —— 1/3 → 2/3 → 3/3。
  */
 import { createServer } from 'node:http';
+import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { unzipSync, strFromU8 } from 'fflate';
 import { createProject, getProject } from '../src/projects/repo.js';
 import { insertDocument } from '../src/documents/repo.js';
-import { insertPackageVersion, listPackageVersions, getPackageVersion, latestPackageVersion } from '../src/workflow/m2-repo.js';
+import { listPackageVersions } from '../src/workflow/m2-repo.js';
 import { checkCoverage } from '../src/workflow/m2.js';
 import * as m3repo from '../src/workflow/m3-repo.js';
 import * as m4repo from '../src/workflow/m4-repo.js';
-import { startEvaluation } from '../src/evaluation/engine.js';
+import { startCurrentEvaluation } from '../src/evaluation/engine.js';
 import { configureProjectDataSource } from '../src/evaluation/data-source-service.js';
 import { proposeOptimizations, applyOptimizations } from '../src/evaluation/optimizer.js';
-import { renderPackage } from '../src/workflow/package-render.js';
+import { createOptimizationCandidate } from '../src/evaluation/optimization-candidate.js';
+import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
+import { nextValidationCandidateVersion } from '../src/workflow/package-version-lifecycle.js';
 import { zipPackage } from '../src/workflow/export.js';
 import { setSetting } from '../src/settings/repo.js';
+import type { LlmDeps } from '../src/llm/provider.js';
 import type { PackageSpec } from '../src/types.js';
 
 const ok = (c: boolean, m: string) => { console.log(`  ${c ? '✓' : '✗ FAIL'}  ${m}`); if (!c) process.exitCode = 1; };
 const frags = (s: string) => s.split(/[，。；、？?：:\s]+/).filter((f) => f.length > 1);
+
+function faux(toolName: string, params: unknown): LlmDeps {
+  const core = createFauxCore({ provider: 'smoke-m4', models: [{ id: 'smoke-m4' }] });
+  core.setResponses([fauxAssistantMessage([fauxToolCall(toolName, params)])]);
+  return { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+}
 
 // ---- 内容感知 stub consumer ----
 let importedPkgText: Record<string, string> = {};
@@ -55,6 +65,10 @@ function startStubConsumer(port: number) {
       }
       return send(201, { success: true, ontology_id: 'demo-agent', objects_count: 1, operations_count: Object.keys(importedPkgText).length });
     }
+    if (/^\/agentic\/ontologies\/[^/]+\/active-version$/.test(url) && req.method === 'PUT') {
+      const version = String(JSON.parse(body.toString()).version ?? '');
+      return send(200, { success: true, active_version: version });
+    }
     if (/^\/agentic\/ontologies\/[^/]+\/data-source$/.test(url) && req.method === 'DELETE') {
       return send(200, { success: true });
     }
@@ -71,9 +85,12 @@ function startStubConsumer(port: number) {
         .filter((x) => x.score > 0)
         .sort((a, b) => b.score - a.score);
       const answer = hits.length
-        ? hits.slice(0, 3).map((h) => h.text).join('\n').slice(0, 4000)
+        ? hits.slice(0, 5).map((h) => h.text).join('\n').slice(0, 6000)
         : '根据当前知识包无法回答该问题。';
-      return send(200, { status: 'success', final_answer: answer, session_id: 'x', run_id: 'r' });
+      return send(200, {
+        status: 'success', final_answer: answer, session_id: 'x', run_id: 'r',
+        execution_trace: { tool_calls: ['knowledge_search'] },
+      });
     }
     return send(404, { error: `stub 未实现 ${req.method} ${url}` });
   });
@@ -82,7 +99,7 @@ function startStubConsumer(port: number) {
 }
 
 async function runRoundAndWait(projectId: string): Promise<{ passCount: number; total: number; version: string }> {
-  const { roundId } = startEvaluation({ projectId, token: 'stub-token' });
+  const { roundId } = await startCurrentEvaluation({ projectId, token: 'stub-token' });
   for (let i = 0; i < 120; i++) {
     const r = m3repo.getRound(roundId)!;
     if (r.status !== 'running') break;
@@ -93,21 +110,95 @@ async function runRoundAndWait(projectId: string): Promise<{ passCount: number; 
   return { passCount: r.passCount, total: r.progressTotal, version: r.packageVersion };
 }
 
-// 镜像 routes.ts 的 optimize/apply 逻辑（版本号递增 + 覆盖重算 + 状态落库）
+// 镜像正式链路：当前 Git 修订 → 优化候选 → 专家接受 → RC 版本固化。
 async function optimizeOnce(projectId: string, adoptQuestions: string[]): Promise<string> {
   const round = m3repo.listRounds(projectId).find((x) => x.status === 'done')!;
-  const pv = getPackageVersion(projectId, round.packageVersion) ?? latestPackageVersion(projectId)!;
+  if (!round.artifactRevision) throw new Error('评测轮次缺少工件修订');
+  const artifacts = getPackageArtifactStore();
+  const current = await artifacts.readPackageFiles(projectId);
+  if (current.revision.oid !== round.artifactRevision) {
+    throw new Error('评测轮次已经过期，请先对当前工件修订重新评测');
+  }
   const failed = m3repo.listResults(round.id).filter((x) => x.verdict !== 'pass');
-  const raw = await proposeOptimizations(getProject(projectId)!, pv.spec, failed);
-  const suggestions = m4repo.insertSuggestions(projectId, round.id, round.packageVersion, raw);
+  const raw = await proposeOptimizations(getProject(projectId)!, current.spec, failed);
+  const suggestions = m4repo.insertSuggestions(
+    projectId, round.id, round.packageVersion, current.revision.oid, raw,
+  );
   const adopted = suggestions.filter((s) => s.status === 'pending' && adoptQuestions.some((q) => s.relatedQuestion === q));
   if (!adopted.length) throw new Error(`没有匹配的可采纳建议（候选 ${suggestions.length} 条）`);
-  const latest = latestPackageVersion(projectId)!;
-  const revised = await applyOptimizations(getProject(projectId)!, latest.spec, adopted);
-  const version = `1.${listPackageVersions(projectId).length}.0`;
-  const spec: PackageSpec = { ...latest.spec, version, objects: revised.objects, operations: revised.operations };
-  insertPackageVersion(projectId, version, spec, checkCoverage(spec, []), `优化迭代：基于 ${adopted[0].basedVersion} 应用 ${adopted.length} 条建议`);
-  m4repo.markApplied(adopted.map((s) => s.id), version);
+  const revised = await applyOptimizations(
+    getProject(projectId)!,
+    current.spec,
+    adopted,
+    faux('submit_revised_spec', {
+      objects: current.spec.objects,
+      operations: [
+        ...current.spec.operations,
+        ...adopted.map((suggestion, index) => ({
+          key: `opt_${current.spec.operations.length + index + 1}`,
+          title: suggestion.relatedQuestion ?? suggestion.title,
+          description: `（优化新增）${suggestion.relatedQuestion ?? ''}：${suggestion.detail}`,
+          inputs: [{ param: 'keyword', type: 'string', required: true, note: '查询关键字' }],
+          outputs: [{ field: 'result', type: 'string', note: '结论' }],
+          flow: ['按沉淀的业务规则直接作答', suggestion.detail],
+          relatedObjects: current.spec.objects.slice(0, 1).map((object) => object.key),
+          competencyQuestion: suggestion.relatedQuestion,
+        })),
+      ],
+      rules: current.spec.rules ?? [],
+      metrics: current.spec.metrics ?? [],
+      scripts: current.spec.scripts ?? [],
+    }),
+  );
+  const candidateSpec: PackageSpec = {
+    ...current.spec,
+    ...revised,
+    version: current.spec.version,
+  };
+  const coverage = checkCoverage(candidateSpec, []);
+  const candidate = await createOptimizationCandidate({
+    store: artifacts,
+    projectId,
+    current,
+    spec: candidateSpec,
+    coverage,
+    suggestionIds: adopted.map((suggestion) => suggestion.id),
+    summary: `M4 冒烟优化：${adopted.map((suggestion) => suggestion.title).join('；')}`,
+    linkCandidate: (candidateId) => m4repo.markCandidateRevision(
+      projectId, adopted.map((suggestion) => suggestion.id), candidateId,
+    ),
+  });
+  const accepted = await artifacts.acceptCandidateRevision(projectId, {
+    candidateId: candidate.id,
+    action: {
+      cause: 'smoke_optimization_accepted',
+      summary: `接受 ${adopted.length} 条 M4 冒烟优化建议`,
+      actorKind: 'user',
+      actorName: '冒烟专家',
+    },
+  });
+  m4repo.markCandidateRevisionApplied(
+    projectId, candidate.id, current.spec.version, accepted.revision.oid,
+  );
+
+  const acceptedSnapshot = await artifacts.readPackageFiles(projectId, accepted.revision.oid);
+  const version = nextValidationCandidateVersion({
+    currentVersion: acceptedSnapshot.spec.version,
+    currentStatus: acceptedSnapshot.spec.status ?? 'draft',
+    changeLevel: 'minor',
+  });
+  await artifacts.saveCurrentAsPackageVersion(projectId, {
+    expectedRevision: accepted.revision.oid,
+    version,
+    status: 'review',
+    note: `优化迭代：基于 ${adopted[0].basedVersion} 应用 ${adopted.length} 条建议`,
+    action: {
+      cause: 'smoke_optimization_versioned',
+      summary: `固化 M4 冒烟优化版本 ${version}`,
+      actorKind: 'user',
+      actorName: '冒烟专家',
+    },
+  });
   return version;
 }
 
@@ -117,11 +208,13 @@ async function main() {
   setSetting('consumer_api_url', 'http://127.0.0.1:5582');
 
   const project = createProject({ owner: 'smoke', name: 'M4 演示', domain: 'DOMAIN', background: '示例制造' });
+  const artifacts = getPackageArtifactStore();
   insertDocument({ projectId: project.id, filename: 'structure-list.xlsx', kind: 'excel', parseStatus: 'parsed', tables: [] });
 
   // v1.0.0：只沉淀了 STRUCTURE_LIST 口径 —— 3 条用例只有 1 条答得出
   const spec: PackageSpec = {
-    id: 'demo-agent', name: 'DOMAIN 演示', description: 'd', version: '1.0.0', language: 'zh-CN', defaultProviderAlias: 'domain',
+    id: 'demo-agent', name: 'DOMAIN 演示', description: 'd', version: '1.0.0', language: 'zh-CN',
+    defaultProviderAlias: 'domain', status: 'released',
     objects: [{
       key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: '制造 BOM', sourceTable: 'STRUCTURE_LIST',
       fields: [{ key: 'ID', cnName: '标识' }, { key: 'ParentPart', cnName: '父项' }],
@@ -131,7 +224,19 @@ async function main() {
       inputs: [], outputs: [], flow: ['查询 STRUCTURE_LIST'], relatedObjects: ['STRUCTURE_LIST'],
     }],
   };
-  insertPackageVersion(project.id, '1.0.0', spec, { covered: [], uncovered: [] });
+  const initialRevision = await artifacts.ensureProject(project.id);
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialRevision.oid,
+    spec,
+    coverage: { covered: [], uncovered: [] },
+    note: 'M4 冒烟评测基线',
+    action: {
+      cause: 'smoke_m4_baseline',
+      summary: '创建 M4 冒烟评测基线',
+      actorKind: 'system',
+      actorName: '冒烟脚本',
+    },
+  });
 
   const Q2 = 'CHANGE_ORDER 审批流程是什么';
   const Q3 = '有效性字段的口径如何判定';
@@ -150,29 +255,28 @@ async function main() {
 
   // 优化迭代 1：只采纳 CHANGE_ORDER 建议（模拟专家选择性采纳）
   const v2 = await optimizeOnce(project.id, [Q2]);
-  ok(v2 === '1.1.0', `优化迭代1 生成新版本：v${v2}`);
+  ok(v2 === '1.1.0-rc.1', `优化迭代1 生成发布候选：v${v2}`);
   const sugs1 = m4repo.listSuggestions(project.id);
-  ok(sugs1.some((s) => s.status === 'applied' && s.appliedVersion === v2), '采纳的建议已标记 applied + 版本号');
+  ok(sugs1.some((s) => s.status === 'applied' && s.appliedRevision), '采纳的建议已绑定 accepted 工件修订');
   ok(sugs1.some((s) => s.status === 'pending' && s.relatedQuestion === Q3), '未采纳的建议保持 pending');
 
   const r2 = await runRoundAndWait(project.id);
-  ok(r2.version === '1.1.0' && r2.passCount === 2, `轮次2：v${r2.version} 通过 ${r2.passCount}/${r2.total}（预期 2/3，较上轮提升）`);
+  ok(r2.version === '1.1.0-rc.1' && r2.passCount === 2, `轮次2：v${r2.version} 通过 ${r2.passCount}/${r2.total}（预期 2/3，较上轮提升）`);
 
   // 优化迭代 2：基于轮次 2 再提议，采纳剩余失败项
   const v3 = await optimizeOnce(project.id, [Q3]);
-  ok(v3 === '1.2.0', `优化迭代2 生成新版本：v${v3}`);
+  ok(v3 === '1.1.0-rc.2', `优化迭代2 生成发布候选：v${v3}`);
   const r3 = await runRoundAndWait(project.id);
-  ok(r3.version === '1.2.0' && r3.passCount === 3, `轮次3：v${r3.version} 通过 ${r3.passCount}/${r3.total}（预期 3/3）`);
+  ok(r3.version === '1.1.0-rc.2' && r3.passCount === 3, `轮次3：v${r3.version} 通过 ${r3.passCount}/${r3.total}（预期 3/3）`);
   ok(r1.passCount < r2.passCount && r2.passCount < r3.passCount, `验收达成：两轮优化通过率持续提升 ${r1.passCount}/3 → ${r2.passCount}/3 → ${r3.passCount}/3`);
 
-  // 版本与导出：v1.2.0 的包应包含优化新增操作，且可正常打 zip
+  // 版本与导出：当前 Git 工件应包含优化新增操作，且可正常打 zip
   const versions = listPackageVersions(project.id);
   ok(versions.length === 3 && versions[2].note?.includes('优化迭代'), `版本历史 ${versions.map((v) => v.version).join(' → ')}，含变更说明`);
-  const finalPv = getPackageVersion(project.id, '1.2.0')!;
-  const files = renderPackage(finalPv.spec);
-  const opFiles = Object.keys(files).filter((p) => p.startsWith('operations/') && !p.endsWith('index.md'));
-  ok(finalPv.spec.operations.length === 3 && opFiles.length === 3, `v1.2.0 含 ${finalPv.spec.operations.length} 个操作（原 1 + 优化新增 2）`);
-  const zip = zipPackage(files);
+  const finalSnapshot = await artifacts.readPackageFiles(project.id);
+  const opFiles = Object.keys(finalSnapshot.files).filter((p) => p.startsWith('operations/') && !p.endsWith('index.md'));
+  ok(finalSnapshot.spec.operations.length === 3 && opFiles.length === 3, `${finalSnapshot.spec.version} 含 ${finalSnapshot.spec.operations.length} 个操作（原 1 + 优化新增 2）`);
+  const zip = zipPackage(finalSnapshot.files);
   ok(zip.length > 0 && !!unzipSync(zip)['ontology/manifest.yaml'], '最终版本可导出合法 zip（含 ontology/manifest.yaml）');
 
   // 回归：大规格（规格 JSON >12KB）应用建议不得丢失既有对象/操作（曾因 prompt 截断静默丢失）
@@ -183,11 +287,31 @@ async function main() {
       sourceTable: 'STRUCTURE_LIST',
       fields: Array.from({ length: 25 }, (_, j) => ({ key: `F_${i}_${j}`, cnName: `字段${j}`, type: 'string', note: `第 ${j} 个字段的业务口径说明` })),
     })),
-    operations: spec.operations,
+    operations: spec.operations.map((operation) => ({ ...operation, relatedObjects: ['OBJ_0'] })),
   };
   const bigJson = JSON.stringify({ objects: bigSpec.objects, operations: bigSpec.operations });
   const bigAdopted = m4repo.listSuggestions(project.id).filter((s) => s.status === 'applied').slice(0, 1);
-  const bigRevised = await applyOptimizations(getProject(project.id)!, bigSpec, bigAdopted);
+  const bigRevised = await applyOptimizations(
+    getProject(project.id)!,
+    bigSpec,
+    bigAdopted,
+    faux('submit_revised_spec', {
+      objects: bigSpec.objects,
+      operations: [...bigSpec.operations, {
+        key: 'opt_big',
+        title: bigAdopted[0].relatedQuestion ?? bigAdopted[0].title,
+        description: `（优化新增）${bigAdopted[0].detail}`,
+        inputs: [{ param: 'keyword', type: 'string', required: true, note: '查询关键字' }],
+        outputs: [{ field: 'result', type: 'string', note: '结论' }],
+        flow: ['按沉淀的业务规则直接作答', bigAdopted[0].detail],
+        relatedObjects: [bigSpec.objects[0].key],
+        competencyQuestion: bigAdopted[0].relatedQuestion,
+      }],
+      rules: bigSpec.rules ?? [],
+      metrics: bigSpec.metrics ?? [],
+      scripts: bigSpec.scripts ?? [],
+    }),
+  );
   ok(bigJson.length > 12000 && bigRevised.objects.length === 10 && bigRevised.operations.length >= spec.operations.length,
     `大规格（JSON ${bigJson.length} 字符）应用建议后既有内容完整保留（对象 ${bigRevised.objects.length}/10）`);
 

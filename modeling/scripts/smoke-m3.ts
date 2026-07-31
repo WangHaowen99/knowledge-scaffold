@@ -7,10 +7,10 @@
 import { createServer } from 'node:http';
 import { createProject } from '../src/projects/repo.js';
 import { insertDocument } from '../src/documents/repo.js';
-import { insertPackageVersion } from '../src/workflow/m2-repo.js';
 import * as m3repo from '../src/workflow/m3-repo.js';
-import { startEvaluation } from '../src/evaluation/engine.js';
+import { startCurrentEvaluation } from '../src/evaluation/engine.js';
 import { configureProjectDataSource } from '../src/evaluation/data-source-service.js';
+import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
 import { setSetting } from '../src/settings/repo.js';
 import type { PackageSpec } from '../src/types.js';
 
@@ -42,6 +42,9 @@ function startStubConsumer(port: number) {
       seen.imported++;
       if (seen.imported === 1) return send(409, { requires_confirmation: true, conflict_type: 'version_exists', ontology_id: 'x' });
       return send(201, { success: true, ontology_id: 'demo-agent', objects_count: 2, operations_count: 5 });
+    }
+    if (url === '/agentic/ontologies/demo-agent/active-version' && req.method === 'PUT') {
+      return send(200, { success: true, active_version: JSON.parse(body).version });
     }
     if (url === '/agentic/ontologies/demo-agent/data-source' && req.method === 'PUT') {
       seen.dataSource = JSON.parse(body);
@@ -88,7 +91,20 @@ async function main() {
     objects: [{ key: 'STRUCTURE_LIST', title: 'STRUCTURE_LIST', description: 'd', fields: [{ key: 'ID' }] }],
     operations: [{ key: 'op1', title: 't', description: 'd', inputs: [], outputs: [], flow: ['x'], relatedObjects: ['STRUCTURE_LIST'] }],
   };
-  insertPackageVersion(project.id, '1.0.0', spec, { covered: [], uncovered: [] });
+  const artifacts = getPackageArtifactStore();
+  const initialRevision = await artifacts.ensureProject(project.id);
+  await artifacts.savePackageVersion(project.id, {
+    expectedRevision: initialRevision.oid,
+    spec,
+    coverage: { covered: [], uncovered: [] },
+    note: 'M3 冒烟评测基线',
+    action: {
+      cause: 'smoke_m3_baseline',
+      summary: '创建 M3 冒烟评测基线',
+      actorKind: 'system',
+      actorName: '冒烟脚本',
+    },
+  });
 
   // 用例：一条应 pass（答案含标准答案关键词）、一条应 fail
   m3repo.addTestcase(project.id, 'STRUCTURE_LIST 有几条记录，父项是什么', '2 条 STRUCTURE_LIST 记录，父项 A001');
@@ -115,7 +131,7 @@ async function main() {
     testConnection: async () => {},
   });
 
-  const { roundId } = startEvaluation({ projectId: project.id, token: 'stub-token' });
+  const { roundId } = await startCurrentEvaluation({ projectId: project.id, token: 'stub-token' });
   ok(!!roundId, `轮次已启动：${roundId}`);
 
   // 轮询直到完成（引擎为后台任务）
@@ -148,7 +164,10 @@ async function main() {
 
   // 人工改判
   const failedResult = results.find((r) => r.verdict === 'fail')!;
-  m3repo.overrideVerdict(failedResult.id, 'pass');
+  m3repo.overrideVerdict(failedResult.id, 'pass', {
+    reason: 'M3 冒烟验证人工复核链路',
+    actor: 'smoke-expert',
+  });
   ok(m3repo.getRound(roundId)!.passCount === 2, '人工改判后轮次通过数同步更新');
 
   stub.close();

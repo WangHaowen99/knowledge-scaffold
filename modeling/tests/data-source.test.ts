@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeDataSourceInput, redactProviderConfig } from '../src/evaluation/data-source.js';
+import type { PackageSpec } from '../src/types.js';
 import {
   createReadyEvaluationProject, jsonResponse, neo4jConfig, neo4jInput, nl2sqlInput,
 } from './helpers/data-source-fixtures.js';
@@ -161,6 +162,58 @@ test('data source service：本地直连测试后同步并保存脱敏配置', a
   assert.equal(saved.ontologyId, 'ontology-001');
   assert.equal(saved.config.has_password, true);
   assert.equal('password' in saved.config, false);
+});
+
+test('data source service：Ontology ID 使用 Git 当前修订而不是 SQLite 旧版本', async () => {
+  const { createProject } = await import('../src/projects/repo.js');
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  const { getPackageArtifactStore } = await import('../src/artifacts/runtime.js');
+  const { configureProjectDataSource } = await import('../src/evaluation/data-source-service.js');
+  const project = createProject({ owner: 'alice', name: '当前修订数据源测试' });
+  insertPackageVersion(project.id, '1.0.0', {
+    id: 'ontology-sqlite-old', name: '当前修订数据源测试',
+    description: '当前修订数据源测试', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'graph', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+  const packages = getPackageArtifactStore();
+  const current = (await packages.current(project.id))!;
+  const candidateSpec = { ...current.spec, id: 'ontology-git-current' };
+  const candidate = await packages.createCandidateRevision(project.id, {
+    expectedRevision: current.revision.oid,
+    groups: [{
+      id: 'ontology-id',
+      summary: '更新当前本体 ID',
+      changes: [{
+        kind: 'write',
+        path: 'model/package-spec.json',
+        content: `${JSON.stringify(candidateSpec, null, 2)}\n`,
+      }],
+    }],
+    action: {
+      cause: 'candidate_created', summary: '创建本体 ID 候选修订', actorKind: 'agent', actorName: '智能助手',
+    },
+  });
+  await packages.acceptCandidateRevision(project.id, {
+    candidateId: candidate.id,
+    selectedGroupIds: ['ontology-id'],
+    action: {
+      cause: 'candidate_accepted', summary: '接受本体 ID 修订', actorKind: 'user', actorName: 'alice',
+    },
+  });
+
+  let synchronizedOntologyId = '';
+  const saved = await configureProjectDataSource({
+    projectId: project.id,
+    token: 'access-token',
+    input: neo4jInput({ ontology_value: 'ontology-git-current' }),
+    testConnection: async () => {},
+    syncConnection: async (options) => {
+      synchronizedOntologyId = options.ontologyId;
+      return { workspaceId: options.workspaceId, ontologyId: options.ontologyId };
+    },
+  });
+  assert.equal(synchronizedOntologyId, 'ontology-git-current');
+  assert.equal(saved.ontologyId, 'ontology-git-current');
 });
 
 test('data source service：校验隔离边界且 none 模式跳过外部调用', async () => {
@@ -434,10 +487,25 @@ test('evaluation：本体数据源引用缺失或工作空间不一致时不创�
     }),
   });
   for (const ready of [missing, mismatched]) {
-    assert.throws(() => startEvaluation({ projectId: ready.project.id, token: 'token' }),
+    assert.throws(() => startEvaluation({
+      projectId: ready.project.id,
+      token: 'token',
+      packageSnapshot: ready.packageSnapshot,
+    }),
       /缺少可用的本体数据源.*重新输入密钥并保存/);
     assert.equal(ready.m3repo.listRounds(ready.project.id).length, 0);
   }
+});
+
+test('evaluation：startEvaluation 不从 SQLite 最新版本隐式补知识包快照', async () => {
+  const { startEvaluation } = await import('../src/evaluation/engine.js');
+  const ready = await createReadyEvaluationProject({ name: '评测快照必填测试' });
+
+  assert.throws(
+    () => startEvaluation({ projectId: ready.project.id, token: 'token' } as any),
+    /必须提供知识包快照/,
+  );
+  assert.equal(ready.m3repo.listRounds(ready.project.id).length, 0);
 });
 
 test('evaluation：评测库后台导入运行中时禁止启动评测', async () => {
@@ -466,7 +534,11 @@ test('evaluation：评测库后台导入运行中时禁止启动评测', async (
   });
 
   assert.throws(
-    () => startEvaluation({ projectId: ready.project.id, token: 'token' }),
+    () => startEvaluation({
+      projectId: ready.project.id,
+      token: 'token',
+      packageSnapshot: ready.packageSnapshot,
+    }),
     /评测库数据仍在后台导入/,
   );
   assert.equal(ready.m3repo.listRounds(ready.project.id).length, 0);
@@ -478,7 +550,7 @@ test('evaluation：存量脚本只有 SDK 执行契约问题时仍创建正式�
   const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
   const { setSetting } = await import('../src/settings/repo.js');
   const ready = await createReadyEvaluationProject({ name: '存量脚本评测' });
-  insertPackageVersion(ready.project.id, '2.0.0', {
+  const legacyPackage: PackageSpec = {
     id: `${ready.project.id}-ontology`,
     name: '存量脚本评测',
     description: '只有执行契约问题的存量知识包',
@@ -518,10 +590,20 @@ if __name__ == "__main__":
     main()
 `,
     }],
-  }, { covered: [], uncovered: [] });
+  };
+  insertPackageVersion(ready.project.id, legacyPackage.version, legacyPackage, { covered: [], uncovered: [] });
   setSetting('consumer_api_url', 'http://127.0.0.1:1');
 
-  const round = startEvaluation({ projectId: ready.project.id, token: 'token' });
+  const round = startEvaluation({
+    projectId: ready.project.id,
+    token: 'token',
+    packageSnapshot: {
+      version: legacyPackage.version,
+      spec: legacyPackage,
+      files: {},
+      revisionOid: `test-revision-${ready.project.id}-legacy`,
+    },
+  });
   assert.ok(round.roundId);
   assert.equal(ready.m3repo.listRounds(ready.project.id).length, 1);
   for (let index = 0; index < 50 && ready.m3repo.getRound(round.roundId)?.status === 'running'; index++) {
@@ -551,14 +633,26 @@ test('evaluation：共享工作空间不能并发运行且失败后释放', asyn
   setSetting('consumer_api_url', 'http://127.0.0.1:1');
   const firstProject = await createReadyEvaluationProject({ name: '共享工作空间项目一' });
   const secondProject = await createReadyEvaluationProject({ name: '共享工作空间项目二' });
-  const first = startEvaluation({ projectId: firstProject.project.id, token: 'token' });
-  assert.throws(() => startEvaluation({ projectId: secondProject.project.id, token: 'token' }),
+  const first = startEvaluation({
+    projectId: firstProject.project.id,
+    token: 'token',
+    packageSnapshot: firstProject.packageSnapshot,
+  });
+  assert.throws(() => startEvaluation({
+    projectId: secondProject.project.id,
+    token: 'token',
+    packageSnapshot: secondProject.packageSnapshot,
+  }),
     /评测工作空间 test 已有评测在运行/);
   for (let index = 0; index < 50 && firstProject.m3repo.getRound(first.roundId)?.status === 'running'; index++) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(firstProject.m3repo.getRound(first.roundId)?.status, 'failed');
-  const second = startEvaluation({ projectId: secondProject.project.id, token: 'token' });
+  const second = startEvaluation({
+    projectId: secondProject.project.id,
+    token: 'token',
+    packageSnapshot: secondProject.packageSnapshot,
+  });
   assert.ok(second.roundId);
   for (let index = 0; index < 50 && secondProject.m3repo.getRound(second.roundId)?.status === 'running'; index++) {
     await new Promise((resolve) => setTimeout(resolve, 20));

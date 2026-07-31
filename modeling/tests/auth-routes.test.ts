@@ -41,6 +41,7 @@ const projectDatabaseAdminQueries: string[] = [];
 let projectDatabaseExists = false;
 let packageChatPlanTask: (() => Promise<any>) | null = null;
 let packageChatApplyTask: (() => Promise<any>) | null = null;
+let materialAnalysisTask: ((...args: any[]) => Promise<any>) | null = null;
 
 before(async () => {
   const pair = await generateKeyPair('RS256');
@@ -127,6 +128,10 @@ before(async () => {
       if (!packageChatApplyTask) throw new Error('测试未配置包修缮应用任务');
       return packageChatApplyTask();
     },
+    runAnalyze: async (...args: any[]) => {
+      if (!materialAnalysisTask) throw new Error('测试未配置资料分析任务');
+      return materialAnalysisTask(...args);
+    },
   });
   await app.ready();
 });
@@ -200,6 +205,60 @@ function multipartEvaluationDatabaseExcel(
       Buffer.from(`\r\n--${boundary}--\r\n`),
     ]),
   };
+}
+
+async function advanceModelingProjectToMaterialAnalysis(projectId: string, packageRevisionOid: string) {
+  const [
+    { AiConstructionTaskGraph },
+    { AiConstructionOrchestrator },
+    { getAuthoringState },
+  ] = await Promise.all([
+    import('../src/ai-construction/task-graph.js'),
+    import('../src/ai-construction/orchestrator.js'),
+    import('../src/authoring/state.js'),
+  ]);
+  const graph = new AiConstructionTaskGraph();
+  const orchestrator = new AiConstructionOrchestrator();
+  const state = getAuthoringState();
+  const initial = graph.snapshot(projectId)!;
+  const prompted = orchestrator.advanceAfterMilestoneConfirmation(projectId, initial);
+  const interaction = prompted.interaction!;
+  const answered = state.apply({
+    kind: 'respond_interaction',
+    projectId,
+    interactionId: interaction.id,
+    responseId: `goal-${projectId}`,
+    response: { answers: [] },
+  });
+  if (answered.kind !== 'interaction') throw new Error('建模目标回答失败');
+  const brief = {
+    problem: '校验月度生产计划',
+    targetUsers: '生产计划专家',
+    scenarios: '计划下发前审核',
+    successCriteria: '审核结果可追溯',
+  };
+  state.apply({
+    kind: 'update_run',
+    projectId,
+    runId: answered.run.id,
+    status: 'completed',
+    result: { purpose: 'modeling_brief', ...brief },
+  });
+  let snapshot = orchestrator.completeModelingBrief(projectId, {
+    taskId: initial.tasks[0].id,
+    packageRevisionOid,
+    messageKey: `goal.completed.${projectId}`,
+    brief,
+  }).aiConstruction;
+  snapshot = graph.apply(projectId, {
+    type: 'confirm_milestone',
+    expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed',
+    packageRevisionOid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  orchestrator.advanceAfterMilestoneConfirmation(projectId, snapshot);
+  return { graph, brief };
 }
 
 // ---------------- /auth/login ----------------
@@ -397,6 +456,253 @@ test('项目删除 API：要求明确确认、校验 owner、阻止运行任务�
   assert.equal(response.json().deleted, projectId);
   const missing = await app.inject({ method: 'GET', url: `/api/projects/${projectId}`, headers });
   assert.equal(missing.statusCode, 404);
+});
+
+test('项目删除 API：数据库删除成功后清理工件，清理失败仍返回已删除', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '工件清理失败策略项目' },
+  });
+  const projectId = created.json().project.id;
+  const [{ getPackageArtifactStore }, { getProject }] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/projects/repo.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  await store.ensureProject(projectId);
+  const originalRemove = store.removeProjectArtifacts;
+  let cleanupCalls = 0;
+  let projectExistedDuringCleanup = true;
+  store.removeProjectArtifacts = async (removedProjectId: string) => {
+    if (removedProjectId !== projectId) {
+      return originalRemove.call(store, removedProjectId);
+    }
+    cleanupCalls += 1;
+    projectExistedDuringCleanup = Boolean(getProject(removedProjectId));
+    throw new Error('模拟工件仓库清理失败');
+  };
+
+  try {
+    const response = await app.inject({
+      method: 'DELETE', url: `/api/projects/${projectId}`, headers,
+      payload: { confirmed: true },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().deleted, projectId);
+    assert.equal(cleanupCalls, 1);
+    assert.equal(projectExistedDuringCleanup, false);
+    assert.equal(getProject(projectId), null);
+  } finally {
+    store.removeProjectArtifacts = originalRemove;
+    await originalRemove.call(store, projectId);
+  }
+});
+
+test('资料分析 API：推进统一任务图并绑定当前工件修订', async (t) => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '资料分析统一编排项目' },
+  });
+  const projectId = created.json().project.id;
+  const [{ getPackageArtifactStore }, { insertDocumentRevision }] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/documents/repo.js'),
+  ]);
+  const current = await getPackageArtifactStore().initializeDraftPackage(projectId, {
+    id: 'material-analysis-route',
+    name: '资料分析统一编排项目',
+    description: '验证分析结果和 Git 工件修订的绑定',
+  });
+  const { brief } = await advanceModelingProjectToMaterialAnalysis(projectId, current.revision.oid);
+  insertDocumentRevision({
+    projectId,
+    filename: '生产计划.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '生产计划需要按月度审核并记录例外。',
+  });
+  const progress: any[] = [];
+  materialAnalysisTask = async (
+    receivedProjectId: string,
+    _tables: unknown[],
+    documents: Array<{ id: string; filename: string }>,
+    _llm: unknown,
+    onProgress: (input: any) => void,
+    confirmedBrief: unknown,
+  ) => {
+    assert.equal(receivedProjectId, projectId);
+    assert.equal(documents[0]?.filename, '生产计划.md');
+    assert.deepEqual(confirmedBrief, brief);
+    onProgress({ phase: 'domain_analysis', title: '正在整理领域概览', percent: 42 });
+    progress.push(42);
+    return {
+      node: { id: 'analysis-route-node', projectId, type: 'analyze', status: 'done', ordinal: 1 },
+      analysis: {
+        domainOverview: '生产计划审核领域',
+        modelingBrief: brief,
+        candidateObjects: [],
+        openQuestions: [],
+      },
+    };
+  };
+  t.after(() => { materialAnalysisTask = null; });
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/analyze`, headers,
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().packageRevision, current.revision.oid);
+  const materialTask = response.json().aiConstruction.tasks.find((task: any) => task.kind === 'material_analysis');
+  assert.equal(materialTask.status, 'completed');
+  assert.equal(materialTask.outputRevisionOid, current.revision.oid);
+  assert.equal(response.json().aiConstructionMessage.key, 'materials.analyzed.analysis-route-node');
+  assert.equal('domainQuestions' in response.json(), false);
+  assert.deepEqual(progress, [42]);
+});
+
+test('资料分析 API：分析期间资料变化时拒绝挂接旧结果并保留可重试状态', async (t) => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '资料分析陈旧保护项目' },
+  });
+  const projectId = created.json().project.id;
+  const [{ getPackageArtifactStore }, { insertDocumentRevision }] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/documents/repo.js'),
+  ]);
+  const current = await getPackageArtifactStore().initializeDraftPackage(projectId, {
+    id: 'material-analysis-stale',
+    name: '资料分析陈旧保护项目',
+    description: '验证分析期间资料修订变化会中止旧结果',
+  });
+  const { graph, brief } = await advanceModelingProjectToMaterialAnalysis(projectId, current.revision.oid);
+  insertDocumentRevision({
+    projectId,
+    filename: '审批规则.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '初始审批规则。',
+  });
+  materialAnalysisTask = async () => {
+    insertDocumentRevision({
+      projectId,
+      filename: '审批规则.md',
+      kind: 'markdown',
+      parseStatus: 'parsed',
+      textContent: '分析期间更新的审批规则。',
+    });
+    return {
+      node: { id: 'analysis-stale-node', projectId, type: 'analyze', status: 'done', ordinal: 1 },
+      analysis: {
+        domainOverview: '旧分析',
+        modelingBrief: brief,
+        candidateObjects: [],
+        openQuestions: [],
+      },
+    };
+  };
+  t.after(() => { materialAnalysisTask = null; });
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/analyze`, headers,
+  });
+
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'MATERIAL_ANALYSIS_STALE');
+  assert.match(response.json().error, /建模资料已变化/);
+  assert.equal(
+    graph.snapshot(projectId)?.tasks.find((task) => task.kind === 'material_analysis')?.status,
+    'failed',
+  );
+});
+
+test('版本汇总 API：按工件修订关联评测并单列未版本化的当前修订', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '评测修订关联项目' },
+  });
+  const projectId = created.json().project.id;
+  const [{ getPackageArtifactStore }, m3repo] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/workflow/m3-repo.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const versioned = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'revision-linked-package',
+      name: '评测修订关联项目',
+      description: '验证评测只按工件修订关联',
+      version: '1.0.0',
+      status: 'review',
+      language: 'zh-CN',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '已版本化基线',
+    action: {
+      cause: 'test_version', summary: '创建已版本化基线', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const exactVersionRound = m3repo.createRound(
+    projectId,
+    '错误的展示版本也不影响修订关联',
+    2,
+    versioned.revision.oid,
+  );
+  m3repo.roundProgress(exactVersionRound.id, 2, 1);
+  m3repo.finishRound(exactVersionRound.id, 'done');
+  const sameNameWrongRevisionRound = m3repo.createRound(
+    projectId,
+    '1.0.0',
+    3,
+    'f'.repeat(40),
+  );
+
+  const indexFile = await store.readFile(projectId, 'package/index.md');
+  const edited = await store.saveFile(projectId, {
+    expectedRevision: versioned.revision.oid,
+    path: 'package/index.md',
+    content: `${indexFile.content}\n当前人工修订。\n`,
+    action: {
+      cause: 'test_edit', summary: '形成未版本化当前修订', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  const currentRound = m3repo.createRound(projectId, '1.0.0', 1, edited.revision.oid);
+
+  const response = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/versions`, headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  const body = response.json();
+  assert.equal(body.currentRevision, edited.revision.oid);
+  assert.equal(body.versions.length, 2);
+
+  const releasedVersion = body.versions.find((version: any) => !version.unversioned);
+  assert.equal(releasedVersion.revision, versioned.revision.oid);
+  assert.equal(releasedVersion.current, false);
+  assert.deepEqual(releasedVersion.rounds.map((round: any) => round.id), [exactVersionRound.id]);
+
+  const currentVersion = body.versions.find((version: any) => version.unversioned);
+  assert.equal(currentVersion.revision, edited.revision.oid);
+  assert.equal(currentVersion.current, true);
+  assert.equal(currentVersion.note, '当前未版本化修订');
+  assert.deepEqual(currentVersion.rounds.map((round: any) => round.id), [currentRound.id]);
+  assert.equal(body.versions.some((version: any) => (
+    version.rounds.some((round: any) => round.id === sameNameWrongRevisionRound.id)
+  )), false);
 });
 
 test('验证候选完成发布警告确认后提升为对应稳定版本并固化已知限制', async () => {
@@ -714,7 +1020,7 @@ test('人工编辑草稿发布 API：确认后一次生成正式版本并恢复�
     payload: { confirmed: true, revision: 1, summary: '修订订单查询说明' },
   });
   assert.equal(response.statusCode, 201, response.body);
-  assert.equal(response.json().published.version, '1.1.0');
+  assert.equal(response.json().published.version, '1.0.0-rc.1');
   assert.equal(response.json().published.draft.status, 'published');
   assert.deepEqual(response.json().published.changedFiles, ['operations/query_order.md']);
 
@@ -724,19 +1030,19 @@ test('人工编辑草稿发布 API：确认后一次生成正式版本并恢复�
   assert.equal(response.json().draft, null);
   response = await app.inject({
     method: 'GET',
-    url: `/api/projects/${projectId}/package/file?version=1.1.0&path=${encodeURIComponent('operations/query_order.md')}`,
+    url: `/api/projects/${projectId}/package/file?version=1.0.0-rc.1&path=${encodeURIComponent('operations/query_order.md')}`,
     headers,
   });
   assert.equal(response.statusCode, 200, response.body);
   assert.match(response.json().content, /根据订单编号查询最新订单详情/);
   response = await app.inject({
-    method: 'GET', url: `/api/projects/${projectId}/package/export?version=1.1.0`, headers,
+    method: 'GET', url: `/api/projects/${projectId}/package/export?version=1.0.0-rc.1`, headers,
   });
   assert.equal(response.statusCode, 200, response.body);
   assert.equal(response.headers['content-type'], 'application/zip');
 });
 
-test('活动人工草稿统一门禁：修缮、重新生成和知识消费入口均要求先发布或放弃', async () => {
+test('活动人工草稿统一门禁：建模写入、修缮和知识消费入口均要求先发布或放弃', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
   const created = await app.inject({
@@ -753,11 +1059,41 @@ test('活动人工草稿统一门禁：修缮、重新生成和知识消费入�
     method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
   });
   assert.equal(draftResponse.statusCode, 201, draftResponse.body);
+  const [{ AiConstructionTaskGraph }, { getPackageArtifactStore }] = await Promise.all([
+    import('../src/ai-construction/task-graph.js'),
+    import('../src/artifacts/runtime.js'),
+  ]);
+  const construction = new AiConstructionTaskGraph().snapshot(projectId)!;
+  const currentPackage = await getPackageArtifactStore().current(projectId);
 
   const gatedRequests: Array<{ method: any; url: string; payload?: unknown; operation: string }> = [
-    { method: 'POST', url: `/api/projects/${projectId}/generate`, payload: {}, operation: 'generate' },
+    {
+      method: 'POST',
+      url: `/api/projects/${projectId}/ai-construction/commands`,
+      payload: {
+        command: {
+          type: 'confirm_milestone',
+          expectedRevision: construction.revision,
+          milestoneId: 'goal_confirmed',
+          packageRevisionOid: currentPackage!.revision.oid,
+          actor: { username: 'ignored', role: 'project_owner' },
+        },
+      },
+      operation: 'milestone-confirm:goal_confirmed',
+    },
+    {
+      method: 'POST',
+      url: `/api/projects/${projectId}/ai-construction/knowledge/generate`,
+      payload: {},
+      operation: 'knowledge-generate',
+    },
+    {
+      method: 'POST',
+      url: `/api/projects/${projectId}/ai-construction/knowledge/repair`,
+      payload: {},
+      operation: 'controlled-repair',
+    },
     { method: 'POST', url: `/api/projects/${projectId}/package/chat`, payload: {}, operation: 'package-chat' },
-    { method: 'POST', url: `/api/projects/${projectId}/package/chat/apply`, payload: {}, operation: 'package-chat-apply' },
     { method: 'POST', url: `/api/projects/${projectId}/package/check`, payload: {}, operation: 'package-check' },
     { method: 'GET', url: `/api/projects/${projectId}/package/export`, operation: 'package-export' },
     { method: 'PUT', url: `/api/projects/${projectId}/data-source`, payload: {}, operation: 'data-source-update' },
@@ -794,11 +1130,6 @@ test('活动人工草稿统一门禁：修缮、重新生成和知识消费入�
     method: 'GET', url: `/api/projects/${projectId}/package/export?version=1.0.0`, headers,
   });
   assert.equal(exportResponse.statusCode, 200, exportResponse.body);
-  const generateResponse = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/generate`, headers, payload: {},
-  });
-  assert.equal(generateResponse.statusCode, 400, generateResponse.body);
-  assert.match(generateResponse.json().error, /数据源/);
 });
 
 test('资料上传 API 保留不可变修订，仅格式变化不传播失效', async () => {
@@ -916,42 +1247,8 @@ test('包修缮运行期间人工草稿只读，所有写接口统一返回 409'
     releasePlan();
     const response = await planRequest;
     packageChatPlanTask = null;
-    assert.equal(response.statusCode, 200, response.body);
-  }
-
-  let startApply!: () => void;
-  let releaseApply!: () => void;
-  const applyStarted = new Promise<void>((resolve) => { startApply = resolve; });
-  const applyBlocked = new Promise<void>((resolve) => { releaseApply = resolve; });
-  packageChatApplyTask = async () => {
-    startApply();
-    await applyBlocked;
-    return { reply: '修缮计划应用完成', version: '1.1.0' };
-  };
-  const applyRequest = app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/package/chat/apply`, headers,
-    payload: {
-      message: '应用修缮计划', history: [],
-      plan: {
-        summary: '测试修缮计划',
-        changes: [{ targetKind: 'operation', targetKey: 'query_order', action: 'modify', description: '测试' }],
-      },
-    },
-  });
-  await applyStarted;
-  try {
-    const response = await app.inject({
-      method: 'POST', url: `/api/projects/${projectId}/package/draft`, headers,
-      payload: {},
-    });
-    assert.equal(response.statusCode, 409, response.body);
-    assert.equal(response.json().code, 'PACKAGE_REPAIR_IN_PROGRESS');
-    assert.equal(response.json().operation, 'package-chat-apply');
-  } finally {
-    releaseApply();
-    const response = await applyRequest;
-    packageChatApplyTask = null;
-    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.statusCode, 202, response.body);
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   const draftAfterRepair = await app.inject({
@@ -987,38 +1284,6 @@ test('旧版单文件 override 写接口已永久停用且不会落库', async (
   assert.equal((getDb().prepare(
     'SELECT COUNT(*) AS count FROM package_overrides WHERE project_id = ?',
   ).get(projectId) as { count: number }).count, 0);
-});
-
-test('领域问题 API：用户可新增并选中自定义问题，生成前必须选择数据源', async () => {
-  const token = await signToken();
-  const headers = { authorization: `Bearer ${token}` };
-  const created = await app.inject({
-    method: 'POST', url: '/api/projects', headers,
-    payload: { name: '自定义领域问题项目' },
-  });
-  const projectId = created.json().project.id;
-
-  let response = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/competency`, headers,
-    payload: { question: '  哪些订单存在交付风险？  ' },
-  });
-  assert.equal(response.statusCode, 201, response.body);
-  assert.equal(response.json().question.question, '哪些订单存在交付风险？');
-  assert.equal(response.json().question.selected, true);
-  assert.equal(response.json().question.source, 'custom');
-
-  response = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/competency`, headers,
-    payload: { question: '   ' },
-  });
-  assert.equal(response.statusCode, 400);
-
-  response = await app.inject({
-    method: 'POST', url: `/api/projects/${projectId}/generate`, headers,
-    payload: {},
-  });
-  assert.equal(response.statusCode, 400);
-  assert.match(response.json().error, /数据源/);
 });
 
 test('项目数据源 API：保存脱敏配置并通过注入依赖推进阶段', async () => {

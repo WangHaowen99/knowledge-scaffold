@@ -10,6 +10,28 @@ const project = {
   updatedAt: '2026-07-28T00:00:00.000Z',
 };
 
+test('project card: modeling progress comes from the unified construction graph', async () => {
+  const { projectConstructionSummary } = await import('../frontend/src/ProjectList.jsx');
+  assert.deepEqual(projectConstructionSummary({
+    ...project,
+    kind: 'modeling',
+    construction: {
+      status: 'active',
+      progress: { percent: 37 },
+      currentTask: { id: 'task-process', title: '确认业务流程' },
+    },
+  }), {
+    label: '确认业务流程',
+    percent: 37,
+    title: '建模进度：确认业务流程（37%）',
+  });
+  assert.deepEqual(projectConstructionSummary({ ...project, kind: 'modeling', construction: null }), {
+    label: '待进入建模',
+    percent: 0,
+    title: '进入项目后初始化 AI 辅助构建',
+  });
+});
+
 test('project card: top-right close action does not open the project', async () => {
   const { ProjectCard } = await import('../frontend/src/ProjectList.jsx');
   let opened = 0;

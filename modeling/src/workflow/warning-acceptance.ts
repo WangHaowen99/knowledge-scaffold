@@ -61,10 +61,8 @@ function acceptanceRows(projectId: string, revision: string): Map<string, any> {
 }
 
 export function getPackageWarningReview(projectId: string, revision: string): PackageWarningReview {
-  const check = getCheck(projectId);
-  const warnings = check?.revision === revision
-    ? check.findings.filter((finding) => finding.severity === '警告')
-    : [];
+  const check = getCheck(projectId, revision);
+  const warnings = check?.findings.filter((finding) => finding.severity === '警告') ?? [];
   const rows = acceptanceRows(projectId, revision);
   const items = warnings.map((finding) => {
     const fingerprint = warningFingerprint(finding);
@@ -125,8 +123,8 @@ export function acceptPackageWarnings(input: {
   const note = input.note.trim();
   if (note.length < 4) throw new Error('请填写警告影响和接受理由');
   if (note.length > 2_000) throw new Error('警告接受说明过长');
-  const check = getCheck(input.projectId);
-  if (!check || check.revision !== input.revision) {
+  const check = getCheck(input.projectId, input.revision);
+  if (!check) {
     throw new Error('知识包检查已过期，请重新检查后再确认警告');
   }
   const review = getPackageWarningReview(input.projectId, input.revision);

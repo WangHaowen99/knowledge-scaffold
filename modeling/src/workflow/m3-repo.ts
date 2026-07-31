@@ -6,7 +6,7 @@ const uid = (p: string) => `${p}_${randomUUID().slice(0, 12)}`;
 
 export interface Testcase {
   id: string; projectId: string; question: string; groundTruth: string;
-  source: 'manual' | 'competency'; createdAt: string;
+  source: 'manual' | 'competency' | 'package'; createdAt: string;
 }
 export interface EvalRound {
   id: string; projectId: string; packageVersion: string;
@@ -36,7 +36,12 @@ const rowToTc = (r: any): Testcase => ({
 export function listTestcases(projectId: string): Testcase[] {
   return getDb().prepare('SELECT * FROM testcases WHERE project_id = ? ORDER BY created_at').all(projectId).map(rowToTc);
 }
-export function addTestcase(projectId: string, question: string, groundTruth = '', source: 'manual' | 'competency' = 'manual'): Testcase {
+export function addTestcase(
+  projectId: string,
+  question: string,
+  groundTruth = '',
+  source: 'manual' | 'competency' | 'package' = 'manual',
+): Testcase {
   const id = uid('tc');
   getDb().prepare('INSERT INTO testcases (id, project_id, question, ground_truth, source, created_at) VALUES (?,?,?,?,?,?)')
     .run(id, projectId, question, groundTruth, source, nowIso());
@@ -83,15 +88,23 @@ export function updateTestcase(id: string, patch: { question?: string; groundTru
 export function deleteTestcase(id: string): void {
   getDb().prepare('DELETE FROM testcases WHERE id = ?').run(id);
 }
-export function prefillFromCompetency(projectId: string, questions: string[]): number {
+export function prefillFromQuestions(
+  projectId: string,
+  questions: string[],
+  source: 'competency' | 'package',
+): number {
   const existing = new Set(listTestcases(projectId).map((t) => t.question));
   let added = 0;
   for (const q of questions) {
     if (existing.has(q)) continue;
-    addTestcase(projectId, q, '', 'competency');
+    addTestcase(projectId, q, '', source);
     added++;
   }
   return added;
+}
+
+export function prefillFromPackage(projectId: string, questions: string[]): number {
+  return prefillFromQuestions(projectId, questions, 'package');
 }
 
 // ---- 轮次 / 结果 ----

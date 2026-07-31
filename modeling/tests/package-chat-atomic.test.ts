@@ -9,6 +9,7 @@ import {
   buildAtomicChangeContext,
   generateAtomicResourcePatchInBatches,
   normalizeChangePlan,
+  nextPackageChatVersion,
   partitionAtomicChangePlan,
   resolveChangePlanTargets,
   resolvePackageApplyTimeoutMs,
@@ -105,6 +106,18 @@ test('知识包应用超时限制在三十秒到三十分钟且非法值回退�
   assert.equal(resolvePackageApplyTimeoutMs('99999999'), 1_800_000);
   assert.equal(resolvePackageApplyTimeoutMs('not-a-number'), 600_000);
   assert.equal(resolvePackageApplyTimeoutMs(''), 600_000);
+});
+
+test('知识包修缮版本号遵循统一生命周期而不依赖历史版本行数', () => {
+  assert.equal(nextPackageChatVersion({
+    version: '1.4.2', status: 'released',
+  }), '1.4.3-rc.1');
+  assert.equal(nextPackageChatVersion({
+    version: '1.4.3-rc.8', status: 'review',
+  }), '1.4.3-rc.9');
+  assert.equal(nextPackageChatVersion({
+    version: '0.1.0', status: 'draft',
+  }), '1.0.0-rc.1');
 });
 
 test('互不依赖的多个脚本各自单批生成并在最后生成对应操作', async () => {

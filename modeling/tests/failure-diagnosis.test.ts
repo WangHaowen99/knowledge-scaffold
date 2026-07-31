@@ -831,7 +831,7 @@ test('优化建议首次触发防过拟合门禁时会根据校验原因自动�
   const suggestions = await proposeOptimizations({
     id: 'project-1', owner: 'tester', name: '通用流程建模', domain: '通用生产流程', background: '处理任意批次计划',
     sensitivityLevel: 'internal', workflowProfile: { enabledSteps: [], requiredSteps: [], releaseRequested: false, externalResearch: false },
-    workflowModelVersion: 2, stage: 'optimize', createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z',
+    stage: 'optimize', createdAt: '2026-07-16T00:00:00.000Z', updatedAt: '2026-07-16T00:00:00.000Z',
   }, {
     id: 'demo', name: 'demo', description: 'demo', version: '1.0.0', language: 'zh-CN',
     defaultProviderAlias: 'data', objects: [], operations: [], rules: [], metrics: [],
@@ -876,7 +876,7 @@ test('已有稳定诊断时优化器上下文不再携带原始评测答案', as
   await proposeOptimizations({
     id: 'project-1', owner: 'tester', name: '通用流程建模', domain: '通用数据处理', background: '按数据契约执行',
     sensitivityLevel: 'internal', workflowProfile: { enabledSteps: [], requiredSteps: [], releaseRequested: false, externalResearch: false },
-    workflowModelVersion: 2, stage: 'optimize', createdAt: '2026-07-24T00:00:00.000Z', updatedAt: '2026-07-24T00:00:00.000Z',
+    stage: 'optimize', createdAt: '2026-07-24T00:00:00.000Z', updatedAt: '2026-07-24T00:00:00.000Z',
   }, calculationScriptSpec(), [failed], llm, [], [diagnosis]);
 
   assert.match(requestContext, /dg-diagnosis-only/);
@@ -914,7 +914,7 @@ test('优化建议连续两次复用评测数值后仍可在第三次收敛为�
   const suggestions = await proposeOptimizations({
     id: 'project-1', owner: 'tester', name: '通用流程建模', domain: '通用数据处理', background: '按数据契约执行',
     sensitivityLevel: 'internal', workflowProfile: { enabledSteps: [], requiredSteps: [], releaseRequested: false, externalResearch: false },
-    workflowModelVersion: 2, stage: 'optimize', createdAt: '2026-07-24T00:00:00.000Z', updatedAt: '2026-07-24T00:00:00.000Z',
+    stage: 'optimize', createdAt: '2026-07-24T00:00:00.000Z', updatedAt: '2026-07-24T00:00:00.000Z',
   }, calculationScriptSpec(), [failed], llm, [], [diagnosis]);
 
   assert.equal(core.state.callCount, 3);

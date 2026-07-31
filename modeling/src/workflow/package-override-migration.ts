@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { getPackageArtifactStore } from '../artifacts/index.js';
 import { getDb, nowIso } from '../db/index.js';
 import { listDocuments } from '../documents/repo.js';
 import {
@@ -8,14 +9,14 @@ import {
   publishPackageDraft,
   type PackageDraftView,
 } from './package-draft.js';
-import { latestPackageVersion, listCompetency } from './m2-repo.js';
-import { renderPackage } from './package-render.js';
+import { latestPackageVersion } from './m2-repo.js';
 
 interface DraftRow {
   id: string;
   project_id: string;
   base_package_version_id: string;
   base_version: string;
+  base_revision_oid: string | null;
   revision: number;
 }
 
@@ -78,13 +79,15 @@ function inImmediateTransaction<T>(fn: () => T): T {
 }
 
 function activeDraftRow(projectId: string): DraftRow | null {
-  return (getDb().prepare(`SELECT id, project_id, base_package_version_id, base_version, revision
+  return (getDb().prepare(`SELECT id, project_id, base_package_version_id, base_version,
+      base_revision_oid, revision
     FROM package_drafts WHERE project_id = ? AND status = 'active' LIMIT 1`)
     .get(projectId) as DraftRow | undefined) ?? null;
 }
 
 function draftRowById(id: string): DraftRow | null {
-  return (getDb().prepare(`SELECT id, project_id, base_package_version_id, base_version, revision
+  return (getDb().prepare(`SELECT id, project_id, base_package_version_id, base_version,
+      base_revision_oid, revision
     FROM package_drafts WHERE id = ?`).get(id) as DraftRow | undefined) ?? null;
 }
 
@@ -150,11 +153,16 @@ function archiveLegacyOverride(input: {
 
 // 升级迁移专用：先完整归档旧 override，再把仍对最新版本有效的内容批量转入一个版本草稿。
 // 同一批迁移只递增一次 revision；若已有活动草稿，则以草稿中的同路径内容为准。
-function migrateLegacyOverridesToPackageDraft(
+async function migrateLegacyOverridesToPackageDraft(
   projectId: string,
   createdBy = 'legacy-override-migration',
-): LegacyOverrideDraftMigration {
-  return inImmediateTransaction(() => {
+): Promise<LegacyOverrideDraftMigration> {
+  const packages = getPackageArtifactStore();
+  const current = await packages.current(projectId);
+  const currentFiles = current
+    ? (await packages.readPackageFiles(projectId, current.revision.oid)).files
+    : null;
+  const migrated = inImmediateTransaction(() => {
     const db = getDb();
     const overrides = db.prepare(
       'SELECT project_id, path, content, updated_at FROM package_overrides WHERE project_id = ? ORDER BY path',
@@ -174,12 +182,12 @@ function migrateLegacyOverridesToPackageDraft(
 
     const migratedAt = nowIso();
     const latest = latestPackageVersion(projectId);
-    if (!latest) {
+    if (!latest || !current || !currentFiles) {
       for (const row of overrides) {
         archiveLegacyOverride({
           row,
           disposition: 'orphaned-no-package-version',
-          detail: '项目没有可绑定的知识包版本，旧覆盖已归档且不再参与运行时消费',
+          detail: '项目没有可绑定的 Git 知识包修订，旧覆盖已归档且不再参与运行时消费',
           migratedAt,
         });
       }
@@ -188,16 +196,20 @@ function migrateLegacyOverridesToPackageDraft(
     }
 
     let draftRow = activeDraftRow(projectId);
-    if (draftRow && draftRow.base_package_version_id !== latest.id) {
+    if (draftRow && draftRow.base_revision_oid !== current.revision.oid) {
       throw new PackageDraftError(
-        'PACKAGE_DRAFT_BASE_VERSION_STALE',
-        '活动草稿基线已过时，无法自动合并旧版人工覆盖；请先处理当前草稿后重试迁移',
+        'PACKAGE_DRAFT_BASE_REVISION_STALE',
+        '活动草稿 Git 基线已过时，无法自动合并旧版人工覆盖；请先处理当前草稿后重试迁移',
         409,
-        { baseVersion: draftRow.base_version, latestVersion: latest.version },
+        {
+          baseVersion: draftRow.base_version,
+          baseRevisionOid: draftRow.base_revision_oid,
+          currentRevisionOid: current.revision.oid,
+        },
       );
     }
 
-    const files = renderPackage(latest.spec);
+    const files = currentFiles;
     const effective = overrides.filter((row) => row.path in files && row.content !== files[row.path]);
     const obsoletePaths = overrides.filter((row) => !(row.path in files)).map((row) => row.path);
     const noOpPaths = overrides.filter((row) => row.path in files && row.content === files[row.path]).map((row) => row.path);
@@ -205,9 +217,19 @@ function migrateLegacyOverridesToPackageDraft(
     if (!draftRow && effective.length) {
       const id = `pd_${randomUUID().slice(0, 12)}`;
       db.prepare(`INSERT INTO package_drafts
-        (id, project_id, base_package_version_id, base_version, status, revision, created_by, created_at, updated_at)
-        VALUES (?,?,?,?, 'active', 0, ?,?,?)`)
-        .run(id, projectId, latest.id, latest.version, createdBy, migratedAt, migratedAt);
+        (id, project_id, base_package_version_id, base_version, base_revision_oid,
+         status, revision, created_by, created_at, updated_at)
+        VALUES (?,?,?,?,?, 'active', 0, ?,?,?)`)
+        .run(
+          id,
+          projectId,
+          latest.id,
+          current.packageVersion,
+          current.revision.oid,
+          createdBy,
+          migratedAt,
+          migratedAt,
+        );
       draftRow = draftRowById(id)!;
       createdDraft = true;
     }
@@ -260,7 +282,7 @@ function migrateLegacyOverridesToPackageDraft(
       : [];
     return {
       projectId,
-      draft: draftRow ? getActivePackageDraft(projectId) : null,
+      draft: null,
       createdDraft,
       importedPaths,
       unsupportedPaths,
@@ -270,6 +292,10 @@ function migrateLegacyOverridesToPackageDraft(
       archivedCount: overrides.length,
     };
   });
+  return {
+    ...migrated,
+    draft: activeDraftRow(projectId) ? await getActivePackageDraft(projectId) : null,
+  };
 }
 
 function updateArchiveAfterPublish(draftId: string, packageVersionId: string, version: string): void {
@@ -286,7 +312,7 @@ function updateArchiveReviewReason(draftId: string, reason: string): void {
     .run(`已转入版本草稿，需人工审阅：${reason.slice(0, 500)}`, draftId);
 }
 
-export function migrateLegacyPackageOverrides(): LegacyOverrideMigrationSummary {
+export async function migrateLegacyPackageOverrides(): Promise<LegacyOverrideMigrationSummary> {
   const projectIds = (getDb().prepare(
     'SELECT DISTINCT project_id FROM package_overrides ORDER BY project_id',
   ).all() as unknown as Array<{ project_id: string }>).map((row) => row.project_id);
@@ -294,7 +320,7 @@ export function migrateLegacyPackageOverrides(): LegacyOverrideMigrationSummary 
 
   for (const projectId of projectIds) {
     try {
-      const migrated = migrateLegacyOverridesToPackageDraft(projectId);
+      const migrated = await migrateLegacyOverridesToPackageDraft(projectId);
       if (!migrated.draft) {
         projects.push({
           projectId,
@@ -333,15 +359,11 @@ export function migrateLegacyPackageOverrides(): LegacyOverrideMigrationSummary 
       }
 
       const tables = listDocuments(projectId).flatMap((document) => document.tables ?? []);
-      const selectedQuestions = listCompetency(projectId)
-        .filter((question) => question.selected)
-        .map((question) => question.question);
       try {
-        const published = publishPackageDraft({
+        const published = await publishPackageDraft({
           projectId,
           expectedRevision: migrated.draft.revision,
           tables,
-          selectedQuestions,
           summary: '迁移旧版人工编辑内容',
         });
         updateArchiveAfterPublish(migrated.draft.id, published.packageVersionId, published.version);

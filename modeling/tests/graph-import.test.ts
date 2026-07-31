@@ -346,6 +346,7 @@ test('graph import upload：临时文件按项目和用户隔离并可立即删�
     owner: 'alice',
     filename: 'graph.xlsx',
     buffer: workbookBuffer({ Part: [['id'], ['P-1']] }),
+    packageRevisionOid: 'revision-upload-isolation',
   });
   assert.equal(existsSync(upload.storedPath), true);
   assert.equal(getGraphImportUpload({ uploadId: upload.id, projectId: project.id, owner: 'alice' }).id, upload.id);
@@ -364,6 +365,7 @@ test('graph import upload：过期文件读取时自动清理', async () => {
     owner: 'alice',
     filename: 'expired.xlsx',
     buffer: workbookBuffer({ Part: [['id'], ['P-1']] }),
+    packageRevisionOid: 'revision-upload-expired',
     ttlMs: -1,
   });
   assert.throws(() => getGraphImportUpload({
@@ -381,6 +383,7 @@ test('graph import repository：历史只保存映射和统计，不存在密码
     filename: 'graph.xlsx',
     fileHash: 'sha256',
     packageVersion: '1.0.0',
+    packageRevisionOid: 'revision-history',
     mapping: graphMapping,
   });
   finishGraphImportRun(run.id, {
@@ -389,6 +392,7 @@ test('graph import repository：历史只保存映射和统计，不存在密码
   const stored = listGraphImportRuns(project.id)[0];
   assert.equal(stored.status, 'done');
   assert.equal(stored.nodeCount, 3);
+  assert.equal(stored.packageRevisionOid, 'revision-history');
   const columns = getDb().prepare('PRAGMA table_info(graph_import_runs)').all() as Array<{ name: string }>;
   assert.equal(columns.some((column) => /password|secret/i.test(column.name)), false);
   const raw = getDb().prepare('SELECT mapping_json FROM graph_import_runs WHERE id = ?')
@@ -409,6 +413,7 @@ test('graph import repository：运行任务可查询且服务重启时标记失
     filename: 'background.xlsx',
     fileHash: 'background-sha256',
     packageVersion: '1.0.0',
+    packageRevisionOid: 'revision-running',
     mapping: graphMapping,
   });
   assert.equal(getRunningGraphImportRun(project.id)?.id, run.id);
@@ -641,7 +646,7 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
     await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
   const project = await createGraphImportProject('图导入服务测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'graph.xlsx', buffer: importBuffer(),
   });
   assert.deepEqual(preview.sheets.map((sheet) => sheet.name), ['Part', 'BOMItem']);
@@ -649,7 +654,7 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
     part_id: 'string', relation_code: 'string', name: 'string',
   });
   assert.equal('storedPath' in preview, false);
-  const validated = validateGraphImportUpload({
+  const validated = await validateGraphImportUpload({
     projectId: project.id, owner: 'alice', uploadId: preview.id, mapping: graphMapping,
   });
   assert.deepEqual(validated.counts, {
@@ -695,6 +700,7 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
     password: 'one-time-secret',
   }, dependencies);
   assert.equal(started.run.status, 'running');
+  assert.equal(started.run.packageRevisionOid, preview.packageRevisionOid);
   assert.equal(receivedPassword, '');
   assert.doesNotMatch(JSON.stringify(getGraphImportHistory(project.id)), /one-time-secret/);
   await assert.rejects(() => executeGraphImport({
@@ -715,11 +721,94 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
   assert.doesNotMatch(JSON.stringify(history), /one-time-secret/);
 });
 
+test('graph import service：知识包修订变化后拒绝旧上传的校验和执行', async () => {
+  const {
+    executeGraphImport,
+    getGraphImportHistory,
+    GraphImportPackageStaleError,
+    uploadGraphImportExcel,
+    validateGraphImportUpload,
+  } = await import('../src/graph-import/service.js');
+  const { getPackageArtifactStore } = await import('../src/artifacts/runtime.js');
+  const project = await createGraphImportProject('图导入修订过期测试');
+  const preview = await uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'stale.xlsx', buffer: importBuffer(),
+  });
+  const packages = getPackageArtifactStore();
+  const current = (await packages.current(project.id))!;
+  const advanced = await packages.saveFiles(project.id, {
+    expectedRevision: current.revision.oid,
+    files: { 'package/extensions/revision-marker.txt': '修订已更新\n' },
+    action: {
+      cause: 'candidate_accepted', summary: '接受候选修订', actorKind: 'user', actorName: 'alice',
+    },
+  });
+  assert.notEqual(advanced.revision.oid, preview.packageRevisionOid);
+
+  await assert.rejects(() => validateGraphImportUpload({
+    projectId: project.id, owner: 'alice', uploadId: preview.id, mapping: graphMapping,
+  }), (error: unknown) => error instanceof GraphImportPackageStaleError
+    && error.uploadRevision === preview.packageRevisionOid
+    && error.currentRevision === advanced.revision.oid);
+  await assert.rejects(() => executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'one-time-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+  }), (error: unknown) => error instanceof GraphImportPackageStaleError);
+  assert.equal(getGraphImportHistory(project.id).length, 0);
+});
+
+test('graph import service：后台任务排队期间知识包变化时不执行旧 schema 写入', async () => {
+  const { executeGraphImport, getGraphImportHistory, uploadGraphImportExcel } =
+    await import('../src/graph-import/service.js');
+  const { getPackageArtifactStore } = await import('../src/artifacts/runtime.js');
+  const project = await createGraphImportProject('图导入排队修订过期测试');
+  const preview = await uploadGraphImportExcel({
+    projectId: project.id, owner: 'alice', filename: 'queued-stale.xlsx', buffer: importBuffer(),
+  });
+  const scheduled: Array<() => Promise<void>> = [];
+  let writerCalled = false;
+  const started = await executeGraphImport({
+    projectId: project.id,
+    owner: 'alice',
+    uploadId: preview.id,
+    mapping: graphMapping,
+    password: 'one-time-secret',
+  }, {
+    inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
+    schedule: (task) => { scheduled.push(task); },
+    writer: async () => {
+      writerCalled = true;
+      return { nodeCount: 0, relationshipCount: 0 };
+    },
+  });
+  const packages = getPackageArtifactStore();
+  const current = (await packages.current(project.id))!;
+  await packages.saveFiles(project.id, {
+    expectedRevision: current.revision.oid,
+    files: { 'package/extensions/queued-revision-marker.txt': '修订已更新\n' },
+    action: {
+      cause: 'candidate_accepted', summary: '排队期间接受候选修订', actorKind: 'user', actorName: 'alice',
+    },
+  });
+
+  await scheduled[0]();
+
+  assert.equal(writerCalled, false);
+  const run = getGraphImportHistory(project.id).find((item) => item.id === started.run.id)!;
+  assert.equal(run.status, 'failed');
+  assert.match(run.error ?? '', /知识包已更新/u);
+});
+
 test('graph import service：审计只保存规范化 mapping 字段', async () => {
   const { uploadGraphImportExcel, executeGraphImport, getGraphImportHistory } =
     await import('../src/graph-import/service.js');
   const project = await createGraphImportProject('图导入 mapping 脱敏测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'mapping.xlsx', buffer: importBuffer(),
   });
   const scheduled: Array<() => Promise<void>> = [];
@@ -754,7 +843,7 @@ test('graph import service：审计只保存规范化 mapping 字段', async () 
 test('graph import service：同步隔离预检错误不泄露一次性密码', async () => {
   const { uploadGraphImportExcel, executeGraphImport } = await import('../src/graph-import/service.js');
   const project = await createGraphImportProject('图导入预检脱敏测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'inspect.xlsx', buffer: importBuffer(),
   });
   const password = 'preflight-password-secret';
@@ -777,7 +866,7 @@ test('graph import service：失败审计脱敏并保留临时文件供重试', 
   const { uploadGraphImportExcel, executeGraphImport, getGraphImportHistory } = await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
   const project = await createGraphImportProject('图导入失败测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'retry.xlsx', buffer: importBuffer(),
   });
   const scheduled: Array<() => Promise<void>> = [];
@@ -813,12 +902,14 @@ test('graph import service：取消后台写入时等待 writer 完成中断清�
   } = await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
   const project = await createGraphImportProject('图导入取消测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'cancel.xlsx', buffer: importBuffer(),
   });
   const scheduled: Array<() => Promise<void>> = [];
   let notifyAbort = () => {};
   const abortObserved = new Promise<void>((resolve) => { notifyAbort = resolve; });
+  let notifyWriterStarted = () => {};
+  const writerStarted = new Promise<void>((resolve) => { notifyWriterStarted = resolve; });
   let releaseCleanup = () => {};
   const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
   let cleanupFinished = false;
@@ -832,6 +923,7 @@ test('graph import service：取消后台写入时等待 writer 完成中断清�
     inspectIsolation: async () => ({ nodeCount: 0, relationshipCount: 0 }),
     schedule: (task) => { scheduled.push(task); },
     writer: async (_plan, _connection, options) => new Promise((_resolve, reject) => {
+      notifyWriterStarted();
       options.signal?.addEventListener('abort', async () => {
         notifyAbort();
         await cleanupGate;
@@ -842,6 +934,7 @@ test('graph import service：取消后台写入时等待 writer 完成中断清�
   });
 
   const background = scheduled[0]();
+  await writerStarted;
   let cancellationFinished = false;
   const cancellation = cancelGraphImportRun(project.id, started.run.id)
     .finally(() => { cancellationFinished = true; });
@@ -870,7 +963,7 @@ test('graph import service：任务尚未开始时取消不会再调用 writer',
     uploadGraphImportExcel,
   } = await import('../src/graph-import/service.js');
   const project = await createGraphImportProject('图导入排队取消测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'queued.xlsx', buffer: importBuffer(),
   });
   const scheduled: Array<() => Promise<void>> = [];
@@ -901,7 +994,7 @@ test('graph import service：冲突仅提示，确认后才记录替换导入', 
   const { uploadGraphImportExcel, executeGraphImport, getGraphImportHistory } = await import('../src/graph-import/service.js');
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
   const project = await createGraphImportProject('图导入替换测试');
-  const preview = uploadGraphImportExcel({
+  const preview = await uploadGraphImportExcel({
     projectId: project.id, owner: 'alice', filename: 'replace.xlsx', buffer: importBuffer(),
   });
   const historyBefore = getGraphImportHistory(project.id).length;

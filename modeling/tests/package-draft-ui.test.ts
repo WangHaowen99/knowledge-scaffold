@@ -54,46 +54,22 @@ test('草稿门禁与 revision 冲突可由前端稳定识别', () => {
   assert.equal(isPackageDraftRevisionConflict({ data: { code: 'PACKAGE_DRAFT_REVISION_CONFLICT' } }), true);
 });
 
-test('二进制响应解析同样派发统一草稿门禁事件', async () => {
-  const previousWindow = (globalThis as any).window;
-  const previousCustomEvent = (globalThis as any).CustomEvent;
-  const events: Array<{ type: string; detail: unknown }> = [];
-  class TestCustomEvent {
-    type: string;
-    detail: unknown;
-
-    constructor(type: string, init: { detail: unknown }) {
-      this.type = type;
-      this.detail = init.detail;
-    }
-  }
-
-  (globalThis as any).window = { dispatchEvent: (event: TestCustomEvent) => events.push(event) };
-  (globalThis as any).CustomEvent = TestCustomEvent;
-  try {
-    const { requireOkResponse } = await import('../frontend/src/api.js');
-    const body = {
-      code: 'PACKAGE_DRAFT_REQUIRES_PUBLISH',
-      error: '请先发布草稿',
-      operation: 'package-export',
-    };
-    await assert.rejects(
-      requireOkResponse({ ok: false, status: 409, json: async () => body }),
-      (error: any) => error.status === 409 && error.data === body && error.message === body.error,
-    );
-    assert.equal(events.length, 1);
-    assert.equal(events[0].type, 'mw-package-draft-required');
-    assert.equal(events[0].detail, body);
-  } finally {
-    (globalThis as any).window = previousWindow;
-    (globalThis as any).CustomEvent = previousCustomEvent;
-  }
+test('二进制响应解析保留草稿门禁错误详情', async () => {
+  const { requireOkResponse } = await import('../frontend/src/api.js');
+  const body = {
+    code: 'PACKAGE_DRAFT_REQUIRES_PUBLISH',
+    error: '请先发布草稿',
+    operation: 'package-export',
+  };
+  await assert.rejects(
+    requireOkResponse({ ok: false, status: 409, json: async () => body }),
+    (error: any) => error.status === 409 && error.data === body && error.message === body.error,
+  );
 });
 
 test('前端主流程已从旧 override 写入切换为草稿发布流程', () => {
   const review = readFileSync(new URL('../frontend/src/M2Panels.jsx', import.meta.url), 'utf8');
-  const workbench = readFileSync(new URL('../frontend/src/Workbench.jsx', import.meta.url), 'utf8');
-  const chat = readFileSync(new URL('../frontend/src/PackageChat.jsx', import.meta.url), 'utf8');
+  const workspace = readFileSync(new URL('../frontend/src/PackageWorkspace.jsx', import.meta.url), 'utf8');
   const check = readFileSync(new URL('../frontend/src/PackageCheck.jsx', import.meta.url), 'utf8');
   const api = readFileSync(new URL('../frontend/src/api.js', import.meta.url), 'utf8');
 
@@ -110,28 +86,22 @@ test('前端主流程已从旧 override 写入切换为草稿发布流程', () =
     assert.match(review, new RegExp(`\\b${apiName}\\s*\\(`));
   }
   assert.match(review, /setTimeout\(\(\) => \{\s*persistDraftFile\(path, editorContent, true\)/);
-  assert.match(review, /window\.addEventListener\('beforeunload'/);
-  assert.match(workbench, /getPackageDraft\(projectId\)/);
-  assert.match(workbench, /if \(d\.draft\) setFocus\('review'\)/);
-  assert.match(workbench, /mw-package-draft-required/);
-  assert.match(chat, /disabled=\{!!packageDraft\}/);
+  assert.match(workspace, /packageDraft=\{pkg\.draft \?\? null\}/);
+  assert.match(workspace, /onDraftChange=\{\(draft\) => setPkg/);
+  assert.match(workspace, /protectUnsavedBeforeUnload\(event, true\)/);
   assert.match(check, /请先发布或放弃人工编辑草稿/);
-  assert.match(api, /new CustomEvent\('mw-package-draft-required'/);
+  assert.doesNotMatch(api, /mw-package-draft-required/);
   assert.match(review, /撤销该派生文件覆盖/);
 });
 
-test('包修缮运行状态由工作台共享，并禁用人工编辑入口与草稿写操作', () => {
+test('包修缮运行状态由服务端会话共享，并禁用人工编辑入口与草稿写操作', () => {
   const review = readFileSync(new URL('../frontend/src/M2Panels.jsx', import.meta.url), 'utf8');
-  const workbench = readFileSync(new URL('../frontend/src/Workbench.jsx', import.meta.url), 'utf8');
+  const workspace = readFileSync(new URL('../frontend/src/PackageWorkspace.jsx', import.meta.url), 'utf8');
   const chat = readFileSync(new URL('../frontend/src/PackageChat.jsx', import.meta.url), 'utf8');
 
-  assert.match(workbench, /const \[packageRepairBusy, setPackageRepairBusy\] = useState\(''\)/);
-  assert.match(workbench, /packageRepairBusy=\{packageRepairBusy\}/);
-  assert.match(workbench, /busy=\{packageRepairBusy\} onBusyChange=\{setPackageRepairBusy\}/);
-  assert.doesNotMatch(chat, /const \[busy, setBusy\] = useState/);
-  assert.match(chat, /onBusyChange\('plan'\)/);
-  assert.match(chat, /onBusyChange\('apply'\)/);
-  assert.match(chat, /finally \{ onBusyChange\(''\); \}/);
+  assert.match(workspace, /packageRepairBusy=\{isPackageChatRunning\(session\.authoring\) \? 'plan' : ''\}/);
+  assert.match(chat, /isPackageChatRunning\(authoring\)/);
+  assert.match(chat, /const busy = localBusy \|\| \(chatRunning \? 'plan' : ''\)/);
   assert.match(review, /知识包修缮正在进行中，暂不能人工编辑/);
   assert.match(review, /if \(repairInProgress \|\| revisionConflict\?\.path === path/);
   assert.match(review, /disabled=\{repairInProgress \|\| !editable \|\| actionBusy === 'create'\}/);
@@ -166,10 +136,11 @@ test('发布时发生 revision 冲突会提示刷新页面后重试', () => {
 
 test('文件树使用草稿标签标识已修改文件', () => {
   const review = readFileSync(new URL('../frontend/src/M2Panels.jsx', import.meta.url), 'utf8');
+  const tree = readFileSync(new URL('../frontend/src/PackageFileTree.jsx', import.meta.url), 'utf8');
 
-  assert.match(review, /className="tag tag-draft rv-file-draft-tag">草稿<\/span>/);
+  assert.match(tree, /className="tag tag-draft rv-file-draft-tag">草稿<\/span>/);
   assert.match(review, /带“草稿”标记的派生文件/);
-  assert.doesNotMatch(review, /\{f\}\{draftChangedSet\.has\(f\) \? ' ●' : ''\}/);
+  assert.doesNotMatch(tree, /\{f\}\{draftChangedSet\.has\(f\) \? ' ●' : ''\}/);
 });
 
 test('正式知识包消费链路不再读取或写入全局 override', () => {

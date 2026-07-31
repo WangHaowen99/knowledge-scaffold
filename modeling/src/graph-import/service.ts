@@ -1,7 +1,6 @@
 import { parseExcel } from '../documents/parser.js';
 import { getProjectDataSource } from '../evaluation/data-source-repo.js';
-import { latestPackageVersion } from '../workflow/m2-repo.js';
-import { renderPackage } from '../workflow/package-render.js';
+import { getPackageArtifactStore } from '../artifacts/index.js';
 import { extractGraphImportSchema } from './package-schema.js';
 import {
   createGraphImportRun,
@@ -51,6 +50,7 @@ export interface GraphImportUploadPreview {
   sizeBytes: number;
   expiresAt: string;
   packageVersion: string;
+  packageRevisionOid: string;
   sheets: GraphImportSheetPreview[];
   schema: GraphImportPackageSchema;
 }
@@ -102,6 +102,17 @@ export class GraphImportAlreadyRunningError extends Error {
   }
 }
 
+export class GraphImportPackageStaleError extends Error {
+  readonly code = 'GRAPH_IMPORT_PACKAGE_STALE';
+  constructor(
+    readonly uploadRevision: string | undefined,
+    readonly currentRevision: string,
+  ) {
+    super('知识包已更新，当前图导入文件基于旧修订，请重新上传并确认映射');
+    this.name = 'GraphImportPackageStaleError';
+  }
+}
+
 const scheduleBackgroundTask: GraphImportTaskScheduler = (task) => {
   setImmediate(() => { void task(); });
 };
@@ -110,15 +121,30 @@ function text(value: unknown): string {
   return String(value ?? '').trim();
 }
 
-function loadPackage(projectId: string): {
+async function loadPackage(projectId: string): Promise<{
   version: string;
+  revisionOid: string;
   schema: GraphImportPackageSchema;
-} {
-  const latest = latestPackageVersion(projectId);
-  if (!latest) throw new Error('请先生成知识包，再导入图数据');
-  const files = renderPackage(latest.spec);
-  const schema = extractGraphImportSchema(latest.spec, files);
-  return { version: latest.version, schema };
+}> {
+  const packages = getPackageArtifactStore();
+  const current = await packages.current(projectId);
+  if (!current) throw new Error('请先生成知识包，再导入图数据');
+  const snapshot = await packages.readPackageFiles(projectId, current.revision.oid);
+  const schema = extractGraphImportSchema(snapshot.spec, snapshot.files);
+  return {
+    version: current.packageVersion,
+    revisionOid: snapshot.revision.oid,
+    schema,
+  };
+}
+
+function assertUploadRevision(
+  uploadRevision: string | undefined,
+  packageContext: { revisionOid: string },
+): void {
+  if (!uploadRevision || uploadRevision !== packageContext.revisionOid) {
+    throw new GraphImportPackageStaleError(uploadRevision, packageContext.revisionOid);
+  }
 }
 
 function loadConnection(
@@ -199,14 +225,14 @@ function safeError(error: unknown, password: string): string {
   return message.slice(0, 2_000);
 }
 
-export function uploadGraphImportExcel(input: {
+export async function uploadGraphImportExcel(input: {
   projectId: string;
   owner: string;
   filename: string;
   buffer: Buffer;
-}): GraphImportUploadPreview {
+}): Promise<GraphImportUploadPreview> {
   if (input.buffer.byteLength > MAX_FILE_SIZE) throw new Error('Excel 文件不能超过 50MB');
-  const packageContext = loadPackage(input.projectId);
+  const packageContext = await loadPackage(input.projectId);
   loadConnection(input.projectId, '', false);
   const tables = parseExcel(input.buffer, {
     maxRows: MAX_ROWS_PER_SHEET,
@@ -214,7 +240,10 @@ export function uploadGraphImportExcel(input: {
     includeCellMetadata: true,
   });
   if (!tables.length) throw new Error('Excel 中没有可导入的 Sheet');
-  const upload = saveGraphImportUpload(input);
+  const upload = saveGraphImportUpload({
+    ...input,
+    packageRevisionOid: packageContext.revisionOid,
+  });
   return {
     id: upload.id,
     filename: upload.filename,
@@ -222,21 +251,28 @@ export function uploadGraphImportExcel(input: {
     sizeBytes: upload.sizeBytes,
     expiresAt: upload.expiresAt,
     packageVersion: packageContext.version,
+    packageRevisionOid: packageContext.revisionOid,
     sheets: sheetPreviews(tables),
     schema: packageContext.schema,
   };
 }
 
-export function validateGraphImportUpload(input: {
+export async function validateGraphImportUpload(input: {
   projectId: string;
   owner: string;
   uploadId: string;
   mapping: GraphImportMapping;
-}): { packageVersion: string; counts: GraphImportCounts; warnings: string[] } {
-  const packageContext = loadPackage(input.projectId);
-  const { tables } = parseUpload(input);
+}): Promise<{ packageVersion: string; packageRevisionOid: string; counts: GraphImportCounts; warnings: string[] }> {
+  const packageContext = await loadPackage(input.projectId);
+  const { upload, tables } = parseUpload(input);
+  assertUploadRevision(upload.packageRevisionOid, packageContext);
   const plan = validateGraphImportMapping(packageContext.schema, tables, input.mapping);
-  return { packageVersion: packageContext.version, counts: counts(plan), warnings: plan.warnings };
+  return {
+    packageVersion: packageContext.version,
+    packageRevisionOid: packageContext.revisionOid,
+    counts: counts(plan),
+    warnings: plan.warnings,
+  };
 }
 
 async function runGraphImportTask(input: {
@@ -256,6 +292,9 @@ async function runGraphImportTask(input: {
 }): Promise<void> {
   const { request, run, plan, connection, writer, signal } = input;
   try {
+    if (signal.aborted) throw signal.reason;
+    const packageContext = await loadPackage(request.projectId);
+    assertUploadRevision(run.packageRevisionOid, packageContext);
     if (signal.aborted) throw signal.reason;
     const result = await writer(plan, connection, {
       replaceExisting: request.replaceExisting === true,
@@ -320,8 +359,9 @@ export async function executeGraphImport(input: {
 
   const password = String(input.password ?? '');
   const connection = loadConnection(input.projectId, password);
-  const packageContext = loadPackage(input.projectId);
+  let packageContext = await loadPackage(input.projectId);
   const { upload, tables } = parseUpload(input);
+  assertUploadRevision(upload.packageRevisionOid, packageContext);
   const mapping = normalizeGraphImportMapping(input.mapping);
   const plan = validateGraphImportMapping(packageContext.schema, tables, mapping);
   const inspectIsolation = dependencies.inspectIsolation ?? inspectGraphIsolation;
@@ -336,11 +376,14 @@ export async function executeGraphImport(input: {
       throw new GraphIsolationDataExistsError(existing);
     }
   }
+  packageContext = await loadPackage(input.projectId);
+  assertUploadRevision(upload.packageRevisionOid, packageContext);
   const run = createGraphImportRun({
     projectId: input.projectId,
     filename: upload.filename,
     fileHash: upload.fileHash,
     packageVersion: packageContext.version,
+    packageRevisionOid: packageContext.revisionOid,
     mapping,
   });
   const writer = dependencies.writer ?? writeGraphImport;

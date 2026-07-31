@@ -133,11 +133,11 @@ export default function LoginPage({ onLogin }) {
       <div className="lbrand">
         <div className="mk">知</div>
         <h1>知识包建模工具</h1>
-        <div className="tg">通过访谈式交互，把领域资料与数据表结构化为可实测、可迭代的知识包。</div>
+        <div className="tg">把业务资料整理成可评测、可迭代的知识包。</div>
         <div className="feats">
-          <div className="feat"><div className="fi">📥</div><div><div className="ft">资料驱动</div><div className="fd">文档 + Excel 数据表自动解析为数据字典</div></div></div>
-          <div className="feat"><div className="fi">🗣️</div><div><div className="ft">访谈式建模</div><div className="fd">出题选项式访谈澄清对象、字段与口径</div></div></div>
-          <div className="feat"><div className="fi">🔁</div><div><div className="ft">评测闭环</div><div className="fd">导入 consumer 实测，按评测反馈迭代优化</div></div></div>
+          <div className="feat"><div className="fi">📥</div><div><div className="ft">资料解析</div><div className="fd">自动解析文档和表格</div></div></div>
+          <div className="feat"><div className="fi">🗣️</div><div><div className="ft">专家访谈</div><div className="fd">逐题确认业务口径</div></div></div>
+          <div className="feat"><div className="fi">🔁</div><div><div className="ft">持续改进</div><div className="fd">按评测结果优化</div></div></div>
         </div>
       </div>
       <div className="lform">

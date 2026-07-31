@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { Type } from '@earendil-works/pi-ai';
 import { getDb, nowIso } from '../db/index.js';
 import { buildLlm } from '../llm/provider.js';
@@ -11,54 +13,195 @@ import {
 } from './mapping-contract.js';
 import { parseObjectIndex } from './object-index.js';
 import { packageMappingResource } from './package-data-source.js';
-import { tableSourceFor } from './source-references.js';
+import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-references.js';
+import { duplicateScriptEntrypoints, normalizeCompetencyQuestion, questionsMatch } from './spec-validation.js';
 import type { PackageFiles } from './package-render.js';
+import { validateGeneratedScriptSafety } from './script-safety.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
 
 // 包体检（知识包完善阶段）双层：
 // ① spec 语义层——规则引擎（确定性，代码直查）+ 语义检查（LLM agent）。
 //    规则集基于既有知识包检查实践整理，
 //    rule-check / semantic-check / coverage-check agent，按本工具的 objects/operations 格式适配。
-// ② 渲染产物层（runFormatChecks）——对正式版本或待发布草稿生成的 files 校验包格式：
+// ② 渲染产物层（runFormatChecks）——对最终 files（含 override 后内容）校验包格式：
 //    必选文件、frontmatter、索引-详情一致性、manifest/mappings 结构、key 合法性。
-//    草稿发布与导出前都过这层，异常规格不会生成或交付无效包。
+//    override 写入与导出前都过这层（routes.ts），人工改坏的包不再原样导出。
 
 export type Severity = '错误' | '警告' | '提示';
 export interface CheckFinding {
   id: string;
+  /** 跨校验修订稳定的问题身份；旧记录可能没有该字段。 */
+  fingerprint?: string;
   source: 'rule' | 'semantic' | 'format';
   severity: Severity;
   category: string;
   target: string;       // 对象/操作 key 或包内路径
   message: string;
   suggestion?: string;  // 可直接交给修缮对话的修复指令
+  /** 面向业务专家的通俗说明，不替代内部技术信息。 */
+  userMessage?: string;
+  /** 面向业务专家的下一步提示。 */
+  userSuggestion?: string;
+  /** 专家可直接选择的通俗方案；decision 保留系统执行所需细节。 */
+  expertOptions?: Array<{ label: string; description: string; decision: string }>;
   /** 发布时必须修复，不能作为已知限制带入发布。 */
   releaseBlocking?: boolean;
+}
+
+export function semanticCheckFailureFinding(error: unknown): CheckFinding {
+  return {
+    id: `semantic_check_failed_${Date.now()}`,
+    source: 'semantic',
+    severity: '警告',
+    category: '语义校验执行失败',
+    target: 'package',
+    message: error instanceof Error ? error.message : String(error),
+    suggestion: '重新执行知识结构校验；若仍失败，请检查任务模型配置和服务连通性',
+  };
+}
+
+function normalizeFindingIdentityPart(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+}
+
+function normalizeFindingCategory(value: string): string {
+  const category = normalizeFindingIdentityPart(value);
+  if (/口径/u.test(category)) return '口径';
+  if (/兜底/u.test(category)) return '兜底';
+  if (/(?:无证据|证据与假设|证据边界)/u.test(category)) return '证据边界';
+  if (/(?:输入参数使用|逻辑步骤完整性)/u.test(category)) return '逻辑完整性';
+  return category;
+}
+
+type FindingResourceKind = 'object' | 'operation' | 'rule' | 'metric' | 'script' | 'package';
+
+function findingResourceKind(value: string): FindingResourceKind | null {
+  const normalized = value.toLocaleLowerCase('en-US').replace(/s$/u, '');
+  return ['object', 'operation', 'rule', 'metric', 'script', 'package'].includes(normalized)
+    ? normalized as FindingResourceKind
+    : null;
+}
+
+function normalizeFindingTarget(value: string, category: string): string {
+  let target = normalizeFindingIdentityPart(value);
+  const indexed = target.match(/^(?:objects?|operations?|rules?|metrics?|scripts?)\[\d+\](?:\((.+)\))?$/iu);
+  const indexedKind = target.match(/^([a-z]+)\[/iu)?.[1];
+  if (indexed?.[1] && indexedKind) {
+    return `${findingResourceKind(indexedKind) ?? 'resource'}:${indexed[1].trim()}`;
+  }
+  target = target.replace(/\.md$/iu, '');
+  const typed = target.match(/^(objects?|operations?|rules?|metrics?|scripts?|package)[/:](.+)$/iu);
+  if (typed) {
+    return `${findingResourceKind(typed[1]) ?? 'resource'}:${typed[2].split('/').filter(Boolean).at(-1)?.trim() ?? typed[2].trim()}`;
+  }
+  const path = target.split('/').filter(Boolean);
+  const key = (path.at(-1) ?? target).trim();
+  const normalizedCategory = normalizeFindingCategory(category);
+  const inferredKind = normalizedCategory === '口径' || /指标/u.test(normalizedCategory)
+    ? 'metric'
+    : null;
+  return `${inferredKind ?? 'resource'}:${key}`;
+}
+
+function normalizeFindingInvariant(
+  finding: Pick<CheckFinding, 'category'> & Partial<Pick<CheckFinding, 'message'>>,
+): string {
+  const text = normalizeFindingIdentityPart([
+    finding.category,
+    finding.message ?? '',
+  ].join(' '));
+  const dimensions: string[] = [];
+  if (normalizeFindingCategory(finding.category) === '口径'
+    || /(?:\bcaliber\b|(?:业务|计算|指标)口径|口径(?:说明|定义|公式))/iu.test(text)) {
+    dimensions.push('caliber');
+  }
+  if (/(?:\bboundar(?:y|ies)\b|计算边界|统计范围|不计入项)/iu.test(text)) dimensions.push('boundaries');
+  return dimensions.sort().join('+') || 'general';
+}
+
+/**
+ * finding 的稳定身份由检查来源、问题类别、资源范围和稳定不变量维度决定。
+ * 完整消息、建议、严重级别与临时 id 都是一次检查的呈现结果，不参与身份，
+ * 因而轻微改写不会变成新问题，而同一资源的口径与边界仍是两个问题。
+ */
+export function checkFindingFingerprint(
+  finding: Pick<CheckFinding, 'source' | 'category' | 'target'>
+    & Partial<Pick<CheckFinding, 'message' | 'suggestion'>>,
+): string {
+  const digest = createHash('sha256').update(JSON.stringify({
+    source: finding.source,
+    category: normalizeFindingCategory(finding.category),
+    target: normalizeFindingTarget(finding.target, finding.category),
+    invariant: normalizeFindingInvariant(finding),
+  })).digest('hex');
+  return `check:${digest}`;
+}
+
+function createCheckFinding(finding: Omit<CheckFinding, 'fingerprint'>): CheckFinding {
+  return { ...finding, fingerprint: checkFindingFingerprint(finding) };
+}
+
+export function withCheckFindingFingerprint(finding: CheckFinding): CheckFinding {
+  return { ...finding, fingerprint: checkFindingFingerprint(finding) };
 }
 
 let seq = 0;
 const fid = () => `f${++seq}_${Math.abs(Date.now() % 100000)}`;
 
 // ---- 规则检查（确定性） ----
-export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], selectedQuestions: string[]): CheckFinding[] {
+export interface RuleCheckOptions {
+  /** 导入型知识包没有建模资料表，映射应在数据源连接中验证。 */
+  validateDataMappings?: boolean;
+}
+
+export function runRuleChecks(
+  spec: PackageSpec,
+  tables: DataDictTable[],
+  selectedQuestions: string[],
+  options: RuleCheckOptions = {},
+): CheckFinding[] {
   const out: CheckFinding[] = [];
   const add = (severity: Severity, category: string, target: string, message: string, suggestion?: string) =>
-    out.push({ id: fid(), source: 'rule', severity, category, target, message, suggestion });
+    out.push(createCheckFinding({
+      id: fid(), source: 'rule', severity, category, target, message, suggestion,
+    }));
   const objKeys = new Set(spec.objects.map((o) => o.key));
   const ruleKeys = new Set((spec.rules ?? []).map((r) => r.key));
   const metricKeys = new Set((spec.metrics ?? []).map((m) => m.key));
 
-  for (const problem of findObjectDataMappingProblems(spec, tables)) {
+  if (options.validateDataMappings !== false) {
+    for (const problem of findObjectDataMappingProblems(spec, tables)) {
+      add(
+        '错误',
+        '数据映射失效',
+        problem.objectKey,
+        problem.message,
+        `修正对象 ${problem.objectKey} 的来源表、字段或主键映射`,
+      );
+    }
+  } else if (spec.objects.some((object) => (
+    Boolean(object.sourceTable)
+    || object.sourceRefs?.some((source) => source.kind === 'table')
+  ))) {
     add(
-      '错误',
-      '数据映射失效',
-      problem.objectKey,
-      problem.message,
-      `修正对象 ${problem.objectKey} 的来源表、字段或主键映射`,
+      '警告',
+      '数据映射待验证',
+      'mappings/object-data-mappings.json',
+      '导入包的数据映射未与建模资料表比对，请在数据源页配置并测试实际连接',
     );
   }
 
   for (const o of spec.objects) {
+    if (!sourceRefsFor(o).length) {
+      add('警告', '来源待确认', o.key,
+        `对象「${o.title || o.key}」没有绑定 Sheet 或文档，可能是外部输入或专家定义对象`,
+        `请专家确认对象 ${o.key} 是否为运行时输入；如需查数，再补充来源表或文档`);
+    }
+    if (tableSourcesFor(o).length > 1) {
+      add('警告', '多表映射待确认', o.key,
+        `对象「${o.title || o.key}」同时引用 ${tableSourcesFor(o).map((source) => source.table).join('、')}，字段按来源表并集校验`,
+        `请专家确认对象 ${o.key} 是否应拆分，或在数据源绑定阶段核对多表关联关系`);
+    }
     if (!o.fields?.length) add('错误', '对象不完整', o.key, `对象「${o.title || o.key}」没有任何字段`, `为对象 ${o.key} 补充字段清单`);
     if ((o.description ?? '').trim().length < 10) add('提示', '描述过简', o.key, `对象「${o.title || o.key}」描述过短，可能造成消费歧义`, `为对象 ${o.key} 补充业务描述（用途、口径、边界）`);
     for (const pk of o.primaryKey ?? []) {
@@ -86,7 +229,7 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
       if (!metricKeys.has(mk)) add('错误', '悬空引用', op.key, `操作「${op.title || op.key}」引用了不存在的指标 ${mk}`, `修正操作 ${op.key} 的 usesMetrics（改为已声明的指标或补建指标）`);
     }
     if (op.competencyQuestion) {
-      const k = op.competencyQuestion.trim();
+      const k = normalizeCompetencyQuestion(op.competencyQuestion);
       if (cqOwner.has(k)) {
         add('错误', '典型问题重复认领', op.key,
           `「${k.slice(0, 40)}…」同时被 ${cqOwner.get(k)} 与 ${op.key} 认领——消费端路由会二义，agent 可能走到不含关键口径的那个操作`,
@@ -111,8 +254,7 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
   }
 
   for (const q of selectedQuestions) {
-    const covered = spec.operations.some((op) => op.competencyQuestion &&
-      (op.competencyQuestion === q || q.includes(op.competencyQuestion) || op.competencyQuestion.includes(q)));
+    const covered = spec.operations.some((op) => questionsMatch(op.competencyQuestion, q));
     if (!covered) {
       add('警告', '领域问题未覆盖', 'index.md',
         `选中的领域问题「${q.slice(0, 40)}…」没有任何操作认领`,
@@ -122,10 +264,10 @@ export function runRuleChecks(spec: PackageSpec, tables: DataDictTable[], select
   return out;
 }
 
-// ---- 渲染产物层格式校验（对正式版本或待发布草稿的最终 files） ----
+// ---- 渲染产物层格式校验（对最终 files——含 override 后内容） ----
 // 覆盖：必选文件存在、全部 .md frontmatter 完整（resource/key/title 且 resource 与路径匹配）、
 // 索引声明的详情文件存在、manifest 可解析且必选字段齐、mappings JSON 结构合法、key 合法性。
-// 纯渲染产物通常由构造保证通过；这里保留独立断言，防止异常规格或草稿解析结果进入交付链路。
+// 纯渲染产物由构造保证通过；这层的目标是拦截 override 改坏的内容（routes 写入与导出前调用）。
 
 const REQUIRED_FILES = ['manifest.yaml', 'index.md', 'objects/index.md', 'operations/index.md'];
 const MANIFEST_REQUIRED = ['kind', 'schema_version', 'id', 'name', 'description', 'version'];
@@ -176,8 +318,45 @@ function tableFirstColumn(md: string): string[] {
 
 export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFinding[] {
   const out: CheckFinding[] = [];
-  const add = (severity: Severity, category: string, target: string, message: string, suggestion?: string) =>
-    out.push({ id: fid(), source: 'format', severity, category, target, message, suggestion });
+  const add = (
+    severity: Severity,
+    category: string,
+    target: string,
+    message: string,
+    suggestion?: string,
+    releaseBlocking = false,
+  ) => out.push(createCheckFinding({
+    id: fid(), source: 'format', severity, category, target, message, suggestion,
+    ...(releaseBlocking ? { releaseBlocking: true } : {}),
+  }));
+
+  // 存量知识包必须保持可浏览，但无效脚本仍要成为可定位、可受控修复的确定性阻断项。
+  for (const conflict of duplicateScriptEntrypoints(spec)) {
+    for (const scriptKey of conflict.scriptKeys) {
+      add(
+        '错误',
+        '脚本入口冲突',
+        `script:${scriptKey}`,
+        `脚本入口文件 ${conflict.entrypoint} 被 ${conflict.scriptKeys.join('、')} 共同使用，渲染和执行时会互相覆盖`,
+        `将 script ${scriptKey} 的 entrypoint 改为与脚本职责对应的唯一 Python 文件名，并同步保留其 operation 绑定、参数、输出和实现逻辑；不得修改无关业务知识。`,
+        true,
+      );
+    }
+  }
+  for (const script of spec.scripts ?? []) {
+    try {
+      validateGeneratedScriptSafety(script);
+    } catch (error) {
+      add(
+        '错误',
+        '脚本执行契约',
+        script.key,
+        error instanceof Error ? error.message : String(error),
+        `修正 script ${script.key} 的 sourceCode，使其符合 DataProviderClient SDK、结构化输入输出和安全执行契约；不得修改无关业务知识。`,
+        true,
+      );
+    }
+  }
 
   // 1) 必选文件存在且非空（规范 §2.1）
   for (const p of REQUIRED_FILES) {
@@ -319,6 +498,20 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
 }
 
 // ---- 语义检查（LLM agent，checklist 源自 semantic-check-agent） ----
+const SEMANTIC_SCRIPT_SOURCE_LIMIT = 20_000;
+
+function semanticScriptSource(sourceCode: string): string {
+  if (sourceCode.length <= SEMANTIC_SCRIPT_SOURCE_LIMIT) return sourceCode;
+  const headLength = 12_000;
+  const tailLength = SEMANTIC_SCRIPT_SOURCE_LIMIT - headLength;
+  const omitted = sourceCode.length - headLength - tailLength;
+  return [
+    sourceCode.slice(0, headLength),
+    `# [语义检查传输摘要：中间省略仅用于控制语义检查上下文，共省略 ${omitted} 个字符；知识包中的实际源码未被截断]`,
+    sourceCode.slice(-tailLength),
+  ].join('\n');
+}
+
 export function buildSemanticCheckPrompt(project: Project, spec: PackageSpec) {
   const system = [
     '你是知识包语义体检员（package_check）。逐项检查规格并用 submit_findings 提交结构化发现。',
@@ -333,8 +526,13 @@ export function buildSemanticCheckPrompt(project: Project, spec: PackageSpec) {
     '8) 变体覆盖——流程是否能处理边界、异常和未见过的输入组合；只复述单一路径、没有适用范围或缺少必要分支时，报「警告/泛化边界不足」。',
     '9) 证据与假设边界——阈值、公式、枚举、流程分支和对象关系是否有资料、确认流程或专家决策依据；模型推测被写成确定事实时，报「错误/无证据知识」。',
     '10) 确定性能力——多步骤计算、聚合、排序、分配或格式转换是否通过参数化 script 执行，并声明输入输出、边界和失败处理；只在文字中给出不可验证计算时，报「警告/确定性能力缺失」。',
+    '长脚本可能包含“语义检查传输摘要”标记；这只表示检查载荷省略了源码中段，首尾仍来自完整源码。不得把传输摘要标记误判为知识包源码截断，也不得仅因摘要标记报告完整性问题。',
     '对每个对象检查：字段描述歧义、关联对象是否有字段/外键支撑、业务定义是否自洽。',
     'target 填对象/操作的 key；suggestion 写成可直接执行的修缮指令；确无问题就提交空数组，不要为凑数报告风格偏好。',
+    '同时生成面向业务专家的说明：业务专家不需要理解代码、表名、字段 key、函数名或“断言”等技术术语。',
+    'userMessage 用 1~2 句话说清“目前不确定什么、可能导致什么业务影响”；userSuggestion 说清专家需要确认什么。',
+    'expertOptions 在存在多种合理处理方式时提供 2~4 项：label 不超过 18 个字，description 只讲业务含义，decision 保留系统执行所需的完整技术决策。',
+    '严重级别为“错误”时，message 必须是完整句子，说清冲突双方或缺失内容及业务影响；同时给出 suggestion、userSuggestion 或 expertOptions 中的至少一种可执行处理方式。不确定或只能输出半句话时必须降为“警告”或“提示”，不得提交阻断性错误。',
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
 
@@ -347,7 +545,7 @@ export function buildSemanticCheckPrompt(project: Project, spec: PackageSpec) {
       metrics: spec.metrics ?? [],
       scripts: (spec.scripts ?? []).map((script) => ({
         ...script,
-        sourceCode: script.sourceCode.slice(0, 20_000),
+        sourceCode: semanticScriptSource(script.sourceCode),
       })),
     }),
     '请完成语义体检并提交发现。',
@@ -355,8 +553,144 @@ export function buildSemanticCheckPrompt(project: Project, spec: PackageSpec) {
   return { system, body };
 }
 
+type RawSemanticFinding = {
+  severity?: unknown;
+  category?: unknown;
+  target?: unknown;
+  message?: unknown;
+  suggestion?: unknown;
+  userMessage?: unknown;
+  userSuggestion?: unknown;
+  expertOptions?: unknown;
+};
+
+function splitMessageAndSuggestion(value: string): { message: string; suggestion?: string } {
+  const separator = '","suggestion":"';
+  const index = value.indexOf(separator);
+  const clean = (text: string) => text.replace(/"\}\]?\s*$/u, '').trim();
+  if (index < 0) return { message: clean(value) };
+  const message = value.slice(0, index).trim();
+  const suggestion = clean(value.slice(index + separator.length));
+  return { message, ...(suggestion ? { suggestion } : {}) };
+}
+
+function recoverMergedSemanticFindings(finding: RawSemanticFinding): RawSemanticFinding[] {
+  const message = typeof finding.message === 'string' ? finding.message : '';
+  const separator = /"\}\s*,\s*\{\s*"severity"\s*:\s*"/u;
+  if (!separator.test(message)) return [finding];
+  const segments = message.split(separator);
+  const first = splitMessageAndSuggestion(segments.shift() ?? '');
+  const recovered: RawSemanticFinding[] = [{
+    ...finding,
+    message: first.message,
+    ...(first.suggestion ? { suggestion: first.suggestion } : {}),
+  }];
+  const categorySeparator = '","category":"';
+  const targetSeparator = '","target":"';
+  const messageSeparator = '","message":"';
+  for (const segment of segments) {
+    const categoryAt = segment.indexOf(categorySeparator);
+    const targetAt = categoryAt < 0 ? -1 : segment.indexOf(targetSeparator, categoryAt + categorySeparator.length);
+    const messageAt = targetAt < 0 ? -1 : segment.indexOf(messageSeparator, targetAt + targetSeparator.length);
+    if (categoryAt < 1 || targetAt < 0 || messageAt < 0) return [finding];
+    const content = splitMessageAndSuggestion(segment.slice(messageAt + messageSeparator.length));
+    recovered.push({
+      severity: segment.slice(0, categoryAt),
+      category: segment.slice(categoryAt + categorySeparator.length, targetAt),
+      target: segment.slice(targetAt + targetSeparator.length, messageAt),
+      message: content.message,
+      ...(content.suggestion ? { suggestion: content.suggestion } : {}),
+    });
+  }
+  return recovered;
+}
+
+type SemanticFindingCompletenessInput = {
+  severity?: unknown;
+  category?: unknown;
+  message?: unknown;
+  suggestion?: unknown;
+  userSuggestion?: unknown;
+  expertOptions?: unknown;
+};
+
+function semanticBlockingFindingIsIncomplete(finding: SemanticFindingCompletenessInput): boolean {
+  if (String(finding.severity ?? '').trim() !== '错误') return false;
+  const message = String(finding.message ?? '').trim();
+  const suggestion = String(finding.suggestion ?? '').trim();
+  const userSuggestion = String(finding.userSuggestion ?? '').trim();
+  const expertOptions = Array.isArray(finding.expertOptions) ? finding.expertOptions : [];
+  const hasAction = suggestion.length >= 6 || userSuggestion.length >= 6 || expertOptions.length > 0;
+  const isCompleteSentence = message.length >= 18 && /[。！？；.!?)]$/u.test(message);
+  return !hasAction && !isCompleteSentence;
+}
+
+export function normalizeSemanticFindings(
+  input: RawSemanticFinding[],
+): Omit<CheckFinding, 'id' | 'source'>[] {
+  const expanded = input.flatMap(recoverMergedSemanticFindings).slice(0, 100);
+  return expanded.map((finding) => {
+    const severity = String(finding.severity ?? '').trim();
+    const category = String(finding.category ?? '').trim();
+    const target = String(finding.target ?? '').trim();
+    const message = String(finding.message ?? '').trim();
+    if (!['错误', '警告', '提示'].includes(severity) || !category || !target || !message) {
+      throw new Error('语义校验返回的发现格式不正确');
+    }
+    const suggestion = typeof finding.suggestion === 'string' ? finding.suggestion.trim() : '';
+    const userMessage = typeof finding.userMessage === 'string' ? finding.userMessage.trim() : '';
+    const userSuggestion = typeof finding.userSuggestion === 'string' ? finding.userSuggestion.trim() : '';
+    const expertOptions = Array.isArray(finding.expertOptions)
+      ? finding.expertOptions.flatMap((option) => {
+        if (!option || typeof option !== 'object' || Array.isArray(option)) return [];
+        const value = option as Record<string, unknown>;
+        const label = typeof value.label === 'string' ? value.label.trim() : '';
+        const description = typeof value.description === 'string' ? value.description.trim() : '';
+        const decision = typeof value.decision === 'string' ? value.decision.trim() : '';
+        return label && description && decision ? [{
+          label: label.slice(0, 80),
+          description: description.slice(0, 500),
+          decision: decision.slice(0, 2_000),
+        }] : [];
+      }).slice(0, 4)
+      : [];
+    const incompleteBlockingFinding = semanticBlockingFindingIsIncomplete({
+      severity,
+      category,
+      message,
+      suggestion,
+      userSuggestion,
+      expertOptions,
+    });
+    const normalizedMessage = incompleteBlockingFinding
+      ? `语义检查只返回了不完整描述“${message}”，缺少完整原因、业务影响或可执行处理方式，本项不作为阻断错误。`
+      : message;
+    return {
+      severity: (incompleteBlockingFinding ? '提示' : severity) as Severity,
+      category: (incompleteBlockingFinding ? '语义校验结果不完整' : category).slice(0, 200),
+      target: target.slice(0, 500),
+      message: normalizedMessage.slice(0, 8_000),
+      ...(suggestion ? { suggestion: suggestion.slice(0, 4_000) } : {}),
+      ...(userMessage ? { userMessage: userMessage.slice(0, 1_000) } : {}),
+      ...(userSuggestion ? { userSuggestion: userSuggestion.slice(0, 1_000) } : {}),
+      ...(expertOptions.length ? { expertOptions } : {}),
+    };
+  });
+}
+
+export function semanticFindingsNeedRecheck(
+  findings: Array<Pick<CheckFinding, 'source' | 'message'> & Partial<Pick<CheckFinding,
+    'severity' | 'category' | 'suggestion' | 'userSuggestion' | 'expertOptions'>>>,
+): boolean {
+  return findings.some((finding) => finding.source === 'semantic'
+    && (finding.category === '语义校验执行失败'
+      || finding.category === '语义校验结果不完整'
+      || semanticBlockingFindingIsIncomplete(finding)
+      || /"\}\s*,\s*\{\s*"severity"\s*:/u.test(finding.message)));
+}
+
 export async function runSemanticCheck(project: Project, spec: PackageSpec): Promise<CheckFinding[]> {
-  const cap: { findings?: Omit<CheckFinding, 'id' | 'source'>[] } = {};
+  const cap: { findings?: RawSemanticFinding[] } = {};
   const submitFindings = {
     name: 'submit_findings',
     label: '提交体检发现',
@@ -368,6 +702,13 @@ export async function runSemanticCheck(project: Project, spec: PackageSpec): Pro
         target: Type.String(),
         message: Type.String(),
         suggestion: Type.Optional(Type.String()),
+        userMessage: Type.Optional(Type.String()),
+        userSuggestion: Type.Optional(Type.String()),
+        expertOptions: Type.Optional(Type.Array(Type.Object({
+          label: Type.String(),
+          description: Type.String(),
+          decision: Type.String(),
+        }))),
       })),
     }),
     async execute(_id: string, params: any) {
@@ -379,35 +720,190 @@ export async function runSemanticCheck(project: Project, spec: PackageSpec): Pro
   const prompt = buildSemanticCheckPrompt(project, spec);
   const agent = makeAgent(buildLlm(), prompt.system, [submitFindings] as any);
   await runAgent(agent, prompt.body);
-  return (cap.findings ?? []).map((f) => ({ ...f, id: fid(), source: 'semantic' as const }));
+  return normalizeSemanticFindings(cap.findings ?? [])
+    .map((f) => createCheckFinding({ ...f, id: fid(), source: 'semantic' as const }));
 }
 
-// ---- 结果存取（最近一次） ----
-export function saveCheck(
-  projectId: string,
-  version: string,
-  findings: CheckFinding[],
-  revision?: string,
-): void {
-  getDb().prepare(`INSERT INTO package_checks
-    (project_id, version, findings_json, artifact_revision_oid, created_at) VALUES (?,?,?,?,?)
-    ON CONFLICT(project_id) DO UPDATE SET version = excluded.version,
-      findings_json = excluded.findings_json,
-      artifact_revision_oid = excluded.artifact_revision_oid,
-      created_at = excluded.created_at`)
-    .run(projectId, version, JSON.stringify(findings), revision ?? null, nowIso());
+export function semanticCheckInputHash(project: Project, spec: PackageSpec): string {
+  const prompt = buildSemanticCheckPrompt(project, spec);
+  const fullBusinessSpec = JSON.stringify({
+    objects: spec.objects,
+    operations: spec.operations,
+    rules: spec.rules ?? [],
+    metrics: spec.metrics ?? [],
+    scripts: spec.scripts ?? [],
+  });
+  return createHash('sha256')
+    .update(prompt.system)
+    .update('\0')
+    .update(fullBusinessSpec)
+    .digest('hex');
 }
-export function getCheck(projectId: string): {
+
+function semanticOnly(findings: CheckFinding[]): CheckFinding[] {
+  return findings
+    .filter((finding) => finding.source === 'semantic')
+    .map((finding) => ({ ...withCheckFindingFingerprint(finding) }));
+}
+
+export function getSemanticCheckCache(
+  projectId: string,
+  semanticHash: string,
+): CheckFinding[] | null {
+  const row = getDb().prepare(`SELECT findings_json FROM package_semantic_check_cache
+    WHERE project_id = ? AND semantic_hash = ?`).get(projectId, semanticHash) as
+    { findings_json?: string } | undefined;
+  if (!row?.findings_json) return null;
+  return semanticOnly(JSON.parse(row.findings_json) as CheckFinding[]);
+}
+
+export function saveSemanticCheckCache(
+  projectId: string,
+  semanticHash: string,
+  findings: CheckFinding[],
+): void {
+  const semantic = semanticOnly(findings);
+  if (semanticFindingsNeedRecheck(semantic)) return;
+  getDb().prepare(`INSERT INTO package_semantic_check_cache
+    (project_id, semantic_hash, findings_json, created_at) VALUES (?,?,?,?)
+    ON CONFLICT(project_id, semantic_hash) DO UPDATE SET
+      findings_json = excluded.findings_json,
+      created_at = excluded.created_at`).run(
+    projectId,
+    semanticHash,
+    JSON.stringify(semantic),
+    nowIso(),
+  );
+}
+
+export interface StableSemanticCheckOptions {
+  force?: boolean;
+  /** 当前知识包修订已有的完整检查结果，用于升级后立即建立稳定基线。 */
+  existingFindings?: CheckFinding[];
+  runner?: (project: Project, spec: PackageSpec) => Promise<CheckFinding[]>;
+}
+
+export interface StableSemanticCheckResult {
+  semanticHash: string;
+  findings: CheckFinding[];
+  reused: boolean;
+  source: 'revision' | 'cache' | 'fresh';
+}
+
+export async function runStableSemanticCheck(
+  project: Project,
+  spec: PackageSpec,
+  options: StableSemanticCheckOptions = {},
+): Promise<StableSemanticCheckResult> {
+  const semanticHash = semanticCheckInputHash(project, spec);
+  if (!options.force && options.existingFindings !== undefined) {
+    const existing = semanticOnly(options.existingFindings);
+    if (!semanticFindingsNeedRecheck(existing)) {
+      saveSemanticCheckCache(project.id, semanticHash, existing);
+      return { semanticHash, findings: existing, reused: true, source: 'revision' };
+    }
+  }
+  if (!options.force) {
+    const cached = getSemanticCheckCache(project.id, semanticHash);
+    if (cached !== null) {
+      return { semanticHash, findings: cached, reused: true, source: 'cache' };
+    }
+  }
+  const findings = semanticOnly(await (options.runner ?? runSemanticCheck)(project, spec));
+  saveSemanticCheckCache(project.id, semanticHash, findings);
+  return { semanticHash, findings, reused: false, source: 'fresh' };
+}
+
+export interface PackageCheckResult {
   version: string;
   revision?: string;
   findings: CheckFinding[];
   createdAt: string;
-} | null {
-  const r = getDb().prepare('SELECT * FROM package_checks WHERE project_id = ?').get(projectId) as any;
-  return r ? {
-    version: r.version,
-    revision: r.artifact_revision_oid ?? undefined,
-    findings: JSON.parse(r.findings_json),
-    createdAt: r.created_at,
-  } : null;
+}
+
+function rowToPackageCheck(row: any): PackageCheckResult {
+  return {
+    version: row.version,
+    revision: row.artifact_revision_oid ?? undefined,
+    findings: (JSON.parse(row.findings_json) as CheckFinding[]).map(withCheckFindingFingerprint),
+    createdAt: row.created_at,
+  };
+}
+
+// ---- 结果存取（按知识包修订保留历史；package_checks 仅作旧库兼容缓存） ----
+export function saveCheck(projectId: string, version: string, findings: CheckFinding[], revision?: string): void {
+  const db = getDb();
+  const serialized = JSON.stringify(findings.map(withCheckFindingFingerprint));
+  const createdAt = nowIso();
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+  try {
+    if (revision) {
+      db.prepare(`INSERT INTO package_check_revisions
+        (project_id, artifact_revision_oid, version, findings_json, created_at) VALUES (?,?,?,?,?)
+        ON CONFLICT(project_id, artifact_revision_oid) DO UPDATE SET
+          version = excluded.version,
+          findings_json = excluded.findings_json,
+          created_at = excluded.created_at`)
+        .run(projectId, revision, version, serialized, createdAt);
+    }
+    db.prepare(`INSERT INTO package_checks
+      (project_id, version, findings_json, artifact_revision_oid, created_at) VALUES (?,?,?,?,?)
+      ON CONFLICT(project_id) DO UPDATE SET version = excluded.version,
+        findings_json = excluded.findings_json,
+        artifact_revision_oid = excluded.artifact_revision_oid,
+        created_at = excluded.created_at`)
+      .run(
+        projectId,
+        version,
+        serialized,
+        revision ?? null,
+        createdAt,
+      );
+    if (ownsTransaction) db.exec('COMMIT');
+  } catch (error) {
+    if (ownsTransaction && db.isTransaction) db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function getCheck(projectId: string, revision?: string): PackageCheckResult | null {
+  const db = getDb();
+  if (revision) {
+    const historical = db.prepare(`SELECT * FROM package_check_revisions
+      WHERE project_id = ? AND artifact_revision_oid = ?`).get(projectId, revision) as any;
+    if (historical) return rowToPackageCheck(historical);
+    const legacy = db.prepare(`SELECT * FROM package_checks
+      WHERE project_id = ? AND artifact_revision_oid = ?`).get(projectId, revision) as any;
+    return legacy ? rowToPackageCheck(legacy) : null;
+  }
+
+  // 默认读取用于兼容旧调用。若修订索引可用，按知识包修订序号而不是校验完成时间
+  // 选取最新结果，避免迟到的旧校验成为项目的“最近校验”。
+  const historical = db.prepare(`SELECT checks.* FROM package_check_revisions checks
+    LEFT JOIN artifact_revisions revisions
+      ON revisions.project_id = checks.project_id
+      AND revisions.oid = checks.artifact_revision_oid
+    WHERE checks.project_id = ?
+    ORDER BY
+      CASE WHEN revisions.sequence IS NULL THEN 0 ELSE 1 END DESC,
+      revisions.sequence DESC,
+      checks.created_at DESC,
+      checks.rowid DESC
+    LIMIT 1`).get(projectId) as any;
+  if (historical) return rowToPackageCheck(historical);
+  const legacy = db.prepare('SELECT * FROM package_checks WHERE project_id = ?').get(projectId) as any;
+  return legacy ? rowToPackageCheck(legacy) : null;
+}
+
+export function currentPackageCheckView(
+  check: ReturnType<typeof getCheck>,
+  currentRevision: string | null,
+) {
+  const stale = check ? check.revision !== currentRevision : Boolean(currentRevision);
+  return {
+    currentRevision,
+    stale,
+    check: stale ? null : check,
+  };
 }

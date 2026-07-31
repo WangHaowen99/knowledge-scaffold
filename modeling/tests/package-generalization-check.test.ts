@@ -7,7 +7,7 @@ import type { PackageSpec, Project } from '../src/types.js';
 const project: Project = {
   id: 'pj-generalization', owner: 'owner', kind: 'modeling', name: '通用知识建模',
   domain: '业务处理', background: '支持不同输入组合和异常分支', stage: 'generate',
-  sensitivityLevel: 'standard', workflowModelVersion: 2,
+  sensitivityLevel: 'standard',
   workflowProfile: { enabledSteps: [], requiredSteps: [], releaseRequested: true, externalResearch: false },
   createdAt: '2026-07-24T00:00:00.000Z', updatedAt: '2026-07-24T00:00:00.000Z',
 };

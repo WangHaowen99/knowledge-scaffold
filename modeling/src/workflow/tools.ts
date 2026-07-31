@@ -256,89 +256,6 @@ export function buildArtifactAnalysisTools(ctx: ToolContext) {
   return [...base, submit];
 }
 
-// ---- M2 访谈工具：ask_user（terminate 挂起）+ finish_interview ----
-export interface InterviewCapture {
-  pendingBatch?: { questions: unknown[] };
-  finished?: boolean;
-  outcome?: import('../types.js').InterviewOutcome;
-}
-
-export function buildInterviewTools(ctx: ToolContext, cap: InterviewCapture) {
-  const base = buildTools(ctx).filter((t) => t.name !== 'submit_analysis');
-  const askUser = {
-    name: 'ask_user',
-    label: '向专家提问',
-    description: '提出一批（1~5 道）流程访谈题，等待专家作答。题型 kind: single/multi/text；topic 属于 触发/角色/输入/步骤/判断/异常/输出/交接 之一。',
-    parameters: Type.Object({
-      questions: Type.Array(Type.Object({
-        kind: Type.Union([Type.Literal('single'), Type.Literal('multi'), Type.Literal('text')]),
-        q: Type.String(),
-        options: Type.Array(Type.String()),
-        topic: Type.String(),
-      })),
-    }),
-    async execute(_id: string, params: { questions: unknown[] }) {
-      cap.pendingBatch = { questions: params.questions };
-      return {
-        content: [{ type: 'text' as const, text: '[已向专家发送一批访谈题，等待作答]' }],
-        details: {},
-        terminate: true,
-      };
-    },
-  };
-  const finishInterview = {
-    name: 'finish_interview',
-    label: '结束访谈',
-    description: '当业务流程的触发、参与角色、输入、步骤、判断分支、异常、输出和交接均已澄清时调用，并提交可绘图的结构化流程。',
-    parameters: Type.Object({
-      summary: Type.String(),
-      processes: Type.Array(Type.Object({
-        id: Type.String(),
-        title: Type.String(),
-        trigger: Type.String(),
-        actors: Type.Array(Type.String()),
-        inputs: Type.Array(Type.String()),
-        steps: Type.Array(Type.Object({
-          id: Type.String(),
-          label: Type.String(),
-          kind: Type.Union([Type.Literal('action'), Type.Literal('decision')]),
-          detail: Type.Optional(Type.String()),
-        }), { minItems: 1 }),
-        transitions: Type.Array(Type.Object({
-          from: Type.String(), to: Type.String(), label: Type.Optional(Type.String()),
-        })),
-        exceptions: Type.Array(Type.String()),
-        outputs: Type.Array(Type.String()),
-        handoffs: Type.Array(Type.String()),
-      }), { minItems: 1 }),
-    }),
-    async execute(_id: string, params: import('../types.js').InterviewOutcome) {
-      cap.finished = true;
-      cap.pendingBatch = undefined;
-      cap.outcome = params;
-      return { content: [{ type: 'text' as const, text: '访谈已结束。' }], details: { summary: params.summary }, terminate: true };
-    },
-  };
-  return [...base, askUser, finishInterview];
-}
-
-// ---- M2 胜任力工具 ----
-export interface CompetencyCapture { questions?: string[]; }
-export function buildCompetencyTools(ctx: ToolContext, cap: CompetencyCapture) {
-  const base = buildTools(ctx).filter((t) => t.name !== 'submit_analysis');
-  const propose = {
-    name: 'propose_competency_questions',
-    label: '提出胜任力问题',
-    description: '提出 10~20 条该知识包建成后必须能回答的业务问题（胜任力问题），供专家勾选。',
-    parameters: Type.Object({ questions: Type.Array(Type.String()) }),
-    async execute(_id: string, params: { questions: string[] }) {
-      cap.questions = params.questions;
-      return { content: [{ type: 'text' as const, text: `已提出 ${params.questions.length} 条候选。` }], details: {}, terminate: true };
-    },
-  };
-  return [...base, propose];
-}
-
 // ---- M2 包生成工具 ----
 // key 一律带 pattern/描述引导（keys.ts 统一规则）；渲染入包前 renderPackage 还会强制校验。
 const KeyString = () => Type.String({ pattern: KEY_SCHEMA_PATTERN, maxLength: 80, description: KEY_SCHEMA_DESCRIPTION });
@@ -457,27 +374,6 @@ export const specScriptSchema = () => Type.Object({
   evidence: Type.Optional(EvidenceList()),
   sourceCode: Type.String({ description: '完整 Python 源码；不得包含答案常量、网络访问或越权文件访问。' }),
 });
-
-export interface SpecCapture { spec?: unknown; }
-export function buildGenerateTools(ctx: ToolContext, cap: SpecCapture) {
-  const base = buildTools(ctx).filter((t) => t.name !== 'submit_analysis');
-  const submitSpec = {
-    name: 'submit_package_spec',
-    label: '提交知识包规格',
-    description: '提交结构化的知识包规格（对象、字段、操作、规则、指标、映射来源表）。系统据此渲染标准包文件。',
-    parameters: Type.Object({
-      objects: Type.Array(specObjectSchema()),
-      operations: Type.Array(specOperationSchema()),
-      rules: Type.Optional(Type.Array(specRuleSchema())),
-      metrics: Type.Optional(Type.Array(specMetricSchema())),
-    }),
-    async execute(_id: string, params: unknown) {
-      cap.spec = params;
-      return { content: [{ type: 'text' as const, text: '知识包规格已提交。' }], details: {}, terminate: true };
-    },
-  };
-  return [...base, submitSpec];
-}
 
 export interface ObjectSpecCapture { objects?: unknown[]; }
 export function buildObjectGenerateTools(

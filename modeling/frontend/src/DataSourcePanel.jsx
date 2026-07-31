@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   createProjectEvaluationDatabase,
   getDataSource,
@@ -24,7 +24,22 @@ import DataSourceConnectionFields from './DataSourceConnectionFields.jsx';
 import EvaluationDatabaseUrlConfirmModal from './EvaluationDatabaseUrlConfirmModal.jsx';
 import EvaluationDatabaseImportPanel from './EvaluationDatabaseImportPanel.jsx';
 import GraphImportPanel from './GraphImportPanel.jsx';
+import { PACKAGE_DATA_SOURCE_HELP } from './package-data-source.js';
 import Tour from './Tour.jsx';
+
+const PACKAGE_DATA_SOURCE_HELP_ID = 'package-data-source-resource-help';
+
+export function PackageDataSourceHelp() {
+  return (
+    <span className="pkg-source-help">
+      <button type="button" className="pkg-source-help-icon" aria-label="查看数据源映射说明"
+        aria-describedby={PACKAGE_DATA_SOURCE_HELP_ID}>?</button>
+      <span id={PACKAGE_DATA_SOURCE_HELP_ID} className="pkg-source-tooltip" role="tooltip">
+        {PACKAGE_DATA_SOURCE_HELP}
+      </span>
+    </span>
+  );
+}
 
 export function DataSourceSummary({ dataSource }) {
   if (!dataSource) {
@@ -244,11 +259,14 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
     <div>
       <Tour scene={DATA_SOURCE_TOUR_SCENE} steps={dataSourceTourSteps(form.provider)} autoStart={false} />
       {err && <div className="lerr">{err}</div>}
-      <label className="ev-bind-toggle" style={{ marginBottom: 14 }}>
-        <input type="checkbox" checked={form.mode === 'connection'}
-          onChange={(e) => setForm((current) => ({ ...current, mode: e.target.checked ? 'connection' : 'none' }))} />
-        使用业务数据源
-      </label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
+        <label className="ev-bind-toggle">
+          <input type="checkbox" checked={form.mode === 'connection'}
+            onChange={(e) => setForm((current) => ({ ...current, mode: e.target.checked ? 'connection' : 'none' }))} />
+          使用业务数据源
+        </label>
+        <PackageDataSourceHelp />
+      </div>
 
       {form.mode === 'connection' ? (
         <DataSourceConnectionFields
@@ -270,11 +288,13 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 14 }}>
         {message && <span style={{ color: 'var(--good)', fontSize: 12.5 }}>{message}</span>}
         {form.mode === 'connection' && (
-          <button className="btn" disabled={busy || syncingOntologyId || creatingDatabase} onClick={startConfigurationGuide}>
+          <button type="button" className="btn" disabled={busy || syncingOntologyId || creatingDatabase}
+            onClick={startConfigurationGuide}>
             配置引导
           </button>
         )}
-        <button className="btn btn-p" disabled={busy || syncingOntologyId || creatingDatabase} onClick={submit}>
+        <button type="button" className="btn btn-p" disabled={busy || syncingOntologyId || creatingDatabase}
+          onClick={submit}>
           {busy ? '保存并测试中…' : form.mode === 'connection' ? '保存并测试连接' : '保存并继续'}
         </button>
       </div>
@@ -290,13 +310,11 @@ export default function DataSourcePanel({ projectId, onAdvance }) {
       )}
       {!providerSelectionChanged && saved?.mode === 'connection'
         && ['nl2sql_template', 'nl2sql_http'].includes(saved.provider) && (
-        <>
-          <EvaluationDatabaseImportPanel
-            projectId={projectId}
-            dataSource={saved}
-            onContinue={() => onAdvance?.(saved)}
-          />
-        </>
+        <EvaluationDatabaseImportPanel
+          projectId={projectId}
+          dataSource={saved}
+          onContinue={() => onAdvance?.(saved)}
+        />
       )}
       {databaseCreationRequest && (
         <EvaluationDatabaseUrlConfirmModal

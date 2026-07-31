@@ -56,6 +56,56 @@ export const applyAiConstructionCommand = (id, command) => api(
   { method: 'POST', body: JSON.stringify({ command }) },
 );
 
+export const listAiConstructionMessages = (id, { beforeSeq, limit = 100 } = {}) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (beforeSeq != null) params.set('beforeSeq', String(beforeSeq));
+  return api(`${projectPath(id)}/ai-construction/messages?${params}`);
+};
+
+// 进入工作台时调用：服务端先对账状态机再返回会话。事件驱动的刷新用 getProjectSession。
+export const advanceProjectSession = (id) => api(`${projectPath(id)}/session/advance`, {
+  method: 'POST', body: '{}',
+});
+
+export const confirmAiConstructionMilestone = (id, milestoneId, expectedRevision, note = '') => (
+  applyAiConstructionCommand(id, {
+    type: 'confirm_milestone',
+    milestoneId,
+    expectedRevision,
+    ...(note.trim() ? { note: note.trim() } : {}),
+  })
+);
+
+export const reviseAiConstructionModelingBrief = (id) => api(
+  `${projectPath(id)}/ai-construction/modeling-brief/revise`,
+  { method: 'POST', body: '{}' },
+);
+
+export const generateAiConstructionKnowledge = (id) => api(
+  `${projectPath(id)}/ai-construction/knowledge/generate`,
+  { method: 'POST', body: '{}' },
+);
+
+export const repairAiConstructionKnowledge = (id) => api(
+  `${projectPath(id)}/ai-construction/knowledge/repair`,
+  { method: 'POST', body: '{}' },
+);
+
+export const deferAiConstructionKnowledgeErrors = (id, reason) => api(
+  `${projectPath(id)}/ai-construction/knowledge/defer-errors`,
+  { method: 'POST', body: JSON.stringify({ reason: String(reason ?? '').trim() }) },
+);
+
+export const deferAiConstructionScripts = (id) => api(
+  `${projectPath(id)}/ai-construction/scripts/defer`,
+  { method: 'POST', body: '{}' },
+);
+
+export const retryAiConstructionScripts = (id) => api(
+  `${projectPath(id)}/ai-construction/scripts/retry`,
+  { method: 'POST', body: '{}' },
+);
+
 export const previewAiConstructionTaskAdjustment = (id, taskId, action) => api(
   `${projectPath(id)}/ai-construction/tasks/${encodeURIComponent(taskId)}/adjustment-preview?action=${encodeURIComponent(action)}`,
 );
@@ -75,17 +125,9 @@ export const editAiConstructionTasks = (id, input) => api(
   { method: 'POST', body: JSON.stringify(input) },
 );
 
-export function respondToInteraction(id, interactionId, response, requestId) {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) {
-    return Promise.reject(new Error('回答格式不正确'));
-  }
-  const key = responseKey(id, interactionId, response);
-  const stableRequestId = rememberRequestId(key, requestId);
-  return api(`${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/respond`, {
-    method: 'POST',
-    body: JSON.stringify({ requestId: stableRequestId, response }),
-  });
-}
+export const getWorkflowStep = (id, stepId) => api(
+  `${projectPath(id)}/workflow/steps/${encodeURIComponent(stepId)}`,
+);
 
 export const getFlowchartDraft = (id, interactionId) => api(
   `${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/flowchart-draft`,
@@ -106,6 +148,37 @@ export const addFlowchartDiagram = (id, interactionId, input) => api(
     body: JSON.stringify(input),
   },
 );
+
+export const startScenario = (id) => api(`${projectPath(id)}/workflow/scenario/start`, {
+  method: 'POST', body: '{}',
+});
+
+export function respondToScenarioReview(id, interactionId, response, requestId) {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return Promise.reject(new Error('回答格式不正确'));
+  }
+  const key = responseKey(id, interactionId, response);
+  const stableRequestId = rememberRequestId(key, requestId);
+  return api(
+    `${projectPath(id)}/workflow/scenario/reviews/${encodeURIComponent(interactionId)}/respond`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ requestId: stableRequestId, response }),
+    },
+  );
+}
+
+export function respondToInteraction(id, interactionId, response, requestId) {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    return Promise.reject(new Error('回答格式不正确'));
+  }
+  const key = responseKey(id, interactionId, response);
+  const stableRequestId = rememberRequestId(key, requestId);
+  return api(`${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/respond`, {
+    method: 'POST',
+    body: JSON.stringify({ requestId: stableRequestId, response }),
+  });
+}
 
 export const listRevisions = (id) => api(`${projectPath(id)}/revisions`);
 

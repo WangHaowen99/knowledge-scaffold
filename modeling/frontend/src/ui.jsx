@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 // 耗时操作的经过时间（秒）：busy 为真时从 0 开始计
 export function useElapsed(busy) {

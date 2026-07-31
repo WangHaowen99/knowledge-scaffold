@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb, nowIso } from '../db/index.js';
+import type { ProjectKind } from '../types.js';
 
 export type AiConstructionGraphStatus = 'active' | 'completed' | 'superseded';
-export type AiConstructionGraphSource = 'new' | 'legacy_projection' | 'package_import';
+export type AiConstructionGraphSource = 'new' | 'package_import';
 export type AiConstructionMilestoneStatus = 'pending' | 'active' | 'confirmed' | 'stale';
 export type AiConstructionTaskStatus =
   | 'pending'
@@ -239,13 +240,6 @@ const INITIAL_TASKS: Record<AiConstructionGraphSource, {
     goal: '先明确知识包要解决的问题、目标用户、典型场景和成功标准。',
     reason: '新项目先确认建模目标，再围绕目标分析资料',
   },
-  legacy_projection: {
-    kind: 'package_baseline_review',
-    milestoneId: 'materials_ready',
-    title: '检查历史项目基线',
-    goal: '根据历史证据检查现有知识包，并识别需要补做的建模内容。',
-    reason: '根据历史证据投影新任务图',
-  },
   package_import: {
     kind: 'package_baseline_review',
     milestoneId: 'materials_ready',
@@ -254,6 +248,12 @@ const INITIAL_TASKS: Record<AiConstructionGraphSource, {
     reason: '以导入知识包作为建模基线',
   },
 };
+
+export function aiConstructionGraphSourceForProjectKind(
+  kind: ProjectKind,
+): AiConstructionGraphSource {
+  return kind === 'package' ? 'package_import' : 'new';
+}
 
 const TASK_DURATION_MINUTES: Partial<Record<AiConstructionTaskKind, [number, number]>> = {
   material_analysis: [2, 8],

@@ -151,6 +151,20 @@ export function coverageFor(spec: PackageSpec, selectedQuestions: string[]): Cov
   return { covered, uncovered };
 }
 
+export function packageIntentQuestions(spec: PackageSpec): string[] {
+  const seen = new Set<string>();
+  const questions: string[] = [];
+  for (const operation of spec.operations ?? []) {
+    const question = operation.competencyQuestion?.normalize('NFKC').trim();
+    if (!question) continue;
+    const key = question.toLocaleLowerCase('zh-CN');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    questions.push(question);
+  }
+  return questions;
+}
+
 export interface DuplicateScriptEntrypoint {
   entrypoint: string;
   scriptKeys: string[];
