@@ -405,11 +405,15 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
           {asArray(payload.risks).map((risk, index) => <div key={index} style={styles.rowText}>{asText(risk)}</div>)}
         </div>
       )}
-      <div style={styles.section}><NoteField value={draft.note} onChange={(note) => setDraft((current) => ({ ...current, note }))} /></div>
+      <div style={styles.section}><NoteField value={draft.note} onChange={(note) => setDraft((current) => ({ ...current, note }))}
+        placeholder={payload.purpose === 'package_chat' ? '补充说明；调整方案时请填写修改意见' : undefined} /></div>
       <div style={styles.footer}>
         <ActionButton primary disabled={busy || !selected.size} onClick={() => submit({ action: 'approve', selectedChangeIds: [...selected], note: draft.note.trim() || undefined })}>
           {busy ? '提交中...' : `确认修改${selected.size ? `（${selected.size} 项）` : ''}`}
         </ActionButton>
+        {payload.purpose === 'package_chat' && (
+          <ActionButton disabled={busy || !draft.note.trim()} onClick={() => submit({ action: 'revise', note: draft.note.trim() })}>调整方案</ActionButton>
+        )}
         <ActionButton disabled={busy} onClick={() => submit({ action: 'reject', note: draft.note.trim() || undefined })}>不修改</ActionButton>
       </div>
     </>

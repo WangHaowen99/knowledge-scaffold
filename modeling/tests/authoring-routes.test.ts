@@ -8,11 +8,18 @@ import Fastify from 'fastify';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-authoring-routes-'));
 
-const [{ registerAuthoringRoutes }, { getAuthoringState }, { createProject }, { getDb }] = await Promise.all([
+const [
+  { registerAuthoringRoutes },
+  { getAuthoringState },
+  { createProject },
+  { getDb },
+  { PackageCandidateRejectedError },
+] = await Promise.all([
   import('../src/authoring/routes.js'),
   import('../src/authoring/state.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
+  import('../src/workflow/package-chat.js'),
 ]);
 
 function routeApp(t: test.TestContext, username = 'alice', options: Record<string, unknown> = {}) {
@@ -694,6 +701,124 @@ test('脚本变更在保存前必须通过格式、规则和语义候选校验',
   assert.match(validationDecision.feedback, /阻断错误/);
   assert.match(failedReason, /候选未通过/);
   assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'pending');
+});
+
+test('知识包候选校验失败后反馈专家并可重新生成待确认方案', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选校验反馈闭环' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '修改知识包', baseRevision: 'pkg-feedback-base',
+  });
+  assert.equal(started.kind, 'run');
+  if (started.kind !== 'run') throw new Error('未创建知识包修改任务');
+  const opened = state.apply({
+    kind: 'open_interaction',
+    projectId: project.id,
+    runId: started.run.id,
+    type: 'change_plan',
+    baseRevision: 'pkg-feedback-base',
+    payload: {
+      purpose: 'package_chat',
+      summary: '新增跨境业务事件',
+      message: '拆分企业成长事件',
+      history: [],
+      changes: [{
+        id: 'cross-border-change', targetKind: 'object', targetKey: 'cross_border_event', action: 'add',
+        description: '新增跨境业务事件，主键使用客户字段',
+      }],
+      risks: [],
+    },
+  });
+  assert.equal(opened.kind, 'interaction');
+  if (opened.kind !== 'interaction') throw new Error('未创建方案待办');
+
+  let revisionRequirement = '';
+  let revisedInteractionId = '';
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: 'pkg-feedback-base' },
+          packageVersion: '1.0.0-rc.1',
+          spec: { objects: [], operations: [], rules: [], metrics: [], scripts: [] },
+        };
+      },
+    },
+    packageChatApply: async () => {
+      throw new PackageCandidateRejectedError(
+        '候选修订生成失败',
+        '对象「跨境业务事件」主键「cust_id」不属于对象字段',
+      );
+    },
+    packageChatPlan: async (_project: any, _history: any[], requirement: string) => {
+      revisionRequirement = requirement;
+      const nextRun = state.apply({
+        kind: 'start_run', projectId: project.id, intent: '调整知识包修改方案', baseRevision: 'pkg-feedback-base',
+      });
+      if (nextRun.kind !== 'run') throw new Error('未创建方案调整任务');
+      const nextInteraction = state.apply({
+        kind: 'open_interaction',
+        projectId: project.id,
+        runId: nextRun.run.id,
+        type: 'change_plan',
+        baseRevision: 'pkg-feedback-base',
+        payload: {
+          purpose: 'package_chat', summary: '修正跨境业务事件主键', message: requirement, history: [],
+          changes: [{
+            id: 'revised-cross-border-change', targetKind: 'object', targetKey: 'cross_border_event', action: 'add',
+            description: '主键改为引用 fields[].key 中的 cross_bor_cust_id',
+          }],
+        },
+      });
+      if (nextInteraction.kind !== 'interaction') throw new Error('未创建调整后方案待办');
+      revisedInteractionId = nextInteraction.interaction.id;
+      return {
+        plan: {
+          summary: '修正跨境业务事件主键',
+          changes: [{
+            targetKind: 'object' as const, targetKey: 'cross_border_event', action: 'add' as const,
+            description: '主键改为引用 fields[].key 中的 cross_bor_cust_id',
+          }],
+        },
+        interaction: {
+          id: nextInteraction.interaction.id,
+          runId: nextRun.run.id,
+          baseRevision: 'pkg-feedback-base',
+        },
+      };
+    },
+  });
+
+  const failed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'approve-invalid-package-candidate',
+      response: { action: 'approve', selectedChangeIds: ['cross-border-change'] },
+    },
+  });
+  assert.equal(failed.statusCode, 422, failed.body);
+  assert.equal(failed.json().code, 'PACKAGE_CANDIDATE_REJECTED');
+  assert.match(failed.json().feedback, /cust_id.*不属于对象字段/u);
+  assert.match(failed.json().aiConstructionMessages[0].blocks[0].text, /当前知识包未更改/u);
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'pending');
+  assert.equal(state.snapshot(project.id).activeRuns.find((run) => run.id === started.run.id)?.status, 'waiting');
+
+  const revised = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'revise-invalid-package-plan',
+      response: { action: 'revise', note: '主键必须使用对象字段 key，不要使用原始列名' },
+    },
+  });
+  assert.equal(revised.statusCode, 200, revised.body);
+  assert.match(revisionRequirement, /上次候选校验反馈.*cust_id.*不属于对象字段/su);
+  assert.match(revisionRequirement, /专家调整意见.*对象字段 key/su);
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+  assert.equal(revised.json().run.status, 'completed');
+  assert.equal(state.interaction(project.id, revisedInteractionId)?.status, 'pending');
+  assert.equal(revised.json().revisedPlan.interaction.id, revisedInteractionId);
 });
 
 test('知识生成只读取当前 Git 修订中已确认的流程文档', async (t) => {

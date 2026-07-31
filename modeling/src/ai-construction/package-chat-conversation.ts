@@ -17,6 +17,11 @@ function planMessageKey(interactionId: string): string {
   return `chat.plan.${digest}`;
 }
 
+function planFailureMessageKey(interactionId: string): string {
+  const digest = createHash('sha256').update(interactionId).digest('hex').slice(0, 24);
+  return `chat.plan-failure.${digest}`;
+}
+
 function textOf(message: AiConstructionMessage): string | null {
   const block = message.blocks.find((item) => item.type === 'text');
   return block?.type === 'text' ? block.text : null;
@@ -82,6 +87,22 @@ export class PackageChatConversation {
       role: 'assistant',
       blocks: [{ type: 'text', text: `${prefix}：${detail}` }],
     });
+  }
+
+  recordPlanFailure(projectId: string, interactionId: string, feedback: string): AiConstructionMessage {
+    return this.messages.upsert(projectId, {
+      key: planFailureMessageKey(interactionId),
+      role: 'assistant',
+      blocks: [{
+        type: 'text',
+        text: `候选内容未通过校验，当前知识包未更改。请调整方案后重试：${feedback.trim()}`,
+      }],
+    });
+  }
+
+  planFailure(projectId: string, interactionId: string): string | null {
+    const message = this.messages.findByKey(projectId, planFailureMessageKey(interactionId));
+    return message ? textOf(message) : null;
   }
 
   settlePlan(

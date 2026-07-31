@@ -84,6 +84,7 @@ import { buildReleaseReadiness } from '../workflow/release.js';
 import { getPackageWarningReview } from '../workflow/warning-acceptance.js';
 import { assertNoActivePackageDraft, PackageDraftError } from '../workflow/package-draft.js';
 import {
+  PackageCandidateRejectedError,
   packageChatApply,
   packageChatPlan,
   type ChangePlan,
@@ -1610,7 +1611,8 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         && ['package_chat', 'script_generation'].includes(String(interaction.payload.purpose ?? ''))) {
         const scriptGeneration = interaction.payload.purpose === 'script_generation';
         const action = String(response.action ?? '');
-        if (!['approve', 'reject'].includes(action)) {
+        const allowedActions = scriptGeneration ? ['approve', 'reject'] : ['approve', 'reject', 'revise'];
+        if (!allowedActions.includes(action)) {
           return reply.code(400).send({ error: '方案处理动作不正确', code: 'INVALID_INPUT' });
         }
         if (interaction.status !== 'pending') {
@@ -1641,6 +1643,79 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               replayed: answered.replayed,
               ...(construction ?? {}),
               aiConstructionMessages: [conversation.plan, conversation.result].filter(Boolean),
+              cursor: state.snapshot(project.id).lastEventSeq,
+            };
+          }
+
+          if (action === 'revise') {
+            const note = String(response.note ?? '').trim();
+            if (!note) {
+              return reply.code(400).send({ error: '请填写方案调整意见', code: 'INVALID_INPUT' });
+            }
+            const current = await packages.current(project.id);
+            if (!current) {
+              return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+            }
+            if (interaction.baseRevision && interaction.baseRevision !== current.revision.oid) {
+              return reply.code(409).send({
+                error: '知识包修订已经变化，请基于当前版本重新规划修改',
+                code: 'REVISION_CONFLICT',
+              });
+            }
+            assertNoActivePackageDraft(project.id, 'package-chat-plan-revise');
+            const validationFeedback = packageChatConversation.planFailure(project.id, interactionId);
+            const previousPlan = {
+              summary: String(interaction.payload.summary ?? '修改知识包'),
+              changes: Array.isArray(interaction.payload.changes) ? interaction.payload.changes : [],
+              risks: Array.isArray(interaction.payload.risks) ? interaction.payload.risks : [],
+            };
+            const revisionMessage = [
+              '请调整尚未应用的知识包修改方案。',
+              `原始诉求：${String(interaction.payload.message ?? '')}`,
+              `原方案：${JSON.stringify(previousPlan)}`,
+              validationFeedback ? `上次候选校验反馈：${validationFeedback}` : '',
+              `专家调整意见：${note}`,
+              '请基于当前规格重新提交一份完整、可审阅的变更方案，不要直接修改知识包。',
+            ].filter(Boolean).join('\n');
+            const revisionTurnId = `${requestId}:revise`;
+            const history = packageChatConversation.history(project.id);
+            const userMessage = packageChatConversation.beginTurn(project.id, revisionTurnId, note);
+            let planned;
+            try {
+              planned = await planPackageChat(project, history, revisionMessage, {
+                purpose: 'package_chat',
+                intent: '调整知识包修改方案',
+                interactionTitle: '确认调整后的建模方案',
+                metadata: { previousInteractionId: interactionId },
+              });
+              if (!planned.interaction || !planned.plan?.changes.length) {
+                throw new Error(planned.reply?.trim() || '未能生成可审阅的调整方案');
+              }
+            } catch (error) {
+              packageChatConversation.failTurn(
+                project.id, revisionTurnId, '调整方案失败', error,
+              );
+              throw error;
+            }
+            const answered = adapter.respond(project.id, interactionId, requestId, response);
+            const run = adapter.complete(project.id, answered.run.id, {
+              revisionRequested: true,
+              nextInteractionId: planned.interaction.id,
+            }).run;
+            const settled = packageChatConversation.settlePlan(
+              project.id, interactionId, 'rejected', '已按专家意见退回原方案，并重新生成待确认方案。',
+            );
+            const revisedPlanMessage = packageChatConversation.finishTurn(
+              project.id, revisionTurnId, planned,
+            );
+            return {
+              interaction: answered.interaction,
+              run,
+              replayed: answered.replayed,
+              revisedPlan: planned,
+              aiConstructionMessages: [
+                userMessage, settled.plan, settled.result, revisedPlanMessage,
+              ].filter(Boolean),
               cursor: state.snapshot(project.id).lastEventSeq,
             };
           }
@@ -1764,6 +1839,19 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
                   error instanceof Error ? error.message : String(error),
                 );
               } catch { /* 保留原始失败 */ }
+            } else if (error instanceof PackageCandidateRejectedError) {
+              const feedbackMessage = packageChatConversation.recordPlanFailure(
+                project.id, interactionId, error.feedback,
+              );
+              const feedback = error.feedback.trim().slice(0, 180);
+              return reply.code(422).send({
+                error: `候选未通过校验，请调整方案：${feedback}`,
+                code: error.code,
+                feedback: error.feedback,
+                interactionId,
+                aiConstructionMessages: [feedbackMessage],
+                cursor: state.snapshot(project.id).lastEventSeq,
+              });
             } else {
               packageChatConversation.failTurn(
                 project.id, requestId, '应用建模调整失败', error,
@@ -1773,13 +1861,15 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
         };
 
+        const revising = action === 'revise';
         return await runWithProjectLease(leases, {
           projectId: project.id,
           operation: action === 'approve'
             ? scriptGeneration ? '应用确定性脚本方案' : '应用建模调整方案'
+            : revising ? '调整建模修改方案'
             : scriptGeneration ? '取消确定性脚本方案' : '取消建模调整方案',
           owner: `${req.user!.username}:${req.id}`,
-          ttlMs: action === 'approve' ? ASSISTED_WRITE_LEASE_TTL_MS : SHORT_WRITE_LEASE_TTL_MS,
+          ttlMs: action === 'reject' ? SHORT_WRITE_LEASE_TTL_MS : ASSISTED_WRITE_LEASE_TTL_MS,
         }, respondToPackagePlan);
       }
       if (interaction?.type === 'flowchart_review' && interaction.payload.purpose === 'process_review') {

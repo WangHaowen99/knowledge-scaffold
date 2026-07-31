@@ -538,6 +538,7 @@ export default function PackageChat({
       await refreshConstruction();
       return result;
     } catch (error) {
+      await refreshConstruction().catch(() => undefined);
       throw error;
     } finally {
       setLocalBusy('');
