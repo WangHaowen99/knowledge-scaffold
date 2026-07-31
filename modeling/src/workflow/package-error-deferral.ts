@@ -38,10 +38,8 @@ export function getPackageErrorDeferral(
   const row = getDb().prepare(`SELECT * FROM package_error_deferrals
     WHERE project_id = ? AND revision_oid = ?`).get(projectId, revision) as any;
   if (!row) return null;
-  const check = getCheck(projectId);
-  const currentFindings = check?.revision === revision
-    ? check.findings.filter((finding) => finding.severity === '错误')
-    : [];
+  const check = getCheck(projectId, revision);
+  const currentFindings = check?.findings.filter((finding) => finding.severity === '错误') ?? [];
   const recordedFingerprints = JSON.parse(row.error_fingerprints_json) as string[];
   return {
     projectId: row.project_id,
@@ -68,8 +66,8 @@ export function deferPackageErrors(input: {
   const reason = input.reason.trim();
   if (reason.length < 4) throw new Error('请说明暂缓阻断错误的原因');
   if (reason.length > 2_000) throw new Error('暂缓原因过长');
-  const check = getCheck(input.projectId);
-  if (!check || check.revision !== input.revision) {
+  const check = getCheck(input.projectId, input.revision);
+  if (!check) {
     throw new Error('知识包检查已过期，请重新检查后再决定是否暂缓');
   }
   const findings = check.findings.filter((finding) => finding.severity === '错误');

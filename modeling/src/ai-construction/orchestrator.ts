@@ -187,6 +187,11 @@ export interface CompleteScriptGenerationInput {
   };
 }
 
+export interface RetryScriptGenerationInput {
+  packageRevisionOid: string;
+  candidates: ScriptCandidate[];
+}
+
 export interface AiConstructionOrchestratorOptions {
   db?: DatabaseSync;
   graph?: AiConstructionTaskGraph;
@@ -2040,7 +2045,8 @@ export class AiConstructionOrchestrator {
           { type: 'text', text: reason.trim().slice(0, 3000) || '生成过程意外中断，请重新执行。' },
           {
             type: 'next_actions', title: '可以这样继续', actions: [
-              { id: 'defer_script_generation', label: '本轮暂缓脚本', style: 'primary' },
+              { id: 'retry_script_generation', label: '重新生成脚本', style: 'primary' },
+              { id: 'defer_script_generation', label: '本轮暂缓脚本', style: 'secondary' },
               { id: 'review_knowledge_files', label: '查看校验问题', style: 'secondary' },
             ],
           },
@@ -2083,12 +2089,122 @@ export class AiConstructionOrchestrator {
           {
             type: 'next_actions', title: '选择下一步', actions: [
               { id: 'confirm_deterministic', label: '本轮暂不生成并继续', style: 'primary' },
+              { id: 'retry_script_generation', label: '重新生成脚本', style: 'secondary' },
               { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
             ],
           },
         ],
       });
       return { aiConstruction: current, message };
+    });
+  }
+
+  retryScriptGeneration(
+    projectId: string,
+    input: RetryScriptGenerationInput,
+  ): AiConstructionAdvanceResult {
+    return this.transaction(() => {
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      let task = current.tasks.find((item) => item.kind === 'script_generation'
+        && item.milestoneId === 'deterministic_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
+      if (!task) throw new Error('确定性脚本生成任务不存在');
+      if (!input.candidates.length) throw new Error('当前知识包没有可重新生成的脚本候选');
+
+      if (task.status === 'completed') {
+        const explicitlyDeferred = [...this.messages.list(projectId)].reverse().some((message) => (
+          message.taskId === task!.id
+          && message.blocks.some((block) => block.type === 'status'
+            && block.title === '本轮暂缓生成确定性脚本')
+        ));
+        if (!explicitlyDeferred) throw new Error('已成功生成的脚本不能通过重试入口覆盖');
+        current = this.graph.apply(projectId, {
+          type: 'reopen_task', expectedRevision: current.revision, taskId: task.id,
+        });
+      } else if (task.status === 'failed') {
+        current = this.graph.apply(projectId, {
+          type: 'start_task', expectedRevision: current.revision, taskId: task.id,
+        });
+        current = this.graph.apply(projectId, {
+          type: 'wait_for_user', expectedRevision: current.revision, taskId: task.id,
+        });
+      } else if (['pending', 'ready', 'running'].includes(task.status)) {
+        if (task.status !== 'running') {
+          current = this.graph.apply(projectId, {
+            type: 'start_task', expectedRevision: current.revision, taskId: task.id,
+          });
+        }
+        current = this.graph.apply(projectId, {
+          type: 'wait_for_user', expectedRevision: current.revision, taskId: task.id,
+        });
+      } else if (task.status !== 'waiting_user') {
+        throw new Error(`当前脚本任务不能重新生成：${task.status}`);
+      }
+      task = current.tasks.find((item) => item.id === task!.id)!;
+
+      const existing = this.state.snapshot(projectId).pendingInteractions.find(
+        (item) => item.type === 'question_batch' && item.payload.purpose === 'script_contract',
+      );
+      let interaction = existing;
+      if (!interaction) {
+        const started = this.state.apply({
+          kind: 'start_run', projectId, intent: '重新确认确定性脚本契约',
+          baseRevision: input.packageRevisionOid,
+          state: {
+            purpose: 'script_contract', taskId: task.id,
+            candidates: input.candidates as unknown as JsonObject[],
+          },
+        });
+        if (started.kind !== 'run') throw new Error('脚本契约任务创建失败');
+        const opened = this.state.apply({
+          kind: 'open_interaction', projectId, runId: started.run.id,
+          type: 'question_batch', baseRevision: input.packageRevisionOid,
+          payload: {
+            purpose: 'script_contract', taskId: task.id,
+            title: '重新确认脚本输入、输出和测试',
+            description: '知识包修订可能已变化，请重新确认契约后再生成受控脚本方案。',
+            candidates: input.candidates as unknown as JsonObject[],
+            questions: input.candidates.map((candidate, index) => {
+              const suggestedContract = candidate.suggestedContract?.trim() || [
+                '输入：以 operation 定义的输入和关联对象作为受控输入',
+                '输出：以 operation 定义的业务结果作为结构化输出',
+                '测试：同一合法输入重复执行结果一致；缺少必填输入时明确失败。',
+              ].join('\n');
+              return {
+                id: `script_contract_${index + 1}`, kind: 'single', required: true,
+                q: `请确认“${candidate.title}”脚本的输入、输出和至少一个测试案例`,
+                allowOther: true,
+                options: [{
+                  value: suggestedContract,
+                  label: '采用系统建议契约',
+                  description: suggestedContract,
+                }],
+              };
+            }),
+          },
+        });
+        if (opened.kind !== 'interaction') throw new Error('脚本契约问题创建失败');
+        interaction = opened.interaction;
+      }
+      const message = this.messages.append(projectId, {
+        role: 'assistant', taskId: task.id,
+        blocks: [
+          {
+            type: 'status', title: '确定性脚本已进入重新生成',
+            summary: `请重新确认 ${input.candidates.length} 个 operation 的脚本契约`,
+            milestoneId: 'deterministic_confirmed', taskId: task.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          { type: 'text', text: '契约确认后会重新生成受控变更方案，确认前不会修改知识包。' },
+        ],
+      });
+      return { aiConstruction: current, message, interaction };
     });
   }
 

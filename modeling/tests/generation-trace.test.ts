@@ -4,23 +4,42 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
+import {
+  confirmedFlowchart,
+  operationTargetId,
+  operationTargetQuestion,
+} from './fixtures/confirmed-flowchart.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'generation-trace-'));
 
 const { createProject } = await import('../src/projects/repo.js');
 const { upsertNode, listNodes } = await import('../src/workflow/engine.js');
 const { generatePackage } = await import('../src/workflow/m2.js');
-const { replaceCompetency, setCompetencySelection } = await import('../src/workflow/m2-repo.js');
 const { listTraceEvents } = await import('../src/workflow/trace.js');
 const { getAuthoringState } = await import('../src/authoring/state.js');
 const { getPiAuthoringAdapter } = await import('../src/authoring/pi-adapter.js');
 const { getPackageArtifactStore } = await import('../src/artifacts/runtime.js');
 
+async function createGenerationProject(input: Parameters<typeof createProject>[0]) {
+  const project = createProject(input);
+  await getPackageArtifactStore().initializeDraftPackage(project.id, {
+    id: `project-${project.id.replace(/^pj_/, '')}`,
+    name: project.name,
+    description: project.background || `${project.name} 的知识包生成测试草稿`,
+  });
+  return project;
+}
+
 test('知识包分阶段生成过程持久化', async () => {
-  const project = createProject({ owner: 'tester', name: '生成轨迹', domain: '银行营销', background: '企业客户产品推荐' });
-  const questions = ['问题一', '问题二', '问题三', '问题四', '问题五'];
-  const competency = replaceCompetency(project.id, questions);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '生成轨迹', domain: '银行营销', background: '企业客户产品推荐' });
+  const processes = [
+    { id: 'identify_customer', title: '识别企业客户' },
+    { id: 'check_eligibility', title: '校验客户资格' },
+    { id: 'analyze_needs', title: '分析客户需求' },
+    { id: 'match_product', title: '匹配金融产品' },
+    { id: 'deliver_recommendation', title: '交付产品建议' },
+  ];
+  const flowchart = confirmedFlowchart(processes);
   upsertNode({
     projectId: project.id,
     type: 'analyze',
@@ -38,15 +57,14 @@ test('知识包分阶段生成过程持久化', async () => {
     key: 'customer', title: '企业客户', description: '对公企业客户', sourceTable: 'customer', primaryKey: ['id'],
     fields: [{ key: 'id', cnName: '客户号', type: 'string', required: true, sourceColumn: 'id' }],
   };
-  const operations = questions.map((question, index) => ({
-    key: `answer_${index + 1}`,
-    title: `回答${index + 1}`,
-    description: `回答${question}`,
+  const operations = processes.map((process) => ({
+    key: process.id,
+    title: process.title,
+    description: `执行${process.title}`,
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: ['查询 object:customer', '返回结果'],
     relatedObjects: ['customer'],
-    competencyQuestionId: competency[index].id,
-    competencyQuestion: question,
+    competencyQuestionId: operationTargetId(process.id),
   }));
   const faux = createFauxCore({ provider: 'generation-trace', models: [{ id: 'generation-trace' }] });
   faux.setResponses([
@@ -62,11 +80,17 @@ test('知识包分阶段生成过程持久化', async () => {
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }],
     documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, 'mindsdb');
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart, {
+    dataSourceType: 'mindsdb',
+  });
 
   assert.equal(result.spec.objects.length, 1);
   assert.equal(result.spec.operations.length, 5);
   assert.equal(result.spec.dataSourceType, 'mindsdb');
+  assert.deepEqual(
+    result.spec.operations.map((operation) => operation.competencyQuestion),
+    processes.map((process) => operationTargetQuestion(process.title)),
+  );
   const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
   assert.equal(node?.status, 'done');
   const events = listTraceEvents(node!.id);
@@ -86,10 +110,14 @@ test('知识包分阶段生成过程持久化', async () => {
   assert.ok(events.some((event) => event.kind === 'generation_completed'));
 });
 
-test('AI 辅助构建始终优先按人工确认流程生成业务操作', async () => {
-  const project = createProject({ owner: 'tester', name: '流程驱动生成', domain: '审批', background: '业务审批流程' });
-  const legacy = replaceCompetency(project.id, ['旧版问题不应覆盖已确认流程']);
-  setCompetencySelection(project.id, legacy.map((item) => item.id));
+test('AI 辅助构建按人工确认流程生成业务操作', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: '流程驱动生成', domain: '审批', background: '业务审批流程' });
+  const process = {
+    id: 'approval', title: '申请审批', trigger: '收到申请', actors: ['经办人', '审批人'],
+    inputs: ['申请单'], steps: ['审批判断'], exceptions: ['资料不全时退回'],
+    outputs: ['审批结果'], handoffs: ['通知经办人'],
+  };
+  const flowchart = confirmedFlowchart([process]);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -107,7 +135,7 @@ test('AI 辅助构建始终优先按人工确认流程生成业务操作', async
     key: 'approve_application', title: '审批申请', description: '按照确认流程审批申请',
     inputs: [], outputs: [{ field: 'decision', type: 'string' }],
     flow: ['读取 object:application', '审批判断', '返回结果'], relatedObjects: ['application'],
-    competencyQuestionId: 'process_approval',
+    competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'process-generation', models: [{ id: 'process-generation' }] });
   faux.setResponses([
@@ -122,33 +150,18 @@ test('AI 辅助构建始终优先按人工确认流程生成业务操作', async
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['A001'], distinctRatio: 1 }],
     }],
     documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, {
-    diagrams: [{
-      id: 'approval', title: '申请审批', trigger: '收到申请', actors: ['经办人', '审批人'],
-      inputs: ['申请单'], exceptions: ['资料不全时退回'], outputs: ['审批结果'], handoffs: ['通知经办人'],
-      nodes: [
-        { id: 'start:approval', label: '收到申请', kind: 'start' },
-        { id: 'step:approval:review', label: '审批判断', kind: 'decision' },
-        { id: 'end:approval', label: '审批结果', kind: 'end' },
-      ],
-      edges: [
-        { from: 'start:approval', to: 'step:approval:review' },
-        { from: 'step:approval:review', to: 'end:approval', label: '通过' },
-      ],
-    }],
-  });
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
   assert.equal(result.spec.operations.length, 1);
-  assert.equal(result.spec.operations[0].competencyQuestionId, 'process_approval');
-  assert.match(result.spec.operations[0].competencyQuestion ?? '', /申请审批/);
+  assert.equal(result.spec.operations[0].competencyQuestionId, operationTargetId(process.id));
+  assert.equal(result.spec.operations[0].competencyQuestion, operationTargetQuestion(process.title));
   assert.equal(result.coverage.uncovered.length, 0);
 });
 
 test('对象批次只提交部分分析候选时直接接受有依据的对象', async () => {
-  const project = createProject({ owner: 'tester', name: '对象补齐', domain: '供应链运营', background: '订单履约查询' });
-  const questions = ['如何查询仓储位置数据？'];
-  const competency = replaceCompetency(project.id, questions);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '对象补齐', domain: '供应链运营', background: '订单履约查询' });
+  const process = { id: 'warehouse_location_lookup', title: '查询仓储位置数据' };
+  const flowchart = confirmedFlowchart([process]);
   const candidates = [
     { name: 'WarehouseLocation', rationale: '仓储位置', sourceTables: ['warehouse_location'] },
     { name: 'ProcessingUnit', rationale: '处理单元', sourceTables: ['processing_unit'] },
@@ -176,8 +189,7 @@ test('对象批次只提交部分分析候选时直接接受有依据的对象',
     key: 'query_warehouse_location', title: '查询仓储位置', description: '查询仓储位置数据',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: ['查询 object:WarehouseLocation', '返回结果'], relatedObjects: ['WarehouseLocation'],
-    competencyQuestionId: competency[0].id,
-    competencyQuestion: questions[0],
+    competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'generation-object-repair', models: [{ id: 'generation-object-repair' }] });
   faux.setResponses([
@@ -193,7 +205,7 @@ test('对象批次只提交部分分析候选时直接接受有依据的对象',
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }],
     })),
     documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' });
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
   assert.deepEqual(result.spec.objects.map((item) => item.key), ['WarehouseLocation']);
   const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
@@ -201,11 +213,13 @@ test('对象批次只提交部分分析候选时直接接受有依据的对象',
   assert.equal(events.some((event) => event.kind === 'repair_started'), false);
 });
 
-test('操作批次引用不存在对象或漏掉问题时会自动重交', async () => {
-  const project = createProject({ owner: 'tester', name: '操作补齐', domain: '供应链运营', background: '仓储位置查询' });
-  const questions = ['如何查询仓储位置基础信息？', '如何查询仓储位置库存？'];
-  const competency = replaceCompetency(project.id, questions);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+test('操作批次引用不存在对象或漏掉确认流程时会自动重交', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: '操作补齐', domain: '供应链运营', background: '仓储位置查询' });
+  const processes = [
+    { id: 'yard_base', title: '查询仓储位置基础信息' },
+    { id: 'yard_inventory', title: '查询仓储位置库存' },
+  ];
+  const flowchart = confirmedFlowchart(processes);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -219,15 +233,15 @@ test('操作批次引用不存在对象或漏掉问题时会自动重交', async
     key: 'WarehouseLocation', title: '仓储位置', description: '仓储位置', sourceTable: 'warehouse_location', primaryKey: ['id'],
     fields: [{ key: 'id', cnName: '编号', type: 'string', required: true, sourceColumn: 'id' }],
   };
-  const operationFor = (key, question, questionId, relatedObjects = ['WarehouseLocation']) => ({
-    key, title: question, description: question,
+  const operationFor = (key, processTitle, processTargetId, relatedObjects = ['WarehouseLocation']) => ({
+    key, title: processTitle, description: processTitle,
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: [`查询 object:${relatedObjects[0]}`, '返回结果'], relatedObjects,
-    competencyQuestionId: questionId, competencyQuestion: question,
+    competencyQuestionId: processTargetId,
   });
   const repaired = [
-    operationFor('query_yard_base', questions[0], competency[0].id),
-    operationFor('query_yard_inventory', questions[1], competency[1].id),
+    operationFor('query_yard_base', processes[0].title, operationTargetId(processes[0].id)),
+    operationFor('query_yard_inventory', processes[1].title, operationTargetId(processes[1].id)),
   ];
   const faux = createFauxCore({ provider: 'generation-operation-repair', models: [{ id: 'generation-operation-repair' }] });
   faux.setResponses([
@@ -236,7 +250,7 @@ test('操作批次引用不存在对象或漏掉问题时会自动重交', async
     // 首次提交同时存在悬空对象引用和未精确认领的问题。
     fauxAssistantMessage([fauxToolCall('submit_operations', {
       operations: [
-        operationFor('query_yard_base', questions[0], competency[0].id, ['MissingObject']),
+        operationFor('query_yard_base', processes[0].title, operationTargetId(processes[0].id), ['MissingObject']),
       ],
     })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: repaired })]),
@@ -247,7 +261,7 @@ test('操作批次引用不存在对象或漏掉问题时会自动重交', async
       name: 'warehouse_location', rowCount: 1,
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }],
     }], documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' });
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
   assert.deepEqual(result.spec.operations.map((item) => item.key), ['query_yard_base', 'query_yard_inventory']);
   const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
@@ -257,11 +271,10 @@ test('操作批次引用不存在对象或漏掉问题时会自动重交', async
   assert.ok(events.some((event) => event.kind === 'repair_completed' && event.phase === 'operation_batch_1'));
 });
 
-test('操作通过领域问题 ID 绑定并由服务端回填原始问题文本', async () => {
-  const project = createProject({ owner: 'tester', name: '问题 ID 绑定', domain: '银行营销', background: '客户产品推荐' });
-  const question = '如何为符合条件的企业客户推荐存款产品？';
-  const competency = replaceCompetency(project.id, [question]);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+test('操作通过确认流程 ID 绑定并由服务端回填流程目标文本', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: '流程 ID 绑定', domain: '银行营销', background: '客户产品推荐' });
+  const process = { id: 'deposit_recommendation', title: '企业客户存款产品推荐' };
+  const flowchart = confirmedFlowchart([process]);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -279,7 +292,7 @@ test('操作通过领域问题 ID 绑定并由服务端回填原始问题文本'
     key: 'recommend_deposit_product', title: '推荐存款产品', description: '按客户条件推荐产品',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: ['查询 object:customer', '匹配产品'], relatedObjects: ['customer'],
-    competencyQuestionId: competency[0].id,
+    competencyQuestionId: operationTargetId(process.id),
     competencyQuestion: '给企业推荐合适的产品',
   };
   const faux = createFauxCore({ provider: 'generation-question-id', models: [{ id: 'generation-question-id' }] });
@@ -294,17 +307,17 @@ test('操作通过领域问题 ID 绑定并由服务端回填原始问题文本'
       name: 'customer', rowCount: 1,
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }], documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' });
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
-  assert.equal(result.spec.operations[0].competencyQuestionId, competency[0].id);
-  assert.equal(result.spec.operations[0].competencyQuestion, question);
+  assert.equal(result.spec.operations[0].competencyQuestionId, operationTargetId(process.id));
+  assert.equal(result.spec.operations[0].competencyQuestion, operationTargetQuestion(process.title));
 });
 
 test('知识包自动补交耗尽后等待专家决定是否跳过', async () => {
-  const project = createProject({ owner: 'tester', name: '生成失败轨迹', domain: '银行营销', background: '' });
-  const questions = ['问题一', '问题二', '问题三', '问题四', '问题五'];
-  const competency = replaceCompetency(project.id, questions);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '生成失败轨迹', domain: '银行营销', background: '' });
+  const processes = ['流程一', '流程二', '流程三', '流程四', '流程五']
+    .map((title, index) => ({ id: `failure_${index + 1}`, title }));
+  const flowchart = confirmedFlowchart(processes);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -321,7 +334,7 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
   const invalidOperation = {
     key: 'invalid_operation', title: '错误操作', description: '引用不存在对象',
     inputs: [], outputs: [], flow: ['读取不存在对象'], relatedObjects: ['missing_object'],
-    competencyQuestionId: competency[0].id,
+    competencyQuestionId: operationTargetId(processes[0].id),
   };
   const faux = createFauxCore({ provider: 'generation-trace-fail', models: [{ id: 'generation-trace-fail' }] });
   faux.setResponses([
@@ -337,7 +350,7 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
       name: 'customer', rowCount: 1,
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
     }], documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }), /等待专家确认是否跳过/);
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart), /等待专家确认是否跳过/);
 
   const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
   assert.equal(node?.status, 'waiting_user');
@@ -351,9 +364,9 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
 });
 
 test('专家确认后沿用原任务跳过失败批次并生成其余知识草案', async () => {
-  const project = createProject({ owner: 'tester', name: '专家跳过生成批次', domain: '银行营销', background: '' });
-  const competency = replaceCompetency(project.id, ['如何处理客户？']);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '专家跳过生成批次', domain: '银行营销', background: '' });
+  const process = { id: 'handle_customer', title: '处理客户' };
+  const flowchart = confirmedFlowchart([process]);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -370,7 +383,7 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
   const invalidOperation = {
     key: 'handle_customer', title: '处理客户', description: '处理客户',
     inputs: [], outputs: [], flow: ['读取不存在的对象'], relatedObjects: ['missing_object'],
-    competencyQuestionId: competency[0].id,
+    competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'generation-expert-skip', models: [{ id: 'generation-expert-skip' }] });
   faux.setResponses([
@@ -393,26 +406,25 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
       name: 'customer', rowCount: 1,
       fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C1'], distinctRatio: 1 }],
     }], documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, undefined, {
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart, {
     skipFailedPhases: ['operation_batch_1'],
     resumeRunId: originalRun.id,
   });
 
   assert.equal(result.spec.objects.length, 1);
   assert.equal(result.spec.operations.length, 0);
-  assert.deepEqual(result.coverage.uncovered, ['如何处理客户？']);
+  assert.deepEqual(result.coverage.uncovered, [operationTargetQuestion(process.title)]);
   assert.equal(result.generationNotices[0]?.phase, 'operation_batch_1');
   assert.equal(getAuthoringState().snapshot(project.id).activeRuns.length, 0);
 });
 
 test('过期生成门禁在创建新 workflow 节点前失败', async () => {
-  const project = createProject({ owner: 'tester', name: '过期生成门禁', domain: '银行营销', background: '' });
-  const competency = replaceCompetency(project.id, ['如何处理客户？']);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '过期生成门禁', domain: '银行营销', background: '' });
+  const flowchart = confirmedFlowchart([{ id: 'handle_customer', title: '处理客户' }]);
 
   await assert.rejects(generatePackage(project, {
     tables: [], documents: [],
-  }, undefined, undefined, {
+  }, undefined, flowchart, {
     resumeRunId: 'ar_expired',
   }), /已结束或不可恢复/);
 
@@ -420,10 +432,9 @@ test('过期生成门禁在创建新 workflow 节点前失败', async () => {
 });
 
 test('历史分析和对象提交中的表格展示标签在生成时规范化', async () => {
-  const project = createProject({ owner: 'tester', name: '历史来源修复', domain: '监管', background: '' });
-  const question = '如何查询监管场景？';
-  const competency = replaceCompetency(project.id, [question]);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '历史来源修复', domain: '监管', background: '' });
+  const process = { id: 'regulatory_scenario_lookup', title: '查询监管场景' };
+  const flowchart = confirmedFlowchart([process]);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -449,8 +460,7 @@ test('历史分析和对象提交中的表格展示标签在生成时规范化',
     key: 'query_regulatory_scenario', title: '查询监管场景', description: '查询监管场景',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: ['查询 object:regulatory_scenario'], relatedObjects: ['regulatory_scenario'],
-    competencyQuestionId: competency[0].id,
-    competencyQuestion: question,
+    competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'generation-source-catalog', models: [{ id: 'generation-source-catalog' }] });
   faux.setResponses([
@@ -465,7 +475,7 @@ test('历史分析和对象提交中的表格展示标签在生成时规范化',
       fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
     }],
     documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' });
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
   assert.equal(result.spec.objects[0].sourceTable, '十一个穿透式监管场景');
   assert.equal(result.spec.objects[0].sourceRefs?.[0]?.kind, 'table');
@@ -473,10 +483,9 @@ test('历史分析和对象提交中的表格展示标签在生成时规范化',
 });
 
 test('对象字段映射无效时在当前批次自动重交', async () => {
-  const project = createProject({ owner: 'tester', name: '字段映射重交', domain: '监管', background: '' });
-  const question = '如何查询监管场景？';
-  const competency = replaceCompetency(project.id, [question]);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '字段映射重交', domain: '监管', background: '' });
+  const process = { id: 'regulatory_scenario_lookup', title: '查询监管场景' };
+  const flowchart = confirmedFlowchart([process]);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -495,8 +504,7 @@ test('对象字段映射无效时在当前批次自动重交', async () => {
     key: 'query_regulatory_scenario', title: '查询监管场景', description: '查询监管场景',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: ['查询 object:regulatory_scenario'], relatedObjects: ['regulatory_scenario'],
-    competencyQuestionId: competency[0].id,
-    competencyQuestion: question,
+    competencyQuestionId: operationTargetId(process.id),
   };
   const core = createFauxCore({ provider: 'generation-mapping-repair', models: [{ id: 'generation-mapping-repair' }] });
   let objectCalls = 0;
@@ -526,7 +534,7 @@ test('对象字段映射无效时在当前批次自动重交', async () => {
       name: '监管场景', rowCount: 1,
       fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
     }], documents: [],
-  }, llm);
+  }, llm, flowchart);
 
   assert.equal(result.spec.objects[0].fields[0].sourceColumn, '序号');
   assert.equal(objectCalls, 2);
@@ -536,10 +544,9 @@ test('对象字段映射无效时在当前批次自动重交', async () => {
 });
 
 test('对象通过候选 ID 认领中英双语候选名称', async () => {
-  const project = createProject({ owner: 'tester', name: '候选 ID 绑定', domain: '监管', background: '' });
-  const question = '如何查询风险事件？';
-  const competency = replaceCompetency(project.id, [question]);
-  setCompetencySelection(project.id, competency.map((item) => item.id));
+  const project = await createGenerationProject({ owner: 'tester', name: '候选 ID 绑定', domain: '监管', background: '' });
+  const process = { id: 'risk_event_lookup', title: '查询风险事件' };
+  const flowchart = confirmedFlowchart([process]);
   upsertNode({
     projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
     output: {
@@ -560,7 +567,7 @@ test('对象通过候选 ID 认领中英双语候选名称', async () => {
     key: 'query_risk_event', title: '查询风险事件', description: '查询风险事件',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: ['查询 object:RiskEvent'], relatedObjects: ['RiskEvent'],
-    competencyQuestionId: competency[0].id,
+    competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'generation-candidate-id', models: [{ id: 'generation-candidate-id' }] });
   faux.setResponses([
@@ -574,7 +581,7 @@ test('对象通过候选 ID 认领中英双语候选名称', async () => {
       name: '监管场景', rowCount: 1,
       fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
     }], documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' });
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
   assert.equal(result.spec.objects[0].candidateId, 'candidate_1');
   assert.equal(result.spec.objects[0].key, 'RiskEvent');

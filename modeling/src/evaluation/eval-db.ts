@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import { parseExcel } from '../documents/parser.js';
 import type { DataDictField, DataDictTable } from '../types.js';
+import type { ProjectDataSource } from './data-source-repo.js';
 import {
   redactEvaluationDatabaseError,
   type EvaluationDatabaseTarget,
@@ -28,6 +29,23 @@ export interface EvaluationDatabaseImportResult {
   tableCount: number;
   rowCount: number;
   tables: { name: string; rowCount: number }[];
+}
+
+export interface EvaluationDatabaseProvisionResult {
+  ok: boolean;
+  schema?: string;
+  detail: string;
+}
+
+export function assertEvaluationDatabaseReady(
+  result: EvaluationDatabaseProvisionResult,
+  dataSource: ProjectDataSource,
+): void {
+  const requiresMysqlMirror = dataSource.mode === 'connection'
+    && ['nl2sql_http', 'nl2sql_template'].includes(dataSource.provider ?? '');
+  if (requiresMysqlMirror && !result.ok) {
+    throw new Error(`评测库准备失败，已停止本轮以避免使用旧数据：${result.detail}`);
+  }
 }
 
 export function validateEvaluationDatabaseExcelUpload(

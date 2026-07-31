@@ -21,6 +21,7 @@ export interface GraphImportUpload {
   storedPath: string;
   fileHash: string;
   sizeBytes: number;
+  packageRevisionOid?: string;
   expiresAt: string;
   createdAt: string;
 }
@@ -34,6 +35,7 @@ function rowToUpload(row: any): GraphImportUpload {
     storedPath: row.stored_path,
     fileHash: row.file_hash,
     sizeBytes: row.size_bytes,
+    packageRevisionOid: row.package_revision_oid || undefined,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
   };
@@ -53,11 +55,22 @@ export function cleanupExpiredGraphImportUploads(now = new Date()): number {
   return rows.length;
 }
 
+export function deleteGraphImportUploadsForProject(projectId: string): number {
+  const rows = getDb().prepare('SELECT * FROM graph_import_uploads WHERE project_id = ?')
+    .all(projectId) as any[];
+  for (const row of rows) removeFile(row.stored_path);
+  if (rows.length) {
+    getDb().prepare('DELETE FROM graph_import_uploads WHERE project_id = ?').run(projectId);
+  }
+  return rows.length;
+}
+
 export function saveGraphImportUpload(input: {
   projectId: string;
   owner: string;
   filename: string;
   buffer: Buffer;
+  packageRevisionOid: string;
   ttlMs?: number;
 }): GraphImportUpload {
   cleanupExpiredGraphImportUploads();
@@ -74,10 +87,11 @@ export function saveGraphImportUpload(input: {
   const expiresAt = new Date(Date.now() + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString();
   const fileHash = createHash('sha256').update(input.buffer).digest('hex');
   getDb().prepare(`INSERT INTO graph_import_uploads
-      (id, project_id, owner, filename, stored_path, file_hash, size_bytes, expires_at, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`)
+      (id, project_id, owner, filename, stored_path, file_hash, size_bytes,
+       package_revision_oid, expires_at, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(id, input.projectId, input.owner, input.filename, storedPath, fileHash,
-      input.buffer.byteLength, expiresAt, createdAt);
+      input.buffer.byteLength, input.packageRevisionOid, expiresAt, createdAt);
   return {
     id,
     projectId: input.projectId,
@@ -86,6 +100,7 @@ export function saveGraphImportUpload(input: {
     storedPath,
     fileHash,
     sizeBytes: input.buffer.byteLength,
+    packageRevisionOid: input.packageRevisionOid,
     expiresAt,
     createdAt,
   };

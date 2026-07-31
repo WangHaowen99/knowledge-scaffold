@@ -11,7 +11,7 @@ import { summarizeModelingBrief, type ModelingBrief } from '../ai-construction/m
 
 const TITLES: Record<NodeType, string> = {
   project_setup: '项目创建', ingest: '资料上传与解析', analyze: '初步分析',
-  interview: '建模访谈', competency: '胜任力问题', generate: '知识包生成',
+  interview: '建模访谈', generate: '知识包生成',
   review: '知识包工作区', data_source: '数据源配置', testcases: '评测用例录入', evaluate: '评测运行', optimize: '优化建议与应用',
   dyn_followup: '追问访谈', dyn_deepread: '深读文档', dyn_probe: '数据探查', dyn_conflict: '冲突消解',
 };

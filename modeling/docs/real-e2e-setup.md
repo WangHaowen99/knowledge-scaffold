@@ -53,6 +53,15 @@ cd modeling   # .env 需含 MODELING_LLM_*、EVAL_DB_URL（与 modeling 服务�
 npx tsx --env-file=.env scripts/nl2sql-service.ts
 ```
 
+生产环境使用同一份已测试实现：
+
+```bash
+npm run build
+NL2SQL_HOST=127.0.0.1 NL2SQL_PORT=5600 node --env-file=.env dist/nl2sql/server.js
+```
+
+`NL2SQL_HOST` 建议只绑定本机或 Consumer 所在 Docker 网桥地址，不要直接暴露到公网。
+
 ## 4. modeling（:5100）
 
 ```bash

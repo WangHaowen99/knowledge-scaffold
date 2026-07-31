@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 
-import { IngestView } from '../frontend/src/Workbench.jsx';
+import { IngestView } from '../frontend/src/PreparationPanels.jsx';
 
 const frontendRequire = createRequire(new URL('../frontend/package.json', import.meta.url));
 const React = frontendRequire('react');

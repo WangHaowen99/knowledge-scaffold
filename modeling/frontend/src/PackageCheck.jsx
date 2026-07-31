@@ -3,50 +3,82 @@ import {
   acceptPackageWarnings,
   deferPackageValidationErrors,
   runPackageCheck,
-  getPackageCheck,
 } from './api.js';
+import { repairAiConstructionKnowledge } from './authoring-api.js';
 import { BusyButton } from './ui.jsx';
 
 // 知识包体检面板（知识包完善页顶部）：规则引擎 + 语义 agent 的结构化发现。
 // 每条发现可一键把修复指令预填进右栏修缮对话。
+//
+// 自动重查由 PackageWorkspace 统一驱动并经 props 下发：这个面板只在「编辑与检查」页签下
+// 挂载，如果重查跟着它走，评测和诊断页签下改包就不会自动校验。
 const SEV_TAG = { 错误: 'tag-err', 警告: 'tag-draft', 提示: 'tag-lang' };
 
-export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
-  const [check, setCheck] = useState(null);   // { version, findings, createdAt } | null
+export default function PackageCheck({
+  projectId,
+  onOpenFile,
+  packageDraft = null,
+  check: suppliedCheck = null,
+  errorDeferral: suppliedErrorDeferral = null,
+  warningReview: suppliedWarningReview = null,
+  rechecking = false,
+  error: suppliedError = '',
+  onCheckResult,
+}) {
+  const [manualCheck, setManualCheck] = useState(null);
+  const [manualErrorDeferral, setManualErrorDeferral] = useState(null);
+  const [manualWarningReview, setManualWarningReview] = useState(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [warningReview, setWarningReview] = useState(null);
   const [acceptanceNote, setAcceptanceNote] = useState('');
   const [accepting, setAccepting] = useState(false);
-  const [errorDeferral, setErrorDeferral] = useState(null);
   const [deferralReason, setDeferralReason] = useState('');
   const [deferring, setDeferring] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+
+  // 手动检查与审计操作先本地生效，等上层快照回流后再让位，避免闪回旧结果。
+  const check = manualCheck ?? suppliedCheck;
+  const errorDeferral = manualErrorDeferral ?? suppliedErrorDeferral;
+  const warningReview = manualWarningReview ?? suppliedWarningReview;
 
   useEffect(() => {
-    getPackageCheck(projectId).then((d) => {
-      setCheck(d.check);
-      setErrorDeferral(d.errorDeferral);
-      setWarningReview(d.warningReview);
-    }).catch(() => {});
+    setManualCheck(null);
+    setManualErrorDeferral(null);
+    setManualWarningReview(null);
+    setAcceptanceNote('');
+    setDeferralReason('');
+  }, [projectId, suppliedCheck]);
+
+  useEffect(() => {
+    const openWarningReview = (event) => {
+      if (event?.detail?.projectId && event.detail.projectId !== projectId) return;
+      if (event?.detail?.warningReview) setManualWarningReview(event.detail.warningReview);
+      setOpen(true);
+    };
+    window.addEventListener('mw-package-warning-review', openWarningReview);
+    return () => window.removeEventListener('mw-package-warning-review', openWarningReview);
   }, [projectId]);
 
   const run = async () => {
-    if (packageDraft) return;
+    if (packageDraft) {
+      setErr('请先发布或放弃人工编辑草稿，再运行知识包检查');
+      return;
+    }
     setBusy(true); setErr('');
     try {
       const d = await runPackageCheck(projectId);
-      setCheck({
-        version: d.version,
-        revision: d.revision,
-        findings: d.findings,
+      setManualCheck({
+        version: d.version, revision: d.revision, findings: d.findings,
         createdAt: new Date().toISOString(),
       });
-      setErrorDeferral(d.errorDeferral);
-      setWarningReview(d.warningReview);
+      setManualErrorDeferral(d.errorDeferral);
+      setManualWarningReview(d.warningReview);
       setAcceptanceNote('');
       setDeferralReason('');
       setOpen(true);
+      onCheckResult?.(d);
+      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
@@ -68,48 +100,55 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
   const pendingWarnings = (warningReview?.items ?? []).filter((item) => !item.accepted);
 
   const acceptWarnings = async () => {
-    if (!check?.revision || !pendingWarnings.length || accepting || packageDraft) return;
-    setAccepting(true);
-    setErr('');
+    if (!check?.revision || !pendingWarnings.length || accepting) return;
+    setAccepting(true); setErr('');
     try {
       const result = await acceptPackageWarnings(
-        projectId,
-        check.revision,
-        pendingWarnings.map((item) => item.fingerprint),
-        acceptanceNote,
-        'validation',
+        projectId, check.revision, pendingWarnings.map((item) => item.fingerprint), acceptanceNote, 'validation',
       );
-      setWarningReview(result.warningReview);
+      setManualWarningReview(result.warningReview);
       setAcceptanceNote('');
+      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
     } catch (error) {
       setErr(error instanceof Error ? error.message : '警告确认失败');
-    } finally {
-      setAccepting(false);
-    }
+    } finally { setAccepting(false); }
   };
 
   const deferErrors = async () => {
-    if (!check?.revision || !counts?.错误 || deferring || packageDraft) return;
-    setDeferring(true);
-    setErr('');
+    if (!check?.revision || !counts?.错误 || deferring) return;
+    setDeferring(true); setErr('');
     try {
       const result = await deferPackageValidationErrors(projectId, deferralReason);
-      setErrorDeferral(result.deferral);
+      setManualErrorDeferral(result.deferral);
       setDeferralReason('');
+      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
     } catch (error) {
       setErr(error instanceof Error ? error.message : '错误暂缓失败');
-    } finally {
-      setDeferring(false);
-    }
+    } finally { setDeferring(false); }
+  };
+
+  const repair = async () => {
+    if (repairing || !counts?.错误 || packageDraft) return;
+    setRepairing(true); setErr('');
+    try {
+      await repairAiConstructionKnowledge(projectId);
+      window.dispatchEvent(new CustomEvent('mw-package-updated'));
+      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
+    } catch (error) {
+      setErr(error instanceof Error ? error.message.replaceAll('受控修复', '逐项修复') : '修复启动失败');
+    } finally { setRepairing(false); }
   };
 
   return (
     <div className="pcheck">
       <div className="pcheck-bar">
-        <BusyButton busy={busy} busyText="体检中" expect="含语义检查约 1~3 分钟" className="btn"
-          disabled={!!packageDraft} title={packageDraft ? '请先发布或放弃人工编辑草稿' : ''} onClick={run}>
-          🩺 知识包体检
+        <BusyButton busy={busy || rechecking} busyText="检查中" expect="约 1~3 分钟" className="btn"
+          disabled={!!packageDraft} onClick={run}>
+          检查内容
         </BusyButton>
+        {packageDraft && (
+          <span className="tag tag-draft">请先发布或放弃人工编辑草稿</span>
+        )}
         {counts && (
           <button className="pcheck-sum" onClick={() => setOpen((v) => !v)}>
             v{check.version}：
@@ -119,10 +158,15 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
             <span style={{ color: 'var(--muted)' }}>{open ? '收起 ▾' : '展开 ▸'}</span>
           </button>
         )}
-        {packageDraft
-          ? <span className="draft-inline-gate">请先发布或放弃人工编辑草稿，再运行知识包体检</span>
-          : !counts && !busy && <span style={{ fontSize: 12, color: 'var(--muted)' }}>检查口径冲突、兜底缺失、路由重复等规格问题</span>}
-        {err && <span className="lerr" style={{ margin: 0 }}>{err}</span>}
+        {counts?.错误 > 0 && (
+          <button type="button" className="btn btn-p"
+            disabled={repairing || busy || rechecking || !!packageDraft} onClick={repair}
+            title="根据当前检查结果自动修改知识包，并重新检查">
+            {repairing ? '自动修复中…' : '自动修复错误'}
+          </button>
+        )}
+        {!counts && !busy && !rechecking && <span style={{ fontSize: 12, color: 'var(--muted)' }}>检查内容和引用</span>}
+        {(err || suppliedError) && <span className="lerr" style={{ margin: 0 }}>{err || suppliedError}</span>}
       </div>
       {open && check && (
         <div className="pcheck-list">
@@ -137,9 +181,8 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
                 <span className="tag tag-ok">当前修订已接受</span>
               )}
               {f.suggestion && (
-                <button className="btn" style={{ padding: '2px 10px', fontSize: 11.5, flex: 'none' }}
-                  disabled={!!packageDraft} title={packageDraft ? '请先发布或放弃人工编辑草稿' : ''} onClick={() => toChat(f)}>
-                  交给修缮对话 →
+                <button className="btn" style={{ padding: '2px 10px', fontSize: 11.5, flex: 'none' }} onClick={() => toChat(f)}>
+                  去修改
                 </button>
               )}
             </div>
@@ -159,13 +202,12 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
                     rows={2}
                     value={deferralReason}
                     placeholder="说明暂缓原因和后续处理计划（必填）"
-                    disabled={!!packageDraft}
                     onChange={(event) => setDeferralReason(event.target.value)}
                   />
                   <button
                     type="button"
                     className="btn"
-                    disabled={deferring || !!packageDraft || deferralReason.trim().length < 4}
+                    disabled={deferring || deferralReason.trim().length < 4}
                     onClick={() => { void deferErrors(); }}
                   >
                     {deferring ? '记录中…' : `暂缓 ${counts.错误} 个错误`}
@@ -182,13 +224,12 @@ export default function PackageCheck({ projectId, onOpenFile, packageDraft }) {
                 rows={2}
                 value={acceptanceNote}
                 placeholder="说明影响范围和接受理由（必填）"
-                disabled={!!packageDraft}
                 onChange={(event) => setAcceptanceNote(event.target.value)}
               />
               <button
                 type="button"
                 className="btn"
-                disabled={accepting || !!packageDraft || acceptanceNote.trim().length < 4}
+                disabled={accepting || acceptanceNote.trim().length < 4}
                 onClick={() => { void acceptWarnings(); }}
               >
                 {accepting ? '确认中…' : `接受 ${pendingWarnings.length} 条警告`}

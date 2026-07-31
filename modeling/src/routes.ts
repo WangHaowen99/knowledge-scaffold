@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
 import { AiConstructionTaskGraph } from './ai-construction/task-graph.js';
+import {
+  AiConstructionMessageStore,
+  notifyAiConstructionMessageWritten,
+} from './ai-construction/messages.js';
+import { PackageChatConversation } from './ai-construction/package-chat-conversation.js';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { getDb } from './db/index.js';
@@ -26,6 +31,8 @@ import * as m2repo from './workflow/m2-repo.js';
 import { renderPackage } from './workflow/package-render.js';
 import { zipPackage } from './workflow/export.js';
 import { parsePackageArchive } from './workflow/package-import.js';
+import { normalizeFlowchartDocument } from './flowchart/document.js';
+import { renderDiagramFiles } from './flowchart/projection.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
@@ -38,9 +45,10 @@ import {
   saveReleaseKnownLimitations,
   type WarningAcceptancePhase,
 } from './workflow/warning-acceptance.js';
-import { buildReleaseReadiness, nextPatchVersion } from './workflow/release.js';
+import { buildReleaseReadiness } from './workflow/release.js';
 import {
   isReleaseCandidateVersion,
+  nextValidationCandidateVersion,
   promoteReleaseCandidate,
 } from './workflow/package-version-lifecycle.js';
 import * as m3repo from './workflow/m3-repo.js';
@@ -78,6 +86,7 @@ import {
   cancelGraphImportsForProject,
   executeGraphImport,
   GraphImportAlreadyRunningError,
+  GraphImportPackageStaleError,
   getGraphImportHistory,
   uploadGraphImportExcel,
   validateGraphImportUpload,
@@ -114,7 +123,6 @@ import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { DataDictTable } from './types.js';
 import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-operations.js';
-import { parsePackageDataSourceType } from './workflow/package-data-source.js';
 import {
   assertNoActivePackageDraft,
   createOrGetPackageDraft,
@@ -132,11 +140,7 @@ import { buildProjectAuditFiles } from './authoring/audit-export.js';
 import { getAuthoringState } from './authoring/state.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
-import { validateSpecIntegrity } from './workflow/spec-validation.js';
-import {
-  GenerationWaitingForExpert,
-  resolveGenerationContinuation,
-} from './workflow/generation-gate.js';
+import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -146,6 +150,7 @@ export interface RegisterRoutesOptions {
   graphImportExecutionDependencies?: GraphImportExecutionDependencies;
   packageChatPlan?: typeof packageChatPlan;
   packageChatApply?: typeof packageChatApply;
+  runAnalyze?: typeof runAnalyze;
 }
 
 function parseDraftRevision(value: unknown): number | null {
@@ -168,6 +173,19 @@ function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
       ? [{ id: document.id, filename: document.filename, textContent: document.textContent }]
       : []),
   };
+}
+
+function materialRevisionFingerprint(documents: ReturnType<typeof listDocuments>): string {
+  return documents
+    .map((document) => [
+      document.id,
+      document.sourceKey ?? '',
+      document.revisionNo ?? 0,
+      document.contentHash ?? '',
+      document.semanticHash ?? '',
+    ].join(':'))
+    .sort()
+    .join('|');
 }
 
 function sendPackageDraftError(reply: any, error: unknown) {
@@ -224,10 +242,16 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
+  const runMaterialAnalysis = options.runAnalyze ?? runAnalyze;
   const packageArtifacts = getPackageArtifactStore();
+  const authoringState = getAuthoringState();
+  const packageChatConversation = new PackageChatConversation(new AiConstructionMessageStore(
+    getDb(),
+    notifyAiConstructionMessageWritten((command) => authoringState.apply(command)),
+  ));
   const aiConstruction = new AiConstructionTaskGraph();
   const aiConstructionOrchestrator = new AiConstructionOrchestrator();
-  const legacyMigration = migrateLegacyPackageOverrides();
+  const legacyMigration = await migrateLegacyPackageOverrides();
   if (legacyMigration.projectCount) {
     const log = legacyMigration.failedCount || legacyMigration.pendingReviewCount
       ? app.log.warn.bind(app.log)
@@ -363,7 +387,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     });
 
     // ---- 项目（节点 1）----
-    r.get('/api/projects', async (req) => ({ projects: listProjects(req.user!.username) }));
+    r.get('/api/projects', async (req) => ({
+      projects: listProjects(req.user!.username).map((project) => {
+        const construction = aiConstruction.snapshot(project.id);
+        const currentTask = construction?.tasks.find(
+          (task) => task.id === construction.progress.currentTaskId,
+        );
+        return {
+          ...project,
+          construction: construction ? {
+            status: construction.status,
+            progress: construction.progress,
+            currentTask: currentTask ? { id: currentTask.id, title: currentTask.title } : null,
+          } : null,
+        };
+      }),
+    }));
 
     r.post('/api/projects', async (req, reply) => {
       const b = (req.body ?? {}) as any;
@@ -436,10 +475,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.get('/api/projects/:id', async (req, reply) => {
       const p = getProject((req.params as any).id);
       if (!p || p.owner !== req.user!.username) return reply.code(404).send({ error: '项目不存在' });
-      const cqs = m2repo.listCompetency(p.id);
       return {
         project: p, documents: listDocuments(p.id), nodes: listNodes(p.id),
-        competency: { total: cqs.length, selected: cqs.filter((q) => q.selected).length },
         dataSource: getProjectDataSource(p.id),
       };
     });
@@ -528,19 +565,78 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const { tables, documents: textDocs } = buildMaterialContext(docs);
       if (!tables.length && !textDocs.length) return reply.code(400).send({ error: '尚无可分析的资料，请先上传文档' });
       return withLock(`${p.id}:analyze`, reply, async () => {
-      try {
-        const { node, analysis } = await runAnalyze(p.id, tables, textDocs);
-        // 重跑早期节点不能让已到达的项目阶段倒退。
-        setProjectStage(p.id, 'analyze');
-        // 领域分析完成即生成「领域问题」候选（勾选后驱动包生成）；失败不阻断分析结果
-        let domainQuestions: unknown[] = [];
+        let started = false;
+        const materialFingerprint = materialRevisionFingerprint(docs);
+        const packageAtStart = await packageArtifacts.current(p.id);
+        if (!packageAtStart) {
+          return reply.code(409).send({
+            code: 'PACKAGE_REVISION_REQUIRED',
+            error: '请先进入统一建模工作台初始化知识包草稿',
+          });
+        }
+        const startedAt = Date.now();
         try {
-          domainQuestions = await m2.proposeCompetency(p, { tables, documents: textDocs }, analysis) as unknown[];
-        } catch { /* 面板可手动重试生成 */ }
-        return { node, analysis, domainQuestions };
-      } catch (e) {
-        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
-      }
+          aiConstructionOrchestrator.startMaterialAnalysis(p.id);
+          started = true;
+          const confirmedBrief = aiConstructionOrchestrator.latestConfirmedModelingBrief(p.id) ?? undefined;
+          const { node, analysis } = await runMaterialAnalysis(
+            p.id,
+            tables,
+            textDocs,
+            undefined,
+            (progress) => aiConstructionOrchestrator.reportMaterialAnalysisProgress(p.id, {
+              title: progress.title,
+              summary: progress.summary,
+              percent: progress.percent,
+              elapsedSeconds: Math.max(1, Math.round((Date.now() - startedAt) / 1_000)),
+            }),
+            confirmedBrief,
+          );
+          const [packageAtCompletion, currentDocuments] = await Promise.all([
+            packageArtifacts.current(p.id),
+            Promise.resolve(listDocuments(p.id)),
+          ]);
+          if (packageAtCompletion?.revision.oid !== packageAtStart.revision.oid) {
+            const error = new Error('分析期间知识包修订已变化，请基于最新修订重试');
+            error.name = 'MaterialAnalysisStaleError';
+            throw error;
+          }
+          if (materialRevisionFingerprint(currentDocuments) !== materialFingerprint) {
+            const error = new Error('分析期间建模资料已变化，请基于最新资料重试');
+            error.name = 'MaterialAnalysisStaleError';
+            throw error;
+          }
+          const completed = aiConstructionOrchestrator.completeMaterialAnalysis(p.id, {
+            packageRevisionOid: packageAtStart.revision.oid,
+            messageKey: `materials.analyzed.${node.id}`,
+            analysis,
+          });
+          // 重跑早期节点不能让已到达的项目阶段倒退。
+          setProjectStage(p.id, 'analyze');
+          return {
+            node,
+            analysis,
+            packageRevision: packageAtStart.revision.oid,
+            aiConstruction: completed.aiConstruction,
+            aiConstructionMessage: completed.message,
+          };
+        } catch (error) {
+          if (started) {
+            try {
+              aiConstructionOrchestrator.failMaterialAnalysis(
+                p.id,
+                error instanceof Error ? error.message : String(error),
+              );
+            } catch { /* 保留原始错误 */ }
+          }
+          const statusCode = !started || (error instanceof Error && error.name === 'MaterialAnalysisStaleError')
+            ? 409
+            : 500;
+          return reply.code(statusCode).send({
+            code: statusCode === 409 ? 'MATERIAL_ANALYSIS_STALE' : 'MATERIAL_ANALYSIS_FAILED',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       });
     });
 
@@ -625,171 +721,82 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       };
     };
 
-    // ---- 节点 4 访谈 ----
-    r.get('/api/projects/:id/interview', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      return { batches: m2repo.listBatches(c.p.id).map((b) => ({ ...b, answers: m2repo.getAnswers(b.id) })) };
-    });
-
-    r.post('/api/projects/:id/interview/start', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const selectedCq = m2repo.listCompetency(c.p.id).filter((q) => q.selected).length;
-      if (selectedCq < 5) return reply.code(400).send({ error: `请先在领域分析中勾选至少 5 条领域问题（当前 ${selectedCq} 条）` });
-      return withLock(`${c.p.id}:interview`, reply, async () => {
-        try {
-          const res = await m2.startInterview(c.p, c.ctx, c.analysis);
-          setProjectStage(c.p.id, 'interview');
-          return res;
-        } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
-      });
-    });
-
-    r.post('/api/projects/:id/interview/answer', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const { batchId, answers } = (req.body ?? {}) as any;
-      if (!batchId || !Array.isArray(answers)) return reply.code(400).send({ error: 'batchId 与 answers 必填' });
-      return withLock(`${c.p.id}:interview`, reply, async () => {
-        try {
-          return await m2.answerInterview(c.p, c.ctx, batchId, answers);
-        } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
-      });
-    });
-
-    // ---- 节点 5 胜任力 ----
-    r.get('/api/projects/:id/competency', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      return { questions: m2repo.listCompetency(c.p.id) };
-    });
-    r.post('/api/projects/:id/competency', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const question = String((req.body as any)?.question ?? '').trim();
-      if (!question) return reply.code(400).send({ error: '领域问题不能为空' });
-      if (question.length > 500) return reply.code(400).send({ error: '领域问题不能超过 500 个字符' });
-      const added = m2repo.addCustomCompetency(c.p.id, question);
-      return reply.code(201).send({ question: added, questions: m2repo.listCompetency(c.p.id) });
-    });
-    r.post('/api/projects/:id/competency/propose', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      return withLock(`${c.p.id}:competency`, reply, async () => {
-      try {
-        const questions = await m2.proposeCompetency(c.p, c.ctx, c.analysis);
-        setProjectStage(c.p.id, 'competency');
-        return { questions };
-      } catch (e) { return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) }); }
-      });
-    });
-    r.post('/api/projects/:id/competency/select', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const { selectedIds } = (req.body ?? {}) as any;
-      m2repo.setCompetencySelection(c.p.id, selectedIds ?? []);
-      return { questions: m2repo.listCompetency(c.p.id) };
-    });
-
-    // ---- 节点 6 知识包生成 ----
-    r.post('/api/projects/:id/generate', async (req, reply) => {
-      const c = loadCtx((req.params as any).id, req.user!.username);
-      if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const blocked = blockForActivePackageDraft(reply, c.p.id, 'generate');
-      if (blocked) return blocked;
-      const body = (req.body ?? {}) as any;
-      let dataSourceType;
-      try {
-        dataSourceType = parsePackageDataSourceType(body.dataSourceType);
-      } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
-      }
-      const authoringState = getAuthoringState();
-      const interactionId = String(body.interactionId ?? '').trim();
-      let generationOptions = {};
-      if (interactionId) {
-        try {
-          generationOptions = resolveGenerationContinuation(
-            authoringState.interaction(c.p.id, interactionId),
-          );
-        } catch (error) {
-          return reply.code(400).send({
-            code: 'INVALID_GENERATION_CONTINUATION',
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      } else if (authoringState.snapshot(c.p.id).activeRuns.some((run) => run.intent === '生成知识包')) {
-        return reply.code(409).send({
-          code: 'GENERATION_DECISION_REQUIRED',
-          error: '当前知识生成任务正在等待处理，请先回答待办并携带 interactionId 继续',
-        });
-      }
-      return withLock(`${c.p.id}:generate`, reply, async () => {
-      const interviewNode = latestNodeOf(listNodes(c.p.id), 'interview');
-      if (interviewNode?.status !== 'done') {
-        return reply.code(400).send({ error: '请先基于最新领域分析重新完成知识萃取访谈' });
-      }
-      const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected);
-      if (selected.length < 5) return reply.code(400).send({ error: '请先在胜任力问题中至少勾选 5 条' });
-      try {
-        const { spec, coverage, version } = await m2.generatePackage(
-          c.p,
-          c.ctx,
-          undefined,
-          dataSourceType,
-          generationOptions,
-        );
-        setProjectStage(c.p.id, 'generate');
-        return { version, coverage, objectCount: spec.objects.length, operationCount: spec.operations.length, dataSourceType };
-      } catch (e) {
-        if (e instanceof GenerationWaitingForExpert) {
-          return reply.code(409).send({
-            code: 'GENERATION_WAITING_FOR_EXPERT',
-            error: e.message,
-            failure: e.failure,
-            interaction: e.interaction,
-          });
-        }
-        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
-      }
-      });
-    });
-
     // ---- 节点 7 包评审：读文件树 / 单文件 / 导出 ----
     // ?version= 指定历史版本，缺省为最新版
-    const pickVersion = (projectId: string, req: any) => {
+    const pickVersion = async (projectId: string, req: any) => {
       const v = String((req.query as any)?.version ?? '');
-      return v ? m2repo.getPackageVersion(projectId, v) : m2repo.latestPackageVersion(projectId);
+      return v ? packageArtifacts.byPackageVersion(projectId, v) : packageArtifacts.current(projectId);
     };
     r.get('/api/projects/:id/package', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const pv = pickVersion(c.p.id, req);
-      if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
-      const files = renderPackage(pv.spec);
-      return {
-        version: pv.version, coverage: pv.coverage,
-        files: Object.keys(files).sort(),
-        versions: m2repo.listPackageVersions(c.p.id),
-      };
+      try {
+        const pv = await pickVersion(c.p.id, req);
+        if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
+        const [snapshot, activeDraft] = await Promise.all([
+          packageArtifacts.readPackageFiles(c.p.id, pv.revision.oid),
+          getActivePackageDraft(c.p.id),
+        ]);
+        const rendered = renderPackage(snapshot.spec);
+        const indexedVersion = getDb().prepare(`SELECT revision_oid FROM package_versions
+          WHERE project_id = ? AND version = ? AND revision_oid IS NOT NULL
+          ORDER BY rowid DESC LIMIT 1`)
+          .get(c.p.id, pv.packageVersion) as { revision_oid: string } | undefined;
+        const hasUnversionedChanges = indexedVersion?.revision_oid !== pv.revision.oid;
+        let nextCandidateVersion: string | null = null;
+        if (activeDraft) {
+          try {
+            nextCandidateVersion = nextValidationCandidateVersion({
+              currentVersion: pv.packageVersion,
+              currentStatus: pv.spec.status ?? 'draft',
+            });
+          } catch { /* 已废弃版本不能继续建立候选 */ }
+        }
+        return {
+          version: pv.packageVersion,
+          status: pv.spec.status ?? 'draft',
+          revision: pv.revision.oid,
+          hasUnversionedChanges: hasUnversionedChanges || Boolean(activeDraft?.changedFileCount),
+          nextCandidateVersion,
+          coverage: pv.coverage,
+          files: [...Object.keys(snapshot.files), ...snapshot.binaryFiles].sort(),
+          binaryPaths: snapshot.binaryFiles,
+          overriddenPaths: Object.keys(snapshot.files)
+            .filter((path) => rendered[path] !== undefined && rendered[path] !== snapshot.files[path])
+            .sort(),
+          versions: m2repo.listPackageVersions(c.p.id),
+          draft: activeDraft,
+        };
+      } catch (error) {
+        return sendArtifactError(reply, error);
+      }
     });
     r.get('/api/projects/:id/package/file', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const pv = pickVersion(c.p.id, req);
-      if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
-      const files = renderPackage(pv.spec);
       const path = String((req.query as any).path || '');
-      if (!(path in files)) return reply.code(404).send({ error: '文件不存在' });
-      return { path, content: files[path] };
+      try {
+        const pv = await pickVersion(c.p.id, req);
+        if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
+        const file = await packageArtifacts.readFile(c.p.id, `package/${path}`, pv.revision.oid);
+        const rendered = renderPackage(pv.spec)[path];
+        return {
+          path,
+          content: file.content,
+          revision: file.revision.oid,
+          overridden: rendered !== undefined && rendered !== file.content,
+          rendered,
+        };
+      } catch (error) {
+        return sendArtifactError(reply, error);
+      }
     });
 
     // 人工编辑草稿后端。草稿发布后固化为一个正式版本；活动草稿期间消费与修缮入口统一门禁。
     r.get('/api/projects/:id/package/draft', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      return { draft: getActivePackageDraft(c.p.id) };
+      return { draft: await getActivePackageDraft(c.p.id) };
     });
     r.post('/api/projects/:id/package/draft', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -797,7 +804,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const blocked = blockForActivePackageRepair(reply, c.p.id);
       if (blocked) return blocked;
       try {
-        const result = createOrGetPackageDraft(c.p.id, req.user!.username);
+        const result = await createOrGetPackageDraft(c.p.id, req.user!.username);
         return reply.code(result.created ? 201 : 200).send(result);
       } catch (error) {
         return sendPackageDraftError(reply, error);
@@ -809,7 +816,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const path = String((req.query as any).path ?? '').trim();
       if (!path) return reply.code(400).send({ error: 'path 必填' });
       try {
-        return { file: getPackageDraftFile(c.p.id, path) };
+        return { file: await getPackageDraftFile(c.p.id, path) };
       } catch (error) {
         return sendPackageDraftError(reply, error);
       }
@@ -832,7 +839,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         return reply.code(400).send({ error: 'draftId 必须是非空字符串' });
       }
       try {
-        return savePackageDraftFile({
+        return await savePackageDraftFile({
           projectId: c.p.id,
           path: path.trim(),
           content,
@@ -855,7 +862,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!path) return reply.code(400).send({ error: 'path 必填' });
       if (expectedRevision == null) return reply.code(400).send({ error: 'revision 必须是非负整数' });
       try {
-        return revertPackageDraftFile({ projectId: c.p.id, path, expectedRevision, expectedDraftId });
+        return await revertPackageDraftFile({
+          projectId: c.p.id,
+          path,
+          expectedRevision,
+          expectedDraftId,
+        });
       } catch (error) {
         return sendPackageDraftError(reply, error);
       }
@@ -902,22 +914,83 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       return withLock(`${c.p.id}:package-draft-publish`, reply, async () => {
         try {
-          const selectedQuestions = m2repo.listCompetency(c.p.id)
-            .filter((question) => question.selected)
-            .map((question) => question.question);
-          const published = publishPackageDraft({
+          const published = await publishPackageDraft({
             projectId: c.p.id,
             expectedRevision,
             expectedDraftId: typeof draftId === 'string' ? draftId.trim() || undefined : undefined,
             tables: c.ctx.tables,
-            selectedQuestions,
             summary: typeof summary === 'string' ? summary : undefined,
+            actorUsername: req.user!.username,
           });
           return reply.code(201).send({ published });
         } catch (error) {
           return sendPackageDraftError(reply, error);
         }
       });
+    });
+
+    // 已确认流程以 processes.json 为唯一事实源；Mermaid 文件只由该文档单向投影。
+    r.put('/api/projects/:id/package/diagram', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-diagram-edit');
+      if (blocked) return blocked;
+      const { document: rawDocument, expectedRevision } = (req.body ?? {}) as Record<string, unknown>;
+      if (typeof expectedRevision !== 'string' || !expectedRevision) {
+        return reply.code(400).send({ error: '流程图保存基线不完整' });
+      }
+      let document;
+      try {
+        document = normalizeFlowchartDocument(rawDocument);
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error ? error.message : '流程图内容不正确',
+        });
+      }
+      if (!document.diagrams.length) {
+        return reply.code(400).send({ error: '已确认知识包至少需要保留一个业务流程' });
+      }
+      return withLock(`${c.p.id}:package-diagram`, reply, async () => {
+        try {
+          const current = await packageArtifacts.current(c.p.id);
+          if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+          if (current.revision.oid !== expectedRevision) {
+            return reply.code(409).send({
+              code: 'revision_conflict',
+              error: '知识包流程图已更新，请刷新后重试',
+              currentRevision: current.revision.oid,
+            });
+          }
+          const projected = renderDiagramFiles(document);
+          const currentFiles = await packageArtifacts.readPackageFiles(c.p.id, current.revision.oid);
+          const projectedPaths = new Set(Object.keys(projected));
+          const deletePaths = Object.keys(currentFiles.files)
+            .filter((path) => /^diagrams\/process_\d+\.mmd$/u.test(path) && !projectedPaths.has(path))
+            .map((path) => `package/${path}`);
+          const saved = await packageArtifacts.saveFiles(c.p.id, {
+            expectedRevision,
+            files: Object.fromEntries(Object.entries(projected).map(([path, content]) => (
+              [`package/${path}`, content]
+            ))),
+            deletePaths,
+            action: {
+              cause: 'flowchart_edit',
+              summary: '更新已确认业务流程',
+              actorKind: 'user',
+              actorName: req.user!.username,
+            },
+          });
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: c.p.id,
+            type: 'package.revision.created',
+            payload: { revisionId: saved.revision.oid, cause: 'flowchart_edit' },
+          });
+          return { document, revision: saved.revision.oid };
+        } catch (error) {
+          return sendArtifactError(reply, error);
+        }
+      }, 'package-diagram');
     });
 
     // 旧版 override 写接口已停用。保留 410 响应，避免旧客户端误以为修改成功。
@@ -938,36 +1011,67 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       });
     });
 
-    // 包修缮 agent 对话·两段式：① plan 影响分析（咨询直接回答）② 专家确认后 apply 落新版本
+    // 建模助手请求只登记消息并启动后台分析；结果经结构化消息和项目事件流回传。
     r.post('/api/projects/:id/package/chat', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-chat');
       if (blocked) return blocked;
-      return withLock(`${c.p.id}:chat`, reply, async () => {
-      const { message, history } = (req.body ?? {}) as { message?: string; history?: { role: 'user' | 'assistant'; text: string }[] };
-      if (!message?.trim()) return reply.code(400).send({ error: 'message 必填' });
-      try {
-        return await runPackageChatPlan(c.p, history ?? [], message.trim());
-      } catch (e) {
-        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
-      }
-      }, 'package-chat');
+      const { message, requestId } = (req.body ?? {}) as { message?: string; requestId?: string };
+      if (!message?.trim()) return reply.code(400).send({ error: '请输入内容' });
+      const chatKey = `${c.p.id}:chat`;
+      if (inFlight.current(chatKey)) return reply.code(409).send({ error: '项目正在处理中' });
+
+      const turnId = String(requestId || req.id);
+      const history = packageChatConversation.history(c.p.id);
+      const userMessage = packageChatConversation.beginTurn(c.p.id, turnId, message.trim());
+      const started = authoringState.apply({
+        kind: 'start_run',
+        projectId: c.p.id,
+        intent: '建模助手分析',
+        state: { purpose: 'package_chat', turnId },
+      });
+      if (started.kind !== 'run') throw new Error('建模助手任务创建失败');
+      const runId = started.run.id;
+      const finishRun = (status: 'completed' | 'failed', error?: unknown) => {
+        try {
+          authoringState.apply({
+            kind: 'update_run',
+            projectId: c.p.id,
+            runId,
+            status,
+            ...(status === 'failed' ? {
+              error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000)
+                || '建模助手处理失败',
+            } : {}),
+          });
+        } catch { /* 对话消息已经落库，运行状态收尾失败不覆盖结果 */ }
+      };
+
+      void inFlight.run(chatKey, 'package-chat', async () => {
+        const result = await runPackageChatPlan(c.p, history, message.trim());
+        packageChatConversation.finishTurn(c.p.id, turnId, result);
+      }).then(
+        () => finishRun('completed'),
+        (error) => {
+          packageChatConversation.failTurn(c.p.id, turnId, '建模助手处理失败', error);
+          finishRun('failed', error);
+        },
+      );
+      return reply.code(202).send({
+        status: 'accepted',
+        requestId: turnId,
+        runId,
+        aiConstructionMessages: [userMessage],
+      });
     });
     r.post('/api/projects/:id/package/chat/apply', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-chat-apply');
-      if (blocked) return blocked;
-      return withLock(`${c.p.id}:chat`, reply, async () => {
-      const { message, history, plan } = (req.body ?? {}) as any;
-      if (!plan?.changes?.length) return reply.code(400).send({ error: 'plan 必填（先调用 chat 获取修缮计划）' });
-      try {
-        return await runPackageChatApply(c.p, history ?? [], String(message ?? ''), plan, c.ctx.tables);
-      } catch (e) {
-        return reply.code(500).send({ error: e instanceof Error ? e.message : String(e) });
-      }
-      }, 'package-chat-apply');
+      return reply.code(410).send({
+        code: 'CONFIRMED_EXECUTION_REQUIRED',
+        error: '该接口已停用，请通过建模助手待办卡确认或取消修改方案',
+      });
     });
 
     // 包体检：规则引擎（确定性）+ 语义检查（LLM）；结果落库供回看
@@ -979,12 +1083,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return withLock(`${c.p.id}:check`, reply, async () => {
       const latest = await packageArtifacts.current(c.p.id);
       if (!latest) return reply.code(404).send({ error: '尚未生成知识包' });
-      const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
       try {
-        // 双层体检：spec 语义层（规则 + LLM 语义）+ 正式版本渲染产物层。
-        const rendered = renderPackage(latest.spec);
-        const formatFindings = runFormatChecks(latest.spec, rendered);
-        const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, selected);
+        // 双层体检：结构化 spec 规则 + 当前 Git 修订中的真实交付文件。
+        const snapshot = await packageArtifacts.readPackageFiles(c.p.id, latest.revision.oid);
+        const formatFindings = runFormatChecks(latest.spec, snapshot.files);
+        const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, packageIntentQuestions(latest.spec));
         const semanticFindings = await runSemanticCheck(c.p, latest.spec);
         const findings = [...formatFindings, ...ruleFindings, ...semanticFindings]
           .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
@@ -1054,20 +1157,23 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!c) return reply.code(404).send({ error: '项目不存在' });
       const blocked = blockForActivePackageDraft(reply, c.p.id, 'package-export');
       if (blocked) return blocked;
-      const pv = pickVersion(c.p.id, req);
+      const pv = await pickVersion(c.p.id, req);
       if (!pv) return reply.code(404).send({ error: '尚未生成知识包或版本不存在' });
-      const rendered = renderPackage(pv.spec);
+      const [snapshot, archive] = await Promise.all([
+        packageArtifacts.readPackageFiles(c.p.id, pv.revision.oid),
+        packageArtifacts.readPackageArchiveFiles(c.p.id, pv.revision.oid),
+      ]);
       // 导出前仍执行确定性渲染格式校验，防止异常规格产出无效交付包。
-      const bad = runFormatChecks(pv.spec, rendered).filter((f) => f.severity === '错误');
+      const bad = runFormatChecks(pv.spec, snapshot.files).filter((f) => f.severity === '错误');
       if (bad.length) {
         return reply.code(400).send({
           error: `导出中止：包格式校验未通过——${bad.map((f) => f.message).join('；')}`,
           findings: bad,
         });
       }
-      const zip = zipPackage(rendered);
+      const zip = zipPackage(archive.files);
       reply.header('Content-Type', 'application/zip');
-      reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.version}.zip"`);
+      reply.header('Content-Disposition', `attachment; filename="${pv.spec.id}-${pv.packageVersion}.zip"`);
       return reply.send(Buffer.from(zip));
     });
     r.get('/api/projects/:id/audit/export', async (req, reply) => {
@@ -1192,7 +1298,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         try {
           const file = await (req as any).file();
           if (!file) return reply.code(400).send({ error: '缺少 Excel 文件' });
-          const upload = uploadGraphImportExcel({
+          const upload = await uploadGraphImportExcel({
             projectId: c.p.id,
             owner: req.user!.username,
             filename: file.filename,
@@ -1213,7 +1319,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const { mapping } = (req.body ?? {}) as any;
       if (!mapping) return reply.code(400).send({ error: 'mapping 必填' });
       try {
-        const validation = validateGraphImportUpload({
+        const validation = await validateGraphImportUpload({
           projectId: c.p.id,
           owner: req.user!.username,
           uploadId: (req.params as any).uploadId,
@@ -1221,6 +1327,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
         return { validation };
       } catch (error) {
+        if (error instanceof GraphImportPackageStaleError) {
+          return reply.code(409).send({
+            code: error.code,
+            error: error.message,
+            uploadRevision: error.uploadRevision,
+            currentRevision: error.currentRevision,
+          });
+        }
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
       }
     });
@@ -1256,6 +1370,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               code: error.code,
               error: error.message,
               run: error.run,
+            });
+          }
+          if (error instanceof GraphImportPackageStaleError) {
+            return reply.code(409).send({
+              code: error.code,
+              error: error.message,
+              uploadRevision: error.uploadRevision,
+              currentRevision: error.currentRevision,
             });
           }
           return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
@@ -1325,8 +1447,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.post('/api/projects/:id/testcases/prefill', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const selected = m2repo.listCompetency(c.p.id).filter((q) => q.selected).map((q) => q.question);
-      const added = m3repo.prefillFromCompetency(c.p.id, selected);
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(409).send({ error: '请先生成知识包' });
+      const added = m3repo.prefillFromPackage(c.p.id, packageIntentQuestions(current.spec));
       setProjectStage(c.p.id, 'testcases');
       return { added, testcases: m3repo.listTestcases(c.p.id) };
     });
@@ -1569,8 +1692,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           }
         }
         try {
-          const selected = m2repo.listCompetency(c.p.id).filter((item) => item.selected).map((item) => item.question);
-          const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, selected);
+          const ruleFindings = runRuleChecks(pv.spec, c.ctx.tables, packageIntentQuestions(pv.spec));
           const raw = await proposeOptimizations(
             c.p, pv.spec, optimizableFailures, undefined, ruleFindings, diagnoses,
           );
@@ -1673,9 +1795,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           );
           markOptimizationCandidateSaving(task.id);
           const spec = { ...latest.spec, ...revised, version: latest.spec.version };
-          const selected = m2repo.listCompetency(c.p.id).filter((item) => item.selected).map((item) => item.question);
-          validateSpecIntegrity(spec, selected);
-          const coverage = m2.checkCoverage(spec, selected);
+          const intentQuestions = packageIntentQuestions(spec);
+          validateSpecIntegrity(spec, intentQuestions);
+          const coverage = m2.checkCoverage(spec, intentQuestions);
           const current = await packageArtifacts.readPackageFiles(c.p.id, latest.revision.oid);
           const candidate = await createOptimizationCandidate({
             store: packageArtifacts,
@@ -1824,35 +1946,28 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             return reply.code(409).send({ error: '发布条件未满足', gates: readiness.gates });
           }
 
-          const latestRevision = (await packageArtifacts.history(c.p.id, 1))[0];
-          const isManualReviewVersion = latestRevision?.oid === current.revision.oid
-            && latestRevision.cause === 'manual_version'
-            && latestRevision.packageVersion === current.packageVersion;
           const releaseCandidate = current.spec.status === 'review'
             && isReleaseCandidateVersion(current.packageVersion);
-          const version = releaseCandidate
-            ? promoteReleaseCandidate(current.packageVersion)
-            : isManualReviewVersion ? current.packageVersion : nextPatchVersion(current.packageVersion);
+          if (!releaseCandidate) {
+            return reply.code(409).send({
+              error: '当前知识包不是可发布的 RC 候选，请先完成人工草稿发布或建模确认',
+              code: 'RELEASE_CANDIDATE_REQUIRED',
+            });
+          }
+          const version = promoteReleaseCandidate(current.packageVersion);
           const action = {
             cause: 'release',
             summary: `发布 ${version}`,
             actorKind: 'user' as const,
             actorName: req.user!.username,
           };
-          const saved = isManualReviewVersion && !releaseCandidate
-            ? await packageArtifacts.finalizeCurrentPackageVersion(c.p.id, {
-              expectedRevision: current.revision.oid,
-              status: 'released',
-              note: '正式发布',
-              action,
-            })
-            : await packageArtifacts.saveCurrentAsPackageVersion(c.p.id, {
-              expectedRevision: current.revision.oid,
-              version,
-              status: 'released',
-              note: '正式发布',
-              action,
-            });
+          const saved = await packageArtifacts.saveCurrentAsPackageVersion(c.p.id, {
+            expectedRevision: current.revision.oid,
+            version,
+            status: 'released',
+            note: '正式发布',
+            action,
+          });
           getAuthoringState().apply({
             kind: 'publish_event',
             projectId: c.p.id,
@@ -1884,16 +1999,44 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.get('/api/projects/:id/versions', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const current = await packageArtifacts.current(c.p.id);
+      const currentRevision = current?.revision.oid ?? null;
       const rounds = m3repo.listRounds(c.p.id);
-      const versions = m2repo.listPackageVersions(c.p.id).map((v) => ({
-        ...v,
-        rounds: rounds.filter((rd) => rd.packageVersion === v.version)
-          .map((rd) => ({ id: rd.id, status: rd.status, passCount: rd.passCount, progressTotal: rd.progressTotal, createdAt: rd.createdAt })),
+      const roundSummary = (revision: string | undefined) => revision
+        ? rounds.filter((round) => round.artifactRevision === revision)
+          .map((round) => ({
+            id: round.id,
+            status: round.status,
+            passCount: round.passCount,
+            progressTotal: round.progressTotal,
+            createdAt: round.createdAt,
+          }))
+        : [];
+      const packageVersions = m2repo.listPackageVersions(c.p.id);
+      const versions = packageVersions.map((version) => ({
+        ...version,
+        revision: version.revision ?? null,
+        current: version.revision === currentRevision,
+        unversioned: false,
+        rounds: roundSummary(version.revision),
       }));
-      return { versions };
+      if (current && !packageVersions.some((version) => version.revision === currentRevision)) {
+        const unversionedRevision = current.revision.oid;
+        versions.push({
+          id: `current:${unversionedRevision}`,
+          version: current.packageVersion,
+          revision: unversionedRevision,
+          note: '当前未版本化修订',
+          createdAt: current.revision.createdAt,
+          current: true,
+          unversioned: true,
+          rounds: roundSummary(unversionedRevision),
+        });
+      }
+      return { currentRevision, versions };
     });
 
-    registerAuthoringRoutes(r);
+    registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply });
     registerArtifactRoutes(r);
   });
 }

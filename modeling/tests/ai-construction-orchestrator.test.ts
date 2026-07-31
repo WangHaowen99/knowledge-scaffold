@@ -874,8 +874,16 @@ test('选择确定性脚本候选后先确认输入输出和测试契约', () =>
     (item) => item.id === generationTask.id,
   )?.status, 'failed');
   assert.deepEqual((failed.message.blocks[2] as any).actions.map((item: any) => item.id), [
-    'defer_script_generation', 'review_knowledge_files',
+    'retry_script_generation', 'defer_script_generation', 'review_knowledge_files',
   ]);
+  const retried = orchestrator.retryScriptGeneration(project.id, {
+    packageRevisionOid: 'revision-knowledge_confirmed',
+    candidates: [candidate],
+  });
+  assert.equal(retried.aiConstruction.tasks.find(
+    (item) => item.id === generationTask.id,
+  )?.status, 'waiting_user');
+  assert.equal(retried.interaction?.payload.purpose, 'script_contract');
   orchestrator.startScriptGeneration(project.id);
 
   const completed = orchestrator.completeScriptGeneration(project.id, {

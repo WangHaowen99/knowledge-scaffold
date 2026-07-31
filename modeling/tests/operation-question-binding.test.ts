@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bindOperationCompetencyQuestions } from '../src/workflow/spec-validation.js';
+import {
+  bindOperationCompetencyQuestions,
+  packageIntentQuestions,
+} from '../src/workflow/spec-validation.js';
 
 const operation = (overrides = {}) => ({
   key: 'query_customer', title: '查询客户', description: '查询客户信息',
@@ -26,4 +29,21 @@ test('问题 ID 不属于当前批次时拒绝绑定', () => {
 
   assert.equal(result.issues.length, 1);
   assert.match(result.issues[0], /不存在的领域问题 ID cq-other/);
+});
+
+test('覆盖问题只从当前知识包 operation 提取并按首次出现顺序去重', () => {
+  const spec = {
+    operations: [
+      operation({ key: 'query_customer', competencyQuestion: '  如何查询企业客户？  ' }),
+      operation({ key: 'query_customer_again', competencyQuestion: '如何查询企业客户？' }),
+      operation({ key: 'query_balance', competencyQuestion: 'How to query balance?' }),
+      operation({ key: 'query_balance_again', competencyQuestion: 'how to query balance?' }),
+      operation({ key: 'without_question', competencyQuestion: '   ' }),
+    ],
+  };
+
+  assert.deepEqual(packageIntentQuestions(spec as any), [
+    '如何查询企业客户?',
+    'How to query balance?',
+  ]);
 });

@@ -163,25 +163,6 @@ export function buildFauxModeler(): LlmDeps {
         openQuestions: tables.slice(0, 2).map((t) => ({ topic: `${t.name} 关键字段语义`, why: `${t.fields[Math.min(1, t.fields.length - 1)] ?? t.fields[0]} 的业务口径需专家确认` })),
       })]);
     }
-    if (sys.includes('ask_user')) {
-      if (!hasToolResult('ask_user')) {
-        return fauxAssistantMessage([fauxToolCall('ask_user', { questions: [
-          { kind: 'single', q: '（演示）核心业务对象之间是父子结构还是引用关系？', options: ['父子结构', '引用关系', '两者都有'], topic: '关系' },
-          { kind: 'multi', q: '（演示）以下哪些字段属于业务主键？', options: ['ID', '编码类字段', '名称类字段'], topic: '字段含义' },
-          { kind: 'text', q: '（演示）请描述最重要的一个计算口径。', options: [], topic: '口径' },
-        ] })]);
-      }
-      return fauxAssistantMessage([fauxToolCall('finish_interview', { summary: '（演示模式）关键决策点已澄清。' })]);
-    }
-    if (sys.includes('propose_competency_questions')) {
-      if (!hasToolResult('list_tables')) return fauxAssistantMessage([fauxToolCall('list_tables', {})]);
-      const tables = parseTablesFromToolResult(context.messages);
-      const base = tables[0]?.name ?? '核心对象';
-      return fauxAssistantMessage([fauxToolCall('propose_competency_questions', { questions: [
-        `${base} 的某条记录明细是什么`, `${base} 按某字段汇总的结果`, `两个对象之间的关联关系如何查询`,
-        `某编号对应的变更影响有哪些`, `某时间范围内的记录有多少`, `字段口径如何计算`,
-      ] })]);
-    }
     if (sys.includes('submit_package_spec')) {
       if (!hasToolResult('list_tables')) return fauxAssistantMessage([fauxToolCall('list_tables', {})]);
       const tables = parseTablesFromToolResult(context.messages);
@@ -221,6 +202,10 @@ export function buildFauxModeler(): LlmDeps {
           detail: `新增操作，把该问题的业务规则写入包内说明：${f.groundTruth}`,
           kind: 'add_operation',
           relatedQuestion: f.question,
+          diagnosisIds: [],
+          evidence: ['faux 演示模式中的评测失败记录'],
+          generalizationPlan: '将确认后的业务口径沉淀为可复用的知识包操作。',
+          validationPlan: '使用独立问题、空输入和缺失字段场景验证操作路由与兜底行为。',
         })),
       })]);
     }
@@ -237,7 +222,15 @@ export function buildFauxModeler(): LlmDeps {
         return fauxAssistantMessage([fauxToolCall('submit_change_plan', {
           summary: `（演示计划）${msg.slice(0, 40)}`,
           changes: removing
-            ? [{ targetKind: 'operation', targetKey: target.key, action: 'remove', description: `移除操作 ${target.key}` }]
+            ? [
+              { targetKind: 'operation', targetKey: target.key, action: 'remove', description: `移除操作 ${target.key}` },
+              ...(target.script?.key ? [{
+                targetKind: 'script',
+                targetKey: target.script.key,
+                action: 'remove',
+                description: `移除操作 ${target.key} 绑定的脚本 ${target.script.key}`,
+              }] : []),
+            ]
             : [{ targetKind: 'operation', targetKey: `chat_${(spec.operations ?? []).length + 1}`, action: 'add', description: `（演示）按要求新增操作：${msg.slice(0, 60)}` }],
           risks: ['（演示）请确认改动不影响既有典型问题路由'],
         })]);
@@ -245,24 +238,84 @@ export function buildFauxModeler(): LlmDeps {
       return fauxAssistantMessage(`（演示模式）已收到：「${msg.slice(0, 60)}」。当前包共 ${(spec.objects ?? []).length} 个对象、${(spec.operations ?? []).length} 个操作；如需修改请描述具体改动。`);
     }
     if (sys.includes('package_chat_apply')) {
-      // faux 修缮·应用：按计划逐条落实（add 追加演示操作 / remove 移除指名条目）
+      // faux 修缮·应用：按当前原子批次只提交计划内的完整资源定义。
       const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
       const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
-      let spec: any = { objects: [], operations: [] };
-      let plan: any = { changes: [] };
-      try { spec = JSON.parse((text.match(/【当前规格】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
-      try { plan = JSON.parse((text.match(/【已确认的修缮计划】\n(.*)/) ?? [])[1] ?? '{}'); } catch { /* 保底 */ }
-      let operations = [...(spec.operations ?? [])];
-      for (const c of plan.changes ?? []) {
-        if (c.targetKind !== 'operation') continue;
-        if (c.action === 'remove') operations = operations.filter((o: any) => o.key !== c.targetKey);
-        if (c.action === 'add') operations.push({
-          key: c.targetKey, title: `（修缮）${String(c.description ?? '').slice(0, 18)}`,
-          description: `（演示修缮）${c.description ?? ''}`,
-          inputs: [], outputs: [], flow: ['按计划执行'], relatedObjects: (spec.objects ?? []).slice(0, 1).map((o: any) => o.key),
-        });
+      let changeContext: any = { targets: [], referenceIndex: {} };
+      try {
+        changeContext = JSON.parse(
+          (text.match(/【原子变更上下文】\n([^\n]+)/) ?? [])[1] ?? '{}',
+        );
+      } catch { /* 保底为空补丁，由调用方给出明确缺项错误 */ }
+      const patch: Record<string, any[]> = {};
+      const add = (property: string, value: any) => {
+        (patch[property] ??= []).push(value);
+      };
+      const firstObject = changeContext.referenceIndex?.objects?.[0]?.key;
+      const firstOperation = changeContext.targets?.find((target: any) => (
+        target.targetKind === 'operation' && target.action !== 'remove'
+      ))?.targetKey ?? changeContext.referenceIndex?.operations?.[0]?.key ?? 'operation';
+      for (const target of changeContext.targets ?? []) {
+        if (target.action === 'remove') continue;
+        const description = String(target.description ?? '按已确认方案修缮').trim();
+        if (target.current) {
+          const current = { ...target.current };
+          if (target.targetKind === 'operation') current.description = `${current.description ?? ''}；${description}`;
+          else if (target.targetKind === 'rule') current.content = `${current.content ?? ''}；${description}`;
+          else if (target.targetKind === 'metric') current.caliber = `${current.caliber ?? ''}；${description}`;
+          else current.description = `${current.description ?? ''}；${description}`;
+          add(`${target.targetKind}s`, current);
+          continue;
+        }
+        if (target.targetKind === 'object') {
+          add('objects', {
+            key: target.targetKey,
+            title: `（修缮）${description.slice(0, 18)}`,
+            description: `（演示修缮）${description}`,
+            fields: [{ key: 'id', cnName: '标识', type: 'string' }],
+          });
+        } else if (target.targetKind === 'operation') {
+          add('operations', {
+            key: target.targetKey,
+            title: `（修缮）${description.slice(0, 18)}`,
+            description: `（演示修缮）${description}`,
+            inputs: [], outputs: [], flow: ['按已确认方案执行'],
+            relatedObjects: firstObject ? [firstObject] : [],
+          });
+        } else if (target.targetKind === 'rule') {
+          add('rules', {
+            key: target.targetKey,
+            title: `（修缮）${description.slice(0, 18)}`,
+            content: description,
+            appliesToObjects: firstObject ? [firstObject] : [],
+          });
+        } else if (target.targetKind === 'metric') {
+          add('metrics', {
+            key: target.targetKey,
+            title: `（修缮）${description.slice(0, 18)}`,
+            caliber: description,
+            boundaries: ['仅使用已确认的知识包数据'],
+            usesObjects: firstObject ? [firstObject] : [],
+          });
+        } else if (target.targetKind === 'script') {
+          add('scripts', {
+            key: target.targetKey,
+            title: `（修缮）${description.slice(0, 18)}`,
+            description: `（演示修缮）${description}`,
+            boundOperation: firstOperation,
+            runtime: 'python', entrypoint: `${target.targetKey}.py`, timeoutSeconds: 30,
+            parameters: [{ name: 'input_json', flag: '--input-json', type: 'string', required: true }],
+            outputs: [{ key: 'result', type: 'object' }],
+            boundaries: ['仅处理结构化输入'],
+            sourceCode: [
+              'import argparse', 'import json', 'parser = argparse.ArgumentParser()',
+              'parser.add_argument("--input-json", required=True)', 'args = parser.parse_args()',
+              'print(json.dumps({"result": json.loads(args.input_json)}))',
+            ].join('\n'),
+          });
+        }
       }
-      return fauxAssistantMessage([fauxToolCall('submit_revised_spec', { objects: spec.objects ?? [], operations })]);
+      return fauxAssistantMessage([fauxToolCall('submit_resource_patch', patch)]);
     }
     if (sys.includes('package_check')) {
       // faux 语义体检：返回一条演示发现（规则检查是确定性代码，不走这里）
@@ -301,14 +354,17 @@ export function buildFauxModeler(): LlmDeps {
       return fauxAssistantMessage([fauxToolCall('submit_revised_spec', {
         objects: spec.objects ?? [],
         operations: [...(spec.operations ?? []), ...newOps],
+        rules: spec.rules ?? [],
+        metrics: spec.metrics ?? [],
+        scripts: spec.scripts ?? [],
       })]);
     }
     if (sys.includes('submit_verdict')) {
       // faux judge：标准答案的关键片段是否包含于回答（长度>1 的片段命中≥半数为 pass）
       const um = [...(context.messages ?? [])].reverse().find((m: any) => m?.role === 'user');
       const text = typeof um?.content === 'string' ? um.content : (um?.content ?? []).map((c: any) => c.text ?? '').join('');
-      const gt = (text.match(/标准答案：([\s\S]*?)\n智能体回答：/) ?? [])[1] ?? '';
-      const ans = (text.match(/智能体回答：([\s\S]*)$/) ?? [])[1] ?? '';
+      const gt = (text.match(/标准答案：([\s\S]*?)\n智能体(?:完整)?回答：/) ?? [])[1] ?? '';
+      const ans = (text.match(/智能体(?:完整)?回答：([\s\S]*)$/) ?? [])[1] ?? '';
       const frags = gt.split(/[，。；、\s]+/).filter((f: string) => f.length > 1);
       const hit = frags.filter((f: string) => ans.includes(f)).length;
       const ratio = frags.length ? hit / frags.length : 0;

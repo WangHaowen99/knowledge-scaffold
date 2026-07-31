@@ -37,7 +37,7 @@ export interface AiConstructionEvidenceBlock {
 export interface AiConstructionValidationBlock {
   type: 'validation';
   title: string;
-  scope: 'node' | 'incremental' | 'milestone' | 'complete';
+  scope: 'node' | 'incremental' | 'milestone' | 'complete' | 'release';
   counts: { errors: number; warnings: number; hints: number };
   findings?: Array<{
     severity: 'error' | 'warning' | 'hint';
@@ -61,6 +61,22 @@ export interface AiConstructionTaskPlanBlock {
   }>;
 }
 
+export interface AiConstructionChangePlanBlock {
+  type: 'change_plan';
+  interactionId: string;
+  title: string;
+  summary: string;
+  status: 'pending' | 'approved' | 'applied' | 'failed' | 'rejected';
+  changes: Array<{
+    id: string;
+    targetKind: 'object' | 'operation' | 'rule' | 'metric' | 'script';
+    targetKey: string;
+    action: 'add' | 'modify' | 'remove';
+    description: string;
+  }>;
+  risks?: string[];
+}
+
 export interface AiConstructionNextActionsBlock {
   type: 'next_actions';
   title?: string;
@@ -78,6 +94,7 @@ export type AiConstructionMessageBlock =
   | AiConstructionEvidenceBlock
   | AiConstructionValidationBlock
   | AiConstructionTaskPlanBlock
+  | AiConstructionChangePlanBlock
   | AiConstructionNextActionsBlock;
 
 export interface AiConstructionMessage {
@@ -125,12 +142,15 @@ const BLOCK_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
 const MESSAGE_ROLES = new Set<AiConstructionMessageRole>(['assistant', 'user', 'system']);
 const ACTION_STYLES = new Set(['primary', 'secondary', 'danger']);
 const CONFIDENCE = new Set(['low', 'medium', 'high']);
-const VALIDATION_SCOPES = new Set(['node', 'incremental', 'milestone', 'complete']);
+const VALIDATION_SCOPES = new Set(['node', 'incremental', 'milestone', 'complete', 'release']);
 const FINDING_SEVERITIES = new Set(['error', 'warning', 'hint']);
 const TASK_PLAN_STATUSES = new Set([
   'pending', 'ready', 'running', 'waiting_user', 'waiting_confirmation',
   'completed', 'failed', 'skipped', 'stale', 'cancelled',
 ]);
+const CHANGE_PLAN_STATUSES = new Set(['pending', 'approved', 'applied', 'failed', 'rejected']);
+const CHANGE_TARGET_KINDS = new Set(['object', 'operation', 'rule', 'metric', 'script']);
+const CHANGE_ACTIONS = new Set(['add', 'modify', 'remove']);
 
 function objectValue(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -281,6 +301,51 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
     const note = optionalText(block.note, '任务调整说明', 1_000);
     return { type: 'task_plan', title: textValue(block.title, '任务计划标题', 100), ...(note ? { note } : {}), tasks };
   }
+  if (block.type === 'change_plan') {
+    const status = String(block.status ?? '');
+    if (!CHANGE_PLAN_STATUSES.has(status)) {
+      throw new AiConstructionMessageStoreError('INVALID_BLOCK', '建模调整方案状态不正确');
+    }
+    if (!Array.isArray(block.changes) || block.changes.length < 1 || block.changes.length > 30) {
+      throw new AiConstructionMessageStoreError('INVALID_BLOCK', '建模调整方案必须包含 1 到 30 项变更');
+    }
+    const changes = block.changes.map((value) => {
+      const change = objectValue(value);
+      const id = textValue(change.id, '变更 ID', 64);
+      if (!BLOCK_ID_PATTERN.test(id)) {
+        throw new AiConstructionMessageStoreError('INVALID_BLOCK', '变更 ID 格式不正确');
+      }
+      const targetKind = String(change.targetKind ?? '');
+      const action = String(change.action ?? '');
+      if (!CHANGE_TARGET_KINDS.has(targetKind) || !CHANGE_ACTIONS.has(action)) {
+        throw new AiConstructionMessageStoreError('INVALID_BLOCK', '建模调整目标或动作不正确');
+      }
+      return {
+        id,
+        targetKind: targetKind as AiConstructionChangePlanBlock['changes'][number]['targetKind'],
+        targetKey: textValue(change.targetKey, '变更目标', 200),
+        action: action as AiConstructionChangePlanBlock['changes'][number]['action'],
+        description: textValue(change.description, '变更说明', MAX_CHANGE_PLAN_DESCRIPTION_LENGTH),
+      };
+    });
+    if (new Set(changes.map((change) => change.id)).size !== changes.length) {
+      throw new AiConstructionMessageStoreError('INVALID_BLOCK', '变更 ID 不能重复');
+    }
+    if (block.risks != null && !Array.isArray(block.risks)) {
+      throw new AiConstructionMessageStoreError('INVALID_BLOCK', '风险列表格式不正确');
+    }
+    const risks = (block.risks ?? []).slice(0, 20)
+      .map((risk: unknown) => textValue(risk, '风险说明', 500));
+    return {
+      type: 'change_plan',
+      interactionId: textValue(block.interactionId, '交互 ID', 100),
+      title: textValue(block.title, '方案标题', 100),
+      summary: textValue(block.summary, '方案摘要', 1_000),
+      status: status as AiConstructionChangePlanBlock['status'],
+      changes,
+      ...(risks.length ? { risks } : {}),
+    };
+  }
   if (block.type === 'next_actions') {
     if (!Array.isArray(block.actions) || block.actions.length < 1 || block.actions.length > 4) {
       throw new AiConstructionMessageStoreError('INVALID_BLOCK', '下一步动作必须包含 1 到 4 个选项');
@@ -334,7 +399,7 @@ function rowToMessage(row: any): AiConstructionMessage {
 const INLINE_MESSAGE_MAX_BYTES = 32_768;
 
 // 这些消息只刷新进度文案、不改变任务图，前端可以只贴消息而不回源重载 session
-const PROGRESS_ONLY_KEY_PREFIXES = ['analysis.progress.'];
+const PROGRESS_ONLY_KEY_PREFIXES = ['analysis.progress.', 'repair.apply.', 'repair.stage.'];
 
 // 把消息写入同步为项目事件，前端经 SSE 实时刷新对话（配合 AuthoringState.publish_event）
 export function notifyAiConstructionMessageWritten(
@@ -487,7 +552,7 @@ export class AiConstructionMessageStore {
     const milestone = graph.milestones.find((item) => item.id === graph.progress.currentMilestoneId);
     const task = graph.tasks.find((item) => item.id === graph.progress.currentTaskId) ?? graph.tasks[0];
     const milestoneTasks = milestone ? graph.tasks.filter((item) => item.milestoneId === milestone.id) : graph.tasks.slice(0, 1);
-    const imported = graph.source === 'package_import' || graph.source === 'legacy_projection';
+    const imported = graph.source === 'package_import';
     return this.append(projectId, {
       key: 'welcome',
       role: 'assistant',

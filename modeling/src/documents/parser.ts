@@ -1,4 +1,4 @@
-import { extname } from 'node:path';
+import { basename, extname } from 'node:path';
 import XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import type {
@@ -17,6 +17,7 @@ export function kindOf(filename: string): DocKind {
   if (ext === '.pdf') return 'pdf';
   if (ext === '.docx' || ext === '.doc') return 'word';
   if (ext === '.xlsx' || ext === '.xls') return 'excel';
+  if (ext === '.csv') return 'csv';
   return 'unknown';
 }
 
@@ -26,8 +27,8 @@ export interface ParseResult {
   error?: string;
 }
 
-// 统一解析入口：excel → 数据字典；其余 → 正文文本。
-export async function parseDocument(kind: DocKind, buffer: Buffer): Promise<ParseResult> {
+// 统一解析入口：Excel / CSV → 数据字典；其余 → 正文文本。
+export async function parseDocument(kind: DocKind, buffer: Buffer, filename = ''): Promise<ParseResult> {
   try {
     switch (kind) {
       case 'markdown':
@@ -35,6 +36,12 @@ export async function parseDocument(kind: DocKind, buffer: Buffer): Promise<Pars
         return { textContent: buffer.toString('utf8') };
       case 'excel':
         return { tables: parseExcel(buffer) };
+      case 'csv':
+        return {
+          tables: parseExcel(buffer, {
+            singleTableName: basename(filename, extname(filename)).trim() || 'data',
+          }),
+        };
       case 'word':
         return { textContent: (await mammoth.extractRawText({ buffer })).value };
       case 'pdf':
@@ -54,6 +61,8 @@ export interface ParseExcelOptions {
   rejectOverflow?: boolean;
   /** 图导入使用：额外保留单元格原始类型与 Excel 展示值。 */
   includeCellMetadata?: boolean;
+  /** CSV 只有一张逻辑表，使用文件名替代工作簿默认 Sheet 名。 */
+  singleTableName?: string;
 }
 
 interface ExcelDateTimeParts {
@@ -207,7 +216,9 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
       ))
       : undefined;
     tables.push({
-      name: sheetName,
+      name: options.singleTableName && wb.SheetNames.length === 1
+        ? options.singleTableName
+        : sheetName,
       fields,
       rowCount: dataRows.length,
       rows: rowMatrix,

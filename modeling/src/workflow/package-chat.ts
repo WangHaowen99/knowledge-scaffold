@@ -2,9 +2,8 @@ import { Type } from '@earendil-works/pi-ai';
 import { buildLlm, buildTaskLlm } from '../llm/provider.js';
 import { AgentRunTimeoutError, makeAgent, runAgent } from './agent.js';
 import { assertObjectDataMappings } from './data-mapping.js';
-import * as repo from './m2-repo.js';
 import { specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema } from './tools.js';
-import { validateSpecIntegrity } from './spec-validation.js';
+import { packageIntentQuestions, validateSpecIntegrity } from './spec-validation.js';
 import type {
   CoverageResult,
   DataDictTable,
@@ -23,6 +22,7 @@ import { renderPackage } from './package-render.js';
 import { canonicalizePackageSpec } from './package-spec.js';
 import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
 import { MAX_CHANGE_PLAN_DESCRIPTION_LENGTH } from '../ai-construction/messages.js';
+import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 
 // 知识包工作区的建模 agent —— 咨询直接回答，修改走两段式确认：
 // ① plan：只分析影响面（改哪些对象/操作、怎么改、风险），返回结构化计划等专家确认；咨询类直接文字回答；
@@ -47,6 +47,12 @@ export interface ChatPlanResult {
   reply?: string;
   plan?: ChangePlan;
   interaction?: { id: string; runId: string; baseRevision?: string };
+}
+export interface PackageChatPlanOptions {
+  purpose?: 'package_chat' | 'script_generation';
+  intent?: string;
+  interactionTitle?: string;
+  metadata?: Record<string, unknown>;
 }
 export interface ChatApplyResult {
   reply: string;
@@ -354,6 +360,15 @@ export function resolvePackageApplyTimeoutMs(configured: string | undefined): nu
   );
 }
 
+export function nextPackageChatVersion(
+  current: Pick<PackageSpec, 'version' | 'status'>,
+): string {
+  return nextValidationCandidateVersion({
+    currentVersion: current.version,
+    currentStatus: current.status ?? 'draft',
+  });
+}
+
 const resourceProperty: Record<ResourceKind, keyof AtomicResourcePatch> = {
   object: 'objects',
   operation: 'operations',
@@ -582,7 +597,12 @@ export function buildAtomicChangeContext(current: PackageSpec, plan: ChangePlan)
 }
 
 // ---- 阶段一：影响分析（不改包） ----
-export async function packageChatPlan(project: Project, history: ChatTurn[], message: string): Promise<ChatPlanResult> {
+export async function packageChatPlan(
+  project: Project,
+  history: ChatTurn[],
+  message: string,
+  options: PackageChatPlanOptions = {},
+): Promise<ChatPlanResult> {
   const latest = await getPackageArtifactStore().current(project.id);
   if (!latest) throw new Error('尚未生成知识包');
 
@@ -636,19 +656,21 @@ export async function packageChatPlan(project: Project, history: ChatTurn[], mes
 
   if (cap.plan?.changes?.length) {
     const adapter = getPiAuthoringAdapter();
-    const run = adapter.start(project.id, '修改知识包', latest.revision.oid, {
+    const purpose = options.purpose ?? 'package_chat';
+    const run = adapter.start(project.id, options.intent ?? '修改知识包', latest.revision.oid, {
       message,
       step: 'review_plan',
+      purpose,
     }).run;
     const interaction = adapter.request(project.id, run.id, 'change_plan', {
-      title: '确认建模调整',
+      purpose,
+      title: options.interactionTitle ?? '确认建模调整',
       summary: cap.plan.summary,
       changes: cap.plan.changes.map((change, index) => ({ id: String(index), ...change })),
       risks: cap.plan.risks ?? [],
       message,
       history: history.map((turn) => ({ role: turn.role, text: turn.text })),
-      autoApprove: false,
-      requiresExpertInput: true,
+      ...(options.metadata ?? {}),
     }, latest.revision.oid).interaction;
     return {
       plan: cap.plan,
@@ -704,9 +726,8 @@ export async function packageChatApply(
 
   const needsGeneratedPatch = plan.changes.some((change) => change.action !== 'remove');
   const spec = latest.spec;
-  const version = `1.${repo.listPackageVersions(project.id).length}.0`;
+  const version = nextPackageChatVersion(latest.spec);
   const timeoutMs = resolvePackageApplyTimeoutMs(process.env.MODELING_PACKAGE_APPLY_TIMEOUT_MS);
-  const selected = repo.listCompetency(project.id).filter((q) => q.selected).map((q) => q.question);
   const maxCandidateAttempts = options.validateCandidate ? (options.maxCandidateAttempts ?? 3) : 1;
   const quality = await runCandidateQualityLoop<PackageApplyCandidate>({
     maxAttempts: maxCandidateAttempts,
@@ -801,7 +822,7 @@ export async function packageChatApply(
         : {};
       const revisedResources = applyAtomicResourcePatch(spec, plan, patch);
       const revisedWithDecisionEvidence = attachKnowledgeChangeEvidence(
-        { ...spec, version, ...revisedResources },
+        { ...spec, version, status: 'review', ...revisedResources },
         plan.changes.map((change) => ({
           targetKind: change.targetKind,
           targetKey: change.targetKey,
@@ -816,7 +837,7 @@ export async function packageChatApply(
         attempt, maxAttempts: maxCandidateAttempts,
       });
       assertObjectDataMappings(newSpec, tables);
-      const coverage = validateSpecIntegrity(newSpec, selected);
+      const coverage = validateSpecIntegrity(newSpec, packageIntentQuestions(newSpec));
       return {
         baseRevision: latest.revision.oid,
         version,

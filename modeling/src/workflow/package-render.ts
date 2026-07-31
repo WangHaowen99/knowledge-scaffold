@@ -25,6 +25,8 @@ import { canonicalizePackageSpec } from './package-spec.js';
 export type PackageFiles = Record<string, string>;
 export interface RenderPackageOptions {
   includeDraftTemplate?: boolean;
+  /** 只读诊断存量包时可跳过脚本执行契约门禁；所有写入路径保持默认严格校验。 */
+  validateScripts?: boolean;
 }
 
 // YAML 标量转义：含特殊字符 / 首尾空白 / 空串时用 JSON 双引号形式（JSON 字符串是合法 YAML 标量）。
@@ -353,7 +355,9 @@ function mappingsJson(spec: PackageSpec): string {
 export function renderPackage(spec: PackageSpec, options: RenderPackageOptions = {}): PackageFiles {
   // 渲染入包前强制校验：key 清洗（NFC+trim）、非法字符/长度、包内同类唯一；不合法直接抛错
   const s = validateSpecKeys(canonicalizePackageSpec(spec));
-  for (const script of s.scripts ?? []) validateGeneratedScriptSafety(script);
+  if (options.validateScripts !== false) {
+    for (const script of s.scripts ?? []) validateGeneratedScriptSafety(script);
+  }
   const rules = s.rules ?? [];
   const metrics = s.metrics ?? [];
   const files: PackageFiles = {};

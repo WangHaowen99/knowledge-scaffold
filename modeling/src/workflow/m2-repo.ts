@@ -1,108 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
-import type { InterviewBatch, CompetencyQuestion, PackageSpec, CoverageResult } from '../types.js';
+import type { PackageSpec, CoverageResult } from '../types.js';
 
 const uid = (p: string) => `${p}_${randomUUID().slice(0, 12)}`;
-
-// ---- 访谈批次 ----
-export function insertBatch(projectId: string, nodeId: string | undefined, questions: unknown[]): InterviewBatch {
-  const db = getDb();
-  const id = uid('bt');
-  const r = db.prepare('SELECT MAX(ordinal) AS m FROM interview_batches WHERE project_id = ?').get(projectId) as { m: number | null };
-  const ordinal = (r.m ?? -1) + 1;
-  db.prepare(`INSERT INTO interview_batches (id, project_id, node_id, ordinal, questions_json, answered, created_at)
-    VALUES (?,?,?,?,?,0,?)`).run(id, projectId, nodeId ?? null, ordinal, JSON.stringify(questions), nowIso());
-  return getBatch(id)!;
-}
-
-function rowToBatch(r: any): InterviewBatch {
-  const qs = JSON.parse(r.questions_json);
-  return {
-    id: r.id, projectId: r.project_id, nodeId: r.node_id ?? undefined, ordinal: r.ordinal,
-    questions: qs.map((q: any, i: number) => ({ id: q.id ?? `q${i}`, kind: q.kind, q: q.q, options: q.options ?? [], topic: q.topic ?? '' })),
-    answered: !!r.answered, createdAt: r.created_at,
-  };
-}
-
-export function getBatch(id: string): InterviewBatch | null {
-  const r = getDb().prepare('SELECT * FROM interview_batches WHERE id = ?').get(id);
-  return r ? rowToBatch(r as any) : null;
-}
-
-export function listBatches(projectId: string, nodeId?: string): InterviewBatch[] {
-  const rows = nodeId
-    ? getDb().prepare('SELECT * FROM interview_batches WHERE project_id = ? AND node_id = ? ORDER BY ordinal').all(projectId, nodeId)
-    : getDb().prepare('SELECT * FROM interview_batches WHERE project_id = ? ORDER BY ordinal').all(projectId);
-  return rows.map(rowToBatch);
-}
-
-export function saveAnswers(batchId: string, answers: { questionId: string; selected: string[]; other?: string; skipped?: boolean }[]): void {
-  const db = getDb();
-  const del = db.prepare('DELETE FROM interview_answers WHERE batch_id = ?');
-  del.run(batchId); // 回溯修改：覆盖旧答案
-  const ins = db.prepare('INSERT INTO interview_answers (id, batch_id, question_id, answer_json, created_at) VALUES (?,?,?,?,?)');
-  for (const a of answers) {
-    ins.run(uid('an'), batchId, a.questionId, JSON.stringify({ selected: a.selected, other: a.other, skipped: a.skipped }), nowIso());
-  }
-  db.prepare('UPDATE interview_batches SET answered = 1 WHERE id = ?').run(batchId);
-}
-
-export function getAnswers(batchId: string): { questionId: string; selected: string[]; other?: string; skipped?: boolean }[] {
-  const rows = getDb().prepare('SELECT * FROM interview_answers WHERE batch_id = ?').all(batchId) as any[];
-  return rows.map((r) => ({ questionId: r.question_id, ...JSON.parse(r.answer_json) }));
-}
-
-// ---- 胜任力 ----
-export function replaceCompetency(projectId: string, questions: string[]): CompetencyQuestion[] {
-  const db = getDb();
-  db.prepare("DELETE FROM competency_questions WHERE project_id = ? AND source = 'generated'").run(projectId);
-  const existing = new Set(listCompetency(projectId).map((item) => item.question));
-  const ins = db.prepare(`INSERT INTO competency_questions
-    (id, project_id, question, selected, source, created_at) VALUES (?,?,?,0,'generated',?)`);
-  for (const rawQuestion of questions) {
-    const question = String(rawQuestion ?? '').trim();
-    if (!question || existing.has(question)) continue;
-    ins.run(uid('cq'), projectId, question, nowIso());
-    existing.add(question);
-  }
-  return listCompetency(projectId);
-}
-
-function rowToCq(r: any): CompetencyQuestion {
-  return {
-    id: r.id,
-    projectId: r.project_id,
-    question: r.question,
-    selected: !!r.selected,
-    source: r.source === 'custom' ? 'custom' : 'generated',
-    coveredOperation: r.covered_operation ?? undefined,
-    createdAt: r.created_at,
-  };
-}
-export function listCompetency(projectId: string): CompetencyQuestion[] {
-  return getDb().prepare('SELECT * FROM competency_questions WHERE project_id = ? ORDER BY created_at').all(projectId).map(rowToCq);
-}
-export function addCustomCompetency(projectId: string, rawQuestion: string): CompetencyQuestion {
-  const db = getDb();
-  const question = String(rawQuestion ?? '').trim();
-  const existing = db.prepare('SELECT * FROM competency_questions WHERE project_id = ? AND question = ? LIMIT 1')
-    .get(projectId, question) as any;
-  if (existing) {
-    db.prepare('UPDATE competency_questions SET selected = 1 WHERE id = ?').run(existing.id);
-    return rowToCq({ ...existing, selected: 1 });
-  }
-  const id = uid('cq');
-  db.prepare(`INSERT INTO competency_questions
-    (id, project_id, question, selected, source, created_at) VALUES (?,?,?,1,'custom',?)`)
-    .run(id, projectId, question, nowIso());
-  return rowToCq(db.prepare('SELECT * FROM competency_questions WHERE id = ?').get(id));
-}
-export function setCompetencySelection(projectId: string, selectedIds: string[]): void {
-  const db = getDb();
-  db.prepare('UPDATE competency_questions SET selected = 0 WHERE project_id = ?').run(projectId);
-  const upd = db.prepare('UPDATE competency_questions SET selected = 1 WHERE id = ? AND project_id = ?');
-  for (const id of selectedIds) upd.run(id, projectId);
-}
 
 // ---- 包版本 ----
 export function insertPackageVersion(projectId: string, version: string, spec: PackageSpec, coverage: CoverageResult, note?: string): string {
@@ -113,16 +13,31 @@ export function insertPackageVersion(projectId: string, version: string, spec: P
   return id;
 }
 export function latestPackageVersion(projectId: string): { id: string; version: string; spec: PackageSpec; coverage: CoverageResult } | null {
-  const r = getDb().prepare('SELECT * FROM package_versions WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(projectId) as any;
+  // Git 修订时间只有秒级精度，同秒内的连续发布不能靠 created_at 排序。
+  // package_versions 是只追加索引，rowid 才能稳定表示版本生成顺序。
+  const r = getDb().prepare('SELECT * FROM package_versions WHERE project_id = ? ORDER BY rowid DESC LIMIT 1').get(projectId) as any;
   if (!r) return null;
   return { id: r.id, version: r.version, spec: JSON.parse(r.spec_json), coverage: r.coverage_json ? JSON.parse(r.coverage_json) : { covered: [], uncovered: [] } };
 }
-export function listPackageVersions(projectId: string): { id: string; version: string; note?: string; createdAt: string }[] {
-  return (getDb().prepare('SELECT id, version, note, created_at FROM package_versions WHERE project_id = ? ORDER BY created_at, rowid').all(projectId) as any[])
-    .map((r) => ({ id: r.id, version: r.version, note: r.note ?? undefined, createdAt: r.created_at }));
+export function listPackageVersions(projectId: string): {
+  id: string;
+  version: string;
+  revision?: string;
+  note?: string;
+  createdAt: string;
+}[] {
+  return (getDb().prepare(`SELECT id, version, revision_oid, note, created_at
+    FROM package_versions WHERE project_id = ? ORDER BY rowid`).all(projectId) as any[])
+    .map((r) => ({
+      id: r.id,
+      version: r.version,
+      revision: r.revision_oid ?? undefined,
+      note: r.note ?? undefined,
+      createdAt: r.created_at,
+    }));
 }
 export function getPackageVersion(projectId: string, version: string): { id: string; version: string; spec: PackageSpec; coverage: CoverageResult } | null {
-  const r = getDb().prepare('SELECT * FROM package_versions WHERE project_id = ? AND version = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(projectId, version) as any;
+  const r = getDb().prepare('SELECT * FROM package_versions WHERE project_id = ? AND version = ? ORDER BY rowid DESC LIMIT 1').get(projectId, version) as any;
   if (!r) return null;
   return { id: r.id, version: r.version, spec: JSON.parse(r.spec_json), coverage: r.coverage_json ? JSON.parse(r.coverage_json) : { covered: [], uncovered: [] } };
 }

@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { consumerFetch } from '../consumer/client.js';
-import { latestPackageVersion } from '../workflow/m2-repo.js';
-import { renderPackage } from '../workflow/package-render.js';
 import { zipPackage } from '../workflow/export.js';
 import { judge, type Verdict } from './judge.js';
 import * as repo from '../workflow/m3-repo.js';
@@ -110,7 +108,7 @@ interface RunOptions {
   owner?: string;
   token: string; // 专家 token 透传
   refreshToken?: string; // 仅保留在评测任务内存中，用于长任务续期
-  packageSnapshot?: {
+  packageSnapshot: {
     version: string;
     spec: any;
     files: Record<string, string>;
@@ -193,8 +191,9 @@ export function startEvaluation(
 ): { roundId: string } {
   const { projectId } = opts;
   if (activeProjects.has(projectId)) throw new Error('该项目已有评测在运行');
-  const latest = opts.packageSnapshot ?? latestPackageVersion(projectId);
-  if (!latest) throw new Error('尚未生成知识包');
+  const latest = opts.packageSnapshot;
+  if (!latest) throw new Error('启动评测必须提供知识包快照');
+  if (!String(latest.revisionOid ?? '').trim()) throw new Error('知识包快照缺少工件修订');
   // 评测必须能够记录存量脚本的执行契约失败，而不是在轮次创建前整体拦截。
   // 安全检查仍然强制执行；候选接受、导出和发布继续使用严格契约。
   validateSpecIntegrity(latest.spec, [], undefined, { validateScriptExecutionContract: false });
@@ -214,7 +213,7 @@ export function startEvaluation(
     projectId,
     latest.version,
     testcases.length,
-    'revisionOid' in latest ? latest.revisionOid : undefined,
+    latest.revisionOid,
   );
   activeProjects.add(projectId);
   activeWorkspaces.add(workspaceId);
@@ -261,7 +260,7 @@ export async function startCurrentEvaluation(
 async function runRound(
   roundId: string,
   opts: RunOptions,
-  latest: { version: string; spec: any; files?: Record<string, string>; revisionOid?: string },
+  latest: RunOptions['packageSnapshot'],
   testcases: { id: string; question: string; groundTruth: string }[],
   dataSource: ProjectDataSource,
   workspaceId: string,
@@ -291,7 +290,7 @@ async function runRound(
 
   // 3. 导入知识包（已存在则覆盖激活版本；人工修订的文件以修订稿为准）
   repo.roundPhase(roundId, 'package');
-  const files = latest.files ? { ...latest.files } : renderPackage(latest.spec);
+  const files = { ...latest.files };
   const zip = zipPackage(files);
   const importResult = await importPackageZip({
     token: await auth.getAccessToken(),

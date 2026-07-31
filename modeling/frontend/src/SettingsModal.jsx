@@ -5,7 +5,7 @@ export function SettingsModalOverlay({ children }) {
   return <div className="modal-ov">{children}</div>;
 }
 
-// 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测数据源默认值。
+// 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测（评测库与数据源默认值）。
 // 优先级统一为：页面配置 > 环境变量。api key 保存后不回显；测试失败展示服务端原始错误便于排障。
 export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   const [tab, setTab] = useState(tabProp);
@@ -15,17 +15,27 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   const [form, setForm] = useState({});    // 编辑缓冲
   const [msg, setMsg] = useState('');
   const [saving, setSaving] = useState(false);
+  const [loadErr, setLoadErr] = useState('');
 
   const load = () => getSettings().then((d) => {
+    setLoadErr('');
     setS(d);
     setForm({
       llmBaseUrl: d.llm.baseUrl, llmModel: d.llm.model, llmMaxTokens: String(d.llm.maxTokens), llmApiKey: '',
       consumerApiUrl: d.consumerApiUrl,
+      evalDbUrl: d.evalDbUrl,
       evalBindingProvider: d.evalBinding.provider, evalBindingUrl: d.evalBinding.url,
       evalBindingToken: d.evalBinding.token, evalBindingScene: d.evalBinding.scene,
     });
-  });
+  }).catch((e) => setLoadErr(e.message || '配置加载失败'));
   useEffect(() => { load(); }, []);
+
+  // Esc 关闭弹窗
+  useEffect(() => {
+    const onKeyDown = (e) => { if (e.key === 'Escape' && !saving) onClose(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [saving, onClose]);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const save = async () => {
@@ -38,7 +48,11 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   if (!s) {
     return (
       <SettingsModalOverlay>
-        <div className="modal" style={{ width: 640 }}><h3>配置中心</h3><div className="empty">加载中…</div></div>
+        <div className="modal" style={{ width: 640 }}><h3>配置中心</h3>
+          {loadErr
+            ? <div className="empty">配置加载失败：{loadErr} <button type="button" className="btn" onClick={load}>重试</button></div>
+            : <div className="empty">加载中…</div>}
+        </div>
       </SettingsModalOverlay>
     );
   }
@@ -157,7 +171,11 @@ function ConsumerTab({ form, set, authIssuerUrl, source }) {
 function EvalTab({ form, set }) {
   return (
     <div>
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)', marginBottom: 8 }}>评测数据源默认值</div>
+      <div className="field">
+        <label>评测库 MySQL 地址</label>
+        <input value={form.evalDbUrl ?? ''} onChange={set('evalDbUrl')} placeholder="mysql://user:pass@host:3306（Excel 数据自动落库；留空跳过）" />
+      </div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink2)', margin: '14px 0 8px' }}>评测数据源默认值</div>
       <div className="field">
         <label>provider</label>
         <input value={form.evalBindingProvider ?? ''} onChange={set('evalBindingProvider')} placeholder="nl2sql_template" style={{ width: 240 }} />
@@ -172,7 +190,7 @@ function EvalTab({ form, set }) {
       </div>
       <div className="field">
         <label>scene</label>
-        <input value={form.evalBindingScene ?? ''} onChange={set('evalBindingScene')} placeholder="留空 = 数据源配置中的评测库 Database" />
+        <input value={form.evalBindingScene ?? ''} onChange={set('evalBindingScene')} placeholder="留空 = 本项目评测库 mw_proj_*" />
       </div>
     </div>
   );

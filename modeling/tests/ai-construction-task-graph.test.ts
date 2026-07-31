@@ -8,7 +8,7 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'ai-construction-task-graph-')
 
 const { AiConstructionTaskGraph } = await import('../src/ai-construction/task-graph.js');
 const { getDb } = await import('../src/db/index.js');
-const { createProject, getProject } = await import('../src/projects/repo.js');
+const { createProject, getProject, listProjects } = await import('../src/projects/repo.js');
 
 const createMaterialFirstProject = (name: string) => createProject({
   owner: 'alice', name, kind: 'package',
@@ -440,7 +440,7 @@ test('重做已确认任务重新激活上游里程碑并使下游任务过时',
   assert.equal(redone.confirmations.length, 2, '历史确认记录必须保留');
 });
 
-test('存量项目首次读取时自动投影到唯一任务图', () => {
+test('项目查询保持纯读，不为存量项目隐式创建任务图', () => {
   const now = new Date().toISOString();
   getDb().prepare(`INSERT INTO projects
     (id, owner, name, domain, background, stage, created_at, updated_at)
@@ -449,5 +449,6 @@ test('存量项目首次读取时自动投影到唯一任务图', () => {
 
   const project = getProject('pj_legacy');
   assert.equal(project?.id, 'pj_legacy');
-  assert.equal(new AiConstructionTaskGraph(getDb()).snapshot('pj_legacy')?.source, 'legacy_projection');
+  assert.deepEqual(listProjects('alice').some((item) => item.id === 'pj_legacy'), true);
+  assert.equal(new AiConstructionTaskGraph(getDb()).snapshot('pj_legacy'), null);
 });

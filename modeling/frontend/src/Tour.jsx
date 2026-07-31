@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 // 蒙版引导（多场景）：高亮目标元素（box-shadow 蒙版）+ 步骤气泡。
-// 每个场景默认首次进入自动播放一次，顶栏「❓ 引导」可重看当前页引导；局部引导可关闭自动播放。
+// 每个场景（项目列表 / 建模工作台）首次进入自动播放一次，顶栏「❓ 引导」可重看当前页引导。
 // 步骤可带 enter 钩子（如打开配置中心并切到指定 tab）；目标元素未就绪时短暂轮询，仍找不到则跳过该步。
 
 // 配置中心三个 tab 的逐项讲解：enter 钩子经 App 打开弹窗并切 tab（见 App.jsx 的 mw-settings-open 监听）
@@ -12,17 +12,17 @@ export const CONFIG_STEPS = [
   {
     sel: '[data-tour="cfg-llm"]', enter: openSettings('llm'),
     title: '配置中心 · 大模型',
-    body: '领域分析、访谈出题、包生成、评测判分都靠这个模型。填 OpenAI-compatible 的 Base URL、模型名和 API Key，点「测试有效性」一键验证。\n想先试玩流程？Base URL 直接填 faux，不需要 Key 就能走完全流程。',
+    body: '填写模型地址、名称和密钥，再点「测试」。演示模式可将地址填为 faux。',
   },
   {
     sel: '[data-tour="cfg-consumer"]', enter: openSettings('consumer'),
     title: '配置中心 · consumer 服务',
-    body: '评测时知识包会导入这个 consumer 服务实际运行。地址一般部署时已配好，点「测试连接」检查三项：服务可达、认证通过、模型就绪——三项全绿评测才能跑起来。',
+    body: '填写评测服务地址，再测试连接。',
   },
   {
     sel: '[data-tour="cfg-eval"]', enter: openSettings('eval'),
     title: '配置中心 · 评测数据',
-    body: '这里维护评测数据源的默认值（provider、数据服务 URL、token、scene），进入数据源配置时会自动预填。评测库连接和 Excel 导入按项目在“数据源配置”步骤完成。改完记得点「保存全部」。',
+    body: '填写评测数据库和数据源，保存后用于评测。',
   },
 ];
 
@@ -46,33 +46,43 @@ export const PROJECT_STEPS = [
 ];
 
 export const WORKBENCH_STEPS = [
-  { sel: '[data-tour="timeline"]', title: '建模流程', body: '从上到下按顺序走完这九个步骤，就完成一次建模：✓ 绿色表示已完成，转圈表示正在执行，灰色表示还没解锁。做过的步骤随时可以点回去查看。' },
-  { sel: '[data-tour="node-ingest"]', title: '① 资料上传与解析', body: '把 Excel 数据表和业务文档（规则、口径、流程说明等）上传进来。Excel 里每个 sheet 是一张表，第一行是字段名，第二行可以写中文说明。传错了可以删除；删除后已算出的结果会标「可能过时」，由你决定何时重新分析。' },
-  { sel: '[data-tour="node-analyze"]', title: '② 领域分析 + 领域问题', body: '系统自动阅读资料，整理出业务概览和候选业务对象，并推荐一批「领域问题」——也就是知识包建好后必须能答对的业务问题。可以勾选候选或添加自定义问题，选满至少 5 条后由你手动进入知识萃取访谈。' },
-  { sel: '[data-tour="node-interview"]', title: '③ 知识萃取访谈', body: '系统像顾问一样向你提问（一般 2~3 批）：对象怎么划分、字段是什么含义、口径怎么算。你的回答会成为建模的依据。提问在服务器上进行，切换页面不会中断。' },
-  { sel: '[data-tour="node-generate"]', title: '④ 知识包生成', body: '先选择后续使用的数据源，再根据数据字典、访谈结论和领域问题生成知识包（业务对象、操作、字段映射），并逐条检查每个领域问题是否都有对应的操作能回答。' },
-  { sel: '[data-tour="node-review"]', title: '⑤ 知识包完善', body: '「知识包体检」自动检查常见问题（口径冲突、兜底缺失、路由重复等）；对象、操作、规则和指标的详情文件可进入人工编辑草稿，多文件修改后一次发布为新版本。草稿未发布时会自动恢复，并暂停修缮、导出和评测，避免消费到不一致的内容。' },
-  { sel: '[data-tour="node-data_source"]', title: '⑥ 数据源配置', body: '选择评测使用的数据源并保存连接；Neo4j 可配置 Database，以及 Workspace 与 Ontology 两组联合隔离条件。' },
-  { sel: '[data-tour="node-testcases"]', title: '⑦ 评测用例录入', body: '每条用例就是一道考题：问题 + 标准答案。可以从已勾选的领域问题一键预填，再逐条补上标准答案。' },
-  { sel: '[data-tour="node-evaluate"]', title: '⑧ 评测运行', body: '把当前知识包放进独立的测试环境，逐条运行用例并自动判分；判得不准可以人工改判。每一轮结果都按包版本保存，随时回看对比。' },
-  { sel: '[data-tour="node-optimize"]', title: '⑨ 优化建议与应用', body: '对没通过的用例，系统会分析原因（缺知识、没用上、写错了）并给出修改建议；勾选认可的建议，一键生成新版本，再回到评测验证是否有提升。每个版本都能导出 zip 交付。' },
-  { sel: '[data-tour="context"]', title: '右栏 · 上下文', body: '数据字典和已上传的文档随时在这里查阅；进入「知识包完善」步骤时，这里会切换成修缮对话。' },
-  { sel: '[data-tour="config"]', title: '配置中心', body: '大模型、consumer 服务与评测数据都在右上角的配置中心统一管理，保存即生效。接下来打开它逐项看一下。' },
+  { sel: '[data-tour="timeline"]', title: '建模流程', body: '按建模步骤推进。可点击的步骤能直接打开。' },
+  { sel: '[data-tour="node-ingest"]', title: '建模资料上传', body: '上传数据表和业务资料。' },
+  { sel: '[data-tour="node-analyze"]', title: '分析与提取', body: '查看调研、提取和问题结果。' },
+  { sel: '[data-tour="node-interview"]', title: '专家访谈', body: '回答需要确认的问题。' },
+  { sel: '[data-tour="node-generate"]', title: '知识包生成', body: '生成知识包并查看进度。' },
+  { sel: '[data-tour="node-data_source"]', title: '数据源绑定', body: '连接评测需要的业务数据。' },
+  { sel: '[data-tour="node-evaluate"]', title: '评测', body: '录入问题并运行评测。' },
+  { sel: '[data-tour="node-optimize"]', title: '诊断与优化', body: '查看失败原因，应用修改。' },
+  { sel: '[data-tour="context"]', title: '右栏', body: '查看资料、待办和版本。' },
+  { sel: '[data-tour="config"]', title: '配置中心', body: '设置模型和评测服务。' },
   ...CONFIG_STEPS,
 ];
 
-export default function Tour({ scene, steps, autoStart = true }) {
+export const AI_CONSTRUCTION_WORKBENCH_STEPS = [
+  { sel: '[data-tour="timeline"]', title: '建模流程', body: '准备、AI辅助构建、验证、改进和交付集中在同一工作台，可随时回看已完成步骤。' },
+  { sel: '[data-tour="node-ingest"]', title: '建模资料上传', body: '上传数据表和业务资料，为 AI 辅助构建提供可追溯证据。' },
+  { sel: '[data-tour="node-ai_construction"]', title: 'AI辅助构建', body: '建模助手会主动推进目标确认、流程访谈、流程图确认、知识构建和确定性能力确认。' },
+  { sel: '[data-tour="node-scenario"]', title: '场景推演', body: '用 AI 构造的场景检查分支、异常、规则和脚本覆盖情况。' },
+  { sel: '[data-tour="node-data_source"]', title: '数据源绑定', body: '连接业务数据；不需要查询数据时可明确选择跳过。' },
+  { sel: '[data-tour="node-evaluate"]', title: '评测', body: '在同一页面完成评测用例、运行与结果、问题分析和优化更新。' },
+  { sel: '[data-tour="node-release"]', title: '发布交付', body: '检查版本和发布门禁，确认后交付知识包。' },
+  { sel: '[data-tour="config"]', title: '配置中心', body: '设置建模模型、Consumer 服务和评测数据。' },
+  ...CONFIG_STEPS,
+];
+
+export default function Tour({ scene, steps }) {
   const doneKey = `mw_tour_done_${scene}`;
   const [idx, setIdx] = useState(-1); // -1 = 关闭
   const [rect, setRect] = useState(null);
 
   // 首次自动播放 + 顶栏按钮重看（按场景过滤）
   useEffect(() => {
-    if (autoStart && !localStorage.getItem(doneKey)) setIdx(0);
+    if (!localStorage.getItem(doneKey)) setIdx(0);
     const h = (e) => { if (!e.detail?.scene || e.detail.scene === scene) setIdx(0); };
     window.addEventListener('mw-tour-start', h);
     return () => window.removeEventListener('mw-tour-start', h);
-  }, [autoStart, doneKey, scene]);
+  }, []);
 
   const close = () => {
     localStorage.setItem(doneKey, '1');

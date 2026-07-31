@@ -112,9 +112,12 @@ test('证据、分层校验和动态任务计划均使用受控消息块', () =>
   assert.throws(() => store.append(project.id, { role: 'assistant', blocks: [
     { type: 'evidence', title: '空证据', items: [] } as any,
   ] }), (error: any) => error?.code === 'INVALID_BLOCK');
-  assert.throws(() => store.append(project.id, { role: 'assistant', blocks: [
-    { type: 'validation', title: '发布校验', scope: 'release', counts: { errors: 0, warnings: 0, hints: 0 } } as any,
-  ] }), (error: any) => error?.code === 'INVALID_BLOCK');
+  const summaryOnly = store.append(project.id, { role: 'assistant', blocks: [
+    { type: 'validation', title: '发布校验', scope: 'release', counts: { errors: 0, warnings: 0, hints: 0 } },
+  ] });
+  assert.deepEqual(summaryOnly.blocks[0], {
+    type: 'validation', title: '发布校验', scope: 'release', counts: { errors: 0, warnings: 0, hints: 0 },
+  });
   assert.throws(() => store.append(project.id, { role: 'assistant', blocks: [
     { type: 'change_plan', title: '越界变更方案' } as any,
   ] }), (error: any) => error?.code === 'INVALID_BLOCK');

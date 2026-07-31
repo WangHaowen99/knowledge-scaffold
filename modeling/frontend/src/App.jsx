@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
-import Workbench from './Workbench.jsx';
+import ProjectWorkbenchRouter from './ProjectWorkbenchRouter.jsx';
 import SettingsModal from './SettingsModal.jsx';
 import Tour, { PROJECT_STEPS } from './Tour.jsx';
 import {
@@ -10,16 +10,37 @@ import {
   protectUnsavedBeforeUnload,
 } from './flowchartNavigationGuard.js';
 
+function initialWorkspaceRoute() {
+  if (typeof window === 'undefined') return { projectId: null, projectKind: 'modeling' };
+  const params = new URLSearchParams(window.location.search);
+  const projectId = params.get('project');
+  const projectKind = params.get('kind') === 'package' ? 'package' : 'modeling';
+  return { projectId, projectKind };
+}
+
+function replaceWorkspaceRoute(projectId, projectKind) {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  for (const key of ['project', 'kind', 'view']) url.searchParams.delete(key);
+  if (projectId) {
+    url.searchParams.set('project', projectId);
+    url.searchParams.set('kind', projectKind);
+  }
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
 export default function App() {
+  const [initialRoute] = useState(initialWorkspaceRoute);
   const [status, setStatus] = useState('checking'); // checking | out | in
   const [user, setUser] = useState(null);
-  const [projectId, setProjectId] = useState(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState('llm');
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [projectId, setProjectId] = useState(initialRoute.projectId);
+  const [projectKind, setProjectKind] = useState(initialRoute.projectKind);
   const [importingPackage, setImportingPackage] = useState(false);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('llm');
+  const [menuOpen, setMenuOpen] = useState(false);
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const userRef = useRef(null);
   const packageInputRef = useRef(null);
@@ -61,7 +82,19 @@ export default function App() {
   const closeProject = () => {
     if (!confirmUnsavedNavigation(workspaceDirty)) return;
     setProjectId(null);
+    setProjectKind('modeling');
+    setImportError('');
+    setImportNotice('');
     setWorkspaceDirty(false);
+    replaceWorkspaceRoute(null, 'modeling');
+  };
+
+  const openProject = (project) => {
+    const id = typeof project === 'string' ? project : project.id;
+    const kind = typeof project === 'string' ? 'modeling' : (project.kind || 'modeling');
+    setProjectId(id);
+    setProjectKind(kind);
+    replaceWorkspaceRoute(id, kind);
   };
 
   const importPackage = async (file) => {
@@ -70,7 +103,7 @@ export default function App() {
     try {
       const result = await importPackageWorkspace(file);
       setImportNotice((result.warnings ?? []).join('；'));
-      setProjectId(result.project.id);
+      openProject(result.project);
     } catch (error) {
       setImportError(error instanceof Error ? error.message : '知识包导入失败');
     } finally {
@@ -100,27 +133,28 @@ export default function App() {
         <div className="logo"><span className="mk">知</span>知识包建模工具</div>
         <span className="crumb">
           {projectId
-            ? <><a onClick={closeProject}>项目</a> / 建模工作台</>
+            ? <><button type="button" className="crumb-link" onClick={closeProject}>项目</button> / 统一建模工作台</>
             : '项目'}
         </span>
         <div className="right">
           {!projectId && (
             <>
-              <button className="tb-btn" disabled={importingPackage}
-                onClick={() => packageInputRef.current?.click()}>
+              <button className="tb-btn" disabled={importingPackage} onClick={() => packageInputRef.current?.click()}>
                 {importingPackage ? '导入中…' : '导入已有知识包'}
               </button>
               <input ref={packageInputRef} type="file" accept=".zip" hidden
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  event.target.value = '';
-                  void importPackage(file);
-                }} />
+                onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; void importPackage(file); }} />
             </>
           )}
           <button className="tb-btn" title="功能引导"
-            onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start', { detail: { scene: projectId ? 'workbench' : 'projects' } }))}>❓ 引导</button>
-          <button className="tb-btn" data-tour="config" onClick={() => setSettingsOpen(true)}>⚙ 配置中心</button>
+            onClick={() => window.dispatchEvent(new CustomEvent('mw-tour-start', { detail: { scene: projectId ? 'workbench' : 'projects' } }))}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            引导
+          </button>
+          <button className="tb-btn" data-tour="config" onClick={() => setSettingsOpen(true)}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+            配置中心
+          </button>
           <span className="tb-sep" />
           <div className="tb-user" ref={userRef}>
             <button className={`tb-chip ${menuOpen ? 'open' : ''}`} title="账号菜单"
@@ -138,18 +172,21 @@ export default function App() {
                     <div className="tb-menu-sub">当前登录账号</div>
                   </div>
                 </div>
-                <button className="tb-menu-item" onClick={logout}>⎋ 退出登录</button>
+                <button className="tb-menu-item" onClick={logout}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                  退出登录
+                </button>
               </div>
             )}
           </div>
         </div>
       </div>
+      {importError && <div className="app-global-error">{importError}<button onClick={() => setImportError('')}>✕</button></div>}
+      {importNotice && <div className="app-global-notice">{importNotice}<button onClick={() => setImportNotice('')}>✕</button></div>}
       <div className="main">
-        {!projectId && importError && <div className="lerr">知识包导入失败：{importError}</div>}
-        {!projectId && importNotice && <div className="saved">{importNotice}</div>}
         {projectId
-          ? <Workbench projectId={projectId} onUnsavedChange={setWorkspaceDirty} />
-          : <ProjectList onOpen={setProjectId} />}
+          ? <ProjectWorkbenchRouter projectId={projectId} onUnsavedChange={setWorkspaceDirty} />
+          : <ProjectList onOpen={openProject} />}
       </div>
       {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}
       {settingsOpen && <SettingsModal tab={settingsTab} onClose={() => setSettingsOpen(false)} />}

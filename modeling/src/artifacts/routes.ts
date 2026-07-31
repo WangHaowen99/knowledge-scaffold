@@ -11,6 +11,7 @@ import { optimizationCandidateDiagnosisLinkState } from '../evaluation/optimizat
 import { getProject } from '../projects/repo.js';
 import * as m4repo from '../workflow/m4-repo.js';
 import { runFormatChecks } from '../workflow/package-check.js';
+import { assertNoActivePackageDraft, PackageDraftError } from '../workflow/package-draft.js';
 import { ArtifactRepositoryError, type ArtifactFileDiff } from './repository.js';
 import {
   PackageArtifactStoreError,
@@ -67,6 +68,13 @@ export function sendArtifactError(reply: FastifyReply, error: unknown) {
         || error.code === 'candidate_validation_failed'
         ? 409 : 400;
     return reply.code(status).send({ error: error.message, code: error.code });
+  }
+  if (error instanceof PackageDraftError) {
+    return reply.code(error.statusCode).send({
+      error: error.message,
+      code: error.code,
+      ...error.details,
+    });
   }
   throw error;
 }
@@ -314,6 +322,7 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
               replayed: true,
             };
           }
+          assertNoActivePackageDraft(project.id, 'candidate-accept');
           const preview = await store.previewCandidateRevision(project.id, candidateId, selectedGroupIds);
           const current = await store.current(project.id);
           if (current?.revision.oid === existing.baseRevision) {
@@ -477,6 +486,7 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: SHORT_WRITE_LEASE_TTL_MS,
       }, async () => {
+        assertNoActivePackageDraft(project.id, 'revision-restore');
         const restored = await store.restore(project.id, {
           targetRevision,
           expectedRevision,

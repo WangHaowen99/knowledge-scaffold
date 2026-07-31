@@ -26,6 +26,15 @@ type ProcessInterviewStage = 'core' | 'details';
 
 const EMPTY_ANSWERS = new Set(['无', '没有', '暂无', '不适用', '无异常', '无交接']);
 
+export class ProcessInterviewInputError extends Error {
+  readonly code = 'INVALID_PROCESS_INTERVIEW_INPUT';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProcessInterviewInputError';
+  }
+}
+
 export function processInterviewQuestions(
   stage: ProcessInterviewStage,
   defaults: Partial<ProcessInterviewCore & ProcessInterviewDetails> = {},
@@ -74,7 +83,7 @@ export function parseProcessSelectionResponse(
     : [];
   const other = !skipped && typeof rawAnswer?.other === 'string' ? rawAnswer.other.trim() : '';
   const values = [...new Set(selected)];
-  if (!values.length && !other) throw new Error('请至少选择一个流程或填写补充说明');
+  if (!values.length && !other) throw new ProcessInterviewInputError('请至少选择一个流程或填写补充说明');
   const byId = new Map(candidates.flatMap((candidate) => {
     const candidateId = candidate.candidateId?.trim();
     return candidateId ? [[candidateId, candidate] as const] : [];
@@ -84,10 +93,10 @@ export function parseProcessSelectionResponse(
     if (identified) return identified;
     const titleMatches = candidates.filter((candidate) => candidate.title.trim() === value);
     if (titleMatches.length > 1) {
-      throw new Error('存在同名候选流程，请刷新页面后重新选择');
+      throw new ProcessInterviewInputError('存在同名候选流程，请刷新页面后重新选择');
     }
     if (titleMatches.length === 1) return titleMatches[0];
-    throw new Error('候选流程已更新，请刷新后重新选择');
+    throw new ProcessInterviewInputError('候选流程已更新，请刷新后重新选择');
   });
   return {
     candidates: selectedCandidates,
@@ -109,8 +118,8 @@ function requireAnswers(
   const values: Record<string, string> = {};
   for (const [id, label] of fields) {
     const value = answers.get(id)?.trim() ?? '';
-    if (!value) throw new Error(`${message}：请填写${label}`);
-    if (value.length > 4_000) throw new Error(`${label}不能超过 4000 字`);
+    if (!value) throw new ProcessInterviewInputError(`${message}：请填写${label}`);
+    if (value.length > 4_000) throw new ProcessInterviewInputError(`${label}不能超过 4000 字`);
     values[id] = value;
   }
   return values;
@@ -135,8 +144,8 @@ export function parseProcessInterviewCoreResponse(response: JsonObject): Process
   ], '请完整填写核心流程');
   const actors = listValues(values.actors);
   const outputs = listValues(values.outputs);
-  if (!actors.length) throw new Error('请完整填写核心流程：请填写参与角色');
-  if (!outputs.length) throw new Error('请完整填写核心流程：请填写流程输出');
+  if (!actors.length) throw new ProcessInterviewInputError('请完整填写核心流程：请填写参与角色');
+  if (!outputs.length) throw new ProcessInterviewInputError('请完整填写核心流程：请填写流程输出');
   return {
     title: values.process_title,
     trigger: values.trigger,
@@ -147,7 +156,7 @@ export function parseProcessInterviewCoreResponse(response: JsonObject): Process
 
 export function readProcessInterviewCore(value: unknown): ProcessInterviewCore {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('流程访谈上下文已失效，请重新开始');
+    throw new ProcessInterviewInputError('流程访谈上下文已失效，请重新开始');
   }
   const raw = value as Record<string, unknown>;
   const title = typeof raw.title === 'string' ? raw.title.trim() : '';
@@ -155,7 +164,7 @@ export function readProcessInterviewCore(value: unknown): ProcessInterviewCore {
   const actors = Array.isArray(raw.actors) ? raw.actors.map(String).map((item) => item.trim()).filter(Boolean) : [];
   const outputs = Array.isArray(raw.outputs) ? raw.outputs.map(String).map((item) => item.trim()).filter(Boolean) : [];
   if (!title || !trigger || !actors.length || !outputs.length) {
-    throw new Error('流程访谈上下文已失效，请重新开始');
+    throw new ProcessInterviewInputError('流程访谈上下文已失效，请重新开始');
   }
   return { title, trigger, actors, outputs };
 }
@@ -163,15 +172,15 @@ export function readProcessInterviewCore(value: unknown): ProcessInterviewCore {
 export function parseProcessInterviewDetailsResponse(response: JsonObject): ProcessInterviewDetails {
   const answers = answerMap(response);
   const steps = answers.get('steps')?.trim() ?? '';
-  if (!steps) throw new Error('请填写流程步骤');
+  if (!steps) throw new ProcessInterviewInputError('请填写流程步骤');
   const values = Object.fromEntries(['inputs', 'steps', 'exceptions', 'handoffs'].map((id) => {
     const value = answers.get(id)?.trim() ?? '';
-    if (value.length > 4_000) throw new Error('单项回答不能超过 4000 字');
+    if (value.length > 4_000) throw new ProcessInterviewInputError('单项回答不能超过 4000 字');
     return [id, value];
   }));
   const stepLines = stepValues(steps);
-  if (!stepLines.length) throw new Error('请完整填写流程步骤：请填写流程步骤');
-  if (stepLines.length > 50) throw new Error('流程步骤不能超过 50 步');
+  if (!stepLines.length) throw new ProcessInterviewInputError('请完整填写流程步骤：请填写流程步骤');
+  if (stepLines.length > 50) throw new ProcessInterviewInputError('流程步骤不能超过 50 步');
   return {
     inputs: listValues(values.inputs),
     stepLines,
@@ -220,7 +229,7 @@ export function buildInterviewOutcome(
 export function buildInterviewOutcomeFromCandidates(
   candidates: CandidateBusinessProcess[],
 ): InterviewOutcome {
-  if (!candidates.length) throw new Error('请至少选择一个核心业务流程');
+  if (!candidates.length) throw new ProcessInterviewInputError('请至少选择一个核心业务流程');
   const processes = candidates.map((candidate, index) => {
     const normalized = isCompleteProcessCandidate(candidate)
       ? candidate

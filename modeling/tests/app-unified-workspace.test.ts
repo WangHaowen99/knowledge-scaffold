@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+
+const source = readFileSync(new URL('../frontend/src/App.jsx', import.meta.url), 'utf8');
+const tourSource = readFileSync(new URL('../frontend/src/Tour.jsx', import.meta.url), 'utf8');
+
+test('主导航不再提供独立打开知识包工作区入口', () => {
+  assert.doesNotMatch(source, />\s*打开知识包工作区\s*</);
+  assert.doesNotMatch(source, /<PackageWorkspace/);
+  assert.doesNotMatch(source, /projectView/);
+  assert.match(source, /ProjectWorkbenchRouter/);
+  assert.match(source, /统一建模工作台/);
+  assert.doesNotMatch(tourSource, /生成后从右上角进入/);
+  assert.doesNotMatch(tourSource, /data-tour="package-workspace"/);
+});

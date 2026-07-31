@@ -1,7 +1,184 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { describeJourneyStep, resolveJourneyValue, validateJourneyPlan } from '../scripts/browser-journey.js';
+import {
+  browserProtocolTimeout,
+  chooseGuidedConstructionAction,
+  describeJourneyStep,
+  guidedInteractionCanAdvance,
+  guidedConstructionIsProcessing,
+  isGuidedInteractionResponse,
+  shouldRecoverGuidedRepairConflict,
+  nextGuidedIdleIterations,
+  matchesJourneyControlText,
+  resolveJourneyFiles,
+  resolveJourneyValue,
+  waitForJourneyText,
+  validateJourneyPlan,
+} from '../scripts/browser-journey.js';
+
+test('长时间页面等待会同步抬高浏览器协议超时', () => {
+  assert.equal(browserProtocolTimeout({
+    name: 'long-running-diagnosis',
+    steps: [
+      { action: 'waitFor', text: '诊断已完成', timeoutMs: 30 * 60_000 },
+    ],
+  }), 31 * 60_000);
+});
+
+test('提交结构化待办时只等待当前交互的响应请求', () => {
+  assert.equal(isGuidedInteractionResponse(
+    'http://example.test/api/projects/p1/interactions/i1/respond',
+    'POST',
+  ), true);
+  assert.equal(isGuidedInteractionResponse(
+    'http://example.test/api/projects/p1/interactions/i1/respond',
+    'GET',
+  ), false);
+  assert.equal(isGuidedInteractionResponse(
+    'http://example.test/api/projects/p1/session',
+    'POST',
+  ), false);
+});
+
+test('知识包修订变化导致待办冲突时重新进入受控修复', () => {
+  assert.equal(shouldRecoverGuidedRepairConflict(409, 'REVISION_CONFLICT'), true);
+  assert.equal(shouldRecoverGuidedRepairConflict(409, 'busy'), true);
+  assert.equal(shouldRecoverGuidedRepairConflict(409, 'OTHER_CONFLICT'), false);
+  assert.equal(shouldRecoverGuidedRepairConflict(400, 'REVISION_CONFLICT'), false);
+});
+
+test('结构化待办提交先确认浏览器确实发起请求再等待长响应', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /waitForRequest/);
+  assert.match(source, /提交按钮没有发起交互请求/);
+});
+
+test('结构化选择尚未勾选时先选择选项再等待提交按钮解锁', () => {
+  assert.equal(guidedInteractionCanAdvance({
+    hasEnabledSubmit: false,
+    hasSelectableChoice: true,
+  }), true);
+  assert.equal(guidedInteractionCanAdvance({
+    hasEnabledSubmit: false,
+    hasSelectableChoice: false,
+  }), false);
+});
+
+test('可操作待办不会被历史任务卡的进行中快照阻塞', () => {
+  assert.equal(guidedConstructionIsProcessing({
+    hasSpinner: false,
+    hasRunningTask: true,
+    hasPendingInteraction: true,
+  }), false);
+  assert.equal(guidedConstructionIsProcessing({
+    hasSpinner: true,
+    hasRunningTask: true,
+    hasPendingInteraction: true,
+  }), true);
+  assert.equal(guidedConstructionIsProcessing({
+    hasSpinner: false,
+    hasRunningTask: true,
+    hasPendingInteraction: false,
+  }), true);
+});
+
+test('长任务仍在运行时不会累计建模驾驶员空闲次数', () => {
+  assert.equal(nextGuidedIdleIterations(149, { progressed: false, processing: true }), 0);
+  assert.equal(nextGuidedIdleIterations(10, { progressed: true, processing: false }), 0);
+  assert.equal(nextGuidedIdleIterations(10, { progressed: false, processing: false }), 11);
+});
+
+test('精确文字操作会忽略按钮中的装饰图标', () => {
+  assert.equal(matchesJourneyControlText('＋ 新建项目', ['＋', '新建项目'], '新建项目', true), true);
+  assert.equal(matchesJourneyControlText('新建项目说明', ['新建项目说明'], '新建项目', true), false);
+});
+
+test('受控建模驾驶员优先处理结构化待办，其次推进里程碑动作', () => {
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: { type: 'question', canSubmit: true },
+    nextActionIds: ['confirm_materials'],
+  }), { kind: 'answer_interaction' });
+
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: { type: 'question', canSubmit: false },
+    nextActionIds: [],
+    processing: true,
+  }), { kind: 'wait' });
+
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: { type: 'question', canSubmit: false },
+    nextActionIds: ['repair_knowledge_structure', 'view_validation'],
+    processing: false,
+  }), { kind: 'click_action', actionId: 'repair_knowledge_structure' });
+
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    nextActionIds: ['review_materials', 'confirm_goal', 'open_package_file'],
+  }), { kind: 'click_action', actionId: 'confirm_goal' });
+
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    nextActionIds: ['confirm_knowledge', 'accept_candidate_revision'],
+  }), { kind: 'click_action', actionId: 'accept_candidate_revision' });
+});
+
+test('结构化待办正在提交时等待服务端完成而不重复点击', () => {
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: { type: 'change_plan', canSubmit: true },
+    nextActionIds: [],
+    processing: true,
+  }), { kind: 'wait' });
+});
+
+test('受控建模驾驶员会先通过页面复核非阻断警告再继续确认', () => {
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    warningAcceptance: { canSubmit: true },
+    nextActionIds: ['confirm_construction'],
+  }), { kind: 'accept_warnings' });
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    warningAcceptance: { canSubmit: false },
+    nextActionIds: ['confirm_construction'],
+  }), { kind: 'accept_warnings' });
+});
+
+test('受控建模驾驶员不会用查看或解释动作伪装流程推进', () => {
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    nextActionIds: ['review_materials', 'review_process_files', 'view_validation'],
+  }), { kind: 'wait' });
+  assert.deepEqual(chooseGuidedConstructionAction({
+    pendingInteraction: null,
+    nextActionIds: ['defer_script_generation'],
+  }), { kind: 'wait' });
+});
+
+test('受控建模驾驶员只从最新动作卡推进流程', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /querySelectorAll<HTMLElement>\('\.ac-message-actions'\)/);
+  assert.match(source, /actionSections\.at\(-1\)/);
+});
+
+test('等待页面文字不局限于按钮和标签控件', async () => {
+  let receivedText = '';
+  const handle = { dispose: async () => undefined };
+  const page = {
+    waitForFunction: async (_predicate: unknown, _options: unknown, text: string) => {
+      receivedText = text;
+      return handle;
+    },
+  };
+
+  await waitForJourneyText(page as never, '注册成功，请登录', 1_000);
+
+  assert.equal(receivedText, '注册成功，请登录');
+});
 
 test('浏览器旅程从环境变量读取敏感输入且不在步骤描述中回显', () => {
   const step = { action: 'fill', selector: 'input[type=password]', valueEnv: 'E2E_PASSWORD' } as const;
@@ -25,6 +202,7 @@ test('浏览器旅程只接受受控前端动作并拒绝直接 API 调用', () 
       { action: 'click', text: '新建项目' },
       { action: 'fill', selector: 'input', value: '通用测试项目' },
       { action: 'assertText', text: 'AI辅助构建' },
+      { action: 'guidedConstruction', timeoutMs: 60_000 },
     ],
   }));
 });
@@ -34,4 +212,56 @@ test('上传步骤必须引用仓库外运行时文件而不是内嵌内容', ()
     name: 'invalid-upload',
     steps: [{ action: 'upload', selector: 'input[type=file]', content: 'embedded' }],
   }), /上传步骤必须提供 file 或 fileEnv/);
+});
+
+test('浏览器旅程可以从环境变量一次选择多份建模资料且不回显路径', () => {
+  const step = { action: 'upload', selector: 'input[type=file]', filesEnv: 'E2E_MATERIAL_FILES' } as const;
+  const files = resolveJourneyFiles(step, {
+    E2E_MATERIAL_FILES: JSON.stringify(['/tmp/material-a.md', '/tmp/material-b.xlsx']),
+  });
+
+  assert.deepEqual(files, ['/tmp/material-a.md', '/tmp/material-b.xlsx']);
+  assert.equal(describeJourneyStep(step).includes('/tmp/material-a.md'), false);
+  assert.match(describeJourneyStep(step), /E2E_MATERIAL_FILES/);
+  assert.doesNotThrow(() => validateJourneyPlan({ name: 'multi-upload', steps: [step] }));
+});
+
+test('浏览器旅程上传隐藏文件控件时不要求控件可见', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /targetElement\(page, step, \{ visible: false \}\)/);
+});
+
+test('浏览器旅程在操作页面前会关闭首次功能引导遮罩', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /dismissVisibleTour\(page\)/);
+  assert.match(source, /\.tour-skip/);
+});
+
+test('浏览器旅程会为隔离页面上下文安装转译辅助函数', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /installBrowserEvaluationHelpers\(page\)/);
+  assert.match(source, /globalThis\.__name/);
+});
+
+test('浏览器旅程替换 React 受控输入时使用原生 value setter 并派发 input 事件', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /HTMLInputElement\.prototype/);
+  assert.match(source, /dispatchEvent\(new Event\('input', \{ bubbles: true \}\)\)/);
+});
+
+test('浏览器旅程点击前把控件滚入视口并由页面元素触发 React 点击事件', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../scripts/browser-journey.ts', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /node\.scrollIntoView\(\{ block: 'center', inline: 'center' \}\)/);
+  assert.match(source, /node\.click\(\)/);
+  assert.match(source, /item\.querySelectorAll\('\*'\)/);
 });

@@ -1,18 +1,16 @@
 import type {
-  AnalysisResult, ArtifactCandidate, CoverageResult, DataDictTable, InterviewBatch,
+  AnalysisResult, ArtifactCandidate, CoverageResult, DataDictTable,
   PackageDataSourceType, PackageSpec, Project, SpecMetric, SpecObject, SpecOperation, SpecRule,
 } from '../types.js';
-import { buildLlm, buildTaskLlm, type LlmDeps } from '../llm/provider.js';
+import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
 import {
-  buildCompetencyTools, buildInterviewTools, buildKnowledgeGenerateTools,
-  buildObjectGenerateTools, buildOperationGenerateTools,
-  type CompetencyCapture, type InterviewCapture, type KnowledgeSpecCapture,
+  buildKnowledgeGenerateTools, buildObjectGenerateTools, buildOperationGenerateTools,
+  type KnowledgeSpecCapture,
   type ObjectSpecCapture, type OperationSpecCapture, type ToolContext,
 } from './tools.js';
-import { makeAgent, runAgent, runAgentCaptured } from './agent.js';
-import { upsertNode, getNode, nextOrdinal, listNodes } from './engine.js';
+import { makeAgent, runAgentCaptured } from './agent.js';
+import { upsertNode, nextOrdinal, listNodes } from './engine.js';
 import { normalizeKey } from './keys.js';
-import * as repo from './m2-repo.js';
 import {
   assertObjectDataMappings,
   findObjectDataMappingProblemsForObjects,
@@ -37,6 +35,7 @@ import {
   type GenerationNotice,
   type GenerationOptions,
 } from './generation-gate.js';
+import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -46,145 +45,11 @@ export interface PackageGenerationOptions extends GenerationOptions {
 
 type Ctx = {
   tables: DataDictTable[];
-  documents: { id?: string; filename: string; textContent?: string }[];
+  documents: { id: string; filename: string; textContent?: string }[];
 };
 
 function toolCtx(ctx: Ctx, captured: Record<string, unknown> = {}): ToolContext {
   return { tables: ctx.tables, documents: ctx.documents, captured };
-}
-
-function qid(batch: unknown[], i: number): unknown {
-  const q = batch[i] as Record<string, unknown>;
-  return { id: `q${i}`, ...q };
-}
-
-// ---- 节点 4 访谈：启动（产出第一批题，挂起） ----
-export async function startInterview(project: Project, ctx: Ctx, analysis: unknown, llmOverride?: LlmDeps): Promise<{ nodeId: string; batch: InterviewBatch | null; finished: boolean }> {
-  const llm = llmOverride ?? buildLlm();
-  const cap: InterviewCapture = {};
-  const tools = buildInterviewTools(toolCtx(ctx), cap);
-  const sys = [
-    '你是业务流程建模访谈助手。围绕业务流程提问，不要把访谈重心放在对象、字段或对象关系上。',
-    '依次澄清：触发条件、参与角色、输入、操作步骤、判断分支、异常处理、输出结果、跨角色交接。',
-    '每次用 ask_user 提交一批（1~5 道）选择题（single/multi/text，均可含"其他"由前端补充）。专家答复后你再决定继续追问或 finish_interview。',
-    '控制专家负担：整场访谈一般 2~3 批内结束；只有仍存在影响建模的关键分歧时才追问，勿为完备性重复确认。',
-    `项目背景：${project.background || project.domain}`,
-    `初步分析：${JSON.stringify(stripQuality(analysis)).slice(0, 2000)}`,
-    ...gapHints(analysis),
-  ].join('\n');
-
-  const node = upsertNode({ projectId: project.id, type: 'interview', status: 'running', ordinal: nextOrdinal(project.id) });
-  const agent = makeAgent(llm, sys, tools);
-  const messages = await runAgentCaptured(agent, '请基于资料开始业务流程访谈，用 ask_user 提交第一批流程题。',
-    () => !!(cap.finished || cap.pendingBatch),
-    '你刚才把题目写成了正文。请立即调用 ask_user 工具提交这批题（结构化），不要以正文形式输出；若确无需访谈请调用 finish_interview。');
-
-  return finalizeInterviewStep(project.id, node.id, cap, messages);
-}
-
-// ---- 节点 4 访谈：专家应答 → 恢复继续 ----
-export async function answerInterview(project: Project, ctx: Ctx, batchId: string, answers: any[], llmOverride?: LlmDeps): Promise<{ nodeId: string; batch: InterviewBatch | null; finished: boolean }> {
-  repo.saveAnswers(batchId, answers);
-  // 取最新访谈节点（访谈可能被重开，旧节点残留）
-  const node = [...listNodes(project.id)].reverse().find((n) => n.type === 'interview');
-  if (!node) throw new Error('访谈节点不存在');
-
-  const llm = llmOverride ?? buildLlm();
-  const cap: InterviewCapture = {};
-  const tools = buildInterviewTools(toolCtx(ctx), cap);
-  const sys = [
-    '你是业务流程建模访谈助手。继续澄清触发、角色、输入、步骤、判断、异常、输出和交接。不要转向对象或关系盘点。',
-    '控制专家负担：整场访谈一般 2~3 批内结束；流程已经能够完整绘制时就用 finish_interview 提交结构化流程。',
-    `项目背景：${project.background || project.domain}`,
-  ].join('\n');
-
-  // 从快照恢复
-  const agent = makeAgent(llm, sys, tools, (node.agentMessages as unknown[]) ?? []);
-  const batch = repo.getBatch(batchId);
-  const answerText = summarizeAnswers(batch, answers);
-  const messages = await runAgentCaptured(agent, `专家对上一批题的答复：\n${answerText}`,
-    () => !!(cap.finished || cap.pendingBatch),
-    '请调用 ask_user 工具提交下一批题，或调用 finish_interview 结束访谈——不要以正文形式输出题目。');
-
-  return finalizeInterviewStep(project.id, node.id, cap, messages);
-}
-
-function finalizeInterviewStep(projectId: string, nodeId: string, cap: InterviewCapture, messages: unknown[]) {
-  if (cap.finished) {
-    if (!cap.outcome?.processes.length) throw new Error('访谈缺少可绘制的业务流程，请继续澄清');
-    upsertNode({
-      id: nodeId, projectId, type: 'interview', status: 'done', ordinal: getNode(nodeId)!.ordinal,
-      agentMessages: messages, output: cap.outcome,
-    });
-    return { nodeId, batch: null, finished: true };
-  }
-  if (cap.pendingBatch) {
-    const qs = cap.pendingBatch.questions.map((_, i) => qid(cap.pendingBatch!.questions, i));
-    const batch = repo.insertBatch(projectId, nodeId, qs);
-    upsertNode({ id: nodeId, projectId, type: 'interview', status: 'waiting_user', ordinal: getNode(nodeId)!.ordinal, agentMessages: messages });
-    return { nodeId, batch, finished: false };
-  }
-  // 没有 finish_interview 的结构化流程就不能完成访谈。否则时间线看似完成，
-  // 下一步却没有可绘制的流程图，错误会被拖到更晚才暴露。
-  const hadInterview = repo.listBatches(projectId, nodeId).length > 0;
-  const reason = hadInterview
-    ? '访谈 agent 未提交可绘制的业务流程，请重试本轮访谈'
-    : '访谈 agent 未按协议出题（已轻推仍失败），请重试';
-  upsertNode({
-    id: nodeId,
-    projectId,
-    type: 'interview',
-    status: hadInterview ? 'failed' : 'pending',
-    ordinal: getNode(nodeId)!.ordinal,
-    agentMessages: messages,
-    reason,
-  });
-  throw new Error(reason);
-}
-
-// 资料质量评估的缺口 → 访谈优先澄清点（分析摘要剔除 quality 防挤占篇幅）
-function stripQuality(analysis: unknown): unknown {
-  if (!analysis || typeof analysis !== 'object') return analysis;
-  const { quality, ...rest } = analysis as Record<string, unknown>;
-  return rest;
-}
-function gapHints(analysis: unknown): string[] {
-  const gaps = (analysis as any)?.quality?.gaps;
-  if (!Array.isArray(gaps) || !gaps.length) return [];
-  const lines = gaps.slice(0, 6).map((g: any) => `${g.kind}·${g.target}：${g.message}`).join('；');
-  return [`资料缺口（访谈应优先澄清）：${lines}`.slice(0, 900)];
-}
-
-function summarizeAnswers(batch: InterviewBatch | null, answers: any[]): string {
-  if (!batch) return JSON.stringify(answers);
-  return batch.questions.map((q) => {
-    const a = answers.find((x) => x.questionId === q.id);
-    if (!a || a.skipped) return `- ${q.q}：（跳过）`;
-    const parts = [...(a.selected ?? []), a.other].filter(Boolean);
-    return `- ${q.q}：${parts.join('；')}`;
-  }).join('\n');
-}
-
-// ---- 节点 5 胜任力：生成候选 ----
-export async function proposeCompetency(project: Project, ctx: Ctx, analysis: unknown, llmOverride?: LlmDeps) {
-  const llm = llmOverride ?? buildLlm();
-  const cap: CompetencyCapture = {};
-  const tools = buildCompetencyTools(toolCtx(ctx), cap);
-  const sys = [
-    '你是知识建模助手。基于数据字典、领域分析与已有访谈结论，提出 10~20 条"该知识包建成后必须能回答的业务问题"（领域问题）。',
-    '问题应具体、可被数据回答、覆盖核心业务场景。用 propose_competency_questions 提交。',
-    `初步分析：${JSON.stringify(analysis).slice(0, 1500)}`,
-  ].join('\n');
-
-  const node = upsertNode({ projectId: project.id, type: 'competency', status: 'running', ordinal: nextOrdinal(project.id) });
-  const agent = makeAgent(llm, sys, tools);
-  const messages = await runAgentCaptured(agent, '请提出候选胜任力问题并调用 propose_competency_questions。',
-    () => !!cap.questions, '请调用 propose_competency_questions 工具提交候选问题（不要以正文形式输出）。');
-
-  const questions = cap.questions ?? [];
-  repo.replaceCompetency(project.id, questions);
-  upsertNode({ id: node.id, projectId: project.id, type: 'competency', status: questions.length ? 'done' : 'running', ordinal: node.ordinal, agentMessages: messages });
-  return repo.listCompetency(project.id);
 }
 
 const chunk = <T>(items: T[], size: number): T[][] => {
@@ -230,12 +95,12 @@ function canonicalizeOperationObjectRefs(operation: SpecOperation, objects: Spec
   return { ...operation, relatedObjects };
 }
 
-// ---- 节点 6 包生成：对象 → 规则/指标 → operation 分阶段生成，最后统一校验与渲染 ----
+// ---- 知识包生成：确认流程 → 对象 → 规则/指标 → operation → 统一校验与渲染 ----
 export async function generatePackage(
   project: Project,
   ctx: Ctx,
-  llmOverride?: LlmDeps,
-  confirmedFlowchartOrDataSourceType?: FlowchartOutput | PackageDataSourceType,
+  llmOverride: LlmDeps | undefined,
+  confirmedFlowchart: FlowchartOutput,
   options: PackageGenerationOptions = {},
 ): Promise<{
   spec: PackageSpec;
@@ -245,36 +110,32 @@ export async function generatePackage(
   revisionId: string;
   generationNotices: GenerationNotice[];
 }> {
-  const confirmedFlowchart = typeof confirmedFlowchartOrDataSourceType === 'string'
-    ? undefined
-    : confirmedFlowchartOrDataSourceType;
-  const dataSourceType = typeof confirmedFlowchartOrDataSourceType === 'string'
-    ? confirmedFlowchartOrDataSourceType
-    : options.dataSourceType ?? 'neo4j';
+  const dataSourceType = options.dataSourceType ?? 'neo4j';
   const artifactStore = getPackageArtifactStore();
   const baseRevision = await artifactStore.ensureProject(project.id);
-  const selectedCompetency = repo.listCompetency(project.id).filter((question) => question.selected);
+  const basePackage = await artifactStore.current(project.id);
+  if (!basePackage) throw new Error('知识包草稿初始化失败');
+  if (!confirmedFlowchart || !Array.isArray(confirmedFlowchart.diagrams)) {
+    throw new Error('知识包生成必须提供已确认的业务流程');
+  }
   type OperationTarget = {
     id: string;
     question: string;
-    diagram?: ConfirmedDiagram;
+    diagram: ConfirmedDiagram;
   };
-  const flowchartTargets: OperationTarget[] = (confirmedFlowchart?.diagrams ?? []).map((diagram, index) => ({
+  const operationTargets: OperationTarget[] = confirmedFlowchart.diagrams.map((diagram, index) => ({
     id: `process_${diagram.id || index + 1}`,
     question: `按照已确认的「${diagram.title}」流程完成业务处理并返回明确结果`,
     diagram,
   }));
-  const operationTargets: OperationTarget[] = flowchartTargets.length
-    ? flowchartTargets
-    : selectedCompetency.map(({ id, question }) => ({ id, question, diagram: undefined }));
   const selectedQuestions = operationTargets.map((target) => target.question);
   if (!operationTargets.length) throw new Error('缺少人工确认的业务流程，无法生成业务操作');
-  const interviewNode = [...listNodes(project.id)].reverse().find((node) => node.type === 'interview');
-  const batches = interviewNode?.status === 'done' ? repo.listBatches(project.id, interviewNode.id) : [];
-  const batchInterviewSummary = batches.map((b) => summarizeAnswers(b, repo.getAnswers(b.id))).join('\n');
-  const interviewSummary = batchInterviewSummary || (interviewNode?.output
-    ? JSON.stringify(interviewNode.output)
-    : '');
+  const confirmedProcessSummary = JSON.stringify(confirmedFlowchart.diagrams.map((diagram) => ({
+    title: diagram.title,
+    ...diagramProcessMeta(diagram),
+    nodes: diagram.nodes.map((node) => ({ label: node.label, kind: node.kind, detail: node.detail })),
+    edges: diagram.edges,
+  })));
   const sourceCatalog = createSourceCatalog(
     ctx.tables,
     ctx.documents.flatMap((document) => document.id
@@ -337,9 +198,9 @@ export async function generatePackage(
   };
   trace({
     projectId: project.id, nodeId: node.id, phase: 'prepare', kind: 'phase_started', status: 'running',
-    title: '准备知识包生成', summary: `业务流程 ${selectedQuestions.length} 个 · 访谈 ${batches.length} 批`,
+    title: '准备知识包生成', summary: `业务流程 ${selectedQuestions.length} 个`,
     details: {
-      questionCount: selectedQuestions.length, batch: batches.length,
+      questionCount: selectedQuestions.length,
       objectBatchCount: objectBatches.length,
       knowledgeBatchCount: knowledgeBatches.length,
       operationBatchCount: questionBatches.length,
@@ -475,7 +336,7 @@ export async function generatePackage(
           'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交当前批次，单类最多 5 条。',
           `对象：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title })))}`,
           `已生成规则 key：${rules.map((item) => item.key).join(', ') || '（无）'}；已生成指标 key：${metrics.map((item) => item.key).join(', ') || '（无）'}。`,
-          `访谈结论：${interviewSummary.slice(0, 2400) || '（无）'}`,
+          `已确认流程摘要：${confirmedProcessSummary.slice(0, 2400)}`,
           `当前批次材料候选：${artifactSummary(candidates)}`,
         ].join('\n');
         const agent = makeAgent(llm, sys, buildKnowledgeGenerateTools(toolCtx(ctx), cap));
@@ -576,17 +437,17 @@ export async function generatePackage(
           `可用规则：${JSON.stringify(rules.map((item) => ({ key: item.key, title: item.title })))}`,
           `可用指标：${JSON.stringify(metrics.map((item) => ({ key: item.key, title: item.title })))}`,
           `操作候选参考：${artifactSummary(operationCandidates)}`,
-          `访谈结论：${interviewSummary.slice(0, 2400)}`,
+          `已确认流程摘要：${confirmedProcessSummary.slice(0, 2400)}`,
           `本批已确认流程：\n${questions.map((target, i) => [
             `${i + 1}. [${target.id}] ${target.question}`,
-            target.diagram ? JSON.stringify({
+            JSON.stringify({
               title: target.diagram.title,
-              ...confirmedDiagramMeta(target.diagram),
+              ...diagramProcessMeta(target.diagram),
               nodes: target.diagram.nodes.map((item) => ({
                 id: item.id, label: item.label, kind: item.kind, detail: item.detail,
               })),
               edges: target.diagram.edges,
-            }) : '',
+            }),
           ].filter(Boolean).join('\n')).join('\n')}`,
           ...(attempt > 1 ? [`上次提交未通过校验：${lastValidation.issues.join('；')}。请重新提交本批全部 operation。`] : []),
         ].join('\n');
@@ -665,18 +526,21 @@ export async function generatePackage(
       });
     }
 
-    const versions = repo.listPackageVersions(project.id);
-    const version = `1.${versions.length}.0`;
+    const version = nextValidationCandidateVersion({
+      currentVersion: basePackage.packageVersion,
+      currentStatus: basePackage.spec.status ?? 'draft',
+    });
     const rawSpec = attachGeneratedKnowledgeEvidence({
       id: `${slug(project.name)}-agent`,
       name: project.name,
       description: project.background || project.domain || project.name,
       version,
+      status: 'review',
       language: 'zh-CN',
       defaultProviderAlias: slug(project.domain || 'data'),
       objects, operations, rules, metrics,
       dataSourceType,
-    }, analysis, confirmedFlowchart?.diagrams ?? [], {
+    }, analysis, confirmedFlowchart.diagrams, {
       documents: ctx.documents
         .filter((document): document is typeof document & { id: string } => Boolean(document.id))
         .map((document) => ({ id: document.id, filename: document.filename })),
@@ -801,7 +665,7 @@ export async function generatePackage(
   }
 }
 
-function confirmedDiagramMeta(diagram: ConfirmedDiagram): {
+function diagramProcessMeta(diagram: ConfirmedDiagram): {
   trigger?: string;
   actors?: string[];
   inputs?: string[];
@@ -828,5 +692,3 @@ function slug(s: string): string {
   // consumer 的 ontology id 仅允许字母数字下划线短横线且字母/数字开头——中文必须剔除
   return (s || 'pkg').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'pkg';
 }
-
-export { repo as m2repo };

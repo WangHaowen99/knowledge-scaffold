@@ -21,21 +21,14 @@ test('project deletion: removes local project data and temporary uploads', async
     VALUES ('doc-delete', ?, 'source.md', 'markdown', ?)`).run(project.id, now);
   db.prepare(`INSERT INTO wf_nodes (id, project_id, type, ordinal, title, created_at, updated_at)
     VALUES ('node-delete', ?, 'analyze', 0, 'Analyze', ?, ?)`).run(project.id, now, now);
-  db.prepare(`INSERT INTO interview_batches
-    (id, project_id, node_id, ordinal, questions_json, answered, created_at)
-    VALUES ('batch-delete', ?, 'node-delete', 0, '[]', 1, ?)`).run(project.id, now);
-  db.prepare(`INSERT INTO interview_answers
-    (id, batch_id, question_id, answer_json, created_at)
-    VALUES ('answer-delete', 'batch-delete', 'q0', '{}', ?)`).run(now);
-  db.prepare(`INSERT INTO competency_questions
-    (id, project_id, question, selected, source, created_at)
-    VALUES ('cq-delete', ?, 'Question', 1, 'custom', ?)`).run(project.id, now);
   db.prepare(`INSERT INTO package_versions
     (id, project_id, version, spec_json, coverage_json, created_at)
     VALUES ('package-delete', ?, '1.0.0', '{}', '{}', ?)`).run(project.id, now);
   db.prepare(`INSERT INTO package_drafts
-    (id, project_id, base_package_version_id, base_version, status, revision, created_by, created_at, updated_at)
-    VALUES ('draft-delete', ?, 'package-delete', '1.0.0', 'active', 1, 'alice', ?, ?)`)
+    (id, project_id, base_package_version_id, base_version, base_revision_oid,
+      status, revision, created_by, created_at, updated_at)
+    VALUES ('draft-delete', ?, 'package-delete', '1.0.0', 'revision-delete',
+      'active', 1, 'alice', ?, ?)`)
     .run(project.id, now, now);
   db.prepare(`INSERT INTO package_draft_files
     (draft_id, path, content, base_content_hash, created_at, updated_at)
@@ -48,10 +41,13 @@ test('project deletion: removes local project data and temporary uploads', async
     owner: project.owner,
     filename: 'source.xlsx',
     buffer: Buffer.from('temporary upload'),
+    packageRevisionOid: 'revision-delete',
   });
   db.prepare(`INSERT INTO graph_import_runs
-    (id, project_id, filename, file_hash, package_version, mapping_json, status, created_at)
-    VALUES ('graph-run-delete', ?, 'source.xlsx', 'hash', '1.0.0', '{}', 'done', ?)`).run(project.id, now);
+    (id, project_id, filename, file_hash, package_version, package_revision_oid,
+      mapping_json, status, created_at)
+    VALUES ('graph-run-delete', ?, 'source.xlsx', 'hash', '1.0.0', 'revision-delete',
+      '{}', 'done', ?)`).run(project.id, now);
   db.prepare(`INSERT INTO evaluation_database_import_runs
     (id, project_id, filename, database_name, status, created_at, finished_at)
     VALUES ('eval-db-import-delete', ?, 'evaluation.xlsx', 'mw_test', 'done', ?, ?)`)
@@ -88,7 +84,7 @@ test('project deletion: removes local project data and temporary uploads', async
   assert.equal(projects.getProject(project.id), null);
 
   const projectTables = [
-    'documents', 'wf_nodes', 'interview_batches', 'competency_questions', 'package_versions',
+    'documents', 'wf_nodes', 'package_versions',
     'package_drafts',
     'project_data_sources', 'graph_import_uploads', 'graph_import_runs',
     'evaluation_database_import_runs', 'testcases', 'eval_rounds', 'opt_suggestions',
@@ -99,7 +95,6 @@ test('project deletion: removes local project data and temporary uploads', async
     assert.equal(row.count, 0, `${table} should be deleted`);
   }
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM package_draft_files').get() as any).count, 0);
-  assert.equal((db.prepare('SELECT COUNT(*) AS count FROM interview_answers').get() as any).count, 0);
   assert.equal((db.prepare('SELECT COUNT(*) AS count FROM eval_results').get() as any).count, 0);
   assert.equal((db.prepare("SELECT value FROM settings WHERE key = 'project-deletion-global'").get() as any).value, 'keep');
 });

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { buildJudgeSystemPrompt, buildJudgeUserPrompt, judge } from '../src/evaluation/judge.js';
+import { buildFauxModeler } from '../src/llm/provider.js';
 
 test('Judge 将通用数值舍入差异视为一致', () => {
   const prompt = buildJudgeSystemPrompt();
@@ -17,6 +18,18 @@ test('Judge 能看到长回答末尾的业务结论', () => {
   const prompt = buildJudgeUserPrompt('问题', '标准答案', answer);
 
   assert.match(prompt, /最终结论：所有装置均未过载，两个逻辑罐超容/);
+});
+
+test('faux Judge 识别当前“智能体完整回答”提示词并按内容判分', async () => {
+  const verdict = await judge(
+    '申请是否通过？',
+    '材料齐全，申请通过。',
+    '经核验，材料齐全，申请通过。',
+    buildFauxModeler(),
+  );
+
+  assert.equal(verdict.verdict, 'pass');
+  assert.doesNotMatch(verdict.reason, /0\/0/);
 });
 
 test('Judge 首次只输出正文时会要求通过工具补交结论', async () => {

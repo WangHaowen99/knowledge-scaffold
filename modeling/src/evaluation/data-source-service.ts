@@ -16,7 +16,7 @@ import {
   type DataSourceConsumerSync,
 } from './data-source-consumer-sync.js';
 import { evaluationWorkspaceId } from './shadow-workspace.js';
-import { latestPackageVersion } from '../workflow/m2-repo.js';
+import { getPackageArtifactStore } from '../artifacts/index.js';
 
 function assertEvaluationGraphScope(
   ontologyId: string,
@@ -58,9 +58,9 @@ export async function configureProjectDataSource({
     });
   }
 
-  const latest = latestPackageVersion(projectId);
-  if (!latest) throw new Error('尚未生成知识包，请先完成知识包生成');
-  const ontologyId = String(latest.spec.id ?? '').trim();
+  const current = await getPackageArtifactStore().current(projectId);
+  if (!current) throw new Error('尚未生成知识包，请先完成知识包生成');
+  const ontologyId = String(current.spec.id ?? '').trim();
   assertEvaluationGraphScope(ontologyId, normalized);
   await testConnection(normalized);
   const syncOptions = {

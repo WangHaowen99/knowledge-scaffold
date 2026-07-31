@@ -1,34 +1,26 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
-  listRounds, diagnoseOptimize, listDiagnoses, resolveDiagnosis, proposeOptimize,
-  listSuggestions, getOptimizeApplyStatus, applyOptimize, reviewOptimizeApply, rejectSuggestions,
-  listVersions, exportVersionUrl, authFetch, requireOkResponse,
+  listRounds, diagnoseOptimize, listDiagnoses, resolveDiagnosis, proposeOptimize, listSuggestions, applyOptimize, rejectSuggestions, getOptimizeTask,
+  getOptimizeApplyStatus, reviewOptimizeApply, listVersions, exportVersionUrl, authFetch,
+  planEvaluationDefectRepair,
 } from './api.js';
-import { listCandidateRevisions } from './authoring-api.js';
-import CandidateRevisionPanel, { CandidateRevisionCanvas } from './CandidateRevisionPanel.jsx';
+import {
+  canPlanEvaluationRepair,
+  selectableEvaluationDefects,
+  submittableEvaluationDefectIds,
+  toggleEvaluationDefect,
+} from './evaluationDefects.js';
+import OptimizationApplyProgress from './OptimizationApplyProgress.jsx';
+import OptimizationOperationProgress from './OptimizationOperationProgress.jsx';
+import { latestDiagnosableRound } from './evaluation-followup.js';
 import {
   normalizeOptimizeOperation,
   shouldPollOptimizeOperation,
 } from './optimize-running-state.js';
-import { latestDiagnosableRound } from './evaluation-followup.js';
-import {
-  canProposeFromDiagnoses,
-  diagnoseAndRefresh,
-  diagnosesForRound,
-  optimizationExpertReviewForRound,
-  optimizationExpertReviewState,
-  pendingSuggestionIdsForRound,
-  suggestionsForRound,
-} from './optimization-flow.js';
-import {
-  linkedOptimizationCandidates,
-  optimizationCandidateNotice,
-  pendingLinkedOptimizationCandidates,
-} from './optimization-candidates.js';
 
-/* ================= 节点 11 · 优化建议与应用 ================= */
+/* ================= 节点 14/15 · 失败诊断 / 优化更新 ================= */
 
 const KIND_LABEL = {
   add_operation: '新增操作', modify_operation: '修改操作',
@@ -39,15 +31,28 @@ const KIND_LABEL = {
   clarify_description: '澄清描述',
 };
 const KIND_CLASS = {
-  add_operation: 'sg-kind-add', add_object: 'sg-kind-add', add_rule: 'sg-kind-add',
-  add_metric: 'sg-kind-add', add_script: 'sg-kind-add',
-  modify_operation: 'sg-kind-mod', modify_object: 'sg-kind-mod', modify_rule: 'sg-kind-mod',
-  modify_metric: 'sg-kind-mod', modify_script: 'sg-kind-mod',
+  add_operation: 'sg-kind-add', add_object: 'sg-kind-add', add_rule: 'sg-kind-add', add_metric: 'sg-kind-add', add_script: 'sg-kind-add',
+  modify_operation: 'sg-kind-mod', modify_object: 'sg-kind-mod', modify_rule: 'sg-kind-mod', modify_metric: 'sg-kind-mod', modify_script: 'sg-kind-mod',
   clarify_description: 'sg-kind-clr',
 };
 
 // 标题里形如「[add_operation] xxx」的类型前缀与左侧类型标签重复，展示时剥掉
 const cleanTitle = (title = '') => title.replace(/^\s*[\[［][a-z_ ]+[\]］]\s*/i, '');
+
+export function optimizationApplyFailureMessage(task) {
+  if (task?.node?.status !== 'failed') return '';
+  return String(task.node.reason || task.node.output?.error || '优化候选生成失败，请查看任务记录后重试或忽略建议。').trim();
+}
+
+export function optimizationApplyTaskForSuggestions(task, suggestions = []) {
+  if (!task?.node) return null;
+  const currentIds = new Set(suggestions.map((suggestion) => suggestion.id));
+  const taskIds = task.node.output?.suggestionIds;
+  if (!Array.isArray(taskIds) || !taskIds.length) {
+    return currentIds.size ? null : task;
+  }
+  return taskIds.some((id) => currentIds.has(id)) ? task : null;
+}
 
 function SuggestionCard({ s, checked, onToggle, onReject }) {
   const pending = s.status === 'pending';
@@ -76,9 +81,7 @@ function SuggestionCard({ s, checked, onToggle, onReject }) {
           : <span className={`tag ${s.status === 'applied' ? 'tag-ok' : 'tag-lang'}`}>
               {s.status === 'candidate'
                 ? '候选待确认'
-                : s.status === 'applied'
-                  ? `已接受 ${String(s.appliedRevision || '').slice(0, 8)}`
-                  : '已拒绝'}
+                : s.status === 'applied' ? `已应用 ${s.appliedVersion}` : '已忽略'}
             </span>}
         <span className={`tag sg-kind ${KIND_CLASS[s.kind] || 'sg-kind-mod'}`}>{KIND_LABEL[s.kind] ?? s.kind}</span>
         <span className="sg-title" title={s.title}>{cleanTitle(s.title) || s.title}</span>
@@ -92,6 +95,11 @@ function SuggestionCard({ s, checked, onToggle, onReject }) {
         {s.relatedQuestion && (
           <div className="sg-q"><b>关联用例</b><div>{s.relatedQuestion}</div></div>
         )}
+        {!!s.evidence?.length && (
+          <div className="sg-q"><b>建议依据</b><div>{s.evidence.map((item, index) => <div key={index}>• {item}</div>)}</div></div>
+        )}
+        {s.generalizationPlan && <div className="sg-q"><b>通用化方案</b><div>{s.generalizationPlan}</div></div>}
+        {s.validationPlan && <div className="sg-q"><b>验证方案</b><div>{s.validationPlan}</div></div>}
       </div>
       {(overflowing || open) && (
         <button className="sg-toggle" onClick={() => setOpen((v) => !v)}>
@@ -102,153 +110,480 @@ function SuggestionCard({ s, checked, onToggle, onReject }) {
   );
 }
 
-export function OptimizePanel({ projectId, onGoEvaluate }) {
+const SCOPE_LABEL = {
+  testcase: '评测用例', runtime: '运行环境', data: '数据资料', package: '知识包', script: '计算脚本', judge: '判分依据',
+};
+
+const RESOLUTION_LABEL = {
+  pending: '待处理', confirmed: '已确认可修包', resolved: '外部问题已处理',
+  deferred: '已暂缓', irrelevant: '已标记不适用',
+};
+
+function DiagnosisCard({ diagnosis, resolving, onResolve, selected = false, onToggleSelect }) {
+  const tone = diagnosis.blocking || !diagnosis.packageOptimizable ? 'tag-lang' : 'tag-ok';
+  const selectable = canPlanEvaluationRepair(diagnosis);
+  const askAndResolve = (action, prompt, optional = false) => {
+    const note = window.prompt(prompt, diagnosis.resolutionNote || '');
+    if (note === null || (!optional && !note.trim())) return;
+    onResolve(action, note.trim());
+  };
+  return (
+    <div className="sg-card" style={{ marginBottom: 8 }}>
+      <div className="sg-head">
+        {selectable && (
+          <label className="dg-pick" title="选中后可一起转为建模修缮任务">
+            <input type="checkbox" checked={selected}
+              aria-label={`选择「${diagnosis.title}」转为建模修缮`}
+              onChange={() => onToggleSelect?.(diagnosis.id)} />
+          </label>
+        )}
+        <span className={`tag ${tone}`}>{SCOPE_LABEL[diagnosis.repairScope] ?? diagnosis.repairScope}</span>
+        <span className="sg-title">{diagnosis.title}</span>
+        <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+          {diagnosis.confidence === 'high' ? '高置信度' : diagnosis.confidence === 'medium' ? '中置信度' : '低置信度'}
+        </span>
+      </div>
+      <div className="sg-body">
+        <div>{diagnosis.summary}</div>
+        {!!diagnosis.evidence?.length && (
+          <div className="sg-q"><b>证据</b><div>{diagnosis.evidence.map((item, index) => <div key={index}>• {item}</div>)}</div></div>
+        )}
+        <div className="sg-q"><b>建议先处理</b><div>{diagnosis.suggestedAction}</div></div>
+        {diagnosis.resolutionStatus && diagnosis.resolutionStatus !== 'pending' && (
+          <div className="sg-q"><b>专家处置</b><div>
+            {RESOLUTION_LABEL[diagnosis.resolutionStatus] ?? diagnosis.resolutionStatus}
+            {diagnosis.resolutionNote ? `：${diagnosis.resolutionNote}` : ''}
+          </div></div>
+        )}
+        {!diagnosis.packageOptimizable && (
+          <div style={{ marginTop: 7, color: 'var(--warn, #9a6700)', fontSize: 12 }}>该问题不应通过修改知识包解决。</div>
+        )}
+        {(diagnosis.blocking || !diagnosis.packageOptimizable) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 9 }}>
+            <button className="btn" disabled={resolving} onClick={() => askAndResolve(
+              'confirm_rule', '请填写要补充或确认的业务规则：',
+            )}>补充/确认规则</button>
+            <button className="btn" disabled={resolving} onClick={() => askAndResolve(
+              'clarify_semantics', '请填写字段、指标或对象的权威语义：',
+            )}>澄清语义</button>
+            <button className="btn" disabled={resolving} onClick={() => askAndResolve(
+              'data_updated', '可选：说明已更新的数据或连接：', true,
+            )}>数据已更新</button>
+            <button className="btn" disabled={resolving} onClick={() => askAndResolve(
+              'not_applicable', '请说明该诊断不适用于当前业务的原因：',
+            )}>标记不适用</button>
+            <button className="btn" disabled={resolving} onClick={() => askAndResolve(
+              'defer', '可选：记录暂缓原因和后续责任人：', true,
+            )}>暂缓处理</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onChanged }) {
+  const [rounds, setRounds] = useState(null);
+  const [diagnoses, setDiagnoses] = useState([]);
+  const [diagnosisCanPropose, setDiagnosisCanPropose] = useState(false);
+  const [diagnosisNotice, setDiagnosisNotice] = useState('');
+  const [busy, setBusy] = useState('');
+  const [operationTask, setOperationTask] = useState(null);
+  const [resolvingId, setResolvingId] = useState('');
+  const [selectedDefects, setSelectedDefects] = useState(() => new Set());
+  const [repairNotice, setRepairNotice] = useState('');
+  const [err, setErr] = useState('');
+  const pollRef = useRef(null);
+
+  const load = useCallback(async () => {
+    try {
+      const roundData = await listRounds(projectId);
+      setRounds(roundData.rounds);
+      const target = latestDiagnosableRound(roundData.rounds);
+      if (target) {
+        const [diagnosisData, suggestionData] = await Promise.all([
+          listDiagnoses(projectId, target.id),
+          listSuggestions(projectId, target.id),
+        ]);
+        setDiagnoses(diagnosisData.diagnoses);
+        setDiagnosisCanPropose(!!diagnosisData.canProposeOptimizations);
+        const runningOperation = normalizeOptimizeOperation(suggestionData.runningOperation);
+        const diagnosing = runningOperation === 'diagnose';
+        setBusy(diagnosing ? runningOperation : '');
+        setOperationTask((current) => {
+          if (!diagnosing) return null;
+          if (suggestionData.runningTask) return suggestionData.runningTask;
+          if (current?.operation === 'diagnose') return current;
+          return { operation: 'diagnose', startedAt: new Date().toISOString() };
+        });
+        setErr('');
+        return runningOperation;
+      } else {
+        setDiagnoses([]);
+        setDiagnosisCanPropose(false);
+      }
+      setErr('');
+      return '';
+    } catch (e) {
+      setErr(e.message);
+      return undefined;
+    }
+  }, [projectId]);
+  useEffect(() => {
+    let mounted = true;
+    const refreshUntilIdle = async () => {
+      const runningOperation = await load();
+      if (mounted && runningOperation === 'diagnose') {
+        pollRef.current = setTimeout(refreshUntilIdle, 2000);
+      }
+    };
+    refreshUntilIdle();
+
+    const task = getOptimizeTask(projectId);
+    if (task?.kind === 'diagnose') {
+      setBusy(task.kind);
+      setOperationTask({ operation: task.kind, startedAt: task.startedAt });
+      task.promise
+        .then(async () => {
+          if (!mounted) return;
+          await load();
+          await onChanged?.();
+        })
+        .catch((e) => mounted && setErr(e.message))
+        .finally(() => {
+          if (!mounted) return;
+          setBusy('');
+          setOperationTask(null);
+        });
+    }
+
+    return () => {
+      mounted = false;
+      clearTimeout(pollRef.current);
+    };
+  }, [projectId, load, onChanged]);
+
+  if (!rounds) return <div className="empty">{err || '加载中…'}</div>;
+  const targetRound = latestDiagnosableRound(rounds);
+  const currentDiagnoses = diagnoses.filter((diagnosis) => diagnosis.roundId === targetRound?.id);
+  const canPropose = diagnosisCanPropose;
+  const latestAnalysisAt = currentDiagnoses.map((diagnosis) => diagnosis.createdAt).filter(Boolean).sort().at(-1);
+  const diagnosing = busy === 'diagnose';
+
+  const diagnose = async () => {
+    setBusy('diagnose'); setErr(''); setDiagnosisNotice('');
+    setOperationTask({ operation: 'diagnose', startedAt: new Date().toISOString() });
+    try {
+      const data = await diagnoseOptimize(projectId, targetRound?.id);
+      setDiagnoses(data.diagnoses);
+      setDiagnosisCanPropose(!!data.canProposeOptimizations);
+      const analyzedAt = data.diagnoses.map((diagnosis) => diagnosis.createdAt).filter(Boolean).sort().at(-1);
+      setDiagnosisNotice(`已重新分析，发现 ${data.diagnoses.length} 项原因${analyzedAt ? `（${new Date(analyzedAt).toLocaleString()}）` : ''}`);
+      await load();
+      await onChanged?.();
+    } catch (e) { setErr(e.message); } finally { setBusy(''); setOperationTask(null); }
+  };
+
+  const packageDefects = selectableEvaluationDefects(currentDiagnoses);
+  const plannableDefectIds = submittableEvaluationDefectIds(currentDiagnoses, selectedDefects);
+
+  const planRepair = async () => {
+    if (!targetRound || !plannableDefectIds.length) return;
+    setBusy('plan_repair'); setErr(''); setRepairNotice('');
+    try {
+      await planEvaluationDefectRepair(projectId, targetRound.id, plannableDefectIds);
+      setSelectedDefects(new Set());
+      setRepairNotice(`已把 ${plannableDefectIds.length} 项缺陷交回建模，请在右侧建模助手里继续。`);
+      // 助手栏与工作流步骤都读 session，需要一次刷新才能看到新任务
+      await onChanged?.();
+    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+  };
+
+  const resolve = async (diagnosis, action, note) => {
+    setResolvingId(diagnosis.id); setErr(''); setDiagnosisNotice('');
+    try {
+      const data = await resolveDiagnosis(projectId, diagnosis.id, action, note);
+      setDiagnoses(data.diagnoses);
+      setDiagnosisCanPropose(!!data.canProposeOptimizations);
+      setDiagnosisNotice(`已记录专家处置；建议后续步骤：${(data.nextSteps ?? []).join('、')}`);
+      await onChanged?.();
+    } catch (e) { setErr(e.message); } finally { setResolvingId(''); }
+  };
+
+  return (
+    <div>
+      {err && <div className="lerr">{err}</div>}
+      <div className="ev-launch">
+        {targetRound
+          ? <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+              基于轮次：包 v{targetRound.packageVersion} · {targetRound.status === 'failed'
+                ? '评测运行失败'
+                : `通过 ${targetRound.passCount}/${targetRound.progressTotal}`}
+            </div>
+          : <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>最近没有需要诊断的评测轮次</div>}
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>分析失败原因</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+          区分运行环境、数据、用例和知识包问题，再决定是否进入优化更新。
+        </div>
+        <button className="btn btn-p" disabled={!!busy || !targetRound} onClick={diagnose}>
+          {busy === 'diagnose' ? '分析中…' : currentDiagnoses.length ? '重新分析' : '开始诊断'}
+        </button>
+        {diagnosisNotice && <div style={{ marginTop: 9, fontSize: 12.5, color: 'var(--ok, #1a7f37)' }}>{diagnosisNotice}</div>}
+        {!diagnosisNotice && latestAnalysisAt && (
+          <div style={{ marginTop: 9, fontSize: 12.5, color: 'var(--muted)' }}>
+            最近分析时间：{new Date(latestAnalysisAt).toLocaleString()}
+          </div>
+        )}
+      </div>
+
+      {diagnosing && operationTask && (
+        <div style={{ marginTop: 12 }}><OptimizationOperationProgress task={operationTask} /></div>
+      )}
+
+      {!diagnosing && currentDiagnoses.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div className="sg-bar">
+            <span className="sg-bar-t">失败原因</span>
+            <span className="sg-bar-c">{currentDiagnoses.length} 项，{currentDiagnoses.filter((item) => item.packageOptimizable && !item.blocking).length} 项可优化</span>
+          </div>
+          {currentDiagnoses.map((diagnosis) => (
+            <DiagnosisCard key={diagnosis.id} diagnosis={diagnosis}
+              resolving={resolvingId === diagnosis.id}
+              selected={selectedDefects.has(diagnosis.id)}
+              onToggleSelect={(id) => setSelectedDefects((current) => toggleEvaluationDefect(current, id))}
+              onResolve={(action, note) => resolve(diagnosis, action, note)} />
+          ))}
+        </div>
+      )}
+
+      {!diagnosing && packageDefects.length > 0 && (
+        <div className="dg-to-modeling">
+          <div>
+            <strong>把知识包缺陷交回建模</strong>
+            <p>
+              选中的缺陷会登记成一条建模修缮任务，并在右侧建模助手里列出下一步。
+              知识包不会被直接修改；建模已完成的项目会重新打开修缮与校验阶段。
+            </p>
+          </div>
+          <div className="dg-to-modeling-actions">
+            <button type="button" className="btn"
+              disabled={busy === 'plan_repair'}
+              onClick={() => setSelectedDefects(new Set(packageDefects.map((item) => item.id)))}>
+              全选 {packageDefects.length} 项
+            </button>
+            <button type="button" className="btn btn-p"
+              disabled={!plannableDefectIds.length || busy === 'plan_repair'}
+              onClick={planRepair}>
+              {busy === 'plan_repair'
+                ? '正在交回建模…'
+                : `转为建模修缮任务${plannableDefectIds.length ? `（${plannableDefectIds.length}）` : ''}`}
+            </button>
+          </div>
+          {repairNotice && <div className="dg-to-modeling-ok">{repairNotice}</div>}
+        </div>
+      )}
+
+      {!diagnosing && currentDiagnoses.length > 0 && (
+        <div className="sg-applied">
+          {canPropose
+            ? <>诊断已完成，可以进入优化更新。<button className="btn btn-p" style={{ marginLeft: 12 }} onClick={onAdvance}>进入优化更新</button></>
+            : <>当前问题需要先修复运行环境、数据或用例，再重新评测。<button className="btn" style={{ marginLeft: 12 }} onClick={onGoEvaluate}>返回评测</button></>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
   const [rounds, setRounds] = useState(null);
   const [versions, setVersions] = useState([]);
   const [diagnoses, setDiagnoses] = useState([]);
+  const [diagnosisCanPropose, setDiagnosisCanPropose] = useState(false);
   const [suggestions, setSuggestions] = useState([]);
-  const [candidates, setCandidates] = useState([]);
   const [sel, setSel] = useState(new Set());
-  const [busy, setBusy] = useState('');   // '' | diagnose | propose | apply
+  const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [candidateResult, setCandidateResult] = useState(null);
-  const [applyReview, setApplyReview] = useState(null);
-  const [preview, setPreview] = useState(null);
+  const [applyTask, setApplyTask] = useState(null);
+  const [expertNote, setExpertNote] = useState('');
+  const [operationTask, setOperationTask] = useState(null);
   const pollRef = useRef(null);
+  // 记录已见过的待处理建议：刷新时保留用户勾选，只把新出现的建议默认选上
+  const knownPendingRef = useRef(new Set());
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const roundData = await listRounds(projectId);
-      const nextTargetRound = latestDiagnosableRound(roundData.rounds);
-      const roundId = nextTargetRound?.id;
-      const [versionData, diagnosisData, suggestionData, candidateData, applyStatus] = await Promise.all([
-        listVersions(projectId),
-        listDiagnoses(projectId, roundId),
-        listSuggestions(projectId, roundId),
-        listCandidateRevisions(projectId),
-        getOptimizeApplyStatus(projectId),
+      const target = latestDiagnosableRound(roundData.rounds);
+      const [versionData, suggestionData, applyTaskData, diagnosisData] = await Promise.all([
+        listVersions(projectId), listSuggestions(projectId, target?.id), getOptimizeApplyStatus(projectId),
+        target ? listDiagnoses(projectId, target.id) : Promise.resolve({ diagnoses: [], canProposeOptimizations: false }),
       ]);
-      const roundSuggestions = suggestionsForRound(suggestionData.suggestions, roundId);
-      const runningOperation = normalizeOptimizeOperation(suggestionData.runningOperation);
       setRounds(roundData.rounds);
       setVersions(versionData.versions);
-      setDiagnoses(diagnosesForRound(diagnosisData.diagnoses, roundId));
-      setSuggestions(roundSuggestions);
-      setSel(new Set(pendingSuggestionIdsForRound(roundSuggestions, roundId)));
-      setCandidates(candidateData.candidates);
-      setApplyReview(optimizationExpertReviewForRound(applyStatus, roundSuggestions, roundId));
+      setSuggestions(suggestionData.suggestions);
+      setApplyTask(applyTaskData.task);
+      setDiagnoses(diagnosisData.diagnoses);
+      setDiagnosisCanPropose(!!diagnosisData.canProposeOptimizations);
+      const runningOperation = normalizeOptimizeOperation(suggestionData.runningOperation);
       setBusy(runningOperation);
+      setOperationTask((current) => {
+        if (!runningOperation) return null;
+        if (suggestionData.runningTask) return suggestionData.runningTask;
+        if (current?.operation === runningOperation) return current;
+        return { operation: runningOperation, startedAt: new Date().toISOString() };
+      });
+      setSel((prev) => {
+        const pendingIds = suggestionData.suggestions.filter((s) => s.status === 'pending').map((s) => s.id);
+        const known = knownPendingRef.current;
+        const next = new Set(pendingIds.filter((id) => prev.has(id) || !known.has(id)));
+        knownPendingRef.current = new Set(pendingIds);
+        return next;
+      });
       setErr('');
       return runningOperation;
     } catch (e) {
       setErr(e.message);
       return undefined;
     }
-  };
+  }, [projectId]);
+
   useEffect(() => {
-    let cancelled = false;
+    let mounted = true;
     const refreshUntilIdle = async () => {
       const runningOperation = await load();
-      if (!cancelled && shouldPollOptimizeOperation(runningOperation)) {
+      if (mounted && shouldPollOptimizeOperation(runningOperation)) {
         pollRef.current = setTimeout(refreshUntilIdle, 2000);
       }
     };
     refreshUntilIdle();
-    return () => {
-      cancelled = true;
-      clearTimeout(pollRef.current);
+    const task = getOptimizeTask(projectId);
+    if (task && ['propose', 'apply'].includes(task.kind)) {
+      setBusy(task.kind);
+      setOperationTask({ operation: task.kind, startedAt: task.startedAt });
+      task.promise
+        .then(() => mounted && load())
+        .catch((e) => mounted && setErr(e.message))
+        .finally(() => mounted && setBusy(''));
+    }
+    return () => { mounted = false; clearTimeout(pollRef.current); };
+  }, [projectId, load]);
+  useEffect(() => {
+    const refresh = () => {
+      setCandidateResult(null);
+      void load();
     };
-  }, [projectId]);
+    window.addEventListener('mw-package-updated', refresh);
+    return () => window.removeEventListener('mw-package-updated', refresh);
+  }, [load]);
+
+  const loadedTargetRound = latestDiagnosableRound(rounds ?? []);
+  const loadedSuggestions = suggestions.filter((suggestion) => suggestion.roundId === loadedTargetRound?.id);
+  const currentApplyTask = optimizationApplyTaskForSuggestions(applyTask, loadedSuggestions);
+  const applyRunning = currentApplyTask?.node?.status === 'running';
+  const applyNeedsExpert = currentApplyTask?.node?.status === 'waiting_user'
+    && currentApplyTask?.node?.output?.phase === 'expert_review';
+  const applyFailure = optimizationApplyFailureMessage(currentApplyTask);
+  useEffect(() => {
+    if (!applyRunning && busy !== 'apply') return undefined;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const data = await getOptimizeApplyStatus(projectId);
+        if (!cancelled) setApplyTask(data.task);
+      } catch (e) {
+        if (!cancelled) setErr(e.message);
+      }
+    };
+    refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [projectId, applyRunning, busy]);
+
+  const completedTaskId = useRef('');
+  useEffect(() => {
+    const node = applyTask?.node;
+    if (!node || node.status !== 'done' || completedTaskId.current === node.id) return;
+    completedTaskId.current = node.id;
+    if (node.output?.candidateId) {
+      setCandidateResult({
+        candidateId: node.output.candidateId,
+        selected: node.output.suggestionCount ?? 0,
+      });
+    }
+    load();
+  }, [applyTask?.node?.id, applyTask?.node?.status, load]);
 
   if (!rounds) return <div className="empty">{err || '加载中…'}</div>;
-  const targetRound = latestDiagnosableRound(rounds);
-  const roundDiagnoses = diagnosesForRound(diagnoses, targetRound?.id);
-  const canPropose = canProposeFromDiagnoses(roundDiagnoses);
-  const pending = suggestions.filter((s) => s.status === 'pending');
-  const linkedCandidates = linkedOptimizationCandidates(suggestions, candidates);
-  const optimizationCandidates = pendingLinkedOptimizationCandidates(suggestions, candidates);
-  const hasAcceptedOptimization = linkedCandidates.some((candidate) => candidate.status === 'accepted');
-
-  const diagnose = async () => {
-    setBusy('diagnose'); setErr(''); setCandidateResult(null);
-    try {
-      await diagnoseAndRefresh(
-        () => diagnoseOptimize(projectId, targetRound?.id),
-        async () => { setPreview(null); await load(); },
-      );
-    } catch (e) { setErr(e.message); } finally { setBusy(''); }
-  };
-
-  const resolve = async (diagnosis, action) => {
-    const needsNote = ['confirm_rule', 'clarify_semantics', 'not_applicable'].includes(action);
-    const note = window.prompt(needsNote ? '请填写专家确认依据' : '可选：填写处置说明', '');
-    if (note === null || (needsNote && !note.trim())) return;
-    try {
-      const d = await resolveDiagnosis(projectId, diagnosis.id, action, note);
-      setDiagnoses((previous) => [
-        ...previous.filter((item) => item.roundId !== diagnosis.roundId),
-        ...d.diagnoses,
-      ]);
-    } catch (e) { setErr(e.message); }
-  };
+  const activeBusy = busy || (applyRunning ? 'apply' : applyNeedsExpert ? 'apply_review' : '');
+  const targetRound = loadedTargetRound;
+  const currentDiagnoses = diagnoses.filter((diagnosis) => diagnosis.roundId === targetRound?.id);
+  const canPropose = diagnosisCanPropose;
+  const hasExternalBlockers = currentDiagnoses.some((diagnosis) => diagnosis.blocking || !diagnosis.packageOptimizable);
+  const currentSuggestions = loadedSuggestions;
+  const pending = currentSuggestions.filter((s) => s.status === 'pending');
+  const pendingIds = new Set(pending.map((suggestion) => suggestion.id));
+  const selectedCurrent = new Set([...sel].filter((id) => pendingIds.has(id)));
 
   const propose = async () => {
     setBusy('propose'); setErr(''); setCandidateResult(null);
+    setOperationTask({ operation: 'propose', startedAt: new Date().toISOString() });
     try {
       const d = await proposeOptimize(projectId, targetRound?.id);
-      const roundSuggestions = suggestionsForRound(d.suggestions, targetRound?.id);
-      setSuggestions(roundSuggestions);
-      setSel(new Set(pendingSuggestionIdsForRound(roundSuggestions, targetRound?.id)));
-    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+      setSuggestions((prev) => {
+        const known = new Set(prev.map((s) => s.id));
+        return [...prev, ...d.suggestions.filter((s) => !known.has(s.id))];
+      });
+      setSel(new Set(d.suggestions.filter((s) => s.status === 'pending').map((s) => s.id)));
+    } catch (e) { setErr(e.message); } finally { setBusy(''); setOperationTask(null); }
   };
 
   const apply = async () => {
     setBusy('apply'); setErr('');
+    setOperationTask({ operation: 'apply', startedAt: new Date().toISOString() });
     try {
-      const selectedSuggestionIds = pendingSuggestionIdsForRound(suggestions, targetRound?.id)
-        .filter((id) => sel.has(id));
-      if (!selectedSuggestionIds.length) throw new Error('请选择当前评测轮次的待处理建议');
-      const d = await applyOptimize(projectId, selectedSuggestionIds);
-      const review = optimizationExpertReviewState(d);
-      if (review) {
-        setApplyReview(review);
+      const d = await applyOptimize(projectId, [...selectedCurrent]);
+      if (d.status === 'waiting_expert') {
+        const status = await getOptimizeApplyStatus(projectId);
+        setApplyTask(status.task);
         setCandidateResult(null);
       } else {
-        setApplyReview(null);
-        setCandidateResult(optimizationCandidateNotice(d));
+        setCandidateResult(d);
       }
       await load();
-    } catch (e) { setErr(e.message); } finally { setBusy(''); }
+      await onChanged?.();
+    } catch (e) { setErr(e.message); } finally { setBusy(''); setOperationTask(null); }
   };
 
-  const reviewApply = async (action) => {
-    if (!applyReview) return;
-    let note = '';
-    if (action === 'retry') {
-      const input = window.prompt('可选：补充本次重试必须满足的约束', '');
-      if (input === null) return;
-      note = input.trim();
-    } else if (!window.confirm('确认跳过本次所选优化建议？')) return;
-    setBusy('apply'); setErr(''); setCandidateResult(null);
+  const resolveExpertReview = async (action) => {
+    const taskId = applyTask?.node?.id;
+    if (!taskId) return;
+    if (action === 'skip' && !window.confirm('确认跳过这些优化建议吗？它们将标记为已忽略，当前知识包不会被修改。')) return;
+    setBusy('apply'); setErr('');
     try {
-      const reviewed = await reviewOptimizeApply(
-        projectId, applyReview.taskId, action, note,
-      );
-      setApplyReview(null);
+      const decision = await reviewOptimizeApply(projectId, taskId, action, expertNote);
+      setExpertNote('');
       if (action === 'retry') {
-        const d = await applyOptimize(projectId, reviewed.suggestionIds);
-        const nextReview = optimizationExpertReviewState(d);
-        if (nextReview) setApplyReview(nextReview);
-        else setCandidateResult(optimizationCandidateNotice(d));
+        const d = await applyOptimize(projectId, decision.suggestionIds);
+        if (d.status === 'waiting_expert') {
+          const status = await getOptimizeApplyStatus(projectId);
+          setApplyTask(status.task);
+        } else {
+          setCandidateResult(d);
+        }
       }
       await load();
+      await onChanged?.();
     } catch (e) { setErr(e.message); } finally { setBusy(''); }
   };
 
   const reject = async (id) => {
+    if (busy || applyRunning) return;
+    if (!window.confirm('确定忽略这条优化建议吗？忽略后不会再出现在待处理列表中。')) return;
     try {
-      await rejectSuggestions(projectId, [id]);
-      await load();
+      const d = await rejectSuggestions(projectId, [id]);
+      setSuggestions(d.suggestions);
+      setSel((prev) => { const n = new Set(prev); n.delete(id); return n; });
     } catch (e) { setErr(e.message); }
   };
 
@@ -261,67 +596,76 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
   return (
     <div>
       {err && <div className="lerr">{err}</div>}
-
-      {/* 失败诊断与专家处置 */}
       <div className="ev-launch">
         {targetRound
           ? <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-              基于轮次：包 v{targetRound.packageVersion} · 修订 {String(targetRound.artifactRevision || '').slice(0, 8)} ·
-              通过 {targetRound.passCount}/{targetRound.progressTotal}
+              基于轮次：包 v{targetRound.packageVersion} · {targetRound.status === 'failed'
+                ? '评测运行失败'
+                : `通过 ${targetRound.passCount}/${targetRound.progressTotal}`}
             </div>
-          : <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>暂无需要诊断的终态评测轮次</div>}
-        <button className="btn" disabled={!!busy || !targetRound} onClick={diagnose}>
-          {busy === 'diagnose' ? '正在分析失败原因…' : '① 诊断失败原因'}
-        </button>
-        <button className="btn btn-p" style={{ marginLeft: 8 }}
-          disabled={!!busy || !targetRound || !roundDiagnoses.length || !canPropose}
+          : <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>请先运行评测</div>}
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>生成优化建议</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+          只处理失败诊断中确认可通过知识包或脚本修复的问题。
+        </div>
+        <button className="btn btn-p" disabled={!!activeBusy || !targetRound || !canPropose}
           onClick={propose}>
-          {busy === 'propose' ? '正在生成建议…' : '③ 生成优化建议'}
+          {activeBusy === 'propose' ? '生成中…' : '生成建议'}
         </button>
-        {busy && (
-          <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--muted)' }}>
-            优化任务正在执行，请稍候
-          </span>
+        {targetRound && !currentDiagnoses.length && <button className="btn" style={{ marginLeft: 10 }} onClick={onGoDiagnose}>先去失败诊断</button>}
+        {!!currentDiagnoses.length && !canPropose && <span style={{ marginLeft: 10, fontSize: 12.5, color: 'var(--muted)' }}>暂无可改项</span>}
+        {canPropose && hasExternalBlockers && (
+          <div style={{ marginTop: 9, fontSize: 12.5, color: 'var(--warn, #9a6700)' }}>
+            仍有数据、用例或运行问题。
+          </div>
         )}
       </div>
 
-      {roundDiagnoses.length > 0 && (
-        <div style={{ marginTop: 16 }}>
-          <div className="sg-bar"><span className="sg-bar-t">② 专家处置失败诊断</span></div>
-          {roundDiagnoses.map((diagnosis) => (
-            <div key={diagnosis.id} className="sg-card">
-              <div className="sg-head">
-                <span className={`tag ${diagnosis.packageOptimizable && !diagnosis.blocking ? 'tag-ok' : 'tag-draft'}`}>
-                  {diagnosis.packageOptimizable && !diagnosis.blocking ? '可优化' : '需处置'}
-                </span>
-                <span className="sg-title">{diagnosis.title}</span>
-              </div>
-              <div className="sg-body">
-                <div>{diagnosis.summary}</div>
-                {diagnosis.evidence?.length > 0 && <div className="sg-q"><b>证据</b><div>{diagnosis.evidence.join('；')}</div></div>}
-                {diagnosis.resolutionStatus !== 'pending'
-                  ? <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 12 }}>
-                      已处置：{diagnosis.resolutionStatus}{diagnosis.resolutionNote ? ` · ${diagnosis.resolutionNote}` : ''}
-                    </div>
-                  : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 9 }}>
-                      <button className="btn" onClick={() => resolve(diagnosis, 'confirm_rule')}>确认规则</button>
-                      <button className="btn" onClick={() => resolve(diagnosis, 'clarify_semantics')}>澄清语义</button>
-                      <button className="btn" onClick={() => resolve(diagnosis, 'data_updated')}>数据已修复</button>
-                      <button className="btn" onClick={() => resolve(diagnosis, 'not_applicable')}>不适用</button>
-                      <button className="btn" onClick={() => resolve(diagnosis, 'defer')}>暂缓</button>
-                    </div>}
-              </div>
-            </div>
-          ))}
+      {activeBusy === 'propose' && operationTask && (
+        <div style={{ marginTop: 12 }}><OptimizationOperationProgress task={operationTask} /></div>
+      )}
+      {activeBusy === 'apply' && !applyRunning && operationTask && (
+        <div style={{ marginTop: 12 }}><OptimizationOperationProgress task={operationTask} /></div>
+      )}
+      {applyRunning && <div style={{ marginTop: 12 }}><OptimizationApplyProgress node={applyTask.node} /></div>}
+      {applyNeedsExpert && (
+        <div className="sg-applied" style={{ marginTop: 12, borderColor: 'var(--warn, #9a6700)' }}>
+          <div style={{ fontWeight: 700, marginBottom: 7 }}>自动修复两次未通过，请专家决策</div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 8 }}>
+            当前知识包没有被修改。可以根据下方原因补充意见后重试，也可确认跳过这些建议。
+          </div>
+          <div className="sg-q"><b>服务端校验原因</b><div>
+            {(applyTask.node.output.validationErrors ?? [applyTask.node.output.error]).filter(Boolean)
+              .map((item, index) => <div key={index}>• {item}</div>)}
+          </div></div>
+          <textarea value={expertNote} onChange={(event) => setExpertNote(event.target.value)}
+            placeholder="可选：补充修复口径、目标资源或脚本职责边界"
+            style={{ width: '100%', minHeight: 76, marginTop: 9 }} />
+          <div style={{ display: 'flex', gap: 8, marginTop: 9 }}>
+            <button className="btn btn-p" disabled={!!busy} onClick={() => resolveExpertReview('retry')}>
+              带反馈重试
+            </button>
+            <button className="btn" disabled={!!busy} onClick={() => resolveExpertReview('skip')}>
+              确认跳过
+            </button>
+          </div>
+        </div>
+      )}
+      {applyFailure && (
+        <div className="lerr" style={{ marginTop: 12 }}>
+          <strong>优化候选生成失败：</strong>{applyFailure}
+          <div style={{ marginTop: 6, fontWeight: 400 }}>
+            当前知识包没有被修改。专家可以调整后重试，或忽略不适用的建议后继续发布。
+          </div>
         </div>
       )}
 
       {/* 建议列表 */}
-      {(suggestions.length > 0 || applyReview) && (
+      {currentSuggestions.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <div className="sg-bar">
             <span className="sg-bar-t">优化建议</span>
-            <span className="sg-bar-c">{pending.length > 0 ? `${sel.size}/${pending.length} 条待处理已选` : '均已处理'}</span>
+            <span className="sg-bar-c">{pending.length > 0 ? `已选 ${selectedCurrent.size}/${pending.length}` : '已处理'}</span>
             {pending.length > 0 && (
               <span className="sg-bar-ops">
                 <button onClick={() => setSel(new Set(pending.map((s) => s.id)))}>全选</button>
@@ -330,31 +674,13 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
               </span>
             )}
           </div>
-          {suggestions.map((s) => (
-            <SuggestionCard key={s.id} s={s} checked={sel.has(s.id)}
+          {currentSuggestions.map((s) => (
+            <SuggestionCard key={s.id} s={s} checked={selectedCurrent.has(s.id)}
               onToggle={() => toggle(s.id)} onReject={() => reject(s.id)} />
           ))}
-          {applyReview && (
-            <div className="sg-card" style={{ marginTop: 10 }}>
-              <div className="sg-head">
-                <span className="tag tag-draft">等待专家决策</span>
-                <span className="sg-title">自动修订两次未通过服务端校验</span>
-              </div>
-              <div className="sg-body">
-                {applyReview.error && <div>{applyReview.error}</div>}
-                {applyReview.validationErrors.length > 0 && (
-                  <ul>{applyReview.validationErrors.map((message) => <li key={message}>{message}</li>)}</ul>
-                )}
-                <button className="btn btn-p" disabled={!!busy}
-                  onClick={() => reviewApply('retry')}>带反馈重试</button>
-                <button className="btn" style={{ marginLeft: 8 }} disabled={!!busy}
-                  onClick={() => reviewApply('skip')}>跳过所选建议</button>
-              </div>
-            </div>
-          )}
-          {pending.length > 0 && !applyReview && (
-            <button className="btn btn-p" style={{ marginTop: 8 }} disabled={!!busy || !sel.size} onClick={apply}>
-              {busy === 'apply' ? '正在生成待确认候选…' : `④ 生成包含 ${sel.size} 条建议的待确认候选`}
+          {pending.length > 0 && (
+            <button className="btn btn-p" style={{ marginTop: 8 }} disabled={!!activeBusy || !selectedCurrent.size} onClick={apply}>
+              {activeBusy === 'apply' ? '生成候选中…' : `生成候选修订（${selectedCurrent.size}）`}
             </button>
           )}
         </div>
@@ -362,34 +688,15 @@ export function OptimizePanel({ projectId, onGoEvaluate }) {
 
       {candidateResult && (
         <div className="sg-applied">
-          ✓ 已生成待确认候选 <b>{candidateResult.candidateId}</b>（包含 {candidateResult.selected} 条建议）。
-          接受前不会推进正式修订。
-        </div>
-      )}
-
-      {(optimizationCandidates.length > 0 || hasAcceptedOptimization) && (
-        <div style={{ marginTop: 22 }}>
-          {optimizationCandidates.length > 0 && (
-            <CandidateRevisionPanel projectId={projectId} candidates={optimizationCandidates}
-              title="⑤ 优化候选预览与决策"
-              subtitle="接受前不推进正式修订；退回、拒绝或失效会同步优化建议状态"
-              onPreview={setPreview} onChanged={async () => {
-                setPreview(null);
-                setCandidateResult(null);
-                await load();
-              }} onError={setErr} />
-          )}
-          <CandidateRevisionCanvas preview={preview} onClose={() => setPreview(null)} />
-          {hasAcceptedOptimization && (
-            <button className="btn btn-p" style={{ marginTop: 8 }} onClick={onGoEvaluate}>去评测当前修订 →</button>
-          )}
+          已生成待确认候选修订（包含 {candidateResult.selected ?? 0} 条建议）。
+          请在右侧“候选修订”卡片查看差异并确认；确认前不会改变当前知识包。
         </div>
       )}
 
       {/* 版本历史与交付 */}
       {versions.length > 0 && (
         <div style={{ marginTop: 22 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>版本历史与交付</div>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>版本</div>
           <VersionTable projectId={projectId} versions={versions} />
         </div>
       )}
@@ -402,13 +709,14 @@ export function VersionTable({ projectId, versions }) {
   const download = async (version) => {
     setDlErr('');
     try {
-      const res = await requireOkResponse(await authFetch(exportVersionUrl(projectId, version)));
+      const res = await authFetch(exportVersionUrl(projectId, version));
+      if (!res.ok) { setDlErr(`导出失败（${res.status}）`); return; }
       const blob = await res.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = (res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1]) || `package-${version}.zip`;
       a.click();
-      URL.revokeObjectURL(a.href);
+      window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } catch (e) { setDlErr(`导出失败：${e.message}`); }
   };
 
@@ -435,7 +743,13 @@ export function VersionTable({ projectId, versions }) {
                   ? <span>{best.passCount}/{best.progressTotal}{improved ? <span className="sg-up"> ↑提升</span> : ''}</span>
                   : <span style={{ color: 'var(--muted)' }}>未评测</span>}
               </td>
-              <td><button className="btn" style={{ padding: '3px 10px', fontSize: 11.5 }} onClick={() => download(v.version)}>导出 zip</button></td>
+              <td><button
+                className="btn"
+                style={{ padding: '3px 10px', fontSize: 11.5 }}
+                disabled={Boolean(v.unversioned)}
+                title={v.unversioned ? '请先将当前修订提升为可交付版本' : '导出该版本'}
+                onClick={() => download(v.version)}
+              >导出</button></td>
             </tr>
           );
         })}

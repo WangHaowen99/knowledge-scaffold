@@ -112,7 +112,7 @@ export async function resumeAgent(agent: Agent, userMessage: string): Promise<un
 }
 
 // 捕获型 agent 的协议恢复：跑完未捕获到工具产物（模型把结果写成了正文）时，
-// 轻推一次要求改用工具提交。所有 submit_* / ask_user 类 agent 通用。
+// 轻推一次要求改用工具提交。所有需要结构化提交的 agent 通用。
 export async function runAgentCaptured(
   agent: any,
   prompt: string,

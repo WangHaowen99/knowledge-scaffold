@@ -2,6 +2,15 @@ const MAX_IMPORT_CASES = 500;
 
 const text = (value) => (value == null ? '' : String(value).trim());
 
+export function testcaseImportTemplateJson() {
+  return `${JSON.stringify({
+    cases: [
+      { question: '示例业务问题', groundTruth: '可选：填写标准答案' },
+      { question: '仅用于真实执行的问题', groundTruth: '' },
+    ],
+  }, null, 2)}\n`;
+}
+
 export function parseTestcaseImport(raw) {
   let value;
   try {

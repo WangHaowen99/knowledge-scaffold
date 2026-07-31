@@ -1,18 +1,21 @@
 import type { FlowchartOutput } from '../authoring/workflow-extras.js';
 import type { DataDictTable, PackageSpec, Project } from '../types.js';
 import { generatePackage } from '../workflow/m2.js';
+import type { PackageGenerationOptions } from '../workflow/m2.js';
 import {
   runFormatChecks,
   runRuleChecks,
   runSemanticCheck,
   saveCheck,
+  semanticCheckFailureFinding,
   type CheckFinding,
 } from '../workflow/package-check.js';
+import { GenerationWaitingForExpert } from '../workflow/generation-gate.js';
 import { AiConstructionOrchestrator } from './orchestrator.js';
 
 export interface KnowledgeGenerationContext {
   tables: DataDictTable[];
-  documents: Array<{ filename: string; textContent?: string }>;
+  documents: Array<{ id: string; filename: string; textContent?: string }>;
 }
 
 export interface KnowledgeStructureValidation {
@@ -35,6 +38,7 @@ export type KnowledgePackageGenerator = (
   context: KnowledgeGenerationContext,
   llmOverride: undefined,
   flowchart: FlowchartOutput,
+  options?: PackageGenerationOptions,
 ) => Promise<GeneratedKnowledgeStructure>;
 
 export type KnowledgeStructureValidator = (
@@ -47,29 +51,6 @@ export interface KnowledgeStructureRunnerOptions {
   orchestrator: AiConstructionOrchestrator;
   generator?: KnowledgePackageGenerator;
   validator?: KnowledgeStructureValidator;
-}
-
-export function confirmedFlowchartFromProgress(progress: {
-  status: string;
-  output: Record<string, unknown>;
-} | null): FlowchartOutput {
-  if (!progress || progress.status !== 'completed') {
-    throw new Error('业务流程图尚未完成人工确认，不能生成知识结构');
-  }
-  const diagrams = progress.output.diagrams;
-  if (!Array.isArray(diagrams) || !diagrams.length) {
-    throw new Error('已确认流程中没有可用流程，不能生成知识结构');
-  }
-  if (diagrams.some((diagram) => (
-    !diagram || typeof diagram !== 'object'
-    || !String((diagram as any).id ?? '').trim()
-    || !String((diagram as any).title ?? '').trim()
-    || !Array.isArray((diagram as any).nodes)
-    || !Array.isArray((diagram as any).edges)
-  ))) {
-    throw new Error('已确认流程图格式不正确，请重新确认流程图');
-  }
-  return { diagrams: diagrams as FlowchartOutput['diagrams'] };
 }
 
 function findingCounts(findings: CheckFinding[]): Omit<KnowledgeStructureValidation, 'findings'> {
@@ -93,15 +74,7 @@ export async function validateGeneratedKnowledge(
   try {
     semantic = await runSemanticCheck(project, generated.spec);
   } catch (error) {
-    semantic = [{
-      id: `semantic_check_failed_${Date.now()}`,
-      source: 'semantic',
-      severity: '错误',
-      category: '语义校验执行失败',
-      target: 'package',
-      message: error instanceof Error ? error.message : String(error),
-      suggestion: '重新执行知识结构校验；若仍失败，请检查任务模型配置和服务连通性',
-    }];
+    semantic = [semanticCheckFailureFinding(error)];
   }
   const findings = [...deterministic, ...semantic]
     .sort((left, right) => ['错误', '警告', '提示'].indexOf(left.severity)
@@ -129,10 +102,16 @@ export class KnowledgeStructureRunner {
     project: Project,
     context: KnowledgeGenerationContext,
     flowchart: FlowchartOutput,
+    options: PackageGenerationOptions = {},
   ) {
     this.orchestrator.startKnowledgeStructure(project.id);
     try {
-      const generated = await this.generator(project, context, undefined, flowchart);
+      const generated = await this.generator(project, context, undefined, flowchart, options);
+      this.orchestrator.startKnowledgeStructureValidation(project.id, {
+        packageRevisionOid: generated.revisionId,
+        messageKey: `knowledge.validating.${generated.version}`,
+        version: generated.version,
+      });
       const validation = await this.validator(project, generated, context);
       const counts = {
         operations: generated.spec.operations.length,
@@ -161,6 +140,13 @@ export class KnowledgeStructureRunner {
       });
       return { ...generated, validation, ...completed };
     } catch (error) {
+      if (error instanceof GenerationWaitingForExpert) {
+        const waiting = this.orchestrator.waitForKnowledgeStructureDecision(project.id, {
+          failure: error.failure,
+          interactionId: error.interaction.id,
+        });
+        return { status: 'waiting_user' as const, interaction: error.interaction, ...waiting };
+      }
       const reason = error instanceof Error ? error.message : String(error);
       try { this.orchestrator.failKnowledgeStructure(project.id, reason); } catch { /* 保留原始错误 */ }
       throw error;

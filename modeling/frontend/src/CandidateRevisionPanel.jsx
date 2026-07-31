@@ -89,7 +89,16 @@ function CandidateGroup({ group, requested, autoIncluded, disabled, onToggle }) 
   );
 }
 
-function CandidateCard({ projectId, candidate, busy, onBusy, onPreview, onChanged, onError }) {
+function CandidateCard({
+  projectId,
+  candidate,
+  busy,
+  confirmAction,
+  onBusy,
+  onPreview,
+  onChanged,
+  onError,
+}) {
   const groups = useMemo(() => normalizedGroups(candidate.groups), [candidate.groups]);
   const [requested, setRequested] = useState(() => groups.map((group) => group.id));
   const [note, setNote] = useState('');
@@ -109,8 +118,9 @@ function CandidateCard({ projectId, candidate, busy, onBusy, onPreview, onChange
       : current.concat(id));
   };
 
-  const run = async (operation) => {
+  const run = async (kind, operation) => {
     if (busy) return;
+    if (confirmAction && !confirmAction(kind)) return;
     onBusy(candidate.id); setError('');
     try { await operation(); }
     catch (cause) {
@@ -121,12 +131,12 @@ function CandidateCard({ projectId, candidate, busy, onBusy, onPreview, onChange
     finally { onBusy(''); }
   };
 
-  const preview = () => run(async () => {
+  const preview = () => run('preview_candidate_revision', async () => {
     const result = await previewCandidateRevision(projectId, candidate.id, selection.requestedGroupIds);
     onPreview?.(result);
   });
 
-  const respond = (action) => run(async () => {
+  const respond = (action) => run(`${action}_candidate_revision`, async () => {
     if (action === 'revise' && !note.trim()) throw new Error('请填写需要调整的内容');
     await respondCandidateWithRefresh(
       () => respondCandidateRevision(projectId, candidate.id, {
@@ -212,6 +222,7 @@ export default function CandidateRevisionPanel({
   onPreview,
   onChanged,
   onError,
+  confirmAction,
   title = '待确认候选修订',
   subtitle = '修改不会在您确认前进入当前知识包',
 }) {
@@ -243,6 +254,7 @@ export default function CandidateRevisionPanel({
       </div>
       {candidates.map((candidate) => <CandidateCard key={candidate.id}
         projectId={projectId} candidate={candidate} busy={busy} onBusy={setBusy}
+        confirmAction={confirmAction}
         onPreview={onPreview} onChanged={changed}
         onError={(message) => { setError(message); onError?.(message); }} />)}
       {error && <div className="candidate-revision-error" role="alert">{error}</div>}

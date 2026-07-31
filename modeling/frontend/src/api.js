@@ -61,29 +61,22 @@ export async function authFetch(path, options = {}) {
   return doFetch(path, options);
 }
 
-const dispatchPackageDraftRequired = (data) => {
-  if (data?.code !== 'PACKAGE_DRAFT_REQUIRES_PUBLISH') return;
-  if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
-  window.dispatchEvent(new CustomEvent('mw-package-draft-required', { detail: data }));
-};
-
-const responseError = (res, data) => {
-  dispatchPackageDraftRequired(data);
-  return Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
-};
-
 export async function api(path, options = {}) {
   const res = await authFetch(path, options);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw responseError(res, data);
+  if (!res.ok) {
+    throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), { status: res.status, data });
+  }
   return data;
 }
 
-// zip 等二进制请求也要走统一错误解析，否则活动草稿门禁只能显示一个无上下文的 HTTP 状态码。
 export async function requireOkResponse(res) {
   if (res.ok) return res;
   const data = await res.json().catch(() => ({}));
-  throw responseError(res, data);
+  throw Object.assign(new Error(data.error || `请求失败（${res.status}）`), {
+    status: res.status,
+    data,
+  });
 }
 
 export const login = (username, password) =>
@@ -101,6 +94,9 @@ export const importPackageWorkspace = (file) => {
   form.append('file', file);
   return api('/api/package-workspaces/import', { method: 'POST', body: form });
 };
+export const updateProject = (id, input) => api(`/api/projects/${encodeURIComponent(id)}`, {
+  method: 'PUT', body: JSON.stringify(input),
+});
 export const getProject = (id) => api(`/api/projects/${encodeURIComponent(id)}`);
 export const uploadDocument = (id, file) => {
   const form = new FormData();
@@ -113,25 +109,20 @@ export const listMaterialRevisions = (id, sourceKey = '') => api(
 );
 export const runAnalyze = (id) => api(`/api/projects/${encodeURIComponent(id)}/analyze`, { method: 'POST' });
 
-// ---- M2 ----
 const P = (id) => `/api/projects/${encodeURIComponent(id)}`;
-export const getInterview = (id) => api(`${P(id)}/interview`);
-export const startInterview = (id) => api(`${P(id)}/interview/start`, { method: 'POST' });
-export const answerInterview = (id, batchId, answers) => api(`${P(id)}/interview/answer`, { method: 'POST', body: JSON.stringify({ batchId, answers }) });
-export const getCompetency = (id) => api(`${P(id)}/competency`);
-export const addCompetency = (id, question) => api(`${P(id)}/competency`, { method: 'POST', body: JSON.stringify({ question }) });
-export const proposeCompetency = (id) => api(`${P(id)}/competency/propose`, { method: 'POST' });
-export const selectCompetency = (id, selectedIds) => api(`${P(id)}/competency/select`, { method: 'POST', body: JSON.stringify({ selectedIds }) });
-export const generatePackage = (id, dataSourceType) => api(`${P(id)}/generate`, {
-  method: 'POST', body: JSON.stringify({ dataSourceType }),
-});
 export const getPackage = (id) => api(`${P(id)}/package`);
-export const getPackageFile = (id, path) => api(`${P(id)}/package/file?path=${encodeURIComponent(path)}`);
+export const getPackageFile = (id, path, options = {}) => api(
+  `${P(id)}/package/file?path=${encodeURIComponent(path)}`,
+  options,
+);
 export const exportPackageUrl = (id) => `${P(id)}/package/export`;
 export const exportModelingAuditUrl = (id) => `${P(id)}/audit/export`;
 export const getPackageDraft = (id) => api(`${P(id)}/package/draft`);
 export const createPackageDraft = (id) => api(`${P(id)}/package/draft`, { method: 'POST', body: '{}' });
-export const getPackageDraftFile = (id, path) => api(`${P(id)}/package/draft/file?path=${encodeURIComponent(path)}`);
+export const getPackageDraftFile = (id, path, options = {}) => api(
+  `${P(id)}/package/draft/file?path=${encodeURIComponent(path)}`,
+  options,
+);
 export const savePackageDraftFile = (id, path, content, revision, expectedContentHash, draftId) => api(`${P(id)}/package/draft/file`, {
   method: 'PUT', body: JSON.stringify({ path, content, revision, expectedContentHash, draftId }),
 });
@@ -155,8 +146,8 @@ export const createProjectEvaluationDatabase = (id, selection) => api(
   {
     method: 'POST',
     body: JSON.stringify({
-      database_url_mode: selection.mode,
-      database_url: selection.mode === 'custom' ? selection.databaseUrl : undefined,
+      databaseUrlMode: selection.mode,
+      ...(selection.mode === 'custom' ? { customDatabaseUrl: selection.customDatabaseUrl } : {}),
     }),
   },
 );
@@ -164,7 +155,7 @@ export const importEvaluationDatabase = (id, file, replaceConfirmed, selection) 
   const form = new FormData();
   if (replaceConfirmed) form.append('replace_confirmation', 'replace_same_name_tables');
   form.append('database_url_mode', selection.mode);
-  if (selection.mode === 'custom') form.append('database_url', selection.databaseUrl);
+  if (selection.mode === 'custom') form.append('custom_database_url', selection.customDatabaseUrl);
   form.append('file', file);
   return api(`${P(id)}/evaluation-database/import`, { method: 'POST', body: form });
 };
@@ -249,9 +240,19 @@ export const rejectSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/r
 export const listVersions = (id) => api(`${P(id)}/versions`);
 export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;
 
-// ---- 包完善（人工编辑统一走版本草稿）----
-export const packageChat = (id, message, history) => api(`${P(id)}/package/chat`, { method: 'POST', body: JSON.stringify({ message, history }) });
-export const packageChatApply = (id, message, history, plan) => api(`${P(id)}/package/chat/apply`, { method: 'POST', body: JSON.stringify({ message, history, plan }) });
+// ---- 包完善（人工草稿 + 修缮对话）----
+// 整份流程图文档落盘；服务端据此重渲染 processes.json、index.md 与所有 process_N.mmd
+export const savePackageDiagram = (id, document, expectedRevision) => api(`${P(id)}/package/diagram`, {
+  method: 'PUT', body: JSON.stringify({ document, expectedRevision }),
+});
+export const packageChat = (id, message, requestId) => api(`${P(id)}/package/chat`, {
+  method: 'POST', body: JSON.stringify({ message, requestId }),
+});
+// 把评测诊断出的知识包缺陷登记成建模修缮任务（只登记，不直接改包）
+export const planEvaluationDefectRepair = (id, roundId, diagnosisIds) => api(
+  `${P(id)}/optimize/diagnoses/plan-repair`,
+  { method: 'POST', body: JSON.stringify({ roundId, diagnosisIds }) },
+);
 export const runPackageCheck = (id) => api(`${P(id)}/package/check`, { method: 'POST', body: '{}' });
 export const getPackageCheck = (id) => api(`${P(id)}/package/check`);
 export const deferPackageValidationErrors = (id, reason) => api(
@@ -264,7 +265,7 @@ export const acceptPackageWarnings = (id, revision, fingerprints, note, phase) =
     method: 'POST', body: JSON.stringify({ revision, fingerprints, note, phase }),
   },
 );
-export const releasePackage = (id) => api(`${P(id)}/release`, { method: 'POST', body: '{}' });
+export const releaseProject = (id) => api(`${P(id)}/release`, { method: 'POST', body: '{}' });
 
 // ---- 配置中心 ----
 export const getSettings = () => api('/api/settings');

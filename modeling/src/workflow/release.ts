@@ -76,7 +76,7 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
       })
     : results.length > 0;
   const evaluationPassed = input.latestRound?.status === 'done'
-    && (input.currentRevision && input.latestRound.artifactRevision ? roundIsCurrent : true)
+    && roundIsCurrent
     && scopeMatches;
   const evaluatedCount = required?.length ?? results.length;
   const nonPassCount = Math.max(0, evaluatedCount - passCount);
@@ -146,8 +146,10 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
           ? '尚未评测'
           : input.latestRound.status !== 'done'
             ? '尚未完成'
-            : input.currentRevision && input.latestRound.artifactRevision && !roundIsCurrent
-              ? '评测使用的是旧修订，请对当前知识包重新评测'
+            : !input.currentRevision || !input.latestRound.artifactRevision
+              ? '评测未记录工件修订，请对当前知识包重新评测'
+              : !roundIsCurrent
+                ? '评测使用的是旧修订，请对当前知识包重新评测'
               : !scopeMatches
                 ? `${matchedResults.length}/${required?.length ?? results.length} 条当前真实用例已评测`
                 : `${passCount}/${required?.length ?? results.length} 通过`,
@@ -155,18 +157,4 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
   ];
 
   return { ready: gates.every((gate) => gate.passed), gates };
-}
-
-const CORE_VERSION = '(0|[1-9]\\d*)';
-const IDENTIFIER = '[0-9A-Za-z-]+';
-const VERSION_PATTERN = new RegExp(
-  `^${CORE_VERSION}\\.${CORE_VERSION}\\.${CORE_VERSION}`
-  + `(?:-${IDENTIFIER}(?:\\.${IDENTIFIER})*)?`
-  + `(?:\\+${IDENTIFIER}(?:\\.${IDENTIFIER})*)?$`,
-);
-
-export function nextPatchVersion(value: string): string {
-  const match = VERSION_PATTERN.exec(String(value ?? '').trim());
-  if (!match) throw new Error('知识包版本不正确');
-  return `${match[1]}.${match[2]}.${BigInt(match[3]) + 1n}`;
 }

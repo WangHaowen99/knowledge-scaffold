@@ -381,7 +381,7 @@ export default function GraphImportPanel({ projectId, dataSource }) {
         <div>
           <div className="gi-title">Excel 图数据导入</div>
           <div className="gi-subtitle">
-            原始资料不会长期保存，请在这里重新上传 Excel。一个 Sheet 可以映射多个实体；文件仅短期暂存。
+            请重新上传 Excel，文件仅临时保存。
           </div>
         </div>
         <label className={`btn ${controlsDisabled ? 'disabled' : ''}`}>

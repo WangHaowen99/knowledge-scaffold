@@ -1,4 +1,5 @@
-import type { Project } from '../../src/types.js';
+import type { PackageSpec, Project } from '../../src/types.js';
+import { renderPackage } from '../../src/workflow/package-render.js';
 
 type M3Repo = typeof import('../../src/workflow/m3-repo.js');
 
@@ -36,7 +37,16 @@ export async function createReadyEvaluationProject(options: {
   workspaceId?: string;
   storedOntologyId?: string;
   includeOntologyId?: boolean;
-}): Promise<{ project: Project; m3repo: M3Repo }> {
+}): Promise<{
+  project: Project;
+  m3repo: M3Repo;
+  packageSnapshot: {
+    version: string;
+    spec: PackageSpec;
+    files: Record<string, string>;
+    revisionOid: string;
+  };
+}> {
   const [projects, packages, m3repo, dataSources] = await Promise.all([
     import('../../src/projects/repo.js'),
     import('../../src/workflow/m2-repo.js'),
@@ -46,10 +56,11 @@ export async function createReadyEvaluationProject(options: {
   const project = projects.createProject({ owner: 'alice', name: options.name });
   const ontologyId = options.ontologyId ?? `${project.id}-ontology`;
   const workspaceId = options.workspaceId ?? 'test';
-  packages.insertPackageVersion(project.id, '1.0.0', {
+  const spec: PackageSpec = {
     id: ontologyId, name: options.name, description: options.name, version: '1.0.0',
     language: 'zh-CN', defaultProviderAlias: 'graph', objects: [], operations: [],
-  }, { covered: [], uncovered: [] });
+  };
+  packages.insertPackageVersion(project.id, spec.version, spec, { covered: [], uncovered: [] });
   m3repo.addTestcase(project.id, '查询测试数据', '标准答案');
   dataSources.saveProjectDataSource({
     projectId: project.id, mode: 'connection', provider: 'neo4j', workspaceId,
@@ -63,5 +74,14 @@ export async function createReadyEvaluationProject(options: {
       ontology_value: ontologyId,
     }),
   });
-  return { project, m3repo };
+  return {
+    project,
+    m3repo,
+    packageSnapshot: {
+      version: spec.version,
+      spec,
+      files: renderPackage(spec),
+      revisionOid: `test-revision-${project.id}`,
+    },
+  };
 }
