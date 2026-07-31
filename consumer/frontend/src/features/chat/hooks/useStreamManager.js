@@ -22,8 +22,10 @@ import {
 import {
   abortStreamController,
   abortStreamControllers,
+  classifyRunProgressFromEnvelope,
   isSilentStreamAbort,
   isTerminalRunStatus,
+  resolveRunStartedAt,
   streamStatusForAdmission,
   streamStatusForConnection,
   streamStatusForError,
@@ -55,6 +57,11 @@ const waitForDelay = (delayMs, signal) => new Promise((resolve, reject) => {
     resolve();
   }, delayMs);
   signal?.addEventListener('abort', onAbort, { once: true });
+});
+
+const buildInitialProgressState = (now = Date.now(), phase = 'starting') => ({
+  startedAt: now,
+  progressPhase: phase,
 });
 
 /**
@@ -291,12 +298,18 @@ const useStreamManager = () => {
           activeMeta.runType = data.type || activeMeta.runType;
           activeMeta.lastSeq = classification.nextCursor;
           if (classification.identity) activeMeta.seenEventIds.add(classification.identity);
+          const progress = classifyRunProgressFromEnvelope(data);
+          if (progress?.phase) {
+            activeMeta.progressPhase = progress.phase;
+          }
           streamMetaRef.current.set(sessionId, activeMeta);
 
           updateStreamState(sessionId, {
             runId: activeMeta.runId,
             cursor: activeMeta.lastSeq,
             status: data.type === 'turn.finished' ? 'finalizing' : 'streaming',
+            startedAt: activeMeta.startedAt,
+            progressPhase: activeMeta.progressPhase,
           });
 
           if (data.type === 'turn.finished') {
@@ -361,11 +374,15 @@ const useStreamManager = () => {
           meta.queue = statusPayload.queue || null;
           streamMetaRef.current.set(sessionId, meta);
           if (meta.runStatus === 'queued') {
+            meta.progressPhase = 'queued';
+            streamMetaRef.current.set(sessionId, meta);
             updateStreamState(sessionId, {
               isLoading: true,
               status: 'queued',
               runId: meta.runId,
               queue: meta.queue,
+              startedAt: meta.startedAt,
+              progressPhase: meta.progressPhase,
             });
             await waitForDelay(QUEUE_POLL_INTERVAL_MS, controller.signal);
             continue;
@@ -375,23 +392,33 @@ const useStreamManager = () => {
           if (error.name === 'AbortError') throw error;
           reconnectAttempts += 1;
           if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) throw error;
+          meta.progressPhase = 'reconnecting';
+          streamMetaRef.current.set(sessionId, meta);
           updateStreamState(sessionId, {
             isLoading: true,
             status: 'reconnecting',
             runId: meta.runId,
             queue: meta.queue,
+            startedAt: meta.startedAt,
+            progressPhase: meta.progressPhase,
           });
           await waitForDelay(RECONNECT_DELAY_MS * reconnectAttempts, controller.signal);
           continue;
         }
       }
 
+      meta.progressPhase = reconnectAttempts > 0
+        ? 'reconnecting'
+        : (['queued', 'reconnecting'].includes(meta.progressPhase) ? 'running' : (meta.progressPhase || 'running'));
+      streamMetaRef.current.set(sessionId, meta);
       updateStreamState(sessionId, {
         isLoading: true,
         status: streamStatusForConnection(reconnectAttempts),
         runId: meta.runId,
         cursor: meta.lastSeq,
         queue: null,
+        startedAt: meta.startedAt,
+        progressPhase: meta.progressPhase,
       });
 
       try {
@@ -404,6 +431,7 @@ const useStreamManager = () => {
           const payload = await response.json().catch(() => ({}));
           meta.runStatus = 'queued';
           meta.queue = payload.queue || null;
+          meta.progressPhase = 'queued';
           streamMetaRef.current.set(sessionId, meta);
           continue;
         }
@@ -461,7 +489,9 @@ const useStreamManager = () => {
     const requestedRunId = typeof body?.run_id === 'string' && body.run_id.trim()
       ? body.run_id.trim()
       : null;
-    const streamToken = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const startedAt = Date.now();
+    const streamToken = `${startedAt}-${Math.random().toString(16).slice(2)}`;
+    const initialProgress = buildInitialProgressState(startedAt);
 
     const controller = new AbortController();
     abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
@@ -476,6 +506,7 @@ const useStreamManager = () => {
       seenEventIds: new Set(),
       queue: null,
       onComplete,
+      ...initialProgress,
     });
 
     updateStreamState(sessionId, {
@@ -483,6 +514,7 @@ const useStreamManager = () => {
       isLoading: true,
       status: 'streaming',
       runId: requestedRunId,
+      ...initialProgress,
     });
 
     try {
@@ -504,18 +536,33 @@ const useStreamManager = () => {
         if (!meta.runId) throw new Error('Queued stream response did not include run_id');
         meta.runStatus = String(payload.status || 'queued');
         meta.queue = payload.queue || null;
+        meta.progressPhase = 'queued';
         streamMetaRef.current.set(sessionId, meta);
         updateStreamState(sessionId, {
           isLoading: true,
           status: streamStatusForAdmission(meta.runStatus),
           runId: meta.runId,
           queue: meta.queue,
+          startedAt: meta.startedAt,
+          progressPhase: meta.progressPhase,
         });
         result = await followRun(sessionId, streamToken, onEvent);
       } else {
         if (!res.ok || !res.body) {
           const data = await res.json().catch(() => ({}));
           throw new Error(data?.error || `Stream failed with status ${res.status}`);
+        }
+        const meta = streamMetaRef.current.get(sessionId);
+        if (meta?.streamToken === streamToken) {
+          meta.progressPhase = 'running';
+          streamMetaRef.current.set(sessionId, meta);
+          updateStreamState(sessionId, {
+            isLoading: true,
+            status: 'streaming',
+            runId: meta.runId,
+            startedAt: meta.startedAt,
+            progressPhase: meta.progressPhase,
+          });
         }
         result = await processStream(sessionId, res.body.getReader(), streamToken, onEvent);
         if (!result.terminalStatus && !result.superseded) {
@@ -552,9 +599,15 @@ const useStreamManager = () => {
     const existing = streamMetaRef.current.get(sessionId);
     if (existing?.runId === runId && abortControllersRef.current.has(sessionId)) return true;
 
-    const streamToken = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const resumedAt = Date.now();
+    const startedAt = resolveRunStartedAt({ runId }, resumedAt);
+    const streamToken = `${resumedAt}-${Math.random().toString(16).slice(2)}`;
     const controller = new AbortController();
     const cursor = normalizeSequence(afterSequence);
+    const initialProgress = buildInitialProgressState(
+      startedAt,
+      status === 'queued' ? 'queued' : 'reconnecting',
+    );
     abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
     abortControllersRef.current.set(sessionId, controller);
     streamMetaRef.current.set(sessionId, {
@@ -567,6 +620,7 @@ const useStreamManager = () => {
       seenEventIds: new Set(),
       queue: null,
       onComplete,
+      ...initialProgress,
     });
     updateStreamState(sessionId, {
       sessionId,
@@ -574,6 +628,7 @@ const useStreamManager = () => {
       cursor,
       isLoading: true,
       status: streamStatusForAdmission(status),
+      ...initialProgress,
     });
 
     try {
@@ -590,7 +645,7 @@ const useStreamManager = () => {
         if (onError) onError(error, false);
       }
       cleanupStream(sessionId, streamToken, streamStatusForError(error));
-      return false;
+      return error.name === 'AbortError';
     }
   }, [cleanupStream, followRun, updateStreamState]);
 
@@ -628,9 +683,9 @@ const useStreamManager = () => {
         return true;
       }
 
-      // Abort the fetch
-      abortStreamController(controller, { silent });
-      if (silent) cleanupStream(sessionId, streamToken, 'cancelled');
+      if (!silent) activeMeta.onComplete?.('cancelled');
+      abortStreamController(controller, { silent: true });
+      cleanupStream(sessionId, streamToken, 'cancelled');
       return true;
     }
 
