@@ -174,8 +174,8 @@ AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>
 auth-server **不发布宿主端口**，仅 backend 通过容器网络访问 `http://auth-server:5056`；
 健康检查由镜像自带的 HEALTHCHECK 提供。可通过环境变量透传覆盖默认配置：
 `AUTH_SERVER_ISSUER`、`AUTH_SERVER_ADMIN_TOKEN`（须与 `backend/.env` 一致）、
-`AUTH_ENABLE_REGISTRATION`。开启注册后一步直接建号，无需邮箱验证码，也无需配置任何
-SMTP / 邮件相关变量。
+`AUTH_ENABLE_REGISTRATION`。注册默认开启并一步直接建号，无需邮箱验证码，也无需配置任何
+SMTP / 邮件相关变量；不允许自行建号时显式设置 `AUTH_ENABLE_REGISTRATION=false`。
 
 ### 数据目录与备份
 

@@ -77,7 +77,7 @@ npm run dev
 直连独立 auth-server（详见 `.env.example` 与 docs/design.md 决策 3）：`AUTH_ISSUER_URL` 指向 auth-server，登录/续期走 OAuth2 `/token`（password/refresh 两种 grant），校验用 JWKS 本地 RS256 验签（不逐请求回查），注册转发 auth-server 的 `/register`（一步建号，无邮箱验证码）。
 
 ```bash
-# auth-server 需开启注册：AUTH_ENABLE_REGISTRATION=true。
+# auth-server 默认开启注册；如需关闭，设置 AUTH_ENABLE_REGISTRATION=false。
 # AUTH_JWT_ISSUER 必须等于 auth-server 侧 AUTH_SERVER_ISSUER 的取值（默认 http://auth-server:5056），
 # 不一致时登录报 503「认证服务暂不可用」并在日志提示验签配置错误
 AUTH_ISSUER_URL=http://localhost:5056 \

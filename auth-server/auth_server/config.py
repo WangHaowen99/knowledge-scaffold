@@ -23,6 +23,7 @@ DEFAULT_AUDIENCE = "meta-wise"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5056
 DEFAULT_USER_MAX_COUNT = 1000
+DEFAULT_ENABLE_REGISTRATION = True
 
 
 def _load_local_dotenv() -> None:
@@ -63,7 +64,7 @@ class AuthServerConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     user_max_count: int = DEFAULT_USER_MAX_COUNT
-    enable_registration: bool = False
+    enable_registration: bool = DEFAULT_ENABLE_REGISTRATION
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data_dir", Path(self.data_dir))
@@ -110,5 +111,7 @@ class AuthServerConfig:
             host=str(env.get("AUTH_SERVER_HOST") or DEFAULT_HOST).strip(),
             port=_int_env(env, "AUTH_SERVER_PORT", DEFAULT_PORT),
             user_max_count=_int_env(env, "AUTH_USER_MAX_COUNT", DEFAULT_USER_MAX_COUNT),
-            enable_registration=_bool_env(env, "AUTH_ENABLE_REGISTRATION", False),
+            enable_registration=_bool_env(
+                env, "AUTH_ENABLE_REGISTRATION", DEFAULT_ENABLE_REGISTRATION
+            ),
         )

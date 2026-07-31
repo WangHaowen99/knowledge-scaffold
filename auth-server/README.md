@@ -28,9 +28,9 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `GET /userinfo` | Bearer access token，通过校验返回 `{sub, role, password_change_required}`（以存储为准），否则 401 |
 | `GET /health` | `{"status": "ok"}` |
 
-### 开放注册（opt-in，`AUTH_ENABLE_REGISTRATION=true` 才开启）
+### 自助注册（默认开启，可用 `AUTH_ENABLE_REGISTRATION=false` 关闭）
 
-注册功能未开启时端点一律 503 `{"error": "注册功能未开启"}`。
+注册功能默认开启；显式关闭后端点一律返回 503 `{"error": "注册功能未开启"}`。
 
 | 端点 | 说明 |
 | --- | --- |
@@ -78,7 +78,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `AUTH_SERVER_ADMIN_TOKEN` | 未设置 | Admin API 共享密钥；未设置则 /admin/* 全部 503 |
 | `AUTH_SERVER_HOST` / `AUTH_SERVER_PORT` | `127.0.0.1` / `5056` | 监听地址与端口 |
 | `AUTH_USER_MAX_COUNT` | `1000` | 用户数量上限；设为 `0` 表示不限制 |
-| `AUTH_ENABLE_REGISTRATION` | `false` | 开放注册开关（opt-in） |
+| `AUTH_ENABLE_REGISTRATION` | `true` | 自助注册开关；设为 `false` 可关闭 |
 
 限流窗口（每小时 5 次）为 `registration.py` 内常量，不做 env。
 
@@ -107,5 +107,6 @@ docker run -v auth-data:/data -e AUTH_SERVER_ADMIN_TOKEN=... meta-wise-auth-serv
 - 不做逐请求 introspection（决策 D2 已否决）
 - 不做授权（authZ）：角色裁决、workspace 隔离、前端权限全部留在 consumer（决策 D3）
 
-开放注册（`/register`）已支持但默认关闭（opt-in），防滥用措施见"开放注册"一节：
+自助注册（`/register`）默认开启，防滥用措施见"自助注册"一节；不允许自行建号的部署应显式设置
+`AUTH_ENABLE_REGISTRATION=false`。现有防护包括：
 限流 + 防枚举权衡（占用类错误返回明确中文消息、靠限流兜底）。

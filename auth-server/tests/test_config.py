@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import builtins
+from pathlib import Path
 
 from auth_server import config as config_module
 from auth_server.config import DEFAULT_ISSUER, AuthServerConfig
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_from_env_loads_project_dotenv(tmp_path, monkeypatch):
@@ -79,3 +83,18 @@ def test_custom_environment_does_not_load_dotenv(monkeypatch):
     )
 
     assert config.issuer == "http://custom.example:5056"
+
+
+def test_all_compose_variants_enable_registration_by_default():
+    compose_paths = (
+        "consumer/docker-compose.yml",
+        "consumer/backend/docker-compose.yml",
+        "consumer/deploy/docker-compose.release.yml",
+    )
+    enabled_default = "AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-true}"
+    disabled_default = "AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-false}"
+
+    for relative_path in compose_paths:
+        compose_text = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
+        assert enabled_default in compose_text
+        assert disabled_default not in compose_text
