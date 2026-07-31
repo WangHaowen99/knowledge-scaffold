@@ -35,7 +35,7 @@ Each scenario ships with knowledge-package source files (plain directories), sam
 - ✅ **Layered configuration and access control**
     + Three scopes: Global (model pool, web search, platform connection, agent parameters) → Workspace (model selection, ontology-private data sources, runtime parameters, observability, MCP) → Personal (preferences, themes).
     + API keys live only in the global scope; workspaces reference model profiles without ever touching keys.
-    + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and modeling share one account system, the backend requires `AUTH_SERVER_URL`, with opt-in open registration (one-step signup, no email verification code).
+    + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and modeling share one account system, the backend requires `AUTH_SERVER_URL`, and self-registration is enabled by default (one-step signup, no email verification code; it can be disabled explicitly).
 - ✅ **Protocols and SDK**
     + A2A and ACP adapter layers plus an SDK expose the same runtime capabilities to external systems.
 - ✅ **Evaluation platform**

@@ -39,6 +39,13 @@ def client(tmp_path):
     return create_app(make_config(tmp_path)).test_client()
 
 
+@pytest.fixture()
+def registration_disabled_client(tmp_path):
+    return create_app(
+        make_config(tmp_path, enable_registration=False)
+    ).test_client()
+
+
 def login(client, username="admin", password="admin123"):
     return client.post(
         "/token",
@@ -376,9 +383,13 @@ def test_health(client):
     assert resp.get_json() == {"status": "ok"}
 
 
-def test_capabilities_reflect_registration_setting(client, reg_client):
-    assert client.get("/capabilities").get_json() == {"registration_enabled": False}
-    assert reg_client.get("/capabilities").get_json() == {"registration_enabled": True}
+def test_capabilities_reflect_registration_setting(
+    client, registration_disabled_client
+):
+    assert client.get("/capabilities").get_json() == {"registration_enabled": True}
+    assert registration_disabled_client.get("/capabilities").get_json() == {
+        "registration_enabled": False
+    }
 
 
 # ------------------------------------------------------------------ Admin 鉴权
@@ -467,9 +478,7 @@ def test_zero_user_max_count_allows_admin_created_users(tmp_path):
 
 
 def test_zero_user_max_count_allows_registered_users(tmp_path):
-    client = create_app(
-        make_config(tmp_path, user_max_count=0, enable_registration=True)
-    ).test_client()
+    client = create_app(make_config(tmp_path, user_max_count=0)).test_client()
 
     response = register(client, "unlimited-registered", "unlimited@example.com")
     assert response.status_code == 200
@@ -535,7 +544,7 @@ def test_legacy_users_json_without_token_version(tmp_path):
 
 @pytest.fixture()
 def reg_client(tmp_path):
-    return create_app(make_config(tmp_path, enable_registration=True)).test_client()
+    return create_app(make_config(tmp_path)).test_client()
 
 
 def register(client, username, email, password=STRONG_PASSWORD, ip=None):
@@ -580,8 +589,8 @@ def test_register_creates_user_and_login_full_flow(reg_client, tmp_path):
     }
 
 
-def test_registration_disabled_503(client):
-    resp = client.post(
+def test_registration_disabled_503(registration_disabled_client):
+    resp = registration_disabled_client.post(
         "/register",
         json={"username": "x", "email": "x@example.com", "password": STRONG_PASSWORD},
     )
@@ -674,8 +683,8 @@ def test_registered_email_persisted_and_admin_list_visible(reg_client, tmp_path)
 
 
 def test_registration_config_from_env():
-    cfg = AuthServerConfig.from_env({"AUTH_ENABLE_REGISTRATION": "true"})
-    assert cfg.enable_registration is True
-
     default_cfg = AuthServerConfig.from_env({})
-    assert default_cfg.enable_registration is False
+    assert default_cfg.enable_registration is True
+
+    disabled_cfg = AuthServerConfig.from_env({"AUTH_ENABLE_REGISTRATION": "false"})
+    assert disabled_cfg.enable_registration is False

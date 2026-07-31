@@ -51,7 +51,7 @@ services:
       - AUTH_SERVER_DATA_DIR=/data
       - AUTH_SERVER_ISSUER=${AUTH_SERVER_ISSUER:-http://auth-server:5056}
       - AUTH_USER_MAX_COUNT=${AUTH_USER_MAX_COUNT:-1000}
-      - AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-false}
+      - AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-true}
   mcp:
     image: onto-agent-backend:${TAG:-latest}
     container_name: onto-agent-mcp-${TAG:-latest}
