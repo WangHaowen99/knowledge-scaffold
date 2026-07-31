@@ -11,6 +11,8 @@ import {
   normalizeChangePlan,
   nextPackageChatVersion,
   partitionAtomicChangePlan,
+  PackageCandidateRejectedError,
+  PackageCandidateValidationError,
   resolveChangePlanTargets,
   resolvePackageApplyTimeoutMs,
   runCandidateQualityLoop,
@@ -771,6 +773,50 @@ test('候选补丁越过计划边界时把失败原因交给下一次生成', as
   assert.equal(accepted.candidate, '只修改计划内资源的候选');
   assert.equal(calls, 2);
   assert.match(feedbacks[1], /计划外.*WeightedRevenue/);
+});
+
+test('候选连续生成失败时保留可反馈给专家的校验原因', async () => {
+  await assert.rejects(
+    () => runCandidateQualityLoop({
+      maxAttempts: 2,
+      generate: async () => {
+        throw new PackageCandidateValidationError(
+          '对象「跨境业务事件」主键「cust_id」不属于对象字段',
+        );
+      },
+      validate: async () => ({ accepted: true, feedback: '' }),
+    }),
+    (error: unknown) => error instanceof PackageCandidateRejectedError
+      && error.code === 'PACKAGE_CANDIDATE_REJECTED'
+      && /cust_id.*不属于对象字段/u.test(error.feedback),
+  );
+});
+
+test('模型服务异常不会被误报为专家方案校验失败', async () => {
+  await assert.rejects(
+    () => runCandidateQualityLoop({
+      maxAttempts: 1,
+      generate: async () => {
+        throw new Error('模型服务不可用');
+      },
+      validate: async () => ({ accepted: true, feedback: '' }),
+    }),
+    (error: unknown) => error instanceof Error
+      && !(error instanceof PackageCandidateRejectedError)
+      && /模型服务不可用/u.test(error.message),
+  );
+});
+
+test('候选连续未通过质量门禁时保留最后一次校验反馈', async () => {
+  await assert.rejects(
+    () => runCandidateQualityLoop({
+      maxAttempts: 2,
+      generate: async (attempt) => `候选-${attempt}`,
+      validate: async () => ({ accepted: false, feedback: '主键必须引用 fields[].key' }),
+    }),
+    (error: unknown) => error instanceof PackageCandidateRejectedError
+      && error.feedback === '主键必须引用 fields[].key',
+  );
 });
 
 test('语义质量门禁多次仍有争议时保留最佳候选供专家复核', async () => {
