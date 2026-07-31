@@ -746,6 +746,7 @@ export default function PackageWorkspace({
               onPendingInteractionBusyChange={setFlowchartSubmitBusy}
               confirmFlowchartMutation={confirmDiscardFlowchartChanges}
               onProjectChanged={load}
+              onNavigate={embedded ? onNavigate : undefined}
             />
           </aside>
         </div>
