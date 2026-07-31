@@ -1281,9 +1281,9 @@ export class AiConstructionOrchestrator {
               findings: input.validation.findings.slice(0, 8).map((finding) => ({
                 severity: finding.severity === '错误' ? 'error' as const
                   : finding.severity === '警告' ? 'warning' as const : 'hint' as const,
-                title: finding.category,
-                summary: finding.message,
-                ...(finding.target ? { target: finding.target } : {}),
+                title: displayText(finding.category, 120, '校验发现'),
+                summary: displayText(finding.message, 1_000, '详细说明见完整校验记录'),
+                ...(displayTarget(finding.target) ? { target: displayTarget(finding.target) } : {}),
               })),
             } : {}),
           },
