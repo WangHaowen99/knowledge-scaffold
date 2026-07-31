@@ -131,6 +131,18 @@ function candidateValidationError(error: unknown): PackageCandidateValidationErr
   return new PackageCandidateValidationError(error instanceof Error ? error.message : String(error));
 }
 
+export function validatePackageApplyCandidate(
+  spec: PackageSpec,
+  tables: DataDictTable[],
+): CoverageResult {
+  try {
+    assertObjectDataMappings(spec, tables);
+    return validateSpecIntegrity(spec, packageIntentQuestions(spec));
+  } catch (error) {
+    throw candidateValidationError(error);
+  }
+}
+
 export type CandidateQualityLoopResult<T> =
   | { status: 'accepted'; candidate: T; decision: CandidateQualityDecision; attempts: number }
   | { status: 'expert_review'; candidate: T; decision: CandidateQualityDecision; attempts: number };
@@ -898,12 +910,7 @@ export async function packageChatApply(
         detail: '检查计划边界、资源引用、数据映射和领域问题覆盖。', percent: 60,
         attempt, maxAttempts: maxCandidateAttempts,
       });
-      try {
-        assertObjectDataMappings(newSpec, tables);
-      } catch (error) {
-        throw candidateValidationError(error);
-      }
-      const coverage = validateSpecIntegrity(newSpec, packageIntentQuestions(newSpec));
+      const coverage = validatePackageApplyCandidate(newSpec, tables);
       return {
         baseRevision: latest.revision.oid,
         version,
