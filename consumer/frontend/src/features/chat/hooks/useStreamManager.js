@@ -645,7 +645,7 @@ const useStreamManager = () => {
         if (onError) onError(error, false);
       }
       cleanupStream(sessionId, streamToken, streamStatusForError(error));
-      return error.name === 'AbortError';
+      return false;
     }
   }, [cleanupStream, followRun, updateStreamState]);
 
@@ -683,9 +683,9 @@ const useStreamManager = () => {
         return true;
       }
 
-      if (!silent) activeMeta.onComplete?.('cancelled');
-      abortStreamController(controller, { silent: true });
-      cleanupStream(sessionId, streamToken, 'cancelled');
+      // Abort the fetch
+      abortStreamController(controller, { silent });
+      if (silent) cleanupStream(sessionId, streamToken, 'cancelled');
       return true;
     }
 
