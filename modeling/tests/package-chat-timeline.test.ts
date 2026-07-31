@@ -7,6 +7,7 @@ import {
   confirmedMilestoneActionIds,
   isMaterialAnalysisRunning,
   latestStructuredActionMessageId,
+  milestoneNavigationTarget,
   mergePackageChatTimeline,
 } from '../frontend/src/packageChatTimeline.js';
 
@@ -33,6 +34,12 @@ test('AI 辅助构建完成后历史动作卡全部只读', () => {
     messageId: 'confirm-card',
     latestActionMessageId: 'confirm-card',
   }), true);
+});
+
+test('只有建模最终确认成功后才导航到场景推演', () => {
+  assert.equal(milestoneNavigationTarget('construction_completed'), 'scenario');
+  assert.equal(milestoneNavigationTarget('knowledge_confirmed'), '');
+  assert.equal(milestoneNavigationTarget('deterministic_confirmed'), '');
 });
 
 test('建模助手把普通消息和结构化卡片按发生时间升序展示', () => {

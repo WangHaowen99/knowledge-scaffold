@@ -19,7 +19,10 @@ import {
   ModelingGoalInputError,
   resolveModelingBriefSubmission,
 } from '../ai-construction/modeling-goal-submission.js';
-import { PackageChatConversation } from '../ai-construction/package-chat-conversation.js';
+import {
+  PackageChatConversation,
+  shouldRequestConstructionCompletion,
+} from '../ai-construction/package-chat-conversation.js';
 import { AiConstructionOrchestrator } from '../ai-construction/orchestrator.js';
 import { generateProcessDraft } from '../ai-construction/process-draft-generator.js';
 import {
@@ -1637,12 +1640,20 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             const construction = scriptGeneration
               ? orchestrator.failScriptGeneration(project.id, '脚本变更方案已取消，可以重新生成或暂缓本轮脚本。')
               : undefined;
+            const completionMessage = !scriptGeneration && shouldRequestConstructionCompletion(
+              graph.snapshot(project.id),
+              state.snapshot(project.id).pendingInteractions.length,
+            )
+              ? packageChatConversation.requestConstructionCompletion(project.id, interactionId)
+              : undefined;
             return {
               interaction: answered.interaction,
               run,
               replayed: answered.replayed,
               ...(construction ?? {}),
-              aiConstructionMessages: [conversation.plan, conversation.result].filter(Boolean),
+              aiConstructionMessages: [
+                conversation.plan, conversation.result, completionMessage,
+              ].filter(Boolean),
               cursor: state.snapshot(project.id).lastEventSeq,
             };
           }

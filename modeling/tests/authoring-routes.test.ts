@@ -703,6 +703,76 @@ test('脚本变更在保存前必须通过格式、规则和语义候选校验',
   assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'pending');
 });
 
+test('最终审阅阶段放弃建模调整后追加一次性完成确认消息', async (t) => {
+  const project = createProject({ owner: 'alice', name: '放弃调整后完成确认' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '修改知识包', baseRevision: 'pkg-completion-base',
+  });
+  assert.equal(started.kind, 'run');
+  if (started.kind !== 'run') throw new Error('未创建知识包修改任务');
+  const opened = state.apply({
+    kind: 'open_interaction',
+    projectId: project.id,
+    runId: started.run.id,
+    type: 'change_plan',
+    baseRevision: 'pkg-completion-base',
+    payload: {
+      purpose: 'package_chat', summary: '调整知识包', message: '调整知识包', history: [],
+      changes: [{
+        id: 'change-1', targetKind: 'object', targetKey: 'customer', action: 'modify',
+        description: '调整客户对象',
+      }],
+    },
+  });
+  assert.equal(opened.kind, 'interaction');
+  if (opened.kind !== 'interaction') throw new Error('未创建方案待办');
+
+  const graph = {
+    snapshot: () => ({
+      revision: 33,
+      status: 'active',
+      milestones: [{ id: 'construction_completed', status: 'active' }],
+      tasks: [{
+        id: 'completion-review', kind: 'completion_review',
+        milestoneId: 'construction_completed', status: 'completed',
+      }],
+    }),
+  };
+  const app = routeApp(t, 'alice', { graph });
+  const payload = {
+    requestId: 'reject-package-plan-at-completion',
+    response: { action: 'reject' },
+  };
+
+  const rejected = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload,
+  });
+
+  assert.equal(rejected.statusCode, 200, rejected.body);
+  assert.equal(rejected.json().run.status, 'completed');
+  const completionMessage = rejected.json().aiConstructionMessages.find((message: any) => (
+    message.blocks.some((block: any) => block.type === 'next_actions'
+      && block.actions.some((action: any) => action.id === 'confirm_construction'))
+  ));
+  assert.ok(completionMessage);
+  assert.match(completionMessage.blocks[0].title, /待最终确认/u);
+  assert.match(JSON.stringify(completionMessage.blocks), /确认并进入场景推演/u);
+  assert.equal(state.snapshot(project.id).pendingInteractions.length, 0);
+
+  const replayed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload,
+  });
+  assert.equal(replayed.statusCode, 200, replayed.body);
+  const stored = getDb().prepare(`SELECT COUNT(*) AS count FROM ai_construction_messages
+    WHERE project_id = ? AND message_key LIKE 'chat.completion.%'`).get(project.id) as { count: number };
+  assert.equal(stored.count, 1);
+});
+
 test('知识包候选校验失败后反馈专家并可重新生成待确认方案', async (t) => {
   const project = createProject({ owner: 'alice', name: '候选校验反馈闭环' });
   const state = getAuthoringState();

@@ -31,6 +31,7 @@ import {
   confirmedMilestoneActionIds,
   isMaterialAnalysisRunning,
   latestStructuredActionMessageId,
+  milestoneNavigationTarget,
   mergePackageChatTimeline,
 } from './packageChatTimeline.js';
 
@@ -116,6 +117,7 @@ export default function PackageChat({
   onPendingInteractionBusyChange,
   confirmFlowchartMutation,
   onProjectChanged,
+  onNavigate,
   uploadFile = uploadDocument,
 }) {
   // 服务端结构化消息是完整会话记录；turns 只用于尚未刷新回来的临时界面反馈。
@@ -389,6 +391,8 @@ export default function PackageChat({
             role: 'assistant',
             text: `${confirmedLabel}已经确认，可以继续当前建模任务。`,
           })]));
+          const navigationTarget = milestoneNavigationTarget(milestoneId);
+          if (navigationTarget) onNavigate?.(navigationTarget);
           return;
         }
         if (!Number.isInteger(aiConstruction?.revision)) throw new Error('建模状态尚未加载，请刷新后重试');
@@ -408,6 +412,8 @@ export default function PackageChat({
         );
       }
       await refreshConstruction();
+      const navigationTarget = milestoneNavigationTarget(milestoneId);
+      if (navigationTarget) onNavigate?.(navigationTarget);
     } catch (error) {
       if (action.id === 'confirm_construction' && shouldOpenWarningReview(error)) {
         window.dispatchEvent(new CustomEvent('mw-package-warning-review', {
@@ -626,7 +632,10 @@ export default function PackageChat({
               messageId: entry.item.id,
               latestActionMessageId,
             })}
-            disabledActionIds={analysisRunning ? ['analyze_materials', 'review_package'] : []}
+            disabledActionIds={[
+              ...(analysisRunning ? ['analyze_materials', 'review_package'] : []),
+              ...((authoring?.pendingInteractions ?? []).length ? ['confirm_construction'] : []),
+            ]}
             hiddenActionIds={confirmedActionIds}
             onAction={(action) => { void handleStructuredAction(action); }} />
         ) : (
