@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
 import { AiConstructionTaskGraph } from './ai-construction/task-graph.js';
+import { packageRepairAvailability } from './ai-construction/repair-availability.js';
 import {
   AiConstructionMessageStore,
   notifyAiConstructionMessageWritten,
@@ -1098,6 +1099,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           findings,
           errorDeferral: getPackageErrorDeferral(c.p.id, latest.revision.oid),
           warningReview: getPackageWarningReview(c.p.id, latest.revision.oid),
+          repair: packageRepairAvailability({
+            errorCount: findings.filter((f) => f.severity === '错误').length,
+            hasActiveDraft: Boolean(getActivePackageDraft(c.p.id)),
+            graph: aiConstruction.snapshot(c.p.id),
+          }),
           counts: {
           错误: findings.filter((f) => f.severity === '错误').length,
           警告: findings.filter((f) => f.severity === '警告').length,
@@ -1117,6 +1123,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         check,
         errorDeferral: check?.revision ? getPackageErrorDeferral(c.p.id, check.revision) : null,
         warningReview: check?.revision ? getPackageWarningReview(c.p.id, check.revision) : null,
+        repair: packageRepairAvailability({
+          errorCount: check?.findings.filter((f) => f.severity === '错误').length ?? 0,
+          hasActiveDraft: Boolean(getActivePackageDraft(c.p.id)),
+          graph: aiConstruction.snapshot(c.p.id),
+        }),
       };
     });
     r.post('/api/projects/:id/package/warnings/accept', async (req, reply) => {

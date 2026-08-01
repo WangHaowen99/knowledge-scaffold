@@ -18,12 +18,14 @@ import { uploadModelingMaterials } from './modeling-material-upload.js';
 import { useElapsed } from './ui.jsx';
 import AiConstructionMessageCard from './AiConstructionMessageCard.jsx';
 import PendingInteraction from './PendingInteraction.jsx';
+import PendingInteractionHint from './PendingInteractionHint.jsx';
 import TaskAdjustmentPreviewCard from './TaskAdjustmentPreviewCard.jsx';
 import TaskGraphEditDialog from './TaskGraphEditDialog.jsx';
 import ValidationDeferralCard from './ValidationDeferralCard.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
 import { confirmFlowchartNavigation } from './flowchartNavigationGuard.js';
 import { formatMessageTimestamp } from './messageTimestamp.js';
+import { NAVIGATION_TARGETS, assistantActionKind, isReadOnlyAction } from './assistantActions.js';
 import { completionBlockerMessage } from './completionBlocker.js';
 import { isPackageChatRunning } from './packageChatRun.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
@@ -36,23 +38,6 @@ import {
   mergePackageChatTimeline,
 } from './packageChatTimeline.js';
 
-const FLOWCHART_READ_ONLY_ACTIONS = new Set([
-  'open_package_file',
-  'preview_task_adjustment',
-  'defer_validation_errors',
-  'open_task_add',
-  'open_task_reorder',
-  'open_task_split',
-  'open_task_merge',
-  'explain_goal',
-  'review_materials',
-  'review_package',
-  'view_validation',
-  'review_process_files',
-  'review_knowledge_files',
-  'open_optimization',
-  'open_scenario_review',
-]);
 
 // 知识包工作区右栏：建模对话（咨询 + 两段式受控修改）。
 // 发消息 → agent 影响分析：咨询直接回答；修改类返回计划卡片（改哪些对象/操作 + 风险）→ 专家确认 → 应用落新版本。
@@ -200,18 +185,47 @@ export default function PackageChat({
     await onProjectChanged?.();
   };
 
+  // 导航类动作只切视图、不写数据，目标在 assistantActions 的注册表里声明
+  const runNavigation = (action) => {
+    const target = NAVIGATION_TARGETS[action.id];
+    if (!target) return;
+    setCompletionBlocker(null);
+    if (target.file) {
+      const path = target.file(action);
+      if (!path) return;
+      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
+        detail: { projectId, path, target: path },
+      }));
+      return;
+    }
+    if (target.step) { onNavigate?.(target.step); return; }
+    if (target.evaluationView) {
+      window.dispatchEvent(new CustomEvent('mw-open-evaluation-view', {
+        detail: { projectId, view: target.evaluationView },
+      }));
+      return;
+    }
+    if (target.openPackageCheck) {
+      window.dispatchEvent(new CustomEvent('mw-package-check-open', { detail: { projectId } }));
+      return;
+    }
+    if (target.focus) {
+      window.requestAnimationFrame?.(() => {
+        bodyRef.current?.querySelector?.(target.focus)?.focus?.();
+      });
+    }
+  };
+
   const handleStructuredAction = async (action) => {
     if (analysisRunning && ['analyze_materials', 'review_package'].includes(action.id)) return;
-    if (flowchartDraftState?.dirty && !FLOWCHART_READ_ONLY_ACTIONS.has(action.id)) {
+    if (flowchartDraftState?.dirty && !isReadOnlyAction(action)) {
       const allowed = confirmFlowchartMutation
         ? confirmFlowchartMutation()
         : confirmFlowchartNavigation(true);
       if (!allowed) return;
     }
-    if (action.id === 'open_package_file' && action.path) {
-      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
-        detail: { projectId, path: action.path, target: action.path },
-      }));
+    if (assistantActionKind(action) === 'navigate') {
+      runNavigation(action);
       return;
     }
     if (action.id === 'preview_task_adjustment') {
@@ -243,11 +257,6 @@ export default function PackageChat({
       });
       return;
     }
-    if (action.id === 'open_scenario_review') {
-      setCompletionBlocker(null);
-      onNavigate?.('scenario');
-      return;
-    }
     if (action.id === 'run_package_check') {
       if (busy) return;
       setLocalBusy('check');
@@ -262,37 +271,8 @@ export default function PackageChat({
       } finally { setLocalBusy(''); }
       return;
     }
-    // 评测缺陷交由优化更新处理：它才能从失败用例反推资源改动并过防过拟合校验
-    if (action.id === 'open_optimization') {
-      window.dispatchEvent(new CustomEvent('mw-open-evaluation-view', {
-        detail: { projectId, view: 'optimize' },
-      }));
-      return;
-    }
-    if (action.id === 'explain_goal') {
-      window.requestAnimationFrame?.(() => {
-        bodyRef.current?.querySelector?.('[data-question-id="goal_text"]')?.focus?.();
-      });
-      return;
-    }
-    const prefills = {
-      review_materials: '请回顾已上传资料的分析结果和待确认问题。',
-      review_package: '请检查当前知识包基线，并告诉我需要优先补充什么。',
-      view_validation: '请说明当前知识包的校验情况和需要处理的问题。',
-    };
-    if (prefills[action.id]) setInput(prefills[action.id]);
     if (action.id === 'upload_materials') {
       if (!busy) materialInputRef.current?.click();
-      return;
-    }
-    const reviewPathByAction = {
-      review_process_files: 'diagrams/index.md',
-      review_knowledge_files: 'index.md',
-    };
-    if (reviewPathByAction[action.id]) {
-      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
-        detail: { projectId, path: reviewPathByAction[action.id] },
-      }));
       return;
     }
     if (['generate_knowledge_structure', 'repair_knowledge_structure'].includes(action.id)) {
@@ -754,6 +734,13 @@ export default function PackageChat({
           </div>
         )}
       </div>
+      {pendingInteraction && (
+        <PendingInteractionHint
+          scrollRef={bodyRef}
+          targetSelector=".ac-message-interaction"
+          label={`还有 1 项待确认：${String(pendingInteraction.payload?.title ?? '请处理待办').slice(0, 20)}`}
+        />
+      )}
       <div className="pchat-input">
         <textarea rows={2} value={input} placeholder="咨询知识包，或说明要新增、修改的内容"
           onChange={(e) => setInput(e.target.value)}

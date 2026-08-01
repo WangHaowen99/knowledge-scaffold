@@ -172,6 +172,17 @@ export default function PackageWorkspace({
     }
   }, [projectId]);
 
+  // 本地写操作后发的 window 事件与 SSE 事件描述的是同一次变更，合流到一个防抖窗口，
+  // 否则一次保存会触发两次 load，先后到达顺序还不确定。
+  const scheduleLoad = useCallback(() => {
+    const store = eventStateRef.current;
+    if (store.loadTimer) return;
+    store.loadTimer = setTimeout(() => {
+      store.loadTimer = null;
+      void load();
+    }, 200);
+  }, [load]);
+
   useEffect(() => {
     if (initialSession?.project?.id !== projectId) return;
     sessionCursorRef.current = Number(initialSession.cursor ?? 0) || 0;
@@ -251,7 +262,7 @@ export default function PackageWorkspace({
   }, [activeTab, deliveryView, embedded, loadRevisions]);
   useEffect(() => {
     const refresh = () => {
-      void load();
+      scheduleLoad();
       if (activeTab === 'versions' || (embedded && activeTab === 'release' && deliveryView === 'versions')) {
         void loadRevisions();
       }
@@ -262,18 +273,10 @@ export default function PackageWorkspace({
       window.removeEventListener('mw-package-updated', refresh);
       window.removeEventListener('mw-package-check-updated', refresh);
     };
-  }, [load, loadRevisions, activeTab, deliveryView, embedded]);
+  }, [scheduleLoad, loadRevisions, activeTab, deliveryView, embedded]);
   const handleProjectEvent = (event) => {
     const store = eventStateRef.current;
     store.gate ??= createProjectEventReplayGate(sessionCursorRef.current);
-    // 事件可能成批到达（一次编排会写多条消息），合并为一次加载避免抖动
-    const scheduleLoad = () => {
-      if (store.loadTimer) return;
-      store.loadTimer = setTimeout(() => {
-        store.loadTimer = null;
-        void load();
-      }, 200);
-    };
     if (CANDIDATE_EVENT_TYPES.has(String(event?.type ?? ''))) {
       setCandidateRefreshKey((value) => value + 1);
     }
