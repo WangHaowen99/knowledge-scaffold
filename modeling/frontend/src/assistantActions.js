@@ -15,8 +15,11 @@ export const ASSISTANT_ACTION_KINDS = {
   revise_goal: 'command',
   run_package_check: 'command',
   preview_task_adjustment: 'command',
+  reload_and_retry: 'command',
 
   defer_validation_errors: 'dialog',
+  publish_package_draft: 'dialog',
+  discard_package_draft: 'dialog',
   upload_materials: 'dialog',
   open_task_add: 'dialog',
   open_task_reorder: 'dialog',
@@ -32,6 +35,7 @@ export const ASSISTANT_ACTION_KINDS = {
   open_optimization: 'navigate',
   open_scenario_review: 'navigate',
   explain_goal: 'navigate',
+  refresh_task_graph: 'navigate',
 };
 
 /**
@@ -49,6 +53,9 @@ export const NAVIGATION_TARGETS = {
   open_optimization: { evaluationView: 'optimize' },
   open_scenario_review: { step: 'scenario' },
   explain_goal: { focus: '[data-question-id="goal_text"]' },
+  // 修订冲突后重拉快照。不自动重发原命令：expectedRevision 就是用来保证
+  // 「确认的是你看到的那一版」，替用户换新 revision 重试等于把这道锁架空。
+  refresh_task_graph: { reload: true },
 };
 
 export function assistantActionKind(action) {

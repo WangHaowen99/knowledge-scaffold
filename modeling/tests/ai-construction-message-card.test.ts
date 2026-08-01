@@ -203,7 +203,11 @@ test('建模调整方案区分资源类型、动作和当前决策状态', () =>
   assert.match(html, /下游规则需重新校验/);
 });
 
-test('动态任务计划根据状态提供受控调整动作', () => {
+/**
+ * 任务计划改为只读：暂缓/跳过/重做/恢复/前移/后移/拆分 这些任务图微操
+ * 在建模对话里没有实际用途，且出现在必选任务上语义可疑。
+ */
+test('任务计划只展示进度，不再提供任务图微操作', () => {
   const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, { message: {
     id: 'message-task-actions', role: 'assistant', blocks: [{
       type: 'task_plan', title: '当前任务', tasks: [
@@ -214,17 +218,27 @@ test('动态任务计划根据状态提供受控调整动作', () => {
     }],
   }, onAction: () => {} }));
 
-  assert.match(html, /暂缓/);
-  assert.match(html, /跳过/);
-  assert.match(html, /重做/);
-  assert.match(html, /恢复/);
-  assert.match(html, /preview_task_adjustment/);
-  assert.match(html, /新增任务/);
-  assert.match(html, /合并所选/);
-  assert.match(html, /前移/);
-  assert.match(html, /后移/);
-  assert.match(html, /拆分/);
-  assert.match(html, /open_task_add/);
+  assert.match(html, /补充说明/);
+  assert.match(html, /确认目标/);
+  for (const label of ['暂缓', '跳过', '重做', '恢复', '前移', '后移', '拆分', '合并所选']) {
+    assert.doesNotMatch(html, new RegExp(label), `不应再出现「${label}」`);
+  }
+  assert.doesNotMatch(html, /type="checkbox"/);
+});
+
+test('对话流里不再重复渲染任务计划，概览只留在助手栏顶部', () => {
+  const message = {
+    id: 'message-hidden-plan', role: 'assistant', blocks: [
+      { type: 'text', text: '正在推进当前任务' },
+      { type: 'task_plan', title: '当前任务', tasks: [{ id: 't', title: '确认目标', status: 'pending', required: true }] },
+    ],
+  };
+  const inline = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, { message, hideTaskPlan: true }));
+  assert.match(inline, /正在推进当前任务/);
+  assert.doesNotMatch(inline, /ac-message-task-plan/);
+
+  const popover = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, { message }));
+  assert.match(popover, /ac-message-task-plan/);
 });
 
 test('动态任务卡不再展示已被当前完成任务替代的历史重做项', () => {
@@ -242,31 +256,4 @@ test('动态任务卡不再展示已被当前完成任务替代的历史重做�
   assert.doesNotMatch(html, /需重做|需要重做|已过时/);
 });
 
-test('失败的知识包修复任务使用通俗文案并可直接重试', () => {
-  const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, { message: {
-    id: 'message-repair-retry', role: 'assistant', blocks: [{
-      type: 'task_plan', title: '当前任务', tasks: [{
-        id: 'repair-task', kind: 'package_repair', title: '受控修复知识包校验问题',
-        status: 'failed', required: true,
-      }],
-    }],
-  }, onAction: () => {} }));
 
-  assert.match(html, /重新修复/);
-  assert.doesNotMatch(html, /受控修复/);
-  assert.match(html, /data-action="repair_knowledge_structure"/);
-});
-
-test('等待用户的受控修复任务提供带审计的暂缓验证入口', () => {
-  const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, { message: {
-    id: 'message-repair-defer', role: 'assistant', blocks: [{
-      type: 'task_plan', title: '当前任务', tasks: [{
-        id: 'repair-task', kind: 'package_repair', title: '受控修复知识包校验问题',
-        status: 'waiting_user', required: false,
-      }],
-    }],
-  }, onAction: () => {} }));
-
-  assert.match(html, /暂缓修复，进入验证/);
-  assert.match(html, /data-action="defer_validation_errors"/);
-});

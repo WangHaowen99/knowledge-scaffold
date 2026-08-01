@@ -175,7 +175,7 @@ test('消息写入经通知器接入项目事件流后可被 replay 读取', asy
   assert.equal((written!.payload as any).role, 'assistant');
 });
 
-test('消息事件一律内联完整内容，仅进度消息额外标记为无需回源', async () => {
+test('消息事件一律内联完整内容；progressOnly 由写入方显式声明而不是按 key 猜', async () => {
   const { getAuthoringState } = await import('../src/authoring/state.js');
   const { notifyAiConstructionMessageWritten } = await import('../src/ai-construction/messages.js');
   const project = createProject({ owner: 'alice', name: '进度消息局部刷新' });
@@ -187,8 +187,15 @@ test('消息事件一律内联完整内容，仅进度消息额外标记为无�
   );
 
   const progress = store.upsert(project.id, {
-    key: 'analysis.progress.live', role: 'assistant', blocks: [{
+    key: 'analysis.progress.live', role: 'assistant', progressOnly: true, blocks: [{
       type: 'status', title: '正在检查资料质量和关键缺口', progress: 86,
+    }],
+  });
+  // 同样落在 analysis.progress.* 下、但伴随任务状态变化的写入不标记，前端必须回源刷新；
+  // 早先按 key 前缀猜，导致「开始分析」把任务转成 running 后前端一直拿着旧状态。
+  const stateChange = store.upsert(project.id, {
+    key: 'analysis.progress.current', role: 'assistant', blocks: [{
+      type: 'status', title: '开始分析建模资料', progress: 3,
     }],
   });
   const ordinary = store.append(project.id, {
@@ -197,14 +204,16 @@ test('消息事件一律内联完整内容，仅进度消息额外标记为无�
 
   const events = state.replay(project.id, before).events
     .filter((event) => event.type === 'ai_construction.message.written');
-  assert.equal((events[0].payload as any).message.id, progress.id);
-  assert.equal((events[0].payload as any).message.blocks[0].progress, 86);
-  assert.equal((events[0].payload as any).progressOnly, true);
+  const payloadOf = (id: string) => (events
+    .find((event) => (event.payload as any).messageId === id)!.payload as any);
+
+  assert.equal(payloadOf(progress.id).message.blocks[0].progress, 86);
+  assert.equal(payloadOf(progress.id).progressOnly, true);
+  assert.equal(payloadOf(stateChange.id).progressOnly, undefined);
 
   // 普通消息同样内联，前端收到即可上屏；但不标 progressOnly，仍会触发一次状态回源
-  assert.equal((events[1].payload as any).message.id, ordinary.id);
-  assert.equal((events[1].payload as any).message.blocks[0].text, '普通消息');
-  assert.equal((events[1].payload as any).progressOnly, undefined);
+  assert.equal(payloadOf(ordinary.id).message.blocks[0].text, '普通消息');
+  assert.equal(payloadOf(ordinary.id).progressOnly, undefined);
 });
 
 test('超过内联上限的消息只发信号，由前端回源读取', async () => {

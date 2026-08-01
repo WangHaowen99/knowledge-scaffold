@@ -451,7 +451,7 @@ export class AiConstructionOrchestrator {
       blocks[1].text = `${blocks[1].text} 当前正在${input.title.trim().replace(/^正在/u, '') || '分析资料'}，并会同步整理候选业务目标和流程。`;
     }
     const message = this.messages.upsert(projectId, {
-      key: messageKey, role: 'assistant', taskId: task.id,
+      key: messageKey, role: 'assistant', taskId: task.id, progressOnly: true,
       blocks,
     });
     return { aiConstruction: current, message };
@@ -917,8 +917,19 @@ export class AiConstructionOrchestrator {
                 { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
               ]
               : [
-                { id: 'generate_knowledge_structure', label: '重新生成知识结构', style: 'primary' },
-                { id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' },
+                // 修复能力一直都在，早先这里只给「重新生成」，让人误以为出错就只能推倒重来
+                {
+                  id: 'repair_knowledge_structure', label: '逐项修复校验错误', style: 'primary',
+                  description: '保留现有知识结构，按校验发现逐条修复；需要业务判断的会来问你',
+                },
+                {
+                  id: 'generate_knowledge_structure', label: '重新生成知识结构', style: 'secondary',
+                  description: '丢弃当前知识结构，基于流程图和资料整体重新生成',
+                },
+                {
+                  id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary',
+                  description: '不修改内容，登记豁免理由后让这些错误暂不阻断建模完成',
+                },
                 { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
               ],
           },
@@ -1353,8 +1364,14 @@ export class AiConstructionOrchestrator {
                 { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
               ]
               : [
-                { id: 'repair_knowledge_structure', label: '继续受控修复', style: 'primary' },
-                { id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' },
+                {
+                  id: 'repair_knowledge_structure', label: '继续逐项修复', style: 'primary',
+                  description: '接着处理剩余的校验错误',
+                },
+                {
+                  id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary',
+                  description: '不修改内容，登记豁免理由后让这些错误暂不阻断建模完成',
+                },
                 { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
               ],
           },
