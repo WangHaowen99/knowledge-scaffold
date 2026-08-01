@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { AnalysisResult, DocumentRecord, InterviewOutcome } from '../types.js';
@@ -19,6 +20,7 @@ import { buildProcessDiagramFiles, processInterviewQuestions } from './process-i
 import {
   AiConstructionTaskGraph,
   type AiConstructionTaskGraphSnapshot,
+  type AiConstructionTaskSnapshot,
 } from './task-graph.js';
 
 export interface AiConstructionMaterialUpdate {
@@ -116,6 +118,21 @@ export interface StartKnowledgeStructureValidationInput {
 export interface WaitForKnowledgeStructureDecisionInput {
   failure: GenerationGateFailure;
   interactionId: string;
+}
+
+export interface EvaluationDefect {
+  id: string;
+  title: string;
+  summary: string;
+  target?: string;
+  suggestedAction?: string;
+}
+
+export interface RecordEvaluationDefectsInput {
+  roundId: string;
+  packageVersion: string;
+  packageRevisionOid?: string;
+  defects: EvaluationDefect[];
 }
 
 export interface StartKnowledgeRepairInput {
@@ -1077,34 +1094,76 @@ export class AiConstructionOrchestrator {
     });
   }
 
+  /** 未结束的受控修复任务全局只会有一条；跟随它所在的里程碑，不再假定是 knowledge_confirmed */
+  private findRepairTask(
+    graph: AiConstructionTaskGraphSnapshot,
+    statuses?: ReadonlySet<AiConstructionTaskSnapshot['status']>,
+  ): AiConstructionTaskSnapshot | undefined {
+    return [...graph.tasks].reverse().find((item) => item.kind === 'package_repair'
+      && (statuses
+        ? statuses.has(item.status)
+        : !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status)));
+  }
+
+  /**
+   * 找到可以承载受控修复的活动里程碑。
+   * 任务图要求里程碑 active 才能规划/推进任务，而知识结构确认之后知识包仍会出阻断错误
+   * （人工改包、确定性阶段校验）。此时重做最近一次已完成的校验任务把该阶段重新打开——
+   * 校验之后发现的错误意味着当时的「已确认」不再成立。
+   */
+  private ensureRepairMilestone(
+    projectId: string,
+    initial: AiConstructionTaskGraphSnapshot,
+  ): { graph: AiConstructionTaskGraphSnapshot; milestoneId: string } {
+    let current = initial;
+    let milestoneId = current.milestones.find((item) => item.status === 'active')?.id;
+    if (milestoneId) return { graph: current, milestoneId };
+
+    const reworkTask = [...current.tasks].reverse().find((item) => (
+      item.kind === 'package_validation' && item.status === 'completed'
+    ));
+    if (!reworkTask) throw new Error('当前没有可执行受控修复的活动里程碑');
+    current = this.graph.adjust(projectId, {
+      expectedRevision: current.revision,
+      taskId: reworkTask.id,
+      action: 'redo',
+      actor: 'system-controlled-repair',
+      reason: '知识包校验发现新的阻断错误，需要重新打开修复与校验阶段',
+    }).graph;
+    milestoneId = current.milestones.find((item) => item.status === 'active')?.id;
+    if (!milestoneId) throw new Error('当前没有可执行受控修复的活动里程碑');
+    return { graph: current, milestoneId };
+  }
+
   startKnowledgeRepair(
     projectId: string,
     input: StartKnowledgeRepairInput,
   ): AiConstructionMaterialUpdate {
     return this.transaction(() => {
-      let current = this.graph.snapshot(projectId);
-      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      let task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-        && item.milestoneId === 'knowledge_confirmed'
-        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      const initial = this.graph.snapshot(projectId);
+      if (!initial) throw new Error('项目尚未初始化 AI 辅助构建');
+      let task = this.findRepairTask(initial);
+      let current = initial;
       if (!task) {
+        const repairMilestone = this.ensureRepairMilestone(projectId, initial);
+        current = repairMilestone.graph;
+        const milestoneId = repairMilestone.milestoneId;
         const knowledgeTask = current.tasks.find((item) => item.kind === 'knowledge_extraction'
           && item.milestoneId === 'knowledge_confirmed'
           && item.status === 'completed');
         current = this.graph.apply(projectId, {
           type: 'plan_task', expectedRevision: current.revision,
           task: {
-            kind: 'package_repair', milestoneId: 'knowledge_confirmed',
+            kind: 'package_repair', milestoneId,
             title: '受控修复知识包校验问题',
-            goal: '按权限修复阻断问题并重新执行知识结构里程碑校验。',
+            goal: '按权限修复阻断问题并重新执行当前里程碑的知识包校验。',
             required: false,
             reason: '知识包校验存在阻断错误；原校验任务继续承担里程碑门禁',
             inputRevisionOid: input.inputRevisionOid,
-            dependsOn: knowledgeTask ? [knowledgeTask.id] : [],
+            dependsOn: milestoneId === 'knowledge_confirmed' && knowledgeTask ? [knowledgeTask.id] : [],
           },
         });
-        task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-          && item.milestoneId === 'knowledge_confirmed');
+        task = this.findRepairTask(current);
       }
       if (!task) throw new Error('知识包修复任务创建失败');
       if (task.status !== 'running') {
@@ -1149,9 +1208,7 @@ export class AiConstructionOrchestrator {
     return this.transaction(() => {
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      const task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-        && item.milestoneId === 'knowledge_confirmed'
-        && ['running', 'waiting_user'].includes(item.status));
+      const task = this.findRepairTask(current, new Set(['running', 'waiting_user']));
       if (!task) throw new Error('当前没有正在执行的知识包修复任务');
       if (task.status === 'running') {
         current = this.graph.apply(projectId, {
@@ -1194,9 +1251,7 @@ export class AiConstructionOrchestrator {
     return this.transaction(() => {
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      let repairTask = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-        && item.milestoneId === 'knowledge_confirmed'
-        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      let repairTask = this.findRepairTask(current);
       if (!repairTask) throw new Error('知识包修复任务不存在');
       if (repairTask.status !== 'running') {
         current = this.graph.apply(projectId, {
@@ -1209,16 +1264,21 @@ export class AiConstructionOrchestrator {
         taskId: repairTask.id, outputRevisionOid: input.packageRevisionOid,
       });
 
-      let validationTask = [...current.tasks].reverse().find((item) => item.kind === 'package_validation'
-        && item.milestoneId === 'knowledge_confirmed'
-        && !['cancelled', 'stale'].includes(item.status));
-      if (!validationTask) throw new Error('知识包校验任务不存在');
-      if (validationTask.status === 'completed'
-        && validationTask.outputRevisionOid !== input.packageRevisionOid) {
+      // 校验任务跟随修复任务所在的里程碑：修复未必发生在知识结构阶段
+      const repairMilestoneId = repairTask.milestoneId;
+      const findValidationTask = (graph: AiConstructionTaskGraphSnapshot) => (
+        [...graph.tasks].reverse().find((item) => item.kind === 'package_validation'
+          && item.milestoneId === repairMilestoneId
+          && !['cancelled', 'stale'].includes(item.status))
+      );
+      let validationTask = findValidationTask(current);
+      if (!validationTask
+        || (validationTask.status === 'completed'
+          && validationTask.outputRevisionOid !== input.packageRevisionOid)) {
         current = this.graph.apply(projectId, {
           type: 'plan_task', expectedRevision: current.revision,
           task: {
-            kind: 'package_validation', milestoneId: 'knowledge_confirmed',
+            kind: 'package_validation', milestoneId: repairMilestoneId,
             title: '重新校验修复后的知识包',
             goal: '基于最新修订重新检查知识包结构、引用、数据映射和语义完整性。',
             required: true,
@@ -1227,9 +1287,7 @@ export class AiConstructionOrchestrator {
             dependsOn: [repairTask.id],
           },
         });
-        validationTask = [...current.tasks].reverse().find((item) => item.kind === 'package_validation'
-          && item.milestoneId === 'knowledge_confirmed'
-          && !['cancelled', 'stale'].includes(item.status));
+        validationTask = findValidationTask(current);
         if (!validationTask) throw new Error('修复后知识包校验任务创建失败');
       }
       if (input.validation.errors === 0 && validationTask.status !== 'completed') {
@@ -1261,7 +1319,7 @@ export class AiConstructionOrchestrator {
             type: 'status',
             title: input.validation.errors === 0 ? '知识包修复已通过校验' : '本轮修复已完成，仍需继续处理',
             summary: `v${input.version} · ${validationSummary}`,
-            milestoneId: 'knowledge_confirmed', taskId: repairTask.id,
+            milestoneId: repairMilestoneId, taskId: repairTask.id,
             progress: current.progress.percent,
             eta: {
               minMinutes: current.progress.eta.minMinutes,
@@ -1306,6 +1364,106 @@ export class AiConstructionOrchestrator {
     });
   }
 
+  /**
+   * 把评测诊断出的知识包缺陷收进建模流程：登记一条 evaluation_repair 任务并在助手对话里给出下一步。
+   *
+   * 用独立 kind 而不是 package_repair：后者由受控修复处理知识包**校验**发现、校验通过即完成；
+   * 评测缺陷来自**失败用例**，只有优化更新能从用例反推资源改动（且带防过拟合校验），
+   * 完成判据是重新评测通过——校验通过不代表评测缺陷已修。
+   *
+   * 只登记不执行：由专家决定何时进入优化更新，避免评测结果直接改写知识包。
+   */
+  recordEvaluationDefects(
+    projectId: string,
+    input: RecordEvaluationDefectsInput,
+  ): AiConstructionAdvanceResult {
+    if (!input.defects.length) throw new Error('没有需要回流建模的评测缺陷');
+    return this.transaction(() => {
+      const initial = this.graph.snapshot(projectId);
+      if (!initial) throw new Error('项目尚未初始化 AI 辅助构建');
+
+      const defectIds = input.defects.map((defect) => defect.id).sort();
+      const messageKey = `evaluation.defects.${createHash('sha256')
+        .update([input.roundId, ...defectIds].join('|')).digest('hex').slice(0, 24)}`;
+      const existing = this.messages.findByKey(projectId, messageKey);
+      if (existing) return { aiConstruction: initial, message: existing };
+
+      const findEvaluationRepair = (graph: AiConstructionTaskGraphSnapshot) => (
+        [...graph.tasks].reverse().find((item) => item.kind === 'evaluation_repair'
+          && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status))
+      );
+      let current = initial;
+      let task = findEvaluationRepair(current);
+      let milestoneId = task?.milestoneId;
+      if (!task) {
+        const repairMilestone = this.ensureRepairMilestone(projectId, current);
+        current = repairMilestone.graph;
+        milestoneId = repairMilestone.milestoneId;
+        current = this.graph.apply(projectId, {
+          type: 'plan_task', expectedRevision: current.revision,
+          task: {
+            kind: 'evaluation_repair', milestoneId,
+            title: '修缮评测发现的知识包缺陷',
+            goal: '按评测失败原因修正对象、操作、规则、指标或脚本，并重新评测验证。',
+            required: false,
+            reason: `来自评测轮次 ${input.roundId} 的 ${input.defects.length} 项失败原因`,
+            ...(input.packageRevisionOid ? { inputRevisionOid: input.packageRevisionOid } : {}),
+            dependsOn: [],
+          },
+        });
+        task = findEvaluationRepair(current);
+      }
+      if (!task || !milestoneId) throw new Error('评测缺陷修缮任务创建失败');
+      if (['pending', 'ready', 'running'].includes(task.status)) {
+        current = this.graph.apply(projectId, {
+          type: 'wait_for_user', expectedRevision: current.revision, taskId: task.id,
+        });
+      }
+
+      const defectLines = input.defects.map((defect, index) => {
+        const target = displayTarget(defect.target);
+        return [
+          `${index + 1}. ${displayText(defect.title, 120, '未命名缺陷')}`,
+          target ? `（${target}）` : '',
+          `\n   现象：${displayText(defect.summary, 300, '评测失败，未给出更多说明')}`,
+          defect.suggestedAction ? `\n   建议：${displayText(defect.suggestedAction, 300, '')}` : '',
+        ].join('');
+      }).join('\n');
+
+      const message = this.messages.ensure(projectId, {
+        key: messageKey, role: 'assistant', taskId: task.id,
+        blocks: [
+          {
+            type: 'status',
+            title: `评测发现 ${input.defects.length} 处知识包缺陷`,
+            summary: '已登记为建模修缮任务，请在优化更新中处理',
+            milestoneId, taskId: task.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: `这些缺陷来自评测轮次 ${input.roundId}（知识包 v${input.packageVersion}）：\n${defectLines}`
+              + '\n\n请在「优化更新」中生成修改建议：它会依据失败用例反推资源改动，并强制通过防过拟合校验，'
+              + '避免把单条用例的答案写死成通用规则。',
+          },
+          {
+            type: 'next_actions', title: '选择下一步',
+            actions: [
+              { id: 'open_optimization', label: '进入优化更新', style: 'primary' },
+              { id: 'review_knowledge_files', label: '先查看知识文件', style: 'secondary' },
+            ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
   deferKnowledgeErrors(
     projectId: string,
     input: DeferKnowledgeErrorsInput,
@@ -1315,9 +1473,7 @@ export class AiConstructionOrchestrator {
       if (!reason || input.errorCount < 1) throw new Error('请说明需要暂缓的阻断错误和原因');
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      let repairTask = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-        && item.milestoneId === 'knowledge_confirmed'
-        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      let repairTask = this.findRepairTask(current);
       if (repairTask?.status === 'running') {
         current = this.graph.apply(projectId, {
           type: 'fail_task', expectedRevision: current.revision, taskId: repairTask.id,
@@ -1396,9 +1552,7 @@ export class AiConstructionOrchestrator {
     return this.transaction(() => {
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      let task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-        && item.milestoneId === 'knowledge_confirmed'
-        && ['running', 'waiting_user', 'failed'].includes(item.status));
+      let task = this.findRepairTask(current, new Set(['running', 'waiting_user', 'failed']));
       if (!task) throw new Error('当前没有可停止的知识包修复任务');
       if (task.status === 'waiting_user') {
         current = this.graph.apply(projectId, {
@@ -1457,9 +1611,7 @@ export class AiConstructionOrchestrator {
     return this.transaction(() => {
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      const task = [...current.tasks].reverse().find((item) => item.kind === 'package_repair'
-        && item.milestoneId === 'knowledge_confirmed'
-        && !['completed', 'skipped', 'cancelled', 'stale'].includes(item.status));
+      const task = this.findRepairTask(current);
       if (!task) throw new Error('当前没有可失效的知识包修复任务');
       current = this.graph.apply(projectId, {
         type: 'complete_task', expectedRevision: current.revision, taskId: task.id,

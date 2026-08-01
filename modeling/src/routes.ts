@@ -1589,6 +1589,55 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
       };
     });
+    // 评测发现的知识包缺陷回流建模：登记成 evaluation_repair 任务并在助手对话里给出下一步。
+    // 只登记不执行——实际修改由专家在优化更新里发起（那里才有防过拟合校验）。
+    r.post('/api/projects/:id/optimize/diagnoses/plan-repair', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { roundId, diagnosisIds } = (req.body ?? {}) as { roundId?: string; diagnosisIds?: unknown };
+      const requested = Array.isArray(diagnosisIds) ? diagnosisIds.map((id) => String(id)) : [];
+      if (!roundId || !requested.length) {
+        return reply.code(400).send({ error: '请选择要回流建模的失败原因', code: 'INVALID_INPUT' });
+      }
+      const round = m3repo.getRound(String(roundId));
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+
+      const selected = new Set(requested);
+      const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id)
+        .filter((diagnosis) => selected.has(diagnosis.id));
+      if (diagnoses.length !== selected.size) {
+        return reply.code(404).send({ error: '部分失败原因不存在或不属于该评测轮次' });
+      }
+      const notPackageDefects = diagnoses.filter((diagnosis) => diagnosis.repairScope !== 'package');
+      if (notPackageDefects.length) {
+        return reply.code(409).send({
+          error: `有 ${notPackageDefects.length} 项失败原因不属于知识包缺陷，请先处理运行环境、数据或用例问题`,
+          code: 'NOT_PACKAGE_DEFECT',
+        });
+      }
+      const latest = await packageArtifacts.current(c.p.id);
+      try {
+        const result = aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
+          roundId: round.id,
+          packageVersion: round.packageVersion,
+          ...(latest ? { packageRevisionOid: latest.revision.oid } : {}),
+          defects: diagnoses.map((diagnosis) => ({
+            id: diagnosis.id,
+            title: diagnosis.title,
+            summary: diagnosis.summary,
+            target: diagnosis.relatedQuestions[0],
+            suggestedAction: diagnosis.suggestedAction,
+          })),
+        });
+        return {
+          aiConstruction: result.aiConstruction,
+          ...(result.message ? { aiConstructionMessage: result.message } : {}),
+        };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
     r.post('/api/projects/:id/optimize/diagnoses/:diagnosisId/resolve', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });

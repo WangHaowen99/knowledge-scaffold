@@ -106,6 +106,11 @@ import {
   runWithProjectLease,
   SHORT_WRITE_LEASE_TTL_MS,
 } from './lease.js';
+import {
+  blockingPendingInteractions,
+  evidenceProblemActions,
+  pendingInteractionActions,
+} from './construction-completion.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
@@ -595,6 +600,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             return reply.code(409).send({
               error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
               code: 'PACKAGE_CHECK_REQUIRED',
+              nextActions: [
+                { id: 'run_package_check', label: '立即执行知识包校验', style: 'primary' },
+              ],
             });
           }
           const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
@@ -604,6 +612,12 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               return reply.code(409).send({
                 error: `知识包检查还有 ${errorCount} 个错误，请修复或明确暂缓后再完成建模`,
                 code: 'PACKAGE_CHECK_FAILED',
+                errorCount,
+                nextActions: [
+                  { id: 'repair_knowledge_structure', label: '逐项修缮这些错误', style: 'primary' },
+                  { id: 'defer_validation_errors', label: '说明理由并暂缓', style: 'secondary' },
+                  { id: 'view_validation', label: '查看校验详情', style: 'secondary' },
+                ],
               });
             }
           }
@@ -621,13 +635,21 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               error: `还有 ${evidenceProblems.length} 项确认知识缺少可追溯证据`,
               code: 'KNOWLEDGE_EVIDENCE_REQUIRED',
               problems: evidenceProblems,
+              nextActions: evidenceProblemActions(evidenceProblems),
             });
           }
-          const pendingInteractions = state.snapshot(project.id).pendingInteractions.length;
-          if (pendingInteractions > 0) {
+          // 与助手栏的渲染规则保持一致：修订变化后失效的受控修复待办不再阻塞，
+          // 否则会出现「被拦住但界面上找不到要处理的事项」的死路。
+          const blockingInteractions = blockingPendingInteractions(
+            state.snapshot(project.id).pendingInteractions,
+            currentPackage.revision.oid,
+          );
+          if (blockingInteractions.length > 0) {
             return reply.code(409).send({
-              error: `还有 ${pendingInteractions} 个待确认事项未处理`,
+              error: `还有 ${blockingInteractions.length} 个待确认事项未处理`,
               code: 'PENDING_INTERACTIONS',
+              pendingInteractions: blockingInteractions,
+              nextActions: pendingInteractionActions(blockingInteractions),
             });
           }
           const version = nextValidationCandidateVersion({

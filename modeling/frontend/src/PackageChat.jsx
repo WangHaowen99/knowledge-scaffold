@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { packageChat, runAnalyze, uploadDocument } from './api.js';
+import { packageChat, runAnalyze, runPackageCheck, uploadDocument } from './api.js';
 import {
   adjustAiConstructionTask,
   confirmAiConstructionMilestone,
@@ -24,6 +24,7 @@ import ValidationDeferralCard from './ValidationDeferralCard.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
 import { confirmFlowchartNavigation } from './flowchartNavigationGuard.js';
 import { formatMessageTimestamp } from './messageTimestamp.js';
+import { completionBlockerMessage } from './completionBlocker.js';
 import { isPackageChatRunning } from './packageChatRun.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
@@ -50,6 +51,7 @@ const FLOWCHART_READ_ONLY_ACTIONS = new Set([
   'review_process_files',
   'review_knowledge_files',
   'open_optimization',
+  'open_scenario_review',
 ]);
 
 // 知识包工作区右栏：建模对话（咨询 + 两段式受控修改）。
@@ -127,6 +129,7 @@ export default function PackageChat({
   const [taskAdjustment, setTaskAdjustment] = useState(null);
   const [taskEditConfig, setTaskEditConfig] = useState(null);
   const [validationDeferral, setValidationDeferral] = useState(null);
+  const [completionBlocker, setCompletionBlocker] = useState(null);
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
@@ -144,6 +147,7 @@ export default function PackageChat({
   );
   useEffect(() => {
     setTurns([]); setTaskAdjustment(null); setTaskEditConfig(null); setValidationDeferral(null);
+    setCompletionBlocker(null);
   }, [projectId]);
 
   const latestValidationErrorCount = useMemo(() => {
@@ -237,6 +241,25 @@ export default function PackageChat({
         ...(action.tasks ? { tasks: action.tasks } : {}),
         ...(action.edit ? { edit: action.edit } : {}),
       });
+      return;
+    }
+    if (action.id === 'open_scenario_review') {
+      setCompletionBlocker(null);
+      onNavigate?.('scenario');
+      return;
+    }
+    if (action.id === 'run_package_check') {
+      if (busy) return;
+      setLocalBusy('check');
+      try {
+        await runPackageCheck(projectId);
+        window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
+      } catch (error) {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: `知识包校验失败：${error instanceof Error ? error.message : String(error)}`,
+        })]));
+      } finally { setLocalBusy(''); }
       return;
     }
     // 评测缺陷交由优化更新处理：它才能从失败用例反推资源改动并过防过拟合校验
@@ -420,10 +443,18 @@ export default function PackageChat({
           detail: { projectId, warningReview: error.data?.warningReview },
         }));
       }
-      setTurns((items) => items.concat([timedTurn({
-        role: 'assistant',
-        text: `${action.id === 'analyze_materials' ? '资料分析' : '里程碑确认'}失败：${error instanceof Error ? error.message : String(error)}`,
-      })]));
+      // 被拦下时后端会声明可执行的下一步，渲染成卡片而不是一句无出口的错误文本
+      const blocked = completionBlockerMessage(error);
+      if (blocked) {
+        setCompletionBlocker(blocked);
+      } else {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: `${action.id === 'analyze_materials' ? '资料分析' : '里程碑确认'}失败：${error instanceof Error ? error.message : String(error)}`,
+        })]));
+      }
+      // 拦截多半源于服务端状态已变（如修订被更新），不刷新会让下一次点击重复失败
+      await refreshConstruction().catch(() => undefined);
     } finally {
       setLocalBusy('');
     }
@@ -663,6 +694,20 @@ export default function PackageChat({
           busy={busy === 'analyze'}
           onRetry={() => { void handleStructuredAction({ id: 'analyze_materials' }); }}
         />}
+        {completionBlocker && (
+          <div className="ac-completion-blocker">
+            <AiConstructionMessageCard
+              message={completionBlocker}
+              actionsEnabled={!busy}
+              onAction={(action) => {
+                setCompletionBlocker(null);
+                void handleStructuredAction(action);
+              }}
+            />
+            <button type="button" className="btn ac-completion-blocker__dismiss"
+              onClick={() => setCompletionBlocker(null)}>知道了</button>
+          </div>
+        )}
         {taskAdjustment && <TaskAdjustmentPreviewCard
           preview={taskAdjustment}
           busy={busy === 'task_adjustment'}

@@ -1004,3 +1004,132 @@ test('生成门禁决定在原运行失败后通过新运行幂等续跑', async
   const resumedRun = state.snapshot(project.id).activeRuns.find((run) => run.id === continuation.resumeRunId);
   assert.equal(resumedRun?.baseRevision, 'pkg-gate');
 });
+
+// ---- 「确认完成 AI 辅助构建」的拦截：每一条都要给出可执行的下一步 ----
+
+function completionApp(t: test.TestContext, projectId: string, overrides: any = {}) {
+  const packages = {
+    async current() {
+      return {
+        revision: { oid: 'pkg-draft' },
+        packageVersion: '0.1.0',
+        spec: { status: 'draft', objects: [], operations: [], ...(overrides.spec ?? {}) },
+      };
+    },
+    async saveCurrentAsPackageVersion() {
+      return { revision: { oid: 'pkg-rc-1' }, packageVersion: '1.0.0-rc.1', spec: { status: 'review' } };
+    },
+  };
+  const graph = {
+    snapshot: () => ({ revision: 6 }),
+    apply: () => ({ revision: 7, status: 'completed' }),
+  };
+  const orchestrator = {
+    latestMaterialAnalysis: () => null,
+    latestConfirmedModelingBrief: () => null,
+  };
+  const options: any = { packages, graph, orchestrator };
+  if (overrides.pendingInteractions) {
+    const real = getAuthoringState();
+    options.state = {
+      ...real,
+      snapshot: (id: string) => ({
+        ...real.snapshot(id),
+        pendingInteractions: overrides.pendingInteractions,
+      }),
+      apply: real.apply.bind(real),
+      replay: real.replay.bind(real),
+    };
+  }
+  return routeApp(t, 'alice', options);
+}
+
+const confirmCompletion = (app: any, projectId: string) => app.inject({
+  method: 'POST',
+  url: `/api/projects/${projectId}/ai-construction/commands`,
+  payload: {
+    command: {
+      type: 'confirm_milestone', expectedRevision: 6,
+      milestoneId: 'construction_completed', packageRevisionOid: 'pkg-draft',
+      actor: { username: 'alice', role: 'validator' },
+    },
+  },
+});
+
+test('未校验时拦截并给出立即校验的动作', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-未校验' });
+  const response = await confirmCompletion(completionApp(t, project.id), project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_CHECK_REQUIRED');
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), ['run_package_check']);
+});
+
+test('存在阻断错误时拦截并给出修缮与暂缓两条出路', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-有错误' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'f1', source: 'rule', severity: '错误', category: '引用缺失', target: 'objects/o1', message: '缺少引用' } as any,
+  ], 'pkg-draft');
+
+  const response = await confirmCompletion(completionApp(t, project.id), project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_CHECK_FAILED');
+  assert.equal(response.json().errorCount, 1);
+  // 这两个动作系统里本来就有，之前没有带出来
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'defer_validation_errors', 'view_validation',
+  ]);
+});
+
+test('缺证据时把明细和文件入口一起返回', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-缺证据' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  const app = completionApp(t, project.id, {
+    spec: {
+      objects: [],
+      operations: [{ key: 'plan', name: '编制方案', evidence: [] }],
+    },
+  });
+  const response = await confirmCompletion(app, project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'KNOWLEDGE_EVIDENCE_REQUIRED');
+  assert.deepEqual(response.json().problems, ['operation:plan 缺少流程或访谈证据']);
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.path), ['operations/index.md']);
+});
+
+test('场景待办拦截时指明去哪里处理', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-场景待办' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  const app = completionApp(t, project.id, {
+    pendingInteractions: [{
+      id: 'sc-1', projectId: project.id, runId: 'ar-1', type: 'scenario_review',
+      status: 'pending', payload: { title: '场景复核' }, createdAt: '2026-07-31T00:00:00.000Z',
+    }],
+  });
+  const response = await confirmCompletion(app, project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PENDING_INTERACTIONS');
+  assert.equal(response.json().pendingInteractions[0].location, 'scenario');
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), ['open_scenario_review']);
+});
+
+/** 助手栏不会渲染修订已变的受控修复待办，后端若仍拦截就成了死路 */
+test('修订已变的受控修复待办不再阻塞完成建模', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-失效待办' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  const app = completionApp(t, project.id, {
+    pendingInteractions: [{
+      id: 'stale-1', projectId: project.id, runId: 'ar-1', type: 'change_plan',
+      status: 'pending', baseRevision: 'pkg-old',
+      payload: { purpose: 'controlled_repair' }, createdAt: '2026-07-31T00:00:00.000Z',
+    }],
+  });
+  const response = await confirmCompletion(app, project.id);
+  assert.equal(response.statusCode, 200, response.body);
+});
