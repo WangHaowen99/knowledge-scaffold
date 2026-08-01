@@ -779,9 +779,15 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
   assert.equal(rejected.aiConstruction.tasks.find(
     (item) => item.kind === 'package_validation',
   )?.status, 'failed');
+  // 修复能力一直都在，早先这里只给「重新生成」，让人误以为出错就只能推倒重来
   assert.deepEqual((rejected.message.blocks[3] as any).actions.map((item: any) => item.id), [
-    'generate_knowledge_structure', 'defer_validation_errors', 'view_validation',
+    'repair_knowledge_structure', 'generate_knowledge_structure',
+    'defer_validation_errors', 'view_validation',
   ]);
+  const rejectedActions = (rejected.message.blocks[3] as any).actions;
+  assert.equal(rejectedActions[0].style, 'primary', '逐项修复应作为首选');
+  assert.match(String(rejectedActions[1].description), /丢弃当前知识结构/);
+  assert.match(String(rejectedActions[2].description), /不修改内容/);
   const validationRetried = orchestrator.startKnowledgeStructure(project.id);
   assert.equal(validationRetried.aiConstruction.tasks.find(
     (item) => item.kind === 'package_validation',

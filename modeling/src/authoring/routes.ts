@@ -111,6 +111,8 @@ import {
   evidenceProblemActions,
   pendingInteractionActions,
 } from './construction-completion.js';
+import { RepairTargetUnresolvedError } from '../ai-construction/controlled-repair.js';
+import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
@@ -166,6 +168,30 @@ function sendStateError(reply: FastifyReply, error: unknown) {
     const status = error.code === 'revision_conflict' ? 409
       : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;
     return reply.code(status).send({ error: error.message, code: error.code });
+  }
+  // 定位不到唯一目标不是「操作失败」，而是需要人工介入；给出可执行的下一步
+  if (error instanceof RepairTargetUnresolvedError) {
+    return reply.code(409).send({
+      error: error.message,
+      code: 'REPAIR_TARGET_UNRESOLVED',
+      candidates: error.candidates.map((item) => ({
+        targetKind: item.targetKind, targetKey: item.targetKey,
+      })),
+      nextActions: [
+        ...(error.candidates.length
+          ? [{
+            id: 'open_package_file', label: `打开 ${error.candidates[0].targetKind} 文件`,
+            style: 'primary' as const,
+            path: `${error.candidates[0].targetKind === 'object' ? 'objects' : `${error.candidates[0].targetKind}s`}/index.md`,
+          }]
+          : [{ id: 'review_knowledge_files', label: '查看知识文件', style: 'primary' as const }]),
+        {
+          id: 'defer_validation_errors', label: '暂缓这条错误', style: 'secondary' as const,
+          description: '登记豁免理由，先推进后续步骤',
+        },
+        { id: 'view_validation', label: '查看校验结果', style: 'secondary' as const },
+      ],
+    });
   }
   if (error instanceof AiConstructionTaskGraphError) {
     const status = error.code === 'PROJECT_NOT_FOUND'
@@ -271,6 +297,23 @@ export interface AuthoringRouteOptions {
 }
 
 export function registerAuthoringRoutes(app: FastifyInstance, options: AuthoringRouteOptions = {}): void {
+  // 与 registerRoutes 同款：错误响应按 code 统一挂上可执行的下一步。
+  // 两处路由分开注册，钩子也要各挂一次。
+  app.addHook('onSend', async (_req, reply, payload) => {
+    if (reply.statusCode < 400 || typeof payload !== 'string') return payload;
+    if (!String(reply.getHeader('content-type') ?? '').includes('application/json')) return payload;
+    let body: unknown;
+    try { body = JSON.parse(payload); } catch { return payload; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
+    const record = body as Record<string, unknown>;
+    if (record.nextActions !== undefined) return payload;
+    const actions = errorNextActions(record.code);
+    if (!actions) return payload;
+    const next = JSON.stringify({ ...record, nextActions: actions });
+    reply.header('content-length', Buffer.byteLength(next));
+    return next;
+  });
+
   registerWorkflowExtraRoutes(app);
   const state = options.state ?? getAuthoringState();
   const graph = options.graph ?? new AiConstructionTaskGraph();
@@ -310,13 +353,31 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const confirmation = construction?.confirmations.find(
       (item) => item.milestoneId === 'process_confirmed',
     );
-    if (!confirmation || confirmation.packageRevisionOid !== currentPackage.revision.oid) {
-      throw new AuthoringStateError(
-        'INVALID_TRANSITION',
-        '当前知识包修订尚未确认业务流程，请先重新确认流程图',
-      );
+    if (!confirmation) {
+      throw new AuthoringStateError('INVALID_TRANSITION', '业务流程尚未确认，请先确认流程图');
     }
     const snapshot = await packages.readPackageFiles(projectId, currentPackage.revision.oid);
+    // 早先这里比对包修订 OID，但生成知识结构、自动修复、人工改包都会产生新修订，
+    // 于是流程内容没动也会被判为「未确认」——「重新生成知识结构」因此必然失败。
+    // 改为比对流程文档本身：只有流程真的被改过才要求重新确认。
+    if (confirmation.packageRevisionOid !== currentPackage.revision.oid) {
+      const confirmed = await packages
+        .readPackageFiles(projectId, confirmation.packageRevisionOid)
+        .catch(() => null);
+      const confirmedProcesses = confirmed?.files['diagrams/processes.json'];
+      if (!confirmedProcesses) {
+        throw new AuthoringStateError(
+          'INVALID_TRANSITION',
+          '已确认流程所在的知识包修订已不可读，请重新确认流程图',
+        );
+      }
+      if (confirmedProcesses !== snapshot.files['diagrams/processes.json']) {
+        throw new AuthoringStateError(
+          'INVALID_TRANSITION',
+          '流程图在确认之后被修改过，请重新确认流程图',
+        );
+      }
+    }
     const source = snapshot.files['diagrams/processes.json'];
     if (!source) throw new Error('当前知识包修订缺少已确认流程文档');
     let document: FlowchartDocument;

@@ -120,3 +120,77 @@ test('没有 nextActions 的错误不生成卡片，仍走原有文本提示', (
   assert.equal(completionBlockerMessage({ message: '网络错误' }), null);
   assert.equal(completionBlockerMessage({ message: 'x', data: { code: 'PROJECT_BUSY' } }), null);
 });
+
+// ---- 错误响应的统一出口 ----
+
+test('已登记的错误码都能派生出可执行的下一步', async () => {
+  const { errorNextActions, errorCodesWithNextActions } = await import('../src/error-next-actions.js');
+  const codes = errorCodesWithNextActions();
+  assert.ok(codes.length >= 10, `覆盖面偏小：${codes.length}`);
+  for (const code of codes) {
+    const actions = errorNextActions(code)!;
+    assert.ok(actions.length > 0, `${code} 应有出口`);
+    assert.equal(actions[0].style, 'primary', `${code} 的首个出口应为主操作`);
+    for (const action of actions) {
+      assert.ok(action.id && action.label, `${code} 的出口缺少 id/label`);
+    }
+  }
+});
+
+test('未登记的错误码不硬造出口', async () => {
+  const { errorNextActions } = await import('../src/error-next-actions.js');
+  assert.equal(errorNextActions('SOMETHING_UNKNOWN'), undefined);
+  assert.equal(errorNextActions(undefined), undefined);
+  assert.equal(errorNextActions(42), undefined);
+});
+
+test('派生出的出口都在助手动作目录里，不会变成点了没反应的按钮', async () => {
+  const { errorNextActions, errorCodesWithNextActions } = await import('../src/error-next-actions.js');
+  const { ASSISTANT_ACTION_KINDS } = await import('../src/ai-construction/assistant-actions.js');
+  for (const code of errorCodesWithNextActions()) {
+    for (const action of errorNextActions(code)!) {
+      assert.ok(ASSISTANT_ACTION_KINDS[action.id], `${code} 的出口 ${action.id} 未在动作目录登记`);
+    }
+  }
+});
+
+test('修订冲突同时给出重试和纯刷新两条出口', async () => {
+  const { errorNextActions } = await import('../src/error-next-actions.js');
+  const ids = errorNextActions('REVISION_CONFLICT')!.map((action) => action.id);
+  assert.deepEqual(ids, ['reload_and_retry', 'refresh_task_graph']);
+});
+
+test('重试确认只在知识包内容没变时才重发', async () => {
+  const { shouldReplayConfirm, confirmReplayBlockedMessage } =
+    await import('../frontend/src/confirmReplay.js');
+  // 任务图 revision 常因无关的后台任务往前走，这类冲突重发是安全的
+  assert.equal(shouldReplayConfirm({
+    seenPackageRevision: 'oid-a', currentPackageRevision: 'oid-a',
+  }), true);
+  // 内容变了就不能重发：否则等于替用户确认了一份他从没看过的知识包
+  assert.equal(shouldReplayConfirm({
+    seenPackageRevision: 'oid-a', currentPackageRevision: 'oid-b',
+  }), false);
+  // 说不清用户看的是哪一版时同样不重发，宁可让他重新确认一次
+  assert.equal(shouldReplayConfirm({ currentPackageRevision: 'oid-a' }), false);
+  assert.equal(shouldReplayConfirm({ seenPackageRevision: 'oid-a' }), false);
+  assert.equal(shouldReplayConfirm(), false);
+  assert.match(
+    confirmReplayBlockedMessage({ seenPackageRevision: 'oid-a', currentPackageRevision: 'oid-b' }),
+    /重新看一遍/,
+  );
+});
+
+test('未发布草稿的出口是处理草稿本身，不是「去看看文件」', async () => {
+  const { errorNextActions } = await import('../src/error-next-actions.js');
+  const ids = errorNextActions('PACKAGE_DRAFT_REQUIRES_PUBLISH')!.map((action) => action.id);
+  // 发布/放弃按钮只在文件编辑器里才渲染，仅靠导航到知识文件用户还得自己翻到编辑态
+  assert.deepEqual(ids.slice(0, 2), ['publish_package_draft', 'discard_package_draft']);
+});
+
+test('返回的出口是副本，调用方修改不会污染下一次', async () => {
+  const { errorNextActions } = await import('../src/error-next-actions.js');
+  const first = errorNextActions('PACKAGE_CHECK_REQUIRED')!;
+  first[0].label = '被改过';
+  assert.notEqual(errorNextActions('PACKAGE_CHECK_REQUIRED')![0].label, '被改过');
+});

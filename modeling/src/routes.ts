@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
 import { AiConstructionTaskGraph } from './ai-construction/task-graph.js';
 import { packageRepairAvailability } from './ai-construction/repair-availability.js';
+import { errorNextActions } from './error-next-actions.js';
 import {
   AiConstructionMessageStore,
   notifyAiConstructionMessageWritten,
@@ -241,6 +242,23 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
+  // 错误响应统一按 code 挂上「接下来能做什么」：逐个路由补出口既改不动也守不住，
+  // 集中派生后新增错误码只要在 error-next-actions 登记一次即可。
+  app.addHook('onSend', async (_req, reply, payload) => {
+    if (reply.statusCode < 400 || typeof payload !== 'string') return payload;
+    if (!String(reply.getHeader('content-type') ?? '').includes('application/json')) return payload;
+    let body: unknown;
+    try { body = JSON.parse(payload); } catch { return payload; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
+    const record = body as Record<string, unknown>;
+    if (record.nextActions !== undefined) return payload;
+    const actions = errorNextActions(record.code);
+    if (!actions) return payload;
+    const next = JSON.stringify({ ...record, nextActions: actions });
+    reply.header('content-length', Buffer.byteLength(next));
+    return next;
+  });
+
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
   const runMaterialAnalysis = options.runAnalyze ?? runAnalyze;
@@ -2009,9 +2027,26 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const releaseCandidate = current.spec.status === 'review'
             && isReleaseCandidateVersion(current.packageVersion);
           if (!releaseCandidate) {
+            // 出口有两种，取决于卡在哪一步。按错误码统一兜底会同时给出两个按钮，
+            // 其中一个必然点不动——这里有上下文，直接给唯一正确的那个。
+            const draft = await getActivePackageDraft(c.p.id);
             return reply.code(409).send({
-              error: '当前知识包不是可发布的 RC 候选，请先完成人工草稿发布或建模确认',
+              error: draft
+                ? '还有未发布的人工编辑草稿，发布知识包前需要先处理它'
+                : '当前知识包还不是可发布的 RC 候选，请先完成 AI 辅助构建的确认',
               code: 'RELEASE_CANDIDATE_REQUIRED',
+              nextActions: draft
+                ? [
+                  { id: 'publish_package_draft', label: '发布草稿', style: 'primary',
+                    description: '把人工编辑的内容并入知识包，然后再发布' },
+                  { id: 'discard_package_draft', label: '放弃草稿', style: 'secondary',
+                    description: '丢弃这些人工编辑，回到草稿之前的版本' },
+                ]
+                : [
+                  { id: 'confirm_construction', label: '确认完成 AI 辅助构建', style: 'primary',
+                    description: '确认后会创建验证候选版本，之后才能发布' },
+                  { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
+                ],
             });
           }
           const version = promoteReleaseCandidate(current.packageVersion);

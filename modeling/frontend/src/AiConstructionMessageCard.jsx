@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import MarkdownContent from './MarkdownContent.jsx';
 import { formatMessageTimestamp } from './messageTimestamp.js';
 import { effectiveTaskPlanTasks } from './taskPlanStatus.js';
@@ -103,68 +103,11 @@ function ValidationBlock({ block, onAction }) {
 }
 
 const TASK_STATUS_LABEL = { pending: '待规划', ready: '可开始', running: '进行中', waiting_user: '等待回答', waiting_confirmation: '待确认', completed: '已完成', failed: '需重试', skipped: '已跳过', stale: '待确认', cancelled: '已取消' };
-function taskActions(task) {
-  if (['package_validation', 'package_repair'].includes(task.kind)
-    && ['failed', 'waiting_user', 'waiting_confirmation'].includes(task.status)) {
-    return [
-      ...(task.status === 'failed'
-        ? [{ directAction: 'repair_knowledge_structure', label: '重新修复' }]
-        : []),
-      { directAction: 'defer_validation_errors', label: '暂缓修复，进入验证' },
-    ];
-  }
-  if (task.status === 'completed') return [{ action: 'redo', label: '重做' }];
-  if (['skipped', 'stale'].includes(task.status)) return [{ action: 'resume', label: '恢复' }];
-  if (['pending', 'ready', 'failed', 'waiting_user', 'waiting_confirmation'].includes(task.status)) {
-    return [
-      { action: 'defer', label: '暂缓' },
-      ...(!task.required ? [{ action: 'skip', label: '跳过' }] : []),
-    ];
-  }
-  return [];
-}
-function TaskPlanBlock({ block, onAction }) {
+function TaskPlanBlock({ block }) {
   const tasks = effectiveTaskPlanTasks(block.tasks);
-  const [selected, setSelected] = useState([]);
-  const editable = (task) => ['pending', 'ready', 'failed', 'waiting_user', 'waiting_confirmation'].includes(task.status);
-  const selectedTasks = tasks.filter((task) => selected.includes(task.id));
-  const toggle = (taskId) => setSelected((items) => items.includes(taskId)
-    ? items.filter((id) => id !== taskId) : items.concat(taskId));
   return <section className="ac-message-task-plan"><div className="ac-message-task-plan-head"><strong>{friendlyRepairText(block.title)}</strong><span>{tasks.filter((task) => ['completed', 'skipped'].includes(task.status)).length}/{tasks.length}</span></div>
-    {onAction && <div className="ac-message-task-edit-toolbar">
-      <button type="button" data-action="open_task_add" onClick={() => onAction({
-        id: 'open_task_add', mode: 'add', milestoneId: block.milestoneId,
-      })}>新增任务</button>
-      <button type="button" data-action="open_task_merge" disabled={selectedTasks.length < 2}
-        title={selectedTasks.length < 2 ? '请先勾选至少两个任务再合并' : `合并选中的 ${selectedTasks.length} 个任务`}
-        onClick={() => onAction({ id: 'open_task_merge', mode: 'merge', tasks: selectedTasks })}>合并所选</button>
-      <span>选中 {selectedTasks.length} 项</span>
-    </div>}
-    <div className="ac-message-task-list">{tasks.map((task, index) => <article key={task.id} className={`${task.status}${onAction ? ' task-editable-row' : ''}`}>
-      {onAction && editable(task) && <input type="checkbox" aria-label={`选择任务 ${friendlyRepairText(task.title)}`}
-        checked={selected.includes(task.id)} onChange={() => toggle(task.id)} />}
-      {onAction && !editable(task) && <span className="ac-message-task-select-placeholder" />}
-      <span className="ac-message-task-index">{index + 1}</span><div><div><strong>{friendlyRepairText(task.title)}</strong>{task.required && <em>必选</em>}</div>{task.reason && <p>{friendlyRepairText(task.reason)}</p>}
-        {onAction && taskActions(task).length > 0 && <div className="ac-message-task-actions">{taskActions(task).map((item) => <button
-          key={item.directAction ?? item.action} type="button"
-          data-action={item.directAction ?? 'preview_task_adjustment'}
-          onClick={() => onAction(item.directAction
-            ? { id: item.directAction }
-            : { id: 'preview_task_adjustment', taskId: task.id, adjustment: item.action })}>{item.label}</button>)}
-          {editable(task) && <>
-            <button type="button" disabled={index === 0} data-action="open_task_reorder"
-              title={index === 0 ? '已经是第一个任务，无法前移' : '把该任务排到前一个任务之前'}
-              onClick={() => onAction({ id: 'open_task_reorder', mode: 'reorder', edit: {
-                action: 'reorder', taskId: task.id, beforeTaskId: tasks[index - 1]?.id,
-              } })}>前移</button>
-            <button type="button" disabled={index === tasks.length - 1} data-action="open_task_reorder"
-              title={index === tasks.length - 1 ? '已经是最后一个任务，无法后移' : '把该任务排到后一个任务之后'}
-              onClick={() => onAction({ id: 'open_task_reorder', mode: 'reorder', edit: {
-                action: 'reorder', taskId: task.id, ...(tasks[index + 2]?.id ? { beforeTaskId: tasks[index + 2].id } : {}),
-              } })}>后移</button>
-            <button type="button" data-action="open_task_split" title="把该任务拆成多个更小的任务"
-              onClick={() => onAction({ id: 'open_task_split', mode: 'split', task })}>拆分</button>
-          </>}</div>}</div>
+    <div className="ac-message-task-list">{tasks.map((task, index) => <article key={task.id} className={task.status}>
+      <span className="ac-message-task-index">{index + 1}</span><div><div><strong>{friendlyRepairText(task.title)}</strong>{task.required && <em>必选</em>}</div>{task.reason && <p>{friendlyRepairText(task.reason)}</p>}</div>
       <span className="ac-message-task-status">{TASK_STATUS_LABEL[task.status] ?? task.status}</span>
     </article>)}</div>{block.note && <div className="ac-message-task-note">{block.note}</div>}
   </section>;
@@ -189,12 +132,13 @@ function ChangePlanBlock({ block }) {
   </section>;
 }
 
-function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hiddenActionIds }) {
+function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hiddenActionIds, hideTaskPlan }) {
   if (block?.type === 'status') return <StatusBlock block={block} />;
   if (block?.type === 'text') return <div className="ac-message-text"><MarkdownContent>{friendlyRepairText(block.text)}</MarkdownContent></div>;
   if (block?.type === 'evidence') return <EvidenceBlock block={block} onAction={onAction} />;
   if (block?.type === 'validation') return <ValidationBlock block={block} onAction={onAction} />;
-  if (block?.type === 'task_plan') return <TaskPlanBlock block={block} onAction={onAction} />;
+  // 任务计划只在助手栏顶部的状态浮层里展示；对话流里再放一遍既占地方又没有操作价值
+  if (block?.type === 'task_plan') return hideTaskPlan ? null : <TaskPlanBlock block={block} />;
   if (block?.type === 'change_plan') return <ChangePlanBlock block={block} />;
   if (block?.type === 'next_actions') return <NextActionsBlock block={block} onAction={onAction}
     actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
@@ -204,6 +148,7 @@ function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hidd
 
 export default function AiConstructionMessageCard({
   message, onAction, actionsEnabled = true, disabledActionIds = [], hiddenActionIds = [],
+  hideTaskPlan = false,
 }) {
   const timestamp = formatMessageTimestamp(message?.createdAt);
   return (
@@ -211,7 +156,7 @@ export default function AiConstructionMessageCard({
       {(message?.blocks ?? []).map((block, index) => (
         <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={onAction}
           actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
-          hiddenActionIds={hiddenActionIds} />
+          hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} />
       ))}
       {timestamp && <time className="ac-message-time" dateTime={message.createdAt}>{timestamp}</time>}
     </article>

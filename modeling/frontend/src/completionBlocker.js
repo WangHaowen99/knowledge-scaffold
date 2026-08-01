@@ -3,6 +3,7 @@ const CODE_TITLE = {
   PACKAGE_CHECK_FAILED: '知识包还有阻断错误',
   KNOWLEDGE_EVIDENCE_REQUIRED: '有确认知识缺少可追溯证据',
   PENDING_INTERACTIONS: '还有待确认事项未处理',
+  REPAIR_TARGET_UNRESOLVED: '这条问题需要先确定修改目标',
   PACKAGE_WARNINGS_UNREVIEWED: '非阻断警告尚未复核',
 };
 
@@ -16,6 +17,9 @@ function detailLines(data) {
     // 后端已经算出具体缺证据的条目，全部丢弃只显示数量会让专家无从下手
     return data.problems.slice(0, 8).map((item) => `· ${String(item)}`)
       .concat(data.problems.length > 8 ? [`· 还有 ${data.problems.length - 8} 项…`] : []);
+  }
+  if (Array.isArray(data?.candidates) && data.candidates.length) {
+    return data.candidates.map((item) => `· ${item.targetKind}：${item.targetKey}`);
   }
   if (Array.isArray(data?.pendingInteractions) && data.pendingInteractions.length) {
     return data.pendingInteractions.slice(0, 8).map((item) => (
