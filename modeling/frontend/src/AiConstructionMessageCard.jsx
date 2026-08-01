@@ -62,6 +62,8 @@ function NextActionsBlock({
             data-action={action.id}
             className={`ac-message-action ${action.style ?? 'secondary'}`}
             disabled={!actionEnabled}
+            // 窄栏下说明文字会被收成两行，title 保证完整内容仍可读
+            title={action.description ? friendlyRepairText(action.description) : undefined}
             onClick={() => { if (actionEnabled) onAction?.(action); }}
           >
             <strong>{friendlyRepairText(action.label)}</strong>
