@@ -55,3 +55,30 @@ test('没选目标时原样返回，不塞空答案', () => {
   const response = { answers: [{ questionId: 'expert_decision', text: 'x' }] };
   assert.equal(withRepairTarget(response, ''), response);
 });
+
+// ---- 待办提交链接入统一出口渲染 ----
+
+test('已渲染成卡片的错误被打标，避免同一个错误显示两遍', async () => {
+  const { markSurfacedAsBlocker, isSurfacedAsBlocker } =
+    await import('../frontend/src/completionBlocker.js');
+  const error: any = new Error('当前状态不允许');
+  assert.equal(isSurfacedAsBlocker(error), false);
+  markSurfacedAsBlocker(error);
+  assert.equal(isSurfacedAsBlocker(error), true);
+  // 非对象不能炸
+  assert.equal(isSurfacedAsBlocker(undefined), false);
+  assert.equal(isSurfacedAsBlocker('boom'), false);
+  assert.doesNotThrow(() => markSurfacedAsBlocker(null));
+});
+
+test('待办提交的 409 也能生成可操作卡片', async () => {
+  const { completionBlockerMessage } = await import('../frontend/src/completionBlocker.js');
+  const card = completionBlockerMessage({
+    message: '还有 2 个待确认事项未处理',
+    data: {
+      code: 'PENDING_INTERACTIONS',
+      nextActions: [{ id: 'open_scenario_review', label: '去场景推演处理', style: 'primary' }],
+    },
+  });
+  assert.ok(card, '带 nextActions 的待办提交失败应生成卡片而不是一行红字');
+});
