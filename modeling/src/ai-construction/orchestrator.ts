@@ -1674,138 +1674,158 @@ export class AiConstructionOrchestrator {
     context: AiConstructionAdvanceContext = {},
   ): AiConstructionAdvanceResult {
     return this.transaction(() => {
-      let current = this.graph.snapshot(projectId) ?? confirmedSnapshot;
+      const current = this.graph.snapshot(projectId) ?? confirmedSnapshot;
+      // 完成评审排在等待态判断之前：等待确认本身就是它要处理的状态
       if (current.progress.currentMilestoneId === 'construction_completed') {
         return this.prepareCompletionReview(projectId, current, confirmedSnapshot);
       }
       if (current.progress.waitingFor === 'milestone_confirmation') {
         return { aiConstruction: current };
       }
-      if (current.progress.currentMilestoneId === 'deterministic_confirmed') {
-        return this.prepareScriptDecision(
-          projectId,
-          current,
-          confirmedSnapshot,
-          context.scriptCandidates ?? [],
-        );
-      }
-      if (current.progress.currentMilestoneId === 'knowledge_confirmed') {
-        return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
-      }
-      if (current.progress.currentMilestoneId === 'process_confirmed') {
-        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
-      }
-      if (current.progress.currentMilestoneId === 'materials_ready') {
-        return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
-      }
-      if (current.progress.currentMilestoneId !== 'goal_confirmed') {
-        return { aiConstruction: current };
-      }
-      let task = current.tasks.find((item) => item.kind === 'modeling_brief'
-        && item.milestoneId === 'goal_confirmed'
-        && !['cancelled', 'stale'].includes(item.status));
-      if (!task) {
-        const materialTask = current.tasks.find((item) => item.kind === 'material_analysis'
-          || item.kind === 'package_baseline_review');
-        current = this.graph.apply(projectId, {
-          type: 'plan_task',
-          expectedRevision: current.revision,
-          task: {
-            kind: 'modeling_brief',
-            milestoneId: 'goal_confirmed',
-            title: '确认建模目标',
-            goal: '明确知识包要解决的问题、目标用户、范围、非目标和成功标准。',
-            required: true,
-            reason: '资料范围确认后进入建模目标确认',
-            dependsOn: materialTask ? [materialTask.id] : [],
-          },
-        });
-        task = current.tasks.find((item) => item.kind === 'modeling_brief'
-          && item.milestoneId === 'goal_confirmed');
-      }
-      const existingInteraction = this.state.snapshot(projectId).pendingInteractions.find(
-        (item) => item.type === 'question_batch' && item.payload.purpose === 'modeling_brief',
-      );
-      const materialAnalysis = this.latestMaterialAnalysis(projectId);
-      let interaction = existingInteraction;
-      if (!interaction && task) {
-        const taskId = task.id;
-        if (task.status !== 'waiting_user') {
-          current = this.graph.apply(projectId, {
-            type: 'wait_for_user', expectedRevision: current.revision, taskId,
-          });
-          const refreshedTask = current.tasks.find((item) => item.id === taskId);
-          if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
-          task = refreshedTask;
-        }
-        const packageRevision = confirmedSnapshot.confirmations.find(
-          (item) => item.milestoneId === 'materials_ready',
-        )?.packageRevisionOid;
-        const started = this.state.apply({
-          kind: 'start_run',
-          projectId,
-          intent: '确认建模目标',
-          baseRevision: packageRevision,
-          state: { purpose: 'modeling_brief', taskId },
-        });
-        if (started.kind !== 'run') throw new Error('建模目标任务创建失败');
-        const opened = this.state.apply({
-          kind: 'open_interaction',
-          projectId,
-          runId: started.run.id,
-          type: 'question_batch',
-          baseRevision: packageRevision,
-          payload: {
-            purpose: 'modeling_brief',
-            taskId,
-            title: materialAnalysis ? '请选择最接近的建模目标假设' : '请先确认建模目标',
-            description: materialAnalysis
-              ? '候选来自已上传资料。优先选择，没有合适项时再填写“其他”。'
-              : '先确认建模目标，再上传并围绕目标分析资料。请说明要解决的问题、使用者、典型场景和成功标准。',
-            questions: buildModelingBriefQuestions(materialAnalysis),
-          },
-        });
-        if (opened.kind !== 'interaction') throw new Error('建模目标问题创建失败');
-        interaction = opened.interaction;
-      }
-      const message = this.messages.ensure(projectId, {
-        key: 'goal_confirmed.started',
-        role: 'assistant',
-        taskId: task?.id,
-        blocks: [
-          {
-            type: 'status',
-            title: '进入建模目标确认',
-            summary: `当前任务：${task?.title ?? '确认建模目标'}`,
-            milestoneId: 'goal_confirmed',
-            taskId: task?.id,
-            progress: current.progress.percent,
-            eta: {
-              minMinutes: current.progress.eta.minMinutes,
-              maxMinutes: current.progress.eta.maxMinutes,
-              confidence: current.progress.eta.confidence,
-            },
-          },
-          {
-            type: 'text',
-            text: materialAnalysis
-              ? '我已根据建模资料整理出少量目标假设。请直接选择或补充。'
-              : '请先确认这次建模要解决什么问题。后续资料分析、候选流程和知识构建都将以该目标为范围。',
-          },
-          {
-            type: 'next_actions',
-            title: '选择一种方式继续',
-            actions: [
-              { id: 'explain_goal', label: materialAnalysis ? '选择建模目标' : '填写建模目标', style: 'primary' },
-              ...(materialAnalysis
-                ? [{ id: 'review_materials', label: '先回顾资料分析', style: 'secondary' as const }]
-                : []),
-            ],
-          },
-        ],
-      });
-      return { aiConstruction: current, message, ...(interaction ? { interaction } : {}) };
+      // 认不出的里程碑不推进，保持原状返回
+      return this.advanceStepForMilestone(projectId, current, confirmedSnapshot, context)
+        ?? { aiConstruction: current };
     });
+  }
+
+  /**
+   * 里程碑 → 下一步处理器。原先是一条十几个分支的 if 链，新增里程碑要在链条中间
+   * 插对位置才生效；摊平成单层分派后「哪个里程碑交给谁」一眼可见，漏接也看得出来。
+   */
+  private advanceStepForMilestone(
+    projectId: string,
+    current: AiConstructionTaskGraphSnapshot,
+    confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    context: AiConstructionAdvanceContext,
+  ): AiConstructionAdvanceResult | null {
+    switch (current.progress.currentMilestoneId) {
+      case 'deterministic_confirmed':
+        return this.prepareScriptDecision(
+          projectId, current, confirmedSnapshot, context.scriptCandidates ?? [],
+        );
+      case 'knowledge_confirmed':
+        return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
+      case 'process_confirmed':
+        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
+      case 'materials_ready':
+        return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
+      case 'goal_confirmed':
+        return this.prepareModelingBrief(projectId, current, confirmedSnapshot);
+      default:
+        return null;
+    }
+  }
+
+  private prepareModelingBrief(
+    projectId: string,
+    snapshot: AiConstructionTaskGraphSnapshot,
+    confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+  ): AiConstructionAdvanceResult {
+    let current = snapshot;
+    let task = current.tasks.find((item) => item.kind === 'modeling_brief'
+      && item.milestoneId === 'goal_confirmed'
+      && !['cancelled', 'stale'].includes(item.status));
+    if (!task) {
+      const materialTask = current.tasks.find((item) => item.kind === 'material_analysis'
+        || item.kind === 'package_baseline_review');
+      current = this.graph.apply(projectId, {
+        type: 'plan_task',
+        expectedRevision: current.revision,
+        task: {
+          kind: 'modeling_brief',
+          milestoneId: 'goal_confirmed',
+          title: '确认建模目标',
+          goal: '明确知识包要解决的问题、目标用户、范围、非目标和成功标准。',
+          required: true,
+          reason: '资料范围确认后进入建模目标确认',
+          dependsOn: materialTask ? [materialTask.id] : [],
+        },
+      });
+      task = current.tasks.find((item) => item.kind === 'modeling_brief'
+        && item.milestoneId === 'goal_confirmed');
+    }
+    const existingInteraction = this.state.snapshot(projectId).pendingInteractions.find(
+      (item) => item.type === 'question_batch' && item.payload.purpose === 'modeling_brief',
+    );
+    const materialAnalysis = this.latestMaterialAnalysis(projectId);
+    let interaction = existingInteraction;
+    if (!interaction && task) {
+      const taskId = task.id;
+      if (task.status !== 'waiting_user') {
+        current = this.graph.apply(projectId, {
+          type: 'wait_for_user', expectedRevision: current.revision, taskId,
+        });
+        const refreshedTask = current.tasks.find((item) => item.id === taskId);
+        if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
+        task = refreshedTask;
+      }
+      const packageRevision = confirmedSnapshot.confirmations.find(
+        (item) => item.milestoneId === 'materials_ready',
+      )?.packageRevisionOid;
+      const started = this.state.apply({
+        kind: 'start_run',
+        projectId,
+        intent: '确认建模目标',
+        baseRevision: packageRevision,
+        state: { purpose: 'modeling_brief', taskId },
+      });
+      if (started.kind !== 'run') throw new Error('建模目标任务创建失败');
+      const opened = this.state.apply({
+        kind: 'open_interaction',
+        projectId,
+        runId: started.run.id,
+        type: 'question_batch',
+        baseRevision: packageRevision,
+        payload: {
+          purpose: 'modeling_brief',
+          taskId,
+          title: materialAnalysis ? '请选择最接近的建模目标假设' : '请先确认建模目标',
+          description: materialAnalysis
+            ? '候选来自已上传资料。优先选择，没有合适项时再填写“其他”。'
+            : '先确认建模目标，再上传并围绕目标分析资料。请说明要解决的问题、使用者、典型场景和成功标准。',
+          questions: buildModelingBriefQuestions(materialAnalysis),
+        },
+      });
+      if (opened.kind !== 'interaction') throw new Error('建模目标问题创建失败');
+      interaction = opened.interaction;
+    }
+    const message = this.messages.ensure(projectId, {
+      key: 'goal_confirmed.started',
+      role: 'assistant',
+      taskId: task?.id,
+      blocks: [
+        {
+          type: 'status',
+          title: '进入建模目标确认',
+          summary: `当前任务：${task?.title ?? '确认建模目标'}`,
+          milestoneId: 'goal_confirmed',
+          taskId: task?.id,
+          progress: current.progress.percent,
+          eta: {
+            minMinutes: current.progress.eta.minMinutes,
+            maxMinutes: current.progress.eta.maxMinutes,
+            confidence: current.progress.eta.confidence,
+          },
+        },
+        {
+          type: 'text',
+          text: materialAnalysis
+            ? '我已根据建模资料整理出少量目标假设。请直接选择或补充。'
+            : '请先确认这次建模要解决什么问题。后续资料分析、候选流程和知识构建都将以该目标为范围。',
+        },
+        {
+          type: 'next_actions',
+          title: '选择一种方式继续',
+          actions: [
+            { id: 'explain_goal', label: materialAnalysis ? '选择建模目标' : '填写建模目标', style: 'primary' },
+            ...(materialAnalysis
+              ? [{ id: 'review_materials', label: '先回顾资料分析', style: 'secondary' as const }]
+              : []),
+          ],
+        },
+      ],
+    });
+    return { aiConstruction: current, message, ...(interaction ? { interaction } : {}) };
   }
 
   private prepareGoalDirectedMaterialAnalysis(
