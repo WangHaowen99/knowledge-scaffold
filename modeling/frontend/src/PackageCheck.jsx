@@ -26,6 +26,7 @@ export default function PackageCheck({
   onCheckResult,
 }) {
   const [manualCheck, setManualCheck] = useState(null);
+  const [repairAvailability, setRepairAvailability] = useState(null);
   const [manualErrorDeferral, setManualErrorDeferral] = useState(null);
   const [manualWarningReview, setManualWarningReview] = useState(null);
   const [open, setOpen] = useState(false);
@@ -56,8 +57,17 @@ export default function PackageCheck({
       if (event?.detail?.warningReview) setManualWarningReview(event.detail.warningReview);
       setOpen(true);
     };
+    // 助手栏「查看校验结果」原先只往输入框预填一句话，现在直接展开体检结果
+    const openCheck = (event) => {
+      if (event?.detail?.projectId && event.detail.projectId !== projectId) return;
+      setOpen(true);
+    };
     window.addEventListener('mw-package-warning-review', openWarningReview);
-    return () => window.removeEventListener('mw-package-warning-review', openWarningReview);
+    window.addEventListener('mw-package-check-open', openCheck);
+    return () => {
+      window.removeEventListener('mw-package-warning-review', openWarningReview);
+      window.removeEventListener('mw-package-check-open', openCheck);
+    };
   }, [projectId]);
 
   const run = async () => {
@@ -77,6 +87,7 @@ export default function PackageCheck({
       setAcceptanceNote('');
       setDeferralReason('');
       setOpen(true);
+      setRepairAvailability(d.repair ?? null);
       onCheckResult?.(d);
       window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
@@ -128,7 +139,13 @@ export default function PackageCheck({
   };
 
   const repair = async () => {
-    if (repairing || !counts?.错误 || packageDraft) return;
+    if (repairing) return;
+    // 可用性由后端声明：不可用时说明原因，而不是静默什么都不做
+    if (repairAvailability && !repairAvailability.available) {
+      setErr(repairAvailability.reason || '当前无法自动修复');
+      return;
+    }
+    if (!counts?.错误 || packageDraft) return;
     setRepairing(true); setErr('');
     try {
       await repairAiConstructionKnowledge(projectId);
@@ -160,8 +177,12 @@ export default function PackageCheck({
         )}
         {counts?.错误 > 0 && (
           <button type="button" className="btn btn-p"
-            disabled={repairing || busy || rechecking || !!packageDraft} onClick={repair}
-            title="根据当前检查结果自动修改知识包，并重新检查">
+            disabled={repairing || busy || rechecking
+              || (repairAvailability ? !repairAvailability.available : !!packageDraft)}
+            onClick={repair}
+            title={repairAvailability && !repairAvailability.available
+              ? repairAvailability.reason
+              : '根据当前检查结果自动修改知识包，并重新检查'}>
             {repairing ? '自动修复中…' : '自动修复错误'}
           </button>
         )}

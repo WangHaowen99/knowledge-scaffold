@@ -136,6 +136,7 @@ function TaskPlanBlock({ block, onAction }) {
         id: 'open_task_add', mode: 'add', milestoneId: block.milestoneId,
       })}>新增任务</button>
       <button type="button" data-action="open_task_merge" disabled={selectedTasks.length < 2}
+        title={selectedTasks.length < 2 ? '请先勾选至少两个任务再合并' : `合并选中的 ${selectedTasks.length} 个任务`}
         onClick={() => onAction({ id: 'open_task_merge', mode: 'merge', tasks: selectedTasks })}>合并所选</button>
       <span>选中 {selectedTasks.length} 项</span>
     </div>}
@@ -152,14 +153,16 @@ function TaskPlanBlock({ block, onAction }) {
             : { id: 'preview_task_adjustment', taskId: task.id, adjustment: item.action })}>{item.label}</button>)}
           {editable(task) && <>
             <button type="button" disabled={index === 0} data-action="open_task_reorder"
+              title={index === 0 ? '已经是第一个任务，无法前移' : '把该任务排到前一个任务之前'}
               onClick={() => onAction({ id: 'open_task_reorder', mode: 'reorder', edit: {
                 action: 'reorder', taskId: task.id, beforeTaskId: tasks[index - 1]?.id,
               } })}>前移</button>
             <button type="button" disabled={index === tasks.length - 1} data-action="open_task_reorder"
+              title={index === tasks.length - 1 ? '已经是最后一个任务，无法后移' : '把该任务排到后一个任务之后'}
               onClick={() => onAction({ id: 'open_task_reorder', mode: 'reorder', edit: {
                 action: 'reorder', taskId: task.id, ...(tasks[index + 2]?.id ? { beforeTaskId: tasks[index + 2].id } : {}),
               } })}>后移</button>
-            <button type="button" data-action="open_task_split"
+            <button type="button" data-action="open_task_split" title="把该任务拆成多个更小的任务"
               onClick={() => onAction({ id: 'open_task_split', mode: 'split', task })}>拆分</button>
           </>}</div>}</div>
       <span className="ac-message-task-status">{TASK_STATUS_LABEL[task.status] ?? task.status}</span>

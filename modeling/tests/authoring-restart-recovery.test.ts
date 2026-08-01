@@ -113,8 +113,9 @@ test('服务重启会结束运行中任务，并保留等待用户的任务和�
       type: 'next_actions',
       title: '可以这样继续',
       actions: [
-        { id: 'analyze_materials', label: '重新分析资料', style: 'primary' },
-        { id: 'upload_materials', label: '补充建模资料', style: 'secondary' },
+        // kind 由后端动作目录声明，前端据此分发
+        { id: 'analyze_materials', kind: 'command', label: '重新分析资料', style: 'primary' },
+        { id: 'upload_materials', kind: 'dialog', label: '补充建模资料', style: 'secondary' },
       ],
     },
   ]);

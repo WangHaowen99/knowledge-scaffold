@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb, nowIso } from '../db/index.js';
+import { assistantActionKind, type AssistantActionKind } from './assistant-actions.js';
 import type { JsonObject } from '../authoring/types.js';
 import type { AiConstructionTaskGraphSnapshot } from './task-graph.js';
 
@@ -82,6 +83,8 @@ export interface AiConstructionNextActionsBlock {
   title?: string;
   actions: Array<{
     id: string;
+    /** 由 assistant-actions 目录声明；前端据此分发，不再按 id 猜语义 */
+    kind?: AssistantActionKind;
     label: string;
     description?: string;
     style: 'primary' | 'secondary' | 'danger';
@@ -361,8 +364,17 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
         throw new AiConstructionMessageStoreError('INVALID_BLOCK', '动作样式不正确');
       }
       const description = optionalText(action.description, '动作说明', 200);
+      // 动作语义由后端声明：未登记的 id 在写入时就失败，不会变成点了没反应的孤儿按钮
+      const kind = assistantActionKind(id);
+      if (!kind) {
+        throw new AiConstructionMessageStoreError(
+          'INVALID_BLOCK',
+          `动作 ${id} 未在助手动作目录登记`,
+        );
+      }
       return {
         id,
+        kind,
         label: textValue(action.label, '动作名称', 50),
         ...(description ? { description } : {}),
         style: style as 'primary' | 'secondary' | 'danger',
