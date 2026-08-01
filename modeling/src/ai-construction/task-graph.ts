@@ -285,22 +285,40 @@ function taskElapsedMinutes(task: AiConstructionTaskSnapshot): number | null {
   return (end - start) / MINUTE_MS;
 }
 
+/** 跨项目的同类任务实测耗时（分钟），由调用方从库里查出来传入 */
+export type MeasuredTaskDurations = Partial<Record<AiConstructionTaskKind, number[]>>;
+
+/**
+ * 低于这个耗时的样本不算数。任务可能被程序瞬间置为 completed（跳过、命中缓存、
+ * 状态补写），这类记录不是对真实工作量的测量。混进来会把区间下限拉到 0，
+ * 让所有人都看到「预计 1 分钟」。
+ */
+const MIN_CREDIBLE_SAMPLE_MINUTES = 0.5;
+
 /**
  * 同类任务的实测耗时区间。静态表只是冷启动兜底：不同项目的资料规模、模型速度
  * 差别很大，写死的 [2, 8] 分钟在真实项目里往往离谱。
  *
- * 有历史时用实测的最小/最大值（各留 20% 余量），并与静态表取并集避免单次样本过窄；
- * 样本不足时退回静态表。
+ * 样本必须跨项目取。每种 task kind 在一个项目里通常只跑一次，只看本项目历史的话，
+ * 等你有样本时这个任务早就做完了、不需要估算了——那等于永远退回静态表，
+ * 界面上的「预计 28–90 分钟」就成了一个从头到尾不动的摆设。
+ *
+ * 有样本时用实测的最小/最大值（各留 20% 余量）；只有一个样本时与静态表取并集，
+ * 避免单次样本给出过窄的区间。
  */
 export function aiConstructionTaskEstimate(
   kind: AiConstructionTaskKind,
   history: AiConstructionTaskSnapshot[],
+  measured: MeasuredTaskDurations = {},
 ): [number, number] {
   const fallback = aiConstructionTaskDuration(kind);
-  const samples = history
-    .filter((task) => task.kind === kind && task.status === 'completed')
-    .map(taskElapsedMinutes)
-    .filter((value): value is number => value !== null && value > 0);
+  const samples = [
+    ...history
+      .filter((task) => task.kind === kind && task.status === 'completed')
+      .map(taskElapsedMinutes)
+      .filter((value): value is number => value !== null),
+    ...(measured[kind] ?? []).filter((value) => Number.isFinite(value)),
+  ].filter((value) => value >= MIN_CREDIBLE_SAMPLE_MINUTES);
   if (!samples.length) return fallback;
 
   const min = Math.min(...samples) * 0.8;
@@ -309,6 +327,24 @@ export function aiConstructionTaskEstimate(
   const low = samples.length > 1 ? min : Math.min(min, fallback[0]);
   const high = samples.length > 1 ? max : Math.max(max, fallback[1]);
   return [Math.max(1, Math.round(low)), Math.max(1, Math.round(high))];
+}
+
+/**
+ * 正在跑的任务已经花掉的时间要从剩余里扣掉，否则跑了 20 分钟数字还是原来那个，
+ * 看上去就是「不会动的固定值」。下限扣到 0，上限至少留 1 分钟避免显示成已完成。
+ */
+function remainingForTask(
+  task: AiConstructionTaskSnapshot,
+  estimate: [number, number],
+): [number, number] {
+  if (task.status !== 'running') return estimate;
+  const started = Date.parse(task.updatedAt);
+  if (!Number.isFinite(started)) return estimate;
+  const elapsed = Math.max(0, (Date.now() - started) / MINUTE_MS);
+  return [
+    Math.max(0, Math.round(estimate[0] - elapsed)),
+    Math.max(1, Math.round(estimate[1] - elapsed)),
+  ];
 }
 
 function durationForTasks(tasks: AiConstructionTaskSnapshot[]): [number, number] {
@@ -338,6 +374,7 @@ function deriveProgress(
   graphStatus: AiConstructionGraphStatus,
   milestones: AiConstructionMilestoneSnapshot[],
   tasks: AiConstructionTaskSnapshot[],
+  measured: MeasuredTaskDurations = {},
 ): AiConstructionProgressSnapshot {
   const effectiveTasks = tasks.filter((task) => !isSupersededStaleTask(task, tasks));
   const confirmedMilestones = milestones.filter((item) => item.status === 'confirmed').length;
@@ -370,14 +407,20 @@ function deriveProgress(
     && item.status !== 'waiting_user' && item.status !== 'waiting_confirmation'
     && item.status !== 'failed');
   const duration = plannedRemaining.reduce(([min, max], task) => {
-    const estimate = aiConstructionTaskEstimate(task.kind, tasks);
+    const estimate = remainingForTask(
+      task, aiConstructionTaskEstimate(task.kind, tasks, measured),
+    );
     return [min + estimate[0], max + estimate[1]] as [number, number];
   }, [0, 0] as [number, number]);
   const hasEstimate = plannedRemaining.length > 0;
   // 有实测样本时置信度提升，界面据此决定措辞
-  const measuredKinds = new Set(tasks
-    .filter((task) => task.status === 'completed' && taskElapsedMinutes(task) !== null)
-    .map((task) => task.kind));
+  const measuredKinds = new Set([
+    ...tasks
+      .filter((task) => task.status === 'completed' && taskElapsedMinutes(task) !== null)
+      .map((task) => task.kind),
+    ...(Object.keys(measured) as AiConstructionTaskKind[])
+      .filter((kind) => (measured[kind] ?? []).length > 0),
+  ]);
   const measuredShare = plannedRemaining.length
     ? plannedRemaining.filter((task) => measuredKinds.has(task.kind)).length / plannedRemaining.length
     : 0;
@@ -1002,7 +1045,35 @@ export class AiConstructionTaskGraph {
       milestones: milestoneSnapshots,
       tasks: taskSnapshots,
       confirmations: confirmationSnapshots,
-      progress: deriveProgress(graph.status, milestoneSnapshots, taskSnapshots),
+      progress: deriveProgress(
+        graph.status, milestoneSnapshots, taskSnapshots, this.measuredTaskDurations(),
+      ),
     };
+  }
+
+  /**
+   * 跨项目的同类任务实测耗时，用来把 ETA 从静态表拉到真实数据上。
+   * 只看本项目没有意义：每种 kind 一个项目通常只跑一次，需要估算的时候必然还没有样本。
+   *
+   * 只取最近 200 条，老样本反映的是早期模型和资料规模，参考价值低；
+   * 每种 kind 最多留 20 个，避免某一类任务把区间算法的极值拉偏。
+   */
+  private measuredTaskDurations(): MeasuredTaskDurations {
+    const rows = this.db.prepare(`
+      SELECT task_kind, created_at, updated_at FROM ai_construction_tasks
+      WHERE status = 'completed' ORDER BY updated_at DESC LIMIT 200
+    `).all() as Array<{ task_kind: string; created_at: string; updated_at: string }>;
+    const measured: MeasuredTaskDurations = {};
+    for (const row of rows) {
+      const start = Date.parse(row.created_at);
+      const end = Date.parse(row.updated_at);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+      const minutes = (end - start) / MINUTE_MS;
+      if (minutes < MIN_CREDIBLE_SAMPLE_MINUTES) continue;
+      const kind = row.task_kind as AiConstructionTaskKind;
+      const bucket = measured[kind] ?? (measured[kind] = []);
+      if (bucket.length < 20) bucket.push(minutes);
+    }
+    return measured;
   }
 }

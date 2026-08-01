@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import ArtifactDiff from './ArtifactDiff.jsx';
 import { safeUiError } from './revision-state.js';
 import { repairTargetCandidatesFrom, withRepairTarget } from './repairTargetChoice.js';
+import { isSurfacedAsBlocker } from './completionBlocker.js';
 
 const TYPE_TITLE = {
   question: '需要确认',
@@ -757,7 +758,8 @@ export default function PendingInteraction({
         setRepairTarget((current) => current || candidates[0].value);
         setRetryResponse(response);
       }
-      setLocalError(safeUiError(cause, '提交失败，请重试'));
+      // 已经渲染成可操作卡片的错误不再重复成一行红字
+      if (!isSurfacedAsBlocker(cause)) setLocalError(safeUiError(cause, '提交失败，请重试'));
     } finally {
       setLocalBusy(false);
     }

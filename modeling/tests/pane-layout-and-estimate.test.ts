@@ -115,3 +115,58 @@ test('未在分析时上传不打扰用户', () => {
   assert.equal(confirmUploadDuringAnalysis(false, () => { asked = true; return true; }), true);
   assert.equal(asked, false);
 });
+
+// ---- 跨项目样本：不然每种 kind 一个项目只跑一次，需要估算时永远没样本 ----
+
+test('本项目没跑过的任务，用跨项目实测样本而不是静态表', () => {
+  const fallback = aiConstructionTaskDuration('knowledge_extraction');
+  const estimate = aiConstructionTaskEstimate('knowledge_extraction', [], {
+    knowledge_extraction: [60, 70, 80],
+  });
+  assert.notDeepEqual(estimate, fallback, '有跨项目样本时不应再退回静态表');
+  assert.deepEqual(estimate, [48, 96]);
+});
+
+test('本项目样本与跨项目样本合并统计', () => {
+  const estimate = aiConstructionTaskEstimate(
+    'material_analysis',
+    [task({ createdAt: '2026-08-01T10:00:00.000Z', updatedAt: '2026-08-01T10:20:00.000Z' })],
+    { material_analysis: [10] },
+  );
+  // 本项目 20 分钟、跨项目 10 分钟 → [10*0.8, 20*1.2]
+  assert.deepEqual(estimate, [8, 24]);
+});
+
+test('跨项目样本里的脏数据被忽略', () => {
+  const fallback = aiConstructionTaskDuration('material_analysis');
+  assert.deepEqual(
+    aiConstructionTaskEstimate('material_analysis', [], { material_analysis: [0, -5, Number.NaN] }),
+    fallback,
+  );
+});
+
+// ---- 忙碌态以服务端运行记录为准 ----
+
+test('取最早开始的活动运行，用户最关心已经等了多久', async () => {
+  const { activeRunOf, activeRunLabel } = await import('../frontend/src/activeRun.js');
+  const run = activeRunOf({ activeRuns: [
+    { id: 'b', status: 'running', intent: '生成知识结构', createdAt: '2026-08-01T10:05:00.000Z' },
+    { id: 'a', status: 'queued', intent: '确认建模目标', createdAt: '2026-08-01T10:01:00.000Z' },
+    { id: 'c', status: 'completed', intent: '早就结束了', createdAt: '2026-08-01T09:00:00.000Z' },
+  ] });
+  assert.equal(run?.id, 'a');
+  assert.equal(activeRunLabel(run), '正在确认建模目标');
+});
+
+test('没有活动运行时不显示忙碌态', async () => {
+  const { activeRunOf } = await import('../frontend/src/activeRun.js');
+  assert.equal(activeRunOf({ activeRuns: [{ status: 'completed' }] }), null);
+  assert.equal(activeRunOf({ activeRuns: [] }), null);
+  assert.equal(activeRunOf(undefined), null);
+});
+
+test('intent 缺失时有兜底文案，不显示空白', async () => {
+  const { activeRunLabel } = await import('../frontend/src/activeRun.js');
+  assert.equal(activeRunLabel({ intent: '  ' }), '正在处理');
+  assert.equal(activeRunLabel(null), '正在处理');
+});
