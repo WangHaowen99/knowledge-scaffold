@@ -1015,3 +1015,124 @@ test('没有脚本需求时明确确认后可以结束确定性能力阶段', ()
     'confirm_deterministic', 'review_knowledge_files',
   ]);
 });
+
+/**
+ * 复现：知识结构里程碑确认后，知识包再出阻断错误时无法发起受控修复。
+ * 六个修复编排方法都硬编码 knowledge_confirmed，而任务图要求里程碑 active 才能规划/推进任务。
+ */
+test('知识结构确认后仍能发起受控修复', () => {
+  const project = createMaterialFirstProject('确认后修复');
+  const { snapshot } = advanceGraphToDeterministic(project.id);
+  const graph = new AiConstructionTaskGraph(getDb());
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
+
+  assert.equal(
+    snapshot.milestones.find((item) => item.id === 'knowledge_confirmed')?.status,
+    'confirmed',
+    '前置条件：知识结构里程碑已确认',
+  );
+
+  const started = orchestrator.startKnowledgeRepair(project.id, {
+    inputRevisionOid: 'revision-after-confirm',
+    messageKey: 'repair.after.confirm',
+  });
+  const repair = started.aiConstruction.tasks.find((item) => item.kind === 'package_repair');
+  assert.ok(repair, '应能创建受控修复任务');
+  assert.equal(repair!.status, 'running');
+
+  // 修复完成后要能写出「仍需继续处理」并带下一步，否则界面上没有任何出口
+  const completed = orchestrator.completeKnowledgeRepair(project.id, {
+    packageRevisionOid: 'revision-repaired',
+    messageKey: 'repair.after.confirm.done',
+    version: '1.0.0',
+    validation: { errors: 2, warnings: 0, hints: 0, findings: [] },
+    summary: '自动修复了 1 个结构问题',
+  });
+  const blocks = completed.message!.blocks as any[];
+  assert.equal(blocks[0].title, '本轮修复已完成，仍需继续处理');
+  assert.deepEqual(blocks.at(-1).actions.map((action: any) => action.id), [
+    'repair_knowledge_structure', 'defer_validation_errors', 'view_validation',
+  ]);
+});
+
+const evaluationDefects = () => [
+  {
+    id: 'dg-1', title: '缺少减一线分流的适用条件',
+    summary: '知识包没有说明什么情况下走减一线分流，模型只能自由发挥。',
+    target: '何时启用减一线分流',
+    suggestedAction: '补一条 rule 明确门槛值和例外。',
+  },
+  {
+    id: 'dg-2', title: '产能利用率口径不一致',
+    summary: '指标定义与业务口径不一致，评测答案偏差稳定存在。',
+    suggestedAction: '修缮 metric 的统计粒度。',
+  },
+];
+
+test('评测缺陷回流建模登记为 evaluation_repair 并指向优化更新', () => {
+  const project = createMaterialFirstProject('评测缺陷回流');
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
+
+  const recorded = orchestrator.recordEvaluationDefects(project.id, {
+    roundId: 'round-1', packageVersion: '1.0.0', defects: evaluationDefects(),
+  });
+
+  const repair = recorded.aiConstruction.tasks.find((item) => item.kind === 'evaluation_repair')!;
+  assert.ok(repair, '应登记评测缺陷修缮任务');
+  assert.equal(repair.status, 'waiting_user');
+  assert.match(String(repair.reason), /评测轮次 round-1/);
+  // 不复用 package_repair：两者引擎与完成判据都不同
+  assert.equal(recorded.aiConstruction.tasks.some((item) => item.kind === 'package_repair'), false);
+
+  const blocks = recorded.message!.blocks as any[];
+  assert.equal(blocks[0].title, '评测发现 2 处知识包缺陷');
+  assert.match(String(blocks[1].text), /缺少减一线分流的适用条件/);
+  assert.match(String(blocks[1].text), /产能利用率口径不一致/);
+  assert.deepEqual(blocks[2].actions.map((action: any) => action.id), [
+    'open_optimization', 'review_knowledge_files',
+  ]);
+});
+
+test('同一批评测缺陷重复回流不会堆出重复任务和消息', () => {
+  const project = createMaterialFirstProject('评测缺陷回流幂等');
+  const graph = new AiConstructionTaskGraph(getDb());
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
+
+  const first = orchestrator.recordEvaluationDefects(project.id, {
+    roundId: 'round-2', packageVersion: '1.0.0', defects: evaluationDefects(),
+  });
+  const second = orchestrator.recordEvaluationDefects(project.id, {
+    roundId: 'round-2', packageVersion: '1.0.0', defects: evaluationDefects(),
+  });
+
+  assert.equal(first.message!.id, second.message!.id);
+  assert.equal(
+    graph.snapshot(project.id)!.tasks.filter((item) => item.kind === 'evaluation_repair').length,
+    1,
+  );
+});
+
+test('建模已完成时回流会重新打开修缮阶段', () => {
+  const project = createMaterialFirstProject('评测缺陷回流-已完成');
+  const { snapshot } = advanceGraphToDeterministic(project.id);
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
+  assert.equal(
+    snapshot.milestones.find((item) => item.id === 'knowledge_confirmed')?.status,
+    'confirmed',
+  );
+
+  const recorded = orchestrator.recordEvaluationDefects(project.id, {
+    roundId: 'round-3', packageVersion: '1.0.0', defects: evaluationDefects(),
+  });
+  const repair = recorded.aiConstruction.tasks.find((item) => item.kind === 'evaluation_repair')!;
+  assert.equal(repair.status, 'waiting_user');
+  assert.equal(recorded.aiConstruction.status, 'active');
+});
+
+test('没有缺陷时拒绝回流建模', () => {
+  const project = createMaterialFirstProject('评测缺陷回流-空集');
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
+  assert.throws(() => orchestrator.recordEvaluationDefects(project.id, {
+    roundId: 'round-4', packageVersion: '1.0.0', defects: [],
+  }), /没有需要回流建模的评测缺陷/);
+});
