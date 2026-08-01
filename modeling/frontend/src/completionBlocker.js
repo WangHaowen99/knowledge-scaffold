@@ -29,6 +29,21 @@ function detailLines(data) {
   return [];
 }
 
+const SURFACED = Symbol.for('mw.blockerSurfaced');
+
+/**
+ * 标记该错误已经渲染成可操作卡片。待办提交那条链原本自带一行红字，
+ * 不打标记的话同一个错误会同时以卡片和红字出现两遍。
+ */
+export function markSurfacedAsBlocker(error) {
+  if (error && typeof error === 'object') error[SURFACED] = true;
+  return error;
+}
+
+export function isSurfacedAsBlocker(error) {
+  return Boolean(error && typeof error === 'object' && error[SURFACED]);
+}
+
 /**
  * 把「确认完成建模」被拦下的 409 变成一张可操作卡片。
  * 后端在响应里声明了 nextActions，前端只负责渲染，不再为每个 code 写特判。

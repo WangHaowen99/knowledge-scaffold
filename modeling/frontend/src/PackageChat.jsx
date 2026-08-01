@@ -31,8 +31,10 @@ import MarkdownContent from './MarkdownContent.jsx';
 import { confirmFlowchartNavigation, confirmUploadDuringAnalysis } from './flowchartNavigationGuard.js';
 import { formatMessageTimestamp } from './messageTimestamp.js';
 import { NAVIGATION_TARGETS, assistantActionKind, isReadOnlyAction } from './assistantActions.js';
-import { completionBlockerMessage } from './completionBlocker.js';
+import { completionBlockerMessage, markSurfacedAsBlocker } from './completionBlocker.js';
+import { repairTargetCandidatesFrom } from './repairTargetChoice.js';
 import { isPackageChatRunning } from './packageChatRun.js';
+import { activeRunLabel, activeRunOf } from './activeRun.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
   canUseStructuredMessageActions,
@@ -137,8 +139,12 @@ export default function PackageChat({
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
-  const busy = localBusy || (chatRunning ? 'plan' : '');
-  const sec = useElapsed(!!busy);
+  // 服务端还在跑的运行。本地 busy 一刷新就没了，但后端没停——只认本地会让用户
+  // 以为提交丢了。本地态优先（文案更贴合刚点的按钮），没有本地态时用服务端的。
+  const serverRun = useMemo(() => activeRunOf(authoring), [authoring]);
+  const busy = localBusy || (chatRunning ? 'plan' : '') || (serverRun ? 'server_run' : '');
+  // 计时也走服务端开始时间，刷新后不会从 0 秒重新数
+  const sec = useElapsed(!!busy, localBusy ? undefined : serverRun?.createdAt);
   const bodyRef = useRef(null);
   const loadingOlderRef = useRef(false);
   const materialInputRef = useRef(null);
@@ -670,6 +676,16 @@ export default function PackageChat({
       await refreshConstruction();
       return result;
     } catch (error) {
+      // 待办提交原本自成一套错误显示（一行红字），后端声明的 nextActions 被丢掉。
+      // 接到与其余路径同一张卡片上；REPAIR_TARGET_UNRESOLVED 除外——那条有更贴合的
+      // 就地单选，卡片会变成重复信息。
+      if (!repairTargetCandidatesFrom(error).length) {
+        const blocked = completionBlockerMessage(error);
+        if (blocked) {
+          setCompletionBlocker(blocked);
+          markSurfacedAsBlocker(error);
+        }
+      }
       await refreshConstruction().catch(() => undefined);
       throw error;
     } finally {
@@ -845,6 +861,7 @@ export default function PackageChat({
               script_apply: `正在应用并校验确定性脚本 · ${etaText(aiConstruction?.progress?.eta)}`,
               task_preview: '正在分析任务调整影响', task_adjustment: '正在应用任务调整',
               task_edit: '正在应用任务图变更',
+              server_run: activeRunLabel(serverRun),
             }[busy] ?? '正在处理'} · {sec} 秒</div>
           </div>
         )}

@@ -1,16 +1,26 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 // 耗时操作的经过时间（秒）：busy 为真时从 0 开始计
-export function useElapsed(busy) {
+/**
+ * 忙碌计时。传入 sinceIso（服务端记录的开始时间）时按它计算，
+ * 这样刷新页面后计时不会归零——后台还在跑，界面却从 0 秒重新数是在误导人。
+ * 不传则从进入忙碌态开始数，与原行为一致。
+ */
+export function useElapsed(busy, sinceIso) {
   const [sec, setSec] = useState(0);
   const timer = useRef(null);
   useEffect(() => {
-    if (busy) {
+    if (!busy) {
       setSec(0);
-      timer.current = setInterval(() => setSec((s) => s + 1), 1000);
+      return undefined;
     }
+    const started = Date.parse(sinceIso ?? '');
+    const from = Number.isFinite(started) ? started : Date.now();
+    const tick = () => setSec(Math.max(0, Math.floor((Date.now() - from) / 1000)));
+    tick();
+    timer.current = setInterval(tick, 1000);
     return () => clearInterval(timer.current);
-  }, [busy]);
+  }, [busy, sinceIso]);
   return sec;
 }
 
