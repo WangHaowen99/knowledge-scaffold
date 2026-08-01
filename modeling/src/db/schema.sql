@@ -776,3 +776,14 @@ CREATE TABLE IF NOT EXISTS package_override_migration_archive (
 );
 CREATE INDEX IF NOT EXISTS idx_package_override_archive_project
   ON package_override_migration_archive(project_id, migrated_at);
+
+-- 资料分析的批次级缓存。补传资料后只重跑内容变了的批次，其余直接复用，
+-- 避免为已经分析过的几十份材料重复付一次 LLM 成本和等待时间。
+-- 键是批次材料内容的哈希（含已确认建模目标），不是批次序号——序号会随增删平移。
+CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  cache_key   TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (project_id, cache_key)
+);
