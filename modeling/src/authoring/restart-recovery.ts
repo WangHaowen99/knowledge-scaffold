@@ -14,6 +14,7 @@ export interface AuthoringRestartRecoveryResult {
   constructionTasks: number;
   workflowNodes: number;
   projectLeases: number;
+  inflightOperations: number;
   /** 写给用户的「已中断，可这样继续」消息条数 */
   recoveryMessages: number;
 }
@@ -40,6 +41,7 @@ export function recoverInterruptedAuthoringWork(
     constructionTasks: 0,
     workflowNodes: 0,
     projectLeases: 0,
+    inflightOperations: 0,
     recoveryMessages: 0,
   };
   const ownsTransaction = !db.isTransaction;
@@ -79,6 +81,10 @@ export function recoverInterruptedAuthoringWork(
     // 租约只代表当前进程内正在执行的写操作；进程重启后其 owner 不可能继续续租。
     // 即使原 TTL 尚未到期也必须清理，否则恢复后的待确认事项会被旧租约错误阻塞。
     result.projectLeases = Number(db.prepare('DELETE FROM project_operation_leases').run().changes);
+
+    // 长任务登记同理：上个进程的登记不可能再续期，留着只会让界面一直显示
+    // 「正在处理」并挡住重新触发。
+    result.inflightOperations = Number(db.prepare('DELETE FROM inflight_operations').run().changes);
 
     result.authoringRuns = Number(db.prepare(`UPDATE authoring_runs
       SET status = 'failed', error = ?, updated_at = ?, finished_at = ?

@@ -787,3 +787,15 @@ CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
   created_at  TEXT NOT NULL,
   PRIMARY KEY (project_id, cache_key)
 );
+
+-- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
+-- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，
+-- 因为上个进程的登记不可能再续期（见 authoring/restart-recovery.ts）。
+CREATE TABLE IF NOT EXISTS inflight_operations (
+  key         TEXT PRIMARY KEY,   -- 形如 pj_xxx:optimize
+  operation   TEXT NOT NULL,
+  token       TEXT NOT NULL,
+  started_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inflight_operations_expiry ON inflight_operations(expires_at);
