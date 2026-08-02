@@ -796,6 +796,9 @@ CREATE TABLE IF NOT EXISTS inflight_operations (
   operation   TEXT NOT NULL,
   token       TEXT NOT NULL,
   started_at  TEXT NOT NULL,
-  expires_at  TEXT NOT NULL
+  expires_at  TEXT NOT NULL,
+  -- 取消请求。任务在检查点（批次之间、逐条修复之间）读它并主动退出：
+  -- 单次模型调用中途停不下来，所以取消是「当前这批跑完就停」，不是立即中断。
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_inflight_operations_expiry ON inflight_operations(expires_at);

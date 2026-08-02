@@ -36,6 +36,7 @@ import {
   type GenerationOptions,
 } from './generation-gate.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
+import { throwIfCancelled } from '../cancellation.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -210,6 +211,7 @@ export async function generatePackage(
   try {
     const objects: SpecObject[] = [];
     for (const [index, hints] of objectBatches.entries()) {
+      throwIfCancelled(project.id, 'knowledgeGenerate');
       const phase = `object_batch_${index + 1}`;
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
@@ -314,6 +316,7 @@ export async function generatePackage(
     const rules: SpecRule[] = [];
     const metrics: SpecMetric[] = [];
     for (const [index, candidates] of knowledgeBatches.entries()) {
+      throwIfCancelled(project.id, 'knowledgeGenerate');
       const phase = `knowledge_batch_${index + 1}`;
       const suggestedRules = candidates.filter((item) => item.kind === 'rule' && item.readiness === 'extractable').length;
       const suggestedMetrics = candidates.filter((item) => item.kind === 'metric' && item.readiness === 'extractable').length;

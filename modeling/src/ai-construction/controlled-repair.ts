@@ -17,6 +17,7 @@ import {
   type KnowledgeStructureValidator,
 } from './knowledge-structure-runner.js';
 import { AiConstructionOrchestrator } from './orchestrator.js';
+import { throwIfCancelled } from '../cancellation.js';
 
 export const DEFAULT_AUTOMATIC_REPAIR_LIMIT = 2;
 
@@ -696,6 +697,8 @@ export class ControlledRepairRunner {
     let repaired = false;
 
     while (validation.errors > 0) {
+      // 检查点：上一轮修复已经落盘并重新校验过，这里停下来知识包是自洽的
+      throwIfCancelled(project.id, 'knowledgeRepair');
       const blocking = validation.findings.filter((finding) => finding.severity === '错误');
       const classified = classifyRepairFindings(blocking);
       const automaticPlan = buildAutomaticRepairPlan(current.spec, packageFiles.files, classified);
