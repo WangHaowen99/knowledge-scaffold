@@ -112,7 +112,7 @@ test('长任务可以进入运行态，失败后保留并允许显式重试', ()
   assert.equal(failed.progress.waitingFor, 'task_failed');
   assert.equal(failed.progress.eta.minMinutes, null);
   assert.equal(failed.progress.eta.maxMinutes, null);
-  assert.match(failed.progress.eta.note, /任务已停止/);
+  assert.match(failed.progress.eta.note, /步骤已停止/);
 
   const retried = graph.apply(project.id, {
     type: 'start_task', expectedRevision: failed.revision, taskId,
@@ -295,7 +295,7 @@ test('任务图快照给出当前工作、里程碑进度和诚实的区间 ETA'
       maxMinutes: 10,
       confidence: 'low',
       basis: 'planned_tasks',
-      note: '仅估算当前已规划任务，后续任务图调整后会更新',
+      note: '只估算当前已安排的步骤；后面还会新增步骤，剩余时长会随之更新',
     },
   });
 
@@ -309,7 +309,7 @@ test('任务图快照给出当前工作、里程碑进度和诚实的区间 ETA'
     maxMinutes: null,
     confidence: 'low',
     basis: 'planned_tasks',
-    note: '当前已规划任务完成，剩余时长将在后续任务规划后更新',
+    note: '当前已安排的步骤都已完成，下一批步骤安排好后会重新估算',
   });
 
   const confirmed = graph.apply(project.id, {

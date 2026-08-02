@@ -754,7 +754,7 @@ export class ControlledRepairRunner {
               cause: 'automatic_repair',
               summary: `自动修复知识包结构（${automaticPlan.actions.length} 个文件）`,
               actorKind: 'system',
-              actorName: '受控修复器',
+              actorName: '知识包修复助手',
             },
           });
           committedRevision = saved.revision.oid;
@@ -861,7 +861,7 @@ export class ControlledRepairRunner {
         status: 'waiting_user',
         findings: [human.finding],
       });
-      const run = this.adapter.start(project.id, '受控修复知识包', current.revision.oid, {
+      const run = this.adapter.start(project.id, '逐项修复知识包', current.revision.oid, {
         purpose: 'controlled_repair',
         repairAttemptId: attempt.id,
         taskId,
