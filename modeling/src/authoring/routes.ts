@@ -1541,11 +1541,14 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         });
       }
       if (interaction?.type === 'decision' && interaction.payload.purpose === 'generation_gate_skip') {
-        return await runWithProjectLease(leases, {
+        // 续跑作业要自己取项目租约，所以只能在同步段的租约释放之后再启动——
+        // 在持锁的 handler 里再取同一把锁会立刻 busy 失败，作业根本跑不起来。
+        let resumeJob: (() => void) | null = null;
+        const accepted = await runWithProjectLease(leases, {
           projectId: project.id,
           operation: '继续生成知识结构',
           owner: `${req.user!.username}:${req.id}`,
-          ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+          ttlMs: SHORT_WRITE_LEASE_TTL_MS,
         }, async () => {
           assertNoActivePackageDraft(project.id, 'knowledge-generation-resume');
           const answered = adapter.respond(project.id, interactionId, requestId, response);
@@ -1590,15 +1593,29 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               ...(document.textContent ? { textContent: document.textContent } : {}),
             })),
           };
-          const result = await knowledgeRunner.run(project, context, flowchart, continuation);
+          // 门禁续跑的还是知识生成，同样十几分钟起步——不能占着请求
+          resumeJob = () => startBackgroundJob({
+            jobs,
+            leases,
+            key: `${project.id}:knowledge-generate`,
+            operation: '继续生成知识结构',
+            owner: `${req.user!.username}:${req.id}`,
+            ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+            projectId: project.id,
+            run: () => knowledgeRunner.run(project, context, flowchart, continuation),
+            onError: (reason) => { orchestrator.failKnowledgeStructure(project.id, reason); },
+          });
           return {
+            accepted: true,
             interaction: answered.interaction,
             run: answered.run,
             replayed: false,
-            ...result,
+            aiConstruction: graph.snapshot(project.id),
             cursor: state.snapshot(project.id).lastEventSeq,
           };
         });
+        if (resumeJob) (resumeJob as () => void)();
+        return (accepted as any)?.accepted ? reply.code(202).send(accepted) : accepted;
       }
       if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'script_decision') {
         return await runWithProjectLease(leases, {
@@ -1814,9 +1831,18 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             const revisionTurnId = `${requestId}:revise`;
             const history = packageChatConversation.history(project.id);
             const userMessage = packageChatConversation.beginTurn(project.id, revisionTurnId, note);
-            let planned;
-            try {
-              planned = await planPackageChat(project, history, revisionMessage, {
+            // 先受理：原先 respond 排在方案生成之后，那几分钟里待办仍是 pending，
+            // 刷新页面它会原样回来，看着像没提交过。
+            const answered = adapter.respond(project.id, interactionId, requestId, response);
+            const runId = answered.run.id;
+            const previousPayload = interaction.payload;
+            const previousBaseRevision = interaction.baseRevision;
+
+            // 这里不能用 startBackgroundJob：本分支已经在项目租约里，作业再取同一把锁
+            // 会立刻 busy 失败（门禁续跑那处就是这么撞出来的）。改用 jobs 去重即可，
+            // 同步段的租约在请求返回时释放，长任务本身不再持锁。
+            void jobs.run(`${project.id}:package-chat-revise`, '调整知识包修改方案', async () => {
+              const planned = await planPackageChat(project, history, revisionMessage, {
                 purpose: 'package_chat',
                 intent: '调整知识包修改方案',
                 interactionTitle: '确认调整后的建模方案',
@@ -1825,33 +1851,39 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               if (!planned.interaction || !planned.plan?.changes.length) {
                 throw new Error(planned.reply?.trim() || '未能生成可审阅的调整方案');
               }
-            } catch (error) {
-              packageChatConversation.failTurn(
-                project.id, revisionTurnId, '调整方案失败', error,
+              adapter.complete(project.id, runId, {
+                revisionRequested: true,
+                nextInteractionId: planned.interaction.id,
+              });
+              packageChatConversation.settlePlan(
+                project.id, interactionId, 'rejected', '已按专家意见退回原方案，并重新生成待确认方案。',
               );
-              throw error;
-            }
-            const answered = adapter.respond(project.id, interactionId, requestId, response);
-            const run = adapter.complete(project.id, answered.run.id, {
-              revisionRequested: true,
-              nextInteractionId: planned.interaction.id,
-            }).run;
-            const settled = packageChatConversation.settlePlan(
-              project.id, interactionId, 'rejected', '已按专家意见退回原方案，并重新生成待确认方案。',
-            );
-            const revisedPlanMessage = packageChatConversation.finishTurn(
-              project.id, revisionTurnId, planned,
-            );
-            return {
+              packageChatConversation.finishTurn(project.id, revisionTurnId, planned);
+            }).catch((error) => {
+              const reason = error instanceof Error ? error.message : String(error);
+              try {
+                packageChatConversation.failTurn(project.id, revisionTurnId, '调整方案失败', error);
+              } catch { /* 收尾失败不再向上抛 */ }
+              try { adapter.fail(project.id, runId, reason); } catch { /* 同上 */ }
+              // 这条路径的重试出口本来就是「待办还 pending」，而 respond 已经前移了。
+              // 失败时按原样重建一个待确认方案，把可重试状态还回去——否则专家提了
+              // 一次调整意见、生成失败，方案就永远卡在那儿没法再改。
+              try {
+                const revived = adapter.start(project.id, '重新确认建模方案', previousBaseRevision);
+                adapter.request(
+                  project.id, revived.run.id, 'change_plan', previousPayload, previousBaseRevision,
+                );
+              } catch { /* 重建失败时仍有失败消息可看，不再抛 */ }
+            });
+
+            return reply.code(202).send({
+              accepted: true,
               interaction: answered.interaction,
-              run,
+              run: answered.run,
               replayed: answered.replayed,
-              revisedPlan: planned,
-              aiConstructionMessages: [
-                userMessage, settled.plan, settled.result, revisedPlanMessage,
-              ].filter(Boolean),
+              aiConstructionMessages: [userMessage].filter(Boolean),
               cursor: state.snapshot(project.id).lastEventSeq,
-            };
+            });
           }
 
           assertNoActivePackageDraft(project.id, 'package-chat-apply');
