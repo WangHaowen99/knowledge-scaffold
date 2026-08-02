@@ -554,6 +554,9 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
   let contractInteraction: any;
   let plannedRequirement = '';
   let plannedOptions: any;
+  // 脚本生成改到后台跑，测试要等作业真正收尾；waitForScriptApproval 是链路最后一步
+  let markScriptPlanReady: () => void;
+  const scriptPlanReady = new Promise<void>((resolve) => { markScriptPlanReady = resolve; });
   const orchestrator = {
     completeScriptDecision: () => {
       const run = state.apply({
@@ -570,7 +573,10 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
       return { aiConstruction: { revision: 8 }, interaction: opened.interaction };
     },
     startScriptGeneration: () => ({ aiConstruction: { revision: 9 } }),
-    waitForScriptApproval: () => ({ aiConstruction: { revision: 10 }, message: { id: 'script-waiting' } }),
+    waitForScriptApproval: () => {
+      markScriptPlanReady();
+      return { aiConstruction: { revision: 10 }, message: { id: 'script-waiting' } };
+    },
     failScriptGeneration: () => ({ aiConstruction: { revision: 11 } }),
   };
   const app = routeApp(t, 'alice', {
@@ -607,11 +613,18 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
       response: { answers: [{ questionId: 'script_contract_1', selected: [candidates[0].suggestedContract] }] },
     },
   });
-  assert.equal(contracted.statusCode, 200, contracted.body);
+  // 脚本生成挪到后台跑，请求只负责受理：立刻 202 返回，不再等十几分钟
+  assert.equal(contracted.statusCode, 202, contracted.body);
+  assert.equal(contracted.json().accepted, true);
+  // 受理时就把待办标为已回答——否则刷新页面它会原样回来，看着像没提交过
+  assert.equal(contracted.json().interaction.status, 'answered');
+
+  // 后台作业跑完才有方案：等它收尾（走到 waitForScriptApproval 说明整条链都成功了）
+  await scriptPlanReady;
   assert.match(plannedRequirement, /CalculateScore/);
   assert.match(plannedRequirement, /重复输入结果一致/);
   assert.equal(plannedOptions.purpose, 'script_generation');
-  assert.equal(contracted.json().scriptPlan.interaction.id, 'script-plan');
+  assert.equal(plannedOptions.metadata.contractInteractionId, contractInteraction.id);
 });
 
 test('脚本变更在保存前必须通过格式、规则和语义候选校验', async (t) => {
@@ -1132,4 +1145,63 @@ test('修订已变的受控修复待办不再阻塞完成建模', async (t) => {
   });
   const response = await confirmCompletion(app, project.id);
   assert.equal(response.statusCode, 200, response.body);
+});
+
+test('脚本生成受理后待办立即变已回答，刷新不会再冒出来', async (t) => {
+  const project = createProject({ owner: 'alice', name: '受理即落库' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认脚本契约', baseRevision: 'pkg-async',
+  });
+  if (run.kind !== 'run') throw new Error('未创建运行');
+  const candidates = [{
+    operationKey: 'CalcA', title: '计算 A', confidence: 'high', reason: 'r',
+    suggestedContract: '输入：x\n输出：y\n测试：一致',
+  }];
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: run.run.id,
+    type: 'question_batch', baseRevision: 'pkg-async',
+    payload: { purpose: 'script_contract', taskId: 'task-async', candidates, questions: [] },
+  });
+  if (opened.kind !== 'interaction') throw new Error('未创建待办');
+
+  // 让后台生成一直不返回，模拟「十几分钟还没跑完」的那段时间
+  let releasePlan: () => void = () => {};
+  const planStalled = new Promise<void>((resolve) => { releasePlan = resolve; });
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-async' }, packageVersion: '1.0.0-rc.1', spec: { objects: [], operations: [] } };
+      },
+    },
+    orchestrator: {
+      startScriptGeneration: () => ({ aiConstruction: { revision: 2 } }),
+      waitForScriptApproval: () => ({ aiConstruction: { revision: 3 } }),
+      failScriptGeneration: () => ({ aiConstruction: { revision: 4 } }),
+    },
+    packageChatPlan: async () => {
+      await planStalled;
+      return { interaction: { id: 'plan-async', runId: 'r', baseRevision: 'pkg-async' } };
+    },
+  });
+
+  const accepted = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'async-answer',
+      response: { answers: [{ questionId: 'script_contract_1', selected: [candidates[0].suggestedContract] }] },
+    },
+  });
+
+  // 生成还卡着，但请求已经返回了——这正是异步化要的
+  assert.equal(accepted.statusCode, 202, accepted.body);
+  // 关键断言：此刻待办已经是 answered。原先要等生成跑完才 respond，
+  // 这段时间刷新页面待办会原样回来，用户以为没提交成功，再点就撞租约。
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+  const stillPending = state.snapshot(project.id).pendingInteractions
+    .some((item) => item.id === opened.interaction.id);
+  assert.equal(stillPending, false, '受理后不该还挂在待办列表里');
+
+  releasePlan();
 });
