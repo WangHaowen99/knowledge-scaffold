@@ -37,6 +37,7 @@ import { repairTargetCandidatesFrom } from './repairTargetChoice.js';
 import { isPackageChatRunning } from './packageChatRun.js';
 import { activeRunLabel, activeRunOf } from './activeRun.js';
 import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
+import { stallHint, stalledForMs } from './taskStall.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
   canUseStructuredMessageActions,
@@ -216,6 +217,12 @@ export default function PackageChat({
     () => cancellableOperationOf({ busy, serverRun }),
     [busy, serverRun],
   );
+  // 「还在跑」和「已经挂了」原先长得一样。sec 每秒都变，顺带让这个判断持续刷新。
+  const stalledMs = useMemo(() => (busy ? stalledForMs({
+    messages: structuredMessages,
+    taskId: aiConstruction?.progress?.currentTaskId,
+    startedAt: serverRun?.createdAt,
+  }) : null), [busy, sec, structuredMessages, aiConstruction, serverRun]);
   // 忙碌态结束就把「正在停止」清掉，否则下一轮任务的按钮会一直是禁用的
   useEffect(() => { if (!busy) setCancelling(''); }, [busy]);
 
@@ -907,6 +914,9 @@ export default function PackageChat({
           </div>
         )}
         {cancelling && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
+        {!cancelling && stalledMs != null && (
+          <div className="pchat-msg assistant"><div className="bubble muted">{stallHint(stalledMs)}</div></div>
+        )}
       </div>
       {pendingInteraction && (
         <PendingInteractionHint
