@@ -972,7 +972,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
           if (current.revision.oid !== expectedRevision) {
             return reply.code(409).send({
-              code: 'revision_conflict',
+              code: 'REVISION_CONFLICT',
               error: '知识包流程图已更新，请刷新后重试',
               currentRevision: current.revision.oid,
             });

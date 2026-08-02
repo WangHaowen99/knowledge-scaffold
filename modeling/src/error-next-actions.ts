@@ -74,6 +74,36 @@ const BY_CODE: Record<string, ErrorNextAction[]> = {
     { id: 'refresh_task_graph', label: '刷新后重试', style: 'primary',
       description: '上一个操作已超时释放，刷新后可以重新提交' },
   ],
+  // 与 busy 是同一件事的两个码。没有合并成一个：busy 来自租约层且历史上就是小写，
+  // 把大写的这个改成小写等于往错误方向统一。两边都登记，出口一致即可。
+  PROJECT_BUSY: [
+    { id: 'refresh_task_graph', label: '刷新查看当前进度', style: 'primary',
+      description: '项目里还有任务在跑，完成后再试' },
+  ],
+  // 流程图确认被拒的四种情况。画布就在中间栏，用户此刻正在编辑——原先这些只回一行
+  // 红字，人被卡在画到一半的图上没有任何可点的东西。
+  FLOWCHART_DIRECT_EDIT_REQUIRED: [
+    { id: 'open_flowchart_editor', label: '回到流程图画布', style: 'primary',
+      description: '直接在画布上改完并保存，再提交确认' },
+  ],
+  FLOWCHART_DRAFT_OUTDATED: [
+    { id: 'refresh_flowchart_draft', label: '刷新到最新草稿', style: 'primary',
+      description: '草稿在别处被改过，刷新后确认内容再提交' },
+  ],
+  FLOWCHART_EMPTY_DOCUMENT: [
+    { id: 'add_flowchart_process', label: '新建一个业务流程', style: 'primary',
+      description: '至少要有一个流程才能提交确认' },
+    { id: 'open_flowchart_editor', label: '回到流程图画布', style: 'secondary' },
+  ],
+  FLOWCHART_WARNINGS_NOT_ACKNOWLEDGED: [
+    { id: 'acknowledge_flowchart_warnings', label: '查看并确认提醒', style: 'primary',
+      description: '提醒不阻断提交，但需要你确认已经知悉' },
+  ],
+  FLOWCHART_CANDIDATE_UNAVAILABLE: [
+    { id: 'refresh_flowchart_draft', label: '刷新候选列表', style: 'primary',
+      description: '该候选可能已被添加或已失效' },
+    { id: 'add_flowchart_process', label: '换一个流程来源', style: 'secondary' },
+  ],
 };
 
 export function errorNextActions(code: unknown): ErrorNextAction[] | undefined {

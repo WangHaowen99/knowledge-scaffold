@@ -18,6 +18,7 @@ export const ASSISTANT_ACTION_KINDS = {
   reload_and_retry: 'command',
 
   defer_validation_errors: 'dialog',
+  add_flowchart_process: 'dialog',
   publish_package_draft: 'dialog',
   discard_package_draft: 'dialog',
   upload_materials: 'dialog',
@@ -36,6 +37,9 @@ export const ASSISTANT_ACTION_KINDS = {
   open_scenario_review: 'navigate',
   explain_goal: 'navigate',
   refresh_task_graph: 'navigate',
+  open_flowchart_editor: 'navigate',
+  refresh_flowchart_draft: 'navigate',
+  acknowledge_flowchart_warnings: 'navigate',
 };
 
 /**
@@ -56,6 +60,10 @@ export const NAVIGATION_TARGETS = {
   // 修订冲突后重拉快照。不自动重发原命令：expectedRevision 就是用来保证
   // 「确认的是你看到的那一版」，替用户换新 revision 重试等于把这道锁架空。
   refresh_task_graph: { reload: true },
+  // 流程图画布就在中间栏，用户被拒时它已经在屏幕上——把焦点带回去即可
+  open_flowchart_editor: { step: 'ai_construction' },
+  refresh_flowchart_draft: { reload: true },
+  acknowledge_flowchart_warnings: { focus: '[data-flowchart-warning-ack]' },
 };
 
 export function assistantActionKind(action) {
