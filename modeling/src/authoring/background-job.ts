@@ -14,7 +14,7 @@
  *   不写状态就会留下一个永远转圈的界面。
  */
 import { runWithProjectLease, type ProjectOperationLease } from './lease.js';
-import type { InFlightOperations } from '../in-flight-operations.js';
+import { OperationCancelledError, type InFlightOperations } from '../in-flight-operations.js';
 
 export interface BackgroundJobOptions {
   jobs: InFlightOperations;
@@ -41,7 +41,11 @@ export function startBackgroundJob(options: BackgroundJobOptions): void {
       await options.run();
     });
   }).catch((error) => {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = error instanceof OperationCancelledError
+      // 取消不是失败：用户自己按的，文案要说清楚是按他的要求停的，
+      // 否则界面上会变成一条看不懂的报错，让人以为出了问题
+      ? error.message
+      : (error instanceof Error ? error.message : String(error));
     // 收尾自身再抛就没人接了，只能吞掉；重启恢复会兜住残留的 running 状态
     try { options.onError(reason); } catch { /* 收尾失败不再向上抛 */ }
   });

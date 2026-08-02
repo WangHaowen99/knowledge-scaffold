@@ -6,6 +6,7 @@ import {
 import { confirmReplayBlockedMessage, shouldReplayConfirm } from './confirmReplay.js';
 import {
   adjustAiConstructionTask,
+  cancelAiConstructionOperation,
   confirmAiConstructionMilestone,
   deferAiConstructionKnowledgeErrors,
   deferAiConstructionScripts,
@@ -35,6 +36,7 @@ import { completionBlockerMessage, markSurfacedAsBlocker } from './completionBlo
 import { repairTargetCandidatesFrom } from './repairTargetChoice.js';
 import { isPackageChatRunning } from './packageChatRun.js';
 import { activeRunLabel, activeRunOf } from './activeRun.js';
+import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
   canUseStructuredMessageActions,
@@ -138,6 +140,8 @@ export default function PackageChat({
   const [completionBlocker, setCompletionBlocker] = useState(null);
   // 被修订冲突挡下的那次确认，连同当时界面上的知识包版本一起记着，供 reload_and_retry 判断
   const [conflictedConfirm, setConflictedConfirm] = useState(null);
+  // 已经按过取消、还没停下来的那段时间，按钮要禁用并说明正在停止
+  const [cancelling, setCancelling] = useState('');
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
@@ -207,6 +211,27 @@ export default function PackageChat({
     }, LONG_TASK_FALLBACK_REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [analysisRunning, chatRunning, busy, onProjectChanged, projectId]);
+
+  const cancellableOperation = useMemo(
+    () => cancellableOperationOf({ busy, serverRun }),
+    [busy, serverRun],
+  );
+  // 忙碌态结束就把「正在停止」清掉，否则下一轮任务的按钮会一直是禁用的
+  useEffect(() => { if (!busy) setCancelling(''); }, [busy]);
+
+  const cancelRunningOperation = async (operation) => {
+    if (cancelling) return;
+    setCancelling(operation);
+    try {
+      await cancelAiConstructionOperation(projectId, operation);
+    } catch (error) {
+      setCancelling('');
+      setTurns((items) => items.concat([timedTurn({
+        role: 'assistant',
+        text: `无法取消：${error instanceof Error ? error.message : String(error)}`,
+      })]));
+    }
+  };
 
   const refreshConstruction = async () => {
     await onProjectChanged?.();
@@ -866,8 +891,16 @@ export default function PackageChat({
               task_edit: '正在应用任务图变更',
               server_run: activeRunLabel(serverRun),
             }[busy] ?? '正在处理'} · {sec} 秒</div>
+            {cancellableOperation && (
+              <button type="button" className="pchat-cancel"
+                disabled={Boolean(cancelling)}
+                onClick={() => { void cancelRunningOperation(cancellableOperation); }}>
+                {cancelling ? '正在停止…' : '取消'}
+              </button>
+            )}
           </div>
         )}
+        {cancelling && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
       </div>
       {pendingInteraction && (
         <PendingInteractionHint

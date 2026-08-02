@@ -23,6 +23,17 @@ export class OperationAlreadyRunningError extends Error {
   }
 }
 
+/**
+ * 任务在检查点看到取消请求后抛这个。调用方据此把状态写成「已取消」而不是「失败」，
+ * 两者对用户的含义完全不同：失败要追原因，取消是他自己按的。
+ */
+export class OperationCancelledError extends Error {
+  constructor(operation: string) {
+    super(`${operation}已按你的要求取消`);
+    this.name = 'OperationCancelledError';
+  }
+}
+
 /** 登记有效期。任务运行期间每 1/3 周期续一次，够长的任务也不会被误判成已结束 */
 export const INFLIGHT_TTL_MS = 2 * 60 * 1000;
 
@@ -59,6 +70,29 @@ export class InFlightOperations {
        WHERE key LIKE ? ESCAPE '\\' AND expires_at > ? ORDER BY started_at LIMIT 1`,
     ).get(`${escaped}%`, this.now().toISOString()) as InFlightRow | undefined;
     return row?.operation ?? null;
+  }
+
+  /**
+   * 请求取消。只置位，不中断——单次模型调用中途停不下来，任务要跑到下一个检查点
+   * 才能干净地退出。返回 false 表示当前没有在跑的任务，界面据此提示而不是假装成功。
+   */
+  requestCancel(key: string): boolean {
+    const changes = this.db.prepare(
+      'UPDATE inflight_operations SET cancel_requested = 1 WHERE key = ? AND expires_at > ?',
+    ).run(key, this.now().toISOString()).changes;
+    return Number(changes) > 0;
+  }
+
+  isCancelRequested(key: string): boolean {
+    const row = this.db.prepare(
+      'SELECT cancel_requested FROM inflight_operations WHERE key = ? AND expires_at > ?',
+    ).get(key, this.now().toISOString()) as { cancel_requested?: number } | undefined;
+    return Number(row?.cancel_requested ?? 0) === 1;
+  }
+
+  /** 供长任务在检查点调用：已请求取消就抛出，让调用方统一收尾 */
+  throwIfCancelled(key: string, operation: string): void {
+    if (this.isCancelRequested(key)) throw new OperationCancelledError(operation);
   }
 
   async run<T>(key: string, operation: string, task: () => Promise<T>): Promise<T> {

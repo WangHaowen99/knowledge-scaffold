@@ -1451,3 +1451,10 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .mermaid-stream-wait { min-height: 380px; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 13px; }
 .mwr .mermaid-stream.failed .mermaid-stream-status { color: #b42318; }
 @keyframes mermaid-stream-blink { 50% { opacity: 0; } }
+
+/* 忙碌气泡上的取消按钮。取消是「当前这批跑完就停」，不是秒停，所以按下后
+   立刻禁用并在下方说明，避免用户连点几次以为没生效。 */
+.mwr .pchat-cancel { margin-left: 8px; border: 1px solid #dde1e9; border-radius: 8px; padding: 3px 10px; background: #fff; color: var(--ink2); font-size: 11.5px; cursor: pointer; }
+.mwr .pchat-cancel:hover:not(:disabled) { border-color: #efc0bc; color: #a6352f; }
+.mwr .pchat-cancel:disabled { opacity: .6; cursor: default; }
+.mwr .pchat-msg .bubble.muted { color: var(--muted); font-size: 11.5px; }

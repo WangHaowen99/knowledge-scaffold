@@ -178,6 +178,8 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'projects', 'workflow_profile_json', `TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}'`);
   ensureColumn(db, 'package_versions', 'revision_oid', 'TEXT');
+  // 旧库已有 inflight_operations 时 CREATE TABLE IF NOT EXISTS 不会补列
+  ensureColumn(db, 'inflight_operations', 'cancel_requested', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'graph_import_uploads', 'package_revision_oid', 'TEXT');
