@@ -18,6 +18,7 @@ import {
 } from './knowledge-structure-runner.js';
 import { AiConstructionOrchestrator } from './orchestrator.js';
 import { throwIfCancelled } from '../cancellation.js';
+import { reportLongTaskProgress } from './task-progress.js';
 
 export const DEFAULT_AUTOMATIC_REPAIR_LIMIT = 2;
 
@@ -695,10 +696,24 @@ export class ControlledRepairRunner {
     }
     let latestUpdate: ReturnType<AiConstructionOrchestrator['startKnowledgeRepair']> | undefined;
     let repaired = false;
+    // 修复可能跑几十分钟，用户只看得到一个转圈——按轮次上报还剩几个错误
+    const repairStartedAt = Date.now();
+    const initialErrors = validation.errors;
+    let round = 0;
 
     while (validation.errors > 0) {
       // 检查点：上一轮修复已经落盘并重新校验过，这里停下来知识包是自洽的
       throwIfCancelled(project.id, 'knowledgeRepair');
+      const fixedSoFar = Math.max(0, initialErrors - validation.errors);
+      reportLongTaskProgress(project.id, {
+        taskKinds: ['package_repair', 'evaluation_repair'],
+        title: `正在修复知识包校验错误（第 ${round + 1} 轮）`,
+        produced: `已修复 ${fixedSoFar} 个，剩余 ${validation.errors} 个`,
+        done: fixedSoFar,
+        total: Math.max(initialErrors, 1),
+        elapsedMs: Date.now() - repairStartedAt,
+      });
+      round += 1;
       const blocking = validation.findings.filter((finding) => finding.severity === '错误');
       const classified = classifyRepairFindings(blocking);
       const automaticPlan = buildAutomaticRepairPlan(current.spec, packageFiles.files, classified);
