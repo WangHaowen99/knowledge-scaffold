@@ -3,6 +3,11 @@ import MarkdownContent from './MarkdownContent.jsx';
 import { formatMessageTimestamp } from './messageTimestamp.js';
 import { effectiveTaskPlanTasks } from './taskPlanStatus.js';
 
+/**
+ * 术语已经在后端统一成「逐项修复 / 知识包修复助手」，这里只兜历史消息——
+ * 库里存量消息是旧词，改不了。新文案不要再依赖这张表：它是个白名单，
+ * 漏一个词就会让用户同时看到两套叫法。
+ */
 function friendlyRepairText(value) {
   return String(value ?? '')
     .replaceAll('受控修复器', '知识包修复助手')
@@ -22,7 +27,20 @@ function etaLabel(eta) {
   return `预计 ${eta.minMinutes}–${eta.maxMinutes} 分钟`;
 }
 
+// 里程碑顺序是固定的，前端据此给百分比一个参照物，不必让后端在 33 处状态块里都带上
+const MILESTONE_ORDER = [
+  'goal_confirmed', 'materials_ready', 'process_confirmed',
+  'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
+];
+const PROGRESS_HINT = '按已确认阶段计算。当前阶段的任务全部完成后仍需你确认，确认后才计满这一阶段。';
+
+export function milestonePosition(milestoneId) {
+  const index = MILESTONE_ORDER.indexOf(String(milestoneId ?? ''));
+  return index < 0 ? null : { index: index + 1, total: MILESTONE_ORDER.length };
+}
+
 function StatusBlock({ block }) {
+  const stage = milestonePosition(block.milestoneId);
   const progress = Number.isFinite(Number(block.progress))
     ? Math.max(0, Math.min(100, Math.round(Number(block.progress))))
     : null;
@@ -30,11 +48,13 @@ function StatusBlock({ block }) {
     <section className="ac-message-status">
       <div className="ac-message-status-head">
         <strong>{friendlyRepairText(block.title)}</strong>
-        {progress != null && <span>{progress}%</span>}
+        {stage && <span className="ac-message-stage">阶段 {stage.index}/{stage.total}</span>}
+        {progress != null && <span title={PROGRESS_HINT}>{progress}%</span>}
       </div>
       {block.summary && <p>{friendlyRepairText(block.summary)}</p>}
       {progress != null && (
-        <div className="ac-message-progress" aria-label={`建模进度 ${progress}%`}>
+        <div className="ac-message-progress" title={PROGRESS_HINT}
+          aria-label={`建模进度 ${progress}%。${PROGRESS_HINT}`}>
           <span style={{ width: `${progress}%` }} />
         </div>
       )}
@@ -51,7 +71,11 @@ function NextActionsBlock({
   return (
     <section className={`ac-message-actions${actionsEnabled ? '' : ' is-history'}`}>
       {block.title && <div className="ac-message-actions-title">{block.title}
-        {!actionsEnabled && <span>历史步骤</span>}
+        {!actionsEnabled && (
+          <span title="建模已经走到后面的步骤，这里的选项基于当时的状态，继续操作请看最新一条消息">
+            历史步骤 · 已不可操作
+          </span>
+        )}
       </div>}
       <div className="ac-message-action-list">
         {actions.map((action) => {

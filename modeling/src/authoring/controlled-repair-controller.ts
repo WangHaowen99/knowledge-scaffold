@@ -152,7 +152,7 @@ export class ControlledRepairController {
     actor: string,
   ) {
     if (!isControlledRepairInteraction(interaction)) {
-      throw new ControlledRepairControllerError('invalid_input', '待办不是受控修复交互');
+      throw new ControlledRepairControllerError('invalid_input', '待办不是逐项修复交互');
     }
     if (interaction.status !== 'pending') {
       const replayed = this.adapter.respond(project.id, interaction.id, requestId, response);
@@ -170,7 +170,7 @@ export class ControlledRepairController {
     if (interaction.baseRevision && interaction.baseRevision !== current.revision.oid) {
       throw new ControlledRepairControllerError(
         'revision_conflict',
-        '知识包已更新，请重新发起受控修复',
+        '知识包已更新，请重新发起逐项修复',
       );
     }
 
@@ -205,7 +205,7 @@ export class ControlledRepairController {
     }
     const attemptId = String(interaction.payload.repairAttemptId ?? '').trim();
     if (!attemptId) {
-      throw new ControlledRepairControllerError('invalid_input', '受控修复审计上下文已失效');
+      throw new ControlledRepairControllerError('invalid_input', '逐项修复审计上下文已失效');
     }
 
     if (action === 'reject') {

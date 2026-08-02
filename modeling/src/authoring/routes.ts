@@ -1104,7 +1104,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         jobs,
         leases,
         key: `${project.id}:knowledge-repair`,
-        operation: '受控修复知识包校验问题',
+        operation: '逐项修复知识包校验问题',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
         projectId: project.id,
