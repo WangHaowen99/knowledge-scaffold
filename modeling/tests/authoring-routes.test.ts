@@ -906,6 +906,9 @@ test('知识包候选校验失败后反馈专家并可重新生成待确认方�
 
 test('知识生成只读取当前 Git 修订中已确认的流程文档', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Git 流程事实源' });
+  // 生成改到后台跑，测试要等作业真正开始才能断言它拿到了哪份流程图
+  let markGenerated: () => void = () => {};
+  const generationStarted = new Promise<void>((resolve) => { markGenerated = resolve; });
   const document = {
     diagrams: [{
       id: 'approval', title: '授信审批',
@@ -934,6 +937,7 @@ test('知识生成只读取当前 Git 修订中已确认的流程文档', async 
     knowledgeRunner: {
       async run(_project: any, _context: any, flowchart: any) {
         generatedFlowchart = flowchart;
+        markGenerated();
         return { version: '1.0.0-rc.2', revisionId: 'pkg-knowledge' };
       },
     },
@@ -942,9 +946,11 @@ test('知识生成只读取当前 Git 修订中已确认的流程文档', async 
   const response = await app.inject({
     method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
   });
-  assert.equal(response.statusCode, 200, response.body);
+  // 生成要跑十几分钟，请求只负责受理
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
+  await generationStarted;
   assert.equal(generatedFlowchart.diagrams[0].id, 'approval');
-  assert.equal(response.json().revisionId, 'pkg-knowledge');
 });
 
 test('生成门禁决定在原运行失败后通过新运行幂等续跑', async (t) => {
@@ -1204,4 +1210,39 @@ test('脚本生成受理后待办立即变已回答，刷新不会再冒出来',
   assert.equal(stillPending, false, '受理后不该还挂在待办列表里');
 
   releasePlan();
+});
+
+test('知识生成的前置校验仍然同步报错，不会先受理再在后台失败', async (t) => {
+  const project = createProject({ owner: 'alice', name: '生成前置校验' });
+  let ran = false;
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-x' }, packageVersion: '0.1.0', spec: { objects: [], operations: [] } };
+      },
+      async readPackageFiles() { return { files: {} }; },
+    },
+    knowledgeRunner: { async run() { ran = true; return {}; } },
+  });
+
+  // 流程未确认：必须当场 409，而不是回 202 然后在后台悄悄失败
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
+  });
+  assert.notEqual(response.statusCode, 202, '前置校验不该被受理');
+  assert.ok(response.statusCode >= 400, response.body);
+  assert.equal(ran, false, '校验没过就不该启动后台生成');
+});
+
+test('逐项修复只负责受理，不等长任务跑完', async (t) => {
+  const project = createProject({ owner: 'alice', name: '修复异步受理' });
+  const app = routeApp(t, 'alice');
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/repair`, payload: {},
+  });
+
+  // 受控修复要跑 5~30 分钟，请求必须立刻回来；失败由后台写成带出口的助手消息
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
 });
