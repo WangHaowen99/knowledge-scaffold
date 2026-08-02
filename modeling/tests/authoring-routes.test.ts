@@ -895,13 +895,20 @@ test('知识包候选校验失败后反馈专家并可重新生成待确认方�
       response: { action: 'revise', note: '主键必须使用对象字段 key，不要使用原始列名' },
     },
   });
-  assert.equal(revised.statusCode, 200, revised.body);
+  // 方案调整改到后台跑，请求只负责受理
+  assert.equal(revised.statusCode, 202, revised.body);
+  assert.equal(revised.json().accepted, true);
+  // 受理时就标记已回答：否则刷新页面待办原样回来，看着像没提交过
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+
+  // 等后台把新方案生成出来
+  const deadline = Date.now() + 5_000;
+  while (state.interaction(project.id, revisedInteractionId)?.status !== 'pending') {
+    if (Date.now() > deadline) throw new Error('调整后的方案待办未在预期时间内出现');
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
   assert.match(revisionRequirement, /上次候选校验反馈.*cust_id.*不属于对象字段/su);
   assert.match(revisionRequirement, /专家调整意见.*对象字段 key/su);
-  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
-  assert.equal(revised.json().run.status, 'completed');
-  assert.equal(state.interaction(project.id, revisedInteractionId)?.status, 'pending');
-  assert.equal(revised.json().revisedPlan.interaction.id, revisedInteractionId);
 });
 
 test('知识生成只读取当前 Git 修订中已确认的流程文档', async (t) => {
@@ -955,6 +962,9 @@ test('知识生成只读取当前 Git 修订中已确认的流程文档', async 
 
 test('生成门禁决定在原运行失败后通过新运行幂等续跑', async (t) => {
   const project = createProject({ owner: 'alice', name: '生成门禁失败恢复' });
+  // 续跑挪到后台，等作业真正开始才能断言它拿到的续跑参数
+  let markResumed: () => void = () => {};
+  const resumeStarted = new Promise<void>((resolve) => { markResumed = resolve; });
   const state = getAuthoringState();
   const started = state.apply({
     kind: 'start_run', projectId: project.id, intent: '生成知识包', baseRevision: 'pkg-gate',
@@ -1007,6 +1017,7 @@ test('生成门禁决定在原运行失败后通过新运行幂等续跑', async
     knowledgeRunner: {
       async run(_project: any, _context: any, _flowchart: any, options: any) {
         continuation = options;
+        markResumed();
         return { revisionId: 'pkg-resumed', version: '1.0.0-rc.1' };
       },
     },
@@ -1017,7 +1028,10 @@ test('生成门禁决定在原运行失败后通过新运行幂等续跑', async
     payload: { requestId: 'generation-gate-answer', response: { value: 'skip' } },
   });
 
-  assert.equal(response.statusCode, 200, response.body);
+  // 门禁续跑的是知识生成，同样挪到后台：请求只负责受理
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
+  await resumeStarted;
   assert.deepEqual(continuation.skipFailedPhases, ['operation_batch_2']);
   assert.notEqual(continuation.resumeRunId, started.run.id);
   const resumedRun = state.snapshot(project.id).activeRuns.find((run) => run.id === continuation.resumeRunId);
@@ -1245,4 +1259,60 @@ test('逐项修复只负责受理，不等长任务跑完', async (t) => {
   // 受控修复要跑 5~30 分钟，请求必须立刻回来；失败由后台写成带出口的助手消息
   assert.equal(response.statusCode, 202, response.body);
   assert.equal(response.json().accepted, true);
+});
+
+test('方案调整生成失败后重建可确认方案，专家不会卡在没法再改的状态', async (t) => {
+  const project = createProject({ owner: 'alice', name: '调整失败仍可重试' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '修改知识包', baseRevision: 'pkg-revise-fail',
+  });
+  if (started.kind !== 'run') throw new Error('未创建运行');
+  const payload = {
+    purpose: 'package_chat',
+    summary: '新增跨境业务事件',
+    message: '拆分企业成长事件',
+    history: [],
+    risks: [],
+    changes: [{
+      id: 'c1', targetKind: 'object', targetKey: 'cross_border_event', action: 'add',
+      description: '新增跨境业务事件',
+    }],
+  };
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'change_plan', baseRevision: 'pkg-revise-fail', payload,
+  });
+  if (opened.kind !== 'interaction') throw new Error('未创建方案待办');
+
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-revise-fail' }, packageVersion: '0.1.0', spec: { objects: [], operations: [] } };
+      },
+    },
+    packageChatPlan: async () => { throw new Error('模型调用失败'); },
+  });
+
+  const revised = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: { requestId: 'revise-fails', response: { action: 'revise', note: '换个写法' } },
+  });
+  assert.equal(revised.statusCode, 202, revised.body);
+  // respond 已经前移，原待办变成 answered——所以失败后必须还回一个能再改的方案
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+
+  const deadline = Date.now() + 5_000;
+  let revived: any;
+  for (;;) {
+    revived = state.snapshot(project.id).pendingInteractions
+      .find((item) => item.type === 'change_plan' && item.id !== opened.interaction.id);
+    if (revived) break;
+    if (Date.now() > deadline) throw new Error('生成失败后没有重建可确认方案，专家将无法继续调整');
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  // 重建的方案要保留原内容，否则等于把专家之前的工作丢了
+  assert.equal(revived.payload.summary, '新增跨境业务事件');
+  assert.equal(revived.payload.changes[0].targetKey, 'cross_border_event');
 });

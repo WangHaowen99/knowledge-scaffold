@@ -500,6 +500,29 @@ test('项目删除 API：数据库删除成功后清理工件，清理失败仍�
   }
 });
 
+/**
+ * 资料分析改成后台作业后，结果不再随响应返回。这里等任务图走到终态再断言。
+ * 用轮询而不是钩内部实现：作业收尾涉及好几步写入，钩住其中一步容易断在半路。
+ */
+async function waitForMaterialTask(
+  projectId: string,
+  statuses: string[],
+  timeoutMs = 5_000,
+): Promise<any> {
+  const { AiConstructionTaskGraph } = await import('../src/ai-construction/task-graph.js');
+  const { getDb } = await import('../src/db/index.js');
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const task = new AiConstructionTaskGraph(getDb()).snapshot(projectId)?.tasks
+      .find((item: any) => item.kind === 'material_analysis');
+    if (task && statuses.includes(task.status)) return task;
+    if (Date.now() > deadline) {
+      throw new Error(`资料分析任务未在 ${timeoutMs}ms 内进入 ${statuses.join('/')}，当前=${task?.status}`);
+    }
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+}
+
 test('资料分析 API：推进统一任务图并绑定当前工件修订', async (t) => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
@@ -555,13 +578,17 @@ test('资料分析 API：推进统一任务图并绑定当前工件修订', asyn
     method: 'POST', url: `/api/projects/${projectId}/analyze`, headers,
   });
 
-  assert.equal(response.statusCode, 200, response.body);
+  // 分析改到后台跑，请求只负责受理：立刻返回，任务已是执行中
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
   assert.equal(response.json().packageRevision, current.revision.oid);
-  const materialTask = response.json().aiConstruction.tasks.find((task: any) => task.kind === 'material_analysis');
-  assert.equal(materialTask.status, 'completed');
+  assert.equal(
+    response.json().aiConstruction.tasks.find((task: any) => task.kind === 'material_analysis').status,
+    'running',
+  );
+
+  const materialTask = await waitForMaterialTask(projectId, ['completed']);
   assert.equal(materialTask.outputRevisionOid, current.revision.oid);
-  assert.equal(response.json().aiConstructionMessage.key, 'materials.analyzed.analysis-route-node');
-  assert.equal('domainQuestions' in response.json(), false);
   assert.deepEqual(progress, [42]);
 });
 
@@ -614,13 +641,19 @@ test('资料分析 API：分析期间资料变化时拒绝挂接旧结果并保�
     method: 'POST', url: `/api/projects/${projectId}/analyze`, headers,
   });
 
-  assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'MATERIAL_ANALYSIS_STALE');
-  assert.match(response.json().error, /建模资料已变化/);
-  assert.equal(
-    graph.snapshot(projectId)?.tasks.find((task) => task.kind === 'material_analysis')?.status,
-    'failed',
-  );
+  // 受理是同步的，陈旧判定发生在后台——失败状态和重试出口走助手消息，不再是 409
+  assert.equal(response.statusCode, 202, response.body);
+  const materialTask = await waitForMaterialTask(projectId, ['failed']);
+  assert.equal(materialTask.status, 'failed');
+  // 失败原因写在助手消息里（fail_task 本身不带 reason），用户看到的也是这条
+  const { getDb: getDbForMessage } = await import('../src/db/index.js');
+  const failureMessage = getDbForMessage().prepare(
+    `SELECT blocks_json FROM ai_construction_messages
+     WHERE project_id = ? AND task_id = ? ORDER BY seq DESC LIMIT 1`,
+  ).get(projectId, materialTask.id) as { blocks_json?: string } | undefined;
+  assert.match(String(failureMessage?.blocks_json ?? ''), /建模资料已变化/);
+  // 并且给出重试出口，而不是让界面停在那儿
+  assert.match(String(failureMessage?.blocks_json ?? ''), /analyze_materials/);
 });
 
 test('版本汇总 API：按工件修订关联评测并单列未版本化的当前修订', async () => {
