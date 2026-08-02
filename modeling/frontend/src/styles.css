@@ -1458,3 +1458,6 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .pchat-cancel:hover:not(:disabled) { border-color: #efc0bc; color: #a6352f; }
 .mwr .pchat-cancel:disabled { opacity: .6; cursor: default; }
 .mwr .pchat-msg .bubble.muted { color: var(--muted); font-size: 11.5px; }
+
+/* 百分比旁边的阶段序号：单看一个百分数没有参照物，用户不知道它在数什么 */
+.mwr .ac-message-stage { margin-left: auto; margin-right: 8px; color: #6b7889; font-size: 10.5px; font-weight: 600; }

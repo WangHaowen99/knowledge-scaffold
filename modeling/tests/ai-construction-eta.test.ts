@@ -54,3 +54,26 @@ test('别的项目跑完的同类任务会喂给本项目的估算', () => {
   assert.ok((progress.eta.maxMinutes ?? 0) > 15,
     `应参考实测 30 分钟而不是静态上限 15：${progress.eta.maxMinutes}`);
 });
+
+test('失败原因写在任务上，不用去聊天流里翻', () => {
+  const project = createProject({ owner: 'alice', name: '失败原因随任务' });
+  const graph = new AiConstructionTaskGraph(getDb());
+  const initial = graph.snapshot(project.id)!;
+  const taskId = initial.tasks[0].id;
+
+  const running = graph.apply(project.id, {
+    type: 'start_task', expectedRevision: initial.revision, taskId,
+  });
+  const failed = graph.apply(project.id, {
+    type: 'fail_task', expectedRevision: running.revision, taskId,
+    reason: '模型调用超时，已保留当前进度',
+  });
+  assert.equal(failed.tasks[0].status, 'failed');
+  assert.equal(failed.tasks[0].reason, '模型调用超时，已保留当前进度');
+
+  // 重新开始要清掉旧原因，否则新一轮会挂着上一次的失败说明
+  const retried = graph.apply(project.id, {
+    type: 'start_task', expectedRevision: failed.revision, taskId,
+  });
+  assert.equal(retried.tasks[0].reason, undefined);
+});

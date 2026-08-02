@@ -469,7 +469,7 @@ export class AiConstructionOrchestrator {
         && item.status === 'running');
       if (!task) throw new Error('当前没有正在执行的资料分析任务');
       current = this.graph.apply(projectId, {
-        type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        type: 'fail_task', expectedRevision: current.revision, taskId: task.id, reason,
       });
       const message = this.messages.upsert(projectId, {
         key: messageKey, role: 'assistant', taskId: task.id,
@@ -1076,7 +1076,7 @@ export class AiConstructionOrchestrator {
         && item.status === 'running');
       if (!task) throw new Error('当前没有正在执行的知识结构任务');
       current = this.graph.apply(projectId, {
-        type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        type: 'fail_task', expectedRevision: current.revision, taskId: task.id, reason,
       });
       const message = this.messages.append(projectId, {
         role: 'assistant', taskId: task.id,
@@ -1133,7 +1133,7 @@ export class AiConstructionOrchestrator {
     const reworkTask = [...current.tasks].reverse().find((item) => (
       item.kind === 'package_validation' && item.status === 'completed'
     ));
-    if (!reworkTask) throw new Error('当前没有可执行受控修复的活动里程碑');
+    if (!reworkTask) throw new Error('当前没有可执行逐项修复的活动里程碑');
     current = this.graph.adjust(projectId, {
       expectedRevision: current.revision,
       taskId: reworkTask.id,
@@ -1142,7 +1142,7 @@ export class AiConstructionOrchestrator {
       reason: '知识包校验发现新的阻断错误，需要重新打开修复与校验阶段',
     }).graph;
     milestoneId = current.milestones.find((item) => item.status === 'active')?.id;
-    if (!milestoneId) throw new Error('当前没有可执行受控修复的活动里程碑');
+    if (!milestoneId) throw new Error('当前没有可执行逐项修复的活动里程碑');
     return { graph: current, milestoneId };
   }
 
@@ -1166,7 +1166,7 @@ export class AiConstructionOrchestrator {
           type: 'plan_task', expectedRevision: current.revision,
           task: {
             kind: 'package_repair', milestoneId,
-            title: '受控修复知识包校验问题',
+            title: '逐项修复知识包校验问题',
             goal: '按权限修复阻断问题并重新执行当前里程碑的知识包校验。',
             required: false,
             reason: '知识包校验存在阻断错误；原校验任务继续承担里程碑门禁',
@@ -1186,7 +1186,7 @@ export class AiConstructionOrchestrator {
       const blocks = [
         {
           type: 'status' as const,
-          title: '正在受控修复知识包',
+          title: '正在逐项修复知识包',
           summary: '先处理可唯一确定的结构问题，再按权限暂停在人工确认点',
           milestoneId: 'knowledge_confirmed', taskId: activeTask.id,
           progress: current.progress.percent,
@@ -1493,7 +1493,7 @@ export class AiConstructionOrchestrator {
       let repairTask = this.findRepairTask(current);
       if (repairTask?.status === 'running') {
         current = this.graph.apply(projectId, {
-          type: 'fail_task', expectedRevision: current.revision, taskId: repairTask.id,
+          type: 'fail_task', expectedRevision: current.revision, taskId: repairTask.id, reason,
         });
         repairTask = current.tasks.find((item) => item.id === repairTask!.id);
       }
@@ -1589,7 +1589,7 @@ export class AiConstructionOrchestrator {
         key: input.messageKey, role: 'assistant', taskId: task.id,
         blocks: [
           {
-            type: 'status', title: '受控修复已停止',
+            type: 'status', title: '逐项修复已停止',
             summary: '当前知识包仍保留原修订和完整尝试记录',
             milestoneId: 'knowledge_confirmed', taskId: task.id,
             progress: current.progress.percent,
@@ -1603,7 +1603,7 @@ export class AiConstructionOrchestrator {
           {
             type: 'next_actions', title: '可以这样继续', actions: [
               ...(input.retryable ? [{
-                id: 'repair_knowledge_structure', label: '重新执行受控修复', style: 'primary' as const,
+                id: 'repair_knowledge_structure', label: '重新执行逐项修复', style: 'primary' as const,
               }] : []),
               {
                 id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' as const,
@@ -2215,7 +2215,7 @@ export class AiConstructionOrchestrator {
         task = current.tasks.find((item) => item.id === task!.id)!;
       }
       current = this.graph.apply(projectId, {
-        type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        type: 'fail_task', expectedRevision: current.revision, taskId: task.id, reason,
       });
       const message = this.messages.append(projectId, {
         role: 'assistant', taskId: task.id,

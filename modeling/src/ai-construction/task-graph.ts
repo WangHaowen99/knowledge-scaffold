@@ -164,6 +164,11 @@ export interface FailAiConstructionTaskCommand {
   type: 'fail_task';
   expectedRevision: number;
   taskId: string;
+  /**
+   * 失败原因。原先只写进助手消息，任务列表里那条就只显示「需重试」——
+   * 要知道为什么失败得去聊天流里翻，而聊天流可能已经滚过去了。
+   */
+  reason?: string;
 }
 
 export interface WaitForAiConstructionUserCommand {
@@ -440,10 +445,10 @@ function deriveProgress(
       confidence: measuredShare >= 0.6 ? 'high' : measuredShare > 0 ? 'medium' : 'low',
       basis: 'planned_tasks',
       note: currentTask?.status === 'failed'
-        ? '当前任务已停止，重试后将重新估算剩余时长'
+        ? '当前步骤已停止，重试后会重新估算剩余时长'
         : hasEstimate
-        ? '仅估算当前已规划任务，后续任务图调整后会更新'
-        : '当前已规划任务完成，剩余时长将在后续任务规划后更新',
+        ? '只估算当前已安排的步骤；后面还会新增步骤，剩余时长会随之更新'
+        : '当前已安排的步骤都已完成，下一批步骤安排好后会重新估算',
     },
   };
 }
@@ -785,6 +790,15 @@ export class AiConstructionTaskGraph {
       if (Number(blocking.count) > 0) {
         throw new AiConstructionTaskGraphError('INVALID_TRANSITION', `${transition.rejection}：依赖任务尚未结束`);
       }
+    }
+
+    // 失败原因跟着任务走；重新开始时清掉，免得旧原因挂在新一轮上误导人
+    if (command.type === 'fail_task' && command.reason?.trim()) {
+      this.db.prepare(`UPDATE ai_construction_tasks SET reason = ? WHERE project_id = ? AND id = ?`)
+        .run(command.reason.trim().slice(0, 2_000), projectId, command.taskId);
+    } else if (command.type === 'start_task' || command.type === 'reopen_task') {
+      this.db.prepare(`UPDATE ai_construction_tasks SET reason = NULL
+        WHERE project_id = ? AND id = ? AND status = 'failed'`).run(projectId, command.taskId);
     }
 
     const outputRevisionOid = command.type === 'complete_task'
