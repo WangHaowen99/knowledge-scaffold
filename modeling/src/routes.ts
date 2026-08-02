@@ -2131,7 +2131,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return { currentRevision, versions };
     });
 
-    registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply });
+    registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply, jobs: inFlight });
     registerArtifactRoutes(r);
   });
 }

@@ -114,6 +114,7 @@ import {
 import { RepairTargetUnresolvedError } from '../ai-construction/controlled-repair.js';
 import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
+import { InFlightOperations } from '../in-flight-operations.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
 import { WorkflowStepProgressRepo } from './workflow-progress.js';
@@ -290,6 +291,8 @@ export interface AuthoringRouteOptions {
     | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'>;
   flowchartDrafts?: FlowchartDraftStore;
   processDraftGenerator?: typeof generateProcessDraft;
+  /** 后台作业登记表。与 registerRoutes 共用同一个实例，跨路由去重才有意义 */
+  jobs?: InFlightOperations;
   packageChatApply?: typeof packageChatApply;
   packageChatPlan?: typeof packageChatPlan;
   knowledgeRunner?: Pick<KnowledgeStructureRunner, 'run'>;
@@ -323,6 +326,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   );
   const editor = new AiConstructionTaskEditor();
   const leases = new ProjectOperationLease();
+  const jobs = options.jobs ?? new InFlightOperations();
   const controlledRepair = new ControlledRepairController({ state, graph });
   const packages = options.packages ?? getPackageArtifactStore();
   const flowchartDrafts = options.flowchartDrafts ?? new FlowchartDraftStore();
@@ -1625,40 +1629,48 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         });
       }
       if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'script_contract') {
-        return await runWithProjectLease(leases, {
-          projectId: project.id,
-          operation: '生成确定性脚本方案',
-          owner: `${req.user!.username}:${req.id}`,
-          ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-        }, async () => {
-          if (interaction.status !== 'pending') {
-            const replayed = adapter.respond(project.id, interactionId, requestId, response);
-            return {
-              interaction: replayed.interaction,
-              run: replayed.run,
-              replayed: replayed.replayed,
-              aiConstruction: graph.snapshot(project.id),
-              cursor: state.snapshot(project.id).lastEventSeq,
-            };
-          }
-          const currentPackage = await packages.current(project.id);
-          if (!currentPackage) {
-            return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
-          }
-          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
-            return reply.code(409).send({
-              error: '知识包修订已经变化，请重新确认脚本契约',
-              code: 'REVISION_CONFLICT',
-            });
-          }
-          const candidates = (Array.isArray(interaction.payload.candidates)
-            ? interaction.payload.candidates : []) as unknown as ScriptCandidate[];
-          const contracts = parseScriptContractResponse(response, candidates);
-          const requirement = buildScriptGenerationRequirement(candidates, contracts);
-          orchestrator.startScriptGeneration(project.id);
-          let planned;
-          try {
-            planned = await planPackageChat(project, [], requirement, {
+        if (interaction.status !== 'pending') {
+          const replayed = adapter.respond(project.id, interactionId, requestId, response);
+          return {
+            interaction: replayed.interaction,
+            run: replayed.run,
+            replayed: replayed.replayed,
+            aiConstruction: graph.snapshot(project.id),
+            cursor: state.snapshot(project.id).lastEventSeq,
+          };
+        }
+        const currentPackage = await packages.current(project.id);
+        if (!currentPackage) {
+          return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+        }
+        if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+          return reply.code(409).send({
+            error: '知识包修订已经变化，请重新确认脚本契约',
+            code: 'REVISION_CONFLICT',
+          });
+        }
+        const candidates = (Array.isArray(interaction.payload.candidates)
+          ? interaction.payload.candidates : []) as unknown as ScriptCandidate[];
+        // 入参解析要同步做：格式不对必须当场告诉用户，不能受理完再在后台失败
+        const contracts = parseScriptContractResponse(response, candidates);
+        const requirement = buildScriptGenerationRequirement(candidates, contracts);
+
+        // 先受理再干活。原先 respond 排在十几分钟的生成之后，那段时间待办在库里
+        // 仍是 pending：刷新页面它原样回来，看着像没提交过，再点就撞上租约。
+        // 提前 respond 之后失败就不能靠原待办重试了——出口改由 failScriptGeneration
+        // 给的「重新生成脚本」承担，那是条独立路由，不依赖待办状态。
+        const answered = adapter.respond(project.id, interactionId, requestId, response);
+        const construction = orchestrator.startScriptGeneration(project.id);
+        const runId = answered.run.id;
+
+        void jobs.run(`${project.id}:script-generation`, '生成确定性脚本方案', async () => {
+          await runWithProjectLease(leases, {
+            projectId: project.id,
+            operation: '生成确定性脚本方案',
+            owner: `${req.user!.username}:${req.id}`,
+            ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+          }, async () => {
+            const planned = await planPackageChat(project, [], requirement, {
               purpose: 'script_generation',
               intent: '生成确定性脚本',
               interactionTitle: '确认确定性脚本变更方案',
@@ -1668,36 +1680,33 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
                 contractInteractionId: interaction.id,
               },
             });
-          } catch (error) {
-            orchestrator.failScriptGeneration(
-              project.id,
-              error instanceof Error ? error.message : String(error),
-            );
-            throw error;
-          }
-          if (!planned.interaction) {
-            const reason = planned.reply?.trim() || '未能生成可审阅的脚本变更方案';
-            const failed = orchestrator.failScriptGeneration(project.id, reason);
-            return reply.code(409).send({ error: reason, code: 'SCRIPT_PLAN_NOT_CREATED', ...failed });
-          }
-          const answered = adapter.respond(project.id, interactionId, requestId, response);
-          const run = adapter.complete(project.id, answered.run.id, {
-            purpose: 'script_contract',
-            scriptPlanInteractionId: planned.interaction.id,
-            packageRevisionOid: currentPackage.revision.oid,
-            candidates: candidates as unknown as JsonObject[],
-            contracts: contracts as unknown as JsonObject[],
-            requirement,
-          }).run;
-          const construction = orchestrator.waitForScriptApproval(project.id);
-          return {
-            interaction: answered.interaction,
-            run,
-            replayed: answered.replayed,
-            scriptPlan: planned,
-            ...construction,
-            cursor: state.snapshot(project.id).lastEventSeq,
-          };
+            if (!planned.interaction) {
+              throw new Error(planned.reply?.trim() || '未能生成可审阅的脚本变更方案');
+            }
+            adapter.complete(project.id, runId, {
+              purpose: 'script_contract',
+              scriptPlanInteractionId: planned.interaction.id,
+              packageRevisionOid: currentPackage.revision.oid,
+              candidates: candidates as unknown as JsonObject[],
+              contracts: contracts as unknown as JsonObject[],
+              requirement,
+            });
+            orchestrator.waitForScriptApproval(project.id);
+          });
+        }).catch((error) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          // 失败收尾必须自己兜住：这时已经没有 HTTP 响应可以承载错误了
+          try { orchestrator.failScriptGeneration(project.id, reason); } catch { /* 收尾失败不再抛 */ }
+          try { adapter.fail(project.id, runId, reason); } catch { /* 同上 */ }
+        });
+
+        return reply.code(202).send({
+          accepted: true,
+          interaction: answered.interaction,
+          run: answered.run,
+          replayed: answered.replayed,
+          ...construction,
+          cursor: state.snapshot(project.id).lastEventSeq,
         });
       }
       if (interaction?.type === 'change_plan'
