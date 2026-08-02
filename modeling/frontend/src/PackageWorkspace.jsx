@@ -26,6 +26,7 @@ import PaneResizeHandle from './PaneResizeHandle.jsx';
 import { assistantPaneBounds, assistantPaneRatio, assistantPaneWidth, ASSISTANT_PANE_RATIO } from './paneLayout.js';
 import { packageWorkspaceFocus } from './packageWorkspaceFocus.js';
 import { isPackageChatRunning } from './packageChatRun.js';
+import { activeOperationOf } from './activeRun.js';
 import ReleasePanel from './ReleasePanel.jsx';
 import VersionPanel from './VersionPanel.jsx';
 import { ScenarioPanel } from './WorkflowExtraPanels.jsx';
@@ -577,6 +578,7 @@ export default function PackageWorkspace({
               <PendingInteraction
                 interaction={scenarioInteraction}
                 busy={interactionBusy}
+                activeOperation={activeOperationOf(session)}
                 onSubmit={answerScenario}
               />
             </aside>
@@ -727,6 +729,7 @@ export default function PackageWorkspace({
               aiConstruction={session.aiConstruction}
               authoring={session.authoring}
               packageRevision={pkg?.revision ?? ''}
+              activeOperation={activeOperationOf(session)}
               pendingInteraction={constructionInteraction}
               candidateRevisionPanel={<CandidateRevisionPanel projectId={projectId}
                 refreshKey={candidateRefreshKey}

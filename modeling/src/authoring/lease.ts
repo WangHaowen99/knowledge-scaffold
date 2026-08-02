@@ -62,6 +62,20 @@ export class ProjectOperationLease {
     this.createToken = options.createToken ?? (() => `lease_${randomUUID()}`);
   }
 
+  /**
+   * 当前仍然有效的租约，没有则返回 null。
+   *
+   * 用来告诉界面「这个项目正在做什么」：长耗时操作（生成脚本方案、调整建模方案）
+   * 全程在请求里跑，期间待办还是 pending 状态。刷新页面会看到它像是没提交过，
+   * 再点一次就撞上租约报「项目正在处理中」。有了这个，界面能如实显示「已提交，
+   * 正在处理」而不是给出一个点了必然失败的表单。
+   */
+  current(projectId: string): ProjectLease | null {
+    const lease = this.get(requiredText(projectId, '项目', 200));
+    if (!lease) return null;
+    return Date.parse(lease.expiresAt) > this.nowDate().getTime() ? lease : null;
+  }
+
   acquire(projectId: string, operation: string, owner: string, ttlMs: number): ProjectLease {
     const input = validateLeaseInput(projectId, operation, owner, ttlMs);
     return this.transaction(() => {

@@ -51,6 +51,7 @@ const styles = {
   button: { padding: '5px 12px', fontSize: 12 },
   quietButton: { marginLeft: 'auto', padding: '5px 10px', fontSize: 11.5 },
   error: { marginTop: 10, padding: '7px 9px', borderRadius: 6, background: '#fef3f2', color: '#b42318', fontSize: 12 },
+  processing: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, padding: '8px 10px', borderRadius: 8, border: '1px solid #dce7f6', background: '#f7fbff', color: '#185da7', fontSize: 12.5 },
   repairTarget: { marginTop: 10, padding: '10px 11px', borderRadius: 8, border: '1px solid #dce7f6', background: '#f7fbff' },
   repairTargetTitle: { marginBottom: 8, color: '#185da7', fontSize: 12.5, fontWeight: 650 },
   repairTargetOption: { display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 6, fontSize: 12.5, cursor: 'pointer' },
@@ -714,6 +715,7 @@ export default function PendingInteraction({
   onSkip,
   onOpenFile,
   flowchartDraftState = null,
+  activeOperation = null,
 }) {
   const [draft, setDraft] = useState(() => initialDraft(interaction));
   const [localBusy, setLocalBusy] = useState(false);
@@ -725,7 +727,8 @@ export default function PendingInteraction({
   const payload = interaction?.payload || {};
   const type = interactionType(interaction?.type);
   const presentation = interactionPresentation(interaction);
-  const working = busy || localBusy;
+  // 后端正在处理时按钮一律禁用：留着能点只会让人撞出「项目正在处理中」
+  const working = busy || localBusy || Boolean(activeOperation);
   const closed = useMemo(() => ['answered', 'resolved', 'completed', 'done', 'cancelled'].includes(interaction?.status), [interaction?.status]);
 
   useEffect(() => {
@@ -792,6 +795,14 @@ export default function PendingInteraction({
       </header>
 
       {closed && <div style={styles.state}>已处理</div>}
+      {/* 长耗时操作全程在请求里跑，期间待办仍是 pending。这时候给出可提交的表单，
+          用户点了必然撞租约报「项目正在处理中」——如实说明正在处理即可。 */}
+      {!closed && activeOperation && (
+        <div style={styles.processing} role="status">
+          <span className="spinner" />
+          <span>已提交，正在{activeOperation.operation}。完成后这里会自动更新，不需要重复提交。</span>
+        </div>
+      )}
       {!closed && type === 'question' && <QuestionForm interaction={interaction} draft={draft} setDraft={setDraft} busy={working} submit={submit} />}
       {!closed && type === 'change_plan' && <ChangePlan interaction={interaction} draft={draft} setDraft={setDraft} busy={working} submit={submit} />}
       {!closed && type === 'decision' && <Decision interaction={interaction} draft={draft} setDraft={setDraft} busy={working} submit={submit} />}
