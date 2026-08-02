@@ -64,6 +64,16 @@ const BY_CODE: Record<string, ErrorNextAction[]> = {
     REVIEW_KNOWLEDGE,
   ],
   PACKAGE_REPAIR_IN_PROGRESS: [{ ...VIEW_VALIDATION, style: 'primary' }],
+  // 项目写租约被别的长耗时操作占着（生成脚本方案要跑十几分钟）。正确出口是等，
+  // 但得让人看到「在等什么、等了多久」，而不是一条不知所措的红字。
+  busy: [
+    { id: 'refresh_task_graph', label: '刷新查看当前进度', style: 'primary',
+      description: '后端正在处理上一个操作，完成后界面会自动更新' },
+  ],
+  expired: [
+    { id: 'refresh_task_graph', label: '刷新后重试', style: 'primary',
+      description: '上一个操作已超时释放，刷新后可以重新提交' },
+  ],
 };
 
 export function errorNextActions(code: unknown): ErrorNextAction[] | undefined {

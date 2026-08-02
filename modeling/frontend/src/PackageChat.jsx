@@ -117,6 +117,8 @@ export default function PackageChat({
   // 当前界面渲染的是哪一版知识包。修订冲突后判断「内容有没有变」要用它做基线，
   // 不能等冲突发生了再去取——那时候拿到的已经是新版本，证明不了用户看过什么。
   packageRevision = '',
+  // 后端正持有写租约时，待办要显示成「已提交，正在处理」而不是可点的表单
+  activeOperation = null,
   pendingInteraction,
   flowchartDraftState,
   candidateRevisionPanel,
@@ -843,6 +845,7 @@ export default function PackageChat({
             <PendingInteraction
               interaction={pendingInteraction}
               busy={Boolean(busy)}
+              activeOperation={activeOperation}
               flowchartDraftState={flowchartDraftState}
               onSubmit={submitPendingInteraction}
             />

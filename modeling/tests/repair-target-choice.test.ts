@@ -82,3 +82,22 @@ test('待办提交的 409 也能生成可操作卡片', async () => {
   });
   assert.ok(card, '带 nextActions 的待办提交失败应生成卡片而不是一行红字');
 });
+
+// ---- 长耗时操作期间：待办不该显示成可提交的表单 ----
+
+test('后端持有写租约时给出「正在处理」而不是可点表单', async () => {
+  const { activeOperationOf } = await import('../frontend/src/activeRun.js');
+  assert.deepEqual(
+    activeOperationOf({ activeOperation: { operation: '生成确定性脚本方案', since: '2026-08-02T10:00:00.000Z' } }),
+    { operation: '生成确定性脚本方案', since: '2026-08-02T10:00:00.000Z' },
+  );
+  assert.equal(activeOperationOf({ activeOperation: null }), null);
+  assert.equal(activeOperationOf({ activeOperation: { operation: '   ' } }), null);
+  assert.equal(activeOperationOf(undefined), null);
+});
+
+test('撞上租约的 409 也有出口，不是一条没法处理的红字', async () => {
+  const { errorNextActions } = await import('../src/error-next-actions.js');
+  assert.deepEqual(errorNextActions('busy')!.map((a) => a.id), ['refresh_task_graph']);
+  assert.deepEqual(errorNextActions('expired')!.map((a) => a.id), ['refresh_task_graph']);
+});

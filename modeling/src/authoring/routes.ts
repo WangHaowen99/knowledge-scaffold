@@ -568,6 +568,13 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         ...releaseReadiness,
       },
       currentRevision: publicRevision(latestRevision),
+      // 后端正在跑的长耗时操作。生成脚本方案这类操作全程在请求里跑，期间待办仍是
+      // pending，刷新页面会看到一个「像是没提交过」的表单，再点就撞租约报「项目正在处理中」。
+      // 把它如实告诉界面，待办才能显示成「已提交，正在处理」。
+      activeOperation: (() => {
+        const lease = leases.current(project.id);
+        return lease ? { operation: lease.operation, since: lease.acquiredAt } : null;
+      })(),
       cursor: authoring.lastEventSeq,
     };
   };
