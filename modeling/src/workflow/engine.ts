@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
+import { throwIfCancelled } from '../cancellation.js';
 import {
   batchCacheKey, briefFingerprint, readCachedBatchAnalysis, writeCachedBatchAnalysis,
 } from './material-analysis-cache.js';
@@ -305,6 +306,8 @@ export async function runAnalyze(
     const cacheBrief = briefFingerprint(confirmedBrief);
     let reusedBatches = 0;
     for (const [index, batch] of batches.entries()) {
+      // 检查点：上一批已经完整落在 parts 里，这里停下来不会留半条记录
+      throwIfCancelled(projectId, 'analyze');
       const phase = `artifact_batch_${index + 1}`;
       const batchStartPercent = 28 + Math.round((index / Math.max(1, batches.length)) * 52);
       // 这批材料一个字节都没变就直接用上次的结果，不再花一次 agent run

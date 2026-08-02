@@ -76,6 +76,11 @@ export const confirmAiConstructionMilestone = (id, milestoneId, expectedRevision
   })
 );
 
+export const cancelAiConstructionOperation = (id, operation) => api(
+  `${projectPath(id)}/ai-construction/operations/cancel`,
+  { method: 'POST', body: JSON.stringify({ operation }) },
+);
+
 export const reviseAiConstructionModelingBrief = (id) => api(
   `${projectPath(id)}/ai-construction/modeling-brief/revise`,
   { method: 'POST', body: '{}' },

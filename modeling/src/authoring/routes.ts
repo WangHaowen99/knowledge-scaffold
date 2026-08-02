@@ -116,6 +116,9 @@ import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
 import { InFlightOperations } from '../in-flight-operations.js';
 import { startBackgroundJob } from './background-job.js';
+import {
+  CANCELLABLE_OPERATIONS, requestCancel, type CancellableOperation,
+} from '../cancellation.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
 import { WorkflowStepProgressRepo } from './workflow-progress.js';
@@ -987,6 +990,31 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     } catch (error) {
       return sendStateError(reply, error);
     }
+  });
+
+  app.post('/api/projects/:id/ai-construction/operations/cancel', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const requested = String((req.body as any)?.operation ?? '');
+    if (!(requested in CANCELLABLE_OPERATIONS)) {
+      return reply.code(400).send({ error: '不支持取消该操作', code: 'INVALID_INPUT' });
+    }
+    const operation = requested as CancellableOperation;
+    // 只置位，不中断：单次模型调用停不下来，任务要跑到下一个检查点才能干净退出。
+    // 界面上必须如实说明，不能做成假的秒停。
+    const accepted = requestCancel(project.id, operation);
+    if (!accepted) {
+      return reply.code(409).send({
+        error: '当前没有正在执行的该项任务，可能已经结束了',
+        code: 'NO_RUNNING_OPERATION',
+      });
+    }
+    return {
+      cancelling: true,
+      operation,
+      note: '已记录取消请求。当前这一批处理完就会停下，请稍候。',
+      cursor: state.snapshot(project.id).lastEventSeq,
+    };
   });
 
   app.post('/api/projects/:id/ai-construction/scripts/defer', async (req, reply) => {
