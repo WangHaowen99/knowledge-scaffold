@@ -27,3 +27,16 @@ export function activeRunLabel(run) {
   const intent = String(run?.intent ?? '').trim();
   return intent ? `正在${intent}` : '正在处理';
 }
+
+/**
+ * 后端是否正持有这个项目的写租约（生成脚本方案、调整建模方案等长耗时操作）。
+ *
+ * 这类操作全程在请求里跑，期间待办在库里仍是 pending。刷新页面待办就会原样回来，
+ * 看着像是没提交过——再点一次必然撞上租约，回一条「项目正在处理中」。
+ * 拿到这个信号，界面就能把待办显示成「已提交，正在处理」而不是一个点了就报错的表单。
+ */
+export function activeOperationOf(session) {
+  const operation = String(session?.activeOperation?.operation ?? '').trim();
+  if (!operation) return null;
+  return { operation, since: session.activeOperation.since ?? '' };
+}
