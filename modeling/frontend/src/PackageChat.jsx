@@ -294,6 +294,12 @@ export default function PackageChat({
       } finally { setLocalBusy(''); }
       return;
     }
+    // 新建流程的弹窗归工作台管，助手只发一个打开请求，不重复实现一套
+    if (action.id === 'add_flowchart_process') {
+      setCompletionBlocker(null);
+      window.dispatchEvent(new CustomEvent('mw-flowchart-add-open', { detail: { projectId } }));
+      return;
+    }
     if (action.id === 'defer_validation_errors') {
       if (!busy) setValidationDeferral({ errorCount: Math.max(1, latestValidationErrorCount) });
       return;

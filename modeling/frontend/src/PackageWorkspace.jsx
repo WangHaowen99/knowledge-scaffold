@@ -154,6 +154,17 @@ export default function PackageWorkspace({
     return () => observer.disconnect();
   }, [activeTab, workspaceReady]);
 
+  // 助手在「流程图里还没有任何流程」时给出的出口，由工作台负责打开弹窗
+  useEffect(() => {
+    const open = (event) => {
+      if (event.detail?.projectId !== projectId) return;
+      setFlowchartAddError('');
+      setFlowchartAddOpen(true);
+    };
+    window.addEventListener('mw-flowchart-add-open', open);
+    return () => window.removeEventListener('mw-flowchart-add-open', open);
+  }, [projectId]);
+
   const load = useCallback(async () => {
     try {
       const [nextSession, nextPackage, nextCheck] = await Promise.all([
