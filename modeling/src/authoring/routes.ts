@@ -115,6 +115,7 @@ import { RepairTargetUnresolvedError } from '../ai-construction/controlled-repai
 import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
 import { InFlightOperations } from '../in-flight-operations.js';
+import { startBackgroundJob } from './background-job.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
 import { WorkflowStepProgressRepo } from './workflow-progress.js';
@@ -285,7 +286,9 @@ export interface AuthoringRouteOptions {
     | 'completeModelingBrief' | 'reviseModelingBrief' | 'completeProcessInterview'
     | 'completeScriptDecision'
     | 'startScriptGeneration' | 'waitForScriptApproval' | 'completeScriptGeneration'
-    | 'failScriptGeneration' | 'deferScriptGeneration' | 'retryScriptGeneration'>;
+    | 'failScriptGeneration' | 'deferScriptGeneration' | 'retryScriptGeneration'
+    // 后台作业失败时的收尾：那时没有 HTTP 响应可用，只能写成带出口的助手消息
+    | 'failKnowledgeStructure' | 'failKnowledgeRepair'>;
   packages?: Pick<PackageArtifactStore,
     'ensureProject' | 'initializeDraftPackage' | 'current' | 'readPackageFiles'
     | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'>;
@@ -947,28 +950,39 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     try {
-      return await runWithProjectLease(leases, {
-        projectId: project.id,
+      // 同步段：这些校验失败必须当场回给用户，不能受理完再在后台悄悄失败
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'knowledge-generate');
+      const { flowchart } = await readConfirmedFlowchart(project.id);
+      const documents = listDocuments(project.id);
+      const context = {
+        tables: documents.flatMap((document) => (
+          document.tables?.map((table) => ({ ...table, documentId: document.id })) ?? []
+        )),
+        documents: documents.map((document) => ({
+          id: document.id,
+          filename: document.filename,
+          ...(document.textContent ? { textContent: document.textContent } : {}),
+        })),
+      };
+      // 生成要跑 15~45 分钟，不能占着请求：扔后台，进度和结果走事件流回前端。
+      // KnowledgeStructureRunner 自己会推进任务图并在失败时调 failKnowledgeStructure，
+      // 所以忙碌态和失败出口都不需要这里另外兜。
+      startBackgroundJob({
+        jobs,
+        leases,
+        key: `${project.id}:knowledge-generate`,
         operation: '生成知识结构',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-      }, async () => {
-        ensureProjectGraph(project);
-        assertNoActivePackageDraft(project.id, 'knowledge-generate');
-        const { flowchart } = await readConfirmedFlowchart(project.id);
-        const documents = listDocuments(project.id);
-        const context = {
-          tables: documents.flatMap((document) => (
-            document.tables?.map((table) => ({ ...table, documentId: document.id })) ?? []
-          )),
-          documents: documents.map((document) => ({
-            id: document.id,
-            filename: document.filename,
-            ...(document.textContent ? { textContent: document.textContent } : {}),
-          })),
-        };
-        const result = await knowledgeRunner.run(project, context, flowchart);
-        return { ...result, cursor: state.snapshot(project.id).lastEventSeq };
+        projectId: project.id,
+        run: () => knowledgeRunner.run(project, context, flowchart),
+        onError: (reason) => { orchestrator.failKnowledgeStructure(project.id, reason); },
+      });
+      return reply.code(202).send({
+        accepted: true,
+        aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
       });
     } catch (error) {
       return sendStateError(reply, error);
@@ -1056,15 +1070,25 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     try {
-      return await runWithProjectLease(leases, {
-        projectId: project.id,
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'controlled-repair');
+      startBackgroundJob({
+        jobs,
+        leases,
+        key: `${project.id}:knowledge-repair`,
         operation: '受控修复知识包校验问题',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-      }, () => {
-        ensureProjectGraph(project);
-        assertNoActivePackageDraft(project.id, 'controlled-repair');
-        return controlledRepair.run(project);
+        projectId: project.id,
+        run: () => controlledRepair.run(project),
+        // 后台失败没有 HTTP 响应可用，改写成带出口的助手消息
+        // （stopKnowledgeRepair 会给「重新执行受控修复 / 暂缓错误」两个动作）
+        onError: (reason) => { orchestrator.failKnowledgeRepair(project.id, reason); },
+      });
+      return reply.code(202).send({
+        accepted: true,
+        aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
       });
     } catch (error) {
       return sendStateError(reply, error);
