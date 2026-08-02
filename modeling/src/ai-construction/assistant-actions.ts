@@ -32,6 +32,7 @@ export const ASSISTANT_ACTION_KINDS: Record<string, AssistantActionKind> = {
 
   // ---- dialog：本地交互界面 ----
   defer_validation_errors: 'dialog',
+  add_flowchart_process: 'dialog',
   // 两者都会改动知识包内容，点击后先弹确认再落库
   publish_package_draft: 'dialog',
   discard_package_draft: 'dialog',
@@ -52,6 +53,9 @@ export const ASSISTANT_ACTION_KINDS: Record<string, AssistantActionKind> = {
   open_scenario_review: 'navigate',
   explain_goal: 'navigate',
   refresh_task_graph: 'navigate',
+  open_flowchart_editor: 'navigate',
+  refresh_flowchart_draft: 'navigate',
+  acknowledge_flowchart_warnings: 'navigate',
 };
 
 export function assistantActionKind(id: string): AssistantActionKind | undefined {

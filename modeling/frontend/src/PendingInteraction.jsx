@@ -548,7 +548,8 @@ function FlowchartDraftReview({ draft, setDraft, busy, submit, flowchartDraftSta
               ))}
             </ul>
             <label style={styles.option}>
-              <input type="checkbox" checked={Boolean(draft.acknowledgeWarnings)}
+              <input type="checkbox" data-flowchart-warning-ack
+                checked={Boolean(draft.acknowledgeWarnings)}
                 onChange={(event) => setDraft((current) => ({
                   ...current,
                   acknowledgeWarnings: event.target.checked,
