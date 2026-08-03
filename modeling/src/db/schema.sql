@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS ai_construction_tasks (
                   'process_interview', 'process_diagram', 'process_review',
                   'operation_extraction', 'knowledge_extraction', 'script_decision',
                   'script_generation', 'package_validation', 'package_repair',
-                  'evaluation_repair', 'completion_review'
+                  'evaluation_repair', 'completion_review',
+                  -- 资料变更后的定向复核：只列出真正受影响的内容，不再整段推倒重来
+                  'material_change_review'
                 )),
   milestone_id  TEXT NOT NULL,
   ordinal       INTEGER NOT NULL,
