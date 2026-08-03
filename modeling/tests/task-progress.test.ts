@@ -106,3 +106,20 @@ test('提示语说明可能仍在处理，并指向取消而不是判死刑', ()
   assert.match(hint, /取消/);
   assert.match(hint, /已完成的部分会保留/);
 });
+
+test('刚启动的操作不会因为任务上有旧消息而被误报成停滞', () => {
+  // 界面上同时出现「正在处理 · 1 秒」和「已经 43 分钟没有新进展」，就是这条没做对
+  const messages = [{ taskId: 't1', createdAt: ago(43 * 60_000) }];
+  assert.equal(
+    stalledForMs({ messages, taskId: 't1', startedAt: ago(1_000), now: NOW }),
+    null,
+    '当前操作一秒前才启动，不该判成停滞',
+  );
+});
+
+test('当前操作确实跑了很久且无进展时仍然提示', () => {
+  const messages = [{ taskId: 't1', createdAt: ago(60 * 60_000) }];
+  assert.ok(stalledForMs({
+    messages, taskId: 't1', startedAt: ago(STALL_THRESHOLD_MS + 60_000), now: NOW,
+  }), '这才是真停滞');
+});

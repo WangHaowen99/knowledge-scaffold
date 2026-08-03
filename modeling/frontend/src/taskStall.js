@@ -28,9 +28,14 @@ export function lastProgressAt({ messages = [], taskId } = {}) {
 export function stalledForMs({
   messages = [], taskId, startedAt, now = Date.now(), thresholdMs = STALL_THRESHOLD_MS,
 } = {}) {
-  const since = lastProgressAt({ messages, taskId }) ?? Date.parse(startedAt ?? '');
-  // 连开始时间都不知道就不猜：宁可不提示，也不要误报成卡住
-  if (!Number.isFinite(since)) return null;
+  const lastProgress = lastProgressAt({ messages, taskId });
+  const started = Date.parse(startedAt ?? '');
+  // 取两者较晚的。只看最近一条进度消息会误报：一个任务可能几十分钟前就有过消息
+  // （比如开轮说明），而当前这次操作一秒前才启动、还来不及写进度——那不是停滞。
+  // 界面上同时出现「正在处理 · 1 秒」和「已经 43 分钟没有新进展」就是这么来的。
+  const candidates = [lastProgress, started].filter((value) => Number.isFinite(value));
+  if (!candidates.length) return null;
+  const since = Math.max(...candidates);
   const idle = now - since;
   return idle >= thresholdMs ? idle : null;
 }
