@@ -2,7 +2,10 @@ import { Type } from '@earendil-works/pi-ai';
 import { buildLlm, buildTaskLlm } from '../llm/provider.js';
 import { AgentRunTimeoutError, makeAgent, runAgent } from './agent.js';
 import { assertObjectDataMappings } from './data-mapping.js';
-import { specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema } from './tools.js';
+import {
+  buildDocumentReadingTools,
+  specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema,
+} from './tools.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './spec-validation.js';
 import type {
   CoverageResult,
@@ -54,6 +57,11 @@ export interface PackageChatPlanOptions {
   intent?: string;
   interactionTitle?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * 允许模型翻阅的资料。给了就注入 list_documents / search_documents / read_document，
+   * 让它自己按需读，而不是由调用方截一段塞进提示词——长文档截头部只会读到目录。
+   */
+  documents?: Array<{ id?: string; filename: string; textContent?: string }>;
 }
 export interface ChatApplyResult {
   reply: string;
@@ -707,7 +715,13 @@ export async function packageChatPlan(
     `【专家消息】\n${message}`,
   ].filter(Boolean).join('\n');
 
-  const agent = makeAgent(buildLlm(), sys, [submitPlan] as any);
+  // 有资料时给上翻阅工具：长文档必须让模型自己检索定位，截断塞进提示词读不到正文
+  const documentTools = options.documents?.length
+    ? buildDocumentReadingTools(options.documents.map((item) => ({
+      id: item.id ?? item.filename, filename: item.filename, textContent: item.textContent ?? '',
+    })))
+    : [];
+  const agent = makeAgent(buildLlm(), sys, [submitPlan, ...documentTools] as any);
   const messages = await runAgent(agent, body);
 
   if (cap.plan?.changes?.length) {

@@ -15,8 +15,27 @@ export interface IncrementMaterial {
   content?: string;
 }
 
-/** 单份资料带进提示词的长度上限，避免一次塞爆上下文 */
-const MAX_MATERIAL_CHARS = 6_000;
+/**
+ * 提示词里给每份资料的预览长度。
+ *
+ * 只是让模型知道「这份资料大概讲什么」，不是让它据此下结论——正文要靠
+ * search_documents / read_document 自己翻。曾经把上限设成 6000 并直接截取开头，
+ * 结果一份 20 万字的手册前 5290 字符全是目录，模型看不到任何产品条款，
+ * 得出「资料只提供了目录、没有具体正文」的错误结论。截断的头部不等于内容摘要。
+ */
+const MATERIAL_PREVIEW_CHARS = 800;
+
+/** 从正文里挑出像标题的行，给模型一份大纲——比截取开头有用得多 */
+function outlineOf(body: string): string[] {
+  return body.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => (
+      line.length > 0 && line.length <= 40
+      && (/^#{1,6}\s/u.test(line) || /^第[一二三四五六七八九十百\d]+[章节条]/u.test(line)
+        || /^\d+(\.\d+)*[、.\s]/u.test(line))
+    ))
+    .slice(0, 30);
+}
 
 export interface IncrementChange {
   targetKind: ChangeTargetKind;
@@ -57,10 +76,16 @@ export function buildIncrementRequirement(input: {
   const materials = input.materials.length
     ? input.materials.map((item, index) => {
       const body = (item.content ?? '').trim();
-      const clipped = body.length > MAX_MATERIAL_CHARS
-        ? `${body.slice(0, MAX_MATERIAL_CHARS)}\n…（内容过长已截断）`
-        : body;
-      return `${index + 1}. 《${item.filename}》\n${clipped || '（这份资料没有可读正文）'}`;
+      if (!body) return `${index + 1}. 《${item.filename}》（这份资料没有可读正文）`;
+      if (body.length <= MATERIAL_PREVIEW_CHARS) {
+        return `${index + 1}. 《${item.filename}》全文：\n${body}`;
+      }
+      const outline = outlineOf(body);
+      return [
+        `${index + 1}. 《${item.filename}》共 ${body.length} 字符（正文未附，请用工具查阅）`,
+        outline.length ? `章节：${outline.join(' / ')}` : '',
+        `开头节选：${body.slice(0, MATERIAL_PREVIEW_CHARS)}…`,
+      ].filter(Boolean).join('\n');
     }).join('\n\n')
     : '（本轮没有新增资料，仅根据已变更资料复核）';
 
@@ -90,5 +115,9 @@ export function buildIncrementRequirement(input: {
       + '新增一条与已有条目语义重复的规则或指标，属于错误做法。',
     '④ 逐条说明这次改动的依据来自本轮哪份资料，无法追溯到资料的改动不要提。',
     '⑤ 如果本轮资料不足以支撑任何可靠变更，就不要提交计划，直接说明还缺什么。',
+    '',
+    '资料正文没有直接附在上面——长文档的开头往往只是目录和前言，据此下结论必然出错。',
+    '请先用 search_documents 按关键词定位相关条款，再用 read_document 分页精读上下文，',
+    '确认看到真正的正文之后再提出变更。没查过正文就断定「资料里没有具体内容」是错误做法。',
   ].join('\n');
 }

@@ -149,13 +149,35 @@ test('需求文本必须带上资料正文——只给文件名模型会直接�
   assert.match(requirement, /资产门槛由 100 万上调至 500 万/);
 });
 
-test('资料过长会截断，不把整份文件塞爆上下文', () => {
+test('长文档不塞正文，改为给大纲并要求模型自己检索', () => {
+  // 真实事故：20 万字手册前 5290 字符全是目录，截取开头喂给模型，
+  // 它读不到任何产品条款，得出「资料只提供了目录、没有具体正文」的错误结论。
+  const body = [
+    '# 目录', ...Array.from({ length: 60 }, (_, i) => `${i + 1}. 第 ${i + 1} 章`),
+    '# 前言', 'x'.repeat(5_000),
+    '# 第三章 产品条款', '大额存单起存金额为 20 万元。',
+  ].join('\n');
   const requirement = buildIncrementRequirement({
-    materials: [{ filename: '长文.md', content: 'x'.repeat(9_000) }],
+    materials: [{ filename: '产品手册.docx', content: body }],
     affected: [],
   });
-  assert.match(requirement, /内容过长已截断/);
-  assert.ok(requirement.length < 8_000);
+
+  assert.match(requirement, /共 \d+ 字符（正文未附/);
+  assert.match(requirement, /章节：/, '要给大纲，让模型知道去哪找');
+  assert.match(requirement, /search_documents/);
+  assert.match(requirement, /read_document/);
+  // 关键：不能把正文整段塞进去，也不能让提示词随文档长度膨胀
+  assert.ok(requirement.length < 4_000, `提示词过长：${requirement.length}`);
+  assert.ok(!requirement.includes('x'.repeat(2_000)), '不应把正文大段塞进提示词');
+});
+
+test('短资料仍然直接给全文，不必让模型多跑一趟工具', () => {
+  const requirement = buildIncrementRequirement({
+    materials: [{ filename: '通知.md', content: '门槛由 100 万上调至 500 万。' }],
+    affected: [],
+  });
+  assert.match(requirement, /全文：/);
+  assert.match(requirement, /门槛由 100 万上调至 500 万/);
 });
 
 test('没有正文的资料如实说明，不假装有内容', () => {
