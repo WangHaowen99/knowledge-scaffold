@@ -1466,3 +1466,9 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .ac-message-change-current { margin-top: 5px; border: 1px solid #eaecf0; border-radius: 7px; background: #f9fafb; padding: 6px 8px; }
 .mwr .ac-message-change-current span { display: block; margin-bottom: 3px; color: #98a2b3; font-size: 10.5px; }
 .mwr .ac-message-change-current pre { margin: 0; color: #475467; font-family: inherit; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 「补充新资料」入口：建完之后随时可能来一批新资料，属于状态可供性而不是对话里的下一步，
+   所以常驻在助手栏顶部，不埋在消息流里等用户翻。 */
+.mwr .pchat-increment-entry { margin-left: 8px; border: 1px solid #9dc2ed; border-radius: 8px; padding: 3px 10px; background: #eef6ff; color: #185da7; font-size: 11.5px; cursor: pointer; }
+.mwr .pchat-increment-entry:hover:not(:disabled) { background: #e3efff; }
+.mwr .pchat-increment-entry:disabled { opacity: .55; cursor: default; }

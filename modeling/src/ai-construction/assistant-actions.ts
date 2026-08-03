@@ -29,6 +29,8 @@ export const ASSISTANT_ACTION_KINDS: Record<string, AssistantActionKind> = {
   // 重放被修订冲突挡下的确认。只有在「要确认的内容没变」时才真的重发，
   // 否则退回让人重新看过——细节见 frontend/src/confirmReplay.js
   reload_and_retry: 'command',
+  start_increment_round: 'command',
+  propose_increment: 'command',
 
   // ---- dialog：本地交互界面 ----
   defer_validation_errors: 'dialog',
