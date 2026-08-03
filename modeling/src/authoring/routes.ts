@@ -1107,6 +1107,10 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             intent: '生成增量修改方案',
             interactionTitle: '确认增量修改方案',
             metadata: { incrementRound: true, incrementTaskId: intake.id },
+            // 把本轮资料交给模型自己翻：长文档不能靠截断塞进提示词
+            documents: materials.map((item) => ({
+              filename: item.filename, textContent: item.content,
+            })),
           });
           // 在方案送到专家面前之前就挡下删除：让他看到一个批准不了的方案毫无意义
           assertIncrementChangesAllowed((planned.plan?.changes ?? []) as any);
