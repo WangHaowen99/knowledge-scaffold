@@ -34,6 +34,9 @@ export type AiConstructionTaskKind =
   // 评测失败反推的修缮：与 package_repair 分开，因为完成判据是「重新评测通过」
   // 而不是「知识包校验通过」，且执行引擎是优化更新而非受控修复
   | 'evaluation_repair'
+  // 资料变更后的定向复核：按引用关系算出受影响的内容并逐项确认，
+  // 取代「受影响点之后的阶段全部推倒重来」
+  | 'material_change_review'
   | 'completion_review';
 
 export interface AiConstructionMilestoneSnapshot {
@@ -274,6 +277,7 @@ const TASK_DURATION_MINUTES: Partial<Record<AiConstructionTaskKind, [number, num
   package_validation: [3, 15],
   package_repair: [5, 30],
   evaluation_repair: [10, 45],
+  material_change_review: [5, 20],
   completion_review: [5, 15],
 };
 

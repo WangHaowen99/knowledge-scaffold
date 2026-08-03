@@ -4,7 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { nowIso } from '../db/index.js';
 import type { PackageSpec } from '../types.js';
 import type { MaterialRevisionChange } from './repo.js';
-import { propagateImpact } from './knowledge-dependency.js';
+import { describeImpact, propagateImpact } from './knowledge-dependency.js';
 
 export type AffectedKnowledgeKind = 'object' | 'relation' | 'operation' | 'rule' | 'metric' | 'script';
 
@@ -130,7 +130,14 @@ export function applyMaterialInvalidation(
   db: DatabaseSync,
   projectId: string,
   analysis: MaterialImpactAnalysis,
-): { graphRevision?: number; staleTaskIds: string[] } {
+): {
+  graphRevision?: number;
+  /** 保留字段：新策略不再作废任务，始终为空 */
+  staleTaskIds: string[];
+  /** 列清影响面的定向复核任务 */
+  reviewTaskId?: string;
+  affectedResources?: AffectedKnowledgeResource[];
+} {
   if (!analysis.earliestMilestone) return { staleTaskIds: [] };
   const graph = db.prepare(`SELECT revision FROM ai_construction_graphs WHERE project_id = ?`)
     .get(projectId) as { revision: number } | undefined;
@@ -144,67 +151,48 @@ export function applyMaterialInvalidation(
   const ownsTransaction = !db.isTransaction;
   if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
   try {
-    const affectedTasks = db.prepare(`SELECT task.id, task.milestone_id, milestone.ordinal
-      FROM ai_construction_tasks task
-      JOIN ai_construction_milestones milestone
-        ON milestone.project_id = task.project_id AND milestone.milestone_id = task.milestone_id
-      WHERE task.project_id = ? AND milestone.ordinal >= ?
-        AND task.status NOT IN ('cancelled')`).all(projectId, milestone.ordinal) as Array<{
-          id: string; milestone_id: string; ordinal: number;
-        }>;
-    const earliestTaskIds = affectedTasks
-      .filter((item) => item.ordinal === milestone.ordinal)
-      .map((item) => item.id);
-    const downstreamTaskIds = affectedTasks
-      .filter((item) => item.ordinal > milestone.ordinal)
-      .map((item) => item.id);
-
+    // 旧策略是按里程碑序号一刀切：受影响点之后的阶段全部 stale、任务全部 pending。
+    // 改一份流程资料就要从头走一遍，代价远大于实际影响面。
+    //
+    // 新策略：已确认的中间阶段一律不动——它们确认的是当时那部分内容，而现在我们
+    // 精确知道哪些内容受影响。只撤销「建模完成确认」，因为它断言的是「整体已一致」，
+    // 资料一变这个断言就不成立了。其余改成一条列清楚影响面的定向复核任务。
+    const completedMilestone = db.prepare(`SELECT status FROM ai_construction_milestones
+      WHERE project_id = ? AND milestone_id = 'construction_completed'`)
+      .get(projectId) as { status: string } | undefined;
+    if (completedMilestone?.status === 'confirmed') {
+      db.prepare(`UPDATE ai_construction_milestones
+        SET status = 'active', confirmed_revision_oid = NULL, updated_at = ?
+        WHERE project_id = ? AND milestone_id = 'construction_completed'`).run(now, projectId);
+    }
     db.prepare(`UPDATE ai_construction_graphs SET status = 'active', revision = revision + 1, updated_at = ?
       WHERE project_id = ?`).run(now, projectId);
-    db.prepare(`UPDATE ai_construction_milestones SET status = 'active', confirmed_revision_oid = NULL, updated_at = ?
-      WHERE project_id = ? AND milestone_id = ?`).run(now, projectId, analysis.earliestMilestone);
-    db.prepare(`UPDATE ai_construction_milestones
-      SET status = CASE WHEN status IN ('active', 'confirmed') THEN 'stale' ELSE status END,
-        confirmed_revision_oid = CASE WHEN status IN ('active', 'confirmed') THEN NULL ELSE confirmed_revision_oid END,
-        updated_at = ?
-      WHERE project_id = ? AND ordinal > ?`).run(now, projectId, milestone.ordinal);
 
-    if (earliestTaskIds.length) {
-      const placeholders = earliestTaskIds.map(() => '?').join(',');
-      db.prepare(`UPDATE ai_construction_tasks SET status = 'pending', output_revision_oid = NULL, updated_at = ?
-        WHERE project_id = ? AND id IN (${placeholders})`).run(now, projectId, ...earliestTaskIds);
+    // 同一批资料反复变更只保留一条复核任务，不要攒出一串
+    const existingReview = db.prepare(`SELECT id FROM ai_construction_tasks
+      WHERE project_id = ? AND task_kind = 'material_change_review'
+        AND status NOT IN ('completed', 'skipped', 'cancelled')`)
+      .get(projectId) as { id: string } | undefined;
+    const reason = `资料变更后需要复核：${describeImpact(analysis.affectedResources)}`;
+    let reviewTaskId: string;
+    if (existingReview) {
+      reviewTaskId = existingReview.id;
+      db.prepare(`UPDATE ai_construction_tasks SET reason = ?, status = 'pending', updated_at = ?
+        WHERE id = ?`).run(reason, now, reviewTaskId);
+    } else {
+      reviewTaskId = `task_${randomUUID().slice(0, 12)}`;
+      const ordinal = Number((db.prepare(`SELECT COALESCE(MAX(ordinal), 0) AS ordinal
+        FROM ai_construction_tasks WHERE project_id = ?`).get(projectId) as { ordinal: number }).ordinal) + 1;
+      db.prepare(`INSERT INTO ai_construction_tasks
+        (id, project_id, task_kind, milestone_id, ordinal, title, goal, status,
+          required, reason, created_at, updated_at)
+        VALUES (?, ?, 'material_change_review', ?, ?, '复核资料变更影响',
+          '资料改动之后，逐项确认受影响的内容是否还成立，不需要重做没被影响的部分。',
+          'pending', 1, ?, ?, ?)`)
+        .run(reviewTaskId, projectId, analysis.earliestMilestone, ordinal, reason, now, now);
     }
-    if (downstreamTaskIds.length) {
-      const placeholders = downstreamTaskIds.map(() => '?').join(',');
-      db.prepare(`UPDATE ai_construction_tasks SET status = 'stale', output_revision_oid = NULL, updated_at = ?
-        WHERE project_id = ? AND id IN (${placeholders})`).run(now, projectId, ...downstreamTaskIds);
-    }
-    const reanalysisId = `task_${randomUUID().slice(0, 12)}`;
-    const ordinal = Number((db.prepare(`SELECT COALESCE(MAX(ordinal), 0) AS ordinal
-      FROM ai_construction_tasks WHERE project_id = ?`).get(projectId) as { ordinal: number }).ordinal) + 1;
-    db.prepare(`INSERT INTO ai_construction_tasks
-      (id, project_id, task_kind, milestone_id, ordinal, title, goal, status,
-        required, reason, created_at, updated_at)
-      VALUES (?, ?, 'material_analysis', ?, ?, '复核变更资料影响',
-        '重新分析发生语义变化的资料，并仅重建受影响知识。', 'pending', 1,
-        '资料修订影响了已确认知识证据', ?, ?)`)
-      .run(reanalysisId, projectId, analysis.earliestMilestone, ordinal, now, now);
-    const addDependency = db.prepare(`INSERT OR IGNORE INTO ai_construction_task_dependencies
-      (project_id, task_id, depends_on_task_id) VALUES (?, ?, ?)`);
-    earliestTaskIds.forEach((taskId) => addDependency.run(projectId, taskId, reanalysisId));
 
-    const staleIds = [...earliestTaskIds, ...downstreamTaskIds];
-    const pendingInteractions = db.prepare(`SELECT id, payload_json FROM authoring_interactions
-      WHERE project_id = ? AND status = 'pending'`).all(projectId) as Array<{ id: string; payload_json: string }>;
-    const staleSet = new Set(staleIds);
-    for (const interaction of pendingInteractions) {
-      try {
-        const payload = JSON.parse(interaction.payload_json) as { taskId?: string };
-        if (payload.taskId && staleSet.has(payload.taskId)) {
-          db.prepare(`UPDATE authoring_interactions SET status = 'cancelled' WHERE id = ?`).run(interaction.id);
-        }
-      } catch { /* damaged historical payload does not block invalidation */ }
-    }
+    // 不再作废任何任务，因此也没有待办需要连带取消——这正是新策略的意义。
 
     db.prepare(`UPDATE wf_nodes SET status = 'stale', updated_at = ?
       WHERE project_id = ? AND type = 'analyze' AND status = 'done'`).run(now, projectId);
@@ -225,7 +213,12 @@ export function applyMaterialInvalidation(
       }
     }
     if (ownsTransaction) db.exec('COMMIT');
-    return { graphRevision: graph.revision + 1, staleTaskIds: staleIds };
+    return {
+      graphRevision: graph.revision + 1,
+      staleTaskIds: [],
+      reviewTaskId,
+      affectedResources: analysis.affectedResources,
+    };
   } catch (error) {
     if (ownsTransaction) {
       try { db.exec('ROLLBACK'); } catch { /* no-op */ }
