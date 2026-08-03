@@ -178,8 +178,11 @@ test('影响分析只命中引用旧资料修订的知识资源', () => {
   const impact = analyzeMaterialImpact(next.change, packageWithMaterialEvidence(first.document.id));
 
   assert.equal(impact.earliestMilestone, 'knowledge_confirmed');
+  // script:calculate 不是直接引用这份资料，而是绑定在受影响的 operation:Handle 上——
+  // 操作变了脚本同样要复核，所以影响面按引用关系传播到它
   assert.deepEqual(impact.affectedResources.map((item) => `${item.kind}:${item.key}`).sort(), [
-    'object:Policy', 'object:Request', 'operation:Handle', 'relation:Request.uses', 'rule:Eligibility',
+    'object:Policy', 'object:Request', 'operation:Handle', 'relation:Request.uses',
+    'rule:Eligibility', 'script:calculate',
   ]);
   assert.deepEqual(impact.staleWorkflowSteps, [
     'scenario', 'data_source', 'evaluate', 'diagnose', 'optimize', 'release',
