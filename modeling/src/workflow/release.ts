@@ -149,7 +149,7 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
             : !input.currentRevision || !input.latestRound.artifactRevision
               ? '评测未记录工件修订，请对当前知识包重新评测'
               : !roundIsCurrent
-                ? '评测使用的是旧修订，请对当前知识包重新评测'
+                ? '知识包在上次评测之后有改动，请重新评测当前版本'
               : !scopeMatches
                 ? `${matchedResults.length}/${required?.length ?? results.length} 条当前真实用例已评测`
                 : `${passCount}/${required?.length ?? results.length} 通过`,

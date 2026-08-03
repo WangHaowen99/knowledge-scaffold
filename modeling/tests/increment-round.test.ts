@@ -67,3 +67,35 @@ test('全是新增和修改时放行', () => {
   ]));
   assert.doesNotThrow(() => assertIncrementChangesAllowed([]));
 });
+
+// ---- 增量后必须重新评测：靠既有的发布门禁保证，不另起一套 ----
+
+test('知识包改动之后，旧评测轮次不再算通过', async () => {
+  const { buildReleaseReadiness } = await import('../src/workflow/release.js');
+  const base = {
+    aiConstructionCompleted: true,
+    packageCheck: { revision: 'rev-2', findings: [] },
+    currentRevision: 'rev-2',
+    pendingRequiredTasks: [],
+    pendingCandidateChanges: [],
+    latestResults: [{ verdict: 'pass' }],
+    requiredTestcases: [{ id: 't1' }],
+  } as any;
+
+  // 上一轮评测跑在 rev-1 上，增量把知识包推到了 rev-2
+  const stale = buildReleaseReadiness({
+    ...base,
+    latestRound: { status: 'done', artifactRevision: 'rev-1' },
+  });
+  const staleGate = stale.gates.find((gate: any) => gate.id === 'evaluation');
+  assert.equal(staleGate?.passed, false, '增量之后旧评测不能算数');
+  assert.match(staleGate!.detail, /重新评测/);
+  assert.equal(stale.ready, false, '发布必须被挡住');
+
+  // 对当前修订重新评测过才放行
+  const fresh = buildReleaseReadiness({
+    ...base,
+    latestRound: { status: 'done', artifactRevision: 'rev-2' },
+  });
+  assert.equal(fresh.gates.find((gate: any) => gate.id === 'evaluation')?.passed, true);
+});
