@@ -80,6 +80,16 @@ const BY_CODE: Record<string, ErrorNextAction[]> = {
     { id: 'refresh_task_graph', label: '刷新查看当前进度', style: 'primary',
       description: '项目里还有任务在跑，完成后再试' },
   ],
+  // 增量补充要有一个确认过的完整知识包做基准，否则「只改增量」没有参照物
+  INCREMENT_REQUIRES_COMPLETED_PACKAGE: [
+    { id: 'confirm_construction', label: '先完成建模确认', style: 'primary',
+      description: '确认完成 AI 辅助构建之后才能补充增量资料' },
+    REVIEW_KNOWLEDGE,
+  ],
+  INCREMENT_ROUND_BLOCKED: [
+    { id: 'refresh_task_graph', label: '刷新查看进行中的任务', style: 'primary',
+      description: '当前还有任务没处理完，处理完再开始增量补充' },
+  ],
   // 流程图确认被拒的四种情况。画布就在中间栏，用户此刻正在编辑——原先这些只回一行
   // 红字，人被卡在画到一半的图上没有任何可点的东西。
   FLOWCHART_DIRECT_EDIT_REQUIRED: [

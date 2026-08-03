@@ -1668,6 +1668,82 @@ export class AiConstructionOrchestrator {
     });
   }
 
+  /**
+   * 开一轮增量补充。
+   *
+   * 与「重走一遍」的区别全在这里：只把增量阶段设为活动、只规划一条吸收任务，
+   * 已确认的 6 个阶段一个都不碰。阶段本身是懒创建的（ensureIncrementMilestone），
+   * 所以存量项目不用迁移。
+   */
+  startIncrementRound(
+    projectId: string,
+    input: { packageRevisionOid: string },
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      const milestoneId = this.graph.ensureIncrementMilestone(projectId);
+      this.graph.activateMilestone(projectId, milestoneId);
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+
+      // 上一轮没做完就不再开新的：提案的基线会一直在变，专家永远确认不了一个稳定的东西
+      const running = current.tasks.find((task) => task.kind === 'incremental_intake'
+        && !['completed', 'skipped', 'cancelled'].includes(task.status));
+      if (!running) {
+        current = this.graph.apply(projectId, {
+          type: 'plan_task',
+          expectedRevision: current.revision,
+          task: {
+            kind: 'incremental_intake',
+            milestoneId,
+            title: '吸收新增资料并提出增量修改',
+            goal: '只根据本轮新增或变更的资料提出修改，已确认且未被涉及的内容保持不变。',
+            required: true,
+            reason: '知识包已完成建模，本轮只处理增量',
+            inputRevisionOid: input.packageRevisionOid,
+            dependsOn: [],
+          },
+        });
+      }
+      const task = current.tasks.find((item) => item.kind === 'incremental_intake'
+        && !['completed', 'skipped', 'cancelled'].includes(item.status));
+
+      const message = this.messages.ensure(projectId, {
+        key: `increment.started.${input.packageRevisionOid}`,
+        role: 'assistant',
+        taskId: task?.id,
+        blocks: [
+          {
+            type: 'status',
+            title: '开始增量补充',
+            summary: '已确认的内容保持不变，本轮只处理新增或变更的资料',
+            milestoneId,
+            taskId: task?.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: '请上传这次要补充的资料。我只会根据这些资料提出修改建议，'
+              + '并优先修改已有内容而不是新增重复的规则；确认之后会生成新版本并需要重新评测。',
+          },
+          {
+            type: 'next_actions',
+            title: '可以这样继续',
+            actions: [
+              { id: 'upload_materials', label: '上传增量资料', style: 'primary' },
+              { id: 'review_knowledge_files', label: '先查看现有知识', style: 'secondary' },
+            ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
   advanceAfterMilestoneConfirmation(
     projectId: string,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
