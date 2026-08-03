@@ -226,11 +226,15 @@ export function ReviewPanel({
       const detail = event.detail ?? {};
       if (detail.projectId !== projectId || typeof detail.path !== 'string') return;
       const resolved = resolvePackageFileTarget(pkg?.files ?? [], detail.path);
-      if (!resolved) return;
+      if (!resolved) {
+        setMsg(`未找到与“${detail.path}”对应的知识文件，请从左侧目录选择`);
+        return;
+      }
       if (resolved !== path && (dirtyRef.current || diagramDirtyRef.current)
         && !window.confirm('当前文件有未保存修改，切换文件将丢弃这些修改，继续吗？')) return;
       setTextDraftDirty(false);
       setDiagramDraftDirty(false);
+      if (resolved === path) setMsg(`已定位到 ${resolved}`);
       setPath(resolved);
       setView('view');
     };

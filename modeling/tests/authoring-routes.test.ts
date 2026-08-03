@@ -1261,6 +1261,46 @@ test('逐项修复只负责受理，不等长任务跑完', async (t) => {
   assert.equal(response.json().accepted, true);
 });
 
+test('逐项修复会关闭未提交的暂缓表单并复用当前修复方案', async (t) => {
+  const project = createProject({ owner: 'alice', name: '修复与暂缓互斥' });
+  const state = getAuthoringState();
+  const open = (purpose: string, findingId: string, type: 'question_batch' | 'change_plan') => {
+    const started = state.apply({
+      kind: 'start_run', projectId: project.id, intent: purpose, baseRevision: 'pkg-current',
+      state: { purpose, findingId },
+    });
+    if (started.kind !== 'run') throw new Error('运行创建失败');
+    const opened = state.apply({
+      kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+      type, baseRevision: 'pkg-current',
+      payload: { purpose, findingId, title: purpose, questions: [] },
+    });
+    if (opened.kind !== 'interaction') throw new Error('待办创建失败');
+    return opened.interaction;
+  };
+  const ignored1 = open('check_finding_ignore', 'warning-1', 'question_batch');
+  const ignored2 = open('check_finding_ignore', 'warning-2', 'question_batch');
+  const repair = open('controlled_repair', 'error-1', 'change_plan');
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-current' }, packageVersion: '0.1.0', spec: { objects: [], operations: [] } };
+      },
+    },
+  });
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/repair`, payload: {},
+  });
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().reused, true);
+  assert.equal(response.json().interaction.id, repair.id);
+  assert.equal(response.json().cancelledIgnoreCount, 2);
+  assert.equal(state.interaction(project.id, ignored1.id)?.status, 'cancelled');
+  assert.equal(state.interaction(project.id, ignored2.id)?.status, 'cancelled');
+  assert.equal(state.interaction(project.id, repair.id)?.status, 'pending');
+});
+
 test('方案调整生成失败后重建可确认方案，专家不会卡在没法再改的状态', async (t) => {
   const project = createProject({ owner: 'alice', name: '调整失败仍可重试' });
   const state = getAuthoringState();
@@ -1406,7 +1446,7 @@ test('「去修改」在助手里落一张卡片，并指向这条发现对应�
   assert.match(blocks.find((block: any) => block.type === 'text').text, /补上来源引用/);
 });
 
-test('target 不是文件路径时不造一个跳不到任何地方的按钮', async (t) => {
+test('target 是语义目标时也把目标交给前端解析到具体文件', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-非路径' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1419,9 +1459,9 @@ test('target 不是文件路径时不造一个跳不到任何地方的按钮', a
   const actions = response.json().message.blocks
     .find((block: any) => block.type === 'next_actions').actions;
   assert.deepEqual(actions.map((item: any) => item.id), [
-    'repair_knowledge_structure', 'review_knowledge_files',
+    'repair_knowledge_structure', 'open_package_file',
   ]);
-  assert.equal(actions[1].path, undefined);
+  assert.equal(actions[1].path, 'ipo_detail_info');
 });
 
 test('「忽略」只是开一条待办收理由，不会当场落审计记录', async (t) => {
@@ -1553,4 +1593,21 @@ test('已有待办未处理时不开忽略表单——否则它会被挡住，�
   assert.equal(response.json().code, 'PENDING_INTERACTION_FIRST');
   // 报错要指名道姓，否则用户不知道该去处理哪一条
   assert.match(response.json().error, /请先确认建模目标/);
+});
+
+test('已有另一条暂缓待办时也不开新表单', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-暂缓互斥' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'w1', source: 'rule', severity: '警告', category: '命名建议', target: 'objects/a.md', message: '命名一' },
+    { id: 'w2', source: 'rule', severity: '警告', category: '命名建议', target: 'objects/b.md', message: '命名二' },
+  ] as any, 'pkg-draft');
+  const app = findingApp(t);
+
+  const first = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(first.statusCode, 200, first.body);
+  const second = await handOff(app, project.id, 'ignore', 'w2');
+  assert.equal(second.statusCode, 409, second.body);
+  assert.equal(second.json().code, 'PENDING_INTERACTION_FIRST');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 1);
 });
