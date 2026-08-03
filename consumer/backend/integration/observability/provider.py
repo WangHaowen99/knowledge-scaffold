@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import atexit
-import os
 import threading
 from typing import Optional
 
 from utils.logging import get_logger
-from integration.observability.bus import ObservabilityBus
 from integration.observability.dispatcher import DispatchSink, RuntimeEventDispatcher
-from integration.observability.exporters import create_speedscope_exporter
 from integration.observability.observer import NOOP_OBSERVER
 from integration.observability.workspace_router import create_workspace_observability_router
 
@@ -18,7 +15,6 @@ logger = get_logger("observability.provider")
 
 _observer_lock = threading.RLock()
 _observer: Optional[object] = None
-SPEEDSCOPE_TRACE_ENABLED_ENV = "SPEEDSCOPE_TRACE_ENABLED"
 
 
 def get_observer():
@@ -53,13 +49,10 @@ def _build_observer():
 
     workspace_observer = _build_workspace_observer()
     platform_observer = get_platform_observer()
-    speedscope_observer = _build_speedscope_observer()
 
     sinks: list[DispatchSink] = []
     if workspace_observer is not NOOP_OBSERVER:
         sinks.append(DispatchSink(workspace_observer, close_on_close=True))
-    if speedscope_observer is not NOOP_OBSERVER:
-        sinks.append(DispatchSink(speedscope_observer, close_on_close=True))
     if platform_observer is not None:
         sinks.append(DispatchSink(platform_observer, close_on_close=False))
 
@@ -80,23 +73,6 @@ def _build_workspace_observer():
     if getattr(router, "available", True) is False:
         return NOOP_OBSERVER
     return router
-
-
-def _build_speedscope_observer():
-    if not _environment_flag(SPEEDSCOPE_TRACE_ENABLED_ENV):
-        return NOOP_OBSERVER
-    try:
-        exporter = create_speedscope_exporter({})
-        if getattr(exporter, "available", True) is False:
-            return NOOP_OBSERVER
-        return ObservabilityBus(exporter)
-    except Exception:
-        logger.warning("Failed to initialize Speedscope trace exporter", exc_info=True)
-        return NOOP_OBSERVER
-
-
-def _environment_flag(name: str) -> bool:
-    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _close_observer(observer: Optional[object], *, timeout: float) -> None:

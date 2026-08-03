@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { requestObservabilityJson } from './api.js';
+import { requestObservabilityDownload, requestObservabilityJson } from './api.js';
 
 test('request adapter returns parsed successful payload', async () => {
   const request = async () => ({
@@ -36,4 +36,19 @@ test('request adapter supplies a stable fallback for non-JSON failures', async (
     () => requestObservabilityJson(request, '/overview', {}, '加载失败'),
     { message: '加载失败（HTTP 502）' },
   );
+});
+
+test('download adapter returns the response blob and attachment filename', async () => {
+  const trace = { type: 'blob' };
+  const request = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: (name) => name === 'content-disposition' ? 'attachment; filename="session-a.speedscope.json"' : '' },
+    blob: async () => trace,
+  });
+
+  assert.deepEqual(await requestObservabilityDownload(request, '/speedscope'), {
+    blob: trace,
+    fileName: 'session-a.speedscope.json',
+  });
 });

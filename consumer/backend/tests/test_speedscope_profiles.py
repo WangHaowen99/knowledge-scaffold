@@ -17,6 +17,7 @@ from integration.observability.exporters.speedscope.exporter import SpeedscopeEx
 from integration.observability.speedscope_io import speedscope_session_lock_path
 from integration.observability.traces.run import RunRuntimeTrace
 from integration.observability.stack_profiler import _RunStackProfile, _write_stack_profile
+from utils.identifiers import safe_user_storage_key
 
 
 def test_stack_profiler_merges_sampled_profile_into_evented_session(tmp_path):
@@ -60,6 +61,31 @@ def test_speedscope_event_rewrite_preserves_active_sampled_profile(tmp_path):
     assert _active_profile(after)["name"] == active_name
     assert len([profile for profile in after["profiles"] if profile["type"] == "sampled"]) == 1
     assert len([profile for profile in after["profiles"] if profile["type"] == "evented"]) >= 1
+
+
+def test_speedscope_session_trace_is_partitioned_by_user(tmp_path):
+    exporter = SpeedscopeExporter(output_dir=tmp_path)
+    _emit_minimal_run(
+        exporter,
+        run_id="run-alice",
+        session_id="session-shared",
+        turn_id=1,
+        user_id="alice@example.com",
+    )
+    _emit_minimal_run(
+        exporter,
+        run_id="run-bob",
+        session_id="session-shared",
+        turn_id=2,
+        user_id="bob@example.com",
+    )
+
+    files = sorted(tmp_path.glob("*/session-*.speedscope.json"))
+    assert {path.parent.name for path in files} == {
+        safe_user_storage_key("alice@example.com"),
+        safe_user_storage_key("bob@example.com"),
+    }
+    assert all("Run " in json.loads(path.read_text(encoding="utf-8"))["profiles"][0]["name"] for path in files)
 
 
 def test_stack_frame_names_omit_source_text(tmp_path, monkeypatch):
@@ -227,10 +253,7 @@ def test_process_sample_budget_limits_concurrent_runs(tmp_path, monkeypatch):
 
 def test_run_trace_close_cleans_started_profile_after_pre_loop_exception(tmp_path, monkeypatch):
     _reset_stack_profiler_state()
-    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
-    monkeypatch.setenv("SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS", "1000")
     monkeypatch.setenv("LOG_DIR", str(tmp_path))
-    monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
     trace = RunRuntimeTrace(
         observer=_CapturingObserver(),
         run_id="run-pre-loop-error",
@@ -244,9 +267,7 @@ def test_run_trace_close_cleans_started_profile_after_pre_loop_exception(tmp_pat
             user_query="query",
             workspace_id="workspace",
         )
-        profile = stack_profiler_module._RUNS["run-pre-loop-error"]
-        stack_profiler_module._sample_profile(profile)
-        assert stack_profiler_module._PROCESS_SAMPLE_COUNT >= 1
+        assert "run-pre-loop-error" not in stack_profiler_module._RUNS
 
         try:
             raise RuntimeError("before agent loop")
@@ -255,8 +276,7 @@ def test_run_trace_close_cleans_started_profile_after_pre_loop_exception(tmp_pat
 
         assert "run-pre-loop-error" not in stack_profiler_module._RUNS
         assert stack_profiler_module._PROCESS_SAMPLE_COUNT == 0
-        assert profile.sampler_thread is not None
-        assert not profile.sampler_thread.is_alive()
+        assert "run-pre-loop-error" not in stack_profiler_module._RUNS
 
         trace.close(status=RuntimeStatus.ERROR)
         assert stack_profiler_module._PROCESS_SAMPLE_COUNT == 0
@@ -487,7 +507,6 @@ def test_speedscope_writers_share_runtime_output_dir(tmp_path, monkeypatch, use_
         monkeypatch.delenv("LOG_DIR", raising=False)
         output_dir = runtime_root / "logs" / "speedscope"
         unexpected_dir = log_dir / "speedscope"
-    monkeypatch.setenv("SPEEDSCOPE_TRACE_ENABLED", "true")
     monkeypatch.setattr(stack_profiler_module, "_include_frame", lambda frame: True)
     session_id = "session-runtime-output-dir"
 
@@ -504,6 +523,7 @@ def test_speedscope_writers_share_runtime_output_dir(tmp_path, monkeypatch, use_
             run_id="run-sampled-output-dir",
             session_id=session_id,
             turn_id=2,
+            enabled=True,
         )
         profile = stack_profiler_module._RUNS["run-sampled-output-dir"]
         stack_profiler_module._sample_profile(profile)
@@ -603,6 +623,7 @@ def _emit_minimal_run(
     run_id: str,
     session_id: str,
     turn_id: int,
+    user_id: str | None = None,
 ) -> None:
     common = {"run_id": run_id, "session_id": session_id, "turn_id": turn_id}
     exporter.export(
@@ -610,7 +631,7 @@ def _emit_minimal_run(
             type=RuntimeEventType.RUN_STARTED,
             span_key="run:{}".format(run_id),
             timestamp_ms=1000,
-            payload={},
+            payload={"user_id": user_id} if user_id else {},
             **common,
         )
     )

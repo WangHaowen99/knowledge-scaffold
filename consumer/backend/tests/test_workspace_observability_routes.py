@@ -40,6 +40,7 @@ def test_get_workspace_observability_config_masks_secret(tmp_path, monkeypatch):
     assert payload["enabled"] is False
     assert payload["mode"] == "local"
     assert payload["local"] == {"retention_days": 30}
+    assert payload["speedscope"] == {"retention_days": 30}
     assert payload["langfuse"]["has_secret_key"] is False
     assert "secret_key" not in payload["langfuse"]
 
@@ -78,6 +79,7 @@ def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_pa
             "enabled": True,
             "mode": "langfuse",
             "local": {"retention_days": 14},
+            "speedscope": {"retention_days": 7},
             "langfuse": {
                 "public_key": "pk-test",
                 "secret_key": "sk-test",
@@ -93,6 +95,7 @@ def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_pa
     assert payload["enabled"] is True
     assert payload["mode"] == "langfuse"
     assert payload["local"]["retention_days"] == 14
+    assert payload["speedscope"]["retention_days"] == 7
     assert payload["langfuse"]["public_key"] == "pk-test"
     assert payload["langfuse"]["has_secret_key"] is True
     assert "secret_key" not in payload["langfuse"]
