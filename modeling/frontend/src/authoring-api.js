@@ -76,6 +76,14 @@ export const confirmAiConstructionMilestone = (id, milestoneId, expectedRevision
   })
 );
 
+export const startAiConstructionIncrement = (id) => api(
+  `${projectPath(id)}/ai-construction/increment/start`, { method: 'POST', body: '{}' },
+);
+
+export const proposeAiConstructionIncrement = (id) => api(
+  `${projectPath(id)}/ai-construction/increment/propose`, { method: 'POST', body: '{}' },
+);
+
 export const cancelAiConstructionOperation = (id, operation) => api(
   `${projectPath(id)}/ai-construction/operations/cancel`,
   { method: 'POST', body: JSON.stringify({ operation }) },
