@@ -46,6 +46,8 @@ const styles = {
   tag: { alignSelf: 'start', borderRadius: 4, padding: '2px 6px', background: '#f2f4f7', color: '#475467', fontSize: 11, fontWeight: 650 },
   rowTitle: { color: '#344054', fontSize: 12.5, fontWeight: 650, overflowWrap: 'anywhere' },
   rowText: { marginTop: 3, color: '#667085', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  changeCurrent: { display: 'block', marginTop: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid #eaecf0', background: '#f9fafb', color: '#475467', fontSize: 11.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  changeCurrentLabel: { display: 'block', marginBottom: 3, color: '#98a2b3', fontSize: 10.5, fontStyle: 'normal' },
   content: { padding: 10, maxHeight: 260, overflow: 'auto', border: '1px solid #eaecf0', borderRadius: 6, background: '#f9fafb', color: '#344054', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
   footer: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 12, flexWrap: 'wrap' },
   button: { padding: '5px 12px', fontSize: 12 },
@@ -401,7 +403,16 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
                 <span style={styles.rowTitle}>
                   {ACTION_LABEL[change.action] || '修改'} · {TARGET_LABEL[change.targetKind ?? change.target_kind] || '内容'} {asText(change.targetKey ?? change.target_key ?? change.path)}
                 </span>
-                <span style={styles.rowText}>{asText(change.description ?? change.summary)}</span>
+                {/* 修改类先给出当前内容：不看见现在是什么样，「怎么改」无从判断 */}
+                {change.current && (
+                  <span style={styles.changeCurrent}>
+                    <em style={styles.changeCurrentLabel}>当前内容</em>
+                    {asText(change.current)}
+                  </span>
+                )}
+                <span style={styles.rowText}>
+                  {change.current ? '计划这样改：' : ''}{asText(change.description ?? change.summary)}
+                </span>
               </span>
             </label>
           );
