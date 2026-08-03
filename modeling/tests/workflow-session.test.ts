@@ -133,7 +133,7 @@ test('资料和任务图分别提供摄取与 AI 构建状态', () => {
   assert.equal(waiting.ai_construction.status, 'waiting_answer');
 });
 
-test('AI 构建完成后场景和数据源并行开放，二者完成后开放评测', () => {
+test('AI 构建完成后场景和数据源并行开放，二者完成后无需预置用例即可进入评测录入', () => {
   const completedGraph = graph({
     status: 'completed', tasks: [], progress: { waitingFor: 'completed' },
   });
@@ -146,7 +146,6 @@ test('AI 构建完成后场景和数据源并行开放，二者完成后开放�
     aiConstruction: completedGraph,
     currentPackage,
     dataSource: { mode: 'none' } as any,
-    testcases: [{ id: 'tc_1' }],
     progress: [{
       projectId: project.id, stepId: 'scenario', status: 'completed', output: {}, revision,
       updatedAt: '2026-07-31T00:02:00.000Z',
