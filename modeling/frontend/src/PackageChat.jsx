@@ -391,7 +391,7 @@ export default function PackageChat({
       setLocalBusy(discard ? 'draft_discard' : 'draft_publish');
       try {
         if (discard) await discardPackageDraft(projectId, draft.revision, draft.id);
-        else await publishPackageDraft(projectId, draft.revision, '人工编辑修订', draft.id);
+        else await publishPackageDraft(projectId, draft.revision, '人工编辑', draft.id);
         setCompletionBlocker(null);
         window.dispatchEvent(new CustomEvent('mw-package-updated'));
         setTurns((items) => items.concat([timedTurn({
@@ -553,7 +553,7 @@ export default function PackageChat({
             process_confirmed: '业务流程', knowledge_confirmed: '知识结构',
             deterministic_confirmed: '确定性能力',
             construction_completed: 'AI 辅助构建',
-          }[milestoneId] ?? '当前里程碑';
+          }[milestoneId] ?? '当前阶段';
           setTurns((items) => items.concat([timedTurn({
             role: 'assistant',
             text: `${confirmedLabel}已经确认，可以继续当前建模任务。`,
@@ -590,7 +590,7 @@ export default function PackageChat({
       } else {
         setTurns((items) => items.concat([timedTurn({
           role: 'assistant',
-          text: `${action.id === 'analyze_materials' ? '资料分析' : '里程碑确认'}失败：${error instanceof Error ? error.message : String(error)}`,
+          text: `${action.id === 'analyze_materials' ? '资料分析' : '阶段确认'}失败：${error instanceof Error ? error.message : String(error)}`,
         })]));
       }
       // 拦截多半源于服务端状态已变（如修订被更新），不刷新会让下一次点击重复失败
@@ -893,7 +893,7 @@ export default function PackageChat({
           <div className="pchat-msg assistant">
             <div className="bubble"><span className="spinner" /> {{
               plan: '正在分析', apply: '正在修改', upload: '正在上传建模资料',
-              analyze: '正在分析建模资料', confirm: '正在确认当前里程碑',
+              analyze: '正在分析建模资料', confirm: '正在确认当前阶段',
               interaction: '正在提交建模回答',
               generate_knowledge: `正在${currentTask?.title ?? '生成知识结构'} · ${etaText(aiConstruction?.progress?.eta)}`,
               repair_knowledge: `正在${String(currentTask?.title ?? '修复知识包').replaceAll('受控修复', '逐项修复')} · ${etaText(aiConstruction?.progress?.eta)}`,

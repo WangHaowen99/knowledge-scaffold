@@ -205,7 +205,7 @@ test('格式变化和未被引用的新资料不会使知识与评测过时', ()
   assert.equal(analyzeMaterialImpact(added.change, packageWithMaterialEvidence(first.document.id)).earliestMilestone, undefined);
 });
 
-test('受影响知识从最早里程碑重新开放并保留上游确认历史', () => {
+test('受影响知识从最早阶段重新开放并保留上游确认历史', () => {
   const { db, repo } = setup();
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO ai_construction_graphs

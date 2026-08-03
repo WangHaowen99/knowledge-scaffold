@@ -688,7 +688,7 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
 
       {candidateResult && (
         <div className="sg-applied">
-          已生成待确认候选修订（包含 {candidateResult.selected ?? 0} 条建议）。
+          已生成待确认的修改（包含 {candidateResult.selected ?? 0} 条建议）。
           请在右侧“候选修订”卡片查看差异并确认；确认前不会改变当前知识包。
         </div>
       )}
@@ -747,7 +747,7 @@ export function VersionTable({ projectId, versions }) {
                 className="btn"
                 style={{ padding: '3px 10px', fontSize: 11.5 }}
                 disabled={Boolean(v.unversioned)}
-                title={v.unversioned ? '请先将当前修订提升为可交付版本' : '导出该版本'}
+                title={v.unversioned ? '请先把当前内容发布为正式版本' : '导出该版本'}
                 onClick={() => download(v.version)}
               >导出</button></td>
             </tr>

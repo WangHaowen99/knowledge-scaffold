@@ -37,7 +37,7 @@ function planGoalTask(
   });
 }
 
-test('用户可以在当前里程碑新增封闭类型任务并保留影响预览和审计', () => {
+test('用户可以在当前阶段新增封闭类型任务并保留影响预览和审计', () => {
   const { project, snapshot, initialGoalTaskId } = activeGoalMilestone('新增动态任务');
   const editor = new AiConstructionTaskEditor(getDb());
   const request = {
@@ -71,7 +71,7 @@ test('用户可以在当前里程碑新增封闭类型任务并保留影响预�
   assert.equal(editor.list(project.id).length, 1);
 });
 
-test('任务重排必须保持依赖拓扑顺序且不能移动固定里程碑', () => {
+test('任务重排必须保持依赖拓扑顺序且不能移动固定阶段', () => {
   const { project, graph, snapshot, initialGoalTaskId } = activeGoalMilestone('重排动态任务');
   const first = planGoalTask(graph, project.id, snapshot.revision, '先确认目标', [initialGoalTaskId]);
   const firstTask = first.tasks.at(-1)!;

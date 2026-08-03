@@ -96,7 +96,7 @@ test('精确文字操作会忽略按钮中的装饰图标', () => {
   assert.equal(matchesJourneyControlText('新建项目说明', ['新建项目说明'], '新建项目', true), false);
 });
 
-test('受控建模驾驶员优先处理结构化待办，其次推进里程碑动作', () => {
+test('受控建模驾驶员优先处理结构化待办，其次推进阶段动作', () => {
   assert.deepEqual(chooseGuidedConstructionAction({
     pendingInteraction: { type: 'question', canSubmit: true },
     nextActionIds: ['confirm_materials'],
@@ -133,7 +133,7 @@ test('结构化待办正在提交时等待服务端完成而不重复点击', ()
   }), { kind: 'wait' });
 });
 
-test('受控建模驾驶员会先通过页面复核非阻断警告再继续确认', () => {
+test('受控建模驾驶员会先通过页面复核可暂缓的提醒再继续确认', () => {
   assert.deepEqual(chooseGuidedConstructionAction({
     pendingInteraction: null,
     warningAcceptance: { canSubmit: true },

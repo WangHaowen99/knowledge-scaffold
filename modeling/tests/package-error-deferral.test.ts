@@ -18,7 +18,7 @@ const blockingFinding = {
   category: '口径冲突', target: 'operation:CalculateScore', message: '指标口径尚未统一',
 };
 
-test('阻断错误暂缓只绑定当前知识包修订并保留审计信息', () => {
+test('必须修复的错误暂缓只绑定当前知识包修订并保留审计信息', () => {
   const project = createProject({ owner: 'alice', name: '暂缓错误进入验证' });
   saveCheck(project.id, '0.1.0', [blockingFinding], 'revision-a');
 

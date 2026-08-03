@@ -98,7 +98,7 @@ export class ProcessReviewFinalizer {
       const attempt = this.get(projectId, interactionId, draftRevision);
       if (!attempt) throw new AuthoringStateError('INVALID_TRANSITION', '流程图提交意图不存在');
       if (attempt.packageRevisionOid && attempt.packageRevisionOid !== packageRevisionOid) {
-        throw new AuthoringStateError('IDEMPOTENCY_CONFLICT', '流程图提交已绑定其他知识包修订');
+        throw new AuthoringStateError('IDEMPOTENCY_CONFLICT', '流程图提交已绑定其他版本的知识包');
       }
       this.db.prepare(`UPDATE flowchart_review_finalizations SET package_revision_oid = ?
         WHERE project_id = ? AND interaction_id = ? AND draft_revision = ?`)
@@ -118,7 +118,7 @@ export class ProcessReviewFinalizer {
         input.actorUsername,
       );
       if (attempt.packageRevisionOid !== input.packageRevisionOid) {
-        throw new AuthoringStateError('IDEMPOTENCY_CONFLICT', '流程图提交绑定的知识包修订不一致');
+        throw new AuthoringStateError('IDEMPOTENCY_CONFLICT', '流程图提交绑定的知识包内容不一致');
       }
 
       const draft = this.deps.drafts.get(input.projectId, input.interactionId);

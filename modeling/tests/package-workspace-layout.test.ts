@@ -89,7 +89,7 @@ const packageCheckSource = readFileSync(
 );
 const stylesSource = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
 
-test('建模完成被非阻断警告拦截时打开影响复核区', () => {
+test('建模完成被可暂缓的提醒拦截时打开影响复核区', () => {
   assert.equal(shouldOpenWarningReview({ data: { code: 'PACKAGE_WARNINGS_UNREVIEWED' } }), true);
   assert.equal(shouldOpenWarningReview({ data: { code: 'PACKAGE_CHECK_FAILED' } }), false);
   assert.match(packageWorkspaceSource, /PackageCheck/);
@@ -565,7 +565,7 @@ test('验证改进交付阶段复用统一三栏工作台而不是替换知识�
   assert.match(stylesSource, /\.mwr \.rv-stage/);
 });
 
-test('待确认候选修订作为建模助手消息展示而不是悬在助手上方', () => {
+test('待确认的修改作为建模助手消息展示而不是悬在助手上方', () => {
   assert.match(packageWorkspaceSource, /<PackageChat[\s\S]*candidateRevisionPanel=\{[\s\S]*<CandidateRevisionPanel/);
   assert.doesNotMatch(
     packageWorkspaceSource,

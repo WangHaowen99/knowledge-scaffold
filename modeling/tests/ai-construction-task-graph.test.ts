@@ -145,7 +145,7 @@ test('等待用户确认契约的任务可以在回答后恢复执行', () => {
   assert.equal(resumed.progress.waitingFor, 'task_execution');
 });
 
-test('确认里程碑要求必选任务完成并绑定知识包修订和确认人', () => {
+test('确认阶段要求必选任务完成并绑定知识包修订和确认人', () => {
   const project = createMaterialFirstProject('确认资料就绪');
   const graph = new AiConstructionTaskGraph(getDb());
   const initial = graph.snapshot(project.id)!;
@@ -193,7 +193,7 @@ test('确认里程碑要求必选任务完成并绑定知识包修订和确认�
   }]);
 });
 
-test('确定性编排器可以基于当前 revision 为活动里程碑规划受控任务', () => {
+test('确定性编排器可以基于当前 revision 为活动阶段规划受控任务', () => {
   const project = createMaterialFirstProject('规划建模目标任务');
   const graph = new AiConstructionTaskGraph(getDb());
   const initial = graph.snapshot(project.id)!;
@@ -243,7 +243,7 @@ test('确定性编排器可以基于当前 revision 为活动里程碑规划受�
   }), (error: any) => error?.code === 'REVISION_CONFLICT');
 });
 
-test('未确认里程碑中的已完成任务可以显式退回用户补充', () => {
+test('未确认阶段中的已完成任务可以显式退回用户补充', () => {
   const project = createMaterialFirstProject('重填建模目标');
   const graph = new AiConstructionTaskGraph(getDb());
   const initial = graph.snapshot(project.id)!;
@@ -276,7 +276,7 @@ test('未确认里程碑中的已完成任务可以显式退回用户补充', ()
   assert.equal(reopened.progress.waitingFor, 'user_input');
 });
 
-test('任务图快照给出当前工作、里程碑进度和诚实的区间 ETA', () => {
+test('任务图快照给出当前工作、阶段进度和诚实的区间 ETA', () => {
   const project = createMaterialFirstProject('进度可视化');
   const graph = new AiConstructionTaskGraph(getDb());
   const initial = graph.snapshot(project.id)!;
@@ -385,7 +385,7 @@ test('动态任务支持影响预览、暂缓、跳过和恢复并保留审计',
   assert.equal(graph.listAdjustments(project.id).length, 2);
 });
 
-test('重做已确认任务重新激活上游里程碑并使下游任务过时', () => {
+test('重做已确认任务重新激活上游阶段并使下游任务过时', () => {
   const project = createMaterialFirstProject('确认点回退任务图');
   const graph = new AiConstructionTaskGraph(getDb());
   const initial = graph.snapshot(project.id)!;

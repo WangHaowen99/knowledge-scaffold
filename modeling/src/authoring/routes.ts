@@ -378,7 +378,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       if (!confirmedProcesses) {
         throw new AuthoringStateError(
           'INVALID_TRANSITION',
-          '已确认流程所在的知识包修订已不可读，请重新确认流程图',
+          '已确认流程所在的知识包内容已不可读，请重新确认流程图',
         );
       }
       if (confirmedProcesses !== snapshot.files['diagrams/processes.json']) {
@@ -389,7 +389,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       }
     }
     const source = snapshot.files['diagrams/processes.json'];
-    if (!source) throw new Error('当前知识包修订缺少已确认流程文档');
+    if (!source) throw new Error('当前知识包缺少已确认的流程文档');
     let document: FlowchartDocument;
     try {
       document = normalizeFlowchartDocument(JSON.parse(source));
@@ -665,7 +665,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           confirmedPackage = await packages.current(project.id);
           if (!confirmedPackage) {
             return reply.code(409).send({
-              error: '当前项目没有可确认的知识包修订', code: 'PACKAGE_NOT_FOUND',
+              error: '当前项目没有可确认的知识包内容', code: 'PACKAGE_NOT_FOUND',
             });
           }
           appliedCommand = { ...command, packageRevisionOid: confirmedPackage.revision.oid };
@@ -676,7 +676,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           const check = getCheck(project.id);
           if (!check || check.revision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
+              error: '当前知识包内容尚未完成检查，请先重新执行知识包校验',
               code: 'PACKAGE_CHECK_REQUIRED',
               nextActions: [
                 { id: 'run_package_check', label: '立即执行知识包校验', style: 'primary' },
@@ -702,7 +702,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
           if (!warningReview.readyForValidation) {
             return reply.code(409).send({
-              error: `还有 ${warningReview.pendingValidation} 条非阻断警告尚未查看影响并接受`,
+              error: `还有 ${warningReview.pendingValidation} 条可暂缓的提醒尚未查看影响并接受`,
               code: 'PACKAGE_WARNINGS_UNREVIEWED',
               warningReview,
             });
@@ -1133,7 +1133,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     try {
       return await runWithProjectLease(leases, {
         projectId: project.id,
-        operation: '暂缓知识包阻断错误',
+        operation: '暂缓知识包必须修复的错误',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: SHORT_WRITE_LEASE_TTL_MS,
       }, async () => {
@@ -1145,13 +1145,13 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         const check = getCheck(project.id);
         if (!check || check.revision !== currentPackage.revision.oid) {
           return reply.code(409).send({
-            error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
+            error: '当前知识包内容尚未完成检查，请先重新执行知识包校验',
             code: 'PACKAGE_CHECK_REQUIRED',
           });
         }
         const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
         if (!errorCount) {
-          return reply.code(409).send({ error: '当前知识包没有阻断错误', code: 'NO_BLOCKING_ERRORS' });
+          return reply.code(409).send({ error: '当前知识包没有必须修复的错误', code: 'NO_BLOCKING_ERRORS' });
         }
         const db = getDb();
         db.exec('BEGIN IMMEDIATE');
@@ -1393,7 +1393,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请重新填写建模目标',
+              error: '知识包内容已经变化，请重新填写建模目标',
               code: 'REVISION_CONFLICT',
             });
           }
@@ -1453,7 +1453,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请重新确认候选业务流程',
+              error: '知识包内容已经变化，请重新确认候选业务流程',
               code: 'REVISION_CONFLICT',
             });
           }
@@ -1668,7 +1668,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请基于当前修订重新选择脚本候选',
+              error: '知识包内容已经变化，请基于当前内容重新选择脚本候选',
               code: 'REVISION_CONFLICT',
             });
           }
@@ -1714,7 +1714,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         }
         if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
           return reply.code(409).send({
-            error: '知识包修订已经变化，请重新确认脚本契约',
+            error: '知识包内容已经变化，请重新确认脚本契约',
             code: 'REVISION_CONFLICT',
           });
         }
@@ -1837,7 +1837,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             }
             if (interaction.baseRevision && interaction.baseRevision !== current.revision.oid) {
               return reply.code(409).send({
-                error: '知识包修订已经变化，请基于当前版本重新规划修改',
+                error: '知识包内容已经变化，请基于当前版本重新规划修改',
                 code: 'REVISION_CONFLICT',
               });
             }
@@ -1921,7 +1921,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== current.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请基于当前版本重新规划修改',
+              error: '知识包内容已经变化，请基于当前版本重新规划修改',
               code: 'REVISION_CONFLICT',
             });
           }

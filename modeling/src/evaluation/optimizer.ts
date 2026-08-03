@@ -147,7 +147,7 @@ export function decideScriptOptimization(
   if (operationMatches.length !== 1) {
     return {
       action: 'add_new',
-      reason: '无法唯一定位承载该能力的 operation，需要由专家先确认责任边界和脚本契约。',
+      reason: '无法唯一定位承载该能力的业务操作，需要由专家先确认责任边界和脚本契约。',
     };
   }
   const operation = operationMatches[0];
@@ -573,7 +573,7 @@ export function validateOptimizationSuggestions(
     const linked = (suggestion.diagnosisIds ?? []).map((id) => diagnosisById.get(id)).filter(Boolean) as OptimizationDiagnosis[];
     if (!linked.length) throw new Error(`优化建议「${suggestion.title}」未关联可验证的失败原因`);
     if (linked.some((item) => !item.packageOptimizable || item.blocking)) {
-      throw new Error(`优化建议「${suggestion.title}」关联了不应修改知识包的阻断问题`);
+      throw new Error(`优化建议「${suggestion.title}」关联了不应修改知识包的必须修复的问题`);
     }
     if (!(suggestion.evidence ?? []).some((item) => item.trim())) {
       throw new Error(`优化建议「${suggestion.title}」缺少证据`);

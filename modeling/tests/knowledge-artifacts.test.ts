@@ -2721,7 +2721,7 @@ test('服务端补齐脚本绑定后产生的 operation 校验错误会把完整
   const changedScript = { ...spec.scripts[0], description: '按当前运行契约计算钱包份额。' };
   const cleanedOperation = {
     ...spec.operations[0],
-    description: '执行确定性脚本；脚本失败时停止并返回阻断错误。',
+    description: '执行确定性脚本；脚本失败时停止并返回必须修复的错误。',
     script: { key: 'calculate_wallet_share', required: true },
   };
   const core = createFauxCore({ provider: 'auto-binding-repair-context', models: [{ id: 'auto-binding-repair-context' }] });

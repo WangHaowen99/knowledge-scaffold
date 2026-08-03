@@ -11,7 +11,7 @@ import {
   mergePackageChatTimeline,
 } from '../frontend/src/packageChatTimeline.js';
 
-test('已经确认的里程碑动作不再作为可点击按钮展示', () => {
+test('已经确认的阶段动作不再作为可点击按钮展示', () => {
   assert.deepEqual(confirmedMilestoneActionIds({
     milestones: [
       { id: 'knowledge_confirmed', status: 'confirmed' },
