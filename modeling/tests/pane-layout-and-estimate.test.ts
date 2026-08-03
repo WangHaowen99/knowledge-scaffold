@@ -68,16 +68,17 @@ test('有多次实测时按实测区间估算，不再用静态值', () => {
     task({ id: 'b', updatedAt: '2026-08-01T10:30:00.000Z' }),  // 30 分钟
   ];
   const [min, max] = aiConstructionTaskEstimate('material_analysis', history);
-  // 静态值是 [2, 8]，实测远超它，说明估算确实跟着实际走
-  assert.ok(min >= 15, `下限应贴近实测：${min}`);
+  // 静态值是 [2, 8]，实测 20/30 分钟远超它，说明估算确实跟着实际走。
+  // 两个样本中位数 25，按不足三样本的宽带 [0.5, 2] 得 [13, 50]。
+  assert.ok(min >= 12, `下限应贴近实测：${min}`);
   assert.ok(max >= 30, `上限应贴近实测：${max}`);
 });
 
-test('只有单次样本时与静态区间取并集，保留不确定度', () => {
+test('只有单次样本时放宽置信带，不给过窄的假精确', () => {
   const [min, max] = aiConstructionTaskEstimate('material_analysis', [task()]); // 6 分钟
-  const [staticMin, staticMax] = aiConstructionTaskDuration('material_analysis');
-  assert.ok(min <= staticMin, `单样本下限不应比静态值更乐观：${min} vs ${staticMin}`);
-  assert.ok(max >= staticMax, `单样本上限不应比静态值更乐观：${max} vs ${staticMax}`);
+  // 以实测 6 分钟为中心按 [0.5, 2] 放宽 → [3, 12]，而不是被静态表拉成两头都极端
+  assert.deepEqual([min, max], [3, 12]);
+  assert.ok(max / min <= 10, '区间不能宽到没有参考价值');
 });
 
 test('未完成或时间戳异常的任务不参与估算', () => {
@@ -124,7 +125,7 @@ test('本项目没跑过的任务，用跨项目实测样本而不是静态表',
     knowledge_extraction: [60, 70, 80],
   });
   assert.notDeepEqual(estimate, fallback, '有跨项目样本时不应再退回静态表');
-  assert.deepEqual(estimate, [48, 96]);
+  assert.deepEqual(estimate, [49, 105]);
 });
 
 test('本项目样本与跨项目样本合并统计', () => {
@@ -133,8 +134,8 @@ test('本项目样本与跨项目样本合并统计', () => {
     [task({ createdAt: '2026-08-01T10:00:00.000Z', updatedAt: '2026-08-01T10:20:00.000Z' })],
     { material_analysis: [10] },
   );
-  // 本项目 20 分钟、跨项目 10 分钟 → [10*0.8, 20*1.2]
-  assert.deepEqual(estimate, [8, 24]);
+  // 本项目 20 分钟、跨项目 10 分钟 → 中位数 15，两样本宽带 [0.5, 2]
+  assert.deepEqual(estimate, [8, 30]);
 });
 
 test('跨项目样本里的脏数据被忽略', () => {
@@ -169,4 +170,38 @@ test('intent 缺失时有兜底文案，不显示空白', async () => {
   const { activeRunLabel } = await import('../frontend/src/activeRun.js');
   assert.equal(activeRunLabel({ intent: '  ' }), '正在处理');
   assert.equal(activeRunLabel(null), '正在处理');
+});
+
+// ---- 离群样本不能把估算顶成离谱数字 ----
+
+test('等待用户的任务跨了几天，不能当成工作量样本', () => {
+  const fallback = aiConstructionTaskDuration('modeling_brief');
+  // 5319 分钟 = 3.7 天，实测出现过：项目开着过了个周末
+  assert.deepEqual(
+    aiConstructionTaskEstimate('modeling_brief', [], { modeling_brief: [5319] }),
+    fallback,
+    '超过四小时的样本一律当作空等，退回静态表',
+  );
+});
+
+test('用中位数而不是极值——一个离群点不该撑爆区间', () => {
+  // 四个正常样本 + 一个偏大的：极值法会给出 [16, 216]，中位数法稳在 20 附近
+  const estimate = aiConstructionTaskEstimate('knowledge_extraction', [], {
+    knowledge_extraction: [18, 20, 22, 20, 180],
+  });
+  assert.ok(estimate[1] <= 45, `上限被离群点撑爆了：${estimate[1]}`);
+  assert.ok(estimate[0] >= 10 && estimate[0] <= 20, `下限异常：${estimate[0]}`);
+});
+
+test('样本不足时放宽置信带，而不是与静态表取并集', () => {
+  // 并集会把两个区间的极端各取一头，结果比任何一方都宽——实测出现过 2–23 分钟
+  const [min, max] = aiConstructionTaskEstimate('material_analysis', [], { material_analysis: [5] });
+  assert.deepEqual([min, max], [3, 10], '单样本以实测为中心放宽，而不是被静态表拉扯');
+});
+
+test('估算区间不会宽到没有参考价值', () => {
+  const [min, max] = aiConstructionTaskEstimate('knowledge_extraction', [], {
+    knowledge_extraction: [1, 2, 40, 60, 200],
+  });
+  assert.ok(max / Math.max(1, min) <= 10, `区间跨度 ${min}–${max}，宽到无法据此做决定`);
 });

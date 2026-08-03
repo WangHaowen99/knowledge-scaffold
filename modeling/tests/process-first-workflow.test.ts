@@ -56,10 +56,10 @@ function workflow(progress: any[] = []) {
   }).steps.map((step) => [step.id, step])) as Record<string, any>;
 }
 
-test('主时间线直接使用唯一九步流程', () => {
+test('主时间线直接使用唯一八步流程', () => {
   const visible = WORKFLOW_STEPS.filter((step) => step.linear !== false).map((step) => step.name);
   assert.deepEqual(visible.slice(0, 5), [
-    '项目创建', '建模资料上传', 'AI辅助构建', '场景推演', '数据源绑定',
+    '项目创建', 'AI辅助构建', '场景推演', '数据源绑定', '评测',
   ]);
   for (const removed of ['领域调研', '渐进提取', '专家访谈', '流程图绘制与确认', '知识包生成']) {
     assert.equal(visible.includes(removed), false);
