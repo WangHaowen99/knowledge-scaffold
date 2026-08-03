@@ -23,8 +23,6 @@ from .speedscope_io import resolve_speedscope_output_dir, speedscope_file_lock
 logger = get_logger("observability.stack_profiler")
 
 SPEEDSCOPE_SCHEMA = "https://www.speedscope.app/file-format-schema.json"
-TRACE_ENABLED_ENV = "SPEEDSCOPE_TRACE_ENABLED"
-STACK_ENABLED_ENV = "SPEEDSCOPE_STACK_PROFILE_ENABLED"
 STACK_MAX_EVENTS_ENV = "SPEEDSCOPE_STACK_PROFILE_MAX_EVENTS"
 STACK_PROCESS_MAX_EVENTS_ENV = "SPEEDSCOPE_STACK_PROFILE_PROCESS_MAX_EVENTS"
 STACK_SAMPLE_INTERVAL_MS_ENV = "SPEEDSCOPE_STACK_SAMPLE_INTERVAL_MS"
@@ -146,8 +144,9 @@ def start_run_stack_profile(
     run_id: str,
     session_id: Optional[str],
     turn_id: Optional[int],
+    enabled: bool = False,
 ) -> None:
-    if not _stack_profile_enabled():
+    if not enabled:
         return
     normalized_run_id = str(run_id or "").strip()
     normalized_session_id = str(session_id or "").strip()
@@ -658,14 +657,6 @@ def _atomic_write_json(path: Path, document: dict[str, Any]) -> None:
             pass
 
 
-def _stack_profile_enabled() -> bool:
-    trace_enabled = _environment_flag(TRACE_ENABLED_ENV)
-    stack_value = str(os.getenv(STACK_ENABLED_ENV) or "").strip().lower()
-    if stack_value in {"0", "false", "no", "n", "off"}:
-        return False
-    return trace_enabled or stack_value in {"1", "true", "yes", "y", "on"}
-
-
 def _max_samples() -> int:
     try:
         return max(1000, int(os.getenv(STACK_MAX_EVENTS_ENV) or DEFAULT_MAX_SAMPLES))
@@ -688,7 +679,3 @@ def _sample_interval_ms() -> float:
         return max(1.0, float(os.getenv(STACK_SAMPLE_INTERVAL_MS_ENV) or DEFAULT_SAMPLE_INTERVAL_MS))
     except (TypeError, ValueError):
         return DEFAULT_SAMPLE_INTERVAL_MS
-
-
-def _environment_flag(name: str) -> bool:
-    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "y", "on"}

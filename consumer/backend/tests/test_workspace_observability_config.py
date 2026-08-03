@@ -24,6 +24,7 @@ def test_workspace_observability_defaults_to_disabled_local(tmp_path, monkeypatc
         "enabled": False,
         "mode": "local",
         "local": {"retention_days": 30},
+        "speedscope": {"retention_days": 30},
         "langfuse": {
             "public_key": "",
             "secret_key": "",
@@ -48,6 +49,7 @@ def test_workspace_observability_update_encrypts_and_masks_langfuse_secret(tmp_p
             "enabled": True,
             "mode": "langfuse",
             "local": {"retention_days": 14},
+            "speedscope": {"retention_days": 7},
             "langfuse": {
                 "public_key": "pk-test",
                 "secret_key": "sk-test",
@@ -64,6 +66,7 @@ def test_workspace_observability_update_encrypts_and_masks_langfuse_secret(tmp_p
     assert "sk-test" not in raw_text
     assert raw["langfuse"]["secret_key"].startswith("enc:v1:")
     assert get_workspace_observability_config("demo")["langfuse"]["secret_key"] == "sk-test"
+    assert get_workspace_observability_config("demo")["speedscope"] == {"retention_days": 7}
     assert get_public_workspace_observability_config("demo")["langfuse"] == {
         "public_key": "pk-test",
         "base_url": "https://langfuse.example",
@@ -135,6 +138,38 @@ def test_workspace_observability_rejects_unknown_and_invalid_values(tmp_path, mo
 
     with pytest.raises(ValueError, match="local.retention_days must be greater than or equal to 1"):
         update_workspace_observability_config("demo", {"local": {"retention_days": 0}})
+
+    with pytest.raises(ValueError, match="speedscope.retention_days must be greater than or equal to 1"):
+        update_workspace_observability_config("demo", {"speedscope": {"retention_days": 0}})
+
+
+def test_legacy_workspace_observability_config_reads_with_default_speedscope(
+    tmp_path,
+    monkeypatch,
+):
+    _create_workspace(tmp_path, monkeypatch)
+    raw_path = tmp_path / ".onto-runtime" / "workspaces" / "demo" / "observability_config.json"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "mode": "local",
+                "local": {"retention_days": 14},
+                "langfuse": {
+                    "public_key": "",
+                    "secret_key": "",
+                    "base_url": "",
+                    "debug": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from integration.observability.workspace_config import get_workspace_observability_config
+
+    assert get_workspace_observability_config("demo")["speedscope"] == {"retention_days": 30}
+    assert "speedscope" not in json.loads(raw_path.read_text(encoding="utf-8"))
 
 
 def test_workspace_observability_read_reports_migration_required_without_writing(

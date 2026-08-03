@@ -33,6 +33,9 @@ DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG: dict[str, Any] = {
     "local": {
         "retention_days": 30,
     },
+    "speedscope": {
+        "retention_days": 30,
+    },
     "langfuse": {
         "public_key": "",
         "secret_key": "",
@@ -43,7 +46,9 @@ DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG: dict[str, Any] = {
 
 _TOP_LEVEL_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG.keys())
 _LOCAL_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["local"].keys())
+_SPEEDSCOPE_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["speedscope"].keys())
 _LANGFUSE_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["langfuse"].keys())
+_LEGACY_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS - {"speedscope"}
 
 
 class WorkspaceObservabilityMigrationRequiredError(ValueError):
@@ -107,11 +112,15 @@ def decode_workspace_observability_document(
     if not isinstance(raw, dict):
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
     local = raw.get("local")
+    speedscope = raw.get("speedscope")
     langfuse = raw.get("langfuse")
+    is_legacy_document = set(raw) == _LEGACY_TOP_LEVEL_KEYS
     if (
-        set(raw) != _TOP_LEVEL_KEYS
+        (set(raw) != _TOP_LEVEL_KEYS and not is_legacy_document)
         or not isinstance(local, dict)
         or set(local) != _LOCAL_KEYS
+        or (speedscope is not None and not isinstance(speedscope, dict))
+        or (isinstance(speedscope, dict) and set(speedscope) != _SPEEDSCOPE_KEYS)
         or not isinstance(langfuse, dict)
         or set(langfuse) != _LANGFUSE_KEYS
         or not isinstance(raw.get("enabled"), bool)
@@ -119,10 +128,18 @@ def decode_workspace_observability_document(
     ):
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
     retention_days = local.get("retention_days")
+    speedscope_retention_days = (
+        speedscope.get("retention_days")
+        if isinstance(speedscope, dict)
+        else DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["speedscope"]["retention_days"]
+    )
     if (
         isinstance(retention_days, bool)
         or not isinstance(retention_days, int)
         or retention_days < 1
+        or isinstance(speedscope_retention_days, bool)
+        or not isinstance(speedscope_retention_days, int)
+        or speedscope_retention_days < 1
         or not isinstance(langfuse.get("debug"), bool)
         or any(
             not isinstance(langfuse.get(field_name), str)
@@ -132,6 +149,8 @@ def decode_workspace_observability_document(
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
 
     result = copy.deepcopy(raw)
+    if "speedscope" not in result:
+        result["speedscope"] = copy.deepcopy(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["speedscope"])
     raw_secret = str(result["langfuse"].get("secret_key") or "")
     if raw_secret and not is_encrypted_secret(raw_secret):
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
@@ -324,6 +343,8 @@ def _normalize_observability_patch(data: dict[str, Any], *, strict: bool) -> dic
             normalized[key] = mode
         elif key == "local":
             normalized[key] = _normalize_local(value, strict=strict)
+        elif key == "speedscope":
+            normalized[key] = _normalize_speedscope(value, strict=strict)
         elif key == "langfuse":
             normalized[key] = _normalize_langfuse(value, strict=strict)
     return normalized
@@ -342,6 +363,23 @@ def _normalize_local(value: Any, *, strict: bool) -> dict[str, Any]:
             retention_days = _coerce_int(item, "local.retention_days")
             if retention_days < 1:
                 raise ValueError("local.retention_days must be greater than or equal to 1")
+            normalized[key] = retention_days
+    return normalized
+
+
+def _normalize_speedscope(value: Any, *, strict: bool) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("speedscope must be an object")
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in _SPEEDSCOPE_KEYS:
+            if strict:
+                raise ValueError(f"Unknown observability config key: speedscope.{key}")
+            continue
+        if key == "retention_days":
+            retention_days = _coerce_int(item, "speedscope.retention_days")
+            if retention_days < 1:
+                raise ValueError("speedscope.retention_days must be greater than or equal to 1")
             normalized[key] = retention_days
     return normalized
 

@@ -878,6 +878,10 @@ TPS 超限 `429`：
 | `to` | 结束 epoch ms 或 ISO 时间，选填 |
 | `limit_runs` | run 列表上限，最大 `200` |
 
+#### `GET /agentic/sessions/{session_id}/performance/speedscope`
+
+Downloads the current session's combined `.speedscope.json` trace. Regular users may download only their own sessions; workspace administrators may download any session in the workspace. The trace does not contain prompts, answers, or tool output. When observability is disabled or the trace is absent, the endpoint returns `404 SPEEDSCOPE_NOT_FOUND`.
+
 #### `GET /agentic/performance/runs/{run_id}`
 
 返回单次运行的耗时拆分、iteration、LLM、工具、runtime phase 和事件时间线。
@@ -1618,6 +1622,9 @@ Graph provider 配置：
   "local": {
     "retention_days": 30
   },
+  "speedscope": {
+    "retention_days": 30
+  },
   "langfuse": {
     "public_key": "",
     "has_secret_key": false,
@@ -1648,6 +1655,9 @@ Graph provider 配置：
   "enabled": true,
   "mode": "langfuse",
   "local": {
+    "retention_days": 30
+  },
+  "speedscope": {
     "retention_days": 30
   },
   "langfuse": {
