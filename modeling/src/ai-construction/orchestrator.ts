@@ -182,6 +182,33 @@ export interface DeferKnowledgeErrorsInput {
   actor: string;
 }
 
+/** 体检面板里点开一条校验发现时，助手要展示的内容。 */
+export interface CheckFindingCardInput {
+  packageRevisionOid: string;
+  findingId: string;
+  severity: string;
+  category: string;
+  target: string;
+  message: string;
+  suggestion?: string;
+  /** target 是包内文件路径时才给，用来生成「打开这个文件」按钮 */
+  filePath?: string;
+}
+
+export interface CheckFindingIgnoreRequest {
+  aiConstruction: AiConstructionTaskGraphSnapshot;
+  interaction: AuthoringInteraction;
+}
+
+/** 忽略一条发现前，先向专家收集理由。错误只能整批暂缓，警告按 fingerprint 逐条接受。 */
+export interface CheckFindingIgnoreInput extends CheckFindingCardInput {
+  scope: 'errors' | 'warning';
+  /** scope='warning' 时必须提供 */
+  fingerprint?: string;
+  /** scope='errors' 时表示会被一起暂缓的错误总数 */
+  errorCount?: number;
+}
+
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
 }
@@ -1559,6 +1586,143 @@ export class AiConstructionOrchestrator {
         ],
       });
       return { aiConstruction: current, message };
+    });
+  }
+
+  /**
+   * 「去修改」：把一条校验发现讲清楚，并给出可执行的两条路。
+   *
+   * 原先这个按钮只是往输入框预填一句话，用户还得自己按发送；现在直接落一条助手消息，
+   * 和其他受阻路径用同一套卡片渲染。
+   */
+  reviewCheckFinding(
+    projectId: string,
+    input: CheckFindingCardInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      const current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      const taskId = current.progress.currentTaskId ?? undefined;
+      const message = this.messages.ensure(projectId, {
+        key: `check.finding.review.${input.packageRevisionOid.slice(0, 12)}.${input.findingId}`,
+        role: 'assistant',
+        taskId,
+        blocks: [
+          {
+            type: 'status',
+            title: `处理校验发现：${input.category}`,
+            summary: `${input.severity} · ${input.target}`,
+            milestoneId: current.progress.currentMilestoneId ?? undefined,
+            taskId,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: [
+              input.message,
+              input.suggestion ? `建议这样改：${input.suggestion}` : '',
+            ].filter(Boolean).join('\n'),
+          },
+          {
+            type: 'next_actions',
+            title: '选择一种方式处理',
+            actions: [
+              {
+                id: 'repair_knowledge_structure',
+                label: '让助手逐项修复',
+                description: '按校验发现逐条修复，需要业务判断时会来问你',
+                style: 'primary' as const,
+              },
+              input.filePath
+                ? {
+                  id: 'open_package_file' as const,
+                  label: '我自己去改这个文件',
+                  description: `打开 ${input.filePath}`,
+                  path: input.filePath,
+                  style: 'secondary' as const,
+                }
+                : {
+                  id: 'review_knowledge_files' as const,
+                  label: '我自己去改知识文件',
+                  style: 'secondary' as const,
+                },
+            ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  /**
+   * 「忽略」：开一条待办收集理由，而不是在体检面板里就地填表。
+   *
+   * 走待办而不是本地弹窗，是因为忽略会写进审计记录，理由不能因为刷新页面丢掉。
+   */
+  requestCheckFindingIgnore(
+    projectId: string,
+    input: CheckFindingIgnoreInput,
+  ): CheckFindingIgnoreRequest {
+    return this.transaction(() => {
+      const current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      if (input.scope === 'warning' && !input.fingerprint) {
+        throw new Error('忽略警告需要提供该条提醒的标识');
+      }
+      const taskId = current.progress.currentTaskId ?? undefined;
+      const existing = this.state.snapshot(projectId).pendingInteractions.find(
+        (item) => item.type === 'question_batch'
+          && item.payload.purpose === 'check_finding_ignore'
+          && item.payload.findingId === input.findingId,
+      );
+      // 同一条发现重复点「忽略」不再开第二个待办，否则助手栏会堆出一串一样的表单
+      if (existing) return { aiConstruction: current, interaction: existing };
+      const batched = input.scope === 'errors';
+      const started = this.state.apply({
+        kind: 'start_run',
+        projectId,
+        intent: batched ? '暂缓知识包必须修复的错误' : '接受一条可暂缓的提醒',
+        baseRevision: input.packageRevisionOid,
+        state: { purpose: 'check_finding_ignore', findingId: input.findingId },
+      });
+      if (started.kind !== 'run') throw new Error('忽略待办创建失败');
+      const opened = this.state.apply({
+        kind: 'open_interaction',
+        projectId,
+        runId: started.run.id,
+        type: 'question_batch',
+        baseRevision: input.packageRevisionOid,
+        payload: {
+          purpose: 'check_finding_ignore',
+          ...(taskId ? { taskId } : {}),
+          findingId: input.findingId,
+          scope: input.scope,
+          ...(input.fingerprint ? { fingerprint: input.fingerprint } : {}),
+          ...(batched ? { errorCount: input.errorCount ?? 0 } : {}),
+          title: batched ? '说明为什么暂缓这些错误' : '说明为什么可以先不改这条',
+          // 错误只能整批暂缓，必须在标题下说清影响面，否则用户以为只忽略了点开的那一条
+          description: batched
+            ? `暂缓会让当前内容里全部 ${input.errorCount ?? 0} 个必须修复的错误一起先不阻断建模，正式发布前仍然必须改掉。`
+            : `这条提醒（${input.target}）将记为已确认影响并放行，只对当前知识包内容有效。`,
+          questions: [{
+            id: 'ignore_reason',
+            kind: 'text',
+            q: batched
+              ? '请说明暂缓原因和后续处理计划'
+              : '请说明影响范围和可以先不改的理由',
+            required: true,
+            allowOther: true,
+            options: [],
+          }],
+        },
+      });
+      if (opened.kind !== 'interaction') throw new Error('忽略待办创建失败');
+      return { aiConstruction: current, interaction: opened.interaction };
     });
   }
 

@@ -94,6 +94,8 @@ export default function PackageWorkspace({
   const [check, setCheck] = useState(null);
   const [warningReview, setWarningReview] = useState(null);
   const [errorDeferral, setErrorDeferral] = useState(null);
+  // 自动修复的可用性由后端在校验响应里声明，跟着体检快照一起更新
+  const [repairAvailability, setRepairAvailability] = useState(null);
   const [rechecking, setRechecking] = useState(false);
   const [checkError, setCheckError] = useState('');
   const [error, setError] = useState('');
@@ -222,6 +224,7 @@ export default function PackageWorkspace({
         setCheck(result.check);
         setWarningReview(result.warningReview);
         setErrorDeferral(result.errorDeferral ?? null);
+        setRepairAvailability(result.repair ?? null);
       },
       onChecked: (result) => {
         setCheck({
@@ -232,11 +235,13 @@ export default function PackageWorkspace({
         });
         setWarningReview(result.warningReview);
         setErrorDeferral(result.errorDeferral ?? null);
+        setRepairAvailability(result.repair ?? null);
       },
       onPackageUpdated: () => {
         setCheck(null);
         setWarningReview(null);
         setErrorDeferral(null);
+        setRepairAvailability(null);
       },
       onError: (cause) => setCheckError(cause instanceof Error ? cause.message : '体检失败'),
       onRecheckStart: () => { setRechecking(true); setCheckError(''); },
@@ -702,18 +707,9 @@ export default function PackageWorkspace({
                     check,
                     warningReview,
                     errorDeferral,
+                    repair: repairAvailability,
                     rechecking,
                     error: checkError,
-                    onResult: (result) => {
-                      setCheck({
-                        version: result.version,
-                        revision: result.revision,
-                        findings: result.findings,
-                        createdAt: new Date().toISOString(),
-                      });
-                      setWarningReview(result.warningReview);
-                      setErrorDeferral(result.errorDeferral ?? null);
-                    },
                   }}
                   wideStage={activeTab === 'edit' && Boolean(processReview)}
                   onDirtyChange={setPackageDraftDirty}
