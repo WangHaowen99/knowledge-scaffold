@@ -23,6 +23,7 @@ import { canonicalizePackageSpec } from './package-spec.js';
 import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
 import { MAX_CHANGE_PLAN_DESCRIPTION_LENGTH } from '../ai-construction/messages.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
+import { withCurrentContent } from '../ai-construction/change-plan-context.js';
 
 // 知识包工作区的建模 agent —— 咨询直接回答，修改走两段式确认：
 // ① plan：只分析影响面（改哪些对象/操作、怎么改、风险），返回结构化计划等专家确认；咨询类直接文字回答；
@@ -721,7 +722,11 @@ export async function packageChatPlan(
       purpose,
       title: options.interactionTitle ?? '确认建模调整',
       summary: cap.plan.summary,
-      changes: cap.plan.changes.map((change, index) => ({ id: String(index), ...change })),
+      // 「修改」类补上当前内容：专家要确认「把门槛提高」，得先看得见现在的门槛是多少
+      changes: withCurrentContent(
+        latest.spec,
+        cap.plan.changes.map((change, index) => ({ id: String(index), ...change })),
+      ),
       risks: cap.plan.risks ?? [],
       message,
       history: history.map((turn) => ({ role: turn.role, text: turn.text })),

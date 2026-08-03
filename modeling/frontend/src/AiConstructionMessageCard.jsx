@@ -151,7 +151,11 @@ function ChangePlanBlock({ block }) {
     <div className="ac-message-change-list">{(block.changes ?? []).map((change) => <article key={change.id}>
       <div><span className={`action ${change.action}`}>{CHANGE_ACTION_LABEL[change.action] ?? change.action}</span>
         <strong>{CHANGE_TARGET_LABEL[change.targetKind] ?? change.targetKind} {change.targetKey}</strong></div>
-      <p>{change.description}</p>
+      {/* 修改类先给出当前内容：不看见现在是什么样，「怎么改」无从判断 */}
+      {change.current && <div className="ac-message-change-current">
+        <span>当前内容</span><pre>{change.current}</pre>
+      </div>}
+      <p>{change.current ? '计划这样改：' : ''}{change.description}</p>
     </article>)}</div>
     {(block.risks ?? []).length > 0 && <div className="ac-message-change-risks"><strong>影响与风险</strong>
       <ul>{block.risks.map((risk, index) => <li key={`${risk}-${index}`}>{risk}</li>)}</ul></div>}
