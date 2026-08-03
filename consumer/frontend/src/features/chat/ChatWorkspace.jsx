@@ -16,6 +16,7 @@ import {
   resolveSessionPreferences,
 } from './lib/sessionModel';
 import { listResumableSessions } from './lib/sessionScope';
+import { resolveRunProgressView } from './lib/streamLifecycle';
 import { buildTraceViewModel } from './lib/traceModel';
 import { getWorkspaceAgentMode, normalizeAgentMode } from './lib/workspacePreferences';
 import './chat.css';
@@ -419,21 +420,22 @@ export default function ChatWorkspace({
     }
   };
   const streamState = currentChatId ? streamManager.getStreamState(currentChatId) : { isLoading: false };
+  const runProgress = resolveRunProgressView(streamState);
   const isSubmitting = isBlankChatSubmitting(currentChatId, firstSendPending);
   const latestTurnStatus = conversationModel.turns.at(-1)?.status || '';
   const displayedStreamStatus = streamState.status === 'awaiting' && latestTurnStatus === 'cancelled'
     ? 'cancelled'
     : streamState.status;
-  const streamStatusLabel = {
+  const streamStatusLabel = runProgress?.label || ({
     queued: `排队中${streamState.queue?.position ? ` · 第 ${streamState.queue.position} 位` : ''}`,
     reconnecting: '连接恢复中',
-    streaming: '运行中',
-    finalizing: '收尾中',
+    streaming: '执行问答任务中',
+    finalizing: '整理最终答案中',
     awaiting: '等待输入',
     cancelled: '已停止',
     cancel_error: streamState.error || '停止失败，运行仍在继续',
     error: '连接异常',
-  }[displayedStreamStatus] || '';
+  }[displayedStreamStatus] || '');
   const liveStatusLabel = streamStatusLabel || ({
     finished: '本轮回答已完成',
     cancelled: '本轮运行已停止',
@@ -522,8 +524,8 @@ export default function ChatWorkspace({
           </button>
         </div>
         <div className="th-body" ref={bodyRef} onScroll={handleMessageScroll}>
-          <ConversationView model={conversationModel} sessionId={currentChatId} />
-          {!messages.length && (
+          <ConversationView model={conversationModel} sessionId={currentChatId} runState={streamState} />
+          {!messages.length && !streamState.isLoading && (
             <div className="chat-empty">
               <div className="chat-empty-visual" aria-hidden="true">
                 <span className="orbit orbit-a" /><span className="orbit orbit-b" />
