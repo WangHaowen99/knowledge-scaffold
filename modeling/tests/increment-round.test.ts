@@ -99,3 +99,41 @@ test('知识包改动之后，旧评测轮次不再算通过', async () => {
   });
   assert.equal(fresh.gates.find((gate: any) => gate.id === 'evaluation')?.passed, true);
 });
+
+// ---- 前端入口：不摆一个点了必然被拒的按钮 ----
+
+test('建模没确认完成时不显示补充入口', async () => {
+  const { incrementEntryState } = await import('../frontend/src/incrementEntry.js');
+  assert.equal(incrementEntryState({
+    milestones: [{ id: 'construction_completed', status: 'active' }], tasks: [],
+  }).visible, false);
+  assert.equal(incrementEntryState(undefined).visible, false);
+});
+
+test('建完之后常驻「补充新资料」', async () => {
+  const { incrementEntryState } = await import('../frontend/src/incrementEntry.js');
+  const entry = incrementEntryState({
+    milestones: [{ id: 'construction_completed', status: 'confirmed' }], tasks: [],
+  });
+  assert.equal(entry.visible, true);
+  assert.equal(entry.action, 'start_increment_round');
+});
+
+test('已在一轮增量里就换成「生成方案」，不会再开一轮', async () => {
+  const { incrementEntryState } = await import('../frontend/src/incrementEntry.js');
+  const inRound = incrementEntryState({
+    milestones: [
+      { id: 'construction_completed', status: 'confirmed' },
+      { id: 'increment_confirmed', status: 'active' },
+    ],
+    tasks: [{ kind: 'incremental_intake', status: 'pending' }],
+  });
+  assert.equal(inRound.action, 'propose_increment');
+});
+
+test('入口动作都在助手动作目录里登记过', async () => {
+  const { ASSISTANT_ACTION_KINDS } = await import('../src/ai-construction/assistant-actions.js');
+  for (const id of ['start_increment_round', 'propose_increment']) {
+    assert.ok(ASSISTANT_ACTION_KINDS[id], `${id} 未登记，会变成点了没反应的按钮`);
+  }
+});

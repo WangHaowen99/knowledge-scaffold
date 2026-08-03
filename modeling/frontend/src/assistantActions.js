@@ -16,6 +16,8 @@ export const ASSISTANT_ACTION_KINDS = {
   run_package_check: 'command',
   preview_task_adjustment: 'command',
   reload_and_retry: 'command',
+  start_increment_round: 'command',
+  propose_increment: 'command',
 
   defer_validation_errors: 'dialog',
   add_flowchart_process: 'dialog',

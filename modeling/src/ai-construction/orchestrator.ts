@@ -1899,6 +1899,8 @@ export class AiConstructionOrchestrator {
             title: '可以这样继续',
             actions: [
               { id: 'upload_materials', label: '上传增量资料', style: 'primary' },
+              { id: 'propose_increment', label: '生成增量修改方案', style: 'secondary',
+                description: '资料传完后点这里，我会只针对这批资料提出修改' },
               { id: 'review_knowledge_files', label: '先查看现有知识', style: 'secondary' },
             ],
           },

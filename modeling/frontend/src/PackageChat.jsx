@@ -8,6 +8,8 @@ import {
   adjustAiConstructionTask,
   cancelAiConstructionOperation,
   confirmAiConstructionMilestone,
+  proposeAiConstructionIncrement,
+  startAiConstructionIncrement,
   deferAiConstructionKnowledgeErrors,
   deferAiConstructionScripts,
   editAiConstructionTasks,
@@ -38,6 +40,7 @@ import { isPackageChatRunning } from './packageChatRun.js';
 import { activeRunLabel, activeRunOf } from './activeRun.js';
 import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
 import { stallHint, stalledForMs } from './taskStall.js';
+import { incrementEntryState } from './incrementEntry.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
   canUseStructuredMessageActions,
@@ -213,6 +216,7 @@ export default function PackageChat({
     return () => window.clearInterval(timer);
   }, [analysisRunning, chatRunning, busy, onProjectChanged, projectId]);
 
+  const incrementEntry = useMemo(() => incrementEntryState(aiConstruction), [aiConstruction]);
   const cancellableOperation = useMemo(
     () => cancellableOperationOf({ busy, serverRun }),
     [busy, serverRun],
@@ -305,6 +309,31 @@ export default function PackageChat({
     if (action.id === 'add_flowchart_process') {
       setCompletionBlocker(null);
       window.dispatchEvent(new CustomEvent('mw-flowchart-add-open', { detail: { projectId } }));
+      return;
+    }
+    // 增量补充：开一轮 / 传完资料后生成方案。两者都由后端做准入判断并给出口，
+    // 前端只负责发起和把失败渲染成可操作卡片。
+    if (action.id === 'start_increment_round' || action.id === 'propose_increment') {
+      if (busy) return;
+      const starting = action.id === 'start_increment_round';
+      setLocalBusy(starting ? 'increment_start' : 'increment_propose');
+      try {
+        if (starting) await startAiConstructionIncrement(projectId);
+        else await proposeAiConstructionIncrement(projectId);
+        setCompletionBlocker(null);
+      } catch (error) {
+        const blocked = completionBlockerMessage(error);
+        if (blocked) setCompletionBlocker(blocked);
+        else {
+          setTurns((items) => items.concat([timedTurn({
+            role: 'assistant',
+            text: `${starting ? '开始增量补充' : '生成增量方案'}失败：${error instanceof Error ? error.message : String(error)}`,
+          })]));
+        }
+      } finally {
+        setLocalBusy('');
+        await refreshConstruction();
+      }
       return;
     }
     if (action.id === 'defer_validation_errors') {
@@ -773,6 +802,13 @@ export default function PackageChat({
           <strong>知识包建模助手</strong>
           <span>咨询、检查并完善对象、操作、规则、指标与脚本</span>
         </div>
+        {incrementEntry.visible && (
+          <button type="button" className="pchat-increment-entry" disabled={Boolean(busy)}
+            title="知识包已建完。补充新资料时只处理增量，已确认的内容保持不变。"
+            onClick={() => { void handleStructuredAction({ id: incrementEntry.action }); }}>
+            {incrementEntry.label}
+          </button>
+        )}
         {liveTaskPlanMessage && (
           <div className="pchat-task-status">
             <button type="button" className="pchat-task-status__chip"
@@ -902,6 +938,8 @@ export default function PackageChat({
               script_apply: `正在应用并校验确定性脚本 · ${etaText(aiConstruction?.progress?.eta)}`,
               task_preview: '正在分析任务调整影响', task_adjustment: '正在应用任务调整',
               task_edit: '正在应用任务图变更',
+              increment_start: '正在开始增量补充',
+              increment_propose: '正在生成增量修改方案',
               server_run: activeRunLabel(serverRun),
             }[busy] ?? '正在处理'} · {sec} 秒</div>
             {cancellableOperation && (
