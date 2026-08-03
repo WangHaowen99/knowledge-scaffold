@@ -1070,7 +1070,11 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       // 本轮资料 = 开轮之后上传的。没有新资料就没有增量可提，早说比让模型空跑十几分钟好
       const materials = listDocuments(project.id)
         .filter((document) => document.createdAt > intake.createdAt)
-        .map((document) => ({ filename: document.filename }));
+        .map((document) => ({
+          filename: document.filename,
+          // 必须带正文：只给文件名模型会直接回「未附上具体内容」然后放弃
+          content: document.textContent ?? '',
+        }));
       if (!materials.length) {
         return reply.code(409).send({
           error: '本轮还没有上传新的资料，请先上传要补充的资料',
@@ -1111,7 +1115,29 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           adapter.complete(project.id, runId, { incrementProposalId: planned.interaction.id });
         },
-        onError: (reason) => { adapter.fail(project.id, runId, reason); },
+        onError: (reason) => {
+          adapter.fail(project.id, runId, reason);
+          // 后台失败必须落成用户看得见的消息：这时已经没有 HTTP 响应可用，
+          // 只 fail 掉 run 的话界面上什么都不会出现——用户点了按钮像是没反应。
+          messages.upsert(project.id, {
+            key: `increment.failed.${intake.id}`,
+            role: 'assistant',
+            taskId: intake.id,
+            blocks: [
+              { type: 'status', title: '增量修改方案没有生成', milestoneId: intake.milestoneId, taskId: intake.id },
+              { type: 'text', text: reason.slice(0, 3_000) },
+              {
+                type: 'next_actions',
+                title: '可以这样继续',
+                actions: [
+                  { id: 'upload_materials', label: '补充更多资料', style: 'primary',
+                    description: '资料不足以支撑修改时，补齐后再试' },
+                  { id: 'propose_increment', label: '重新生成方案', style: 'secondary' },
+                ],
+              },
+            ],
+          });
+        },
       });
 
       return reply.code(202).send({

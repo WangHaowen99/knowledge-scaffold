@@ -15,14 +15,15 @@ const spec = {
 
 test('提示词把边界写死：只动本轮资料涉及的内容', () => {
   const requirement = buildIncrementRequirement({
-    materials: [{ filename: '新规则.md', summary: '门槛调整通知' }],
+    materials: [{ filename: '新规则.md', content: '门槛调整通知' }],
     affected: [],
   });
   assert.match(requirement, /增量补充/);
-  assert.match(requirement, /新规则\.md：门槛调整通知/);
+  assert.match(requirement, /《新规则\.md》/);
+  assert.match(requirement, /门槛调整通知/);
   assert.match(requirement, /与本轮资料无关的内容一律不要动/);
   assert.match(requirement, /不得使用 remove/);
-  assert.match(requirement, /优先 modify/);
+  assert.match(requirement, /有就用 modify 改它/);
   // 拿不出依据的改动不该提——否则增量会变成模型的自由发挥
   assert.match(requirement, /无法追溯到资料的改动不要提/);
 });
@@ -35,7 +36,7 @@ test('带上相关已有内容，模型才可能提出「怎么改」而不是�
   });
   assert.match(requirement, /rule Eligibility 当前内容/);
   assert.match(requirement, /资产 ≥ 100 万/);
-  assert.match(requirement, /不要新增一条语义重复的规则/);
+  assert.match(requirement, /语义重复的规则/);
 });
 
 test('没有新资料时也能构造需求，不产出空指令', () => {
@@ -136,4 +137,30 @@ test('入口动作都在助手动作目录里登记过', async () => {
   for (const id of ['start_increment_round', 'propose_increment']) {
     assert.ok(ASSISTANT_ACTION_KINDS[id], `${id} 未登记，会变成点了没反应的按钮`);
   }
+});
+
+test('需求文本必须带上资料正文——只给文件名模型会直接放弃', () => {
+  const requirement = buildIncrementRequirement({
+    materials: [{ filename: '门槛调整通知.md', content: '资产门槛由 100 万上调至 500 万。' }],
+    affected: [],
+  });
+  // 实测教训：只给文件名时模型回「您提到本轮资料为…但未附上具体内容」然后不产出方案
+  assert.match(requirement, /《门槛调整通知\.md》/);
+  assert.match(requirement, /资产门槛由 100 万上调至 500 万/);
+});
+
+test('资料过长会截断，不把整份文件塞爆上下文', () => {
+  const requirement = buildIncrementRequirement({
+    materials: [{ filename: '长文.md', content: 'x'.repeat(9_000) }],
+    affected: [],
+  });
+  assert.match(requirement, /内容过长已截断/);
+  assert.ok(requirement.length < 8_000);
+});
+
+test('没有正文的资料如实说明，不假装有内容', () => {
+  const requirement = buildIncrementRequirement({
+    materials: [{ filename: '客户表.xlsx' }], affected: [],
+  });
+  assert.match(requirement, /这份资料没有可读正文/);
 });

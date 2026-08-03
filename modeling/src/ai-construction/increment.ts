@@ -11,8 +11,12 @@ import { currentResourceSummary } from './change-plan-context.js';
 
 export interface IncrementMaterial {
   filename: string;
-  summary?: string;
+  /** 资料正文。只给文件名模型无从下手——实测它会直接回「未附上具体内容」并放弃 */
+  content?: string;
 }
+
+/** 单份资料带进提示词的长度上限，避免一次塞爆上下文 */
+const MAX_MATERIAL_CHARS = 6_000;
 
 export interface IncrementChange {
   targetKind: ChangeTargetKind;
@@ -51,9 +55,13 @@ export function buildIncrementRequirement(input: {
   spec?: PackageSpec | null;
 }): string {
   const materials = input.materials.length
-    ? input.materials.map((item, index) => (
-      `${index + 1}. ${item.filename}${item.summary ? `：${item.summary}` : ''}`
-    )).join('\n')
+    ? input.materials.map((item, index) => {
+      const body = (item.content ?? '').trim();
+      const clipped = body.length > MAX_MATERIAL_CHARS
+        ? `${body.slice(0, MAX_MATERIAL_CHARS)}\n…（内容过长已截断）`
+        : body;
+      return `${index + 1}. 《${item.filename}》\n${clipped || '（这份资料没有可读正文）'}`;
+    }).join('\n\n')
     : '（本轮没有新增资料，仅根据已变更资料复核）';
 
   const affected = input.affected
@@ -70,12 +78,16 @@ export function buildIncrementRequirement(input: {
     '',
     '本轮资料：',
     materials,
-    ...(affected ? ['', '这些已有内容与本轮资料相关，请优先判断是否需要修改它们，而不是新增重复内容：', affected] : []),
+    ...(affected ? ['', '这些已有内容与本轮资料直接相关，请优先修改它们：', affected] : []),
     '',
     '硬性要求：',
     '① 只提出与本轮资料直接相关的变更；与本轮资料无关的内容一律不要动，即使你觉得它可以更好。',
     '② 只能使用 add 和 modify，不得使用 remove。内容不再适用时改为修改它的适用条件或例外，保留可追溯性。',
-    '③ 已有内容能覆盖新资料时优先 modify，不要新增一条语义重复的规则或指标。',
+    // 实测（deepseek-v4-flash）：知识包非空时模型会正确选择 modify 已有规则。
+    // 这条只是把判据说清楚，不额外重复一遍规格——【当前规格】里已经完整给过了。
+    '③ 提出每一条变更前，先在【当前规格】里找有没有讲同一件事的条目：'
+      + '有就用 modify 改它（例如门槛、口径、例外发生变化），只有确实没有对应条目时才用 add。'
+      + '新增一条与已有条目语义重复的规则或指标，属于错误做法。',
     '④ 逐条说明这次改动的依据来自本轮哪份资料，无法追溯到资料的改动不要提。',
     '⑤ 如果本轮资料不足以支撑任何可靠变更，就不要提交计划，直接说明还缺什么。',
   ].join('\n');
