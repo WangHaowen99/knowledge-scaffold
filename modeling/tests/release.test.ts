@@ -191,7 +191,7 @@ test('发布评测必须绑定当前修订并覆盖全部真实用例', async ()
     requiredTestcases, latestResults: results,
   });
   assert.equal(stale.ready, false);
-  assert.match(stale.gates.find((gate) => gate.id === 'evaluation')!.detail, /旧修订/);
+  assert.match(stale.gates.find((gate) => gate.id === 'evaluation')!.detail, /知识包在上次评测之后有改动/);
 
   const missingRevision = buildReleaseReadiness({
     currentRevision: 'revision-current', packageCheck: { revision: 'revision-current', findings: [] },

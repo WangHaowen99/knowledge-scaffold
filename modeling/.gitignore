@@ -1,6 +1,7 @@
 node_modules/
 dist/
 data/
+data-e2e/
 .env
 *.log
 frontend/node_modules/

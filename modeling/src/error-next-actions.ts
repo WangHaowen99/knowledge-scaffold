@@ -86,6 +86,14 @@ const BY_CODE: Record<string, ErrorNextAction[]> = {
       description: '确认完成 AI 辅助构建之后才能补充增量资料' },
     REVIEW_KNOWLEDGE,
   ],
+  INCREMENT_ROUND_NOT_STARTED: [
+    { id: 'refresh_task_graph', label: '刷新查看当前状态', style: 'primary',
+      description: '当前没有进行中的增量补充，请先开始一轮' },
+  ],
+  INCREMENT_MATERIALS_REQUIRED: [
+    { id: 'upload_materials', label: '上传增量资料', style: 'primary',
+      description: '先把这次要补充的资料传上来，再生成修改方案' },
+  ],
   INCREMENT_ROUND_BLOCKED: [
     { id: 'refresh_task_graph', label: '刷新查看进行中的任务', style: 'primary',
       description: '当前还有任务没处理完，处理完再开始增量补充' },

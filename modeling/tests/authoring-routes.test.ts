@@ -1528,3 +1528,29 @@ test('开场先说「已就绪」再进入建模目标确认，而不是倒着�
   assert.notEqual(goal, -1, `没有找到建模目标卡片：${JSON.stringify(titles)}`);
   assert.ok(welcome < goal, `欢迎语应排在建模目标确认之前，实际顺序：${JSON.stringify(titles)}`);
 });
+
+test('已有待办未处理时不开忽略表单——否则它会被挡住，用户点了没反应', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-待办冲突' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any], 'pkg-draft');
+
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认建模目标', state: { purpose: 'modeling_brief' },
+  });
+  if (started.kind !== 'run') throw new Error('运行创建失败');
+  state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'question_batch',
+    payload: { purpose: 'modeling_brief', title: '请先确认建模目标', questions: [] },
+  });
+
+  const response = await handOff(findingApp(t), project.id, 'ignore', 'w1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PENDING_INTERACTION_FIRST');
+  // 报错要指名道姓，否则用户不知道该去处理哪一条
+  assert.match(response.json().error, /请先确认建模目标/);
+});
