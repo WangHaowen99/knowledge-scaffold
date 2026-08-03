@@ -543,9 +543,9 @@ export function ReviewPanel({
       check={packageCheck?.check ?? null}
       warningReview={packageCheck?.warningReview ?? null}
       errorDeferral={packageCheck?.errorDeferral ?? null}
+      repair={packageCheck?.repair ?? null}
       rechecking={packageCheck?.rechecking ?? false}
-      error={packageCheck?.error ?? ''}
-      onCheckResult={packageCheck?.onResult} />
+      error={packageCheck?.error ?? ''} />
     {repairInProgress && (
       <div className="stale-banner" role="status">{PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE}</div>
     )}

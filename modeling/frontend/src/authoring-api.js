@@ -96,6 +96,17 @@ export const repairAiConstructionKnowledge = (id) => api(
   { method: 'POST', body: '{}' },
 );
 
+// 体检面板的两个按钮都只是「把这条发现交给建模助手」，处理本身在助手里完成
+export const reviewPackageCheckFinding = (id, findingId) => api(
+  `${projectPath(id)}/package/check/findings/review`,
+  { method: 'POST', body: JSON.stringify({ findingId }) },
+);
+
+export const ignorePackageCheckFinding = (id, findingId) => api(
+  `${projectPath(id)}/package/check/findings/ignore`,
+  { method: 'POST', body: JSON.stringify({ findingId }) },
+);
+
 export const deferAiConstructionKnowledgeErrors = (id, reason) => api(
   `${projectPath(id)}/ai-construction/knowledge/defer-errors`,
   { method: 'POST', body: JSON.stringify({ reason: String(reason ?? '').trim() }) },

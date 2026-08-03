@@ -1363,3 +1363,168 @@ test('增量补充：建模没走完时拒绝，走完后开一轮且不动已�
     WHERE project_id = ? AND task_kind = 'incremental_intake'`).get(project.id) as { n: number };
   assert.equal(again.n, 1);
 });
+
+// ---- 体检发现交给建模助手处理 ----
+
+function findingApp(t: test.TestContext) {
+  return routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: 'pkg-draft' },
+          packageVersion: '0.1.0',
+          spec: { status: 'draft', objects: [], operations: [] },
+        };
+      },
+    } as any,
+  });
+}
+
+const handOff = (app: any, projectId: string, mode: 'review' | 'ignore', findingId: string) => app.inject({
+  method: 'POST',
+  url: `/api/projects/${projectId}/package/check/findings/${mode}`,
+  payload: { findingId },
+});
+
+test('「去修改」在助手里落一张卡片，并指向这条发现对应的文件', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-修改' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'f1', source: 'rule', severity: '错误', category: '引用缺失',
+    target: 'objects/index.md', message: '缺少引用', suggestion: '补上来源引用',
+  } as any], 'pkg-draft');
+
+  const response = await handOff(findingApp(t), project.id, 'review', 'f1');
+  assert.equal(response.statusCode, 200, response.body);
+  const blocks = response.json().message.blocks;
+  const actions = blocks.find((block: any) => block.type === 'next_actions').actions;
+  assert.deepEqual(actions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'open_package_file',
+  ]);
+  // target 是包内路径时才给「打开文件」，路径要跟着这条发现走
+  assert.equal(actions[1].path, 'objects/index.md');
+  assert.match(blocks.find((block: any) => block.type === 'text').text, /补上来源引用/);
+});
+
+test('target 不是文件路径时不造一个跳不到任何地方的按钮', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-非路径' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'f1', source: 'rule', severity: '错误', category: '定义冲突',
+    target: 'ipo_detail_info', message: '对象定义冲突',
+  } as any], 'pkg-draft');
+
+  const response = await handOff(findingApp(t), project.id, 'review', 'f1');
+  assert.equal(response.statusCode, 200, response.body);
+  const actions = response.json().message.blocks
+    .find((block: any) => block.type === 'next_actions').actions;
+  assert.deepEqual(actions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'review_knowledge_files',
+  ]);
+  assert.equal(actions[1].path, undefined);
+});
+
+test('「忽略」只是开一条待办收理由，不会当场落审计记录', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-忽略警告' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  const { getPackageWarningReview } = await import('../src/workflow/warning-acceptance.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any], 'pkg-draft');
+
+  const app = findingApp(t);
+  const opened = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(opened.statusCode, 200, opened.body);
+  const interaction = opened.json().interaction;
+  assert.equal(interaction.payload.purpose, 'check_finding_ignore');
+  assert.equal(interaction.payload.scope, 'warning');
+  // 点了忽略还没落库——理由填完提交才算数
+  assert.equal(
+    getPackageWarningReview(project.id, 'pkg-draft').items.every((item: any) => !item.accepted),
+    true,
+  );
+
+  const answered = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
+    payload: {
+      requestId: 'ignore-w1',
+      response: { answers: [{ questionId: 'ignore_reason', other: '命名在下一版统一调整' }] },
+    },
+  });
+  assert.equal(answered.statusCode, 200, answered.body);
+  const accepted = getPackageWarningReview(project.id, 'pkg-draft').items
+    .filter((item: any) => item.accepted);
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].finding.id, 'w1');
+});
+
+test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开的那一条', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-忽略错误' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'e1', source: 'rule', severity: '错误', category: '引用缺失', target: 'objects/index.md', message: '缺引用' },
+    { id: 'e2', source: 'rule', severity: '错误', category: '映射缺失', target: 'mapping/index.md', message: '缺映射' },
+  ] as any, 'pkg-draft');
+
+  const opened = await handOff(findingApp(t), project.id, 'ignore', 'e1');
+  assert.equal(opened.statusCode, 200, opened.body);
+  const payload = opened.json().interaction.payload;
+  assert.equal(payload.scope, 'errors');
+  assert.equal(payload.errorCount, 2);
+  assert.match(String(payload.description), /全部 2 个必须修复的错误/);
+});
+
+test('理由太短不放行，待办仍然停在原地等人重填', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-理由不足' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any], 'pkg-draft');
+
+  const app = findingApp(t);
+  const interaction = (await handOff(app, project.id, 'ignore', 'w1')).json().interaction;
+  const answered = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
+    payload: { requestId: 'ignore-short', response: { answers: [{ questionId: 'ignore_reason', other: '略' }] } },
+  });
+  assert.equal(answered.statusCode, 400, answered.body);
+  assert.equal(answered.json().code, 'INVALID_INPUT');
+  assert.equal(getAuthoringState().interaction(project.id, interaction.id)?.status, 'pending');
+});
+
+test('提示类发现不给忽略通道', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-提示' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'h1', source: 'rule', severity: '提示', category: '可读性',
+    target: 'objects/index.md', message: '可以补充说明',
+  } as any], 'pkg-draft');
+
+  const response = await handOff(findingApp(t), project.id, 'ignore', 'h1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NOT_IGNORABLE');
+});
+
+test('开场先说「已就绪」再进入建模目标确认，而不是倒着来', async (t) => {
+  const project = createProject({ owner: 'alice', name: '开场顺序' });
+  const app = routeApp(t);
+
+  const advanced = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/session/advance`,
+  });
+  assert.equal(advanced.statusCode, 200, advanced.body);
+
+  // 助手栏按 seq 排；欢迎语写在推进之后会让它反而排到「进入建模目标确认」下面
+  const titles = advanced.json().aiConstructionMessages
+    .map((message: any) => message.blocks.find((block: any) => block.type === 'status')?.title)
+    .filter(Boolean);
+  const welcome = titles.indexOf('AI 辅助构建已就绪');
+  const goal = titles.indexOf('进入建模目标确认');
+  assert.notEqual(welcome, -1, `没有找到欢迎语：${JSON.stringify(titles)}`);
+  assert.notEqual(goal, -1, `没有找到建模目标卡片：${JSON.stringify(titles)}`);
+  assert.ok(welcome < goal, `欢迎语应排在建模目标确认之前，实际顺序：${JSON.stringify(titles)}`);
+});
