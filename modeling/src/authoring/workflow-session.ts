@@ -183,7 +183,7 @@ export function buildProjectWorkflow(input: ProjectWorkflowStateInput) {
     };
   } else {
     steps.evaluate = {
-      available: Boolean(validationPrerequisitesReady && input.currentPackage && input.testcases.length),
+      available: Boolean(validationPrerequisitesReady && input.currentPackage),
     };
   }
   if (input.testcases.length || latestRound) enabled.add('evaluate');
