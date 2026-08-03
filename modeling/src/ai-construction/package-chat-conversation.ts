@@ -6,6 +6,7 @@ import {
   type AiConstructionChangePlanBlock,
   type AiConstructionMessage,
 } from './messages.js';
+import type { AiConstructionTaskGraphSnapshot } from './task-graph.js';
 
 function messageKey(kind: 'user' | 'reply' | 'error' | 'result', requestId: string): string {
   const digest = createHash('sha256').update(requestId).digest('hex').slice(0, 24);
@@ -15,6 +16,31 @@ function messageKey(kind: 'user' | 'reply' | 'error' | 'result', requestId: stri
 function planMessageKey(interactionId: string): string {
   const digest = createHash('sha256').update(interactionId).digest('hex').slice(0, 24);
   return `chat.plan.${digest}`;
+}
+
+function planFailureMessageKey(interactionId: string): string {
+  const digest = createHash('sha256').update(interactionId).digest('hex').slice(0, 24);
+  return `chat.plan-failure.${digest}`;
+}
+
+function constructionCompletionMessageKey(interactionId: string): string {
+  const digest = createHash('sha256').update(interactionId).digest('hex').slice(0, 24);
+  return `chat.completion.${digest}`;
+}
+
+export function shouldRequestConstructionCompletion(
+  snapshot: AiConstructionTaskGraphSnapshot | null,
+  pendingInteractionCount: number,
+): boolean {
+  if (!snapshot || pendingInteractionCount !== 0 || snapshot.status === 'completed') return false;
+  return snapshot.milestones.some((milestone) => (
+    milestone.id === 'construction_completed' && milestone.status === 'active'
+  ))
+    && snapshot.tasks.some((task) => (
+      task.kind === 'completion_review'
+        && task.milestoneId === 'construction_completed'
+        && task.status === 'completed'
+    ));
 }
 
 function textOf(message: AiConstructionMessage): string | null {
@@ -81,6 +107,46 @@ export class PackageChatConversation {
       key: messageKey('error', requestId),
       role: 'assistant',
       blocks: [{ type: 'text', text: `${prefix}：${detail}` }],
+    });
+  }
+
+  recordPlanFailure(projectId: string, interactionId: string, feedback: string): AiConstructionMessage {
+    return this.messages.upsert(projectId, {
+      key: planFailureMessageKey(interactionId),
+      role: 'assistant',
+      blocks: [{
+        type: 'text',
+        text: `候选内容未通过校验，当前知识包未更改。请调整方案后重试：${feedback.trim()}`,
+      }],
+    });
+  }
+
+  planFailure(projectId: string, interactionId: string): string | null {
+    const message = this.messages.findByKey(projectId, planFailureMessageKey(interactionId));
+    return message ? textOf(message) : null;
+  }
+
+  requestConstructionCompletion(projectId: string, interactionId: string): AiConstructionMessage {
+    return this.messages.ensure(projectId, {
+      key: constructionCompletionMessageKey(interactionId),
+      role: 'assistant',
+      blocks: [
+        {
+          type: 'status',
+          title: 'AI 辅助构建待最终确认',
+          summary: '本轮建模调整已取消，当前知识包保持不变',
+          milestoneId: 'construction_completed',
+        },
+        { type: 'text', text: '确认当前成果后将进入场景推演。' },
+        {
+          type: 'next_actions',
+          title: '选择下一步',
+          actions: [
+            { id: 'confirm_construction', label: '确认并进入场景推演', style: 'primary' },
+            { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
+          ],
+        },
+      ],
     });
   }
 

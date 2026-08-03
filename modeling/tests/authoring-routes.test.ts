@@ -8,11 +8,18 @@ import Fastify from 'fastify';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-authoring-routes-'));
 
-const [{ registerAuthoringRoutes }, { getAuthoringState }, { createProject }, { getDb }] = await Promise.all([
+const [
+  { registerAuthoringRoutes },
+  { getAuthoringState },
+  { createProject },
+  { getDb },
+  { PackageCandidateRejectedError },
+] = await Promise.all([
   import('../src/authoring/routes.js'),
   import('../src/authoring/state.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
+  import('../src/workflow/package-chat.js'),
 ]);
 
 function routeApp(t: test.TestContext, username = 'alice', options: Record<string, unknown> = {}) {
@@ -696,6 +703,194 @@ test('脚本变更在保存前必须通过格式、规则和语义候选校验',
   assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'pending');
 });
 
+test('最终审阅阶段放弃建模调整后追加一次性完成确认消息', async (t) => {
+  const project = createProject({ owner: 'alice', name: '放弃调整后完成确认' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '修改知识包', baseRevision: 'pkg-completion-base',
+  });
+  assert.equal(started.kind, 'run');
+  if (started.kind !== 'run') throw new Error('未创建知识包修改任务');
+  const opened = state.apply({
+    kind: 'open_interaction',
+    projectId: project.id,
+    runId: started.run.id,
+    type: 'change_plan',
+    baseRevision: 'pkg-completion-base',
+    payload: {
+      purpose: 'package_chat', summary: '调整知识包', message: '调整知识包', history: [],
+      changes: [{
+        id: 'change-1', targetKind: 'object', targetKey: 'customer', action: 'modify',
+        description: '调整客户对象',
+      }],
+    },
+  });
+  assert.equal(opened.kind, 'interaction');
+  if (opened.kind !== 'interaction') throw new Error('未创建方案待办');
+
+  const graph = {
+    snapshot: () => ({
+      revision: 33,
+      status: 'active',
+      milestones: [{ id: 'construction_completed', status: 'active' }],
+      tasks: [{
+        id: 'completion-review', kind: 'completion_review',
+        milestoneId: 'construction_completed', status: 'completed',
+      }],
+    }),
+  };
+  const app = routeApp(t, 'alice', { graph });
+  const payload = {
+    requestId: 'reject-package-plan-at-completion',
+    response: { action: 'reject' },
+  };
+
+  const rejected = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload,
+  });
+
+  assert.equal(rejected.statusCode, 200, rejected.body);
+  assert.equal(rejected.json().run.status, 'completed');
+  const completionMessage = rejected.json().aiConstructionMessages.find((message: any) => (
+    message.blocks.some((block: any) => block.type === 'next_actions'
+      && block.actions.some((action: any) => action.id === 'confirm_construction'))
+  ));
+  assert.ok(completionMessage);
+  assert.match(completionMessage.blocks[0].title, /待最终确认/u);
+  assert.match(JSON.stringify(completionMessage.blocks), /确认并进入场景推演/u);
+  assert.equal(state.snapshot(project.id).pendingInteractions.length, 0);
+
+  const replayed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload,
+  });
+  assert.equal(replayed.statusCode, 200, replayed.body);
+  const stored = getDb().prepare(`SELECT COUNT(*) AS count FROM ai_construction_messages
+    WHERE project_id = ? AND message_key LIKE 'chat.completion.%'`).get(project.id) as { count: number };
+  assert.equal(stored.count, 1);
+});
+
+test('知识包候选校验失败后反馈专家并可重新生成待确认方案', async (t) => {
+  const project = createProject({ owner: 'alice', name: '候选校验反馈闭环' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '修改知识包', baseRevision: 'pkg-feedback-base',
+  });
+  assert.equal(started.kind, 'run');
+  if (started.kind !== 'run') throw new Error('未创建知识包修改任务');
+  const opened = state.apply({
+    kind: 'open_interaction',
+    projectId: project.id,
+    runId: started.run.id,
+    type: 'change_plan',
+    baseRevision: 'pkg-feedback-base',
+    payload: {
+      purpose: 'package_chat',
+      summary: '新增跨境业务事件',
+      message: '拆分企业成长事件',
+      history: [],
+      changes: [{
+        id: 'cross-border-change', targetKind: 'object', targetKey: 'cross_border_event', action: 'add',
+        description: '新增跨境业务事件，主键使用客户字段',
+      }],
+      risks: [],
+    },
+  });
+  assert.equal(opened.kind, 'interaction');
+  if (opened.kind !== 'interaction') throw new Error('未创建方案待办');
+
+  let revisionRequirement = '';
+  let revisedInteractionId = '';
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: 'pkg-feedback-base' },
+          packageVersion: '1.0.0-rc.1',
+          spec: { objects: [], operations: [], rules: [], metrics: [], scripts: [] },
+        };
+      },
+    },
+    packageChatApply: async () => {
+      throw new PackageCandidateRejectedError(
+        '候选修订生成失败',
+        '对象「跨境业务事件」主键「cust_id」不属于对象字段',
+      );
+    },
+    packageChatPlan: async (_project: any, _history: any[], requirement: string) => {
+      revisionRequirement = requirement;
+      const nextRun = state.apply({
+        kind: 'start_run', projectId: project.id, intent: '调整知识包修改方案', baseRevision: 'pkg-feedback-base',
+      });
+      if (nextRun.kind !== 'run') throw new Error('未创建方案调整任务');
+      const nextInteraction = state.apply({
+        kind: 'open_interaction',
+        projectId: project.id,
+        runId: nextRun.run.id,
+        type: 'change_plan',
+        baseRevision: 'pkg-feedback-base',
+        payload: {
+          purpose: 'package_chat', summary: '修正跨境业务事件主键', message: requirement, history: [],
+          changes: [{
+            id: 'revised-cross-border-change', targetKind: 'object', targetKey: 'cross_border_event', action: 'add',
+            description: '主键改为引用 fields[].key 中的 cross_bor_cust_id',
+          }],
+        },
+      });
+      if (nextInteraction.kind !== 'interaction') throw new Error('未创建调整后方案待办');
+      revisedInteractionId = nextInteraction.interaction.id;
+      return {
+        plan: {
+          summary: '修正跨境业务事件主键',
+          changes: [{
+            targetKind: 'object' as const, targetKey: 'cross_border_event', action: 'add' as const,
+            description: '主键改为引用 fields[].key 中的 cross_bor_cust_id',
+          }],
+        },
+        interaction: {
+          id: nextInteraction.interaction.id,
+          runId: nextRun.run.id,
+          baseRevision: 'pkg-feedback-base',
+        },
+      };
+    },
+  });
+
+  const failed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'approve-invalid-package-candidate',
+      response: { action: 'approve', selectedChangeIds: ['cross-border-change'] },
+    },
+  });
+  assert.equal(failed.statusCode, 422, failed.body);
+  assert.equal(failed.json().code, 'PACKAGE_CANDIDATE_REJECTED');
+  assert.match(failed.json().feedback, /cust_id.*不属于对象字段/u);
+  assert.match(failed.json().aiConstructionMessages[0].blocks[0].text, /当前知识包未更改/u);
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'pending');
+  assert.equal(state.snapshot(project.id).activeRuns.find((run) => run.id === started.run.id)?.status, 'waiting');
+
+  const revised = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'revise-invalid-package-plan',
+      response: { action: 'revise', note: '主键必须使用对象字段 key，不要使用原始列名' },
+    },
+  });
+  assert.equal(revised.statusCode, 200, revised.body);
+  assert.match(revisionRequirement, /上次候选校验反馈.*cust_id.*不属于对象字段/su);
+  assert.match(revisionRequirement, /专家调整意见.*对象字段 key/su);
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+  assert.equal(revised.json().run.status, 'completed');
+  assert.equal(state.interaction(project.id, revisedInteractionId)?.status, 'pending');
+  assert.equal(revised.json().revisedPlan.interaction.id, revisedInteractionId);
+});
+
 test('知识生成只读取当前 Git 修订中已确认的流程文档', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Git 流程事实源' });
   const document = {
@@ -808,4 +1003,133 @@ test('生成门禁决定在原运行失败后通过新运行幂等续跑', async
   assert.notEqual(continuation.resumeRunId, started.run.id);
   const resumedRun = state.snapshot(project.id).activeRuns.find((run) => run.id === continuation.resumeRunId);
   assert.equal(resumedRun?.baseRevision, 'pkg-gate');
+});
+
+// ---- 「确认完成 AI 辅助构建」的拦截：每一条都要给出可执行的下一步 ----
+
+function completionApp(t: test.TestContext, projectId: string, overrides: any = {}) {
+  const packages = {
+    async current() {
+      return {
+        revision: { oid: 'pkg-draft' },
+        packageVersion: '0.1.0',
+        spec: { status: 'draft', objects: [], operations: [], ...(overrides.spec ?? {}) },
+      };
+    },
+    async saveCurrentAsPackageVersion() {
+      return { revision: { oid: 'pkg-rc-1' }, packageVersion: '1.0.0-rc.1', spec: { status: 'review' } };
+    },
+  };
+  const graph = {
+    snapshot: () => ({ revision: 6 }),
+    apply: () => ({ revision: 7, status: 'completed' }),
+  };
+  const orchestrator = {
+    latestMaterialAnalysis: () => null,
+    latestConfirmedModelingBrief: () => null,
+  };
+  const options: any = { packages, graph, orchestrator };
+  if (overrides.pendingInteractions) {
+    const real = getAuthoringState();
+    options.state = {
+      ...real,
+      snapshot: (id: string) => ({
+        ...real.snapshot(id),
+        pendingInteractions: overrides.pendingInteractions,
+      }),
+      apply: real.apply.bind(real),
+      replay: real.replay.bind(real),
+    };
+  }
+  return routeApp(t, 'alice', options);
+}
+
+const confirmCompletion = (app: any, projectId: string) => app.inject({
+  method: 'POST',
+  url: `/api/projects/${projectId}/ai-construction/commands`,
+  payload: {
+    command: {
+      type: 'confirm_milestone', expectedRevision: 6,
+      milestoneId: 'construction_completed', packageRevisionOid: 'pkg-draft',
+      actor: { username: 'alice', role: 'validator' },
+    },
+  },
+});
+
+test('未校验时拦截并给出立即校验的动作', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-未校验' });
+  const response = await confirmCompletion(completionApp(t, project.id), project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_CHECK_REQUIRED');
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), ['run_package_check']);
+});
+
+test('存在阻断错误时拦截并给出修缮与暂缓两条出路', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-有错误' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'f1', source: 'rule', severity: '错误', category: '引用缺失', target: 'objects/o1', message: '缺少引用' } as any,
+  ], 'pkg-draft');
+
+  const response = await confirmCompletion(completionApp(t, project.id), project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_CHECK_FAILED');
+  assert.equal(response.json().errorCount, 1);
+  // 这两个动作系统里本来就有，之前没有带出来
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'defer_validation_errors', 'view_validation',
+  ]);
+});
+
+test('缺证据时把明细和文件入口一起返回', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-缺证据' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  const app = completionApp(t, project.id, {
+    spec: {
+      objects: [],
+      operations: [{ key: 'plan', name: '编制方案', evidence: [] }],
+    },
+  });
+  const response = await confirmCompletion(app, project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'KNOWLEDGE_EVIDENCE_REQUIRED');
+  assert.deepEqual(response.json().problems, ['operation:plan 缺少流程或访谈证据']);
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.path), ['operations/index.md']);
+});
+
+test('场景待办拦截时指明去哪里处理', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-场景待办' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  const app = completionApp(t, project.id, {
+    pendingInteractions: [{
+      id: 'sc-1', projectId: project.id, runId: 'ar-1', type: 'scenario_review',
+      status: 'pending', payload: { title: '场景复核' }, createdAt: '2026-07-31T00:00:00.000Z',
+    }],
+  });
+  const response = await confirmCompletion(app, project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PENDING_INTERACTIONS');
+  assert.equal(response.json().pendingInteractions[0].location, 'scenario');
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), ['open_scenario_review']);
+});
+
+/** 助手栏不会渲染修订已变的受控修复待办，后端若仍拦截就成了死路 */
+test('修订已变的受控修复待办不再阻塞完成建模', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-失效待办' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [], 'pkg-draft');
+
+  const app = completionApp(t, project.id, {
+    pendingInteractions: [{
+      id: 'stale-1', projectId: project.id, runId: 'ar-1', type: 'change_plan',
+      status: 'pending', baseRevision: 'pkg-old',
+      payload: { purpose: 'controlled_repair' }, createdAt: '2026-07-31T00:00:00.000Z',
+    }],
+  });
+  const response = await confirmCompletion(app, project.id);
+  assert.equal(response.statusCode, 200, response.body);
 });

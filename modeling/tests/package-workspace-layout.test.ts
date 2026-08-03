@@ -223,6 +223,33 @@ test('知识包建模助手在对话流中展示可恢复的建模目标问题',
   assert.match(html, /请描述要解决的问题、使用者、典型场景和期望结果/);
 });
 
+test('知识包修改方案支持填写意见后调整，脚本生成方案保持原有动作', () => {
+  const packagePlan = renderToStaticMarkup(React.createElement(PendingInteraction, {
+    interaction: {
+      id: 'package-plan', type: 'change_plan', status: 'pending',
+      payload: {
+        purpose: 'package_chat', summary: '新增跨境业务事件',
+        changes: [{ id: 'change-1', targetKind: 'object', targetKey: 'cross_border_event', action: 'add', description: '新增事件对象' }],
+      },
+    },
+    onSubmit: () => {},
+  }));
+  const scriptPlan = renderToStaticMarkup(React.createElement(PendingInteraction, {
+    interaction: {
+      id: 'script-plan', type: 'change_plan', status: 'pending',
+      payload: {
+        purpose: 'script_generation', summary: '生成脚本',
+        changes: [{ id: 'change-1', targetKind: 'script', targetKey: 'calculate', action: 'add', description: '生成计算脚本' }],
+      },
+    },
+    onSubmit: () => {},
+  }));
+
+  assert.match(packagePlan, /调整方案/);
+  assert.match(packagePlan, /调整方案时请填写修改意见/);
+  assert.doesNotMatch(scriptPlan, /调整方案/);
+});
+
 test('流程选择的其他输入明确表示补充说明而不是标题', () => {
   const html = renderToStaticMarkup(React.createElement(PackageChat, {
     projectId: 'project-process-other',

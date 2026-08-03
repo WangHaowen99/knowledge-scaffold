@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import ArtifactDiff from './ArtifactDiff.jsx';
 import { safeUiError } from './revision-state.js';
+import { repairTargetCandidatesFrom, withRepairTarget } from './repairTargetChoice.js';
 
 const TYPE_TITLE = {
   question: '需要确认',
@@ -49,6 +50,11 @@ const styles = {
   button: { padding: '5px 12px', fontSize: 12 },
   quietButton: { marginLeft: 'auto', padding: '5px 10px', fontSize: 11.5 },
   error: { marginTop: 10, padding: '7px 9px', borderRadius: 6, background: '#fef3f2', color: '#b42318', fontSize: 12 },
+  repairTarget: { marginTop: 10, padding: '10px 11px', borderRadius: 8, border: '1px solid #dce7f6', background: '#f7fbff' },
+  repairTargetTitle: { marginBottom: 8, color: '#185da7', fontSize: 12.5, fontWeight: 650 },
+  repairTargetOption: { display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 6, fontSize: 12.5, cursor: 'pointer' },
+  repairTargetKind: { marginLeft: 7, color: '#748195', fontSize: 11, fontStyle: 'normal' },
+  repairTargetSubmit: { marginTop: 4 },
   state: { padding: '18px 4px', textAlign: 'center', color: '#667085', fontSize: 13 },
 };
 
@@ -405,11 +411,15 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
           {asArray(payload.risks).map((risk, index) => <div key={index} style={styles.rowText}>{asText(risk)}</div>)}
         </div>
       )}
-      <div style={styles.section}><NoteField value={draft.note} onChange={(note) => setDraft((current) => ({ ...current, note }))} /></div>
+      <div style={styles.section}><NoteField value={draft.note} onChange={(note) => setDraft((current) => ({ ...current, note }))}
+        placeholder={payload.purpose === 'package_chat' ? '补充说明；调整方案时请填写修改意见' : undefined} /></div>
       <div style={styles.footer}>
         <ActionButton primary disabled={busy || !selected.size} onClick={() => submit({ action: 'approve', selectedChangeIds: [...selected], note: draft.note.trim() || undefined })}>
           {busy ? '提交中...' : `确认修改${selected.size ? `（${selected.size} 项）` : ''}`}
         </ActionButton>
+        {payload.purpose === 'package_chat' && (
+          <ActionButton disabled={busy || !draft.note.trim()} onClick={() => submit({ action: 'revise', note: draft.note.trim() })}>调整方案</ActionButton>
+        )}
         <ActionButton disabled={busy} onClick={() => submit({ action: 'reject', note: draft.note.trim() || undefined })}>不修改</ActionButton>
       </div>
     </>
@@ -707,6 +717,10 @@ export default function PendingInteraction({
   const [draft, setDraft] = useState(() => initialDraft(interaction));
   const [localBusy, setLocalBusy] = useState(false);
   const [localError, setLocalError] = useState('');
+  // 提交被「涉及多个资源」挡下时，后端带回的候选目标与那次待重发的回答
+  const [repairTargets, setRepairTargets] = useState([]);
+  const [repairTarget, setRepairTarget] = useState('');
+  const [retryResponse, setRetryResponse] = useState(null);
   const payload = interaction?.payload || {};
   const type = interactionType(interaction?.type);
   const presentation = interactionPresentation(interaction);
@@ -716,6 +730,9 @@ export default function PendingInteraction({
   useEffect(() => {
     setDraft(initialDraft(interaction));
     setLocalError('');
+    setRepairTargets([]);
+    setRepairTarget('');
+    setRetryResponse(null);
   }, [interaction?.id]);
 
   useEffect(() => {
@@ -727,8 +744,19 @@ export default function PendingInteraction({
     setLocalBusy(true);
     setLocalError('');
     try {
-      await onSubmit(interaction.id, response);
+      await onSubmit(interaction.id, withRepairTarget(response, repairTarget));
+      setRepairTargets([]);
+      setRepairTarget('');
+      setRetryResponse(null);
     } catch (cause) {
+      // 「涉及多个资源、先说改哪一个」——后端已经把候选算好了，就地渲染成选项，
+      // 否则用户只能看着红字反复提交同一份答案
+      const candidates = repairTargetCandidatesFrom(cause);
+      if (candidates.length) {
+        setRepairTargets(candidates);
+        setRepairTarget((current) => current || candidates[0].value);
+        setRetryResponse(response);
+      }
       setLocalError(safeUiError(cause, '提交失败，请重试'));
     } finally {
       setLocalBusy(false);
@@ -782,6 +810,27 @@ export default function PendingInteraction({
         </div>
       )}
       {(error || localError) && <div role="alert" style={styles.error}>{safeUiError(error || localError, '提交失败，请重试')}</div>}
+      {!closed && repairTargets.length > 0 && (
+        <div style={styles.repairTarget}>
+          <div style={styles.repairTargetTitle}>请选择本次要修改哪一个知识资源</div>
+          {repairTargets.map((candidate) => (
+            <label key={candidate.value} style={styles.repairTargetOption}>
+              <input type="radio" name="repair-target" value={candidate.value}
+                checked={repairTarget === candidate.value} disabled={working}
+                onChange={() => setRepairTarget(candidate.value)} />
+              <span>
+                <strong>{candidate.targetKey}</strong>
+                <em style={styles.repairTargetKind}>{candidate.targetKind}</em>
+              </span>
+            </label>
+          ))}
+          <button type="button" className="btn btn-p" style={styles.repairTargetSubmit}
+            disabled={working || !repairTarget}
+            onClick={() => { void submit(retryResponse ?? { answers: [] }); }}>
+            用这个资源重新提交
+          </button>
+        </div>
+      )}
     </section>
   );
 }

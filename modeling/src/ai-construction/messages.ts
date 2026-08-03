@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb, nowIso } from '../db/index.js';
+import { assistantActionKind, type AssistantActionKind } from './assistant-actions.js';
 import type { JsonObject } from '../authoring/types.js';
 import type { AiConstructionTaskGraphSnapshot } from './task-graph.js';
 
@@ -82,6 +83,8 @@ export interface AiConstructionNextActionsBlock {
   title?: string;
   actions: Array<{
     id: string;
+    /** 由 assistant-actions 目录声明；前端据此分发，不再按 id 猜语义 */
+    kind?: AssistantActionKind;
     label: string;
     description?: string;
     style: 'primary' | 'secondary' | 'danger';
@@ -113,6 +116,12 @@ export interface AppendAiConstructionMessageInput {
   taskId?: string;
   role: AiConstructionMessageRole;
   blocks: AiConstructionMessageBlock[];
+  /**
+   * 纯进度刷新：前端贴上消息即可，无需回源重载 session。
+   * 只有确实不改变任务图的写入才能标记——伴随任务状态变化的消息若被标记，
+   * 前端会一直拿着过期的任务状态（历史上「分析中按钮不置灰」就是这么来的）。
+   */
+  progressOnly?: boolean;
 }
 
 export interface AiConstructionMessagePage {
@@ -361,8 +370,17 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
         throw new AiConstructionMessageStoreError('INVALID_BLOCK', '动作样式不正确');
       }
       const description = optionalText(action.description, '动作说明', 200);
+      // 动作语义由后端声明：未登记的 id 在写入时就失败，不会变成点了没反应的孤儿按钮
+      const kind = assistantActionKind(id);
+      if (!kind) {
+        throw new AiConstructionMessageStoreError(
+          'INVALID_BLOCK',
+          `动作 ${id} 未在助手动作目录登记`,
+        );
+      }
       return {
         id,
+        kind,
         label: textValue(action.label, '动作名称', 50),
         ...(description ? { description } : {}),
         style: style as 'primary' | 'secondary' | 'danger',
@@ -398,9 +416,6 @@ function rowToMessage(row: any): AiConstructionMessage {
 // 超过上限的消息只发信号，由前端回源读取，避免个别超大消息把事件表撑大。
 const INLINE_MESSAGE_MAX_BYTES = 32_768;
 
-// 这些消息只刷新进度文案、不改变任务图，前端可以只贴消息而不回源重载 session
-const PROGRESS_ONLY_KEY_PREFIXES = ['analysis.progress.', 'repair.apply.', 'repair.stage.'];
-
 // 把消息写入同步为项目事件，前端经 SSE 实时刷新对话（配合 AuthoringState.publish_event）
 export function notifyAiConstructionMessageWritten(
   apply: (command: {
@@ -409,14 +424,12 @@ export function notifyAiConstructionMessageWritten(
     type: string;
     payload?: JsonObject;
   }) => unknown,
-): (projectId: string, message: AiConstructionMessage) => void {
-  return (projectId, message) => {
+): (projectId: string, message: AiConstructionMessage, progressOnly: boolean) => void {
+  return (projectId, message, progressOnly) => {
     const serialized = JSON.stringify(message);
     const liveMessage = Buffer.byteLength(serialized, 'utf8') <= INLINE_MESSAGE_MAX_BYTES
       ? JSON.parse(serialized) as JsonObject
       : undefined;
-    const key = String(message.key ?? '');
-    const progressOnly = PROGRESS_ONLY_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
     apply({
       kind: 'publish_event',
       projectId,
@@ -433,13 +446,21 @@ export function notifyAiConstructionMessageWritten(
 export class AiConstructionMessageStore {
   constructor(
     private readonly db: DatabaseSync = getDb(),
-    private readonly onWrite?: (projectId: string, message: AiConstructionMessage) => void,
+    private readonly onWrite?: (
+      projectId: string,
+      message: AiConstructionMessage,
+      progressOnly: boolean,
+    ) => void,
   ) {}
 
   // 写入提交后通知（用于项目事件流推送）；通知失败不影响消息本身
-  private notifyWrite(projectId: string, message: AiConstructionMessage) {
+  private notifyWrite(
+    projectId: string,
+    message: AiConstructionMessage,
+    progressOnly = false,
+  ) {
     try {
-      this.onWrite?.(projectId, message);
+      this.onWrite?.(projectId, message, progressOnly);
     } catch { /* 通知通道异常不回滚消息 */ }
   }
 
@@ -479,7 +500,7 @@ export class AiConstructionMessageStore {
       WHERE project_id = ? AND message_key = ?`)
       .run(input.taskId ?? null, input.role, JSON.stringify(blocks), projectId, input.key);
     const updated = this.findByKey(projectId, input.key)!;
-    this.notifyWrite(projectId, updated);
+    this.notifyWrite(projectId, updated, input.progressOnly === true);
     return updated;
   }
 
@@ -534,7 +555,7 @@ export class AiConstructionMessageStore {
       };
     });
     // 提交后再通知，避免通知方在同一连接上嵌套事务
-    this.notifyWrite(projectId, message);
+    this.notifyWrite(projectId, message, input.progressOnly === true);
     return message;
   }
 

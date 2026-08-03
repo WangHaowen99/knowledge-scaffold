@@ -1790,3 +1790,78 @@ test('图导入 API：支持取消后台任务并在删除项目时等待任务�
   });
   assert.equal(missing.statusCode, 404);
 });
+
+test('评测发现的知识包缺陷可以回流成建模修缮任务', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers, payload: { name: '评测缺陷回建模' },
+  });
+  const projectId = created.json().project.id;
+  await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
+
+  const [m3repo, diagnosisRepo] = await Promise.all([
+    import('../src/workflow/m3-repo.js'),
+    import('../src/evaluation/failure-diagnosis-repo.js'),
+  ]);
+  const round = m3repo.createRound(projectId, '0.1.0', 2);
+  const stored = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', 'rev-0', [
+    {
+      category: 'knowledge_gap', title: '缺少分流适用条件', summary: '没有说明触发门槛',
+      evidence: ['用例 3 回答与预期不符'], confidence: 'high', blocking: false,
+      repairScope: 'package', packageOptimizable: true, resultIds: [],
+      relatedQuestions: ['何时启用分流'], suggestedAction: '补一条 rule 明确门槛值',
+    },
+    {
+      category: 'data_issue', title: '数据源缺列', summary: '评测库缺少必要字段',
+      evidence: [], confidence: 'medium', blocking: true,
+      repairScope: 'data', packageOptimizable: false, resultIds: [],
+      relatedQuestions: [], suggestedAction: '补齐数据源字段',
+    },
+  ] as any);
+  const packageDefect = stored.find((item) => item.repairScope === 'package')!;
+  const dataDefect = stored.find((item) => item.repairScope === 'data')!;
+
+  // 混入非知识包缺陷要被拒：改知识包解决不了运行环境和数据问题
+  const rejected = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
+    payload: { roundId: round.id, diagnosisIds: [packageDefect.id, dataDefect.id] },
+  });
+  assert.equal(rejected.statusCode, 409, rejected.body);
+  assert.equal(rejected.json().code, 'NOT_PACKAGE_DEFECT');
+
+  const missingRound = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
+    payload: { roundId: 'round-does-not-exist', diagnosisIds: [packageDefect.id] },
+  });
+  assert.equal(missingRound.statusCode, 404, missingRound.body);
+
+  const planned = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/diagnoses/plan-repair`, headers,
+    payload: { roundId: round.id, diagnosisIds: [packageDefect.id] },
+  });
+  assert.equal(planned.statusCode, 200, planned.body);
+  const repair = planned.json().aiConstruction.tasks
+    .find((item: any) => item.kind === 'evaluation_repair');
+  assert.ok(repair, '应规划出评测缺陷修缮任务');
+  assert.equal(repair.status, 'waiting_user');
+
+  // 缺陷清单和下一步要出现在建模助手的对话流里
+  const session = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/session`, headers,
+  });
+  const defectMessage = session.json().aiConstructionMessages.find((message: any) => (
+    message.blocks?.some((block: any) => block.type === 'status'
+      && String(block.title).includes('评测发现'))
+  ));
+  assert.ok(defectMessage, '助手对话里应出现评测缺陷消息');
+  assert.match(
+    String(defectMessage.blocks.find((block: any) => block.type === 'text').text),
+    /缺少分流适用条件/,
+  );
+  assert.deepEqual(
+    defectMessage.blocks.find((block: any) => block.type === 'next_actions')
+      .actions.map((action: any) => action.id),
+    ['open_optimization', 'review_knowledge_files'],
+  );
+});

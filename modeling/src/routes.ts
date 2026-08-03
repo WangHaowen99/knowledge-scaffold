@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { AiConstructionOrchestrator } from './ai-construction/orchestrator.js';
 import { AiConstructionTaskGraph } from './ai-construction/task-graph.js';
+import { packageRepairAvailability } from './ai-construction/repair-availability.js';
+import { errorNextActions } from './error-next-actions.js';
 import {
   AiConstructionMessageStore,
   notifyAiConstructionMessageWritten,
@@ -240,6 +242,23 @@ async function readEvaluationDatabaseUpload(req: any): Promise<{
 }
 
 export async function registerRoutes(app: FastifyInstance, options: RegisterRoutesOptions = {}) {
+  // 错误响应统一按 code 挂上「接下来能做什么」：逐个路由补出口既改不动也守不住，
+  // 集中派生后新增错误码只要在 error-next-actions 登记一次即可。
+  app.addHook('onSend', async (_req, reply, payload) => {
+    if (reply.statusCode < 400 || typeof payload !== 'string') return payload;
+    if (!String(reply.getHeader('content-type') ?? '').includes('application/json')) return payload;
+    let body: unknown;
+    try { body = JSON.parse(payload); } catch { return payload; }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return payload;
+    const record = body as Record<string, unknown>;
+    if (record.nextActions !== undefined) return payload;
+    const actions = errorNextActions(record.code);
+    if (!actions) return payload;
+    const next = JSON.stringify({ ...record, nextActions: actions });
+    reply.header('content-length', Buffer.byteLength(next));
+    return next;
+  });
+
   const runPackageChatPlan = options.packageChatPlan ?? packageChatPlan;
   const runPackageChatApply = options.packageChatApply ?? packageChatApply;
   const runMaterialAnalysis = options.runAnalyze ?? runAnalyze;
@@ -1098,6 +1117,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           findings,
           errorDeferral: getPackageErrorDeferral(c.p.id, latest.revision.oid),
           warningReview: getPackageWarningReview(c.p.id, latest.revision.oid),
+          repair: packageRepairAvailability({
+            errorCount: findings.filter((f) => f.severity === '错误').length,
+            hasActiveDraft: Boolean(getActivePackageDraft(c.p.id)),
+            graph: aiConstruction.snapshot(c.p.id),
+          }),
           counts: {
           错误: findings.filter((f) => f.severity === '错误').length,
           警告: findings.filter((f) => f.severity === '警告').length,
@@ -1117,6 +1141,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         check,
         errorDeferral: check?.revision ? getPackageErrorDeferral(c.p.id, check.revision) : null,
         warningReview: check?.revision ? getPackageWarningReview(c.p.id, check.revision) : null,
+        repair: packageRepairAvailability({
+          errorCount: check?.findings.filter((f) => f.severity === '错误').length ?? 0,
+          hasActiveDraft: Boolean(getActivePackageDraft(c.p.id)),
+          graph: aiConstruction.snapshot(c.p.id),
+        }),
       };
     });
     r.post('/api/projects/:id/package/warnings/accept', async (req, reply) => {
@@ -1589,6 +1618,55 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(diagnoses),
       };
     });
+    // 评测发现的知识包缺陷回流建模：登记成 evaluation_repair 任务并在助手对话里给出下一步。
+    // 只登记不执行——实际修改由专家在优化更新里发起（那里才有防过拟合校验）。
+    r.post('/api/projects/:id/optimize/diagnoses/plan-repair', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const { roundId, diagnosisIds } = (req.body ?? {}) as { roundId?: string; diagnosisIds?: unknown };
+      const requested = Array.isArray(diagnosisIds) ? diagnosisIds.map((id) => String(id)) : [];
+      if (!roundId || !requested.length) {
+        return reply.code(400).send({ error: '请选择要回流建模的失败原因', code: 'INVALID_INPUT' });
+      }
+      const round = m3repo.getRound(String(roundId));
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+
+      const selected = new Set(requested);
+      const diagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id)
+        .filter((diagnosis) => selected.has(diagnosis.id));
+      if (diagnoses.length !== selected.size) {
+        return reply.code(404).send({ error: '部分失败原因不存在或不属于该评测轮次' });
+      }
+      const notPackageDefects = diagnoses.filter((diagnosis) => diagnosis.repairScope !== 'package');
+      if (notPackageDefects.length) {
+        return reply.code(409).send({
+          error: `有 ${notPackageDefects.length} 项失败原因不属于知识包缺陷，请先处理运行环境、数据或用例问题`,
+          code: 'NOT_PACKAGE_DEFECT',
+        });
+      }
+      const latest = await packageArtifacts.current(c.p.id);
+      try {
+        const result = aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
+          roundId: round.id,
+          packageVersion: round.packageVersion,
+          ...(latest ? { packageRevisionOid: latest.revision.oid } : {}),
+          defects: diagnoses.map((diagnosis) => ({
+            id: diagnosis.id,
+            title: diagnosis.title,
+            summary: diagnosis.summary,
+            target: diagnosis.relatedQuestions[0],
+            suggestedAction: diagnosis.suggestedAction,
+          })),
+        });
+        return {
+          aiConstruction: result.aiConstruction,
+          ...(result.message ? { aiConstructionMessage: result.message } : {}),
+        };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+
     r.post('/api/projects/:id/optimize/diagnoses/:diagnosisId/resolve', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
@@ -1949,9 +2027,26 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           const releaseCandidate = current.spec.status === 'review'
             && isReleaseCandidateVersion(current.packageVersion);
           if (!releaseCandidate) {
+            // 出口有两种，取决于卡在哪一步。按错误码统一兜底会同时给出两个按钮，
+            // 其中一个必然点不动——这里有上下文，直接给唯一正确的那个。
+            const draft = await getActivePackageDraft(c.p.id);
             return reply.code(409).send({
-              error: '当前知识包不是可发布的 RC 候选，请先完成人工草稿发布或建模确认',
+              error: draft
+                ? '还有未发布的人工编辑草稿，发布知识包前需要先处理它'
+                : '当前知识包还不是可发布的 RC 候选，请先完成 AI 辅助构建的确认',
               code: 'RELEASE_CANDIDATE_REQUIRED',
+              nextActions: draft
+                ? [
+                  { id: 'publish_package_draft', label: '发布草稿', style: 'primary',
+                    description: '把人工编辑的内容并入知识包，然后再发布' },
+                  { id: 'discard_package_draft', label: '放弃草稿', style: 'secondary',
+                    description: '丢弃这些人工编辑，回到草稿之前的版本' },
+                ]
+                : [
+                  { id: 'confirm_construction', label: '确认完成 AI 辅助构建', style: 'primary',
+                    description: '确认后会创建验证候选版本，之后才能发布' },
+                  { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
+                ],
             });
           }
           const version = promoteReleaseCandidate(current.packageVersion);

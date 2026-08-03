@@ -105,6 +105,44 @@ export interface CandidateQualityDecision {
   reviewScore?: number;
 }
 
+export class PackageCandidateValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PackageCandidateValidationError';
+  }
+}
+
+export class PackageCandidateRejectedError extends Error {
+  readonly code = 'PACKAGE_CANDIDATE_REJECTED';
+  readonly feedback: string;
+
+  constructor(
+    message: string,
+    feedback: string,
+  ) {
+    super(message);
+    this.name = 'PackageCandidateRejectedError';
+    this.feedback = String(feedback).trim().slice(0, 3_000) || '候选内容未通过校验';
+  }
+}
+
+function candidateValidationError(error: unknown): PackageCandidateValidationError {
+  if (error instanceof PackageCandidateValidationError) return error;
+  return new PackageCandidateValidationError(error instanceof Error ? error.message : String(error));
+}
+
+export function validatePackageApplyCandidate(
+  spec: PackageSpec,
+  tables: DataDictTable[],
+): CoverageResult {
+  try {
+    assertObjectDataMappings(spec, tables);
+    return validateSpecIntegrity(spec, packageIntentQuestions(spec));
+  } catch (error) {
+    throw candidateValidationError(error);
+  }
+}
+
 export type CandidateQualityLoopResult<T> =
   | { status: 'accepted'; candidate: T; decision: CandidateQualityDecision; attempts: number }
   | { status: 'expert_review'; candidate: T; decision: CandidateQualityDecision; attempts: number };
@@ -252,14 +290,20 @@ export async function generateAtomicResourcePatchInBatches(
     if (batch.changes.every((change) => change.action === 'remove')) continue;
     const batchKey = atomicChangeBatchKey(batch);
     const patch = progress.completed?.[batchKey] ?? await generate(batch, index, batches.length);
-    assertAtomicBatchPatch(batch, patch);
+    try {
+      assertAtomicBatchPatch(batch, patch);
+    } catch (error) {
+      throw candidateValidationError(error);
+    }
     for (const kind of ['object', 'operation', 'rule', 'metric', 'script'] as ResourceKind[]) {
       const property = resourceProperty[kind];
       const resources = resourcesOf(patch, kind);
       if (!resources.length) continue;
       for (const resource of resources) {
         const id = `${kind}:${resource.key}`;
-        if (submitted.has(id)) throw new Error(`模型跨批次重复提交资源 ${id}`);
+        if (submitted.has(id)) {
+          throw new PackageCandidateValidationError(`模型跨批次重复提交资源 ${id}`);
+        }
         submitted.add(id);
       }
       (merged[property] as Array<{ key: string }> | undefined) ??= [];
@@ -269,7 +313,9 @@ export async function generateAtomicResourcePatchInBatches(
   }
   const planned = new Set(plan.changes.filter((change) => change.action !== 'remove').map(plannedResourceId));
   const missing = [...planned].filter((id) => !submitted.has(id));
-  if (missing.length) throw new Error(`模型未提交计划内资源：${missing.join('、')}`);
+  if (missing.length) {
+    throw new PackageCandidateValidationError(`模型未提交计划内资源：${missing.join('、')}`);
+  }
   return merged;
 }
 
@@ -310,6 +356,12 @@ export async function runCandidateQualityLoop<T>(input: {
       const reason = (error instanceof Error ? error.message : String(error)).trim().slice(0, 3_000)
         || '候选补丁生成失败';
       if (attempt >= maxAttempts) {
+        if (error instanceof PackageCandidateValidationError) {
+          throw new PackageCandidateRejectedError(
+            `候选修订连续 ${maxAttempts} 次生成失败。最后原因：${reason}`,
+            reason,
+          );
+        }
         throw new Error(`候选修订连续 ${maxAttempts} 次生成失败。最后原因：${reason}`);
       }
       feedback = `上一候选生成失败：${reason}\n请严格只提交计划内资源，保留计划外资源不变。`;
@@ -335,7 +387,10 @@ export async function runCandidateQualityLoop<T>(input: {
     }
   }
   if (bestExpertReview) return { ...bestExpertReview, attempts: maxAttempts };
-  throw new Error(`候选修订连续 ${maxAttempts} 次未通过质量门禁。最后反馈：${feedback}`);
+  throw new PackageCandidateRejectedError(
+    `候选修订连续 ${maxAttempts} 次未通过质量门禁。最后反馈：${feedback}`,
+    feedback,
+  );
 }
 
 const specBody = (spec: PackageSpec) => JSON.stringify({
@@ -707,8 +762,13 @@ export async function packageChatApply(
   const artifactStore = getPackageArtifactStore();
   const latest = await artifactStore.current(project.id);
   if (!latest) throw new Error('尚未生成知识包');
-  plan = resolveChangePlanTargets(latest.spec, plan);
-  if (!plan.changes.length) throw new Error('修缮计划没有可执行的资源变更');
+  try {
+    plan = resolveChangePlanTargets(latest.spec, plan);
+    if (!plan.changes.length) throw new Error('修缮计划没有可执行的资源变更');
+  } catch (error) {
+    const feedback = error instanceof Error ? error.message : String(error);
+    throw new PackageCandidateRejectedError('已确认的修改方案无法应用', feedback);
+  }
 
   const sys = [
     '你是知识包建模助手（package_chat_apply）。专家已确认建模调整计划，请把计划逐条落实到规格上，',
@@ -721,6 +781,7 @@ export async function packageChatApply(
     DATA_PROVIDER_SCRIPT_CONTRACT,
     '脚本与 operation 必须双向绑定：script.boundOperation 指向 operation，operation.script.key 指回 script，并在 flow 中明确调用。',
     '每个对象都必须保留资料来源：数据对象的 sourceRefs 引用真实 Sheet，字段通过 sourceColumn 对应真实列；产品、场景等语义对象引用原始文档及证据位置。',
+    '对象 primaryKey 只能填写 fields[].key，不得填写 sourceColumn、alias 或原始列名。',
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
 
@@ -804,8 +865,16 @@ export async function packageChatApply(
           ].filter(Boolean).join('\n');
           const agent = makeAgent(buildTaskLlm(), sys, [submitPatch] as any);
           await runAgent(agent, body, undefined, { timeoutMs });
-          if (!cap.patch) throw new Error(`agent 未产出第 ${index + 1}/${total} 批计划内资源补丁，请重试`);
-          applyAtomicResourcePatch(spec, batch, cap.patch);
+          if (!cap.patch) {
+            throw new PackageCandidateValidationError(
+              `agent 未产出第 ${index + 1}/${total} 批计划内资源补丁，请重试`,
+            );
+          }
+          try {
+            applyAtomicResourcePatch(spec, batch, cap.patch);
+          } catch (error) {
+            throw candidateValidationError(error);
+          }
           await report({
             eventKey: `attempt-${attempt}-batch-${index + 1}-completed`,
             phase: 'generating',
@@ -820,7 +889,12 @@ export async function packageChatApply(
           onCompleted: options.onBatchCompleted,
         })
         : {};
-      const revisedResources = applyAtomicResourcePatch(spec, plan, patch);
+      let revisedResources: ReturnType<typeof applyAtomicResourcePatch>;
+      try {
+        revisedResources = applyAtomicResourcePatch(spec, plan, patch);
+      } catch (error) {
+        throw candidateValidationError(error);
+      }
       const revisedWithDecisionEvidence = attachKnowledgeChangeEvidence(
         { ...spec, version, status: 'review', ...revisedResources },
         plan.changes.map((change) => ({
@@ -836,8 +910,7 @@ export async function packageChatApply(
         detail: '检查计划边界、资源引用、数据映射和领域问题覆盖。', percent: 60,
         attempt, maxAttempts: maxCandidateAttempts,
       });
-      assertObjectDataMappings(newSpec, tables);
-      const coverage = validateSpecIntegrity(newSpec, packageIntentQuestions(newSpec));
+      const coverage = validatePackageApplyCandidate(newSpec, tables);
       return {
         baseRevision: latest.revision.oid,
         version,
