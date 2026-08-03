@@ -363,6 +363,24 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   const knowledgeRunner = options.knowledgeRunner ?? new KnowledgeStructureRunner({
     orchestrator: orchestrator as AiConstructionOrchestrator,
   });
+  const cancelPendingFindingIgnoreInteractions = (projectId: string): number => {
+    const pending = state.snapshot(projectId).pendingInteractions.filter(
+      (interaction) => interaction.payload.purpose === 'check_finding_ignore',
+    );
+    for (const interaction of pending) {
+      state.apply({
+        kind: 'update_run',
+        projectId,
+        runId: interaction.runId,
+        status: 'cancelled',
+        result: {
+          purpose: 'check_finding_ignore',
+          supersededBy: 'controlled_repair',
+        },
+      });
+    }
+    return pending.length;
+  };
   const readConfirmedFlowchart = async (projectId: string) => {
     const currentPackage = await packages.current(projectId);
     if (!currentPackage) throw new Error('当前项目没有知识包草稿');
@@ -1262,10 +1280,45 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     try {
       ensureProjectGraph(project);
       assertNoActivePackageDraft(project.id, 'controlled-repair');
+      const repairKey = `${project.id}:knowledge-repair`;
+      const currentPackage = await packages.current(project.id);
+      const currentRevision = currentPackage?.revision.oid;
+
+      // 「逐项修复」和「先不改」是互斥选择。用户转去修复时，未提交的暂缓表单
+      // 没有任何审计效果，可以直接关闭；否则旧表单会一直占着助手栏，遮住修复方案。
+      const cancelledIgnoreCount = cancelPendingFindingIgnoreInteractions(project.id);
+      const pendingRepair = state.snapshot(project.id).pendingInteractions.find((interaction) => (
+        (interaction.payload.purpose === 'controlled_repair'
+          || interaction.payload.purpose === 'controlled_repair_expert')
+        && (!currentRevision || !interaction.baseRevision || interaction.baseRevision === currentRevision)
+      ));
+      if (pendingRepair) {
+        return reply.code(202).send({
+          accepted: true,
+          reused: true,
+          status: pendingRepair.payload.purpose === 'controlled_repair_expert'
+            ? 'waiting_expert'
+            : 'waiting_approval',
+          interaction: pendingRepair,
+          cancelledIgnoreCount,
+          aiConstruction: graph.snapshot(project.id),
+          cursor: state.snapshot(project.id).lastEventSeq,
+        });
+      }
+      if (jobs.status(repairKey)) {
+        return reply.code(202).send({
+          accepted: true,
+          reused: true,
+          status: 'running',
+          cancelledIgnoreCount,
+          aiConstruction: graph.snapshot(project.id),
+          cursor: state.snapshot(project.id).lastEventSeq,
+        });
+      }
       startBackgroundJob({
         jobs,
         leases,
-        key: `${project.id}:knowledge-repair`,
+        key: repairKey,
         operation: '逐项修复知识包校验问题',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
@@ -1277,6 +1330,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       });
       return reply.code(202).send({
         accepted: true,
+        cancelledIgnoreCount,
         aiConstruction: graph.snapshot(project.id),
         cursor: state.snapshot(project.id).lastEventSeq,
       });
@@ -1370,13 +1424,10 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     return { revision: currentPackage.revision.oid, check, finding };
   };
 
-  // target 可能是对象/操作 key 而不是文件路径，只有看起来是包内路径时才给「打开文件」按钮，
-  // 否则会造出一个点了跳不到任何地方的按钮。
-  const findingFilePath = (finding: CheckFinding): string | undefined => (
-    /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*\.[A-Za-z0-9]+$/.test(finding.target)
-      ? finding.target
-      : undefined
-  );
+  const findingFileTarget = (finding: CheckFinding): string | undefined => {
+    const target = finding.target.trim();
+    return /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target) ? target : undefined;
+  };
 
   const findingCardInput = (finding: CheckFinding, revision: string) => ({
     packageRevisionOid: revision,
@@ -1386,7 +1437,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     target: finding.target,
     message: finding.userMessage?.trim() || finding.message,
     ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
-    ...(findingFilePath(finding) ? { filePath: findingFilePath(finding)! } : {}),
+    // target 既可能是明确路径，也可能是 object:key / survey_scheme.fields.xxx 这类
+    // 语义目标。前端结合当前知识包文件表解析，避免统一跳到 index.md 后看起来没反应。
+    ...(findingFileTarget(finding) ? { filePath: findingFileTarget(finding)! } : {}),
   });
 
   app.post('/api/projects/:id/package/check/findings/review', async (req, reply) => {
@@ -1435,9 +1488,16 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       // 助手栏一次只渲染一条待办。这里不拦的话，新开的忽略表单会被已有待办挡住，
       // 用户点了「忽略」界面上什么都不会发生；而待办没有取消入口，让它抢占插槽又会把
       // 人困在必填理由里退不出去。所以先处理完手上的那条再来。
-      const blocking = state.snapshot(project.id).pendingInteractions.find(
-        (item) => item.payload.purpose !== 'check_finding_ignore',
+      const pending = state.snapshot(project.id).pendingInteractions;
+      const existing = pending.find(
+        (item) => item.type === 'question_batch'
+          && item.payload.purpose === 'check_finding_ignore'
+          && item.payload.findingId === findingId
+          && (!item.baseRevision || item.baseRevision === loaded.revision),
       );
+      // 同一条重复点击交给 orchestrator 复用；除此之外，无论已有的是哪种待办，
+      // 都不能再开第二张表单，否则旧待办会按创建顺序把新待办遮住。
+      const blocking = existing ? undefined : pending[0];
       if (blocking) {
         return reply.code(409).send({
           error: `请先在建模助手里处理「${String(blocking.payload.title ?? '待确认事项')}」，再来忽略校验发现`,

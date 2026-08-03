@@ -30,7 +30,7 @@ import { activeOperationOf } from './activeRun.js';
 import ReleasePanel from './ReleasePanel.jsx';
 import VersionPanel from './VersionPanel.jsx';
 import { ScenarioPanel } from './WorkflowExtraPanels.jsx';
-import { isCurrentConstructionInteraction } from './constructionInteraction.js';
+import { selectCurrentConstructionInteraction } from './constructionInteraction.js';
 import CandidateRevisionPanel, { CandidateRevisionCanvas } from './CandidateRevisionPanel.jsx';
 import {
   advanceProjectEventReplayGate,
@@ -356,9 +356,10 @@ export default function PackageWorkspace({
   const scenarioProgress = (session?.workflow?.progress ?? [])
     .find((item) => item.stepId === 'scenario');
   const pendingInteractions = session?.authoring?.pendingInteractions ?? [];
-  const constructionInteraction = pendingInteractions.find((interaction) => (
-    isCurrentConstructionInteraction(interaction, pkg?.revision)
-  )) ?? null;
+  const constructionInteraction = selectCurrentConstructionInteraction(
+    pendingInteractions,
+    pkg?.revision,
+  );
   const processReview = constructionInteraction?.type === 'flowchart_review'
     && constructionInteraction?.payload?.purpose === 'process_review'
     ? constructionInteraction
