@@ -276,6 +276,41 @@ export function aiConstructionTaskDuration(kind: AiConstructionTaskKind): [numbe
   return TASK_DURATION_MINUTES[kind] ?? [5, 20];
 }
 
+const MINUTE_MS = 60_000;
+
+function taskElapsedMinutes(task: AiConstructionTaskSnapshot): number | null {
+  const start = Date.parse(task.createdAt);
+  const end = Date.parse(task.updatedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return (end - start) / MINUTE_MS;
+}
+
+/**
+ * 同类任务的实测耗时区间。静态表只是冷启动兜底：不同项目的资料规模、模型速度
+ * 差别很大，写死的 [2, 8] 分钟在真实项目里往往离谱。
+ *
+ * 有历史时用实测的最小/最大值（各留 20% 余量），并与静态表取并集避免单次样本过窄；
+ * 样本不足时退回静态表。
+ */
+export function aiConstructionTaskEstimate(
+  kind: AiConstructionTaskKind,
+  history: AiConstructionTaskSnapshot[],
+): [number, number] {
+  const fallback = aiConstructionTaskDuration(kind);
+  const samples = history
+    .filter((task) => task.kind === kind && task.status === 'completed')
+    .map(taskElapsedMinutes)
+    .filter((value): value is number => value !== null && value > 0);
+  if (!samples.length) return fallback;
+
+  const min = Math.min(...samples) * 0.8;
+  const max = Math.max(...samples) * 1.2;
+  // 单个样本会给出一个过窄的区间，与静态表取并集保留合理的不确定度
+  const low = samples.length > 1 ? min : Math.min(min, fallback[0]);
+  const high = samples.length > 1 ? max : Math.max(max, fallback[1]);
+  return [Math.max(1, Math.round(low)), Math.max(1, Math.round(high))];
+}
+
 function durationForTasks(tasks: AiConstructionTaskSnapshot[]): [number, number] {
   return tasks.reduce(([min, max], task) => {
     const estimate = aiConstructionTaskDuration(task.kind);
@@ -335,10 +370,17 @@ function deriveProgress(
     && item.status !== 'waiting_user' && item.status !== 'waiting_confirmation'
     && item.status !== 'failed');
   const duration = plannedRemaining.reduce(([min, max], task) => {
-    const estimate = aiConstructionTaskDuration(task.kind);
+    const estimate = aiConstructionTaskEstimate(task.kind, tasks);
     return [min + estimate[0], max + estimate[1]] as [number, number];
   }, [0, 0] as [number, number]);
   const hasEstimate = plannedRemaining.length > 0;
+  // 有实测样本时置信度提升，界面据此决定措辞
+  const measuredKinds = new Set(tasks
+    .filter((task) => task.status === 'completed' && taskElapsedMinutes(task) !== null)
+    .map((task) => task.kind));
+  const measuredShare = plannedRemaining.length
+    ? plannedRemaining.filter((task) => measuredKinds.has(task.kind)).length / plannedRemaining.length
+    : 0;
 
   return {
     confirmedMilestones,
@@ -352,7 +394,7 @@ function deriveProgress(
     eta: {
       minMinutes: hasEstimate ? duration[0] : null,
       maxMinutes: hasEstimate ? duration[1] : null,
-      confidence: 'low',
+      confidence: measuredShare >= 0.6 ? 'high' : measuredShare > 0 ? 'medium' : 'low',
       basis: 'planned_tasks',
       note: currentTask?.status === 'failed'
         ? '当前任务已停止，重试后将重新估算剩余时长'

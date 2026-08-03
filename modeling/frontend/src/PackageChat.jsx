@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { packageChat, runAnalyze, uploadDocument } from './api.js';
+import {
+  discardPackageDraft, getPackage, getPackageDraft, packageChat, publishPackageDraft,
+  runAnalyze, runPackageCheck, uploadDocument,
+} from './api.js';
+import { confirmReplayBlockedMessage, shouldReplayConfirm } from './confirmReplay.js';
 import {
   adjustAiConstructionTask,
   confirmAiConstructionMilestone,
@@ -7,6 +11,7 @@ import {
   deferAiConstructionScripts,
   editAiConstructionTasks,
   generateAiConstructionKnowledge,
+  getAiConstruction,
   repairAiConstructionKnowledge,
   previewAiConstructionTaskAdjustment,
   previewAiConstructionTaskEdit,
@@ -18,12 +23,15 @@ import { uploadModelingMaterials } from './modeling-material-upload.js';
 import { useElapsed } from './ui.jsx';
 import AiConstructionMessageCard from './AiConstructionMessageCard.jsx';
 import PendingInteraction from './PendingInteraction.jsx';
+import PendingInteractionHint from './PendingInteractionHint.jsx';
 import TaskAdjustmentPreviewCard from './TaskAdjustmentPreviewCard.jsx';
 import TaskGraphEditDialog from './TaskGraphEditDialog.jsx';
 import ValidationDeferralCard from './ValidationDeferralCard.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
-import { confirmFlowchartNavigation } from './flowchartNavigationGuard.js';
+import { confirmFlowchartNavigation, confirmUploadDuringAnalysis } from './flowchartNavigationGuard.js';
 import { formatMessageTimestamp } from './messageTimestamp.js';
+import { NAVIGATION_TARGETS, assistantActionKind, isReadOnlyAction } from './assistantActions.js';
+import { completionBlockerMessage } from './completionBlocker.js';
 import { isPackageChatRunning } from './packageChatRun.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
@@ -31,25 +39,10 @@ import {
   confirmedMilestoneActionIds,
   isMaterialAnalysisRunning,
   latestStructuredActionMessageId,
+  milestoneNavigationTarget,
   mergePackageChatTimeline,
 } from './packageChatTimeline.js';
 
-const FLOWCHART_READ_ONLY_ACTIONS = new Set([
-  'open_package_file',
-  'preview_task_adjustment',
-  'defer_validation_errors',
-  'open_task_add',
-  'open_task_reorder',
-  'open_task_split',
-  'open_task_merge',
-  'explain_goal',
-  'review_materials',
-  'review_package',
-  'view_validation',
-  'review_process_files',
-  'review_knowledge_files',
-  'open_optimization',
-]);
 
 // 知识包工作区右栏：建模对话（咨询 + 两段式受控修改）。
 // 发消息 → agent 影响分析：咨询直接回答；修改类返回计划卡片（改哪些对象/操作 + 风险）→ 专家确认 → 应用落新版本。
@@ -57,6 +50,15 @@ const MATERIAL_ACCEPT = '.xlsx,.xls,.csv,.md,.markdown,.txt,.docx,.doc,.pdf';
 // 进度经事件流推送后不再需要秒级轮询，这里只兜底事件连接中断的情况
 const LONG_TASK_FALLBACK_REFRESH_MS = 15_000;
 const timedTurn = (turn) => ({ ...turn, createdAt: new Date().toISOString() });
+
+const MILESTONE_CONFIRM_NOTE = {
+  materials_ready: '确认当前建模资料范围',
+  goal_confirmed: '确认当前建模目标说明',
+  process_confirmed: '确认当前业务流程',
+  knowledge_confirmed: '确认当前知识结构',
+  deterministic_confirmed: '确认当前确定性能力',
+  construction_completed: '确认完成 AI 辅助构建',
+};
 
 export function shouldOpenWarningReview(error) {
   return error?.data?.code === 'PACKAGE_WARNINGS_UNREVIEWED';
@@ -110,12 +112,16 @@ export default function PackageChat({
   onLoadOlderMessages,
   aiConstruction,
   authoring,
+  // 当前界面渲染的是哪一版知识包。修订冲突后判断「内容有没有变」要用它做基线，
+  // 不能等冲突发生了再去取——那时候拿到的已经是新版本，证明不了用户看过什么。
+  packageRevision = '',
   pendingInteraction,
   flowchartDraftState,
   candidateRevisionPanel,
   onPendingInteractionBusyChange,
   confirmFlowchartMutation,
   onProjectChanged,
+  onNavigate,
   uploadFile = uploadDocument,
 }) {
   // 服务端结构化消息是完整会话记录；turns 只用于尚未刷新回来的临时界面反馈。
@@ -125,6 +131,9 @@ export default function PackageChat({
   const [taskAdjustment, setTaskAdjustment] = useState(null);
   const [taskEditConfig, setTaskEditConfig] = useState(null);
   const [validationDeferral, setValidationDeferral] = useState(null);
+  const [completionBlocker, setCompletionBlocker] = useState(null);
+  // 被修订冲突挡下的那次确认，连同当时界面上的知识包版本一起记着，供 reload_and_retry 判断
+  const [conflictedConfirm, setConflictedConfirm] = useState(null);
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
@@ -142,6 +151,7 @@ export default function PackageChat({
   );
   useEffect(() => {
     setTurns([]); setTaskAdjustment(null); setTaskEditConfig(null); setValidationDeferral(null);
+    setCompletionBlocker(null);
   }, [projectId]);
 
   const latestValidationErrorCount = useMemo(() => {
@@ -194,18 +204,48 @@ export default function PackageChat({
     await onProjectChanged?.();
   };
 
+  // 导航类动作只切视图、不写数据，目标在 assistantActions 的注册表里声明
+  const runNavigation = (action) => {
+    const target = NAVIGATION_TARGETS[action.id];
+    if (!target) return;
+    setCompletionBlocker(null);
+    if (target.reload) { void refreshConstruction(); return; }
+    if (target.file) {
+      const path = target.file(action);
+      if (!path) return;
+      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
+        detail: { projectId, path, target: path },
+      }));
+      return;
+    }
+    if (target.step) { onNavigate?.(target.step); return; }
+    if (target.evaluationView) {
+      window.dispatchEvent(new CustomEvent('mw-open-evaluation-view', {
+        detail: { projectId, view: target.evaluationView },
+      }));
+      return;
+    }
+    if (target.openPackageCheck) {
+      window.dispatchEvent(new CustomEvent('mw-package-check-open', { detail: { projectId } }));
+      return;
+    }
+    if (target.focus) {
+      window.requestAnimationFrame?.(() => {
+        bodyRef.current?.querySelector?.(target.focus)?.focus?.();
+      });
+    }
+  };
+
   const handleStructuredAction = async (action) => {
     if (analysisRunning && ['analyze_materials', 'review_package'].includes(action.id)) return;
-    if (flowchartDraftState?.dirty && !FLOWCHART_READ_ONLY_ACTIONS.has(action.id)) {
+    if (flowchartDraftState?.dirty && !isReadOnlyAction(action)) {
       const allowed = confirmFlowchartMutation
         ? confirmFlowchartMutation()
         : confirmFlowchartNavigation(true);
       if (!allowed) return;
     }
-    if (action.id === 'open_package_file' && action.path) {
-      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
-        detail: { projectId, path: action.path, target: action.path },
-      }));
+    if (assistantActionKind(action) === 'navigate') {
+      runNavigation(action);
       return;
     }
     if (action.id === 'preview_task_adjustment') {
@@ -225,6 +265,104 @@ export default function PackageChat({
       if (!busy) setValidationDeferral({ errorCount: Math.max(1, latestValidationErrorCount) });
       return;
     }
+    // 修订冲突后的重试。不无条件重发：先看你当时确认的那份知识包内容还在不在，
+    // 变了就退回让人重新看过——否则等于替用户确认了一份他没看过的东西。
+    if (action.id === 'reload_and_retry') {
+      if (busy) return;
+      const intent = conflictedConfirm;
+      setLocalBusy('confirm');
+      try {
+        await refreshConstruction();
+        if (!intent?.milestoneId) {
+          setCompletionBlocker(null);
+          return;
+        }
+        // 直接取最新值，不用 props——refreshConstruction 之后 props 还没重新渲染进来
+        const [currentPackage, current] = await Promise.all([
+          getPackage(projectId),
+          getAiConstruction(projectId),
+        ]);
+        const currentPackageRevision = currentPackage?.revision ?? '';
+        const graph = current?.aiConstruction;
+        if (!shouldReplayConfirm({
+          seenPackageRevision: intent.seenPackageRevision, currentPackageRevision,
+        })) {
+          setConflictedConfirm(null);
+          setCompletionBlocker(null);
+          setTurns((items) => items.concat([timedTurn({
+            role: 'assistant',
+            text: confirmReplayBlockedMessage({
+              seenPackageRevision: intent.seenPackageRevision, currentPackageRevision,
+            }),
+          })]));
+          return;
+        }
+        if (graph?.milestones?.find((item) => item.id === intent.milestoneId)?.status === 'confirmed') {
+          setConflictedConfirm(null);
+          setCompletionBlocker(null);
+          return;
+        }
+        if (!Number.isInteger(graph?.revision)) throw new Error('建模状态尚未加载，请刷新后重试');
+        await confirmAiConstructionMilestone(
+          projectId, intent.milestoneId, graph.revision, MILESTONE_CONFIRM_NOTE[intent.milestoneId],
+        );
+        setConflictedConfirm(null);
+        setCompletionBlocker(null);
+        const navigationTarget = milestoneNavigationTarget(intent.milestoneId);
+        if (navigationTarget) onNavigate?.(navigationTarget);
+      } catch (error) {
+        const blocked = completionBlockerMessage(error);
+        if (blocked) setCompletionBlocker(blocked);
+        else {
+          setTurns((items) => items.concat([timedTurn({
+            role: 'assistant',
+            text: `重试确认失败：${error instanceof Error ? error.message : String(error)}`,
+          })]));
+        }
+      } finally {
+        setLocalBusy('');
+        await refreshConstruction().catch(() => undefined);
+      }
+      return;
+    }
+    // 未发布草稿会拦住确认和发布，而 发布/放弃 按钮只在文件编辑器里才出现，
+    // 光把用户送去知识文件他还得自己翻到编辑态——这里直接给出口。
+    if (['publish_package_draft', 'discard_package_draft'].includes(action.id)) {
+      if (busy) return;
+      const discard = action.id === 'discard_package_draft';
+      const draft = await getPackageDraft(projectId).catch(() => null);
+      if (!draft?.id) {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant', text: '没有找到未发布的人工编辑草稿，可能已经被处理过了。',
+        })]));
+        await refreshConstruction();
+        return;
+      }
+      const confirmed = window.confirm(discard
+        ? '放弃整份人工编辑草稿？所有已保存但未发布的修改都会丢失。'
+        : `发布这份人工编辑草稿（${draft.changedFileCount ?? 0} 个文件）并生成新版本？`);
+      if (!confirmed) return;
+      setLocalBusy(discard ? 'draft_discard' : 'draft_publish');
+      try {
+        if (discard) await discardPackageDraft(projectId, draft.revision, draft.id);
+        else await publishPackageDraft(projectId, draft.revision, '人工编辑修订', draft.id);
+        setCompletionBlocker(null);
+        window.dispatchEvent(new CustomEvent('mw-package-updated'));
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: discard ? '已放弃人工编辑草稿，可以继续了。' : '已发布人工编辑草稿，可以继续了。',
+        })]));
+      } catch (error) {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: `${discard ? '放弃' : '发布'}草稿失败：${error instanceof Error ? error.message : String(error)}`,
+        })]));
+      } finally {
+        setLocalBusy('');
+        await refreshConstruction();
+      }
+      return;
+    }
     if (['open_task_add', 'open_task_reorder', 'open_task_split', 'open_task_merge'].includes(action.id)) {
       if (busy) return;
       if (action.id === 'open_task_merge' && (!action.tasks || action.tasks.length < 2)) return;
@@ -237,37 +375,22 @@ export default function PackageChat({
       });
       return;
     }
-    // 评测缺陷交由优化更新处理：它才能从失败用例反推资源改动并过防过拟合校验
-    if (action.id === 'open_optimization') {
-      window.dispatchEvent(new CustomEvent('mw-open-evaluation-view', {
-        detail: { projectId, view: 'optimize' },
-      }));
+    if (action.id === 'run_package_check') {
+      if (busy) return;
+      setLocalBusy('check');
+      try {
+        await runPackageCheck(projectId);
+        window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
+      } catch (error) {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: `知识包校验失败：${error instanceof Error ? error.message : String(error)}`,
+        })]));
+      } finally { setLocalBusy(''); }
       return;
     }
-    if (action.id === 'explain_goal') {
-      window.requestAnimationFrame?.(() => {
-        bodyRef.current?.querySelector?.('[data-question-id="goal_text"]')?.focus?.();
-      });
-      return;
-    }
-    const prefills = {
-      review_materials: '请回顾已上传资料的分析结果和待确认问题。',
-      review_package: '请检查当前知识包基线，并告诉我需要优先补充什么。',
-      view_validation: '请说明当前知识包的校验情况和需要处理的问题。',
-    };
-    if (prefills[action.id]) setInput(prefills[action.id]);
     if (action.id === 'upload_materials') {
       if (!busy) materialInputRef.current?.click();
-      return;
-    }
-    const reviewPathByAction = {
-      review_process_files: 'diagrams/index.md',
-      review_knowledge_files: 'index.md',
-    };
-    if (reviewPathByAction[action.id]) {
-      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
-        detail: { projectId, path: reviewPathByAction[action.id] },
-      }));
       return;
     }
     if (['generate_knowledge_structure', 'repair_knowledge_structure'].includes(action.id)) {
@@ -389,35 +512,43 @@ export default function PackageChat({
             role: 'assistant',
             text: `${confirmedLabel}已经确认，可以继续当前建模任务。`,
           })]));
+          const navigationTarget = milestoneNavigationTarget(milestoneId);
+          if (navigationTarget) onNavigate?.(navigationTarget);
           return;
         }
         if (!Number.isInteger(aiConstruction?.revision)) throw new Error('建模状态尚未加载，请刷新后重试');
-        const note = {
-          materials_ready: '确认当前建模资料范围',
-          goal_confirmed: '确认当前建模目标说明',
-          process_confirmed: '确认当前业务流程',
-          knowledge_confirmed: '确认当前知识结构',
-          deterministic_confirmed: '确认当前确定性能力',
-          construction_completed: '确认完成 AI 辅助构建',
-        }[milestoneId];
         await confirmAiConstructionMilestone(
           projectId,
           milestoneId,
           aiConstruction.revision,
-          note,
+          MILESTONE_CONFIRM_NOTE[milestoneId],
         );
       }
       await refreshConstruction();
+      const navigationTarget = milestoneNavigationTarget(milestoneId);
+      if (navigationTarget) onNavigate?.(navigationTarget);
     } catch (error) {
       if (action.id === 'confirm_construction' && shouldOpenWarningReview(error)) {
         window.dispatchEvent(new CustomEvent('mw-package-warning-review', {
           detail: { projectId, warningReview: error.data?.warningReview },
         }));
       }
-      setTurns((items) => items.concat([timedTurn({
-        role: 'assistant',
-        text: `${action.id === 'analyze_materials' ? '资料分析' : '里程碑确认'}失败：${error instanceof Error ? error.message : String(error)}`,
-      })]));
+      // 记下这次确认针对的是哪一版内容，reload_and_retry 靠它判断能不能安全重发
+      if (error?.data?.code === 'REVISION_CONFLICT' && milestoneId) {
+        setConflictedConfirm({ milestoneId, seenPackageRevision: packageRevision });
+      }
+      // 被拦下时后端会声明可执行的下一步，渲染成卡片而不是一句无出口的错误文本
+      const blocked = completionBlockerMessage(error);
+      if (blocked) {
+        setCompletionBlocker(blocked);
+      } else {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: `${action.id === 'analyze_materials' ? '资料分析' : '里程碑确认'}失败：${error instanceof Error ? error.message : String(error)}`,
+        })]));
+      }
+      // 拦截多半源于服务端状态已变（如修订被更新），不刷新会让下一次点击重复失败
+      await refreshConstruction().catch(() => undefined);
     } finally {
       setLocalBusy('');
     }
@@ -507,6 +638,7 @@ export default function PackageChat({
 
   const uploadMaterials = async (files) => {
     if (!files?.length || busy) return;
+    if (!confirmUploadDuringAnalysis(analysisRunning)) return;
     setLocalBusy('upload');
     try {
       const result = await uploadModelingMaterials({ projectId, files, uploadFile });
@@ -538,6 +670,7 @@ export default function PackageChat({
       await refreshConstruction();
       return result;
     } catch (error) {
+      await refreshConstruction().catch(() => undefined);
       throw error;
     } finally {
       setLocalBusy('');
@@ -618,14 +751,17 @@ export default function PackageChat({
           <div className="pchat-hint"><strong>你好，我是知识包建模助手。</strong><br />可以咨询当前知识包，也可以说明需要新增或调整的建模内容。</div>
         )}
         {visibleTimeline.map((entry) => entry.kind === 'structured' ? (
-          <AiConstructionMessageCard key={`structured-${entry.item.id}`} message={entry.item}
+          <AiConstructionMessageCard key={`structured-${entry.item.id}`} message={entry.item} hideTaskPlan
             actionsEnabled={canUseStructuredMessageActions({
               busy: Boolean(busy),
               constructionStatus: aiConstruction?.status,
               messageId: entry.item.id,
               latestActionMessageId,
             })}
-            disabledActionIds={analysisRunning ? ['analyze_materials', 'review_package'] : []}
+            disabledActionIds={[
+              ...(analysisRunning ? ['analyze_materials', 'review_package'] : []),
+              ...((authoring?.pendingInteractions ?? []).length ? ['confirm_construction'] : []),
+            ]}
             hiddenActionIds={confirmedActionIds}
             onAction={(action) => { void handleStructuredAction(action); }} />
         ) : (
@@ -653,6 +789,20 @@ export default function PackageChat({
           busy={busy === 'analyze'}
           onRetry={() => { void handleStructuredAction({ id: 'analyze_materials' }); }}
         />}
+        {completionBlocker && (
+          <div className="ac-completion-blocker">
+            <AiConstructionMessageCard
+              message={completionBlocker}
+              actionsEnabled={!busy}
+              onAction={(action) => {
+                setCompletionBlocker(null);
+                void handleStructuredAction(action);
+              }}
+            />
+            <button type="button" className="btn ac-completion-blocker__dismiss"
+              onClick={() => setCompletionBlocker(null)}>知道了</button>
+          </div>
+        )}
         {taskAdjustment && <TaskAdjustmentPreviewCard
           preview={taskAdjustment}
           busy={busy === 'task_adjustment'}
@@ -699,6 +849,13 @@ export default function PackageChat({
           </div>
         )}
       </div>
+      {pendingInteraction && (
+        <PendingInteractionHint
+          scrollRef={bodyRef}
+          targetSelector=".ac-message-interaction"
+          label={`还有 1 项待确认：${String(pendingInteraction.payload?.title ?? '请处理待办').slice(0, 20)}`}
+        />
+      )}
       <div className="pchat-input">
         <textarea rows={2} value={input} placeholder="咨询知识包，或说明要新增、修改的内容"
           onChange={(e) => setInput(e.target.value)}

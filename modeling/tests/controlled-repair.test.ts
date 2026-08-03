@@ -548,7 +548,7 @@ test('无法定位资源的专家回答不会关闭待办，补充资源 key 后
         other: '审批时长不包含补件等待时间。',
       }],
     },
-  ), /明确要修改的资源 key/);
+  ), /无法定位到具体的知识资源|需要先确定要修改哪一个/);
   assert.equal(state.snapshot(project.id).pendingInteractions.some(
     (interaction) => interaction.id === waiting.interaction?.id,
   ), true);
@@ -768,4 +768,78 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
   );
   assert.equal(replayed.replayed, true);
   assert.equal(applyCalls, 1);
+});
+
+// ---- 多资源冲突：让专家指定修改目标 ----
+
+test('冲突类问题同时命中多个资源时给出候选而不是放弃', async () => {
+  const { repairTargetCandidates, inferRepairTarget } = await import('../src/ai-construction/controlled-repair.js');
+  const spec = {
+    objects: [{ key: 'ipo_detail_info' }, { key: 'major_project_info' }],
+    operations: [], rules: [], metrics: [], scripts: [],
+  } as any;
+  const finding = {
+    id: 'f6_83216', source: 'semantic', severity: '错误', category: '对象定义冲突',
+    target: 'ipo_detail_info、major_project_info',
+    message: 'ipo_detail_info 和 major_project_info 两个对象的 candidateId 均为 candidate_3',
+  } as any;
+
+  const candidates = repairTargetCandidates(spec, finding);
+  assert.deepEqual(candidates.map((item) => item.targetKey), ['ipo_detail_info', 'major_project_info']);
+  // 单一目标无法推断，但候选是明确的——早先只能返回 null 然后抛错
+  assert.equal(inferRepairTarget(spec, finding), null);
+});
+
+test('定位不到唯一目标时抛可识别错误并带上候选', async () => {
+  const { buildSemanticRepairPlan, RepairTargetUnresolvedError } = await import('../src/ai-construction/controlled-repair.js');
+  const spec = {
+    objects: [{ key: 'a_info' }, { key: 'b_info' }],
+    operations: [], rules: [], metrics: [], scripts: [],
+  } as any;
+  const finding = {
+    id: 'f1', source: 'semantic', severity: '错误', category: '对象定义冲突',
+    target: 'a_info、b_info', message: 'a_info 与 b_info 冲突',
+  } as any;
+
+  assert.throws(() => buildSemanticRepairPlan(spec, finding), (error: any) => {
+    assert.ok(error instanceof RepairTargetUnresolvedError);
+    assert.deepEqual(error.candidates.map((item: any) => item.targetKey), ['a_info', 'b_info']);
+    assert.match(error.message, /需要先确定要修改哪一个/);
+    return true;
+  });
+});
+
+test('专家选定目标后可以生成修复方案', async () => {
+  const { buildSemanticRepairPlan, parseExpertRepairTarget } = await import('../src/ai-construction/controlled-repair.js');
+  const spec = {
+    objects: [{ key: 'a_info' }, { key: 'b_info' }],
+    operations: [], rules: [], metrics: [], scripts: [],
+  } as any;
+  const finding = {
+    id: 'f1', source: 'semantic', severity: '错误', category: '对象定义冲突',
+    target: 'a_info、b_info', message: 'a_info 与 b_info 冲突',
+  } as any;
+
+  const picked = parseExpertRepairTarget({
+    answers: [
+      { questionId: 'expert_decision', selected: ['两者应使用不同编号'], other: '' },
+      { questionId: 'repair_target', selected: ['object:b_info'], other: '' },
+    ],
+  } as any);
+  assert.deepEqual(picked, { targetKind: 'object', targetKey: 'b_info' });
+
+  const plan = buildSemanticRepairPlan(spec, finding, '两者应使用不同编号', picked);
+  assert.equal(plan.changes[0].targetKey, 'b_info');
+  assert.equal(plan.changes[0].targetKind, 'object');
+});
+
+test('业务决策解析忽略目标选择那道题', async () => {
+  const { parseExpertRepairDecision } = await import('../src/ai-construction/controlled-repair.js');
+  const decision = parseExpertRepairDecision({
+    answers: [
+      { questionId: 'repair_target', selected: ['object:b_info'], other: '' },
+      { questionId: 'expert_decision', selected: ['按业务口径分别编号'], other: '' },
+    ],
+  } as any);
+  assert.equal(decision, '按业务口径分别编号');
 });

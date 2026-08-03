@@ -23,7 +23,7 @@ import { FailureDiagnosisPanel, OptimizationPanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
 import PendingInteraction from './PendingInteraction.jsx';
 import PaneResizeHandle from './PaneResizeHandle.jsx';
-import { clampPaneWidth } from './paneResize.js';
+import { assistantPaneBounds, assistantPaneRatio, assistantPaneWidth, ASSISTANT_PANE_RATIO } from './paneLayout.js';
 import { packageWorkspaceFocus } from './packageWorkspaceFocus.js';
 import { isPackageChatRunning } from './packageChatRun.js';
 import ReleasePanel from './ReleasePanel.jsx';
@@ -102,8 +102,9 @@ export default function PackageWorkspace({
   const [diffLoading, setDiffLoading] = useState(false);
   const [versionLoading, setVersionLoading] = useState(false);
   const [versionError, setVersionError] = useState('');
-  const [assistantWidth, setAssistantWidth] = useState(360);
-  const [assistantMax, setAssistantMax] = useState(520);
+  // 存比例而不是像素：窗口尺寸变化时版面观感保持一致
+  const [assistantRatio, setAssistantRatio] = useState(ASSISTANT_PANE_RATIO.default);
+  const [gridWidth, setGridWidth] = useState(0);
   const [interactionBusy, setInteractionBusy] = useState(false);
   const [olderMessagesBusy, setOlderMessagesBusy] = useState(false);
   const [olderMessagesError, setOlderMessagesError] = useState('');
@@ -139,19 +140,18 @@ export default function PackageWorkspace({
     if (view) setMountedEvaluationViews((current) => rememberEvaluationView(current, view));
   }, [embedded, focus, focusedView.evalView, focusedView.improveView]);
 
+  // 栅格要等 session/pkg 就绪后才渲染，所以依赖里必须带上就绪标志，
+  // 否则首次 effect 拿到的是空 ref、之后再也不会重跑，宽度永远停在下限。
+  const workspaceReady = Boolean(session && pkg);
   useEffect(() => {
     const element = editGridRef.current;
     if (!element || typeof ResizeObserver === 'undefined') return undefined;
-    const update = () => {
-      const max = Math.max(300, Math.min(520, element.clientWidth - 620));
-      setAssistantMax(max);
-      setAssistantWidth((current) => clampPaneWidth(current, 300, max));
-    };
+    const update = () => { setGridWidth(element.clientWidth); };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [activeTab]);
+  }, [activeTab, workspaceReady]);
 
   const load = useCallback(async () => {
     try {
@@ -171,6 +171,17 @@ export default function PackageWorkspace({
       setError(cause instanceof Error ? cause.message : '知识包工作区加载失败');
     }
   }, [projectId]);
+
+  // 本地写操作后发的 window 事件与 SSE 事件描述的是同一次变更，合流到一个防抖窗口，
+  // 否则一次保存会触发两次 load，先后到达顺序还不确定。
+  const scheduleLoad = useCallback(() => {
+    const store = eventStateRef.current;
+    if (store.loadTimer) return;
+    store.loadTimer = setTimeout(() => {
+      store.loadTimer = null;
+      void load();
+    }, 200);
+  }, [load]);
 
   useEffect(() => {
     if (initialSession?.project?.id !== projectId) return;
@@ -251,7 +262,7 @@ export default function PackageWorkspace({
   }, [activeTab, deliveryView, embedded, loadRevisions]);
   useEffect(() => {
     const refresh = () => {
-      void load();
+      scheduleLoad();
       if (activeTab === 'versions' || (embedded && activeTab === 'release' && deliveryView === 'versions')) {
         void loadRevisions();
       }
@@ -262,18 +273,10 @@ export default function PackageWorkspace({
       window.removeEventListener('mw-package-updated', refresh);
       window.removeEventListener('mw-package-check-updated', refresh);
     };
-  }, [load, loadRevisions, activeTab, deliveryView, embedded]);
+  }, [scheduleLoad, loadRevisions, activeTab, deliveryView, embedded]);
   const handleProjectEvent = (event) => {
     const store = eventStateRef.current;
     store.gate ??= createProjectEventReplayGate(sessionCursorRef.current);
-    // 事件可能成批到达（一次编排会写多条消息），合并为一次加载避免抖动
-    const scheduleLoad = () => {
-      if (store.loadTimer) return;
-      store.loadTimer = setTimeout(() => {
-        store.loadTimer = null;
-        void load();
-      }, 200);
-    };
     if (CANDIDATE_EVENT_TYPES.has(String(event?.type ?? ''))) {
       setCandidateRefreshKey((value) => value + 1);
     }
@@ -508,6 +511,9 @@ export default function PackageWorkspace({
       onGoDiagnose={() => selectEvaluationLifecycle('diagnose')} />;
   };
 
+  const assistantBounds = assistantPaneBounds(gridWidth);
+  const assistantWidth = assistantPaneWidth(gridWidth, assistantRatio);
+
   const stageContent = (() => {
     if (activeTab === 'edit') {
       if (candidatePreview) {
@@ -705,8 +711,10 @@ export default function PackageWorkspace({
                   }}
                 />}
           </section>
-          <PaneResizeHandle label="调整知识包建模助手栏宽度" value={assistantWidth} min={300} max={assistantMax}
-            direction={-1} defaultValue={360} onChange={setAssistantWidth} />
+          <PaneResizeHandle label="调整知识包建模助手栏宽度"
+            value={assistantWidth} min={assistantBounds.min} max={assistantBounds.max}
+            direction={-1} defaultValue={assistantPaneWidth(gridWidth)}
+            onChange={(next) => setAssistantRatio(assistantPaneRatio(gridWidth, next))} />
           <aside className="pkw-assistant">
             <PackageChat
               projectId={projectId}
@@ -718,6 +726,7 @@ export default function PackageWorkspace({
               onLoadOlderMessages={loadOlderMessages}
               aiConstruction={session.aiConstruction}
               authoring={session.authoring}
+              packageRevision={pkg?.revision ?? ''}
               pendingInteraction={constructionInteraction}
               candidateRevisionPanel={<CandidateRevisionPanel projectId={projectId}
                 refreshKey={candidateRefreshKey}
@@ -746,6 +755,7 @@ export default function PackageWorkspace({
               onPendingInteractionBusyChange={setFlowchartSubmitBusy}
               confirmFlowchartMutation={confirmDiscardFlowchartChanges}
               onProjectChanged={load}
+              onNavigate={embedded ? onNavigate : undefined}
             />
           </aside>
         </div>

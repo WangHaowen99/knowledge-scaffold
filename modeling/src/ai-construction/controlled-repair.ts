@@ -260,10 +260,14 @@ export function buildAutomaticRepairPlan(
 
 type RepairTargetKind = 'object' | 'operation' | 'rule' | 'metric' | 'script';
 
-export function inferRepairTarget(
-  spec: PackageSpec,
-  finding: CheckFinding,
-): { targetKind: RepairTargetKind; targetKey: string } | null {
+export interface RepairTarget { targetKind: RepairTargetKind; targetKey: string }
+
+/**
+ * 找出该校验发现可能涉及的知识资源。
+ * 冲突类问题（例如两个对象共用同一个 candidateId）天然指向多个资源，
+ * 这时不能替业务决定改哪一个——把候选交给专家选。
+ */
+export function repairTargetCandidates(spec: PackageSpec, finding: CheckFinding): RepairTarget[] {
   const target = finding.target.replace(/\.md$/, '').split('/').at(-1) ?? finding.target;
   const collections: Array<[RepairTargetKind, Array<{ key: string }>]> = [
     ['object', spec.objects],
@@ -274,24 +278,47 @@ export function inferRepairTarget(
   ];
   for (const [targetKind, items] of collections) {
     const item = items.find((candidate) => candidate.key === finding.target || candidate.key === target);
-    if (item) return { targetKind, targetKey: item.key };
+    if (item) return [{ targetKind, targetKey: item.key }];
   }
-  const findingText = `${finding.message}\n${finding.suggestion ?? ''}`;
+  const findingText = `${finding.target}\n${finding.message}\n${finding.suggestion ?? ''}`;
   const mentioned = collections.flatMap(([targetKind, items]) => items
     .filter((item) => findingText.includes(item.key))
     .map((item) => ({ targetKind, targetKey: item.key })));
-  const unique = [...new Map(mentioned.map((item) => [
+  return [...new Map(mentioned.map((item) => [
     `${item.targetKind}:${item.targetKey}`,
     item,
   ])).values()];
-  if (unique.length === 1) return unique[0];
-  return null;
+}
+
+export function inferRepairTarget(
+  spec: PackageSpec,
+  finding: CheckFinding,
+): RepairTarget | null {
+  const candidates = repairTargetCandidates(spec, finding);
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+/**
+ * 定位不到唯一目标时抛这个而不是普通 Error：调用方据此把该发现转成
+ * 「需人工处理」并给出可执行的下一步，而不是让整轮修复中断在一条红字上。
+ */
+export class RepairTargetUnresolvedError extends Error {
+  constructor(
+    readonly finding: CheckFinding,
+    readonly candidates: RepairTarget[],
+  ) {
+    super(candidates.length
+      ? `校验问题「${finding.category}」同时涉及 ${candidates.map((item) => item.targetKey).join('、')}，需要先确定要修改哪一个`
+      : `校验问题「${finding.category}」无法定位到具体的知识资源，需要人工处理`);
+    this.name = 'RepairTargetUnresolvedError';
+  }
 }
 
 export function buildSemanticRepairPlan(
   spec: PackageSpec,
   finding: CheckFinding,
   expertDecision?: string,
+  explicitTarget?: RepairTarget,
 ): {
   summary: string;
   message: string;
@@ -304,12 +331,13 @@ export function buildSemanticRepairPlan(
   }>;
   risks: string[];
 } {
-  const target = inferRepairTarget(spec, expertDecision ? {
+  // 专家显式指定的目标优先：冲突类问题的候选不止一个，只有业务能决定改哪一个
+  const target = explicitTarget ?? inferRepairTarget(spec, expertDecision ? {
     ...finding,
     suggestion: [finding.suggestion, expertDecision].filter(Boolean).join('\n'),
   } : finding);
   if (!target) {
-    throw new Error(`校验问题 ${finding.id} 没有可安全定位的知识资源，请在回答中明确要修改的资源 key`);
+    throw new RepairTargetUnresolvedError(finding, repairTargetCandidates(spec, finding));
   }
   const instruction = [
     finding.suggestion || `修复“${finding.category}”：${finding.message}`,
@@ -336,9 +364,26 @@ export function buildSemanticRepairPlan(
   };
 }
 
+/** 从回答里取出专家选定的修改目标（多候选时才有） */
+export function parseExpertRepairTarget(response: JsonObject): RepairTarget | undefined {
+  const answers = Array.isArray(response.answers) ? response.answers : [];
+  const picked = answers.find((item) => (
+    item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Record<string, unknown>).questionId === 'repair_target'
+  )) as Record<string, unknown> | undefined;
+  const selected = Array.isArray(picked?.selected) ? picked!.selected.map(String) : [];
+  const [value] = selected.filter(Boolean);
+  if (!value) return undefined;
+  const [targetKind, targetKey] = value.split(':');
+  if (!targetKind || !targetKey) return undefined;
+  return { targetKind: targetKind as RepairTarget['targetKind'], targetKey };
+}
+
 export function parseExpertRepairDecision(response: JsonObject): string {
   const answers = Array.isArray(response.answers) ? response.answers : [];
-  const first = answers[0];
+  // 目标选择是另一道题，不能混进业务决策文本
+  const first = answers.find((item) => item && typeof item === 'object' && !Array.isArray(item)
+    && (item as Record<string, unknown>).questionId !== 'repair_target') ?? answers[0];
   if (!first || typeof first !== 'object' || Array.isArray(first)) {
     throw new Error('请明确填写业务决策');
   }
@@ -831,17 +876,36 @@ export class ControlledRepairRunner {
           finding: findingForPayload(human.finding),
           title: `请明确“${human.finding.category}”的业务决策`,
           description: `${human.finding.message}\n系统不会自行选择业务阈值、流程分支、计算口径或冲突结论。`,
-          questions: [{
-            id: 'expert_decision',
-            kind: 'text',
-            q: [
-              human.finding.suggestion
+          ...(target ? {} : {
+            repairCandidates: repairTargetCandidates(current.spec, human.finding)
+              .map((item) => ({ targetKind: item.targetKind, targetKey: item.targetKey })),
+          }),
+          questions: [
+            {
+              id: 'expert_decision',
+              kind: 'text',
+              q: human.finding.suggestion
                 ? `请给出明确决策，以便落实：${human.finding.suggestion}`
                 : '请给出应采用的业务规则、口径或分支结论。',
-              !target ? '同时请明确要修改的对象、操作、规则、指标或脚本 key。' : '',
-            ].filter(Boolean).join('\n'),
-            required: true,
-          }],
+              required: true,
+            },
+            // 冲突类问题涉及多个资源，系统不能替业务挑；早先只在文案里要求
+            // 「回答中明确资源 key」，但界面根本没有填 key 的地方，必然走不下去。
+            ...(target ? [] : (() => {
+              const candidates = repairTargetCandidates(current.spec, human.finding);
+              return candidates.length >= 2 ? [{
+                id: 'repair_target',
+                kind: 'single' as const,
+                q: '这个问题涉及多个知识资源，请选择本次要修改哪一个：',
+                required: true,
+                options: candidates.map((item) => ({
+                  value: `${item.targetKind}:${item.targetKey}`,
+                  label: item.targetKey,
+                  description: `${item.targetKind}`,
+                })),
+              }] : [];
+            })()),
+          ],
         }, current.revision.oid);
       } else {
         const plan = buildSemanticRepairPlan(current.spec, human.finding);
@@ -917,7 +981,9 @@ export class ControlledRepairRunner {
     if (pending.baseRevision && pending.baseRevision !== current.revision.oid) {
       throw new Error('知识包修订已经变化，请基于最新校验结果重新处理');
     }
-    const plan = buildSemanticRepairPlan(current.spec, finding, decision);
+    const plan = buildSemanticRepairPlan(
+      current.spec, finding, decision, parseExpertRepairTarget(response),
+    );
     const answered = this.adapter.respond(project.id, pending.id, requestId, response);
     const existing = this.state.snapshot(project.id).pendingInteractions.find((item) => (
       item.type === 'change_plan' && item.payload.parentInteractionId === pending.id

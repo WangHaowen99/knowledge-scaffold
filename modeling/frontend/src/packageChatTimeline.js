@@ -88,6 +88,10 @@ export function confirmedMilestoneActionIds(aiConstruction) {
   });
 }
 
+export function milestoneNavigationTarget(milestoneId) {
+  return milestoneId === 'construction_completed' ? 'scenario' : '';
+}
+
 function structuredText(message) {
   const parts = (message?.blocks ?? []).flatMap((block) => {
     if (block?.type === 'text' && block.text) return [String(block.text).trim()];
