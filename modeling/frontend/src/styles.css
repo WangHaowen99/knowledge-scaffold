@@ -768,15 +768,18 @@ body { background: #f2f4f8; overflow: hidden; }
 
 /* ---- 知识包建模助手 ---- */
 .mwr .pchat { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; background: #fafbfc; }
-.mwr .pchat-head { flex: none; min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--hair); background: #fff; }
+/* 助手栏可以被拖到 280px，头部里塞了标题、增量入口和任务状态三样。
+   不允许换行时它们会互相挤压到一个字宽，标题直接竖排——所以整行可换行，
+   且每个子项各自声明伸缩行为，不靠默认值。 */
+.mwr .pchat-head { flex: none; min-height: 58px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; row-gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--hair); background: #fff; }
 .mwr .pchat-avatar { width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 9px; background: var(--grad-p); color: #fff; font-size: 13px; font-weight: 780; box-shadow: 0 4px 12px -5px rgba(42, 120, 214, .7); }
-.mwr .pchat-head > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.mwr .pchat-head strong { color: var(--ink); font-size: 13px; }
+.mwr .pchat-head > div { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mwr .pchat-head strong { overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .mwr .pchat-head > div > span { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 头部右上角：当前动态任务状态，悬停展开详情 */
-.mwr .pchat-head .pchat-task-status { position: relative; margin-left: auto; flex: none; display: block; min-width: 0; }
-.mwr .pchat-head .pchat-task-status__chip { max-width: 320px; min-height: 30px; padding: 4px 10px; display: flex; flex-direction: row; align-items: center; gap: 6px; color: #31517e; background: #f2f7fe; border: 1px solid #d6e5f8; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: default; transition: border-color .15s, background .15s; }
+.mwr .pchat-head .pchat-task-status { position: relative; flex: 1 1 100%; display: block; min-width: 0; max-width: 100%; }
+.mwr .pchat-head .pchat-task-status__chip { max-width: 100%; min-height: 30px; padding: 4px 10px; display: flex; flex-direction: row; align-items: center; gap: 6px; color: #31517e; background: #f2f7fe; border: 1px solid #d6e5f8; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: default; transition: border-color .15s, background .15s; }
 .mwr .pchat-head .pchat-task-status:hover .pchat-task-status__chip,
 .mwr .pchat-head .pchat-task-status:focus-within .pchat-task-status__chip { background: #e7f1fd; border-color: #b4d1f2; }
 .mwr .pchat-head .pchat-task-status__dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #9aa7b8; }
@@ -1071,6 +1074,9 @@ body { background: #f2f4f8; overflow: hidden; }
   }
   .mwr .ac-message-card { font-size: 11.5px; }
   .mwr .ac-message-actions { padding: 0 10px 10px; }
+  /* 标题行放不下时，副标题是其中最不重要的（本来就被省略号截断），先让它退场，
+     把宽度让给标题本身。 */
+  .mwr .pchat-head > div > span { display: none; }
 }
 .mwr .ac-message-unsupported { margin: 10px 12px; border: 1px dashed #d5dae3; border-radius: 9px; padding: 8px 10px; color: var(--muted); font-size: 11px; }
 .mwr .ac-message-interaction { margin-bottom: 12px; border: 1px solid #dce7f6; border-radius: 14px; padding: 13px; background: #fff; box-shadow: 0 6px 18px -14px rgba(32, 82, 145, .55); }
@@ -1469,6 +1475,6 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 
 /* 「补充新资料」入口：建完之后随时可能来一批新资料，属于状态可供性而不是对话里的下一步，
    所以常驻在助手栏顶部，不埋在消息流里等用户翻。 */
-.mwr .pchat-increment-entry { margin-left: 8px; border: 1px solid #9dc2ed; border-radius: 8px; padding: 3px 10px; background: #eef6ff; color: #185da7; font-size: 11.5px; cursor: pointer; }
+.mwr .pchat-increment-entry { flex: none; margin-left: 8px; border: 1px solid #9dc2ed; border-radius: 8px; padding: 3px 10px; background: #eef6ff; color: #185da7; font-size: 11.5px; white-space: nowrap; cursor: pointer; }
 .mwr .pchat-increment-entry:hover:not(:disabled) { background: #e3efff; }
 .mwr .pchat-increment-entry:disabled { opacity: .55; cursor: default; }

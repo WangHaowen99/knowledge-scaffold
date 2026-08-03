@@ -138,6 +138,13 @@ export default function PackageChat({
   const [turns, setTurns] = useState([]);
   const [input, setInput] = useState('');
   const [localBusy, setLocalBusy] = useState('');
+  // 本地发起操作的时刻。服务端 run 未必立刻出现在快照里，这段空窗期如果没有基线，
+  // 停滞判定会退回到任务上的旧消息，把刚点下去的操作误报成「已经 N 分钟没有新进展」。
+  const localBusySince = useRef('');
+  useEffect(() => {
+    if (localBusy && !localBusySince.current) localBusySince.current = new Date().toISOString();
+    if (!localBusy) localBusySince.current = '';
+  }, [localBusy]);
   const [taskAdjustment, setTaskAdjustment] = useState(null);
   const [taskEditConfig, setTaskEditConfig] = useState(null);
   const [validationDeferral, setValidationDeferral] = useState(null);
@@ -225,8 +232,8 @@ export default function PackageChat({
   const stalledMs = useMemo(() => (busy ? stalledForMs({
     messages: structuredMessages,
     taskId: aiConstruction?.progress?.currentTaskId,
-    startedAt: serverRun?.createdAt,
-  }) : null), [busy, sec, structuredMessages, aiConstruction, serverRun]);
+    startedAt: localBusy ? localBusySince.current : serverRun?.createdAt,
+  }) : null), [busy, localBusy, sec, structuredMessages, aiConstruction, serverRun]);
   // 忙碌态结束就把「正在停止」清掉，否则下一轮任务的按钮会一直是禁用的
   useEffect(() => { if (!busy) setCancelling(''); }, [busy]);
 
