@@ -18,7 +18,7 @@ test('优化应用进度展示当前步骤、后续步骤、已耗时和预计�
     totalSteps: 4,
     percent: 25,
     currentStep: '模型正在修改知识包（第 1/3 次）',
-    nextSteps: ['校验修改结果', '保存待确认候选修订'],
+    nextSteps: ['校验修改结果', '保存待确认的修改'],
     elapsedSeconds: 60,
     elapsedLabel: '1 分钟',
     estimatedSeconds: 865,
@@ -51,6 +51,6 @@ test('校验阶段展示可能发生的剩余自动修正次数', () => {
   };
 
   const progress = optimizationProgress(node, Date.parse('2026-07-16T12:02:05.000Z'));
-  assert.deepEqual(progress?.nextSteps, ['校验未通过时自动修正（最多剩余 1 次）', '保存待确认候选修订']);
+  assert.deepEqual(progress?.nextSteps, ['校验未通过时自动修正（最多剩余 1 次）', '保存待确认的修改']);
   assert.equal(progress?.currentStep, '正在校验修改结果（第 2/3 次）');
 });

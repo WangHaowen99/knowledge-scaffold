@@ -50,7 +50,7 @@ test('警告接受绑定知识包修订并在修订变化后自动失效', () =>
   assert.equal(changed.items[0].accepted, false);
 });
 
-test('发布前必须再次确认非阻断警告并保留已知限制', () => {
+test('发布前必须再次确认可暂缓的提醒并保留已知限制', () => {
   const project = createProject({ owner: 'alice', name: '发布限制' });
   saveCheck(project.id, '1.0.0-rc.1', [warning], 'revision-a');
   const first = getPackageWarningReview(project.id, 'revision-a');

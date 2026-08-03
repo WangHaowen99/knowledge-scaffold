@@ -231,17 +231,17 @@ export class AiConstructionTaskEditor {
       throw new TaskEditValidationError('任务编辑动作不正确');
     }
     const activeMilestone = graph.milestones.find((item) => item.status === 'active');
-    if (!activeMilestone) throw new TaskEditValidationError('当前没有可编辑的活动里程碑');
+    if (!activeMilestone) throw new TaskEditValidationError('当前没有可编辑的活动阶段');
     const affected = this.affectedTasks(graph, edit);
     let milestoneId = activeMilestone.id;
     let etaDelta = { minMinutes: 0, maxMinutes: 0 };
 
     if (edit.action === 'add') {
-      if (edit.milestoneId !== activeMilestone.id) throw new TaskEditValidationError('只能在当前活动里程碑新增任务');
+      if (edit.milestoneId !== activeMilestone.id) throw new TaskEditValidationError('只能在当前活动阶段新增任务');
       this.validateNewTask(graph, edit.task, activeMilestone.ordinal);
       if (edit.beforeTaskId) {
         const before = graph.tasks.find((task) => task.id === edit.beforeTaskId);
-        if (!before || before.milestoneId !== edit.milestoneId) throw new TaskEditValidationError('插入位置不属于当前里程碑');
+        if (!before || before.milestoneId !== edit.milestoneId) throw new TaskEditValidationError('插入位置不属于当前阶段');
       }
       etaDelta = duration(edit.task.kind);
     } else if (edit.action === 'reorder') {
@@ -252,7 +252,7 @@ export class AiConstructionTaskEditor {
       if (edit.beforeTaskId === task.id) throw new TaskEditValidationError('任务不能排到自己之前');
       const sameMilestone = graph.tasks.filter((item) => item.milestoneId === task.milestoneId && item.status !== 'cancelled');
       if (edit.beforeTaskId && !sameMilestone.some((item) => item.id === edit.beforeTaskId)) {
-        throw new TaskEditValidationError('目标位置不属于当前里程碑');
+        throw new TaskEditValidationError('目标位置不属于当前阶段');
       }
       const order = sameMilestone.map((item) => item.id).filter((id) => id !== task.id);
       const target = edit.beforeTaskId ? order.indexOf(edit.beforeTaskId) : order.length;
@@ -282,7 +282,7 @@ export class AiConstructionTaskEditor {
       if (tasks.length !== ids.length) throw new TaskEditValidationError('合并任务不存在或不属于当前项目');
       tasks.forEach((task) => this.assertEditableTask(task, activeMilestone.id));
       milestoneId = tasks[0].milestoneId;
-      if (tasks.some((task) => task.milestoneId !== milestoneId)) throw new TaskEditValidationError('只能合并同一里程碑的任务');
+      if (tasks.some((task) => task.milestoneId !== milestoneId)) throw new TaskEditValidationError('只能合并同一阶段的任务');
       if (tasks.some((task) => task.kind !== edit.task.kind)) throw new TaskEditValidationError('只能合并同一任务类型');
       this.validateNewTask(graph, { ...edit.task, required: tasks.some((task) => task.required), dependsOn: [] }, activeMilestone.ordinal, false);
       const dependencies = new Map(graph.tasks.map((task) => [task.id, [...task.dependsOn]]));
@@ -320,7 +320,7 @@ export class AiConstructionTaskEditor {
   }
 
   private assertEditableTask(task: AiConstructionTaskSnapshot, activeMilestoneId: string) {
-    if (task.milestoneId !== activeMilestoneId) throw new TaskEditValidationError('只能调整当前活动里程碑的任务');
+    if (task.milestoneId !== activeMilestoneId) throw new TaskEditValidationError('只能调整当前活动阶段的任务');
     if (!EDITABLE_STATUSES.has(task.status)) throw new TaskEditValidationError('只有未完成且未运行的任务可以调整结构');
   }
 
@@ -342,7 +342,7 @@ export class AiConstructionTaskEditor {
       const dependency = graph.tasks.find((item) => item.id === id);
       if (!dependency) throw new TaskEditValidationError('任务依赖不存在或不属于当前项目');
       if ((milestoneOrdinal.get(dependency.milestoneId) ?? Infinity) > activeMilestoneOrdinal) {
-        throw new TaskEditValidationError('任务不能依赖后续里程碑');
+        throw new TaskEditValidationError('任务不能依赖后续阶段');
       }
     }
   }

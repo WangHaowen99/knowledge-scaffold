@@ -450,7 +450,7 @@ export function ReviewPanel({
       const result = await publishPackageDraft(
         projectId,
         active.revision,
-        '人工编辑修订',
+        '人工编辑',
         active.id,
       );
       setPackageDraft(null);
@@ -652,7 +652,7 @@ export function ReviewPanel({
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <button className="btn btn-p"
                 disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'}
-                onClick={save}>{actionBusy === 'save' || saveState === 'saving' ? '保存中…' : '保存修订'}</button>
+                onClick={save}>{actionBusy === 'save' || saveState === 'saving' ? '保存中…' : '保存修改'}</button>
               {(packageDraft?.changedFileCount > 0 || draft !== content) && (
                 <BusyButton busy={actionBusy === 'publish'} busyText="保存并检查中" expect="约 1~3 分钟" className="btn"
                   disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'}

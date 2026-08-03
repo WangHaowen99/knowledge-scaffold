@@ -158,7 +158,7 @@ test('完成建模确认时固化验证候选并让任务图引用候选修订',
   assert.equal(response.json().cursor, 2);
 });
 
-test('暂缓当前修订阻断错误时持久化审计记录并推进编排状态', async (t) => {
+test('暂缓当前修订必须修复的错误时持久化审计记录并推进编排状态', async (t) => {
   const project = createProject({ owner: 'alice', name: '暂缓错误继续验证' });
   const [{ saveCheck }, { getPackageErrorDeferral }] = await Promise.all([
     import('../src/workflow/package-check.js'),
@@ -1097,7 +1097,7 @@ test('未校验时拦截并给出立即校验的动作', async (t) => {
   assert.deepEqual(response.json().nextActions.map((item: any) => item.id), ['run_package_check']);
 });
 
-test('存在阻断错误时拦截并给出修缮与暂缓两条出路', async (t) => {
+test('存在必须修复的错误时拦截并给出修缮与暂缓两条出路', async (t) => {
   const project = createProject({ owner: 'alice', name: '拦截-有错误' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [

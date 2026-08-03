@@ -221,7 +221,7 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
       }
     }
     const summary = optionalText(block.summary, '状态说明', 500);
-    const milestoneId = optionalText(block.milestoneId, '里程碑', 100);
+    const milestoneId = optionalText(block.milestoneId, '阶段', 100);
     const taskId = optionalText(block.taskId, '任务', 100);
     return {
       type: 'status',
@@ -596,7 +596,7 @@ export class AiConstructionMessageStore {
           type: 'text',
           text: imported
             ? '我会先检查现有知识包的结构、证据和校验结果，再与您确认需要补充或改进的内容。'
-            : '知识包草稿目录已经创建。请先说明建模目标；目标确认后，我会围绕它分析资料并逐步形成流程、operation、对象、规则和确定性脚本。',
+            : '知识包草稿目录已经创建。请先说明建模目标；目标确认后，我会围绕它分析资料并逐步形成流程、业务操作、对象、规则和确定性脚本。',
         },
         { type: 'task_plan', title: '当前建模计划', note: graph.progress.eta.note,
           tasks: milestoneTasks.map((item) => ({ id: item.id, title: item.title, status: item.status,

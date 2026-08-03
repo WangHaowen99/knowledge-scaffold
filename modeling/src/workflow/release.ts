@@ -106,7 +106,7 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
       passed: input.warningReview?.readyForRelease === true,
       detail: input.warningReview?.readyForRelease === true
         ? input.warningReview.warningTotal > 0
-          ? `${input.warningReview.warningTotal} 条非阻断警告已确认为已知限制`
+          ? `${input.warningReview.warningTotal} 条可暂缓的提醒已确认为已知限制`
           : '当前修订没有警告'
         : !input.warningReview
           ? '尚未检查当前修订警告'

@@ -21,7 +21,7 @@ export function packageRepairAvailability(
   input: PackageRepairAvailabilityInput,
 ): PackageRepairAvailability {
   if (input.errorCount < 1) {
-    return { available: false, reason: '当前修订没有阻断错误，无需修复' };
+    return { available: false, reason: '当前内容没有必须修复的错误，无需修复' };
   }
   if (input.hasActiveDraft) {
     return { available: false, reason: '存在未发布的人工编辑草稿，请先发布或放弃草稿' };

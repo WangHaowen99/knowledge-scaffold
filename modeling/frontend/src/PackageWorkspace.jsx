@@ -73,7 +73,7 @@ function checkState(pkg, check) {
   const errors = check.findings?.filter((finding) => finding.severity === '错误').length ?? 0;
   return errors
     ? { tone: 'bad', text: `${errors} 个错误` }
-    : { tone: 'good', text: '当前修订已通过检查' };
+    : { tone: 'good', text: '当前内容已通过检查' };
 }
 
 export default function PackageWorkspace({
