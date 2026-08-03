@@ -208,7 +208,7 @@ test('格式变化和未被引用的新资料不会使知识与评测过时', ()
   assert.equal(analyzeMaterialImpact(added.change, packageWithMaterialEvidence(first.document.id)).earliestMilestone, undefined);
 });
 
-test('受影响知识从最早阶段重新开放并保留上游确认历史', () => {
+test('资料变更只生成定向复核任务，不再推倒已确认阶段', () => {
   const { db, repo } = setup();
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO ai_construction_graphs
@@ -253,15 +253,43 @@ test('受影响知识从最早阶段重新开放并保留上游确认历史', ()
   assert.equal(stored.changeKind, 'replaced');
   assert.equal(listMaterialImpacts(db, 'project-material')[0]?.id, stored.id);
   assert.equal(invalidation.graphRevision, 9);
-  assert.equal(db.prepare(`SELECT status FROM ai_construction_milestones
-    WHERE project_id = 'project-material' AND milestone_id = 'process_confirmed'`).get().status, 'confirmed');
-  assert.equal(db.prepare(`SELECT status FROM ai_construction_milestones
-    WHERE project_id = 'project-material' AND milestone_id = 'knowledge_confirmed'`).get().status, 'active');
-  assert.equal(db.prepare(`SELECT status FROM ai_construction_milestones
-    WHERE project_id = 'project-material' AND milestone_id = 'deterministic_confirmed'`).get().status, 'stale');
-  assert.equal(db.prepare("SELECT status FROM ai_construction_tasks WHERE id = 'task-knowledge'").get().status, 'pending');
-  assert.equal(db.prepare("SELECT status FROM ai_construction_tasks WHERE id = 'task-script'").get().status, 'stale');
-  assert.equal(db.prepare(`SELECT COUNT(*) AS count FROM ai_construction_tasks
-    WHERE project_id = 'project-material' AND milestone_id = 'knowledge_confirmed'
-      AND task_kind = 'material_analysis' AND status = 'pending'`).get().count, 1);
+
+  const status = (milestoneId: string) => (db.prepare(`SELECT status FROM ai_construction_milestones
+    WHERE project_id = 'project-material' AND milestone_id = ?`).get(milestoneId) as any).status;
+
+  // 已确认的中间阶段一律不动：它们确认的是当时那部分内容，而现在我们精确知道
+  // 哪些内容受影响，没必要把整段推倒让人重走一遍。
+  assert.equal(status('process_confirmed'), 'confirmed');
+  assert.equal(status('knowledge_confirmed'), 'confirmed');
+  assert.equal(status('deterministic_confirmed'), 'confirmed');
+  // 只撤销「建模完成确认」——它断言的是「整体已一致」，资料一变这个断言就不成立
+  assert.equal(status('construction_completed'), 'active');
+
+  // 任务也不再被作废，用户不用重做没被影响的部分
+  for (const taskId of ['task-knowledge', 'task-validation', 'task-script']) {
+    assert.equal((db.prepare('SELECT status FROM ai_construction_tasks WHERE id = ?')
+      .get(taskId) as any).status, 'completed', `${taskId} 不该被作废`);
+  }
+  assert.deepEqual(invalidation.staleTaskIds, []);
+
+  // 取而代之的是一条列清影响面的定向复核任务
+  const review = db.prepare(`SELECT id, status, reason FROM ai_construction_tasks
+    WHERE project_id = 'project-material' AND task_kind = 'material_change_review'`).all() as any[];
+  assert.equal(review.length, 1);
+  assert.equal(review[0].id, invalidation.reviewTaskId);
+  assert.equal(review[0].status, 'pending');
+  assert.match(review[0].reason, /资料变更后需要复核/);
+  // 影响面要具体到资源，而不是一句「有内容受影响」
+  assert.match(review[0].reason, /业务操作|规则|业务对象/);
+
+  // 同一份资料再变一次，只刷新那条任务，不攒出一串
+  const third = repo.insert({
+    projectId: 'project-material', filename: 'policy.md', kind: 'markdown',
+    parseStatus: 'parsed', textContent: '第三版策略',
+  });
+  applyMaterialInvalidation(db, 'project-material',
+    analyzeMaterialImpact(third.change, packageWithMaterialEvidence(first.document.id)));
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM ai_construction_tasks
+    WHERE project_id = 'project-material' AND task_kind = 'material_change_review'`)
+    .get() as any).count, 1);
 });

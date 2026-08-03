@@ -147,6 +147,65 @@ export function ensureEvaluationRepairTaskKind(db: DatabaseSync): void {
   }
 }
 
+export function ensureMaterialChangeReviewTaskKind(db: DatabaseSync): void {
+  const row = db.prepare(`SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'ai_construction_tasks'`).get() as { sql?: string } | undefined;
+  if (!row?.sql || row.sql.includes("'material_change_review'")) return;
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE ai_construction_tasks_next (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+        task_kind     TEXT NOT NULL CHECK (task_kind IN (
+                        'material_analysis', 'package_baseline_review', 'modeling_brief',
+                        'process_interview', 'process_diagram', 'process_review',
+                        'operation_extraction', 'knowledge_extraction', 'script_decision',
+                        'script_generation', 'package_validation', 'package_repair',
+                        'evaluation_repair', 'completion_review',
+                        'material_change_review'
+                      )),
+        milestone_id  TEXT NOT NULL,
+        ordinal       INTEGER NOT NULL,
+        title         TEXT NOT NULL,
+        goal          TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN (
+                        'pending', 'ready', 'running', 'waiting_user', 'waiting_confirmation',
+                        'completed', 'failed', 'skipped', 'stale', 'cancelled'
+                      )),
+        required      INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0, 1)),
+        reason        TEXT,
+        input_revision_oid TEXT,
+        output_revision_oid TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        FOREIGN KEY (project_id, milestone_id)
+          REFERENCES ai_construction_milestones(project_id, milestone_id) ON DELETE CASCADE,
+        UNIQUE (project_id, ordinal)
+      );
+      INSERT INTO ai_construction_tasks_next (
+        id, project_id, task_kind, milestone_id, ordinal, title, goal, status,
+        required, reason, input_revision_oid, output_revision_oid, created_at, updated_at
+      )
+      SELECT
+        id, project_id, task_kind, milestone_id, ordinal, title, goal, status,
+        required, reason, input_revision_oid, output_revision_oid, created_at, updated_at
+      FROM ai_construction_tasks;
+      DROP TABLE ai_construction_tasks;
+      ALTER TABLE ai_construction_tasks_next RENAME TO ai_construction_tasks;
+      CREATE INDEX idx_ai_construction_tasks_project
+        ON ai_construction_tasks(project_id, ordinal);
+      COMMIT;`);
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* 没有活动事务时忽略 */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 /**
  * 旧版按读取时机投影的任务图已经包含真实进度，只迁移来源标记。
  * 不重建任务图，避免改写既有任务、里程碑、确认记录和 revision。
@@ -173,6 +232,7 @@ export function getDb(): DatabaseSync {
   migrateLegacyAiConstructionGraphSources(db);
   ensureFlowchartReviewInteraction(db);
   ensureEvaluationRepairTaskKind(db);
+  ensureMaterialChangeReviewTaskKind(db);
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
