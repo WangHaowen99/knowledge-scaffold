@@ -61,7 +61,7 @@ export default function ReleasePanel({ projectId, release, steps = [], onRelease
   const sourceGates = serverGates ?? release?.gates;
   const localGates = Array.isArray(sourceGates) ? sourceGates.map((gate) => gate.id === 'known_limitations'
     ? { ...gate, passed: warningGatePassed, detail: warningGatePassed
-      ? `${warningReview.warningTotal} 条非阻断警告已复核`
+      ? `${warningReview.warningTotal} 条可暂缓的提醒已复核`
       : gate.detail }
     : gate) : sourceGates;
   const view = { ...release, warningReview, ...(localGates ? { gates: localGates } : {}), ready: undefined };
@@ -82,7 +82,7 @@ export default function ReleasePanel({ projectId, release, steps = [], onRelease
       );
       setWarningReview(response.warningReview);
       setServerGates((current) => (current ?? release?.gates ?? []).map((gate) => gate.id === 'known_limitations'
-        ? { ...gate, passed: true, detail: `${response.warningReview.warningTotal} 条非阻断警告已复核` }
+        ? { ...gate, passed: true, detail: `${response.warningReview.warningTotal} 条可暂缓的提醒已复核` }
         : gate));
       setWarningNote('');
     } catch (err) {

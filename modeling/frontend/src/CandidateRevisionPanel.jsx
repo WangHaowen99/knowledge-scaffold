@@ -124,7 +124,7 @@ function CandidateCard({
     onBusy(candidate.id); setError('');
     try { await operation(); }
     catch (cause) {
-      const message = safeUiError(cause, '候选修订处理失败，请重试');
+      const message = safeUiError(cause, '待确认的修改处理失败，请重试');
       setError(message);
       onError?.(message);
     }
@@ -194,7 +194,7 @@ export function CandidateRevisionCanvas({ preview, onOpenFile, onClose }) {
   const candidate = preview.candidate ?? {};
   const selection = preview.selection ?? {};
   return (
-    <section className="candidate-revision-canvas" aria-label="候选修订差异">
+    <section className="candidate-revision-canvas" aria-label="待确认的修改差异">
       <header>
         <div>
           <span>候选修订差异</span>
@@ -223,7 +223,7 @@ export default function CandidateRevisionPanel({
   onChanged,
   onError,
   confirmAction,
-  title = '待确认候选修订',
+  title = '待确认的修改',
   subtitle = '修改不会在您确认前进入当前知识包',
 }) {
   const [loaded, setLoaded] = useState(suppliedCandidates ?? null);
@@ -236,7 +236,7 @@ export default function CandidateRevisionPanel({
     try {
       const result = await listCandidateRevisions(projectId, 'pending');
       setLoaded(result.candidates ?? []); setError('');
-    } catch (cause) { setError(safeUiError(cause, '候选修订读取失败，请重试')); }
+    } catch (cause) { setError(safeUiError(cause, '待确认的修改读取失败，请重试')); }
   };
   useEffect(() => { void load(); }, [projectId, suppliedCandidates, refreshKey]);
 

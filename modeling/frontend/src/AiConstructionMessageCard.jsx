@@ -113,7 +113,7 @@ function EvidenceBlock({ block, onAction }) {
     </article>)}</div></section>;
 }
 
-const VALIDATION_SCOPE_LABEL = { node: '当前产物', incremental: '本次变更', milestone: '当前里程碑', complete: '完整知识包', release: '发布候选' };
+const VALIDATION_SCOPE_LABEL = { node: '当前产物', incremental: '本次变更', milestone: '当前阶段', complete: '完整知识包', release: '发布候选' };
 const FINDING_LABEL = { error: '错误', warning: '警告', hint: '提示' };
 function ValidationBlock({ block, onAction }) {
   const counts = block.counts ?? {};

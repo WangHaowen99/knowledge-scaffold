@@ -381,7 +381,7 @@ export async function runCandidateQualityLoop<T>(input: {
         : Number.POSITIVE_INFINITY;
       if (!bestExpertReview || score < previousScore) bestExpertReview = review;
     }
-    feedback = decision.feedback.trim() || '候选修订没有改善当前阻断问题，请重新生成更小、更保守的补丁。';
+    feedback = decision.feedback.trim() || '候选修订没有改善当前必须修复的问题，请重新生成更小、更保守的补丁。';
     if (attempt < maxAttempts) {
       await report({ eventKey: `attempt-${attempt}-retrying`, phase: 'retrying', attempt, maxAttempts, feedback });
     }

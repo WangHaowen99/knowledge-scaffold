@@ -136,7 +136,7 @@ test('知识结构修复使用独立受控修复接口', async () => {
   }]);
 });
 
-test('建模里程碑与后续任务都调用已接线的 authoring 接口', async () => {
+test('建模阶段与后续任务都调用已接线的 authoring 接口', async () => {
   const calls: Array<{ url: string; body?: any }> = [];
   globalThis.fetch = (async (url: string | URL | Request, options: RequestInit = {}) => {
     calls.push({

@@ -40,12 +40,12 @@ test('优化请求超过经验时长后停止倒计时', () => {
   assert.equal(progress?.estimatedLabel, '模型响应较慢，暂无法准确估算');
 });
 
-test('应用优化建议时明确生成的是待确认候选修订', () => {
+test('应用优化建议时明确生成的是待确认的修改', () => {
   const progress = optimizationOperationProgress({
     operation: 'apply',
     startedAt: '2026-07-22T12:00:00.000Z',
   }, Date.parse('2026-07-22T12:00:10.000Z'));
 
-  assert.equal(progress?.currentStep, '准备生成所选优化建议的候选修订');
-  assert.deepEqual(progress?.nextSteps, ['模型修改知识包', '校验修改结果', '保存待确认候选修订']);
+  assert.equal(progress?.currentStep, '正在把所选优化建议整理成待确认的修改');
+  assert.deepEqual(progress?.nextSteps, ['模型修改知识包', '校验修改结果', '保存待确认的修改']);
 });

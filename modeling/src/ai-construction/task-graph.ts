@@ -634,10 +634,10 @@ export class AiConstructionTaskGraph {
           WHERE project_id = ? AND milestone_id = ?`)
           .get(projectId, command.task.milestoneId) as { status: string } | undefined;
         if (!milestone) {
-          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '任务计划引用的里程碑不存在');
+          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '任务计划引用的阶段不存在');
         }
         if (milestone.status !== 'active') {
-          throw new AiConstructionTaskGraphError('INVALID_TASK_PLAN', '只能为当前活动里程碑规划任务');
+          throw new AiConstructionTaskGraphError('INVALID_TASK_PLAN', '只能为当前活动阶段规划任务');
         }
         const title = command.task.title.trim();
         const goal = command.task.goal.trim();
@@ -684,7 +684,7 @@ export class AiConstructionTaskGraph {
           WHERE project_id = ? AND milestone_id = ?`)
           .get(projectId, command.milestoneId) as { ordinal: number; status: string } | undefined;
         if (!milestone) {
-          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '里程碑不存在或不属于当前项目');
+          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '阶段不存在或不属于当前项目');
         }
         const taskCounts = this.db.prepare(`SELECT
           COUNT(*) AS total,
@@ -707,7 +707,7 @@ export class AiConstructionTaskGraph {
         if (milestone.status !== 'active' || Number(taskCounts.total) === 0 || Number(taskCounts.blocking ?? 0) > 0) {
           throw new AiConstructionTaskGraphError(
             'MILESTONE_NOT_READY',
-            '里程碑尚未满足确认条件：必选任务必须全部完成',
+            '阶段尚未满足确认条件：必选任务必须全部完成',
           );
         }
         const nextRevision = command.expectedRevision + 1;
@@ -831,13 +831,13 @@ export class AiConstructionTaskGraph {
     if (action === 'skip') {
       allowed = active && !task.required
         && ['pending', 'ready', 'failed', 'waiting_user', 'waiting_confirmation'].includes(task.status);
-      if (!allowed) reason = task.required ? '必选任务不能跳过' : '只有当前里程碑中的未完成任务可以跳过';
+      if (!allowed) reason = task.required ? '必选任务不能跳过' : '只有当前阶段中的未完成任务可以跳过';
     } else if (action === 'resume') {
       allowed = active && ['skipped', 'stale'].includes(task.status);
-      if (!allowed) reason = '只有当前里程碑中已跳过或需复核的任务可以恢复';
+      if (!allowed) reason = '只有当前阶段中已跳过或需复核的任务可以恢复';
     } else if (action === 'defer') {
       allowed = active && ['pending', 'ready', 'failed', 'waiting_user'].includes(task.status);
-      if (!allowed) reason = '正在执行、已完成或不在当前里程碑的任务不能暂缓';
+      if (!allowed) reason = '正在执行、已完成或不在当前阶段的任务不能暂缓';
     } else if (action === 'redo') {
       allowed = task.status === 'completed';
       if (!allowed) reason = '只有已完成任务可以重做';

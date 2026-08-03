@@ -109,7 +109,7 @@ test('新项目确认建模目标后才规划资料分析', () => {
   ]);
 });
 
-test('用户显式暂缓阻断错误后关闭修复待办并允许确认知识结构', () => {
+test('用户显式暂缓必须修复的错误后关闭修复待办并允许确认知识结构', () => {
   const project = createMaterialFirstProject('暂缓错误进入验证');
   const graph = new AiConstructionTaskGraph(getDb());
   const state = new AuthoringState(getDb());
@@ -166,7 +166,7 @@ test('用户显式暂缓阻断错误后关闭修复待办并允许确认知识�
   snapshot = graph.apply(project.id, {
     type: 'plan_task', expectedRevision: snapshot.revision,
     task: {
-      kind: 'package_repair', milestoneId: 'knowledge_confirmed', title: '受控修复', goal: '修复阻断错误',
+      kind: 'package_repair', milestoneId: 'knowledge_confirmed', title: '受控修复', goal: '修复必须修复的错误',
       required: false, dependsOn: [],
     },
   });
@@ -259,7 +259,7 @@ test('知识包修复完成时将超长校验发现收敛为可展示摘要', ()
 
   const completed = orchestrator.completeKnowledgeRepair(project.id, {
     packageRevisionOid: 'revision-repaired', messageKey: 'repair.completed',
-    version: '1.0.0-rc.2', summary: '重新校验后未发现阻断错误',
+    version: '1.0.0-rc.2', summary: '重新校验后未发现必须修复的错误',
     validation: {
       errors: 0, warnings: 0, hints: 1,
       findings: [{ severity: '提示', category: ' ', message: '说'.repeat(6_099), target: ' ' }],
@@ -453,7 +453,7 @@ test('资料清单进度表示资料读取完成度且分析运行中不再提�
   assert.match((running!.message.blocks[1] as any).text, /资料分析正在进行/);
 });
 
-test('资料里程碑确认前补充材料后可以重新运行已完成的分析任务', () => {
+test('资料阶段确认前补充材料后可以重新运行已完成的分析任务', () => {
   const project = createMaterialFirstProject('补充资料后重分析');
   const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
   const completed = orchestrator.completeMaterialAnalysis(project.id, {
@@ -468,7 +468,7 @@ test('资料里程碑确认前补充材料后可以重新运行已完成的分�
   assert.equal(restarted.aiConstruction.tasks[0].outputRevisionOid, undefined);
 });
 
-test('确认资料里程碑后自动规划建模目标任务并提示下一步', () => {
+test('确认资料阶段后自动规划建模目标任务并提示下一步', () => {
   const project = createMaterialFirstProject('目标任务编排');
   const graph = new AiConstructionTaskGraph(getDb());
   const orchestrator = new AiConstructionOrchestrator({ db: getDb() });
@@ -838,7 +838,7 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     },
     {
       value: '__none__', label: '本轮暂不生成脚本',
-      description: '保留为 operation、rule 或 metric，不生成确定性代码',
+      description: '保留为业务操作、规则或指标，不生成确定性代码',
     },
   ]);
 
@@ -950,7 +950,7 @@ test('选择确定性脚本候选后先确认输入输出和测试契约', () =>
   )?.status, 'waiting_user');
   assert.equal((approval.message.blocks[0] as any).title, '脚本变更方案等待确认');
 
-  const failed = orchestrator.failScriptGeneration(project.id, '知识包校验仍有阻断错误');
+  const failed = orchestrator.failScriptGeneration(project.id, '知识包校验仍有必须修复的错误');
   assert.equal(failed.aiConstruction.tasks.find(
     (item) => item.id === generationTask.id,
   )?.status, 'failed');
@@ -1035,7 +1035,7 @@ test('知识结构确认后仍能发起受控修复', () => {
   assert.equal(
     snapshot.milestones.find((item) => item.id === 'knowledge_confirmed')?.status,
     'confirmed',
-    '前置条件：知识结构里程碑已确认',
+    '前置条件：知识结构阶段已确认',
   );
 
   const started = orchestrator.startKnowledgeRepair(project.id, {

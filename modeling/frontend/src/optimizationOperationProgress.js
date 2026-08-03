@@ -13,8 +13,8 @@ const OPERATIONS = {
   },
   apply: {
     seconds: 60,
-    currentStep: '准备生成所选优化建议的候选修订',
-    nextSteps: ['模型修改知识包', '校验修改结果', '保存待确认候选修订'],
+    currentStep: '正在把所选优化建议整理成待确认的修改',
+    nextSteps: ['模型修改知识包', '校验修改结果', '保存待确认的修改'],
   },
 };
 

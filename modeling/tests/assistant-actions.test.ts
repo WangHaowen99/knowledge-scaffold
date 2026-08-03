@@ -72,10 +72,10 @@ const graph = (overrides: any = {}) => ({
   ...overrides,
 }) as any;
 
-test('无阻断错误时不提供自动修复', () => {
+test('无必须修复的错误时不提供自动修复', () => {
   assert.deepEqual(
     packageRepairAvailability({ errorCount: 0, hasActiveDraft: false, graph: graph() }),
-    { available: false, reason: '当前修订没有阻断错误，无需修复' },
+    { available: false, reason: '当前内容没有必须修复的错误，无需修复' },
   );
 });
 
@@ -85,7 +85,7 @@ test('存在人工编辑草稿时说明原因而不是静默禁用', () => {
   assert.match(String(result.reason), /人工编辑草稿/);
 });
 
-test('有活动里程碑时可修复', () => {
+test('有活动阶段时可修复', () => {
   const result = packageRepairAvailability({
     errorCount: 1, hasActiveDraft: false,
     graph: graph({ milestones: [{ id: 'knowledge_confirmed', status: 'active' }] }),
@@ -93,7 +93,7 @@ test('有活动里程碑时可修复', () => {
   assert.deepEqual(result, { available: true });
 });
 
-test('无活动里程碑但有已完成校验任务时仍可修复（重开该阶段）', () => {
+test('无活动阶段但有已完成校验任务时仍可修复（重开该阶段）', () => {
   const result = packageRepairAvailability({
     errorCount: 1, hasActiveDraft: false,
     graph: graph({ tasks: [{ kind: 'package_validation', status: 'completed' }] }),
@@ -101,7 +101,7 @@ test('无活动里程碑但有已完成校验任务时仍可修复（重开该�
   assert.deepEqual(result, { available: true });
 });
 
-test('既无活动里程碑也无可重开的校验任务时说明原因', () => {
+test('既无活动阶段也无可重开的校验任务时说明原因', () => {
   const result = packageRepairAvailability({ errorCount: 1, hasActiveDraft: false, graph: graph() });
   assert.equal(result.available, false);
   assert.match(String(result.reason), /没有可承载修复的建模阶段/);

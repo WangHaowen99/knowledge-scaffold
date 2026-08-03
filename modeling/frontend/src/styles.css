@@ -1461,3 +1461,6 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 
 /* 百分比旁边的阶段序号：单看一个百分数没有参照物，用户不知道它在数什么 */
 .mwr .ac-message-stage { margin-left: auto; margin-right: 8px; color: #6b7889; font-size: 10.5px; font-weight: 600; }
+
+/* 数据源说明里的技术细节：保留但弱化，业务专家看正文即可 */
+.mwr .pkg-source-tooltip-detail { display: block; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.18); opacity: .75; font-size: 11px; }
