@@ -75,7 +75,7 @@ function steps(overrides: Partial<ProjectWorkflowStateInput> = {}) {
   return Object.fromEntries(workflow(overrides).steps.map((step) => [step.id, step])) as any;
 }
 
-test('会话原生返回九步流程且完全忽略旧 wf_nodes', () => {
+test('会话原生返回八步流程且完全忽略旧 wf_nodes', () => {
   const withoutNodes = workflow();
   const withConflictingNodes = workflow({
     nodes: [
@@ -89,7 +89,7 @@ test('会话原生返回九步流程且完全忽略旧 wf_nodes', () => {
   });
 
   assert.deepEqual(withoutNodes.steps.map((step) => step.id), [
-    'project_setup', 'ingest', 'ai_construction', 'scenario', 'data_source',
+    'project_setup', 'ai_construction', 'scenario', 'data_source',
     'evaluate', 'diagnose', 'optimize', 'release',
   ]);
   assert.deepEqual(withConflictingNodes.steps, withoutNodes.steps);
@@ -98,7 +98,7 @@ test('会话原生返回九步流程且完全忽略旧 wf_nodes', () => {
   }
 });
 
-test('旧步骤进度不会泄漏到九步会话或改变状态', () => {
+test('旧步骤进度不会泄漏到八步会话或改变状态', () => {
   const baseline = workflow();
   const withLegacyProgress = workflow({
     progress: [{
@@ -111,9 +111,8 @@ test('旧步骤进度不会泄漏到九步会话或改变状态', () => {
   assert.deepEqual(withLegacyProgress.progress, []);
 });
 
-test('资料和任务图分别提供摄取与 AI 构建状态', () => {
+test('任务图状态直接决定 AI 辅助构建的可进入性', () => {
   const noGraph = steps({ aiConstruction: null });
-  assert.equal(noGraph.ingest.status, 'completed');
   assert.equal(noGraph.ai_construction.status, 'ready');
 
   const imported = steps({
@@ -121,7 +120,6 @@ test('资料和任务图分别提供摄取与 AI 构建状态', () => {
     documents: [],
     aiConstruction: graph({ source: 'package_import' }),
   });
-  assert.equal(imported.ingest.status, 'skipped');
   assert.equal(imported.ai_construction.status, 'ready');
 
   const waiting = steps({

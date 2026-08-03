@@ -16,7 +16,6 @@ const { renderToStaticMarkup } = frontendRequire('react-dom/server');
 
 const definitions = [
   ['project_setup', '项目创建', 'prepare'],
-  ['ingest', '建模资料上传', 'prepare'],
   ['ai_construction', 'AI辅助构建', 'model'],
   ['scenario', '场景推演', 'verify'],
   ['data_source', '数据源绑定', 'verify'],
@@ -26,9 +25,12 @@ const definitions = [
   ['release', '发布交付', 'deliver'],
 ] as const;
 
+// 状态按定义下标分配。移除「建模资料上传」后线性步骤只剩 6 个，
+// 装不下全部状态，所以把要断言的几个排在线性位置上，
+// skipped/stale 留给 diagnose/optimize 这两个非线性步骤。
 const statuses = [
-  'not_started', 'ready', 'running', 'waiting_answer', 'waiting_review',
-  'completed', 'skipped', 'stale', 'failed',
+  'not_started', 'ready', 'running', 'waiting_answer', 'completed',
+  'skipped', 'stale', 'failed', 'waiting_review',
 ];
 
 function steps() {
@@ -54,10 +56,10 @@ const render = (props: Record<string, unknown>) => renderToStaticMarkup(
   React.createElement(WorkflowTimeline, props),
 );
 
-test('左栏按唯一九步数据渲染线性阶段', () => {
+test('左栏按唯一八步数据渲染线性阶段', () => {
   const html = render({ steps: steps(), activeId: 'ai_construction' });
 
-  assert.equal((html.match(/data-step-id=/g) || []).length, 7);
+  assert.equal((html.match(/data-step-id=/g) || []).length, 6);
   for (const group of ['准备', '建模', '验证', '交付']) {
     assert.match(html, new RegExp(`>${group}<`));
   }
@@ -84,7 +86,8 @@ test('状态使用统一文案且失败和过时态面向用户显示为待确�
     steps: steps().map((step) => (step.id === 'release' ? { ...step, status: 'failed' } : step)),
   });
 
-  for (const label of ['未开始', '可开始', '进行中', '待回答', '待审阅', '完成', '待确认']) {
+  // 待审阅没有线性位置可放（只剩 6 个），其余状态与「失败态显示为待确认」仍然覆盖
+  for (const label of ['未开始', '可开始', '进行中', '待回答', '完成', '待确认']) {
     assert.match(html, new RegExp(`>${label}<`));
   }
   assert.doesNotMatch(html, />失败</);
@@ -117,9 +120,9 @@ test('选择步骤时原样回传，禁用项不触发', () => {
   assert.equal(selected[0], ready);
 });
 
-test('分组保持固定顺序并在缺少 group 时按九步位置兜底', () => {
+test('分组保持固定顺序并在缺少 group 时按八步位置兜底', () => {
   const input = steps().map((step) => ({ ...step, group: undefined }));
   const grouped = groupWorkflowSteps(input);
   assert.deepEqual(Object.keys(grouped), ['prepare', 'model', 'verify', 'improve', 'deliver']);
-  assert.deepEqual(Object.values(grouped).map((items) => items.length), [2, 1, 3, 0, 1]);
+  assert.deepEqual(Object.values(grouped).map((items) => items.length), [1, 1, 3, 0, 1]);
 });

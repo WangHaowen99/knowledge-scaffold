@@ -63,8 +63,10 @@ const REQUIREMENT_LABELS = {
   正式发布必选: '发布',
 };
 
+// 必须与 FALLBACK_STEP_IDS 一一对应：移除「建模资料上传」后这里少了一项 prepare，
+// 不同步就会整体错位一格，把 verify 的步骤归到 improve 下面。
 const FALLBACK_GROUPS = [
-  'prepare', 'prepare',
+  'prepare',
   'model',
   'verify', 'verify', 'verify',
   'improve', 'improve',
@@ -72,7 +74,7 @@ const FALLBACK_GROUPS = [
 ];
 
 const FALLBACK_STEP_IDS = [
-  'project_setup', 'ingest', 'ai_construction',
+  'project_setup', 'ai_construction',
   'scenario', 'data_source', 'evaluate',
   'diagnose', 'optimize', 'release',
 ];

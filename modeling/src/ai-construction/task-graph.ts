@@ -315,6 +315,14 @@ export type MeasuredTaskDurations = Partial<Record<AiConstructionTaskKind, numbe
 const MIN_CREDIBLE_SAMPLE_MINUTES = 0.5;
 
 /**
+ * 高于这个耗时的样本同样不算数。任务的耗时是用 updatedAt - createdAt 算的，而等待
+ * 用户回答的任务会把人的思考时间、下班时间、整个周末都算进去。实测见过 5319 分钟
+ * （3.7 天）的样本，把界面上的估算顶成「预计 1–5319 分钟」——这种数字不但没用，
+ * 还会让人不再相信界面上其余的数。四小时以上一律当作空等而非工作量。
+ */
+const MAX_CREDIBLE_SAMPLE_MINUTES = 4 * 60;
+
+/**
  * 同类任务的实测耗时区间。静态表只是冷启动兜底：不同项目的资料规模、模型速度
  * 差别很大，写死的 [2, 8] 分钟在真实项目里往往离谱。
  *
@@ -337,15 +345,24 @@ export function aiConstructionTaskEstimate(
       .map(taskElapsedMinutes)
       .filter((value): value is number => value !== null),
     ...(measured[kind] ?? []).filter((value) => Number.isFinite(value)),
-  ].filter((value) => value >= MIN_CREDIBLE_SAMPLE_MINUTES);
+  ].filter((value) => (
+    value >= MIN_CREDIBLE_SAMPLE_MINUTES && value <= MAX_CREDIBLE_SAMPLE_MINUTES
+  ));
   if (!samples.length) return fallback;
 
-  const min = Math.min(...samples) * 0.8;
-  const max = Math.max(...samples) * 1.2;
-  // 单个样本会给出一个过窄的区间，与静态表取并集保留合理的不确定度
-  const low = samples.length > 1 ? min : Math.min(min, fallback[0]);
-  const high = samples.length > 1 ? max : Math.max(max, fallback[1]);
-  return [Math.max(1, Math.round(low)), Math.max(1, Math.round(high))];
+  // 用中位数而不是最小/最大值：极值对离群点毫无抵抗力，一个异常样本就能把区间撑爆。
+  // 中位数需要一半样本同时异常才会跑偏。
+  const sorted = [...samples].sort((left, right) => left - right);
+  const median = sorted.length % 2
+    ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+  // 样本少时把带子放宽而不是与静态表取并集：并集会把两个区间的极端各取一头，
+  // 结果比任何一方都宽（实测 2 个样本时给出过 2–23 分钟，比静态表还没用）。
+  const [lowFactor, highFactor] = samples.length >= 3 ? [0.7, 1.5] : [0.5, 2];
+  return [
+    Math.max(1, Math.round(median * lowFactor)),
+    Math.max(1, Math.round(median * highFactor)),
+  ];
 }
 
 /**
