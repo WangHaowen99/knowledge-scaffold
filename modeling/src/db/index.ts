@@ -147,10 +147,27 @@ export function ensureEvaluationRepairTaskKind(db: DatabaseSync): void {
   }
 }
 
-export function ensureMaterialChangeReviewTaskKind(db: DatabaseSync): void {
+/**
+ * 让 task_kind 的 CHECK 取值与代码里的全量清单对齐。
+ *
+ * 原先每新增一种就复制一遍整段重建逻辑（evaluation_repair 一次、
+ * material_change_review 一次），第三种再复制就该收口了。这里按清单比对：
+ * 少任何一种就重建，全都在就直接返回。
+ */
+export const ALL_TASK_KINDS = [
+  'material_analysis', 'package_baseline_review', 'modeling_brief',
+  'process_interview', 'process_diagram', 'process_review',
+  'operation_extraction', 'knowledge_extraction', 'script_decision',
+  'script_generation', 'package_validation', 'package_repair',
+  'evaluation_repair', 'completion_review', 'material_change_review',
+  'incremental_intake',
+] as const;
+
+export function ensureTaskKindCoverage(db: DatabaseSync): void {
   const row = db.prepare(`SELECT sql FROM sqlite_master
     WHERE type = 'table' AND name = 'ai_construction_tasks'`).get() as { sql?: string } | undefined;
-  if (!row?.sql || row.sql.includes("'material_change_review'")) return;
+  if (!row?.sql) return;
+  if (ALL_TASK_KINDS.every((kind) => row.sql!.includes(`'${kind}'`))) return;
 
   db.exec('PRAGMA foreign_keys = OFF');
   try {
@@ -163,8 +180,7 @@ export function ensureMaterialChangeReviewTaskKind(db: DatabaseSync): void {
                         'process_interview', 'process_diagram', 'process_review',
                         'operation_extraction', 'knowledge_extraction', 'script_decision',
                         'script_generation', 'package_validation', 'package_repair',
-                        'evaluation_repair', 'completion_review',
-                        'material_change_review'
+                        ${ALL_TASK_KINDS.map((kind) => `'${kind}'`).join(', ')}
                       )),
         milestone_id  TEXT NOT NULL,
         ordinal       INTEGER NOT NULL,
@@ -232,7 +248,7 @@ export function getDb(): DatabaseSync {
   migrateLegacyAiConstructionGraphSources(db);
   ensureFlowchartReviewInteraction(db);
   ensureEvaluationRepairTaskKind(db);
-  ensureMaterialChangeReviewTaskKind(db);
+  ensureTaskKindCoverage(db);
   // CREATE TABLE IF NOT EXISTS 不会给旧数据库补列；显式补齐向后兼容字段。
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
