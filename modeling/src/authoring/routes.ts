@@ -84,7 +84,11 @@ import { deferPackageErrors, getPackageErrorDeferral } from '../workflow/package
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { packageIntentQuestions } from '../workflow/spec-validation.js';
 import { buildReleaseReadiness } from '../workflow/release.js';
-import { getPackageWarningReview } from '../workflow/warning-acceptance.js';
+import {
+  acceptPackageWarnings,
+  getPackageWarningReview,
+  warningFingerprint,
+} from '../workflow/warning-acceptance.js';
 import { assertNoActivePackageDraft, PackageDraftError } from '../workflow/package-draft.js';
 import {
   PackageCandidateRejectedError,
@@ -286,6 +290,7 @@ export interface AuthoringRouteOptions {
     'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'
     | 'latestModelingBrief'
     | 'deferKnowledgeErrors' | 'advanceAfterMilestoneConfirmation'
+    | 'reviewCheckFinding' | 'requestCheckFindingIgnore'
     | 'completeModelingBrief' | 'reviseModelingBrief' | 'completeProcessInterview'
     | 'completeScriptDecision'
     | 'startScriptGeneration' | 'waitForScriptApproval' | 'completeScriptGeneration'
@@ -477,6 +482,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const workflowPackage = initialDraft ? null : currentPackage;
 
     let constructionSnapshot = advance ? ensureProjectGraph(project) : graph.snapshot(project.id);
+    // 欢迎语必须先落库：消息按 seq 排序，写在推进之后会让「已就绪」反而排在
+    // 「进入建模目标确认」下面，用户看到的是倒着的开场。
+    if (advance && constructionSnapshot) messages.ensureWelcome(project.id, constructionSnapshot);
     if (advance && constructionSnapshot && [
       'goal_confirmed', 'materials_ready', 'process_confirmed',
       'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
@@ -495,7 +503,6 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           : {},
       ).aiConstruction;
     }
-    if (advance && constructionSnapshot) messages.ensureWelcome(project.id, constructionSnapshot);
 
     const authoring = state.snapshot(project.id);
     const rounds = m3repo.listRounds(project.id);
@@ -1228,6 +1235,110 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     }
   });
 
+  // 体检面板只负责列出发现，处理动作一律交给建模助手：面板里就地填表的做法
+  // 让「怎么处理」和「处理到哪一步」分散在两个地方，刷新还会丢。
+  //
+  // 两条路由都先按 findingId 从已保存的校验结果里取回发现本身，不信任前端传来的内容。
+  const loadCheckFinding = async (projectId: string, findingId: string) => {
+    const currentPackage = await packages.current(projectId);
+    if (!currentPackage) return { error: { code: 'PACKAGE_NOT_FOUND', message: '当前项目没有知识包草稿' } };
+    const check = getCheck(projectId);
+    if (!check || check.revision !== currentPackage.revision.oid) {
+      return {
+        error: {
+          code: 'PACKAGE_CHECK_REQUIRED',
+          message: '当前知识包内容尚未完成检查，请先重新执行知识包校验',
+        },
+      };
+    }
+    const finding = check.findings.find((item) => item.id === findingId);
+    if (!finding) return { error: { code: 'CHECK_FINDING_NOT_FOUND', message: '该校验发现已经不在最新检查结果里' } };
+    return { revision: currentPackage.revision.oid, check, finding };
+  };
+
+  // target 可能是对象/操作 key 而不是文件路径，只有看起来是包内路径时才给「打开文件」按钮，
+  // 否则会造出一个点了跳不到任何地方的按钮。
+  const findingFilePath = (finding: CheckFinding): string | undefined => (
+    /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*\.[A-Za-z0-9]+$/.test(finding.target)
+      ? finding.target
+      : undefined
+  );
+
+  const findingCardInput = (finding: CheckFinding, revision: string) => ({
+    packageRevisionOid: revision,
+    findingId: finding.id,
+    severity: finding.severity,
+    category: finding.category,
+    target: finding.target,
+    message: finding.userMessage?.trim() || finding.message,
+    ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
+    ...(findingFilePath(finding) ? { filePath: findingFilePath(finding)! } : {}),
+  });
+
+  app.post('/api/projects/:id/package/check/findings/review', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const findingId = String((req.body as any)?.findingId ?? '').trim();
+    if (!findingId) return reply.code(400).send({ error: '缺少校验发现标识', code: 'INVALID_INPUT' });
+    try {
+      ensureProjectGraph(project);
+      const loaded = await loadCheckFinding(project.id, findingId);
+      if (loaded.error) {
+        return reply.code(409).send({ error: loaded.error.message, code: loaded.error.code });
+      }
+      const result = orchestrator.reviewCheckFinding(
+        project.id,
+        findingCardInput(loaded.finding!, loaded.revision!),
+      );
+      return {
+        aiConstruction: result.aiConstruction,
+        message: result.message,
+        cursor: state.snapshot(project.id).lastEventSeq,
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/package/check/findings/ignore', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const findingId = String((req.body as any)?.findingId ?? '').trim();
+    if (!findingId) return reply.code(400).send({ error: '缺少校验发现标识', code: 'INVALID_INPUT' });
+    try {
+      ensureProjectGraph(project);
+      const loaded = await loadCheckFinding(project.id, findingId);
+      if (loaded.error) {
+        return reply.code(409).send({ error: loaded.error.message, code: loaded.error.code });
+      }
+      const finding = loaded.finding!;
+      if (finding.severity !== '错误' && finding.severity !== '警告') {
+        return reply.code(409).send({
+          error: '提示类发现不需要忽略，可以直接继续建模',
+          code: 'CHECK_FINDING_NOT_IGNORABLE',
+        });
+      }
+      const scope = finding.severity === '错误' ? 'errors' as const : 'warning' as const;
+      const result = orchestrator.requestCheckFindingIgnore(project.id, {
+        ...findingCardInput(finding, loaded.revision!),
+        scope,
+        // 必须用 warningFingerprint 算，不能用 finding.fingerprint：后者是跨校验修订稳定的
+        // 问题身份，和警告接受记录用的键不是一回事，混用会指向错误的目标。
+        ...(scope === 'warning' ? { fingerprint: warningFingerprint(finding) } : {}),
+        ...(scope === 'errors'
+          ? { errorCount: loaded.check!.findings.filter((item) => item.severity === '错误').length }
+          : {}),
+      });
+      return {
+        aiConstruction: result.aiConstruction,
+        interaction: result.interaction,
+        cursor: state.snapshot(project.id).lastEventSeq,
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
   app.get('/api/projects/:id/interactions/:interactionId/flowchart-draft', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -1463,6 +1574,118 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               run,
               replayed: answered.replayed,
               ...construction,
+              cursor: state.snapshot(project.id).lastEventSeq,
+            };
+          } catch (error) {
+            if (db.isTransaction) db.exec('ROLLBACK');
+            throw error;
+          }
+        });
+      }
+      if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'check_finding_ignore') {
+        return await runWithProjectLease(leases, {
+          projectId: project.id,
+          operation: '记录知识包校验发现的忽略理由',
+          owner: `${req.user!.username}:${req.id}`,
+          ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+        }, async () => {
+          if (interaction.status !== 'pending') {
+            const replayed = adapter.respond(project.id, interactionId, requestId, response);
+            return {
+              interaction: replayed.interaction,
+              run: replayed.run,
+              replayed: replayed.replayed,
+              aiConstruction: graph.snapshot(project.id),
+              cursor: state.snapshot(project.id).lastEventSeq,
+            };
+          }
+          const currentPackage = await packages.current(project.id);
+          if (!currentPackage) {
+            return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+          }
+          // 忽略记录只对当时看到的那份内容成立，内容变了必须重新判断
+          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+            return reply.code(409).send({
+              error: '知识包内容已经变化，请重新检查后再决定是否忽略',
+              code: 'REVISION_CONFLICT',
+            });
+          }
+          const answers = Array.isArray(response.answers) ? response.answers : [];
+          const answer = answers.find((item) => (
+            item && typeof item === 'object' && !Array.isArray(item)
+              && (item as Record<string, unknown>).questionId === 'ignore_reason'
+          )) as Record<string, unknown> | undefined;
+          const selected = Array.isArray(answer?.selected)
+            ? answer!.selected.map(String).map((item) => item.trim()).find(Boolean) ?? ''
+            : '';
+          const reason = String(answer?.other ?? selected).trim();
+          if (reason.length < 4 || reason.length > 2_000) {
+            return reply.code(400).send({ error: '请填写有效的忽略理由', code: 'INVALID_INPUT' });
+          }
+          const scope = String(interaction.payload.scope ?? '');
+          const db = getDb();
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            const answered = adapter.respond(project.id, interactionId, requestId, response);
+            let result: JsonObject;
+            if (scope === 'errors') {
+              // 后端只支持整批暂缓，卡片描述里已经把影响面写清楚了
+              const check = getCheck(project.id);
+              const errorCount = check?.findings.filter((item) => item.severity === '错误').length ?? 0;
+              if (!errorCount) {
+                db.exec('ROLLBACK');
+                return reply.code(409).send({
+                  error: '当前知识包没有必须修复的错误',
+                  code: 'NO_BLOCKING_ERRORS',
+                });
+              }
+              orchestrator.deferKnowledgeErrors(project.id, {
+                packageRevisionOid: currentPackage.revision.oid,
+                errorCount,
+                reason,
+                actor: req.user!.username,
+              });
+              const deferral = deferPackageErrors({
+                projectId: project.id,
+                revision: currentPackage.revision.oid,
+                reason,
+                actor: req.user!.username,
+                actorRole: 'project_owner',
+              });
+              state.apply({
+                kind: 'publish_event',
+                projectId: project.id,
+                type: 'package.validation.errors.deferred',
+                payload: { revision: deferral.revision, errorCount: deferral.errorCount },
+              });
+              result = { purpose: 'check_finding_ignore', scope, errorCount } as JsonObject;
+            } else {
+              const fingerprint = String(interaction.payload.fingerprint ?? '');
+              if (!fingerprint) {
+                db.exec('ROLLBACK');
+                return reply.code(409).send({
+                  error: '这条提醒缺少可追溯标识，无法忽略',
+                  code: 'CHECK_FINDING_NOT_IGNORABLE',
+                });
+              }
+              acceptPackageWarnings({
+                projectId: project.id,
+                revision: currentPackage.revision.oid,
+                fingerprints: [fingerprint],
+                note: reason,
+                actor: req.user!.username,
+                actorRole: 'project_owner',
+                phase: 'validation',
+              });
+              result = { purpose: 'check_finding_ignore', scope, fingerprint } as JsonObject;
+            }
+            const run = adapter.complete(project.id, answered.run.id, result).run;
+            db.exec('COMMIT');
+            return {
+              interaction: answered.interaction,
+              run,
+              replayed: answered.replayed,
+              aiConstruction: graph.snapshot(project.id),
               cursor: state.snapshot(project.id).lastEventSeq,
             };
           } catch (error) {

@@ -603,9 +603,6 @@ body { background: #f2f4f8; overflow: hidden; }
 .package-release-review { margin: 12px 16px 0; padding: 12px; border: 1px solid #b9c8e8; border-radius: 10px; background: #f5f8ff; }
 .package-release-review p { margin: 5px 0 9px; color: #34486d; font-size: 12px; line-height: 1.55; }
 .package-release-review textarea { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; border: 1px solid #aebddb; border-radius: 7px; padding: 7px 9px; background: #fff; resize: vertical; }
-.pcheck-warning-acceptance { margin: 12px 0 2px; padding: 12px; border: 1px solid #efd49a; border-radius: 10px; background: #fff9eb; }
-.pcheck-warning-acceptance p { margin: 5px 0 9px; color: #72571f; font-size: 12px; line-height: 1.55; }
-.pcheck-warning-acceptance textarea { display: block; width: 100%; box-sizing: border-box; margin-bottom: 8px; border: 1px solid #d9c38d; border-radius: 7px; padding: 7px 9px; background: #fff; resize: vertical; }
 
 /* ---- M3 评测 ---- */
 .mwr .tc-row { border: 1px solid #dbe5f1; border-radius: 14px; padding: 14px; margin-bottom: 12px; background: #fff; box-shadow: 0 4px 14px rgba(32, 74, 121, .06); transition: box-shadow .16s, border-color .16s; }
@@ -1110,13 +1107,13 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .pcheck-list { margin-top: 10px; border: 1px solid #e6e9f0; border-radius: 12px; background: #fff; max-height: 260px; overflow-y: auto; box-shadow: var(--sh-sm); }
 .mwr .pcheck-item { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid #eff1f5; }
 .mwr .pcheck-item:last-child { border-bottom: none; }
-.mwr .pcheck-warning-acceptance { margin: 10px; padding: 11px; border: 1px solid #ead9ae; border-radius: 9px; background: #fffbef; }
-.mwr .pcheck-warning-acceptance strong { color: #6c5420; font-size: 12px; }
-.mwr .pcheck-warning-acceptance p { margin: 5px 0 8px; color: #7b6941; font-size: 11px; line-height: 1.55; }
-.mwr .pcheck-warning-acceptance textarea { display: block; width: 100%; box-sizing: border-box; margin-bottom: 7px; border: 1px solid #d7c38f; border-radius: 7px; padding: 7px; resize: vertical; font: inherit; }
 .mwr .pcheck-target { border: none; background: none; font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--blue-d); cursor: pointer; padding: 0; }
 .mwr .pcheck-target:hover { text-decoration: underline; }
 .mwr .pcheck-msg { flex-basis: 100%; font-size: 12.5px; color: var(--ink); line-height: 1.6; }
+/* 每条发现自带的两个交接按钮：处理动作本身在建模助手里完成，这里只负责把它交过去 */
+.mwr .pcheck-act { padding: 2px 10px; font-size: 11.5px; flex: none; }
+.mwr .pcheck-note { margin: 10px; padding: 11px; border: 1px solid #ead9ae; border-radius: 9px; background: #fffbef; color: #7b6941; font-size: 11px; line-height: 1.55; }
+.mwr .pcheck-note .muted { display: block; margin-top: 5px; color: #9a8a63; }
 
 /* ---- 访谈题卡（改版） ---- */
 .mwr .iv-q { background: #fff; }

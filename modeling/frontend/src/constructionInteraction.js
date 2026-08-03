@@ -9,6 +9,7 @@ const CONSTRUCTION_PURPOSES = new Set([
   'script_generation',
   'generation_gate_skip',
   'controlled_repair_expert',
+  'check_finding_ignore',
 ]);
 
 export function isConstructionInteraction(interaction) {
