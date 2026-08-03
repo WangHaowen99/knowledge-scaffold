@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { nowIso } from '../db/index.js';
 import type { PackageSpec } from '../types.js';
 import type { MaterialRevisionChange } from './repo.js';
+import { propagateImpact } from './knowledge-dependency.js';
 
 export type AffectedKnowledgeKind = 'object' | 'relation' | 'operation' | 'rule' | 'metric' | 'script';
 
@@ -72,7 +73,10 @@ export function analyzeMaterialImpact(
   collect('rule', spec.rules);
   collect('metric', spec.metrics);
   collect('script', spec.scripts);
-  const unique = [...new Map(affectedResources.map((item) => [`${item.kind}:${item.key}`, item])).values()];
+  const direct = [...new Map(affectedResources.map((item) => [`${item.kind}:${item.key}`, item])).values()];
+  // 直接引用了这份资料的只是起点。改一条规则，引用它的业务操作和绑定的脚本同样要复核——
+  // 沿 spec 里的显式引用关系把影响面算全，用户才知道这次改动到底牵动了什么。
+  const unique = propagateImpact(spec, direct);
   const earliestMilestone = unique.some((item) => item.kind !== 'script')
     ? 'knowledge_confirmed' as const
     : unique.some((item) => item.kind === 'script')
