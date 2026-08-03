@@ -191,7 +191,7 @@ export interface CheckFindingCardInput {
   target: string;
   message: string;
   suggestion?: string;
-  /** target 是包内文件路径时才给，用来生成「打开这个文件」按钮 */
+  /** 包内文件路径或知识资源语义目标，用来生成「打开这个文件」按钮 */
   filePath?: string;
 }
 

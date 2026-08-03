@@ -78,6 +78,12 @@ test('动作保留 path，卡片才能打开这条发现对应的文件', () => 
   assert.equal((reloaded[0].blocks[0] as any).actions[0].path, 'objects/index.md');
 });
 
+test('动作路径允许 object:key 语义目标并继续拒绝包外路径', () => {
+  const project = createProject({ owner: 'alice', name: '动作语义目标' });
+  const message = appendFileAction(project.id, 'object:survey_scheme');
+  assert.equal((message.blocks[0] as any).actions[0].path, 'object:survey_scheme');
+});
+
 test('拒绝越出知识包的动作路径', () => {
   const project = createProject({ owner: 'alice', name: '动作路径越界' });
   for (const path of ['../secrets.md', '/etc/passwd', 'a/../../b.md']) {

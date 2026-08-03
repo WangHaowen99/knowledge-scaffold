@@ -87,7 +87,7 @@ export interface AiConstructionNextActionsBlock {
     kind?: AssistantActionKind;
     label: string;
     description?: string;
-    /** 仅 open_package_file 使用：要打开的知识包内相对路径 */
+    /** 仅 open_package_file 使用：知识包内相对路径或可解析的资源语义目标 */
     path?: string;
     style: 'primary' | 'secondary' | 'danger';
   }>;
@@ -150,8 +150,8 @@ export class AiConstructionMessageStoreError extends Error {
 }
 
 const BLOCK_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
-// 知识包内的相对路径。拒绝绝对路径和 .. 段，避免动作把用户导向包外的文件。
-const PACKAGE_PATH_PATTERN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)*$/;
+// 知识包内的相对路径或 object:key 等语义目标。拒绝绝对路径和 .. 段，避免导向包外。
+const PACKAGE_PATH_PATTERN = /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/;
 const MESSAGE_ROLES = new Set<AiConstructionMessageRole>(['assistant', 'user', 'system']);
 const ACTION_STYLES = new Set(['primary', 'secondary', 'danger']);
 const CONFIDENCE = new Set(['low', 'medium', 'high']);
