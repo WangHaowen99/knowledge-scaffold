@@ -120,6 +120,8 @@ import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
 import { InFlightOperations } from '../in-flight-operations.js';
 import { startBackgroundJob } from './background-job.js';
+import { assertIncrementChangesAllowed, buildIncrementRequirement } from '../ai-construction/increment.js';
+import { listMaterialImpacts } from '../documents/material-impact.js';
 import {
   CANCELLABLE_OPERATIONS, requestCancel, type CancellableOperation,
 } from '../cancellation.js';
@@ -737,9 +739,15 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               nextActions: pendingInteractionActions(blockingInteractions),
             });
           }
+          // 增量补充是在已发布版本上加内容，走次版本号（1.0.0 → 1.1.0-rc.1）。
+          // 会破坏已有接口的变更（改脚本契约、改操作结构）不在增量范围内，
+          // 所以这里不需要 major。
+          const incrementRound = graph.snapshot(project.id)?.milestones
+            ?.some((item) => item.id === 'increment_confirmed' && item.status === 'active');
           const version = nextValidationCandidateVersion({
             currentVersion: currentPackage.packageVersion,
             currentStatus: currentPackage.spec.status ?? 'draft',
+            ...(incrementRound ? { changeLevel: 'minor' as const } : {}),
           });
           validationCandidate = await packages.saveCurrentAsPackageVersion(project.id, {
             expectedRevision: currentPackage.revision.oid,
@@ -1040,6 +1048,82 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     }
   });
 
+  app.post('/api/projects/:id/ai-construction/increment/propose', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'increment-propose');
+      const currentPackage = await packages.current(project.id);
+      if (!currentPackage) {
+        return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+      }
+      const snapshot = graph.snapshot(project.id);
+      const intake = snapshot?.tasks.find((task) => task.kind === 'incremental_intake'
+        && !['completed', 'skipped', 'cancelled'].includes(task.status));
+      if (!intake) {
+        return reply.code(409).send({
+          error: '当前没有进行中的增量补充，请先开始一轮增量',
+          code: 'INCREMENT_ROUND_NOT_STARTED',
+        });
+      }
+      // 本轮资料 = 开轮之后上传的。没有新资料就没有增量可提，早说比让模型空跑十几分钟好
+      const materials = listDocuments(project.id)
+        .filter((document) => document.createdAt > intake.createdAt)
+        .map((document) => ({ filename: document.filename }));
+      if (!materials.length) {
+        return reply.code(409).send({
+          error: '本轮还没有上传新的资料，请先上传要补充的资料',
+          code: 'INCREMENT_MATERIALS_REQUIRED',
+        });
+      }
+
+      const requirement = buildIncrementRequirement({
+        materials,
+        affected: listMaterialImpacts(getDb(), project.id)
+          .flatMap((impact) => impact.affectedResources ?? [])
+          .map((ref) => ({ targetKind: ref.kind as any, targetKey: ref.key, action: 'modify' })),
+        spec: currentPackage.spec,
+      });
+
+      const runId = adapter.start(project.id, '生成增量修改方案', currentPackage.revision.oid, {
+        purpose: 'increment_proposal', taskId: intake.id,
+      }).run.id;
+      startBackgroundJob({
+        jobs,
+        leases,
+        key: `${project.id}:increment-propose`,
+        operation: '生成增量修改方案',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+        projectId: project.id,
+        run: async () => {
+          const planned = await planPackageChat(project, [], requirement, {
+            purpose: 'package_chat',
+            intent: '生成增量修改方案',
+            interactionTitle: '确认增量修改方案',
+            metadata: { incrementRound: true, incrementTaskId: intake.id },
+          });
+          // 在方案送到专家面前之前就挡下删除：让他看到一个批准不了的方案毫无意义
+          assertIncrementChangesAllowed((planned.plan?.changes ?? []) as any);
+          if (!planned.interaction) {
+            throw new Error(planned.reply?.trim() || '本轮资料不足以提出可靠的增量修改');
+          }
+          adapter.complete(project.id, runId, { incrementProposalId: planned.interaction.id });
+        },
+        onError: (reason) => { adapter.fail(project.id, runId, reason); },
+      });
+
+      return reply.code(202).send({
+        accepted: true,
+        aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
+      });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
   app.post('/api/projects/:id/ai-construction/operations/cancel', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -1316,6 +1400,18 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         return reply.code(409).send({
           error: '提示类发现不需要忽略，可以直接继续建模',
           code: 'CHECK_FINDING_NOT_IGNORABLE',
+        });
+      }
+      // 助手栏一次只渲染一条待办。这里不拦的话，新开的忽略表单会被已有待办挡住，
+      // 用户点了「忽略」界面上什么都不会发生；而待办没有取消入口，让它抢占插槽又会把
+      // 人困在必填理由里退不出去。所以先处理完手上的那条再来。
+      const blocking = state.snapshot(project.id).pendingInteractions.find(
+        (item) => item.payload.purpose !== 'check_finding_ignore',
+      );
+      if (blocking) {
+        return reply.code(409).send({
+          error: `请先在建模助手里处理「${String(blocking.payload.title ?? '待确认事项')}」，再来忽略校验发现`,
+          code: 'PENDING_INTERACTION_FIRST',
         });
       }
       const scope = finding.severity === '错误' ? 'errors' as const : 'warning' as const;
