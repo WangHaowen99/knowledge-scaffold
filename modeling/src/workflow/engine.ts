@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { getDb, nowIso } from '../db/index.js';
+import { throwIfCancelled } from '../cancellation.js';
+import {
+  batchCacheKey, briefFingerprint, readCachedBatchAnalysis, writeCachedBatchAnalysis,
+} from './material-analysis-cache.js';
 import type { NodeStatus, NodeType, WorkflowNode, DataDictTable, AnalysisResult } from '../types.js';
 import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
 import { buildArtifactAnalysisTools, buildTools, type ToolContext } from './tools.js';
@@ -299,9 +303,32 @@ export async function runAnalyze(
     const batches = buildArtifactBatches(tables, documents);
     const parts: ArtifactAnalysis[] = [];
     const artifactMessages: unknown[] = [];
+    const cacheBrief = briefFingerprint(confirmedBrief);
+    let reusedBatches = 0;
     for (const [index, batch] of batches.entries()) {
+      // 检查点：上一批已经完整落在 parts 里，这里停下来不会留半条记录
+      throwIfCancelled(projectId, 'analyze');
       const phase = `artifact_batch_${index + 1}`;
       const batchStartPercent = 28 + Math.round((index / Math.max(1, batches.length)) * 52);
+      // 这批材料一个字节都没变就直接用上次的结果，不再花一次 agent run
+      const cacheKey = batchCacheKey(batch, cacheBrief);
+      const cached = readCachedBatchAnalysis<ArtifactAnalysis>(projectId, cacheKey);
+      if (cached) {
+        reusedBatches += 1;
+        parts.push(cached);
+        trace({
+          projectId, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
+          title: `第 ${index + 1}/${batches.length} 批材料复用已有分析`,
+          summary: batch.refs.map((item) => item.source).join('、'),
+          details: { reused: true, sources: batch.refs.map((item) => item.source) },
+        });
+        reportProgress({
+          phase, title: `第 ${index + 1}/${batches.length} 批资料未变动，复用已有分析`,
+          summary: batch.refs.map((item) => item.source).join('、').slice(0, 500),
+          percent: 28 + Math.round(((index + 1) / Math.max(1, batches.length)) * 52),
+        });
+        continue;
+      }
       trace({
         projectId, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
         title: `分析第 ${index + 1}/${batches.length} 批材料`,
@@ -397,6 +424,8 @@ export async function runAnalyze(
         throw new Error(`第 ${index + 1} 批材料自动补交 2 次后仍不完整：\n${formatArtifactIssues(issues)}`);
       }
       parts.push(current);
+      // 只缓存校验通过的结果：补交两次仍不完整的批次上面已经抛错，不会走到这里
+      writeCachedBatchAnalysis(projectId, cacheKey, current);
       artifactMessages.push(...batchMessages);
       messagesSoFar = [...messages, ...artifactMessages];
       trace({
@@ -408,6 +437,14 @@ export async function runAnalyze(
         phase, title: `第 ${index + 1}/${batches.length} 批资料分析完成`,
         summary: `材料 ${current.materialAssessments?.length ?? 0} 份 · 知识候选 ${current.candidateArtifacts?.length ?? 0} 个`,
         percent: 28 + Math.round(((index + 1) / Math.max(1, batches.length)) * 52),
+      });
+    }
+    if (reusedBatches) {
+      trace({
+        projectId, nodeId: node.id, phase: 'artifact_analysis', kind: 'phase_completed', status: 'done',
+        title: `复用了 ${reusedBatches}/${batches.length} 批未变动资料的分析`,
+        summary: '只有内容发生变化的资料重新分析，其余沿用上次结果',
+        details: { reusedBatches, totalBatches: batches.length },
       });
     }
     const artifactAnalysis = mergeArtifactAnalyses(parts);

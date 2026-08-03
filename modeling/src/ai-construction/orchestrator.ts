@@ -182,6 +182,33 @@ export interface DeferKnowledgeErrorsInput {
   actor: string;
 }
 
+/** 体检面板里点开一条校验发现时，助手要展示的内容。 */
+export interface CheckFindingCardInput {
+  packageRevisionOid: string;
+  findingId: string;
+  severity: string;
+  category: string;
+  target: string;
+  message: string;
+  suggestion?: string;
+  /** 包内文件路径或知识资源语义目标，用来生成「打开这个文件」按钮 */
+  filePath?: string;
+}
+
+export interface CheckFindingIgnoreRequest {
+  aiConstruction: AiConstructionTaskGraphSnapshot;
+  interaction: AuthoringInteraction;
+}
+
+/** 忽略一条发现前，先向专家收集理由。错误只能整批暂缓，警告按 fingerprint 逐条接受。 */
+export interface CheckFindingIgnoreInput extends CheckFindingCardInput {
+  scope: 'errors' | 'warning';
+  /** scope='warning' 时必须提供 */
+  fingerprint?: string;
+  /** scope='errors' 时表示会被一起暂缓的错误总数 */
+  errorCount?: number;
+}
+
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
 }
@@ -469,7 +496,7 @@ export class AiConstructionOrchestrator {
         && item.status === 'running');
       if (!task) throw new Error('当前没有正在执行的资料分析任务');
       current = this.graph.apply(projectId, {
-        type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        type: 'fail_task', expectedRevision: current.revision, taskId: task.id, reason,
       });
       const message = this.messages.upsert(projectId, {
         key: messageKey, role: 'assistant', taskId: task.id,
@@ -807,7 +834,7 @@ export class AiConstructionOrchestrator {
         blocks: [
           {
             type: 'status', title: '业务流程图已确认',
-            summary: '流程图已经写入知识包，可以确认业务流程里程碑',
+            summary: '流程图已经写入知识包，可以确认业务流程阶段',
             milestoneId: 'process_confirmed', taskId: task.id,
             progress: after.progress.percent,
             eta: {
@@ -816,7 +843,7 @@ export class AiConstructionOrchestrator {
               confidence: after.progress.eta.confidence,
             },
           },
-          { type: 'text', text: '后续将以已确认流程为主线提取 operation、对象关系、规则和确定性能力。' },
+          { type: 'text', text: '后续将以已确认流程为主线提取业务操作、对象关系、规则和确定性能力。' },
           {
             type: 'next_actions', title: '请确认下一步',
             actions: [{ id: 'confirm_process', label: '确认业务流程', style: 'primary' }],
@@ -896,10 +923,10 @@ export class AiConstructionOrchestrator {
               `知识包校验结果：${validationSummary}。`,
               input.validation.errors === 0
                 ? '请在中间工作区逐文件审阅；确认后再进入确定性脚本判断。'
-                : '当前存在阻断错误，请重新生成并校验后再确认知识结构。',
+                : '当前存在必须修复的错误，请重新生成并校验后再确认知识结构。',
             ].join('\n'),
           },
-          { type: 'validation', title: '知识结构里程碑校验', scope: 'milestone',
+          { type: 'validation', title: '知识结构阶段校验', scope: 'milestone',
             counts: { errors: input.validation.errors, warnings: input.validation.warnings, hints: input.validation.hints },
             ...(input.validation.findings?.length ? {
               findings: input.validation.findings.slice(0, 8).map((finding) => ({
@@ -1076,7 +1103,7 @@ export class AiConstructionOrchestrator {
         && item.status === 'running');
       if (!task) throw new Error('当前没有正在执行的知识结构任务');
       current = this.graph.apply(projectId, {
-        type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        type: 'fail_task', expectedRevision: current.revision, taskId: task.id, reason,
       });
       const message = this.messages.append(projectId, {
         role: 'assistant', taskId: task.id,
@@ -1133,16 +1160,16 @@ export class AiConstructionOrchestrator {
     const reworkTask = [...current.tasks].reverse().find((item) => (
       item.kind === 'package_validation' && item.status === 'completed'
     ));
-    if (!reworkTask) throw new Error('当前没有可执行受控修复的活动里程碑');
+    if (!reworkTask) throw new Error('当前没有可执行逐项修复的活动阶段');
     current = this.graph.adjust(projectId, {
       expectedRevision: current.revision,
       taskId: reworkTask.id,
       action: 'redo',
       actor: 'system-controlled-repair',
-      reason: '知识包校验发现新的阻断错误，需要重新打开修复与校验阶段',
+      reason: '知识包校验发现新的必须修复的错误，需要重新打开修复与校验阶段',
     }).graph;
     milestoneId = current.milestones.find((item) => item.status === 'active')?.id;
-    if (!milestoneId) throw new Error('当前没有可执行受控修复的活动里程碑');
+    if (!milestoneId) throw new Error('当前没有可执行逐项修复的活动阶段');
     return { graph: current, milestoneId };
   }
 
@@ -1166,10 +1193,10 @@ export class AiConstructionOrchestrator {
           type: 'plan_task', expectedRevision: current.revision,
           task: {
             kind: 'package_repair', milestoneId,
-            title: '受控修复知识包校验问题',
-            goal: '按权限修复阻断问题并重新执行当前里程碑的知识包校验。',
+            title: '逐项修复知识包校验问题',
+            goal: '按各自的处理权限把问题修掉，然后重新跑一次检查。',
             required: false,
-            reason: '知识包校验存在阻断错误；原校验任务继续承担里程碑门禁',
+            reason: '知识包校验存在必须修复的错误；原校验任务继续承担阶段门禁',
             inputRevisionOid: input.inputRevisionOid,
             dependsOn: milestoneId === 'knowledge_confirmed' && knowledgeTask ? [knowledgeTask.id] : [],
           },
@@ -1186,7 +1213,7 @@ export class AiConstructionOrchestrator {
       const blocks = [
         {
           type: 'status' as const,
-          title: '正在受控修复知识包',
+          title: '正在逐项修复知识包',
           summary: '先处理可唯一确定的结构问题，再按权限暂停在人工确认点',
           milestoneId: 'knowledge_confirmed', taskId: activeTask.id,
           progress: current.progress.percent,
@@ -1198,7 +1225,7 @@ export class AiConstructionOrchestrator {
         },
         {
           type: 'text' as const,
-          text: '安全结构问题会形成独立修订；知识语义修改先展示方案；阈值、分支、口径和冲突必须由专家明确回答。',
+          text: '安全结构问题会单独形成一次修改；知识语义修改先展示方案；阈值、分支、口径和冲突必须由专家明确回答。',
         },
       ];
       const message = input.messageKey
@@ -1291,9 +1318,9 @@ export class AiConstructionOrchestrator {
           task: {
             kind: 'package_validation', milestoneId: repairMilestoneId,
             title: '重新校验修复后的知识包',
-            goal: '基于最新修订重新检查知识包结构、引用、数据映射和语义完整性。',
+            goal: '重新检查一遍知识包有没有缺内容、引用错、和数据对不上的地方。',
             required: true,
-            reason: '知识包修订已经变化，旧校验结果不能继续作为里程碑门禁',
+            reason: '知识包内容已经变化，旧校验结果不能继续作为阶段门禁',
             inputRevisionOid: input.packageRevisionOid,
             dependsOn: [repairTask.id],
           },
@@ -1340,7 +1367,7 @@ export class AiConstructionOrchestrator {
           },
           { type: 'text', text: input.summary },
           {
-            type: 'validation', title: '修复后里程碑校验', scope: 'milestone',
+            type: 'validation', title: '修复后阶段校验', scope: 'milestone',
             counts: {
               errors: input.validation.errors,
               warnings: input.validation.warnings,
@@ -1421,7 +1448,7 @@ export class AiConstructionOrchestrator {
           task: {
             kind: 'evaluation_repair', milestoneId,
             title: '修缮评测发现的知识包缺陷',
-            goal: '按评测失败原因修正对象、操作、规则、指标或脚本，并重新评测验证。',
+            goal: '按评测失败的原因改掉对应的内容，改完重新评测确认已经修好。',
             required: false,
             reason: `来自评测轮次 ${input.roundId} 的 ${input.defects.length} 项失败原因`,
             ...(input.packageRevisionOid ? { inputRevisionOid: input.packageRevisionOid } : {}),
@@ -1487,13 +1514,13 @@ export class AiConstructionOrchestrator {
   ): AiConstructionMaterialUpdate {
     return this.transaction(() => {
       const reason = input.reason.trim();
-      if (!reason || input.errorCount < 1) throw new Error('请说明需要暂缓的阻断错误和原因');
+      if (!reason || input.errorCount < 1) throw new Error('请说明需要暂缓的必须修复的错误和原因');
       let current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
       let repairTask = this.findRepairTask(current);
       if (repairTask?.status === 'running') {
         current = this.graph.apply(projectId, {
-          type: 'fail_task', expectedRevision: current.revision, taskId: repairTask.id,
+          type: 'fail_task', expectedRevision: current.revision, taskId: repairTask.id, reason,
         });
         repairTask = current.tasks.find((item) => item.id === repairTask!.id);
       }
@@ -1533,7 +1560,7 @@ export class AiConstructionOrchestrator {
         blocks: [
           {
             type: 'status', title: '已暂缓知识包错误修复',
-            summary: `保留 ${input.errorCount} 个阻断错误，先进入验证闭环`,
+            summary: `保留 ${input.errorCount} 个必须修复的错误，先进入验证闭环`,
             milestoneId: 'knowledge_confirmed', taskId: validationTask.id,
             progress: current.progress.percent,
             eta: {
@@ -1544,7 +1571,7 @@ export class AiConstructionOrchestrator {
           },
           {
             type: 'text',
-            text: `${reason}\n这些错误仅对当前修订暂缓；验证和改进可以继续，正式发布前仍必须消除阻断错误。`,
+            text: `${reason}\n这些错误仅对当前修订暂缓；验证和改进可以继续，正式发布前仍必须消除必须修复的错误。`,
           },
           {
             type: 'validation', title: '暂缓进入验证的已知阻断项', scope: 'milestone',
@@ -1559,6 +1586,143 @@ export class AiConstructionOrchestrator {
         ],
       });
       return { aiConstruction: current, message };
+    });
+  }
+
+  /**
+   * 「去修改」：把一条校验发现讲清楚，并给出可执行的两条路。
+   *
+   * 原先这个按钮只是往输入框预填一句话，用户还得自己按发送；现在直接落一条助手消息，
+   * 和其他受阻路径用同一套卡片渲染。
+   */
+  reviewCheckFinding(
+    projectId: string,
+    input: CheckFindingCardInput,
+  ): AiConstructionMaterialUpdate {
+    return this.transaction(() => {
+      const current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      const taskId = current.progress.currentTaskId ?? undefined;
+      const message = this.messages.ensure(projectId, {
+        key: `check.finding.review.${input.packageRevisionOid.slice(0, 12)}.${input.findingId}`,
+        role: 'assistant',
+        taskId,
+        blocks: [
+          {
+            type: 'status',
+            title: `处理校验发现：${input.category}`,
+            summary: `${input.severity} · ${input.target}`,
+            milestoneId: current.progress.currentMilestoneId ?? undefined,
+            taskId,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: [
+              input.message,
+              input.suggestion ? `建议这样改：${input.suggestion}` : '',
+            ].filter(Boolean).join('\n'),
+          },
+          {
+            type: 'next_actions',
+            title: '选择一种方式处理',
+            actions: [
+              {
+                id: 'repair_knowledge_structure',
+                label: '让助手逐项修复',
+                description: '按校验发现逐条修复，需要业务判断时会来问你',
+                style: 'primary' as const,
+              },
+              input.filePath
+                ? {
+                  id: 'open_package_file' as const,
+                  label: '我自己去改这个文件',
+                  description: `打开 ${input.filePath}`,
+                  path: input.filePath,
+                  style: 'secondary' as const,
+                }
+                : {
+                  id: 'review_knowledge_files' as const,
+                  label: '我自己去改知识文件',
+                  style: 'secondary' as const,
+                },
+            ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  /**
+   * 「忽略」：开一条待办收集理由，而不是在体检面板里就地填表。
+   *
+   * 走待办而不是本地弹窗，是因为忽略会写进审计记录，理由不能因为刷新页面丢掉。
+   */
+  requestCheckFindingIgnore(
+    projectId: string,
+    input: CheckFindingIgnoreInput,
+  ): CheckFindingIgnoreRequest {
+    return this.transaction(() => {
+      const current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      if (input.scope === 'warning' && !input.fingerprint) {
+        throw new Error('忽略警告需要提供该条提醒的标识');
+      }
+      const taskId = current.progress.currentTaskId ?? undefined;
+      const existing = this.state.snapshot(projectId).pendingInteractions.find(
+        (item) => item.type === 'question_batch'
+          && item.payload.purpose === 'check_finding_ignore'
+          && item.payload.findingId === input.findingId,
+      );
+      // 同一条发现重复点「忽略」不再开第二个待办，否则助手栏会堆出一串一样的表单
+      if (existing) return { aiConstruction: current, interaction: existing };
+      const batched = input.scope === 'errors';
+      const started = this.state.apply({
+        kind: 'start_run',
+        projectId,
+        intent: batched ? '暂缓知识包必须修复的错误' : '接受一条可暂缓的提醒',
+        baseRevision: input.packageRevisionOid,
+        state: { purpose: 'check_finding_ignore', findingId: input.findingId },
+      });
+      if (started.kind !== 'run') throw new Error('忽略待办创建失败');
+      const opened = this.state.apply({
+        kind: 'open_interaction',
+        projectId,
+        runId: started.run.id,
+        type: 'question_batch',
+        baseRevision: input.packageRevisionOid,
+        payload: {
+          purpose: 'check_finding_ignore',
+          ...(taskId ? { taskId } : {}),
+          findingId: input.findingId,
+          scope: input.scope,
+          ...(input.fingerprint ? { fingerprint: input.fingerprint } : {}),
+          ...(batched ? { errorCount: input.errorCount ?? 0 } : {}),
+          title: batched ? '说明为什么暂缓这些错误' : '说明为什么可以先不改这条',
+          // 错误只能整批暂缓，必须在标题下说清影响面，否则用户以为只忽略了点开的那一条
+          description: batched
+            ? `暂缓会让当前内容里全部 ${input.errorCount ?? 0} 个必须修复的错误一起先不阻断建模，正式发布前仍然必须改掉。`
+            : `这条提醒（${input.target}）将记为已确认影响并放行，只对当前知识包内容有效。`,
+          questions: [{
+            id: 'ignore_reason',
+            kind: 'text',
+            q: batched
+              ? '请说明暂缓原因和后续处理计划'
+              : '请说明影响范围和可以先不改的理由',
+            required: true,
+            allowOther: true,
+            options: [],
+          }],
+        },
+      });
+      if (opened.kind !== 'interaction') throw new Error('忽略待办创建失败');
+      return { aiConstruction: current, interaction: opened.interaction };
     });
   }
 
@@ -1589,8 +1753,8 @@ export class AiConstructionOrchestrator {
         key: input.messageKey, role: 'assistant', taskId: task.id,
         blocks: [
           {
-            type: 'status', title: '受控修复已停止',
-            summary: '当前知识包仍保留原修订和完整尝试记录',
+            type: 'status', title: '逐项修复已停止',
+            summary: '当前知识包仍保留原内容和完整尝试记录',
             milestoneId: 'knowledge_confirmed', taskId: task.id,
             progress: current.progress.percent,
             eta: {
@@ -1603,7 +1767,7 @@ export class AiConstructionOrchestrator {
           {
             type: 'next_actions', title: '可以这样继续', actions: [
               ...(input.retryable ? [{
-                id: 'repair_knowledge_structure', label: '重新执行受控修复', style: 'primary' as const,
+                id: 'repair_knowledge_structure', label: '重新执行逐项修复', style: 'primary' as const,
               }] : []),
               {
                 id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' as const,
@@ -1638,7 +1802,7 @@ export class AiConstructionOrchestrator {
         blocks: [
           {
             type: 'status', title: '旧修复待办已失效',
-            summary: '知识包修订已经变化，将基于最新版本重新分类校验问题',
+            summary: '知识包内容已经变化，将基于最新版本重新分类校验问题',
             milestoneId: 'knowledge_confirmed', taskId: task.id,
             progress: current.progress.percent,
             eta: {
@@ -1668,116 +1832,55 @@ export class AiConstructionOrchestrator {
     });
   }
 
-  advanceAfterMilestoneConfirmation(
+  /**
+   * 开一轮增量补充。
+   *
+   * 与「重走一遍」的区别全在这里：只把增量阶段设为活动、只规划一条吸收任务，
+   * 已确认的 6 个阶段一个都不碰。阶段本身是懒创建的（ensureIncrementMilestone），
+   * 所以存量项目不用迁移。
+   */
+  startIncrementRound(
     projectId: string,
-    confirmedSnapshot: AiConstructionTaskGraphSnapshot,
-    context: AiConstructionAdvanceContext = {},
-  ): AiConstructionAdvanceResult {
+    input: { packageRevisionOid: string },
+  ): AiConstructionMaterialUpdate {
     return this.transaction(() => {
-      let current = this.graph.snapshot(projectId) ?? confirmedSnapshot;
-      if (current.progress.currentMilestoneId === 'construction_completed') {
-        return this.prepareCompletionReview(projectId, current, confirmedSnapshot);
-      }
-      if (current.progress.waitingFor === 'milestone_confirmation') {
-        return { aiConstruction: current };
-      }
-      if (current.progress.currentMilestoneId === 'deterministic_confirmed') {
-        return this.prepareScriptDecision(
-          projectId,
-          current,
-          confirmedSnapshot,
-          context.scriptCandidates ?? [],
-        );
-      }
-      if (current.progress.currentMilestoneId === 'knowledge_confirmed') {
-        return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
-      }
-      if (current.progress.currentMilestoneId === 'process_confirmed') {
-        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
-      }
-      if (current.progress.currentMilestoneId === 'materials_ready') {
-        return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
-      }
-      if (current.progress.currentMilestoneId !== 'goal_confirmed') {
-        return { aiConstruction: current };
-      }
-      let task = current.tasks.find((item) => item.kind === 'modeling_brief'
-        && item.milestoneId === 'goal_confirmed'
-        && !['cancelled', 'stale'].includes(item.status));
-      if (!task) {
-        const materialTask = current.tasks.find((item) => item.kind === 'material_analysis'
-          || item.kind === 'package_baseline_review');
+      const milestoneId = this.graph.ensureIncrementMilestone(projectId);
+      this.graph.activateMilestone(projectId, milestoneId);
+      let current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+
+      // 上一轮没做完就不再开新的：提案的基线会一直在变，专家永远确认不了一个稳定的东西
+      const running = current.tasks.find((task) => task.kind === 'incremental_intake'
+        && !['completed', 'skipped', 'cancelled'].includes(task.status));
+      if (!running) {
         current = this.graph.apply(projectId, {
           type: 'plan_task',
           expectedRevision: current.revision,
           task: {
-            kind: 'modeling_brief',
-            milestoneId: 'goal_confirmed',
-            title: '确认建模目标',
-            goal: '明确知识包要解决的问题、目标用户、范围、非目标和成功标准。',
+            kind: 'incremental_intake',
+            milestoneId,
+            title: '吸收新增资料并提出增量修改',
+            goal: '只根据本轮新增或变更的资料提出修改，已确认且未被涉及的内容保持不变。',
             required: true,
-            reason: '资料范围确认后进入建模目标确认',
-            dependsOn: materialTask ? [materialTask.id] : [],
+            reason: '知识包已完成建模，本轮只处理增量',
+            inputRevisionOid: input.packageRevisionOid,
+            dependsOn: [],
           },
         });
-        task = current.tasks.find((item) => item.kind === 'modeling_brief'
-          && item.milestoneId === 'goal_confirmed');
       }
-      const existingInteraction = this.state.snapshot(projectId).pendingInteractions.find(
-        (item) => item.type === 'question_batch' && item.payload.purpose === 'modeling_brief',
-      );
-      const materialAnalysis = this.latestMaterialAnalysis(projectId);
-      let interaction = existingInteraction;
-      if (!interaction && task) {
-        const taskId = task.id;
-        if (task.status !== 'waiting_user') {
-          current = this.graph.apply(projectId, {
-            type: 'wait_for_user', expectedRevision: current.revision, taskId,
-          });
-          const refreshedTask = current.tasks.find((item) => item.id === taskId);
-          if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
-          task = refreshedTask;
-        }
-        const packageRevision = confirmedSnapshot.confirmations.find(
-          (item) => item.milestoneId === 'materials_ready',
-        )?.packageRevisionOid;
-        const started = this.state.apply({
-          kind: 'start_run',
-          projectId,
-          intent: '确认建模目标',
-          baseRevision: packageRevision,
-          state: { purpose: 'modeling_brief', taskId },
-        });
-        if (started.kind !== 'run') throw new Error('建模目标任务创建失败');
-        const opened = this.state.apply({
-          kind: 'open_interaction',
-          projectId,
-          runId: started.run.id,
-          type: 'question_batch',
-          baseRevision: packageRevision,
-          payload: {
-            purpose: 'modeling_brief',
-            taskId,
-            title: materialAnalysis ? '请选择最接近的建模目标假设' : '请先确认建模目标',
-            description: materialAnalysis
-              ? '候选来自已上传资料。优先选择，没有合适项时再填写“其他”。'
-              : '先确认建模目标，再上传并围绕目标分析资料。请说明要解决的问题、使用者、典型场景和成功标准。',
-            questions: buildModelingBriefQuestions(materialAnalysis),
-          },
-        });
-        if (opened.kind !== 'interaction') throw new Error('建模目标问题创建失败');
-        interaction = opened.interaction;
-      }
+      const task = current.tasks.find((item) => item.kind === 'incremental_intake'
+        && !['completed', 'skipped', 'cancelled'].includes(item.status));
+
       const message = this.messages.ensure(projectId, {
-        key: 'goal_confirmed.started',
+        key: `increment.started.${input.packageRevisionOid}`,
         role: 'assistant',
         taskId: task?.id,
         blocks: [
           {
             type: 'status',
-            title: '进入建模目标确认',
-            summary: `当前任务：${task?.title ?? '确认建模目标'}`,
-            milestoneId: 'goal_confirmed',
+            title: '开始增量补充',
+            summary: '已确认的内容保持不变，本轮只处理新增或变更的资料',
+            milestoneId,
             taskId: task?.id,
             progress: current.progress.percent,
             eta: {
@@ -1788,24 +1891,183 @@ export class AiConstructionOrchestrator {
           },
           {
             type: 'text',
-            text: materialAnalysis
-              ? '我已根据建模资料整理出少量目标假设。请直接选择或补充。'
-              : '请先确认这次建模要解决什么问题。后续资料分析、候选流程和知识构建都将以该目标为范围。',
+            text: '请上传这次要补充的资料。我只会根据这些资料提出修改建议，'
+              + '并优先修改已有内容而不是新增重复的规则；确认之后会生成新版本并需要重新评测。',
           },
           {
             type: 'next_actions',
-            title: '选择一种方式继续',
+            title: '可以这样继续',
             actions: [
-              { id: 'explain_goal', label: materialAnalysis ? '选择建模目标' : '填写建模目标', style: 'primary' },
-              ...(materialAnalysis
-                ? [{ id: 'review_materials', label: '先回顾资料分析', style: 'secondary' as const }]
-                : []),
+              { id: 'upload_materials', label: '上传增量资料', style: 'primary' },
+              { id: 'propose_increment', label: '生成增量修改方案', style: 'secondary',
+                description: '资料传完后点这里，我会只针对这批资料提出修改' },
+              { id: 'review_knowledge_files', label: '先查看现有知识', style: 'secondary' },
             ],
           },
         ],
       });
-      return { aiConstruction: current, message, ...(interaction ? { interaction } : {}) };
+      return { aiConstruction: current, message };
     });
+  }
+
+  advanceAfterMilestoneConfirmation(
+    projectId: string,
+    confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    context: AiConstructionAdvanceContext = {},
+  ): AiConstructionAdvanceResult {
+    return this.transaction(() => {
+      const current = this.graph.snapshot(projectId) ?? confirmedSnapshot;
+      // 完成评审排在等待态判断之前：等待确认本身就是它要处理的状态
+      if (current.progress.currentMilestoneId === 'construction_completed') {
+        return this.prepareCompletionReview(projectId, current, confirmedSnapshot);
+      }
+      if (current.progress.waitingFor === 'milestone_confirmation') {
+        return { aiConstruction: current };
+      }
+      // 认不出的里程碑不推进，保持原状返回
+      return this.advanceStepForMilestone(projectId, current, confirmedSnapshot, context)
+        ?? { aiConstruction: current };
+    });
+  }
+
+  /**
+   * 里程碑 → 下一步处理器。原先是一条十几个分支的 if 链，新增里程碑要在链条中间
+   * 插对位置才生效；摊平成单层分派后「哪个里程碑交给谁」一眼可见，漏接也看得出来。
+   */
+  private advanceStepForMilestone(
+    projectId: string,
+    current: AiConstructionTaskGraphSnapshot,
+    confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    context: AiConstructionAdvanceContext,
+  ): AiConstructionAdvanceResult | null {
+    switch (current.progress.currentMilestoneId) {
+      case 'deterministic_confirmed':
+        return this.prepareScriptDecision(
+          projectId, current, confirmedSnapshot, context.scriptCandidates ?? [],
+        );
+      case 'knowledge_confirmed':
+        return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
+      case 'process_confirmed':
+        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
+      case 'materials_ready':
+        return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
+      case 'goal_confirmed':
+        return this.prepareModelingBrief(projectId, current, confirmedSnapshot);
+      default:
+        return null;
+    }
+  }
+
+  private prepareModelingBrief(
+    projectId: string,
+    snapshot: AiConstructionTaskGraphSnapshot,
+    confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+  ): AiConstructionAdvanceResult {
+    let current = snapshot;
+    let task = current.tasks.find((item) => item.kind === 'modeling_brief'
+      && item.milestoneId === 'goal_confirmed'
+      && !['cancelled', 'stale'].includes(item.status));
+    if (!task) {
+      const materialTask = current.tasks.find((item) => item.kind === 'material_analysis'
+        || item.kind === 'package_baseline_review');
+      current = this.graph.apply(projectId, {
+        type: 'plan_task',
+        expectedRevision: current.revision,
+        task: {
+          kind: 'modeling_brief',
+          milestoneId: 'goal_confirmed',
+          title: '确认建模目标',
+          goal: '说清楚这个知识包要解决什么问题、给谁用、管到哪、不管什么、做到什么程度算成功。',
+          required: true,
+          reason: '资料范围确认后进入建模目标确认',
+          dependsOn: materialTask ? [materialTask.id] : [],
+        },
+      });
+      task = current.tasks.find((item) => item.kind === 'modeling_brief'
+        && item.milestoneId === 'goal_confirmed');
+    }
+    const existingInteraction = this.state.snapshot(projectId).pendingInteractions.find(
+      (item) => item.type === 'question_batch' && item.payload.purpose === 'modeling_brief',
+    );
+    const materialAnalysis = this.latestMaterialAnalysis(projectId);
+    let interaction = existingInteraction;
+    if (!interaction && task) {
+      const taskId = task.id;
+      if (task.status !== 'waiting_user') {
+        current = this.graph.apply(projectId, {
+          type: 'wait_for_user', expectedRevision: current.revision, taskId,
+        });
+        const refreshedTask = current.tasks.find((item) => item.id === taskId);
+        if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
+        task = refreshedTask;
+      }
+      const packageRevision = confirmedSnapshot.confirmations.find(
+        (item) => item.milestoneId === 'materials_ready',
+      )?.packageRevisionOid;
+      const started = this.state.apply({
+        kind: 'start_run',
+        projectId,
+        intent: '确认建模目标',
+        baseRevision: packageRevision,
+        state: { purpose: 'modeling_brief', taskId },
+      });
+      if (started.kind !== 'run') throw new Error('建模目标任务创建失败');
+      const opened = this.state.apply({
+        kind: 'open_interaction',
+        projectId,
+        runId: started.run.id,
+        type: 'question_batch',
+        baseRevision: packageRevision,
+        payload: {
+          purpose: 'modeling_brief',
+          taskId,
+          title: materialAnalysis ? '请选择最接近的建模目标假设' : '请先确认建模目标',
+          description: materialAnalysis
+            ? '候选来自已上传资料。优先选择，没有合适项时再填写“其他”。'
+            : '先确认建模目标，再上传并围绕目标分析资料。请说明要解决的问题、使用者、典型场景和成功标准。',
+          questions: buildModelingBriefQuestions(materialAnalysis),
+        },
+      });
+      if (opened.kind !== 'interaction') throw new Error('建模目标问题创建失败');
+      interaction = opened.interaction;
+    }
+    const message = this.messages.ensure(projectId, {
+      key: 'goal_confirmed.started',
+      role: 'assistant',
+      taskId: task?.id,
+      blocks: [
+        {
+          type: 'status',
+          title: '进入建模目标确认',
+          summary: `当前任务：${task?.title ?? '确认建模目标'}`,
+          milestoneId: 'goal_confirmed',
+          taskId: task?.id,
+          progress: current.progress.percent,
+          eta: {
+            minMinutes: current.progress.eta.minMinutes,
+            maxMinutes: current.progress.eta.maxMinutes,
+            confidence: current.progress.eta.confidence,
+          },
+        },
+        {
+          type: 'text',
+          text: materialAnalysis
+            ? '我已根据建模资料整理出少量目标假设。请直接选择或补充。'
+            : '请先确认这次建模要解决什么问题。后续资料分析、候选流程和知识构建都将以该目标为范围。',
+        },
+        {
+          type: 'next_actions',
+          title: '选择一种方式继续',
+          actions: [
+            { id: 'explain_goal', label: materialAnalysis ? '选择建模目标' : '填写建模目标', style: 'primary' },
+            ...(materialAnalysis
+              ? [{ id: 'review_materials', label: '先回顾资料分析', style: 'secondary' as const }]
+              : []),
+          ],
+        },
+      ],
+    });
+    return { aiConstruction: current, message, ...(interaction ? { interaction } : {}) };
   }
 
   private prepareGoalDirectedMaterialAnalysis(
@@ -1824,7 +2086,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'material_analysis', milestoneId: 'materials_ready',
           title: '围绕建模目标分析资料',
-          goal: '围绕已确认建模目标分析已上传资料，形成证据索引、候选流程和待确认问题。',
+          goal: '读一遍你上传的资料，找出和建模目标相关的业务流程，并列出需要你补充说明的地方。',
           required: true,
           reason: '建模目标已确认，资料分析必须以该目标为范围',
           dependsOn: goalTask ? [goalTask.id] : [],
@@ -1885,7 +2147,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'completion_review', milestoneId: 'construction_completed',
           title: '检查 AI 辅助构建成果',
-          goal: '确认流程、知识结构、确定性能力和知识包校验记录均已形成可追溯版本。',
+          goal: '确认流程、知识结构、脚本和检查记录都已经存档，可以往下走了。',
           required: true, reason: 'AI 辅助构建结束前进行最终完成检查',
           inputRevisionOid,
           dependsOn: deterministicTask ? [deterministicTask.id] : [],
@@ -1955,8 +2217,8 @@ export class AiConstructionOrchestrator {
             task: {
               kind: 'script_generation', milestoneId: 'deterministic_confirmed',
               title: '生成受控确定性脚本',
-              goal: '在用户确认输入、输出和测试案例后，为选定 operation 生成并校验受控脚本。',
-              required: true, reason: '选定的 operation 需要用确定性代码保证稳定重复执行',
+              goal: '你确认好输入输出和测试用例之后，为选中的业务操作生成脚本并跑通验证。',
+              required: true, reason: '选定的业务操作需要用确定性代码保证稳定重复执行',
               inputRevisionOid: input.packageRevisionOid,
               dependsOn: [task.id],
             },
@@ -1994,9 +2256,9 @@ export class AiConstructionOrchestrator {
               candidates: input.selectedCandidates as unknown as JsonObject[],
               questions: input.selectedCandidates.map((candidate, index) => {
                 const suggestedContract = candidate.suggestedContract?.trim() || [
-                  '输入：以 operation 定义的输入和关联对象作为受控输入',
-                  '输出：以 operation 定义的业务结果作为结构化输出',
-                  '测试：同一合法输入重复执行结果一致；缺少必填输入时明确失败；结果满足已确认的 operation、规则和指标约束。',
+                  '输入：以业务操作定义的输入和关联对象作为受控输入',
+                  '输出：以业务操作定义的业务结果作为结构化输出',
+                  '测试：同一合法输入重复执行结果一致；缺少必填输入时明确失败；结果满足已确认的业务操作、规则和指标约束。',
                 ].join('\n');
                 return {
                   id: `script_contract_${index + 1}`, kind: 'single', required: true,
@@ -2038,7 +2300,7 @@ export class AiConstructionOrchestrator {
         blocks: [
           {
             type: 'status', title: '确定性脚本决策已确认',
-            summary: '本轮不生成脚本，现有 operation、rule 和 metric 保持不变',
+            summary: '本轮不生成脚本，现有业务操作、规则和指标保持不变',
             milestoneId: 'deterministic_confirmed', taskId: task.id,
             progress: current.progress.percent,
             eta: {
@@ -2047,7 +2309,7 @@ export class AiConstructionOrchestrator {
               confidence: current.progress.eta.confidence,
             },
           },
-          { type: 'text', text: '当前知识结构没有需要生成确定性脚本的能力，或您选择本轮暂不生成。可以确认确定性能力里程碑。' },
+          { type: 'text', text: '当前知识结构没有需要生成确定性脚本的能力，或您选择本轮暂不生成。可以确认确定性能力阶段。' },
           {
             type: 'next_actions', title: '选择下一步', actions: [
               { id: 'confirm_deterministic', label: '确认确定性能力', style: 'primary' },
@@ -2121,7 +2383,7 @@ export class AiConstructionOrchestrator {
               confidence: current.progress.eta.confidence,
             },
           },
-          { type: 'text', text: '请核对脚本文件、operation 引用、输入输出和测试案例，再决定是否应用。' },
+          { type: 'text', text: '请核对脚本文件、业务操作引用、输入输出和测试案例，再决定是否应用。' },
         ],
       });
       return { aiConstruction: current, message };
@@ -2141,7 +2403,7 @@ export class AiConstructionOrchestrator {
         && !['cancelled', 'stale'].includes(item.status));
       if (!task) throw new Error('确定性脚本生成任务不存在');
       if (input.validation.errors > 0) {
-        throw new Error(`脚本校验仍有 ${input.validation.errors} 个阻断错误`);
+        throw new Error(`脚本校验仍有 ${input.validation.errors} 个必须修复的错误`);
       }
       if (task.status !== 'completed') {
         current = this.graph.apply(projectId, {
@@ -2195,7 +2457,7 @@ export class AiConstructionOrchestrator {
         task = current.tasks.find((item) => item.id === task!.id)!;
       }
       current = this.graph.apply(projectId, {
-        type: 'fail_task', expectedRevision: current.revision, taskId: task.id,
+        type: 'fail_task', expectedRevision: current.revision, taskId: task.id, reason,
       });
       const message = this.messages.append(projectId, {
         role: 'assistant', taskId: task.id,
@@ -2332,12 +2594,12 @@ export class AiConstructionOrchestrator {
           payload: {
             purpose: 'script_contract', taskId: task.id,
             title: '重新确认脚本输入、输出和测试',
-            description: '知识包修订可能已变化，请重新确认契约后再生成受控脚本方案。',
+            description: '知识包内容可能已变化，请重新确认契约后再生成受控脚本方案。',
             candidates: input.candidates as unknown as JsonObject[],
             questions: input.candidates.map((candidate, index) => {
               const suggestedContract = candidate.suggestedContract?.trim() || [
-                '输入：以 operation 定义的输入和关联对象作为受控输入',
-                '输出：以 operation 定义的业务结果作为结构化输出',
+                '输入：以业务操作定义的输入和关联对象作为受控输入',
+                '输出：以业务操作定义的业务结果作为结构化输出',
                 '测试：同一合法输入重复执行结果一致；缺少必填输入时明确失败。',
               ].join('\n');
               return {
@@ -2398,7 +2660,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'script_decision', milestoneId: 'deterministic_confirmed',
           title: '识别确定性脚本需求',
-          goal: '识别数值计算、聚合、日期、排序、分配和格式转换等需要确定性代码的 operation。',
+          goal: '找出哪些步骤是算数、排序、分配这类每次都必须算得一模一样的，它们需要用代码而不是让模型临场判断。',
           required: true, reason: '知识结构确认后判断哪些能力需要由脚本保证确定性',
           inputRevisionOid,
           dependsOn: validationTask ? [validationTask.id] : [],
@@ -2430,12 +2692,12 @@ export class AiConstructionOrchestrator {
         type: 'question_batch', baseRevision: inputRevisionOid,
         payload: {
           purpose: 'script_decision', taskId: task.id,
-          title: '确认需要生成脚本的 operation',
-          description: '请选择需要以确定性代码实现的能力。开放式判断继续保留在 operation、rule 或 metric 中。',
+          title: '确认需要生成脚本的业务操作',
+          description: '请选择需要以确定性代码实现的能力。开放式判断继续保留在业务操作、规则或指标中。',
           candidates: candidates as unknown as JsonObject[],
           questions: [{
             id: 'script_candidates', kind: 'multi',
-            q: '哪些 operation 需要生成确定性脚本？', required: true,
+            q: '哪些业务操作需要生成确定性脚本？', required: true,
             options: [
               ...candidates.map((candidate) => ({
                 value: candidate.operationKey,
@@ -2444,7 +2706,7 @@ export class AiConstructionOrchestrator {
               })),
               {
                 value: '__none__', label: '本轮暂不生成脚本',
-                description: '保留为 operation、rule 或 metric，不生成确定性代码',
+                description: '保留为业务操作、规则或指标，不生成确定性代码',
               },
             ],
           }],
@@ -2460,7 +2722,7 @@ export class AiConstructionOrchestrator {
           type: 'status', title: '进入确定性能力确认',
           summary: candidates.length > 0
             ? `识别到 ${candidates.length} 个可能需要脚本的 operation`
-            : '暂未识别到必须生成脚本的 operation',
+            : '暂未识别到必须生成脚本的业务操作',
           milestoneId: 'deterministic_confirmed', taskId: task.id,
           progress: current.progress.percent,
           eta: {
@@ -2495,8 +2757,8 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'operation_extraction', milestoneId: 'knowledge_confirmed',
           title: '从流程提取业务操作',
-          goal: '以已确认业务流程为主线，形成 operation 的输入、输出、步骤、分支、异常和交接。',
-          required: true, reason: '业务流程确认后先沉淀可执行的 operation',
+          goal: '按确认好的流程，逐个写清楚每步业务操作要什么输入、产出什么、怎么走分支和例外。',
+          required: true, reason: '业务流程确认后先沉淀可执行的业务操作',
           inputRevisionOid,
           dependsOn: processTask ? [processTask.id] : [],
         },
@@ -2515,8 +2777,8 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'knowledge_extraction', milestoneId: 'knowledge_confirmed',
           title: '提取对象、关系和规则',
-          goal: '从已确认流程、建模资料和访谈证据中提取对象、关系、规则和指标，并建立可靠引用。',
-          required: true, reason: 'operation 需要可追溯的对象、关系、规则和指标支撑',
+          goal: '从流程、资料和访谈里整理出涉及哪些业务对象、它们之间什么关系、有哪些判断规则和计算口径，并标明每条的出处。',
+          required: true, reason: '业务操作需要可追溯的对象、关系、规则和指标支撑',
           inputRevisionOid,
           dependsOn: [operationTask.id],
         },
@@ -2535,7 +2797,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'package_validation', milestoneId: 'knowledge_confirmed',
           title: '校验知识结构草案',
-          goal: '检查知识包结构、引用、数据映射和语义完整性，阻断错误必须修复。',
+          goal: '检查知识包有没有缺内容、引用错、和数据对不上的地方。标为必须修复的要处理完才能继续。',
           required: true, reason: '每次确认知识结构前必须通过知识包校验',
           inputRevisionOid,
           dependsOn: [knowledgeTask.id],
@@ -2551,7 +2813,7 @@ export class AiConstructionOrchestrator {
       blocks: [
         {
           type: 'status', title: '进入知识结构构建',
-          summary: '将从已确认流程生成 operation、对象关系、规则和指标',
+          summary: '将从已确认流程生成业务操作、对象关系、规则和指标',
           milestoneId: 'knowledge_confirmed', taskId: operationTask.id,
           progress: current.progress.percent,
           eta: {
@@ -2562,7 +2824,7 @@ export class AiConstructionOrchestrator {
         },
         {
           type: 'text',
-          text: '我会先把流程转成可执行的 operation，再从资料和访谈证据中提取相关对象、关系、规则和指标。生成结果会写入知识包工作区，供您逐文件审阅后确认。',
+          text: '我会先把流程转成可执行的业务操作，再从资料和访谈证据中提取相关对象、关系、规则和指标。生成结果会写入知识包工作区，供您逐文件审阅后确认。',
         },
         {
           type: 'next_actions', title: '选择下一步',
@@ -2592,7 +2854,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'process_interview', milestoneId: 'process_confirmed',
           title: '业务流程访谈',
-          goal: '围绕触发、角色、输入、步骤、判断、异常、输出和交接梳理核心业务流程。',
+          goal: '把核心业务流程问清楚：什么情况下触发、谁来做、需要什么、分几步、什么时候会走例外、最后交给谁。',
           required: true, reason: '建模目标确认后进入流程访谈',
           dependsOn: goalTask ? [goalTask.id] : [],
         },
@@ -2611,7 +2873,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'process_diagram', milestoneId: 'process_confirmed',
           title: '生成 Mermaid 流程图',
-          goal: '把已完成访谈转成可审阅、可版本化的 Mermaid 流程图文件。',
+          goal: '把访谈结果画成流程图，供你逐张查看和修改。',
           required: true, reason: '流程访谈结果必须形成可视化流程图',
           dependsOn: [interviewTask.id],
         },
@@ -2630,7 +2892,7 @@ export class AiConstructionOrchestrator {
         task: {
           kind: 'process_review', milestoneId: 'process_confirmed',
           title: '人工确认业务流程图',
-          goal: '由领域专家确认流程触发、步骤、分支、异常、输出和交接正确。',
+          goal: '请你确认流程图画得对：触发条件、步骤顺序、分支和例外情况有没有问题。',
           required: true, reason: '流程图必须人工确认后才能驱动知识生成',
           dependsOn: [diagramTask.id],
         },
@@ -2716,7 +2978,7 @@ export class AiConstructionOrchestrator {
       },
       {
         type: 'text',
-        text: '我正在依据已确认流程、建模资料和访谈证据生成 operation、对象关系、规则与指标，并会在提交前执行知识包校验。',
+        text: '我正在依据已确认流程、建模资料和访谈证据生成业务操作、对象关系、规则与指标，并会在提交前执行知识包校验。',
       },
     ];
   }

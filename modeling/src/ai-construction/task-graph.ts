@@ -34,6 +34,11 @@ export type AiConstructionTaskKind =
   // 评测失败反推的修缮：与 package_repair 分开，因为完成判据是「重新评测通过」
   // 而不是「知识包校验通过」，且执行引擎是优化更新而非受控修复
   | 'evaluation_repair'
+  // 资料变更后的定向复核：按引用关系算出受影响的内容并逐项确认，
+  // 取代「受影响点之后的阶段全部推倒重来」
+  | 'material_change_review'
+  // 增量补充：知识包建完之后补新资料，只吸收增量并提出变更方案
+  | 'incremental_intake'
   | 'completion_review';
 
 export interface AiConstructionMilestoneSnapshot {
@@ -164,6 +169,11 @@ export interface FailAiConstructionTaskCommand {
   type: 'fail_task';
   expectedRevision: number;
   taskId: string;
+  /**
+   * 失败原因。原先只写进助手消息，任务列表里那条就只显示「需重试」——
+   * 要知道为什么失败得去聊天流里翻，而聊天流可能已经滚过去了。
+   */
+  reason?: string;
 }
 
 export interface WaitForAiConstructionUserCommand {
@@ -210,6 +220,13 @@ export type AiConstructionTaskGraphCommand =
   | ReopenAiConstructionTaskCommand
   | PlanAiConstructionTaskCommand
   | ConfirmAiConstructionMilestoneCommand;
+
+/**
+ * 增量补充阶段：知识包建完之后补新资料时进入，可反复进入。
+ * 不放进初始里程碑列表——见 ensureIncrementMilestone。
+ */
+export const INCREMENT_MILESTONE_ID = 'increment_confirmed';
+export const INCREMENT_MILESTONE_TITLE = '增量补充确认';
 
 const MATERIAL_FIRST_MILESTONES = [
   ['materials_ready', '资料就绪'],
@@ -269,6 +286,8 @@ const TASK_DURATION_MINUTES: Partial<Record<AiConstructionTaskKind, [number, num
   package_validation: [3, 15],
   package_repair: [5, 30],
   evaluation_repair: [10, 45],
+  material_change_review: [5, 20],
+  incremental_intake: [10, 30],
   completion_review: [5, 15],
 };
 
@@ -285,30 +304,83 @@ function taskElapsedMinutes(task: AiConstructionTaskSnapshot): number | null {
   return (end - start) / MINUTE_MS;
 }
 
+/** 跨项目的同类任务实测耗时（分钟），由调用方从库里查出来传入 */
+export type MeasuredTaskDurations = Partial<Record<AiConstructionTaskKind, number[]>>;
+
+/**
+ * 低于这个耗时的样本不算数。任务可能被程序瞬间置为 completed（跳过、命中缓存、
+ * 状态补写），这类记录不是对真实工作量的测量。混进来会把区间下限拉到 0，
+ * 让所有人都看到「预计 1 分钟」。
+ */
+const MIN_CREDIBLE_SAMPLE_MINUTES = 0.5;
+
+/**
+ * 高于这个耗时的样本同样不算数。任务的耗时是用 updatedAt - createdAt 算的，而等待
+ * 用户回答的任务会把人的思考时间、下班时间、整个周末都算进去。实测见过 5319 分钟
+ * （3.7 天）的样本，把界面上的估算顶成「预计 1–5319 分钟」——这种数字不但没用，
+ * 还会让人不再相信界面上其余的数。四小时以上一律当作空等而非工作量。
+ */
+const MAX_CREDIBLE_SAMPLE_MINUTES = 4 * 60;
+
 /**
  * 同类任务的实测耗时区间。静态表只是冷启动兜底：不同项目的资料规模、模型速度
  * 差别很大，写死的 [2, 8] 分钟在真实项目里往往离谱。
  *
- * 有历史时用实测的最小/最大值（各留 20% 余量），并与静态表取并集避免单次样本过窄；
- * 样本不足时退回静态表。
+ * 样本必须跨项目取。每种 task kind 在一个项目里通常只跑一次，只看本项目历史的话，
+ * 等你有样本时这个任务早就做完了、不需要估算了——那等于永远退回静态表，
+ * 界面上的「预计 28–90 分钟」就成了一个从头到尾不动的摆设。
+ *
+ * 有样本时用实测的最小/最大值（各留 20% 余量）；只有一个样本时与静态表取并集，
+ * 避免单次样本给出过窄的区间。
  */
 export function aiConstructionTaskEstimate(
   kind: AiConstructionTaskKind,
   history: AiConstructionTaskSnapshot[],
+  measured: MeasuredTaskDurations = {},
 ): [number, number] {
   const fallback = aiConstructionTaskDuration(kind);
-  const samples = history
-    .filter((task) => task.kind === kind && task.status === 'completed')
-    .map(taskElapsedMinutes)
-    .filter((value): value is number => value !== null && value > 0);
+  const samples = [
+    ...history
+      .filter((task) => task.kind === kind && task.status === 'completed')
+      .map(taskElapsedMinutes)
+      .filter((value): value is number => value !== null),
+    ...(measured[kind] ?? []).filter((value) => Number.isFinite(value)),
+  ].filter((value) => (
+    value >= MIN_CREDIBLE_SAMPLE_MINUTES && value <= MAX_CREDIBLE_SAMPLE_MINUTES
+  ));
   if (!samples.length) return fallback;
 
-  const min = Math.min(...samples) * 0.8;
-  const max = Math.max(...samples) * 1.2;
-  // 单个样本会给出一个过窄的区间，与静态表取并集保留合理的不确定度
-  const low = samples.length > 1 ? min : Math.min(min, fallback[0]);
-  const high = samples.length > 1 ? max : Math.max(max, fallback[1]);
-  return [Math.max(1, Math.round(low)), Math.max(1, Math.round(high))];
+  // 用中位数而不是最小/最大值：极值对离群点毫无抵抗力，一个异常样本就能把区间撑爆。
+  // 中位数需要一半样本同时异常才会跑偏。
+  const sorted = [...samples].sort((left, right) => left - right);
+  const median = sorted.length % 2
+    ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+  // 样本少时把带子放宽而不是与静态表取并集：并集会把两个区间的极端各取一头，
+  // 结果比任何一方都宽（实测 2 个样本时给出过 2–23 分钟，比静态表还没用）。
+  const [lowFactor, highFactor] = samples.length >= 3 ? [0.7, 1.5] : [0.5, 2];
+  return [
+    Math.max(1, Math.round(median * lowFactor)),
+    Math.max(1, Math.round(median * highFactor)),
+  ];
+}
+
+/**
+ * 正在跑的任务已经花掉的时间要从剩余里扣掉，否则跑了 20 分钟数字还是原来那个，
+ * 看上去就是「不会动的固定值」。下限扣到 0，上限至少留 1 分钟避免显示成已完成。
+ */
+function remainingForTask(
+  task: AiConstructionTaskSnapshot,
+  estimate: [number, number],
+): [number, number] {
+  if (task.status !== 'running') return estimate;
+  const started = Date.parse(task.updatedAt);
+  if (!Number.isFinite(started)) return estimate;
+  const elapsed = Math.max(0, (Date.now() - started) / MINUTE_MS);
+  return [
+    Math.max(0, Math.round(estimate[0] - elapsed)),
+    Math.max(1, Math.round(estimate[1] - elapsed)),
+  ];
 }
 
 function durationForTasks(tasks: AiConstructionTaskSnapshot[]): [number, number] {
@@ -338,6 +410,7 @@ function deriveProgress(
   graphStatus: AiConstructionGraphStatus,
   milestones: AiConstructionMilestoneSnapshot[],
   tasks: AiConstructionTaskSnapshot[],
+  measured: MeasuredTaskDurations = {},
 ): AiConstructionProgressSnapshot {
   const effectiveTasks = tasks.filter((task) => !isSupersededStaleTask(task, tasks));
   const confirmedMilestones = milestones.filter((item) => item.status === 'confirmed').length;
@@ -370,14 +443,20 @@ function deriveProgress(
     && item.status !== 'waiting_user' && item.status !== 'waiting_confirmation'
     && item.status !== 'failed');
   const duration = plannedRemaining.reduce(([min, max], task) => {
-    const estimate = aiConstructionTaskEstimate(task.kind, tasks);
+    const estimate = remainingForTask(
+      task, aiConstructionTaskEstimate(task.kind, tasks, measured),
+    );
     return [min + estimate[0], max + estimate[1]] as [number, number];
   }, [0, 0] as [number, number]);
   const hasEstimate = plannedRemaining.length > 0;
   // 有实测样本时置信度提升，界面据此决定措辞
-  const measuredKinds = new Set(tasks
-    .filter((task) => task.status === 'completed' && taskElapsedMinutes(task) !== null)
-    .map((task) => task.kind));
+  const measuredKinds = new Set([
+    ...tasks
+      .filter((task) => task.status === 'completed' && taskElapsedMinutes(task) !== null)
+      .map((task) => task.kind),
+    ...(Object.keys(measured) as AiConstructionTaskKind[])
+      .filter((kind) => (measured[kind] ?? []).length > 0),
+  ]);
   const measuredShare = plannedRemaining.length
     ? plannedRemaining.filter((task) => measuredKinds.has(task.kind)).length / plannedRemaining.length
     : 0;
@@ -397,10 +476,10 @@ function deriveProgress(
       confidence: measuredShare >= 0.6 ? 'high' : measuredShare > 0 ? 'medium' : 'low',
       basis: 'planned_tasks',
       note: currentTask?.status === 'failed'
-        ? '当前任务已停止，重试后将重新估算剩余时长'
+        ? '当前步骤已停止，重试后会重新估算剩余时长'
         : hasEstimate
-        ? '仅估算当前已规划任务，后续任务图调整后会更新'
-        : '当前已规划任务完成，剩余时长将在后续任务规划后更新',
+        ? '只估算当前已安排的步骤；后面还会新增步骤，剩余时长会随之更新'
+        : '当前已安排的步骤都已完成，下一批步骤安排好后会重新估算',
     },
   };
 }
@@ -586,10 +665,10 @@ export class AiConstructionTaskGraph {
           WHERE project_id = ? AND milestone_id = ?`)
           .get(projectId, command.task.milestoneId) as { status: string } | undefined;
         if (!milestone) {
-          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '任务计划引用的里程碑不存在');
+          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '任务计划引用的阶段不存在');
         }
         if (milestone.status !== 'active') {
-          throw new AiConstructionTaskGraphError('INVALID_TASK_PLAN', '只能为当前活动里程碑规划任务');
+          throw new AiConstructionTaskGraphError('INVALID_TASK_PLAN', '只能为当前活动阶段规划任务');
         }
         const title = command.task.title.trim();
         const goal = command.task.goal.trim();
@@ -636,7 +715,7 @@ export class AiConstructionTaskGraph {
           WHERE project_id = ? AND milestone_id = ?`)
           .get(projectId, command.milestoneId) as { ordinal: number; status: string } | undefined;
         if (!milestone) {
-          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '里程碑不存在或不属于当前项目');
+          throw new AiConstructionTaskGraphError('MILESTONE_NOT_FOUND', '阶段不存在或不属于当前项目');
         }
         const taskCounts = this.db.prepare(`SELECT
           COUNT(*) AS total,
@@ -659,7 +738,7 @@ export class AiConstructionTaskGraph {
         if (milestone.status !== 'active' || Number(taskCounts.total) === 0 || Number(taskCounts.blocking ?? 0) > 0) {
           throw new AiConstructionTaskGraphError(
             'MILESTONE_NOT_READY',
-            '里程碑尚未满足确认条件：必选任务必须全部完成',
+            '阶段尚未满足确认条件：必选任务必须全部完成',
           );
         }
         const nextRevision = command.expectedRevision + 1;
@@ -744,6 +823,15 @@ export class AiConstructionTaskGraph {
       }
     }
 
+    // 失败原因跟着任务走；重新开始时清掉，免得旧原因挂在新一轮上误导人
+    if (command.type === 'fail_task' && command.reason?.trim()) {
+      this.db.prepare(`UPDATE ai_construction_tasks SET reason = ? WHERE project_id = ? AND id = ?`)
+        .run(command.reason.trim().slice(0, 2_000), projectId, command.taskId);
+    } else if (command.type === 'start_task' || command.type === 'reopen_task') {
+      this.db.prepare(`UPDATE ai_construction_tasks SET reason = NULL
+        WHERE project_id = ? AND id = ? AND status = 'failed'`).run(projectId, command.taskId);
+    }
+
     const outputRevisionOid = command.type === 'complete_task'
       ? command.outputRevisionOid ?? null
       : transition.clearsOutputRevision ? null : undefined;
@@ -774,13 +862,13 @@ export class AiConstructionTaskGraph {
     if (action === 'skip') {
       allowed = active && !task.required
         && ['pending', 'ready', 'failed', 'waiting_user', 'waiting_confirmation'].includes(task.status);
-      if (!allowed) reason = task.required ? '必选任务不能跳过' : '只有当前里程碑中的未完成任务可以跳过';
+      if (!allowed) reason = task.required ? '必选任务不能跳过' : '只有当前阶段中的未完成任务可以跳过';
     } else if (action === 'resume') {
       allowed = active && ['skipped', 'stale'].includes(task.status);
-      if (!allowed) reason = '只有当前里程碑中已跳过或需复核的任务可以恢复';
+      if (!allowed) reason = '只有当前阶段中已跳过或需复核的任务可以恢复';
     } else if (action === 'defer') {
       allowed = active && ['pending', 'ready', 'failed', 'waiting_user'].includes(task.status);
-      if (!allowed) reason = '正在执行、已完成或不在当前里程碑的任务不能暂缓';
+      if (!allowed) reason = '正在执行、已完成或不在当前阶段的任务不能暂缓';
     } else if (action === 'redo') {
       allowed = task.status === 'completed';
       if (!allowed) reason = '只有已完成任务可以重做';
@@ -1002,7 +1090,69 @@ export class AiConstructionTaskGraph {
       milestones: milestoneSnapshots,
       tasks: taskSnapshots,
       confirmations: confirmationSnapshots,
-      progress: deriveProgress(graph.status, milestoneSnapshots, taskSnapshots),
+      progress: deriveProgress(
+        graph.status, milestoneSnapshots, taskSnapshots, this.measuredTaskDurations(),
+      ),
     };
+  }
+
+  /**
+   * 增量补充阶段。懒创建而不是随图初始化：
+   *
+   * - 存量项目不必迁移；
+   * - 从没做过增量的项目不会凭空多出一个永远 pending 的阶段，进度和阶段数也就不会被它带偏。
+   *
+   * 序号排在 construction_completed 之后。这个阶段可以反复进入——每补一批资料一轮。
+   */
+  ensureIncrementMilestone(projectId: string): string {
+    const existing = this.db.prepare(`SELECT milestone_id FROM ai_construction_milestones
+      WHERE project_id = ? AND milestone_id = ?`)
+      .get(projectId, INCREMENT_MILESTONE_ID) as { milestone_id: string } | undefined;
+    if (existing) return INCREMENT_MILESTONE_ID;
+    const max = this.db.prepare(`SELECT COALESCE(MAX(ordinal), 0) AS ordinal
+      FROM ai_construction_milestones WHERE project_id = ?`).get(projectId) as { ordinal: number };
+    this.db.prepare(`INSERT INTO ai_construction_milestones
+      (project_id, milestone_id, ordinal, title, status, updated_at)
+      VALUES (?, ?, ?, ?, 'pending', ?)`)
+      .run(projectId, INCREMENT_MILESTONE_ID, Number(max.ordinal) + 1, INCREMENT_MILESTONE_TITLE, nowIso());
+    return INCREMENT_MILESTONE_ID;
+  }
+
+  /**
+   * 把某个阶段设为活动。只动这一个，其余阶段的确认状态一概不碰——
+   * 增量补充的前提就是「已确认的部分继续有效」。
+   */
+  activateMilestone(projectId: string, milestoneId: string): void {
+    this.db.prepare(`UPDATE ai_construction_milestones SET status = 'active', updated_at = ?
+      WHERE project_id = ? AND milestone_id = ? AND status <> 'active'`)
+      .run(nowIso(), projectId, milestoneId);
+    this.db.prepare(`UPDATE ai_construction_graphs SET status = 'active', updated_at = ?
+      WHERE project_id = ?`).run(nowIso(), projectId);
+  }
+
+  /**
+   * 跨项目的同类任务实测耗时，用来把 ETA 从静态表拉到真实数据上。
+   * 只看本项目没有意义：每种 kind 一个项目通常只跑一次，需要估算的时候必然还没有样本。
+   *
+   * 只取最近 200 条，老样本反映的是早期模型和资料规模，参考价值低；
+   * 每种 kind 最多留 20 个，避免某一类任务把区间算法的极值拉偏。
+   */
+  private measuredTaskDurations(): MeasuredTaskDurations {
+    const rows = this.db.prepare(`
+      SELECT task_kind, created_at, updated_at FROM ai_construction_tasks
+      WHERE status = 'completed' ORDER BY updated_at DESC LIMIT 200
+    `).all() as Array<{ task_kind: string; created_at: string; updated_at: string }>;
+    const measured: MeasuredTaskDurations = {};
+    for (const row of rows) {
+      const start = Date.parse(row.created_at);
+      const end = Date.parse(row.updated_at);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+      const minutes = (end - start) / MINUTE_MS;
+      if (minutes < MIN_CREDIBLE_SAMPLE_MINUTES) continue;
+      const kind = row.task_kind as AiConstructionTaskKind;
+      const bucket = measured[kind] ?? (measured[kind] = []);
+      if (bucket.length < 20) bucket.push(minutes);
+    }
+    return measured;
   }
 }

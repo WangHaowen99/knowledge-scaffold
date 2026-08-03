@@ -17,6 +17,8 @@ import {
   type KnowledgeStructureValidator,
 } from './knowledge-structure-runner.js';
 import { AiConstructionOrchestrator } from './orchestrator.js';
+import { throwIfCancelled } from '../cancellation.js';
+import { reportLongTaskProgress } from './task-progress.js';
 
 export const DEFAULT_AUTOMATIC_REPAIR_LIMIT = 2;
 
@@ -358,7 +360,7 @@ export function buildSemanticRepairPlan(
       description: instruction,
     }],
     risks: [
-      '该修改会改变知识语义，应用后必须重新执行里程碑校验。',
+      '该修改会改变知识语义，应用后必须重新执行阶段校验。',
       ...(expertDecision ? ['方案必须忠实落实专家决策，不得自行扩展业务口径。'] : []),
     ],
   };
@@ -650,7 +652,7 @@ export class ControlledRepairRunner {
             type: 'superseded_by_revision',
             revision: current.revision.oid,
           });
-          this.attempts.stop(attemptId, '知识包修订已经变化，旧修复待办失效');
+          this.attempts.stop(attemptId, '知识包内容已经变化，旧修复待办失效');
         } catch { /* 旧审计已经结束时只关闭待办 */ }
       }
       try {
@@ -694,8 +696,24 @@ export class ControlledRepairRunner {
     }
     let latestUpdate: ReturnType<AiConstructionOrchestrator['startKnowledgeRepair']> | undefined;
     let repaired = false;
+    // 修复可能跑几十分钟，用户只看得到一个转圈——按轮次上报还剩几个错误
+    const repairStartedAt = Date.now();
+    const initialErrors = validation.errors;
+    let round = 0;
 
     while (validation.errors > 0) {
+      // 检查点：上一轮修复已经落盘并重新校验过，这里停下来知识包是自洽的
+      throwIfCancelled(project.id, 'knowledgeRepair');
+      const fixedSoFar = Math.max(0, initialErrors - validation.errors);
+      reportLongTaskProgress(project.id, {
+        taskKinds: ['package_repair', 'evaluation_repair'],
+        title: `正在修复知识包校验错误（第 ${round + 1} 轮）`,
+        produced: `已修复 ${fixedSoFar} 个，剩余 ${validation.errors} 个`,
+        done: fixedSoFar,
+        total: Math.max(initialErrors, 1),
+        elapsedMs: Date.now() - repairStartedAt,
+      });
+      round += 1;
       const blocking = validation.findings.filter((finding) => finding.severity === '错误');
       const classified = classifyRepairFindings(blocking);
       const automaticPlan = buildAutomaticRepairPlan(current.spec, packageFiles.files, classified);
@@ -711,7 +729,7 @@ export class ControlledRepairRunner {
           const attempts = this.attempts.listChain(project.id, rootRevision);
           const update = this.orchestrator.stopKnowledgeRepair(project.id, {
             messageKey: repairMessageKey('stopped', rootRevision),
-            reason: `自动修复已连续尝试 ${attemptNumber} 次，仍有 ${validation.errors} 个阻断错误。`,
+            reason: `自动修复已连续尝试 ${attemptNumber} 次，仍有 ${validation.errors} 个必须修复的错误。`,
             attempts: attempts.flatMap((item) => item.actions.map((action) => JSON.stringify(action))),
           });
           return {
@@ -751,7 +769,7 @@ export class ControlledRepairRunner {
               cause: 'automatic_repair',
               summary: `自动修复知识包结构（${automaticPlan.actions.length} 个文件）`,
               actorKind: 'system',
-              actorName: '受控修复器',
+              actorName: '知识包修复助手',
             },
           });
           committedRevision = saved.revision.oid;
@@ -835,7 +853,7 @@ export class ControlledRepairRunner {
         ...classified.filter((item) => item.authority === 'approval_required'),
         ...automaticPlan.unresolved.filter((item) => item.authority === 'approval_required'),
       ][0];
-      if (!human) throw new Error('知识包仍有阻断错误，但没有可执行的修复路径');
+      if (!human) throw new Error('知识包仍有必须修复的错误，但没有可执行的修复路径');
 
       const target = inferRepairTarget(current.spec, human.finding);
       const authority: Exclude<RepairAuthority, 'automatic'> = human.authority === 'expert_decision'
@@ -858,7 +876,7 @@ export class ControlledRepairRunner {
         status: 'waiting_user',
         findings: [human.finding],
       });
-      const run = this.adapter.start(project.id, '受控修复知识包', current.revision.oid, {
+      const run = this.adapter.start(project.id, '逐项修复知识包', current.revision.oid, {
         purpose: 'controlled_repair',
         repairAttemptId: attempt.id,
         taskId,
@@ -952,7 +970,7 @@ export class ControlledRepairRunner {
         messageKey: repairMessageKey('valid', rootRevision),
         version: current.packageVersion,
         validation,
-        summary: '重新校验后未发现阻断错误',
+        summary: '重新校验后未发现必须修复的错误',
       });
     }
     return {
@@ -979,7 +997,7 @@ export class ControlledRepairRunner {
     const finding = repairFindingFromPayload(pending.payload.finding);
     const current = await this.requireCurrent(project.id);
     if (pending.baseRevision && pending.baseRevision !== current.revision.oid) {
-      throw new Error('知识包修订已经变化，请基于最新校验结果重新处理');
+      throw new Error('知识包内容已经变化，请基于最新校验结果重新处理');
     }
     const plan = buildSemanticRepairPlan(
       current.spec, finding, decision, parseExpertRepairTarget(response),
@@ -1057,7 +1075,7 @@ export class ControlledRepairRunner {
       messageKey: repairMessageKey('plan_completed', attempt.id),
       version: current.packageVersion,
       validation,
-      summary: '已按确认方案修订知识包并重新校验',
+      summary: '已按确认方案修改知识包并重新校验',
     });
     return { current, validation, ...update };
   }

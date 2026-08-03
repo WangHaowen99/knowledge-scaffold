@@ -158,7 +158,7 @@ test('完成建模确认时固化验证候选并让任务图引用候选修订',
   assert.equal(response.json().cursor, 2);
 });
 
-test('暂缓当前修订阻断错误时持久化审计记录并推进编排状态', async (t) => {
+test('暂缓当前修订必须修复的错误时持久化审计记录并推进编排状态', async (t) => {
   const project = createProject({ owner: 'alice', name: '暂缓错误继续验证' });
   const [{ saveCheck }, { getPackageErrorDeferral }] = await Promise.all([
     import('../src/workflow/package-check.js'),
@@ -554,6 +554,9 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
   let contractInteraction: any;
   let plannedRequirement = '';
   let plannedOptions: any;
+  // 脚本生成改到后台跑，测试要等作业真正收尾；waitForScriptApproval 是链路最后一步
+  let markScriptPlanReady: () => void;
+  const scriptPlanReady = new Promise<void>((resolve) => { markScriptPlanReady = resolve; });
   const orchestrator = {
     completeScriptDecision: () => {
       const run = state.apply({
@@ -570,7 +573,10 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
       return { aiConstruction: { revision: 8 }, interaction: opened.interaction };
     },
     startScriptGeneration: () => ({ aiConstruction: { revision: 9 } }),
-    waitForScriptApproval: () => ({ aiConstruction: { revision: 10 }, message: { id: 'script-waiting' } }),
+    waitForScriptApproval: () => {
+      markScriptPlanReady();
+      return { aiConstruction: { revision: 10 }, message: { id: 'script-waiting' } };
+    },
     failScriptGeneration: () => ({ aiConstruction: { revision: 11 } }),
   };
   const app = routeApp(t, 'alice', {
@@ -607,11 +613,18 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
       response: { answers: [{ questionId: 'script_contract_1', selected: [candidates[0].suggestedContract] }] },
     },
   });
-  assert.equal(contracted.statusCode, 200, contracted.body);
+  // 脚本生成挪到后台跑，请求只负责受理：立刻 202 返回，不再等十几分钟
+  assert.equal(contracted.statusCode, 202, contracted.body);
+  assert.equal(contracted.json().accepted, true);
+  // 受理时就把待办标为已回答——否则刷新页面它会原样回来，看着像没提交过
+  assert.equal(contracted.json().interaction.status, 'answered');
+
+  // 后台作业跑完才有方案：等它收尾（走到 waitForScriptApproval 说明整条链都成功了）
+  await scriptPlanReady;
   assert.match(plannedRequirement, /CalculateScore/);
   assert.match(plannedRequirement, /重复输入结果一致/);
   assert.equal(plannedOptions.purpose, 'script_generation');
-  assert.equal(contracted.json().scriptPlan.interaction.id, 'script-plan');
+  assert.equal(plannedOptions.metadata.contractInteractionId, contractInteraction.id);
 });
 
 test('脚本变更在保存前必须通过格式、规则和语义候选校验', async (t) => {
@@ -882,17 +895,27 @@ test('知识包候选校验失败后反馈专家并可重新生成待确认方�
       response: { action: 'revise', note: '主键必须使用对象字段 key，不要使用原始列名' },
     },
   });
-  assert.equal(revised.statusCode, 200, revised.body);
+  // 方案调整改到后台跑，请求只负责受理
+  assert.equal(revised.statusCode, 202, revised.body);
+  assert.equal(revised.json().accepted, true);
+  // 受理时就标记已回答：否则刷新页面待办原样回来，看着像没提交过
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+
+  // 等后台把新方案生成出来
+  const deadline = Date.now() + 5_000;
+  while (state.interaction(project.id, revisedInteractionId)?.status !== 'pending') {
+    if (Date.now() > deadline) throw new Error('调整后的方案待办未在预期时间内出现');
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
   assert.match(revisionRequirement, /上次候选校验反馈.*cust_id.*不属于对象字段/su);
   assert.match(revisionRequirement, /专家调整意见.*对象字段 key/su);
-  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
-  assert.equal(revised.json().run.status, 'completed');
-  assert.equal(state.interaction(project.id, revisedInteractionId)?.status, 'pending');
-  assert.equal(revised.json().revisedPlan.interaction.id, revisedInteractionId);
 });
 
 test('知识生成只读取当前 Git 修订中已确认的流程文档', async (t) => {
   const project = createProject({ owner: 'alice', name: 'Git 流程事实源' });
+  // 生成改到后台跑，测试要等作业真正开始才能断言它拿到了哪份流程图
+  let markGenerated: () => void = () => {};
+  const generationStarted = new Promise<void>((resolve) => { markGenerated = resolve; });
   const document = {
     diagrams: [{
       id: 'approval', title: '授信审批',
@@ -921,6 +944,7 @@ test('知识生成只读取当前 Git 修订中已确认的流程文档', async 
     knowledgeRunner: {
       async run(_project: any, _context: any, flowchart: any) {
         generatedFlowchart = flowchart;
+        markGenerated();
         return { version: '1.0.0-rc.2', revisionId: 'pkg-knowledge' };
       },
     },
@@ -929,13 +953,18 @@ test('知识生成只读取当前 Git 修订中已确认的流程文档', async 
   const response = await app.inject({
     method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
   });
-  assert.equal(response.statusCode, 200, response.body);
+  // 生成要跑十几分钟，请求只负责受理
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
+  await generationStarted;
   assert.equal(generatedFlowchart.diagrams[0].id, 'approval');
-  assert.equal(response.json().revisionId, 'pkg-knowledge');
 });
 
 test('生成门禁决定在原运行失败后通过新运行幂等续跑', async (t) => {
   const project = createProject({ owner: 'alice', name: '生成门禁失败恢复' });
+  // 续跑挪到后台，等作业真正开始才能断言它拿到的续跑参数
+  let markResumed: () => void = () => {};
+  const resumeStarted = new Promise<void>((resolve) => { markResumed = resolve; });
   const state = getAuthoringState();
   const started = state.apply({
     kind: 'start_run', projectId: project.id, intent: '生成知识包', baseRevision: 'pkg-gate',
@@ -988,6 +1017,7 @@ test('生成门禁决定在原运行失败后通过新运行幂等续跑', async
     knowledgeRunner: {
       async run(_project: any, _context: any, _flowchart: any, options: any) {
         continuation = options;
+        markResumed();
         return { revisionId: 'pkg-resumed', version: '1.0.0-rc.1' };
       },
     },
@@ -998,7 +1028,10 @@ test('生成门禁决定在原运行失败后通过新运行幂等续跑', async
     payload: { requestId: 'generation-gate-answer', response: { value: 'skip' } },
   });
 
-  assert.equal(response.statusCode, 200, response.body);
+  // 门禁续跑的是知识生成，同样挪到后台：请求只负责受理
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
+  await resumeStarted;
   assert.deepEqual(continuation.skipFailedPhases, ['operation_batch_2']);
   assert.notEqual(continuation.resumeRunId, started.run.id);
   const resumedRun = state.snapshot(project.id).activeRuns.find((run) => run.id === continuation.resumeRunId);
@@ -1064,7 +1097,7 @@ test('未校验时拦截并给出立即校验的动作', async (t) => {
   assert.deepEqual(response.json().nextActions.map((item: any) => item.id), ['run_package_check']);
 });
 
-test('存在阻断错误时拦截并给出修缮与暂缓两条出路', async (t) => {
+test('存在必须修复的错误时拦截并给出修缮与暂缓两条出路', async (t) => {
   const project = createProject({ owner: 'alice', name: '拦截-有错误' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [
@@ -1132,4 +1165,449 @@ test('修订已变的受控修复待办不再阻塞完成建模', async (t) => {
   });
   const response = await confirmCompletion(app, project.id);
   assert.equal(response.statusCode, 200, response.body);
+});
+
+test('脚本生成受理后待办立即变已回答，刷新不会再冒出来', async (t) => {
+  const project = createProject({ owner: 'alice', name: '受理即落库' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认脚本契约', baseRevision: 'pkg-async',
+  });
+  if (run.kind !== 'run') throw new Error('未创建运行');
+  const candidates = [{
+    operationKey: 'CalcA', title: '计算 A', confidence: 'high', reason: 'r',
+    suggestedContract: '输入：x\n输出：y\n测试：一致',
+  }];
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: run.run.id,
+    type: 'question_batch', baseRevision: 'pkg-async',
+    payload: { purpose: 'script_contract', taskId: 'task-async', candidates, questions: [] },
+  });
+  if (opened.kind !== 'interaction') throw new Error('未创建待办');
+
+  // 让后台生成一直不返回，模拟「十几分钟还没跑完」的那段时间
+  let releasePlan: () => void = () => {};
+  const planStalled = new Promise<void>((resolve) => { releasePlan = resolve; });
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-async' }, packageVersion: '1.0.0-rc.1', spec: { objects: [], operations: [] } };
+      },
+    },
+    orchestrator: {
+      startScriptGeneration: () => ({ aiConstruction: { revision: 2 } }),
+      waitForScriptApproval: () => ({ aiConstruction: { revision: 3 } }),
+      failScriptGeneration: () => ({ aiConstruction: { revision: 4 } }),
+    },
+    packageChatPlan: async () => {
+      await planStalled;
+      return { interaction: { id: 'plan-async', runId: 'r', baseRevision: 'pkg-async' } };
+    },
+  });
+
+  const accepted = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: {
+      requestId: 'async-answer',
+      response: { answers: [{ questionId: 'script_contract_1', selected: [candidates[0].suggestedContract] }] },
+    },
+  });
+
+  // 生成还卡着，但请求已经返回了——这正是异步化要的
+  assert.equal(accepted.statusCode, 202, accepted.body);
+  // 关键断言：此刻待办已经是 answered。原先要等生成跑完才 respond，
+  // 这段时间刷新页面待办会原样回来，用户以为没提交成功，再点就撞租约。
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+  const stillPending = state.snapshot(project.id).pendingInteractions
+    .some((item) => item.id === opened.interaction.id);
+  assert.equal(stillPending, false, '受理后不该还挂在待办列表里');
+
+  releasePlan();
+});
+
+test('知识生成的前置校验仍然同步报错，不会先受理再在后台失败', async (t) => {
+  const project = createProject({ owner: 'alice', name: '生成前置校验' });
+  let ran = false;
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-x' }, packageVersion: '0.1.0', spec: { objects: [], operations: [] } };
+      },
+      async readPackageFiles() { return { files: {} }; },
+    },
+    knowledgeRunner: { async run() { ran = true; return {}; } },
+  });
+
+  // 流程未确认：必须当场 409，而不是回 202 然后在后台悄悄失败
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
+  });
+  assert.notEqual(response.statusCode, 202, '前置校验不该被受理');
+  assert.ok(response.statusCode >= 400, response.body);
+  assert.equal(ran, false, '校验没过就不该启动后台生成');
+});
+
+test('逐项修复只负责受理，不等长任务跑完', async (t) => {
+  const project = createProject({ owner: 'alice', name: '修复异步受理' });
+  const app = routeApp(t, 'alice');
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/repair`, payload: {},
+  });
+
+  // 受控修复要跑 5~30 分钟，请求必须立刻回来；失败由后台写成带出口的助手消息
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().accepted, true);
+});
+
+test('逐项修复会关闭未提交的暂缓表单并复用当前修复方案', async (t) => {
+  const project = createProject({ owner: 'alice', name: '修复与暂缓互斥' });
+  const state = getAuthoringState();
+  const open = (purpose: string, findingId: string, type: 'question_batch' | 'change_plan') => {
+    const started = state.apply({
+      kind: 'start_run', projectId: project.id, intent: purpose, baseRevision: 'pkg-current',
+      state: { purpose, findingId },
+    });
+    if (started.kind !== 'run') throw new Error('运行创建失败');
+    const opened = state.apply({
+      kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+      type, baseRevision: 'pkg-current',
+      payload: { purpose, findingId, title: purpose, questions: [] },
+    });
+    if (opened.kind !== 'interaction') throw new Error('待办创建失败');
+    return opened.interaction;
+  };
+  const ignored1 = open('check_finding_ignore', 'warning-1', 'question_batch');
+  const ignored2 = open('check_finding_ignore', 'warning-2', 'question_batch');
+  const repair = open('controlled_repair', 'error-1', 'change_plan');
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-current' }, packageVersion: '0.1.0', spec: { objects: [], operations: [] } };
+      },
+    },
+  });
+
+  const response = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/repair`, payload: {},
+  });
+  assert.equal(response.statusCode, 202, response.body);
+  assert.equal(response.json().reused, true);
+  assert.equal(response.json().interaction.id, repair.id);
+  assert.equal(response.json().cancelledIgnoreCount, 2);
+  assert.equal(state.interaction(project.id, ignored1.id)?.status, 'cancelled');
+  assert.equal(state.interaction(project.id, ignored2.id)?.status, 'cancelled');
+  assert.equal(state.interaction(project.id, repair.id)?.status, 'pending');
+});
+
+test('方案调整生成失败后重建可确认方案，专家不会卡在没法再改的状态', async (t) => {
+  const project = createProject({ owner: 'alice', name: '调整失败仍可重试' });
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '修改知识包', baseRevision: 'pkg-revise-fail',
+  });
+  if (started.kind !== 'run') throw new Error('未创建运行');
+  const payload = {
+    purpose: 'package_chat',
+    summary: '新增跨境业务事件',
+    message: '拆分企业成长事件',
+    history: [],
+    risks: [],
+    changes: [{
+      id: 'c1', targetKind: 'object', targetKey: 'cross_border_event', action: 'add',
+      description: '新增跨境业务事件',
+    }],
+  };
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'change_plan', baseRevision: 'pkg-revise-fail', payload,
+  });
+  if (opened.kind !== 'interaction') throw new Error('未创建方案待办');
+
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-revise-fail' }, packageVersion: '0.1.0', spec: { objects: [], operations: [] } };
+      },
+    },
+    packageChatPlan: async () => { throw new Error('模型调用失败'); },
+  });
+
+  const revised = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${opened.interaction.id}/respond`,
+    payload: { requestId: 'revise-fails', response: { action: 'revise', note: '换个写法' } },
+  });
+  assert.equal(revised.statusCode, 202, revised.body);
+  // respond 已经前移，原待办变成 answered——所以失败后必须还回一个能再改的方案
+  assert.equal(state.interaction(project.id, opened.interaction.id)?.status, 'answered');
+
+  const deadline = Date.now() + 5_000;
+  let revived: any;
+  for (;;) {
+    revived = state.snapshot(project.id).pendingInteractions
+      .find((item) => item.type === 'change_plan' && item.id !== opened.interaction.id);
+    if (revived) break;
+    if (Date.now() > deadline) throw new Error('生成失败后没有重建可确认方案，专家将无法继续调整');
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  // 重建的方案要保留原内容，否则等于把专家之前的工作丢了
+  assert.equal(revived.payload.summary, '新增跨境业务事件');
+  assert.equal(revived.payload.changes[0].targetKey, 'cross_border_event');
+});
+
+test('增量补充：建模没走完时拒绝，走完后开一轮且不动已确认阶段', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量补充入口' });
+  const db = getDb();
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-inc' }, packageVersion: '1.0.0', spec: { objects: [], operations: [] } };
+      },
+    },
+  });
+  const url = `/api/projects/${project.id}/ai-construction/increment/start`;
+
+  // 建模没走完就补资料该走原流程：「只改增量」需要一个确认过的完整知识包做基准
+  const tooEarly = await app.inject({ method: 'POST', url, payload: {} });
+  assert.equal(tooEarly.statusCode, 409, tooEarly.body);
+  assert.equal(tooEarly.json().code, 'INCREMENT_REQUIRES_COMPLETED_PACKAGE');
+  // 无出口的红字是这个仓库反复出现的问题，新错误码也要有下一步
+  assert.ok(tooEarly.json().error);
+
+  // 把项目置为建模完成
+  db.prepare(`UPDATE ai_construction_milestones SET status = 'confirmed'
+    WHERE project_id = ?`).run(project.id);
+  db.prepare(`UPDATE ai_construction_tasks SET status = 'completed' WHERE project_id = ?`).run(project.id);
+
+  const started = await app.inject({ method: 'POST', url, payload: {} });
+  assert.equal(started.statusCode, 202, started.body);
+  assert.equal(started.json().accepted, true);
+
+  const milestones = db.prepare(`SELECT milestone_id, status FROM ai_construction_milestones
+    WHERE project_id = ?`).all(project.id) as any[];
+  const increment = milestones.find((item) => item.milestone_id === 'increment_confirmed');
+  assert.equal(increment?.status, 'active', '增量阶段应被激活');
+  // 关键：已确认的阶段一个都不能被动过，否则又变成「重走一遍」
+  for (const item of milestones.filter((row) => row.milestone_id !== 'increment_confirmed')) {
+    assert.equal(item.status, 'confirmed', `${item.milestone_id} 不该被改动`);
+  }
+  const intake = db.prepare(`SELECT COUNT(*) AS n FROM ai_construction_tasks
+    WHERE project_id = ? AND task_kind = 'incremental_intake'`).get(project.id) as { n: number };
+  assert.equal(intake.n, 1);
+
+  // 上一轮没做完就再点一次，不该攒出第二条吸收任务
+  await app.inject({ method: 'POST', url, payload: {} });
+  const again = db.prepare(`SELECT COUNT(*) AS n FROM ai_construction_tasks
+    WHERE project_id = ? AND task_kind = 'incremental_intake'`).get(project.id) as { n: number };
+  assert.equal(again.n, 1);
+});
+
+// ---- 体检发现交给建模助手处理 ----
+
+function findingApp(t: test.TestContext) {
+  return routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: 'pkg-draft' },
+          packageVersion: '0.1.0',
+          spec: { status: 'draft', objects: [], operations: [] },
+        };
+      },
+    } as any,
+  });
+}
+
+const handOff = (app: any, projectId: string, mode: 'review' | 'ignore', findingId: string) => app.inject({
+  method: 'POST',
+  url: `/api/projects/${projectId}/package/check/findings/${mode}`,
+  payload: { findingId },
+});
+
+test('「去修改」在助手里落一张卡片，并指向这条发现对应的文件', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-修改' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'f1', source: 'rule', severity: '错误', category: '引用缺失',
+    target: 'objects/index.md', message: '缺少引用', suggestion: '补上来源引用',
+  } as any], 'pkg-draft');
+
+  const response = await handOff(findingApp(t), project.id, 'review', 'f1');
+  assert.equal(response.statusCode, 200, response.body);
+  const blocks = response.json().message.blocks;
+  const actions = blocks.find((block: any) => block.type === 'next_actions').actions;
+  assert.deepEqual(actions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'open_package_file',
+  ]);
+  // target 是包内路径时才给「打开文件」，路径要跟着这条发现走
+  assert.equal(actions[1].path, 'objects/index.md');
+  assert.match(blocks.find((block: any) => block.type === 'text').text, /补上来源引用/);
+});
+
+test('target 是语义目标时也把目标交给前端解析到具体文件', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-非路径' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'f1', source: 'rule', severity: '错误', category: '定义冲突',
+    target: 'ipo_detail_info', message: '对象定义冲突',
+  } as any], 'pkg-draft');
+
+  const response = await handOff(findingApp(t), project.id, 'review', 'f1');
+  assert.equal(response.statusCode, 200, response.body);
+  const actions = response.json().message.blocks
+    .find((block: any) => block.type === 'next_actions').actions;
+  assert.deepEqual(actions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'open_package_file',
+  ]);
+  assert.equal(actions[1].path, 'ipo_detail_info');
+});
+
+test('「忽略」只是开一条待办收理由，不会当场落审计记录', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-忽略警告' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  const { getPackageWarningReview } = await import('../src/workflow/warning-acceptance.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any], 'pkg-draft');
+
+  const app = findingApp(t);
+  const opened = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(opened.statusCode, 200, opened.body);
+  const interaction = opened.json().interaction;
+  assert.equal(interaction.payload.purpose, 'check_finding_ignore');
+  assert.equal(interaction.payload.scope, 'warning');
+  // 点了忽略还没落库——理由填完提交才算数
+  assert.equal(
+    getPackageWarningReview(project.id, 'pkg-draft').items.every((item: any) => !item.accepted),
+    true,
+  );
+
+  const answered = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
+    payload: {
+      requestId: 'ignore-w1',
+      response: { answers: [{ questionId: 'ignore_reason', other: '命名在下一版统一调整' }] },
+    },
+  });
+  assert.equal(answered.statusCode, 200, answered.body);
+  const accepted = getPackageWarningReview(project.id, 'pkg-draft').items
+    .filter((item: any) => item.accepted);
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].finding.id, 'w1');
+});
+
+test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开的那一条', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-忽略错误' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'e1', source: 'rule', severity: '错误', category: '引用缺失', target: 'objects/index.md', message: '缺引用' },
+    { id: 'e2', source: 'rule', severity: '错误', category: '映射缺失', target: 'mapping/index.md', message: '缺映射' },
+  ] as any, 'pkg-draft');
+
+  const opened = await handOff(findingApp(t), project.id, 'ignore', 'e1');
+  assert.equal(opened.statusCode, 200, opened.body);
+  const payload = opened.json().interaction.payload;
+  assert.equal(payload.scope, 'errors');
+  assert.equal(payload.errorCount, 2);
+  assert.match(String(payload.description), /全部 2 个必须修复的错误/);
+});
+
+test('理由太短不放行，待办仍然停在原地等人重填', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-理由不足' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any], 'pkg-draft');
+
+  const app = findingApp(t);
+  const interaction = (await handOff(app, project.id, 'ignore', 'w1')).json().interaction;
+  const answered = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
+    payload: { requestId: 'ignore-short', response: { answers: [{ questionId: 'ignore_reason', other: '略' }] } },
+  });
+  assert.equal(answered.statusCode, 400, answered.body);
+  assert.equal(answered.json().code, 'INVALID_INPUT');
+  assert.equal(getAuthoringState().interaction(project.id, interaction.id)?.status, 'pending');
+});
+
+test('提示类发现不给忽略通道', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-提示' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'h1', source: 'rule', severity: '提示', category: '可读性',
+    target: 'objects/index.md', message: '可以补充说明',
+  } as any], 'pkg-draft');
+
+  const response = await handOff(findingApp(t), project.id, 'ignore', 'h1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NOT_IGNORABLE');
+});
+
+test('开场先说「已就绪」再进入建模目标确认，而不是倒着来', async (t) => {
+  const project = createProject({ owner: 'alice', name: '开场顺序' });
+  const app = routeApp(t);
+
+  const advanced = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/session/advance`,
+  });
+  assert.equal(advanced.statusCode, 200, advanced.body);
+
+  // 助手栏按 seq 排；欢迎语写在推进之后会让它反而排到「进入建模目标确认」下面
+  const titles = advanced.json().aiConstructionMessages
+    .map((message: any) => message.blocks.find((block: any) => block.type === 'status')?.title)
+    .filter(Boolean);
+  const welcome = titles.indexOf('AI 辅助构建已就绪');
+  const goal = titles.indexOf('进入建模目标确认');
+  assert.notEqual(welcome, -1, `没有找到欢迎语：${JSON.stringify(titles)}`);
+  assert.notEqual(goal, -1, `没有找到建模目标卡片：${JSON.stringify(titles)}`);
+  assert.ok(welcome < goal, `欢迎语应排在建模目标确认之前，实际顺序：${JSON.stringify(titles)}`);
+});
+
+test('已有待办未处理时不开忽略表单——否则它会被挡住，用户点了没反应', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-待办冲突' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any], 'pkg-draft');
+
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认建模目标', state: { purpose: 'modeling_brief' },
+  });
+  if (started.kind !== 'run') throw new Error('运行创建失败');
+  state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'question_batch',
+    payload: { purpose: 'modeling_brief', title: '请先确认建模目标', questions: [] },
+  });
+
+  const response = await handOff(findingApp(t), project.id, 'ignore', 'w1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PENDING_INTERACTION_FIRST');
+  // 报错要指名道姓，否则用户不知道该去处理哪一条
+  assert.match(response.json().error, /请先确认建模目标/);
+});
+
+test('已有另一条暂缓待办时也不开新表单', async (t) => {
+  const project = createProject({ owner: 'alice', name: '发现交接-暂缓互斥' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'w1', source: 'rule', severity: '警告', category: '命名建议', target: 'objects/a.md', message: '命名一' },
+    { id: 'w2', source: 'rule', severity: '警告', category: '命名建议', target: 'objects/b.md', message: '命名二' },
+  ] as any, 'pkg-draft');
+  const app = findingApp(t);
+
+  const first = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(first.statusCode, 200, first.body);
+  const second = await handOff(app, project.id, 'ignore', 'w2');
+  assert.equal(second.statusCode, 409, second.body);
+  assert.equal(second.json().code, 'PENDING_INTERACTION_FIRST');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 1);
 });

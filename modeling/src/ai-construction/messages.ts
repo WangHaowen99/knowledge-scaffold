@@ -87,6 +87,8 @@ export interface AiConstructionNextActionsBlock {
     kind?: AssistantActionKind;
     label: string;
     description?: string;
+    /** 仅 open_package_file 使用：知识包内相对路径或可解析的资源语义目标 */
+    path?: string;
     style: 'primary' | 'secondary' | 'danger';
   }>;
 }
@@ -148,6 +150,8 @@ export class AiConstructionMessageStoreError extends Error {
 }
 
 const BLOCK_ID_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
+// 知识包内的相对路径或 object:key 等语义目标。拒绝绝对路径和 .. 段，避免导向包外。
+const PACKAGE_PATH_PATTERN = /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/;
 const MESSAGE_ROLES = new Set<AiConstructionMessageRole>(['assistant', 'user', 'system']);
 const ACTION_STYLES = new Set(['primary', 'secondary', 'danger']);
 const CONFIDENCE = new Set(['low', 'medium', 'high']);
@@ -221,7 +225,7 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
       }
     }
     const summary = optionalText(block.summary, '状态说明', 500);
-    const milestoneId = optionalText(block.milestoneId, '里程碑', 100);
+    const milestoneId = optionalText(block.milestoneId, '阶段', 100);
     const taskId = optionalText(block.taskId, '任务', 100);
     return {
       type: 'status',
@@ -378,11 +382,20 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
           `动作 ${id} 未在助手动作目录登记`,
         );
       }
+      // 导航到具体文件的动作要带路径，否则前端拿不到目标只能空跳
+      const rawPath = action.path === undefined || action.path === null
+        ? undefined
+        : textValue(action.path, '动作目标路径', 200);
+      if (rawPath !== undefined
+        && (!PACKAGE_PATH_PATTERN.test(rawPath) || rawPath.split('/').includes('..'))) {
+        throw new AiConstructionMessageStoreError('INVALID_BLOCK', '动作目标路径不正确');
+      }
       return {
         id,
         kind,
         label: textValue(action.label, '动作名称', 50),
         ...(description ? { description } : {}),
+        ...(rawPath ? { path: rawPath } : {}),
         style: style as 'primary' | 'secondary' | 'danger',
       };
     });
@@ -596,7 +609,7 @@ export class AiConstructionMessageStore {
           type: 'text',
           text: imported
             ? '我会先检查现有知识包的结构、证据和校验结果，再与您确认需要补充或改进的内容。'
-            : '知识包草稿目录已经创建。请先说明建模目标；目标确认后，我会围绕它分析资料并逐步形成流程、operation、对象、规则和确定性脚本。',
+            : '知识包草稿目录已经创建。请先说明建模目标；目标确认后，我会围绕它分析资料并逐步形成流程、业务操作、对象、规则和确定性脚本。',
         },
         { type: 'task_plan', title: '当前建模计划', note: graph.progress.eta.note,
           tasks: milestoneTasks.map((item) => ({ id: item.id, title: item.title, status: item.status,

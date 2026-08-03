@@ -6,7 +6,7 @@ import test from 'node:test';
 const frontendRequire = createRequire(join(process.cwd(), 'frontend/package.json'));
 const React = frontendRequire('react');
 const { renderToStaticMarkup } = frontendRequire('react-dom/server');
-const { default: AiConstructionMessageCard } = await import(
+const { default: AiConstructionMessageCard, resolveLegacyFindingAction } = await import(
   '../frontend/src/AiConstructionMessageCard.jsx'
 );
 
@@ -80,6 +80,33 @@ test('历史消息保留动作记录但不允许再次触发', () => {
   assert.match(html, /disabled=""/);
 });
 
+test('历史校验卡的泛化文件按钮恢复为当前发现的语义目标', () => {
+  const action = resolveLegacyFindingAction({
+    blocks: [
+      {
+        type: 'status',
+        title: '处理校验发现：字段类型定义错误',
+        summary: '错误 · survey_scheme.fields.special_load_cn',
+      },
+      {
+        type: 'next_actions',
+        actions: [{ id: 'review_knowledge_files', label: '我自己去改知识文件' }],
+      },
+    ],
+  }, { id: 'review_knowledge_files', label: '我自己去改知识文件' });
+
+  assert.equal(action.id, 'open_package_file');
+  assert.equal(action.path, 'survey_scheme.fields.special_load_cn');
+});
+
+test('普通查看知识文件动作不从无关状态摘要猜测文件', () => {
+  const original = { id: 'review_knowledge_files', label: '查看知识文件' };
+  const action = resolveLegacyFindingAction({
+    blocks: [{ type: 'status', title: '知识结构已生成', summary: '当前包含 62 个文件' }],
+  }, original);
+  assert.equal(action, original);
+});
+
 test('运行中的资料分析只禁用分析动作并保留继续上传', () => {
   const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, {
     message: {
@@ -137,7 +164,7 @@ test('历史候选复核消息隐藏内部术语并告诉专家下一步怎么�
         },
         {
           type: 'text',
-          text: '候选修订的阻断错误从 1 个变为 1 个。候选修订引入了新的阻断错误，需要专家判断。',
+          text: '候选修订的阻断错误从 1 个变为 1 个。候选修订引入了新的必须修复的错误，需要专家判断。',
         },
       ],
     },
@@ -255,5 +282,4 @@ test('动态任务卡不再展示已被当前完成任务替代的历史重做�
   assert.match(html, /已完成/);
   assert.doesNotMatch(html, /需重做|需要重做|已过时/);
 });
-
 

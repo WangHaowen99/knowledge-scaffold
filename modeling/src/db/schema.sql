@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS ai_construction_tasks (
                   'process_interview', 'process_diagram', 'process_review',
                   'operation_extraction', 'knowledge_extraction', 'script_decision',
                   'script_generation', 'package_validation', 'package_repair',
-                  'evaluation_repair', 'completion_review'
+                  'evaluation_repair', 'completion_review',
+                  -- 资料变更后的定向复核：只列出真正受影响的内容，不再整段推倒重来
+                  'material_change_review',
+                  -- 增量补充：知识包建完之后补新资料，只处理增量而不重走全流程
+                  'incremental_intake'
                 )),
   milestone_id  TEXT NOT NULL,
   ordinal       INTEGER NOT NULL,
@@ -776,3 +780,29 @@ CREATE TABLE IF NOT EXISTS package_override_migration_archive (
 );
 CREATE INDEX IF NOT EXISTS idx_package_override_archive_project
   ON package_override_migration_archive(project_id, migrated_at);
+
+-- 资料分析的批次级缓存。补传资料后只重跑内容变了的批次，其余直接复用，
+-- 避免为已经分析过的几十份材料重复付一次 LLM 成本和等待时间。
+-- 键是批次材料内容的哈希（含已确认建模目标），不是批次序号——序号会随增删平移。
+CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
+  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  cache_key   TEXT NOT NULL,
+  payload     TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (project_id, cache_key)
+);
+
+-- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
+-- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，
+-- 因为上个进程的登记不可能再续期（见 authoring/restart-recovery.ts）。
+CREATE TABLE IF NOT EXISTS inflight_operations (
+  key         TEXT PRIMARY KEY,   -- 形如 pj_xxx:optimize
+  operation   TEXT NOT NULL,
+  token       TEXT NOT NULL,
+  started_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  -- 取消请求。任务在检查点（批次之间、逐条修复之间）读它并主动退出：
+  -- 单次模型调用中途停不下来，所以取消是「当前这批跑完就停」，不是立即中断。
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1))
+);
+CREATE INDEX IF NOT EXISTS idx_inflight_operations_expiry ON inflight_operations(expires_at);

@@ -127,26 +127,13 @@ export function buildProjectWorkflow(input: ProjectWorkflowStateInput) {
     input.aiConstruction ?? null,
     input.rounds.length > 0,
   );
-  const packageImport = input.aiConstruction?.source === 'package_import';
-  const parsedDocuments = input.documents.filter((document) => document.parseStatus === 'parsed');
-  if (packageImport) {
-    steps.ingest = { status: 'skipped' };
-  } else if (!input.documents.length) {
-    steps.ingest = { available: true };
-  } else if (input.documents.some((document) => document.parseStatus === 'pending')) {
-    steps.ingest = { status: 'running' };
-  } else if (parsedDocuments.length) {
-    steps.ingest = { status: 'completed' };
-  } else {
-    steps.ingest = { status: 'failed' };
-  }
-
+  // 建模资料上传不再是独立步骤：资料在「AI 辅助构建」里按需上传和补充，
+  // 左侧再列一步只是把同一件事说两遍。解析状态仍会通过助手的资料任务反映出来。
   if (input.aiConstruction) {
     steps.ai_construction = statusFact(construction.aiConstruction);
   } else {
-    steps.ai_construction = {
-      available: TERMINAL_STATUSES.has(steps.ingest.status ?? 'not_started'),
-    };
+    // 资料上传不再是前置步骤，项目建好就能进 AI 辅助构建——资料在里面按需补充
+    steps.ai_construction = { available: true };
   }
   const constructionDone = construction.aiConstruction === 'completed';
 
@@ -183,7 +170,7 @@ export function buildProjectWorkflow(input: ProjectWorkflowStateInput) {
     };
   } else {
     steps.evaluate = {
-      available: Boolean(validationPrerequisitesReady && input.currentPackage && input.testcases.length),
+      available: Boolean(validationPrerequisitesReady && input.currentPackage),
     };
   }
   if (input.testcases.length || latestRound) enabled.add('evaluate');

@@ -447,7 +447,7 @@ test('Trace 不可用时不得推断 execute_script 调用次数为零', async (
   assert.equal(report.diagnoses.some((item) => item.category === 'needs_script'), false);
 });
 
-test('阻断问题只隔离关联用例，不阻止其他可优化失败', async () => {
+test('必须修复的问题只隔离关联用例，不阻止其他可优化失败', async () => {
   const conflictA = result('conflict-a', '库存口径是什么？', '包含在库');
   const conflictB = result('conflict-b', '库存口径是什么？', '包含在库和在制');
   const calculable = result('scriptable', '第1批、第2批、第3批的装置负荷如何统计？', '按装置能力计算');

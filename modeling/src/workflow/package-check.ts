@@ -663,7 +663,7 @@ export function normalizeSemanticFindings(
       expertOptions,
     });
     const normalizedMessage = incompleteBlockingFinding
-      ? `语义检查只返回了不完整描述“${message}”，缺少完整原因、业务影响或可执行处理方式，本项不作为阻断错误。`
+      ? `语义检查只返回了不完整描述“${message}”，缺少完整原因、业务影响或可执行处理方式，本项不作为必须修复的错误。`
       : message;
     return {
       severity: (incompleteBlockingFinding ? '提示' : severity) as Severity,

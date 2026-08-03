@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import ArtifactDiff from './ArtifactDiff.jsx';
 import { safeUiError } from './revision-state.js';
 import { repairTargetCandidatesFrom, withRepairTarget } from './repairTargetChoice.js';
+import { isSurfacedAsBlocker } from './completionBlocker.js';
 
 const TYPE_TITLE = {
   question: '需要确认',
@@ -45,11 +46,14 @@ const styles = {
   tag: { alignSelf: 'start', borderRadius: 4, padding: '2px 6px', background: '#f2f4f7', color: '#475467', fontSize: 11, fontWeight: 650 },
   rowTitle: { color: '#344054', fontSize: 12.5, fontWeight: 650, overflowWrap: 'anywhere' },
   rowText: { marginTop: 3, color: '#667085', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  changeCurrent: { display: 'block', marginTop: 4, padding: '6px 8px', borderRadius: 6, border: '1px solid #eaecf0', background: '#f9fafb', color: '#475467', fontSize: 11.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
+  changeCurrentLabel: { display: 'block', marginBottom: 3, color: '#98a2b3', fontSize: 10.5, fontStyle: 'normal' },
   content: { padding: 10, maxHeight: 260, overflow: 'auto', border: '1px solid #eaecf0', borderRadius: 6, background: '#f9fafb', color: '#344054', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
   footer: { display: 'flex', alignItems: 'center', gap: 8, paddingTop: 12, flexWrap: 'wrap' },
   button: { padding: '5px 12px', fontSize: 12 },
   quietButton: { marginLeft: 'auto', padding: '5px 10px', fontSize: 11.5 },
   error: { marginTop: 10, padding: '7px 9px', borderRadius: 6, background: '#fef3f2', color: '#b42318', fontSize: 12 },
+  processing: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, padding: '8px 10px', borderRadius: 8, border: '1px solid #dce7f6', background: '#f7fbff', color: '#185da7', fontSize: 12.5 },
   repairTarget: { marginTop: 10, padding: '10px 11px', borderRadius: 8, border: '1px solid #dce7f6', background: '#f7fbff' },
   repairTargetTitle: { marginBottom: 8, color: '#185da7', fontSize: 12.5, fontWeight: 650 },
   repairTargetOption: { display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 6, fontSize: 12.5, cursor: 'pointer' },
@@ -399,7 +403,16 @@ function ChangePlan({ interaction, draft, setDraft, busy, submit }) {
                 <span style={styles.rowTitle}>
                   {ACTION_LABEL[change.action] || '修改'} · {TARGET_LABEL[change.targetKind ?? change.target_kind] || '内容'} {asText(change.targetKey ?? change.target_key ?? change.path)}
                 </span>
-                <span style={styles.rowText}>{asText(change.description ?? change.summary)}</span>
+                {/* 修改类先给出当前内容：不看见现在是什么样，「怎么改」无从判断 */}
+                {change.current && (
+                  <span style={styles.changeCurrent}>
+                    <em style={styles.changeCurrentLabel}>当前内容</em>
+                    {asText(change.current)}
+                  </span>
+                )}
+                <span style={styles.rowText}>
+                  {change.current ? '计划这样改：' : ''}{asText(change.description ?? change.summary)}
+                </span>
               </span>
             </label>
           );
@@ -546,7 +559,8 @@ function FlowchartDraftReview({ draft, setDraft, busy, submit, flowchartDraftSta
               ))}
             </ul>
             <label style={styles.option}>
-              <input type="checkbox" checked={Boolean(draft.acknowledgeWarnings)}
+              <input type="checkbox" data-flowchart-warning-ack
+                checked={Boolean(draft.acknowledgeWarnings)}
                 onChange={(event) => setDraft((current) => ({
                   ...current,
                   acknowledgeWarnings: event.target.checked,
@@ -713,6 +727,7 @@ export default function PendingInteraction({
   onSkip,
   onOpenFile,
   flowchartDraftState = null,
+  activeOperation = null,
 }) {
   const [draft, setDraft] = useState(() => initialDraft(interaction));
   const [localBusy, setLocalBusy] = useState(false);
@@ -724,7 +739,8 @@ export default function PendingInteraction({
   const payload = interaction?.payload || {};
   const type = interactionType(interaction?.type);
   const presentation = interactionPresentation(interaction);
-  const working = busy || localBusy;
+  // 后端正在处理时按钮一律禁用：留着能点只会让人撞出「项目正在处理中」
+  const working = busy || localBusy || Boolean(activeOperation);
   const closed = useMemo(() => ['answered', 'resolved', 'completed', 'done', 'cancelled'].includes(interaction?.status), [interaction?.status]);
 
   useEffect(() => {
@@ -757,7 +773,8 @@ export default function PendingInteraction({
         setRepairTarget((current) => current || candidates[0].value);
         setRetryResponse(response);
       }
-      setLocalError(safeUiError(cause, '提交失败，请重试'));
+      // 已经渲染成可操作卡片的错误不再重复成一行红字
+      if (!isSurfacedAsBlocker(cause)) setLocalError(safeUiError(cause, '提交失败，请重试'));
     } finally {
       setLocalBusy(false);
     }
@@ -790,6 +807,14 @@ export default function PendingInteraction({
       </header>
 
       {closed && <div style={styles.state}>已处理</div>}
+      {/* 长耗时操作全程在请求里跑，期间待办仍是 pending。这时候给出可提交的表单，
+          用户点了必然撞租约报「项目正在处理中」——如实说明正在处理即可。 */}
+      {!closed && activeOperation && (
+        <div style={styles.processing} role="status">
+          <span className="spinner" />
+          <span>已提交，正在{activeOperation.operation}。完成后这里会自动更新，不需要重复提交。</span>
+        </div>
+      )}
       {!closed && type === 'question' && <QuestionForm interaction={interaction} draft={draft} setDraft={setDraft} busy={working} submit={submit} />}
       {!closed && type === 'change_plan' && <ChangePlan interaction={interaction} draft={draft} setDraft={setDraft} busy={working} submit={submit} />}
       {!closed && type === 'decision' && <Decision interaction={interaction} draft={draft} setDraft={setDraft} busy={working} submit={submit} />}

@@ -217,6 +217,20 @@ export function buildTools(ctx: ToolContext) {
   return [listTables, describeTable, readTableRows, listDocuments, readDocument, searchDocuments, submitAnalysis];
 }
 
+/**
+ * 只要「翻文档」这三件套：列大纲、按关键词检索、分页精读。
+ *
+ * 长文档不能靠截断塞进提示词——一份 20 万字的手册前 6000 字符全是目录和前言，
+ * 模型看不到任何产品条款，只会得出「资料里没有具体内容」的错误结论。
+ * 给它工具让它自己按需翻，比我们替它猜哪 6000 字符重要靠谱得多。
+ */
+export function buildDocumentReadingTools(documents: ToolContext['documents']) {
+  const all = buildTools({ tables: [], documents, captured: {} });
+  return all.filter((tool) => (
+    ['list_documents', 'read_document', 'search_documents'].includes(tool.name)
+  ));
+}
+
 // 初步对象分析完成后，单独判断每份材料适合沉淀为何种知识资源。
 // 与 submit_analysis 分开，避免大项目把对象和知识候选塞进一个超大 tool call 后被截断。
 export function buildArtifactAnalysisTools(ctx: ToolContext) {

@@ -106,7 +106,7 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
       passed: input.warningReview?.readyForRelease === true,
       detail: input.warningReview?.readyForRelease === true
         ? input.warningReview.warningTotal > 0
-          ? `${input.warningReview.warningTotal} 条非阻断警告已确认为已知限制`
+          ? `${input.warningReview.warningTotal} 条可暂缓的提醒已确认为已知限制`
           : '当前修订没有警告'
         : !input.warningReview
           ? '尚未检查当前修订警告'
@@ -149,7 +149,7 @@ export function buildReleaseReadiness(input: ReleaseReadinessInput): ReleaseRead
             : !input.currentRevision || !input.latestRound.artifactRevision
               ? '评测未记录工件修订，请对当前知识包重新评测'
               : !roundIsCurrent
-                ? '评测使用的是旧修订，请对当前知识包重新评测'
+                ? '知识包在上次评测之后有改动，请重新评测当前版本'
               : !scopeMatches
                 ? `${matchedResults.length}/${required?.length ?? results.length} 条当前真实用例已评测`
                 : `${passCount}/${required?.length ?? results.length} 通过`,

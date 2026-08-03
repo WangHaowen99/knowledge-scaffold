@@ -2,7 +2,10 @@ import { Type } from '@earendil-works/pi-ai';
 import { buildLlm, buildTaskLlm } from '../llm/provider.js';
 import { AgentRunTimeoutError, makeAgent, runAgent } from './agent.js';
 import { assertObjectDataMappings } from './data-mapping.js';
-import { specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema } from './tools.js';
+import {
+  buildDocumentReadingTools,
+  specMetricSchema, specObjectSchema, specOperationSchema, specRuleSchema, specScriptSchema,
+} from './tools.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './spec-validation.js';
 import type {
   CoverageResult,
@@ -23,6 +26,7 @@ import { canonicalizePackageSpec } from './package-spec.js';
 import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
 import { MAX_CHANGE_PLAN_DESCRIPTION_LENGTH } from '../ai-construction/messages.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
+import { withCurrentContent } from '../ai-construction/change-plan-context.js';
 
 // 知识包工作区的建模 agent —— 咨询直接回答，修改走两段式确认：
 // ① plan：只分析影响面（改哪些对象/操作、怎么改、风险），返回结构化计划等专家确认；咨询类直接文字回答；
@@ -53,6 +57,11 @@ export interface PackageChatPlanOptions {
   intent?: string;
   interactionTitle?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * 允许模型翻阅的资料。给了就注入 list_documents / search_documents / read_document，
+   * 让它自己按需读，而不是由调用方截一段塞进提示词——长文档截头部只会读到目录。
+   */
+  documents?: Array<{ id?: string; filename: string; textContent?: string }>;
 }
 export interface ChatApplyResult {
   reply: string;
@@ -381,7 +390,7 @@ export async function runCandidateQualityLoop<T>(input: {
         : Number.POSITIVE_INFINITY;
       if (!bestExpertReview || score < previousScore) bestExpertReview = review;
     }
-    feedback = decision.feedback.trim() || '候选修订没有改善当前阻断问题，请重新生成更小、更保守的补丁。';
+    feedback = decision.feedback.trim() || '候选修订没有改善当前必须修复的问题，请重新生成更小、更保守的补丁。';
     if (attempt < maxAttempts) {
       await report({ eventKey: `attempt-${attempt}-retrying`, phase: 'retrying', attempt, maxAttempts, feedback });
     }
@@ -706,7 +715,13 @@ export async function packageChatPlan(
     `【专家消息】\n${message}`,
   ].filter(Boolean).join('\n');
 
-  const agent = makeAgent(buildLlm(), sys, [submitPlan] as any);
+  // 有资料时给上翻阅工具：长文档必须让模型自己检索定位，截断塞进提示词读不到正文
+  const documentTools = options.documents?.length
+    ? buildDocumentReadingTools(options.documents.map((item) => ({
+      id: item.id ?? item.filename, filename: item.filename, textContent: item.textContent ?? '',
+    })))
+    : [];
+  const agent = makeAgent(buildLlm(), sys, [submitPlan, ...documentTools] as any);
   const messages = await runAgent(agent, body);
 
   if (cap.plan?.changes?.length) {
@@ -721,7 +736,11 @@ export async function packageChatPlan(
       purpose,
       title: options.interactionTitle ?? '确认建模调整',
       summary: cap.plan.summary,
-      changes: cap.plan.changes.map((change, index) => ({ id: String(index), ...change })),
+      // 「修改」类补上当前内容：专家要确认「把门槛提高」，得先看得见现在的门槛是多少
+      changes: withCurrentContent(
+        latest.spec,
+        cap.plan.changes.map((change, index) => ({ id: String(index), ...change })),
+      ),
       risks: cap.plan.risks ?? [],
       message,
       history: history.map((turn) => ({ role: turn.role, text: turn.text })),

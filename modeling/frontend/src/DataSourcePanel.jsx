@@ -24,7 +24,7 @@ import DataSourceConnectionFields from './DataSourceConnectionFields.jsx';
 import EvaluationDatabaseUrlConfirmModal from './EvaluationDatabaseUrlConfirmModal.jsx';
 import EvaluationDatabaseImportPanel from './EvaluationDatabaseImportPanel.jsx';
 import GraphImportPanel from './GraphImportPanel.jsx';
-import { PACKAGE_DATA_SOURCE_HELP } from './package-data-source.js';
+import { PACKAGE_DATA_SOURCE_DETAIL, PACKAGE_DATA_SOURCE_HELP } from './package-data-source.js';
 import Tour from './Tour.jsx';
 
 const PACKAGE_DATA_SOURCE_HELP_ID = 'package-data-source-resource-help';
@@ -36,6 +36,8 @@ export function PackageDataSourceHelp() {
         aria-describedby={PACKAGE_DATA_SOURCE_HELP_ID}>?</button>
       <span id={PACKAGE_DATA_SOURCE_HELP_ID} className="pkg-source-tooltip" role="tooltip">
         {PACKAGE_DATA_SOURCE_HELP}
+        {/* 实现细节放在后面且弱化：业务专家不需要它，实施同事需要时能看到 */}
+        <span className="pkg-source-tooltip-detail">{PACKAGE_DATA_SOURCE_DETAIL}</span>
       </span>
     </span>
   );

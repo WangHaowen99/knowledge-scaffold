@@ -76,6 +76,19 @@ export const confirmAiConstructionMilestone = (id, milestoneId, expectedRevision
   })
 );
 
+export const startAiConstructionIncrement = (id) => api(
+  `${projectPath(id)}/ai-construction/increment/start`, { method: 'POST', body: '{}' },
+);
+
+export const proposeAiConstructionIncrement = (id) => api(
+  `${projectPath(id)}/ai-construction/increment/propose`, { method: 'POST', body: '{}' },
+);
+
+export const cancelAiConstructionOperation = (id, operation) => api(
+  `${projectPath(id)}/ai-construction/operations/cancel`,
+  { method: 'POST', body: JSON.stringify({ operation }) },
+);
+
 export const reviseAiConstructionModelingBrief = (id) => api(
   `${projectPath(id)}/ai-construction/modeling-brief/revise`,
   { method: 'POST', body: '{}' },
@@ -89,6 +102,17 @@ export const generateAiConstructionKnowledge = (id) => api(
 export const repairAiConstructionKnowledge = (id) => api(
   `${projectPath(id)}/ai-construction/knowledge/repair`,
   { method: 'POST', body: '{}' },
+);
+
+// 体检面板的两个按钮都只是「把这条发现交给建模助手」，处理本身在助手里完成
+export const reviewPackageCheckFinding = (id, findingId) => api(
+  `${projectPath(id)}/package/check/findings/review`,
+  { method: 'POST', body: JSON.stringify({ findingId }) },
+);
+
+export const ignorePackageCheckFinding = (id, findingId) => api(
+  `${projectPath(id)}/package/check/findings/ignore`,
+  { method: 'POST', body: JSON.stringify({ findingId }) },
 );
 
 export const deferAiConstructionKnowledgeErrors = (id, reason) => api(

@@ -36,6 +36,8 @@ import {
   type GenerationOptions,
 } from './generation-gate.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
+import { throwIfCancelled } from '../cancellation.js';
+import { reportLongTaskProgress } from '../ai-construction/task-progress.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -207,9 +209,20 @@ export async function generatePackage(
       totalStepCount,
     },
   });
+  // 生成要跑十几到几十分钟，用户只看得到一个转圈——按批次实时上报在干什么、产出了多少
+  const generationStartedAt = Date.now();
   try {
     const objects: SpecObject[] = [];
     for (const [index, hints] of objectBatches.entries()) {
+      throwIfCancelled(project.id, 'knowledgeGenerate');
+      reportLongTaskProgress(project.id, {
+        taskKinds: ['knowledge_extraction', 'operation_extraction'],
+        title: `正在生成第 ${index + 1}/${objectBatches.length} 批业务对象`,
+        produced: `已产出 ${objects.length} 个对象`,
+        done: index,
+        total: objectBatches.length + knowledgeBatches.length,
+        elapsedMs: Date.now() - generationStartedAt,
+      });
       const phase = `object_batch_${index + 1}`;
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
@@ -314,6 +327,15 @@ export async function generatePackage(
     const rules: SpecRule[] = [];
     const metrics: SpecMetric[] = [];
     for (const [index, candidates] of knowledgeBatches.entries()) {
+      throwIfCancelled(project.id, 'knowledgeGenerate');
+      reportLongTaskProgress(project.id, {
+        taskKinds: ['knowledge_extraction', 'operation_extraction'],
+        title: `正在生成第 ${index + 1}/${knowledgeBatches.length} 批规则和指标`,
+        produced: `已产出 ${objects.length} 个对象、${rules.length} 条规则、${metrics.length} 个指标`,
+        done: objectBatches.length + index,
+        total: objectBatches.length + knowledgeBatches.length,
+        elapsedMs: Date.now() - generationStartedAt,
+      });
       const phase = `knowledge_batch_${index + 1}`;
       const suggestedRules = candidates.filter((item) => item.kind === 'rule' && item.readiness === 'extractable').length;
       const suggestedMetrics = candidates.filter((item) => item.kind === 'metric' && item.readiness === 'extractable').length;

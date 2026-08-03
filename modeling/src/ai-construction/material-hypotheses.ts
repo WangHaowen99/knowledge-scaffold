@@ -113,7 +113,7 @@ export function ensureMaterialHypotheses(
     handoffs: [],
     rationale: confirmedBrief
       ? '模型未提交完整流程候选，由已确认建模目标生成的待确认假设。'
-      : '模型未提交完整流程候选，由资料中的 operation 或对象名称生成的待确认假设。',
+      : '模型未提交完整流程候选，由资料中的业务操作或对象名称生成的待确认假设。',
   }]);
 
   return {

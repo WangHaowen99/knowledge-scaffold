@@ -10,6 +10,7 @@ import { resizePaneWidth } from '../frontend/src/paneResize.js';
 import {
   isConstructionInteraction,
   isCurrentConstructionInteraction,
+  selectCurrentConstructionInteraction,
 } from '../frontend/src/constructionInteraction.js';
 
 const frontendRequire = createRequire(new URL('../frontend/package.json', import.meta.url));
@@ -89,7 +90,7 @@ const packageCheckSource = readFileSync(
 );
 const stylesSource = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
 
-test('建模完成被非阻断警告拦截时打开影响复核区', () => {
+test('建模完成被可暂缓的提醒拦截时打开影响复核区', () => {
   assert.equal(shouldOpenWarningReview({ data: { code: 'PACKAGE_WARNINGS_UNREVIEWED' } }), true);
   assert.equal(shouldOpenWarningReview({ data: { code: 'PACKAGE_CHECK_FAILED' } }), false);
   assert.match(packageWorkspaceSource, /PackageCheck/);
@@ -164,7 +165,7 @@ test('自由对话由服务端持久化而不是保存在浏览器标签页', ()
   assert.doesNotMatch(packageChatSource, /historyForApi/);
   assert.match(packageChatSource, /requestId/);
   assert.match(packageChatSource, /await refreshConstruction\(\)/);
-  assert.match(packageWorkspaceSource, /isCurrentConstructionInteraction\(interaction, pkg\?\.revision\)/);
+  assert.match(packageWorkspaceSource, /selectCurrentConstructionInteraction\(/);
 });
 
 test('知识包建模助手内置建模资料多文件上传入口', () => {
@@ -302,6 +303,20 @@ test('旧修订的受控修复待办不会覆盖当前版本的继续修复动�
     type: 'question_batch', baseRevision: 'rev-old',
     payload: { purpose: 'modeling_brief' },
   }, 'rev-current'), true);
+});
+
+test('受控修复确认优先于更早创建的暂缓理由表单', () => {
+  const selected = selectCurrentConstructionInteraction([
+    {
+      id: 'ignore-old', type: 'question_batch', baseRevision: 'rev-current',
+      payload: { purpose: 'check_finding_ignore' },
+    },
+    {
+      id: 'repair-current', type: 'change_plan', baseRevision: 'rev-current',
+      payload: { purpose: 'controlled_repair' },
+    },
+  ], 'rev-current');
+  assert.equal(selected?.id, 'repair-current');
 });
 
 test('升级前创建的受控修复自由输入待办按互斥建议恢复为选择卡片', () => {
@@ -565,7 +580,7 @@ test('验证改进交付阶段复用统一三栏工作台而不是替换知识�
   assert.match(stylesSource, /\.mwr \.rv-stage/);
 });
 
-test('待确认候选修订作为建模助手消息展示而不是悬在助手上方', () => {
+test('待确认的修改作为建模助手消息展示而不是悬在助手上方', () => {
   assert.match(packageWorkspaceSource, /<PackageChat[\s\S]*candidateRevisionPanel=\{[\s\S]*<CandidateRevisionPanel/);
   assert.doesNotMatch(
     packageWorkspaceSource,

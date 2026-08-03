@@ -64,14 +64,14 @@ export function deferPackageErrors(input: {
   actorRole: PackageErrorDeferralRole;
 }): PackageErrorDeferral {
   const reason = input.reason.trim();
-  if (reason.length < 4) throw new Error('请说明暂缓阻断错误的原因');
+  if (reason.length < 4) throw new Error('请说明暂缓必须修复的错误的原因');
   if (reason.length > 2_000) throw new Error('暂缓原因过长');
   const check = getCheck(input.projectId, input.revision);
   if (!check) {
     throw new Error('知识包检查已过期，请重新检查后再决定是否暂缓');
   }
   const findings = check.findings.filter((finding) => finding.severity === '错误');
-  if (!findings.length) throw new Error('当前知识包没有需要暂缓的阻断错误');
+  if (!findings.length) throw new Error('当前知识包没有需要暂缓的必须修复的错误');
   const deferredAt = nowIso();
   getDb().prepare(`INSERT INTO package_error_deferrals (
     project_id, revision_oid, error_count, error_fingerprints_json, findings_json, reason,

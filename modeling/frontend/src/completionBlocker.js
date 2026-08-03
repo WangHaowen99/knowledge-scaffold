@@ -1,10 +1,10 @@
 const CODE_TITLE = {
   PACKAGE_CHECK_REQUIRED: '需要先完成知识包校验',
-  PACKAGE_CHECK_FAILED: '知识包还有阻断错误',
+  PACKAGE_CHECK_FAILED: '知识包还有必须修复的错误',
   KNOWLEDGE_EVIDENCE_REQUIRED: '有确认知识缺少可追溯证据',
   PENDING_INTERACTIONS: '还有待确认事项未处理',
   REPAIR_TARGET_UNRESOLVED: '这条问题需要先确定修改目标',
-  PACKAGE_WARNINGS_UNREVIEWED: '非阻断警告尚未复核',
+  PACKAGE_WARNINGS_UNREVIEWED: '可暂缓的提醒尚未复核',
 };
 
 const LOCATION_HINT = {
@@ -27,6 +27,21 @@ function detailLines(data) {
     ));
   }
   return [];
+}
+
+const SURFACED = Symbol.for('mw.blockerSurfaced');
+
+/**
+ * 标记该错误已经渲染成可操作卡片。待办提交那条链原本自带一行红字，
+ * 不打标记的话同一个错误会同时以卡片和红字出现两遍。
+ */
+export function markSurfacedAsBlocker(error) {
+  if (error && typeof error === 'object') error[SURFACED] = true;
+  return error;
+}
+
+export function isSurfacedAsBlocker(error) {
+  return Boolean(error && typeof error === 'object' && error[SURFACED]);
 }
 
 /**

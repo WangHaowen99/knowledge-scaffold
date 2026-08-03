@@ -16,21 +16,21 @@ function byId(facts: WorkflowFacts = {}) {
     Record<WorkflowStepId, ReturnType<typeof deriveWorkflowSteps>[number]>;
 }
 
-test('唯一工作流只定义九个用户步骤', () => {
+test('唯一工作流只定义八个用户步骤', () => {
   assert.deepEqual(WORKFLOW_STEPS.map((step) => step.id), [
-    'project_setup', 'ingest', 'ai_construction', 'scenario', 'data_source',
+    'project_setup', 'ai_construction', 'scenario', 'data_source',
     'evaluate', 'diagnose', 'optimize', 'release',
   ]);
   assert.deepEqual(WORKFLOW_STEPS.map((step) => step.name), [
-    '项目创建', '建模资料上传', 'AI辅助构建', '场景推演', '数据源绑定',
+    '项目创建', 'AI辅助构建', '场景推演', '数据源绑定',
     '评测', '失败诊断', '优化更新', '发布交付',
   ]);
   assert.deepEqual(WORKFLOW_STEPS.map((step) => step.group), [
-    'prepare', 'prepare', 'model', 'verify', 'verify', 'verify', 'improve', 'improve', 'deliver',
+    'prepare', 'model', 'verify', 'verify', 'verify', 'improve', 'improve', 'deliver',
   ]);
   assert.equal(WORKFLOW_STEPS.find((step) => step.id === 'diagnose')?.linear, false);
   assert.equal(WORKFLOW_STEPS.find((step) => step.id === 'optimize')?.linear, false);
-  assert.equal(WORKFLOW_STEPS.filter((step) => step.linear !== false).length, 7);
+  assert.equal(WORKFLOW_STEPS.filter((step) => step.linear !== false).length, 6);
 });
 
 test('场景与数据源在建模完成后并行开放，评测等待二者结束', () => {
@@ -70,12 +70,10 @@ test('显式运行事实优先于导航依赖且不会被猜测为完成', () =>
   const steps = byId({
     steps: {
       project_setup: { status: 'completed' },
-      ingest: { available: true },
       ai_construction: { status: 'running' },
     },
   });
 
-  assert.equal(steps.ingest.status, 'ready');
   assert.equal(steps.ai_construction.status, 'running');
   assert.equal(steps.scenario.status, 'not_started');
   assert.equal(steps.release.status, 'not_started');
@@ -114,7 +112,7 @@ test('发布步骤可进入检查页，但过时事实保持过时', () => {
   assert.equal(stale.release.status, 'stale');
 });
 
-test('企业银行建议配置只引用九步运行时中的可配置能力', () => {
+test('企业银行建议配置只引用八步运行时中的可配置能力', () => {
   assert.deepEqual(CORPORATE_MARKETING_PROFILE, {
     releaseRequested: true,
     enabledSteps: [],

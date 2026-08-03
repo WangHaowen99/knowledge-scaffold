@@ -29,9 +29,12 @@ export const ASSISTANT_ACTION_KINDS: Record<string, AssistantActionKind> = {
   // 重放被修订冲突挡下的确认。只有在「要确认的内容没变」时才真的重发，
   // 否则退回让人重新看过——细节见 frontend/src/confirmReplay.js
   reload_and_retry: 'command',
+  start_increment_round: 'command',
+  propose_increment: 'command',
 
   // ---- dialog：本地交互界面 ----
   defer_validation_errors: 'dialog',
+  add_flowchart_process: 'dialog',
   // 两者都会改动知识包内容，点击后先弹确认再落库
   publish_package_draft: 'dialog',
   discard_package_draft: 'dialog',
@@ -52,6 +55,9 @@ export const ASSISTANT_ACTION_KINDS: Record<string, AssistantActionKind> = {
   open_scenario_review: 'navigate',
   explain_goal: 'navigate',
   refresh_task_graph: 'navigate',
+  open_flowchart_editor: 'navigate',
+  refresh_flowchart_draft: 'navigate',
+  acknowledge_flowchart_warnings: 'navigate',
 };
 
 export function assistantActionKind(id: string): AssistantActionKind | undefined {

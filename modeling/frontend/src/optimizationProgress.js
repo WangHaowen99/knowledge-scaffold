@@ -4,24 +4,24 @@ const PHASES = {
   prepare: {
     completedSteps: 0,
     current: () => '检查所选优化建议',
-    next: ['模型修改知识包', '校验修改结果', '保存待确认候选修订'],
+    next: ['模型修改知识包', '校验修改结果', '保存待确认的修改'],
   },
   revision: {
     completedSteps: 1,
     current: (state) => `模型正在修改知识包（第 ${state.attempt}/${state.maxAttempts} 次）`,
-    next: ['校验修改结果', '保存待确认候选修订'],
+    next: ['校验修改结果', '保存待确认的修改'],
   },
   validation: {
     completedSteps: 2,
     current: (state) => `正在校验修改结果（第 ${state.attempt}/${state.maxAttempts} 次）`,
-    next: ['保存待确认候选修订'],
+    next: ['保存待确认的修改'],
   },
   candidate: {
     completedSteps: 3,
-    current: () => '正在保存待确认候选修订',
+    current: () => '正在保存待确认的修改',
     next: [],
   },
-  done: { completedSteps: 4, current: () => '候选修订已生成', next: [] },
+  done: { completedSteps: 4, current: () => '已生成待确认的修改', next: [] },
   failed: { completedSteps: 0, current: () => '优化候选生成失败', next: [] },
 };
 

@@ -26,10 +26,11 @@ import PaneResizeHandle from './PaneResizeHandle.jsx';
 import { assistantPaneBounds, assistantPaneRatio, assistantPaneWidth, ASSISTANT_PANE_RATIO } from './paneLayout.js';
 import { packageWorkspaceFocus } from './packageWorkspaceFocus.js';
 import { isPackageChatRunning } from './packageChatRun.js';
+import { activeOperationOf } from './activeRun.js';
 import ReleasePanel from './ReleasePanel.jsx';
 import VersionPanel from './VersionPanel.jsx';
 import { ScenarioPanel } from './WorkflowExtraPanels.jsx';
-import { isCurrentConstructionInteraction } from './constructionInteraction.js';
+import { selectCurrentConstructionInteraction } from './constructionInteraction.js';
 import CandidateRevisionPanel, { CandidateRevisionCanvas } from './CandidateRevisionPanel.jsx';
 import {
   advanceProjectEventReplayGate,
@@ -72,7 +73,7 @@ function checkState(pkg, check) {
   const errors = check.findings?.filter((finding) => finding.severity === '错误').length ?? 0;
   return errors
     ? { tone: 'bad', text: `${errors} 个错误` }
-    : { tone: 'good', text: '当前修订已通过检查' };
+    : { tone: 'good', text: '当前内容已通过检查' };
 }
 
 export default function PackageWorkspace({
@@ -93,6 +94,8 @@ export default function PackageWorkspace({
   const [check, setCheck] = useState(null);
   const [warningReview, setWarningReview] = useState(null);
   const [errorDeferral, setErrorDeferral] = useState(null);
+  // 自动修复的可用性由后端在校验响应里声明，跟着体检快照一起更新
+  const [repairAvailability, setRepairAvailability] = useState(null);
   const [rechecking, setRechecking] = useState(false);
   const [checkError, setCheckError] = useState('');
   const [error, setError] = useState('');
@@ -153,6 +156,17 @@ export default function PackageWorkspace({
     return () => observer.disconnect();
   }, [activeTab, workspaceReady]);
 
+  // 助手在「流程图里还没有任何流程」时给出的出口，由工作台负责打开弹窗
+  useEffect(() => {
+    const open = (event) => {
+      if (event.detail?.projectId !== projectId) return;
+      setFlowchartAddError('');
+      setFlowchartAddOpen(true);
+    };
+    window.addEventListener('mw-flowchart-add-open', open);
+    return () => window.removeEventListener('mw-flowchart-add-open', open);
+  }, [projectId]);
+
   const load = useCallback(async () => {
     try {
       const [nextSession, nextPackage, nextCheck] = await Promise.all([
@@ -210,6 +224,7 @@ export default function PackageWorkspace({
         setCheck(result.check);
         setWarningReview(result.warningReview);
         setErrorDeferral(result.errorDeferral ?? null);
+        setRepairAvailability(result.repair ?? null);
       },
       onChecked: (result) => {
         setCheck({
@@ -220,11 +235,13 @@ export default function PackageWorkspace({
         });
         setWarningReview(result.warningReview);
         setErrorDeferral(result.errorDeferral ?? null);
+        setRepairAvailability(result.repair ?? null);
       },
       onPackageUpdated: () => {
         setCheck(null);
         setWarningReview(null);
         setErrorDeferral(null);
+        setRepairAvailability(null);
       },
       onError: (cause) => setCheckError(cause instanceof Error ? cause.message : '体检失败'),
       onRecheckStart: () => { setRechecking(true); setCheckError(''); },
@@ -339,9 +356,10 @@ export default function PackageWorkspace({
   const scenarioProgress = (session?.workflow?.progress ?? [])
     .find((item) => item.stepId === 'scenario');
   const pendingInteractions = session?.authoring?.pendingInteractions ?? [];
-  const constructionInteraction = pendingInteractions.find((interaction) => (
-    isCurrentConstructionInteraction(interaction, pkg?.revision)
-  )) ?? null;
+  const constructionInteraction = selectCurrentConstructionInteraction(
+    pendingInteractions,
+    pkg?.revision,
+  );
   const processReview = constructionInteraction?.type === 'flowchart_review'
     && constructionInteraction?.payload?.purpose === 'process_review'
     ? constructionInteraction
@@ -577,6 +595,7 @@ export default function PackageWorkspace({
               <PendingInteraction
                 interaction={scenarioInteraction}
                 busy={interactionBusy}
+                activeOperation={activeOperationOf(session)}
                 onSubmit={answerScenario}
               />
             </aside>
@@ -689,18 +708,9 @@ export default function PackageWorkspace({
                     check,
                     warningReview,
                     errorDeferral,
+                    repair: repairAvailability,
                     rechecking,
                     error: checkError,
-                    onResult: (result) => {
-                      setCheck({
-                        version: result.version,
-                        revision: result.revision,
-                        findings: result.findings,
-                        createdAt: new Date().toISOString(),
-                      });
-                      setWarningReview(result.warningReview);
-                      setErrorDeferral(result.errorDeferral ?? null);
-                    },
                   }}
                   wideStage={activeTab === 'edit' && Boolean(processReview)}
                   onDirtyChange={setPackageDraftDirty}
@@ -727,6 +737,7 @@ export default function PackageWorkspace({
               aiConstruction={session.aiConstruction}
               authoring={session.authoring}
               packageRevision={pkg?.revision ?? ''}
+              activeOperation={activeOperationOf(session)}
               pendingInteraction={constructionInteraction}
               candidateRevisionPanel={<CandidateRevisionPanel projectId={projectId}
                 refreshKey={candidateRefreshKey}

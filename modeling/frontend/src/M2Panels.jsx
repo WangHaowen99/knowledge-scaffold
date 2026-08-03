@@ -226,11 +226,15 @@ export function ReviewPanel({
       const detail = event.detail ?? {};
       if (detail.projectId !== projectId || typeof detail.path !== 'string') return;
       const resolved = resolvePackageFileTarget(pkg?.files ?? [], detail.path);
-      if (!resolved) return;
+      if (!resolved) {
+        setMsg(`未找到与“${detail.path}”对应的知识文件，请从左侧目录选择`);
+        return;
+      }
       if (resolved !== path && (dirtyRef.current || diagramDirtyRef.current)
         && !window.confirm('当前文件有未保存修改，切换文件将丢弃这些修改，继续吗？')) return;
       setTextDraftDirty(false);
       setDiagramDraftDirty(false);
+      if (resolved === path) setMsg(`已定位到 ${resolved}`);
       setPath(resolved);
       setView('view');
     };
@@ -450,7 +454,7 @@ export function ReviewPanel({
       const result = await publishPackageDraft(
         projectId,
         active.revision,
-        '人工编辑修订',
+        '人工编辑',
         active.id,
       );
       setPackageDraft(null);
@@ -543,9 +547,9 @@ export function ReviewPanel({
       check={packageCheck?.check ?? null}
       warningReview={packageCheck?.warningReview ?? null}
       errorDeferral={packageCheck?.errorDeferral ?? null}
+      repair={packageCheck?.repair ?? null}
       rechecking={packageCheck?.rechecking ?? false}
-      error={packageCheck?.error ?? ''}
-      onCheckResult={packageCheck?.onResult} />
+      error={packageCheck?.error ?? ''} />
     {repairInProgress && (
       <div className="stale-banner" role="status">{PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE}</div>
     )}
@@ -652,7 +656,7 @@ export function ReviewPanel({
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
               <button className="btn btn-p"
                 disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'}
-                onClick={save}>{actionBusy === 'save' || saveState === 'saving' ? '保存中…' : '保存修订'}</button>
+                onClick={save}>{actionBusy === 'save' || saveState === 'saving' ? '保存中…' : '保存修改'}</button>
               {(packageDraft?.changedFileCount > 0 || draft !== content) && (
                 <BusyButton busy={actionBusy === 'publish'} busyText="保存并检查中" expect="约 1~3 分钟" className="btn"
                   disabled={repairInProgress || !!revisionConflict || !!actionBusy || saveState === 'saving'}

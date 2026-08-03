@@ -26,14 +26,14 @@ const NUMBER_TYPE = /^(number|integer|float|double|decimal|int|long)$/i;
 function operationContractSuggestion(operation: SpecOperation): string {
   const inputs = operation.inputs?.length
     ? operation.inputs.map((item) => `${item.param}(${item.type}，${item.required ? '必填' : '可选'})`).join('、')
-    : '以 operation 定义的输入和关联对象作为受控输入';
+    : '以业务操作定义的输入和关联对象作为受控输入';
   const outputs = operation.outputs?.length
     ? operation.outputs.map((item) => `${item.field}(${item.type})`).join('、')
-    : '以 operation 定义的业务结果作为结构化输出';
+    : '以业务操作定义的业务结果作为结构化输出';
   return [
     `输入：${inputs}`,
     `输出：${outputs}`,
-    '测试：同一合法输入重复执行结果一致；缺少必填输入时明确失败；结果满足已确认的 operation 步骤、规则和指标约束。',
+    '测试：同一合法输入重复执行结果一致；缺少必填输入时明确失败；结果满足已确认的业务操作步骤、规则和指标约束。',
   ].join('\n');
 }
 
@@ -79,7 +79,7 @@ export function parseScriptDecisionResponse(
   candidates: ScriptCandidate[],
 ): ScriptDecision {
   if (!response || typeof response !== 'object' || !Array.isArray((response as any).answers)) {
-    throw new Error('请选择需要生成脚本的 operation，或选择本轮暂不生成');
+    throw new Error('请选择需要生成脚本的业务操作，或选择本轮暂不生成');
   }
   const answer = (response as any).answers.find(
     (item: any) => String(item?.questionId ?? '') === 'script_candidates',
@@ -89,9 +89,9 @@ export function parseScriptDecisionResponse(
       .map((item: unknown) => String(item).trim())
       .filter((item: string) => Boolean(item)))]
     : [];
-  if (!selected.length) throw new Error('请选择需要生成脚本的 operation，或选择本轮暂不生成');
+  if (!selected.length) throw new Error('请选择需要生成脚本的业务操作，或选择本轮暂不生成');
   if (selected.includes('__none__') && selected.length > 1) {
-    throw new Error('“本轮暂不生成脚本”不能同时与具体 operation 一起选择');
+    throw new Error('“本轮暂不生成脚本”不能同时与具体业务操作一起选择');
   }
   if (selected.length === 1 && selected[0] === '__none__') return { selectedOperationKeys: [] };
   const allowed = new Set(candidates.map((item) => item.operationKey));

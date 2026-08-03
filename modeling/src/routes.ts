@@ -583,20 +583,25 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const docs = listDocuments(p.id);
       const { tables, documents: textDocs } = buildMaterialContext(docs);
       if (!tables.length && !textDocs.length) return reply.code(400).send({ error: '尚无可分析的资料，请先上传文档' });
-      return withLock(`${p.id}:analyze`, reply, async () => {
-        let started = false;
-        const materialFingerprint = materialRevisionFingerprint(docs);
-        const packageAtStart = await packageArtifacts.current(p.id);
-        if (!packageAtStart) {
-          return reply.code(409).send({
-            code: 'PACKAGE_REVISION_REQUIRED',
-            error: '请先进入统一建模工作台初始化知识包草稿',
-          });
-        }
-        const startedAt = Date.now();
-        try {
-          aiConstructionOrchestrator.startMaterialAnalysis(p.id);
-          started = true;
+      const analyzeKey = `${p.id}:analyze`;
+      if (inFlight.current(analyzeKey)) {
+        return reply.code(409).send({ error: '项目正在处理中', code: 'busy' });
+      }
+      // 同步段：资料和知识包草稿的前置校验必须当场回，不能受理完再在后台失败
+      const materialFingerprint = materialRevisionFingerprint(docs);
+      const packageAtStart = await packageArtifacts.current(p.id);
+      if (!packageAtStart) {
+        return reply.code(409).send({
+          code: 'PACKAGE_REVISION_REQUIRED',
+          error: '请先进入统一建模工作台初始化知识包草稿',
+        });
+      }
+      const startedAt = Date.now();
+      // 先把任务标成执行中再返回，界面立刻就能显示「正在分析」
+      const startedUpdate = aiConstructionOrchestrator.startMaterialAnalysis(p.id);
+      // 资料分析要跑几分钟到几十分钟，不占请求：进度和结果都走事件流回前端
+      void inFlight.run(analyzeKey, 'analyze', async () => {
+        {
           const confirmedBrief = aiConstructionOrchestrator.latestConfirmedModelingBrief(p.id) ?? undefined;
           const { node, analysis } = await runMaterialAnalysis(
             p.id,
@@ -632,30 +637,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           });
           // 重跑早期节点不能让已到达的项目阶段倒退。
           setProjectStage(p.id, 'analyze');
-          return {
-            node,
-            analysis,
-            packageRevision: packageAtStart.revision.oid,
-            aiConstruction: completed.aiConstruction,
-            aiConstructionMessage: completed.message,
-          };
-        } catch (error) {
-          if (started) {
-            try {
-              aiConstructionOrchestrator.failMaterialAnalysis(
-                p.id,
-                error instanceof Error ? error.message : String(error),
-              );
-            } catch { /* 保留原始错误 */ }
-          }
-          const statusCode = !started || (error instanceof Error && error.name === 'MaterialAnalysisStaleError')
-            ? 409
-            : 500;
-          return reply.code(statusCode).send({
-            code: statusCode === 409 ? 'MATERIAL_ANALYSIS_STALE' : 'MATERIAL_ANALYSIS_FAILED',
-            error: error instanceof Error ? error.message : String(error),
-          });
+          void completed;
         }
+      }).catch((error) => {
+        // 后台失败没有 HTTP 响应可用：failMaterialAnalysis 会写一条带
+        // 「重新分析资料 / 补充建模资料」的助手消息，界面据此给出口
+        try {
+          aiConstructionOrchestrator.failMaterialAnalysis(
+            p.id,
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch { /* 收尾失败不再向上抛 */ }
+      });
+      return reply.code(202).send({
+        accepted: true,
+        packageRevision: packageAtStart.revision.oid,
+        aiConstruction: startedUpdate.aiConstruction,
       });
     });
 
@@ -975,7 +972,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
           if (current.revision.oid !== expectedRevision) {
             return reply.code(409).send({
-              code: 'revision_conflict',
+              code: 'REVISION_CONFLICT',
               error: '知识包流程图已更新，请刷新后重试',
               currentRevision: current.revision.oid,
             });
@@ -2131,7 +2128,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return { currentRevision, versions };
     });
 
-    registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply });
+    registerAuthoringRoutes(r, { packageChatApply: runPackageChatApply, jobs: inFlight });
     registerArtifactRoutes(r);
   });
 }

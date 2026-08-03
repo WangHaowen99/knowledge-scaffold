@@ -84,7 +84,11 @@ import { deferPackageErrors, getPackageErrorDeferral } from '../workflow/package
 import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import { packageIntentQuestions } from '../workflow/spec-validation.js';
 import { buildReleaseReadiness } from '../workflow/release.js';
-import { getPackageWarningReview } from '../workflow/warning-acceptance.js';
+import {
+  acceptPackageWarnings,
+  getPackageWarningReview,
+  warningFingerprint,
+} from '../workflow/warning-acceptance.js';
 import { assertNoActivePackageDraft, PackageDraftError } from '../workflow/package-draft.js';
 import {
   PackageCandidateRejectedError,
@@ -114,6 +118,13 @@ import {
 import { RepairTargetUnresolvedError } from '../ai-construction/controlled-repair.js';
 import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
+import { InFlightOperations } from '../in-flight-operations.js';
+import { startBackgroundJob } from './background-job.js';
+import { assertIncrementChangesAllowed, buildIncrementRequirement } from '../ai-construction/increment.js';
+import { listMaterialImpacts } from '../documents/material-impact.js';
+import {
+  CANCELLABLE_OPERATIONS, requestCancel, type CancellableOperation,
+} from '../cancellation.js';
 import { AuthoringStateError, type JsonObject, type ProjectEvent } from './types.js';
 import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
 import { WorkflowStepProgressRepo } from './workflow-progress.js';
@@ -281,15 +292,20 @@ export interface AuthoringRouteOptions {
     'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'
     | 'latestModelingBrief'
     | 'deferKnowledgeErrors' | 'advanceAfterMilestoneConfirmation'
+    | 'reviewCheckFinding' | 'requestCheckFindingIgnore'
     | 'completeModelingBrief' | 'reviseModelingBrief' | 'completeProcessInterview'
     | 'completeScriptDecision'
     | 'startScriptGeneration' | 'waitForScriptApproval' | 'completeScriptGeneration'
-    | 'failScriptGeneration' | 'deferScriptGeneration' | 'retryScriptGeneration'>;
+    | 'failScriptGeneration' | 'deferScriptGeneration' | 'retryScriptGeneration'
+    // 后台作业失败时的收尾：那时没有 HTTP 响应可用，只能写成带出口的助手消息
+    | 'failKnowledgeStructure' | 'failKnowledgeRepair' | 'startIncrementRound'>;
   packages?: Pick<PackageArtifactStore,
     'ensureProject' | 'initializeDraftPackage' | 'current' | 'readPackageFiles'
     | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'>;
   flowchartDrafts?: FlowchartDraftStore;
   processDraftGenerator?: typeof generateProcessDraft;
+  /** 后台作业登记表。与 registerRoutes 共用同一个实例，跨路由去重才有意义 */
+  jobs?: InFlightOperations;
   packageChatApply?: typeof packageChatApply;
   packageChatPlan?: typeof packageChatPlan;
   knowledgeRunner?: Pick<KnowledgeStructureRunner, 'run'>;
@@ -323,6 +339,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   );
   const editor = new AiConstructionTaskEditor();
   const leases = new ProjectOperationLease();
+  const jobs = options.jobs ?? new InFlightOperations();
   const controlledRepair = new ControlledRepairController({ state, graph });
   const packages = options.packages ?? getPackageArtifactStore();
   const flowchartDrafts = options.flowchartDrafts ?? new FlowchartDraftStore();
@@ -346,6 +363,24 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   const knowledgeRunner = options.knowledgeRunner ?? new KnowledgeStructureRunner({
     orchestrator: orchestrator as AiConstructionOrchestrator,
   });
+  const cancelPendingFindingIgnoreInteractions = (projectId: string): number => {
+    const pending = state.snapshot(projectId).pendingInteractions.filter(
+      (interaction) => interaction.payload.purpose === 'check_finding_ignore',
+    );
+    for (const interaction of pending) {
+      state.apply({
+        kind: 'update_run',
+        projectId,
+        runId: interaction.runId,
+        status: 'cancelled',
+        result: {
+          purpose: 'check_finding_ignore',
+          supersededBy: 'controlled_repair',
+        },
+      });
+    }
+    return pending.length;
+  };
   const readConfirmedFlowchart = async (projectId: string) => {
     const currentPackage = await packages.current(projectId);
     if (!currentPackage) throw new Error('当前项目没有知识包草稿');
@@ -368,7 +403,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       if (!confirmedProcesses) {
         throw new AuthoringStateError(
           'INVALID_TRANSITION',
-          '已确认流程所在的知识包修订已不可读，请重新确认流程图',
+          '已确认流程所在的知识包内容已不可读，请重新确认流程图',
         );
       }
       if (confirmedProcesses !== snapshot.files['diagrams/processes.json']) {
@@ -379,7 +414,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       }
     }
     const source = snapshot.files['diagrams/processes.json'];
-    if (!source) throw new Error('当前知识包修订缺少已确认流程文档');
+    if (!source) throw new Error('当前知识包缺少已确认的流程文档');
     let document: FlowchartDocument;
     try {
       document = normalizeFlowchartDocument(JSON.parse(source));
@@ -467,6 +502,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const workflowPackage = initialDraft ? null : currentPackage;
 
     let constructionSnapshot = advance ? ensureProjectGraph(project) : graph.snapshot(project.id);
+    // 欢迎语必须先落库：消息按 seq 排序，写在推进之后会让「已就绪」反而排在
+    // 「进入建模目标确认」下面，用户看到的是倒着的开场。
+    if (advance && constructionSnapshot) messages.ensureWelcome(project.id, constructionSnapshot);
     if (advance && constructionSnapshot && [
       'goal_confirmed', 'materials_ready', 'process_confirmed',
       'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
@@ -485,7 +523,6 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           : {},
       ).aiConstruction;
     }
-    if (advance && constructionSnapshot) messages.ensureWelcome(project.id, constructionSnapshot);
 
     const authoring = state.snapshot(project.id);
     const rounds = m3repo.listRounds(project.id);
@@ -568,6 +605,13 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         ...releaseReadiness,
       },
       currentRevision: publicRevision(latestRevision),
+      // 后端正在跑的长耗时操作。生成脚本方案这类操作全程在请求里跑，期间待办仍是
+      // pending，刷新页面会看到一个「像是没提交过」的表单，再点就撞租约报「项目正在处理中」。
+      // 把它如实告诉界面，待办才能显示成「已提交，正在处理」。
+      activeOperation: (() => {
+        const lease = leases.current(project.id);
+        return lease ? { operation: lease.operation, since: lease.acquiredAt } : null;
+      })(),
       cursor: authoring.lastEventSeq,
     };
   };
@@ -648,7 +692,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           confirmedPackage = await packages.current(project.id);
           if (!confirmedPackage) {
             return reply.code(409).send({
-              error: '当前项目没有可确认的知识包修订', code: 'PACKAGE_NOT_FOUND',
+              error: '当前项目没有可确认的知识包内容', code: 'PACKAGE_NOT_FOUND',
             });
           }
           appliedCommand = { ...command, packageRevisionOid: confirmedPackage.revision.oid };
@@ -659,7 +703,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           const check = getCheck(project.id);
           if (!check || check.revision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
+              error: '当前知识包内容尚未完成检查，请先重新执行知识包校验',
               code: 'PACKAGE_CHECK_REQUIRED',
               nextActions: [
                 { id: 'run_package_check', label: '立即执行知识包校验', style: 'primary' },
@@ -685,7 +729,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
           if (!warningReview.readyForValidation) {
             return reply.code(409).send({
-              error: `还有 ${warningReview.pendingValidation} 条非阻断警告尚未查看影响并接受`,
+              error: `还有 ${warningReview.pendingValidation} 条可暂缓的提醒尚未查看影响并接受`,
               code: 'PACKAGE_WARNINGS_UNREVIEWED',
               warningReview,
             });
@@ -713,9 +757,15 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               nextActions: pendingInteractionActions(blockingInteractions),
             });
           }
+          // 增量补充是在已发布版本上加内容，走次版本号（1.0.0 → 1.1.0-rc.1）。
+          // 会破坏已有接口的变更（改脚本契约、改操作结构）不在增量范围内，
+          // 所以这里不需要 major。
+          const incrementRound = graph.snapshot(project.id)?.milestones
+            ?.some((item) => item.id === 'increment_confirmed' && item.status === 'active');
           const version = nextValidationCandidateVersion({
             currentVersion: currentPackage.packageVersion,
             currentStatus: currentPackage.spec.status ?? 'draft',
+            ...(incrementRound ? { changeLevel: 'minor' as const } : {}),
           });
           validationCandidate = await packages.saveCurrentAsPackageVersion(project.id, {
             expectedRevision: currentPackage.revision.oid,
@@ -936,32 +986,215 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     try {
-      return await runWithProjectLease(leases, {
-        projectId: project.id,
+      // 同步段：这些校验失败必须当场回给用户，不能受理完再在后台悄悄失败
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'knowledge-generate');
+      const { flowchart } = await readConfirmedFlowchart(project.id);
+      const documents = listDocuments(project.id);
+      const context = {
+        tables: documents.flatMap((document) => (
+          document.tables?.map((table) => ({ ...table, documentId: document.id })) ?? []
+        )),
+        documents: documents.map((document) => ({
+          id: document.id,
+          filename: document.filename,
+          ...(document.textContent ? { textContent: document.textContent } : {}),
+        })),
+      };
+      // 生成要跑 15~45 分钟，不能占着请求：扔后台，进度和结果走事件流回前端。
+      // KnowledgeStructureRunner 自己会推进任务图并在失败时调 failKnowledgeStructure，
+      // 所以忙碌态和失败出口都不需要这里另外兜。
+      startBackgroundJob({
+        jobs,
+        leases,
+        key: `${project.id}:knowledge-generate`,
         operation: '生成知识结构',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-      }, async () => {
-        ensureProjectGraph(project);
-        assertNoActivePackageDraft(project.id, 'knowledge-generate');
-        const { flowchart } = await readConfirmedFlowchart(project.id);
-        const documents = listDocuments(project.id);
-        const context = {
-          tables: documents.flatMap((document) => (
-            document.tables?.map((table) => ({ ...table, documentId: document.id })) ?? []
-          )),
-          documents: documents.map((document) => ({
-            id: document.id,
-            filename: document.filename,
-            ...(document.textContent ? { textContent: document.textContent } : {}),
-          })),
-        };
-        const result = await knowledgeRunner.run(project, context, flowchart);
-        return { ...result, cursor: state.snapshot(project.id).lastEventSeq };
+        projectId: project.id,
+        run: () => knowledgeRunner.run(project, context, flowchart),
+        onError: (reason) => { orchestrator.failKnowledgeStructure(project.id, reason); },
+      });
+      return reply.code(202).send({
+        accepted: true,
+        aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
       });
     } catch (error) {
       return sendStateError(reply, error);
     }
+  });
+
+  app.post('/api/projects/:id/ai-construction/increment/start', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'increment-start');
+      const currentPackage = await packages.current(project.id);
+      if (!currentPackage) {
+        return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+      }
+      const snapshot = graph.snapshot(project.id);
+      const completed = snapshot?.milestones.find((item) => item.id === 'construction_completed');
+      // 建模还没走完就补资料，应该走原来的流程而不是增量——增量的前提是「已经有一个
+      // 确认过的完整知识包」，否则「只改增量」这句话没有基准。
+      if (completed?.status !== 'confirmed') {
+        return reply.code(409).send({
+          error: '知识包还没有完成建模确认，请先走完当前建模流程再补充增量资料',
+          code: 'INCREMENT_REQUIRES_COMPLETED_PACKAGE',
+        });
+      }
+      const active = snapshot?.tasks.some((task) => ['running', 'waiting_user'].includes(task.status));
+      if (active) {
+        return reply.code(409).send({
+          error: '还有任务正在进行，请先处理完再开始增量补充',
+          code: 'INCREMENT_ROUND_BLOCKED',
+        });
+      }
+
+      const started = orchestrator.startIncrementRound(project.id, {
+        packageRevisionOid: currentPackage.revision.oid,
+      });
+      return reply.code(202).send({
+        accepted: true,
+        ...started,
+        cursor: state.snapshot(project.id).lastEventSeq,
+      });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/ai-construction/increment/propose', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'increment-propose');
+      const currentPackage = await packages.current(project.id);
+      if (!currentPackage) {
+        return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+      }
+      const snapshot = graph.snapshot(project.id);
+      const intake = snapshot?.tasks.find((task) => task.kind === 'incremental_intake'
+        && !['completed', 'skipped', 'cancelled'].includes(task.status));
+      if (!intake) {
+        return reply.code(409).send({
+          error: '当前没有进行中的增量补充，请先开始一轮增量',
+          code: 'INCREMENT_ROUND_NOT_STARTED',
+        });
+      }
+      // 本轮资料 = 开轮之后上传的。没有新资料就没有增量可提，早说比让模型空跑十几分钟好
+      const materials = listDocuments(project.id)
+        .filter((document) => document.createdAt > intake.createdAt)
+        .map((document) => ({
+          filename: document.filename,
+          // 必须带正文：只给文件名模型会直接回「未附上具体内容」然后放弃
+          content: document.textContent ?? '',
+        }));
+      if (!materials.length) {
+        return reply.code(409).send({
+          error: '本轮还没有上传新的资料，请先上传要补充的资料',
+          code: 'INCREMENT_MATERIALS_REQUIRED',
+        });
+      }
+
+      const requirement = buildIncrementRequirement({
+        materials,
+        affected: listMaterialImpacts(getDb(), project.id)
+          .flatMap((impact) => impact.affectedResources ?? [])
+          .map((ref) => ({ targetKind: ref.kind as any, targetKey: ref.key, action: 'modify' })),
+        spec: currentPackage.spec,
+      });
+
+      const runId = adapter.start(project.id, '生成增量修改方案', currentPackage.revision.oid, {
+        purpose: 'increment_proposal', taskId: intake.id,
+      }).run.id;
+      startBackgroundJob({
+        jobs,
+        leases,
+        key: `${project.id}:increment-propose`,
+        operation: '生成增量修改方案',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+        projectId: project.id,
+        run: async () => {
+          const planned = await planPackageChat(project, [], requirement, {
+            purpose: 'package_chat',
+            intent: '生成增量修改方案',
+            interactionTitle: '确认增量修改方案',
+            metadata: { incrementRound: true, incrementTaskId: intake.id },
+            // 把本轮资料交给模型自己翻：长文档不能靠截断塞进提示词
+            documents: materials.map((item) => ({
+              filename: item.filename, textContent: item.content,
+            })),
+          });
+          // 在方案送到专家面前之前就挡下删除：让他看到一个批准不了的方案毫无意义
+          assertIncrementChangesAllowed((planned.plan?.changes ?? []) as any);
+          if (!planned.interaction) {
+            throw new Error(planned.reply?.trim() || '本轮资料不足以提出可靠的增量修改');
+          }
+          adapter.complete(project.id, runId, { incrementProposalId: planned.interaction.id });
+        },
+        onError: (reason) => {
+          adapter.fail(project.id, runId, reason);
+          // 后台失败必须落成用户看得见的消息：这时已经没有 HTTP 响应可用，
+          // 只 fail 掉 run 的话界面上什么都不会出现——用户点了按钮像是没反应。
+          messages.upsert(project.id, {
+            key: `increment.failed.${intake.id}`,
+            role: 'assistant',
+            taskId: intake.id,
+            blocks: [
+              { type: 'status', title: '增量修改方案没有生成', milestoneId: intake.milestoneId, taskId: intake.id },
+              { type: 'text', text: reason.slice(0, 3_000) },
+              {
+                type: 'next_actions',
+                title: '可以这样继续',
+                actions: [
+                  { id: 'upload_materials', label: '补充更多资料', style: 'primary',
+                    description: '资料不足以支撑修改时，补齐后再试' },
+                  { id: 'propose_increment', label: '重新生成方案', style: 'secondary' },
+                ],
+              },
+            ],
+          });
+        },
+      });
+
+      return reply.code(202).send({
+        accepted: true,
+        aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
+      });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/ai-construction/operations/cancel', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const requested = String((req.body as any)?.operation ?? '');
+    if (!(requested in CANCELLABLE_OPERATIONS)) {
+      return reply.code(400).send({ error: '不支持取消该操作', code: 'INVALID_INPUT' });
+    }
+    const operation = requested as CancellableOperation;
+    // 只置位，不中断：单次模型调用停不下来，任务要跑到下一个检查点才能干净退出。
+    // 界面上必须如实说明，不能做成假的秒停。
+    const accepted = requestCancel(project.id, operation);
+    if (!accepted) {
+      return reply.code(409).send({
+        error: '当前没有正在执行的该项任务，可能已经结束了',
+        code: 'NO_RUNNING_OPERATION',
+      });
+    }
+    return {
+      cancelling: true,
+      operation,
+      note: '已记录取消请求。当前这一批处理完就会停下，请稍候。',
+      cursor: state.snapshot(project.id).lastEventSeq,
+    };
   });
 
   app.post('/api/projects/:id/ai-construction/scripts/defer', async (req, reply) => {
@@ -1045,15 +1278,61 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
     try {
-      return await runWithProjectLease(leases, {
-        projectId: project.id,
-        operation: '受控修复知识包校验问题',
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'controlled-repair');
+      const repairKey = `${project.id}:knowledge-repair`;
+      const currentPackage = await packages.current(project.id);
+      const currentRevision = currentPackage?.revision.oid;
+
+      // 「逐项修复」和「先不改」是互斥选择。用户转去修复时，未提交的暂缓表单
+      // 没有任何审计效果，可以直接关闭；否则旧表单会一直占着助手栏，遮住修复方案。
+      const cancelledIgnoreCount = cancelPendingFindingIgnoreInteractions(project.id);
+      const pendingRepair = state.snapshot(project.id).pendingInteractions.find((interaction) => (
+        (interaction.payload.purpose === 'controlled_repair'
+          || interaction.payload.purpose === 'controlled_repair_expert')
+        && (!currentRevision || !interaction.baseRevision || interaction.baseRevision === currentRevision)
+      ));
+      if (pendingRepair) {
+        return reply.code(202).send({
+          accepted: true,
+          reused: true,
+          status: pendingRepair.payload.purpose === 'controlled_repair_expert'
+            ? 'waiting_expert'
+            : 'waiting_approval',
+          interaction: pendingRepair,
+          cancelledIgnoreCount,
+          aiConstruction: graph.snapshot(project.id),
+          cursor: state.snapshot(project.id).lastEventSeq,
+        });
+      }
+      if (jobs.status(repairKey)) {
+        return reply.code(202).send({
+          accepted: true,
+          reused: true,
+          status: 'running',
+          cancelledIgnoreCount,
+          aiConstruction: graph.snapshot(project.id),
+          cursor: state.snapshot(project.id).lastEventSeq,
+        });
+      }
+      startBackgroundJob({
+        jobs,
+        leases,
+        key: repairKey,
+        operation: '逐项修复知识包校验问题',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-      }, () => {
-        ensureProjectGraph(project);
-        assertNoActivePackageDraft(project.id, 'controlled-repair');
-        return controlledRepair.run(project);
+        projectId: project.id,
+        run: () => controlledRepair.run(project),
+        // 后台失败没有 HTTP 响应可用，改写成带出口的助手消息
+        // （stopKnowledgeRepair 会给「重新执行受控修复 / 暂缓错误」两个动作）
+        onError: (reason) => { orchestrator.failKnowledgeRepair(project.id, reason); },
+      });
+      return reply.code(202).send({
+        accepted: true,
+        cancelledIgnoreCount,
+        aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
       });
     } catch (error) {
       return sendStateError(reply, error);
@@ -1070,7 +1349,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     try {
       return await runWithProjectLease(leases, {
         projectId: project.id,
-        operation: '暂缓知识包阻断错误',
+        operation: '暂缓知识包必须修复的错误',
         owner: `${req.user!.username}:${req.id}`,
         ttlMs: SHORT_WRITE_LEASE_TTL_MS,
       }, async () => {
@@ -1082,13 +1361,13 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         const check = getCheck(project.id);
         if (!check || check.revision !== currentPackage.revision.oid) {
           return reply.code(409).send({
-            error: '当前知识包修订尚未完成检查，请先重新执行知识包校验',
+            error: '当前知识包内容尚未完成检查，请先重新执行知识包校验',
             code: 'PACKAGE_CHECK_REQUIRED',
           });
         }
         const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
         if (!errorCount) {
-          return reply.code(409).send({ error: '当前知识包没有阻断错误', code: 'NO_BLOCKING_ERRORS' });
+          return reply.code(409).send({ error: '当前知识包没有必须修复的错误', code: 'NO_BLOCKING_ERRORS' });
         }
         const db = getDb();
         db.exec('BEGIN IMMEDIATE');
@@ -1119,6 +1398,128 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           throw error;
         }
       });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  // 体检面板只负责列出发现，处理动作一律交给建模助手：面板里就地填表的做法
+  // 让「怎么处理」和「处理到哪一步」分散在两个地方，刷新还会丢。
+  //
+  // 两条路由都先按 findingId 从已保存的校验结果里取回发现本身，不信任前端传来的内容。
+  const loadCheckFinding = async (projectId: string, findingId: string) => {
+    const currentPackage = await packages.current(projectId);
+    if (!currentPackage) return { error: { code: 'PACKAGE_NOT_FOUND', message: '当前项目没有知识包草稿' } };
+    const check = getCheck(projectId);
+    if (!check || check.revision !== currentPackage.revision.oid) {
+      return {
+        error: {
+          code: 'PACKAGE_CHECK_REQUIRED',
+          message: '当前知识包内容尚未完成检查，请先重新执行知识包校验',
+        },
+      };
+    }
+    const finding = check.findings.find((item) => item.id === findingId);
+    if (!finding) return { error: { code: 'CHECK_FINDING_NOT_FOUND', message: '该校验发现已经不在最新检查结果里' } };
+    return { revision: currentPackage.revision.oid, check, finding };
+  };
+
+  const findingFileTarget = (finding: CheckFinding): string | undefined => {
+    const target = finding.target.trim();
+    return /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target) ? target : undefined;
+  };
+
+  const findingCardInput = (finding: CheckFinding, revision: string) => ({
+    packageRevisionOid: revision,
+    findingId: finding.id,
+    severity: finding.severity,
+    category: finding.category,
+    target: finding.target,
+    message: finding.userMessage?.trim() || finding.message,
+    ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
+    // target 既可能是明确路径，也可能是 object:key / survey_scheme.fields.xxx 这类
+    // 语义目标。前端结合当前知识包文件表解析，避免统一跳到 index.md 后看起来没反应。
+    ...(findingFileTarget(finding) ? { filePath: findingFileTarget(finding)! } : {}),
+  });
+
+  app.post('/api/projects/:id/package/check/findings/review', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const findingId = String((req.body as any)?.findingId ?? '').trim();
+    if (!findingId) return reply.code(400).send({ error: '缺少校验发现标识', code: 'INVALID_INPUT' });
+    try {
+      ensureProjectGraph(project);
+      const loaded = await loadCheckFinding(project.id, findingId);
+      if (loaded.error) {
+        return reply.code(409).send({ error: loaded.error.message, code: loaded.error.code });
+      }
+      const result = orchestrator.reviewCheckFinding(
+        project.id,
+        findingCardInput(loaded.finding!, loaded.revision!),
+      );
+      return {
+        aiConstruction: result.aiConstruction,
+        message: result.message,
+        cursor: state.snapshot(project.id).lastEventSeq,
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/package/check/findings/ignore', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const findingId = String((req.body as any)?.findingId ?? '').trim();
+    if (!findingId) return reply.code(400).send({ error: '缺少校验发现标识', code: 'INVALID_INPUT' });
+    try {
+      ensureProjectGraph(project);
+      const loaded = await loadCheckFinding(project.id, findingId);
+      if (loaded.error) {
+        return reply.code(409).send({ error: loaded.error.message, code: loaded.error.code });
+      }
+      const finding = loaded.finding!;
+      if (finding.severity !== '错误' && finding.severity !== '警告') {
+        return reply.code(409).send({
+          error: '提示类发现不需要忽略，可以直接继续建模',
+          code: 'CHECK_FINDING_NOT_IGNORABLE',
+        });
+      }
+      // 助手栏一次只渲染一条待办。这里不拦的话，新开的忽略表单会被已有待办挡住，
+      // 用户点了「忽略」界面上什么都不会发生；而待办没有取消入口，让它抢占插槽又会把
+      // 人困在必填理由里退不出去。所以先处理完手上的那条再来。
+      const pending = state.snapshot(project.id).pendingInteractions;
+      const existing = pending.find(
+        (item) => item.type === 'question_batch'
+          && item.payload.purpose === 'check_finding_ignore'
+          && item.payload.findingId === findingId
+          && (!item.baseRevision || item.baseRevision === loaded.revision),
+      );
+      // 同一条重复点击交给 orchestrator 复用；除此之外，无论已有的是哪种待办，
+      // 都不能再开第二张表单，否则旧待办会按创建顺序把新待办遮住。
+      const blocking = existing ? undefined : pending[0];
+      if (blocking) {
+        return reply.code(409).send({
+          error: `请先在建模助手里处理「${String(blocking.payload.title ?? '待确认事项')}」，再来忽略校验发现`,
+          code: 'PENDING_INTERACTION_FIRST',
+        });
+      }
+      const scope = finding.severity === '错误' ? 'errors' as const : 'warning' as const;
+      const result = orchestrator.requestCheckFindingIgnore(project.id, {
+        ...findingCardInput(finding, loaded.revision!),
+        scope,
+        // 必须用 warningFingerprint 算，不能用 finding.fingerprint：后者是跨校验修订稳定的
+        // 问题身份，和警告接受记录用的键不是一回事，混用会指向错误的目标。
+        ...(scope === 'warning' ? { fingerprint: warningFingerprint(finding) } : {}),
+        ...(scope === 'errors'
+          ? { errorCount: loaded.check!.findings.filter((item) => item.severity === '错误').length }
+          : {}),
+      });
+      return {
+        aiConstruction: result.aiConstruction,
+        interaction: result.interaction,
+        cursor: state.snapshot(project.id).lastEventSeq,
+      };
     } catch (error) {
       return sendStateError(reply, error);
     }
@@ -1330,7 +1731,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请重新填写建模目标',
+              error: '知识包内容已经变化，请重新填写建模目标',
               code: 'REVISION_CONFLICT',
             });
           }
@@ -1367,6 +1768,118 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
         });
       }
+      if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'check_finding_ignore') {
+        return await runWithProjectLease(leases, {
+          projectId: project.id,
+          operation: '记录知识包校验发现的忽略理由',
+          owner: `${req.user!.username}:${req.id}`,
+          ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+        }, async () => {
+          if (interaction.status !== 'pending') {
+            const replayed = adapter.respond(project.id, interactionId, requestId, response);
+            return {
+              interaction: replayed.interaction,
+              run: replayed.run,
+              replayed: replayed.replayed,
+              aiConstruction: graph.snapshot(project.id),
+              cursor: state.snapshot(project.id).lastEventSeq,
+            };
+          }
+          const currentPackage = await packages.current(project.id);
+          if (!currentPackage) {
+            return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+          }
+          // 忽略记录只对当时看到的那份内容成立，内容变了必须重新判断
+          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+            return reply.code(409).send({
+              error: '知识包内容已经变化，请重新检查后再决定是否忽略',
+              code: 'REVISION_CONFLICT',
+            });
+          }
+          const answers = Array.isArray(response.answers) ? response.answers : [];
+          const answer = answers.find((item) => (
+            item && typeof item === 'object' && !Array.isArray(item)
+              && (item as Record<string, unknown>).questionId === 'ignore_reason'
+          )) as Record<string, unknown> | undefined;
+          const selected = Array.isArray(answer?.selected)
+            ? answer!.selected.map(String).map((item) => item.trim()).find(Boolean) ?? ''
+            : '';
+          const reason = String(answer?.other ?? selected).trim();
+          if (reason.length < 4 || reason.length > 2_000) {
+            return reply.code(400).send({ error: '请填写有效的忽略理由', code: 'INVALID_INPUT' });
+          }
+          const scope = String(interaction.payload.scope ?? '');
+          const db = getDb();
+          db.exec('BEGIN IMMEDIATE');
+          try {
+            const answered = adapter.respond(project.id, interactionId, requestId, response);
+            let result: JsonObject;
+            if (scope === 'errors') {
+              // 后端只支持整批暂缓，卡片描述里已经把影响面写清楚了
+              const check = getCheck(project.id);
+              const errorCount = check?.findings.filter((item) => item.severity === '错误').length ?? 0;
+              if (!errorCount) {
+                db.exec('ROLLBACK');
+                return reply.code(409).send({
+                  error: '当前知识包没有必须修复的错误',
+                  code: 'NO_BLOCKING_ERRORS',
+                });
+              }
+              orchestrator.deferKnowledgeErrors(project.id, {
+                packageRevisionOid: currentPackage.revision.oid,
+                errorCount,
+                reason,
+                actor: req.user!.username,
+              });
+              const deferral = deferPackageErrors({
+                projectId: project.id,
+                revision: currentPackage.revision.oid,
+                reason,
+                actor: req.user!.username,
+                actorRole: 'project_owner',
+              });
+              state.apply({
+                kind: 'publish_event',
+                projectId: project.id,
+                type: 'package.validation.errors.deferred',
+                payload: { revision: deferral.revision, errorCount: deferral.errorCount },
+              });
+              result = { purpose: 'check_finding_ignore', scope, errorCount } as JsonObject;
+            } else {
+              const fingerprint = String(interaction.payload.fingerprint ?? '');
+              if (!fingerprint) {
+                db.exec('ROLLBACK');
+                return reply.code(409).send({
+                  error: '这条提醒缺少可追溯标识，无法忽略',
+                  code: 'CHECK_FINDING_NOT_IGNORABLE',
+                });
+              }
+              acceptPackageWarnings({
+                projectId: project.id,
+                revision: currentPackage.revision.oid,
+                fingerprints: [fingerprint],
+                note: reason,
+                actor: req.user!.username,
+                actorRole: 'project_owner',
+                phase: 'validation',
+              });
+              result = { purpose: 'check_finding_ignore', scope, fingerprint } as JsonObject;
+            }
+            const run = adapter.complete(project.id, answered.run.id, result).run;
+            db.exec('COMMIT');
+            return {
+              interaction: answered.interaction,
+              run,
+              replayed: answered.replayed,
+              aiConstruction: graph.snapshot(project.id),
+              cursor: state.snapshot(project.id).lastEventSeq,
+            };
+          } catch (error) {
+            if (db.isTransaction) db.exec('ROLLBACK');
+            throw error;
+          }
+        });
+      }
       if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'process_interview') {
         return await runWithProjectLease(leases, {
           projectId: project.id,
@@ -1390,7 +1903,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请重新确认候选业务流程',
+              error: '知识包内容已经变化，请重新确认候选业务流程',
               code: 'REVISION_CONFLICT',
             });
           }
@@ -1506,11 +2019,14 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         });
       }
       if (interaction?.type === 'decision' && interaction.payload.purpose === 'generation_gate_skip') {
-        return await runWithProjectLease(leases, {
+        // 续跑作业要自己取项目租约，所以只能在同步段的租约释放之后再启动——
+        // 在持锁的 handler 里再取同一把锁会立刻 busy 失败，作业根本跑不起来。
+        let resumeJob: (() => void) | null = null;
+        const accepted = await runWithProjectLease(leases, {
           projectId: project.id,
           operation: '继续生成知识结构',
           owner: `${req.user!.username}:${req.id}`,
-          ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+          ttlMs: SHORT_WRITE_LEASE_TTL_MS,
         }, async () => {
           assertNoActivePackageDraft(project.id, 'knowledge-generation-resume');
           const answered = adapter.respond(project.id, interactionId, requestId, response);
@@ -1555,15 +2071,29 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               ...(document.textContent ? { textContent: document.textContent } : {}),
             })),
           };
-          const result = await knowledgeRunner.run(project, context, flowchart, continuation);
+          // 门禁续跑的还是知识生成，同样十几分钟起步——不能占着请求
+          resumeJob = () => startBackgroundJob({
+            jobs,
+            leases,
+            key: `${project.id}:knowledge-generate`,
+            operation: '继续生成知识结构',
+            owner: `${req.user!.username}:${req.id}`,
+            ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+            projectId: project.id,
+            run: () => knowledgeRunner.run(project, context, flowchart, continuation),
+            onError: (reason) => { orchestrator.failKnowledgeStructure(project.id, reason); },
+          });
           return {
+            accepted: true,
             interaction: answered.interaction,
             run: answered.run,
             replayed: false,
-            ...result,
+            aiConstruction: graph.snapshot(project.id),
             cursor: state.snapshot(project.id).lastEventSeq,
           };
         });
+        if (resumeJob) (resumeJob as () => void)();
+        return (accepted as any)?.accepted ? reply.code(202).send(accepted) : accepted;
       }
       if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'script_decision') {
         return await runWithProjectLease(leases, {
@@ -1588,7 +2118,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请基于当前修订重新选择脚本候选',
+              error: '知识包内容已经变化，请基于当前内容重新选择脚本候选',
               code: 'REVISION_CONFLICT',
             });
           }
@@ -1618,40 +2148,48 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         });
       }
       if (interaction?.type === 'question_batch' && interaction.payload.purpose === 'script_contract') {
-        return await runWithProjectLease(leases, {
-          projectId: project.id,
-          operation: '生成确定性脚本方案',
-          owner: `${req.user!.username}:${req.id}`,
-          ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-        }, async () => {
-          if (interaction.status !== 'pending') {
-            const replayed = adapter.respond(project.id, interactionId, requestId, response);
-            return {
-              interaction: replayed.interaction,
-              run: replayed.run,
-              replayed: replayed.replayed,
-              aiConstruction: graph.snapshot(project.id),
-              cursor: state.snapshot(project.id).lastEventSeq,
-            };
-          }
-          const currentPackage = await packages.current(project.id);
-          if (!currentPackage) {
-            return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
-          }
-          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
-            return reply.code(409).send({
-              error: '知识包修订已经变化，请重新确认脚本契约',
-              code: 'REVISION_CONFLICT',
-            });
-          }
-          const candidates = (Array.isArray(interaction.payload.candidates)
-            ? interaction.payload.candidates : []) as unknown as ScriptCandidate[];
-          const contracts = parseScriptContractResponse(response, candidates);
-          const requirement = buildScriptGenerationRequirement(candidates, contracts);
-          orchestrator.startScriptGeneration(project.id);
-          let planned;
-          try {
-            planned = await planPackageChat(project, [], requirement, {
+        if (interaction.status !== 'pending') {
+          const replayed = adapter.respond(project.id, interactionId, requestId, response);
+          return {
+            interaction: replayed.interaction,
+            run: replayed.run,
+            replayed: replayed.replayed,
+            aiConstruction: graph.snapshot(project.id),
+            cursor: state.snapshot(project.id).lastEventSeq,
+          };
+        }
+        const currentPackage = await packages.current(project.id);
+        if (!currentPackage) {
+          return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+        }
+        if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+          return reply.code(409).send({
+            error: '知识包内容已经变化，请重新确认脚本契约',
+            code: 'REVISION_CONFLICT',
+          });
+        }
+        const candidates = (Array.isArray(interaction.payload.candidates)
+          ? interaction.payload.candidates : []) as unknown as ScriptCandidate[];
+        // 入参解析要同步做：格式不对必须当场告诉用户，不能受理完再在后台失败
+        const contracts = parseScriptContractResponse(response, candidates);
+        const requirement = buildScriptGenerationRequirement(candidates, contracts);
+
+        // 先受理再干活。原先 respond 排在十几分钟的生成之后，那段时间待办在库里
+        // 仍是 pending：刷新页面它原样回来，看着像没提交过，再点就撞上租约。
+        // 提前 respond 之后失败就不能靠原待办重试了——出口改由 failScriptGeneration
+        // 给的「重新生成脚本」承担，那是条独立路由，不依赖待办状态。
+        const answered = adapter.respond(project.id, interactionId, requestId, response);
+        const construction = orchestrator.startScriptGeneration(project.id);
+        const runId = answered.run.id;
+
+        void jobs.run(`${project.id}:script-generation`, '生成确定性脚本方案', async () => {
+          await runWithProjectLease(leases, {
+            projectId: project.id,
+            operation: '生成确定性脚本方案',
+            owner: `${req.user!.username}:${req.id}`,
+            ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+          }, async () => {
+            const planned = await planPackageChat(project, [], requirement, {
               purpose: 'script_generation',
               intent: '生成确定性脚本',
               interactionTitle: '确认确定性脚本变更方案',
@@ -1661,36 +2199,33 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
                 contractInteractionId: interaction.id,
               },
             });
-          } catch (error) {
-            orchestrator.failScriptGeneration(
-              project.id,
-              error instanceof Error ? error.message : String(error),
-            );
-            throw error;
-          }
-          if (!planned.interaction) {
-            const reason = planned.reply?.trim() || '未能生成可审阅的脚本变更方案';
-            const failed = orchestrator.failScriptGeneration(project.id, reason);
-            return reply.code(409).send({ error: reason, code: 'SCRIPT_PLAN_NOT_CREATED', ...failed });
-          }
-          const answered = adapter.respond(project.id, interactionId, requestId, response);
-          const run = adapter.complete(project.id, answered.run.id, {
-            purpose: 'script_contract',
-            scriptPlanInteractionId: planned.interaction.id,
-            packageRevisionOid: currentPackage.revision.oid,
-            candidates: candidates as unknown as JsonObject[],
-            contracts: contracts as unknown as JsonObject[],
-            requirement,
-          }).run;
-          const construction = orchestrator.waitForScriptApproval(project.id);
-          return {
-            interaction: answered.interaction,
-            run,
-            replayed: answered.replayed,
-            scriptPlan: planned,
-            ...construction,
-            cursor: state.snapshot(project.id).lastEventSeq,
-          };
+            if (!planned.interaction) {
+              throw new Error(planned.reply?.trim() || '未能生成可审阅的脚本变更方案');
+            }
+            adapter.complete(project.id, runId, {
+              purpose: 'script_contract',
+              scriptPlanInteractionId: planned.interaction.id,
+              packageRevisionOid: currentPackage.revision.oid,
+              candidates: candidates as unknown as JsonObject[],
+              contracts: contracts as unknown as JsonObject[],
+              requirement,
+            });
+            orchestrator.waitForScriptApproval(project.id);
+          });
+        }).catch((error) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          // 失败收尾必须自己兜住：这时已经没有 HTTP 响应可以承载错误了
+          try { orchestrator.failScriptGeneration(project.id, reason); } catch { /* 收尾失败不再抛 */ }
+          try { adapter.fail(project.id, runId, reason); } catch { /* 同上 */ }
+        });
+
+        return reply.code(202).send({
+          accepted: true,
+          interaction: answered.interaction,
+          run: answered.run,
+          replayed: answered.replayed,
+          ...construction,
+          cursor: state.snapshot(project.id).lastEventSeq,
         });
       }
       if (interaction?.type === 'change_plan'
@@ -1752,7 +2287,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             }
             if (interaction.baseRevision && interaction.baseRevision !== current.revision.oid) {
               return reply.code(409).send({
-                error: '知识包修订已经变化，请基于当前版本重新规划修改',
+                error: '知识包内容已经变化，请基于当前版本重新规划修改',
                 code: 'REVISION_CONFLICT',
               });
             }
@@ -1774,9 +2309,18 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             const revisionTurnId = `${requestId}:revise`;
             const history = packageChatConversation.history(project.id);
             const userMessage = packageChatConversation.beginTurn(project.id, revisionTurnId, note);
-            let planned;
-            try {
-              planned = await planPackageChat(project, history, revisionMessage, {
+            // 先受理：原先 respond 排在方案生成之后，那几分钟里待办仍是 pending，
+            // 刷新页面它会原样回来，看着像没提交过。
+            const answered = adapter.respond(project.id, interactionId, requestId, response);
+            const runId = answered.run.id;
+            const previousPayload = interaction.payload;
+            const previousBaseRevision = interaction.baseRevision;
+
+            // 这里不能用 startBackgroundJob：本分支已经在项目租约里，作业再取同一把锁
+            // 会立刻 busy 失败（门禁续跑那处就是这么撞出来的）。改用 jobs 去重即可，
+            // 同步段的租约在请求返回时释放，长任务本身不再持锁。
+            void jobs.run(`${project.id}:package-chat-revise`, '调整知识包修改方案', async () => {
+              const planned = await planPackageChat(project, history, revisionMessage, {
                 purpose: 'package_chat',
                 intent: '调整知识包修改方案',
                 interactionTitle: '确认调整后的建模方案',
@@ -1785,33 +2329,39 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               if (!planned.interaction || !planned.plan?.changes.length) {
                 throw new Error(planned.reply?.trim() || '未能生成可审阅的调整方案');
               }
-            } catch (error) {
-              packageChatConversation.failTurn(
-                project.id, revisionTurnId, '调整方案失败', error,
+              adapter.complete(project.id, runId, {
+                revisionRequested: true,
+                nextInteractionId: planned.interaction.id,
+              });
+              packageChatConversation.settlePlan(
+                project.id, interactionId, 'rejected', '已按专家意见退回原方案，并重新生成待确认方案。',
               );
-              throw error;
-            }
-            const answered = adapter.respond(project.id, interactionId, requestId, response);
-            const run = adapter.complete(project.id, answered.run.id, {
-              revisionRequested: true,
-              nextInteractionId: planned.interaction.id,
-            }).run;
-            const settled = packageChatConversation.settlePlan(
-              project.id, interactionId, 'rejected', '已按专家意见退回原方案，并重新生成待确认方案。',
-            );
-            const revisedPlanMessage = packageChatConversation.finishTurn(
-              project.id, revisionTurnId, planned,
-            );
-            return {
+              packageChatConversation.finishTurn(project.id, revisionTurnId, planned);
+            }).catch((error) => {
+              const reason = error instanceof Error ? error.message : String(error);
+              try {
+                packageChatConversation.failTurn(project.id, revisionTurnId, '调整方案失败', error);
+              } catch { /* 收尾失败不再向上抛 */ }
+              try { adapter.fail(project.id, runId, reason); } catch { /* 同上 */ }
+              // 这条路径的重试出口本来就是「待办还 pending」，而 respond 已经前移了。
+              // 失败时按原样重建一个待确认方案，把可重试状态还回去——否则专家提了
+              // 一次调整意见、生成失败，方案就永远卡在那儿没法再改。
+              try {
+                const revived = adapter.start(project.id, '重新确认建模方案', previousBaseRevision);
+                adapter.request(
+                  project.id, revived.run.id, 'change_plan', previousPayload, previousBaseRevision,
+                );
+              } catch { /* 重建失败时仍有失败消息可看，不再抛 */ }
+            });
+
+            return reply.code(202).send({
+              accepted: true,
               interaction: answered.interaction,
-              run,
+              run: answered.run,
               replayed: answered.replayed,
-              revisedPlan: planned,
-              aiConstructionMessages: [
-                userMessage, settled.plan, settled.result, revisedPlanMessage,
-              ].filter(Boolean),
+              aiConstructionMessages: [userMessage].filter(Boolean),
               cursor: state.snapshot(project.id).lastEventSeq,
-            };
+            });
           }
 
           assertNoActivePackageDraft(project.id, 'package-chat-apply');
@@ -1821,7 +2371,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           if (interaction.baseRevision && interaction.baseRevision !== current.revision.oid) {
             return reply.code(409).send({
-              error: '知识包修订已经变化，请基于当前版本重新规划修改',
+              error: '知识包内容已经变化，请基于当前版本重新规划修改',
               code: 'REVISION_CONFLICT',
             });
           }

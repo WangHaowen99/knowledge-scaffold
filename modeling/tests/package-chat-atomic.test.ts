@@ -740,7 +740,7 @@ test('候选修订未改善时把校验反馈交给下一次生成且不返回�
       return feedbacks.length === 1 ? '退化候选' : '改善候选';
     },
     validate: async (candidate) => candidate === '改善候选'
-      ? { accepted: true, feedback: '阻断错误减少' }
+      ? { accepted: true, feedback: '必须修复的错误减少' }
       : { accepted: false, feedback: '新增了未经确认的业务阈值' },
   });
 
@@ -783,7 +783,7 @@ test('候选补丁越过计划边界时把失败原因交给下一次生成', as
       if (calls === 1) throw new Error('模型提交了计划外的 metric:WeightedRevenue，已拒绝应用');
       return '只修改计划内资源的候选';
     },
-    validate: async () => ({ accepted: true, feedback: '阻断错误减少' }),
+    validate: async () => ({ accepted: true, feedback: '必须修复的错误减少' }),
   });
 
   assert.equal(accepted.status, 'accepted');

@@ -74,6 +74,8 @@ test('服务重启会结束运行中任务，并保留等待用户的任务和�
     constructionTasks: 1,
     workflowNodes: 1,
     projectLeases: 1,
+    inflightOperations: 0,
+    recoveryMessages: 0,
   });
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM project_operation_leases').get().count, 0);
 
@@ -142,6 +144,8 @@ test('恢复操作可重复执行且不会改写已结束状态', () => {
     constructionTasks: 0,
     workflowNodes: 0,
     projectLeases: 0,
+    inflightOperations: 0,
+    recoveryMessages: 0,
   });
   assert.deepEqual(second, first);
   assert.equal((db.prepare(`SELECT status FROM authoring_runs WHERE id = 'run_done'`).get() as any).status, 'completed');

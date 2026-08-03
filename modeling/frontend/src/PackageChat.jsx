@@ -6,7 +6,10 @@ import {
 import { confirmReplayBlockedMessage, shouldReplayConfirm } from './confirmReplay.js';
 import {
   adjustAiConstructionTask,
+  cancelAiConstructionOperation,
   confirmAiConstructionMilestone,
+  proposeAiConstructionIncrement,
+  startAiConstructionIncrement,
   deferAiConstructionKnowledgeErrors,
   deferAiConstructionScripts,
   editAiConstructionTasks,
@@ -31,8 +34,13 @@ import MarkdownContent from './MarkdownContent.jsx';
 import { confirmFlowchartNavigation, confirmUploadDuringAnalysis } from './flowchartNavigationGuard.js';
 import { formatMessageTimestamp } from './messageTimestamp.js';
 import { NAVIGATION_TARGETS, assistantActionKind, isReadOnlyAction } from './assistantActions.js';
-import { completionBlockerMessage } from './completionBlocker.js';
+import { completionBlockerMessage, markSurfacedAsBlocker } from './completionBlocker.js';
+import { repairTargetCandidatesFrom } from './repairTargetChoice.js';
 import { isPackageChatRunning } from './packageChatRun.js';
+import { activeRunLabel, activeRunOf } from './activeRun.js';
+import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
+import { stallHint, stalledForMs } from './taskStall.js';
+import { incrementEntryState } from './incrementEntry.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
   canUseStructuredMessageActions,
@@ -115,6 +123,8 @@ export default function PackageChat({
   // 当前界面渲染的是哪一版知识包。修订冲突后判断「内容有没有变」要用它做基线，
   // 不能等冲突发生了再去取——那时候拿到的已经是新版本，证明不了用户看过什么。
   packageRevision = '',
+  // 后端正持有写租约时，待办要显示成「已提交，正在处理」而不是可点的表单
+  activeOperation = null,
   pendingInteraction,
   flowchartDraftState,
   candidateRevisionPanel,
@@ -128,17 +138,30 @@ export default function PackageChat({
   const [turns, setTurns] = useState([]);
   const [input, setInput] = useState('');
   const [localBusy, setLocalBusy] = useState('');
+  // 本地发起操作的时刻。服务端 run 未必立刻出现在快照里，这段空窗期如果没有基线，
+  // 停滞判定会退回到任务上的旧消息，把刚点下去的操作误报成「已经 N 分钟没有新进展」。
+  const localBusySince = useRef('');
+  useEffect(() => {
+    if (localBusy && !localBusySince.current) localBusySince.current = new Date().toISOString();
+    if (!localBusy) localBusySince.current = '';
+  }, [localBusy]);
   const [taskAdjustment, setTaskAdjustment] = useState(null);
   const [taskEditConfig, setTaskEditConfig] = useState(null);
   const [validationDeferral, setValidationDeferral] = useState(null);
   const [completionBlocker, setCompletionBlocker] = useState(null);
   // 被修订冲突挡下的那次确认，连同当时界面上的知识包版本一起记着，供 reload_and_retry 判断
   const [conflictedConfirm, setConflictedConfirm] = useState(null);
+  // 已经按过取消、还没停下来的那段时间，按钮要禁用并说明正在停止
+  const [cancelling, setCancelling] = useState('');
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
-  const busy = localBusy || (chatRunning ? 'plan' : '');
-  const sec = useElapsed(!!busy);
+  // 服务端还在跑的运行。本地 busy 一刷新就没了，但后端没停——只认本地会让用户
+  // 以为提交丢了。本地态优先（文案更贴合刚点的按钮），没有本地态时用服务端的。
+  const serverRun = useMemo(() => activeRunOf(authoring), [authoring]);
+  const busy = localBusy || (chatRunning ? 'plan' : '') || (serverRun ? 'server_run' : '');
+  // 计时也走服务端开始时间，刷新后不会从 0 秒重新数
+  const sec = useElapsed(!!busy, localBusy ? undefined : serverRun?.createdAt);
   const bodyRef = useRef(null);
   const loadingOlderRef = useRef(false);
   const materialInputRef = useRef(null);
@@ -200,6 +223,34 @@ export default function PackageChat({
     return () => window.clearInterval(timer);
   }, [analysisRunning, chatRunning, busy, onProjectChanged, projectId]);
 
+  const incrementEntry = useMemo(() => incrementEntryState(aiConstruction), [aiConstruction]);
+  const cancellableOperation = useMemo(
+    () => cancellableOperationOf({ busy, serverRun }),
+    [busy, serverRun],
+  );
+  // 「还在跑」和「已经挂了」原先长得一样。sec 每秒都变，顺带让这个判断持续刷新。
+  const stalledMs = useMemo(() => (busy ? stalledForMs({
+    messages: structuredMessages,
+    taskId: aiConstruction?.progress?.currentTaskId,
+    startedAt: localBusy ? localBusySince.current : serverRun?.createdAt,
+  }) : null), [busy, localBusy, sec, structuredMessages, aiConstruction, serverRun]);
+  // 忙碌态结束就把「正在停止」清掉，否则下一轮任务的按钮会一直是禁用的
+  useEffect(() => { if (!busy) setCancelling(''); }, [busy]);
+
+  const cancelRunningOperation = async (operation) => {
+    if (cancelling) return;
+    setCancelling(operation);
+    try {
+      await cancelAiConstructionOperation(projectId, operation);
+    } catch (error) {
+      setCancelling('');
+      setTurns((items) => items.concat([timedTurn({
+        role: 'assistant',
+        text: `无法取消：${error instanceof Error ? error.message : String(error)}`,
+      })]));
+    }
+  };
+
   const refreshConstruction = async () => {
     await onProjectChanged?.();
   };
@@ -259,6 +310,37 @@ export default function PackageChat({
           role: 'assistant', text: `无法调整任务：${error instanceof Error ? error.message : String(error)}`,
         })]));
       } finally { setLocalBusy(''); }
+      return;
+    }
+    // 新建流程的弹窗归工作台管，助手只发一个打开请求，不重复实现一套
+    if (action.id === 'add_flowchart_process') {
+      setCompletionBlocker(null);
+      window.dispatchEvent(new CustomEvent('mw-flowchart-add-open', { detail: { projectId } }));
+      return;
+    }
+    // 增量补充：开一轮 / 传完资料后生成方案。两者都由后端做准入判断并给出口，
+    // 前端只负责发起和把失败渲染成可操作卡片。
+    if (action.id === 'start_increment_round' || action.id === 'propose_increment') {
+      if (busy) return;
+      const starting = action.id === 'start_increment_round';
+      setLocalBusy(starting ? 'increment_start' : 'increment_propose');
+      try {
+        if (starting) await startAiConstructionIncrement(projectId);
+        else await proposeAiConstructionIncrement(projectId);
+        setCompletionBlocker(null);
+      } catch (error) {
+        const blocked = completionBlockerMessage(error);
+        if (blocked) setCompletionBlocker(blocked);
+        else {
+          setTurns((items) => items.concat([timedTurn({
+            role: 'assistant',
+            text: `${starting ? '开始增量补充' : '生成增量方案'}失败：${error instanceof Error ? error.message : String(error)}`,
+          })]));
+        }
+      } finally {
+        setLocalBusy('');
+        await refreshConstruction();
+      }
       return;
     }
     if (action.id === 'defer_validation_errors') {
@@ -345,7 +427,7 @@ export default function PackageChat({
       setLocalBusy(discard ? 'draft_discard' : 'draft_publish');
       try {
         if (discard) await discardPackageDraft(projectId, draft.revision, draft.id);
-        else await publishPackageDraft(projectId, draft.revision, '人工编辑修订', draft.id);
+        else await publishPackageDraft(projectId, draft.revision, '人工编辑', draft.id);
         setCompletionBlocker(null);
         window.dispatchEvent(new CustomEvent('mw-package-updated'));
         setTurns((items) => items.concat([timedTurn({
@@ -507,7 +589,7 @@ export default function PackageChat({
             process_confirmed: '业务流程', knowledge_confirmed: '知识结构',
             deterministic_confirmed: '确定性能力',
             construction_completed: 'AI 辅助构建',
-          }[milestoneId] ?? '当前里程碑';
+          }[milestoneId] ?? '当前阶段';
           setTurns((items) => items.concat([timedTurn({
             role: 'assistant',
             text: `${confirmedLabel}已经确认，可以继续当前建模任务。`,
@@ -544,7 +626,7 @@ export default function PackageChat({
       } else {
         setTurns((items) => items.concat([timedTurn({
           role: 'assistant',
-          text: `${action.id === 'analyze_materials' ? '资料分析' : '里程碑确认'}失败：${error instanceof Error ? error.message : String(error)}`,
+          text: `${action.id === 'analyze_materials' ? '资料分析' : '阶段确认'}失败：${error instanceof Error ? error.message : String(error)}`,
         })]));
       }
       // 拦截多半源于服务端状态已变（如修订被更新），不刷新会让下一次点击重复失败
@@ -670,6 +752,16 @@ export default function PackageChat({
       await refreshConstruction();
       return result;
     } catch (error) {
+      // 待办提交原本自成一套错误显示（一行红字），后端声明的 nextActions 被丢掉。
+      // 接到与其余路径同一张卡片上；REPAIR_TARGET_UNRESOLVED 除外——那条有更贴合的
+      // 就地单选，卡片会变成重复信息。
+      if (!repairTargetCandidatesFrom(error).length) {
+        const blocked = completionBlockerMessage(error);
+        if (blocked) {
+          setCompletionBlocker(blocked);
+          markSurfacedAsBlocker(error);
+        }
+      }
       await refreshConstruction().catch(() => undefined);
       throw error;
     } finally {
@@ -717,6 +809,13 @@ export default function PackageChat({
           <strong>知识包建模助手</strong>
           <span>咨询、检查并完善对象、操作、规则、指标与脚本</span>
         </div>
+        {incrementEntry.visible && (
+          <button type="button" className="pchat-increment-entry" disabled={Boolean(busy)}
+            title="知识包已建完。补充新资料时只处理增量，已确认的内容保持不变。"
+            onClick={() => { void handleStructuredAction({ id: incrementEntry.action }); }}>
+            {incrementEntry.label}
+          </button>
+        )}
         {liveTaskPlanMessage && (
           <div className="pchat-task-status">
             <button type="button" className="pchat-task-status__chip"
@@ -827,6 +926,7 @@ export default function PackageChat({
             <PendingInteraction
               interaction={pendingInteraction}
               busy={Boolean(busy)}
+              activeOperation={activeOperation}
               flowchartDraftState={flowchartDraftState}
               onSubmit={submitPendingInteraction}
             />
@@ -836,7 +936,7 @@ export default function PackageChat({
           <div className="pchat-msg assistant">
             <div className="bubble"><span className="spinner" /> {{
               plan: '正在分析', apply: '正在修改', upload: '正在上传建模资料',
-              analyze: '正在分析建模资料', confirm: '正在确认当前里程碑',
+              analyze: '正在分析建模资料', confirm: '正在确认当前阶段',
               interaction: '正在提交建模回答',
               generate_knowledge: `正在${currentTask?.title ?? '生成知识结构'} · ${etaText(aiConstruction?.progress?.eta)}`,
               repair_knowledge: `正在${String(currentTask?.title ?? '修复知识包').replaceAll('受控修复', '逐项修复')} · ${etaText(aiConstruction?.progress?.eta)}`,
@@ -845,8 +945,22 @@ export default function PackageChat({
               script_apply: `正在应用并校验确定性脚本 · ${etaText(aiConstruction?.progress?.eta)}`,
               task_preview: '正在分析任务调整影响', task_adjustment: '正在应用任务调整',
               task_edit: '正在应用任务图变更',
+              increment_start: '正在开始增量补充',
+              increment_propose: '正在生成增量修改方案',
+              server_run: activeRunLabel(serverRun),
             }[busy] ?? '正在处理'} · {sec} 秒</div>
+            {cancellableOperation && (
+              <button type="button" className="pchat-cancel"
+                disabled={Boolean(cancelling)}
+                onClick={() => { void cancelRunningOperation(cancellableOperation); }}>
+                {cancelling ? '正在停止…' : '取消'}
+              </button>
+            )}
           </div>
+        )}
+        {cancelling && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
+        {!cancelling && stalledMs != null && (
+          <div className="pchat-msg assistant"><div className="bubble muted">{stallHint(stalledMs)}</div></div>
         )}
       </div>
       {pendingInteraction && (

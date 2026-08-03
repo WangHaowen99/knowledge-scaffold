@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
 import {
-  acceptPackageWarnings,
-  deferPackageValidationErrors,
-  runPackageCheck,
-} from './api.js';
-import { repairAiConstructionKnowledge } from './authoring-api.js';
-import { BusyButton } from './ui.jsx';
+  ignorePackageCheckFinding,
+  repairAiConstructionKnowledge,
+  reviewPackageCheckFinding,
+} from './authoring-api.js';
 
 // 知识包体检面板（知识包完善页顶部）：规则引擎 + 语义 agent 的结构化发现。
-// 每条发现可一键把修复指令预填进右栏修缮对话。
+//
+// 这里只负责「列出发现」。每条发现的处理——修改和忽略——都交给建模助手：
+// 忽略要写审计记录、要填理由，在面板里就地填表既和助手里的处理路径重复，
+// 刷新还会丢；助手那边已经有卡片和待办两套现成的承载方式。
 //
 // 自动重查由 PackageWorkspace 统一驱动并经 props 下发：这个面板只在「编辑与检查」页签下
 // 挂载，如果重查跟着它走，评测和诊断页签下改包就不会自动校验。
@@ -21,34 +22,24 @@ export default function PackageCheck({
   check: suppliedCheck = null,
   errorDeferral: suppliedErrorDeferral = null,
   warningReview: suppliedWarningReview = null,
+  repair: repairAvailability = null,
   rechecking = false,
   error: suppliedError = '',
-  onCheckResult,
 }) {
-  const [manualCheck, setManualCheck] = useState(null);
-  const [repairAvailability, setRepairAvailability] = useState(null);
-  const [manualErrorDeferral, setManualErrorDeferral] = useState(null);
   const [manualWarningReview, setManualWarningReview] = useState(null);
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [acceptanceNote, setAcceptanceNote] = useState('');
-  const [accepting, setAccepting] = useState(false);
-  const [deferralReason, setDeferralReason] = useState('');
-  const [deferring, setDeferring] = useState(false);
+  const [handoffId, setHandoffId] = useState('');
   const [repairing, setRepairing] = useState(false);
 
-  // 手动检查与审计操作先本地生效，等上层快照回流后再让位，避免闪回旧结果。
-  const check = manualCheck ?? suppliedCheck;
-  const errorDeferral = manualErrorDeferral ?? suppliedErrorDeferral;
+  // 助手侧的处理结果回流前，先本地生效，避免闪回旧结果
+  const check = suppliedCheck;
+  const errorDeferral = suppliedErrorDeferral;
   const warningReview = manualWarningReview ?? suppliedWarningReview;
 
   useEffect(() => {
-    setManualCheck(null);
-    setManualErrorDeferral(null);
     setManualWarningReview(null);
-    setAcceptanceNote('');
-    setDeferralReason('');
+    setErr('');
   }, [projectId, suppliedCheck]);
 
   useEffect(() => {
@@ -70,36 +61,18 @@ export default function PackageCheck({
     };
   }, [projectId]);
 
-  const run = async () => {
-    if (packageDraft) {
-      setErr('请先发布或放弃人工编辑草稿，再运行知识包检查');
-      return;
-    }
-    setBusy(true); setErr('');
+  // 两个按钮走同一条路：请求后端在助手里落一张卡片/一条待办，再让工作区刷新把它取回来。
+  const handOff = async (finding, mode) => {
+    if (handoffId) return;
+    setHandoffId(`${finding.id}:${mode}`);
+    setErr('');
     try {
-      const d = await runPackageCheck(projectId);
-      setManualCheck({
-        version: d.version, revision: d.revision, findings: d.findings,
-        createdAt: new Date().toISOString(),
-      });
-      setManualErrorDeferral(d.errorDeferral);
-      setManualWarningReview(d.warningReview);
-      setAcceptanceNote('');
-      setDeferralReason('');
-      setOpen(true);
-      setRepairAvailability(d.repair ?? null);
-      onCheckResult?.(d);
+      if (mode === 'ignore') await ignorePackageCheckFinding(projectId, finding.id);
+      else await reviewPackageCheckFinding(projectId, finding.id);
       window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
-    } catch (e) { setErr(e.message); } finally { setBusy(false); }
-  };
-
-  const toChat = (f) => {
-    // 预填带全上下文（类别/目标/现象/修复要求）——只发 suggestion 一句话 agent 不知道改哪个问题
-    const text = [
-      `修复体检发现（${f.category} · ${f.target}）：${f.message}`,
-      f.suggestion ? `修复要求：${f.suggestion}` : '',
-    ].filter(Boolean).join('\n');
-    window.dispatchEvent(new CustomEvent('mw-chat-prefill', { detail: text }));
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : '交给建模助手失败');
+    } finally { setHandoffId(''); }
   };
 
   const counts = check ? {
@@ -108,35 +81,7 @@ export default function PackageCheck({
     提示: check.findings.filter((f) => f.severity === '提示').length,
   } : null;
   const warningByFindingId = new Map((warningReview?.items ?? []).map((item) => [item.finding?.id, item]));
-  const pendingWarnings = (warningReview?.items ?? []).filter((item) => !item.accepted);
-
-  const acceptWarnings = async () => {
-    if (!check?.revision || !pendingWarnings.length || accepting) return;
-    setAccepting(true); setErr('');
-    try {
-      const result = await acceptPackageWarnings(
-        projectId, check.revision, pendingWarnings.map((item) => item.fingerprint), acceptanceNote, 'validation',
-      );
-      setManualWarningReview(result.warningReview);
-      setAcceptanceNote('');
-      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : '警告确认失败');
-    } finally { setAccepting(false); }
-  };
-
-  const deferErrors = async () => {
-    if (!check?.revision || !counts?.错误 || deferring) return;
-    setDeferring(true); setErr('');
-    try {
-      const result = await deferPackageValidationErrors(projectId, deferralReason);
-      setManualErrorDeferral(result.deferral);
-      setDeferralReason('');
-      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : '错误暂缓失败');
-    } finally { setDeferring(false); }
-  };
+  const deferred = Boolean(errorDeferral?.valid && errorDeferral.revision === check?.revision);
 
   const repair = async () => {
     if (repairing) return;
@@ -159,10 +104,7 @@ export default function PackageCheck({
   return (
     <div className="pcheck">
       <div className="pcheck-bar">
-        <BusyButton busy={busy || rechecking} busyText="检查中" expect="约 1~3 分钟" className="btn"
-          disabled={!!packageDraft} onClick={run}>
-          检查内容
-        </BusyButton>
+        {rechecking && <span className="tag tag-lang">检查中…</span>}
         {packageDraft && (
           <span className="tag tag-draft">请先发布或放弃人工编辑草稿</span>
         )}
@@ -177,7 +119,7 @@ export default function PackageCheck({
         )}
         {counts?.错误 > 0 && (
           <button type="button" className="btn btn-p"
-            disabled={repairing || busy || rechecking
+            disabled={repairing || rechecking
               || (repairAvailability ? !repairAvailability.available : !!packageDraft)}
             onClick={repair}
             title={repairAvailability && !repairAvailability.available
@@ -186,75 +128,43 @@ export default function PackageCheck({
             {repairing ? '自动修复中…' : '自动修复错误'}
           </button>
         )}
-        {!counts && !busy && !rechecking && <span style={{ fontSize: 12, color: 'var(--muted)' }}>检查内容和引用</span>}
         {(err || suppliedError) && <span className="lerr" style={{ margin: 0 }}>{err || suppliedError}</span>}
       </div>
       {open && check && (
         <div className="pcheck-list">
           {!check.findings.length && <div className="empty" style={{ padding: '10px 0' }}>✓ 未发现问题</div>}
-          {check.findings.map((f) => (
-            <div key={f.id} className="pcheck-item">
-              <span className={`tag ${SEV_TAG[f.severity] ?? 'tag-lang'}`}>{f.severity}</span>
-              <span className="tag tag-lang">{f.category}</span>
-              <button className="pcheck-target" title="定位到该文件" onClick={() => onOpenFile?.(f.target)}>{f.target}</button>
-              <div className="pcheck-msg">{f.message}</div>
-              {f.severity === '警告' && warningByFindingId.get(f.id)?.accepted && (
-                <span className="tag tag-ok">当前修订已接受</span>
-              )}
-              {f.suggestion && (
-                <button className="btn" style={{ padding: '2px 10px', fontSize: 11.5, flex: 'none' }} onClick={() => toChat(f)}>
-                  去修改
+          {check.findings.map((f) => {
+            const ignorable = f.severity === '错误' || f.severity === '警告';
+            const accepted = f.severity === '警告' && warningByFindingId.get(f.id)?.accepted;
+            const alreadyIgnored = accepted || (f.severity === '错误' && deferred);
+            return (
+              <div key={f.id} className="pcheck-item">
+                <span className={`tag ${SEV_TAG[f.severity] ?? 'tag-lang'}`}>{f.severity}</span>
+                <span className="tag tag-lang">{f.category}</span>
+                <button className="pcheck-target" title="定位到该文件" onClick={() => onOpenFile?.(f.target)}>{f.target}</button>
+                <div className="pcheck-msg">{f.message}</div>
+                {alreadyIgnored && <span className="tag tag-ok">当前内容已忽略</span>}
+                <button type="button" className="btn pcheck-act"
+                  disabled={Boolean(handoffId)}
+                  title="在建模助手里说明这条问题并给出处理方式"
+                  onClick={() => { void handOff(f, 'review'); }}>
+                  {handoffId === `${f.id}:review` ? '正在打开…' : '去修改'}
                 </button>
-              )}
-            </div>
-          ))}
-          {counts.错误 > 0 && (
-            <div className="pcheck-warning-acceptance">
-              <strong>暂缓阻断错误进入验证</strong>
-              {errorDeferral?.valid && errorDeferral.revision === check.revision ? (
-                <>
-                  <p>当前修订的 {errorDeferral.errorCount} 个错误已记录暂缓原因，可继续验证；正式发布仍要求错误清零。</p>
-                  <p className="muted">暂缓说明：{errorDeferral.reason}</p>
-                </>
-              ) : (
-                <>
-                  <p>仅允许当前错误集合先进入验证闭环。内容或错误变化后记录自动失效，正式发布仍会阻断。</p>
-                  <textarea
-                    rows={2}
-                    value={deferralReason}
-                    placeholder="说明暂缓原因和后续处理计划（必填）"
-                    onChange={(event) => setDeferralReason(event.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={deferring || deferralReason.trim().length < 4}
-                    onClick={() => { void deferErrors(); }}
-                  >
-                    {deferring ? '记录中…' : `暂缓 ${counts.错误} 个错误`}
+                {ignorable && !alreadyIgnored && (
+                  <button type="button" className="btn pcheck-act"
+                    disabled={Boolean(handoffId)}
+                    title="在建模助手里说明理由后忽略"
+                    onClick={() => { void handOff(f, 'ignore'); }}>
+                    {handoffId === `${f.id}:ignore` ? '正在打开…' : '忽略'}
                   </button>
-                </>
-              )}
-            </div>
-          )}
-          {pendingWarnings.length > 0 && (
-            <div className="pcheck-warning-acceptance">
-              <strong>接受非阻断警告进入验证</strong>
-              <p>请确认已查看这 {pendingWarnings.length} 条警告的影响。接受记录只对当前知识包修订有效。</p>
-              <textarea
-                rows={2}
-                value={acceptanceNote}
-                placeholder="说明影响范围和接受理由（必填）"
-                onChange={(event) => setAcceptanceNote(event.target.value)}
-              />
-              <button
-                type="button"
-                className="btn"
-                disabled={accepting || acceptanceNote.trim().length < 4}
-                onClick={() => { void acceptWarnings(); }}
-              >
-                {accepting ? '确认中…' : `接受 ${pendingWarnings.length} 条警告`}
-              </button>
+                )}
+              </div>
+            );
+          })}
+          {deferred && (
+            <div className="pcheck-note">
+              当前内容的 {errorDeferral.errorCount} 个错误已记录忽略理由，可继续验证；正式发布仍要求错误清零。
+              <span className="muted">忽略说明：{errorDeferral.reason}</span>
             </div>
           )}
         </div>

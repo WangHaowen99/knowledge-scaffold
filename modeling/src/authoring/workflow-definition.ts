@@ -1,6 +1,5 @@
 export const WORKFLOW_STEP_IDS = [
   'project_setup',
-  'ingest',
   'ai_construction',
   'scenario',
   'data_source',
@@ -73,13 +72,9 @@ export const WORKFLOW_STEPS = [
     id: 'project_setup', name: '项目创建', group: 'prepare', requirement: 'required',
     focus: 'project_setup', capability: 'project_setup',
   },
-  {
-    id: 'ingest', name: '建模资料上传', group: 'prepare', requirement: 'required',
-    focus: 'ingest', capability: 'material_ingest', dependsOn: ['project_setup'],
-  },
-  {
+    {
     id: 'ai_construction', name: 'AI辅助构建', group: 'model', requirement: 'required',
-    focus: 'ai_construction', capability: 'ai_construction', dependsOn: ['ingest'],
+    focus: 'ai_construction', capability: 'ai_construction', dependsOn: ['project_setup'],
   },
   {
     id: 'scenario', name: '场景推演', group: 'verify', requirement: 'required',

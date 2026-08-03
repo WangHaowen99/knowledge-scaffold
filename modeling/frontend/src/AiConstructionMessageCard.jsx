@@ -3,6 +3,11 @@ import MarkdownContent from './MarkdownContent.jsx';
 import { formatMessageTimestamp } from './messageTimestamp.js';
 import { effectiveTaskPlanTasks } from './taskPlanStatus.js';
 
+/**
+ * 术语已经在后端统一成「逐项修复 / 知识包修复助手」，这里只兜历史消息——
+ * 库里存量消息是旧词，改不了。新文案不要再依赖这张表：它是个白名单，
+ * 漏一个词就会让用户同时看到两套叫法。
+ */
 function friendlyRepairText(value) {
   return String(value ?? '')
     .replaceAll('受控修复器', '知识包修复助手')
@@ -15,6 +20,18 @@ function friendlyRepairText(value) {
     );
 }
 
+export function resolveLegacyFindingAction(message, action) {
+  if (action?.id !== 'review_knowledge_files' || action.path) return action;
+  const status = (message?.blocks ?? []).find((block) => (
+    block?.type === 'status' && String(block.title ?? '').startsWith('处理校验发现：')
+  ));
+  const summary = String(status?.summary ?? '');
+  const separator = summary.indexOf('·');
+  const target = separator >= 0 ? summary.slice(separator + 1).trim() : '';
+  if (!target || !/^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target)) return action;
+  return { ...action, id: 'open_package_file', path: target };
+}
+
 function etaLabel(eta) {
   if (!eta || eta.minMinutes == null || eta.maxMinutes == null) return '剩余时长待规划';
   if (eta.minMinutes === 0 && eta.maxMinutes === 0) return '当前步骤已完成';
@@ -22,7 +39,20 @@ function etaLabel(eta) {
   return `预计 ${eta.minMinutes}–${eta.maxMinutes} 分钟`;
 }
 
+// 里程碑顺序是固定的，前端据此给百分比一个参照物，不必让后端在 33 处状态块里都带上
+const MILESTONE_ORDER = [
+  'goal_confirmed', 'materials_ready', 'process_confirmed',
+  'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
+];
+const PROGRESS_HINT = '按已确认阶段计算。当前阶段的任务全部完成后仍需你确认，确认后才计满这一阶段。';
+
+export function milestonePosition(milestoneId) {
+  const index = MILESTONE_ORDER.indexOf(String(milestoneId ?? ''));
+  return index < 0 ? null : { index: index + 1, total: MILESTONE_ORDER.length };
+}
+
 function StatusBlock({ block }) {
+  const stage = milestonePosition(block.milestoneId);
   const progress = Number.isFinite(Number(block.progress))
     ? Math.max(0, Math.min(100, Math.round(Number(block.progress))))
     : null;
@@ -30,11 +60,13 @@ function StatusBlock({ block }) {
     <section className="ac-message-status">
       <div className="ac-message-status-head">
         <strong>{friendlyRepairText(block.title)}</strong>
-        {progress != null && <span>{progress}%</span>}
+        {stage && <span className="ac-message-stage">阶段 {stage.index}/{stage.total}</span>}
+        {progress != null && <span title={PROGRESS_HINT}>{progress}%</span>}
       </div>
       {block.summary && <p>{friendlyRepairText(block.summary)}</p>}
       {progress != null && (
-        <div className="ac-message-progress" aria-label={`建模进度 ${progress}%`}>
+        <div className="ac-message-progress" title={PROGRESS_HINT}
+          aria-label={`建模进度 ${progress}%。${PROGRESS_HINT}`}>
           <span style={{ width: `${progress}%` }} />
         </div>
       )}
@@ -51,7 +83,11 @@ function NextActionsBlock({
   return (
     <section className={`ac-message-actions${actionsEnabled ? '' : ' is-history'}`}>
       {block.title && <div className="ac-message-actions-title">{block.title}
-        {!actionsEnabled && <span>历史步骤</span>}
+        {!actionsEnabled && (
+          <span title="建模已经走到后面的步骤，这里的选项基于当时的状态，继续操作请看最新一条消息">
+            历史步骤 · 已不可操作
+          </span>
+        )}
       </div>}
       <div className="ac-message-action-list">
         {actions.map((action) => {
@@ -62,6 +98,8 @@ function NextActionsBlock({
             data-action={action.id}
             className={`ac-message-action ${action.style ?? 'secondary'}`}
             disabled={!actionEnabled}
+            // 窄栏下说明文字会被收成两行，title 保证完整内容仍可读
+            title={action.description ? friendlyRepairText(action.description) : undefined}
             onClick={() => { if (actionEnabled) onAction?.(action); }}
           >
             <strong>{friendlyRepairText(action.label)}</strong>
@@ -87,7 +125,7 @@ function EvidenceBlock({ block, onAction }) {
     </article>)}</div></section>;
 }
 
-const VALIDATION_SCOPE_LABEL = { node: '当前产物', incremental: '本次变更', milestone: '当前里程碑', complete: '完整知识包', release: '发布候选' };
+const VALIDATION_SCOPE_LABEL = { node: '当前产物', incremental: '本次变更', milestone: '当前阶段', complete: '完整知识包', release: '发布候选' };
 const FINDING_LABEL = { error: '错误', warning: '警告', hint: '提示' };
 function ValidationBlock({ block, onAction }) {
   const counts = block.counts ?? {};
@@ -125,7 +163,11 @@ function ChangePlanBlock({ block }) {
     <div className="ac-message-change-list">{(block.changes ?? []).map((change) => <article key={change.id}>
       <div><span className={`action ${change.action}`}>{CHANGE_ACTION_LABEL[change.action] ?? change.action}</span>
         <strong>{CHANGE_TARGET_LABEL[change.targetKind] ?? change.targetKind} {change.targetKey}</strong></div>
-      <p>{change.description}</p>
+      {/* 修改类先给出当前内容：不看见现在是什么样，「怎么改」无从判断 */}
+      {change.current && <div className="ac-message-change-current">
+        <span>当前内容</span><pre>{change.current}</pre>
+      </div>}
+      <p>{change.current ? '计划这样改：' : ''}{change.description}</p>
     </article>)}</div>
     {(block.risks ?? []).length > 0 && <div className="ac-message-change-risks"><strong>影响与风险</strong>
       <ul>{block.risks.map((risk, index) => <li key={`${risk}-${index}`}>{risk}</li>)}</ul></div>}
@@ -151,10 +193,13 @@ export default function AiConstructionMessageCard({
   hideTaskPlan = false,
 }) {
   const timestamp = formatMessageTimestamp(message?.createdAt);
+  const handleAction = onAction
+    ? (action) => onAction(resolveLegacyFindingAction(message, action))
+    : undefined;
   return (
     <article className={`ac-message-card ${message?.role ?? 'assistant'}`}>
       {(message?.blocks ?? []).map((block, index) => (
-        <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={onAction}
+        <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={handleAction}
           actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
           hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} />
       ))}
