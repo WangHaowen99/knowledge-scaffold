@@ -1464,3 +1464,8 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 
 /* 数据源说明里的技术细节：保留但弱化，业务专家看正文即可 */
 .mwr .pkg-source-tooltip-detail { display: block; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.18); opacity: .75; font-size: 11px; }
+
+/* 变更方案里的「当前内容」：修改类必须先给出现状，否则专家在确认看不见的东西 */
+.mwr .ac-message-change-current { margin-top: 5px; border: 1px solid #eaecf0; border-radius: 7px; background: #f9fafb; padding: 6px 8px; }
+.mwr .ac-message-change-current span { display: block; margin-bottom: 3px; color: #98a2b3; font-size: 10.5px; }
+.mwr .ac-message-change-current pre { margin: 0; color: #475467; font-family: inherit; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
