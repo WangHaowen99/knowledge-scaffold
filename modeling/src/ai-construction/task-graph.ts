@@ -37,6 +37,8 @@ export type AiConstructionTaskKind =
   // 资料变更后的定向复核：按引用关系算出受影响的内容并逐项确认，
   // 取代「受影响点之后的阶段全部推倒重来」
   | 'material_change_review'
+  // 增量补充：知识包建完之后补新资料，只吸收增量并提出变更方案
+  | 'incremental_intake'
   | 'completion_review';
 
 export interface AiConstructionMilestoneSnapshot {
@@ -219,6 +221,13 @@ export type AiConstructionTaskGraphCommand =
   | PlanAiConstructionTaskCommand
   | ConfirmAiConstructionMilestoneCommand;
 
+/**
+ * 增量补充阶段：知识包建完之后补新资料时进入，可反复进入。
+ * 不放进初始里程碑列表——见 ensureIncrementMilestone。
+ */
+export const INCREMENT_MILESTONE_ID = 'increment_confirmed';
+export const INCREMENT_MILESTONE_TITLE = '增量补充确认';
+
 const MATERIAL_FIRST_MILESTONES = [
   ['materials_ready', '资料就绪'],
   ['goal_confirmed', '建模目标确认'],
@@ -278,6 +287,7 @@ const TASK_DURATION_MINUTES: Partial<Record<AiConstructionTaskKind, [number, num
   package_repair: [5, 30],
   evaluation_repair: [10, 45],
   material_change_review: [5, 20],
+  incremental_intake: [10, 30],
   completion_review: [5, 15],
 };
 
@@ -1067,6 +1077,28 @@ export class AiConstructionTaskGraph {
         graph.status, milestoneSnapshots, taskSnapshots, this.measuredTaskDurations(),
       ),
     };
+  }
+
+  /**
+   * 增量补充阶段。懒创建而不是随图初始化：
+   *
+   * - 存量项目不必迁移；
+   * - 从没做过增量的项目不会凭空多出一个永远 pending 的阶段，进度和阶段数也就不会被它带偏。
+   *
+   * 序号排在 construction_completed 之后。这个阶段可以反复进入——每补一批资料一轮。
+   */
+  ensureIncrementMilestone(projectId: string): string {
+    const existing = this.db.prepare(`SELECT milestone_id FROM ai_construction_milestones
+      WHERE project_id = ? AND milestone_id = ?`)
+      .get(projectId, INCREMENT_MILESTONE_ID) as { milestone_id: string } | undefined;
+    if (existing) return INCREMENT_MILESTONE_ID;
+    const max = this.db.prepare(`SELECT COALESCE(MAX(ordinal), 0) AS ordinal
+      FROM ai_construction_milestones WHERE project_id = ?`).get(projectId) as { ordinal: number };
+    this.db.prepare(`INSERT INTO ai_construction_milestones
+      (project_id, milestone_id, ordinal, title, status, updated_at)
+      VALUES (?, ?, ?, ?, 'pending', ?)`)
+      .run(projectId, INCREMENT_MILESTONE_ID, Number(max.ordinal) + 1, INCREMENT_MILESTONE_TITLE, nowIso());
+    return INCREMENT_MILESTONE_ID;
   }
 
   /**
