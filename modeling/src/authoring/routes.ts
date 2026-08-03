@@ -291,7 +291,7 @@ export interface AuthoringRouteOptions {
     | 'startScriptGeneration' | 'waitForScriptApproval' | 'completeScriptGeneration'
     | 'failScriptGeneration' | 'deferScriptGeneration' | 'retryScriptGeneration'
     // 后台作业失败时的收尾：那时没有 HTTP 响应可用，只能写成带出口的助手消息
-    | 'failKnowledgeStructure' | 'failKnowledgeRepair'>;
+    | 'failKnowledgeStructure' | 'failKnowledgeRepair' | 'startIncrementRound'>;
   packages?: Pick<PackageArtifactStore,
     'ensureProject' | 'initializeDraftPackage' | 'current' | 'readPackageFiles'
     | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'>;
@@ -985,6 +985,47 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       return reply.code(202).send({
         accepted: true,
         aiConstruction: graph.snapshot(project.id),
+        cursor: state.snapshot(project.id).lastEventSeq,
+      });
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/ai-construction/increment/start', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      ensureProjectGraph(project);
+      assertNoActivePackageDraft(project.id, 'increment-start');
+      const currentPackage = await packages.current(project.id);
+      if (!currentPackage) {
+        return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
+      }
+      const snapshot = graph.snapshot(project.id);
+      const completed = snapshot?.milestones.find((item) => item.id === 'construction_completed');
+      // 建模还没走完就补资料，应该走原来的流程而不是增量——增量的前提是「已经有一个
+      // 确认过的完整知识包」，否则「只改增量」这句话没有基准。
+      if (completed?.status !== 'confirmed') {
+        return reply.code(409).send({
+          error: '知识包还没有完成建模确认，请先走完当前建模流程再补充增量资料',
+          code: 'INCREMENT_REQUIRES_COMPLETED_PACKAGE',
+        });
+      }
+      const active = snapshot?.tasks.some((task) => ['running', 'waiting_user'].includes(task.status));
+      if (active) {
+        return reply.code(409).send({
+          error: '还有任务正在进行，请先处理完再开始增量补充',
+          code: 'INCREMENT_ROUND_BLOCKED',
+        });
+      }
+
+      const started = orchestrator.startIncrementRound(project.id, {
+        packageRevisionOid: currentPackage.revision.oid,
+      });
+      return reply.code(202).send({
+        accepted: true,
+        ...started,
         cursor: state.snapshot(project.id).lastEventSeq,
       });
     } catch (error) {

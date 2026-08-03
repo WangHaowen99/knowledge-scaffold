@@ -1316,3 +1316,50 @@ test('方案调整生成失败后重建可确认方案，专家不会卡在没�
   assert.equal(revived.payload.summary, '新增跨境业务事件');
   assert.equal(revived.payload.changes[0].targetKey, 'cross_border_event');
 });
+
+test('增量补充：建模没走完时拒绝，走完后开一轮且不动已确认阶段', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量补充入口' });
+  const db = getDb();
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return { revision: { oid: 'pkg-inc' }, packageVersion: '1.0.0', spec: { objects: [], operations: [] } };
+      },
+    },
+  });
+  const url = `/api/projects/${project.id}/ai-construction/increment/start`;
+
+  // 建模没走完就补资料该走原流程：「只改增量」需要一个确认过的完整知识包做基准
+  const tooEarly = await app.inject({ method: 'POST', url, payload: {} });
+  assert.equal(tooEarly.statusCode, 409, tooEarly.body);
+  assert.equal(tooEarly.json().code, 'INCREMENT_REQUIRES_COMPLETED_PACKAGE');
+  // 无出口的红字是这个仓库反复出现的问题，新错误码也要有下一步
+  assert.ok(tooEarly.json().error);
+
+  // 把项目置为建模完成
+  db.prepare(`UPDATE ai_construction_milestones SET status = 'confirmed'
+    WHERE project_id = ?`).run(project.id);
+  db.prepare(`UPDATE ai_construction_tasks SET status = 'completed' WHERE project_id = ?`).run(project.id);
+
+  const started = await app.inject({ method: 'POST', url, payload: {} });
+  assert.equal(started.statusCode, 202, started.body);
+  assert.equal(started.json().accepted, true);
+
+  const milestones = db.prepare(`SELECT milestone_id, status FROM ai_construction_milestones
+    WHERE project_id = ?`).all(project.id) as any[];
+  const increment = milestones.find((item) => item.milestone_id === 'increment_confirmed');
+  assert.equal(increment?.status, 'active', '增量阶段应被激活');
+  // 关键：已确认的阶段一个都不能被动过，否则又变成「重走一遍」
+  for (const item of milestones.filter((row) => row.milestone_id !== 'increment_confirmed')) {
+    assert.equal(item.status, 'confirmed', `${item.milestone_id} 不该被改动`);
+  }
+  const intake = db.prepare(`SELECT COUNT(*) AS n FROM ai_construction_tasks
+    WHERE project_id = ? AND task_kind = 'incremental_intake'`).get(project.id) as { n: number };
+  assert.equal(intake.n, 1);
+
+  // 上一轮没做完就再点一次，不该攒出第二条吸收任务
+  await app.inject({ method: 'POST', url, payload: {} });
+  const again = db.prepare(`SELECT COUNT(*) AS n FROM ai_construction_tasks
+    WHERE project_id = ? AND task_kind = 'incremental_intake'`).get(project.id) as { n: number };
+  assert.equal(again.n, 1);
+});

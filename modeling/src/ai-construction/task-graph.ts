@@ -1102,6 +1102,18 @@ export class AiConstructionTaskGraph {
   }
 
   /**
+   * 把某个阶段设为活动。只动这一个，其余阶段的确认状态一概不碰——
+   * 增量补充的前提就是「已确认的部分继续有效」。
+   */
+  activateMilestone(projectId: string, milestoneId: string): void {
+    this.db.prepare(`UPDATE ai_construction_milestones SET status = 'active', updated_at = ?
+      WHERE project_id = ? AND milestone_id = ? AND status <> 'active'`)
+      .run(nowIso(), projectId, milestoneId);
+    this.db.prepare(`UPDATE ai_construction_graphs SET status = 'active', updated_at = ?
+      WHERE project_id = ?`).run(nowIso(), projectId);
+  }
+
+  /**
    * 跨项目的同类任务实测耗时，用来把 ETA 从静态表拉到真实数据上。
    * 只看本项目没有意义：每种 kind 一个项目通常只跑一次，需要估算的时候必然还没有样本。
    *
