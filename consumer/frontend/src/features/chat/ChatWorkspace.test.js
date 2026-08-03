@@ -110,6 +110,14 @@ test('prompt editor and user messages preserve multiline formatting', () => {
   assert.match(userBubbleRule, /overflow-wrap:\s*anywhere/);
 });
 
+test('live run dots keep a visible heartbeat in reduced-motion environments', () => {
+  assert.match(chatCssSource, /@keyframes\s+mw-dot-heartbeat/);
+  assert.match(
+    chatCssSource,
+    /\.mwr \.run-status-summary \.tdots span\s*\{\s*animation-duration:\s*1\.2s !important;\s*animation-iteration-count:\s*infinite !important;/,
+  );
+});
+
 test('new chat navigation is active only for a blank chat session', () => {
   assert.equal(
     appShellSource.includes("className={surface === 'chat' && !chat.currentChatId ? 'on' : ''}"),

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch,
   Globe2, Loader2, Search, Wrench,
@@ -5,6 +6,7 @@ import {
 
 import Markdown from '../../../shared/ui/Markdown';
 import { formatDurationMs, formatTime } from '../lib/chatPresentation';
+import { resolveRunProgressView } from '../lib/streamLifecycle';
 import { CopyButton, RunFeedback } from './RunActions';
 import ToolOutput from './ToolOutput';
 
@@ -16,7 +18,7 @@ const safeJson = (value) => {
 
 const statusLabel = (status) => ({
   queued: '排队中',
-  running: '进行中',
+  running: '执行问答任务中',
   finished: '已完成',
   error: '出错',
   cancelled: '已停止',
@@ -33,7 +35,7 @@ function BlockMeta({ status, durationMs }) {
   );
 }
 
-export default function ConversationView({ model, sessionId = '' }) {
+export default function ConversationView({ model, sessionId = '', runState = null }) {
   return (
     <div className="conversation-view" role="log" aria-live="off" aria-relevant="additions">
       {(model?.messages || []).map((message) => (
@@ -41,7 +43,8 @@ export default function ConversationView({ model, sessionId = '' }) {
           ? <UserMessage key={message.key} message={message} />
           : message.role === 'system'
             ? <SystemMessage key={message.key} message={message} />
-            : <AssistantTurn key={message.key} turn={message} sessionId={sessionId} />
+            : <AssistantTurn key={message.key} turn={message} sessionId={sessionId}
+                runState={message.isLoading ? runState : null} />
       ))}
     </div>
   );
@@ -66,13 +69,14 @@ export function SystemMessage({ message }) {
   );
 }
 
-export function AssistantTurn({ turn, sessionId = '' }) {
+export function AssistantTurn({ turn, sessionId = '', runState = null }) {
   const answerText = (turn.blocks || [])
     .filter((block) => block.kind === 'content')
     .map((block) => block.text)
     .join('\n')
     .trim() || turn.content;
   const hasVisibleBlock = (turn.blocks || []).some((block) => block.kind !== 'status');
+  const hasLiveProgress = Boolean(turn.isLoading && runState?.isLoading);
 
   return (
     <article className="msg a assistant-turn" data-run-id={turn.runId || undefined} data-message-key={turn.key}>
@@ -80,10 +84,11 @@ export function AssistantTurn({ turn, sessionId = '' }) {
       <div className="bubwrap">
         <div className={`bub assistant-turn-body status-${turn.status}`}>
           {(turn.blocks || []).map((block) => (
-            <ConversationBlock key={block.key} block={block} turn={turn} answerText={answerText} sessionId={sessionId} />
+            <ConversationBlock key={block.key} block={block} turn={turn} answerText={answerText}
+              sessionId={sessionId} runState={runState} />
           ))}
-          {turn.isLoading && !hasVisibleBlock && (
-            <span className="assistant-thinking"><span className="tdots"><span /><span /><span /></span>正在思考…</span>
+          {turn.isLoading && !hasVisibleBlock && !hasLiveProgress && (
+            <span className="assistant-thinking"><span className="tdots"><span /><span /><span /></span>分析问题中…</span>
           )}
         </div>
         {turn.startedAt != null && <div className="time">{formatTime(turn.startedAt)}</div>}
@@ -92,7 +97,7 @@ export function AssistantTurn({ turn, sessionId = '' }) {
   );
 }
 
-function ConversationBlock({ block, turn, answerText, sessionId }) {
+function ConversationBlock({ block, turn, answerText, sessionId, runState }) {
   if (block.kind === 'content') return <AgentContent block={block} />;
   if (block.kind === 'reasoning') return <ReasoningBlock block={block} />;
   if (block.kind === 'business_data') return <BusinessDataResult block={block} sessionId={sessionId} runId={turn.runId} />;
@@ -100,7 +105,7 @@ function ConversationBlock({ block, turn, answerText, sessionId }) {
   if (block.kind === 'tool') return <ToolCallBlock block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'subagent') return <SubagentGroup block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'status' || block.kind === 'awaiting') {
-    return <RunStatusBlock block={block} turn={turn} answerText={answerText} />;
+    return <RunStatusBlock block={block} turn={turn} answerText={answerText} runState={runState} />;
   }
   return block.text ? <div className="conversation-state-block"><Circle size={11} />{block.text}</div> : null;
 }
@@ -263,16 +268,29 @@ function SubagentTask({ task, sessionId, runId }) {
   );
 }
 
-export function RunStatusBlock({ block, turn, answerText }) {
+export function RunStatusBlock({ block, turn, answerText, runState = null }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const tracksActiveRun = Boolean(
+    (turn.status === 'running' || turn.status === 'queued') && runState?.isLoading,
+  );
+  useEffect(() => {
+    if (!tracksActiveRun) return undefined;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runState?.startedAt, tracksActiveRun]);
+
   const duration = formatDurationMs(turn.durationMs);
   const isFailure = turn.status === 'error';
   const isCancelled = turn.status === 'cancelled';
   const isAwaiting = turn.status === 'awaiting';
+  const activeProgress = tracksActiveRun ? resolveRunProgressView(runState, nowMs) : null;
   return (
     <div className={`statusline run-status status-${turn.status}`} data-block-key={block.key}>
       <span className="run-status-summary">
-        {turn.status === 'running' ? <Loader2 className="spin" size={12} /> : isFailure ? <AlertCircle size={12} /> : isCancelled ? <Circle size={12} /> : isAwaiting ? <Clock3 size={12} /> : <Check size={12} />}
-        {statusLabel(turn.status)}{duration ? ` · 总耗时 ${duration}` : ''}
+        {activeProgress
+          ? <span className="tdots" aria-hidden="true"><span /><span /><span /></span>
+          : turn.status === 'running' ? <Loader2 className="spin" size={12} /> : isFailure ? <AlertCircle size={12} /> : isCancelled ? <Circle size={12} /> : isAwaiting ? <Clock3 size={12} /> : <Check size={12} />}
+        {activeProgress?.summary || `${statusLabel(turn.status)}${duration ? ` · 总耗时 ${duration}` : ''}`}
       </span>
       {(block.text || turn.error) && (isFailure || isCancelled || isAwaiting) && (
         <span className="run-status-detail">{block.text || turn.error}</span>
