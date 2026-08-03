@@ -20,6 +20,18 @@ function friendlyRepairText(value) {
     );
 }
 
+export function resolveLegacyFindingAction(message, action) {
+  if (action?.id !== 'review_knowledge_files' || action.path) return action;
+  const status = (message?.blocks ?? []).find((block) => (
+    block?.type === 'status' && String(block.title ?? '').startsWith('处理校验发现：')
+  ));
+  const summary = String(status?.summary ?? '');
+  const separator = summary.indexOf('·');
+  const target = separator >= 0 ? summary.slice(separator + 1).trim() : '';
+  if (!target || !/^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target)) return action;
+  return { ...action, id: 'open_package_file', path: target };
+}
+
 function etaLabel(eta) {
   if (!eta || eta.minMinutes == null || eta.maxMinutes == null) return '剩余时长待规划';
   if (eta.minMinutes === 0 && eta.maxMinutes === 0) return '当前步骤已完成';
@@ -181,10 +193,13 @@ export default function AiConstructionMessageCard({
   hideTaskPlan = false,
 }) {
   const timestamp = formatMessageTimestamp(message?.createdAt);
+  const handleAction = onAction
+    ? (action) => onAction(resolveLegacyFindingAction(message, action))
+    : undefined;
   return (
     <article className={`ac-message-card ${message?.role ?? 'assistant'}`}>
       {(message?.blocks ?? []).map((block, index) => (
-        <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={onAction}
+        <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={handleAction}
           actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
           hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} />
       ))}
