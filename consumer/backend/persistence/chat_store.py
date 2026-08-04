@@ -38,6 +38,46 @@ _INTERACTION_CANCELLED_EVENT_TYPE = "interaction_cancelled"
 _LEGACY_MIGRATED_SUFFIX = ".migrated"
 _STORAGE_VERSION = "append-only-v1"
 _SUPPORTED_EVENT_NAMES = {"chat_message", "agent.v2"}
+_POST_TERMINAL_MODEL_EVENT_TYPES = {"token.delta", "reasoning.summary"}
+
+
+def _public_chat_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hide model output emitted after a terminal interaction boundary.
+
+    Older openJiuwen runs could start one extra model iteration after
+    request_user_interaction had already ended the turn. Keep the durable raw
+    events for diagnostics, but never expose those trailing model deltas to
+    conversation clients.
+    """
+    public_events: List[Dict[str, Any]] = []
+    terminal_runs: set[str] = set()
+    for event in events or []:
+        data = event.get("data") if isinstance(event, dict) else None
+        if (
+            not isinstance(data, dict)
+            or event.get("event") != "agent.v2"
+            or data.get("protocol") != "agent-stream.v2"
+        ):
+            public_events.append(event)
+            continue
+
+        run_id = str(data.get("run_id") or "").strip()
+        event_type = str(data.get("type") or "").strip()
+        payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+        if (
+            run_id
+            and event_type == "iteration.completed"
+            and str(payload.get("status") or "").strip() == "terminal_tool_batch"
+        ):
+            terminal_runs.add(run_id)
+
+        if run_id in terminal_runs and event_type in _POST_TERMINAL_MODEL_EVENT_TYPES:
+            continue
+
+        public_events.append(event)
+        if run_id and event_type == "turn.finished":
+            terminal_runs.discard(run_id)
+    return public_events
 
 
 @dataclass(frozen=True)
@@ -1084,9 +1124,9 @@ class ChatSession:
         }
         if include_messages:
             result["messages"] = [m.to_dict() for m in self.messages]
-            # Include raw events if available (from backend file store)
+            # Include client-safe events while retaining raw persisted events.
             if hasattr(self, "events"):
-                result["events"] = self.events
+                result["events"] = _public_chat_events(self.events)
         return result
 
     @staticmethod

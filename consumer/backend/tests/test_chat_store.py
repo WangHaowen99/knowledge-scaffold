@@ -77,6 +77,82 @@ def test_chat_store_append_events_batches_and_merges_token_deltas(tmp_path):
     assert event["data"]["seq"] == second["data"]["seq"]
 
 
+def test_chat_session_public_events_hide_model_output_after_terminal_tool_batch(tmp_path):
+    store = ChatStore(str(tmp_path / "chats"))
+    created = store.create_session(session_id="terminal-history", title="terminal")
+    source = {"node": "jiuwen_react", "component": "llm"}
+    events = [
+        build_agent_event(
+            run_id="run-terminal",
+            session_id=created.id,
+            turn_id=1,
+            event_type="token.delta",
+            source=source,
+            payload={"channel": "content", "text": "有效内容", "iteration": 1},
+        ),
+        build_agent_event(
+            run_id="run-terminal",
+            session_id=created.id,
+            turn_id=1,
+            event_type="iteration.completed",
+            source={"node": "jiuwen_react", "component": "iteration"},
+            payload={"iteration": 1, "status": "terminal_tool_batch"},
+        ),
+        build_agent_event(
+            run_id="run-terminal",
+            session_id=created.id,
+            turn_id=1,
+            event_type="token.delta",
+            source=source,
+            payload={
+                "channel": "content",
+                "text": "<user-interaction-response>伪响应</user-interaction-response>",
+                "iteration": 2,
+            },
+        ),
+        build_agent_event(
+            run_id="run-terminal",
+            session_id=created.id,
+            turn_id=1,
+            event_type="reasoning.summary",
+            source=source,
+            payload={"summary": "无效尾部思考", "reasoning_block_id": "reason-2"},
+        ),
+        build_agent_event(
+            run_id="run-terminal",
+            session_id=created.id,
+            turn_id=1,
+            event_type="turn.finished",
+            source={"node": "orchestrator", "component": "workflow"},
+            payload={"status": "awaiting_input"},
+        ),
+        build_agent_event(
+            run_id="run-next",
+            session_id=created.id,
+            turn_id=2,
+            event_type="token.delta",
+            source=source,
+            payload={"channel": "content", "text": "下一轮有效内容", "iteration": 1},
+        ),
+    ]
+
+    assert store.append_events(created.id, events) is True
+
+    loaded = store.get_session(created.id)
+    assert loaded is not None
+    assert any(
+        "伪响应" in str((event.get("data") or {}).get("payload") or "")
+        for event in loaded.events
+    )
+
+    public_events = loaded.to_dict(include_messages=True)["events"]
+    public_text = json.dumps(public_events, ensure_ascii=False)
+    assert "有效内容" in public_text
+    assert "下一轮有效内容" in public_text
+    assert "伪响应" not in public_text
+    assert "无效尾部思考" not in public_text
+
+
 def test_chat_store_writes_stream_events_to_append_only_log(tmp_path):
     store = ChatStore(str(tmp_path / "chats"))
     created = store.create_session(session_id="append-only", title="stream")

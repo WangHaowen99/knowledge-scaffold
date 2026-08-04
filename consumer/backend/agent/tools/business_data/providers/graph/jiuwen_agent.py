@@ -232,9 +232,6 @@ class JiuwenGraphQueryAgent:
 
         def remember_terminal_tool_batch(batch_result: Any) -> None:
             terminal_result["batch_result"] = batch_result
-            terminal_result["tool_call_id"] = str(
-                getattr(batch_result, "terminal_tool_call_id", None) or ""
-            ).strip()
 
         try:
             if owns_runtime:

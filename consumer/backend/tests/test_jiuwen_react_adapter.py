@@ -13,10 +13,9 @@ import pytest
 from agent.context import apply_sliding_window
 from agent.core.jiuwen import smoke as jiuwen_smoke
 from agent.core.jiuwen.smoke import run_jiuwen_smoke
-from agent.core.jiuwen.tools import jiuwen_tool_info_from_spec
+from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter, jiuwen_tool_info_from_spec
 from agent.core.jiuwen.trace import jiuwen_tool_call_to_trace_tool_call
 from agent.core.jiuwen_engine import (
-    CurrentRuntimeToolAdapter,
     JiuwenBackendUnavailable,
     JiuwenReactLoopEngine,
     _JiuwenModelTraceBridge,
@@ -3677,13 +3676,25 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
             callback = self.agent_callback_manager.callbacks[FakeAgentCallbackEvent.AFTER_TOOL_CALL]
             callback_context = FakeToolCallbackContext(
                 tool_result,
-                created["terminal_tool_call_id"],
+                "model-generated-request-user-interaction-call",
             )
+            assert callback_context.inputs.tool_call.id != created["terminal_tool_call_id"]
             callback_result = callback(callback_context)
             if asyncio.iscoroutine(callback_result):
                 await callback_result
             if callback_context.force_finish_result is not None:
                 self.force_finish_results.append(callback_context.force_finish_result)
+                yield SimpleNamespace(
+                    type="llm_output",
+                    payload={
+                        "content": (
+                            "继续\n\n<user-interaction-response>"
+                            '{"option_id":"proceed","value":"proceed"}'
+                            "</user-interaction-response>"
+                        ),
+                        "result_type": "answer",
+                    },
+                )
                 yield SimpleNamespace(
                     type="answer",
                     payload=callback_context.force_finish_result,
@@ -3767,6 +3778,15 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
     assert resource_mgr.removed_tool_ids
     assert not any(
         message.get("content") == "should not continue"
+        for message in final_state["messages"]
+        if isinstance(message, dict)
+    )
+    assert not any(
+        event["data"]["type"] in {"token.delta", "reasoning.summary"}
+        for event in events
+    )
+    assert not any(
+        "user-interaction-response" in str(message.get("content") or "")
         for message in final_state["messages"]
         if isinstance(message, dict)
     )
