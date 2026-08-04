@@ -12,7 +12,7 @@ export function SkeletonState({ rows = 4, compact = false, label = '正在加载
   );
 }
 
-export function ToastNotice({ message, tone, duration = 3200, actionLabel, onAction }) {
+export function ToastNotice({ message, tone, duration = 3200, actionLabel, onAction, actionHref }) {
   const [dismissedMessage, setDismissedMessage] = useState('');
 
   useEffect(() => {
@@ -32,7 +32,12 @@ export function ToastNotice({ message, tone, duration = 3200, actionLabel, onAct
     <div className={`ui-toast ${resolvedTone}`} role={resolvedTone === 'error' ? 'alert' : 'status'} aria-live={resolvedTone === 'error' ? 'assertive' : 'polite'}>
       <Icon size={16} />
       <span>{message}</span>
-      {actionLabel && <button type="button" className="ui-toast-action" onClick={onAction}>{actionLabel}</button>}
+      {actionLabel && actionHref && (
+        <a className="ui-toast-action" href={actionHref} target="_blank" rel="noreferrer">
+          {actionLabel}
+        </a>
+      )}
+      {actionLabel && !actionHref && <button type="button" className="ui-toast-action" onClick={onAction}>{actionLabel}</button>}
       <button type="button" aria-label="关闭提示" onClick={() => setDismissedMessage(message)}><X size={14} /></button>
     </div>
   );

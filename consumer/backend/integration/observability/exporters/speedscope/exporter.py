@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import threading
 import time
 from typing import Any, Dict, Iterable, Mapping, Optional
@@ -17,6 +15,7 @@ from utils.logging import get_logger
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.speedscope_io import (
     resolve_speedscope_output_dir,
+    speedscope_session_path,
     speedscope_file_lock,
     speedscope_session_lock_path,
 )
@@ -90,6 +89,7 @@ class _Span:
 class _RunTrace:
     run_id: str
     session_id: str
+    user_id: str
     turn_id: Optional[int]
     first_ts_ms: int
     last_ts_ms: int
@@ -107,6 +107,7 @@ class _RunTrace:
 class _PendingDrop:
     run_id: str
     session_id: str
+    user_id: str
     turn_id: Optional[int]
     first_ts_ms: int
     last_ts_ms: int
@@ -173,6 +174,8 @@ class SpeedscopeExporter:
     def record_drop(self, event: RuntimeEvent) -> None:
         run_id = str(getattr(event, "run_id", "") or "").strip()
         session_id = str(getattr(event, "session_id", "") or "").strip()
+        payload = dict(getattr(event, "payload", {}) or {})
+        user_id = str(payload.get("user_id") or "").strip()
         if not run_id or not session_id:
             return
         with self._lock:
@@ -193,12 +196,14 @@ class SpeedscopeExporter:
                 pending = _PendingDrop(
                     run_id=run_id,
                     session_id=session_id,
+                    user_id=user_id,
                     turn_id=_optional_int(getattr(event, "turn_id", None)),
                     first_ts_ms=timestamp_ms,
                     last_ts_ms=timestamp_ms,
                 )
                 self._pending_drops[run_id] = pending
             pending.session_id = pending.session_id or session_id
+            pending.user_id = pending.user_id or user_id
             if pending.turn_id is None:
                 pending.turn_id = _optional_int(getattr(event, "turn_id", None))
             pending.first_ts_ms = min(pending.first_ts_ms, timestamp_ms)
@@ -235,6 +240,7 @@ class SpeedscopeExporter:
         return _RunTrace(
             run_id=pending.run_id,
             session_id=pending.session_id,
+            user_id=pending.user_id,
             turn_id=pending.turn_id,
             first_ts_ms=pending.first_ts_ms,
             last_ts_ms=max(pending.first_ts_ms, pending.last_ts_ms),
@@ -273,6 +279,7 @@ class SpeedscopeExporter:
         run = _RunTrace(
             run_id=event.run_id,
             session_id=str(event.session_id or (pending.session_id if pending else "") or ""),
+            user_id=_event_user_id(event) or (pending.user_id if pending else ""),
             turn_id=(
                 _optional_int(event.turn_id)
                 if event.turn_id is not None
@@ -340,7 +347,11 @@ class SpeedscopeExporter:
 
     def _write_run(self, run: _RunTrace) -> None:
         spans, incomplete = _materialize_spans(run)
-        path = self.output_dir / _session_file_name(run.session_id)
+        path = speedscope_session_path(
+            self.output_dir,
+            run.session_id,
+            user_id=run.user_id or None,
+        )
         with speedscope_file_lock(path):
             document = _load_session_document(path, run.session_id)
             active_profile_name = _active_profile_name(document)
@@ -377,7 +388,7 @@ class SpeedscopeExporter:
             return
         self._last_prune_day = today
         cutoff = time.time() - self.retention_days * 24 * 60 * 60
-        for path in self.output_dir.glob("session-*.speedscope.json"):
+        for path in self.output_dir.rglob("session-*.speedscope.json"):
             if path == current_path:
                 continue
             try:
@@ -398,9 +409,15 @@ class SpeedscopeExporter:
             self._runs.pop(run_id, None)
 
 
-def create_speedscope_exporter(config: Mapping[str, Any] | None = None) -> SpeedscopeExporter:
-    del config
-    return SpeedscopeExporter()
+def create_speedscope_exporter(
+    config: Mapping[str, Any] | None = None,
+    *,
+    output_dir: str | Path | None = None,
+) -> SpeedscopeExporter:
+    config = config if isinstance(config, Mapping) else {}
+    speedscope = config.get("speedscope") if isinstance(config.get("speedscope"), Mapping) else {}
+    retention_days = speedscope.get("retention_days", DEFAULT_RETENTION_DAYS)
+    return SpeedscopeExporter(output_dir=output_dir, retention_days=retention_days)
 
 
 def _unlink_speedscope_lock(path: Path) -> None:
@@ -1034,13 +1051,6 @@ def _atomic_write_json(path: Path, document: Mapping[str, Any]) -> None:
             pass
 
 
-def _session_file_name(session_id: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(session_id or "session")).strip("._-")
-    normalized = (normalized or "session")[:64]
-    digest = hashlib.sha256(str(session_id or "").encode("utf-8")).hexdigest()[:12]
-    return "session-{}-{}.speedscope.json".format(normalized, digest)
-
-
 def _run_profile_prefix(run: _RunTrace) -> str:
     turn = run.turn_id if run.turn_id is not None else "?"
     return "Turn {} / Run {}".format(turn, run.run_id)
@@ -1057,6 +1067,11 @@ def _optional_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _event_user_id(event: RuntimeEvent) -> str:
+    payload = dict(getattr(event, "payload", {}) or {})
+    return str(payload.get("user_id") or "").strip()
 
 
 def _bounded_label(value: Any, limit: int = 120) -> str:

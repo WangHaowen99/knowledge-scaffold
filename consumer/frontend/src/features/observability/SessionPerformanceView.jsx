@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { Download, RefreshCw } from 'lucide-react';
 
-import { requestObservabilityJson } from './api.js';
+import { requestObservabilityDownload, requestObservabilityJson } from './api.js';
+import { ToastNotice } from '../../shared/ui/feedback.jsx';
 import {
   DataTable,
   DiagnosticsBanner,
@@ -38,6 +39,8 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
   const [runLoading, setRunLoading] = useState(false);
   const [runError, setRunError] = useState('');
   const [runErrorStatus, setRunErrorStatus] = useState(null);
+  const [speedscopeDownloading, setSpeedscopeDownloading] = useState(false);
+  const [speedscopeNotice, setSpeedscopeNotice] = useState({ message: '', tone: 'info' });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -105,6 +108,33 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
     return () => controller.abort();
   }, [refreshVersion, request, selectedRunId, sessionId]);
 
+  const downloadSpeedscope = async () => {
+    setSpeedscopeDownloading(true);
+    setSpeedscopeNotice({ message: '', tone: 'info' });
+    try {
+      const result = await requestObservabilityDownload(
+        request,
+        `/agentic/sessions/${encodeURIComponent(sessionId)}/performance/speedscope`,
+      );
+      const objectUrl = window.URL.createObjectURL(result.blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = result.fileName || `session-${sessionId}.speedscope.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
+      setSpeedscopeNotice({ message: 'Speedscope 文件已下载', tone: 'success' });
+    } catch (nextError) {
+      setSpeedscopeNotice({
+        message: nextError.message || 'Speedscope 下载失败',
+        tone: 'error',
+      });
+    } finally {
+      setSpeedscopeDownloading(false);
+    }
+  };
+
   const runs = analysis?.runs || [];
   const summary = analysis?.summary || {};
   const state = resolveCollectionState({ loading, error, itemCount: runs.length });
@@ -118,6 +148,16 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
         description="按会话对齐轮次、运行、LLM 和工具耗时。"
         onBack={onBack}
         actions={(
+          <>
+            <button
+              className="obs-button"
+              onClick={downloadSpeedscope}
+              type="button"
+              disabled={speedscopeDownloading || !sessionId}
+            >
+              <Download size={15} aria-hidden="true" />
+              {speedscopeDownloading ? '下载中…' : '下载 Speedscope'}
+            </button>
           <button
             className="obs-button"
             onClick={() => setRefreshVersion((value) => value + 1)}
@@ -127,7 +167,16 @@ export default function SessionPerformanceView({ sessionId, onBack, request }) {
             <RefreshCw className={loading ? 'obs-spin' : ''} size={15} aria-hidden="true" />
             刷新
           </button>
+          </>
         )}
+      />
+
+      <ToastNotice
+        message={speedscopeNotice.message}
+        tone={speedscopeNotice.tone}
+        duration={speedscopeNotice.tone === 'error' ? 5200 : 4200}
+        actionLabel="打开 Speedscope"
+        actionHref="https://www.speedscope.app/"
       />
 
       {error && runs.length > 0 && <div className="obs-banner tone-error">刷新失败，当前保留上次数据：{error}</div>}

@@ -6,12 +6,10 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 import uuid
-import weakref
 
 from agent.exceptions import WorkflowCancelledError
 from integration.observability.events import RuntimeEvent, RuntimeEventType, RuntimeStatus
 from integration.observability.observer import NOOP_OBSERVER
-from integration.observability.stack_profiler import start_run_stack_profile, stop_run_stack_profile
 
 
 class RunRuntimeTrace:
@@ -34,9 +32,7 @@ class RunRuntimeTrace:
         self.session_id = session_id
         self.turn_id = turn_id
         self.root_span_key = "run:{}".format(self.run_id)
-        self._profile_started = False
         self._terminal = False
-        self._profile_finalizer: Optional[weakref.finalize] = None
 
     @property
     def enabled(self) -> bool:
@@ -54,18 +50,6 @@ class RunRuntimeTrace:
     ) -> None:
         if not self.enabled:
             return
-        start_run_stack_profile(
-            run_id=self.run_id,
-            session_id=self.session_id,
-            turn_id=self.turn_id,
-        )
-        self._profile_started = True
-        self._profile_finalizer = weakref.finalize(
-            self,
-            stop_run_stack_profile,
-            self.run_id,
-            status=RuntimeStatus.ERROR,
-        )
         self._emit(
             RuntimeEventType.RUN_STARTED,
             span_key=self.root_span_key,
@@ -228,13 +212,6 @@ class RunRuntimeTrace:
         if self._terminal:
             return
         self._terminal = True
-        finalizer = self._profile_finalizer
-        self._profile_finalizer = None
-        if finalizer is not None and finalizer.alive:
-            finalizer.detach()
-        if self._profile_started:
-            stop_run_stack_profile(self.run_id, status=status)
-            self._profile_started = False
 
     def _emit_phase(
         self,

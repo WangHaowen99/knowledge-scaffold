@@ -230,7 +230,6 @@ Important variables:
 | `AGENT_LLM_CONNECTION_MAX_RETRIES` | LLM HTTP retry count for connection-style failures | `3` |
 | `LOG_LEVEL` | Process startup log level; overridden by `ops_config.json` `logging.level` | `INFO` |
 | `LOG_CONSOLE` | Enable console logging when set | off |
-| `SPEEDSCOPE_TRACE_ENABLED` | Generate developer-only, session-scoped Speedscope timing files | `false` |
 
 Notes:
 
@@ -241,8 +240,8 @@ Notes:
 - `web_search` is optional and disabled by default. Configure `web_search` through system settings or `WEB_SEARCH_*` environment variables before the tool is exposed to the model.
 - Observability output is configured per workspace through `/agentic/workspaces/<workspace_id>/observability-config` or the configuration center's workspace observability section. Each workspace can independently select local performance JSONL or its own Langfuse project. Global system config no longer exposes an `observability` section, and the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
 - When a workspace uses `mode=local`, the chat UI can analyze that workspace's current session. Admins can also aggregate and filter local observations across workspaces, but that dashboard is an analysis view rather than global observability configuration. Neither view reads Langfuse data or old direct perf logger records.
-- `SPEEDSCOPE_TRACE_ENABLED=true` is a developer diagnostic switch independent of workspace observability configuration. The knowledge-QA backend writes standard session-scoped `.speedscope.json` files under `<PROJECT_ROOT>/logs/speedscope/`, retained for 30 days. Runs and parallel execution lanes become evented profiles that can be opened directly in [Speedscope](https://www.speedscope.app/); these files are not consumed by the local-observability UI. Normal `agent.log` output remains enabled, while `agent_perf` is produced only for workspaces configured with `mode=local` and follows each workspace's retention setting.
-- Speedscope traces contain stage names, status, and timing only. They exclude user questions, prompts, reasoning, answers, tool arguments, SQL parameters, and tool output. The standalone MCP container explicitly disables this switch.
+- Workspace observability is the only Speedscope control plane. When `enabled=false`, the workspace writes no local perf, Langfuse, or Speedscope output. When enabled, `mode=local` writes local perf JSONL plus an evented session trace; `mode=langfuse` writes Langfuse plus the same evented session trace. Speedscope traces are stored under `<PROJECT_ROOT>/workspaces/<workspace_id>/runtime/observability/speedscope/<user>/` and follow `speedscope.retention_days` (30 days by default).
+- Speedscope traces contain stage names, status, and timing only. They exclude user questions, prompts, reasoning, answers, tool arguments, SQL parameters, and tool output. The current session trace is available from `GET /agentic/sessions/{session_id}/performance/speedscope`; regular users can download their own sessions and workspace admins can download any session in that workspace.
 - If you use GLM directly, the recommended endpoint example is `https://open.bigmodel.cn/api/paas/v4`.
 
 ## HTTP surface

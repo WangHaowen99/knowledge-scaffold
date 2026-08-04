@@ -126,6 +126,71 @@ def test_session_performance_availability_requires_existing_session(tmp_path, mo
     assert response.status_code == 404
 
 
+def test_session_speedscope_download_is_scoped_to_current_user(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, role="user")
+    trace_path = tmp_path / "session.speedscope.json"
+    trace_path.write_text('{"$schema":"https://www.speedscope.app/file-format-schema.json"}', encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(
+        "api.routes.performance.get_request_stores",
+        lambda: (_FakeChatStore({"sess-a"}), object()),
+    )
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
+    monkeypatch.setattr(
+        "api.routes.performance.find_speedscope_session_file",
+        lambda workspace_id, session_id, **kwargs: captured.update(
+            {"workspace_id": workspace_id, "session_id": session_id, **kwargs}
+        )
+        or trace_path,
+    )
+
+    response = client.get("/agentic/sessions/sess-a/performance/speedscope", headers=headers)
+
+    assert response.status_code == 200
+    assert response.mimetype == "application/json"
+    assert response.data.startswith(b'{"$schema"')
+    assert "attachment" in response.headers["Content-Disposition"]
+    assert captured == {"workspace_id": "ws-a", "session_id": "sess-a", "user_id": "perf-user"}
+
+
+def test_admin_can_download_any_workspace_user_session_speedscope(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, role="admin")
+    trace_path = tmp_path / "session.speedscope.json"
+    trace_path.write_text("{}", encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
+    monkeypatch.setattr(
+        "api.routes.performance.find_speedscope_session_file",
+        lambda workspace_id, session_id, **kwargs: captured.update(
+            {"workspace_id": workspace_id, "session_id": session_id, **kwargs}
+        )
+        or trace_path,
+    )
+
+    response = client.get("/agentic/sessions/sess-a/performance/speedscope", headers=headers)
+
+    assert response.status_code == 200
+    assert captured == {"workspace_id": "ws-a", "session_id": "sess-a", "any_user": True}
+
+
+def test_session_speedscope_download_returns_controlled_not_found(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, role="user")
+    monkeypatch.setattr(
+        "api.routes.performance.get_request_stores",
+        lambda: (_FakeChatStore({"sess-a"}), object()),
+    )
+    monkeypatch.setattr("api.routes.performance.get_request_workspace_id", lambda: "ws-a")
+    monkeypatch.setattr("api.routes.performance.find_speedscope_session_file", lambda *args, **kwargs: None)
+
+    response = client.get("/agentic/sessions/sess-a/performance/speedscope", headers=headers)
+
+    assert response.status_code == 404
+    assert response.get_json() == {
+        "error": "Speedscope trace not found",
+        "code": "SPEEDSCOPE_NOT_FOUND",
+    }
+
+
 def test_user_run_detail_requires_current_session_ownership(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, role="user")
     captured = {}
