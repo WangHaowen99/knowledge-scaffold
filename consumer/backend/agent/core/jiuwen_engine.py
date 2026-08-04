@@ -170,9 +170,6 @@ class _JiuwenTerminalForceFinishBridge:
             self._event = None
 
     async def _on_after_tool_call(self, ctx: Any) -> None:
-        inputs = _read_field(ctx, "inputs")
-        tool_call = _read_field(inputs, "tool_call")
-        actual_tool_call_id = str(_read_field(tool_call, "id") or "").strip()
         terminal_error = (
             self.terminal_error_signal.get()
             if self.terminal_error_signal is not None
@@ -195,9 +192,12 @@ class _JiuwenTerminalForceFinishBridge:
         batch_result = self.terminal_result.get("batch_result")
         if batch_result is None or _read_field(ctx, "exception") is not None:
             return
-        expected_tool_call_id = str(self.terminal_result.get("tool_call_id") or "").strip()
-        if expected_tool_call_id and actual_tool_call_id != expected_tool_call_id:
-            return
+        # The registered adapter creates an internal ToolInvocation id, while
+        # openJiuwen's callback exposes the model-generated tool-call id. They
+        # identify the same execution but are intentionally different values.
+        # Once any tool reports a terminal batch, forcing the enclosing batch
+        # to finish is correct regardless of which parallel AFTER_TOOL_CALL
+        # callback observes the shared terminal result first.
         await self._request_force_finish(
             ctx,
             {
@@ -651,10 +651,11 @@ class JiuwenReactLoopEngine:
             )
 
         terminal_result: Dict[str, Any] = {}
+        terminal_stop_event = threading.Event()
 
         def remember_terminal_tool_batch(batch_result: Any) -> None:
             terminal_result["batch_result"] = batch_result
-            terminal_result["tool_call_id"] = _terminal_tool_call_id(batch_result)
+            terminal_stop_event.set()
 
         registered_tool_cards: list[Any] = []
         model_trace_bridge = _JiuwenModelTraceBridge(
@@ -719,6 +720,7 @@ class JiuwenReactLoopEngine:
                         stream_enabled=stream_enabled,
                         event_source_node=event_source_node,
                         terminal_error_signal=terminal_error_signal,
+                        terminal_stop_event=terminal_stop_event,
                         observability_context={
                             "observer": runtime_observer,
                             "run_id": runtime_trace.run_id,
@@ -932,6 +934,7 @@ class JiuwenReactLoopEngine:
         stream_enabled: bool = True,
         event_source_node: Optional[str] = None,
         terminal_error_signal: Optional[_JiuwenTerminalErrorSignal] = None,
+        terminal_stop_event: Optional[threading.Event] = None,
         observability_context: Optional[Dict[str, Any]] = None,
     ) -> Any:
         _raise_if_jiuwen_cancelled(cancel_event, state)
@@ -969,6 +972,7 @@ class JiuwenReactLoopEngine:
                         reasoning_summary_callback=reasoning_summary_callback,
                         event_source_node=event_source_node,
                         terminal_error_signal=terminal_error_signal,
+                        terminal_stop_event=terminal_stop_event,
                     ),
                     observer=obs_ctx.get("observer") or NOOP_OBSERVER,
                     run_id=str(obs_ctx.get("run_id") or ""),
@@ -997,6 +1001,7 @@ class JiuwenReactLoopEngine:
                         reasoning_summary_callback=reasoning_summary_callback,
                         event_source_node=event_source_node,
                         terminal_error_signal=terminal_error_signal,
+                        terminal_stop_event=terminal_stop_event,
                     ),
                     observer=obs_ctx.get("observer") or NOOP_OBSERVER,
                     run_id=str(obs_ctx.get("run_id") or ""),
@@ -1042,6 +1047,7 @@ class JiuwenReactLoopEngine:
         reasoning_summary_callback: Optional[Any],
         event_source_node: Optional[str],
         terminal_error_signal: Optional[_JiuwenTerminalErrorSignal] = None,
+        terminal_stop_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         _raise_if_jiuwen_cancelled(cancel_event, state)
         stream_result = stream(inputs, session=session) if session is not None else stream(inputs)
@@ -1060,8 +1066,18 @@ class JiuwenReactLoopEngine:
                 reasoning_summary_callback=reasoning_summary_callback,
                 event_source_node=event_source_node,
                 terminal_error_signal=terminal_error_signal,
+                terminal_stop_event=terminal_stop_event,
             )
         finally:
+            if terminal_stop_event is not None and terminal_stop_event.is_set():
+                close_stream = getattr(stream_result, "aclose", None)
+                if callable(close_stream):
+                    try:
+                        result = close_stream()
+                        if isawaitable(result):
+                            await result
+                    except Exception:
+                        logger.debug("Failed to close Jiuwen stream after terminal tool", exc_info=True)
             if session is not None:
                 await _save_jiuwen_session_contexts(agent, session)
 
@@ -1080,6 +1096,7 @@ class JiuwenReactLoopEngine:
         reasoning_summary_callback: Optional[Any],
         event_source_node: Optional[str],
         terminal_error_signal: Optional[_JiuwenTerminalErrorSignal] = None,
+        terminal_stop_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         managed_session = session or _create_jiuwen_agent_session(agent, inputs)
         producer_task: Optional[asyncio.Task[Any]] = None
@@ -1104,6 +1121,7 @@ class JiuwenReactLoopEngine:
                 reasoning_summary_callback=reasoning_summary_callback,
                 event_source_node=event_source_node,
                 terminal_error_signal=terminal_error_signal,
+                terminal_stop_event=terminal_stop_event,
             )
         finally:
             if producer_task is not None:
@@ -1133,6 +1151,7 @@ class JiuwenReactLoopEngine:
         reasoning_summary_callback: Optional[Any],
         event_source_node: Optional[str],
         terminal_error_signal: Optional[_JiuwenTerminalErrorSignal] = None,
+        terminal_stop_event: Optional[threading.Event] = None,
     ) -> Dict[str, Any]:
         final_result: Dict[str, Any] = {}
         stream_state: Dict[str, str] = {"content": "", "reasoning": "", "reasoning_block_id": ""}
@@ -1140,6 +1159,8 @@ class JiuwenReactLoopEngine:
             _raise_if_jiuwen_cancelled(cancel_event, state)
             if terminal_error_signal is not None:
                 terminal_error_signal.raise_if_set()
+            if terminal_stop_event is not None and terminal_stop_event.is_set():
+                break
             chunk_result = self._handle_stream_chunk(
                 chunk,
                 state=state,
