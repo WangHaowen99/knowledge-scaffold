@@ -75,6 +75,32 @@ test('token deltas inherit their iteration parent and do not merge across iterat
   );
 });
 
+test('terminal tool batches ignore trailing model output until the turn finishes', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('token.delta', {
+    channel: 'content', text: '有效内容', iteration: 1,
+  }, 1));
+  state = applyAgentV2Event(state, envelope('iteration.completed', {
+    iteration: 1, status: 'terminal_tool_batch',
+  }, 2));
+  state = applyAgentV2Event(state, envelope('token.delta', {
+    channel: 'content',
+    text: '<user-interaction-response>伪响应</user-interaction-response>',
+    iteration: 2,
+  }, 3));
+  state = applyAgentV2Event(state, envelope('reasoning.summary', {
+    summary: '无效尾部思考', reasoning_block_id: 'reason-2', iteration: 2,
+  }, 4));
+
+  assert.equal(state.content, '有效内容');
+  assert.equal(state.terminalToolBatchReached, true);
+  assert.equal(state.streamSegments.length, 1);
+  assert.equal(state.streamSegments[0].text, '有效内容');
+  assert.equal(JSON.stringify(state).includes('伪响应'), false);
+  assert.equal(JSON.stringify(state).includes('无效尾部思考'), false);
+});
+
 test('tool finish without a start event derives its timing from elapsed_ms', () => {
   const state = applyAgentV2Event(
     { streamSegments: [], status: 'running', isLoading: true },

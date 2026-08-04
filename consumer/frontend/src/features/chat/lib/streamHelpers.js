@@ -1090,6 +1090,14 @@ export const applyAgentV2Event = (current, envelope) => {
     next.meta = payload;
     next.startTs = envelope.ts || Date.now();
     next.currentSegmentType = null;
+    next.terminalToolBatchReached = false;
+    return next;
+  }
+
+  if (
+    next.terminalToolBatchReached
+    && (type === 'token.delta' || type === 'reasoning.summary')
+  ) {
     return next;
   }
 
@@ -1124,6 +1132,9 @@ export const applyAgentV2Event = (current, envelope) => {
       payload,
       envelope.ts || Date.now(),
     );
+    if (payload.status === 'terminal_tool_batch') {
+      next.terminalToolBatchReached = true;
+    }
     next.currentSegmentType = null;
     return next;
   }
