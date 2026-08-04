@@ -261,6 +261,35 @@ def test_admin_can_change_owner_field(tmp_path, monkeypatch):
     assert _get_skills(client, headers["alice"], "alice-ws").status_code == 403
 
 
+def test_workspace_owner_reference_must_exist_on_create_and_transfer(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    created = client.post(
+        "/agentic/workspaces",
+        json={"name": "Orphan", "id": "orphan", "owner": "missing-owner"},
+        headers=headers["admin"],
+    )
+    assert created.status_code == 400
+    assert created.get_json() == {
+        "detail": "工作空间负责人 missing-owner 不存在",
+        "code": "WORKSPACE_OWNER_NOT_FOUND",
+        "username": "missing-owner",
+    }
+
+    transferred = client.patch(
+        "/agentic/workspaces/alice-ws",
+        json={"owner": "missing-owner"},
+        headers=headers["admin"],
+    )
+    assert transferred.status_code == 400
+    assert transferred.get_json()["code"] == "WORKSPACE_OWNER_NOT_FOUND"
+    assert client.get(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["admin"],
+    ).get_json()["owner"] == "alice"
+
+
 def test_put_members_owner_allowed_and_validated(tmp_path, monkeypatch):
     client, headers = _build_env(tmp_path, monkeypatch)
     _setup_shared_and_owned(client, headers)
@@ -297,6 +326,275 @@ def test_put_members_owner_allowed_and_validated(tmp_path, monkeypatch):
             headers=headers["alice"],
         )
         assert response.status_code == 400, bad_payload
+
+
+def test_workspace_member_identity_must_exist_before_validation_or_save(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    checked = client.post(
+        "/agentic/workspaces/alice-ws/members/validate",
+        json={"username": "missing-user"},
+        headers=headers["alice"],
+    )
+    assert checked.status_code == 400
+    assert checked.get_json() == {
+        "detail": "成员用户 missing-user 不存在",
+        "code": "WORKSPACE_MEMBER_NOT_FOUND",
+        "username": "missing-user",
+        "usernames": ["missing-user"],
+    }
+
+    saved = client.put(
+        "/agentic/workspaces/alice-ws/members",
+        json={"members": ["bob", "missing-user"]},
+        headers=headers["alice"],
+    )
+    assert saved.status_code == 400
+    assert saved.get_json()["code"] == "WORKSPACE_MEMBER_NOT_FOUND"
+    assert client.get(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["admin"],
+    ).get_json()["members"] == []
+
+    multiple = client.put(
+        "/agentic/workspaces/alice-ws/members",
+        json={"members": ["missing-b", "bob", "missing-a"]},
+        headers=headers["alice"],
+    )
+    assert multiple.status_code == 400
+    assert multiple.get_json()["code"] == "WORKSPACE_MEMBERS_NOT_FOUND"
+    assert multiple.get_json()["usernames"] == ["missing-b", "missing-a"]
+
+
+def test_member_save_revalidates_after_successful_add_check(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    checked = client.post(
+        "/agentic/workspaces/alice-ws/members/validate",
+        json={"username": "bob"},
+        headers=headers["alice"],
+    )
+    assert checked.status_code == 200
+    assert checked.get_json() == {"valid": True, "username": "bob"}
+
+    auth_manager = client.application.config["AUTH_MANAGER"]
+    auth_manager.delete_user("bob")
+    saved = client.put(
+        "/agentic/workspaces/alice-ws/members",
+        json={"members": ["bob"]},
+        headers=headers["alice"],
+    )
+
+    assert saved.status_code == 400
+    assert saved.get_json()["code"] == "WORKSPACE_MEMBER_NOT_FOUND"
+    assert client.get(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["admin"],
+    ).get_json()["members"] == []
+
+
+def test_pending_user_deletion_blocks_member_validation_and_save(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+    reconciliation_id = "b" * 32
+    reconciliation_path = (
+        tmp_path
+        / ".onto-runtime"
+        / "system"
+        / "user-deletion-reconciliation.json"
+    )
+    reconciliation_path.parent.mkdir(parents=True, exist_ok=True)
+    reconciliation_path.write_text(
+        json.dumps({
+            "version": 1,
+            "records": [{
+                "id": reconciliation_id,
+                "username": "bob",
+                "status": "cleanup_pending",
+                "identity_deleted": True,
+                "created_at": "2026-08-04T00:00:00+00:00",
+                "updated_at": "2026-08-04T00:00:00+00:00",
+                "attempts": 1,
+                "completed_steps": [],
+                "errors": {"workspace_members": "pending"},
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    for method, path, payload in (
+        (client.post, "/agentic/workspaces/alice-ws/members/validate", {"username": "bob"}),
+        (client.put, "/agentic/workspaces/alice-ws/members", {"members": ["bob"]}),
+    ):
+        response = method(path, json=payload, headers=headers["alice"])
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "USER_DELETION_RECONCILIATION_PENDING"
+        assert response.get_json()["reconciliation_id"] == reconciliation_id
+
+    assert client.get(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["admin"],
+    ).get_json()["members"] == []
+
+
+@pytest.mark.parametrize(
+    ("method_name", "path", "payload"),
+    [
+        ("put", "/agentic/workspaces/alice-ws/members", []),
+        ("put", "/agentic/workspaces/alice-ws/members", "alice"),
+        ("put", "/agentic/workspaces/alice-ws/members", 1),
+        ("post", "/agentic/workspaces/alice-ws/members/validate", []),
+        ("post", "/agentic/workspaces/alice-ws/members/validate", "alice"),
+        ("post", "/agentic/workspaces/alice-ws/members/validate", 1),
+    ],
+)
+def test_member_endpoints_reject_non_object_json(
+    tmp_path,
+    monkeypatch,
+    method_name,
+    path,
+    payload,
+):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    response = getattr(client, method_name)(
+        path,
+        json=payload,
+        headers=headers["alice"],
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"detail": "请求体必须是 JSON object"}
+
+
+@pytest.mark.parametrize("payload", [[], ["workspace"], "workspace", 1])
+def test_workspace_create_and_patch_reject_non_object_json(tmp_path, monkeypatch, payload):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    responses = [
+        client.post(
+            "/agentic/workspaces",
+            json=payload,
+            headers=headers["admin"],
+        ),
+        client.patch(
+            "/agentic/workspaces/alice-ws",
+            json=payload,
+            headers=headers["admin"],
+        ),
+    ]
+
+    for response in responses:
+        assert response.status_code == 400
+        assert response.get_json() == {"detail": "请求体必须是 JSON object"}
+
+
+@pytest.mark.parametrize("payload", [[], ["workspace"], "workspace", 1])
+def test_modeling_shadow_workspace_rejects_non_object_json(tmp_path, monkeypatch, payload):
+    monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
+    client, _ = _build_env(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/agentic/internal/modeling/shadow-workspaces/ensure",
+        json=payload,
+        headers={"Authorization": "Bearer {}".format("s" * 32)},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json() == {"detail": "请求体必须是 JSON object"}
+
+
+def test_corrupt_user_deletion_state_returns_503_for_acl_writes(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+    reconciliation_path = (
+        tmp_path
+        / ".onto-runtime"
+        / "system"
+        / "user-deletion-reconciliation.json"
+    )
+    reconciliation_path.parent.mkdir(parents=True, exist_ok=True)
+    reconciliation_path.write_text("{broken", encoding="utf-8")
+
+    responses = [
+        client.post(
+            "/agentic/workspaces/alice-ws/members/validate",
+            json={"username": "bob"},
+            headers=headers["alice"],
+        ),
+        client.put(
+            "/agentic/workspaces/alice-ws/members",
+            json={"members": ["bob"]},
+            headers=headers["alice"],
+        ),
+        client.patch(
+            "/agentic/workspaces/alice-ws",
+            json={"owner": "bob"},
+            headers=headers["admin"],
+        ),
+    ]
+
+    for response in responses:
+        assert response.status_code == 503
+        assert response.get_json() == {
+            "error": "用户删除状态暂不可用，请稍后再试",
+            "code": "USER_DELETION_STATE_UNAVAILABLE",
+        }
+    workspace = client.get(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["admin"],
+    ).get_json()
+    assert workspace["owner"] == "alice"
+    assert workspace["members"] == []
+
+
+def test_member_validation_requires_workspace_administration(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+
+    response = client.post(
+        "/agentic/workspaces/alice-ws/members/validate",
+        json={"username": "alice"},
+        headers=headers["bob"],
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == FORBIDDEN_BODY
+
+
+def test_member_save_fails_closed_when_identity_directory_is_unavailable(tmp_path, monkeypatch):
+    client, headers = _build_env(tmp_path, monkeypatch)
+    _setup_shared_and_owned(client, headers)
+    auth_manager = client.application.config["AUTH_MANAGER"]
+
+    def fail_directory():
+        raise ValueError("认证服务暂不可用")
+
+    monkeypatch.setattr(auth_manager, "list_users", fail_directory)
+    response = client.put(
+        "/agentic/workspaces/alice-ws/members",
+        json={"members": ["bob"]},
+        headers=headers["alice"],
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["code"] == "AUTH_DIRECTORY_UNAVAILABLE"
+    assert client.get(
+        "/agentic/workspaces/alice-ws",
+        headers=headers["admin"],
+    ).get_json()["members"] == []
+
+    # Removing all references remains possible even during an auth outage.
+    cleared = client.put(
+        "/agentic/workspaces/alice-ws/members",
+        json={"members": []},
+        headers=headers["alice"],
+    )
+    assert cleared.status_code == 200
 
 
 def test_create_workspace_defaults_owner_to_creator(tmp_path, monkeypatch):

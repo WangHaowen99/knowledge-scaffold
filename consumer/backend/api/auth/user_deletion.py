@@ -13,7 +13,7 @@ import os
 import re
 import threading
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +106,31 @@ def user_identity_lifecycle_guard(username: Any) -> Iterator[str]:
                 and _IDENTITY_LIFECYCLE_ENTRIES.get(normalized_username) is entry
             ):
                 _IDENTITY_LIFECYCLE_ENTRIES.pop(normalized_username, None)
+
+
+@contextmanager
+def identity_reference_guard(usernames: Any) -> Iterator[tuple[str, ...]]:
+    """Keep identity references stable while another subsystem persists them.
+
+    Locks are acquired in canonical username order so concurrent workspace ACL
+    updates cannot deadlock each other.  A pending deletion reserves the name
+    and must fail closed instead of being written back into workspace metadata.
+    """
+
+    if isinstance(usernames, str) or not isinstance(usernames, (list, tuple, set)):
+        raise ValueError("usernames 必须是字符串集合")
+    normalized = sorted({normalize_username(item) for item in usernames})
+    if any(not username for username in normalized):
+        raise ValueError("usernames 只能包含非空字符串")
+
+    with ExitStack() as stack:
+        for username in normalized:
+            stack.enter_context(user_identity_lifecycle_guard(username))
+        for username in normalized:
+            pending = _find_reconciliation_for_username(username)
+            if pending is not None:
+                raise UserDeletionPendingError(username, str(pending["id"]))
+        yield tuple(normalized)
 
 
 def create_identity_if_reusable(
