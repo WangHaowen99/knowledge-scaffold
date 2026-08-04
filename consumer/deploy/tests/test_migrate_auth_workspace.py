@@ -37,6 +37,27 @@ def _user(username: str = "admin", **fields):
     }
 
 
+def _reconciliation_record(
+    username: str = "alice",
+    status: str = "cleanup_pending",
+    record_id: str = "a" * 32,
+    **fields,
+):
+    payload = {
+        "id": record_id,
+        "username": username,
+        "status": status,
+        "identity_deleted": True,
+        "created_at": "2026-08-04T00:00:00+00:00",
+        "updated_at": "2026-08-04T00:00:00+00:00",
+        "attempts": 1,
+        "completed_steps": [],
+        "errors": {},
+    }
+    payload.update(fields)
+    return payload
+
+
 class MigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = TemporaryDirectory()
@@ -137,19 +158,30 @@ class MigrationTests(unittest.TestCase):
 
     def test_orphan_acl_and_same_name_reconciliation_block_startup(self) -> None:
         _write_json(self.root / ".onto-auth" / "users.json", {"users": [_user(), _user("alice")]})
-        _write_json(
-            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json",
-            {"id": "private", "owner": "missing", "members": ["ghost"]},
+        workspace_path = (
+            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json"
         )
+        _write_json(workspace_path, {"id": "private", "owner": "missing", "members": ["ghost"]})
         _write_json(
             self.root / ".onto-runtime" / "system" / "user-deletion-reconciliation.json",
-            {"records": [{"id": "pending-1", "username": "alice", "status": "pending"}]},
+            {
+                "version": 1,
+                "records": [_reconciliation_record(status="pending")],
+            },
         )
+        before = workspace_path.read_bytes()
 
         code, report = self.execute(dry_run=True)
 
         self.assertEqual(code, 2)
         self.assertEqual(report["error"]["code"], "WORKSPACE_ACL_RECONCILIATION_REQUIRED")
+        self.assertIn("不会自动修改", report["error"]["detail"])
+        self.assertIn("unknown_member", report["error"]["suggestion"])
+        self.assertIn("unknown_owner", report["error"]["suggestion"])
+        self.assertIn("转移给已验证账号", report["error"]["suggestion"])
+        self.assertNotIn("owner 设为 null", report["error"]["suggestion"])
+        self.assertIn("workspace_acl.clean=true", report["error"]["suggestion"])
+        self.assertEqual(workspace_path.read_bytes(), before)
         finding_types = {item["type"] for item in report["workspace_acl"]["findings"]}
         self.assertEqual(
             finding_types,
@@ -160,6 +192,78 @@ class MigrationTests(unittest.TestCase):
                 "same_name_account_inheritance_risk",
             },
         )
+
+    def test_invalid_reconciliation_schema_is_not_reported_as_pending(self) -> None:
+        _write_json(self.root / ".onto-auth" / "users.json", {"users": [_user(), _user("alice")]})
+        invalid_record = _reconciliation_record()
+        invalid_record.pop("status")
+        _write_json(
+            self.root / ".onto-runtime" / "system" / "user-deletion-reconciliation.json",
+            {"version": 1, "records": [invalid_record]},
+        )
+
+        code, report = self.execute(dry_run=True)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["error"]["code"], "WORKSPACE_ACL_RECONCILIATION_REQUIRED")
+        self.assertEqual(
+            report["workspace_acl"]["findings"],
+            [{
+                "workspace_id": "<system>",
+                "type": "invalid_user_deletion_reconciliation",
+                "detail": "records[0].status must be a non-empty string",
+            }],
+        )
+
+    def test_acl_references_with_surrounding_whitespace_are_invalid(self) -> None:
+        _write_json(
+            self.root / ".onto-auth" / "users.json",
+            {"users": [_user(), _user("alice"), _user("bob")]},
+        )
+        _write_json(
+            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json",
+            {"id": "private", "owner": " alice ", "members": [" bob "]},
+        )
+
+        code, report = self.execute(dry_run=True)
+
+        self.assertEqual(code, 2)
+        self.assertFalse(report["workspace_acl"]["clean"])
+        self.assertEqual(
+            {item["type"] for item in report["workspace_acl"]["findings"]},
+            {"invalid_owner", "invalid_member"},
+        )
+
+    def test_empty_owner_is_invalid_instead_of_public(self) -> None:
+        _write_json(self.root / ".onto-auth" / "users.json", {"users": [_user()]})
+        _write_json(
+            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json",
+            {"id": "private", "owner": "", "members": []},
+        )
+
+        code, report = self.execute(dry_run=True)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["workspace_acl"]["public_workspaces"], [])
+        self.assertEqual(report["workspace_acl"]["findings"][0]["type"], "invalid_owner")
+
+    def test_apply_orphan_acl_stays_blocked_without_modifying_workspace(self) -> None:
+        _write_json(self.root / ".onto-auth" / "users.json", {"users": [_user()]})
+        workspace_path = (
+            self.root / ".onto-runtime" / "workspaces" / "private" / "workspace.json"
+        )
+        _write_json(
+            workspace_path,
+            {"id": "private", "owner": "admin", "members": ["ghost"]},
+        )
+        before = workspace_path.read_bytes()
+
+        code, report = self.execute(dry_run=False, writes_stopped=True)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(report["error"]["code"], "WORKSPACE_ACL_RECONCILIATION_REQUIRED")
+        self.assertEqual(workspace_path.read_bytes(), before)
+        self.assertIsNotNone(report["backup"])
 
     def test_apply_requires_explicit_stop_confirmation(self) -> None:
         code, report = self.execute(dry_run=False, writes_stopped=False)

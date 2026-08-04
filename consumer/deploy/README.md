@@ -206,6 +206,26 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 ./deploy/migrate.sh <旧版本> <新版本> --dry-run
 ```
 
+上线新版本前必须先执行上述 ACL dry-run，并检查报告中的：
+
+```json
+{
+  "workspace_acl": {
+    "clean": true,
+    "findings": []
+  }
+}
+```
+
+若 `clean=false`，迁移保持严格阻断，且只输出提示，不会自动修改 `workspace.json`，也没有跳过 ACL 校验的放行参数。常见存量问题按以下方式处理：
+
+- `unknown_member`：该成员仍应保留访问权时，由管理员在认证中心创建 findings 中完全同名的账号；不应保留时，从对应 workspace 的 members 中移除。
+- `unknown_owner`：由管理员在认证中心创建 findings 中完全同名的账号，或通过 workspace API 将 owner 转移给已验证账号。
+- `pending_user_deletion_reconciliation`：通过用户删除 reconciliation 管理接口完成或重试清理，不能直接复用同名账号。
+- `duplicate_member`、`invalid_member`、`invalid_owner`：修正对应 ACL 字段格式或重复项。
+
+优先在旧版本仍运行时通过配置中心或 workspace API 修复，避免绕过服务端并发保护直接编辑文件。每次处理后重新执行 dry-run，直到 `workspace_acl.clean=true` 再开始升级。这里“创建对应账号”是指管理员确认该历史用户名确实代表一个仍需访问空间的人后，在认证目录创建完全同名账号；迁移脚本本身不会代替管理员建号。
+
 正式 apply 只允许在确认停写后执行：
 
 ```bash

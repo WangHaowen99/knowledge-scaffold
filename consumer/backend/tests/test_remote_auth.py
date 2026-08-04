@@ -11,6 +11,7 @@ from __future__ import annotations
 import socket
 import sys
 import threading
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,8 @@ from werkzeug.serving import make_server
 
 from api.auth.auth import AuthManager, PasswordPolicyError
 from api.auth.remote_auth import RemoteAuthBackend
+from api import workspace_acl_service
+from api.workspace_acl_service import WorkspaceIdentityNotFoundError
 
 # 测试专用例外：决策 D4 禁止 consumer 与 auth-server 之间任何生产代码 Python import
 # （唯一接口是 HTTP）。集成测试为了进程内起真实 server 而 import auth_server，
@@ -313,6 +316,23 @@ def test_admin_api_error_translation(backend):
         backend.delete_user("nobody")
     with pytest.raises(ValueError, match="原密码错误"):
         backend.change_password("carol", "wrong-old", STRONG_PASSWORD_2)
+
+
+def test_workspace_acl_identity_lookup_accepts_real_remote_directory_contract(
+    backend,
+    monkeypatch,
+):
+    backend.create_user("alice", STRONG_PASSWORD)
+    monkeypatch.setattr(
+        workspace_acl_service,
+        "identity_reference_guard",
+        lambda usernames: nullcontext(tuple(usernames)),
+    )
+
+    assert workspace_acl_service.validate_workspace_member(backend, "alice") == "alice"
+    with pytest.raises(WorkspaceIdentityNotFoundError) as exc_info:
+        workspace_acl_service.validate_workspace_member(backend, "missing-user")
+    assert exc_info.value.code == "WORKSPACE_MEMBER_NOT_FOUND"
 
 
 def test_admin_methods_require_admin_token(auth_server):

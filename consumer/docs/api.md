@@ -51,6 +51,7 @@ ACP 除 `GET /acp/agent` 外也默认使用同一 JWT 认证；只有当 `.onto-
   - `POST /agentic/ontologies/{ontology_id}/upload`
   - `POST /agentic/ontologies/{ontology_id}/data-source/test`
   - `PATCH /agentic/workspaces/{workspace_id}`（仅全局 admin 可转移 owner）
+  - `POST /agentic/workspaces/{workspace_id}/members/validate`
   - `PUT /agentic/workspaces/{workspace_id}/members`
   - `DELETE /agentic/workspaces/{workspace_id}`（workspace owner 只能删除自己的空间）
 - `admin` 才能访问：
@@ -1362,6 +1363,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 - `name` 必填
 - `description` 可选
 - `set_as_default` 可选
+- 全局 admin 显式指定的非空 `owner` 必须已存在；普通用户的 owner 固定为当前登录用户，并在创建时重新校验认证目录
 
 响应 `201`：返回创建后的 workspace 对象。
 
@@ -1370,6 +1372,8 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 ```json
 { "detail": "工作空间 ID 'demo-workspace' 已存在" }
 ```
+
+身份引用相关错误与 owner 转移一致：负责人不存在时返回 `400 WORKSPACE_OWNER_NOT_FOUND`，正在删除时返回 `409 USER_DELETION_RECONCILIATION_PENDING`，用户删除状态不可读取时返回 `503 USER_DELETION_STATE_UNAVAILABLE`，认证目录不可用时返回 `503 AUTH_DIRECTORY_UNAVAILABLE`。
 
 ### 7.4 `GET /agentic/workspaces/{workspace_id}`
 
@@ -1385,7 +1389,7 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 ### 7.5 `PATCH /agentic/workspaces/{workspace_id}`
 
-全局 admin 或该 workspace owner 可更新名称和描述；只有全局 admin 可通过 `owner` 转移所有权。
+全局 admin 或该 workspace owner 可更新名称和描述；只有全局 admin 可通过 `owner` 转移所有权。非空 `owner` 必须是认证目录中已存在的用户名；认证目录不可用时拒绝写入。
 
 请求体：
 
@@ -1398,13 +1402,48 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 
 响应 `200`：返回更新后的 workspace 对象。
 
+错误响应：
+
+- `400 WORKSPACE_OWNER_NOT_FOUND`：目标负责人不存在
+- `409 USER_DELETION_RECONCILIATION_PENDING`：目标用户正在删除或等待清理
+- `503 USER_DELETION_STATE_UNAVAILABLE`：用户删除状态文件损坏或暂时无法读取
+- `503 AUTH_DIRECTORY_UNAVAILABLE`：认证目录暂不可用，无法完成最终校验
+
+#### `POST /agentic/workspaces/{workspace_id}/members/validate`
+
+在前端把用户名加入成员草稿前即时校验。全局 admin 或 workspace owner 可调用；该接口只校验，不修改 `workspace.json`。保存时仍会由 PUT 接口重新做最终校验，因此不能用即时校验结果绕过用户删除并发。
+
+请求体必须是 JSON object；数组、字符串或数字返回 `400`。
+
+```json
+{ "username": "analyst" }
+```
+
+成功响应 `200`：
+
+```json
+{ "valid": true, "username": "analyst" }
+```
+
 #### `PUT /agentic/workspaces/{workspace_id}/members`
 
-全量替换成员列表。全局 admin 或 workspace owner 可调用；成员用户名必须已存在且不得重复。
+全量替换成员列表。全局 admin 或 workspace owner 可调用；成员用户名必须已存在且不得重复。服务端在持有身份生命周期锁期间重新读取认证目录并完成最终写入，防止用户删除与 ACL 保存并发制造孤儿成员。
+
+请求体必须是 JSON object；数组、字符串或数字返回 `400`。
 
 ```json
 { "members": ["analyst", "operator"] }
 ```
+
+错误响应：
+
+- `400 WORKSPACE_MEMBER_NOT_FOUND`：一个成员不存在
+- `400 WORKSPACE_MEMBERS_NOT_FOUND`：多个成员不存在，`usernames` 返回缺失用户名
+- `409 USER_DELETION_RECONCILIATION_PENDING`：成员正在删除或等待清理
+- `503 USER_DELETION_STATE_UNAVAILABLE`：用户删除状态文件损坏或暂时无法读取
+- `503 AUTH_DIRECTORY_UNAVAILABLE`：认证目录暂不可用；非空成员列表不会写入
+
+为便于修复存量 ACL，提交空数组 `{ "members": [] }` 不依赖认证目录，可在认证服务异常时清空成员引用。
 
 无 owner 的存量 workspace 保持公共可见，服务不会在迁移时自动私有化；管理员应根据审计报告显式设置 owner 和 members。
 

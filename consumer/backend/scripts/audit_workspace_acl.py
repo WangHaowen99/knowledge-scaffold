@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+
+_RECONCILIATION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _load_json(path: Path) -> Any:
@@ -33,9 +37,13 @@ def load_auth_usernames(users_file: Path) -> set[str]:
     for index, record in enumerate(records):
         if not isinstance(record, dict):
             raise ValueError(f"Auth user entry {index} must be an object")
-        username = str(record.get("username") or "").strip()
-        if not username:
+        username = record.get("username")
+        if not isinstance(username, str) or not username:
             raise ValueError(f"Auth user entry {index} has no username")
+        if username != username.strip():
+            raise ValueError(f"Auth user entry {index} has an invalid username")
+        if username in usernames:
+            raise ValueError(f"Auth user file contains duplicate username {username!r}")
         usernames.add(username)
     return usernames
 
@@ -66,12 +74,20 @@ def _audit_workspace_metadata(
     findings: list[dict[str, str]] = []
     owner = metadata.get("owner")
     if owner is not None:
-        if not isinstance(owner, str) or not owner.strip():
+        if (
+            not isinstance(owner, str)
+            or not owner
+            or owner != owner.strip()
+        ):
             findings.append(
-                _finding(workspace_id, "invalid_owner", detail="owner must be null or a non-empty string")
+                _finding(
+                    workspace_id,
+                    "invalid_owner",
+                    detail="owner must be null or a non-empty string without surrounding whitespace",
+                )
             )
-        elif owner.strip() not in auth_usernames:
-            findings.append(_finding(workspace_id, "unknown_owner", username=owner.strip()))
+        elif owner not in auth_usernames:
+            findings.append(_finding(workspace_id, "unknown_owner", username=owner))
 
     members = metadata.get("members", [])
     if not isinstance(members, list):
@@ -80,22 +96,28 @@ def _audit_workspace_metadata(
 
     seen: set[str] = set()
     for index, member in enumerate(members):
-        if not isinstance(member, str) or not member.strip():
+        if (
+            not isinstance(member, str)
+            or not member
+            or member != member.strip()
+        ):
             findings.append(
                 _finding(
                     workspace_id,
                     "invalid_member",
-                    detail=f"members[{index}] must be a non-empty string",
+                    detail=(
+                        f"members[{index}] must be a non-empty string "
+                        "without surrounding whitespace"
+                    ),
                 )
             )
             continue
-        username = member.strip()
-        if username in seen:
-            findings.append(_finding(workspace_id, "duplicate_member", username=username))
+        if member in seen:
+            findings.append(_finding(workspace_id, "duplicate_member", username=member))
             continue
-        seen.add(username)
-        if username not in auth_usernames:
-            findings.append(_finding(workspace_id, "unknown_member", username=username))
+        seen.add(member)
+        if member not in auth_usernames:
+            findings.append(_finding(workspace_id, "unknown_member", username=member))
 
     return findings
 
@@ -140,7 +162,10 @@ def audit_workspace_acl(users_file: Path, workspaces_root: Path) -> dict[str, An
                 )
         findings.extend(_audit_workspace_metadata(workspace_id, metadata, auth_usernames))
 
-    reconciliation_findings = _audit_pending_reconciliations(workspaces_root)
+    reconciliation_findings = _audit_pending_reconciliations(
+        workspaces_root,
+        auth_usernames,
+    )
     findings.extend(reconciliation_findings)
 
     findings.sort(
@@ -155,7 +180,10 @@ def audit_workspace_acl(users_file: Path, workspaces_root: Path) -> dict[str, An
         "clean": not findings,
         "auth_user_count": len(auth_usernames),
         "workspace_count": workspace_count,
-        "pending_reconciliation_count": len(reconciliation_findings),
+        "pending_reconciliation_count": sum(
+            item["type"] == "pending_user_deletion_reconciliation"
+            for item in reconciliation_findings
+        ),
         "finding_count": len(findings),
         "findings": findings,
     }
@@ -163,6 +191,7 @@ def audit_workspace_acl(users_file: Path, workspaces_root: Path) -> dict[str, An
 
 def _audit_pending_reconciliations(
     workspaces_root: Path,
+    auth_usernames: set[str],
 ) -> list[dict[str, str]]:
     path = (
         workspaces_root.parent
@@ -173,6 +202,7 @@ def _audit_pending_reconciliations(
         return []
     try:
         payload = _load_json(path)
+        records = _validate_reconciliation_document(payload)
     except ValueError as exc:
         return [
             _finding(
@@ -181,50 +211,74 @@ def _audit_pending_reconciliations(
                 detail=str(exc),
             )
         ]
-    records = payload.get("records") if isinstance(payload, dict) else None
-    if not isinstance(records, list):
-        return [
-            _finding(
-                "<system>",
-                "invalid_user_deletion_reconciliation",
-                detail="records must be an array",
-            )
-        ]
     findings: list[dict[str, str]] = []
-    for index, record in enumerate(records):
-        if not isinstance(record, dict):
-            findings.append(
-                _finding(
-                    "<system>",
-                    "invalid_user_deletion_reconciliation",
-                    detail=f"records[{index}] must be an object",
-                )
-            )
-            continue
-        status = str(record.get("status") or "").strip()
-        if not status:
-            findings.append(
-                _finding(
-                    "<system>",
-                    "invalid_user_deletion_reconciliation",
-                    detail=f"records[{index}] has no status",
-                )
-            )
-            continue
+    for record in records:
         # Completed records are removed from this file.  Every record that is
         # still present reserves its username, regardless of the current
         # deletion phase (intent, unconfirmed identity delete, or cleanup).
-        username = str(record.get("username") or "").strip()
-        record_id = str(record.get("id") or "").strip()
+        username = record["username"]
+        record_id = record["id"]
         findings.append(
             _finding(
                 "<system>",
                 "pending_user_deletion_reconciliation",
-                username=username or None,
-                detail="reconciliation_id={}".format(record_id or "<missing>"),
+                username=username,
+                detail="reconciliation_id={}".format(record_id),
             )
         )
+        if username and username in auth_usernames:
+            findings.append(
+                _finding(
+                    "<system>",
+                    "same_name_account_inheritance_risk",
+                    username=username,
+                )
+            )
     return findings
+
+
+def _validate_reconciliation_document(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise ValueError("reconciliation document must be an object")
+    if payload.get("version") != 1:
+        raise ValueError("reconciliation version must be 1")
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise ValueError("reconciliation records must be an array")
+
+    seen_ids: set[str] = set()
+    seen_usernames: set[str] = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(f"records[{index}] must be an object")
+        record_id = record.get("id")
+        username = record.get("username")
+        if not isinstance(record_id, str) or not _RECONCILIATION_ID_PATTERN.fullmatch(record_id):
+            raise ValueError(f"records[{index}].id must be 32 lowercase hex characters")
+        if record_id in seen_ids:
+            raise ValueError(f"records[{index}].id is duplicated")
+        if (
+            not isinstance(username, str)
+            or not username
+            or username != username.strip()
+        ):
+            raise ValueError(f"records[{index}].username must be a canonical non-empty string")
+        if username in seen_usernames:
+            raise ValueError(f"records[{index}].username is duplicated")
+        if not isinstance(record.get("status"), str) or not record.get("status"):
+            raise ValueError(f"records[{index}].status must be a non-empty string")
+        if not isinstance(record.get("identity_deleted"), bool):
+            raise ValueError(f"records[{index}].identity_deleted must be boolean")
+        attempts = record.get("attempts")
+        if not isinstance(attempts, int) or attempts < 1:
+            raise ValueError(f"records[{index}].attempts must be a positive integer")
+        if not isinstance(record.get("completed_steps"), list):
+            raise ValueError(f"records[{index}].completed_steps must be an array")
+        if not isinstance(record.get("errors"), dict):
+            raise ValueError(f"records[{index}].errors must be an object")
+        seen_ids.add(record_id)
+        seen_usernames.add(username)
+    return records
 
 
 def _build_parser() -> argparse.ArgumentParser:

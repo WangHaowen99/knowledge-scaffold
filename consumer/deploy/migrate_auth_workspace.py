@@ -13,12 +13,24 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+_WORKSPACE_ACL_RECONCILIATION_DETAIL = (
+    "工作空间 ACL 存在无效身份引用，已阻止启动；迁移不会自动修改或跳过这些数据"
+)
+_WORKSPACE_ACL_RECONCILIATION_SUGGESTION = (
+    "请先运行 ACL dry-run 查看 findings：unknown_member 请创建对应账号或从 members 中移除；"
+    "unknown_owner 请创建对应账号，或转移给已验证账号。"
+    "处理完成后重新执行 dry-run，确认 workspace_acl.clean=true 再升级。"
+)
+_RECONCILIATION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
 @dataclass(frozen=True)
@@ -233,15 +245,19 @@ def audit_workspace_acl(runtime_root: Path, usernames: set[str]) -> dict[str, An
                         "detail": f"workspace.json id is {metadata_id!r}",
                     })
                 owner = metadata.get("owner")
-                if owner is None or owner == "":
+                if owner is None:
                     public_workspaces.append(directory.name)
-                elif not isinstance(owner, str) or not owner.strip():
+                elif (
+                    not isinstance(owner, str)
+                    or not owner
+                    or owner != owner.strip()
+                ):
                     findings.append({"workspace_id": directory.name, "type": "invalid_owner"})
-                elif owner.strip() not in usernames:
+                elif owner not in usernames:
                     findings.append({
                         "workspace_id": directory.name,
                         "type": "unknown_owner",
-                        "username": owner.strip(),
+                        "username": owner,
                     })
                 members = metadata.get("members", [])
                 if not isinstance(members, list):
@@ -249,44 +265,39 @@ def audit_workspace_acl(runtime_root: Path, usernames: set[str]) -> dict[str, An
                     continue
                 seen: set[str] = set()
                 for member in members:
-                    username = str(member or "").strip() if isinstance(member, str) else ""
-                    if not username:
+                    if (
+                        not isinstance(member, str)
+                        or not member
+                        or member != member.strip()
+                    ):
                         findings.append({"workspace_id": directory.name, "type": "invalid_member"})
-                    elif username in seen:
+                        continue
+                    if member in seen:
                         findings.append({
                             "workspace_id": directory.name,
                             "type": "duplicate_member",
-                            "username": username,
+                            "username": member,
                         })
-                    elif username not in usernames:
+                    elif member not in usernames:
                         findings.append({
                             "workspace_id": directory.name,
                             "type": "unknown_member",
-                            "username": username,
+                            "username": member,
                         })
-                    seen.add(username)
+                    seen.add(member)
 
     reconciliation_path = runtime_root / "system" / "user-deletion-reconciliation.json"
     if reconciliation_path.exists():
         try:
             payload = _read_json(reconciliation_path)
-            records = payload.get("records") if isinstance(payload, dict) else None
-            if not isinstance(records, list):
-                raise MigrationIssue("INVALID_RECONCILIATION", "records must be an array")
-            for index, record in enumerate(records):
-                if not isinstance(record, dict):
-                    findings.append({
-                        "workspace_id": "<system>",
-                        "type": "invalid_user_deletion_reconciliation",
-                        "detail": f"records[{index}] must be an object",
-                    })
-                    continue
-                username = str(record.get("username") or "").strip()
+            records = _validate_reconciliation_document(payload)
+            for record in records:
+                username = record["username"]
                 findings.append({
                     "workspace_id": "<system>",
                     "type": "pending_user_deletion_reconciliation",
                     "username": username,
-                    "detail": f"reconciliation_id={record.get('id') or '<missing>'}",
+                    "detail": f"reconciliation_id={record['id']}",
                 })
                 if username and username in usernames:
                     findings.append({
@@ -310,6 +321,86 @@ def audit_workspace_acl(runtime_root: Path, usernames: set[str]) -> dict[str, An
         "finding_count": len(findings),
         "findings": findings,
     }
+
+
+def _validate_reconciliation_document(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        raise MigrationIssue(
+            "INVALID_RECONCILIATION",
+            "reconciliation document must be an object",
+        )
+    if payload.get("version") != 1:
+        raise MigrationIssue("INVALID_RECONCILIATION", "reconciliation version must be 1")
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise MigrationIssue(
+            "INVALID_RECONCILIATION",
+            "reconciliation records must be an array",
+        )
+
+    seen_ids: set[str] = set()
+    seen_usernames: set[str] = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}] must be an object",
+            )
+        record_id = record.get("id")
+        username = record.get("username")
+        if not isinstance(record_id, str) or not _RECONCILIATION_ID_PATTERN.fullmatch(record_id):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].id must be 32 lowercase hex characters",
+            )
+        if record_id in seen_ids:
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].id is duplicated",
+            )
+        if (
+            not isinstance(username, str)
+            or not username
+            or username != username.strip()
+        ):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].username must be a canonical non-empty string",
+            )
+        if username in seen_usernames:
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].username is duplicated",
+            )
+        if not isinstance(record.get("status"), str) or not record.get("status"):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].status must be a non-empty string",
+            )
+        if not isinstance(record.get("identity_deleted"), bool):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].identity_deleted must be boolean",
+            )
+        attempts = record.get("attempts")
+        if not isinstance(attempts, int) or attempts < 1:
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].attempts must be a positive integer",
+            )
+        if not isinstance(record.get("completed_steps"), list):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].completed_steps must be an array",
+            )
+        if not isinstance(record.get("errors"), dict):
+            raise MigrationIssue(
+                "INVALID_RECONCILIATION",
+                f"records[{index}].errors must be an object",
+            )
+        seen_ids.add(record_id)
+        seen_usernames.add(username)
+    return records
 
 
 def _snapshot(root: Path, backup_root: Path) -> Path | None:
@@ -419,7 +510,7 @@ def execute_migration(
         if not acl["clean"]:
             raise MigrationIssue(
                 "WORKSPACE_ACL_RECONCILIATION_REQUIRED",
-                "Workspace owner/member reconciliation is required before startup",
+                _WORKSPACE_ACL_RECONCILIATION_DETAIL,
                 findings=acl["findings"],
             )
 
@@ -444,6 +535,8 @@ def execute_migration(
         return 0, report
     except MigrationIssue as exc:
         report["error"] = {"code": exc.code, "detail": exc.detail}
+        if exc.code == "WORKSPACE_ACL_RECONCILIATION_REQUIRED":
+            report["error"]["suggestion"] = _WORKSPACE_ACL_RECONCILIATION_SUGGESTION
         if exc.findings and not report["users"].get("field_differences"):
             report["error"]["findings"] = exc.findings
         return 2, report

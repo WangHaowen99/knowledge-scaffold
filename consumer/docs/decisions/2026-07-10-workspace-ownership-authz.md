@@ -11,6 +11,10 @@
 > `2026-07-20-evaluation-resource-write-permissions.md` 取代。当前规则为：
 > 登录用户可创建并删除自己拥有的 workspace；workspace 资源仅全局 admin
 > 或 workspace owner 可修改，member 只能读取、使用和评测。
+>
+> 2026-08-04 更新：Decision 5 中“members 只做格式校验、不校验用户存在性”
+> 已被 `2026-08-04-workspace-acl-identity-validation.md` 取代。当前 owner/member
+> 非空引用必须指向认证目录中的现存用户，并与用户删除流程使用同一身份生命周期锁。
 
 ## Context
 
@@ -22,7 +26,7 @@ workspace 此前只是文件系统目录（`workspaces/<id>/workspace.json`）�
 2. **强制点**：`resolve_workspace_id`（携带 workspace 上下文路由的主收口）。访问规则：全局 admin → 通；无 owner → 通；默认 workspace → 通（公共落地空间语义）；user==owner 或 user∈members → 通；否则以 werkzeug HTTPException 形式返回 403 `{"error":"Forbidden","code":"WORKSPACE_ACCESS_DENIED"}`（穿透各调用方的 `except (KeyError, ValueError)` 包裹，无需全局 errorhandler）。**不经 `resolve_workspace_id`（从 URL 路径取 id）或复用持久化 id 的入口须各自补校验**：`GET /workspaces/<id>` 单查、`GET /workspaces/<id>/runtime-config`、ACP 续跑端点（execute/stream/await/interact）取持久化 `workspace_id` 后调用公开的 `enforce_workspace_access`——否则成为绕过面（越权读配置、成员被移除后旧 run 仍可续跑）。
 3. **无用户上下文放行**：`g` 中没有登录用户时（如 ACP `auth=none` 通道、非请求上下文）保持原行为。本决策只修已登录用户之间的水平越权；机器通道的认证由其自身配置负责。
 4. **列表过滤而非 403**：`GET /agentic/workspaces` 保持对所有登录用户 200，但按可见性过滤（admin 全量），每项加法追加 `owner`/`members`/`role`（当前用户与该空间的关系：owner→`admin`、member→`member`）。前端失效空间自愈逻辑依赖该端点保持 200。
-5. **管理权限**：改名/描述放开给 owner（原 admin-only）；owner 变更仅 admin（含 `PATCH {"owner": null}` 清空为公共空间——body 缺 owner 键=不改，显式 null=清空）；新增 `PUT /workspaces/<id>/members`（admin 或 owner）。members 只做格式校验、不校验用户存在性（local/remote 两种 auth 后端的用户目录能力不同）。创建/删除/设默认、runtime-config PATCH、数据连接/知识包写操作维持 admin-only（前端 `permissions.js` 的 wsRoles 仅对这两个已放开 owner 通道的权限点开启，避免 owner 看到可写 UI 却被后端 403）。
+5. **管理权限（历史基线）**：改名/描述放开给 owner（原 admin-only）；owner 变更仅 admin（含 `PATCH {"owner": null}` 清空为公共空间——body 缺 owner 键=不改，显式 null=清空）；新增 `PUT /workspaces/<id>/members`（admin 或 owner）。本决策最初只校验 members 格式、不校验用户存在性；该部分已于 2026-08-04 被新的 ACL 身份引用决策取代。创建/删除和资源写权限的后续变化见文首更新说明。
 6. **前端接通 wsRoles 预留**：AuthContext 从列表条目的 `role` 派生 `user.workspace_roles`，`can()` 的 wsRoles 分支即刻生效；空间视角新增"成员"管理区。
 7. **顺手加固**：workspace.json / runtime_config.json / workspace-settings.json 写入改为 tmp + `os.replace` 原子写，并以模块级 `RLock` 保护 read-modify-write（create/update/delete/members/runtime-config/legacy 迁移）——单进程 gunicorn 64 gthread 下有真实丢更新与并发迁移 500 风险。用 `RLock` 而非 `Lock`：`create_workspace` 持锁期间会经 `list_workspaces` 触发迁移路径，需同线程重入。**仅单进程有效**：多 worker 部署下线程锁不跨进程，此加固对进程内并发有效、对跨进程写竞争无效（当前部署为单进程多线程，见 Dockerfile）。
 
