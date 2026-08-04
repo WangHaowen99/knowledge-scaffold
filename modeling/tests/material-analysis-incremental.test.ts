@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { runAnalyze } from '../src/workflow/engine.js';
 import { createProject } from '../src/projects/repo.js';
-import type { LlmDeps } from '../src/llm/provider.js';
+import { nextRequiredDocumentRead, type LlmDeps } from '../src/llm/provider.js';
 
 /** 按批次提示词里声明的来源，生成一份刚好通过校验的应答 */
 function artifactReplyFor(systemPrompt: string) {
@@ -29,6 +29,13 @@ function countingLlm() {
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
       const system = String(context.systemPrompt ?? '');
+      if (system.includes('所有文本材料必须')) {
+        const nextRead = nextRequiredDocumentRead(context.messages ?? [], fauxToolCall);
+        if (nextRead) {
+          core.setResponses([fauxAssistantMessage([nextRead as any])]);
+          return core.streamSimple(model as any, context, options as any);
+        }
+      }
       if (system.includes('submit_artifact_analysis')) {
         calls.artifact += 1;
         core.setResponses([fauxAssistantMessage([

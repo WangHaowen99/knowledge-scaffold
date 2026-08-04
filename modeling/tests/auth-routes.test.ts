@@ -39,7 +39,7 @@ const evaluationDatabaseQueries: string[] = [];
 const projectDatabaseAdminConnections: any[] = [];
 const projectDatabaseAdminQueries: string[] = [];
 let projectDatabaseExists = false;
-let packageChatPlanTask: (() => Promise<any>) | null = null;
+let packageChatPlanTask: ((...args: any[]) => Promise<any>) | null = null;
 let packageChatApplyTask: (() => Promise<any>) | null = null;
 let materialAnalysisTask: ((...args: any[]) => Promise<any>) | null = null;
 
@@ -120,9 +120,9 @@ before(async () => {
         relationshipCount: plan.relationshipCount,
       }),
     },
-    packageChatPlan: async () => {
+    packageChatPlan: async (...args: any[]) => {
       if (!packageChatPlanTask) throw new Error('测试未配置包修缮计划任务');
-      return packageChatPlanTask();
+      return packageChatPlanTask(...args);
     },
     packageChatApply: async () => {
       if (!packageChatApplyTask) throw new Error('测试未配置包修缮应用任务');
@@ -1289,6 +1289,55 @@ test('包修缮运行期间人工草稿只读，所有写接口统一返回 409'
     payload: {},
   });
   assert.equal(draftAfterRepair.statusCode, 201, draftAfterRepair.body);
+});
+
+test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全文意图可访问', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '全文阅读聊天材料加载' },
+  });
+  const projectId = created.json().project.id;
+  const { insertPackageVersion } = await import('../src/workflow/m2-repo.js');
+  const { insertDocument } = await import('../src/documents/repo.js');
+  insertPackageVersion(projectId, '1.0.0', {
+    id: 'full-read-chat', name: '全文阅读聊天材料加载', description: '测试', version: '1.0.0',
+    language: 'zh-CN', defaultProviderAlias: 'data', objects: [], operations: [],
+  }, { covered: [], uncovered: [] });
+  const document = insertDocument({
+    projectId, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
+    textContent: '第一章 产品准入条件',
+  });
+
+  let receivedOptions: any;
+  let finish!: () => void;
+  const planned = new Promise<void>((resolve) => { finish = resolve; });
+  packageChatPlanTask = async (_project, _history, _message, options) => {
+    receivedOptions = options;
+    finish();
+    return { reply: '已处理' };
+  };
+  try {
+    const response = await app.inject({
+      method: 'POST', url: `/api/projects/${projectId}/package/chat`, headers,
+      payload: { message: '把这份文档全文看完' },
+    });
+    assert.equal(response.statusCode, 202, response.body);
+    await planned;
+    assert.equal(receivedOptions.documentAccess, 'full-read-only');
+    assert.deepEqual(receivedOptions.documents, [{
+      id: document.id,
+      filename: document.filename,
+      textContent: '第一章 产品准入条件',
+      revisionFingerprint: [
+        document.id, document.sourceKey, document.revisionNo,
+        document.contentHash, document.semanticHash,
+      ].join(':'),
+    }]);
+  } finally {
+    packageChatPlanTask = null;
+  }
 });
 
 test('旧版单文件 override 写接口已永久停用且不会落库', async () => {
