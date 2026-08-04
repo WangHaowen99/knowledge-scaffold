@@ -2,6 +2,10 @@ import { Type } from '@earendil-works/pi-ai';
 import type { AnalysisResult, DataDictTable } from '../types.js';
 import { KEY_SCHEMA_PATTERN, KEY_SCHEMA_DESCRIPTION } from './keys.js';
 import { createSourceCatalog } from './source-catalog.js';
+import {
+  DocumentReadSession,
+  type ReadableDocument,
+} from './document-read-session.js';
 
 // 建模工具集。M1 用到：读数据字典、读文档、发起访谈（terminate 挂起）、产出初步分析。
 // execute 抛错即失败（pi 约定），返回 { content, details, terminate? }。
@@ -10,9 +14,10 @@ const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }], de
 
 export interface ToolContext {
   tables: DataDictTable[];
-  documents: { filename: string; textContent?: string }[];
+  documents: ReadableDocument[];
   // 收集节点产物：analyze 工具把结构化结果写这里
   captured: Record<string, unknown>;
+  documentReadSession?: DocumentReadSession;
 }
 
 export function buildTools(ctx: ToolContext) {
@@ -120,16 +125,55 @@ export function buildTools(ctx: ToolContext) {
   const readDocument = {
     name: 'read_document',
     label: '读取文档',
-    description: '分页读取文档正文：每次返回约 6000 字符，长文档用 offset 翻页（返回中含下一页偏移提示）',
-    parameters: Type.Object({ filename: Type.String(), offset: Type.Optional(Type.Number()) }),
-    async execute(_id: string, params: { filename: string; offset?: number }) {
+    description: [
+      '分页读取文档正文，每次返回最多 6000 字符和结构化 offset/EOF 信息。',
+      '全文模式必须从 offset=0 开始，并严格使用上次返回的 nextOffset；继续翻页时，',
+      '用 previousPageSummary 保留上一页滚动摘要，可用 previousPageEvidence 记录重要证据及原文 offset。',
+    ].join(''),
+    parameters: Type.Object({
+      filename: Type.String(),
+      offset: Type.Optional(Type.Number({ minimum: 0 })),
+      previousPageSummary: Type.Optional(Type.String({ maxLength: 2_000 })),
+      previousPageEvidence: Type.Optional(Type.Array(Type.Object({
+        offset: Type.Number({ minimum: 0 }),
+        note: Type.String({ maxLength: 500 }),
+      }), { maxItems: 20 })),
+    }),
+    async execute(_id: string, params: {
+      filename: string;
+      offset?: number;
+      previousPageSummary?: string;
+      previousPageEvidence?: Array<{ offset: number; note: string }>;
+    }) {
       const d = ctx.documents.find((x) => x.filename === params.filename);
       if (!d?.textContent) return text(`未找到文档或无正文：${params.filename}`);
-      const body = d.textContent;
-      const off = Math.max(0, Math.floor(params.offset ?? 0));
-      const chunk = body.slice(off, off + 6000);
-      const tail = off + 6000 < body.length ? `\n\n……（未完，全文 ${body.length} 字符，续读请传 offset=${off + 6000}）` : '\n\n（已到文末）';
-      return text(`[${d.filename} @${off}]\n${chunk}${tail}`);
+      try {
+        const page = ctx.documentReadSession
+          ? ctx.documentReadSession.read(params.filename, params.offset, {
+            previousPageSummary: params.previousPageSummary,
+            previousPageEvidence: params.previousPageEvidence,
+          })
+          : new DocumentReadSession([d]).read(params.filename, params.offset);
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(page) }],
+          details: {
+            filename: page.filename,
+            offset: page.offset,
+            endOffset: page.endOffset,
+            totalChars: page.totalChars,
+            nextOffset: page.nextOffset,
+            eof: page.eof,
+          },
+        };
+      } catch (error) {
+        const payload = {
+          error: error instanceof Error ? error.message : String(error),
+          ...(error && typeof error === 'object' && 'expectedOffset' in error
+            ? { expectedOffset: (error as { expectedOffset: number }).expectedOffset }
+            : {}),
+        };
+        return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }], details: payload };
+      }
     },
   };
 
@@ -196,6 +240,9 @@ export function buildTools(ctx: ToolContext) {
       openQuestions: Type.Array(Type.Object({ topic: Type.String(), why: Type.String() })),
     }),
     async execute(_id: string, params: unknown) {
+      if (ctx.documentReadSession && !ctx.documentReadSession.complete) {
+        return text(ctx.documentReadSession.continuationPrompt());
+      }
       const canonical = sourceCatalog.canonicalizeAnalysis(params as AnalysisResult);
       if (canonical.problems.length) {
         return text([
@@ -224,8 +271,11 @@ export function buildTools(ctx: ToolContext) {
  * 模型看不到任何产品条款，只会得出「资料里没有具体内容」的错误结论。
  * 给它工具让它自己按需翻，比我们替它猜哪 6000 字符重要靠谱得多。
  */
-export function buildDocumentReadingTools(documents: ToolContext['documents']) {
-  const all = buildTools({ tables: [], documents, captured: {} });
+export function buildDocumentReadingTools(
+  documents: ToolContext['documents'],
+  documentReadSession?: DocumentReadSession,
+) {
+  const all = buildTools({ tables: [], documents, captured: {}, documentReadSession });
   return all.filter((tool) => (
     ['list_documents', 'read_document', 'search_documents'].includes(tool.name)
   ));
@@ -259,6 +309,9 @@ export function buildArtifactAnalysisTools(ctx: ToolContext) {
       })),
     }),
     async execute(_id: string, params: unknown) {
+      if (ctx.documentReadSession && !ctx.documentReadSession.complete) {
+        return text(ctx.documentReadSession.continuationPrompt());
+      }
       ctx.captured.artifactAnalysis = params;
       return {
         content: [{ type: 'text' as const, text: '材料知识类型分析已提交。' }],

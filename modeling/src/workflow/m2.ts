@@ -38,6 +38,12 @@ import {
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { throwIfCancelled } from '../cancellation.js';
 import { reportLongTaskProgress } from '../ai-construction/task-progress.js';
+import type { ReadableDocument } from './document-read-session.js';
+import { attachVerifiedDocumentReadCoverage } from './document-read-coverage.js';
+import {
+  attachObjectMaterialSources,
+  buildObjectGenerationHints,
+} from './object-generation-hints.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -47,7 +53,7 @@ export interface PackageGenerationOptions extends GenerationOptions {
 
 type Ctx = {
   tables: DataDictTable[];
-  documents: { id: string; filename: string; textContent?: string }[];
+  documents: Array<ReadableDocument & { id: string }>;
 };
 
 function toolCtx(ctx: Ctx, captured: Record<string, unknown> = {}): ToolContext {
@@ -173,9 +179,7 @@ export async function generatePackage(
         step: 'resume_after_generation_gate',
       }).run
     : authoring.start(project.id, '生成知识包', baseRevision.oid, { nodeId: node.id }).run;
-  const rawObjectHints = analysis?.candidateObjects?.length
-    ? analysis.candidateObjects
-    : ctx.tables.map((table) => ({ name: table.name, rationale: `来自数据表 ${table.name}`, sourceTables: [table.name] }));
+  const rawObjectHints = buildObjectGenerationHints(analysis, ctx.tables);
   const objectHints = rawObjectHints.map((candidate, index) => ({
     ...candidate,
     id: `candidate_${index + 1}`,
@@ -237,6 +241,7 @@ export async function generatePackage(
         const sys = [
           '你是知识包对象建模助手。本阶段只生成业务对象，不生成规则、指标或操作。',
           '有资料来源时应给出 sourceRefs：数据对象引用真实 Sheet 和字段；产品、场景、需求等语义对象引用原始文档及章节或偏移。外部输入可以暂不绑定来源。',
+          '候选中的 materialEvidence 来自已完成全文覆盖的材料分析，必须用于补充文档来源和正文证据；不得只重新读取文档首页后丢弃这些证据。',
           '数据对象还要给出字段中文名、类型、真实 sourceColumn 和主键；不得虚构数据字典中不存在的字段。',
           '补充查询边界、别名和有材料依据的对象关系。',
           '每个对象必须用 candidateId 认领当前批次中的一个候选，候选名称只用于理解，不用于绑定。',
@@ -268,7 +273,15 @@ export async function generatePackage(
         }
         messages.push(...stageMessages);
         const submitted = sourceCatalog.canonicalizeObjects((cap.objects ?? []) as SpecObject[]);
-        const normalizedObjects = normalizeObjectDataMappingsForObjects(submitted.value, ctx.tables);
+        const normalizedObjects = attachVerifiedDocumentReadCoverage(
+          attachObjectMaterialSources(
+            normalizeObjectDataMappingsForObjects(submitted.value, ctx.tables),
+            hints,
+            ctx.documents,
+          ),
+          analysis?.documentReadCoverage,
+          ctx.documents,
+        );
         lastIssues = [
           ...submitted.problems.map((problem) => problem.message),
           ...findObjectDataMappingProblemsForObjects(normalizedObjects, ctx.tables)

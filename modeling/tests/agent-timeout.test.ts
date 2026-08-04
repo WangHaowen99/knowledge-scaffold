@@ -74,3 +74,22 @@ test('取消模型任务会等待底层运行完成中断清理后再返回', as
   const error = await outcome;
   assert.match(String(error?.message ?? error), /本轮评测已由用户停止/);
 });
+
+test('全文读取的共享回合预算跨多次内部继续提示累计消耗', async () => {
+  let listener: ((event: unknown) => void) | undefined;
+  let aborted = 0;
+  const agent = {
+    state: { messages: [] },
+    subscribe: (next: (event: unknown) => void) => { listener = next; return () => undefined; },
+    prompt: async () => { listener?.({ type: 'turn_end' }); },
+    waitForIdle: async () => undefined,
+    abort: () => { aborted += 1; },
+  };
+  const turnBudget = { remaining: 2 };
+
+  await runAgent(agent as any, '第一次继续读取', undefined, { turnBudget });
+  await runAgent(agent as any, '第二次继续读取', undefined, { turnBudget });
+
+  assert.equal(turnBudget.remaining, 0);
+  assert.equal(aborted, 1);
+});

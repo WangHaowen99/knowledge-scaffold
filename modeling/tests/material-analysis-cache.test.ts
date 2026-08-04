@@ -20,6 +20,12 @@ test('材料内容变了键就变——否则会拿旧结论套新材料', () =>
   assert.notEqual(batchCacheKey(before, 'b'), batchCacheKey(after, 'b'));
 });
 
+test('文档修订指纹变化时旧批次分析不能复用', () => {
+  const before = { tables: [], documents: [{ ...doc('a.md', 'hello'), revisionFingerprint: 'rev-1' }] };
+  const after = { tables: [], documents: [{ ...doc('a.md', 'hello'), revisionFingerprint: 'rev-2' }] };
+  assert.notEqual(batchCacheKey(before, 'b'), batchCacheKey(after, 'b'));
+});
+
 test('表结构变了键就变，光看表名不够', () => {
   const before = { tables: [table('t1', { columns: [{ name: 'id' }] })], documents: [] };
   const after = { tables: [table('t1', { columns: [{ name: 'id' }, { name: 'amount' }] })], documents: [] };

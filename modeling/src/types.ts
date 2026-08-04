@@ -158,6 +158,18 @@ export interface ArtifactCandidate {
   readiness: 'extractable' | 'needs_clarification';
 }
 
+/** 后端全文读取账本的持久化快照；不能由模型自行声明。 */
+export interface DocumentReadCoverage {
+  documentId?: string;
+  filename: string;
+  revisionFingerprint?: string;
+  totalChars: number;
+  ranges: Array<[number, number]>;
+  contiguousEnd: number;
+  eofSeen: boolean;
+  complete: boolean;
+}
+
 export interface ModelingBrief {
   problem: string;
   targetUsers: string;
@@ -196,6 +208,7 @@ export interface AnalysisResult {
   candidateProcesses?: CandidateBusinessProcess[];
   materialAssessments?: MaterialAssessment[];
   candidateArtifacts?: ArtifactCandidate[];
+  documentReadCoverage?: DocumentReadCoverage[];
 }
 
 export type ProjectSensitivity = 'standard' | 'restricted';
@@ -290,11 +303,21 @@ export interface DocumentSourceAnchor {
   offset?: number;
   quote?: string;
 }
+export interface DocumentSourceReadCoverage {
+  revisionFingerprint?: string;
+  totalChars: number;
+  ranges: Array<[number, number]>;
+  contiguousEnd: number;
+  eofSeen: boolean;
+  complete: boolean;
+}
 export interface DocumentSourceRef {
   kind: 'document';
   documentId?: string;
   filename: string;
   anchors?: DocumentSourceAnchor[];
+  /** 与 anchors 分离：anchors 是证据引用点，readCoverage 才是后端验证的阅读范围。 */
+  readCoverage?: DocumentSourceReadCoverage;
 }
 export type SourceRef = TableSourceRef | DocumentSourceRef;
 export interface SpecObject {

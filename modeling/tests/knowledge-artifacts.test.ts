@@ -15,7 +15,7 @@ import {
   operationTargetId,
   operationTargetQuestion,
 } from './fixtures/confirmed-flowchart.js';
-import type { LlmDeps } from '../src/llm/provider.js';
+import { nextRequiredDocumentRead, type LlmDeps } from '../src/llm/provider.js';
 import type { AnalysisResult, PackageSpec, Project } from '../src/types.js';
 import type { OptSuggestion } from '../src/workflow/m4-repo.js';
 import type { EvalResult } from '../src/workflow/m3-repo.js';
@@ -32,6 +32,15 @@ function faux(toolName: string, params: unknown): LlmDeps {
   const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-1' }] });
   core.setResponses([fauxAssistantMessage([fauxToolCall(toolName, params)])]);
   return { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
+}
+
+function queueRequiredDocumentRead(core: ReturnType<typeof createFauxCore>, context: any): boolean {
+  const system = String(context.systemPrompt ?? '');
+  if (!system.includes('所有文本材料必须')) return false;
+  const nextRead = nextRequiredDocumentRead(context.messages ?? [], fauxToolCall);
+  if (!nextRead) return false;
+  core.setResponses([fauxAssistantMessage([nextRead as any])]);
+  return true;
 }
 
 const baseSpec = (): PackageSpec => ({
@@ -136,6 +145,9 @@ test('领域分析在保存前将表格展示标签规范化为真实 Sheet 名'
     model: core.getModel(),
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
+      if (queueRequiredDocumentRead(core, context)) {
+        return core.streamSimple(model as any, context, options as any);
+      }
       const system = String(context.systemPrompt ?? '');
       if (system.includes('submit_analysis')) {
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
@@ -195,6 +207,9 @@ test('资料分析的每个模型提示和最终输出都带已确认建模目�
   const llm: LlmDeps = {
     model: core.getModel(), getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
+      if (queueRequiredDocumentRead(core, context)) {
+        return core.streamSimple(model as any, context, options as any);
+      }
       const system = String(context.systemPrompt ?? '');
       prompts.push(system);
       if (system.includes('submit_analysis')) {
@@ -236,6 +251,16 @@ test('资料分析的每个模型提示和最终输出都带已确认建模目�
   assert.ok(prompts.every((prompt) => prompt.includes(brief.successCriteria)));
   assert.deepEqual(result.analysis.modelingBrief, brief);
   assert.equal(result.analysis.candidateProcesses?.[0].title, '减一线分流方案编制');
+  assert.deepEqual(result.analysis.documentReadCoverage, [{
+    filename: '生产手册.md',
+    totalChars: 13,
+    ranges: [[0, 13]],
+    contiguousEnd: 13,
+    eofSeen: true,
+    complete: true,
+  }]);
+  const node = listNodes(project.id).find((item) => item.type === 'analyze');
+  assert.deepEqual((node?.output as AnalysisResult).documentReadCoverage, result.analysis.documentReadCoverage);
 });
 
 test('规格硬校验保留引用完整性，但未覆盖问题和分析候选不再阻断', () => {
@@ -294,9 +319,13 @@ test('分析候选是建议清单，允许模型只提交有依据的部分对�
 test('材料类型分析未提交时分析节点记录失败原因并可重试', async () => {
   const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-analysis' }] });
   core.setResponses([
+    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
+    fauxAssistantMessage([fauxToolCall('read_document', { filename: 'manual.md', offset: 0 })]),
     fauxAssistantMessage([fauxToolCall('submit_analysis', {
       domainOverview: '银行营销', candidateObjects: [], openQuestions: [],
     })]),
+    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
+    fauxAssistantMessage([fauxToolCall('read_document', { filename: 'manual.md', offset: 0 })]),
     fauxAssistantMessage('只返回正文，不调用材料分类工具。'),
     fauxAssistantMessage('仍然不调用工具。'),
   ]);
@@ -312,9 +341,13 @@ test('材料类型分析未提交时分析节点记录失败原因并可重试',
 test('材料类型分析不能用空结果跳过文档判断', async () => {
   const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-empty-analysis' }] });
   core.setResponses([
+    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
+    fauxAssistantMessage([fauxToolCall('read_document', { filename: '产品手册.docx', offset: 0 })]),
     fauxAssistantMessage([fauxToolCall('submit_analysis', {
       domainOverview: '银行营销', candidateObjects: [], openQuestions: [],
     })]),
+    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
+    fauxAssistantMessage([fauxToolCall('read_document', { filename: '产品手册.docx', offset: 0 })]),
     fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
       materialAssessments: [], candidateArtifacts: [],
     })]),
@@ -346,6 +379,9 @@ test('材料分类按四个来源分批并自动补交漏项', async () => {
     model: core.getModel(),
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
+      if (queueRequiredDocumentRead(core, context)) {
+        return core.streamSimple(model as any, context, options as any);
+      }
       const system = String(context.systemPrompt ?? '');
       if (system.includes('submit_analysis')) {
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
@@ -386,6 +422,9 @@ test('材料分类自动补交耗尽后保留失败状态和轨迹', async () =>
     model: core.getModel(),
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
+      if (queueRequiredDocumentRead(core, context)) {
+        return core.streamSimple(model as any, context, options as any);
+      }
       const system = String(context.systemPrompt ?? '');
       if (system.includes('submit_analysis')) {
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {

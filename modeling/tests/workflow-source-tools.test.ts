@@ -6,6 +6,7 @@ import {
   validateArtifactAnalysis,
 } from '../src/workflow/engine.js';
 import { buildTools } from '../src/workflow/tools.js';
+import { DocumentReadSession } from '../src/workflow/document-read-session.js';
 
 function spacedTable(): DataDictTable {
   return {
@@ -65,6 +66,32 @@ test('领域分析工具要求提交候选业务目标和候选流程', () => {
 
   assert.ok(properties.candidateGoals, 'submit_analysis 缺少候选业务目标');
   assert.ok(properties.candidateProcesses, 'submit_analysis 缺少候选业务流程');
+});
+
+test('read_document 返回可校验的结构化分页信息并由账本强制连续读取', async () => {
+  const documents = [{ filename: 'manual.md', textContent: 'x'.repeat(6_005) }];
+  const readSession = new DocumentReadSession(documents, { fullReadMode: true });
+  const read = buildTools({ tables: [], documents, captured: {}, documentReadSession: readSession })
+    .find((tool) => tool.name === 'read_document') as any;
+
+  const first = await read.execute('call-1', { filename: 'manual.md', offset: 0 });
+  const firstPage = JSON.parse(first.content[0].text);
+  assert.deepEqual({ ...firstPage, content: undefined }, {
+    filename: 'manual.md', offset: 0, endOffset: 6_000, totalChars: 6_005,
+    nextOffset: 6_000, eof: false, content: undefined,
+  });
+  assert.equal(first.details.endOffset, 6_000);
+
+  const skipped = await read.execute('call-2', {
+    filename: 'manual.md', offset: 6_004, previousPageSummary: '第一页摘要',
+  });
+  assert.match(skipped.content[0].text, /expectedOffset.*6000/);
+
+  const last = await read.execute('call-3', {
+    filename: 'manual.md', offset: 6_000, previousPageSummary: '第一页摘要',
+  });
+  assert.equal(JSON.parse(last.content[0].text).eof, true);
+  assert.equal(readSession.complete, true);
 });
 
 test('材料分类将规范化表名还原为原始 Sheet 名', () => {

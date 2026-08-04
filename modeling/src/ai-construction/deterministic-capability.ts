@@ -141,8 +141,8 @@ export function buildScriptGenerationRequirement(
     ].join('\n');
   }).join('\n');
   return [
-    '请为以下已确认的确定性计算生成受控 Python 脚本，并绑定到对应 operation。',
-    '每个 operation 单独生成一个 script；不得修改未列出的对象、操作、规则或指标。',
+    '请为以下已确认的确定性计算生成受控 Python 脚本，并绑定到对应业务操作。',
+    '每个业务操作单独生成一个脚本；不得修改未列出的对象、操作、规则或指标。',
     '脚本必须使用 argparse 接收结构化输入并输出 JSON；不得访问网络、任意文件系统、启动子进程或动态执行代码。',
     '用户给出的测试案例必须体现在实现约束中，不能把某条测试答案硬编码进脚本。',
     tasks,
