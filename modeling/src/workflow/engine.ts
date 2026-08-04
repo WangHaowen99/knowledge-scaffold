@@ -7,11 +7,18 @@ import {
 import type { NodeStatus, NodeType, WorkflowNode, DataDictTable, AnalysisResult } from '../types.js';
 import { buildTaskLlm, type LlmDeps } from '../llm/provider.js';
 import { buildArtifactAnalysisTools, buildTools, type ToolContext } from './tools.js';
-import { makeAgent, runAgent, runAgentCaptured } from './agent.js';
+import { makeAgent, runAgent } from './agent.js';
 import { appendTraceEvent, traceEventFromAgentEvent } from './trace.js';
 import { createSourceCatalog } from './source-catalog.js';
 import { ensureMaterialHypotheses } from '../ai-construction/material-hypotheses.js';
 import { summarizeModelingBrief, type ModelingBrief } from '../ai-construction/modeling-brief.js';
+import {
+  DocumentReadSession,
+  fullReadTurnBudget,
+  runAgentWithDocumentReadGate,
+  type ReadableDocument,
+} from './document-read-session.js';
+import { captureDocumentReadCoverage } from './document-read-coverage.js';
 
 const TITLES: Record<NodeType, string> = {
   project_setup: '项目创建', ingest: '资料上传与解析', analyze: '初步分析',
@@ -103,7 +110,7 @@ export interface MaterialAnalysisProgressUpdate {
 
 export function canonicalizeArtifactAnalysisSources(
   tables: DataDictTable[],
-  documents: { filename: string; textContent?: string }[],
+  documents: ReadableDocument[],
   analysis: ArtifactAnalysis,
 ): ArtifactAnalysis {
   const tableCatalog = createSourceCatalog(tables);
@@ -141,7 +148,7 @@ export function canonicalizeArtifactAnalysisSources(
 
 export function validateArtifactAnalysis(
   tables: DataDictTable[],
-  documents: { filename: string; textContent?: string }[],
+  documents: ReadableDocument[],
   analysis: ArtifactAnalysis,
 ): ArtifactValidationIssue[] {
   const canonical = canonicalizeArtifactAnalysisSources(tables, documents, analysis);
@@ -183,13 +190,13 @@ export function formatArtifactIssues(issues: ArtifactValidationIssue[]): string 
 
 interface ArtifactBatch {
   tables: DataDictTable[];
-  documents: { filename: string; textContent?: string }[];
+  documents: ReadableDocument[];
   refs: { source: string; sourceType: 'table' | 'document' }[];
 }
 
 function buildArtifactBatches(
   tables: DataDictTable[],
-  documents: { filename: string; textContent?: string }[],
+  documents: ReadableDocument[],
   size = 4,
 ): ArtifactBatch[] {
   const sources = [
@@ -231,14 +238,16 @@ function mergeArtifactAnalyses(parts: ArtifactAnalysis[]): ArtifactAnalysis {
 export async function runAnalyze(
   projectId: string,
   tables: DataDictTable[],
-  documents: { filename: string; textContent?: string }[],
+  documents: ReadableDocument[],
   llmOverride?: LlmDeps,
   onProgress?: (progress: MaterialAnalysisProgressUpdate) => void,
   confirmedBrief?: ModelingBrief,
 ): Promise<{ node: WorkflowNode; analysis: AnalysisResult }> {
   const llm = llmOverride ?? buildTaskLlm();
   const captured: Record<string, unknown> = {};
-  const ctx: ToolContext = { tables, documents, captured };
+  const documentReadSession = new DocumentReadSession(documents, { fullReadMode: true });
+  const fullReadMaxTurns = Math.max(24, fullReadTurnBudget(documents));
+  const ctx: ToolContext = { tables, documents, captured, documentReadSession };
   const tools = buildTools(ctx);
   const goalContext = confirmedBrief
     ? `已确认建模目标（不得擅自扩大或改写）：\n${summarizeModelingBrief(confirmedBrief)}`
@@ -247,7 +256,8 @@ export async function runAnalyze(
   const systemPrompt = [
     '你是企业知识工程建模分析助手。基于已解析的数据表与文档，完成初步分析：',
     ...(goalContext ? [goalContext] : []),
-    '1) 用 list_tables / describe_table / list_documents / read_document 探查资料；',
+    '1) 用 list_tables / describe_table / list_documents / read_document 探查资料；所有文本材料必须从 offset=0 连续读到 eof=true 后才能提交；',
+    '读取下一页时严格使用上次的 nextOffset，并用 previousPageSummary / previousPageEvidence 保留滚动摘要和带 offset 的重要证据；',
     '2) 围绕已确认建模目标归纳领域概览，识别与目标直接相关的候选业务对象（对应哪些表）；',
     '3) 已确认建模目标是分析范围，不得另行提出或改写业务目标；',
     '4) 仅提出最多 3 个能支撑已确认目标的核心业务流程。每个候选需包含触发、角色、输入、步骤、异常、输出、交接和依据；材料缺失的部分可留空，不得编造；',
@@ -279,10 +289,21 @@ export async function runAnalyze(
   try {
     trace({ projectId, nodeId: node.id, phase: 'domain_analysis', kind: 'phase_started', status: 'running', title: '生成领域概览' });
     reportProgress({ phase: 'domain_analysis', title: '正在理解资料并整理领域概览', percent: 12 });
-    const agent = makeAgent(llm, systemPrompt, tools);
-    const messages = await runAgent(agent, confirmedBrief
-      ? `请围绕以下已确认建模目标分析已上传资料，完成后调用 submit_analysis：\n${summarizeModelingBrief(confirmedBrief)}`
-      : '请对已上传的资料做初步分析，完成后调用 submit_analysis。', observe('domain_analysis'));
+    const agent = makeAgent(llm, systemPrompt, tools, [], {
+      transformContext: (agentMessages) => documentReadSession.compactMessages(agentMessages),
+    });
+    const messages = await runAgentWithDocumentReadGate({
+      agent,
+      prompt: confirmedBrief
+        ? `请围绕以下已确认建模目标分析已上传资料，完成后调用 submit_analysis：\n${summarizeModelingBrief(confirmedBrief)}`
+        : '请对已上传的资料做初步分析，完成后调用 submit_analysis。',
+      session: documentReadSession,
+      maxTurns: fullReadMaxTurns,
+      captured: () => !!captured.analysis,
+      submitNudge: '全文覆盖已由后端确认完成，请立即调用 submit_analysis 提交完整结构化分析。',
+      missingSubmissionError: '领域分析完成全文读取后仍未按协议提交，请重试',
+      observe: observe('domain_analysis'),
+    });
     messagesSoFar = messages;
 
     const submittedAnalysis = (captured.analysis as AnalysisResult) ?? {
@@ -341,10 +362,13 @@ export async function runAnalyze(
         percent: batchStartPercent,
       });
       const artifactCaptured: Record<string, unknown> = {};
+      const batchReadSession = new DocumentReadSession(batch.documents, { fullReadMode: true });
+      const batchFullReadMaxTurns = Math.max(24, fullReadTurnBudget(batch.documents));
       const artifactTools = buildArtifactAnalysisTools({
         tables: batch.tables,
         documents: batch.documents,
         captured: artifactCaptured,
+        documentReadSession: batchReadSession,
       });
       const artifactPrompt = [
         '你是知识材料分类助手。请在领域对象分析之后，逐份判断当前批次材料适合沉淀成哪类知识资源。',
@@ -356,17 +380,23 @@ export async function runAnalyze(
         'source 必须精确使用当前批次来源中的名称；candidateArtifact.sources 也使用同样的精确名称。',
         '每个候选给出材料来源和简短证据或章节定位；在覆盖当前批次所有材料与类型的前提下尽量合并重复候选。',
         '探查完成后必须调用 submit_artifact_analysis 提交当前批次完整结构化结果。',
+        '所有文本材料必须已由后端账本确认从 offset=0 连续覆盖到 eof=true；未完成时继续 read_document，不能提交或声称读完。',
         `当前批次来源：${JSON.stringify(batch.refs)}`,
         `已有领域分析：${JSON.stringify(baseAnalysis).slice(0, 2500)}`,
       ].join('\n');
-      const artifactAgent = makeAgent(llm, artifactPrompt, artifactTools);
-      let batchMessages = await runAgentCaptured(
-        artifactAgent,
-        '请探查当前批次材料并调用 submit_artifact_analysis 提交材料适用类型和知识候选。',
-        () => !!artifactCaptured.artifactAnalysis,
-        '请立即调用 submit_artifact_analysis 提交当前批次完整结构化结果，不要只写正文。',
-        observe(phase),
-      );
+      const artifactAgent = makeAgent(llm, artifactPrompt, artifactTools, [], {
+        transformContext: (agentMessages) => batchReadSession.compactMessages(agentMessages),
+      });
+      let batchMessages = await runAgentWithDocumentReadGate({
+        agent: artifactAgent,
+        prompt: '请探查当前批次材料并调用 submit_artifact_analysis 提交材料适用类型和知识候选。',
+        session: batchReadSession,
+        maxTurns: batchFullReadMaxTurns,
+        captured: () => !!artifactCaptured.artifactAnalysis,
+        submitNudge: '请立即调用 submit_artifact_analysis 提交当前批次完整结构化结果，不要只写正文。',
+        missingSubmissionError: '材料知识类型分析未按协议提交，请重试',
+        observe: observe(phase),
+      });
       messagesSoFar = [...messages, ...artifactMessages, ...batchMessages];
       if (!artifactCaptured.artifactAnalysis) throw new Error('材料知识类型分析未按协议提交，请重试');
       let current = canonicalizeArtifactAnalysisSources(
@@ -448,7 +478,11 @@ export async function runAnalyze(
       });
     }
     const artifactAnalysis = mergeArtifactAnalyses(parts);
-    const analysis: AnalysisResult = { ...baseAnalysis, ...artifactAnalysis };
+    const analysis: AnalysisResult = {
+      ...baseAnalysis,
+      ...artifactAnalysis,
+      documentReadCoverage: captureDocumentReadCoverage(documentReadSession, documents),
+    };
 
     // 资料质量评估：确定性检查（同步、零成本）+ LLM 缺口分析（best-effort）。
     // 结论并入节点 output（quality 字段），供面板展示与访谈优先澄清。

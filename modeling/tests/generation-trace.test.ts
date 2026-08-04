@@ -586,3 +586,80 @@ test('对象通过候选 ID 认领中英双语候选名称', async () => {
   assert.equal(result.spec.objects[0].candidateId, 'candidate_1');
   assert.equal(result.spec.objects[0].key, 'RiskEvent');
 });
+
+test('文档对象生成继承材料分析证据和后端全文覆盖记录', async () => {
+  const project = await createGenerationProject({
+    owner: 'tester', name: '文档对象证据传递', domain: '银行营销', background: '营销产品推荐',
+  });
+  const process = { id: 'recommend_product', title: '推荐营销产品' };
+  const flowchart = confirmedFlowchart([process]);
+  upsertNode({
+    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
+    output: {
+      domainOverview: '银行营销',
+      candidateObjects: [{ name: '营销产品目录', rationale: '产品匹配知识库', sourceTables: [] }],
+      openQuestions: [],
+      materialAssessments: [{
+        source: '营销产品手册.docx', sourceType: 'document', suitableFor: ['object'],
+        rationale: '全文包含各章节产品定义',
+      }],
+      candidateArtifacts: [{
+        kind: 'object', name: '对公营销产品目录', rationale: '正文定义了产品和适用场景',
+        sources: ['营销产品手册.docx'], evidence: '服务渠道和竞品章节证据位于 offset~12000',
+        readiness: 'extractable',
+      }],
+      documentReadCoverage: [{
+        documentId: 'doc_manual', filename: '营销产品手册.docx',
+        revisionFingerprint: 'doc_manual:rev1', totalChars: 12_500,
+        ranges: [[0, 12_500]], contiguousEnd: 12_500, eofSeen: true, complete: true,
+      }],
+    },
+  });
+
+  const object = {
+    candidateId: 'candidate_1', key: 'MarketingProductCatalog', title: '营销产品目录',
+    description: '营销产品和适用场景目录', fields: [],
+  };
+  const operation = {
+    key: 'recommend_product', title: '推荐营销产品', description: '根据客户需求推荐产品',
+    inputs: [], outputs: [{ field: 'products', type: 'array' }],
+    flow: ['查询 object:MarketingProductCatalog', '返回匹配产品'],
+    relatedObjects: ['MarketingProductCatalog'],
+    competencyQuestionId: operationTargetId(process.id),
+  };
+  let objectPrompt = '';
+  const core = createFauxCore({ provider: 'document-object-evidence', models: [{ id: 'document-object-evidence' }] });
+  const llm = {
+    model: core.getModel(), getApiKey: () => 'faux',
+    streamFn: ((model: unknown, context: any, options: unknown) => {
+      const system = String(context.systemPrompt ?? '');
+      if (system.includes('submit_objects')) {
+        objectPrompt = system;
+        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })])]);
+      } else if (system.includes('submit_rules_metrics')) {
+        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })])]);
+      } else if (system.includes('submit_operations')) {
+        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })])]);
+      } else {
+        throw new Error(`未处理的测试 prompt: ${system.slice(0, 80)}`);
+      }
+      return core.streamSimple(model as any, context, options as any);
+    }) as any,
+  };
+
+  const result = await generatePackage(project, {
+    tables: [],
+    documents: [{
+      id: 'doc_manual', filename: '营销产品手册.docx', textContent: 'x'.repeat(12_500),
+      revisionFingerprint: 'doc_manual:rev1',
+    }],
+  }, llm, flowchart);
+
+  assert.match(objectPrompt, /服务渠道和竞品章节证据位于 offset~12000/u);
+  const source = result.spec.objects[0].sourceRefs?.[0];
+  assert.equal(source?.kind, 'document');
+  assert.deepEqual(source?.kind === 'document' ? source.readCoverage : undefined, {
+    revisionFingerprint: 'doc_manual:rev1', totalChars: 12_500,
+    ranges: [[0, 12_500]], contiguousEnd: 12_500, eofSeen: true, complete: true,
+  });
+});

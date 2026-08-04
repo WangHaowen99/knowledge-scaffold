@@ -98,6 +98,33 @@ function parseNumberedList(prompt: string): string[] {
   return prompt.split('\n').map((l) => l.match(/^\d+\.\s*(.+)$/)?.[1]?.trim()).filter(Boolean) as string[];
 }
 
+export function nextRequiredDocumentRead(messages: any[], fauxToolCall: (name: string, params: unknown) => unknown) {
+  const listResult = [...messages].reverse().find((message: any) => (
+    message?.role === 'toolResult' && message?.toolName === 'list_documents'
+  ));
+  if (!listResult) return fauxToolCall('list_documents', {});
+  const listText = (listResult.content ?? []).map((part: any) => part?.text ?? '').join('\n');
+  const filenames = [...listText.matchAll(/【(.+?)】共\s*\d+\s*字符/gu)].map((match) => match[1]);
+  if (!filenames.length) return null;
+
+  const reads = messages.filter((message: any) => (
+    message?.role === 'toolResult' && message?.toolName === 'read_document'
+  ));
+  const previousPageSummary = reads.length ? '（演示模式）已记录上一页的章节要点和重要证据。' : undefined;
+  for (const filename of filenames) {
+    const latest = [...reads].reverse().find((message: any) => message?.details?.filename === filename);
+    if (!latest) return fauxToolCall('read_document', { filename, offset: 0, previousPageSummary });
+    if (!latest.details?.eof) {
+      return fauxToolCall('read_document', {
+        filename,
+        offset: latest.details?.nextOffset ?? latest.details?.endOffset ?? 0,
+        previousPageSummary,
+      });
+    }
+  }
+  return null;
+}
+
 function latestUserJson(messages: any[]): any {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -119,6 +146,11 @@ export function buildFauxModeler(): LlmDeps {
     const sys: string = context.systemPrompt ?? '';
     const { fauxAssistantMessage, fauxToolCall } = fx;
     const hasToolResult = (name: string) => (context.messages ?? []).some((m: any) => m?.role === 'toolResult' && m.toolName === name);
+
+    if (sys.includes('所有文本材料必须') || sys.includes('专家明确要求全文阅读')) {
+      const nextRead = nextRequiredDocumentRead(context.messages ?? [], fauxToolCall);
+      if (nextRead) return fauxAssistantMessage([nextRead]);
+    }
 
     if (sys.includes('submit_modeling_goal_brief')) {
       const goal = String(latestUserJson(context.messages ?? [])?.modelingGoal ?? '').trim();

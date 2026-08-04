@@ -674,6 +674,40 @@ test('原子修订保留未涉及的可选目录缺省状态', () => {
   assert.equal(revised.scripts, undefined);
 });
 
+test('对象修订只能保留后端已有全文覆盖记录，不能接受模型改写', () => {
+  const current = spec();
+  current.objects[0].sourceRefs = [{
+    kind: 'document', documentId: 'doc_manual', filename: 'manual.md',
+    anchors: [{ heading: '第一章', offset: 0 }],
+    readCoverage: {
+      revisionFingerprint: 'doc_manual:rev1', totalChars: 12_500,
+      ranges: [[0, 12_500]], contiguousEnd: 12_500, eofSeen: true, complete: true,
+    },
+  }];
+  const submitted = {
+    ...current.objects[0],
+    description: '补充后的订单对象',
+    sourceRefs: [{
+      kind: 'document' as const, documentId: 'doc_manual', filename: 'manual.md',
+      anchors: [{ heading: '第一章', offset: 0 }],
+      readCoverage: {
+        revisionFingerprint: '模型伪造', totalChars: 1,
+        ranges: [[0, 1] as [number, number]], contiguousEnd: 1, eofSeen: true, complete: true,
+      },
+    }],
+  };
+
+  const revised = applyAtomicResourcePatch(current, {
+    summary: '补充订单说明',
+    changes: [{ targetKind: 'object', targetKey: 'Order', action: 'modify', description: '补充' }],
+  }, { objects: [submitted] });
+  const source = revised.objects[0].sourceRefs?.[0];
+
+  assert.equal(source?.kind, 'document');
+  assert.equal(source?.kind === 'document' ? source.readCoverage?.revisionFingerprint : undefined, 'doc_manual:rev1');
+  assert.equal(source?.kind === 'document' ? source.readCoverage?.totalChars : undefined, 12_500);
+});
+
 test('原子修订拒绝同一资源的重复补丁', () => {
   const current = spec();
   assert.throws(() => applyAtomicResourcePatch(current, {

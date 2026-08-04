@@ -1,5 +1,5 @@
 import { Type } from '@earendil-works/pi-ai';
-import { buildLlm, buildTaskLlm } from '../llm/provider.js';
+import { buildLlm, buildTaskLlm, type LlmDeps } from '../llm/provider.js';
 import { AgentRunTimeoutError, makeAgent, runAgent } from './agent.js';
 import { assertObjectDataMappings } from './data-mapping.js';
 import {
@@ -8,6 +8,7 @@ import {
 } from './tools.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './spec-validation.js';
 import type {
+  AnalysisResult,
   CoverageResult,
   DataDictTable,
   PackageSpec,
@@ -27,6 +28,18 @@ import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
 import { MAX_CHANGE_PLAN_DESCRIPTION_LENGTH } from '../ai-construction/messages.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { withCurrentContent } from '../ai-construction/change-plan-context.js';
+import {
+  DocumentReadSession,
+  fullReadTurnBudget,
+  runAgentWithDocumentReadGate,
+  type ReadableDocument,
+} from './document-read-session.js';
+import {
+  documentReadCoveragePrompt,
+  preserveDocumentReadCoverage,
+  stripUnverifiedDocumentReadCoverage,
+  verifiedDocumentReadCoverage,
+} from './document-read-coverage.js';
 
 // 知识包工作区的建模 agent —— 咨询直接回答，修改走两段式确认：
 // ① plan：只分析影响面（改哪些对象/操作、怎么改、风险），返回结构化计划等专家确认；咨询类直接文字回答；
@@ -61,7 +74,15 @@ export interface PackageChatPlanOptions {
    * 允许模型翻阅的资料。给了就注入 list_documents / search_documents / read_document，
    * 让它自己按需读，而不是由调用方截一段塞进提示词——长文档截头部只会读到目录。
    */
-  documents?: Array<{ id?: string; filename: string; textContent?: string }>;
+  documents?: ReadableDocument[];
+  /** 最近一次材料分析的后端输出，仅使用与当前文档修订匹配的全文覆盖记录。 */
+  analysis?: Pick<AnalysisResult, 'documentReadCoverage'>;
+  /** 普通聊天默认不读原始资料；on-demand 按需检索；full 强制连续覆盖全部传入文本资料。 */
+  documentAccess?: 'full-read-only' | 'on-demand' | 'full';
+  /** Agent 事件观察器，供调用方记录进度或审计工具调用。 */
+  observe?: (event: unknown) => void;
+  /** 受控调用或测试可注入模型依赖，生产路径默认使用当前建模模型配置。 */
+  llmOverride?: LlmDeps;
 }
 export interface ChatApplyResult {
   reply: string;
@@ -133,6 +154,35 @@ export class PackageCandidateRejectedError extends Error {
     this.name = 'PackageCandidateRejectedError';
     this.feedback = String(feedback).trim().slice(0, 3_000) || '候选内容未通过校验';
   }
+}
+
+export function hasExplicitFullReadIntent(message: string): boolean {
+  const normalized = String(message ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  const withoutNegatedIntent = normalized.replace(
+    /(?:不用|无需|不必|不要|不是(?:要求|要)?|并非(?:要求|要)?).{0,3}?(?:完整(?:地)?(?:阅读|通读|审阅)|通读|全文(?:阅读|通读|审阅)?|读完|看完|全量(?:提取|抽取|梳理|整理|分析|覆盖)|逐章(?:提取|抽取|梳理|整理|分析|覆盖))/gu,
+    ' ',
+  );
+  const explicitReading = /完整(?:地)?(?:阅读|通读|审阅)|(?:全文|整份|整篇|完整(?:的)?(?:文档|资料|手册|文件)|全部(?:文档|资料|手册|文件)|所有(?:文档|资料|手册|文件)|从头到尾).{0,12}(?:读|看|阅读|通读|审阅)|(?:读|看|阅读|通读|审阅).{0,12}(?:全文|整份|整篇|完整(?:的)?(?:文档|资料|手册|文件)|全部(?:文档|资料|手册|文件)|所有(?:文档|资料|手册|文件)|从头到尾)|通读|(?:读完|看完).{0,8}(?:文档|资料|手册|文件)|(?:文档|资料|手册|文件).{0,8}(?:读完|看完)/u;
+  const exhaustiveExtraction = /全量.{0,8}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|逐章.{0,8}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|(?:所有|全部|每(?:一|个)?)(?:个)?章(?:节)?.{0,12}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充).{0,12}(?:所有|全部|每(?:一|个)?)(?:个)?章(?:节)?/u;
+  return explicitReading.test(withoutNegatedIntent) || exhaustiveExtraction.test(withoutNegatedIntent);
+}
+
+export function resolvePackageChatDocumentAccess(
+  message: string,
+  configured: PackageChatPlanOptions['documentAccess'] = 'full-read-only',
+): 'none' | 'on-demand' | 'full' {
+  if (configured === 'full') return 'full';
+  if (hasExplicitFullReadIntent(message)) return 'full';
+  return configured === 'on-demand' ? 'on-demand' : 'none';
+}
+
+function requestedFullReadDocuments<T extends { filename: string }>(message: string, documents: T[]): T[] {
+  const named = documents.filter((document) => {
+    const stem = document.filename.replace(/\.[^.]+$/u, '');
+    return message.includes(document.filename) || (stem.length >= 2 && message.includes(stem));
+  });
+  return named.length ? named : documents;
 }
 
 function candidateValidationError(error: unknown): PackageCandidateValidationError {
@@ -547,12 +597,20 @@ export function applyAtomicResourcePatch(
     const singleModify = changes.length === 1 && changes[0].action === 'modify'
       ? changes[0]
       : undefined;
-    const submitted = singleModify
+    const normalizedSubmitted = singleModify
       && rawSubmitted.length === 1
       && rawSubmitted[0].key !== singleModify.targetKey
       && !currentKeys.has(rawSubmitted[0].key)
       ? [{ ...rawSubmitted[0], key: singleModify.targetKey }]
       : rawSubmitted;
+    const submitted = kind === 'object'
+      ? normalizedSubmitted.map((item) => {
+        const previous = currentItems.find((candidate) => candidate.key === item.key);
+        return previous
+          ? preserveDocumentReadCoverage(previous as SpecObject, item as SpecObject)
+          : stripUnverifiedDocumentReadCoverage(item as SpecObject);
+      })
+      : normalizedSubmitted;
     const staleModify = changes.find((change) => (
       change.action === 'modify' && !currentKeys.has(change.targetKey)
     ));
@@ -670,6 +728,22 @@ export async function packageChatPlan(
   const latest = await getPackageArtifactStore().current(project.id);
   if (!latest) throw new Error('尚未生成知识包');
 
+  const documents = (options.documents ?? []).filter((item) => (item.textContent ?? '').length > 0);
+  const historicalReadCoverage = verifiedDocumentReadCoverage(
+    options.analysis?.documentReadCoverage,
+    documents,
+  );
+  const documentAccess = resolvePackageChatDocumentAccess(message, options.documentAccess);
+  const accessibleDocuments = documentAccess === 'full'
+    ? (options.documentAccess === 'full' ? documents : requestedFullReadDocuments(message, documents))
+    : documents;
+  if (documentAccess === 'full' && !accessibleDocuments.length) {
+    return { reply: '当前项目没有可供全文读取的文本材料，无法确认“已完整读取”。请先上传并成功解析文档。' };
+  }
+  const documentReadSession = documentAccess === 'full'
+    ? new DocumentReadSession(accessibleDocuments, { fullReadMode: true })
+    : undefined;
+
   const cap: { plan?: ChangePlan } = {};
   const submitPlan = {
     name: 'submit_change_plan',
@@ -689,6 +763,12 @@ export async function packageChatPlan(
       risks: Type.Optional(Type.Array(Type.String())),
     }),
     async execute(_id: string, params: any) {
+      if (documentReadSession && !documentReadSession.complete) {
+        return {
+          content: [{ type: 'text' as const, text: documentReadSession.continuationPrompt() }],
+          details: {},
+        };
+      }
       cap.plan = resolveChangePlanTargets(latest.spec, params as ChangePlan);
       return { content: [{ type: 'text' as const, text: '计划已提交，等待专家确认。' }], details: {}, terminate: true };
     },
@@ -706,6 +786,13 @@ export async function packageChatPlan(
     '多步骤精确计算应修缮 script，并同时计划修改绑定它的 operation；脚本不得内置某条用例的答案。',
     '删除 operation 时必须同时规划删除或重新绑定其 script；删除 script 时必须同时规划移除 operation.script 引用。',
     '列出级联风险：改口径会影响哪些操作、是否与典型问题路由冲突、remove 是否破坏领域问题覆盖。',
+    'sourceRefs.anchors 只是知识对象保留的证据引用点，不是全文阅读账本或正文收录清单；不得仅因锚点较少就声称其他章节未阅读、未收录或不存在。',
+    `后端已验证的历史全文阅读覆盖：${documentReadCoveragePrompt(historicalReadCoverage)}。`,
+    ...(documentReadSession ? [
+      '当前调用要求全文阅读。所有文本材料必须从 offset=0 开始，严格使用 nextOffset 连续读到 eof=true；',
+      '翻页时用 previousPageSummary / previousPageEvidence 保留滚动摘要和带 offset 的重要证据。',
+      '后端账本确认全部文档连续覆盖前，不得提交计划，也不得声称“已完整读取”或作出最终答复。',
+    ] : []),
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
 
@@ -715,14 +802,46 @@ export async function packageChatPlan(
     `【专家消息】\n${message}`,
   ].filter(Boolean).join('\n');
 
-  // 有资料时给上翻阅工具：长文档必须让模型自己检索定位，截断塞进提示词读不到正文
-  const documentTools = options.documents?.length
-    ? buildDocumentReadingTools(options.documents.map((item) => ({
+  // 普通聊天不扫描原始资料；按需模式只注入工具，强制或明确全文诉求时启用连续覆盖账本。
+  const documentTools = documentAccess !== 'none'
+    ? buildDocumentReadingTools(accessibleDocuments.map((item) => ({
       id: item.id ?? item.filename, filename: item.filename, textContent: item.textContent ?? '',
-    })))
+    })), documentReadSession)
     : [];
-  const agent = makeAgent(buildLlm(), sys, [submitPlan, ...documentTools] as any);
-  const messages = await runAgent(agent, body);
+  const agent = makeAgent(options.llmOverride ?? buildLlm(), sys, [submitPlan, ...documentTools] as any, [], {
+    ...(documentReadSession ? {
+      transformContext: (agentMessages) => documentReadSession.compactMessages(agentMessages),
+    } : {}),
+  });
+  const hasAnswerAfterLastRead = () => {
+    const agentMessages = agent.state.messages as any[];
+    let lastRead = -1;
+    for (let index = agentMessages.length - 1; index >= 0; index -= 1) {
+      const item = agentMessages[index];
+      if (item?.role === 'toolResult' && item?.toolName === 'read_document') {
+        lastRead = index;
+        break;
+      }
+    }
+    return agentMessages.slice(lastRead + 1).some((item) => (
+      item?.role === 'assistant'
+      && (typeof item.content === 'string'
+        ? item.content.trim().length > 0
+        : (item.content ?? []).some((part: any) => String(part?.text ?? '').trim().length > 0))
+    ));
+  };
+  const messages = documentReadSession
+    ? await runAgentWithDocumentReadGate({
+      agent,
+      prompt: body,
+      session: documentReadSession,
+      maxTurns: fullReadTurnBudget(accessibleDocuments),
+      captured: () => !!cap.plan || hasAnswerAfterLastRead(),
+      submitNudge: '后端已确认全文连续覆盖完成。请现在基于滚动摘要和带 offset 的证据给出最终答复；若专家要求修改，请调用 submit_change_plan。',
+      missingSubmissionError: '全文读取完成，但模型未生成最终答复',
+      observe: options.observe,
+    })
+    : await runAgent(agent, body, options.observe);
 
   if (cap.plan?.changes?.length) {
     const adapter = getPiAuthoringAdapter();

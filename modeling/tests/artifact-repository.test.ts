@@ -206,7 +206,7 @@ test('拒绝把项目目录替换为符号链接', async (t) => {
   const { rootDir, repository } = await fixture(t);
   const outside = await mkdtemp(join(tmpdir(), 'artifact-repository-outside-'));
   t.after(() => rm(outside, { recursive: true, force: true }));
-  await symlink(outside, join(rootDir, 'pj_link'));
+  await symlink(outside, join(rootDir, 'pj_link'), process.platform === 'win32' ? 'junction' : 'dir');
 
   await expectRepositoryError(() => repository.initialize('pj_link'), 'invalid_repository');
   await expectRepositoryError(() => repository.current('pj_link'), 'invalid_repository');
