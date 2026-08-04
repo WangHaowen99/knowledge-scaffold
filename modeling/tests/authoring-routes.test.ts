@@ -1404,6 +1404,74 @@ test('增量补充：建模没走完时拒绝，走完后开一轮且不动已�
   assert.equal(again.n, 1);
 });
 
+test('生成增量方案时强制全文读取本轮新增文本资料', async (t) => {
+  const project = createProject({ owner: 'alice', name: '增量全文读取入口' });
+  const db = getDb();
+  let plannedOptions: any;
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: 'pkg-increment-full-read' },
+          packageVersion: '1.0.0',
+          spec: { objects: [], operations: [], rules: [], metrics: [], scripts: [] },
+        };
+      },
+    },
+    packageChatPlan: async (_project: any, _history: any[], _requirement: string, options: any) => {
+      plannedOptions = options;
+      return {
+        plan: { summary: '增量方案', changes: [], risks: [] },
+        interaction: {
+          id: 'increment-full-read-plan',
+          runId: 'increment-full-read-run',
+          baseRevision: 'pkg-increment-full-read',
+        },
+      };
+    },
+  });
+  const startUrl = `/api/projects/${project.id}/ai-construction/increment/start`;
+
+  // 首次调用初始化任务图；随后模拟既有建模已全部确认。
+  const beforeCompletion = await app.inject({ method: 'POST', url: startUrl, payload: {} });
+  assert.equal(beforeCompletion.statusCode, 409, beforeCompletion.body);
+  db.prepare(`UPDATE ai_construction_milestones SET status = 'confirmed'
+    WHERE project_id = ?`).run(project.id);
+  db.prepare(`UPDATE ai_construction_tasks SET status = 'completed'
+    WHERE project_id = ?`).run(project.id);
+  const started = await app.inject({ method: 'POST', url: startUrl, payload: {} });
+  assert.equal(started.statusCode, 202, started.body);
+
+  const { insertDocument } = await import('../src/documents/repo.js');
+  const document = insertDocument({
+    projectId: project.id,
+    filename: '新增规则.md',
+    kind: 'markdown',
+    parseStatus: 'parsed',
+    textContent: '本轮新增规则正文。',
+  });
+  // 避免测试运行过快时资料和增量任务落在同一毫秒，确保属于本轮新增资料。
+  db.prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+    .run('2099-01-01T00:00:00.000Z', document.id);
+
+  const proposed = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/increment/propose`,
+    payload: {},
+  });
+  assert.equal(proposed.statusCode, 202, proposed.body);
+
+  const deadline = Date.now() + 2_000;
+  while (!plannedOptions && Date.now() <= deadline) {
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+  }
+  assert.ok(plannedOptions, '增量方案后台作业应调用 packageChatPlan');
+  assert.equal(plannedOptions.documentAccess, 'full');
+  assert.deepEqual(plannedOptions.documents, [{
+    filename: '新增规则.md', textContent: '本轮新增规则正文。',
+  }]);
+});
+
 // ---- 体检发现交给建模助手处理 ----
 
 function findingApp(t: test.TestContext) {

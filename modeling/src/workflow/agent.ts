@@ -3,7 +3,16 @@ import type { LlmDeps } from '../llm/provider.js';
 import type { AgentTool } from './types.js';
 
 export type AgentEventObserver = (event: unknown) => void;
-export interface RunAgentOptions { timeoutMs?: number; signal?: AbortSignal; }
+export interface AgentTurnBudget { remaining: number; }
+export interface RunAgentOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  maxTurns?: number;
+  turnBudget?: AgentTurnBudget;
+}
+export interface MakeAgentOptions {
+  transformContext?: (messages: unknown[]) => unknown[] | Promise<unknown[]>;
+}
 
 export class AgentRunTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
@@ -19,6 +28,7 @@ export function makeAgent(
   systemPrompt: string,
   tools: AgentTool[],
   messages: unknown[] = [],
+  options: MakeAgentOptions = {},
 ): Agent {
   return new Agent({
     streamFn: llm.streamFn,
@@ -29,6 +39,9 @@ export function makeAgent(
       tools: tools as any,
       messages: messages as any,
     },
+    ...(options.transformContext ? {
+      transformContext: async (contextMessages) => options.transformContext!(contextMessages) as any,
+    } : {}),
   });
 }
 
@@ -51,9 +64,20 @@ export async function runAgent(
   let timeout: NodeJS.Timeout | undefined;
   let run: Promise<void> | undefined;
   let removeAbortListener: () => void = () => {};
+  const configuredMaxTurns = Number(options.maxTurns ?? MAX_TURNS);
+  const maxTurns = Number.isFinite(configuredMaxTurns) && configuredMaxTurns > 0
+    ? Math.floor(configuredMaxTurns)
+    : 12;
   const unsub = agent.subscribe((event: any) => {
     observe?.(event);
-    if (event?.type === 'turn_end' && ++turns >= MAX_TURNS) agent.abort();
+    if (event?.type !== 'turn_end') return;
+    turns += 1;
+    if (options.turnBudget) {
+      options.turnBudget.remaining = Math.max(0, options.turnBudget.remaining - 1);
+      if (options.turnBudget.remaining <= 0) agent.abort();
+      return;
+    }
+    if (turns >= maxTurns) agent.abort();
   });
   try {
     run = (async () => {

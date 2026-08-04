@@ -123,7 +123,7 @@ import {
 import { buildLlm } from './llm/provider.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
-import type { DataDictTable } from './types.js';
+import type { AnalysisResult, DataDictTable } from './types.js';
 import { InFlightOperations, OperationAlreadyRunningError } from './in-flight-operations.js';
 import {
   assertNoActivePackageDraft,
@@ -164,7 +164,12 @@ function parseDraftRevision(value: unknown): number | null {
 
 function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
   tables: DataDictTable[];
-  documents: Array<{ id: string; filename: string; textContent: string }>;
+  documents: Array<{
+    id: string;
+    filename: string;
+    textContent: string;
+    revisionFingerprint: string;
+  }>;
 } {
   return {
     tables: documents.flatMap((document) => (document.tables ?? []).map((table) => ({
@@ -172,7 +177,18 @@ function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
       documentId: document.id,
     }))),
     documents: documents.flatMap((document) => document.textContent
-      ? [{ id: document.id, filename: document.filename, textContent: document.textContent }]
+      ? [{
+        id: document.id,
+        filename: document.filename,
+        textContent: document.textContent,
+        revisionFingerprint: [
+          document.id,
+          document.sourceKey ?? '',
+          document.revisionNo ?? 0,
+          document.contentHash ?? '',
+          document.semanticHash ?? '',
+        ].join(':'),
+      }]
       : []),
   };
 }
@@ -1065,7 +1081,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       };
 
       void inFlight.run(chatKey, 'package-chat', async () => {
-        const result = await runPackageChatPlan(c.p, history, message.trim());
+        const result = await runPackageChatPlan(c.p, history, message.trim(), {
+          documents: c.ctx.documents,
+          analysis: c.analysis as AnalysisResult | undefined,
+          documentAccess: 'full-read-only',
+        });
         packageChatConversation.finishTurn(c.p.id, turnId, result);
       }).then(
         () => finishRun('completed'),

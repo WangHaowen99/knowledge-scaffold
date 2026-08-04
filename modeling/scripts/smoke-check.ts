@@ -11,7 +11,11 @@ import { createProject, getProject } from '../src/projects/repo.js';
 import { getPackageVersion, listPackageVersions } from '../src/workflow/m2-repo.js';
 import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
 import { runRuleChecks, runSemanticCheck } from '../src/workflow/package-check.js';
-import { packageChatPlan, packageChatApply } from '../src/workflow/package-chat.js';
+import {
+  PackageCandidateRejectedError,
+  packageChatPlan,
+  packageChatApply,
+} from '../src/workflow/package-chat.js';
 import { findingsToSuggestions, extractCitedKeys } from '../src/evaluation/optimizer.js';
 import { runDataQualityChecks } from '../src/workflow/data-quality.js';
 import type { DataDictTable, PackageSpec } from '../src/types.js';
@@ -219,10 +223,12 @@ async function main() {
   const versionCountBeforeStaleApply = listPackageVersions(project.id).length;
   const guarded = await packageChatApply(getProject(project.id)!, [], '再次删除 OP-A', stalePlan, TABLES)
     .then((r) => ({ okApplied: true as const, r }))
-    .catch((e) => ({ okApplied: false as const, msg: String(e?.message ?? e) }));
+    .catch((error: unknown) => ({ okApplied: false as const, error }));
   ok(
     !guarded.okApplied
-      && /目标不存在|修订未完整落实/.test(guarded.msg)
+      && guarded.error instanceof PackageCandidateRejectedError
+      && guarded.error.code === 'PACKAGE_CANDIDATE_REJECTED'
+      && /目标不存在/.test(guarded.error.feedback)
       && listPackageVersions(project.id).length === versionCountBeforeStaleApply,
     '防护：计划目标已不存在时拒绝空转版本',
   );
