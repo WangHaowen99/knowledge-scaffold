@@ -17,6 +17,7 @@ import {
   resolveWorkspaceAccess,
 } from './configAccess';
 import { CONFIG_CENTER_SCOPES as SCOPES } from './configCenterScopes';
+import { saveWorkspaceMembers, validateWorkspaceMember } from './workspaceMembers/api';
 import './settings.css';
 
 const ChangePasswordDialog = lazy(() => import('../auth')
@@ -293,7 +294,9 @@ function WorkspaceMembers() {
   const setDraft = (members) => setDraftState(members === null ? null : { wsId: workspaceId, members });
   const [newName, setNewName] = useState('');
   const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState('');
   const members = draft ?? (ws?.members || []);
+  const msgIsError = msg.startsWith('失败：');
 
   // 优先复用 AuthContext 已拉取的条目；找不到当前空间时兜底重拉一次列表
   useEffect(() => {
@@ -307,24 +310,40 @@ function WorkspaceMembers() {
     return () => clearTimeout(t);
   }, [workspaces, workspaceId]);
 
-  const add = () => {
+  const add = async () => {
     const name = newName.trim();
-    if (!name) return;
+    if (!name || busy) return;
     if (members.includes(name)) { setMsg(`「${name}」已在成员列表`); return; }
-    setDraft([...members, name]);
-    setNewName('');
     setMsg('');
+    setBusy('validate');
+    try {
+      await validateWorkspaceMember(workspaceId, name);
+      setDraft([...members, name]);
+      setNewName('');
+    } catch (error) {
+      setMsg(`失败：${error?.message || '成员校验失败'}`);
+    } finally {
+      setBusy('');
+    }
   };
-  const removeMember = (name) => setDraft(members.filter((m) => m !== name));
+  const removeMember = (name) => {
+    if (!busy) setDraft(members.filter((m) => m !== name));
+  };
 
   const save = async () => {
-    const res = await authFetch(`/agentic/workspaces/${encodeURIComponent(workspaceId)}/members`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ members }),
-    });
-    const data = await res.json().catch(() => ({}));
-    // 后端 403 用 error 字段、400 校验错用 detail 字段，两者都取
-    setMsg(res.ok ? '已保存' : `失败：${data.error || data.detail || res.status}`);
-    if (res.ok) { setDraft(null); reloadWorkspaces(); }
+    if (busy) return;
+    setBusy('save');
+    setMsg('');
+    try {
+      await saveWorkspaceMembers(workspaceId, members);
+      setMsg('已保存');
+      setDraft(null);
+      await reloadWorkspaces();
+    } catch (error) {
+      setMsg(`失败：${error?.message || '保存成员失败'}`);
+    } finally {
+      setBusy('');
+    }
   };
 
   return (
@@ -338,12 +357,26 @@ function WorkspaceMembers() {
       {canEdit && (
         <div style={{ display: 'flex', gap: 8, margin: '12px 0', alignItems: 'center' }}>
           <input type="text" placeholder="用户名" style={inputS(160)} value={newName}
+            disabled={Boolean(busy)}
             onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') add(); }} />
-          <button className="btn btn-p" disabled={!newName.trim()} onClick={add}>＋ 添加成员</button>
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }} />
+          <button className="btn btn-p" disabled={!newName.trim() || Boolean(busy)} onClick={add}>
+            {busy === 'validate' ? '校验中…' : '＋ 添加成员'}
+          </button>
         </div>
       )}
-      {msg && <div style={{ fontSize: 12.5, color: 'var(--ink2)', marginBottom: 8 }}>{msg}</div>}
+      {msg && (
+        <div
+          role={msgIsError ? 'alert' : 'status'}
+          style={{
+            fontSize: 12.5,
+            color: msgIsError ? 'var(--status-error-fg)' : 'var(--ink2)',
+            marginBottom: 8,
+          }}
+        >
+          {msg}
+        </div>
+      )}
       <table className="dt">
         <thead><tr><th>成员</th>{canEdit && <th style={{ width: 100 }}>操作</th>}</tr></thead>
         <tbody>
@@ -352,7 +385,7 @@ function WorkspaceMembers() {
               <td style={{ fontWeight: 600 }}>{m}</td>
               {canEdit && (
                 <td>
-                  <button className="btn" style={btnS} onClick={() => removeMember(m)}>移除</button>
+                  <button className="btn" style={btnS} disabled={Boolean(busy)} onClick={() => removeMember(m)}>移除</button>
                 </td>
               )}
             </tr>
@@ -362,8 +395,10 @@ function WorkspaceMembers() {
       </table>
       {canEdit && (
         <div className="foot">
-          <button className="btn" disabled={!draft} onClick={() => setDraft(null)}>重置</button>
-          <button className="btn btn-p" disabled={!draft} onClick={save}>保存修改</button>
+          <button className="btn" disabled={!draft || Boolean(busy)} onClick={() => setDraft(null)}>重置</button>
+          <button className="btn btn-p" disabled={!draft || Boolean(busy)} onClick={save}>
+            {busy === 'save' ? '保存中…' : '保存修改'}
+          </button>
         </div>
       )}
     </div>
