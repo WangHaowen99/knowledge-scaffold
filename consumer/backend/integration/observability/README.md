@@ -260,3 +260,6 @@ RuntimeEventDispatcher
 - 再跟随它 emit 出来的 `RuntimeEvent`。
 - 只有需要理解厂商映射时，再看 `LangfuseExporter`。
 - 只有需要理解 SDK 调用、数据清洗或 flush/close 行为时，再看 `LangfuseTraceAdapter`。
+## Speedscope session traces
+
+Workspace observability is the only Speedscope control plane. `enabled=false` writes no local perf, Langfuse, or Speedscope data. With `enabled=true`, both `mode=local` and `mode=langfuse` emit the workspace session's evented `.speedscope.json` trace. The trace is stored below `runtime/observability/speedscope/<user>/` and uses `speedscope.retention_days` for retention. The session download endpoint is `GET /agentic/sessions/<session_id>/performance/speedscope`; regular users are limited to their own sessions and workspace admins may download any session in the workspace.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 from utils.perf_analysis.service import (
     MAX_WINDOW_MS,
@@ -19,6 +19,8 @@ from utils.perf_analysis.service import (
 )
 from api.auth.auth import get_current_user, require_auth, require_role
 from api.auth.service_auth import modeling_service_authorized
+from integration.observability.speedscope_files import find_speedscope_session_file
+from utils.identifiers import validate_session_id
 from workspace.workspaces import resolve_workspace_id
 
 performance_bp = Blueprint("performance", __name__)
@@ -74,6 +76,53 @@ def get_session_performance_availability(session_id: str):
             workspace_id=get_request_workspace_id(),
         )
     )
+
+
+@performance_bp.route("/agentic/sessions/<session_id>/performance/speedscope", methods=["GET"])
+@require_auth()
+def download_session_speedscope(session_id: str):
+    """Download the current workspace session's combined Speedscope trace."""
+    try:
+        normalized_session_id = validate_session_id(session_id)
+        workspace_id = get_request_workspace_id()
+    except ValueError as exc:
+        return jsonify({"detail": str(exc)}), 400
+
+    current_user = get_current_user()
+    is_admin = bool(current_user and current_user.role == "admin")
+    if is_admin:
+        path = find_speedscope_session_file(
+            workspace_id,
+            normalized_session_id,
+            any_user=True,
+        )
+    else:
+        chat_store, _execution_store = get_request_stores()
+        if not chat_store.get_session(normalized_session_id):
+            return jsonify({"error": "Session not found"}), 404
+        path = find_speedscope_session_file(
+            workspace_id,
+            normalized_session_id,
+            user_id=current_user.username if current_user else None,
+        )
+
+    if path is None:
+        return jsonify({
+            "error": "Speedscope trace not found",
+            "code": "SPEEDSCOPE_NOT_FOUND",
+        }), 404
+
+    response = send_file(
+        path,
+        mimetype="application/json",
+        as_attachment=True,
+        download_name="{}.speedscope.json".format(normalized_session_id),
+        conditional=False,
+        etag=False,
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @performance_bp.route("/agentic/performance/runs/<run_id>", methods=["GET"])

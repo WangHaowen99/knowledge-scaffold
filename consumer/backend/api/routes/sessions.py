@@ -16,6 +16,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     InteractionCheckpointError,
 )
+from integration.observability.speedscope_files import remove_speedscope_session_files
 from workspace.workspaces import workspace_scope
 
 logger = get_logger("routes.sessions")
@@ -257,6 +258,7 @@ def create_session():
             "selected_ontology_id": "Optional enabled ontology id"
         }
     """
+    current_user = get_current_user()
     data = request.get_json() or {}
     title = data.get("title")
     agent_mode = resolve_agent_mode({"agent_mode": data.get("agent_mode")})
@@ -301,6 +303,11 @@ def create_session():
         LimitsConfig.from_env().session_max_per_user_workspace
     ):
         execution_store.delete_session(deleted_session_id)
+        remove_speedscope_session_files(
+            workspace_id,
+            deleted_session_id,
+            user_id=current_user.username,
+        )
 
     return jsonify(session.to_dict()), 201
 
@@ -398,12 +405,19 @@ def update_session(session_id: str):
 def delete_session(session_id: str):
     """Delete a chat session."""
     current_user = get_current_user()
+    workspace_id = _get_request_workspace_id()
     chat_store, execution_store = _get_user_stores()
     chat_deleted = chat_store.delete_session(session_id)
     execution_deleted = execution_store.delete_session(session_id)
 
     if not chat_deleted and not execution_deleted:
         return jsonify({"error": "Session not found"}), 404
+
+    remove_speedscope_session_files(
+        workspace_id,
+        session_id,
+        user_id=current_user.username if current_user else None,
+    )
 
     return jsonify({"success": True})
 

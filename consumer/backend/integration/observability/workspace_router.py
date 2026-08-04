@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from typing import Any, Iterable
 
 from utils.logging import get_logger
 from workspace.workspaces import get_current_workspace_id, list_workspaces, validate_workspace_id
@@ -10,6 +11,7 @@ from integration.observability.bus import ObservabilityBus
 from integration.observability.events import RuntimeEvent, RuntimeEventType
 from integration.observability.exporters.langfuse import create_langfuse_exporter
 from integration.observability.exporters.local import LocalPerfExporter
+from integration.observability.exporters.speedscope import create_speedscope_exporter
 from integration.observability.workspace_config import (
     get_workspace_observability_config,
     get_workspace_observability_log_dir,
@@ -22,6 +24,54 @@ _TERMINAL_EVENTS = {
     RuntimeEventType.RUN_FAILED,
     RuntimeEventType.RUN_CANCELLED,
 }
+
+
+class _WorkspaceExporterFanout:
+    """Keep one queue per workspace while isolating exporter failures."""
+
+    def __init__(self, exporters: Iterable[Any]) -> None:
+        self._exporters = [exporter for exporter in exporters if exporter is not None]
+
+    @property
+    def available(self) -> bool:
+        return bool(self._exporters)
+
+    def export(self, event: RuntimeEvent) -> None:
+        for exporter in self._exporters:
+            try:
+                exporter.export(event)
+            except Exception:
+                logger.warning("Workspace observability exporter failed", exc_info=True)
+
+    def record_drop(self, event: RuntimeEvent) -> None:
+        for exporter in self._exporters:
+            record_drop = getattr(exporter, "record_drop", None)
+            if not callable(record_drop):
+                continue
+            try:
+                record_drop(event)
+            except Exception:
+                logger.warning("Workspace observability exporter drop recording failed", exc_info=True)
+
+    def flush(self) -> None:
+        for exporter in self._exporters:
+            flush = getattr(exporter, "flush", None)
+            if not callable(flush):
+                continue
+            try:
+                flush()
+            except Exception:
+                logger.warning("Workspace observability exporter flush failed", exc_info=True)
+
+    def close(self) -> None:
+        for exporter in self._exporters:
+            close = getattr(exporter, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception:
+                logger.warning("Workspace observability exporter close failed", exc_info=True)
 
 
 class WorkspaceObservabilityRouter:
@@ -167,40 +217,57 @@ class WorkspaceObservabilityRouter:
             return None
 
         mode = str(config.get("mode") or "local").strip().lower()
-        try:
-            if mode == "local":
-                exporter = LocalPerfExporter(
-                    config,
-                    log_dir=get_workspace_observability_log_dir(workspace_id),
-                )
-            elif mode == "langfuse":
-                exporter = create_langfuse_exporter(config)
-            else:
-                logger.warning("Unknown workspace observability mode=%s workspace_id=%s", mode, workspace_id)
-                return None
-        except Exception:
-            logger.warning(
-                "Failed to initialize workspace observability exporter: workspace_id=%s mode=%s",
-                workspace_id,
-                mode,
-                exc_info=True,
-            )
+        if mode not in {"local", "langfuse"}:
+            logger.warning("Unknown workspace observability mode=%s workspace_id=%s", mode, workspace_id)
             return None
 
-        if getattr(exporter, "available", True) is False:
-            logger.warning(
-                "Workspace observability exporter unavailable: workspace_id=%s mode=%s",
-                workspace_id,
-                mode,
+        exporters: list[object] = []
+        log_dir = get_workspace_observability_log_dir(workspace_id)
+        if mode == "local":
+            try:
+                exporters.append(LocalPerfExporter(config, log_dir=log_dir))
+            except Exception:
+                logger.warning(
+                    "Failed to initialize local observability exporter: workspace_id=%s",
+                    workspace_id,
+                    exc_info=True,
+                )
+        else:
+            try:
+                exporters.append(create_langfuse_exporter(config))
+            except Exception:
+                logger.warning(
+                    "Failed to initialize Langfuse exporter: workspace_id=%s",
+                    workspace_id,
+                    exc_info=True,
+                )
+
+        try:
+            exporters.append(
+                create_speedscope_exporter(
+                    config,
+                    output_dir=log_dir / "speedscope",
+                )
             )
-            close = getattr(exporter, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    logger.warning("Unavailable workspace exporter close failed", exc_info=True)
-            return None
-        return exporter
+        except Exception:
+            logger.warning(
+                "Failed to initialize Speedscope exporter: workspace_id=%s",
+                workspace_id,
+                exc_info=True,
+            )
+
+        available_exporters = []
+        for exporter in exporters:
+            if getattr(exporter, "available", True) is False:
+                close = getattr(exporter, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.warning("Unavailable workspace exporter close failed", exc_info=True)
+                continue
+            available_exporters.append(exporter)
+        return _WorkspaceExporterFanout(available_exporters) if available_exporters else None
 
     def _cleanup_terminal_run(self, event: RuntimeEvent) -> None:
         if event.type not in _TERMINAL_EVENTS:

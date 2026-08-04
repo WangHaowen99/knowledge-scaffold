@@ -476,6 +476,7 @@ function WorkspaceObservability() {
     ...(config || {}),
     ...draft,
     local: { ...(config?.local || {}), ...(draft.local || {}) },
+    speedscope: { ...(config?.speedscope || {}), ...(draft.speedscope || {}) },
     langfuse: { ...(config?.langfuse || {}), ...(draft.langfuse || {}) },
   };
   const load = useCallback(async () => {
@@ -508,6 +509,7 @@ function WorkspaceObservability() {
       {!canEdit && <ReadOnlyBanner who="平台管理员" />}
       <Field label="启用观测"><Toggle on={Boolean(effective.enabled)} disabled={!canEdit} onChange={(value) => set('enabled', value)} /></Field>
       <Field label="观测模式"><select disabled={!canEdit} value={effective.mode || 'local'} onChange={(event) => set('mode', event.target.value)}><option value="local">本地日志</option><option value="langfuse">Langfuse</option></select></Field>
+      <Field label="Speedscope 保留天数"><input type="number" disabled={!canEdit} value={effective.speedscope.retention_days || 30} onChange={(event) => setNested('speedscope', 'retention_days', Number(event.target.value))} /></Field>
       {effective.mode === 'local' ? (
         <Field label="日志保留天数"><input type="number" disabled={!canEdit} value={effective.local.retention_days || 30} onChange={(event) => setNested('local', 'retention_days', Number(event.target.value))} /></Field>
       ) : (
