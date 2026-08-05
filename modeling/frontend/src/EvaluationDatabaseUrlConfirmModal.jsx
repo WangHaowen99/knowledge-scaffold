@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { evaluationDatabaseUrlSelectionError } from './data-source-form.js';
 
 export default function EvaluationDatabaseUrlConfirmModal({

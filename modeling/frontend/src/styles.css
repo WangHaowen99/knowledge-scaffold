@@ -642,6 +642,60 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .tc-add { border: 1.5px dashed #cfd4de; border-radius: 13px; padding: 16px; margin-top: 16px; background: #fafbfc; }
 .mwr .ev-launch { border: 1px solid #e6e9f0; border-radius: 13px; padding: 16px; background: #fff; box-shadow: var(--sh-sm); }
 .mwr .ev-bind-toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink2); cursor: pointer; }
+.mwr .pkg-source-help { position: relative; display: inline-flex; align-items: center; }
+.mwr .pkg-source-help-icon {
+  display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center;
+  border: 1px solid #b7c3d3; border-radius: 50%; padding: 0; background: #fff; color: #52657c;
+  font-size: 12px; font-weight: 750;
+}
+.mwr .pkg-source-tooltip {
+  position: absolute; z-index: 90; top: calc(100% + 8px); left: 0;
+  width: min(360px, calc(100vw - 32px)); visibility: hidden; opacity: 0; pointer-events: none;
+  border-radius: 7px; padding: 10px 12px; background: #263244; color: #fff;
+  box-shadow: var(--sh-md); font-size: 12px; line-height: 1.6;
+  transition: opacity .15s, visibility .15s;
+}
+.mwr .pkg-source-help:hover .pkg-source-tooltip,
+.mwr .pkg-source-help:focus-within .pkg-source-tooltip { visibility: visible; opacity: 1; }
+.mwr .field-control-row--ontology {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(168px, auto); align-items: stretch; gap: 8px;
+}
+.mwr .field-control-row--ontology > input { min-width: 0; }
+.mwr .field-control-row--ontology > .btn { min-width: 168px; white-space: nowrap; }
+.mwr .field-control-row--scene {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(184px, auto); align-items: stretch; gap: 8px;
+}
+.mwr .field-control-row--scene > input { min-width: 0; }
+.mwr .field-control-row--scene > .btn { min-width: 184px; white-space: nowrap; }
+.mwr .evaluation-db-url-modal { width: min(640px, calc(100vw - 32px)); }
+.mwr .evaluation-db-url-options { display: grid; gap: 8px; margin: 12px 0 10px; }
+.mwr .evaluation-db-url-option {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 9px;
+  border: 1px solid var(--hair); border-radius: 7px; padding: 10px 12px; background: #fff; cursor: pointer;
+}
+.mwr .evaluation-db-url-option.selected { border-color: #8db7eb; background: #f4f8fd; }
+.mwr .evaluation-db-url-option:has(input:disabled) { color: var(--muted); cursor: not-allowed; }
+.mwr .evaluation-db-url-option input {
+  width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--blue);
+}
+.mwr .evaluation-db-url-option span { min-width: 0; }
+.mwr .evaluation-db-url-option b { display: block; margin-bottom: 4px; color: var(--ink); font-size: 12.5px; }
+.mwr .evaluation-db-url-option code {
+  display: block; color: var(--ink2); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere;
+}
+.mwr .evaluation-db-custom-url { margin: 2px 0 0 27px; }
+.mwr .project-db-fixed-name {
+  margin: 14px 0 10px; border: 1px solid #d5e4f8; border-radius: 7px; padding: 11px 13px; background: #f6fafd;
+}
+.mwr .project-db-fixed-name span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11.5px; }
+.mwr .project-db-fixed-name code { display: block; color: var(--blue-dd); font-size: 13.5px; overflow-wrap: anywhere; }
+.mwr .project-db-create-hint { color: var(--muted); font-size: 12px; line-height: 1.65; }
+@media (max-width: 520px) {
+  .mwr .evaluation-db-url-modal { padding: 20px 18px; }
+  .mwr .evaluation-db-custom-url { margin-left: 0; }
+  .mwr .evaluation-db-url-modal .foot { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mwr .evaluation-db-url-modal .foot .btn { min-width: 0; }
+}
 .mwr .ev-rounds { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .mwr .ev-round-chip { border: 1px solid #dfe3ea; background: #fff; border-radius: 99px; padding: 5px 13px; font-size: 12px; cursor: pointer; box-shadow: var(--sh-sm); transition: all .14s; }
 .mwr .ev-round-chip:hover { border-color: var(--blue-l); }
@@ -1411,7 +1465,17 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .gi-filebar { display: grid; grid-template-columns: minmax(160px, auto) 1fr auto; align-items: center; gap: 12px; border: 1px solid #d5e4f8; background: #f6fafd; border-radius: 11px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; }
 .mwr .gi-filebar b { margin-right: 8px; }
 .mwr .gi-filebar span, .mwr .gi-filebar > div:nth-child(2) { color: var(--muted); }
-.mwr .gi-add { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.mwr .gi-add { display: grid; gap: 8px; margin-bottom: 10px; }
+.mwr .gi-known-relation-picker { display: grid; gap: 8px; }
+.mwr .gi-known-relation-picker > select { min-height: 31px; }
+.mwr .gi-known-relation-actions { display: flex; align-items: stretch; gap: 8px; }
+.mwr .gi-known-relation-actions .btn { min-width: 0; }
+.mwr .gi-add-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(104px, .6fr) minmax(104px, .6fr);
+  gap: 8px;
+}
+.mwr .gi-add-fields > .btn { min-width: 0; padding-inline: 10px; white-space: nowrap; }
 .mwr .gi-add select, .mwr .gi-add input { width: 100%; min-width: 0; }
 .mwr .gi-relation { border: 1px solid #e6e9f0; border-radius: 12px; background: #fff; margin-bottom: 10px; overflow: hidden; box-shadow: var(--sh-sm); }
 .mwr .gi-relation-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: #f8f9fb; border-bottom: 1px solid #ebecf0; font-size: 12.5px; }

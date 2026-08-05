@@ -163,6 +163,16 @@ export function addRelationMapping(mappings, draft, preview) {
   }];
 }
 
+export function addKnownRelationMappings(mappings, preview) {
+  return (preview?.schema?.relations || []).reduce((current, relation) => {
+    const draft = relationDraftFromKnown(relation);
+    const relationName = String(draft.relationName || '').trim();
+    const alreadyAdded = current.some((mapping) => mapping.sourceObject === draft.sourceObject
+      && mapping.relationName === relationName && mapping.targetObject === draft.targetObject);
+    return alreadyAdded ? current : addRelationMapping(current, draft, preview);
+  }, mappings);
+}
+
 export function updateRelationMapping(mappings, index, field, value, preview) {
   if (!MAPPING_FIELDS.includes(field)) throw new Error(`未知映射字段：${field}`);
   return mappings.map((mapping, currentIndex) => {
