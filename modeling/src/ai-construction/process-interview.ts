@@ -2,6 +2,7 @@ import type { JsonObject } from '../authoring/types.js';
 import type { CandidateBusinessProcess, InterviewOutcome } from '../types.js';
 import { buildProcessInterviewQuestions } from './interaction-options.js';
 import { normalizeGeneratedProcessDraft } from './process-draft-generator.js';
+import { diagramFileEntries } from '../flowchart/file-path.js';
 
 export interface ProcessInterviewCore {
   title: string;
@@ -279,8 +280,9 @@ function mermaidFor(outcome: InterviewOutcome, index: number): string {
 }
 
 export function buildProcessDiagramFiles(outcome: InterviewOutcome): Record<string, string> {
-  const rows = outcome.processes.map((process, index) => (
-    `- [${process.title}](process_${index + 1}.mmd)`
+  const entries = diagramFileEntries(outcome.processes);
+  const rows = entries.map(({ path, title }) => (
+    `- [${title.replace(/[\\\[\]]/gu, '\\$&')}](<${path.slice('diagrams/'.length)}>)`
   ));
   const files: Record<string, string> = {
     'diagrams/index.md': [
@@ -288,8 +290,8 @@ export function buildProcessDiagramFiles(outcome: InterviewOutcome): Record<stri
       '# 流程图目录', '', ...rows, '',
     ].join('\n'),
   };
-  outcome.processes.forEach((_process, index) => {
-    files[`diagrams/process_${index + 1}.mmd`] = mermaidFor(outcome, index);
+  entries.forEach(({ diagram, path }) => {
+    files[path] = mermaidFor(outcome, outcome.processes.indexOf(diagram));
   });
   return files;
 }

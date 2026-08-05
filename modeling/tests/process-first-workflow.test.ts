@@ -95,6 +95,6 @@ test('流程图直接由访谈确认的流程快照构建', () => {
 test('知识包中的 Mermaid 流程图默认使用竖向布局', async () => {
   const { buildProcessDiagramFiles } = await import('../src/ai-construction/process-interview.js');
   const files = buildProcessDiagramFiles(interviewNode.output as any);
-  assert.match(files['diagrams/process_1.mmd'], /^flowchart TD/m);
-  assert.doesNotMatch(files['diagrams/process_1.mmd'], /^flowchart LR/m);
+  assert.match(files['diagrams/营销审批.mmd'], /^flowchart TD/m);
+  assert.doesNotMatch(files['diagrams/营销审批.mmd'], /^flowchart LR/m);
 });

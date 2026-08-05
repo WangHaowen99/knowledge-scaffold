@@ -89,11 +89,11 @@ test('已确认流程生成独立 Mermaid 文件和目录索引', () => {
   });
   const files = buildProcessDiagramFiles(outcome);
 
-  assert.deepEqual(Object.keys(files).sort(), ['diagrams/index.md', 'diagrams/process_1.mmd']);
-  assert.match(files['diagrams/index.md'], /授信审批/);
-  assert.match(files['diagrams/process_1.mmd'], /^flowchart TD/m);
-  assert.match(files['diagrams/process_1.mmd'], /资料是否完整/);
-  assert.match(files['diagrams/process_1.mmd'], /-->/);
+  assert.deepEqual(Object.keys(files).sort(), ['diagrams/index.md', 'diagrams/授信审批.mmd']);
+  assert.match(files['diagrams/index.md'], /\[授信审批\]\(<授信审批\.mmd>\)/);
+  assert.match(files['diagrams/授信审批.mmd'], /^flowchart TD/m);
+  assert.match(files['diagrams/授信审批.mmd'], /资料是否完整/);
+  assert.match(files['diagrams/授信审批.mmd'], /-->/);
 });
 
 test('完整候选流程通过一次多选直接形成多个独立流程和纵向 Mermaid', () => {
@@ -118,10 +118,10 @@ test('完整候选流程通过一次多选直接形成多个独立流程和纵�
   assert.equal(outcome.processes.length, 2);
   assert.deepEqual(outcome.processes.map((process) => process.id), ['process_1', 'process_2']);
   assert.deepEqual(Object.keys(files).sort(), [
-    'diagrams/index.md', 'diagrams/process_1.mmd', 'diagrams/process_2.mmd',
+    'diagrams/index.md', 'diagrams/申请处理.mmd', 'diagrams/结果复核.mmd',
   ]);
-  assert.match(files['diagrams/process_1.mmd'], /^flowchart TD/m);
-  assert.match(files['diagrams/process_2.mmd'], /^flowchart TD/m);
+  assert.match(files['diagrams/申请处理.mmd'], /^flowchart TD/m);
+  assert.match(files['diagrams/结果复核.mmd'], /^flowchart TD/m);
 });
 
 test('资料候选不完整时生成可编辑占位流程而不是阻断流程图', () => {
