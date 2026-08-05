@@ -146,8 +146,8 @@ export const createProjectEvaluationDatabase = (id, selection) => api(
   {
     method: 'POST',
     body: JSON.stringify({
-      databaseUrlMode: selection.mode,
-      ...(selection.mode === 'custom' ? { customDatabaseUrl: selection.customDatabaseUrl } : {}),
+      database_url_mode: selection.mode,
+      ...(selection.mode === 'custom' ? { database_url: selection.databaseUrl } : {}),
     }),
   },
 );
@@ -155,7 +155,7 @@ export const importEvaluationDatabase = (id, file, replaceConfirmed, selection) 
   const form = new FormData();
   if (replaceConfirmed) form.append('replace_confirmation', 'replace_same_name_tables');
   form.append('database_url_mode', selection.mode);
-  if (selection.mode === 'custom') form.append('custom_database_url', selection.customDatabaseUrl);
+  if (selection.mode === 'custom') form.append('database_url', selection.databaseUrl);
   form.append('file', file);
   return api(`${P(id)}/evaluation-database/import`, { method: 'POST', body: form });
 };

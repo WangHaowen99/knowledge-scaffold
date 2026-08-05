@@ -10,6 +10,7 @@ import {
 import {
   GRAPH_ISOLATION_EXISTS_PROMPT,
   activeGraphImportRun,
+  addKnownRelationMappings,
   addRelationMapping,
   graphImportContextKey,
   graphImportMappingPayload,
@@ -228,6 +229,26 @@ export default function GraphImportPanel({ projectId, dataSource }) {
     if (relation) setRelationDraft(relationDraftFromKnown(relation));
   };
 
+  const selectAllKnownRelations = () => {
+    try {
+      const next = addKnownRelationMappings(mappings, preview);
+      if (next === mappings) return;
+      setMappings(next);
+      setKnownRelationId('');
+      setError('');
+      invalidate();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const clearMappings = () => {
+    setMappings([]);
+    setKnownRelationId('');
+    setError('');
+    invalidate();
+  };
+
   const changeMapping = (index, field, value) => {
     setMappings((current) => updateRelationMapping(current, index, field, value, preview));
     setError('');
@@ -417,38 +438,49 @@ export default function GraphImportPanel({ projectId, dataSource }) {
           )}
           <div className="gi-add">
             {preview.schema.relations.length > 0 && (
-              <select value={knownRelationId} disabled={controlsDisabled}
-                onChange={(event) => chooseKnownRelation(event.target.value)}>
-                <option value="">选择知识包中的关系（可选）</option>
-                {preview.schema.relations.map((relation) => (
-                  <option key={relation.id} value={relation.id}>{graphRelationLabel(relation, preview)}</option>
-                ))}
-              </select>
+              <div className="gi-known-relation-picker">
+                <select value={knownRelationId} disabled={controlsDisabled}
+                  aria-label="选择知识包中的关系（可选）"
+                  onChange={(event) => chooseKnownRelation(event.target.value)}>
+                  <option value="">选择知识包中的关系（可选）</option>
+                  {preview.schema.relations.map((relation) => (
+                    <option key={relation.id} value={relation.id}>{graphRelationLabel(relation, preview)}</option>
+                  ))}
+                </select>
+                <div className="gi-known-relation-actions">
+                  <button type="button" className="btn" disabled={controlsDisabled}
+                    onClick={selectAllKnownRelations}>全选知识包关系</button>
+                </div>
+              </div>
             )}
-            <select value={relationDraft.sourceObject} disabled={controlsDisabled}
-              onChange={(event) => setRelationDraft((current) => ({ ...current, sourceObject: event.target.value }))}>
-              <option value="">选择源实体</option>
-              {preview.schema.objects.map((object) => {
-                const issue = objectImportIssue(preview, object);
-                return <option key={object.key} value={object.key} disabled={!!issue}>
-                  {object.title}（{object.key}）{issue ? ` - 不可导入：${issue}` : ''}
-                </option>;
-              })}
-            </select>
-            <input value={relationDraft.relationName} placeholder="关系名称" disabled={controlsDisabled}
-              onChange={(event) => setRelationDraft((current) => ({ ...current, relationName: event.target.value }))} />
-            <select value={relationDraft.targetObject} disabled={controlsDisabled}
-              onChange={(event) => setRelationDraft((current) => ({ ...current, targetObject: event.target.value }))}>
-              <option value="">选择目标实体</option>
-              {preview.schema.objects.map((object) => {
-                const issue = objectImportIssue(preview, object);
-                return <option key={object.key} value={object.key} disabled={!!issue}>
-                  {object.title}（{object.key}）{issue ? ` - 不可导入：${issue}` : ''}
-                </option>;
-              })}
-            </select>
-            <button className="btn" disabled={!relationDraft.sourceObject || !relationDraft.relationName.trim()
-              || !relationDraft.targetObject || controlsDisabled} onClick={addRelation}>新增关系</button>
+            <div className="gi-add-fields">
+              <select value={relationDraft.sourceObject} disabled={controlsDisabled}
+                onChange={(event) => setRelationDraft((current) => ({ ...current, sourceObject: event.target.value }))}>
+                <option value="">选择源实体</option>
+                {preview.schema.objects.map((object) => {
+                  const issue = objectImportIssue(preview, object);
+                  return <option key={object.key} value={object.key} disabled={!!issue}>
+                    {object.title}（{object.key}）{issue ? ` - 不可导入：${issue}` : ''}
+                  </option>;
+                })}
+              </select>
+              <input value={relationDraft.relationName} placeholder="关系名称" disabled={controlsDisabled}
+                onChange={(event) => setRelationDraft((current) => ({ ...current, relationName: event.target.value }))} />
+              <select value={relationDraft.targetObject} disabled={controlsDisabled}
+                onChange={(event) => setRelationDraft((current) => ({ ...current, targetObject: event.target.value }))}>
+                <option value="">选择目标实体</option>
+                {preview.schema.objects.map((object) => {
+                  const issue = objectImportIssue(preview, object);
+                  return <option key={object.key} value={object.key} disabled={!!issue}>
+                    {object.title}（{object.key}）{issue ? ` - 不可导入：${issue}` : ''}
+                  </option>;
+                })}
+              </select>
+              <button type="button" className="btn" disabled={!relationDraft.sourceObject || !relationDraft.relationName.trim()
+                || !relationDraft.targetObject || controlsDisabled} onClick={addRelation}>新增关系</button>
+              <button type="button" className="btn" disabled={controlsDisabled || !mappings.length}
+                onClick={clearMappings}>清空已选关系</button>
+            </div>
           </div>
 
           {mappings.map((mapping, index) => (
