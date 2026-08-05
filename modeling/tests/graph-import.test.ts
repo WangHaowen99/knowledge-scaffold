@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseExcel } from '../src/documents/parser.js';
@@ -16,6 +16,10 @@ import {
 } from './helpers/graph-import-fixtures.js';
 
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-graph-import-'));
+const graphImportPanelSource = readFileSync(
+  new URL('../frontend/src/GraphImportPanel.jsx', import.meta.url),
+  'utf8',
+);
 
 const importBuffer = () => workbookBuffer({
   Part: [
@@ -1041,7 +1045,7 @@ test('graph import service：冲突仅提示，确认后才记录替换导入', 
 
 test('graph import form：固定知识包 Sheet 且关联字段只使用实体属性', async () => {
   const {
-    GRAPH_ISOLATION_EXISTS_PROMPT, addRelationMapping, graphImportMappingPayload,
+    GRAPH_ISOLATION_EXISTS_PROMPT, addKnownRelationMappings, addRelationMapping, graphImportMappingPayload,
     graphRelationLabel, hasRunningGraphImport, isGraphIsolationConflict, joinPropertyOptions,
     objectImportIssue, updateRelationMapping,
   } = await import('../frontend/src/graph-import-form.js');
@@ -1076,6 +1080,27 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   assert.equal(GRAPH_ISOLATION_EXISTS_PROMPT, '当前您所选的隔离字段值在图数据库中已存在数据，是否要清空旧数据，并写入新数据？');
   assert.equal(isGraphIsolationConflict({ status: 409, data: { code: 'GRAPH_ISOLATION_DATA_EXISTS' } }), true);
   assert.equal(hasRunningGraphImport([{ status: 'done' }, { status: 'running' }]), true);
+
+  const twoRelationPreview = {
+    ...preview,
+    schema: {
+      ...preview.schema,
+      relations: [
+        ...preview.schema.relations,
+        {
+          id: 'BOMItem|belongs_to|Part|1', sourceObject: 'BOMItem',
+          relationName: 'belongs_to', targetObject: 'Part',
+        },
+      ],
+    },
+  };
+  const existing = [{
+    ...added[0], sourceJoinProperty: 'relation_code', targetJoinProperty: 'parent_code',
+  }];
+  const selectedAll = addKnownRelationMappings(existing, twoRelationPreview);
+  assert.deepEqual(selectedAll[0], existing[0]);
+  assert.equal(selectedAll.length, 2);
+  assert.deepEqual(addKnownRelationMappings(selectedAll, twoRelationPreview), selectedAll);
 
   const sameSheetPreview = {
     schema: {
@@ -1118,6 +1143,33 @@ test('graph import form：固定知识包 Sheet 且关联字段只使用实体�
   assert.deepEqual(
     updateRelationMapping(fieldMatched, 0, 'matchMode', 'same_row', sameSheetPreview),
     sameRow,
+  );
+});
+
+test('graph import relation controls：清空按钮与新增关系位于同一行', () => {
+  const knownActions = graphImportPanelSource.match(
+    /className="gi-known-relation-actions">([\s\S]*?)<\/div>/,
+  )?.[1] || '';
+  assert.match(knownActions, /全选知识包关系/);
+  assert.doesNotMatch(knownActions, /清空已选关系/);
+  assert.match(
+    graphImportPanelSource,
+    /className="gi-add-fields"[\s\S]*新增关系[\s\S]*清空已选关系/,
+  );
+  assert.match(
+    readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8'),
+    /\.mwr \.gi-add-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(0, 1fr\) minmax\(104px, \.6fr\) minmax\(104px, \.6fr\)/s,
+  );
+});
+
+test('graph import known relation selector matches the manual relation selector height', () => {
+  assert.match(
+    graphImportPanelSource,
+    /className="gi-known-relation-picker"[\s\S]*aria-label="选择知识包中的关系（可选）"/,
+  );
+  assert.match(
+    readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8'),
+    /\.mwr \.gi-known-relation-picker > select\s*\{[^}]*min-height:\s*31px/s,
   );
 });
 
