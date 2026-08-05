@@ -10,6 +10,7 @@ import type {
   FlowchartProcessMeta,
   FlowchartValidationIssue,
 } from './types.js';
+import { diagramFilePath } from './file-path.js';
 
 const NODE_KINDS = new Set<FlowchartNodeKind>([
   'start', 'end', 'action', 'decision', 'object', 'data',
@@ -32,11 +33,25 @@ export function normalizeFlowchartDocument(value: unknown): FlowchartDocument {
 export function validateFlowchartDocument(document: FlowchartDocument): FlowchartValidationIssue[] {
   const issues: FlowchartValidationIssue[] = [];
   const diagramIds = new Set<string>();
+  const diagramPaths = new Set<string>();
   for (const diagram of document.diagrams) {
     if (diagramIds.has(diagram.id)) {
       issues.push(error('duplicate_diagram_id', '流程图 ID 重复', diagram.id));
     }
     diagramIds.add(diagram.id);
+    try {
+      const path = diagramFilePath(diagram.title).toLocaleLowerCase('en-US');
+      if (diagramPaths.has(path)) {
+        issues.push(error('duplicate_diagram_title', `流程名称重复：“${diagram.title}”`, diagram.id));
+      }
+      diagramPaths.add(path);
+    } catch (cause) {
+      issues.push(error(
+        'invalid_diagram_title',
+        cause instanceof Error ? cause.message : '流程名称不能用于流程图文件名',
+        diagram.id,
+      ));
+    }
     issues.push(...validateDiagram(diagram));
   }
   return issues;

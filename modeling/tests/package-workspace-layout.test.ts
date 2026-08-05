@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
-import PackageChat, { interactionBusyState, shouldOpenWarningReview } from '../frontend/src/PackageChat.jsx';
+import PackageChat, {
+  interactionBusyState,
+  interactionResponseChangedPackage,
+  shouldOpenWarningReview,
+} from '../frontend/src/PackageChat.jsx';
 import PendingInteraction from '../frontend/src/PendingInteraction.jsx';
 import PaneResizeHandle from '../frontend/src/PaneResizeHandle.jsx';
 import { resizePaneWidth } from '../frontend/src/paneResize.js';
@@ -389,6 +393,13 @@ test('流程图待确认时中栏展示可编辑草稿且右栏提交已保存�
   assert.match(html, /提交全部已保存流程图/);
 });
 
+test('流程图确认返回知识包修订后刷新文件面板', () => {
+  assert.equal(interactionResponseChangedPackage({ packageRevision: 'pkg-flowchart' }), true);
+  assert.equal(interactionResponseChangedPackage({ revision: 'pkg-repair' }), true);
+  assert.equal(interactionResponseChangedPackage({ result: { version: '1.0.0' } }), true);
+  assert.equal(interactionResponseChangedPackage({}), false);
+});
+
 test('流程图未保存修改由顶层、候选修订和助手动作共用离开保护', () => {
   assert.match(appSource, /confirmUnsavedNavigation\(workspaceDirty\)/);
   assert.match(appSource, /onUnsavedChange=\{setWorkspaceDirty\}/);
@@ -521,8 +532,14 @@ test('动态任务弹层压平为单层卡片容器', () => {
 test('建模助手可以让中栏定位流程或知识文件', () => {
   assert.match(reviewPanelSource, /mw-package-file-select/);
   assert.match(reviewPanelSource, /detail\.projectId/);
-  assert.match(reviewPanelSource, /resolvePackageFileTarget\(pkg\?\.files \?\? \[\], detail\.path\)/);
+  assert.match(reviewPanelSource, /selectPackageTarget\(detail\.path\)/);
   assert.match(reviewPanelSource, /setPath\(resolved\)/);
+});
+
+test('知识包 Markdown 相对链接由中栏接管而不是触发页面跳转', () => {
+  assert.match(reviewPanelSource, /resolvePackageMarkdownTarget\(path, href, pkg\.files\)/);
+  assert.match(reviewPanelSource, /event\.preventDefault\(\)/);
+  assert.match(reviewPanelSource, /components=\{\{ a: renderPackageMarkdownLink \}\}/);
 });
 
 test('文件切换不会在 effect 清理阶段把当前加载请求悬空', () => {

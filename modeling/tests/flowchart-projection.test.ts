@@ -45,7 +45,25 @@ test('规范文档投影为访谈结果并渲染带条件文字的知识包文�
   ]);
   assert.equal(outcome.processes[0].trigger, '收到申请');
   assert.deepEqual(outcome.processes[0].outputs, ['生成结果']);
-  assert.match(files['diagrams/process_1.mmd'], /review -->\|"通过 \/ 金额小于 100 万"\| approve/);
+  assert.match(files['diagrams/授信审批.mmd'], /review -->\|"通过 \/ 金额小于 100 万"\| approve/);
   assert.deepEqual(JSON.parse(files['diagrams/processes.json']), document);
-  assert.match(files['diagrams/index.md'], /\[授信审批\]\(process_1\.mmd\)/);
+  assert.match(files['diagrams/index.md'], /\[授信审批\]\(<授信审批\.mmd>\)/);
+});
+
+test('同名或不能安全落盘的流程名称拒绝生成派生文件', () => {
+  const diagram = {
+    id: 'one', title: '授信审批', nodes: [], edges: [],
+  };
+  assert.throws(
+    () => renderDiagramFiles(normalizeFlowchartDocument({ diagrams: [
+      diagram, { ...diagram, id: 'two' },
+    ] })),
+    /流程名称重复/u,
+  );
+  assert.throws(
+    () => renderDiagramFiles(normalizeFlowchartDocument({ diagrams: [
+      { ...diagram, title: '申请/审批' },
+    ] })),
+    /不能用于流程图文件名/u,
+  );
 });

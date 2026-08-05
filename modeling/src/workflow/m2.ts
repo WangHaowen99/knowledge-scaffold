@@ -243,11 +243,12 @@ export async function generatePackage(
           '有资料来源时应给出 sourceRefs：数据对象引用真实 Sheet 和字段；产品、场景、需求等语义对象引用原始文档及章节或偏移。外部输入可以暂不绑定来源。',
           '候选中的 materialEvidence 来自已完成全文覆盖的材料分析，必须用于补充文档来源和正文证据；不得只重新读取文档首页后丢弃这些证据。',
           '数据对象还要给出字段中文名、类型、真实 sourceColumn 和主键；不得虚构数据字典中不存在的字段。',
-          '补充查询边界、别名和有材料依据的对象关系。',
+          '补充查询边界、别名和有材料依据的对象关系。对象别名在整个知识包内必须唯一：忽略 ASCII 大小写和首尾空格后，不得与其他对象的别名、key 或 title 重复。',
           '每个对象必须用 candidateId 认领当前批次中的一个候选，候选名称只用于理解，不用于绑定。',
           `当前批次有 ${hints.length} 个分析候选。候选是建模建议；没有充分证据、不适合当前版本或应由专家补充的候选可以省略。`,
           '用 submit_objects 一次提交当前批次中有依据的对象，最多 4 个。',
           `已生成对象 key：${objects.map((item) => item.key).join(', ') || '（无）'}；当前批次不得重复。`,
+          `已生成对象及别名：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title, aliases: item.aliases ?? [] })))}`,
           `当前批次候选：${JSON.stringify(hints)}`,
           `项目背景：${project.background || project.domain || project.name}`,
           ...(attempt > 1 ? [`上次提交不完整：${lastIssues.join('；')}。这次请重新提交整批完整结果，不是只提交缺失项。`] : []),
@@ -286,13 +287,13 @@ export async function generatePackage(
           ...submitted.problems.map((problem) => problem.message),
           ...findObjectDataMappingProblemsForObjects(normalizedObjects, ctx.tables)
             .map((problem) => problem.message),
-          ...validateObjectBatch(hints, normalizedObjects),
+          ...validateObjectBatch(hints, normalizedObjects, objects),
         ];
         if (lastIssues.length) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
             title: `第 ${index + 1} 批业务对象提交不完整`,
-            summary: `缺少 ${lastIssues.length} 个候选对象或存在结构映射问题`,
+            summary: `当前对象批次存在 ${lastIssues.length} 个待修正问题`,
             details: { attempt, missingCount: lastIssues.length, issues: lastIssues },
           });
           if (attempt < 3) {

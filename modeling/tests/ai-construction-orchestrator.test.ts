@@ -693,7 +693,7 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
   ]);
   assert.equal(completed.interaction?.type, 'flowchart_review');
   assert.equal(completed.interaction?.payload.purpose, 'process_review');
-  assert.match(String((completed.interaction?.payload.candidateFiles as any)?.['diagrams/process_1.mmd']), /flowchart TD/);
+  assert.match(String((completed.interaction?.payload.candidateFiles as any)?.['diagrams/授信审批.mmd']), /flowchart TD/);
   assert.equal((completed.message?.blocks[0] as any).title, '流程图草稿已生成');
 
   const reviewed = orchestrator.completeProcessReview(project.id, {

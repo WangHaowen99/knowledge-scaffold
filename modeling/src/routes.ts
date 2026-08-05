@@ -35,6 +35,7 @@ import { zipPackage } from './workflow/export.js';
 import { parsePackageArchive } from './workflow/package-import.js';
 import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
+import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
@@ -982,6 +983,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       if (!document.diagrams.length) {
         return reply.code(400).send({ error: '已确认知识包至少需要保留一个业务流程' });
       }
+      let projected: Record<string, string>;
+      try {
+        projected = renderDiagramFiles(document);
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error ? error.message : '流程图文件名不正确',
+        });
+      }
       return withLock(`${c.p.id}:package-diagram`, reply, async () => {
         try {
           const current = await packageArtifacts.current(c.p.id);
@@ -993,11 +1002,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
               currentRevision: current.revision.oid,
             });
           }
-          const projected = renderDiagramFiles(document);
           const currentFiles = await packageArtifacts.readPackageFiles(c.p.id, current.revision.oid);
-          const projectedPaths = new Set(Object.keys(projected));
-          const deletePaths = Object.keys(currentFiles.files)
-            .filter((path) => /^diagrams\/process_\d+\.mmd$/u.test(path) && !projectedPaths.has(path))
+          const deletePaths = obsoleteDiagramFilePaths(currentFiles.files, document)
             .map((path) => `package/${path}`);
           const saved = await packageArtifacts.saveFiles(c.p.id, {
             expectedRevision,
