@@ -7,6 +7,7 @@ import {
   type AiConstructionMessage,
 } from './messages.js';
 import type { AiConstructionTaskGraphSnapshot } from './task-graph.js';
+import { splitAiConstructionText } from './text-blocks.js';
 
 function messageKey(kind: 'user' | 'reply' | 'error' | 'result', requestId: string): string {
   const digest = createHash('sha256').update(requestId).digest('hex').slice(0, 24);
@@ -44,8 +45,10 @@ export function shouldRequestConstructionCompletion(
 }
 
 function textOf(message: AiConstructionMessage): string | null {
-  const block = message.blocks.find((item) => item.type === 'text');
-  return block?.type === 'text' ? block.text : null;
+  const parts = message.blocks.flatMap((block) => (
+    block.type === 'text' ? [block.text] : []
+  ));
+  return parts.length ? parts.join('') : null;
 }
 
 /**
@@ -82,10 +85,11 @@ export class PackageChatConversation {
         }],
       });
     }
+    const reply = result.reply?.trim() || '（建模助手未给出答复）';
     return this.messages.ensure(projectId, {
       key: messageKey('reply', requestId),
       role: 'assistant',
-      blocks: [{ type: 'text', text: result.reply?.trim() || '（建模助手未给出答复）' }],
+      blocks: splitAiConstructionText(reply).map((text) => ({ type: 'text', text })),
     });
   }
 

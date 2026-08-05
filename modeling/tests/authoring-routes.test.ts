@@ -320,7 +320,14 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
     async readPackageFiles() {
       return {
         revision: { oid: 'pkg-base' }, spec: {}, coverage: {},
-        files: { 'diagrams/process_9.mmd': 'stale' },
+        files: {
+          'diagrams/processes.json': JSON.stringify({
+            diagrams: [{ id: 'old-approval', title: '旧授信审批', nodes: [], edges: [] }],
+          }),
+          'diagrams/process_9.mmd': 'legacy',
+          'diagrams/旧授信审批.mmd': 'stale',
+          'diagrams/人工补充.mmd': 'manual',
+        },
       };
     },
     async saveFiles(_projectId: string, input: any) {
@@ -386,9 +393,17 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
   assert.equal(submitted.statusCode, 200, submitted.body);
   assert.equal(submitted.json().packageRevision, 'pkg-flowchart');
   assert.equal(saveInput.expectedRevision, 'pkg-base');
-  assert.deepEqual(saveInput.deletePaths, ['package/diagrams/process_9.mmd']);
+  assert.deepEqual(saveInput.deletePaths, [
+    'package/diagrams/process_9.mmd',
+    'package/diagrams/旧授信审批.mmd',
+  ]);
+  assert.deepEqual(Object.keys(saveInput.files).sort(), [
+    'package/diagrams/index.md',
+    'package/diagrams/processes.json',
+    'package/diagrams/授信审批.mmd',
+  ]);
   assert.deepEqual(JSON.parse(saveInput.files['package/diagrams/processes.json']).diagrams[0].id, 'approval');
-  assert.match(saveInput.files['package/diagrams/process_1.mmd'], /^flowchart TD/m);
+  assert.match(saveInput.files['package/diagrams/授信审批.mmd'], /^flowchart TD/m);
 
   const retry = await app.inject(answer);
   assert.equal(retry.statusCode, 200, retry.body);

@@ -56,6 +56,8 @@ export type FlowchartValidationSeverity = 'error' | 'warning';
 
 export type FlowchartValidationCode =
   | 'duplicate_diagram_id'
+  | 'invalid_diagram_title'
+  | 'duplicate_diagram_title'
   | 'duplicate_node_id'
   | 'duplicate_edge_id'
   | 'missing_edge_endpoint'

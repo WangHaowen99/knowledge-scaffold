@@ -16,6 +16,7 @@ import PackageCheck from './PackageCheck.jsx';
 import PackageFileTree from './PackageFileTree.jsx';
 import { resolvePackageFileTarget } from './packageFileTarget.js';
 import { createLatestRequestGate } from './packageFileContent.js';
+import { isPackageMarkdownHref, resolvePackageMarkdownTarget } from './packageMarkdownLink.js';
 import PaneResizeHandle from './PaneResizeHandle.jsx';
 import { clampPaneWidth } from './paneResize.js';
 import {
@@ -221,32 +222,38 @@ export function ReviewPanel({
     return () => window.removeEventListener('mw-package-updated', h);
   }, [loadPkg]);
 
+  const selectPackageTarget = useCallback((target) => {
+    const resolved = resolvePackageFileTarget(pkg?.files ?? [], target);
+    if (!resolved) {
+      setMsg(`未找到与“${target}”对应的知识文件，请从左侧目录选择`);
+      return false;
+    }
+    if (resolved !== path && (dirtyRef.current || diagramDirtyRef.current)
+      && !window.confirm('当前文件有未保存修改，切换文件将丢弃这些修改，继续吗？')) return false;
+    setTextDraftDirty(false);
+    setDiagramDraftDirty(false);
+    if (resolved === path) setMsg(`已定位到 ${resolved}`);
+    setPath(resolved);
+    setView('view');
+    onFileSelected?.(resolved);
+    return true;
+  }, [onFileSelected, path, pkg?.files, setDiagramDraftDirty, setTextDraftDirty]);
+
   useEffect(() => {
     const selectRequestedFile = (event) => {
       const detail = event.detail ?? {};
       if (detail.projectId !== projectId || typeof detail.path !== 'string') return;
-      const resolved = resolvePackageFileTarget(pkg?.files ?? [], detail.path);
-      if (!resolved) {
-        setMsg(`未找到与“${detail.path}”对应的知识文件，请从左侧目录选择`);
-        return;
-      }
-      if (resolved !== path && (dirtyRef.current || diagramDirtyRef.current)
-        && !window.confirm('当前文件有未保存修改，切换文件将丢弃这些修改，继续吗？')) return;
-      setTextDraftDirty(false);
-      setDiagramDraftDirty(false);
-      if (resolved === path) setMsg(`已定位到 ${resolved}`);
-      setPath(resolved);
-      setView('view');
+      selectPackageTarget(detail.path);
     };
     window.addEventListener('mw-package-file-select', selectRequestedFile);
     return () => window.removeEventListener('mw-package-file-select', selectRequestedFile);
-  }, [projectId, pkg?.files, path, setDiagramDraftDirty, setTextDraftDirty]);
+  }, [projectId, selectPackageTarget]);
 
   useEffect(() => {
     void loadFile(path); setView('view'); setMsg('');
   }, [path, loadFile]);
 
-  // 点开 process_N.mmd 时额外取回同级源文档；没有源文档就不取，直接走原文视图
+  // 点开同名 .mmd（或历史 process_N.mmd）时取回源文档；没有源文档则走原文视图
   useEffect(() => {
     setDiagramView('graph');
     setDiagramDraftDirty(false);
@@ -539,6 +546,22 @@ export function ReviewPanel({
     const hit = resolvePackageFileTarget(editableFiles, target);
     if (hit) setPath(hit);
   };
+  const renderPackageMarkdownLink = ({ node: _node, href, children, ...props }) => {
+    if (!isPackageMarkdownHref(href)) return <a href={href} {...props}>{children}</a>;
+    return (
+      <a href={href} {...props} onClick={(event) => {
+        event.preventDefault();
+        const target = resolvePackageMarkdownTarget(path, href, pkg.files);
+        if (!target) {
+          setMsg(`未找到链接“${href}”对应的知识文件，请从左侧目录选择`);
+          return;
+        }
+        selectPackageTarget(target);
+      }}>
+        {children}
+      </a>
+    );
+  };
 
   return (
     <div className="review-panel">
@@ -632,7 +655,9 @@ export function ReviewPanel({
           <div className="lerr" style={{ marginBottom: 10 }}>
             {diagramErr
               ? `流程图源文档读取失败：${diagramErr}，已回退到源码视图`
-              : '该流程图缺少配套的结构化源文档（diagrams/processes.json），暂不支持图形编辑'}
+              : hasDiagramDocument(pkg?.files)
+                ? '该 Mermaid 文件未关联到结构化流程图，暂不支持图形编辑'
+                : '该流程图缺少配套的结构化源文档（diagrams/processes.json），暂不支持图形编辑'}
           </div>
         )}
         {diagramTarget ? (
@@ -681,7 +706,8 @@ export function ReviewPanel({
             </p>
           </div>
         ) : isMd
-          ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown></div>
+          ? <div className="mdv"><ReactMarkdown remarkPlugins={[remarkGfm]}
+              components={{ a: renderPackageMarkdownLink }}>{stripFrontmatter(content)}</ReactMarkdown></div>
           : <pre className="srcview">{content}</pre>}
         </>}
       </div>

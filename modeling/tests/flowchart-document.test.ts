@@ -137,6 +137,22 @@ test('重复 ID 和悬空连线被识别为结构错误', () => {
   assert.deepEqual(errors, ['duplicate_node_id', 'missing_edge_endpoint', 'duplicate_edge_id']);
 });
 
+test('流程名称必须能安全形成唯一文件名', () => {
+  const document = normalizeFlowchartDocument({
+    diagrams: [
+      { id: 'one', title: '授信审批', nodes: [], edges: [] },
+      { id: 'two', title: '授信审批', nodes: [], edges: [] },
+      { id: 'three', title: '申请/审批', nodes: [], edges: [] },
+    ],
+  });
+
+  const errors = validateFlowchartDocument(document)
+    .filter((issue) => issue.severity === 'error')
+    .map((issue) => issue.code);
+
+  assert.deepEqual(errors, ['duplicate_diagram_title', 'invalid_diagram_title']);
+});
+
 test('删除节点级联删除连线和布局且不修改原文档', () => {
   const original = normalizeFlowchartDocument({
     diagrams: [{

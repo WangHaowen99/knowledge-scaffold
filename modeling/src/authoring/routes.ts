@@ -65,6 +65,7 @@ import {
 } from '../flowchart/document.js';
 import { FlowchartDraftError, FlowchartDraftStore } from '../flowchart/draft-store.js';
 import { renderDiagramFiles } from '../flowchart/projection.js';
+import { obsoleteDiagramFilePaths } from '../flowchart/file-path.js';
 import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
 import { getProject } from '../projects/repo.js';
 import { listNodes } from '../workflow/engine.js';
@@ -2587,9 +2588,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             const files = Object.fromEntries(Object.entries(projected)
               .map(([path, content]) => [`package/${path}`, content]));
             const currentFiles = await packages.readPackageFiles(project.id, currentPackage.revision.oid);
-            const projectedPaths = new Set(Object.keys(projected));
-            const deletePaths = Object.keys(currentFiles.files)
-              .filter((path) => /^diagrams\/process_\d+\.mmd$/u.test(path) && !projectedPaths.has(path))
+            const deletePaths = obsoleteDiagramFilePaths(currentFiles.files, currentDraft.document)
               .map((path) => `package/${path}`);
             const saved = await packages.saveFiles(project.id, {
               expectedRevision: currentPackage.revision.oid,

@@ -7,6 +7,7 @@ import test from 'node:test';
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'ai-construction-messages-'));
 
 const { AiConstructionMessageStore } = await import('../src/ai-construction/messages.js');
+const { PackageChatConversation } = await import('../src/ai-construction/package-chat-conversation.js');
 const { AiConstructionTaskGraph } = await import('../src/ai-construction/task-graph.js');
 const { getDb } = await import('../src/db/index.js');
 const { createProject } = await import('../src/projects/repo.js');
@@ -237,6 +238,42 @@ test('超过内联上限的消息只发信号，由前端回源读取', async ()
     .filter((item) => item.type === 'ai_construction.message.written');
   assert.equal((event.payload as any).messageId, huge.id);
   assert.equal((event.payload as any).message, undefined);
+});
+
+test('建模助手超长回复拆成多个受控文本块且内容保持完整', () => {
+  const project = createProject({ owner: 'alice', name: '超长建模助手回复' });
+  const conversation = new PackageChatConversation(new AiConstructionMessageStore(getDb()));
+  const reply = `\`\`\`text\n${'甲 乙\n'.repeat(2_800)}\`\`\``;
+
+  const message = conversation.finishTurn(project.id, 'long-reply', { reply });
+  const textBlocks = message.blocks.filter((block: any) => block.type === 'text');
+
+  assert.equal(textBlocks.length, 2);
+  assert.ok(textBlocks.every((block: any) => block.text.length <= 10_000));
+  assert.equal(textBlocks.map((block: any) => block.text).join(''), reply);
+});
+
+test('建模助手长回复不会因频繁换行提前耗尽消息块额度', () => {
+  const project = createProject({ owner: 'alice', name: '多段超长建模助手回复' });
+  const conversation = new PackageChatConversation(new AiConstructionMessageStore(getDb()));
+  const reply = `${(`${'x'.repeat(6_000)}\n`).repeat(16)}结束`;
+
+  const message = conversation.finishTurn(project.id, 'many-paragraphs-reply', { reply });
+  const textBlocks = message.blocks.filter((block: any) => block.type === 'text');
+
+  assert.ok(textBlocks.length <= 12);
+  assert.ok(textBlocks.every((block: any) => block.text.length <= 10_000));
+  assert.equal(textBlocks.map((block: any) => block.text).join(''), reply);
+});
+
+test('建模助手后续对话历史会还原完整的分块回复', () => {
+  const project = createProject({ owner: 'alice', name: '分块回复历史' });
+  const conversation = new PackageChatConversation(new AiConstructionMessageStore(getDb()));
+  const reply = `长代码:${'x'.repeat(11_000)}:结束`;
+
+  conversation.finishTurn(project.id, 'history-long-reply', { reply });
+
+  assert.deepEqual(conversation.history(project.id), [{ role: 'assistant', text: reply }]);
 });
 
 test('消息窗口默认返回最新内容并支持按最早序号向前翻页', () => {

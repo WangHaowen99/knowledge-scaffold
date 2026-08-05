@@ -8,6 +8,10 @@ import {
   validateGeneratedScriptSyntax,
 } from './script-safety.js';
 import { findKnowledgeEvidenceProblems } from './knowledge-evidence.js';
+import {
+  describeObjectAliasConflict,
+  findObjectAliasConflicts,
+} from './object-alias-validation.js';
 
 export const normalizeCompetencyQuestion = (value: string) => value.trim().replace(/\s+/g, '').replace(/[？?。！!]$/g, '');
 
@@ -82,13 +86,25 @@ export type ObjectCandidateRef = ObjectCandidate & { id: string };
 /**
  * 分析候选是建模建议，不是强制生成清单。这里只拒绝认领当前批次之外的 ID。
  */
-export function validateObjectBatch(candidates: ObjectCandidateRef[], objects: SpecObject[]): string[] {
+export function validateObjectBatch(
+  candidates: ObjectCandidateRef[],
+  objects: SpecObject[],
+  existingObjects: SpecObject[] = [],
+): string[] {
   const issues: string[] = [];
   const candidateIds = new Set(candidates.map((candidate) => candidate.id));
   for (const object of objects) {
     if (object.candidateId && !candidateIds.has(object.candidateId)) {
       issues.push(`对象「${object.title || object.key}」认领了当前批次不存在的候选 ID ${object.candidateId}`);
     }
+  }
+  const submittedKeys = new Set(objects.map((object) => object.key));
+  for (const conflict of findObjectAliasConflicts([...existingObjects, ...objects])) {
+    const involvesSubmittedObject = conflict.kind === 'shared_alias'
+      ? conflict.objectKeys.some((key) => submittedKeys.has(key))
+      : conflict.aliasObjectKeys.some((key) => submittedKeys.has(key))
+        || submittedKeys.has(conflict.identityObjectKey);
+    if (involvesSubmittedObject) issues.push(describeObjectAliasConflict(conflict));
   }
   return issues;
 }
@@ -206,6 +222,10 @@ export function validateSpecIntegrity(
     ['脚本', (spec.scripts ?? []).map((item) => normalizeKey(item.key))],
   ] as const) {
     for (const key of findDuplicates(keys)) errors.push(`${label} key 重复：${key}`);
+  }
+
+  for (const conflict of findObjectAliasConflicts(spec.objects ?? [])) {
+    errors.push(describeObjectAliasConflict(conflict));
   }
 
   for (const conflict of duplicateScriptEntrypoints(spec)) {

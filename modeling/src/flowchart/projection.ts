@@ -7,6 +7,7 @@ import type {
   FlowchartEdge,
   FlowchartNode,
 } from './types.js';
+import { diagramFileEntries } from './file-path.js';
 
 export function documentToInterviewOutcome(document: FlowchartDocument): InterviewOutcome {
   const processes = document.diagrams.map((diagram) => {
@@ -52,8 +53,9 @@ export function documentToInterviewOutcome(document: FlowchartDocument): Intervi
 }
 
 export function renderDiagramFiles(document: FlowchartDocument): Record<string, string> {
-  const rows = document.diagrams.map((diagram, index) => (
-    `- [${diagram.title}](process_${index + 1}.mmd)`
+  const entries = diagramFileEntries(document.diagrams);
+  const rows = entries.map(({ path, title }) => (
+    `- [${markdownLinkText(title)}](<${path.slice('diagrams/'.length)}>)`
   ));
   const files: Record<string, string> = {
     'diagrams/index.md': [
@@ -62,10 +64,14 @@ export function renderDiagramFiles(document: FlowchartDocument): Record<string, 
     ].join('\n'),
     'diagrams/processes.json': `${JSON.stringify(document, null, 2)}\n`,
   };
-  document.diagrams.forEach((diagram, index) => {
-    files[`diagrams/process_${index + 1}.mmd`] = renderMermaid(diagram);
+  entries.forEach(({ diagram, path }) => {
+    files[path] = renderMermaid(diagram);
   });
   return files;
+}
+
+function markdownLinkText(value: string): string {
+  return value.replace(/[\\\[\]]/gu, '\\$&');
 }
 
 function renderMermaid(diagram: FlowchartDiagram): string {
