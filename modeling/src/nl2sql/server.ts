@@ -32,6 +32,24 @@ export function canonicalizeSqlTableIdentifiers(sql: string, tableNames: string[
   );
 }
 
+const CONNECTION_PROBE_SQL = /^select\s+1(?:\s+as\s+`?ok`?)?$/i;
+
+export async function prepareNl2SqlSelect(
+  sql: string,
+  loadTableNames: () => Promise<string[]>,
+): Promise<string> {
+  const normalized = sql.replace(/;\s*$/, '').trim();
+  if (!/^(select|with)\b/i.test(normalized)) throw new Error('仅允许 SELECT 查询');
+  if (normalized.includes(';')) throw new Error('不允许多语句');
+  if (/\b(insert|update|delete|drop|alter|create|truncate|replace|grant|revoke|call|load)\b/i.test(normalized)) {
+    throw new Error('查询包含禁止的写入或结构变更关键字');
+  }
+
+  const tableNames = CONNECTION_PROBE_SQL.test(normalized) ? [] : await loadTableNames();
+  const prepared = canonicalizeSqlTableIdentifiers(normalized, tableNames);
+  return /\blimit\s+\d+/i.test(prepared) ? prepared : `${prepared} LIMIT ${MAX_ROWS}`;
+}
+
 const validScene = (scene: string) => /^[a-zA-Z0-9_]{1,60}$/.test(scene);
 
 async function readJson(req: import('node:http').IncomingMessage): Promise<Record<string, unknown>> {
@@ -157,14 +175,10 @@ function productionRuntime(): Nl2SqlRuntime {
   };
 
   const runSelect = async (sql: string, scene: string): Promise<{ rows: unknown[]; sql: string }> => {
-    const { tableNames } = await schemaInfo(scene);
-    const clean = canonicalizeSqlTableIdentifiers(sql, tableNames).replace(/;\s*$/, '').trim();
-    if (!/^(select|with)\b/i.test(clean)) throw new Error('仅允许 SELECT 查询');
-    if (clean.includes(';')) throw new Error('不允许多语句');
-    if (/\b(insert|update|delete|drop|alter|create|truncate|replace|grant|revoke|call|load)\b/i.test(clean)) {
-      throw new Error('查询包含禁止的写入或结构变更关键字');
-    }
-    const limited = /\blimit\s+\d+/i.test(clean) ? clean : `${clean} LIMIT ${MAX_ROWS}`;
+    const limited = await prepareNl2SqlSelect(
+      sql,
+      async () => (await schemaInfo(scene)).tableNames,
+    );
     const db = await pool();
     const connection = await db.getConnection();
     try {
