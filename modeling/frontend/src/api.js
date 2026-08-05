@@ -241,7 +241,7 @@ export const listVersions = (id) => api(`${P(id)}/versions`);
 export const exportVersionUrl = (id, version) => `${P(id)}/package/export${version ? `?version=${encodeURIComponent(version)}` : ''}`;
 
 // ---- 包完善（人工草稿 + 修缮对话）----
-// 整份流程图文档落盘；服务端据此重渲染 processes.json、index.md 与所有 process_N.mmd
+// 整份流程图文档落盘；服务端据此重渲染 processes.json、index.md 与各流程同名 .mmd
 export const savePackageDiagram = (id, document, expectedRevision) => api(`${P(id)}/package/diagram`, {
   method: 'PUT', body: JSON.stringify({ document, expectedRevision }),
 });

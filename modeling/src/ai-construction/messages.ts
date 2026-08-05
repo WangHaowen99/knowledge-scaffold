@@ -5,6 +5,7 @@ import { getDb, nowIso } from '../db/index.js';
 import { assistantActionKind, type AssistantActionKind } from './assistant-actions.js';
 import type { JsonObject } from '../authoring/types.js';
 import type { AiConstructionTaskGraphSnapshot } from './task-graph.js';
+import { AI_CONSTRUCTION_TEXT_BLOCK_MAX_LENGTH } from './text-blocks.js';
 
 export const MAX_CHANGE_PLAN_DESCRIPTION_LENGTH = 6_000;
 
@@ -180,6 +181,17 @@ function textValue(value: unknown, label: string, max: number): string {
   return text;
 }
 
+function textBlockValue(value: unknown): string {
+  const text = typeof value === 'string' ? value : '';
+  if (!text.trim() || text.length > AI_CONSTRUCTION_TEXT_BLOCK_MAX_LENGTH) {
+    throw new AiConstructionMessageStoreError(
+      'INVALID_BLOCK',
+      `说明内容不能为空且不能超过 ${AI_CONSTRUCTION_TEXT_BLOCK_MAX_LENGTH} 字`,
+    );
+  }
+  return text;
+}
+
 function optionalText(value: unknown, label: string, max: number): string | undefined {
   if (value == null || value === '') return undefined;
   return textValue(value, label, max);
@@ -238,7 +250,10 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
     };
   }
   if (block.type === 'text') {
-    return { type: 'text', text: textValue(block.text, '说明内容', 10_000) };
+    return {
+      type: 'text',
+      text: textBlockValue(block.text),
+    };
   }
   if (block.type === 'evidence') {
     if (!Array.isArray(block.items) || block.items.length < 1 || block.items.length > 20) {

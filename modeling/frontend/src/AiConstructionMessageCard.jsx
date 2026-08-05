@@ -188,17 +188,35 @@ function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hidd
   return <div className="ac-message-unsupported">暂不支持的消息内容</div>;
 }
 
+function displayBlocks(message) {
+  const blocks = message?.blocks ?? [];
+  if (!String(message?.key ?? '').startsWith('chat.reply.')) return blocks;
+  return blocks.reduce((merged, block) => {
+    const previous = merged.at(-1);
+    if (block?.type === 'text' && previous?.type === 'text') {
+      merged[merged.length - 1] = {
+        ...previous,
+        text: `${previous.text}${block.text}`,
+      };
+    } else {
+      merged.push(block);
+    }
+    return merged;
+  }, []);
+}
+
 export default function AiConstructionMessageCard({
   message, onAction, actionsEnabled = true, disabledActionIds = [], hiddenActionIds = [],
   hideTaskPlan = false,
 }) {
   const timestamp = formatMessageTimestamp(message?.createdAt);
+  const blocks = displayBlocks(message);
   const handleAction = onAction
     ? (action) => onAction(resolveLegacyFindingAction(message, action))
     : undefined;
   return (
     <article className={`ac-message-card ${message?.role ?? 'assistant'}`}>
-      {(message?.blocks ?? []).map((block, index) => (
+      {blocks.map((block, index) => (
         <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={handleAction}
           actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
           hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} />

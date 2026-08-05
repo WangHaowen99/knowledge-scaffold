@@ -337,7 +337,9 @@ export const specObjectSchema = (candidateIds: string[] = []) => Type.Object({
     ? literalString(candidateIds)
     : Type.Optional(Type.String()),
   key: KeyString(), title: Type.String(), description: Type.String(),
-  aliases: Type.Optional(Type.Array(Type.String({ description: '用户可能使用的自然语言别名' }))),
+  aliases: Type.Optional(Type.Array(Type.String({
+    description: '用户可能使用的自然语言别名；在整个知识包内不得与其他对象的 alias、key 或 title 重复（英文忽略大小写）',
+  }))),
   queryBoundary: Type.Optional(Type.String({ description: '查询边界：查询该对象前的前置条件与不得推断的事项' })),
   relations: Type.Optional(Type.Array(Type.Object({
     relation: Type.String({ description: '关系名，如 belongs_to / references' }),

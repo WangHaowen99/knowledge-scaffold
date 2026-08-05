@@ -1,6 +1,8 @@
-// 知识包里的 diagrams/process_N.mmd 是 diagrams/processes.json 的派生产物：
+// 知识包里的 diagrams/<流程名称>.mmd 是 diagrams/processes.json 的派生产物；
+// 历史 diagrams/process_N.mmd 继续按序号兼容读取。
 // 点击 .mmd 时读结构化源文档交给流程图编辑器，而不是解析 mermaid 文本。
 const PROCESS_MMD_PATTERN = /^diagrams\/process_(\d+)\.mmd$/u;
+const DIAGRAM_MMD_PATTERN = /^diagrams\/[^/]+\.mmd$/u;
 
 export const DIAGRAM_DOCUMENT_PATH = 'diagrams/processes.json';
 
@@ -15,7 +17,7 @@ export function diagramIndexFromPath(path) {
 }
 
 export function isProcessDiagramPath(path) {
-  return diagramIndexFromPath(path) !== null;
+  return DIAGRAM_MMD_PATTERN.test(String(path ?? ''));
 }
 
 // 文件树里是否存在配套源文档；缺失时调用方降级为原文视图。
@@ -44,13 +46,17 @@ export function diagramIdAt(document, index) {
 
 // 一次性给出 .mmd 的可编辑目标；任何一环缺失都返回 null，由调用方降级。
 export function resolveDiagramTarget({ path, files, documentContent }) {
-  const index = diagramIndexFromPath(path);
-  if (index === null) return null;
+  if (!isProcessDiagramPath(path)) return null;
   if (!hasDiagramDocument(files)) return null;
   const document = parseDiagramDocument(documentContent);
   if (!document) return null;
+  const namedIndex = document.diagrams.findIndex((diagram) => (
+    `diagrams/${String(diagram?.title ?? '').normalize('NFC').trim()}.mmd` === path
+  ));
+  const index = namedIndex >= 0 ? namedIndex : diagramIndexFromPath(path);
+  if (index === null) return null;
   const activeDiagramId = diagramIdAt(document, index);
-  // .mmd 存在但源文档里没有第 N 张图，说明两者已不同步，交回原文视图更诚实
+  // .mmd 存在但无法关联到源文档中的流程图，交回原文视图，避免错误回写。
   if (!activeDiagramId) return null;
   return { index, document, activeDiagramId };
 }

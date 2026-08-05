@@ -142,6 +142,33 @@ test('助手文字块按 Markdown 渲染且原始 HTML 不会直接注入', () =
   assert.doesNotMatch(html, /<script>/);
 });
 
+test('同一消息的相邻文本块合并后连续渲染 Markdown', () => {
+  const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, {
+    message: {
+      id: 'split-markdown-message', key: 'chat.reply.example', role: 'assistant', blocks: [
+        { type: 'text', text: '```text\n第一段' },
+        { type: 'text', text: '第二段\n```' },
+      ],
+    },
+  }));
+
+  assert.equal((html.match(/class="ac-message-text"/g) ?? []).length, 1);
+  assert.match(html, /第一段第二段/);
+});
+
+test('非聊天回复的相邻文本块保持原有分区展示', () => {
+  const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, {
+    message: {
+      id: 'ordinary-multi-text-message', role: 'assistant', blocks: [
+        { type: 'text', text: '第一块' },
+        { type: 'text', text: '第二块' },
+      ],
+    },
+  }));
+
+  assert.equal((html.match(/class="ac-message-text"/g) ?? []).length, 2);
+});
+
 test('未知消息块降级为普通提示且不渲染注入 HTML', () => {
   const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, {
     message: {

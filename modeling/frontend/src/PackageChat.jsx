@@ -79,6 +79,10 @@ export function interactionBusyState(purpose) {
   return 'interaction';
 }
 
+export function interactionResponseChangedPackage(result) {
+  return Boolean(result?.packageRevision || result?.revision || result?.result?.version);
+}
+
 export function MaterialAnalysisStoppedNotice({ task, busy = false, onRetry }) {
   if (!task || task.status !== 'failed'
     || !['material_analysis', 'package_baseline_review'].includes(task.kind)) return null;
@@ -746,7 +750,7 @@ export default function PackageChat({
     setLocalBusy(interactionBusyState(purpose));
     try {
       const result = await respondToInteraction(projectId, interactionId, response);
-      if (result.result?.version || result.revision) {
+      if (interactionResponseChangedPackage(result)) {
         window.dispatchEvent(new CustomEvent('mw-package-updated'));
       }
       await refreshConstruction();

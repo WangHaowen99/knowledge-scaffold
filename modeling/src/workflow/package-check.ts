@@ -11,6 +11,10 @@ import {
   mappingObjectName,
   mappingPrimaryNames,
 } from './mapping-contract.js';
+import {
+  describeObjectAliasConflict,
+  findObjectAliasConflicts,
+} from './object-alias-validation.js';
 import { parseObjectIndex } from './object-index.js';
 import { packageMappingResource } from './package-data-source.js';
 import { sourceRefsFor, tableSourceFor, tableSourcesFor } from './source-references.js';
@@ -168,6 +172,19 @@ export function runRuleChecks(
   const objKeys = new Set(spec.objects.map((o) => o.key));
   const ruleKeys = new Set((spec.rules ?? []).map((r) => r.key));
   const metricKeys = new Set((spec.metrics ?? []).map((m) => m.key));
+
+  for (const conflict of findObjectAliasConflicts(spec.objects)) {
+    const objectKeys = conflict.kind === 'shared_alias'
+      ? conflict.objectKeys
+      : [...conflict.aliasObjectKeys, conflict.identityObjectKey];
+    add(
+      '错误',
+      '对象别名冲突',
+      objectKeys.join('、'),
+      describeObjectAliasConflict(conflict),
+      '为冲突对象保留含义明确且互不重复的别名；若对象语义实际相同，请先合并对象',
+    );
+  }
 
   if (options.validateDataMappings !== false) {
     for (const problem of findObjectDataMappingProblems(spec, tables)) {
