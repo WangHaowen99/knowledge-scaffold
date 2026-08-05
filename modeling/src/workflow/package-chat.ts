@@ -160,12 +160,31 @@ export function hasExplicitFullReadIntent(message: string): boolean {
   const normalized = String(message ?? '').replace(/\s+/g, ' ').trim();
   if (!normalized) return false;
   const withoutNegatedIntent = normalized.replace(
-    /(?:不用|无需|不必|不要|不是(?:要求|要)?|并非(?:要求|要)?).{0,3}?(?:完整(?:地)?(?:阅读|通读|审阅)|通读|全文(?:阅读|通读|审阅)?|读完|看完|全量(?:提取|抽取|梳理|整理|分析|覆盖)|逐章(?:提取|抽取|梳理|整理|分析|覆盖))/gu,
+    /(?:不用|无需|不必|不要|不是(?:要求|要)?|并非(?:要求|要)?).{0,3}?(?:完整(?:地)?(?:阅读|通读|审阅)|通读|全文(?:阅读|通读|审阅)?|读完|看完|全量(?:读取|阅读|查看|提取|抽取|梳理|整理|分析|覆盖)|逐章(?:提取|抽取|梳理|整理|分析|覆盖))/gu,
     ' ',
   );
   const explicitReading = /完整(?:地)?(?:阅读|通读|审阅)|(?:全文|整份|整篇|完整(?:的)?(?:文档|资料|手册|文件)|全部(?:文档|资料|手册|文件)|所有(?:文档|资料|手册|文件)|从头到尾).{0,12}(?:读|看|阅读|通读|审阅)|(?:读|看|阅读|通读|审阅).{0,12}(?:全文|整份|整篇|完整(?:的)?(?:文档|资料|手册|文件)|全部(?:文档|资料|手册|文件)|所有(?:文档|资料|手册|文件)|从头到尾)|通读|(?:读完|看完).{0,8}(?:文档|资料|手册|文件)|(?:文档|资料|手册|文件).{0,8}(?:读完|看完)/u;
-  const exhaustiveExtraction = /全量.{0,8}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|逐章.{0,8}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|(?:所有|全部|每(?:一|个)?)(?:个)?章(?:节)?.{0,12}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充).{0,12}(?:所有|全部|每(?:一|个)?)(?:个)?章(?:节)?/u;
+  const exhaustiveExtraction = /全量.{0,8}(?:读取|阅读|查看|提取|抽取|梳理|整理|分析|覆盖|生成|补充)|逐章.{0,8}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|(?:所有|全部|每(?:一|个)?)(?:个)?章(?:节)?.{0,12}(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充)|(?:提取|抽取|梳理|整理|分析|覆盖|生成|补充).{0,12}(?:所有|全部|每(?:一|个)?)(?:个)?章(?:节)?/u;
   return explicitReading.test(withoutNegatedIntent) || exhaustiveExtraction.test(withoutNegatedIntent);
+}
+
+/**
+ * 识别“以原始文档为依据生成产物”的诉求。
+ *
+ * 这类请求的结果隐含了对文档整体口径的承诺（例如“基于产品手册生成规则”），
+ * 即使用户没有写“全文”，也必须走全文覆盖门禁；否则模型可能只读到局部内容，
+ * 却生成看起来完整的规则集合。
+ */
+export function hasDocumentBasedGenerationIntent(message: string): boolean {
+  const normalized = String(message ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  const withoutNegatedIntent = normalized.replace(
+    /(?:不用|无需|不必|不要|不是(?:要求|要)?|并非(?:要求|要)?).{0,6}?(?:基于|根据|依据|参照|按照).{0,24}(?:生成|提取|抽取|梳理|整理|分析|覆盖|补充|制定|编写)/gu,
+    ' ',
+  );
+  const sourceReference = /(?:文档|资料|手册|文件|原文|章节|条款|附件|第[一二三四五六七八九十百0-9]+章)/u;
+  const deriveFromSource = /(?:基于|根据|依据|参照|按照).{0,32}(?:生成|提取|抽取|梳理|整理|分析|覆盖|补充|制定|编写)/u;
+  return sourceReference.test(withoutNegatedIntent) && deriveFromSource.test(withoutNegatedIntent);
 }
 
 /**
@@ -183,7 +202,8 @@ export function hasExplicitDocumentLookupIntent(message: string): boolean {
   );
   const sourceReference = /(?:文档|资料|手册|文件|原文|章节|条款|附件|第[一二三四五六七八九十百0-9]+章)/u;
   const lookupAction = /(?:查阅|检索|搜索|读取|重读|重新|再次|查看|核对|核实|定位|查找|提取|引用|原文)/u;
-  return sourceReference.test(withoutNegatedIntent) && lookupAction.test(withoutNegatedIntent);
+  return sourceReference.test(withoutNegatedIntent)
+    && lookupAction.test(withoutNegatedIntent);
 }
 
 export function resolvePackageChatDocumentAccess(
@@ -191,7 +211,7 @@ export function resolvePackageChatDocumentAccess(
   configured: PackageChatPlanOptions['documentAccess'] = 'full-read-only',
 ): 'none' | 'on-demand' | 'full' {
   if (configured === 'full') return 'full';
-  if (hasExplicitFullReadIntent(message)) return 'full';
+  if (hasExplicitFullReadIntent(message) || hasDocumentBasedGenerationIntent(message)) return 'full';
   if (hasExplicitDocumentLookupIntent(message)) return 'on-demand';
   return configured === 'on-demand' ? 'on-demand' : 'none';
 }
@@ -483,6 +503,25 @@ const DOCUMENT_TOOL_NAMES = new Set(['list_documents', 'search_documents', 'read
 function hasDocumentToolInvocation(messages: unknown[]): boolean {
   return messages.some((message: any) => (
     message?.role === 'toolResult' && DOCUMENT_TOOL_NAMES.has(String(message.toolName ?? ''))
+  ));
+}
+
+function hasAssistantTextAfterLastDocumentTool(messages: unknown[]): boolean {
+  const items = messages as any[];
+  let lastToolResult = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.role === 'toolResult' && DOCUMENT_TOOL_NAMES.has(String(item.toolName ?? ''))) {
+      lastToolResult = index;
+      break;
+    }
+  }
+  if (lastToolResult < 0) return false;
+  return items.slice(lastToolResult + 1).some((item) => (
+    item?.role === 'assistant'
+      && (typeof item.content === 'string'
+        ? item.content.trim().length > 0
+        : (item.content ?? []).some((part: any) => String(part?.text ?? '').trim().length > 0))
   ));
 }
 
@@ -881,12 +920,21 @@ export async function packageChatPlan(
         const result = await runAgentCaptured(
           agent,
           body,
-          () => hasDocumentToolInvocation(agent.state.messages as unknown[]),
-          '当前问题明确要求核对原始文档。请先调用 search_documents 或 read_document 获取本轮文档证据，再给出答复。',
+          () => {
+            const messages = agent.state.messages as unknown[];
+            return hasDocumentToolInvocation(messages)
+              && (Boolean(cap.plan?.changes?.length)
+                || hasAssistantTextAfterLastDocumentTool(messages));
+          },
+          '请完成本轮原始文档核对：如果还没有调用文档工具，先调用 search_documents 或 read_document；如果已经调用过，请基于工具返回的原文证据直接给出最终文字答复，或调用 submit_change_plan。不要停在工具调用结果上。',
           options.observe,
         );
-        if (!hasDocumentToolInvocation(agent.state.messages as unknown[])) {
+        const messages = agent.state.messages as unknown[];
+        if (!hasDocumentToolInvocation(messages)) {
           throw new Error('文档查询未调用文档读取工具，无法确认本轮原文依据');
+        }
+        if (!cap.plan?.changes?.length && !hasAssistantTextAfterLastDocumentTool(messages)) {
+          throw new Error('已调用文档工具，但模型未生成最终答复，请重试');
         }
         return result;
       })()
@@ -926,7 +974,8 @@ export async function packageChatPlan(
       ? (lastText as any).content
       : ((lastText as any).content ?? []).map((c: any) => c.text ?? '').join(''))
     : '';
-  return { reply: text || '（agent 未给出答复）' };
+  if (!text.trim()) throw new Error('模型未生成最终答复，请重试');
+  return { reply: text };
 }
 
 // ---- 阶段二：确认后应用 ----
