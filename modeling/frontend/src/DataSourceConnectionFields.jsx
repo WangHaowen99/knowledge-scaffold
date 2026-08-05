@@ -71,6 +71,7 @@ function Neo4jFields({ form, busy, syncingOntologyId, onFieldChange, onSyncOntol
           tourId={DATA_SOURCE_TOUR_TARGETS.ontologyProperty} />
         <Field label="Ontology 对应值" value={form.ontology_value} onChange={onFieldChange('ontology_value')}
           tourId={DATA_SOURCE_TOUR_TARGETS.ontologyValue}
+          controlClassName="field-control-row--ontology"
           action={(
             <button type="button" className="btn" disabled={busy || syncingOntologyId} onClick={onSyncOntologyId}>
               {syncingOntologyId ? '同步中…' : ONTOLOGY_ID_SYNC_BUTTON_LABEL}
@@ -99,6 +100,7 @@ function Nl2SqlFields({
           tourId={DATA_SOURCE_TOUR_TARGETS.url} />
         <Field label="Scene" value={form.scene} onChange={onFieldChange('scene')} placeholder="例如 mv_shadow_project_id"
           tourId={DATA_SOURCE_TOUR_TARGETS.scene}
+          controlClassName="field-control-row--scene"
           action={(
             <button type="button" className="btn" disabled={busy || creatingDatabase}
               onClick={onCreateProjectDatabase}>
@@ -118,14 +120,23 @@ function Nl2SqlFields({
   );
 }
 
-function Field({ label, type = 'text', value, onChange, placeholder = '', action = null, tourId }) {
+function Field({
+  label,
+  type = 'text',
+  value,
+  onChange,
+  placeholder = '',
+  action = null,
+  controlClassName = '',
+  tourId,
+}) {
   const inputId = useId();
   const input = <input id={inputId} aria-label={label} type={type} value={value ?? ''}
     onChange={onChange} placeholder={placeholder} autoComplete="off" />;
   return (
     <div className="field" data-tour={tourId}>
       <label htmlFor={inputId}>{label}</label>
-      {action ? <div className="field-control-row">{input}{action}</div> : input}
+      {action ? <div className={`field-control-row ${controlClassName}`.trim()}>{input}{action}</div> : input}
     </div>
   );
 }

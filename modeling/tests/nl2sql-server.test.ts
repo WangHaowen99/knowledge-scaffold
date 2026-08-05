@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalizeSqlTableIdentifiers, createNl2SqlServer } from '../src/nl2sql/server.js';
+import {
+  canonicalizeSqlTableIdentifiers,
+  createNl2SqlServer,
+  prepareNl2SqlSelect,
+} from '../src/nl2sql/server.js';
 
 test('NL2SQL 按真实 schema 纠正模型生成的表名大小写', () => {
   const tables = ['RefineryUnit', 'VGOHTUnit', 'Product'];
@@ -18,6 +22,23 @@ test('NL2SQL 按真实 schema 纠正模型生成的表名大小写', () => {
     ),
     'SELECT * FROM mid_stack_device_plan.`Product`',
   );
+});
+
+test('NL2SQL 连接探测允许 Scene 数据库尚无数据表', async () => {
+  let schemaReadCount = 0;
+  const loadEmptySchema = async () => {
+    schemaReadCount += 1;
+    throw new Error('scene（数据库）不存在或为空：mv_shadow_project');
+  };
+  const sql = await prepareNl2SqlSelect('SELECT 1 AS ok', loadEmptySchema);
+
+  assert.equal(sql, 'SELECT 1 AS ok LIMIT 200');
+  assert.equal(schemaReadCount, 0);
+  await assert.rejects(
+    prepareNl2SqlSelect('SELECT * FROM orders', loadEmptySchema),
+    /scene（数据库）不存在或为空/,
+  );
+  assert.equal(schemaReadCount, 1);
 });
 
 test('NL2SQL provider 服务提供鉴权查询和 Consumer 兼容结果', async () => {
