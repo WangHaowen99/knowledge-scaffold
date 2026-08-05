@@ -1,6 +1,6 @@
 import { Type } from '@earendil-works/pi-ai';
 import { buildLlm, buildTaskLlm, type LlmDeps } from '../llm/provider.js';
-import { AgentRunTimeoutError, makeAgent, runAgent } from './agent.js';
+import { AgentRunTimeoutError, makeAgent, runAgent, runAgentCaptured } from './agent.js';
 import { assertObjectDataMappings } from './data-mapping.js';
 import {
   buildDocumentReadingTools,
@@ -168,12 +168,31 @@ export function hasExplicitFullReadIntent(message: string): boolean {
   return explicitReading.test(withoutNegatedIntent) || exhaustiveExtraction.test(withoutNegatedIntent);
 }
 
+/**
+ * 识别需要核对原始资料、但不要求从头读完整份文档的诉求。
+ *
+ * 这类诉求仍应使用文档工具；与全文意图分开，避免“读取第二章”被误判为
+ * 必须从 offset=0 读完整份手册。
+ */
+export function hasExplicitDocumentLookupIntent(message: string): boolean {
+  const normalized = String(message ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  const withoutNegatedIntent = normalized.replace(
+    /(?:不用|无需|不必|不要|不是(?:要求|要)?|并非(?:要求|要)?).{0,5}?(?:查阅|检索|搜索|读取|重读|查看|核对|核实|定位|查找|提取|引用|原文)/gu,
+    ' ',
+  );
+  const sourceReference = /(?:文档|资料|手册|文件|原文|章节|条款|附件|第[一二三四五六七八九十百0-9]+章)/u;
+  const lookupAction = /(?:查阅|检索|搜索|读取|重读|重新|再次|查看|核对|核实|定位|查找|提取|引用|原文)/u;
+  return sourceReference.test(withoutNegatedIntent) && lookupAction.test(withoutNegatedIntent);
+}
+
 export function resolvePackageChatDocumentAccess(
   message: string,
   configured: PackageChatPlanOptions['documentAccess'] = 'full-read-only',
 ): 'none' | 'on-demand' | 'full' {
   if (configured === 'full') return 'full';
   if (hasExplicitFullReadIntent(message)) return 'full';
+  if (hasExplicitDocumentLookupIntent(message)) return 'on-demand';
   return configured === 'on-demand' ? 'on-demand' : 'none';
 }
 
@@ -458,6 +477,14 @@ const specBody = (spec: PackageSpec) => JSON.stringify({
 });
 const historyText = (history: ChatTurn[]) =>
   history.slice(-6).map((t) => `${t.role === 'user' ? '专家' : '助手'}：${t.text}`).join('\n');
+
+const DOCUMENT_TOOL_NAMES = new Set(['list_documents', 'search_documents', 'read_document']);
+
+function hasDocumentToolInvocation(messages: unknown[]): boolean {
+  return messages.some((message: any) => (
+    message?.role === 'toolResult' && DOCUMENT_TOOL_NAMES.has(String(message.toolName ?? ''))
+  ));
+}
 
 type ResourceKind = ChangePlanItem['targetKind'];
 const PACKAGE_APPLY_TIMEOUT_MS = 600_000;
@@ -788,6 +815,13 @@ export async function packageChatPlan(
     '列出级联风险：改口径会影响哪些操作、是否与典型问题路由冲突、remove 是否破坏领域问题覆盖。',
     'sourceRefs.anchors 只是知识对象保留的证据引用点，不是全文阅读账本或正文收录清单；不得仅因锚点较少就声称其他章节未阅读、未收录或不存在。',
     `后端已验证的历史全文阅读覆盖：${documentReadCoveragePrompt(historicalReadCoverage)}。`,
+    ...(documents.length ? [
+      '当前调用可使用 list_documents、search_documents、read_document 文档工具。',
+      '只咨询当前知识包规格时不必调用文档工具；如果专家明确询问原始文档、章节、条款、原文或要求重新核对资料，必须先使用文档工具获取本轮证据。',
+    ] : []),
+    ...(documentAccess === 'on-demand' ? [
+      '当前是按需文档查询：优先用 search_documents 定位，再用 read_document 读取相关正文，不要为了局部问题从头通读整份文档。',
+    ] : []),
     ...(documentReadSession ? [
       '当前调用要求全文阅读。所有文本材料必须从 offset=0 开始，严格使用 nextOffset 连续读到 eof=true；',
       '翻页时用 previousPageSummary / previousPageEvidence 保留滚动摘要和带 offset 的重要证据。',
@@ -802,8 +836,9 @@ export async function packageChatPlan(
     `【专家消息】\n${message}`,
   ].filter(Boolean).join('\n');
 
-  // 普通聊天不扫描原始资料；按需模式只注入工具，强制或明确全文诉求时启用连续覆盖账本。
-  const documentTools = documentAccess !== 'none'
+  // 有文本资料时始终注入只读文档工具；documentAccess 只决定按需读取还是全文门禁，
+  // 不再决定普通聊天是否看得见工具。这样局部章节查询不会退化成只有 submit_change_plan。
+  const documentTools = documents.length
     ? buildDocumentReadingTools(accessibleDocuments.map((item) => ({
       id: item.id ?? item.filename, filename: item.filename, textContent: item.textContent ?? '',
     })), documentReadSession)
@@ -841,7 +876,21 @@ export async function packageChatPlan(
       missingSubmissionError: '全文读取完成，但模型未生成最终答复',
       observe: options.observe,
     })
-    : await runAgent(agent, body, options.observe);
+    : documentAccess === 'on-demand' && documents.length
+      ? await (async () => {
+        const result = await runAgentCaptured(
+          agent,
+          body,
+          () => hasDocumentToolInvocation(agent.state.messages as unknown[]),
+          '当前问题明确要求核对原始文档。请先调用 search_documents 或 read_document 获取本轮文档证据，再给出答复。',
+          options.observe,
+        );
+        if (!hasDocumentToolInvocation(agent.state.messages as unknown[])) {
+          throw new Error('文档查询未调用文档读取工具，无法确认本轮原文依据');
+        }
+        return result;
+      })()
+      : await runAgent(agent, body, options.observe);
 
   if (cap.plan?.changes?.length) {
     const adapter = getPiAuthoringAdapter();
