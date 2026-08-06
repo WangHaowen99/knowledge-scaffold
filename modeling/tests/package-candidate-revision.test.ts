@@ -22,7 +22,8 @@ function spec(): PackageSpec {
     id: 'candidate-review',
     name: '候选修订测试',
     description: '验证候选修订不会越过专家确认',
-    version: '1.0.0',
+    version: '1.0.0-rc.4',
+    status: 'review',
     language: 'zh-CN',
     defaultProviderAlias: 'data',
     objects: [{
@@ -76,8 +77,8 @@ async function fixture(t: test.TestContext) {
   return { db, projectId, repository, store, generated };
 }
 
-test('预览不会推进当前修订，接受依赖组时自动补齐并只形成一个提交', async (t) => {
-  const { projectId, repository, store, generated } = await fixture(t);
+test('预览不会推进当前修订，接受依赖组时自动补齐并生成递增版本', async (t) => {
+  const { db, projectId, repository, store, generated } = await fixture(t);
   const index = (await store.readFile(projectId, 'package/index.md')).content;
   const operation = (await store.readFile(projectId, 'package/operations/Approve.md')).content;
   const candidate = await store.createCandidateRevision(projectId, {
@@ -112,9 +113,19 @@ test('预览不会推进当前修订，接受依赖组时自动补齐并只形�
     action: action('candidate_accepted', '接受审批候选修改'),
   });
   assert.equal(accepted.revision.parentOid, generated.revision.oid);
+  assert.equal(accepted.packageVersion, '1.0.0-rc.5');
   assert.deepEqual(accepted.candidate.selectedGroupIds, ['base-description', 'approve-detail']);
   assert.match((await store.readFile(projectId, 'package/index.md')).content, /候选说明/u);
   assert.match((await store.readFile(projectId, 'package/operations/Approve.md')).content, /审批候选说明/u);
+  const current = await store.current(projectId);
+  assert.equal(current?.packageVersion, '1.0.0-rc.5');
+  assert.equal(current?.spec.status, 'review');
+  assert.match((await store.readFile(projectId, 'package/manifest.yaml')).content, /version: 1\.0\.0-rc\.5/u);
+  const versions = db.prepare(`SELECT version, revision_oid FROM package_versions
+    WHERE project_id = ? ORDER BY rowid`).all(projectId) as any[];
+  assert.deepEqual(versions.map((row) => row.version), ['1.0.0-rc.4', '1.0.0-rc.5']);
+  assert.equal(versions[1].revision_oid, accepted.revision.oid);
+  assert.equal((await store.history(projectId))[0].packageVersion, '1.0.0-rc.5');
 });
 
 test('校验错误、退回和拒绝都不会改变当前知识包修订', async (t) => {
@@ -224,6 +235,8 @@ test('候选接受索引失败时回滚 Git 并保留待处理候选', async (t)
   );
   assert.equal((await repository.current(projectId)).oid, generated.revision.oid);
   assert.equal((await store.getCandidateRevision(projectId, candidate.id)).status, 'pending');
+  assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM package_versions
+    WHERE project_id = ?`).get(projectId) as any).count, 1);
   assert.equal((db.prepare(`SELECT COUNT(*) AS count FROM artifact_commit_intents
     WHERE project_id = ?`).get(projectId) as any).count, 0);
 });

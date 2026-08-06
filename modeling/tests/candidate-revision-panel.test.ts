@@ -8,6 +8,9 @@ import {
   respondCandidateRevision,
 } from '../frontend/src/authoring-api.js';
 import CandidateRevisionPanel, {
+  candidateRevisionAcceptedNotice,
+  candidateRevisionVisibilityKey,
+  CandidateRevisionSuccessNotice,
   respondCandidateWithRefresh,
   resolveCandidateGroupSelection,
 } from '../frontend/src/CandidateRevisionPanel.jsx';
@@ -31,6 +34,41 @@ test('原子变更组选择自动包含传递依赖', () => {
     selectedGroupIds: ['operation', 'object', 'rule'],
     autoIncludedGroupIds: ['operation', 'object'],
   });
+});
+
+test('候选列表或读取错误生成稳定的可见性键', () => {
+  assert.equal(candidateRevisionVisibilityKey([], ''), '');
+  assert.equal(candidateRevisionVisibilityKey([{ id: 'candidate-a' }], ''), 'candidates:candidate-a');
+  assert.equal(
+    candidateRevisionVisibilityKey([{ id: 'candidate-a' }, { id: 'candidate-b' }], ''),
+    'candidates:candidate-a,candidate-b',
+  );
+  assert.equal(candidateRevisionVisibilityKey([], '读取失败'), 'error:读取失败');
+  assert.equal(
+    candidateRevisionVisibilityKey([], '', 'accepted:revision-a'),
+    'notice:accepted:revision-a',
+  );
+  assert.equal(
+    candidateRevisionVisibilityKey([{ id: 'candidate-a' }], '', 'accepted:revision-a'),
+    'candidates:candidate-a|notice:accepted:revision-a',
+  );
+});
+
+test('接受候选后生成知识包修订成功提示', () => {
+  const notice = candidateRevisionAcceptedNotice({
+    currentRevision: 'revision-a',
+    packageVersion: '1.0.0-rc.5',
+    candidate: { id: 'candidate-a', acceptedRevision: 'revision-a' },
+  });
+  assert.deepEqual(notice, {
+    key: 'accepted:revision-a',
+    title: '知识包已更新',
+    detail: '所选修改已接受，新版本 v1.0.0-rc.5 已生成并设为当前内容。',
+  });
+  const html = renderToStaticMarkup(React.createElement(CandidateRevisionSuccessNotice, { notice }));
+  assert.match(html, /role="status"/);
+  assert.match(html, /知识包已更新/);
+  assert.match(html, /新版本 v1\.0\.0-rc\.5 已生成/);
 });
 
 test('候选卡片提供预览、接受、退回和拒绝入口', () => {

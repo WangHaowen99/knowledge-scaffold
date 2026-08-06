@@ -10,7 +10,7 @@ export interface StoredFailureDiagnosis extends FailureDiagnosis {
   basedRevisionOid: string;
   createdAt: string;
   resolutionStatus: 'pending' | 'confirmed' | 'resolved' | 'deferred' | 'irrelevant';
-  resolutionAction?: DiagnosisResolutionAction;
+  resolutionAction?: DiagnosisStoredAction;
   resolutionNote?: string;
   resolutionActor?: string;
   resolutionPayload?: Record<string, unknown>;
@@ -23,6 +23,8 @@ export type DiagnosisResolutionAction =
   | 'data_updated'
   | 'not_applicable'
   | 'defer';
+
+export type DiagnosisStoredAction = DiagnosisResolutionAction | 'plan_repair';
 
 function rowToDiagnosis(row: any): StoredFailureDiagnosis {
   return {
@@ -109,6 +111,59 @@ export function hasConfirmedOptimizableDiagnoses(
   return diagnoses.some((diagnosis) => diagnosis.resolutionStatus === 'confirmed'
     && diagnosis.packageOptimizable
     && !diagnosis.blocking);
+}
+
+/**
+ * 记录用户已将可修复的知识包诊断加入评测修缮任务。
+ * 这是一次显式的修复范围确认；不放宽阻断条件，但会把知识包范围固化为可优化。
+ */
+export function markFailureDiagnosesForRepair(input: {
+  projectId: string;
+  diagnosisIds: string[];
+  actor: string;
+  note?: string;
+  payload?: Record<string, unknown>;
+}): StoredFailureDiagnosis[] {
+  const diagnosisIds = [...new Set(input.diagnosisIds.map((id) => String(id)).filter(Boolean))];
+  if (!diagnosisIds.length) return [];
+
+  const db = getDb();
+  const select = db.prepare(`SELECT * FROM failure_diagnoses
+    WHERE id = ? AND project_id = ?`);
+  const update = db.prepare(`UPDATE failure_diagnoses SET
+      resolution_status = 'confirmed', resolution_action = ?, resolution_note = ?, resolution_actor = ?,
+      resolution_payload_json = ?, resolved_at = ?, package_optimizable = 1, repair_scope = 'package'
+    WHERE id = ? AND project_id = ?`);
+  const note = String(input.note ?? '').trim() || '用户选择转为建模修缮任务';
+  const payload = JSON.stringify(input.payload ?? {});
+  const resolvedAt = nowIso();
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const diagnosisId of diagnosisIds) {
+      const current = select.get(diagnosisId, input.projectId) as any;
+      if (!current) throw new Error('失败诊断不存在');
+      if (['resolved', 'irrelevant'].includes(String(current.resolution_status))) {
+        throw new Error('该失败诊断已关闭，不能再次加入建模修缮');
+      }
+      if (current.repair_scope !== 'package' || current.blocking) {
+        throw new Error('只有不阻断的知识包缺陷才能进入优化更新');
+      }
+      update.run(
+        'plan_repair', note, input.actor, payload, resolvedAt,
+        diagnosisId, input.projectId,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  return diagnosisIds.map((diagnosisId) => rowToDiagnosis(
+    db.prepare('SELECT * FROM failure_diagnoses WHERE id = ? AND project_id = ?')
+      .get(diagnosisId, input.projectId),
+  ));
 }
 
 export function resolveFailureDiagnosis(input: {
