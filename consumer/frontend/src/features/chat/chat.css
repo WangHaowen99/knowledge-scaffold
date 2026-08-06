@@ -1,23 +1,32 @@
-/* 侧边栏左下 · 固定的历史对话区块（导航之下、版本卡之上，所有页面常驻） */
-.mwr .side-hist { flex: none; height: 268px; display: flex; flex-direction: column; min-height: 0;
-  margin: 0 12px; padding-top: 8px; border-top: 1px solid #efeee9; }
-.mwr .side-hist .sh-title { flex: none; font-size: 11px; color: var(--muted); letter-spacing: 1.5px; font-weight: 600; padding: 4px 4px 6px; }
-.mwr .side-hist .ch-search { flex: none; font-size: 12px; padding: 6px 10px; margin-bottom: 6px; }
-.mwr .side-hist .ch-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px; }
-.mwr .side-hist .ch-empty { font-size: 12px; color: var(--muted); padding: 6px 6px; }
-.mwr .side-hist .ch-group { font-size: 10.5px; color: var(--muted); letter-spacing: 1px; padding: 6px 6px 3px; font-weight: 600; }
-.mwr .side-hist .ch-item-wrap { position: relative; border-radius: 8px; margin-bottom: 1px; }
-.mwr .side-hist .ch-item-wrap:hover { background: #f4f5f7; }
-.mwr .side-hist .ch-item-wrap.on { background: var(--blue-ll); }
-.mwr .side-hist .ch-item { width: 100%; display: flex; flex-direction: column; align-items: stretch; padding: 6px 50px 6px 8px; color: var(--ink); border: none; border-radius: 8px; background: none; text-align: left; }
-.mwr .side-hist .ch-title { display: block; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 侧栏历史对话工作区：占满导航与版本信息之外的剩余高度。 */
+.mwr .side-hist { flex: 1 1 280px; display: flex; flex-direction: column; min-height: 180px;
+  margin: 0 12px; padding-top: 10px; border-top: 1px solid var(--border-subtle); overflow: hidden; }
+.mwr .side-hist .sh-head { flex: none; min-height: 28px; display: flex; align-items: center; padding: 0 4px 7px; }
+.mwr .side-hist .sh-title { font-size: 11px; color: var(--muted); letter-spacing: 1.5px; font-weight: 650; }
+.mwr .side-hist .sh-count { min-width: 23px; height: 20px; margin-left: auto; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-pill); color: var(--muted); background: var(--surface-subtle); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.mwr .side-hist .ch-search-wrap { position: relative; flex: none; display: flex; align-items: center; margin-bottom: 8px; color: var(--muted); }
+.mwr .side-hist .ch-search-wrap > svg { position: absolute; left: 10px; z-index: 1; pointer-events: none; }
+.mwr .side-hist .ch-search { width: 100%; min-height: 34px; padding: 7px 30px; border: 1px solid var(--border-default); border-radius: 9px; font-size: 12px; outline: none; }
+.mwr .side-hist .ch-search:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--control-focus-ring); }
+.mwr .side-hist .ch-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 3px 10px 0; scrollbar-gutter: stable; }
+.mwr .side-hist .ch-empty { min-height: 96px; display: grid; place-items: center; align-content: center; color: var(--muted); font-size: 12px; text-align: center; }
+.mwr .side-hist .ch-group { position: sticky; top: 0; z-index: 1; padding: 8px 8px 5px; color: var(--muted); background: color-mix(in srgb, var(--surface-card) 94%, transparent);
+  font-size: 10.5px; font-weight: 650; letter-spacing: 1px; backdrop-filter: blur(8px); }
+.mwr .side-hist .ch-item-wrap { position: relative; min-height: 52px; margin-bottom: 3px; border-radius: 9px; transition: background-color var(--motion-fast), transform var(--motion-fast); }
+.mwr .side-hist .ch-item-wrap:hover { background: var(--surface-subtle); transform: translateX(2px); }
+.mwr .side-hist .ch-item-wrap.on { background: var(--blue-ll); box-shadow: inset 3px 0 0 var(--blue); }
+.mwr .side-hist .ch-item { width: 100%; min-height: 52px; display: flex; flex-direction: column; align-items: stretch; justify-content: center;
+  padding: 8px 56px 8px 10px; color: var(--ink); border: none; border-radius: 9px; background: none; text-align: left; }
+.mwr .side-hist .ch-title { display: block; font-size: 12.5px; font-weight: 620; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mwr .side-hist .ch-item-wrap.on .ch-title { color: var(--blue-dd); }
-.mwr .side-hist .ch-meta { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); margin-top: 1px; }
+.mwr .side-hist .ch-meta { display: flex; align-items: center; gap: 3px; margin-top: 2px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .mwr .side-hist .ch-run-status { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--blue-d); }
-.mwr .side-hist .ch-pin, .mwr .side-hist .ch-delete { position: absolute; top: 50%; transform: translateY(-50%); color: var(--muted); cursor: pointer; visibility: hidden; padding: 3px; border: none; border-radius: 5px; background: none; display: inline-flex; }
-.mwr .side-hist .ch-pin { right: 26px; font-size: 11px; }
-.mwr .side-hist .ch-delete { right: 6px; }
-.mwr .side-hist .ch-item-wrap:hover :is(.ch-pin, .ch-delete), .mwr .side-hist :is(.ch-pin, .ch-delete):focus-visible { visibility: visible; }
+.mwr .side-hist .ch-pin, .mwr .side-hist .ch-delete { position: absolute; top: 50%; transform: translateY(-50%); width: 25px; height: 25px;
+  align-items: center; justify-content: center; color: var(--muted); cursor: pointer; visibility: hidden; padding: 0; border: none; border-radius: 6px; background: color-mix(in srgb, var(--surface-card) 88%, transparent); }
+.mwr .side-hist .ch-pin { right: 31px; font-size: 11px; }
+.mwr .side-hist .ch-delete { right: 4px; }
+.mwr .side-hist .ch-item-wrap:hover :is(.ch-pin, .ch-delete), .mwr .side-hist .ch-item-wrap:focus-within :is(.ch-pin, .ch-delete) { display: inline-flex; visibility: visible; }
 .mwr .side-hist :is(.ch-pin, .ch-delete):hover { color: var(--crit); background: color-mix(in srgb, var(--crit) 9%, transparent); }
 
 /* 对话 · 右侧 Trace 竖栏（树形层级） */
