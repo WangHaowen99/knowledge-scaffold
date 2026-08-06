@@ -145,3 +145,5 @@ def matcher(query):
 1. 若当前激活版本目录下存在 `scripts/sql_matcher.py`，使用自定义匹配器。
 2. 若不存在，使用默认匹配器（对 `scripts/query_templates.json` 的 key 做精确匹配）。
 3. 两种匹配器未命中时，均回退到 NL2SQL 自然语言查询。
+
+`sql_matcher.py` 是为存量知识包保留的 legacy 能力。运行时继续保持上述优先级以避免兼容性变化，但每次动态加载都会产生 `legacy_sql_matcher_load` 结构化审计事件。新知识包应优先使用声明式 `scripts/query_templates.json`。

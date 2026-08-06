@@ -35,6 +35,7 @@ def test_release_compose_loads_sandbox_settings_from_backend_env_file():
 
     assert "env_file:\n      - ./backend/.env" in compose_text
     for env_name in (
+        "SANDBOX_EXECUTION_MODE",
         "SANDBOX_ENABLED",
         "SANDBOX_FALLBACK_LOCAL",
         "SANDBOX_SECRET_ALLOW_PLAIN_HTTP",

@@ -17,7 +17,7 @@ from shared_capabilities.business_data import AuthSpec, EffectiveConnection
 from utils.logging import get_logger
 from .client import JiuwenboxClient
 from .config import SandboxConfig, load_sandbox_config
-from .errors import SandboxUnavailableError
+from .errors import SandboxUnavailableError, SandboxUnsupportedProviderError
 
 if TYPE_CHECKING:
     from agent.tools.business_data.resolver import ResolvedBusinessDataConnection
@@ -354,9 +354,7 @@ def _safe_provider_config(
             ),
         )
 
-    raise SandboxUnavailableError(
-        "unsupported sandbox business data provider '{}'".format(provider or "unknown")
-    )
+    raise SandboxUnsupportedProviderError(provider)
 
 
 def _placeholder_token(connection_id: str, field_name: str) -> str:
