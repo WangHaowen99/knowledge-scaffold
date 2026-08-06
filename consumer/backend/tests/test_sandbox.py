@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,7 +18,11 @@ from integration.sandbox.config import SandboxConfig, load_sandbox_config
 from integration.sandbox.client import JiuwenboxClient
 from integration.sandbox.data_proxy import DataConnectionSecretManager
 from integration.sandbox.env_allowlist import build_script_env
-from integration.sandbox.errors import SandboxCreateError, SandboxUnavailableError
+from integration.sandbox.errors import (
+    SandboxCreateError,
+    SandboxUnavailableError,
+    SandboxUnsupportedProviderError,
+)
 from integration.sandbox.executor import SandboxScriptExecutor
 from integration.sandbox.paths import to_sandbox_script_path
 from integration.sandbox.policy_builder import (
@@ -327,7 +332,10 @@ def test_data_proxy_manager_creates_safe_env_without_raw_secret(monkeypatch):
     assert fake_client.started
 
 
-@pytest.mark.parametrize("provider", ["dataagent", "nl2sql_template"])
+@pytest.mark.parametrize(
+    "provider",
+    ["dataagent", "nl2sql_template", "neo4j", "hugegraph"],
+)
 def test_data_proxy_manager_rejects_script_disallowed_providers(monkeypatch, provider):
     connection = _resolved_source(
         id="disallowed-ontology",
@@ -348,11 +356,12 @@ def test_data_proxy_manager_rejects_script_disallowed_providers(monkeypatch, pro
     )
 
     with pytest.raises(
-        SandboxUnavailableError,
+        SandboxUnsupportedProviderError,
         match="unsupported sandbox business data provider '{}'".format(provider),
-    ):
+    ) as exc_info:
         manager.prepare(run_id="run-disallowed", workspace_id="ws", ontology_id="demo")
 
+    assert exc_info.value.provider == provider
     assert fake_client.created == []
     assert fake_client.started == []
 
@@ -622,6 +631,7 @@ def test_sandbox_config_ignores_system_config_section(tmp_path, monkeypatch):
     monkeypatch.setattr(system_config_module, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(system_config_module, "CONFIG_PATH", config_path)
     for env_name in (
+        "SANDBOX_EXECUTION_MODE",
         "SANDBOX_ENABLED",
         "SANDBOX_FALLBACK_LOCAL",
         "SANDBOX_MEMORY_MAX",
@@ -639,6 +649,71 @@ def test_sandbox_config_ignores_system_config_section(tmp_path, monkeypatch):
         load_sandbox_config.cache_clear()
 
     assert config == SandboxConfig()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_enabled"),
+    [("legacy", False), ("prefer", True)],
+)
+def test_sandbox_execution_mode_overrides_legacy_boolean_flags(
+    monkeypatch,
+    mode,
+    expected_enabled,
+):
+    monkeypatch.setenv("SANDBOX_EXECUTION_MODE", mode)
+    monkeypatch.setenv("SANDBOX_ENABLED", "false" if expected_enabled else "true")
+    monkeypatch.setenv("SANDBOX_FALLBACK_LOCAL", "false")
+
+    load_sandbox_config.cache_clear()
+    try:
+        config = load_sandbox_config()
+    finally:
+        load_sandbox_config.cache_clear()
+
+    assert config.execution_mode == mode
+    assert config.enabled is expected_enabled
+    assert config.fallback_local is True
+
+
+def test_sandbox_execution_mode_absence_preserves_legacy_boolean_flags(monkeypatch):
+    monkeypatch.delenv("SANDBOX_EXECUTION_MODE", raising=False)
+    monkeypatch.setenv("SANDBOX_ENABLED", "true")
+    monkeypatch.setenv("SANDBOX_FALLBACK_LOCAL", "false")
+
+    load_sandbox_config.cache_clear()
+    try:
+        config = load_sandbox_config()
+    finally:
+        load_sandbox_config.cache_clear()
+
+    assert config.enabled is True
+    assert config.fallback_local is False
+
+
+@pytest.mark.parametrize("invalid_mode", ["mandatory", "enforce"])
+def test_invalid_sandbox_execution_mode_falls_back_to_legacy(
+    monkeypatch,
+    caplog,
+    invalid_mode,
+):
+    monkeypatch.setenv("SANDBOX_EXECUTION_MODE", invalid_mode)
+    monkeypatch.setenv("SANDBOX_ENABLED", "true")
+    monkeypatch.setenv("SANDBOX_FALLBACK_LOCAL", "false")
+
+    load_sandbox_config.cache_clear()
+    try:
+        with caplog.at_level(logging.WARNING, logger="integration.sandbox.config"):
+            config = load_sandbox_config()
+    finally:
+        load_sandbox_config.cache_clear()
+
+    assert config.execution_mode == "legacy"
+    assert config.enabled is False
+    assert config.fallback_local is True
+    record = caplog.records[-1]
+    assert record.security_event == "sandbox_invalid_execution_mode"
+    assert record.execution_mode == "legacy"
+    assert invalid_mode not in record.getMessage()
 
 
 def test_sandbox_config_keeps_topology_fields_fixed(monkeypatch):

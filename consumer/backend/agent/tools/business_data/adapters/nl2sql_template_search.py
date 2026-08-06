@@ -10,6 +10,10 @@ from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 from ontology.ontologies import get_ontology_version_dir
 from agent.tools.business_data.adapters.base import BusinessDataSearchEvent
 from shared_capabilities.business_data import EffectiveConnection, NL2SQLProvider
+from utils.logging import get_logger
+
+
+logger = get_logger("business_data.nl2sql_template")
 
 # Matcher protocol type: (query) -> (sql | None, metadata | None)
 MatcherFn = Callable[[str], Tuple[Optional[str], Optional[Dict[str, Any]]]]
@@ -130,6 +134,7 @@ class NL2SQLTemplateSearchAdapter:
         connection: EffectiveConnection,
         *,
         workspace_root: str = "",
+        workspace_id: str = "",
         ontology_id: str = "",
         ontology_version: str = "",
     ):
@@ -138,6 +143,7 @@ class NL2SQLTemplateSearchAdapter:
         self.ontology_id = str(ontology_id or "").strip()
         self.ontology_version = str(ontology_version or "").strip()
         self._workspace_root = str(workspace_root or "").strip()
+        self.workspace_id = str(workspace_id or "").strip()
 
         # Resolve matcher: external sql_matcher.py or built-in default
         self._matcher: MatcherFn = self._resolve_matcher() or _DefaultMatcher(
@@ -165,7 +171,51 @@ class NL2SQLTemplateSearchAdapter:
         if not matcher_file.exists():
             return None
 
-        return self._load_matcher_module(matcher_file)
+        try:
+            matcher = self._load_matcher_module(matcher_file)
+        except Exception as exc:
+            self._log_legacy_matcher_load(
+                matcher_file,
+                status="failed",
+                error=exc,
+            )
+            raise
+        self._log_legacy_matcher_load(matcher_file, status="loaded")
+        return matcher
+
+    def _log_legacy_matcher_load(
+        self,
+        path: Path,
+        *,
+        status: str,
+        error: Exception | None = None,
+    ) -> None:
+        """Audit backend execution of a legacy Python matcher."""
+        error_type = type(error).__name__ if error is not None else ""
+        logger.warning(
+            (
+                "LEGACY_SQL_MATCHER_LOAD: status=%s workspace_id=%s ontology_id=%s "
+                "ontology_version=%s matcher_path=%s error=%s"
+            ),
+            status,
+            self.workspace_id,
+            self.ontology_id,
+            self.ontology_version,
+            str(path),
+            error_type,
+            extra={
+                "security_event": "legacy_sql_matcher_load",
+                "execution_decision": "backend_dynamic_import",
+                "legacy_capability": "sql_matcher.py",
+                "provider": self.name,
+                "load_status": status,
+                "workspace_id": self.workspace_id,
+                "ontology_id": self.ontology_id,
+                "ontology_version": self.ontology_version,
+                "matcher_path": str(path),
+                "error_type": error_type,
+            },
+        )
 
     @staticmethod
     def _load_matcher_module(path: Path) -> MatcherFn:
