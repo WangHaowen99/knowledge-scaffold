@@ -218,8 +218,12 @@ test('候选修订接口支持预览、接受和幂等重放且禁止修改内�
   assert.equal(accepted.statusCode, 200, accepted.body);
   assert.notEqual(accepted.json().currentRevision, generated.revision.oid);
   assert.equal(accepted.json().candidate.status, 'accepted');
-  assert.equal(m4repo.getSuggestions([suggestion.id])[0].status, 'applied');
-  assert.equal(m4repo.getSuggestions([suggestion.id])[0].appliedRevision, accepted.json().currentRevision);
+  assert.equal(accepted.json().packageVersion, '1.0.0-rc.1');
+  const appliedSuggestion = m4repo.getSuggestions([suggestion.id])[0];
+  assert.equal(appliedSuggestion.status, 'applied');
+  assert.equal(appliedSuggestion.appliedVersion, '1.0.0-rc.1');
+  assert.equal(appliedSuggestion.appliedRevision, accepted.json().currentRevision);
+  assert.equal((await store.current(project.id))?.packageVersion, '1.0.0-rc.1');
 
   getDb().prepare(`UPDATE opt_suggestions SET status = 'candidate', applied_revision_oid = NULL
     WHERE id = ?`).run(suggestion.id);
@@ -228,6 +232,7 @@ test('候选修订接口支持预览、接受和幂等重放且禁止修改内�
   assert.equal(replayed.statusCode, 200, replayed.body);
   assert.equal(replayed.json().replayed, true);
   assert.equal(replayed.json().currentRevision, accepted.json().currentRevision);
+  assert.equal(replayed.json().packageVersion, accepted.json().packageVersion);
   assert.equal(m4repo.getSuggestions([suggestion.id])[0].status, 'applied');
 });
 

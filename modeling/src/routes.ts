@@ -1667,6 +1667,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           code: 'NOT_PACKAGE_DEFECT',
         });
       }
+      const blockedPackageDefects = diagnoses.filter((diagnosis) => diagnosis.blocking);
+      if (blockedPackageDefects.length) {
+        return reply.code(409).send({
+          error: `有 ${blockedPackageDefects.length} 项知识包诊断仍会阻断优化，请先完成专家确认`,
+          code: 'BLOCKING_PACKAGE_DEFECT',
+        });
+      }
+      const closedDiagnoses = diagnoses.filter((diagnosis) => ['resolved', 'irrelevant']
+        .includes(diagnosis.resolutionStatus));
+      if (closedDiagnoses.length) {
+        return reply.code(409).send({
+          error: `有 ${closedDiagnoses.length} 项失败诊断已关闭，请刷新后重新选择`,
+          code: 'CLOSED_DIAGNOSIS',
+        });
+      }
       const latest = await packageArtifacts.current(c.p.id);
       try {
         const result = aiConstructionOrchestrator.recordEvaluationDefects(c.p.id, {
@@ -1681,9 +1696,25 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             suggestedAction: diagnosis.suggestedAction,
           })),
         });
+        const optimizableIds = diagnoses
+          .filter((diagnosis) => !diagnosis.blocking)
+          .map((diagnosis) => diagnosis.id);
+        if (optimizableIds.length) {
+          // 用户在失败诊断页的明确勾选就是本轮知识包修复范围确认，后续建议/候选链路统一读取该状态。
+          diagnosisRepo.markFailureDiagnosesForRepair({
+            projectId: c.p.id,
+            diagnosisIds: optimizableIds,
+            actor: req.user!.username,
+            note: '用户选择转为建模修缮任务',
+            payload: { source: 'evaluation_repair', roundId: round.id },
+          });
+        }
+        const currentDiagnoses = diagnosisRepo.listFailureDiagnoses(c.p.id, round.id);
         return {
           aiConstruction: result.aiConstruction,
           ...(result.message ? { aiConstructionMessage: result.message } : {}),
+          diagnoses: currentDiagnoses,
+          canProposeOptimizations: diagnosisRepo.hasConfirmedOptimizableDiagnoses(currentDiagnoses),
         };
       } catch (error) {
         return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });

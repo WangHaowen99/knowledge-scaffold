@@ -1,11 +1,12 @@
 const CLOSED_RESOLUTIONS = new Set(['resolved', 'irrelevant']);
 
 /**
- * 只有归因到知识包本身、且尚未被专家关掉的失败原因才值得回流建模。
+ * 只有归因到知识包本身、没有阻断且尚未被专家关掉的失败原因才值得回流建模。
  * 运行环境、数据和用例问题改知识包解决不了，回流只会制造无效修缮任务。
  */
 export function canPlanEvaluationRepair(diagnosis) {
   return diagnosis?.repairScope === 'package'
+    && diagnosis?.blocking !== true
     && !CLOSED_RESOLUTIONS.has(String(diagnosis?.resolutionStatus ?? 'pending'));
 }
 
