@@ -32,6 +32,17 @@ const table: DataDictTable = {
   rows: [['1', '是', '测试'], ['2', '否', '示例']],
 };
 
+function excelDateTimeSerial(
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+): number {
+  return Date.UTC(year, month - 1, day, hour, minute, second) / 86_400_000 + 25_569;
+}
+
 function databaseTarget(overrides: Partial<EvaluationDatabaseTarget> = {}): EvaluationDatabaseTarget {
   return {
     connectionUrl: 'mysql://tester:db-secret@mysql.local:3306/',
@@ -198,6 +209,41 @@ test('评测库导入：Excel 超过既有行数阈值时仍全量分批写入',
   assert.equal(inserts.length, Math.ceil(rowCount / 200));
   assert.equal(inserts.reduce((total, call) => total + (call.values?.length ?? 0), 0), rowCount * 2);
   assert.deepEqual(inserts.at(-1)?.values?.slice(-2), [String(rowCount), `row-${rowCount}`]);
+});
+
+test('评测库导入：DATETIME 列保留日期、非零时间和零点时间', async () => {
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ['business_date', 'occurred_at', 'midnight_at'],
+    [
+      excelDateTimeSerial(2026, 8, 6),
+      excelDateTimeSerial(2026, 8, 6, 15, 4, 5),
+      excelDateTimeSerial(2026, 8, 7),
+    ],
+  ]);
+  worksheet.A2.z = 'yyyy-mm-dd';
+  worksheet.B2.z = 'yyyy-mm-dd hh:mm:ss';
+  worksheet.C2.z = 'yyyy-mm-dd hh:mm:ss';
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'events');
+  const buffer = Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+  const recorder = recordingClient();
+
+  await importEvaluationDatabaseExcel({
+    filename: 'events.xlsx',
+    buffer,
+    target: databaseTarget(),
+  }, { connect: async () => recorder.client });
+
+  const create = recorder.calls.find((call) => call.sql.startsWith('CREATE TABLE'));
+  assert.match(create?.sql ?? '', /`business_date` DATETIME/);
+  assert.match(create?.sql ?? '', /`occurred_at` DATETIME/);
+  assert.match(create?.sql ?? '', /`midnight_at` DATETIME/);
+  const insert = recorder.calls.find((call) => call.sql.startsWith('INSERT INTO'));
+  assert.deepEqual(insert?.values, [
+    '2026-08-06',
+    '2026-08-06T15:04:05',
+    '2026-08-07T00:00:00',
+  ]);
 });
 
 test('评测库导入：完整列推断避免混合类型失败并保留超大整数', async () => {
