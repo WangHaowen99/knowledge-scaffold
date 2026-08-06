@@ -80,6 +80,11 @@ interface ExcelSheetRow {
   sheetRow: number;
 }
 
+interface ExcelFormatSemantics {
+  hasDate: boolean;
+  hasTime: boolean;
+}
+
 function padDatePart(value: number, length = 2): string {
   return String(value).padStart(length, '0');
 }
@@ -111,6 +116,40 @@ function dateValue(parts: ExcelDateTimeParts): string {
   return localDateTimeValue(parts).slice(0, 10);
 }
 
+function timeValue(parts: ExcelDateTimeParts): string {
+  return `${padDatePart(parts.hour)}:${padDatePart(parts.minute)}:${padDatePart(parts.second)}`;
+}
+
+function excelFormatSemantics(format: unknown): ExcelFormatSemantics {
+  const source = String(format ?? '');
+  const hasBracketedTime = /\[(?:h+|m+|s+)\]/i.test(source);
+  const normalized = source
+    .replace(/"[^"]*"/g, '')
+    .replace(/\\./g, '')
+    .replace(/\[[^\]]+\]/g, '');
+  const hasTime = hasBracketedTime || /(?:h|s|am\/pm|a\/p)/i.test(normalized);
+  const hasDate = /(?:y|d)/i.test(normalized) || (!hasTime && /m/i.test(normalized));
+  return { hasDate, hasTime };
+}
+
+function stableDateTimeValue(parts: ExcelDateTimeParts, format: unknown): string {
+  const semantics = excelFormatSemantics(format);
+  if (semantics.hasTime && !semantics.hasDate) return timeValue(parts);
+  const containsTime = semantics.hasTime || parts.hour !== 0 || parts.minute !== 0 || parts.second !== 0;
+  return containsTime ? localDateTimeValue(parts) : dateValue(parts);
+}
+
+function dateTimePartsFromDate(value: Date): ExcelDateTimeParts {
+  return {
+    year: value.getUTCFullYear(),
+    month: value.getUTCMonth() + 1,
+    day: value.getUTCDate(),
+    hour: value.getUTCHours(),
+    minute: value.getUTCMinutes(),
+    second: value.getUTCSeconds(),
+  };
+}
+
 function worksheetCell(sheet: XLSX.WorkSheet, row: number, column: number): XLSX.CellObject | undefined {
   return sheet[XLSX.utils.encode_cell({ r: row, c: column })] as XLSX.CellObject | undefined;
 }
@@ -121,17 +160,19 @@ function documentCellValue(
   date1904: boolean,
 ): unknown {
   const dateTime = excelDateTimeParts(cell, date1904);
-  if (dateTime) return dateValue(dateTime);
-  return raw instanceof Date ? raw.toISOString().slice(0, 10) : raw;
+  if (dateTime) return stableDateTimeValue(dateTime, cell?.z);
+  return raw instanceof Date
+    ? stableDateTimeValue(dateTimePartsFromDate(raw), cell?.z)
+    : raw;
 }
 
 export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): DataDictTable[] {
   const includeCellMetadata = options.includeCellMetadata === true;
-  // 图导入保留 Excel 日期序列，避免无时区时间被 JavaScript Date 转成 UTC。
+  // 始终保留 Excel 日期序列，避免 JavaScript Date 的时区转换导致日期偏移或时间截断。
   const wb = XLSX.read(buffer, {
     type: 'buffer',
-    cellDates: !includeCellMetadata,
-    cellNF: includeCellMetadata,
+    cellDates: false,
+    cellNF: true,
   });
   const date1904 = Boolean(wb.Workbook?.WBProps?.date1904);
   const tables: DataDictTable[] = [];
@@ -142,7 +183,7 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
     const range = XLSX.utils.decode_range(reference);
     const rawRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
       header: 1,
-      blankrows: includeCellMetadata,
+      blankrows: true,
       raw: true,
     });
     const formattedRows = includeCellMetadata
@@ -156,10 +197,10 @@ export function parseExcel(buffer: Buffer, options: ParseExcelOptions = {}): Dat
       raw,
       formatted: formattedRows?.[index],
       sheetRow: range.s.r + index,
-    })).filter((row) => !includeCellMetadata || row.raw.some((value) => value != null));
+    })).filter((row) => row.raw.some((value) => value != null));
     const rows = sheetRows.map((row) => row.raw.map((value, column) => documentCellValue(
       value,
-      includeCellMetadata ? worksheetCell(sheet, row.sheetRow, range.s.c + column) : undefined,
+      worksheetCell(sheet, row.sheetRow, range.s.c + column),
       date1904,
     )));
     if (!rows.length) continue;
@@ -234,7 +275,7 @@ function cellMetadata(
   cell: XLSX.CellObject | undefined,
   date1904: boolean,
 ): DataDictCell {
-  const formattedText = String(formatted ?? '').trim();
+  const formattedText = String(formatted ?? cell?.w ?? '').trim();
   if (raw == null || raw === '') return { kind: 'blank', value: '', formatted: formattedText };
   const dateTime = excelDateTimeParts(cell, date1904);
   if (dateTime) {
@@ -243,14 +284,7 @@ function cellMetadata(
   if (raw instanceof Date) {
     return {
       kind: 'date',
-      value: localDateTimeValue({
-        year: raw.getFullYear(),
-        month: raw.getMonth() + 1,
-        day: raw.getDate(),
-        hour: raw.getHours(),
-        minute: raw.getMinutes(),
-        second: raw.getSeconds(),
-      }),
+      value: localDateTimeValue(dateTimePartsFromDate(raw)),
       formatted: formattedText,
     };
   }
