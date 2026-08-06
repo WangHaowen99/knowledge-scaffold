@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { getDb } from '../db/index.js';
 import type { CoverageResult, PackageSpec } from '../types.js';
 import { renderPackage } from '../workflow/package-render.js';
+import { nextValidationCandidateVersion } from '../workflow/package-version-lifecycle.js';
 import {
   ArtifactRepositoryError,
   type ArtifactChange,
@@ -229,6 +230,7 @@ export interface AcceptedPackageCandidateRevision {
   candidate: PackageCandidateRevision;
   selection: PackageCandidateSelection;
   revision: ArtifactRevision;
+  packageVersion: string;
 }
 
 export interface PackageArtifactView {
@@ -1065,9 +1067,37 @@ export class PackageArtifactStore {
         );
       }
 
-      const changes = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
+      const currentView = this.viewFromSnapshot(current);
+      let packageVersion: string;
+      try {
+        packageVersion = nextValidationCandidateVersion({
+          currentVersion: currentView.packageVersion,
+          currentStatus: currentView.spec.status ?? 'draft',
+        });
+      } catch (cause) {
+        throw new PackageArtifactStoreError(
+          'invalid_input',
+          cause instanceof Error ? cause.message : '无法生成下一个知识包版本',
+        );
+      }
+      const contentChanges = selectedCandidateChanges(candidate.groups, selection.selectedGroupIds);
+      const candidateTarget = applyCandidateChanges(current, contentChanges);
+      const candidateView = this.viewFromSnapshot(candidateTarget);
+      if (![currentView.spec.version, packageVersion].includes(candidateView.spec.version)) {
+        throw new PackageArtifactStoreError('invalid_input', '候选修订不能自行指定知识包版本');
+      }
+      const versionedSpec: PackageSpec = {
+        ...candidateView.spec,
+        version: packageVersion,
+        status: 'review',
+      };
+      const changes = overlayArtifactChanges(
+        contentChanges,
+        metadataChanges(candidateTarget.files, versionedSpec),
+      );
       const target = applyCandidateChanges(current, changes);
-      this.viewFromSnapshot(target);
+      const acceptedView = this.viewFromSnapshot(target, packageVersion);
+      const packageVersionId = `pv_${randomUUID().slice(0, 12)}`;
       const revision = await this.commitAndIndex(
         projectId,
         candidate.baseRevision,
@@ -1078,7 +1108,26 @@ export class PackageArtifactStore {
           gitMetadata(action),
         ),
         (savedRevision) => {
-          this.recordRevision(projectId, savedRevision, action, changes.map((change) => change.path));
+          this.db.prepare(`INSERT INTO package_versions
+            (id, project_id, version, spec_json, coverage_json, note, revision_oid, created_at)
+            VALUES (?,?,?,?,?,?,?,?)`)
+            .run(
+              packageVersionId,
+              projectId,
+              packageVersion,
+              JSON.stringify(acceptedView.spec),
+              JSON.stringify(acceptedView.coverage),
+              note ?? candidate.summary,
+              savedRevision.oid,
+              savedRevision.createdAt,
+            );
+          this.recordRevision(
+            projectId,
+            savedRevision,
+            action,
+            changes.map((change) => change.path),
+            packageVersion,
+          );
           this.decideCandidate(
             candidate,
             'accepted',
@@ -1093,6 +1142,7 @@ export class PackageArtifactStore {
         candidate: this.candidateRevisionUnlocked(projectId, candidate.id),
         selection,
         revision,
+        packageVersion,
       };
     });
   }
@@ -1689,6 +1739,17 @@ function selectedCandidateChanges(
   return groups
     .filter((group) => selected.has(group.id))
     .flatMap((group) => group.changes.map(cloneArtifactChange));
+}
+
+function overlayArtifactChanges(
+  changes: readonly ArtifactChange[],
+  replacements: readonly ArtifactChange[],
+): ArtifactChange[] {
+  const replacementPaths = new Set(replacements.map((change) => change.path));
+  return [
+    ...changes.filter((change) => !replacementPaths.has(change.path)),
+    ...replacements,
+  ].sort((left, right) => compareNames(left.path, right.path));
 }
 
 function assertCandidateValidation(

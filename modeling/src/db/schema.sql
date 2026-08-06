@@ -621,7 +621,7 @@ CREATE TABLE IF NOT EXISTS opt_suggestions (
   candidate_revision_id TEXT,          -- 最近一次 PR7 候选修订 ID；退回后保留审计关联
   candidate_feedback TEXT,             -- 候选被退回后带入下一次修订的调整要求
   status        TEXT NOT NULL DEFAULT 'pending',  -- pending | candidate | applied | rejected
-  applied_version TEXT,              -- 接受候选时的 spec.version；工件修订通常不提升语义版本
+  applied_version TEXT,              -- 接受候选时生成的新 spec.version
   applied_revision_oid TEXT,         -- 接受候选后形成的正式 Git 修订
   created_at    TEXT NOT NULL
 );

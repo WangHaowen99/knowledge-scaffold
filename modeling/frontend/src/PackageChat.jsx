@@ -132,6 +132,7 @@ export default function PackageChat({
   pendingInteraction,
   flowchartDraftState,
   candidateRevisionPanel,
+  candidateRevisionAttentionKey = '',
   onPendingInteractionBusyChange,
   confirmFlowchartMutation,
   onProjectChanged,
@@ -198,6 +199,12 @@ export default function PackageChat({
     }
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });
   }, [timeline.length, busy]);
+
+  // 候选卡片在独立请求完成后才挂载，不能依赖消息数量变化来进入可视区。
+  useEffect(() => {
+    if (!candidateRevisionAttentionKey) return;
+    bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });
+  }, [candidateRevisionAttentionKey]);
 
   const loadOlder = async () => {
     if (!hasOlderMessages || olderMessagesBusy || !onLoadOlderMessages) return;
