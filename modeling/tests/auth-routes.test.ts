@@ -1923,6 +1923,11 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
     payload: { roundId: round.id, diagnosisIds: [packageDefect.id] },
   });
   assert.equal(planned.statusCode, 200, planned.body);
+  assert.equal(planned.json().canProposeOptimizations, true);
+  const plannedDiagnosis = planned.json().diagnoses
+    .find((item: any) => item.id === packageDefect.id);
+  assert.equal(plannedDiagnosis.resolutionStatus, 'confirmed');
+  assert.equal(plannedDiagnosis.resolutionAction, 'plan_repair');
   const repair = planned.json().aiConstruction.tasks
     .find((item: any) => item.kind === 'evaluation_repair');
   assert.ok(repair, '应规划出评测缺陷修缮任务');

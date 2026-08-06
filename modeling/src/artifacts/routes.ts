@@ -305,10 +305,12 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
         }
         if (action === 'accept') {
           if (existing.status === 'accepted') {
+            let packageVersion: string | null = null;
             if (existing.acceptedRevision) {
               const acceptedSnapshot = await store.readPackageFiles(project.id, existing.acceptedRevision);
+              packageVersion = acceptedSnapshot.spec.version;
               m4repo.markCandidateRevisionApplied(
-                project.id, candidateId, acceptedSnapshot.spec.version, existing.acceptedRevision,
+                project.id, candidateId, packageVersion, existing.acceptedRevision,
               );
             }
             return {
@@ -319,6 +321,7 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
                 autoIncludedGroupIds: [],
               },
               currentRevision: existing.acceptedRevision,
+              packageVersion,
               replayed: true,
             };
           }
@@ -371,18 +374,24 @@ export function registerArtifactRoutes(app: FastifyInstance): void {
             },
           });
           m4repo.markCandidateRevisionApplied(
-            project.id, candidateId, preview.spec.version, accepted.revision.oid,
+            project.id, candidateId, accepted.packageVersion, accepted.revision.oid,
           );
           getAuthoringState().apply({
             kind: 'publish_event',
             projectId: project.id,
             type: 'package.revision.created',
-            payload: { revisionId: accepted.revision.oid, cause: 'candidate_accepted', candidateId },
+            payload: {
+              revisionId: accepted.revision.oid,
+              cause: 'candidate_accepted',
+              candidateId,
+              packageVersion: accepted.packageVersion,
+            },
           });
           return {
             candidate: publicCandidate(accepted.candidate),
             selection: accepted.selection,
             currentRevision: accepted.revision.oid,
+            packageVersion: accepted.packageVersion,
           };
         }
         if (action === 'revise') {

@@ -16,6 +16,7 @@ test('只有归因到知识包且未关闭的失败原因可以回流建模', ()
   assert.equal(canPlanEvaluationRepair(defect()), true);
   assert.equal(canPlanEvaluationRepair(defect({ repairScope: 'data' })), false);
   assert.equal(canPlanEvaluationRepair(defect({ repairScope: 'testcase' })), false);
+  assert.equal(canPlanEvaluationRepair(defect({ blocking: true })), false);
   assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'resolved' })), false);
   assert.equal(canPlanEvaluationRepair(defect({ resolutionStatus: 'irrelevant' })), false);
   // 专家已确认或暂缓的知识包缺陷仍然可以回流

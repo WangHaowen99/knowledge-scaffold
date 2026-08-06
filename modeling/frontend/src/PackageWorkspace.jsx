@@ -113,9 +113,11 @@ export default function PackageWorkspace({
   const [olderMessagesError, setOlderMessagesError] = useState('');
   const [candidatePreview, setCandidatePreview] = useState(null);
   const [candidateRefreshKey, setCandidateRefreshKey] = useState(0);
+  const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
   const sessionCursorRef = useRef(0);
   // 回放闸门与合并加载的定时器跨事件存活，因此放在 ref 而不是订阅副作用的闭包里
   const eventStateRef = useRef({ gate: null, loadTimer: null });
+  const pendingFileSelectionRef = useRef(null);
   const [flowchartDraft, setFlowchartDraft] = useState(null);
   const [flowchartDraftError, setFlowchartDraftError] = useState('');
   const [flowchartDraftLoading, setFlowchartDraftLoading] = useState(false);
@@ -133,6 +135,9 @@ export default function PackageWorkspace({
   const focusedView = packageWorkspaceFocus(focus);
   const activeTab = embedded ? focusedView.tab : tab;
   const sessionReady = Boolean(session);
+  const refreshCandidateRevisions = useCallback(() => {
+    setCandidateRefreshKey((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     if (!embedded) return;
@@ -497,6 +502,35 @@ export default function PackageWorkspace({
     return () => window.removeEventListener('mw-open-evaluation-view', handler);
   }, [projectId]);
 
+  // 评测/优化阶段不挂载 ReviewPanel，先保存助手发起的文件定位请求，回到编辑页后再交给文件面板。
+  useEffect(() => {
+    const selectFileFromStage = (event) => {
+      const detail = event?.detail ?? {};
+      if (detail.projectId !== projectId || typeof detail.path !== 'string') return;
+      if (!['scenario', 'data', 'evaluate', 'improve'].includes(activeTab)) return;
+      if (activeTab === 'edit') return;
+      if (!confirmDiscardFlowchartChanges()) return;
+      pendingFileSelectionRef.current = { projectId, path: detail.path };
+      if (embedded) onNavigate?.('ai_construction');
+      else setTab('edit');
+    };
+    window.addEventListener('mw-package-file-select', selectFileFromStage);
+    return () => window.removeEventListener('mw-package-file-select', selectFileFromStage);
+  }, [activeTab, confirmDiscardFlowchartChanges, embedded, onNavigate, projectId]);
+
+  useEffect(() => {
+    if (activeTab !== 'edit') return undefined;
+    const pending = pendingFileSelectionRef.current;
+    if (!pending || pending.projectId !== projectId) return undefined;
+    pendingFileSelectionRef.current = null;
+    const timer = window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('mw-package-file-select', {
+        detail: { projectId, path: pending.path, target: pending.path },
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeTab, projectId]);
+
   const evaluationLifecycleTabs = (
     <EvaluationLifecycleTabs
       activeView={evaluationLifecycleView}
@@ -525,6 +559,8 @@ export default function PackageWorkspace({
         onGoEvaluate={() => selectEvaluationLifecycle('run')} />;
     }
     return <OptimizationPanel projectId={projectId} onChanged={load}
+      active={evaluationLifecycleView === 'optimize'}
+      onCandidateCreated={refreshCandidateRevisions}
       onGoEvaluate={() => selectEvaluationLifecycle('run')}
       onGoDiagnose={() => selectEvaluationLifecycle('diagnose')} />;
   };
@@ -739,8 +775,10 @@ export default function PackageWorkspace({
               packageRevision={pkg?.revision ?? ''}
               activeOperation={activeOperationOf(session)}
               pendingInteraction={constructionInteraction}
+              candidateRevisionAttentionKey={candidateAttentionKey}
               candidateRevisionPanel={<CandidateRevisionPanel projectId={projectId}
                 refreshKey={candidateRefreshKey}
+                onVisibilityChange={setCandidateAttentionKey}
                 confirmAction={confirmDiscardFlowchartChanges}
                 onPreview={(preview) => {
                   setCandidatePreview(preview);

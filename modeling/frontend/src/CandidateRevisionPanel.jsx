@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { CheckCircle2 } from 'lucide-react';
 
 import {
   listCandidateRevisions,
@@ -44,6 +45,36 @@ export function resolveCandidateGroupSelection(groups, requestedGroupIds) {
     selectedGroupIds,
     autoIncludedGroupIds: selectedGroupIds.filter((id) => !requested.includes(id)),
   };
+}
+
+export function candidateRevisionAcceptedNotice(response = {}) {
+  const revision = String(
+    response?.currentRevision ?? response?.candidate?.acceptedRevision ?? '',
+  ).trim();
+  const packageVersion = String(response?.packageVersion ?? '').trim().replace(/^v/i, '');
+  return {
+    key: `accepted:${revision || response?.candidate?.id || 'current'}`,
+    title: '知识包已更新',
+    detail: packageVersion
+      ? `所选修改已接受，新版本 v${packageVersion} 已生成并设为当前内容。`
+      : '所选修改已接受，新的知识包修订已生成并设为当前内容。',
+  };
+}
+
+export function candidateRevisionVisibilityKey(candidates = [], error = '', noticeKey = '') {
+  const ids = candidates.map((candidate) => String(candidate?.id ?? '')).filter(Boolean);
+  const base = ids.length ? `candidates:${ids.join(',')}` : (error ? `error:${error}` : '');
+  return noticeKey ? `${base ? `${base}|` : ''}notice:${noticeKey}` : base;
+}
+
+export function CandidateRevisionSuccessNotice({ notice }) {
+  if (!notice) return null;
+  return (
+    <div className="candidate-revision-notice" role="status" aria-live="polite">
+      <CheckCircle2 size={19} strokeWidth={2.2} aria-hidden="true" />
+      <div><strong>{notice.title}</strong><span>{notice.detail}</span></div>
+    </div>
+  );
 }
 
 export async function respondCandidateWithRefresh(operation, refresh) {
@@ -97,6 +128,7 @@ function CandidateCard({
   onBusy,
   onPreview,
   onChanged,
+  onResponded,
   onError,
 }) {
   const groups = useMemo(() => normalizedGroups(candidate.groups), [candidate.groups]);
@@ -138,7 +170,7 @@ function CandidateCard({
 
   const respond = (action) => run(`${action}_candidate_revision`, async () => {
     if (action === 'revise' && !note.trim()) throw new Error('请填写需要调整的内容');
-    await respondCandidateWithRefresh(
+    const result = await respondCandidateWithRefresh(
       () => respondCandidateRevision(projectId, candidate.id, {
         action,
         ...(action !== 'reject' ? { selectedGroupIds: selection.requestedGroupIds } : {}),
@@ -146,6 +178,7 @@ function CandidateCard({
       }),
       onChanged,
     );
+    onResponded?.(action, result);
     setNote('');
   });
 
@@ -219,6 +252,7 @@ export default function CandidateRevisionPanel({
   projectId,
   candidates: suppliedCandidates,
   refreshKey,
+  onVisibilityChange,
   onPreview,
   onChanged,
   onError,
@@ -229,7 +263,13 @@ export default function CandidateRevisionPanel({
   const [loaded, setLoaded] = useState(suppliedCandidates ?? null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [notice, setNotice] = useState(null);
   const candidates = suppliedCandidates ?? loaded ?? [];
+  const visibilityKey = candidateRevisionVisibilityKey(candidates, error, notice?.key);
+
+  useEffect(() => {
+    onVisibilityChange?.(visibilityKey);
+  }, [onVisibilityChange, visibilityKey]);
 
   const load = async () => {
     if (!projectId || suppliedCandidates) return;
@@ -245,17 +285,21 @@ export default function CandidateRevisionPanel({
     await onChanged?.();
   };
 
-  if (!candidates.length && !error) return null;
+  if (!candidates.length && !error && !notice) return null;
   return (
-    <section className="candidate-revision-panel" aria-label={title}>
-      <div className="candidate-revision-panel-title">
+    <section className="candidate-revision-panel" aria-label={notice?.title ?? title}>
+      {candidates.length > 0 && <div className="candidate-revision-panel-title">
         <div><strong>{title}</strong><span>{subtitle}</span></div>
         <em>{candidates.length}</em>
-      </div>
+      </div>}
+      <CandidateRevisionSuccessNotice notice={notice} />
       {candidates.map((candidate) => <CandidateCard key={candidate.id}
         projectId={projectId} candidate={candidate} busy={busy} onBusy={setBusy}
         confirmAction={confirmAction}
         onPreview={onPreview} onChanged={changed}
+        onResponded={(action, result) => {
+          if (action === 'accept') setNotice(candidateRevisionAcceptedNotice(result));
+        }}
         onError={(message) => { setError(message); onError?.(message); }} />)}
       {error && <div className="candidate-revision-error" role="alert">{error}</div>}
     </section>

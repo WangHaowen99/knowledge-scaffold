@@ -5,6 +5,7 @@ import { diagnoseEvaluationFailures } from '../src/evaluation/failure-diagnosis.
 import {
   hasConfirmedOptimizableDiagnoses,
   listFailureDiagnoses,
+  markFailureDiagnosesForRepair,
   replaceFailureDiagnoses,
   resolveFailureDiagnosis,
 } from '../src/evaluation/failure-diagnosis-repo.js';
@@ -1086,6 +1087,34 @@ test('专家可将数据阻断诊断转为可验证的知识包修复并保留�
     nextSteps: ['generate_optimization_suggestions', 'rerun_evaluation'],
   });
   assert.equal(hasConfirmedOptimizableDiagnoses([resolved]), true);
+});
+
+test('用户转为建模修缮任务会确认可优化诊断并保留修缮来源', () => {
+  const project = createProject({ owner: 'diagnosis-plan', name: 'diagnosis-plan', domain: 'demo', background: '' });
+  const round = createRound(project.id, '1.0.0', 1);
+  const [diagnosis] = replaceFailureDiagnoses(project.id, round.id, '1.0.0', 'revision-1', [{
+    category: 'knowledge_gap', title: '缺少适用条件', summary: '规则没有覆盖该场景', evidence: ['用例证据'],
+    confidence: 'high', blocking: false, repairScope: 'package', packageOptimizable: false,
+    resultIds: ['result-1'], relatedQuestions: ['何时适用'], suggestedAction: '补充规则',
+  }]);
+
+  const [planned] = markFailureDiagnosesForRepair({
+    projectId: project.id,
+    diagnosisIds: [diagnosis.id],
+    actor: 'repair-user',
+    note: '用户选择转为建模修缮任务',
+    payload: { source: 'evaluation_repair', roundId: round.id },
+  });
+
+  assert.equal(planned.resolutionStatus, 'confirmed');
+  assert.equal(planned.resolutionAction, 'plan_repair');
+  assert.equal(planned.packageOptimizable, true);
+  assert.equal(planned.resolutionActor, 'repair-user');
+  assert.equal(planned.resolutionNote, '用户选择转为建模修缮任务');
+  assert.deepEqual(planned.resolutionPayload, {
+    source: 'evaluation_repair', roundId: round.id,
+  });
+  assert.equal(hasConfirmedOptimizableDiagnoses([planned]), true);
 });
 
 test('优化建议持久化根因、证据、通用化和验证方案', () => {

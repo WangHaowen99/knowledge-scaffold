@@ -46,6 +46,10 @@ const candidateRevisionSource = readFileSync(
   new URL('../frontend/src/CandidateRevisionPanel.jsx', import.meta.url),
   'utf8',
 );
+const optimizationPanelSource = readFileSync(
+  new URL('../frontend/src/M4Panel.jsx', import.meta.url),
+  'utf8',
+);
 
 test('确认知识包修复方案后显示明确的修复进度而不是普通提交提示', () => {
   assert.equal(interactionBusyState('controlled_repair'), 'repair_knowledge');
@@ -536,6 +540,18 @@ test('建模助手可以让中栏定位流程或知识文件', () => {
   assert.match(reviewPanelSource, /setPath\(resolved\)/);
 });
 
+test('评测和优化阶段的知识文件动作会回到编辑页后再定位文件', () => {
+  assert.match(packageWorkspaceSource, /pendingFileSelectionRef/);
+  assert.match(packageWorkspaceSource, /\['scenario', 'data', 'evaluate', 'improve'\]\.includes\(activeTab\)/);
+  assert.match(packageWorkspaceSource, /activeTab === 'edit'\) return/);
+  assert.match(packageWorkspaceSource, /setTab\('edit'\)/);
+  assert.match(packageWorkspaceSource, /onNavigate\?\.\('ai_construction'\)/);
+  assert.match(
+    packageWorkspaceSource,
+    /activeTab !== 'edit'[\s\S]*?window\.setTimeout\(\(\) => \{[\s\S]*?mw-package-file-select/,
+  );
+});
+
 test('知识包 Markdown 相对链接由中栏接管而不是触发页面跳转', () => {
   assert.match(reviewPanelSource, /resolvePackageMarkdownTarget\(path, href, pkg\.files\)/);
   assert.match(reviewPanelSource, /event\.preventDefault\(\)/);
@@ -611,6 +627,32 @@ test('待确认的修改作为建模助手消息展示而不是悬在助手上�
   }));
   assert.ok(html.indexOf('知识包建模助手') < html.indexOf('需要你确认的修改'));
   assert.match(html, /pchat-candidate-review/);
+});
+
+test('优化候选成功后刷新右侧卡片并把异步出现的卡片滚动到可见区域', () => {
+  assert.match(optimizationPanelSource, /onCandidateCreated\?\.\(result\)/);
+  assert.match(packageWorkspaceSource, /onCandidateCreated=\{refreshCandidateRevisions\}/);
+  assert.match(packageWorkspaceSource, /onVisibilityChange=\{setCandidateAttentionKey\}/);
+  assert.match(packageWorkspaceSource, /candidateRevisionAttentionKey=\{candidateAttentionKey\}/);
+  assert.match(
+    packageChatSource,
+    /if \(!candidateRevisionAttentionKey\) return;[\s\S]*?scrollTo[\s\S]*?\[candidateRevisionAttentionKey\]/,
+  );
+});
+
+test('优化页重新激活时刷新可改项且旧请求不能覆盖新状态', () => {
+  assert.match(
+    packageWorkspaceSource,
+    /<OptimizationPanel[\s\S]*?active=\{evaluationLifecycleView === 'optimize'\}/,
+  );
+  assert.match(optimizationPanelSource, /active = true/);
+  assert.match(optimizationPanelSource, /createLatestRequestGate\(\)/);
+  assert.match(optimizationPanelSource, /const isCurrent = loadRequestGate\.current\.begin\(\)/);
+  assert.match(optimizationPanelSource, /if \(!isCurrent\(\)\) return null/);
+  assert.match(
+    optimizationPanelSource,
+    /if \(!active\)[\s\S]*?loadRequestGate\.current\.invalidate\(\)[\s\S]*?\[active, projectId, load\]/,
+  );
 });
 
 test('自动重查挂在工作区而不是体检面板，评测与诊断页签下改包同样会重新校验', () => {

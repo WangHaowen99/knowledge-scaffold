@@ -19,6 +19,7 @@ import {
   normalizeOptimizeOperation,
   shouldPollOptimizeOperation,
 } from './optimize-running-state.js';
+import { createLatestRequestGate } from './packageFileContent.js';
 
 /* ================= 节点 14/15 · 失败诊断 / 优化更新 ================= */
 
@@ -150,8 +151,10 @@ function DiagnosisCard({ diagnosis, resolving, onResolve, selected = false, onTo
         )}
         <div className="sg-q"><b>建议先处理</b><div>{diagnosis.suggestedAction}</div></div>
         {diagnosis.resolutionStatus && diagnosis.resolutionStatus !== 'pending' && (
-          <div className="sg-q"><b>专家处置</b><div>
-            {RESOLUTION_LABEL[diagnosis.resolutionStatus] ?? diagnosis.resolutionStatus}
+          <div className="sg-q"><b>{diagnosis.resolutionAction === 'plan_repair' ? '建模修缮' : '专家处置'}</b><div>
+            {diagnosis.resolutionAction === 'plan_repair'
+              ? '已加入建模修缮'
+              : (RESOLUTION_LABEL[diagnosis.resolutionStatus] ?? diagnosis.resolutionStatus)}
             {diagnosis.resolutionNote ? `：${diagnosis.resolutionNote}` : ''}
           </div></div>
         )}
@@ -291,7 +294,9 @@ export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onCh
     if (!targetRound || !plannableDefectIds.length) return;
     setBusy('plan_repair'); setErr(''); setRepairNotice('');
     try {
-      await planEvaluationDefectRepair(projectId, targetRound.id, plannableDefectIds);
+      const data = await planEvaluationDefectRepair(projectId, targetRound.id, plannableDefectIds);
+      if (Array.isArray(data.diagnoses)) setDiagnoses(data.diagnoses);
+      setDiagnosisCanPropose(!!data.canProposeOptimizations);
       setSelectedDefects(new Set());
       setRepairNotice(`已把 ${plannableDefectIds.length} 项缺陷交回建模，请在右侧建模助手里继续。`);
       // 助手栏与工作流步骤都读 session，需要一次刷新才能看到新任务
@@ -344,7 +349,7 @@ export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onCh
         <div style={{ marginTop: 16 }}>
           <div className="sg-bar">
             <span className="sg-bar-t">失败原因</span>
-            <span className="sg-bar-c">{currentDiagnoses.length} 项，{currentDiagnoses.filter((item) => item.packageOptimizable && !item.blocking).length} 项可优化</span>
+            <span className="sg-bar-c">{currentDiagnoses.length} 项，{packageDefects.length} 项可回流修缮</span>
           </div>
           {currentDiagnoses.map((diagnosis) => (
             <DiagnosisCard key={diagnosis.id} diagnosis={diagnosis}
@@ -394,7 +399,13 @@ export function FailureDiagnosisPanel({ projectId, onAdvance, onGoEvaluate, onCh
   );
 }
 
-export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
+export function OptimizationPanel({
+  projectId,
+  onGoDiagnose,
+  onChanged,
+  onCandidateCreated,
+  active = true,
+}) {
   const [rounds, setRounds] = useState(null);
   const [versions, setVersions] = useState([]);
   const [diagnoses, setDiagnoses] = useState([]);
@@ -408,17 +419,31 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
   const [expertNote, setExpertNote] = useState('');
   const [operationTask, setOperationTask] = useState(null);
   const pollRef = useRef(null);
+  const announcedCandidateIdRef = useRef('');
+  const loadRequestGate = useRef(null);
+  if (!loadRequestGate.current) loadRequestGate.current = createLatestRequestGate();
   // 记录已见过的待处理建议：刷新时保留用户勾选，只把新出现的建议默认选上
   const knownPendingRef = useRef(new Set());
 
+  const showCandidate = useCallback((result) => {
+    if (!result?.candidateId) return;
+    setCandidateResult(result);
+    if (announcedCandidateIdRef.current === result.candidateId) return;
+    announcedCandidateIdRef.current = result.candidateId;
+    onCandidateCreated?.(result);
+  }, [onCandidateCreated]);
+
   const load = useCallback(async () => {
+    const isCurrent = loadRequestGate.current.begin();
     try {
       const roundData = await listRounds(projectId);
+      if (!isCurrent()) return null;
       const target = latestDiagnosableRound(roundData.rounds);
       const [versionData, suggestionData, applyTaskData, diagnosisData] = await Promise.all([
         listVersions(projectId), listSuggestions(projectId, target?.id), getOptimizeApplyStatus(projectId),
         target ? listDiagnoses(projectId, target.id) : Promise.resolve({ diagnoses: [], canProposeOptimizations: false }),
       ]);
+      if (!isCurrent()) return null;
       setRounds(roundData.rounds);
       setVersions(versionData.versions);
       setSuggestions(suggestionData.suggestions);
@@ -443,12 +468,18 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
       setErr('');
       return runningOperation;
     } catch (e) {
+      if (!isCurrent()) return null;
       setErr(e.message);
       return undefined;
     }
   }, [projectId]);
 
   useEffect(() => {
+    if (!active) {
+      loadRequestGate.current.invalidate();
+      clearTimeout(pollRef.current);
+      return undefined;
+    }
     let mounted = true;
     const refreshUntilIdle = async () => {
       const runningOperation = await load();
@@ -466,16 +497,21 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
         .catch((e) => mounted && setErr(e.message))
         .finally(() => mounted && setBusy(''));
     }
-    return () => { mounted = false; clearTimeout(pollRef.current); };
-  }, [projectId, load]);
+    return () => {
+      mounted = false;
+      loadRequestGate.current.invalidate();
+      clearTimeout(pollRef.current);
+    };
+  }, [active, projectId, load]);
   useEffect(() => {
+    if (!active) return undefined;
     const refresh = () => {
       setCandidateResult(null);
       void load();
     };
     window.addEventListener('mw-package-updated', refresh);
     return () => window.removeEventListener('mw-package-updated', refresh);
-  }, [load]);
+  }, [active, load]);
 
   const loadedTargetRound = latestDiagnosableRound(rounds ?? []);
   const loadedSuggestions = suggestions.filter((suggestion) => suggestion.roundId === loadedTargetRound?.id);
@@ -506,13 +542,13 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
     if (!node || node.status !== 'done' || completedTaskId.current === node.id) return;
     completedTaskId.current = node.id;
     if (node.output?.candidateId) {
-      setCandidateResult({
+      showCandidate({
         candidateId: node.output.candidateId,
         selected: node.output.suggestionCount ?? 0,
       });
     }
     load();
-  }, [applyTask?.node?.id, applyTask?.node?.status, load]);
+  }, [applyTask?.node?.id, applyTask?.node?.status, load, showCandidate]);
 
   if (!rounds) return <div className="empty">{err || '加载中…'}</div>;
   const activeBusy = busy || (applyRunning ? 'apply' : applyNeedsExpert ? 'apply_review' : '');
@@ -548,7 +584,7 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
         setApplyTask(status.task);
         setCandidateResult(null);
       } else {
-        setCandidateResult(d);
+        showCandidate(d);
       }
       await load();
       await onChanged?.();
@@ -569,7 +605,7 @@ export function OptimizationPanel({ projectId, onGoDiagnose, onChanged }) {
           const status = await getOptimizeApplyStatus(projectId);
           setApplyTask(status.task);
         } else {
-          setCandidateResult(d);
+          showCandidate(d);
         }
       }
       await load();
