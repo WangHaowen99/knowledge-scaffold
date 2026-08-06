@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as XLSX from 'xlsx';
 import { parseExcel } from '../src/documents/parser.js';
 import { normalizeGraphImportMapping, validateGraphImportMapping } from '../src/graph-import/validator.js';
 import { extractGraphImportSchema } from '../src/graph-import/package-schema.js';
@@ -30,6 +31,35 @@ const importBuffer = () => workbookBuffer({
   ],
   BOMItem: [['item_id', 'parent_code', 'name'], ['I-001', 'R-1', '机翼 BOM 行']],
 });
+
+function excelDateTimeSerial(
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+): number {
+  return Date.UTC(year, month - 1, day, hour, minute, second) / 86_400_000 + 25_569;
+}
+
+const previewDateTimeBuffer = () => {
+  const worksheet = XLSX.utils.aoa_to_sheet([
+    ['part_id', 'relation_code', 'name', 'occurred_at'],
+    ['P-001', 'R-1', '机翼', excelDateTimeSerial(2024, 12, 19, 15, 1, 52)],
+    ['P-002', 'NOT-FOUND', '机身', excelDateTimeSerial(2024, 12, 20)],
+    ['P-003', '', '尾翼', ''],
+  ]);
+  worksheet.D2.z = 'yyyy-mm-dd hh:mm:ss';
+  worksheet.D3.z = 'yyyy-mm-dd hh:mm:ss';
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Part');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['item_id', 'parent_code', 'name'],
+    ['I-001', 'R-1', '机翼 BOM 行'],
+  ]), 'BOMItem');
+  return Buffer.from(XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+};
 
 const importPlan = () => validateGraphImportMapping(graphSchema, parseExcel(workbookBuffer({
     Part: [['part_id', 'relation_code', 'name'], ['P-001', 'R-1', '机翼']],
@@ -651,12 +681,14 @@ test('graph import service：预览、校验、执行和审计形成脱敏闭环
   const { getGraphImportUpload } = await import('../src/graph-import/upload-store.js');
   const project = await createGraphImportProject('图导入服务测试');
   const preview = await uploadGraphImportExcel({
-    projectId: project.id, owner: 'alice', filename: 'graph.xlsx', buffer: importBuffer(),
+    projectId: project.id, owner: 'alice', filename: 'graph.xlsx', buffer: previewDateTimeBuffer(),
   });
   assert.deepEqual(preview.sheets.map((sheet) => sheet.name), ['Part', 'BOMItem']);
   assert.deepEqual(preview.sheets[0].columnTypes, {
-    part_id: 'string', relation_code: 'string', name: 'string',
+    part_id: 'string', relation_code: 'string', name: 'string', occurred_at: 'local_datetime',
   });
+  assert.equal(preview.sheets[0].sampleRows[0].occurred_at, '2024-12-19T15:01:52');
+  assert.equal(preview.sheets[0].sampleRows[1].occurred_at, '2024-12-20T00:00:00');
   assert.equal('storedPath' in preview, false);
   const validated = await validateGraphImportUpload({
     projectId: project.id, owner: 'alice', uploadId: preview.id, mapping: graphMapping,

@@ -93,6 +93,10 @@ test('graph import value inference：保留 Excel 单元格类型并按整列非
   });
   assert.equal(table.cellRows?.[0][5].kind, 'date');
   assert.equal(table.cellRows?.[0][5].value, '2024-12-19T15:01:52');
+  assert.deepEqual(table.rows?.[0].slice(4, 6), [
+    '2026-07-29', '2024-12-19T15:01:52',
+  ]);
+  assert.equal(table.rows?.[0][11], '2026-07-29T00:00:00');
 
   assert.deepEqual(plan.entities[0].propertyTypes, {
     code: 'string',
