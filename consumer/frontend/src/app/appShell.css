@@ -1,10 +1,10 @@
 /* ---- 应用外壳（左侧导航 + 顶栏） ---- */
 .mwr.shell { display: flex; height: 100vh; height: 100dvh; background: var(--surface-page); }
-.mwr .side { width: 232px; flex: none; background: rgba(255, 255, 255, .94); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(16, 24, 40, .025); }
+.mwr .side { width: 272px; flex: none; min-height: 0; background: rgba(255, 255, 255, .94); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(16, 24, 40, .025); }
 .mwr .logo { height: var(--shell-header-height); min-height: var(--shell-header-height); padding: 10px 16px; font-size: 16px; font-weight: 760; letter-spacing: -.2px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-subtle); }
 .mwr .logo .mk { width: 36px; height: 36px; display: block; object-fit: contain; flex: none; filter: var(--brand-logo-filter) drop-shadow(0 4px 9px rgba(20, 80, 150, .18)); transition: filter var(--motion-normal); }
 .mwr .mobile-menu-btn, .mwr .mobile-side-close, .mwr .side-backdrop { display: none; }
-.mwr .nav { padding: 8px 12px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.mwr .nav { padding: 8px 12px; flex: 0 1 auto; max-height: 46%; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 .mwr .nav > button, .mwr .nav .grp { flex: none; }
 .mwr .nav .grp { font-size: 11px; color: var(--muted); letter-spacing: 1.5px; padding: 14px 10px 6px; font-weight: 600; }
 .mwr .nav button { position: relative; display: flex; width: 100%; align-items: center; gap: 10px; min-height: 38px; padding: 9px 11px; border-radius: 10px; color: var(--ink2); border: none; background: none; font-size: 13.5px; font-weight: 560; margin-bottom: 3px; text-align: left; }
@@ -41,7 +41,7 @@
 .mwr .uchip:hover { border-color: #c9c8c1; }
 .mwr .uav { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--blue-dd)); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 750; flex: none; }
 .mwr .user-chevron { color: var(--muted); }
-.mwr .vercard { margin: 12px; padding: 10px 13px; border-top: 1px solid #efeee9; }
+.mwr .vercard { flex: none; margin: 8px 12px 10px; padding: 10px 13px 0; border-top: 1px solid #efeee9; }
 .mwr .vercard .vn { font-size: 12px; font-weight: 650; color: var(--ink2); }
 .mwr .vercard .vv { font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
 /* ---- 二、三阶段：反馈、空状态、折叠导航与页面动效 ---- */
@@ -72,7 +72,7 @@
 @media (max-width: 900px) {
   .mwr { --shell-header-height: 56px; }
   .mwr.shell { position: relative; }
-  .mwr .side { position: fixed; inset: 0 auto 0 0; width: 280px; max-width: calc(100vw - 44px); z-index: 90;
+  .mwr .side { position: fixed; inset: 0 auto 0 0; width: 304px; max-width: calc(100vw - 32px); z-index: 90;
     transform: translateX(-100%); visibility: hidden; pointer-events: none;
     transition: transform .2s ease, visibility 0s linear .2s; box-shadow: 12px 0 32px rgba(15, 25, 40, .18); }
   .mwr .side.side-open { transform: translateX(0); visibility: visible; pointer-events: auto; transition-delay: 0s; }

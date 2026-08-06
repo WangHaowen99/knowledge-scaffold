@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Clock3, Loader2, MessageCircleQuestion, Trash2 } from 'lucide-react';
+import { Clock3, Loader2, MessageCircleQuestion, Search, Trash2 } from 'lucide-react';
 import { ConfirmDialog, SkeletonState } from '../../shared/ui/feedback';
 import { formatTime, groupSessions } from './lib/chatPresentation';
 import { resolveSessionRunIndicator } from './lib/sessionScope';
@@ -10,7 +10,7 @@ const RUN_STATUS_PRESENTATION = {
   awaiting_input: { label: '需要输入', Icon: MessageCircleQuestion },
 };
 
-// 侧边栏左下固定的历史对话区块：所有页面常驻，标题 + 搜索框固定，列表内部滚动。
+// 侧边栏历史对话工作区：标题与搜索固定，列表使用侧栏的剩余高度独立滚动。
 export default function ChatHistorySidebar({ chat, onOpen }) {
   const { sessions, currentChatId, deleteChat, loadingSessions, setPinned, streamStates } = chat;
   const [search, setSearch] = useState('');
@@ -21,12 +21,22 @@ export default function ChatHistorySidebar({ chat, onOpen }) {
 
   return (
     <div className="side-hist">
-      <div className="sh-title">历史对话</div>
-      <input className="kb-search ch-search" placeholder="搜索历史对话…"
-        value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="sh-head">
+        <div className="sh-title">历史对话</div>
+        {!loadingSessions && <span className="sh-count" aria-label={`共 ${sessions.length} 条对话`}>{sessions.length}</span>}
+      </div>
+      <label className="ch-search-wrap">
+        <Search size={14} aria-hidden="true" />
+        <span className="sr-only">搜索历史对话</span>
+        <input className="kb-search ch-search" placeholder="搜索历史对话…" aria-label="搜索历史对话"
+          value={search} onChange={(e) => setSearch(e.target.value)} />
+      </label>
       <div className="ch-list">
         {loadingSessions && <SkeletonState compact rows={4} label="正在加载历史对话" />}
         {!loadingSessions && !sessions.length && <div className="ch-empty">还没有历史对话</div>}
+        {!loadingSessions && sessions.length > 0 && groups.length === 0 && (
+          <div className="ch-empty">未找到匹配的对话</div>
+        )}
         {groups.map(([label, items]) => (
           <div key={label}>
             <div className="ch-group">{label}</div>
