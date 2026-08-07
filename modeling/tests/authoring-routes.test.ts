@@ -1522,7 +1522,7 @@ test('「去修改」在助手里落一张卡片，并指向这条发现对应�
   const blocks = response.json().message.blocks;
   const actions = blocks.find((block: any) => block.type === 'next_actions').actions;
   assert.deepEqual(actions.map((item: any) => item.id), [
-    'repair_knowledge_structure', 'open_package_file',
+    'repair_knowledge_structure', 'open_package_file', 'run_package_check',
   ]);
   // target 是包内路径时才给「打开文件」，路径要跟着这条发现走
   assert.equal(actions[1].path, 'objects/index.md');
@@ -1542,7 +1542,7 @@ test('target 是语义目标时也把目标交给前端解析到具体文件', a
   const actions = response.json().message.blocks
     .find((block: any) => block.type === 'next_actions').actions;
   assert.deepEqual(actions.map((item: any) => item.id), [
-    'repair_knowledge_structure', 'open_package_file',
+    'repair_knowledge_structure', 'open_package_file', 'run_package_check',
   ]);
   assert.equal(actions[1].path, 'ipo_detail_info');
 });
@@ -1551,10 +1551,16 @@ test('「忽略」只是开一条待办收理由，不会当场落审计记录',
   const project = createProject({ owner: 'alice', name: '发现交接-忽略警告' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   const { getPackageWarningReview } = await import('../src/workflow/warning-acceptance.js');
-  saveCheck(project.id, '0.1.0', [{
-    id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
-    target: 'objects/index.md', message: '命名不一致',
-  } as any], 'pkg-draft');
+  saveCheck(project.id, '0.1.0', [
+    {
+      id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
+      target: 'objects/index.md', message: '命名不一致',
+    },
+    {
+      id: 'w2', source: 'rule', severity: '警告', category: '映射待确认',
+      target: 'objects/order.md', message: '来源映射需要确认',
+    },
+  ] as any, 'pkg-draft');
 
   const app = findingApp(t);
   const opened = await handOff(app, project.id, 'ignore', 'w1');
@@ -1581,6 +1587,10 @@ test('「忽略」只是开一条待办收理由，不会当场落审计记录',
     .filter((item: any) => item.accepted);
   assert.equal(accepted.length, 1);
   assert.equal(accepted[0].finding.id, 'w1');
+  assert.match(
+    answered.json().message.blocks.find((block: any) => block.type === 'status').summary,
+    /objects\/order\.md/,
+  );
 });
 
 test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开的那一条', async (t) => {

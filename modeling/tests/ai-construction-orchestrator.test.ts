@@ -997,6 +997,26 @@ test('选择确定性脚本候选后先确认输入输出和测试契约', () =>
   assert.deepEqual((completion.message?.blocks[2] as any).actions.map((item: any) => item.id), [
     'confirm_construction', 'review_knowledge_files',
   ]);
+
+  orchestrator.startKnowledgeRepair(project.id, {
+    inputRevisionOid: 'revision-script-v1',
+    messageKey: 'repair.after-completion.started',
+  });
+  orchestrator.completeKnowledgeRepair(project.id, {
+    packageRevisionOid: 'revision-script-v1',
+    messageKey: 'repair.after-completion.valid',
+    version: '1.0.0-rc.2',
+    summary: '校验提醒已经逐条处理',
+    validation: { errors: 0, warnings: 1, hints: 0 },
+  });
+  const resumed = orchestrator.resumeAfterCheckFindingReview(project.id, 'revision-script-v1');
+  assert.notEqual(resumed.message?.id, completion.message?.id, '警告处理后应追加新的最终确认卡');
+  assert.equal((resumed.message?.blocks[0] as any).title, '知识包校验提醒已处理完');
+  assert.deepEqual((resumed.message?.blocks[2] as any).actions.map((item: any) => item.id), [
+    'confirm_construction', 'review_knowledge_files',
+  ]);
+  const replayed = orchestrator.resumeAfterCheckFindingReview(project.id, 'revision-script-v1');
+  assert.equal(replayed.message?.id, resumed.message?.id, '同一修订刷新时不应重复追加确认卡');
 });
 
 test('没有脚本需求时明确确认后可以结束确定性能力阶段', () => {

@@ -1651,6 +1651,71 @@ export class AiConstructionOrchestrator {
                   label: '我自己去改知识文件',
                   style: 'secondary' as const,
                 },
+              {
+                id: 'run_package_check',
+                label: '改好并发布后，重新校验',
+                description: '保存并发布人工修改后重新检查，并继续处理下一条提醒',
+                style: 'secondary' as const,
+              },
+            ],
+          },
+        ],
+      });
+      return { aiConstruction: current, message };
+    });
+  }
+
+  /**
+   * 当前修订的校验警告已经全部处理后，重新给出一次最终确认出口。
+   *
+   * 不能复用最初的 construction.completed 消息：警告处理不会改变任务图 revision，
+   * ensure 会命中旧消息，而前端只允许最新动作卡操作，最终确认仍会被历史警告卡遮住。
+   * 这里按知识包修订生成独立且幂等的一次性消息，刷新不会重复，内容变更后会重新评审。
+   */
+  resumeAfterCheckFindingReview(
+    projectId: string,
+    packageRevisionOid: string,
+  ): AiConstructionAdvanceResult {
+    return this.transaction(() => {
+      const current = this.graph.snapshot(projectId);
+      if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
+      if (current.progress.currentMilestoneId !== 'construction_completed') {
+        return { aiConstruction: current };
+      }
+      const task = [...current.tasks].reverse().find((item) => (
+        item.kind === 'completion_review'
+          && item.milestoneId === 'construction_completed'
+          && item.status === 'completed'
+      ));
+      if (!task) return { aiConstruction: current };
+      const message = this.messages.ensure(projectId, {
+        key: `construction.validation.ready.${packageRevisionOid.slice(0, 24)}`.slice(0, 64),
+        role: 'assistant',
+        taskId: task.id,
+        blocks: [
+          {
+            type: 'status',
+            title: '知识包校验提醒已处理完',
+            summary: '当前修订已经完成逐条检查，可以进行建模完成确认',
+            milestoneId: 'construction_completed',
+            taskId: task.id,
+            progress: current.progress.percent,
+            eta: {
+              minMinutes: current.progress.eta.minMinutes,
+              maxMinutes: current.progress.eta.maxMinutes,
+              confidence: current.progress.eta.confidence,
+            },
+          },
+          {
+            type: 'text',
+            text: '请做最后一次整体检查。确认完成后即可进入场景推演、数据源绑定和真实场景评测。',
+          },
+          {
+            type: 'next_actions',
+            title: '选择下一步',
+            actions: [
+              { id: 'confirm_construction', label: '确认完成 AI 辅助构建', style: 'primary' },
+              { id: 'review_knowledge_files', label: '再次查看知识文件', style: 'secondary' },
             ],
           },
         ],

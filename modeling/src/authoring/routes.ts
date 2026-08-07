@@ -293,7 +293,7 @@ export interface AuthoringRouteOptions {
     'latestMaterialAnalysis' | 'latestConfirmedModelingBrief' | 'completeProcessReview'
     | 'latestModelingBrief'
     | 'deferKnowledgeErrors' | 'advanceAfterMilestoneConfirmation'
-    | 'reviewCheckFinding' | 'requestCheckFindingIgnore'
+    | 'reviewCheckFinding' | 'requestCheckFindingIgnore' | 'resumeAfterCheckFindingReview'
     | 'completeModelingBrief' | 'reviseModelingBrief' | 'completeProcessInterview'
     | 'completeScriptDecision'
     | 'startScriptGeneration' | 'waitForScriptApproval' | 'completeScriptGeneration'
@@ -381,6 +381,37 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       });
     }
     return pending.length;
+  };
+  const findingFileTarget = (finding: CheckFinding): string | undefined => {
+    const target = finding.target.trim();
+    return /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target) ? target : undefined;
+  };
+  const findingCardInput = (finding: CheckFinding, revision: string) => ({
+    packageRevisionOid: revision,
+    findingId: finding.id,
+    severity: finding.severity,
+    category: finding.category,
+    target: finding.target,
+    message: finding.userMessage?.trim() || finding.message,
+    ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
+    // target 既可能是明确路径，也可能是 object:key / survey_scheme.fields.xxx 这类
+    // 语义目标。前端结合当前知识包文件表解析，避免统一跳到 index.md 后看起来没反应。
+    ...(findingFileTarget(finding) ? { filePath: findingFileTarget(finding)! } : {}),
+  });
+  const continuePackageWarningReview = (projectId: string, revision: string) => {
+    const construction = graph.snapshot(projectId);
+    if (!construction) return null;
+    if (state.snapshot(projectId).pendingInteractions.length) return null;
+    const check = getCheck(projectId);
+    if (!check || check.revision !== revision) return null;
+    const errorCount = check.findings.filter((finding) => finding.severity === '错误').length;
+    if (errorCount > 0 && !getPackageErrorDeferral(projectId, revision)?.valid) return null;
+    const review = getPackageWarningReview(projectId, revision);
+    const next = review.items.find((item) => !item.accepted);
+    if (next) {
+      return orchestrator.reviewCheckFinding(projectId, findingCardInput(next.finding, revision));
+    }
+    return orchestrator.resumeAfterCheckFindingReview(projectId, revision);
   };
   const readConfirmedFlowchart = async (projectId: string) => {
     const currentPackage = await packages.current(projectId);
@@ -523,6 +554,13 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           : {},
       ).aiConstruction;
+    }
+    if (advance && constructionSnapshot && currentPackage
+      && constructionSnapshot.progress.currentMilestoneId === 'construction_completed') {
+      constructionSnapshot = continuePackageWarningReview(
+        project.id,
+        currentPackage.revision.oid,
+      )?.aiConstruction ?? constructionSnapshot;
     }
 
     const authoring = state.snapshot(project.id);
@@ -1426,24 +1464,6 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     return { revision: currentPackage.revision.oid, check, finding };
   };
 
-  const findingFileTarget = (finding: CheckFinding): string | undefined => {
-    const target = finding.target.trim();
-    return /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target) ? target : undefined;
-  };
-
-  const findingCardInput = (finding: CheckFinding, revision: string) => ({
-    packageRevisionOid: revision,
-    findingId: finding.id,
-    severity: finding.severity,
-    category: finding.category,
-    target: finding.target,
-    message: finding.userMessage?.trim() || finding.message,
-    ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
-    // target 既可能是明确路径，也可能是 object:key / survey_scheme.fields.xxx 这类
-    // 语义目标。前端结合当前知识包文件表解析，避免统一跳到 index.md 后看起来没反应。
-    ...(findingFileTarget(finding) ? { filePath: findingFileTarget(finding)! } : {}),
-  });
-
   app.post('/api/projects/:id/package/check/findings/review', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -1868,12 +1888,16 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               result = { purpose: 'check_finding_ignore', scope, fingerprint } as JsonObject;
             }
             const run = adapter.complete(project.id, answered.run.id, result).run;
+            const continuation = scope === 'warning'
+              ? continuePackageWarningReview(project.id, currentPackage.revision.oid)
+              : null;
             db.exec('COMMIT');
             return {
               interaction: answered.interaction,
               run,
               replayed: answered.replayed,
-              aiConstruction: graph.snapshot(project.id),
+              aiConstruction: continuation?.aiConstruction ?? graph.snapshot(project.id),
+              ...(continuation?.message ? { message: continuation.message } : {}),
               cursor: state.snapshot(project.id).lastEventSeq,
             };
           } catch (error) {

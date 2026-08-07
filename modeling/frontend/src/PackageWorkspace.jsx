@@ -4,6 +4,7 @@ import { getPackage, getPackageCheck, runPackageCheck } from './api.js';
 import { synchronizePackageCheck } from './packageCheckRefresh.js';
 import {
   addFlowchartDiagram,
+  advanceProjectSession,
   getFlowchartDraft,
   getProjectSession,
   getRevisionDiff,
@@ -172,10 +173,11 @@ export default function PackageWorkspace({
     return () => window.removeEventListener('mw-flowchart-add-open', open);
   }, [projectId]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options) => {
     try {
+      const readSession = options?.advance === true ? advanceProjectSession : getProjectSession;
       const [nextSession, nextPackage, nextCheck] = await Promise.all([
-        getProjectSession(projectId),
+        readSession(projectId),
         getPackage(projectId),
         getPackageCheck(projectId),
       ]);

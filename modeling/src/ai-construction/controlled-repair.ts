@@ -961,13 +961,17 @@ export class ControlledRepairRunner {
     }
 
     if (!latestUpdate) {
+      // 同一知识包修订可以多次触发“重新校验”。若只用 rootRevision 作为消息键，
+      // 第二次任务虽然真实执行并完成，消息却会被 ensure 去重，界面看起来毫无反应。
+      // 每次实际运行使用独立标识；同一次调用内部的开始/完成消息仍可追溯对应。
+      const validationRunId = randomUUID();
       this.orchestrator.startKnowledgeRepair(project.id, {
         inputRevisionOid: current.revision.oid,
-        messageKey: repairMessageKey('revalidate', rootRevision),
+        messageKey: repairMessageKey('revalidate', rootRevision, validationRunId),
       });
       latestUpdate = this.orchestrator.completeKnowledgeRepair(project.id, {
         packageRevisionOid: current.revision.oid,
-        messageKey: repairMessageKey('valid', rootRevision),
+        messageKey: repairMessageKey('valid', rootRevision, validationRunId),
         version: current.packageVersion,
         validation,
         summary: '重新校验后未发现必须修复的错误',

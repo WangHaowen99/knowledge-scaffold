@@ -611,6 +611,13 @@ test('自动修订提交后校验崩溃仍记录输出修订并沿用原重试�
   const result = await resumed.run(project, { tables: [], documents: [] });
   assert.equal(result.status, 'valid');
   assert.equal(result.attempts[0].id, failedAttempts[0].id);
+  const repeated = await resumed.run(project, { tables: [], documents: [] });
+  assert.equal(repeated.status, 'valid');
+  assert.notEqual(
+    repeated.message.id,
+    result.message.id,
+    '同一修订再次实际校验时也要追加本轮结果，不能被旧消息键吞掉',
+  );
 });
 
 test('业务口径问题暂停为领域专家必答问题，任务图显示等待用户', async (t) => {

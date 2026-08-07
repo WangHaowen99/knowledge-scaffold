@@ -262,8 +262,8 @@ export default function PackageChat({
     }
   };
 
-  const refreshConstruction = async () => {
-    await onProjectChanged?.();
+  const refreshConstruction = async (options) => {
+    await onProjectChanged?.(options);
   };
 
   // 导航类动作只切视图、不写数据，目标在 assistantActions 的注册表里声明
@@ -474,6 +474,9 @@ export default function PackageChat({
       try {
         await runPackageCheck(projectId);
         window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
+        // 人工改完文件后的重新校验需要推进一次后端状态机：它会展示下一条未处理提醒，
+        // 或在全部处理完时追加一次性的建模完成确认。普通事件刷新保持纯读。
+        await refreshConstruction({ advance: true });
       } catch (error) {
         setTurns((items) => items.concat([timedTurn({
           role: 'assistant',
