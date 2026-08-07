@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from agent.tools.business_data.adapters import (
+    nl2sql_template_search as nl2sql_template_module,
+)
 from agent.tools.business_data.adapters.nl2sql_template_search import (
     NL2SQLTemplateSearchAdapter,
     _DefaultMatcher,
@@ -27,6 +30,7 @@ def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
         **overrides,
     }
     workspace_root = str(config.pop("_workspace_root"))
+    workspace_id = str(config.pop("workspace_id", ""))
     ontology_id = str(config.pop("ontology_id"))
     ontology_version = str(config.pop("ontology_version", ""))
     endpoint = str(config.pop("url")).rstrip("/")
@@ -41,6 +45,7 @@ def _provider(**overrides) -> NL2SQLTemplateSearchAdapter:
     return NL2SQLTemplateSearchAdapter(
         connection,
         workspace_root=workspace_root,
+        workspace_id=workspace_id,
         ontology_id=ontology_id,
         ontology_version=ontology_version,
     )
@@ -231,6 +236,68 @@ def test_external_matcher_discovered_and_called(tmp_path):
     # Should hit the external matcher and execute the returned SQL
     assert captured["json"]["sql"] == "SELECT * FROM Part"
     assert "模板命中" in events[1]["content"]
+
+
+def test_external_matcher_load_emits_structured_legacy_audit(tmp_path, monkeypatch):
+    ontology_dir = tmp_path / "test-ontology"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    matcher_path = scripts_dir / "sql_matcher.py"
+    matcher_path.write_text(
+        "def matcher(query):\n    return None, None\n",
+        encoding="utf-8",
+    )
+    audit_events = []
+    monkeypatch.setattr(
+        nl2sql_template_module.logger,
+        "warning",
+        lambda *args, **kwargs: audit_events.append(kwargs["extra"]),
+    )
+
+    _provider(
+        _workspace_root=str(tmp_path),
+        workspace_id="workspace-a",
+        ontology_id="test-ontology",
+    )
+
+    assert audit_events == [
+        {
+            "security_event": "legacy_sql_matcher_load",
+            "execution_decision": "backend_dynamic_import",
+            "legacy_capability": "sql_matcher.py",
+            "provider": "nl2sql_template",
+            "load_status": "loaded",
+            "workspace_id": "workspace-a",
+            "ontology_id": "test-ontology",
+            "ontology_version": "",
+            "matcher_path": str(matcher_path),
+            "error_type": "",
+        }
+    ]
+
+
+def test_external_matcher_load_failure_is_audited(tmp_path, monkeypatch):
+    scripts_dir = tmp_path / "test-ontology" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    matcher_path = scripts_dir / "sql_matcher.py"
+    matcher_path.write_text("NOT_A_MATCHER = True\n", encoding="utf-8")
+    audit_events = []
+    monkeypatch.setattr(
+        nl2sql_template_module.logger,
+        "warning",
+        lambda *args, **kwargs: audit_events.append(kwargs["extra"]),
+    )
+
+    with pytest.raises(AttributeError, match="must define a callable"):
+        _provider(
+            _workspace_root=str(tmp_path),
+            workspace_id="workspace-a",
+            ontology_id="test-ontology",
+        )
+
+    assert audit_events[0]["load_status"] == "failed"
+    assert audit_events[0]["error_type"] == "AttributeError"
+    assert audit_events[0]["matcher_path"] == str(matcher_path)
 
 
 def test_external_matcher_no_match_falls_back_to_nl2sql(tmp_path):

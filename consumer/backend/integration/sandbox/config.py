@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
+
+
+SANDBOX_EXECUTION_MODE_ENV = "SANDBOX_EXECUTION_MODE"
+SUPPORTED_EXECUTION_MODES = frozenset({"legacy", "prefer"})
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,11 @@ class SandboxConfig:
     sandbox_runtime_root: str = "/app/sandbox-runtime"
     data_proxy_base_url: str = "http://jiuwenbox:8322"
     secret_allow_plain_http: bool = True
+
+    @property
+    def execution_mode(self) -> str:
+        """Return the effective compatibility mode for this configuration."""
+        return "prefer" if self.enabled else "legacy"
 
 
 # Cold-start environment variable backing for operator-tunable fields.
@@ -84,6 +96,25 @@ def _coerce_float(value: Any, default: float) -> float:
         return default
 
 
+def _normalize_execution_mode(value: Any) -> str | None:
+    if value is None:
+        return None
+    mode = str(value).strip().lower()
+    if not mode:
+        return None
+    if mode not in SUPPORTED_EXECUTION_MODES:
+        logger.warning(
+            "Invalid %s; using legacy compatibility mode.",
+            SANDBOX_EXECUTION_MODE_ENV,
+            extra={
+                "security_event": "sandbox_invalid_execution_mode",
+                "execution_mode": "legacy",
+            },
+        )
+        return "legacy"
+    return mode
+
+
 @lru_cache(maxsize=1)
 def load_sandbox_config() -> SandboxConfig:
     """Load sandbox settings from cold-start env > field defaults."""
@@ -103,4 +134,14 @@ def load_sandbox_config() -> SandboxConfig:
             values[field.name] = _coerce_str(
                 raw, default, rstrip_slash=field.name in _PATH_FIELDS
             )
+
+    # The named mode is an opt-in compatibility layer. When it is absent,
+    # preserve the existing boolean configuration exactly for older deploys.
+    execution_mode = _normalize_execution_mode(os.getenv(SANDBOX_EXECUTION_MODE_ENV))
+    if execution_mode == "legacy":
+        values["enabled"] = False
+        values["fallback_local"] = True
+    elif execution_mode == "prefer":
+        values["enabled"] = True
+        values["fallback_local"] = True
     return SandboxConfig(**values)

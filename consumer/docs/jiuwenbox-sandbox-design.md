@@ -16,7 +16,7 @@ knowledge-scaffold 采用 **Consumer backend 控制面 + JiuwenBox sidecar + per
 
 核心结论如下：
 
-1. Linux 官方部署中，`script_catalog` 注册的 Python 维护脚本由 JiuwenBox 隔离执行。
+1. `prefer` 模式下，Linux 部署中 `script_catalog` 注册的 Python 维护脚本优先由 JiuwenBox 隔离执行；默认 `legacy` 模式保持本地执行。
 2. 一个 agent run 最多复用一个 sandbox；同一 run 不允许跨 workspace 或 ontology 复用。
 3. sandbox 只读当前 workspace 和镜像内最小 Python runtime，仅 `/tmp` 可写。
 4. sandbox 不继承 backend 环境，不可见完整 backend、其他 workspace、Docker socket 或 JiuwenBox 管理 UDS。
@@ -41,7 +41,7 @@ knowledge-scaffold 采用 **Consumer backend 控制面 + JiuwenBox sidecar + per
 - 以固定 target 的 data proxy 收敛 sandbox 的数据访问目标。
 - 使沙箱创建、复用、取消和释放与 run 生命周期一致。
 - 通过固定上游 commit 和白名单源码构建可重复发布的 JiuwenBox 派生镜像。
-- 官方生产部署 fail closed；开发模式的本地 fallback 必须产生高可见安全事件。
+- 以兼容性优先的 `legacy` / `prefer` 模式渐进引入 JiuwenBox；`prefer` 的本地 fallback 必须产生高可见安全事件。
 
 ### 2.2 非目标
 
@@ -828,6 +828,7 @@ backend 通过共享 UDS `unix:///run/jiuwenbox/jiuwenbox.sock` 调用这些接�
 
 | 环境变量 | 代码默认 | 官方 Compose 默认 | 说明 |
 |---|---:|---:|---|
+| `SANDBOX_EXECUTION_MODE` | `legacy` | `legacy` | `legacy` 保持本地执行；`prefer` 尽力使用 JiuwenBox 并允许审计后回落。 |
 | `SANDBOX_ENABLED` | `false` | `false` | 沙箱总开关。 |
 | `SANDBOX_FALLBACK_LOCAL` | `true` | `true` | setup/create/exec 失败时是否允许本地 subprocess。 |
 | `SANDBOX_MEMORY_MAX` | `512M` | 同代码 | memory cgroup。 |
@@ -836,7 +837,7 @@ backend 通过共享 UDS `unix:///run/jiuwenbox/jiuwenbox.sock` 调用这些接�
 | `SANDBOX_CLIENT_TIMEOUT` | `30.0` | 同代码 | Management API client timeout。 |
 | `SANDBOX_SECRET_ALLOW_PLAIN_HTTP` | `true` | `true` | 可信内网 HTTP secret gate。 |
 
-这些值只从进程环境和代码默认读取，不属于 system-config 热更新范围，修改后需要重启 backend。
+这些值只从进程环境和代码默认读取，不属于 system-config 热更新范围，修改后需要重启 backend。显式配置 `SANDBOX_EXECUTION_MODE` 时由模式统一决定 `enabled` 和 `fallback_local`；未配置时继续按旧布尔变量解析，保证已有部署升级兼容。未知模式不会阻断现网请求，而是记录 `sandbox_invalid_execution_mode` 告警并按 `legacy` 处理。
 
 固定部署/镜像契约：
 
@@ -852,28 +853,30 @@ backend 通过共享 UDS `unix:///run/jiuwenbox/jiuwenbox.sock` 调用这些接�
 ```text
 SandboxError
 ├─ SandboxUnavailableError
+│  └─ SandboxUnsupportedProviderError
 ├─ SandboxCreateError
 └─ SandboxExecError
 ```
 
-- 数据源、proxy 或平台前置条件失败：`SandboxUnavailableError`；
+- 数据源、proxy 或平台前置条件失败：`SandboxUnavailableError`；不支持的 Provider 使用其子类 `SandboxUnsupportedProviderError`；
 - create 或同 run scope 冲突：`SandboxCreateError`；
 - exec/delete 请求失败或超时：`SandboxExecError`。
 
 `execute_script` 是唯一 fallback 决策点。
 
-### 16.3 Fail closed 与本地 fallback
+### 16.3 兼容模式与本地 fallback
 
 官方 Compose 默认与代码默认一致：
 
 ```text
-SANDBOX_ENABLED=false
-SANDBOX_FALLBACK_LOCAL=true
+SANDBOX_EXECUTION_MODE=legacy
 ```
 
-需要沙箱隔离的部署应显式配置 `SANDBOX_ENABLED=true` 和 `SANDBOX_FALLBACK_LOCAL=false`。此时 unsupported Provider、缺少 run id、平台不支持、参数过大、proxy 失败、create 冲突和 exec 失败都返回错误，不在宿主进程执行。
+`legacy` 保持当前本地 subprocess 行为，不要求 JiuwenBox 可用。部署方可以显式设置 `SANDBOX_EXECUTION_MODE=prefer`，使已支持的脚本优先进入 JiuwenBox；unsupported Provider、缺少 run id、平台不支持、参数过大、proxy 失败、create 冲突和 exec 基础设施失败均审计后回落本地执行，不把 JiuwenBox 作为发布或请求的强制边界。
 
-开发环境显式允许 fallback 时，系统记录 `SANDBOX_SECURITY_FALLBACK` / `security_event=sandbox_bypass`，说明脚本已暴露于宿主环境。exec timeout 永不 fallback，防止脚本重复执行产生副作用。
+`prefer` 发生 fallback 时，系统记录 `SANDBOX_SECURITY_FALLBACK` / `security_event=sandbox_bypass`，说明脚本已暴露于宿主环境。exec timeout 永不 fallback，防止脚本重复执行产生副作用；该限制属于避免重复副作用的执行一致性约束，不代表 fail-close 安全模式。
+
+如果 sandbox 已返回进程结果但工具启动器、脚本文件、运行时模块不存在，或策略拒绝了该执行，`prefer` 仍按原默认本地路径重试，并分别记录 `sandbox_tool_missing` 或 `sandbox_policy_unavailable`。普通脚本业务错误（非零退出但不含上述启动/策略特征）不自动重跑。
 
 ## 17. 构建、部署与发布
 
@@ -1002,7 +1005,7 @@ release bundle 同时包含 backend、frontend、auth-server 和 JiuwenBox 镜�
 - workspace/runtime 只读挂载；
 - egress 只允许 proxy；
 - NL2SQL Safe Connection 不含真实 token/target；
-- unsupported Provider fail closed；
+- data proxy 明确拒绝 unsupported Provider，`prefer` 由统一 fallback gate 审计后转为本地执行；
 - proxy create 非成功不复用；
 - route start 失败回滚；
 - MindsDB 每 run 只登录一次；
@@ -1039,7 +1042,7 @@ PYTHONPATH=backend python -m pytest \
 
 ## 20. 当前验收标准
 
-1. 官方 Linux 部署中，已注册 Python 维护脚本实际运行于 per-run JiuwenBox sandbox。
+1. `legacy` 默认保持本地执行；`prefer` 在 JiuwenBox 和 Provider 均受支持时让已注册 Python 维护脚本运行于 per-run sandbox。
 2. 同一 run 同 scope 复用；workspace、ontology、runtime、proxy 或 policy 变化时拒绝复用。
 3. sandbox 只读当前 workspace 和最小 runtime，仅 `/tmp` 可写。
 4. sandbox 不可见完整 backend、其他 workspace、管理 UDS 和 Docker socket。
