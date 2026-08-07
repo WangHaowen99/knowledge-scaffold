@@ -70,6 +70,7 @@ def test_sandbox_settings_come_from_backend_env_file_in_supported_compose_files(
 
     for compose in compose_files:
         assert "env_file:\n      - ./backend/.env" in compose
+        assert "SANDBOX_EXECUTION_MODE" not in compose
         assert "SANDBOX_ENABLED" not in compose
         assert "SANDBOX_FALLBACK_LOCAL" not in compose
         assert "SANDBOX_SECRET_ALLOW_PLAIN_HTTP" not in compose

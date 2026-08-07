@@ -34,7 +34,11 @@ from ontology.ontology_catalog import (
 )
 from ontology.ontologies import OntologyManifest, OntologyRegistry
 from integration.sandbox.executor import SandboxScriptExecutor
-from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
+from integration.sandbox.errors import (
+    SandboxExecError,
+    SandboxUnavailableError,
+    SandboxUnsupportedProviderError,
+)
 from integration.sandbox.config import load_sandbox_config
 from integration.sandbox.alerts import log_sandbox_security_fallback
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
@@ -61,6 +65,32 @@ _MAX_ARG_SAFE_TOTAL = 1_500_000
 # Windows CreateProcess command-line limit is 32,767 characters.
 # When CLI args alone exceed this, also use the tempfile path.
 _MAX_CLI_ARGS_SIZE = 25_000
+
+_SANDBOX_TOOL_MISSING_MARKERS = (
+    "can't open file",
+    "cannot open file",
+    "no module named",
+    "modulenotfounderror",
+    "command not found",
+    "executable file not found",
+)
+_SANDBOX_POLICY_FAILURE_MARKERS = (
+    "policy denied",
+    "denied by policy",
+    "policy rejected",
+    "policy validation",
+    "invalid policy",
+    "policy error",
+    "not allowed by policy",
+    "landlock",
+    "seccomp",
+    "mount denied",
+)
+_SANDBOX_PERMISSION_FAILURE_MARKERS = (
+    "permission denied",
+    "operation not permitted",
+    "access denied",
+)
 
 _SCRIPT_EXECUTION_INTERNAL_ERROR = (
     "Error: Script execution failed due to an internal error."
@@ -427,12 +457,16 @@ def _format_call_context(
 def _fallback_or_error(
     *,
     fallback_local: bool,
+    mode: str = "prefer",
     reason: str,
     blocked_message: str,
     call_context: str,
     script_path: str,
     run_id: Optional[str],
     error: Any = None,
+    provider: str = "",
+    workspace_id: Optional[str] = None,
+    ontology_id: Optional[str] = None,
 ) -> Optional[str]:
     """Authorize one explicit transition from sandbox to local execution."""
     if not fallback_local:
@@ -443,7 +477,59 @@ def _fallback_or_error(
         script_path=script_path,
         run_id=run_id,
         error=type(error).__name__ if error is not None else None,
+        mode=mode,
+        provider=provider,
+        workspace_id=workspace_id,
+        ontology_id=ontology_id,
     )
+    return None
+
+
+def _classify_sandbox_failure_text(value: Any) -> Optional[str]:
+    """Classify sandbox exceptions, which already use the fallback gate."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if any(
+        marker in text
+        for marker in (
+            *_SANDBOX_POLICY_FAILURE_MARKERS,
+            *_SANDBOX_PERMISSION_FAILURE_MARKERS,
+        )
+    ):
+        return "sandbox_policy_unavailable"
+    if any(marker in text for marker in _SANDBOX_TOOL_MISSING_MARKERS):
+        return "sandbox_tool_missing"
+    return None
+
+
+def _classify_sandbox_result_failure(
+    completed: subprocess.CompletedProcess[str],
+) -> Optional[str]:
+    """Classify only unambiguous sandbox startup/policy process failures."""
+    if completed.returncode == 0:
+        return None
+    stderr = str(completed.stderr or "").strip().lower()
+    if not stderr:
+        return None
+    if any(marker in stderr for marker in _SANDBOX_POLICY_FAILURE_MARKERS):
+        return "sandbox_policy_unavailable"
+    if completed.returncode == 126 and any(
+        marker in stderr for marker in _SANDBOX_PERMISSION_FAILURE_MARKERS
+    ):
+        return "sandbox_policy_unavailable"
+    if (
+        any(marker in stderr for marker in ("can't open file", "cannot open file"))
+        and "no such file or directory" in stderr
+    ):
+        return "sandbox_tool_missing"
+    if "modulenotfounderror" in stderr and "no module named" in stderr:
+        return "sandbox_tool_missing"
+    if completed.returncode == 127 and any(
+        marker in stderr
+        for marker in ("command not found", "executable file not found")
+    ):
+        return "sandbox_tool_missing"
     return None
 
 
@@ -841,6 +927,13 @@ def handle_execute_script_path(
 
         completed: Optional[subprocess.CompletedProcess[str]] = None
         sandbox_config = load_sandbox_config()
+        execution_mode = str(
+            getattr(
+                sandbox_config,
+                "execution_mode",
+                "prefer" if sandbox_config.enabled else "legacy",
+            )
+        )
         run_locally = not sandbox_config.enabled
         fallback_reason: Optional[str] = None
         fallback_error: Any = None
@@ -876,6 +969,10 @@ def handle_execute_script_path(
                         ontology_id=ontology_id,
                         timeout_seconds=max(1, int(timeout_seconds)),
                     )
+                except SandboxUnsupportedProviderError as exc:
+                    fallback_reason = "unsupported_provider"
+                    fallback_error = exc
+                    fallback_blocked_message = "Error: Sandbox provider is not supported."
                 except SandboxUnavailableError as exc:
                     fallback_reason = "sandbox_unavailable"
                     fallback_error = exc
@@ -885,13 +982,39 @@ def handle_execute_script_path(
                         return "Error: Script execution timed out after {} seconds.".format(
                             timeout_seconds
                         )
-                    fallback_reason = "sandbox_exec_failed"
+                    fallback_reason = (
+                        _classify_sandbox_failure_text(exc)
+                        or "sandbox_exec_failed"
+                    )
                     fallback_error = exc
-                    fallback_blocked_message = "Error: Sandbox execution failed."
+                    fallback_blocked_message = (
+                        "Error: Sandbox policy unavailable."
+                        if fallback_reason == "sandbox_policy_unavailable"
+                        else "Error: Sandbox execution failed."
+                    )
                 except Exception as exc:
-                    fallback_reason = "sandbox_execution_error"
+                    fallback_reason = (
+                        _classify_sandbox_failure_text(exc)
+                        or "sandbox_execution_error"
+                    )
                     fallback_error = exc
-                    fallback_blocked_message = "Error: Sandbox execution failed."
+                    fallback_blocked_message = (
+                        "Error: Sandbox policy unavailable."
+                        if fallback_reason == "sandbox_policy_unavailable"
+                        else "Error: Sandbox execution failed."
+                    )
+
+            if completed is not None:
+                result_failure_reason = _classify_sandbox_result_failure(completed)
+                if result_failure_reason:
+                    fallback_reason = result_failure_reason
+                    fallback_error = SandboxExecError(result_failure_reason)
+                    fallback_blocked_message = (
+                        "Error: Sandbox policy unavailable."
+                        if result_failure_reason == "sandbox_policy_unavailable"
+                        else "Error: Sandbox tool is unavailable."
+                    )
+                    completed = None
 
             if completed is None:
                 if fallback_reason is None:
@@ -903,12 +1026,16 @@ def handle_execute_script_path(
                     return _SCRIPT_EXECUTION_INTERNAL_ERROR
                 blocked = _fallback_or_error(
                     fallback_local=sandbox_config.fallback_local,
+                    mode=execution_mode,
                     reason=fallback_reason,
                     blocked_message=fallback_blocked_message,
                     call_context=call_context,
                     script_path=script_path,
                     run_id=run_id,
                     error=fallback_error,
+                    provider=str(getattr(fallback_error, "provider", "")),
+                    workspace_id=workspace_id,
+                    ontology_id=ontology_id,
                 )
                 if blocked is not None:
                     return blocked

@@ -11,6 +11,16 @@ class SandboxUnavailableError(SandboxError):
     """jiuwenbox is not reachable or unhealthy."""
 
 
+class SandboxUnsupportedProviderError(SandboxUnavailableError):
+    """The bound business-data provider has no sandbox proxy support yet."""
+
+    def __init__(self, provider: str) -> None:
+        self.provider = str(provider or "").strip().lower() or "unknown"
+        super().__init__(
+            "unsupported sandbox business data provider '{}'".format(self.provider)
+        )
+
+
 class SandboxCreateError(SandboxError):
     """Failed to create a sandbox instance."""
 

@@ -9,7 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 import agent.tools.execute_script as execute_script_module
-from integration.sandbox.errors import SandboxExecError, SandboxUnavailableError
+from integration.sandbox.alerts import log_sandbox_security_fallback
+from integration.sandbox.errors import (
+    SandboxCreateError,
+    SandboxExecError,
+    SandboxUnavailableError,
+    SandboxUnsupportedProviderError,
+)
 
 
 def _write_script(tmp_path):
@@ -31,12 +37,17 @@ def _set_sandbox_config(
     )
 
 
-def _completed(output: str) -> subprocess.CompletedProcess[str]:
+def _completed(
+    output: str,
+    *,
+    returncode: int = 0,
+    stderr: str = "",
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["python"],
-        returncode=0,
+        returncode=returncode,
         stdout=output,
-        stderr="",
+        stderr=stderr,
     )
 
 
@@ -147,6 +158,38 @@ def test_disabled_sandbox_uses_normal_local_execution(tmp_path, monkeypatch):
     )
 
     assert result == "normal-local-output"
+
+
+def test_legacy_mode_routes_directly_to_original_local_path(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_sandbox_config",
+        lambda: SimpleNamespace(
+            enabled=False,
+            fallback_local=True,
+            execution_mode="legacy",
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "SandboxScriptExecutor",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("legacy mode must not initialize the sandbox executor")
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _completed("legacy-output"),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == "legacy-output"
 
 
 def test_local_none_result_returns_public_internal_error(tmp_path, monkeypatch):
@@ -280,6 +323,311 @@ def test_sandbox_exception_uses_same_fallback_gate(tmp_path, monkeypatch):
     assert result == "local-after-error"
     assert fallback_events[0]["reason"] == "sandbox_unavailable"
     assert fallback_events[0]["error"] == "SandboxUnavailableError"
+    assert fallback_events[0]["mode"] == "prefer"
+
+
+def test_unsupported_provider_uses_local_execution_with_audit(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+    fallback_events = []
+
+    class UnsupportedProviderSandboxExecutor:
+        def run_script(self, **kwargs):
+            raise SandboxUnsupportedProviderError("neo4j")
+
+    monkeypatch.setattr(
+        execute_script_module,
+        "SandboxScriptExecutor",
+        UnsupportedProviderSandboxExecutor,
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "log_sandbox_security_fallback",
+        lambda **kwargs: fallback_events.append(kwargs),
+    )
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _completed("local-neo4j-output"),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-neo4j",
+    )
+
+    assert result == "local-neo4j-output"
+    assert fallback_events == [
+        {
+            "reason": "unsupported_provider",
+            "call_context": "run_id=run-neo4j",
+            "script_path": script.name,
+            "run_id": "run-neo4j",
+            "error": "SandboxUnsupportedProviderError",
+            "mode": "prefer",
+            "provider": "neo4j",
+            "workspace_id": None,
+            "ontology_id": None,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "expected_reason"),
+    [
+        (
+            1,
+            "python3: can't open file '/workspace/scripts/tool.py': "
+            "[Errno 2] No such file or directory",
+            "sandbox_tool_missing",
+        ),
+        (
+            1,
+            "ModuleNotFoundError: No module named 'legacy_tool_runtime'",
+            "sandbox_tool_missing",
+        ),
+        (127, "legacy-tool: command not found", "sandbox_tool_missing"),
+        (
+            1,
+            "exec denied by policy: permission denied",
+            "sandbox_policy_unavailable",
+        ),
+        (126, "python3: permission denied", "sandbox_policy_unavailable"),
+    ],
+)
+def test_sandbox_tool_or_policy_failure_reuses_local_execution(
+    tmp_path,
+    monkeypatch,
+    returncode,
+    stderr,
+    expected_reason,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+    fallback_events = []
+
+    class MissingToolSandboxExecutor:
+        def run_script(self, **kwargs):
+            return _completed("", returncode=returncode, stderr=stderr)
+
+    monkeypatch.setattr(
+        execute_script_module,
+        "SandboxScriptExecutor",
+        MissingToolSandboxExecutor,
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "log_sandbox_security_fallback",
+        lambda **kwargs: fallback_events.append(kwargs),
+    )
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _completed("local-default-output"),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-sandbox-recovery",
+    )
+
+    assert result == "local-default-output"
+    assert fallback_events[0]["reason"] == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("sandbox_error", "expected_reason"),
+    [
+        (SandboxExecError("sandbox command not found"), "sandbox_tool_missing"),
+        (SandboxCreateError("sandbox policy rejected command"), "sandbox_policy_unavailable"),
+    ],
+)
+def test_sandbox_tool_or_policy_exception_reuses_local_execution(
+    tmp_path,
+    monkeypatch,
+    sandbox_error,
+    expected_reason,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+    fallback_events = []
+
+    class FailingSandboxExecutor:
+        def run_script(self, **kwargs):
+            raise sandbox_error
+
+    monkeypatch.setattr(execute_script_module, "SandboxScriptExecutor", FailingSandboxExecutor)
+    monkeypatch.setattr(
+        execute_script_module,
+        "log_sandbox_security_fallback",
+        lambda **kwargs: fallback_events.append(kwargs),
+    )
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _completed("local-exception-recovery"),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-sandbox-exception-recovery",
+    )
+
+    assert result == "local-exception-recovery"
+    assert fallback_events[0]["reason"] == expected_reason
+
+
+def test_sandbox_recovery_reuses_original_local_command_and_context(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+    local_calls = []
+
+    class MissingToolSandboxExecutor:
+        def run_script(self, **kwargs):
+            return _completed(
+                "",
+                returncode=1,
+                stderr="python: can't open file '/workspace/tool.py': No such file or directory",
+            )
+
+    monkeypatch.setattr(execute_script_module, "SandboxScriptExecutor", MissingToolSandboxExecutor)
+
+    def local_run(*args, **kwargs):
+        local_calls.append((args, kwargs))
+        return _completed("local-original-path")
+
+    monkeypatch.setattr(execute_script_module.subprocess, "run", local_run)
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        args=["--mode", "compat"],
+        base_path=tmp_path,
+        run_id="run-original-context",
+        env_overrides={"TOOL_COMPAT_FLAG": "enabled"},
+    )
+
+    assert result == "local-original-path"
+    assert len(local_calls) == 1
+    command, options = local_calls[0]
+    assert command == (
+        [
+            execute_script_module.sys.executable,
+            str(script.resolve()),
+            "--mode",
+            "compat",
+        ],
+    )
+    assert options["cwd"] == str(tmp_path.resolve())
+    assert options["env"]["TOOL_COMPAT_FLAG"] == "enabled"
+
+
+def test_sandbox_timeout_is_not_replayed_locally(tmp_path, monkeypatch):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+
+    class TimedOutSandboxExecutor:
+        def run_script(self, **kwargs):
+            raise SandboxExecError("exec timed out in sandbox")
+
+    monkeypatch.setattr(execute_script_module, "SandboxScriptExecutor", TimedOutSandboxExecutor)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("a sandbox timeout must not replay locally")
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-sandbox-timeout",
+        timeout_seconds=7,
+    )
+
+    assert result == "Error: Script execution timed out after 7 seconds."
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr"),
+    [
+        (2, "business validation failed"),
+        (2, "lookup failed: file not found"),
+        (1, "PermissionError: [Errno 13] Permission denied: '/restricted'"),
+        (1, "OSError: [Errno 30] Read-only file system: '/workspace/output'"),
+    ],
+)
+def test_normal_sandbox_script_failure_is_not_replayed_locally(
+    tmp_path,
+    monkeypatch,
+    returncode,
+    stderr,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=True)
+    monkeypatch.setattr(execute_script_module.sys, "platform", "linux")
+
+    class FailedSandboxExecutor:
+        def run_script(self, **kwargs):
+            return _completed(
+                "",
+                returncode=returncode,
+                stderr=stderr,
+            )
+
+    monkeypatch.setattr(
+        execute_script_module,
+        "SandboxScriptExecutor",
+        FailedSandboxExecutor,
+    )
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("normal sandbox script failures must not replay locally")
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+        run_id="run-sandbox-failure",
+    )
+
+    assert result == "Error: Script exited with code {}.".format(returncode)
+
+
+def test_sandbox_fallback_log_contains_searchable_audit_fields(caplog):
+    with caplog.at_level(logging.ERROR, logger="sandbox.alerts"):
+        log_sandbox_security_fallback(
+            reason="unsupported_provider",
+            call_context="run_id=run-1",
+            script_path="scripts/demo.py",
+            run_id="run-1",
+            error="SandboxUnsupportedProviderError",
+            mode="prefer",
+            provider="neo4j",
+            workspace_id="workspace-a",
+            ontology_id="ontology-a",
+        )
+
+    record = caplog.records[-1]
+    assert record.security_event == "sandbox_bypass"
+    assert record.execution_mode == "prefer"
+    assert record.execution_decision == "local_fallback"
+    assert record.fallback_reason == "unsupported_provider"
+    assert record.provider == "neo4j"
+    assert record.workspace_id == "workspace-a"
+    assert record.ontology_id == "ontology-a"
+    assert record.error_type == "SandboxUnsupportedProviderError"
 
 
 def test_sandbox_exception_fails_closed_when_fallback_disabled(tmp_path, monkeypatch):

@@ -67,7 +67,7 @@
 
 ### 安全执行、协议与可观测性
 
-- 知识包脚本通过 `execute_script` 工具提交给独立 JiuwenBox 容器执行；
+- 知识包脚本通过 `execute_script` 执行；默认 `legacy` 保持本地兼容，显式启用 `prefer` 后优先提交给独立 JiuwenBox 容器，并在不支持时审计后回落本地；
 - JiuwenBox 使用只读运行时挂载、策略文件、Unix Domain Socket 和容器隔离约束脚本权限；
 - MCP 服务作为独立进程运行，支持 Streamable HTTP 和 SSE；
 - 后端提供 A2A 与 ACP 适配接口，复用同一套编排器和工作空间权限；
