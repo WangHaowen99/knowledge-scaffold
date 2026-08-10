@@ -38,6 +38,10 @@ const BY_CODE: Record<string, ErrorNextAction[]> = {
     { id: 'defer_validation_errors', label: '暂缓错误并继续验证', style: 'secondary' },
     VIEW_VALIDATION,
   ],
+  PACKAGE_WARNINGS_UNREVIEWED: [
+    { ...VIEW_VALIDATION, label: '查看待处理提醒', style: 'primary' },
+    REVIEW_KNOWLEDGE,
+  ],
   NO_BLOCKING_ERRORS: [{ ...VIEW_VALIDATION, style: 'primary' }],
   MODELING_GOAL_NOT_CONFIRMED: [EXPLAIN_GOAL],
   MODELING_BRIEF_NOT_FOUND: [EXPLAIN_GOAL],

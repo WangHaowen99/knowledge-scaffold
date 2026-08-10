@@ -386,7 +386,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const target = finding.target.trim();
     return /^[A-Za-z0-9_.:-]+(\/[A-Za-z0-9_.:-]+)*$/.test(target) ? target : undefined;
   };
-  const findingCardInput = (finding: CheckFinding, revision: string) => ({
+  const findingCardInput = (finding: CheckFinding, revision: string, attentionKey?: string) => ({
     packageRevisionOid: revision,
     findingId: finding.id,
     severity: finding.severity,
@@ -397,10 +397,36 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     // target 既可能是明确路径，也可能是 object:key / survey_scheme.fields.xxx 这类
     // 语义目标。前端结合当前知识包文件表解析，避免统一跳到 index.md 后看起来没反应。
     ...(findingFileTarget(finding) ? { filePath: findingFileTarget(finding)! } : {}),
+    ...(attentionKey ? { attentionKey } : {}),
   });
+  const actionCardState = (projectId: string) => {
+    const recent = messages.page(projectId, { limit: 500 }).messages;
+    const latestChat = [...recent].reverse().find((message) => message.key?.startsWith('chat.user.'));
+    const latestAction = [...recent].reverse().find((message) => (
+      message.blocks.some((block) => block.type === 'next_actions')
+    ));
+    const chatSeq = latestChat?.seq ?? 0;
+    return {
+      attentionKey: chatSeq ? `chat${chatSeq.toString(36)}` : 'reconcile',
+      freshAction: (id: string, findingId?: string) => Boolean(
+        latestAction
+        && latestAction.seq > chatSeq
+        && latestAction.blocks.some((block) => block.type === 'next_actions'
+          && block.actions.some((action) => action.id === id
+            && (!findingId || action.findingId === findingId))),
+      ),
+    };
+  };
   const continuePackageWarningReview = (projectId: string, revision: string) => {
     const construction = graph.snapshot(projectId);
     if (!construction) return null;
+    const milestoneId = construction.progress.currentMilestoneId;
+    const requiredTaskKind = milestoneId === 'knowledge_confirmed'
+      ? 'package_validation'
+      : milestoneId === 'construction_completed' ? 'completion_review' : null;
+    if (requiredTaskKind && !construction.tasks.some((task) => (
+      task.milestoneId === milestoneId && task.kind === requiredTaskKind && task.status === 'completed'
+    ))) return null;
     if (state.snapshot(projectId).pendingInteractions.length) return null;
     const check = getCheck(projectId);
     if (!check || check.revision !== revision) return null;
@@ -408,10 +434,19 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     if (errorCount > 0 && !getPackageErrorDeferral(projectId, revision)?.valid) return null;
     const review = getPackageWarningReview(projectId, revision);
     const next = review.items.find((item) => !item.accepted);
+    const card = actionCardState(projectId);
     if (next) {
-      return orchestrator.reviewCheckFinding(projectId, findingCardInput(next.finding, revision));
+      if (card.freshAction('ignore_check_finding', next.finding.id)) return null;
+      return orchestrator.reviewCheckFinding(
+        projectId,
+        findingCardInput(next.finding, revision, card.attentionKey),
+      );
     }
-    return orchestrator.resumeAfterCheckFindingReview(projectId, revision);
+    const confirmationAction = milestoneId === 'knowledge_confirmed'
+      ? 'confirm_knowledge'
+      : 'confirm_construction';
+    if (card.freshAction(confirmationAction)) return null;
+    return orchestrator.resumeAfterCheckFindingReview(projectId, revision, card.attentionKey);
   };
   const readConfirmedFlowchart = async (projectId: string) => {
     const currentPackage = await packages.current(projectId);
@@ -556,7 +591,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       ).aiConstruction;
     }
     if (advance && constructionSnapshot && currentPackage
-      && constructionSnapshot.progress.currentMilestoneId === 'construction_completed') {
+      && ['knowledge_confirmed', 'construction_completed'].includes(
+        String(constructionSnapshot.progress.currentMilestoneId ?? ''),
+      )) {
       constructionSnapshot = continuePackageWarningReview(
         project.id,
         currentPackage.revision.oid,
@@ -737,7 +774,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           appliedCommand = { ...command, packageRevisionOid: confirmedPackage.revision.oid };
         }
         if (appliedCommand.type === 'confirm_milestone'
-          && appliedCommand.milestoneId === 'construction_completed') {
+          && ['knowledge_confirmed', 'construction_completed'].includes(appliedCommand.milestoneId)) {
           const currentPackage = confirmedPackage!;
           const check = getCheck(project.id);
           if (!check || check.revision !== currentPackage.revision.oid) {
@@ -754,7 +791,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             const deferral = getPackageErrorDeferral(project.id, currentPackage.revision.oid);
             if (!deferral?.valid) {
               return reply.code(409).send({
-                error: `知识包检查还有 ${errorCount} 个错误，请修复或明确暂缓后再完成建模`,
+                error: `知识包检查还有 ${errorCount} 个错误，请修复或明确暂缓后再确认当前阶段`,
                 code: 'PACKAGE_CHECK_FAILED',
                 errorCount,
                 nextActions: [
@@ -767,12 +804,22 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
           if (!warningReview.readyForValidation) {
+            const continuation = continuePackageWarningReview(project.id, currentPackage.revision.oid);
             return reply.code(409).send({
               error: `还有 ${warningReview.pendingValidation} 条可暂缓的提醒尚未查看影响并接受`,
               code: 'PACKAGE_WARNINGS_UNREVIEWED',
               warningReview,
+              ...(continuation?.message ? { message: continuation.message } : {}),
+              nextActions: [
+                { id: 'view_validation', label: '查看待处理提醒', style: 'primary' },
+                { id: 'review_knowledge_files', label: '查看知识文件', style: 'secondary' },
+              ],
             });
           }
+        }
+        if (appliedCommand.type === 'confirm_milestone'
+          && appliedCommand.milestoneId === 'construction_completed') {
+          const currentPackage = confirmedPackage!;
           const evidenceProblems = findKnowledgeEvidenceProblems(currentPackage.spec);
           if (evidenceProblems.length > 0) {
             return reply.code(409).send({

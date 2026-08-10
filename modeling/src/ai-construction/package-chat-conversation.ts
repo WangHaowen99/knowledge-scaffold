@@ -29,6 +29,19 @@ function constructionCompletionMessageKey(interactionId: string): string {
   return `chat.completion.${digest}`;
 }
 
+/**
+ * 自由文本只能表达“我想推进”，不能代替任务图确认命令。
+ * 这类输入由服务端按真实状态生成操作卡，避免模型直接回复“已经完成”却没有落状态。
+ */
+export function isWorkflowControlMessage(value: string): boolean {
+  const text = value.replace(/\s+/gu, '');
+  if (!text) return false;
+  return /确认(?:完成)?(?:AI辅助构建|知识结构|当前阶段|建模阶段)/u.test(text)
+    || /(?:继续|进入|推进|跳转)(?:到)?(?:下一步|下一阶段|后续阶段)/u.test(text)
+    || /(?:当前|这个|该)(?:阶段|步骤)(?:是否)?(?:已经|可以)?(?:完成|确认|通过)/u.test(text)
+    || /(?:怎么|如何|能否|无法|不能|没法)?(?:继续)?往下走/u.test(text);
+}
+
 export function shouldRequestConstructionCompletion(
   snapshot: AiConstructionTaskGraphSnapshot | null,
   pendingInteractionCount: number,

@@ -815,6 +815,43 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     'confirm_knowledge', 'review_knowledge_files',
   ]);
 
+  const warning = orchestrator.reviewCheckFinding(project.id, {
+    packageRevisionOid: 'generated-revision-1',
+    findingId: 'warning-1',
+    severity: '警告',
+    category: '交接口径',
+    target: 'operations/handoff.md',
+    message: '上下游字段口径需要确认',
+    attentionKey: 'chat1',
+  });
+  const warningActions = (warning.message.blocks[2] as any).actions;
+  assert.deepEqual(warningActions.map((item: any) => item.id), [
+    'repair_knowledge_structure', 'review_knowledge_files', 'run_package_check', 'ignore_check_finding',
+  ]);
+  assert.equal(warningActions[3].findingId, 'warning-1');
+
+  const knowledgeReady = orchestrator.resumeAfterCheckFindingReview(
+    project.id,
+    'generated-revision-1',
+    'chat1',
+  );
+  assert.equal((knowledgeReady.message?.blocks[0] as any).milestoneId, 'knowledge_confirmed');
+  assert.deepEqual((knowledgeReady.message?.blocks[2] as any).actions.map((item: any) => item.id), [
+    'confirm_knowledge', 'review_knowledge_files',
+  ]);
+  const replayedKnowledgeReady = orchestrator.resumeAfterCheckFindingReview(
+    project.id,
+    'generated-revision-1',
+    'chat1',
+  );
+  assert.equal(replayedKnowledgeReady.message?.id, knowledgeReady.message?.id);
+  const resurfacedKnowledgeReady = orchestrator.resumeAfterCheckFindingReview(
+    project.id,
+    'generated-revision-1',
+    'chat2',
+  );
+  assert.notEqual(resurfacedKnowledgeReady.message?.id, knowledgeReady.message?.id);
+
   snapshot = graph.apply(project.id, {
     type: 'confirm_milestone', expectedRevision: generated.aiConstruction.revision,
     milestoneId: 'knowledge_confirmed', packageRevisionOid: 'generated-revision-1',

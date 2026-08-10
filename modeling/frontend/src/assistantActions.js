@@ -14,6 +14,7 @@ export const ASSISTANT_ACTION_KINDS = {
   retry_script_generation: 'command',
   revise_goal: 'command',
   run_package_check: 'command',
+  ignore_check_finding: 'command',
   preview_task_adjustment: 'command',
   reload_and_retry: 'command',
   start_increment_round: 'command',

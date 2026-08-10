@@ -117,7 +117,7 @@ export default function PackageWorkspace({
   const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
   const sessionCursorRef = useRef(0);
   // 回放闸门与合并加载的定时器跨事件存活，因此放在 ref 而不是订阅副作用的闭包里
-  const eventStateRef = useRef({ gate: null, loadTimer: null });
+  const eventStateRef = useRef({ gate: null, loadTimer: null, advanceRequested: false });
   const pendingFileSelectionRef = useRef(null);
   const [flowchartDraft, setFlowchartDraft] = useState(null);
   const [flowchartDraftError, setFlowchartDraftError] = useState('');
@@ -195,12 +195,15 @@ export default function PackageWorkspace({
 
   // 本地写操作后发的 window 事件与 SSE 事件描述的是同一次变更，合流到一个防抖窗口，
   // 否则一次保存会触发两次 load，先后到达顺序还不确定。
-  const scheduleLoad = useCallback(() => {
+  const scheduleLoad = useCallback((options) => {
     const store = eventStateRef.current;
+    if (options?.advance === true) store.advanceRequested = true;
     if (store.loadTimer) return;
     store.loadTimer = setTimeout(() => {
       store.loadTimer = null;
-      void load();
+      const advance = store.advanceRequested;
+      store.advanceRequested = false;
+      void load(advance ? { advance: true } : undefined);
     }, 200);
   }, [load]);
 
@@ -285,8 +288,8 @@ export default function PackageWorkspace({
     }
   }, [activeTab, deliveryView, embedded, loadRevisions]);
   useEffect(() => {
-    const refresh = () => {
-      scheduleLoad();
+    const refresh = (event) => {
+      scheduleLoad({ advance: event.type === 'mw-package-check-updated' });
       if (activeTab === 'versions' || (embedded && activeTab === 'release' && deliveryView === 'versions')) {
         void loadRevisions();
       }
@@ -306,15 +309,19 @@ export default function PackageWorkspace({
     }
     const replay = advanceProjectEventReplayGate(store.gate, event);
     store.gate = replay.gate;
-    const refreshWhenSafe = () => {
+    const refreshWhenSafe = (options) => {
       if (workspaceDirtyRef.current) {
+        if (options?.advance === true) store.advanceRequested = true;
         deferredRefreshRef.current = true;
         return;
       }
-      scheduleLoad();
+      scheduleLoad(options);
     };
     // 消息随事件内联送达，先贴上去让回显立即可见；任务图等其余状态仍按需回源。
     const liveMessage = liveAiConstructionMessage(event);
+    const reconcileAfterChat = /^chat\.(?:reply|error|result|plan)\./u.test(
+      String(liveMessage?.key ?? ''),
+    );
     if (liveMessage && !replay.historical) {
       setSession((current) => current ? {
         ...current,
@@ -325,7 +332,7 @@ export default function PackageWorkspace({
       } : current);
       if (isProgressOnlyMessageEvent(event)) return;
     }
-    if (replay.refresh) refreshWhenSafe();
+    if (replay.refresh) refreshWhenSafe(reconcileAfterChat ? { advance: true } : undefined);
   };
 
   useProjectEvents(projectId, handleProjectEvent, { enabled: sessionReady });
@@ -336,6 +343,7 @@ export default function PackageWorkspace({
     return () => {
       if (store.loadTimer) clearTimeout(store.loadTimer);
       store.loadTimer = null;
+      store.advanceRequested = false;
     };
   }, [projectId]);
 
@@ -399,7 +407,10 @@ export default function PackageWorkspace({
   useEffect(() => {
     if (workspaceDraftDirty || !deferredRefreshRef.current) return;
     deferredRefreshRef.current = false;
-    void load();
+    const store = eventStateRef.current;
+    const advance = store.advanceRequested;
+    store.advanceRequested = false;
+    void load(advance ? { advance: true } : undefined);
   }, [workspaceDraftDirty, load]);
 
   useEffect(() => {

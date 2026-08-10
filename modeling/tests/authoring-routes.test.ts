@@ -1068,13 +1068,37 @@ function completionApp(t: test.TestContext, projectId: string, overrides: any = 
       return { revision: { oid: 'pkg-rc-1' }, packageVersion: '1.0.0-rc.1', spec: { status: 'review' } };
     },
   };
+  const currentMilestoneId = overrides.currentMilestoneId ?? 'construction_completed';
   const graph = {
-    snapshot: () => ({ revision: 6 }),
+    snapshot: () => ({
+      revision: 6,
+      progress: { currentMilestoneId },
+      tasks: [{
+        id: 'completed-check',
+        milestoneId: currentMilestoneId,
+        kind: currentMilestoneId === 'knowledge_confirmed' ? 'package_validation' : 'completion_review',
+        status: 'completed',
+      }],
+    }),
     apply: () => ({ revision: 7, status: 'completed' }),
   };
   const orchestrator = {
     latestMaterialAnalysis: () => null,
     latestConfirmedModelingBrief: () => null,
+    reviewCheckFinding: (_projectId: string, input: any) => ({
+      aiConstruction: { revision: 6 },
+      message: {
+        id: `warning-${input.findingId}`,
+        blocks: [{
+          type: 'next_actions',
+          actions: [{
+            id: 'ignore_check_finding', label: '说明原因，先不改', style: 'secondary',
+            findingId: input.findingId,
+          }],
+        }],
+      },
+    }),
+    resumeAfterCheckFindingReview: () => ({ aiConstruction: { revision: 6 } }),
   };
   const options: any = { packages, graph, orchestrator };
   if (overrides.pendingInteractions) {
@@ -1104,6 +1128,18 @@ const confirmCompletion = (app: any, projectId: string) => app.inject({
   },
 });
 
+const confirmKnowledge = (app: any, projectId: string) => app.inject({
+  method: 'POST',
+  url: `/api/projects/${projectId}/ai-construction/commands`,
+  payload: {
+    command: {
+      type: 'confirm_milestone', expectedRevision: 6,
+      milestoneId: 'knowledge_confirmed', packageRevisionOid: 'pkg-draft',
+      actor: { username: 'alice', role: 'validator' },
+    },
+  },
+});
+
 test('未校验时拦截并给出立即校验的动作', async (t) => {
   const project = createProject({ owner: 'alice', name: '拦截-未校验' });
   const response = await confirmCompletion(completionApp(t, project.id), project.id);
@@ -1127,6 +1163,27 @@ test('存在必须修复的错误时拦截并给出修缮与暂缓两条出路',
   assert.deepEqual(response.json().nextActions.map((item: any) => item.id), [
     'repair_knowledge_structure', 'defer_validation_errors', 'view_validation',
   ]);
+});
+
+test('知识结构确认前有未处理提醒时生成对应操作卡，不能从旧确认按钮绕过', async (t) => {
+  const project = createProject({ owner: 'alice', name: '拦截-知识阶段提醒' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [{
+    id: 'warning-knowledge', source: 'rule', severity: '警告', category: '字段交接',
+    target: 'operations/handoff.md', message: '上下游字段口径需要确认',
+  } as any], 'pkg-draft');
+
+  const response = await confirmKnowledge(completionApp(t, project.id, {
+    currentMilestoneId: 'knowledge_confirmed',
+  }), project.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'PACKAGE_WARNINGS_UNREVIEWED');
+  assert.deepEqual(response.json().nextActions.map((item: any) => item.id), [
+    'view_validation', 'review_knowledge_files',
+  ]);
+  const action = response.json().message.blocks[0].actions[0];
+  assert.equal(action.id, 'ignore_check_finding');
+  assert.equal(action.findingId, 'warning-knowledge');
 });
 
 test('缺证据时把明细和文件入口一起返回', async (t) => {

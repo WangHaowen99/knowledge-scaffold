@@ -193,6 +193,8 @@ export interface CheckFindingCardInput {
   suggestion?: string;
   /** 包内文件路径或知识资源语义目标，用来生成「打开这个文件」按钮 */
   filePath?: string;
+  /** 最近一次需要重新呈现操作卡的对话序号；只参与幂等 key，不进入文案 */
+  attentionKey?: string;
 }
 
 export interface CheckFindingIgnoreRequest {
@@ -252,6 +254,11 @@ function displayTarget(value: unknown): string | undefined {
   const text = String(value ?? '').trim();
   if (!text) return undefined;
   return displayText(text, 300, 'package');
+}
+
+function actionCardKey(prefix: string, ...parts: Array<string | undefined>): string {
+  const digest = createHash('sha256').update(parts.filter(Boolean).join('|')).digest('hex').slice(0, 28);
+  return `${prefix}.${digest}`.slice(0, 64);
 }
 
 function isGoalFirstGraph(graph: AiConstructionTaskGraphSnapshot): boolean {
@@ -1604,7 +1611,12 @@ export class AiConstructionOrchestrator {
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
       const taskId = current.progress.currentTaskId ?? undefined;
       const message = this.messages.ensure(projectId, {
-        key: `check.finding.review.${input.packageRevisionOid.slice(0, 12)}.${input.findingId}`,
+        key: actionCardKey(
+          'check.finding.review',
+          input.packageRevisionOid,
+          input.findingId,
+          input.attentionKey,
+        ),
         role: 'assistant',
         taskId,
         blocks: [
@@ -1657,6 +1669,13 @@ export class AiConstructionOrchestrator {
                 description: '保存并发布人工修改后重新检查，并继续处理下一条提醒',
                 style: 'secondary' as const,
               },
+              ...(input.severity === '警告' ? [{
+                id: 'ignore_check_finding',
+                label: '说明原因，先不改',
+                description: '登记这条提醒的影响和暂缓理由，然后继续处理下一条',
+                findingId: input.findingId,
+                style: 'secondary' as const,
+              }] : []),
             ],
           },
         ],
@@ -1675,29 +1694,39 @@ export class AiConstructionOrchestrator {
   resumeAfterCheckFindingReview(
     projectId: string,
     packageRevisionOid: string,
+    attentionKey?: string,
   ): AiConstructionAdvanceResult {
     return this.transaction(() => {
       const current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      if (current.progress.currentMilestoneId !== 'construction_completed') {
+      const milestoneId = current.progress.currentMilestoneId;
+      if (milestoneId !== 'knowledge_confirmed' && milestoneId !== 'construction_completed') {
         return { aiConstruction: current };
       }
+      const taskKind = milestoneId === 'knowledge_confirmed' ? 'package_validation' : 'completion_review';
       const task = [...current.tasks].reverse().find((item) => (
-        item.kind === 'completion_review'
-          && item.milestoneId === 'construction_completed'
+        item.kind === taskKind
+          && item.milestoneId === milestoneId
           && item.status === 'completed'
       ));
       if (!task) return { aiConstruction: current };
+      const knowledgeStage = milestoneId === 'knowledge_confirmed';
       const message = this.messages.ensure(projectId, {
-        key: `construction.validation.ready.${packageRevisionOid.slice(0, 24)}`.slice(0, 64),
+        key: actionCardKey(
+          knowledgeStage ? 'knowledge.validation.ready' : 'construction.validation.ready',
+          packageRevisionOid,
+          attentionKey,
+        ),
         role: 'assistant',
         taskId: task.id,
         blocks: [
           {
             type: 'status',
             title: '知识包校验提醒已处理完',
-            summary: '当前修订已经完成逐条检查，可以进行建模完成确认',
-            milestoneId: 'construction_completed',
+            summary: knowledgeStage
+              ? '当前修订已经完成逐条检查，可以确认知识结构'
+              : '当前修订已经完成逐条检查，可以进行建模完成确认',
+            milestoneId,
             taskId: task.id,
             progress: current.progress.percent,
             eta: {
@@ -1708,12 +1737,17 @@ export class AiConstructionOrchestrator {
           },
           {
             type: 'text',
-            text: '请做最后一次整体检查。确认完成后即可进入场景推演、数据源绑定和真实场景评测。',
+            text: knowledgeStage
+              ? '请确认当前知识结构；确认后将继续判断需要固化的确定性能力。'
+              : '请做最后一次整体检查。确认完成后即可进入场景推演、数据源绑定和真实场景评测。',
           },
           {
             type: 'next_actions',
             title: '选择下一步',
-            actions: [
+            actions: knowledgeStage ? [
+              { id: 'confirm_knowledge', label: '确认知识结构', style: 'primary' },
+              { id: 'review_knowledge_files', label: '再次查看知识文件', style: 'secondary' },
+            ] : [
               { id: 'confirm_construction', label: '确认完成 AI 辅助构建', style: 'primary' },
               { id: 'review_knowledge_files', label: '再次查看知识文件', style: 'secondary' },
             ],

@@ -24,7 +24,10 @@ test('后台包更新不会覆盖仍在自动保存或冲突中的本地输入',
   assert.match(reviewPanelSource, /\(dirtyRef\.current \|\| diagramDirtyRef\.current\) && current \? current/);
   assert.match(reviewPanelSource, /当前文件有未保存修改，已保留你的草稿/);
   assert.match(reviewPanelSource, /onDirtyChange\?\.\(hasUnsavedDraft\)/);
-  assert.match(workspaceSource, /if \(workspaceDirtyRef\.current\) \{\s*deferredRefreshRef\.current = true/);
+  assert.match(
+    workspaceSource,
+    /if \(workspaceDirtyRef\.current\) \{[\s\S]*?store\.advanceRequested = true;[\s\S]*?deferredRefreshRef\.current = true/,
+  );
 });
 
 test('助手消息提交失败时恢复输入草稿', () => {

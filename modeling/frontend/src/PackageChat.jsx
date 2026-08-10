@@ -15,6 +15,7 @@ import {
   editAiConstructionTasks,
   generateAiConstructionKnowledge,
   getAiConstruction,
+  ignorePackageCheckFinding,
   repairAiConstructionKnowledge,
   previewAiConstructionTaskAdjustment,
   previewAiConstructionTaskEdit,
@@ -481,6 +482,26 @@ export default function PackageChat({
         setTurns((items) => items.concat([timedTurn({
           role: 'assistant',
           text: `知识包校验失败：${error instanceof Error ? error.message : String(error)}`,
+        })]));
+      } finally { setLocalBusy(''); }
+      return;
+    }
+    if (action.id === 'ignore_check_finding') {
+      if (busy) return;
+      if (!action.findingId) {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant', text: '这张提醒卡缺少校验发现标识，请刷新后重试。',
+        })]));
+        return;
+      }
+      setLocalBusy('interaction');
+      try {
+        await ignorePackageCheckFinding(projectId, action.findingId);
+        await refreshConstruction();
+      } catch (error) {
+        setTurns((items) => items.concat([timedTurn({
+          role: 'assistant',
+          text: `暂缓这条提醒失败：${error instanceof Error ? error.message : String(error)}`,
         })]));
       } finally { setLocalBusy(''); }
       return;

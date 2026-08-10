@@ -7,7 +7,10 @@ import test from 'node:test';
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'ai-construction-messages-'));
 
 const { AiConstructionMessageStore } = await import('../src/ai-construction/messages.js');
-const { PackageChatConversation } = await import('../src/ai-construction/package-chat-conversation.js');
+const {
+  isWorkflowControlMessage,
+  PackageChatConversation,
+} = await import('../src/ai-construction/package-chat-conversation.js');
 const { AiConstructionTaskGraph } = await import('../src/ai-construction/task-graph.js');
 const { getDb } = await import('../src/db/index.js');
 const { createProject } = await import('../src/projects/repo.js');
@@ -49,6 +52,39 @@ test('结构化建模消息只接受受控 block 并可在重启后恢复', () =
     blocks: [{ type: 'arbitrary_html', html: '<button onclick="steal()">x</button>' } as any],
   }), (error: any) => error?.code === 'INVALID_BLOCK');
   assert.equal(store.list(project.id).length, 1);
+});
+
+test('校验提醒动作保留 findingId，前端才能提交对应的暂缓理由', () => {
+  const project = createProject({ owner: 'alice', name: '提醒动作目标' });
+  const store = new AiConstructionMessageStore(getDb());
+  const created = store.append(project.id, {
+    role: 'assistant',
+    blocks: [{
+      type: 'next_actions',
+      actions: [{
+        id: 'ignore_check_finding', label: '说明原因，先不改', style: 'secondary', findingId: 'warning-1',
+      }],
+    }],
+  });
+  assert.equal((created.blocks[0] as any).actions[0].findingId, 'warning-1');
+  assert.equal(
+    (new AiConstructionMessageStore(getDb()).list(project.id)[0].blocks[0] as any).actions[0].findingId,
+    'warning-1',
+  );
+});
+
+test('阶段推进类自由文本交给任务图核对，普通建模需求仍交给 Agent', () => {
+  for (const message of [
+    '确认完成AI辅助构建',
+    '请继续进入下一阶段',
+    '这个阶段是否已经完成',
+    '为什么没法往下走',
+  ]) assert.equal(isWorkflowControlMessage(message), true, message);
+  for (const message of [
+    '继续生成产品匹配规则',
+    '基于产品手册完善知识结构',
+    '解释当前对象之间的关系',
+  ]) assert.equal(isWorkflowControlMessage(message), false, message);
 });
 
 test('欢迎消息由任务图生成且重复初始化只保存一次', () => {

@@ -7,7 +7,10 @@ import {
   AiConstructionMessageStore,
   notifyAiConstructionMessageWritten,
 } from './ai-construction/messages.js';
-import { PackageChatConversation } from './ai-construction/package-chat-conversation.js';
+import {
+  isWorkflowControlMessage,
+  PackageChatConversation,
+} from './ai-construction/package-chat-conversation.js';
 import { requireAuth } from './auth/middleware.js';
 import { getAuthClient, PasswordChangeRequiredError } from './auth/client.js';
 import { getDb } from './db/index.js';
@@ -1087,6 +1090,12 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       };
 
       void inFlight.run(chatKey, 'package-chat', async () => {
+        if (isWorkflowControlMessage(message.trim())) {
+          packageChatConversation.finishTurn(c.p.id, turnId, {
+            reply: '我会按当前任务图和最新校验结果核对可执行的下一步。请使用随后出现的操作卡继续；文字消息本身不会直接修改阶段状态。',
+          });
+          return;
+        }
         const result = await runPackageChatPlan(c.p, history, message.trim(), {
           documents: c.ctx.documents,
           analysis: c.analysis as AnalysisResult | undefined,

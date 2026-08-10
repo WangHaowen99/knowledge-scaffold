@@ -88,6 +88,8 @@ export interface AiConstructionNextActionsBlock {
     kind?: AssistantActionKind;
     label: string;
     description?: string;
+    /** 校验发现动作使用；后端仍会按该 ID 重新读取当前检查结果，不信任卡片正文 */
+    findingId?: string;
     /** 仅 open_package_file 使用：知识包内相对路径或可解析的资源语义目标 */
     path?: string;
     style: 'primary' | 'secondary' | 'danger';
@@ -389,6 +391,7 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
         throw new AiConstructionMessageStoreError('INVALID_BLOCK', '动作样式不正确');
       }
       const description = optionalText(action.description, '动作说明', 200);
+      const findingId = optionalText(action.findingId, '校验发现标识', 200);
       // 动作语义由后端声明：未登记的 id 在写入时就失败，不会变成点了没反应的孤儿按钮
       const kind = assistantActionKind(id);
       if (!kind) {
@@ -410,6 +413,7 @@ function normalizeBlock(value: unknown): AiConstructionMessageBlock {
         kind,
         label: textValue(action.label, '动作名称', 50),
         ...(description ? { description } : {}),
+        ...(findingId ? { findingId } : {}),
         ...(rawPath ? { path: rawPath } : {}),
         style: style as 'primary' | 'secondary' | 'danger',
       };

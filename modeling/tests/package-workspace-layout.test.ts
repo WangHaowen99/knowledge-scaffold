@@ -105,6 +105,15 @@ test('建模完成被可暂缓的提醒拦截时打开影响复核区', () => {
   assert.match(packageChatSource, /mw-package-warning-review/);
 });
 
+test('建模助手回复和校验完成后触发一次状态对账并恢复操作卡', () => {
+  assert.match(packageWorkspaceSource, /advanceRequested/);
+  assert.match(packageWorkspaceSource, /chat\\\.\(\?:reply\|error\|result\|plan\)/);
+  assert.match(packageWorkspaceSource, /scheduleLoad\(\{ advance: event\.type === 'mw-package-check-updated' \}\)/);
+  assert.match(packageWorkspaceSource, /addEventListener\('mw-package-check-updated'/);
+  assert.match(packageChatSource, /ignorePackageCheckFinding/);
+  assert.match(packageChatSource, /action\.id === 'ignore_check_finding'/);
+});
+
 test('嵌入发布页在会话加载前不会解引用空会话', () => {
   assert.match(packageWorkspaceSource, /release=\{session\?\.release\}/);
 });
@@ -420,7 +429,7 @@ test('流程图有未保存修改时事件流刷新不会卸载当前编辑器',
   assert.match(packageWorkspaceSource, /workspaceDirtyRef\.current = workspaceDraftDirty/);
   assert.match(
     packageWorkspaceSource,
-    /if \(workspaceDraftDirty \|\| !deferredRefreshRef\.current\) return;[\s\S]*?void load\(\)/,
+    /if \(workspaceDraftDirty \|\| !deferredRefreshRef\.current\) return;[\s\S]*?const advance = store\.advanceRequested;[\s\S]*?void load\(advance \? \{ advance: true \} : undefined\)/,
   );
 });
 
