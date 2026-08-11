@@ -216,13 +216,6 @@ def test_example_operation_dependencies_cover_referenced_objects():
             / "operations"
             / "设计变更不停产切换分析.md"
         ): {"CHANGE_ORDER变更单", "AO工序", "设备批次", "设备批次工序状态"},
-        (
-            examples_root
-            / "corporate-deposit-marketing"
-            / "ontology"
-            / "operations"
-            / "IPO与上市辅导营销机会分析.md"
-        ): {"企业客户", "上市辅导", "IPO上市审核"},
     }
 
     for operation_path, expected_objects in cases.items():

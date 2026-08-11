@@ -1,5 +1,5 @@
 /**
- * 知识包格式回归（对照 examples/corporate-marketing-eval/ontology-package-final-design.md v0.2）。
+ * 知识包格式回归。
  * 覆盖 2026-07 格式缺漏审计的 17 个修复点（H1-H4 / M1-M8 / L1-L5）：
  * 构造覆盖全部资源类型（对象/操作/规则/指标/脚本目录/映射）的 sample spec → 渲染 →
  * 逐项断言 frontmatter、表格列数、key 校验、manifest 转义、mapping 一致性、
