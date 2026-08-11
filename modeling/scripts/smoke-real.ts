@@ -38,14 +38,14 @@ const TABLES: DataDictTable[] = [
   ] },
 ];
 const DOCS = [{
-  id: 'doc-eco-flow',
-  filename: 'eco-flow.md',
+  id: 'doc-change-order-flow',
+  filename: 'change-order-flow.md',
   textContent: 'CHANGE_ORDER 变更管理规范：所有 CHANGE_ORDER 需依次经工艺、质量双会签后方可生效；生效后按批次区间更新 STRUCTURE_LIST 的 Effective 字段。',
 }];
 
 const CONFIRMED_FLOWCHART: FlowchartOutput = {
   diagrams: [{
-    id: 'eco-approval',
+    id: 'change-order-approval',
     title: 'CHANGE_ORDER 双会签与生效',
     description: 'CHANGE_ORDER 依次经工艺、质量会签后生效，并交接给 STRUCTURE_LIST 更新环节。',
     processMeta: {
@@ -57,15 +57,15 @@ const CONFIRMED_FLOWCHART: FlowchartOutput = {
       handoffs: ['交接 STRUCTURE_LIST 更新'],
     },
     nodes: [
-      { id: 'eco-start', label: '收到待审批 CHANGE_ORDER', kind: 'start' },
+      { id: 'change-order-start', label: '收到待审批 CHANGE_ORDER', kind: 'start' },
       { id: 'process-sign', label: '完成工艺会签', kind: 'action' },
       { id: 'quality-sign', label: '完成质量会签', kind: 'action' },
-      { id: 'eco-end', label: 'CHANGE_ORDER 生效', kind: 'end' },
+      { id: 'change-order-end', label: 'CHANGE_ORDER 生效', kind: 'end' },
     ],
     edges: [
-      { id: 'eco-edge-1', from: 'eco-start', to: 'process-sign', kind: 'sequence' },
-      { id: 'eco-edge-2', from: 'process-sign', to: 'quality-sign', kind: 'sequence' },
-      { id: 'eco-edge-3', from: 'quality-sign', to: 'eco-end', kind: 'sequence' },
+      { id: 'change-order-edge-1', from: 'change-order-start', to: 'process-sign', kind: 'sequence' },
+      { id: 'change-order-edge-2', from: 'process-sign', to: 'quality-sign', kind: 'sequence' },
+      { id: 'change-order-edge-3', from: 'quality-sign', to: 'change-order-end', kind: 'sequence' },
     ],
   }, {
     id: 'structure_list-applicability',
@@ -80,15 +80,15 @@ const CONFIRMED_FLOWCHART: FlowchartOutput = {
       handoffs: [],
     },
     nodes: [
-      { id: 'structure-list-start', label: '收到查询条件', kind: 'start' },
-      { id: 'read-structure-list', label: '读取 STRUCTURE_LIST', kind: 'action' },
+      { id: 'structure_list-start', label: '收到查询条件', kind: 'start' },
+      { id: 'read-structure_list', label: '读取 STRUCTURE_LIST', kind: 'action' },
       { id: 'filter-effective', label: '按 Effective 区间筛选', kind: 'decision' },
-      { id: 'structure-list-end', label: '返回适用 STRUCTURE_LIST 行', kind: 'end' },
+      { id: 'structure_list-end', label: '返回适用 STRUCTURE_LIST 行', kind: 'end' },
     ],
     edges: [
-      { id: 'structure-list-edge-1', from: 'structure-list-start', to: 'read-structure-list', kind: 'sequence' },
-      { id: 'structure-list-edge-2', from: 'read-structure-list', to: 'filter-effective', kind: 'sequence' },
-      { id: 'structure-list-edge-3', from: 'filter-effective', to: 'structure-list-end', kind: 'condition', label: '批次适用', conditionText: '目标批次落在 Effective 区间内' },
+      { id: 'structure_list-edge-1', from: 'structure_list-start', to: 'read-structure_list', kind: 'sequence' },
+      { id: 'structure_list-edge-2', from: 'read-structure_list', to: 'filter-effective', kind: 'sequence' },
+      { id: 'structure_list-edge-3', from: 'filter-effective', to: 'structure_list-end', kind: 'condition', label: '批次适用', conditionText: '目标批次落在 Effective 区间内' },
     ],
   }],
 };
@@ -100,7 +100,7 @@ async function main() {
   }
   console.log('\n=== 真实 LLM 端点全流程冒烟（输出非确定，断言取形状+底线） ===');
   const t0 = Date.now();
-  const project = createProject({ owner: 'smoke-real', name: '示例工程变更', domain: 'DOMAIN', background: '示例制造 STRUCTURE_LIST 与工程变更管理' });
+  const project = createProject({ owner: 'smoke-real', name: '示例工程变更', domain: 'DOMAIN', background: '示例业务 STRUCTURE_LIST 与工程变更管理' });
   const artifactStore = getPackageArtifactStore();
   await artifactStore.initializeDraftPackage(project.id, {
     id: 'example-domain-agent',

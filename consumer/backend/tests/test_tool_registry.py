@@ -343,7 +343,7 @@ def _write_v01_ontology_package(tmp_path):
             "---\nresource: operation_index\n---\n\n"
             "| operation key | 标题 | 输入 |\n"
             "| --- | --- | --- |\n"
-            "| 分析影响 | 影响分析 | eco_id |\n"
+            "| 分析影响 | 影响分析 | change_order_id |\n"
         ),
         encoding="utf-8",
     )
@@ -457,7 +457,7 @@ def _write_v01_ontology_package(tmp_path):
             "---\n\n"
             "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
             "| --- | --- | --- | --- | --- |\n"
-            "| eco_id | --eco-id | string | 是 | CHANGE_ORDER编号 |\n"
+            "| change_order_id | --change-order-id | string | 是 | CHANGE_ORDER编号 |\n"
         ),
         encoding="utf-8",
     )
@@ -638,7 +638,7 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
     assert (
         "operations_catalog:\n"
         "columns: operation key | 标题 | 输入\n"
-        "- 分析影响 | 影响分析 | eco_id"
+        "- 分析影响 | 影响分析 | change_order_id"
     ) in root_content
     assert (
         "objects_catalog:\n"
@@ -655,7 +655,7 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
         "columns: metric key | 标题 | 说明\n"
         "- 处理成本 | 库存处理成本 | 数量乘单价"
     ) in root_content
-    assert "- 分析影响 - 影响分析脚本 (parameters: eco_id=CHANGE_ORDER编号 required string)" in root_content
+    assert "- 分析影响 - 影响分析脚本 (parameters: change_order_id=CHANGE_ORDER编号 required string)" in root_content
     assert "assets_catalog" not in root_content
     assert "legacy-operation" not in root_content
     assert "legacy-object" not in root_content
@@ -725,12 +725,12 @@ def test_registry_loads_v01_ontology_package_resources(tmp_path, monkeypatch):
         [
             _build_tool_call(
                 "execute_script",
-                {"ontology_id": "demo-v01", "operation_key": "分析影响", "arguments": {"eco_id": "CHANGE_ORDER-001"}},
+                {"ontology_id": "demo-v01", "operation_key": "分析影响", "arguments": {"change_order_id": "CHANGE_ORDER-001"}},
             )
         ],
         context,
     )
-    assert json.loads(script_result.messages[0]["content"]) == ["--eco-id", "CHANGE_ORDER-001"]
+    assert json.loads(script_result.messages[0]["content"]) == ["--change-order-id", "CHANGE_ORDER-001"]
 
     matched_entry, matched_key, confidence = find_best_script_operation("分析影响", "demo-v01")
     assert matched_entry is not None
@@ -1156,7 +1156,7 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
             "| --- | --- | --- | --- | --- | --- |\n"
             "| target_item_code | --target_item-code | string | 是 | TargetItem编码 | 否 |\n"
             "| equipment_model | --equipment-model | string | 否 | 设备型号 | 否 |\n"
-            "| batch_codes | --batch-code | string | 是 | 设备批次 | 是 |\n"
+            "| batch_codes | --batch-code | string | 是 | 生产批次 | 是 |\n"
         ),
         encoding="utf-8",
     )
@@ -1172,7 +1172,7 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
         "- 流程A (parameters: "
         "target_item_code=TargetItem编码 required string; "
         "equipment_model=设备型号 optional string; "
-        "batch_codes=设备批次 required string[])"
+        "batch_codes=生产批次 required string[])"
     ) in root_content
 
     result = execute_tool_batch(
@@ -1209,7 +1209,7 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
                     "ontology_id": "demo",
                     "operation_key": "流程A",
                     "arguments": {
-                        "target_item_code": "MP-001",
+                        "target_item_code": "ITEM-001",
                         "equipment_model": "EQ-100",
                         "batch_codes": ["F001"],
                     },
@@ -1221,7 +1221,7 @@ def test_execute_script_supports_structured_parameters(tmp_path, monkeypatch):
 
     assert json.loads(result_with_optional.messages[0]["content"]) == [
         "--target_item-code",
-        "MP-001",
+        "ITEM-001",
         "--equipment-model",
         "EQ-100",
         "--batch-code",
@@ -1238,7 +1238,7 @@ def test_execute_script_validates_structured_parameters(tmp_path, monkeypatch):
             "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 | multiple |\n"
             "| --- | --- | --- | --- | --- | --- |\n"
             "| quantity | --quantity | integer | 是 | 数量 | 否 |\n"
-            "| batch_codes | --batch-code | string | 否 | 设备批次 | 是 |\n"
+            "| batch_codes | --batch-code | string | 否 | 生产批次 | 是 |\n"
         ),
         encoding="utf-8",
     )
@@ -1583,8 +1583,8 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
         {
             "role": "user",
             "content": (
-                "第1批：示例原料A，2.574万吨，周期1.5天，减一线去生产线B；\n"
-                "第2批：示例原料B，4.437万吨，周期2.75天，减一线去生产线C。"
+                "第1批：示例原料A，2.574万吨，周期1.5天，减一线去辅助生产线A；\n"
+                "第2批：示例原料B，4.437万吨，周期2.75天，减一线去辅助生产线B。"
             ),
         },
         {
@@ -1605,8 +1605,8 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
             "operation_key": "process_records",
             "arguments": {
                 "batchPlans": [
-                    {"name": "示例原料A", "quantity": 2.574, "days": 1.5, "route": "生产线B"},
-                    {"name": "示例原料B", "quantity": 4.437, "days": 2.75, "route": "生产线C"},
+                    {"name": "示例原料A", "quantity": 2.574, "days": 1.5, "route": "辅助生产线A"},
+                    {"name": "示例原料B", "quantity": 4.437, "days": 2.75, "route": "辅助生产线B"},
                 ],
                 "productYieldData": [
                     {"ProductName": "常一线", "Yield_1_Percent": 1.81, "RefineryUnitID": 10, "LogicTankID": 21},

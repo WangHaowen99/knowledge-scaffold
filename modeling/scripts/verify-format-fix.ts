@@ -34,28 +34,28 @@ const SPEC: PackageSpec = {
       aliases: ['CHANGE_ORDER影响对象', '设计变更影响对象'],
       queryBoundary: '查询前必须提供 CHANGE_ORDER 编号；不得将缺失版本解释为无影响。',
       relations: [{ relation: 'belongs_to', target: 'CHANGE_ORDER变更单', note: '受影响对象归属于一个 CHANGE_ORDER' }],
-      sourceTable: 'CHANGE_ORDER_AFFECTED_OBJECT', primaryKey: ['eco_id'],
+      sourceTable: 'CHANGE_ORDER_AFFECTED_OBJECT', primaryKey: ['change_order_id'],
       fields: [
-        { key: 'eco_id', cnName: 'CHANGE_ORDER编号', type: 'string', required: true, note: '工程变更单编号', alias: '变更单号', sourceColumn: 'CHANGE_ORDER_ID' },
+        { key: 'change_order_id', cnName: 'CHANGE_ORDER编号', type: 'string', required: true, note: '工程变更单编号', alias: '变更单号', sourceColumn: 'CHANGE_ORDER_ID' },
         { key: 'affected_object_id', cnName: '受影响对象ID', type: 'string' },
       ],
     },
     {
       key: 'CHANGE_ORDER变更单', title: 'CHANGE_ORDER变更单', description: '工程变更单主对象。',
-      sourceTable: 'CHANGE_ORDER_AFFECTED_OBJECT', primaryKey: ['eco_id'],
-      fields: [{ key: 'eco_id', type: 'string', sourceColumn: 'CHANGE_ORDER_ID' }],
+      sourceTable: 'CHANGE_ORDER_AFFECTED_OBJECT', primaryKey: ['change_order_id'],
+      fields: [{ key: 'change_order_id', type: 'string', sourceColumn: 'CHANGE_ORDER_ID' }],
     },
   ],
   operations: [
     {
-      key: 'eco_change_impact', title: 'CHANGE_ORDER变更影响分析', description: '分析 CHANGE_ORDER 对物料和库存成本的影响。',
-      inputs: [{ param: 'eco_id', cnName: 'CHANGE_ORDER编号', type: 'string', required: true, note: '工程变更单编号' }],
+      key: 'change_order_change_impact', title: 'CHANGE_ORDER变更影响分析', description: '分析 CHANGE_ORDER 对物料和库存成本的影响。',
+      inputs: [{ param: 'change_order_id', cnName: 'CHANGE_ORDER编号', type: 'string', required: true, note: '工程变更单编号' }],
       outputs: [{ field: 'affected_items', cnName: '受影响对象', type: 'array', note: '受影响明细' }],
       flow: ['加载 object:CHANGE_ORDER变更单，确认基础状态。', '加载 object:CHANGE_ORDER受影响对象，查询受影响对象。'],
       relatedObjects: ['CHANGE_ORDER变更单', 'CHANGE_ORDER受影响对象'],
       usesRules: ['变更生效批次判断规则'], usesMetrics: ['库存处理成本'],
       notes: ['缺少 CHANGE_ORDER 编号时必须追问。'],
-      script: { key: 'eco_impact_script', required: false },
+      script: { key: 'change_order_impact_script', required: false },
       competencyQuestion: 'CHANGE_ORDER-001 会影响哪些物料',
     },
     {
@@ -74,7 +74,7 @@ const SPEC: PackageSpec = {
     key: '库存处理成本', title: '库存处理成本', description: '旧物料不可用时的库存处理成本。',
     unit: 'CNY', grain: 'material + warehouse',
     usesObjects: ['CHANGE_ORDER受影响对象'],
-    caliber: '库存处理成本 = 可处理数量 * 库存单价。',
+    caliber: '库存处理成本 = 待处理数量 * 库存单价。',
     boundaries: ['只统计不能改制、不能替代、不能继续消耗的旧物料。'],
     nullPolicy: [{ field: '库存单价为空', handling: '不得按 0 计算，必须返回缺失证据' }],
     dimensions: [{ key: 'material_id', note: '物料' }],
@@ -138,7 +138,7 @@ function main() {
 
   // ---- M1 fields 的 key/source 均使用字段 key ----
   console.log('· M1 semantic mapping source');
-  ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.eco_id.source === 'eco_id', '字段 key/source 一致：eco_id -> eco_id');
+  ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.change_order_id.source === 'change_order_id', '字段 key/source 一致：change_order_id -> change_order_id');
   ok(mapping.objects['CHANGE_ORDER受影响对象'].fields.affected_object_id.source === 'affected_object_id', '字段 key/source 一致：affected_object_id -> affected_object_id');
 
   // ---- M2 mapping policy 块 ----
@@ -165,22 +165,22 @@ function main() {
   ok(files['objects/index.md'].includes('| object key | 标题 | 说明 | 来源Sheet |'), 'objects 索引四列（object key|标题|说明|来源Sheet）');
   ok(files['objects/index.md'].includes('| CHANGE_ORDER受影响对象 | CHANGE_ORDER受影响对象 | 记录一个 CHANGE_ORDER 变更影响到的设计对象、变更前后版本和处理意见。 | CHANGE_ORDER_AFFECTED_OBJECT |'), 'objects 索引行含标题与来源 Sheet 列');
   ok(files['operations/index.md'].includes('| operation key | 标题 | 输入 | 输出 |'), 'operations 索引四列（operation key|标题|输入|输出）');
-  ok(files['operations/index.md'].includes('| eco_change_impact | CHANGE_ORDER变更影响分析 | eco_id | affected_items |'), 'operations 索引行含输入/输出摘要');
+  ok(files['operations/index.md'].includes('| change_order_change_impact | CHANGE_ORDER变更影响分析 | change_order_id | affected_items |'), 'operations 索引行含输入/输出摘要');
 
   // ---- M5 操作 frontmatter intent_examples / uses / script；正文去「# 关联对象」----
   console.log('· M5 操作 frontmatter');
-  const opMd = files['operations/eco_change_impact.md'];
-  const opFm = fm('operations/eco_change_impact.md');
+  const opMd = files['operations/change_order_change_impact.md'];
+  const opFm = fm('operations/change_order_change_impact.md');
   ok(opFm.includes('intent_examples:') && opFm.includes('- CHANGE_ORDER-001 会影响哪些物料'), 'intent_examples（来自 competencyQuestion）');
   ok(opFm.includes('uses:') && opFm.includes('objects:') && opFm.includes('- CHANGE_ORDER变更单') && opFm.includes('- CHANGE_ORDER受影响对象'), 'uses.objects（迁移自关联对象）');
   ok(opFm.includes('rules:') && opFm.includes('- 变更生效批次判断规则') && opFm.includes('metrics:') && opFm.includes('- 库存处理成本'), 'uses.rules / uses.metrics');
-  ok(opFm.includes('script:') && opFm.includes('key: eco_impact_script') && opFm.includes('required: false'), 'script 块（有绑定脚本时）');
+  ok(opFm.includes('script:') && opFm.includes('key: change_order_impact_script') && opFm.includes('required: false'), 'script 块（有绑定脚本时）');
   ok(!opMd.includes('# 关联对象'), '正文「# 关联对象」章节已移除（信息进 frontmatter uses.objects）');
 
   // ---- M6 输入/输出表补「中文名」列 ----
   console.log('· M6 输入/输出中文名列');
   ok(opMd.includes('| 参数 key | 中文名 | 类型 | 必填 | 说明 |'), '输入表五列');
-  ok(opMd.includes('| eco_id | CHANGE_ORDER编号 | string | 是 | 工程变更单编号 |'), '输入行含中文名');
+  ok(opMd.includes('| change_order_id | CHANGE_ORDER编号 | string | 是 | 工程变更单编号 |'), '输入行含中文名');
   ok(opMd.includes('| 输出 key | 中文名 | 类型 | 说明 |'), '输出表四列');
   ok(opMd.includes('| affected_items | 受影响对象 | array | 受影响明细 |'), '输出行含中文名');
   const plainMd = files['operations/plain_op.md'];

@@ -59,7 +59,7 @@
 ```yaml
 resource: object
 key: CHANGE_ORDER受影响对象
-canonical_key: eco_affected_object
+canonical_key: change_order_affected_object
 title: CHANGE_ORDER受影响对象
 aliases:
   - CHANGE_ORDER影响对象
@@ -397,7 +397,7 @@ status: resolved
 requested_key: 设计变更影响对象
 object_key: CHANGE_ORDER受影响对象
 matched_by: alias
-path: objects/eco_affected_object.md
+path: objects/change_order_affected_object.md
 ```
 
 ### 4.5 `ontology_context` 消费流程
@@ -416,9 +416,9 @@ path: objects/eco_affected_object.md
 ontology_context(object, "设计变更影响对象")
   -> resolve: matched_by=alias
   -> formal key=CHANGE_ORDER受影响对象
-  -> read objects/eco_affected_object.md
+  -> read objects/change_order_affected_object.md
   -> payload.object_key=CHANGE_ORDER受影响对象
-  -> ledger.source_path=objects/eco_affected_object.md
+  -> ledger.source_path=objects/change_order_affected_object.md
 ```
 
 ### 4.6 `business_data_search` 决策流程

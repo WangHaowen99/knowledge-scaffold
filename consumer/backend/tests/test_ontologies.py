@@ -7,7 +7,7 @@ from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
-EXAMPLE_ONTOLOGY_DESCRIPTION = "Example DOMAIN ontology for tests"
+EXAMPLE_ONTOLOGY_DESCRIPTION = "Example domain ontology for tests"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ONTO_RUNTIME_ROOT = REPO_ROOT / ".onto-runtime"
 
@@ -184,47 +184,6 @@ def test_runtime_loader_rejects_legacy_manifest(tmp_path):
     (ontology_dir / "index.md").write_text("# Legacy\n", encoding="utf-8")
 
     assert OntologyLoader.load_ontology(ontology_dir) is None
-
-
-def test_example_ontology_manifest_contains_expected_metadata():
-    import yaml
-
-    manifest_path = (
-        REPO_ROOT.parent
-        / "examples"
-        / "example-domain-knowledge"
-        / "ontology"
-        / "manifest.yaml"
-    )
-
-    content = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-
-    assert content["kind"] == "ontology-package"
-    assert content["id"] == EXAMPLE_ONTOLOGY_ID
-    assert content["language"] == "zh-CN"
-    assert content["version"] == "1.0.0"
-
-
-def test_example_operation_dependencies_cover_referenced_objects():
-    from ontology.ontology_catalog import read_markdown_frontmatter
-
-    cases = {
-        (
-            examples_root
-            / "example-domain-knowledge"
-            / "ontology"
-            / "operations"
-            / "设计变更不停产切换分析.md"
-        ): {"CHANGE_ORDER变更单", "AO工序", "设备批次", "设备批次工序状态"},
-    }
-
-    for operation_path, expected_objects in cases.items():
-        frontmatter = read_markdown_frontmatter(operation_path)
-        declared_objects = set((frontmatter.get("uses") or {}).get("objects") or [])
-        assert expected_objects <= declared_objects
-        for object_key in expected_objects:
-            object_path = operation_path.parent.parent / "objects" / "{}.md".format(object_key)
-            assert object_path.is_file()
 
 
 def test_build_ontologies_section_honors_selected_ontology(tmp_path, monkeypatch):

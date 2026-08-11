@@ -66,7 +66,6 @@ ACP_SUBMODE = get_env("ACP_SUBMODE", "execute_stream")  # execute_stream | strea
 ACP_AUTO_REPLY = get_env("ACP_AUTO_REPLY", "继续")
 ACP_LANG = get_env("ACP_LANG", None)  # 单独控制 ACP 传入的 lang 参数，不设置则使用 lang_code
 ACP_SUPPRESS_SCRIPT_PATTERNS = get_env("ACP_SUPPRESS_SCRIPT_PATTERNS", "")  # ACP 输出过滤脚本模式, 逗号分隔
-XLSX_TEMPLATE = os.path.join(_TEST_DIR, "测试结果记录 ds-v4 - 空模板.xlsx")
 _RESULT_BASE_DIR = get_env("BENCHMARK_RESULT_DIR") or os.path.join(_TEST_DIR, "result")
 _current_run_dir: str | None = None
 _current_xlsx_path: str | None = None
@@ -455,6 +454,8 @@ def _ensure_auth() -> str:
     global _AUTH_TOKEN
     if _AUTH_TOKEN:
         return _AUTH_TOKEN
+    if not AUTH_USERNAME or not AUTH_PASSWORD:
+        raise RuntimeError("AUTH_USERNAME and AUTH_PASSWORD must be set for benchmark login")
     resp = requests.post(
         f"{BASE_URL}/auth/login",
         json={"username": AUTH_USERNAME, "password": AUTH_PASSWORD},
@@ -2342,7 +2343,7 @@ def _save_run_log(
 
 _CHATS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".onto-runtime", "workspaces", WORKSPACE_ID, "runtime", "users", "admin", "chats",
+    ".onto-runtime", "workspaces", WORKSPACE_ID, "runtime", "users", AUTH_USERNAME or "benchmark-user", "chats",
 )
 
 def _read_snapshot_failures(session_id: str) -> list[dict]:
@@ -3497,7 +3498,6 @@ def run_tests():
     run_details_log: list[dict] = []  # 逐次执行详情，用于 Markdown 报告
     flywheel_wos_track: dict[str, dict] = {}
 
-    import shutil
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if get_env("BENCHMARK_RESULT_DIR"):
         run_dir = _RESULT_BASE_DIR
@@ -3507,30 +3507,13 @@ def run_tests():
     global _current_run_dir, _current_xlsx_path
     _current_run_dir = run_dir
 
-    if os.path.exists(XLSX_TEMPLATE):
-        xlsx_filename = "benchmark_%s.xlsx" % ts
-        xlsx_dst = os.path.join(run_dir, xlsx_filename)
-        shutil.copy2(XLSX_TEMPLATE, xlsx_dst)
-        wb = openpyxl.load_workbook(xlsx_dst)
-        _ensure_xlsx(wb)
-        for ws in wb.worksheets:
-            if ws.max_row > 1:
-                ws.delete_rows(2, ws.max_row)
-        _current_xlsx_path = xlsx_dst
-        print(f"📁 本次测试结果目录: {run_dir}")
-        print(f"📊 Excel: {xlsx_dst}")
-    else:
-        fallback_xlsx = os.path.join(run_dir, "benchmark_fallback.xlsx")
-        if not os.path.exists(fallback_xlsx):
-            wb = openpyxl.Workbook()
-            _ensure_xlsx(wb)
-            wb.save(fallback_xlsx)
-            print(f"已创建 Excel 模板: {fallback_xlsx}")
-            _current_xlsx_path = fallback_xlsx
-        else:
-            wb = openpyxl.load_workbook(fallback_xlsx)
-            _current_xlsx_path = fallback_xlsx
-        _ensure_xlsx(wb)
+    xlsx_path = os.path.join(run_dir, "benchmark_%s.xlsx" % ts)
+    wb = openpyxl.Workbook()
+    _ensure_xlsx(wb)
+    wb.save(xlsx_path)
+    _current_xlsx_path = xlsx_path
+    print(f"📁 本次测试结果目录: {run_dir}")
+    print(f"📊 Excel: {xlsx_path}")
 
     for question_idx, q in enumerate(QUESTIONS):
         if TEST_QUESTION_LIMIT > 0 and question_idx >= TEST_QUESTION_LIMIT:

@@ -94,7 +94,7 @@ cp backend/.env.example backend/.env
 - 容器启动（`backend`、`mcp`、`frontend`、`auth-server`）
 - 部署后健康检查
 
-部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。若需要对外提供 MCP 客户端接入，请在 `backend/.env` 中设置 `MCP_PUBLIC_BASE_URL` 为服务器 IP 或域名，例如 `http://192.0.2.20:7488`。
+部署成功后，通过系统设置页面配置 LLM、MindsDB 等对接参数即可。若需要对外提供 MCP 客户端接入，请在 `backend/.env` 中设置 `MCP_PUBLIC_BASE_URL` 为经过审批、可从客户端访问的 HTTPS 域名，例如 `https://mcp.example.com`。
 
 ## 升级
 

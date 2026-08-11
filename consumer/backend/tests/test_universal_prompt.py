@@ -278,5 +278,5 @@ def test_ontology_indexes_document_script_first_tool_flows():
     assert "脚本优先规则" in ontology_doc_content
     assert "scripts/index.md" in ontology_doc_content
     assert "优先调用 `execute_script`" in ontology_doc_content
-    assert "ontologies/example-domain-operations-manual/scripts/get_in_progress_flights.py" not in ontology_doc_content
-    assert "get_in_progress_flights" in scripts_index_content
+    assert "ontologies/example-domain-operations-manual/scripts/get_in_progress_batches.py" not in ontology_doc_content
+    assert "get_in_progress_batches" in scripts_index_content

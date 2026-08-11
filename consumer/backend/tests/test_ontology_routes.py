@@ -64,7 +64,7 @@ def _write_example_ontology(workspace_paths):
             "schema_version: 0.1\n"
             f"id: {EXAMPLE_ONTOLOGY_ID}\n"
             f"name: {EXAMPLE_ONTOLOGY_ID}\n"
-            "description: Example DOMAIN ontology for route tests\n"
+            "description: Example domain ontology for route tests\n"
             "version: 1.0.0\n"
             "active_version: 1.0.0\n"
             "versions:\n"

@@ -80,11 +80,7 @@ PYTHONPATH=. venv/bin/python -m pytest tests/test_session_routes.py tests/test_a
 - 1440、1024、768 三档宽度可用；768 下 Trace 进入遮罩抽屉。
 - 浏览器控制台 error：0。
 
-截图：
-
-- [1440 × 1000](../../frontend/local-browser-artifacts/frontend-stage1/chat-1440x1000.png)
-- [1024 × 1000](../../frontend/local-browser-artifacts/frontend-stage1/chat-1024x1000.png)
-- [768 × 1000](../../frontend/local-browser-artifacts/frontend-stage1/chat-768x1000.png)
+三档宽度验收截图属于运行产物，可能包含会话、账号或环境数据，不纳入代码仓库。
 
 ## 6. 性能对比
 

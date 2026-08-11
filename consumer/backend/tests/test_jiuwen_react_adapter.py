@@ -1441,7 +1441,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
                 "content": "",
                 "tool_calls": [
                     {
-                        "id": "call_eco",
+                        "id": "call_change_order",
                         "type": "function",
                         "function": {
                             "name": "business_data_search",
@@ -1452,7 +1452,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
             },
             {
                 "role": "tool",
-                "tool_call_id": "call_eco",
+                "tool_call_id": "call_change_order",
                 "name": "business_data_search",
                 "content": "CHANGE_ORDER-001 查询结果",
             },
@@ -1485,7 +1485,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
     ]
     assert dumped[0]["content"] == "查询 CHANGE_ORDER-001"
     assert dumped[1]["tool_calls"][0]["function"]["name"] == "business_data_search"
-    assert dumped[2]["tool_call_id"] == "call_eco"
+    assert dumped[2]["tool_call_id"] == "call_change_order"
     assert dumped[-1]["content"] == "CHANGE_ORDER-001 已查询完成"
     assert "old system prompt" not in [message.get("content") for message in dumped]
     assert [message.get("content") for message in dumped].count("继续分析") == 0

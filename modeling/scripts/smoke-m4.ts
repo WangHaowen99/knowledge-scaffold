@@ -207,9 +207,9 @@ async function main() {
   const stub = startStubConsumer(5582);
   setSetting('consumer_api_url', 'http://127.0.0.1:5582');
 
-  const project = createProject({ owner: 'smoke', name: 'M4 演示', domain: 'DOMAIN', background: '示例制造' });
+  const project = createProject({ owner: 'smoke', name: 'M4 演示', domain: 'DOMAIN', background: '示例业务' });
   const artifacts = getPackageArtifactStore();
-  insertDocument({ projectId: project.id, filename: 'structure-list.xlsx', kind: 'excel', parseStatus: 'parsed', tables: [] });
+  insertDocument({ projectId: project.id, filename: 'structure_list.xlsx', kind: 'excel', parseStatus: 'parsed', tables: [] });
 
   // v1.0.0：只沉淀了 STRUCTURE_LIST 口径 —— 3 条用例只有 1 条答得出
   const spec: PackageSpec = {

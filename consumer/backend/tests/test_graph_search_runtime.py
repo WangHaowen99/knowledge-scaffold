@@ -49,7 +49,7 @@ class _FakeBackend:
 
     def property_filter(self, **kwargs):
         self.calls.append(("property_filter", kwargs))
-        return GraphBackendResult(records=[{"properties": {"eco_id": "CHANGE_ORDER-001"}}], total=1)
+        return GraphBackendResult(records=[{"properties": {"change_order_id": "CHANGE_ORDER-001"}}], total=1)
 
     def count_search(self, **kwargs):
         self.calls.append(("count_search", kwargs))
@@ -153,7 +153,7 @@ def _agent_result(tool_name="property_filter"):
         tool_name=tool_name,
         tool_args={"queries": [{"element_class": "ChangeOrderAffectedObject", "element_type": "NODE"}]},
         backend_result=GraphBackendResult(
-            records=[{"properties": {"eco_id": "CHANGE_ORDER-001"}}],
+            records=[{"properties": {"change_order_id": "CHANGE_ORDER-001"}}],
             total=1,
             truncated=False,
         ),
@@ -164,11 +164,11 @@ def _agent_result(tool_name="property_filter"):
 def test_runtime_uses_graph_agent_internal_tool_result_with_forced_scope():
     backend = _FakeBackend()
     mapping = GraphEntityMapping(
-        entity="eco_affected_object",
+        entity="change_order_affected_object",
         kind="node",
         source="test",
         label="ChangeOrderAffectedObject",
-        property_map={"CHANGE_ORDER_ID": "eco_id"},
+        property_map={"CHANGE_ORDER_ID": "change_order_id"},
     )
     agent = _StaticGraphAgent(_agent_result())
     runtime = GraphSearchRuntime(
@@ -179,12 +179,12 @@ def test_runtime_uses_graph_agent_internal_tool_result_with_forced_scope():
         graph_agent=agent,
     )
 
-    events = list(runtime.search_stream(query="查询 CHANGE_ORDER_ID 为 CHANGE_ORDER-001 的对象", entity="eco_affected_object"))
+    events = list(runtime.search_stream(query="查询 CHANGE_ORDER_ID 为 CHANGE_ORDER-001 的对象", entity="change_order_affected_object"))
     final = json.loads(events[-1]["content"])
 
     assert final["success"] is True
     assert final["provider"] == "neo4j"
-    assert final["records"] == [{"properties": {"eco_id": "CHANGE_ORDER-001"}}]
+    assert final["records"] == [{"properties": {"change_order_id": "CHANGE_ORDER-001"}}]
     assert final["evidence"][0]["tool"] == "property_filter"
     assert set(final["evidence"][0]) == {
         "evidence_id",

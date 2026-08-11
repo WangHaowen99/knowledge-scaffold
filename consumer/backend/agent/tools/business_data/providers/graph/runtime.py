@@ -473,8 +473,8 @@ def _analyze_path_intent(*, query: str, entity: str, mapping: GraphEntityMapping
             "变更前",
             "变更后",
             "BOM",
-            "SOURCE_STRUCTURE",
-            "STRUCTURE_LIST",
+            "结构",
+            "清单",
             "工艺关系",
             "供应商",
         )
@@ -554,6 +554,8 @@ def _mapping_resource_kind(mapping: GraphEntityMapping) -> str:
 
 def _looks_like_relationship_record(*, entity: str, mapping: GraphEntityMapping) -> bool:
     text = "{} {} {} {}".format(entity or "", mapping.entity or "", mapping.title or "", mapping.label or "")
+    if mapping.kind == "edge" or mapping.path_pattern:
+        return True
     return any(
         cue in text
         for cue in (
@@ -563,11 +565,9 @@ def _looks_like_relationship_record(*, entity: str, mapping: GraphEntityMapping)
             "受影响",
             "映射",
             "BOM",
-            "SOURCE_STRUCTURE",
-            "STRUCTURE_LIST",
+            "结构",
+            "清单",
             "_obj",
-            "_TargetItem",
-            "_TargetItem",
         )
     )
 
@@ -594,15 +594,15 @@ def _requires_associated_object_detail(*, query: str, entity: str) -> bool:
     text = "{} {}".format(query or "", entity or "")
     relation_cues = ("对应", "关联", "连接", "映射到", "追溯", "展开", "上下游", "上游", "下游")
     object_detail_cues = (
-        "TargetItem",
+        "对象",
+        "实体",
+        "节点",
         "SourceItem",
-        "AO",
+        "TargetItem",
+        "物料",
+        "零件",
+        "版本",
         "工序",
-        "版本详情",
-        "对象详情",
-        "节点详情",
-        "关联对象",
-        "关联节点",
         "父项",
         "子项",
         "供应商",

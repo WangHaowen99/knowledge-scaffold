@@ -1,4 +1,6 @@
-# Benchmark 自动化测试工具 (独立版)
+# Benchmark 自动化测试工具
+
+该目录只保留通用测试工具，不包含客户用例、工作空间配置或历史执行结果。运行前请使用隔离的测试账号和测试工作空间；`.env`、翻译缓存、日志、截图及 Excel/Markdown 报告均为本地运行资产，不得提交到代码仓库。
 
 对后端 Agent 服务进行批量基准测试，支持中/英/日/韩多语言，自动记录性能指标、工具调用统计、中文混入检测等。
 
@@ -9,7 +11,6 @@
 ├── run_benchmark_multilang.py     多语言循环执行脚本
 ├── lang.py                        语言工具 (翻译/检测)
 ├── .env.example                   配置模板 ← 复制为 .env 使用
-├── 0509 ...空模板.xlsx             Excel 结果模板
 ├── original_cases/                原始测试数据
 │   ├── cases.json                 用例定义 (飞轮/评估/其他)
 │   ├── 数据飞轮用例 1 - *.json
@@ -68,8 +69,8 @@ cp .env.example .env      # Linux/Mac
 
 # 编辑 .env，至少设置:
 #   BASE_URL=http://localhost:5055   ← 后端服务地址
-#   AUTH_USERNAME=              ← 认证用户名
-#   AUTH_PASSWORD=           ← 认证密码
+#   AUTH_USERNAME=<测试账号>         ← 必填，不提供默认值
+#   AUTH_PASSWORD=<测试账号密码>     ← 必填，不提供默认值
 #   LLM_API_KEY=your-key            ← 翻译功能需要 (可选)
 ```
 
@@ -99,8 +100,8 @@ python run_benchmark_multilang.py --replay
 | `ACP_INTERACT_STREAM_PATH` | `/acp/runs/{run_id}/interact_stream` | ACP 模式交互接口，处理 `run.awaiting` |
 | `ACP_SUBMODE` | `execute_stream` | ACP 子模式选择，见下表 |
 | `WORKSPACE_ID` | `default` | 工作区 ID |
-| `AUTH_USERNAME` | `admin` | 认证用户名 |
-| `AUTH_PASSWORD` | `benchmark-password-placeholder` | 认证密码 |
+| `AUTH_USERNAME` | _(空，必填)_ | 隔离测试账号的认证用户名 |
+| `AUTH_PASSWORD` | _(空，必填)_ | 隔离测试账号的认证密码 |
 | `API_MODE` | `agentic` | 执行模式: `agentic`（默认）/ `acp` |
 | `ACP_LANG` | _(空)_ | ACP 模式下的语言参数，告知 Agent 以指定语言输出，仅在 `runtime_config.lang.enabled=true` 时生效。不设置则使用 `TEST_LANGUAGE` 的值 |
 | `ACP_SUPPRESS_SCRIPT_PATTERNS` | _(空)_ | ACP 输出过滤脚本模式，逗号分隔 (如 `mindsdb,work_order_sync`)。设置后会在测试前通过 API 写入工作区的 `acp_suppress_script_patterns` 配置，后端会过滤匹配脚本的 `tool.progress (output/stream)` 事件，并在报告中展示过滤验证结果 |
@@ -113,8 +114,8 @@ python run_benchmark_multilang.py --replay
 | `MULTILANG_LANGUAGES` | `zh,en,ja,ko` | 多语言测试语言列表，逗号分隔；设为 `all` 则执行 `translated_cases/` 下所有支持的语言 (含 zh) |
 | `CHINESE_DETECT_MIN_SEVERITY` | `info` | 中文混入检测最低报告级别，见下表 |
 | `LLM_API_KEY` | _(空)_ | LLM API Key (翻译/语言检测用) |
-| `LLM_BASE_URL` | `https://llm.example.com/v1` | LLM API 地址 |
-| `LLM_MODEL_NAME` | `example-chat-model` | LLM 模型名称 |
+| `LLM_BASE_URL` | `https://llm.example.com/v1` | LLM API 地址示例 |
+| `LLM_MODEL_NAME` | `example-chat-model` | LLM 模型名称示例 |
 
 > **优先级**: 环境变量 > `.env` 文件 > 默认值
 > **注意**: `run_benchmark_multilang.py` 会自动设置 `BENCHMARK_LANG` 环境变量覆盖 `TEST_LANGUAGE`。
@@ -123,7 +124,7 @@ python run_benchmark_multilang.py --replay
 
 本项目后端 API 需要 **Bearer Token** 认证。测试脚本会自动通过 `POST /auth/login` 获取 token 并附加到所有 API 请求的 `Authorization` 头中。
 
-默认管理员账户: `admin` / `benchmark-password-placeholder`（由后端 `data/users.json` 配置）。
+必须显式配置一个只用于测试的账号。工具不再内置管理员账号或密码。
 
 ### 中文混入检测级别说明
 

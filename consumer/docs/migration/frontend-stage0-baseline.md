@@ -187,10 +187,6 @@ main.jsx
 
 该数据用于后续阶段相对比较，不作为生产环境绝对性能结论。
 
-### 6.3 三档宽度截图
+### 6.3 三档宽度验收
 
-- [1440 × 1000](../../frontend/local-browser-artifacts/frontend-stage0/login-1440x1000.png)
-- [1024 × 1000](../../frontend/local-browser-artifacts/frontend-stage0/login-1024x1000.png)
-- [768 × 1000](../../frontend/local-browser-artifacts/frontend-stage0/login-768x1000.png)
-
-三档宽度均显示完整登录卡片，无横向溢出、裁切或控件重叠。
+三档宽度均显示完整登录卡片，无横向溢出、裁切或控件重叠。验收截图属于运行产物，可能包含账号或环境数据，不纳入代码仓库。

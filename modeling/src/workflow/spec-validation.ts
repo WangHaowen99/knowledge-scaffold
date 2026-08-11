@@ -115,7 +115,7 @@ export interface OperationBatchValidation {
   invalidReferenceCount: number;
 }
 
-/** 在操作批次入库前检查问题覆盖和所有资源引用，避免等到整包校验才处理整次生成。 */
+/** 在操作批次入库前检查问题覆盖和所有资源引用，避免等到整包校验才丢弃整次生成。 */
 export function validateOperationBatch(
   questions: CompetencyQuestionRef[],
   operations: SpecOperation[],

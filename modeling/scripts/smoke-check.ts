@@ -34,7 +34,7 @@ const BAD: PackageSpec = {
     { key: 'GHOST_SRC', title: '幽灵表对象', description: '来源表不存在于数据字典的对象', sourceTable: 'NOT_A_TABLE', fields: [{ key: 'X' }] },
   ],
   operations: [
-    { key: 'OP-A', title: '甲', description: 'd', inputs: [{ param: 'eco_id', type: 'string', required: true }], outputs: [], flow: ['查 STRUCTURE_LIST'], relatedObjects: ['STRUCTURE_LIST'], usesRules: ['MISSING-RULE'], competencyQuestion: '问题一' },
+    { key: 'OP-A', title: '甲', description: 'd', inputs: [{ param: 'change_order_id', type: 'string', required: true }], outputs: [], flow: ['查 STRUCTURE_LIST'], relatedObjects: ['STRUCTURE_LIST'], usesRules: ['MISSING-RULE'], competencyQuestion: '问题一' },
     { key: 'OP-B', title: '乙', description: 'd', inputs: [], outputs: [], flow: [], relatedObjects: ['DANGLING'], competencyQuestion: '问题一' },
   ],
   rules: [{ key: 'KEEP-RULE', title: '保留规则', content: '修缮操作时不得丢失。', appliesToObjects: ['STRUCTURE_LIST'] }],
@@ -97,8 +97,8 @@ async function main() {
   ]), 'WithNote');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
     ['CHANGE_ORDER_ID', 'Code', 'Type', 'Opinion'],
-    ['CHANGE_ORDER-001', '0001', '物料替换', '建议处理'],
-    ['CHANGE_ORDER-001', '0002', '物料替换', '建议处理'],
+    ['CHANGE_ORDER-001', '0001', '物料替换', '建议处置'],
+    ['CHANGE_ORDER-001', '0002', '物料替换', '建议处置'],
   ]), 'CjkData');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
     ['K', 'V'], ['唯一', '一行'],

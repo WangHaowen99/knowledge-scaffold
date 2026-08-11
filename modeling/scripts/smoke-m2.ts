@@ -26,16 +26,16 @@ function faux(steps: any[]): LlmDeps {
 
 const TABLES = [{ name: 'STRUCTURE_LIST', rowCount: 3, fields: [
   { name: 'ID', note: '行编号', inferredType: 'number' as const, sampleValues: ['1'], distinctRatio: 1 },
-  { name: 'Effective', note: '有效性(批次区间)', inferredType: 'string' as const, sampleValues: ['AC001-'], distinctRatio: 0.6 },
+  { name: 'Effective', note: '有效性(批次区间)', inferredType: 'string' as const, sampleValues: ['BATCH001-'], distinctRatio: 0.6 },
 ] }];
 
 const CONFIRMED_FLOWCHART: FlowchartOutput = {
   diagrams: [
-    ['structure-list-by-id', '按行编号查询 STRUCTURE_LIST', '收到 STRUCTURE_LIST 行编号', '读取指定 STRUCTURE_LIST 行', 'STRUCTURE_LIST 行详情'],
+    ['structure_list-by-id', '按行编号查询 STRUCTURE_LIST', '收到 STRUCTURE_LIST 行编号', '读取指定 STRUCTURE_LIST 行', 'STRUCTURE_LIST 行详情'],
     ['effective-range', '判断 Effective 批次区间', '收到 STRUCTURE_LIST 行与批次', '判断批次是否落在 Effective 区间', '有效性判断结果'],
-    ['applicable-structure-list', '筛选批次适用的 STRUCTURE_LIST', '收到目标批次', '按 Effective 区间筛选 STRUCTURE_LIST 行', '适用 STRUCTURE_LIST 行'],
+    ['applicable-structure_list', '筛选批次适用的 STRUCTURE_LIST', '收到目标批次', '按 Effective 区间筛选 STRUCTURE_LIST 行', '适用 STRUCTURE_LIST 行'],
     ['missing-effective', '识别缺失的有效性条件', '开始检查 STRUCTURE_LIST 数据', '识别 Effective 为空的 STRUCTURE_LIST 行', '待补充有效性条件的行'],
-    ['structure-list-summary', '汇总批次适用结果', '完成 STRUCTURE_LIST 有效性判断', '汇总适用与不适用的 STRUCTURE_LIST 行', '批次适用性汇总'],
+    ['structure_list-summary', '汇总批次适用结果', '完成 STRUCTURE_LIST 有效性判断', '汇总适用与不适用的 STRUCTURE_LIST 行', '批次适用性汇总'],
   ].map(([id, title, trigger, action, output]) => ({
     id,
     title,
@@ -61,7 +61,7 @@ const CONFIRMED_FLOWCHART: FlowchartOutput = {
 
 async function main() {
   console.log('\n=== M2 冒烟：已确认业务流程 → 包生成 ===\n');
-  const project = createProject({ owner: 'smoke', name: '示例业务 DOMAIN', domain: '示例制造', background: 'CHANGE_ORDER 与 STRUCTURE_LIST 建模' });
+  const project = createProject({ owner: 'smoke', name: '示例工程变更', domain: '示例业务', background: 'CHANGE_ORDER 与 STRUCTURE_LIST 建模' });
   insertDocument({ projectId: project.id, filename: 'domain.xlsx', kind: 'excel', parseStatus: 'parsed', tables: TABLES });
   await getPackageArtifactStore().initializeDraftPackage(project.id, {
     id: 'example-domain-agent',
@@ -120,12 +120,12 @@ async function main() {
   const objMd = files['objects/STRUCTURE_LIST.md'];
   ok(objMd.startsWith('---\n') && objMd.includes('resource: object') && objMd.includes('| 字段 key |'), 'object.md 含 frontmatter + 字段表（格式对齐 examples）');
   const mapping = JSON.parse(files['mappings/object-data-mappings.json']);
-  const structureListMapping = mapping.objects.STRUCTURE_LIST;
+  const structure_listMapping = mapping.objects.STRUCTURE_LIST;
   ok(
-    structureListMapping?.resource === 'STRUCTURE_LIST'
-      && JSON.stringify(structureListMapping.primary_key) === JSON.stringify(['ID'])
-      && structureListMapping.fields?.ID?.source === 'ID'
-      && structureListMapping.fields?.Effective?.source === 'Effective',
+    structure_listMapping?.resource === 'STRUCTURE_LIST'
+      && JSON.stringify(structure_listMapping.primary_key) === JSON.stringify(['ID'])
+      && structure_listMapping.fields?.ID?.source === 'ID'
+      && structure_listMapping.fields?.Effective?.source === 'Effective',
     'mapping json 的 object、resource、primary_key、fields 和 source 均使用稳定 key',
   );
 

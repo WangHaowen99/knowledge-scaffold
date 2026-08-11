@@ -173,7 +173,7 @@ def test_structured_business_placeholder_resolves_argument_value():
         script_parameters=[
             {
                 "name": "batch_code_cn",
-                "flag": "--flight",
+                "flag": "--batch",
                 "placeholder": "<batch_code>",
                 "required": True,
                 "type": "string",
@@ -182,7 +182,7 @@ def test_structured_business_placeholder_resolves_argument_value():
         arguments={"batch_code": "BATCH123"},
     )
 
-    assert (args, missing, invalid) == (["--flight", "BATCH123"], [], [])
+    assert (args, missing, invalid) == (["--batch", "BATCH123"], [], [])
 
 
 def test_execute_script_tool_injects_selected_operation_ontology_as_runtime_ontology(

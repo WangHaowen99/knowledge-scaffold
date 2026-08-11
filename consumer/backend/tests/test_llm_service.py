@@ -988,12 +988,12 @@ def test_collect_stream_response_keeps_final_tool_call_fragment_when_finish_reas
         [
             (
                 'data: {"id":"chunk-1","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/objects/E"}}]},'
+                '[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\"file_path\\":\\"ontologies/example-domain-operations-manual/objects/CHANGE_"}}]},'
                 '"finish_reason":null}]}'
             ),
             (
                 'data: {"id":"chunk-2","model":"unit-model","choices":[{"delta":{"tool_calls":'
-                '[{"index":0,"function":{"arguments":"CO受影响对象在制品处理结论.md\\"}"}}]},'
+                '[{"index":0,"function":{"arguments":"ORDER受影响对象在制品处理结论.md\\"}"}}]},'
                 '"finish_reason":"stop"}]}'
             ),
             "data: [DONE]",

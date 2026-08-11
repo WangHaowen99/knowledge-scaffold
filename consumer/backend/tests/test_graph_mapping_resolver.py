@@ -41,12 +41,12 @@ def test_resolver_reads_object_data_mappings_final_template(tmp_path):
             "schema_version": "0.1",
             "default_provider_alias": "domain_graph",
             "objects": {
-                "eco_affected_object": {
+                "change_order_affected_object": {
                     "provider_alias": "domain_graph",
                     "resource": "ChangeOrderAffectedObject",
-                    "primary_key": ["eco_id"],
+                    "primary_key": ["change_order_id"],
                     "fields": {
-                        "eco_id": {
+                        "change_order_id": {
                             "source": "CHANGE_ORDER_ID",
                             "type": "string",
                             "required": True,
@@ -69,15 +69,15 @@ def test_resolver_reads_object_data_mappings_final_template(tmp_path):
         workspace_root=str(workspace_root),
         ontology_id="demo-ontology",
         provider="neo4j",
-        schema_labels=["eco_affected_object"],
-    ).resolve("eco_affected_object")
+        schema_labels=["change_order_affected_object"],
+    ).resolve("change_order_affected_object")
 
     assert mapping is not None
     assert mapping.kind == "node"
     assert mapping.label == "ChangeOrderAffectedObject"
     assert mapping.id_property == "CHANGE_ORDER_ID"
     assert mapping.property_map == {
-        "eco_id": "CHANGE_ORDER_ID",
+        "change_order_id": "CHANGE_ORDER_ID",
         "affected_object_id": "AFFECTED_OBJECT_CODE",
         "workspace": "d2o_workspace_id",
     }

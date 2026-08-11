@@ -19,6 +19,7 @@ logs*
 .pytest_cache/
 frontend/dist/
 consumer/frontend/dist/
+consumer/frontend/output/
 .claude/
 *.z*
 *.zip
@@ -29,6 +30,14 @@ backend/config/system_config.json
 backend/config/langfuse.json
 consumer/backend/config/system_config.json
 consumer/backend/config/langfuse.json
+consumer/backend/tests/benchmarks/.env
+consumer/backend/tests/benchmarks/result/
+consumer/backend/tests/benchmarks/translated_cases/
+consumer/backend/tests/benchmarks/*.xlsx
+
+# Generated evaluation and browser artifacts may contain runtime or customer data.
+evaluation/agent_eval/outputs/
+evaluation/agent_eval/assistant-*.png
 
 # Runtime and local data
 .onto-runtime/**
