@@ -17,8 +17,7 @@ import { sourceLabelsFor, tableSourceFor } from './source-references.js';
 import { packageMappingResource } from './package-data-source.js';
 import { canonicalizePackageSpec } from './package-spec.js';
 
-// PackageSpec → 标准知识包文件集（严格对照 examples/corporate-marketing-eval/
-// ontology-package-final-design.md v0.2，保证 consumer 可导入）。
+// PackageSpec → 标准知识包文件集（遵循 consumer 当前知识包导入格式）。
 // 返回 { path: content } 映射，供落盘或打 zip。
 // 兼容性：库里存量 spec 没有后加字段（sourceRefs/sourceColumn/relations/rules/metrics/status…）。
 // 只有绑定数据表的对象生成 mapping；文档语义对象仍可被 Agent 正常消费。
