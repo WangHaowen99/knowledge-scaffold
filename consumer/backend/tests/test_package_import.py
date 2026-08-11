@@ -173,7 +173,7 @@ entrypoint: monthly.py
 
 | 参数 key | CLI 参数 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| batchPlans | --batchPlans | string | 是 |  | JSON 数组，去向为 '生产线B'|'生产线C' |
+| batchPlans | --batchPlans | string | 是 |  | JSON 数组，去向为 '辅助生产线A'|'辅助生产线B' |
 | productYieldData | --productYieldData | string | 是 |  | JSON 收率数据 |
 """,
         encoding="utf-8",
@@ -186,7 +186,7 @@ entrypoint: monthly.py
         "batchPlans",
         "productYieldData",
     ]
-    assert entry["parameters"][0]["description"].endswith("'生产线B' | '生产线C'")
+    assert entry["parameters"][0]["description"].endswith("'辅助生产线A' | '辅助生产线B'")
 
 
 def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_path):
@@ -980,7 +980,7 @@ def test_field_alias_resolution_supports_standard_and_legacy_headers(tmp_path):
     )
     key_resolution, key_error = resolve_field_reference(
         standard_path,
-        "eco_id",
+        "change_order_id",
     )
     alias_resolution, alias_error = resolve_field_reference(
         standard_path,

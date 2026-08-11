@@ -297,7 +297,7 @@ def test_direct_structured_business_placeholder_resolves_argument_value():
         script_parameters=[
             {
                 "name": "batch_code_cn",
-                "flag": "--flight",
+                "flag": "--batch",
                 "placeholder": "<batch_code>",
                 "required": True,
                 "type": "string",
@@ -306,7 +306,7 @@ def test_direct_structured_business_placeholder_resolves_argument_value():
         business_arguments={"batch_code": "BATCH123"},
     )
 
-    assert (args, missing, error) == (["--flight", "BATCH123"], [], None)
+    assert (args, missing, error) == (["--batch", "BATCH123"], [], None)
 
 
 def test_direct_explicit_runtime_ontology_uses_selected_ontology_context():

@@ -18,7 +18,7 @@ python app.py
 ### 1.2 测试工具目录
 
 ```
-d:\project\onto-agent\backend\tests\benchmark\
+d:\project\onto-agent\backend\tests\benchmarks\
 ├── test_benchmark_suite.py         核心测试脚本
 ├── run_benchmark_multilang.py    多语言批量测试
 ├── run_acp_full_matrix.py        [新] ACP 全场景自动测试矩阵（一键运行全部 35 测试项）
@@ -36,7 +36,7 @@ pip install requests openpyxl langdetect openai matplotlib
 ### 1.4 创建配置文件
 
 ```bash
-cd d:\project\onto-agent\backend\tests\benchmark
+cd d:\project\onto-agent\backend\tests\benchmarks
 copy .env.example .env
 ```
 
@@ -284,7 +284,7 @@ CHINESE_DETECT_MIN_SEVERITY=info
 ### 4.1 单场景运行
 
 ```bash
-cd d:\project\onto-agent\backend\tests\benchmark
+cd d:\project\onto-agent\backend\tests\benchmarks
 
 # 编辑 .env 为目标场景配置后执行：
 python test_benchmark_suite.py
@@ -312,7 +312,7 @@ python run_benchmark_multilang.py --replay
 ### 5.1 结果目录结构
 
 ```
-tests/benchmark/result/
+tests/benchmarks/result/
 └── 20260525_093249/              ← 时间戳目录
     ├── benchmark_20260525_093249.xlsx    Excel 报告
     ├── benchmark_20260525_093723.md      Markdown 报告
@@ -393,7 +393,7 @@ ACP_SUPPRESS_SCRIPT_PATTERNS=business_data_search,故障历史
 
 ### Q: 测试脚本报认证失败？
 
-确认 `.env` 中 `AUTH_USERNAME` 和 `AUTH_PASSWORD` 与后端 `data/users.json` 一致。默认是 `admin` / `admin123`。
+确认 `.env` 中 `AUTH_USERNAME` 和 `AUTH_PASSWORD` 已设置为隔离环境中的专用测试账号；不要使用生产账号，也不要把实际密码写入文档或提交 `.env`。
 
 ### Q: ACP 模式下事件流为空？
 
@@ -433,7 +433,7 @@ ACP_SUPPRESS_SCRIPT_PATTERNS=business_data_search,故障历史
 ### 8.2 使用方法
 
 ```bash
-cd d:\project\onto-agent\backend\tests\benchmark
+cd d:\project\onto-agent\backend\tests\benchmarks
 
 # 执行全部 31 个测试项（前置检查 + 28 benchmark 场景 + 后置检查）
 python run_acp_full_matrix.py
@@ -501,7 +501,7 @@ python run_acp_full_matrix.py --skip-agentic
 运行后生成：
 
 ```
-tests/benchmark/result/
+tests/benchmarks/result/
 └── full_matrix_20260526_093249/        ← 时间戳目录
     ├── full_matrix_report.md            ← 汇总报告（Markdown）
     ├── _precheck/                       ← 前置检查结果

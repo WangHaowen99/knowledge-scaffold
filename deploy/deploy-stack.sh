@@ -167,8 +167,10 @@ cmd_up() {
 
     local eval_args=()
     if [ "$with_eval" -eq 1 ]; then
+      [ -n "${EVAL_MYSQL_ROOT_PASSWORD:-}" ] || fail \
+        "--with-eval 要求显式设置 EVAL_MYSQL_ROOT_PASSWORD；请使用独立强随机值，禁止沿用示例或生产数据库密码" 2
       eval_args=(--profile eval)
-      export EVAL_DB_URL="${EVAL_DB_URL:-mysql://root:${EVAL_MYSQL_ROOT_PASSWORD:?EVAL_MYSQL_ROOT_PASSWORD must be set}@eval-mysql:3306}"
+      export EVAL_DB_URL="${EVAL_DB_URL:-mysql://root:${EVAL_MYSQL_ROOT_PASSWORD}@eval-mysql:3306}"
       # 打印时掩码密码段，避免凭据进入终端/CI 日志
       ok "评测库已启用：EVAL_DB_URL=$(printf '%s' "$EVAL_DB_URL" | sed -E 's#://([^:/@]+):[^@]*@#://\1:***@#')"
     fi
@@ -235,7 +237,8 @@ cmd_help() {
   logs <service>                跟踪日志：backend|frontend|auth-server|modeling|eval-mysql
 
 环境变量（可选覆盖）：BACKEND_PORT=5055 FRONTEND_PORT=8888 MODELING_PORT=5100
-  EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<REDACTED> MODELING_LLM_BASE_URL/MODEL/API_KEY（默认 faux 演示模式）
+  EVAL_MYSQL_PORT=3306 EVAL_MYSQL_ROOT_PASSWORD=<启用评测库时必填的强随机值>
+  MODELING_LLM_BASE_URL/MODEL/API_KEY（默认 faux 演示模式）
 完整手册：deploy/README.md
 EOF
 }

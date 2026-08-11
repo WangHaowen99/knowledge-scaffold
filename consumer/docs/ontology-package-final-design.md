@@ -4,6 +4,8 @@
 
 > 实现状态：本文描述目标形态和迁移基线，不是当前版本的 API 契约。当前 `ontology_context` 仅支持 `ontology_id/resource/key`，`business_data_search` 仅支持 `ontology_id/entity/query`，`execute_script` 支持 `ontology_id/operation_key/arguments`。`ontology_evidence_search`、`section/max_chars`、`fields/filters`、`business_data_search(operation_key/query_plan)` 和证据闭环尚未实现；集成时必须以当前工具注册表和 schema 为准。
 
+> 示例数据说明：文中的名称、编号、表名和字段仅用于说明格式，均为虚构的通用工程变更示例，不对应任何客户、项目或生产系统。真实项目资料进入共享仓库前必须完成授权确认和脱敏审查。
+
 版本：v0.2
 状态：目标设计（部分未实现）
 最后更新：2026-06-24
@@ -228,10 +230,10 @@ Markdown 命中会返回 `section` 和携带 `section` 的 `next_action`，用�
 
 | 字段 | 是否必需 | 说明 | 示例 |
 | --- | --- | --- | --- |
-| `key` | 必需 | 本体包内稳定引用，可以是中文或 ASCII | `CHANGE_ORDER受影响对象`、`eco_affected_object` |
+| `key` | 必需 | 本体包内稳定引用，可以是中文或 ASCII | `CHANGE_ORDER受影响对象`、`change_order_affected_object` |
 | `title` | 必需 | 展示名称，面向人和 Agent | `CHANGE_ORDER受影响对象` |
 | `aliases` | 推荐 | 用户可能使用的自然语言说法 | `设计变更影响对象`、`CHANGE_ORDER影响对象` |
-| `canonical_key` | 推荐 | ASCII 稳定 key，用于系统集成和后续迁移 | `eco_affected_object` |
+| `canonical_key` | 推荐 | ASCII 稳定 key，用于系统集成和后续迁移 | `change_order_affected_object` |
 
 首版工具应以 `key` 为主，同时允许通过 `title`、`aliases`、`canonical_key` 做解析和召回。包校验中的 operation 引用和 mapping key 也按同一组等价标识判断，避免中文主 key 与 ASCII `canonical_key` 并存时误报资源缺失。
 
@@ -242,9 +244,9 @@ Markdown 命中会返回 `section` 和携带 `section` 的 `next_action`，用�
 | 字符类型 | 示例 |
 | --- | --- |
 | 中文字符 | `受影响对象` |
-| 英文字母 | `eco` |
+| 英文字母 | `change_order` |
 | 数字 | `001` |
-| 下划线 | `eco_affected_object` |
+| 下划线 | `change_order_affected_object` |
 | 短横线 | `change-impact` |
 
 `key` 不允许：
@@ -265,7 +267,7 @@ Markdown 命中会返回 `section` 和携带 `section` 的 `next_action`，用�
 
 ```text
 objects/CHANGE_ORDER受影响对象.md
-objects/eco_affected_object.md
+objects/change_order_affected_object.md
 ```
 
 如果使用中文 key，文件名可以使用中文。后端读取时必须按 UTF-8 处理，并禁止路径穿越。
@@ -276,7 +278,7 @@ objects/eco_affected_object.md
 ---
 resource: object
 key: CHANGE_ORDER受影响对象
-canonical_key: eco_affected_object
+canonical_key: change_order_affected_object
 title: CHANGE_ORDER受影响对象
 aliases:
   - 设计变更影响对象
@@ -290,7 +292,7 @@ aliases:
 | 场景 | 推荐 key | 说明 |
 | --- | --- | --- |
 | 业务术语稳定且主要中文使用 | 中文 key | 例如 `CHANGE_ORDER受影响对象`，降低业务维护成本 |
-| 已有系统字段或团队已有英文命名 | ASCII key | 例如 `eco_affected_object` |
+| 已有系统字段或团队已有英文命名 | ASCII key | 例如 `change_order_affected_object` |
 | 需要频繁跨 API、日志、代码引用 | ASCII `canonical_key` | 中文 `key` 仍可保留为业务引用 |
 | 旧包迁移 | 先保留中文 key | 后续渐进补 `canonical_key`，避免一次性翻译失真 |
 
@@ -312,8 +314,8 @@ canonical_key 是工程友好补充，不应替代业务 key 的语义。
 ```yaml
 kind: ontology-package
 schema_version: 0.1
-id: example-domain-change-impact
-name: 示例业务 DOMAIN 设计变更影响分析本体
+id: example-change-impact
+name: 示例工程变更影响分析本体
 description: 面向设计变更、物料影响和库存成本分析的业务本体。
 version: 0.1.0
 language: zh-CN
@@ -345,7 +347,7 @@ status: draft
 ---
 resource: root
 key: root
-title: 示例业务 DOMAIN 设计变更影响分析本体
+title: 示例工程变更影响分析本体
 ---
 
 # 领域范围
@@ -356,8 +358,8 @@ title: 示例业务 DOMAIN 设计变更影响分析本体
 
 | 问题 | 推荐入口 |
 | --- | --- |
-| CHANGE_ORDER 影响了哪些物料 | operation:eco_change_impact_analysis |
-| 变更前后的 SourceItem 版本是什么 | object:eco_affected_object |
+| CHANGE_ORDER 影响了哪些物料 | operation:change_order_change_impact_analysis |
+| 变更前后的 SourceItem 版本是什么 | object:change_order_affected_object |
 
 # 目录
 
@@ -389,8 +391,8 @@ title: 对象目录
 
 | object key | 标题 | 别名 | 说明 |
 | --- | --- | --- | --- |
-| eco_change_order | CHANGE_ORDER变更单 | 工程变更单、变更指令 | 工程变更单主对象 |
-| eco_affected_object | CHANGE_ORDER受影响对象 | CHANGE_ORDER影响对象、设计变更影响对象 | 记录 CHANGE_ORDER 影响到的对象和版本变化 |
+| change_order_change_order | CHANGE_ORDER变更单 | 工程变更单、变更指令 | 工程变更单主对象 |
+| change_order_affected_object | CHANGE_ORDER受影响对象 | CHANGE_ORDER影响对象、设计变更影响对象 | 记录 CHANGE_ORDER 影响到的对象和版本变化 |
 | source_item_version | SourceItem版本 | 设计件版本、SourceItem版次 | 设计件版本 |
 ```
 
@@ -415,13 +417,13 @@ objects/<object_key>.md
 ```markdown
 ---
 resource: object
-key: eco_affected_object
+key: change_order_affected_object
 title: CHANGE_ORDER受影响对象
 description: 记录一个 CHANGE_ORDER 变更影响到的设计对象、变更前后版本和处理意见。
 aliases:
   - CHANGE_ORDER影响对象
   - 设计变更影响对象
-mapping: eco_affected_object
+mapping: change_order_affected_object
 ---
 
 # 业务定义
@@ -432,7 +434,7 @@ CHANGE_ORDER受影响对象表示某个 CHANGE_ORDER 变更涉及的设计对象
 
 | 字段 key | 中文名 | 类型 | 必填 | 业务说明 | 别名 |
 | --- | --- | --- | --- | --- | --- |
-| eco_id | CHANGE_ORDER编号 | string | 是 | 工程变更单编号 | 变更单号 |
+| change_order_id | CHANGE_ORDER编号 | string | 是 | 工程变更单编号 | 变更单号 |
 | affected_object_id | 受影响对象ID | string | 是 | 被变更影响的对象标识 | 影响对象 |
 | before_source_item_version_id | 变更前SourceItem版本 | string | 否 | 变更前设计件版本 | 旧版本 |
 | after_source_item_version_id | 变更后SourceItem版本 | string | 否 | 变更后设计件版本 | 新版本 |
@@ -441,7 +443,7 @@ CHANGE_ORDER受影响对象表示某个 CHANGE_ORDER 变更涉及的设计对象
 
 | 关系 | 目标对象 | 说明 |
 | --- | --- | --- |
-| belongs_to | eco_change_order | 受影响对象归属于一个 CHANGE_ORDER |
+| belongs_to | change_order_change_order | 受影响对象归属于一个 CHANGE_ORDER |
 | references | source_item_version | 通过变更前后版本关联 SourceItem 版本 |
 
 # 查询边界
@@ -481,7 +483,7 @@ title: 操作目录
 
 | operation key | 标题 | 输入 | 输出 |
 | --- | --- | --- | --- |
-| eco_change_impact_analysis | CHANGE_ORDER变更影响分析 | eco_id | 受影响物料、版本变化和风险摘要 |
+| change_order_change_impact_analysis | CHANGE_ORDER变更影响分析 | change_order_id | 受影响物料、版本变化和风险摘要 |
 ```
 
 ## 10. Operation 详情
@@ -499,7 +501,7 @@ operations/<operation_key>.md
 ```markdown
 ---
 resource: operation
-key: eco_change_impact_analysis
+key: change_order_change_impact_analysis
 title: CHANGE_ORDER变更影响分析
 description: 分析 CHANGE_ORDER 对 SourceItem、TargetItem 和库存成本的影响。
 intent_examples:
@@ -507,15 +509,15 @@ intent_examples:
   - 设计变更前后的 TargetItem 编码是什么
 uses:
   objects:
-    - eco_change_order
-    - eco_affected_object
+    - change_order_change_order
+    - change_order_affected_object
     - source_item_version
   rules:
     - change_effectivity_rule
   metrics:
-    - handling_inventory_cost
+    - inventory_handling_cost
 script:
-  key: eco_change_impact_script
+  key: change_order_change_impact_script
   required: false
 ---
 
@@ -527,7 +529,7 @@ script:
 
 | 参数 key | 中文名 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
-| eco_id | CHANGE_ORDER编号 | string | 是 | 工程变更单编号 |
+| change_order_id | CHANGE_ORDER编号 | string | 是 | 工程变更单编号 |
 
 # 输出
 
@@ -538,11 +540,11 @@ script:
 
 # 流程
 
-1. 加载 object:eco_change_order，确认 CHANGE_ORDER 编号和基础状态。
-2. 加载 object:eco_affected_object，查询 CHANGE_ORDER 对应的受影响对象。
+1. 加载 object:change_order_change_order，确认 CHANGE_ORDER 编号和基础状态。
+2. 加载 object:change_order_affected_object，查询 CHANGE_ORDER 对应的受影响对象。
 3. 加载 object:source_item_version，识别变更前后版本。
 4. 必要时查询相关库存对象，形成风险摘要。
-5. 当用户提供完整输入且需要确定性汇总时，可以调用 script:eco_change_impact_script。
+5. 当用户提供完整输入且需要确定性汇总时，可以调用 script:change_order_change_impact_script。
 
 # 规则、指标和注意事项
 
@@ -618,8 +620,8 @@ title: 变更生效批次判断规则
 description: 判断设计变更从哪个批次开始生效。
 applies_to:
   objects:
-    - eco_change_order
-    - eco_affected_object
+    - change_order_change_order
+    - change_order_affected_object
 ---
 
 # 规则内容
@@ -668,7 +670,7 @@ title: 指标目录
 
 | metric key | 标题 | 说明 |
 | --- | --- | --- |
-| handling_inventory_cost | 库存处理成本 | 因设计变更导致旧物料不可用时的库存处理成本 |
+| inventory_handling_cost | 库存处理成本 | 因设计变更导致旧物料不可用时的库存处理成本 |
 ```
 
 ## 14. Metric 详情
@@ -686,7 +688,7 @@ metrics/<metric_key>.md
 ```markdown
 ---
 resource: metric
-key: handling_inventory_cost
+key: inventory_handling_cost
 title: 库存处理成本
 description: 因设计变更导致旧物料不可用时的库存处理成本。
 unit: CNY
@@ -698,7 +700,7 @@ uses:
 
 # 业务口径
 
-库存处理成本 = 可处理数量 * 库存单价。
+库存处理成本 = 待处理数量 * 库存单价。
 
 # 计算边界
 
@@ -710,7 +712,7 @@ uses:
 | 字段 | 处理 |
 | --- | --- |
 | 库存单价为空 | 不得按 0 计算，必须返回缺失证据 |
-| 可处理数量为空 | 不得计算总成本 |
+| 待处理数量为空 | 不得计算总成本 |
 
 # 维度
 
@@ -754,7 +756,7 @@ title: 脚本目录
 
 | script key | 标题 | 绑定操作 | 参数摘要 |
 | --- | --- | --- | --- |
-| eco_change_impact_script | CHANGE_ORDER变更影响分析脚本 | operation:eco_change_impact_analysis | eco_id |
+| change_order_change_impact_script | CHANGE_ORDER变更影响分析脚本 | operation:change_order_change_impact_analysis | change_order_id |
 ```
 
 如果本体包暂时没有脚本，`scripts/index.md` 可以保留空目录：
@@ -781,12 +783,12 @@ scripts/<script_file>.py
 ```markdown
 ---
 resource: script
-key: eco_change_impact_script
+key: change_order_change_impact_script
 title: CHANGE_ORDER变更影响分析脚本
 description: 根据 CHANGE_ORDER 编号输出设计变更影响分析的结构化摘要。
-bound_operation: eco_change_impact_analysis
+bound_operation: change_order_change_impact_analysis
 runtime: python
-entrypoint: eco_change_impact.py
+entrypoint: change_order_change_impact.py
 timeout_seconds: 300
 ---
 
@@ -798,13 +800,13 @@ timeout_seconds: 300
 
 | 参数 key | CLI 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
-| eco_id | --eco-id | string | 是 | CHANGE_ORDER 编号 |
+| change_order_id | --change-order-id | string | 是 | CHANGE_ORDER 编号 |
 
 # 输出
 
 | 输出 key | 类型 | 说明 |
 | --- | --- | --- |
-| eco_id | string | CHANGE_ORDER 编号 |
+| change_order_id | string | CHANGE_ORDER 编号 |
 | affected_items | array | 受影响对象摘要 |
 | risk_summary | object | 风险摘要 |
 
@@ -824,11 +826,11 @@ import argparse
 import json
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--eco-id", required=True)
+parser.add_argument("--change-order-id", required=True)
 args = parser.parse_args()
 
 print(json.dumps({
-    "eco_id": args.eco_id,
+    "change_order_id": args.change_order_id,
     "affected_items": [],
     "risk_summary": {"status": "requires_provider_data"}
 }, ensure_ascii=False))
@@ -883,14 +885,14 @@ mappings/object-data-mappings.json
 ```json
 {
   "schema_version": "0.1",
-  "default_provider_alias": "domain",
+  "default_provider_alias": "business",
   "objects": {
-    "eco_affected_object": {
-      "provider_alias": "domain",
+    "change_order_affected_object": {
+      "provider_alias": "business",
       "resource": "CHANGE_ORDER_AFFECTED_OBJECT",
-      "primary_key": ["eco_id", "affected_object_id"],
+      "primary_key": ["change_order_id", "affected_object_id"],
       "fields": {
-        "eco_id": {
+        "change_order_id": {
           "source": "CHANGE_ORDER_ID",
           "type": "string",
           "required": true
@@ -912,17 +914,17 @@ mappings/object-data-mappings.json
       "policy": {
         "read_only": true,
         "max_rows": 200,
-        "require_user_filter": ["eco_id"]
+        "require_user_filter": ["change_order_id"]
       }
     }
   },
   "metrics": {
     "handling_cost": {
-      "provider_alias": "domain",
-      "resource": "SCRAP_COST_VIEW",
+      "provider_alias": "business",
+      "resource": "HANDLING_COST_VIEW",
       "fields": {
-        "eco_id": {"source": "CHANGE_ORDER_ID", "type": "string"},
-        "amount": {"source": "SCRAP_AMOUNT", "type": "number"}
+        "change_order_id": {"source": "CHANGE_ORDER_ID", "type": "string"},
+        "amount": {"source": "HANDLING_AMOUNT", "type": "number"}
       },
       "policy": {
         "read_only": true,
@@ -932,7 +934,7 @@ mappings/object-data-mappings.json
   },
   "rules": {
     "effectivity_rule": {
-      "provider_alias": "domain",
+      "provider_alias": "business",
       "resource": "EFFECTIVITY_RULE",
       "fields": {
         "rule_id": {"source": "RULE_ID", "type": "string"},
@@ -1013,10 +1015,10 @@ mappings/object-data-mappings.json
 
 ```json
 {
-  "ontology_id": "example-domain-change-impact",
-  "default_connection_id": "conn_domain_prod",
+  "ontology_id": "example-change-impact",
+  "default_connection_id": "conn_example",
   "provider_bindings": {
-    "domain": "conn_domain_prod"
+    "business": "conn_example"
   }
 }
 ```
@@ -1024,7 +1026,7 @@ mappings/object-data-mappings.json
 首版解析链路：
 
 ```text
-business_data_search(entity=eco_affected_object)
+business_data_search(entity=change_order_affected_object)
   -> object-data-mappings.json 找 provider_alias/resource/fields
   -> workspace binding 找 connection_id
   -> data connection 找 provider type 和密钥配置

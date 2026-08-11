@@ -503,7 +503,7 @@ def test_json_tool_errors_are_canonicalized_before_repeat_detection(first_conten
     invocation = ToolInvocation(
         id="call-json-error",
         name="business_data_search",
-        arguments={"entity": "生产流程装置"},
+        arguments={"entity": "生产设备"},
     )
 
     guard.record(invocation, _error_batch([invocation], content=first_content))

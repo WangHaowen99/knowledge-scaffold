@@ -577,7 +577,7 @@ vehicle_model → 车辆型号
 
 **第2层：脚本 `knowledge_graph_tool.py` 的 `_FIELD_ALIASES`**
 
-[knowledge_graph_tool.py:L46-L65](file:///d:/project/onto-agent/.onto-runtime/workspaces/example-workspace/ontologies/equipment-fault-diagnosis/scripts/knowledge_graph_tool.py#L46-L65)：
+知识包脚本 `knowledge_graph_tool.py` 的语言参数处理逻辑：
 
 ```python
 _FIELD_ALIASES = {

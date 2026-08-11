@@ -438,12 +438,12 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
         session_id="session-direct",
         turn_id=4,
     )
-    with trace.direct_execution_scope(ontology_id="example", operation_key="query_flight"):
+    with trace.direct_execution_scope(ontology_id="example", operation_key="query_batch"):
         with trace.script_scope(
-            script_name="query_flight.py",
-            script_path="scripts/query_flight.py",
+            script_name="query_batch.py",
+            script_path="scripts/query_batch.py",
             ontology_id="example",
-            operation_key="query_flight",
+            operation_key="query_batch",
             arguments={"batch_no": "BATCH123"},
         ) as script_trace:
             script_trace.record_result(output="ok", is_error=False, elapsed_ms=12)
@@ -477,8 +477,8 @@ def test_local_perf_exporter_projects_direct_execution_trace(tmp_path, monkeypat
     assert direct_tool["caller"] == "direct"
     assert direct_tool["iteration"] == 0
     assert direct_tool["metrics"]["elapsed_ms"] == 12
-    assert direct_tool["labels"]["display_name"] == "execute_script:query_flight.py"
-    assert direct_tool["labels"]["script_name"] == "query_flight.py"
+    assert direct_tool["labels"]["display_name"] == "execute_script:query_batch.py"
+    assert direct_tool["labels"]["script_name"] == "query_batch.py"
     assert direct_batch["caller"] == "direct"
     assert direct_batch["iteration"] == 0
     assert records[-1]["kind"] == "run_summary"

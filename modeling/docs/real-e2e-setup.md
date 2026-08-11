@@ -13,17 +13,20 @@ NL2SQL 服务 (:5600，scripts/nl2sql-service.ts，LLM 生成 SELECT)
   │
   ▼
 MySQL (:3306，Docker mw-eval-mysql)
-  ├─ example_domain         示例样例 48 表（examples 数据集）
+  ├─ example_scene        已获授权的验证数据集
   └─ evaluation           在“数据源配置”中连接并上传 Excel 的项目评测库
 ```
 
 ## 1. MySQL（Docker）
 
 ```bash
-docker run -d --name mw-eval-mysql -e MYSQL_ROOT_PASSWORD=root -p 3306:3306 mysql:8
-# 导入示例样例（48 表 / 309 行）
-docker exec mw-eval-mysql mysql -uroot -p<REDACTED> -e "CREATE DATABASE IF NOT EXISTS example_domain CHARACTER SET utf8mb4;"
-docker exec -i mw-eval-mysql mysql -uroot -p<REDACTED> example_domain \
+read -rsp '评测库 root 密码: ' EVAL_MYSQL_ROOT_PASSWORD && echo
+export EVAL_MYSQL_ROOT_PASSWORD
+docker run -d --name mw-eval-mysql -e MYSQL_ROOT_PASSWORD="$EVAL_MYSQL_ROOT_PASSWORD" -p 3306:3306 mysql:8
+# 导入已获授权并完成脱敏的验证数据
+docker exec mw-eval-mysql mysql -uroot -p"$EVAL_MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS example_scene CHARACTER SET utf8mb4;"
+docker exec -i mw-eval-mysql mysql -uroot -p"$EVAL_MYSQL_ROOT_PASSWORD" example_scene \
+  < /path/to/authorized/sanitized-data.sql
 ```
 
 ## 2. consumer 后端（:5055）
@@ -46,7 +49,7 @@ NO_PROXY='localhost,127.0.0.1' no_proxy='localhost,127.0.0.1' ./venv/bin/python 
 
 兼容 consumer `nl2sql_template` / `nl2sql_http` provider 契约
 （`POST /api/v1/query|sql`、`GET /health`、Bearer 鉴权、`{success,data,row_count}`）。
-**约定 scene = 数据库名**（例如 `example_domain` 或项目配置的 `evaluation`）。
+**约定 scene = 数据库名**（例如 `example_scene` 或项目配置的 `evaluation`）。
 
 ```bash
 cd modeling   # .env 需含 MODELING_LLM_*、EVAL_DB_URL（与 modeling 服务共用），可选 NL2SQL_TOKEN/NL2SQL_PORT
@@ -76,12 +79,12 @@ npx tsx --env-file=.env src/server.ts
 
 | 检查 | 命令/方式 | 预期 |
 | --- | --- | --- |
-| MySQL | `docker exec mw-eval-mysql mysqladmin ping -uroot -p<REDACTED>` | alive |
-| NL2SQL | `POST :5600/api/v1/query {"question":"AO工序AO_OP0001的执行工位是什么？","scene":"example_domain"}` | data 含 `STATION01-工位1` |
+| MySQL | `docker exec mw-eval-mysql mysqladmin ping -uroot -p"$EVAL_MYSQL_ROOT_PASSWORD"` | alive |
+| NL2SQL | `POST :5600/api/v1/query {"question":"示例工序 CHANGE-OP-001 的执行工位是什么？","scene":"example_scene"}` | 返回已授权样例数据 |
 | consumer 就绪 | `GET :5055/api/system-config/readiness` | `ready:true` |
-| consumer 全链路 | 导入示例本体 zip → 为该本体配置 `nl2sql_template` 数据源（url=`http://localhost:5600`）→ `runs/sync` 同上问题 | final_answer 含 `STATION01-工位1` |
+| consumer 全链路 | 导入已授权样例本体 zip → 配置 `nl2sql_template` 数据源（url=`http://localhost:5600`）→ `runs/sync` 执行样例问题 | final_answer 与样例数据一致 |
 | modeling→consumer | `POST :5100/api/settings/consumer/test` | `reachable/authOk/modelReady` 全 true |
 | modeling→评测库 | 项目“数据源配置”保存并测试 → 上传 Excel → 等待后台任务完成 | 同名 Sheet 表及全部数据行出现在 `EVAL_DB_URL` 服务器上的 Scene 数据库 |
 
-（`business-query-testcases.json` 13 条业务推理题 + `data-query-testcases.json` 26 条数据查询题，
-字段 `question` / `ground_truth`，可直接录入“评测用例录入”节点）。
+评测用例需使用已获授权的数据自行准备，字段为 `question` / `ground_truth`，
+可直接录入“评测用例录入”节点。

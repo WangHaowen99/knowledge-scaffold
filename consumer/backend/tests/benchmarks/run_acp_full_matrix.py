@@ -75,6 +75,8 @@ def _ensure_session():
     global _session, _token
     if _session is not None:
         return _session
+    if not AUTH_USERNAME or not AUTH_PASSWORD:
+        raise RuntimeError("AUTH_USERNAME and AUTH_PASSWORD must be set for ACP matrix login")
     import requests
     _session = requests.Session()
     resp = _session.post(

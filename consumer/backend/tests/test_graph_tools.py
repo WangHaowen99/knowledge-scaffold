@@ -580,7 +580,7 @@ def test_graph_tool_executor_ignores_empty_filter_fallback_samples_after_constra
         ontology_property="d2o_ontology_id",
         ontology_value="demo",
     )
-    mapping = GraphEntityMapping(entity="flight-material", kind="node", source="test", label="EquipmentMaterialStatus")
+    mapping = GraphEntityMapping(entity="batch-item", kind="node", source="test", label="EquipmentMaterialStatus")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
     execution = executor.execute(
@@ -629,7 +629,7 @@ def test_graph_tool_executor_counts_single_empty_filter_query_as_intentional_bro
         ontology_property="d2o_ontology_id",
         ontology_value="demo",
     )
-    mapping = GraphEntityMapping(entity="flight-material", kind="node", source="test", label="EquipmentMaterialStatus")
+    mapping = GraphEntityMapping(entity="batch-item", kind="node", source="test", label="EquipmentMaterialStatus")
     executor = GraphToolExecutor(backend=backend, context=_context(scope), mapping=mapping)
 
     execution = executor.execute(

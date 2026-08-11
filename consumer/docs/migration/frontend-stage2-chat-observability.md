@@ -207,14 +207,6 @@ PYTHONPATH=. pytest \
 - 用户上滚后出现“返回最新消息”，点击后距底部 1 px、按钮消失并恢复跟随。
 - 页面完整刷新后的浏览器控制台 error：0；Trace 分隔器可通过方向键、Home/End 调宽，ARIA 数值同步更新。
 
-截图：
-
-- [聊天 1440 × 1000](../../frontend/local-browser-artifacts/frontend-stage2/chat-1440.png)
-- [聊天 1024 × 900](../../frontend/local-browser-artifacts/frontend-stage2/chat-1024.png)
-- [聊天 768 × 1000](../../frontend/local-browser-artifacts/frontend-stage2/chat-main-768.png)
-- [窄屏 Trace 抽屉](../../frontend/local-browser-artifacts/frontend-stage2/chat-768.png)
-- [会话性能 1440 × 1000](../../frontend/local-browser-artifacts/frontend-stage2/session-observability-1440.png)
-- [全局观测 1440 × 1000](../../frontend/local-browser-artifacts/frontend-stage2/global-observability-1440.png)
-- [全局观测 1024 × 900](../../frontend/local-browser-artifacts/frontend-stage2/global-observability-1024.png)
+聊天、Trace 与观测页面的验收截图属于运行产物，可能包含会话、运行标识或账号信息，不纳入代码仓库。
 
 阶段 2 退出条件全部满足。下一阶段按[总计划的阶段 3](./frontend-convergence-and-enhancement-plan.md#阶段-3加强知识包图谱和-evolution)继续知识包、图谱与 Evolution 收敛。

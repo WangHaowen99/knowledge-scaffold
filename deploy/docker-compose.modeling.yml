@@ -51,7 +51,9 @@ services:
     container_name: mw-eval-mysql
     restart: unless-stopped
     environment:
-      - MYSQL_ROOT_PASSWORD=${EVAL_MYSQL_ROOT_PASSWORD:?EVAL_MYSQL_ROOT_PASSWORD must be set}
+      # 不提供弱口令 fallback；deploy-stack 在启用 eval profile 前校验该变量。
+      # 手动启用 profile 时也必须显式设置 EVAL_MYSQL_ROOT_PASSWORD。
+      - MYSQL_ROOT_PASSWORD=${EVAL_MYSQL_ROOT_PASSWORD:-}
     ports:
       - "${EVAL_MYSQL_PORT:-3306}:3306"
     volumes:

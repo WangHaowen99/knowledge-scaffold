@@ -31,12 +31,12 @@ def test_build_graph_scope_uses_workspace_name_for_workspace_name_property():
     scope = build_graph_scope({
         "workspace_id": "workspace-a",
         "ontology_id": "demo-ontology",
-        "workspace_name": "示例工程变更空间",
+        "workspace_name": "示例业务空间",
         "workspace_property": "workspace_name",
     })
 
     assert scope.workspace_property == "workspace_name"
-    assert scope.workspace_value == "示例工程变更空间"
+    assert scope.workspace_value == "示例业务空间"
     assert scope.ontology_property == ""
     assert scope.ontology_value == ""
 

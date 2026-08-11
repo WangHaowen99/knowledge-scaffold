@@ -47,7 +47,7 @@ class _FakeSession:
         if "UNWIND labels(n)" in query_text:
             return [
                 {"label": "D2O_NODE", "prop_types": [{"name": "id", "type": "STRING"}]},
-                {"label": "ChangeOrderAffectedObject", "prop_types": [{"name": "eco_id", "type": "STRING"}]},
+                {"label": "ChangeOrderAffectedObject", "prop_types": [{"name": "change_order_id", "type": "STRING"}]},
                 {"label": "TargetItem", "prop_types": [{"name": "target_item_code", "type": "STRING"}]},
             ]
         if "WITH r, type(r) AS rel_type" in query_text:
@@ -74,7 +74,7 @@ class _FakeSession:
                 {
                     "nodes": [
                         _FakeNode(
-                            element_id="node-eco",
+                            element_id="node-change_order",
                             labels=["D2O_NODE", "CHANGE_ORDER"],
                             properties={
                                 "CHANGE_ORDER_ID": "CHANGE_ORDER-001",
@@ -171,7 +171,7 @@ class _FakeSession:
                     element_id="node-1",
                     labels=["D2O_NODE", "ChangeOrderAffectedObject"],
                     properties={
-                        "eco_id": "CHANGE_ORDER-001",
+                        "change_order_id": "CHANGE_ORDER-001",
                         "d2o_workspace_id": "workspace-a",
                         "d2o_ontology_id": "demo-ontology",
                         "tenant_ontology": "demo-ontology",
@@ -238,8 +238,8 @@ def test_neo4j_property_filter_forces_workspace_scope(monkeypatch):
     result = backend.property_filter(
         element_class="ChangeOrderAffectedObject",
         element_type="NODE",
-        filter_dict={"eco_id": "CHANGE_ORDER-001"},
-        return_properties=["eco_id"],
+        filter_dict={"change_order_id": "CHANGE_ORDER-001"},
+        return_properties=["change_order_id"],
         limit=10,
         offset=0,
         scope=_scope(),
@@ -251,19 +251,19 @@ def test_neo4j_property_filter_forces_workspace_scope(monkeypatch):
     assert "$elem_class IN labels(e)" in query_text
     assert "e.`d2o_workspace_id` = $scope_workspace_value" in query_text
     assert "e.`tenant_ontology` = $scope_ontology_value" in query_text
-    assert "e.eco_id = $fp_eco_id_0" in query_text
+    assert "e.change_order_id = $fp_change_order_id_0" in query_text
     assert getattr(query, "timeout", None) == 30
     assert params["elem_class"] == "ChangeOrderAffectedObject"
     assert params["scope_workspace_value"] == "workspace-a"
     assert params["scope_ontology_value"] == "demo-ontology"
-    assert params["fp_eco_id_0"] == "CHANGE_ORDER-001"
+    assert params["fp_change_order_id_0"] == "CHANGE_ORDER-001"
     assert result.records == [
         {
             "element_id": "node-1",
             "entity_instance_id": "node-1",
             "entity_type_id": "",
             "labels": ["ChangeOrderAffectedObject"],
-            "properties": {"eco_id": "CHANGE_ORDER-001"},
+            "properties": {"change_order_id": "CHANGE_ORDER-001"},
         }
     ]
 
@@ -276,8 +276,8 @@ def test_neo4j_property_filter_supports_workspace_only_scope(monkeypatch):
     backend.property_filter(
         element_class="ChangeOrderAffectedObject",
         element_type="NODE",
-        filter_dict={"eco_id": "CHANGE_ORDER-001"},
-        return_properties=["eco_id"],
+        filter_dict={"change_order_id": "CHANGE_ORDER-001"},
+        return_properties=["change_order_id"],
         limit=10,
         offset=0,
         scope=_workspace_only_scope(),
@@ -299,7 +299,7 @@ def test_neo4j_schema_methods_return_sanitized_metadata(monkeypatch):
 
     assert nodes_schema["labels"] == ["ChangeOrderAffectedObject", "TargetItem"]
     assert nodes_schema["schema"]["TargetItem"] == {"target_item_code": "STRING"}
-    assert edges_schema["relationship_types"] == ["D2O_RELATION", "CHANGE_ORDER_AFFECTS_BEFORE"]
+    assert edges_schema["relationship_types"] == ["CHANGE_ORDER_AFFECTS_BEFORE", "D2O_RELATION"]
     assert edges_schema["relation_triples"][0]["source_label"] == "CHANGE_ORDER"
     assert "UNWIND labels(n)" in str(calls[1][0])
     assert "WITH r, type(r) AS rel_type" in str(calls[3][0])
@@ -340,20 +340,20 @@ def test_neo4j_pattern_search_supports_mapping_dict_segments(monkeypatch):
 
     result = backend.pattern_search(
         path_pattern=[
-            {"var": "eco", "label": "CHANGE_ORDER", "filters": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}, "return_properties": ["CHANGE_ORDER_ID"]},
+            {"var": "change_order", "label": "CHANGE_ORDER", "filters": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}, "return_properties": ["CHANGE_ORDER_ID"]},
             {"var": "rel", "type": "D2O_RELATION", "direction": "->", "return_properties": ["relation_type"]},
             {"var": "version", "label": "SourceItemVersion", "return_properties": ["SourceItemVersionID"]},
         ],
-        return_vars=["eco", "rel", "version"],
+        return_vars=["change_order", "rel", "version"],
         limit=100,
         scope=_scope(),
     )
 
     query, params = calls[1]
     query_text = str(query)
-    assert "MATCH p = (eco:`CHANGE_ORDER`)-[rel:`D2O_RELATION`]->(version:`SourceItemVersion`)" in query_text
-    assert "eco.CHANGE_ORDER_ID = $pathprop0_eco_CHANGE_ORDER_ID_0" in query_text
-    assert params["pathprop0_eco_CHANGE_ORDER_ID_0"] == "CHANGE_ORDER-001"
+    assert "MATCH p = (change_order:`CHANGE_ORDER`)-[rel:`D2O_RELATION`]->(version:`SourceItemVersion`)" in query_text
+    assert "change_order.CHANGE_ORDER_ID = $pathprop0_change_order_CHANGE_ORDER_ID_0" in query_text
+    assert params["pathprop0_change_order_CHANGE_ORDER_ID_0"] == "CHANGE_ORDER-001"
     assert result.records[0]["nodes"][0]["properties"] == {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}
     assert result.records[0]["relationships"][0]["properties"] == {"relation_type": "CHANGE_ORDER_AFFECTS_BEFORE"}
 
@@ -390,7 +390,7 @@ def test_neo4j_pattern_search_projects_return_vars_and_properties(monkeypatch):
 
     result = backend.pattern_search(
         path_pattern=[
-            {"var": "eco", "label": "CHANGE_ORDER", "filters": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}},
+            {"var": "change_order", "label": "CHANGE_ORDER", "filters": {"CHANGE_ORDER_ID": "CHANGE_ORDER-001"}},
             {"var": "rel", "type": "D2O_RELATION", "direction": "->"},
             {"var": "version", "label": "SourceItemVersion"},
         ],

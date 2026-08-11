@@ -33,7 +33,7 @@ GRAPH_AGENT_SYSTEM_PROMPT = """你是 business_data_search Provider 内部的图
 13. return_properties 必须列出明确字段名，不能使用 "*"、"all" 或其它通配符；不确定字段时优先参考 schema_context/mapping。
 14. 结构化 filter_dict 操作符使用 eq/ne/gt/gte/lt/lte/contains/starts_with/ends_with/in/not_in/is_null，不要使用 Mongo 风格 "$contains"。
 15. filter_dict 顶层 key 必须是 schema 中存在的字段名，不能使用 "$or"、"$and" 等 Mongo 风格逻辑操作符；“编码或名称”等 OR 查询必须拆成 queries 数组里的多个子查询。
-16. 示例：查询编码或名称包含 A001 时，应生成两个 queries 子项，分别使用 {"SourceItemCode":{"contains":"A001"}} 和 {"SourceItemDesc":{"contains":"A001"}}。
+16. 示例：查询编码或名称包含 A001 时，应生成两个 queries 子项，分别使用 {"ObjectCode":{"contains":"A001"}} 和 {"ObjectName":{"contains":"A001"}}。
 17. 同一字段同一值不要同时使用 eq 和 contains/starts_with/ends_with 重复查询；精确 eq 已命中时，不要再追加模糊兜底查询。
 18. 同一个 element_class/element_type/filter_dict/return_properties 查询不要重复调用。
 19. 需要追加更窄过滤条件时可以继续查询，但最终事实以 Provider 去重后的工具结果为准。
@@ -42,7 +42,7 @@ GRAPH_AGENT_SYSTEM_PROMPT = """你是 business_data_search Provider 内部的图
 
 路径检索策略：
 - schema_context.query_analysis.path_intent 为 true 且 schema_context.mapping_intent.pattern_search_required 为 true 时，应至少尝试一次 pattern_search，除非 schema_context 中完全没有可用 relation_triples。
-- 若 object mapping 的 resource 是关系记录节点（例如 *_obj、*_TargetItem、SOURCE_STRUCTURE、STRUCTURE_LIST 等），用户只查询“记录/字段/编号/表信息”时应使用 property_filter；只有问题明确需要关联对象详情、上下游对象、从 A 找 B 的对象属性时，才继续 pattern_search。
+- 若 object mapping 的 resource 是关系记录节点（例如名称含“关系”“映射”“受影响”“结构”“清单”等），用户只查询“记录/字段/编号/表信息”时应使用 property_filter；只有问题明确需要关联对象详情、上下游对象、从 A 找 B 的对象属性时，才继续 pattern_search。
 - 构造 path_pattern 时使用 relation_triples 的 source_label、relation_type、target_label；物理关系 type 通常来自 edges_schema.relationship_types 或 relation_triples.physical_relation_type/type。
 - 对 D2O_RELATION 这类通用物理边，业务关系名通常在边属性 relation_type 中；可在边段 props/filters 中约束 relation_type。
 
@@ -435,15 +435,7 @@ def _path_record_key(record: Mapping[str, Any]) -> str:
 
 
 def _candidate_property_identity_fields(properties: Mapping[str, Any]) -> list[str]:
-    preferred = [
-        "InventoryDetailCode",
-        "KC_BM",
-        "ConclusionID",
-        "AffectedObjectCode",
-        "SourceItemVersionID",
-        "TargetItemID",
-        "ID",
-    ]
+    preferred = ["ID"]
     keys = [str(key) for key in properties if str(key)]
     selected = [key for key in preferred if key in properties]
     selected.extend(
@@ -594,13 +586,12 @@ def _query_requires_associated_object_detail(context: GraphSearchRuntimeContext)
     text = "{} {}".format(query, entity)
     relation_cues = ("对应", "关联", "连接", "映射", "追溯", "展开", "上下游", "上游", "下游")
     object_detail_cues = (
-        "TargetItem",
-        "SourceItem",
-        "版本详情",
-        "对象详情",
-        "节点详情",
-        "关联对象",
-        "关联节点",
+        "对象",
+        "实体",
+        "节点",
+        "物料",
+        "零件",
+        "版本",
         "父项",
         "子项",
         "供应商",
@@ -790,7 +781,7 @@ _GRAPH_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "pattern_search",
             "description": (
                 "按图结构模式匹配路径。path_pattern 使用 Jiutian 数组协议：节点、关系、节点交替排列。"
-                "节点或关系属性过滤写在 props 中，例如 {\"label\":\"SourceItemVersion\",\"props\":{\"SourceItemCode\":\"101000-001\"}}。"
+                "节点或关系属性过滤写在 props 中，例如 {\"label\":\"ObjectVersion\",\"props\":{\"ObjectCode\":\"OBJ-001\"}}。"
                 "兼容 filters 作为 props 别名。"
                 "用 return_vars 指定需要返回的变量；用 return_properties 指定返回字段，"
                 "可传字符串数组应用到全部变量，或传 {变量名: [字段名]} 精确控制；"

@@ -14,8 +14,10 @@ The platform follows a three-part split: **design time builds the model** (the k
 
 Meta Wise targets scenarios where answers must follow **domain semantics and established calculation rules** rather than free-form model output:
 
+- **Engineering change impact analysis**: change-record impact analysis, object/version mapping, inventory and supply risks, cost and schedule calculations.
+- **Production workflow planning**: production-plan decision support built on equipment, batch, material, and capacity knowledge.
 
-Each scenario ships with knowledge-package source files (plain directories), sample datasets, and test cases — zip the package directory to import it into consumer, or build a package from scratch out of your own domain material with the modeling workbench.
+Domain knowledge packages are built and exported as ZIP files by the modeling workbench, then imported into consumer.
 
 ## Core Features
 
@@ -161,9 +163,9 @@ On Windows, if Python dependency paths exceed the length limit, enable long-path
 
 1. **Log in** — an admin account is created on first startup; you must change the initial password at first login. A masked onboarding tour walks through the setup path (skippable, reopenable from the top bar).
 2. **Configure models** — Configuration Center → Global → Model Pool: add model profiles (keys stored encrypted, global scope only) and pick a default.
-3. **Import a knowledge package** — Knowledge Package Workbench → Import (.zip). Example package sources live under [examples/](../examples/); zip a package directory before importing.
+3. **Import a knowledge package** — Knowledge Package Workbench → Import (.zip).
 4. **Configure its data source** — select the imported package in the Knowledge Package Workbench, open the Data Source tab, choose a provider, complete the form, test it, and save. The source belongs only to that package in the current workspace.
-5. **Ask** — start a New Chat and try the package's typical questions, e.g. *"Which SourceItem versions does TargetItem M-3021 map to?"*; tool-call details for each step are available in the Trace panel on the right.
+5. **Ask** — start a New Chat and try the package's typical questions, e.g. *"Which design versions does manufacturing item MAT-3021 map to?"*; tool-call details for each step are available in the Trace panel on the right.
 
 ## Build a knowledge package (design time)
 
@@ -189,7 +191,6 @@ Repository layout:
 ├── auth-server/              # Standalone auth service (OAuth2/OIDC subset, required by consumer/modeling)
 ├── common/                   # Lightweight shared code across modules
 ├── evaluation/agent_eval/    # Agent evaluation platform
-├── examples/                 # Scenario cases, knowledge packages, sample scripts
 ├── deploy/                   # Full-stack deployment guide and orchestration scripts
 └── docs/                     # Repository-level docs (translated READMEs, etc.)
 ```

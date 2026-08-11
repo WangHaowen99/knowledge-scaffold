@@ -79,7 +79,7 @@ def test_service_injects_trusted_workspace_name_for_graph_scope(monkeypatch, tmp
     )
     monkeypatch.setattr(
         "agent.tools.business_data.service.get_workspace",
-        lambda workspace_id: {"id": workspace_id, "name": "示例工程变更空间"},
+        lambda workspace_id: {"id": workspace_id, "name": "示例业务空间"},
     )
     monkeypatch.setattr(
         "agent.tools.business_data.service.get_provider_spec",
@@ -106,7 +106,7 @@ def test_service_injects_trusted_workspace_name_for_graph_scope(monkeypatch, tmp
     ]
     config = _CapturingProvider.configs[0]["ontology_search"]["neo4j"]
     assert config["workspace_id"] == "workspace-a"
-    assert config["workspace_name"] == "示例工程变更空间"
+    assert config["workspace_name"] == "示例业务空间"
 
 
 def test_service_does_not_forward_graph_trace_metadata_to_other_providers(monkeypatch):

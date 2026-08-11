@@ -113,6 +113,8 @@ class ACPTestRunner:
         return f"{self.base_url}{path}"
 
     def login(self) -> bool:
+        if not AUTH_USERNAME or not AUTH_PASSWORD:
+            raise RuntimeError("AUTH_USERNAME and AUTH_PASSWORD must be set for ACP test login")
         try:
             resp = self.session.post(
                 self._url("/auth/login"),

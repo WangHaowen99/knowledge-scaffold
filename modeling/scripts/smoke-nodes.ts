@@ -24,14 +24,14 @@ function buildTestXlsx(): Buffer {
     ['2', 'A001', 'B002', '1', 'BATCH001-BATCH050'],
     ['3', 'A002', 'B003', '4', 'BATCH051-'],
   ];
-  const eco = [
+  const change_order = [
     ['ChangeOrderCode', 'Title', 'Status'],
     ['CHANGE_ORDER-001', '翼盒结构变更', '已批准'],
     ['CHANGE_ORDER-002', '蒙皮材料替换', '审查中'],
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(structure_list), 'STRUCTURE_LIST');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(eco), 'CHANGE_ORDER');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(change_order), 'CHANGE_ORDER');
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
@@ -43,7 +43,7 @@ function buildFauxLlm(): LlmDeps {
     fauxAssistantMessage([fauxToolCall('describe_table', { table: 'STRUCTURE_LIST' })]),
     fauxAssistantMessage([
       fauxToolCall('submit_analysis', {
-        domainOverview: '工程变更影响分析 域：围绕 STRUCTURE_LIST 结构与 CHANGE_ORDER 工程变更。',
+        domainOverview: '示例业务 DOMAIN 域：围绕 STRUCTURE_LIST 结构与 CHANGE_ORDER 工程变更。',
         candidateObjects: [
           { name: 'STRUCTURE_LIST', rationale: '制造物料清单，父子结构', sourceTables: ['STRUCTURE_LIST'] },
           { name: 'CHANGE_ORDER', rationale: '工程变更单', sourceTables: ['CHANGE_ORDER'] },
@@ -77,7 +77,7 @@ async function main() {
   console.log('\n=== M1 冒烟：workflow 节点 1→3 ===\n');
 
   // 节点 1：建项目
-  const project = createProject({ owner: 'smoke-user', name: '示例业务 DOMAIN 建模', domain: '示例制造', background: '测试' });
+  const project = createProject({ owner: 'smoke-user', name: '示例工程变更 建模', domain: '示例业务', background: '测试' });
   ok(!!project.id, `节点 1 建项目：${project.id} · stage=${project.stage}`);
 
   // 节点 2：解析 Excel → 数据字典

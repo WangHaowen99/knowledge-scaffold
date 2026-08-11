@@ -5,10 +5,10 @@ from pathlib import Path
 
 
 def test_benchmark_lang_loads_local_dotenv_into_environment(tmp_path, monkeypatch):
-    helper_dir = tmp_path / "benchmark"
+    helper_dir = tmp_path / "benchmarks"
     helper_dir.mkdir()
     helper_path = helper_dir / "lang.py"
-    source_path = Path(__file__).resolve().parent / "benchmark" / "lang.py"
+    source_path = Path(__file__).resolve().parent / "benchmarks" / "lang.py"
     helper_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
     (helper_dir / ".env").write_text(
         "LLM_API_KEY=from-dotenv\nLLM_BASE_URL=https://dotenv.example/v1\nLLM_MODEL_NAME=dotenv-model\n",
