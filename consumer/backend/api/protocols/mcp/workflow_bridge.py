@@ -123,7 +123,12 @@ def execute_mcp_chat_workflow(
         slot_manager=admission_queue,
         slot_limit_user_id=scope.username,
         traceparent=scope.traceparent,
-        event_observer=trace_collector.consume if trace_collector is not None else None,
+        event_observer=(trace_collector.consume if trace_collector is not None else None),
+        runtime_event_observer=(
+            trace_collector.consume_runtime_event
+            if trace_collector is not None
+            else None
+        ),
     )
     registry = get_run_registry()
     admitted = threading.Event()

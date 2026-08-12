@@ -3,26 +3,13 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from integration.observability.events import RuntimeEvent, RuntimeEventType
-from utils.logging import (
-    DEFAULT_BACKUP_COUNT,
-    DEFAULT_MAX_BYTES,
-    LOG_DIR,
-    DatePartitionedRotatingFileHandler,
-)
-
-_LOGGER_NAME = "integration.observability.local_perf"
-
-
-class _PerfRecordFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = getattr(record, "perf_record", {})
-        return json.dumps(payload, ensure_ascii=True, default=str)
+from integration.observability.local_storage import IndexedLocalOTelStore
+from utils.logging import LOG_DIR
 
 
 class LocalPerfExporter:
@@ -32,16 +19,10 @@ class LocalPerfExporter:
         local = config.get("local") if isinstance(config.get("local"), dict) else {}
         resolved_log_dir = _resolve_log_dir(config, log_dir=log_dir)
         resolved_log_dir.mkdir(parents=True, exist_ok=True)
-        base_path = os.path.abspath(os.path.join(resolved_log_dir, "agent_perf.log"))
-        self._handler = DatePartitionedRotatingFileHandler(
-            base_path,
-            encoding="utf-8",
-            max_bytes=DEFAULT_MAX_BYTES,
-            backup_count=DEFAULT_BACKUP_COUNT,
+        self._store = IndexedLocalOTelStore(
+            resolved_log_dir,
             retention_days=_coerce_positive_int(local.get("retention_days"), 30),
         )
-        self._handler.setLevel(logging.INFO)
-        self._handler.setFormatter(_PerfRecordFormatter())
         self._run_metrics: Dict[str, Dict[str, int]] = {}
         self._run_labels: Dict[str, Dict[str, str]] = {}
 
@@ -50,6 +31,11 @@ class LocalPerfExporter:
         return True
 
     def export(self, event: RuntimeEvent) -> None:
+        if event.type in {"otel.span.exported", "otel.metric.exported"}:
+            record = (event.payload or {}).get("otel_record")
+            if isinstance(record, dict):
+                self._write_record(dict(record))
+            return
         self._track_run_labels(event)
         self._track_run_metrics(event)
         records = _project_event(event)
@@ -61,21 +47,12 @@ class LocalPerfExporter:
             self._write_record(record)
 
     def _write_record(self, record: Dict[str, Any]) -> None:
-        log_record = logging.LogRecord(
-            name=_LOGGER_NAME,
-            level=logging.INFO,
-            pathname=__file__,
-            lineno=0,
-            msg=record.get("event") or "runtime_event",
-            args=(),
-            exc_info=None,
-        )
-        log_record.perf_record = record
-        self._handler.handle(log_record)
+        self._store.append(record)
 
     def _track_run_metrics(self, event: RuntimeEvent) -> None:
         if event.type not in {
             RuntimeEventType.LLM_FINISHED,
+            RuntimeEventType.LLM_FAILED,
             RuntimeEventType.AGENT_ITERATION_FINISHED,
             RuntimeEventType.TOOL_STARTED,
             RuntimeEventType.TOOL_FINISHED,
@@ -83,8 +60,10 @@ class LocalPerfExporter:
             return
         metrics = self._run_metrics.setdefault(event.run_id, {})
         payload = dict(event.payload or {})
-        if event.type == RuntimeEventType.LLM_FINISHED:
+        if event.type in {RuntimeEventType.LLM_FINISHED, RuntimeEventType.LLM_FAILED}:
             _increment(metrics, "llm_calls")
+            if event.type == RuntimeEventType.LLM_FAILED:
+                _increment(metrics, "llm_failures")
             _increment(metrics, "llm_stream_total_ms", payload.get("stream_duration_ms"))
             _increment(
                 metrics,
@@ -92,6 +71,8 @@ class LocalPerfExporter:
                 _first_present_value(payload, "wall_duration_ms", "duration_ms", "stream_duration_ms"),
             )
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                _increment(metrics, key, usage.get(key))
             if "cache_total_input_tokens" in usage:
                 _increment(metrics, "llm_cache_hit_tokens", usage.get("cache_hit_tokens"))
                 _increment(metrics, "llm_cache_total_input_tokens", usage.get("cache_total_input_tokens"))
@@ -103,6 +84,8 @@ class LocalPerfExporter:
         elif event.type == RuntimeEventType.TOOL_FINISHED:
             _increment(metrics, "tool_calls_finished")
             _increment(metrics, "tool_call_total_ms", payload.get("elapsed_ms"))
+            if str(payload.get("status") or "").strip().lower() in {"error", "failed"}:
+                _increment(metrics, "tool_failures")
 
     def _track_run_labels(self, event: RuntimeEvent) -> None:
         if event.type != RuntimeEventType.RUN_STARTED:
@@ -131,13 +114,13 @@ class LocalPerfExporter:
             labels=dict(self._run_labels.get(event.run_id) or {}),
         )
 
-    def flush(self) -> None:
-        flush = getattr(self._handler, "flush", None)
-        if callable(flush):
-            flush()
+    @staticmethod
+    def flush() -> None:
+        return None
 
-    def close(self) -> None:
-        self._handler.close()
+    @staticmethod
+    def close() -> None:
+        return None
 
 
 def create_local_perf_exporter(config: Mapping[str, Any]) -> LocalPerfExporter:
@@ -216,7 +199,7 @@ def _project_event(event: RuntimeEvent) -> list[Dict[str, Any]]:
                 labels=_copy_label_fields(payload, "purpose", "agent_mode"),
             )
         ]
-    if event.type == RuntimeEventType.LLM_FINISHED:
+    if event.type in {RuntimeEventType.LLM_FINISHED, RuntimeEventType.LLM_FAILED}:
         return [
             _record(
                 event,
@@ -231,6 +214,7 @@ def _project_event(event: RuntimeEvent) -> list[Dict[str, Any]]:
                     "model",
                     "model_provider",
                     "finish_reason",
+                    "error_type",
                 ),
             )
         ]
@@ -305,7 +289,8 @@ def _record(
     labels: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "record_type": "opentelemetry",
         "kind": kind,
         "event": event.type,
         "ts_ms": event.timestamp_ms,
@@ -315,6 +300,9 @@ def _record(
     _copy_present(record, "turn_id", event.turn_id)
     _copy_present(record, "span_key", event.span_key)
     _copy_present(record, "parent_key", event.parent_key)
+    _copy_present(record, "trace_id", event.trace_id)
+    _copy_present(record, "span_id", event.span_id)
+    _copy_present(record, "parent_span_id", event.parent_span_id)
     _copy_present(record, "status", status)
     _copy_present(record, "caller", caller)
     _copy_present(record, "iteration", iteration)

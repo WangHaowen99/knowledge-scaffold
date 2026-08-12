@@ -4,6 +4,38 @@ import json
 import threading
 
 from api.protocols.mcp.public_trace import MCPPublicTraceCollector
+from integration.observability.events import RuntimeEvent, RuntimeEventType
+
+
+def test_public_trace_deduplicates_protocol_and_otel_tool_lifecycle_events():
+    collector = MCPPublicTraceCollector(max_events=20, max_bytes=32768, max_text_chars=200)
+    span_id = "2" * 16
+    base_payload = {"iteration": 1, "tool_name": "search", "tool_call_id": "tool-1"}
+    lifecycle = [
+        (RuntimeEventType.TOOL_STARTED, {}),
+        (RuntimeEventType.TOOL_PROGRESS, {"status": "running"}),
+        (RuntimeEventType.TOOL_PROGRESS, {"status": "running", "progress_index": 2}),
+        (RuntimeEventType.TOOL_FINISHED, {"status": "completed", "elapsed_ms": 12}),
+    ]
+    for event_type, extra_payload in lifecycle:
+        collector.consume({
+            "type": event_type,
+            "span_id": span_id,
+            "payload": {**base_payload, **extra_payload},
+        })
+    for event_type, extra_payload in lifecycle:
+        collector.consume_runtime_event(RuntimeEvent.from_otel(
+            type=event_type,
+            run_id="run-deduplicate",
+            span_id=span_id,
+            payload={**base_payload, **extra_payload},
+        ))
+
+    trace = collector.snapshot()
+    assert trace["totals"]["tool_calls"] == 1
+    assert trace["totals"]["tool_execution_elapsed_ms"] == 12
+    assert trace["iterations"][0]["tools"]["count"] == 1
+    assert trace["iterations"][0]["tools"]["calls"][0]["status"] == "completed"
 from integration.mcp.config import load_mcp_runtime_config
 
 

@@ -96,6 +96,12 @@ REGISTERED_MIGRATIONS = (
         failure_policy=MigrationFailurePolicy.NON_BLOCKING,
     ),
     RegisteredMigration(
+        migration_id="observability-workspace-mode-v2",
+        module="migrations.observability_workspace_mode_v2",
+        phase=MigrationPhase.STARTUP,
+        failure_policy=MigrationFailurePolicy.NON_BLOCKING,
+    ),
+    RegisteredMigration(
         migration_id="system-config-model-profiles-v1",
         module="migrations.system_config_model_profiles_v1",
         phase=MigrationPhase.STARTUP,

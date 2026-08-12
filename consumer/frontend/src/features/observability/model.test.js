@@ -161,13 +161,16 @@ test('pagination clamps offsets and exposes next/previous transitions', () => {
 });
 
 test('runtime status distinguishes local, disabled and Langfuse modes', () => {
-  assert.equal(getLocalObservabilityRuntime({ observability: { enabled: true, mode: 'local' } }).tone, 'success');
+  assert.equal(getLocalObservabilityRuntime({ observability: { enabled: true } }).tone, 'success');
   assert.equal(getLocalObservabilityRuntime({ observability: { enabled: false } }).tone, 'muted');
-  assert.equal(getLocalObservabilityRuntime({ observability: { enabled: true, mode: 'langfuse' } }).tone, 'warning');
+  const withLangfuse = getLocalObservabilityRuntime({ observability: { enabled: true, langfuse: {
+    base_url: 'https://langfuse.example', public_key: 'pk-test', has_secret_key: true,
+  } } });
+  assert.equal(withLangfuse.tone, 'success');
+  assert.match(withLangfuse.detail, /Langfuse/);
   assert.deepEqual(getFailedLocalObservabilityRuntime('配置接口不可用'), {
     loaded: true,
     enabled: null,
-    mode: '',
     isWritingLocal: false,
     label: '观测配置读取失败',
     detail: '配置接口不可用',

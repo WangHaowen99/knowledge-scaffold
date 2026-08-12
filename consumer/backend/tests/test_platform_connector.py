@@ -45,7 +45,7 @@ def test_platform_event_mapper_projects_run_terminal_event_without_rich_content(
         "user_id": "user-a",
         "session_id": "session-1",
         "run_id": "run-1",
-        "trace_id": None,
+        "trace_id": event.trace_id,
         "payload": {
             "status": "success",
             "duration_ms": 1234,

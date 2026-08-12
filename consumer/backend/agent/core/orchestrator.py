@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import time
+from contextvars import copy_context
 from typing import Any, Dict, Generator, List, Optional
 import uuid
 
@@ -33,8 +34,12 @@ from agent.core.shared.modes import VALID_AGENT_MODES, resolve_agent_mode
 from agent.memory import MemoryFactory
 from agent.state import AgenticState
 from llm import get_llm_router
-from integration.observability import RunRuntimeTrace, RuntimeStatus, get_observer
+from integration.observability import RunRuntimeTrace, RuntimeStatus, get_observer_for_run
 from integration.observability.trace_context import parse_traceparent
+from integration.observability.identity import (
+    bind_runtime_trace_identity,
+    clear_runtime_trace_identity,
+)
 from persistence.run_queue import RunAdmissionQueue, RunSlotManager
 from persistence.run_queue import TokenBucketRateLimiter
 from persistence.run_store import RunStore
@@ -461,8 +466,10 @@ class AgenticOrchestrator:
             finally:
                 event_queue.put(done)
 
+        worker_context = copy_context()
         worker_thread = threading.Thread(
-            target=worker,
+            target=worker_context.run,
+            args=(worker,),
             name="agentic-workflow-loop",
             daemon=True,
         )
@@ -836,18 +843,33 @@ class AgenticOrchestrator:
             metadata=msg_metadata,
         )
 
-        logger.info("Starting workflow run %s, query: %s", run_id, user_request)
-        logger.info("用户接口输入: request=%s arguments=%s (run_id=%s)", user_request, arguments, run_id)
-
-        workflow_started_at = time.perf_counter()
-        observer = get_observer()
-        run_trace = RunRuntimeTrace(
-            observer=observer,
-            run_id=run_id,
-            session_id=session_id,
-            turn_id=current_turn_id,
-        )
+        observer = None
         try:
+            bind_runtime_trace_identity(
+                run_id,
+                trace_id=trace_context.trace_id if trace_context is not None else None,
+                parent_span_id=trace_context.parent_id if trace_context is not None else None,
+            )
+            observer = get_observer_for_run(run_id, str(workspace_id or "default"))
+            run_trace = RunRuntimeTrace(
+                observer=observer,
+                run_id=run_id,
+                session_id=session_id,
+                turn_id=current_turn_id,
+            )
+        except BaseException:
+            clear_run_sequence(run_id)
+            clear_runtime_trace_identity(run_id)
+            release_run = getattr(observer, "release_run", None)
+            if callable(release_run):
+                release_run(run_id)
+            raise
+
+        try:
+            logger.info("Starting workflow run %s, query: %s", run_id, user_request)
+            logger.info("用户接口输入: request=%s arguments=%s (run_id=%s)", user_request, arguments, run_id)
+
+            workflow_started_at = time.perf_counter()
             run_trace.started(
                 user_id=user_id,
                 user_query=user_request,
@@ -1400,6 +1422,7 @@ class AgenticOrchestrator:
 
         finally:
             run_trace.close(status=RuntimeStatus.ERROR)
+            run_trace.release()
 
     def _get_stores(
         self,

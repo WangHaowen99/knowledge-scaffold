@@ -38,7 +38,7 @@ def test_get_workspace_observability_config_masks_secret(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["enabled"] is False
-    assert payload["mode"] == "local"
+    assert "mode" not in payload
     assert payload["local"] == {"retention_days": 30}
     assert payload["speedscope"] == {"retention_days": 30}
     assert payload["langfuse"]["has_secret_key"] is False
@@ -77,7 +77,6 @@ def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_pa
         "/agentic/workspaces/demo/observability-config",
         json={
             "enabled": True,
-            "mode": "langfuse",
             "local": {"retention_days": 14},
             "speedscope": {"retention_days": 7},
             "langfuse": {
@@ -93,7 +92,7 @@ def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_pa
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["enabled"] is True
-    assert payload["mode"] == "langfuse"
+    assert "mode" not in payload
     assert payload["local"]["retention_days"] == 14
     assert payload["speedscope"]["retention_days"] == 7
     assert payload["langfuse"]["public_key"] == "pk-test"
@@ -120,7 +119,6 @@ def test_workspace_observability_connection_test_reuses_saved_secret(tmp_path, m
         "/agentic/workspaces/demo/observability-config",
         json={
             "enabled": True,
-            "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-old",
                 "secret_key": "sk-saved",
@@ -145,7 +143,6 @@ def test_workspace_observability_connection_test_reuses_saved_secret(tmp_path, m
         "/agentic/workspaces/demo/observability-config/test",
         json={
             "enabled": True,
-            "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-new",
                 "base_url": "https://langfuse.new",

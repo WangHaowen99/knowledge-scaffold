@@ -49,6 +49,7 @@ class ObservabilityBus:
         self._lock = threading.Lock()
         self._exporter_closed = False
         self._exporter_close_lock = threading.Lock()
+        self._export_lock = threading.RLock()
         self._flush_interval_seconds = max(0.1, float(flush_interval_seconds))
         self._worker = threading.Thread(
             target=self._run,
@@ -88,9 +89,20 @@ class ObservabilityBus:
             except queue.Full:
                 pass
         self._worker.join(timeout=timeout)
-        # Exporters own their final flush. Close is idempotent, so invoke it
-        # even when a daemon worker did not finish draining before shutdown.
-        self._close_exporter()
+        if not self._worker.is_alive():
+            self._close_exporter()
+
+    def emit_metric(self, event: RuntimeEvent) -> bool:
+        """Persist an OTel metric outside the trace-detail queue."""
+        with self._lock:
+            if self._closed:
+                return False
+        try:
+            self._export_item(event)
+            return True
+        except Exception:
+            logger.warning("Observability exporter failed to export metric", exc_info=True)
+            return False
 
     def _run(self) -> None:
         try:
@@ -107,7 +119,7 @@ class ObservabilityBus:
                     break
 
                 try:
-                    self._exporter.export(item)
+                    self._export_item(item)
                 except Exception:
                     logger.warning("Observability exporter failed to export event", exc_info=True)
                 self._drain_drop_notices()
@@ -133,7 +145,7 @@ class ObservabilityBus:
             if item is self._stop:
                 continue
             try:
-                self._exporter.export(item)
+                self._export_item(item)
             except Exception:
                 logger.warning("Observability exporter failed during drain", exc_info=True)
             self._drain_drop_notices()
@@ -143,7 +155,8 @@ class ObservabilityBus:
         if not callable(flush):
             return
         try:
-            flush()
+            with self._export_lock:
+                flush()
         except Exception:
             logger.warning("Observability exporter flush failed", exc_info=True)
 
@@ -152,7 +165,8 @@ class ObservabilityBus:
         if not callable(record_drop):
             return
         try:
-            record_drop(event)
+            with self._export_lock:
+                record_drop(event)
         except Exception:
             logger.warning("Observability exporter failed to record dropped event", exc_info=True)
 
@@ -200,6 +214,11 @@ class ObservabilityBus:
         if not callable(close):
             return
         try:
-            close()
+            with self._export_lock:
+                close()
         except Exception:
             logger.warning("Observability exporter close failed", exc_info=True)
+
+    def _export_item(self, event: RuntimeEvent) -> None:
+        with self._export_lock:
+            self._exporter.export(event)

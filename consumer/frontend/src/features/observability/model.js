@@ -314,15 +314,19 @@ export function getPageInfo({ count = 0, limit = 50, offset = 0 } = {}) {
 export function getLocalObservabilityRuntime(config) {
   const observability = asObject(asObject(config).observability);
   const enabled = observability.enabled === true;
-  const mode = cleanText(observability.mode).toLowerCase() === 'langfuse' ? 'langfuse' : 'local';
-  if (enabled && mode === 'local') {
+  const langfuse = asObject(observability.langfuse);
+  const exportsToLangfuse = Boolean(
+    cleanText(langfuse.base_url)
+    && cleanText(langfuse.public_key)
+    && langfuse.has_secret_key === true
+  );
+  if (enabled) {
     return {
       loaded: true,
       enabled,
-      mode,
       isWritingLocal: true,
       label: '当前正在写入本地观测日志',
-      detail: '新运行完成后会进入本地观测分析。',
+      detail: exportsToLangfuse ? '新运行会写入本地观测分析，并按配置导出到 Langfuse。' : '新运行完成后会进入本地观测分析。',
       tone: 'success',
     };
   }
@@ -330,29 +334,18 @@ export function getLocalObservabilityRuntime(config) {
     return {
       loaded: true,
       enabled,
-      mode,
       isWritingLocal: false,
       label: '当前未开启观测',
       detail: '仍可分析历史本地日志；新运行不会写入本地观测数据。',
       tone: 'muted',
     };
   }
-  return {
-    loaded: true,
-    enabled,
-    mode,
-    isWritingLocal: false,
-    label: '当前观测写入 Langfuse',
-    detail: '本页仅分析历史本地日志；新运行不会写入本地日志。',
-    tone: 'warning',
-  };
 }
 
 export function getUnknownLocalObservabilityRuntime() {
   return {
     loaded: false,
     enabled: null,
-    mode: '',
     isWritingLocal: false,
     label: '正在读取观测配置',
     detail: '配置读取完成后会显示当前写入目标。',
@@ -364,7 +357,6 @@ export function getFailedLocalObservabilityRuntime(error = '') {
   return {
     loaded: true,
     enabled: null,
-    mode: '',
     isWritingLocal: false,
     label: '观测配置读取失败',
     detail: cleanText(error) || '请刷新后重试。',

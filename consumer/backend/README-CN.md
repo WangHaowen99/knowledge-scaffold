@@ -256,12 +256,12 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - 主 ReAct 循环运行在 openJiuwen 上。后端依赖统一通过 `backend/requirements.txt` 安装。
 - `business_data_search` 根据 `workspace_id + ontology_id` 读取本体私有数据源。通过 `/agentic/ontologies/{ontology_id}/data-source` 保存 `provider + config`；配置存于 workspace 运行目录，不进入本体包。
 - `web_search` 是可选联网搜索工具，通过系统设置 UI 或 `web_search` 配置 section 开启；默认关闭，未开启时不会暴露给模型。
-- 观测输出按工作空间配置，通过 `/agentic/workspaces/<workspace_id>/observability-config` 或配置中心的“空间观测”管理；每个工作空间可独立选择本地性能 JSONL 或 Langfuse。全局系统配置不再提供 `observability` section，旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量也不再作为运行时配置入口读取。
-- 工作空间观测配置为 `mode=local` 时，前端会话性能页读取当前工作空间的新 schema 本地 perf JSONL；管理员本地观测页可以跨工作空间聚合和筛选，但只是分析视图，不是全局观测配置。两者都不读取 Langfuse 数据或旧 direct perf logger 记录。
-- 工作空间观测配置是 Speedscope 的唯一控制入口。`enabled=false` 时不写本地 perf、Langfuse 或 Speedscope；开启后，`mode=local` 同时写本地 perf JSONL 和会话级 evented trace，`mode=langfuse` 同时写 Langfuse 和会话级 evented trace。Speedscope 文件按工作空间和用户隔离，位于 `<PROJECT_ROOT>/workspaces/<workspace_id>/runtime/observability/speedscope/<user>/`，由 `speedscope.retention_days` 控制保留时间（默认 30 天）。
+- 观测输出按工作空间配置，通过 `/agentic/workspaces/<workspace_id>/observability-config` 或配置中心的“空间观测”管理；开启观测的工作空间始终写入本地 OpenTelemetry 记录，配置完整的 Langfuse 目标后再额外导出。全局系统配置不再提供 `observability` section，旧的 `LANGFUSE_*` 和 `OBSERVABILITY_*` 环境变量也不再作为运行时配置入口读取。
+- 前端会话性能页读取当前工作空间的本地 OpenTelemetry 记录；管理员本地观测页可以跨工作空间聚合和筛选，但只是分析视图，不是全局观测配置。两者都不读取 Langfuse 数据或旧 direct perf logger 记录。
+- 工作空间观测配置是 Speedscope 的唯一控制入口。`enabled=false` 时不写本地 OpenTelemetry 或 Speedscope；开启后同时写本地 OpenTelemetry 记录和会话级 evented trace，配置了 Langfuse 后再额外导出。Speedscope 文件按工作空间和用户隔离，位于 `<PROJECT_ROOT>/workspaces/<workspace_id>/runtime/observability/speedscope/<user>/`，由 `speedscope.retention_days` 控制保留时间（默认 30 天）。
 - Speedscope trace 只包含阶段名称、状态和耗时，不包含问题、Prompt、推理、回答、工具参数、SQL 参数或工具输出。当前会话可通过 `GET /agentic/sessions/{session_id}/performance/speedscope` 下载；普通用户只能下载自己的会话，工作空间管理员可以下载空间内任意用户的会话。
-- Speedscope 文件只保存阶段名称、状态、时间关系以及代码帧标签（模块、函数、文件和行号），不保存源码文本、用户问题、Prompt、reasoning、回答、工具参数、SQL 参数或工具输出。MCP 请求不携带知识问答会话的 workspace 运行上下文，因此不会写入这些会话 trace。
-- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，各工作空间的 `agent_perf` 由其观测模式和 `local.retention_days` 独立控制。
+- Speedscope 文件只保存阶段/调用名称、状态、时间关系和模型/工具等安全标签，不保存源码文本、用户问题、Prompt、reasoning、回答、工具参数、SQL 参数或工具输出。MCP 请求不携带知识问答会话的 workspace 运行上下文，因此不会写入这些会话 trace。
+- 消费智能体规格限制是部署级策略，通过 `.onto-runtime/config/ops_config.json` 或 `OPS_CONFIG_PATH` 管理，不在系统设置页展示或开放给用户编辑；输入/输出 token 硬上限同样由 ops_config 管理；普通 `agent.log` 使用 180 天保留与旧日志 gzip 压缩，各工作空间的本地 OpenTelemetry 记录由 `local.retention_days` 独立控制。
 - 如果直接接入 GLM，推荐地址示例为 `https://open.bigmodel.cn/api/paas/v4`。
 
 ## HTTP 接口

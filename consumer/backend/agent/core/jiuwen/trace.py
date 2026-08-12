@@ -207,6 +207,9 @@ class JiuwenModelTraceBridge:
             return max(1, int(self.iteration_provider()))
         return 1
 
+    def current_call_index(self, iteration: int) -> int:
+        return max(1, int(self._call_counts.get(max(1, int(iteration or 1))) or 1))
+
     def _next_call_index(self, iteration: int) -> int:
         count = int(self._call_counts.get(iteration) or 0) + 1
         self._call_counts[iteration] = count

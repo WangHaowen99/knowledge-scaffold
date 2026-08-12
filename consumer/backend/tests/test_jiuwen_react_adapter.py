@@ -521,6 +521,13 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
     assert llm_finished[0].payload["reasoning_text"] == "模型思考"
     assert llm_finished[0].payload["tool_calls_count"] == 1
     assert llm_finished[0].payload["usage"]["total_tokens"] == 18
+    token_event = next(
+        event["data"]
+        for event in protocol_events
+        if event["data"]["type"] == "token.delta"
+    )
+    assert token_event["span_key"] == llm_started[-1].span_key
+    assert token_event["span_id"] == llm_started[-1].span_id
     iteration_payload = next(
         event["data"]["payload"]
         for event in protocol_events
@@ -1167,6 +1174,10 @@ def test_jiuwen_loop_engine_streams_llm_output_as_token_delta(monkeypatch):
     assert [event["source"] for event in token_events] == [
         {"node": "agent_loop", "component": "llm"},
         {"node": "agent_loop", "component": "llm"},
+    ]
+    assert [event["span_key"] for event in token_events] == [
+        "llm:main:1:1",
+        "llm:main:1:1",
     ]
     assert [event["payload"] for event in token_events] == [
         {
@@ -2182,9 +2193,10 @@ def test_jiuwen_loop_engine_routes_stream_tokens_to_token_callback(monkeypatch):
 
     assert callbacks[0][0:2] == ("reasoning", "先分析")
     assert callbacks[0][2]["reasoning_block_id"].startswith("reasoning_")
+    assert callbacks[0][2]["call_index"] == 1
     assert callbacks[1:] == [
-        ("content", "处理中", None),
-        ("content", "最终答案", None),
+        ("content", "处理中", {"call_index": 1}),
+        ("content", "最终答案", {"call_index": 1}),
     ]
     assert [
         event["data"]["type"]
@@ -2299,6 +2311,7 @@ def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monke
         "reasoning_block_id": token_event["payload"]["reasoning_block_id"],
         "iteration": 1,
     }
+    assert summary_event["span_id"] == token_event["span_id"]
 
 
 def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):

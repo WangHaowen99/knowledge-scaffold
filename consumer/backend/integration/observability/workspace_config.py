@@ -29,7 +29,6 @@ from workspace.workspaces import (
 
 DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG: dict[str, Any] = {
     "enabled": False,
-    "mode": "local",
     "local": {
         "retention_days": 30,
     },
@@ -49,6 +48,9 @@ _LOCAL_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["local"].keys())
 _SPEEDSCOPE_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["speedscope"].keys())
 _LANGFUSE_KEYS = set(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["langfuse"].keys())
 _LEGACY_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS - {"speedscope"}
+_MODE_KEY = "mode"
+_LEGACY_MODE_TOP_LEVEL_KEYS = _LEGACY_TOP_LEVEL_KEYS | {_MODE_KEY}
+_CANONICAL_MODE_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS | {_MODE_KEY}
 
 
 class WorkspaceObservabilityMigrationRequiredError(ValueError):
@@ -114,9 +116,17 @@ def decode_workspace_observability_document(
     local = raw.get("local")
     speedscope = raw.get("speedscope")
     langfuse = raw.get("langfuse")
-    is_legacy_document = set(raw) == _LEGACY_TOP_LEVEL_KEYS
+    raw_keys = set(raw)
+    is_legacy_document = (
+        raw_keys == _LEGACY_TOP_LEVEL_KEYS
+        or raw_keys == _LEGACY_MODE_TOP_LEVEL_KEYS
+    )
     if (
-        (set(raw) != _TOP_LEVEL_KEYS and not is_legacy_document)
+        (
+            raw_keys != _TOP_LEVEL_KEYS
+            and raw_keys != _CANONICAL_MODE_TOP_LEVEL_KEYS
+            and not is_legacy_document
+        )
         or not isinstance(local, dict)
         or set(local) != _LOCAL_KEYS
         or (speedscope is not None and not isinstance(speedscope, dict))
@@ -124,7 +134,7 @@ def decode_workspace_observability_document(
         or not isinstance(langfuse, dict)
         or set(langfuse) != _LANGFUSE_KEYS
         or not isinstance(raw.get("enabled"), bool)
-        or raw.get("mode") not in {"local", "langfuse"}
+        or ("mode" in raw and raw.get("mode") not in {"local", "langfuse"})
     ):
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
     retention_days = local.get("retention_days")
@@ -149,6 +159,7 @@ def decode_workspace_observability_document(
         raise WorkspaceObservabilityMigrationRequiredError(resolved_id)
 
     result = copy.deepcopy(raw)
+    result.pop("mode", None)
     if "speedscope" not in result:
         result["speedscope"] = copy.deepcopy(DEFAULT_WORKSPACE_OBSERVABILITY_CONFIG["speedscope"])
     raw_secret = str(result["langfuse"].get("secret_key") or "")
@@ -214,25 +225,21 @@ def test_workspace_observability_connection(
     if not bool(config.get("enabled")):
         return {"success": True, "message": "工作空间观测已关闭", "tested_at": tested_at}
 
-    mode = str(config.get("mode") or "local").strip().lower()
-    if mode == "local":
-        return {"success": True, "message": "本地观测日志已启用", "tested_at": tested_at}
-    if mode != "langfuse":
-        return {"success": False, "message": f"不支持的观测 mode: {mode}", "tested_at": tested_at}
-
     langfuse_config = config.get("langfuse") if isinstance(config.get("langfuse"), dict) else {}
-    missing = [
-        name
+    langfuse_fields = {
+        name: str(langfuse_config.get(name) or "").strip()
         for name in ("public_key", "secret_key", "base_url")
-        if not str(langfuse_config.get(name) or "").strip()
-    ]
-    if missing:
+    }
+    configured_langfuse = all(langfuse_fields.values())
+    if not any(langfuse_fields.values()):
+        return {"success": True, "message": "本地观测日志已启用", "tested_at": tested_at}
+    if not configured_langfuse:
+        missing = [name for name, value in langfuse_fields.items() if not value]
         return {
             "success": False,
             "message": "Langfuse 配置缺少字段: {}".format(", ".join(missing)),
             "tested_at": tested_at,
         }
-
     base_url = str(langfuse_config.get("base_url") or "").strip().rstrip("/")
     public_key = str(langfuse_config.get("public_key") or "").strip()
     secret_key = str(langfuse_config.get("secret_key") or "").strip()
@@ -336,11 +343,6 @@ def _normalize_observability_patch(data: dict[str, Any], *, strict: bool) -> dic
 
         if key == "enabled":
             normalized[key] = _coerce_bool(value, "enabled")
-        elif key == "mode":
-            mode = str(value or "").strip().lower()
-            if mode not in {"local", "langfuse"}:
-                raise ValueError("mode must be local or langfuse")
-            normalized[key] = mode
         elif key == "local":
             normalized[key] = _normalize_local(value, strict=strict)
         elif key == "speedscope":

@@ -168,6 +168,12 @@ def test_observability_close_flushes_and_closes_after_timeout():
         assert bus.emit(RuntimeEvent(type=RuntimeEventType.RUN_STARTED, run_id="run-1"))
         assert export_started.wait(timeout=1)
         bus.close(timeout=0.01)
+
+        assert exporter.close_count == 0
+        release_export.set()
+        bus._worker.join(timeout=1)
+
+        assert not bus._worker.is_alive()
         assert exporter.close_count == 1
         assert exporter.flush_count >= 1
     finally:

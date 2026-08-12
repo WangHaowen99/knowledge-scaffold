@@ -190,7 +190,10 @@ def _assert_stack_profile_released(run_id, profile):
 def test_run_trace_resources_close_when_generator_closed_after_start(monkeypatch, tmp_path):
     _reset_stack_profiler_state()
     monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
-    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: _EnabledObserver())
+    monkeypatch.setattr(
+        "agent.core.orchestrator.get_observer_for_run",
+        lambda run_id, workspace_id: _EnabledObserver(),
+    )
     run_store = RunStore()
     chat_store = ChatStore(str(tmp_path / "chats"))
     execution_store = ExecutionStore(str(tmp_path / "executions"))
@@ -223,7 +226,10 @@ def test_run_trace_resources_close_when_generator_closed_after_start(monkeypatch
 def test_run_trace_resources_close_on_pre_agent_loop_exception(monkeypatch, tmp_path):
     _reset_stack_profiler_state()
     monkeypatch.setenv("LOG_DIR", str(tmp_path / "logs"))
-    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: _EnabledObserver())
+    monkeypatch.setattr(
+        "agent.core.orchestrator.get_observer_for_run",
+        lambda run_id, workspace_id: _EnabledObserver(),
+    )
     config = AgentConfig.from_env()
     config.direct_execution.enabled = True
 
@@ -1028,7 +1034,10 @@ def test_orchestrator_emits_run_finished_before_final_event_is_yielded(monkeypat
         yield ("values", state)
 
     monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
-    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: RecordingObserver())
+    monkeypatch.setattr(
+        "agent.core.orchestrator.get_observer_for_run",
+        lambda run_id, workspace_id: RecordingObserver(),
+    )
 
     orchestrator = AgenticOrchestrator(
         run_store=run_store,
@@ -1089,7 +1098,10 @@ def test_orchestrator_does_not_mark_trace_success_before_final_event_persists(mo
         yield ("values", state)
 
     monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
-    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: RecordingObserver())
+    monkeypatch.setattr(
+        "agent.core.orchestrator.get_observer_for_run",
+        lambda run_id, workspace_id: RecordingObserver(),
+    )
 
     orchestrator = AgenticOrchestrator(
         run_store=run_store,
@@ -1175,7 +1187,10 @@ def test_orchestrator_run_trace_includes_agent_mode(monkeypatch, tmp_path):
             return True
 
     monkeypatch.setattr(AgenticOrchestrator, "_stream_agent_loop", _stream_agent_loop)
-    monkeypatch.setattr("agent.core.orchestrator.get_observer", lambda: RecordingObserver())
+    monkeypatch.setattr(
+        "agent.core.orchestrator.get_observer_for_run",
+        lambda run_id, workspace_id: RecordingObserver(),
+    )
 
     orchestrator = AgenticOrchestrator(
         run_store=run_store,

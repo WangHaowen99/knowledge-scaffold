@@ -33,7 +33,8 @@ def _record(
     iteration: int | None = None,
 ) -> dict:
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "record_type": "opentelemetry",
         "kind": kind,
         "event": event,
         "ts_ms": ts_ms,
@@ -49,6 +50,39 @@ def _record(
     if iteration is not None:
         record["iteration"] = iteration
     return record
+
+
+def _metric_record(
+    ts_ms: int,
+    name: str,
+    value,
+    *,
+    status: str = "success",
+    tool_name: str | None = None,
+    token_type: str | None = None,
+) -> dict:
+    labels = {
+        "agent.workspace_id": "ws-a",
+        "agent.status": status,
+        "agent.model": "glm-5",
+        "agent.model_provider": "glm",
+        "agent.agent_mode": "thinking",
+    }
+    if tool_name:
+        labels["agent.tool.name"] = tool_name
+    if token_type:
+        labels["agent.token.type"] = token_type
+    return {
+        "schema_version": 2,
+        "record_type": "opentelemetry",
+        "kind": "metric",
+        "event": "metric.recorded",
+        "name": name,
+        "ts_ms": ts_ms,
+        "workspace_id": "ws-a",
+        "value": value,
+        "labels": labels,
+    }
 
 
 def _write_records(path, records) -> None:
@@ -158,10 +192,10 @@ def _sample_perf_records() -> list[dict]:
 
 def test_perf_reader_scans_requested_date_window_and_reports_bad_lines(tmp_path):
     _write_records(
-        tmp_path / "agent_perf-2026-05-21.log",
+        tmp_path / "otel_trace-2026-05-21.log",
         [_record("run-old", ts_ms=_ts_ms(2026, 5, 21, 9))],
     )
-    (tmp_path / "agent_perf-2026-05-22.log").write_text(
+    (tmp_path / "otel_trace-2026-05-22.log").write_text(
         json.dumps(_record("run-new", ts_ms=_ts_ms(2026, 5, 22, 9))) + "\nnot-json\n",
         encoding="utf-8",
     )
@@ -178,8 +212,8 @@ def test_perf_reader_scans_requested_date_window_and_reports_bad_lines(tmp_path)
 
 def test_perf_reader_skips_unknown_schema_versions(tmp_path):
     _write_records(
-        tmp_path / "agent_perf-2026-05-22.log",
-        [{**_record("run-v2", ts_ms=_ts_ms(2026, 5, 22, 9)), "schema_version": 2}],
+        tmp_path / "otel_trace-2026-05-22.log",
+        [{**_record("run-v3", ts_ms=_ts_ms(2026, 5, 22, 9)), "schema_version": 3}],
     )
 
     result = LocalPerfLogReader(log_dir=tmp_path).read_records(
@@ -197,7 +231,7 @@ def test_perf_reader_has_record_stops_after_first_match(tmp_path):
         _record("run-b", ts_ms=_ts_ms(2026, 5, 22, 10), session_id="sess-b"),
         _record("run-c", ts_ms=_ts_ms(2026, 5, 22, 11), session_id="sess-c"),
     ]
-    _write_records(tmp_path / "agent_perf-2026-05-22.log", records)
+    _write_records(tmp_path / "otel_trace-2026-05-22.log", records)
 
     result = LocalPerfLogReader(log_dir=tmp_path).has_record(
         start_ms=_ts_ms(2026, 5, 22),
@@ -212,7 +246,7 @@ def test_perf_reader_has_record_stops_after_first_match(tmp_path):
 
 def test_check_session_availability_reads_only_run_summaries(tmp_path, monkeypatch):
     _write_records(
-        tmp_path / "agent_perf-2026-05-22.log",
+        tmp_path / "otel_trace-2026-05-22.log",
         [
             _record("run-a", ts_ms=_ts_ms(2026, 5, 22, 9), kind="runtime_phase"),
             _record("run-a", ts_ms=_ts_ms(2026, 5, 22, 10)),
@@ -315,6 +349,142 @@ def test_build_global_overview_filters_workspace_and_ranks_tools():
     assert overview["tools"][0]["tool_name"] == "ontology_context"
     assert overview["runtime_phases"][0]["phase_name"] == "chat_session_compact"
     assert [run["run_id"] for run in overview["slow_runs"]] == ["run-2", "run-1"]
+
+
+def test_perf_analysis_uses_otel_metrics_when_run_summaries_are_missing():
+    first_ts = _ts_ms(2026, 5, 22, 9)
+    second_ts = _ts_ms(2026, 5, 22, 10)
+    records = [
+        _metric_record(first_ts, "agent.run.count", 1),
+        _metric_record(
+            first_ts,
+            "agent.run.duration",
+            {
+                "count": 1,
+                "sum": 1000,
+                "min": 1000,
+                "max": 1000,
+                "bucket_counts": [0, 1],
+                "explicit_bounds": [500],
+            },
+        ),
+        _metric_record(
+            first_ts,
+            "agent.llm.failure.count",
+            1,
+            status="error",
+        ),
+        _metric_record(
+            first_ts,
+            "agent.llm.token.count",
+            14,
+            token_type="total_tokens",
+        ),
+        _metric_record(
+            first_ts,
+            "agent.tool.call.count",
+            1,
+            tool_name="search",
+        ),
+        _metric_record(
+            first_ts,
+            "agent.tool.duration",
+            {"count": 1, "sum": 120, "min": 120, "max": 120},
+            tool_name="search",
+        ),
+        _metric_record(
+            first_ts,
+            "agent.tool.failure.count",
+            1,
+            status="error",
+            tool_name="search",
+        ),
+        _metric_record(second_ts, "agent.run.count", 1, status="error"),
+        _metric_record(
+            second_ts,
+            "agent.run.duration",
+            {"count": 1, "sum": 3000, "min": 3000, "max": 3000},
+            status="error",
+        ),
+    ]
+
+    overview = build_global_overview(
+        records,
+        workspace_id="ws-a",
+        model_provider="glm",
+        agent_mode="thinking",
+    )
+
+    assert overview["summary"]["run_count"] == 2
+    assert overview["summary"]["success_count"] == 1
+    assert overview["summary"]["error_count"] == 1
+    assert overview["summary"]["total_tokens"] == 14
+    assert overview["summary"]["llm_failures"] == 1
+    assert overview["summary"]["tool_failures"] == 1
+    assert overview["summary"]["total_duration_ms"]["p90"] > 1000
+    assert overview["tools"] == [
+        {
+            "tool_name": "search",
+            "count": 1,
+            "total_ms": 120,
+            "max_ms": 120,
+            "avg_ms": 120,
+        }
+    ]
+
+
+def test_run_timeline_includes_safe_span_events_without_duplicate_end_events():
+    ts_ms = _ts_ms(2026, 5, 22, 12)
+    span_event = {
+        "schema_version": 2,
+        "record_type": "opentelemetry",
+        "kind": "span_event",
+        "event": "tool.progress",
+        "ts_ms": ts_ms + 10,
+        "run_id": "run-events",
+        "session_id": "sess-a",
+        "trace_id": "1" * 32,
+        "span_id": "2" * 16,
+        "labels": {"tool_name": "search"},
+        "metrics": {},
+    }
+    duplicate_finished = {
+        **span_event,
+        "event": "tool.finished",
+        "ts_ms": ts_ms + 20,
+    }
+    records = [
+        _record(
+            "run-events",
+            ts_ms=ts_ms,
+            metrics={"total_duration_ms": 20},
+        ),
+        {
+            **span_event,
+            "kind": "tool_call",
+            "event": "tool.finished",
+            "ts_ms": ts_ms + 20,
+        },
+        {
+            "schema_version": 2,
+            "record_type": "opentelemetry",
+            "kind": "span",
+            "event": "span.ended",
+            "ts_ms": ts_ms + 20,
+            "run_id": "run-events",
+            "session_id": "sess-a",
+            "trace_id": "1" * 32,
+            "span_id": "2" * 16,
+            "labels": {},
+            "metrics": {"duration_ms": 20},
+            "events": [span_event, duplicate_finished],
+        },
+    ]
+
+    detail = build_run_detail(records, run_id="run-events")
+
+    assert sum(row["event"] == "tool.progress" for row in detail["timeline"]) == 1
+    assert sum(row["event"] == "tool.finished" for row in detail["timeline"]) == 1
 
 
 def test_perf_analysis_falls_back_to_stream_llm_duration_when_wall_missing():
@@ -437,3 +607,32 @@ def test_perf_analysis_aggregates_llm_cache_metrics_by_tokens():
     assert overview["summary"]["llm_cache_hit_tokens"] == 15
     assert overview["summary"]["llm_cache_total_input_tokens"] == 30
     assert overview["summary"]["llm_cache_hit_rate"] == 0.5
+
+
+def test_local_otel_store_rolls_partitions_and_rebuilds_index(tmp_path):
+    from integration.observability.local_storage import IndexedLocalOTelStore
+
+    store = IndexedLocalOTelStore(tmp_path, retention_days=30, max_bytes=1024)
+    first = _record("run-index-a", ts_ms=_ts_ms(2026, 5, 22, 12))
+    second = _record("run-index-b", ts_ms=_ts_ms(2026, 5, 22, 12, 1))
+    first["padding"] = "a" * 600
+    second["padding"] = "b" * 600
+    store.append(first)
+    store.append(second)
+
+    partitions = sorted(tmp_path.glob("otel_trace-2026-05-22.log*"))
+    data_partitions = [path for path in partitions if not path.name.endswith(".idx")]
+    assert [path.name for path in data_partitions] == [
+        "otel_trace-2026-05-22.log",
+        "otel_trace-2026-05-22.log.1",
+    ]
+
+    for path in tmp_path.glob("*.idx"):
+        path.unlink()
+    result = LocalPerfLogReader(log_dir=tmp_path).read_records(
+        start_ms=_ts_ms(2026, 5, 22),
+        end_ms=_ts_ms(2026, 5, 23),
+        run_id="run-index-b",
+    )
+    assert [record["run_id"] for record in result.records] == ["run-index-b"]
+    assert len(list(tmp_path.glob("*.idx"))) == 2

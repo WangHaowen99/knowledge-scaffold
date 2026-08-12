@@ -1422,62 +1422,60 @@ def parse_sse_stream(response_text: str) -> dict:
     }
 
 
-def _parse_agent_perf_log(run_id: str) -> dict:
-    log_candidates = [
+def _parse_otel_trace_log(run_id: str) -> dict:
+    import glob
+
+    runtime_root = os.getenv("PROJECT_ROOT", "").strip()
+    workspace_id = os.getenv("WORKSPACE_ID", "").strip()
+    log_candidates = []
+    if runtime_root and workspace_id:
+        log_candidates.append(os.path.join(runtime_root, "workspaces", workspace_id, "runtime", "observability"))
+    elif runtime_root:
+        log_candidates.extend(glob.glob(os.path.join(runtime_root, "workspaces", "*", "runtime", "observability")))
+    log_candidates.extend([
         os.path.join(_TEST_DIR, "..", "backend", "logs"),
         os.path.join(_TEST_DIR, "..", "logs"),
-    ]
-    today = datetime.now().strftime("%Y-%m-%d")
+    ])
     for log_dir in log_candidates:
-        if not os.path.isdir(log_dir):
-            continue
-        perf_file = os.path.join(log_dir, f"agent_perf-{today}.log")
-        if not os.path.exists(perf_file):
-            import glob
-            candidates = sorted(glob.glob(os.path.join(log_dir, "agent_perf-*.log")), reverse=True)
-            perf_file = candidates[0] if candidates else ""
-        if not perf_file or not os.path.exists(perf_file):
-            continue
-        llm_call_count = 0
-        llm_total_time_ms = 0
-        worker_time_ms = 0
-        with open(perf_file, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if record.get("run_id") != run_id:
-                    continue
-                event = record.get("event", "")
-                kind = record.get("kind", "")
-                metrics = record.get("metrics") if isinstance(record.get("metrics"), dict) else {}
-                if event == "llm.collect.completed":
-                    llm_call_count += 1
-                    llm_total_time_ms += record.get("duration_ms", 0)
-                elif event == "main_agent.worker.completed":
-                    worker_time_ms += record.get("duration_ms", 0)
-                elif kind == "llm_call" and event == "llm.finished":
-                    llm_call_count += 1
-                    llm_total_time_ms += (
-                        metrics.get("wall_duration_ms")
-                        or metrics.get("duration_ms")
-                        or metrics.get("stream_duration_ms")
-                        or 0
-                    )
-                elif kind == "run_summary":
-                    worker_time_ms = max(worker_time_ms, metrics.get("total_duration_ms") or 0)
-                elif kind == "run" and event in {"run.finished", "run.failed", "run.cancelled"}:
-                    worker_time_ms = max(worker_time_ms, metrics.get("duration_ms") or 0)
-        if llm_call_count > 0 or worker_time_ms > 0:
-            return {
-                "llm_call_count": llm_call_count,
-                "llm_total_time": llm_total_time_ms / 1000.0,
-                "worker_time": worker_time_ms / 1000.0,
-            }
+        candidates = sorted(glob.glob(os.path.join(log_dir, "otel_trace-*.log")), reverse=True)
+        for perf_file in candidates:
+            if not os.path.exists(perf_file):
+                continue
+            llm_call_count = 0
+            llm_total_time_ms = 0
+            worker_time_ms = 0
+            with open(perf_file, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if record.get("run_id") != run_id:
+                        continue
+                    event = record.get("event", "")
+                    kind = record.get("kind", "")
+                    metrics = record.get("metrics") if isinstance(record.get("metrics"), dict) else {}
+                    if kind == "llm_call" and event == "llm.finished":
+                        llm_call_count += 1
+                        llm_total_time_ms += (
+                            metrics.get("wall_duration_ms")
+                            or metrics.get("duration_ms")
+                            or metrics.get("stream_duration_ms")
+                            or 0
+                        )
+                    elif kind == "run_summary":
+                        worker_time_ms = max(worker_time_ms, metrics.get("total_duration_ms") or 0)
+                    elif kind == "run" and event in {"run.finished", "run.failed", "run.cancelled"}:
+                        worker_time_ms = max(worker_time_ms, metrics.get("duration_ms") or 0)
+            if llm_call_count > 0 or worker_time_ms > 0:
+                return {
+                    "llm_call_count": llm_call_count,
+                    "llm_total_time": llm_total_time_ms / 1000.0,
+                    "worker_time": worker_time_ms / 1000.0,
+                }
     return {}
 
 
@@ -1899,7 +1897,7 @@ def call_skill_execution(message: str, session_id: str) -> dict:
     run_id = result.get("run_id")
     sse_llm_call_count = result.get("llm_call_count", 0)
     if run_id:
-        perf_data = _parse_agent_perf_log(run_id)
+        perf_data = _parse_otel_trace_log(run_id)
         if perf_data:
             dag = result.get("dag_perf", {})
             perf_llm_count = perf_data.get("llm_call_count", 0)

@@ -12,6 +12,11 @@ from persistence.run_store import RunStatus
 from utils.identifiers import validate_session_id
 from utils.logging import get_logger
 from workspace.workspaces import workspace_scope
+from integration.observability.trace_context import (
+    bind_otel_context,
+    bind_otel_traceparent,
+    capture_otel_context,
+)
 from api.protocols.a2a.mapper import map_run_status_to_a2a
 from api.protocols.a2a.models import (
     A2ATaskCreateRequest,
@@ -35,6 +40,7 @@ class A2ATaskService:
         user_id: Optional[str],
         workspace_id: Optional[str],
         flask_app: Optional[Any] = None,
+        traceparent: str = "",
     ):
         self.orchestrator = orchestrator
         self.chat_store = chat_store
@@ -42,6 +48,7 @@ class A2ATaskService:
         self.user_id = user_id
         self.workspace_id = workspace_id
         self.flask_app = flask_app
+        self.traceparent = str(traceparent or "")
 
     def create_task(self, req: A2ATaskCreateRequest) -> A2ATaskSnapshot:
         task_id = self._allocate_task_id(req.task_id)
@@ -111,17 +118,22 @@ class A2ATaskService:
         context: Dict[str, Any],
     ) -> None:
         thread = threading.Thread(
-            target=self._run_task_in_background,
+            target=self._run_task_with_context,
             kwargs={
                 "task_id": task_id,
                 "session_id": session_id,
                 "message": message,
                 "context": dict(context or {}),
+                "otel_context": capture_otel_context(),
             },
             name="a2a-task-{}".format(task_id),
             daemon=True,
         )
         thread.start()
+
+    def _run_task_with_context(self, *, otel_context: Any, **kwargs: Any) -> None:
+        with bind_otel_context(otel_context):
+            self._run_task_in_background(**kwargs)
 
     def _run_task_in_background(
         self,
@@ -135,7 +147,10 @@ class A2ATaskService:
             context = set_user_interaction_capability(context, supported=False)
             app_context = self.flask_app.app_context() if self.flask_app is not None else nullcontext()
             with app_context:
-                with workspace_scope(self.workspace_id):
+                with workspace_scope(self.workspace_id), bind_otel_traceparent(
+                    self.traceparent,
+                    strict=False,
+                ):
                     for _event in self.orchestrator.run(
                         user_request=message,
                         user_context=context,
