@@ -311,10 +311,11 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
   if (pending.kind !== 'interaction') throw new Error('未创建流程图待办');
 
   let saveInput: any;
+  let currentRevision = 'pkg-base';
   const packages = {
     async current() {
       return {
-        revision: { oid: 'pkg-base' }, packageVersion: '0.1.0', spec: {}, coverage: {}, files: [],
+        revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {}, coverage: {}, files: [],
       };
     },
     async readPackageFiles() {
@@ -332,6 +333,7 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
     },
     async saveFiles(_projectId: string, input: any) {
       saveInput = input;
+      currentRevision = 'pkg-flowchart';
       return {
         revision: { oid: 'pkg-flowchart' }, packageVersion: '0.1.0', spec: {}, coverage: {},
         files: Object.keys(input.files),
@@ -408,6 +410,155 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
   const retry = await app.inject(answer);
   assert.equal(retry.statusCode, 200, retry.body);
   assert.equal(retry.json().replayed, true);
+  assert.equal(getDb().prepare(`SELECT status FROM flowchart_review_finalizations
+    WHERE interaction_id = ?`).get(pending.interaction.id)?.status, 'completed');
+});
+
+test('流程图基线过期时拒绝提交且不留待收敛记录', async (t) => {
+  const project = createProject({ owner: 'alice', name: '流程图基线冲突' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认业务流程', baseRevision: 'pkg-base',
+  });
+  assert.equal(run.kind, 'run');
+  if (run.kind !== 'run') throw new Error('未创建流程图任务');
+  const pending = state.apply({
+    kind: 'open_interaction',
+    projectId: project.id,
+    runId: run.run.id,
+    type: 'flowchart_review',
+    baseRevision: 'pkg-base',
+    payload: {
+      purpose: 'process_review',
+      taskId: 'task-process-review-conflict',
+      diagrams: [{
+        id: 'approval', title: '授信审批',
+        processMeta: { actors: ['客户经理'], inputs: ['申请材料'], exceptions: [], handoffs: [] },
+        nodes: [
+          { id: 'start', label: '收到申请', kind: 'start' },
+          { id: 'review', label: '审核材料', kind: 'action' },
+          { id: 'end', label: '形成结论', kind: 'end' },
+        ],
+        edges: [
+          { id: 'start-review', from: 'start', to: 'review', kind: 'sequence' },
+          { id: 'review-end', from: 'review', to: 'end', kind: 'sequence' },
+        ],
+      }],
+    },
+  });
+  assert.equal(pending.kind, 'interaction');
+  if (pending.kind !== 'interaction') throw new Error('未创建流程图待办');
+
+  let saveCalls = 0;
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: 'pkg-current' }, packageVersion: '0.1.0', spec: {}, coverage: {}, files: [],
+        };
+      },
+      async readPackageFiles() {
+        throw new Error('基线过期时不应读取知识包文件');
+      },
+      async saveFiles() {
+        saveCalls += 1;
+        throw new Error('基线过期时不应保存知识包');
+      },
+    },
+    orchestrator: {
+      latestMaterialAnalysis: () => null,
+      latestConfirmedModelingBrief: () => null,
+      completeProcessReview: () => { throw new Error('基线过期时不应完成流程确认'); },
+    },
+  });
+  const url = `/api/projects/${project.id}/interactions/${pending.interaction.id}/respond`;
+  for (const requestId of ['flowchart-conflict-1', 'flowchart-conflict-2']) {
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      payload: { requestId, response: { action: 'accept', draftRevision: 1 } },
+    });
+    assert.equal(response.statusCode, 409, response.body);
+    assert.equal(response.json().code, 'REVISION_CONFLICT');
+    assert.equal(getDb().prepare(`SELECT COUNT(*) AS count FROM flowchart_review_finalizations
+      WHERE interaction_id = ?`).get(pending.interaction.id)?.count, 0);
+  }
+  assert.equal(saveCalls, 0);
+  assert.equal(state.interaction(project.id, pending.interaction.id)?.status, 'pending');
+});
+
+test('流程图知识包已保存时从中断提交继续收敛', async (t) => {
+  const project = createProject({ owner: 'alice', name: '流程图提交恢复' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认业务流程', baseRevision: 'pkg-base',
+  });
+  assert.equal(run.kind, 'run');
+  if (run.kind !== 'run') throw new Error('未创建流程图任务');
+  const pending = state.apply({
+    kind: 'open_interaction',
+    projectId: project.id,
+    runId: run.run.id,
+    type: 'flowchart_review',
+    baseRevision: 'pkg-base',
+    payload: {
+      purpose: 'process_review',
+      taskId: 'task-process-review-recovery',
+      diagrams: [{
+        id: 'approval', title: '授信审批',
+        processMeta: { actors: ['客户经理'], inputs: ['申请材料'], exceptions: [], handoffs: [] },
+        nodes: [
+          { id: 'start', label: '收到申请', kind: 'start' },
+          { id: 'end', label: '形成结论', kind: 'end' },
+        ],
+        edges: [{ id: 'start-end', from: 'start', to: 'end', kind: 'sequence' }],
+      }],
+    },
+  });
+  assert.equal(pending.kind, 'interaction');
+  if (pending.kind !== 'interaction') throw new Error('未创建流程图待办');
+
+  const requestId = 'flowchart-recovery';
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() { throw new Error('已保存提交恢复时不应重新读取基线'); },
+      async readPackageFiles() { throw new Error('已保存提交恢复时不应读取知识包文件'); },
+      async saveFiles() { throw new Error('已保存提交恢复时不应重复保存'); },
+    },
+    orchestrator: {
+      latestMaterialAnalysis: () => null,
+      latestConfirmedModelingBrief: () => null,
+      completeProcessReview: () => ({
+        aiConstruction: { revision: 8 },
+        message: { id: 'message-flowchart-recovered' },
+      }),
+    },
+  });
+  const baseUrl = `/api/projects/${project.id}/interactions/${pending.interaction.id}`;
+  const draft = await app.inject({ method: 'GET', url: `${baseUrl}/flowchart-draft` });
+  assert.equal(draft.statusCode, 200, draft.body);
+  assert.equal(draft.json().draftRevision, 1);
+  getDb().prepare(`INSERT INTO flowchart_review_finalizations
+    (project_id, interaction_id, draft_revision, request_id, response_json,
+      actor_username, package_revision_oid, status, created_at)
+    VALUES (?, ?, 1, ?, ?, 'alice', 'pkg-flowchart', 'pending', ?)`)
+    .run(
+      project.id,
+      pending.interaction.id,
+      requestId,
+      JSON.stringify({ action: 'accept', draftRevision: 1 }),
+      new Date().toISOString(),
+    );
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `${baseUrl}/respond`,
+    payload: { requestId, response: { action: 'accept', draftRevision: 1 } },
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().packageRevision, 'pkg-flowchart');
+  assert.equal(state.interaction(project.id, pending.interaction.id)?.status, 'answered');
   assert.equal(getDb().prepare(`SELECT status FROM flowchart_review_finalizations
     WHERE interaction_id = ?`).get(pending.interaction.id)?.status, 'completed');
 });

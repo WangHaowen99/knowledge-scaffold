@@ -2628,6 +2628,32 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             });
           }
 
+          const existingAttempt = processReviewFinalizer.get(
+            project.id,
+            interactionId,
+            draftRevision,
+          );
+          // 新提交必须在记录意图前先验证基线；已经绑定知识包修订的
+          // 历史提交则直接续跑，因为首次保存成功后当前修订本来就会前进。
+          const currentPackage = existingAttempt?.packageRevisionOid
+            ? null
+            : await packages.current(project.id);
+          if (!existingAttempt?.packageRevisionOid) {
+            if (!currentPackage) {
+              return reply.code(409).send({
+                error: '当前项目没有知识包草稿',
+                code: 'PACKAGE_NOT_FOUND',
+              });
+            }
+            if (interaction.baseRevision
+              && interaction.baseRevision !== currentPackage.revision.oid) {
+              return reply.code(409).send({
+                error: '知识包已更新，请重新生成并确认流程图',
+                code: 'REVISION_CONFLICT',
+              });
+            }
+          }
+
           const attempt = processReviewFinalizer.begin({
             projectId: project.id,
             interactionId,
@@ -2648,13 +2674,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
 
           let packageRevisionOid = attempt.packageRevisionOid;
           if (!packageRevisionOid) {
-            const currentPackage = await packages.current(project.id);
-            if (!currentPackage) {
-              throw new AuthoringStateError('INVALID_TRANSITION', '当前项目没有知识包草稿');
-            }
-            if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
-              throw new AuthoringStateError('INVALID_TRANSITION', '知识包已更新，请重新生成并确认流程图');
-            }
+            if (!currentPackage) throw new Error('流程图提交前未加载知识包基线');
             const projected = renderDiagramFiles(currentDraft.document);
             const files = Object.fromEntries(Object.entries(projected)
               .map(([path, content]) => [`package/${path}`, content]));
