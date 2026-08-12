@@ -418,6 +418,74 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
   assert.equal(getAuthoringState().snapshot(project.id).activeRuns.length, 0);
 });
 
+test('生成门禁续跑从检查点恢复成功批次且不重复调用模型', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: '生成批次断点续跑', domain: '银行营销', background: '' });
+  const process = { id: 'handle_customer', title: '处理客户' };
+  const flowchart = confirmedFlowchart([process]);
+  upsertNode({
+    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
+    output: {
+      domainOverview: '银行营销',
+      candidateObjects: [{ name: '客户', rationale: '客户主数据', sourceTables: ['customer'] }],
+      openQuestions: [], materialAssessments: [], candidateArtifacts: [],
+    },
+  });
+  const object = {
+    candidateId: 'candidate_1', key: 'customer', title: '客户', description: '客户业务对象',
+    sourceTable: 'customer', primaryKey: ['id'],
+    fields: [{ key: 'id', cnName: '客户号', sourceColumn: 'id' }],
+  };
+  const invalidOperation = {
+    key: 'handle_customer', title: '处理客户', description: '处理客户',
+    inputs: [], outputs: [], flow: ['读取不存在的对象'], relatedObjects: ['missing_object'],
+    competencyQuestionId: operationTargetId(process.id),
+  };
+  const faux = createFauxCore({ provider: 'generation-checkpoint-resume', models: [{ id: 'generation-checkpoint-resume' }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
+    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
+  ]);
+  const context = {
+    tables: [{
+      name: 'customer', rowCount: 1,
+      fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C1'], distinctRatio: 1 }],
+    }],
+    documents: [],
+  };
+  const llm = { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' };
+
+  await assert.rejects(generatePackage(project, context, llm, flowchart), /等待专家确认是否跳过/);
+  const snapshot = getAuthoringState().snapshot(project.id);
+  const interaction = snapshot.pendingInteractions[0];
+  const run = snapshot.activeRuns[0];
+  assert.ok(interaction);
+  assert.ok(run);
+  const adapter = getPiAuthoringAdapter();
+  adapter.respond(project.id, interaction.id, 'checkpoint-skip', { value: 'skip' });
+  adapter.fail(project.id, run.id, '模拟服务重启后的旧运行失败');
+  const resumedRun = adapter.start(project.id, '生成知识包', run.baseRevision, {
+    purpose: 'knowledge_generation_resume',
+    priorRunId: run.id,
+  }).run;
+
+  const result = await generatePackage(project, context, llm, flowchart, {
+    resumeRunId: resumedRun.id,
+    skipFailedPhases: ['operation_batch_1'],
+  });
+
+  assert.equal(result.spec.objects.length, 1);
+  assert.equal(result.spec.operations.length, 0);
+  assert.equal(result.generationNotices[0]?.phase, 'operation_batch_1');
+  const checkpointEvents = listNodes(project.id)
+    .filter((node) => node.type === 'generate')
+    .flatMap((node) => listTraceEvents(node.id));
+  assert.ok(checkpointEvents.some((event) => event.title.includes('对象已从检查点恢复')));
+  assert.ok(checkpointEvents.some((event) => event.title.includes('规则和指标已从检查点恢复')));
+});
+
 test('过期生成门禁在创建新 workflow 节点前失败', async () => {
   const project = await createGenerationProject({ owner: 'tester', name: '过期生成门禁', domain: '银行营销', background: '' });
   const flowchart = confirmedFlowchart([{ id: 'handle_customer', title: '处理客户' }]);

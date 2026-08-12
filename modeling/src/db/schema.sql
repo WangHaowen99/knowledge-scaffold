@@ -792,6 +792,26 @@ CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
   PRIMARY KEY (project_id, cache_key)
 );
 
+-- 知识生成的批次级检查点。生成门禁暂停后，恢复任务从失败批次继续，
+-- 已完成批次的结构化产物和专家跳过决定不再重复调用模型。
+CREATE TABLE IF NOT EXISTS generation_batch_checkpoints (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL REFERENCES authoring_runs(id) ON DELETE CASCADE,
+  plan_hash     TEXT NOT NULL,
+  phase         TEXT NOT NULL,
+  batch_kind    TEXT NOT NULL CHECK (batch_kind IN ('object', 'knowledge', 'operation')),
+  batch_index   INTEGER NOT NULL CHECK (batch_index > 0),
+  status        TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'skipped')),
+  output_json   TEXT NOT NULL DEFAULT '{}',
+  issues_json   TEXT NOT NULL DEFAULT '[]',
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (run_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_generation_batch_checkpoints_project
+  ON generation_batch_checkpoints(project_id, run_id, batch_index);
+
 -- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
 -- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，
 -- 因为上个进程的登记不可能再续期（见 authoring/restart-recovery.ts）。
