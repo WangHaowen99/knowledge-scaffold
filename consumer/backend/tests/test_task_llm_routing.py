@@ -103,9 +103,9 @@ def test_generate_title_uses_task_llm(tmp_path, monkeypatch):
     app.config["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "admin123")
+    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
-    user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
     app.config["AUTH_MANAGER"] = auth_manager
 
     user_store_manager = UserStoreManager(

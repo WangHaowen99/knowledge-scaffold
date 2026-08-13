@@ -61,6 +61,7 @@ class AuthServerConfig:
     access_ttl_seconds: int = DEFAULT_ACCESS_TTL_SECONDS
     refresh_ttl_seconds: int = DEFAULT_REFRESH_TTL_SECONDS
     admin_token: Optional[str] = None
+    bootstrap_admin_password: Optional[str] = None
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     user_max_count: int = DEFAULT_USER_MAX_COUNT
@@ -87,6 +88,9 @@ class AuthServerConfig:
         admin_token = str(self.admin_token or "").strip() or None
         object.__setattr__(self, "admin_token", admin_token)
 
+        bootstrap_admin_password = str(self.bootstrap_admin_password or "") or None
+        object.__setattr__(self, "bootstrap_admin_password", bootstrap_admin_password)
+
         user_max_count = int(self.user_max_count)
         object.__setattr__(
             self,
@@ -108,6 +112,7 @@ class AuthServerConfig:
             access_ttl_seconds=_int_env(env, "AUTH_ACCESS_TTL_SECONDS", DEFAULT_ACCESS_TTL_SECONDS),
             refresh_ttl_seconds=_int_env(env, "AUTH_REFRESH_TTL_SECONDS", DEFAULT_REFRESH_TTL_SECONDS),
             admin_token=env.get("AUTH_SERVER_ADMIN_TOKEN"),
+            bootstrap_admin_password=env.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD"),
             host=str(env.get("AUTH_SERVER_HOST") or DEFAULT_HOST).strip(),
             port=_int_env(env, "AUTH_SERVER_PORT", DEFAULT_PORT),
             user_max_count=_int_env(env, "AUTH_USER_MAX_COUNT", DEFAULT_USER_MAX_COUNT),

@@ -1,7 +1,7 @@
 """认证对外契约测试。
 
 锁定 docs/decisions/2026-07-09-decoupled-auth-architecture.md D4 冻结的对外契约：
-前端（useAuth/UserManagement）、SDK（py/ts）、agent_eval 登录适配器都依赖这些精确形状。
+前端（useAuth/UserManagement）、SDK（py/ts）和外部登录适配器都依赖这些精确形状。
 任何 AuthBackend 实现（local/remote）都必须让本文件全绿；字段名、错误码、中文错误
 消息一旦改变即破坏三类外部消费方。
 """
@@ -56,13 +56,13 @@ def client(app):
     return app.test_client()
 
 
-def _login(client, username="admin", password="admin123"):
+def _login(client, username="admin", password="TestBootstrap#2026"):
     return client.post("/auth/login", json={"username": username, "password": password})
 
 
 def _admin_headers(client, auth_manager):
     # bootstrap 的 admin 处于强制改密状态，先改密再登录，得到无限制 token
-    auth_manager.change_password("admin", "admin123", "ContractTest#2026")
+    auth_manager.change_password("admin", "TestBootstrap#2026", "ContractTest#2026")
     response = _login(client, password="ContractTest#2026")
     token = response.get_json()["token"]
     return {"Authorization": f"Bearer {token}"}
@@ -74,7 +74,7 @@ def test_login_response_shape(client):
     response = _login(client)
     assert response.status_code == 200
     data = response.get_json()
-    # 字段名必须是 token（不是 access_token）：agent_eval 适配器默认 token_path 依赖它
+    # 字段名必须是 token（不是 access_token）：外部适配器的 token_path 依赖它
     assert set(data.keys()) == {"token", "user"}
     assert isinstance(data["token"], str) and data["token"]
     assert data["user"] == {
@@ -156,7 +156,7 @@ def test_change_password_contract_and_token_invalidation(client, auth_manager):
     response = client.put(
         "/auth/change-password",
         headers=headers,
-        json={"old_password": "admin123", "new_password": "ContractTest#2026"},
+        json={"old_password": "TestBootstrap#2026", "new_password": "ContractTest#2026"},
     )
     assert response.status_code == 200
     assert response.get_json() == {"success": True, "requires_relogin": True}
@@ -170,7 +170,7 @@ def test_change_password_requires_both_fields(client):
     response = client.put(
         "/auth/change-password",
         headers={"Authorization": f"Bearer {token}"},
-        json={"old_password": "admin123"},
+        json={"old_password": "TestBootstrap#2026"},
     )
     assert response.status_code == 400
     assert response.get_json() == {"error": "原密码和新密码不能为空"}

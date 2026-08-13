@@ -33,9 +33,9 @@ def _build_test_client(tmp_path, *, role="admin"):
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     if role == "admin":
-        user = auth_manager.authenticate("admin", "admin123")
+        user = auth_manager.authenticate("admin", "TestBootstrap#2026")
         assert user is not None
-        user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
     else:
         user = auth_manager.create_user("perf-user", "PerfStrong123!", role=role)
         user = auth_manager.change_password("perf-user", "PerfStrong123!", "ChangedStrong123!")

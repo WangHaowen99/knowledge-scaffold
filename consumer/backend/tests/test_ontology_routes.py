@@ -21,7 +21,7 @@ EXAMPLE_ONTOLOGY_ID = "example-domain-knowledge-agent"
 def _build_test_client(
     tmp_path,
     username: str = "admin",
-    password: str = "admin123",
+    password: str = "TestBootstrap#2026",
     role: str = "admin",
 ):
     app = Flask(__name__)
@@ -272,7 +272,7 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     response = client.put(
         "/agentic/ontologies/demo-ontology/status",
         headers=headers,
@@ -1368,7 +1368,7 @@ def test_shadow_workspace_owner_can_import_evaluation_package(tmp_path, monkeypa
 
 def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -1414,7 +1414,7 @@ def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit
         ),
         encoding="utf-8",
     )
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -1447,7 +1447,7 @@ def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit
 def test_import_converted_ontology_zip_rejects_object_count_over_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
     monkeypatch.setenv("ONTOLOGY_OBJECT_MAX_COUNT", "1")
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -1480,7 +1480,7 @@ def test_import_converted_ontology_zip_rejects_object_count_over_limit(tmp_path,
 def test_import_converted_ontology_zip_rejects_operation_count_over_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
     monkeypatch.setenv("ONTOLOGY_OPERATION_MAX_COUNT", "1")
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -1513,7 +1513,7 @@ def test_import_converted_ontology_zip_rejects_operation_count_over_limit(tmp_pa
 def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
     monkeypatch.setenv("ENTITY_ATTRIBUTE_MAX_COUNT", "1")
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     zip_buffer = _build_zip_file({
         "converted-demo/manifest.yaml": (
@@ -1555,7 +1555,7 @@ def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit
 def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tmp_path, monkeypatch):
     _create_demo_workspace(tmp_path, monkeypatch)
     monkeypatch.setenv("ONTOLOGY_OBJECT_MAX_COUNT", "1")
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     object_content = "\n".join([
         "# 对象描述",
@@ -1641,7 +1641,7 @@ def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path
         }),
         encoding="utf-8",
     )
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     zip_buffer = _build_zip_file({
         "bound-demo/manifest.yaml": (
             "kind: ontology-package\n"
@@ -1689,7 +1689,7 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
     )
     (ontology_dir / "objects" / "旧实体.md").write_text("旧内容\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     zip_entries = {
         "converted-demo/manifest.yaml": (
             "kind: ontology-package\n"
@@ -1745,7 +1745,7 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
 
 def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     response = client.post(
         "/agentic/ontologies/import-zip",
@@ -1791,7 +1791,7 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
 
 def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     response = client.post(
         "/agentic/ontologies/import-zip",
@@ -1814,7 +1814,7 @@ def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, mo
 
 def test_import_source_ontology_zip_splits_slash_aliases_and_reports_empty_warning(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     response = client.post(
         "/agentic/ontologies/import-zip",
@@ -1876,7 +1876,7 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
     )
     (ontology_dir / "scripts" / "old.py").write_text("print('old')\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     response = client.post(
         "/agentic/ontologies/import-zip",
@@ -1924,7 +1924,7 @@ def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_p
     )
     (ontology_dir / "objects" / "旧实体.md").write_text("旧实体\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     conflict_response = client.post(
         "/agentic/ontologies/import-zip",
         headers=headers,
@@ -1961,7 +1961,7 @@ def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_p
 
 def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(tmp_path, monkeypatch):
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
     first_response = client.post(
         "/agentic/ontologies/import-zip",
@@ -2035,7 +2035,7 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
     (version1 / "objects" / "实体A.md").write_text("v1\n", encoding="utf-8")
     (version2 / "objects" / "实体A.md").write_text("v2\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     read_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
         query_string={"folder": "objects", "name": "实体A.md", "version": "2.0.0"},
@@ -2137,7 +2137,7 @@ def test_delete_ontology_version_removes_only_target_version(tmp_path, monkeypat
     (version1 / "operations" / "流程A.md").write_text("v1\n", encoding="utf-8")
     (version2 / "operations" / "流程A.md").write_text("v2\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     response = client.delete(
         "/agentic/ontologies/demo-ontology/versions/2.0.0",
         headers=headers,
@@ -2184,7 +2184,7 @@ def test_delete_active_ontology_version_returns_409(tmp_path, monkeypatch):
     (version1 / "operations" / "流程A.md").write_text("v1\n", encoding="utf-8")
     (version2 / "operations" / "流程A.md").write_text("v2\n", encoding="utf-8")
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     response = client.delete(
         "/agentic/ontologies/demo-ontology/versions/1.0.0",
         headers=headers,

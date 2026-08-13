@@ -43,6 +43,27 @@ def _positive_int(value: str) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _bootstrap_password_is_strong(value: str) -> bool:
+    if value != value.strip() or not 8 <= len(value) <= 128:
+        return False
+    if "admin" in value.lower():
+        return False
+    classes = (
+        any(ch.islower() for ch in value),
+        any(ch.isupper() for ch in value),
+        any(ch.isdigit() for ch in value),
+        any(not ch.isalnum() for ch in value),
+    )
+    return sum(classes) >= 3 and value.lower() not in {
+        "123456",
+        "12345678",
+        "password",
+        "password123",
+        "qwerty",
+        "qwerty123",
+    }
+
+
 def _read_json_document(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -514,6 +535,8 @@ def validate_config(
     issuer = env.get("AUTH_SERVER_ISSUER", "").rstrip("/")
     audience = env.get("AUTH_SERVER_AUDIENCE", "")
     admin_token = env.get("AUTH_SERVER_ADMIN_TOKEN", "")
+    bootstrap_admin_password = env.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD", "")
+    bootstrap_user_store = env_file.parent.parent / ".onto-auth" / "users.json"
     if not _valid_http_url(auth_url):
         errors.append({"type": "invalid_auth_server_url"})
     # Keep issuer/audience optional for compatibility with the original
@@ -523,12 +546,22 @@ def validate_config(
         errors.append({"type": "invalid_auth_server_issuer"})
     if len(admin_token) < 16:
         errors.append({"type": "weak_or_missing_auth_admin_token", "minimum_length": 16})
+    if not bootstrap_admin_password and not bootstrap_user_store.is_file():
+        errors.append({"type": "weak_or_missing_bootstrap_admin_password"})
+    elif bootstrap_admin_password and not _bootstrap_password_is_strong(
+        bootstrap_admin_password
+    ):
+        errors.append({"type": "weak_or_missing_bootstrap_admin_password"})
+    if bootstrap_admin_password and bootstrap_admin_password == admin_token:
+        errors.append({"type": "bootstrap_password_reuses_auth_admin_token"})
 
     mcp_secret = env.get("MCP_TOKEN_SECRET", "")
     if len(mcp_secret) < 32:
         errors.append({"type": "weak_or_missing_mcp_token_secret", "minimum_length": 32})
     elif mcp_secret == admin_token:
         errors.append({"type": "mcp_secret_reuses_auth_admin_token"})
+    if bootstrap_admin_password and bootstrap_admin_password == mcp_secret:
+        errors.append({"type": "bootstrap_password_reuses_mcp_token_secret"})
     mcp_port = _positive_int(env.get("MCP_SERVER_PORT", "7488"))
     if mcp_port is None or mcp_port > 65535:
         errors.append({"type": "invalid_mcp_server_port"})

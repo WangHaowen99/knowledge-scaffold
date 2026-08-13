@@ -15,9 +15,9 @@ def _build_client(tmp_path, monkeypatch):
     app.config["REFRESH_PLATFORM_CONNECTOR"] = lambda: refresh_calls.append("refresh")
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    admin = auth_manager.authenticate("admin", "admin123")
+    admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert admin is not None
-    admin = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+    admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
 
     app.config["AUTH_MANAGER"] = auth_manager
     app.register_blueprint(platform_config_bp)

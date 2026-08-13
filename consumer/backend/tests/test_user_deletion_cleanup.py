@@ -61,7 +61,7 @@ def deletion_env(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_TOKEN_AUDIENCE", "meta-wise-mcp")
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    auth_manager.change_password("admin", "admin123", "RootStrong#2026")
+    auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong#2026")
     login = auth_manager.login("admin", "RootStrong#2026")
     assert login is not None
 

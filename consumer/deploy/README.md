@@ -75,7 +75,7 @@ cd /opt
 tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
-3. 进入安装目录，从示例创建 `backend/.env`，填入互不相同的 `AUTH_SERVER_ADMIN_TOKEN` 与 `MCP_TOKEN_SECRET`，确认两个用户上限一致，再执行部署：
+3. 进入安装目录，从示例创建 `backend/.env`，填入互不相同的 `AUTH_SERVER_ADMIN_TOKEN`、`AUTH_BOOTSTRAP_ADMIN_PASSWORD` 与 `MCP_TOKEN_SECRET`，确认两个用户上限一致，再执行部署：
 
 ```bash
 cd /opt/onto-agent
@@ -160,20 +160,22 @@ backend 一起部署、升级、回滚、重启，backend 依赖其健康（`ser
 
 ### 配置
 
-安装目录下的 `backend/.env` 必填以下两项：
+安装目录下的 `backend/.env` 必填以下三项：
 
 ```bash
 AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>
+AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次启动使用的独立强密码>
 ```
 
-`AUTH_SERVER_ADMIN_TOKEN` 须与 auth-server 容器的同名环境变量一致。配置后执行
+三个敏感值不得互相复用；`AUTH_SERVER_ADMIN_TOKEN` 须与 auth-server 容器的同名环境变量一致。配置后执行
 `./deploy/deploy.sh`（或已部署过则 `./deploy/restart.sh`）即可，compose 会随主服务
-一起拉起 auth-server，无需额外参数。
+一起拉起 auth-server，无需额外参数。已有 `users.json` 的部署可以不再保留管理员初始密码。
 
 auth-server **不发布宿主端口**，仅 backend 通过容器网络访问 `http://auth-server:5056`；
 健康检查由镜像自带的 HEALTHCHECK 提供。可通过环境变量透传覆盖默认配置：
 `AUTH_SERVER_ISSUER`、`AUTH_SERVER_ADMIN_TOKEN`（须与 `backend/.env` 一致）、
+`AUTH_BOOTSTRAP_ADMIN_PASSWORD`（首次创建用户文件时使用）、
 `AUTH_ENABLE_REGISTRATION`。注册默认开启并一步直接建号，无需邮箱验证码，也无需配置任何
 SMTP / 邮件相关变量；不允许自行建号时显式设置 `AUTH_ENABLE_REGISTRATION=false`。
 

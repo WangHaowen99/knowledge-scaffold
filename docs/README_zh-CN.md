@@ -39,12 +39,10 @@ Meta Wise 面向的是回答必须遵循**领域语义与既定计算口径**、
     + 模型密钥仅存全局层；工作空间只引用模型 profile，不接触 API Key。
 - ✅ **协议与 SDK 扩展**
     + A2A、ACP 适配层与 SDK，外部系统可集成同一套运行能力。
-- ✅ **评测平台**
-    + `evaluation/agent_eval/` 基于场景测试用例评测智能体质量：评测执行、trace 回放、能力清单与用例生成。
 - 🚧 **知识建模（设计期，规划中）**
     + **知识包建模工具**：基于 openjiuwen 的专家交互式 CLI，通过访谈式对话将领域专家经验结构化为知识包，降低手工编写门槛。
     + **领域知识包**：经专家沉淀、达到标杆质量的知识包，兼作新领域建模的热启动模板与建模调优的标准答案（golden）。
-    + **建模—评测闭环**：建模产出经评测平台验证，按评测反馈迭代优化，形成建模、评测、优化的循环。
+    + **建模—评测闭环**：建模产出经 Modeling 内置评测验证，按评测反馈迭代优化，形成建模、评测、优化的循环。
     + 当前 `modeling/` 目录为能力边界占位（bindings / frontend / ontology / operations），上述能力将按此边界逐步落地。
 
 ## 系统架构
@@ -161,7 +159,6 @@ Windows 用户如果遇到 Python 依赖安装路径过长，可以先启用系�
 ├── consumer/                 # 运行期主应用：后端、前端、部署脚本、SDK 和应用文档
 ├── modeling/                 # 设计期知识建模边界（🚧 规划中，当前为占位）
 ├── common/                   # 跨模块共享的轻量公共代码
-├── evaluation/agent_eval/    # 智能体评测平台
 ├── docs/                     # 仓库级文档（多语言 README 等）
 ├── tests/                    # 仓库级测试入口
 └── .onto-runtime/            # 本地运行时工作区，默认不提交
@@ -200,7 +197,6 @@ cd consumer
 | [consumer/docs/business-data-provider-extension.md](../consumer/docs/business-data-provider-extension.md) | 业务数据 provider 扩展方式 |
 | [consumer/sdk/README.md](../consumer/sdk/README.md) | SDK 目录与发布说明 |
 | [consumer/deploy/README.md](../consumer/deploy/README.md) | 镜像构建、部署包和安装说明 |
-| [evaluation/agent_eval/docs/architecture.md](../evaluation/agent_eval/docs/architecture.md) | 评测平台架构说明 |
 
 # ❓ FAQ
 

@@ -18,7 +18,7 @@
 | 5 | Excel 语义 | 一个 xlsx=一个库；**sheet=表**（sheet 名=表名），首行=字段名，次行可选注释，余行=数据。三段用途：① 入项目数据字典（驱动访谈与映射）② 推导 objects 字段与 `object-data-mappings.json`；每个 object 必须绑定真实 Sheet、字段必须存在于该 Sheet，同一 Sheet 可映射多个 object，`objects/index.md` 的 `来源Sheet` 是 Excel 图导入选表依据 ③ 在数据源配置步骤全量、异步写入以 Scene 命名的 MySQL 数据库；建库和导入前确认脱敏的 `EVAL_DB_URL`，可为本次项目操作临时指定其他 URL，但不持久化、不修改环境变量；可幂等创建并回填固定名称 `mv_shadow_<project_id>` |
 | 6 | 访谈交互 | 建模目标先以自由文本确认；业务流程访谈按核心信息与流程细节两段进行，答案和候选都绑定任务图中的当前任务与工件 revision，刷新后可继续 |
 | 7 | 流程事实源 | 多流程只保存一份结构化 `diagrams/processes.json`；画布可增删改流程、节点和连线，Mermaid 文件只由结构化文档单向派生，人工确认后才允许知识生成 |
-| 8 | 评测与优化 | **LLM Judge** 判分（通过/部分/失败+理由，专家可改判）→ 优化器输出**结构化建议**（精确到文件段落、预期修复的用例）→ 逐条采纳后 agent 改包、**版本递增、自动重评**；首版内置轻量评测，不接 `evaluation/agent_eval` |
+| 8 | 评测与优化 | **LLM Judge** 判分（通过/部分/失败+理由，专家可改判）→ 优化器输出**结构化建议**（精确到文件段落、预期修复的用例）→ 逐条采纳后 agent 改包、**版本递增、自动重评**；使用 Modeling 内置轻量评测 |
 | 9 | 持久化 | **SQLite** 保存项目、任务图、交互、索引和评测状态；`isomorphic-git` 工件仓库保存知识包文件及不可变 revision。人工草稿、候选、检查、评测、图导入和发布都绑定 revision；两者随同一持久卷备份 |
 | 10 | LLM 配置 | modeling 独立 `.env`（`MODELING_LLM_BASE_URL/MODEL/API_KEY` + 可选轻量模型），OpenAI-compatible 直喂 pi；**不**从 consumer 取密钥（不破坏「密钥永不出全局层」） |
 | 11 | 工作流 | 用户可见流程固定为 9 步；建模阶段只有一份可编辑、可恢复的 `AiConstructionTaskGraph`，允许在封闭任务类型内新增、拆分、合并、重排、跳过和重做。场景、数据源、评测、诊断、优化和发布状态直接来自各自事实记录 |

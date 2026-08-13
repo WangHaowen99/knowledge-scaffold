@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
@@ -92,23 +93,38 @@ class AuthManager:
         "qwerty123",
     }
 
-    def __init__(self, users_file: str, secret: Optional[str], token_ttl_seconds: int = 12 * 3600) -> None:
+    def __init__(
+        self,
+        users_file: str,
+        secret: Optional[str],
+        token_ttl_seconds: int = 12 * 3600,
+        bootstrap_admin_password: Optional[str] = None,
+    ) -> None:
         self.users_file = Path(users_file)
         self._secret = (secret or "dev-secret-change").encode("utf-8")
         self._token_ttl_seconds = max(60, int(token_ttl_seconds))
         self._lock = threading.Lock()
         self._users_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._users_mtime: Optional[float] = None
+        self._bootstrap_admin_password = (
+            bootstrap_admin_password or os.environ.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD")
+        )
         self.ensure_users_file()
 
     def ensure_users_file(self) -> None:
         if self.users_file.exists():
             return
+        bootstrap_password = self._bootstrap_admin_password
+        if not bootstrap_password:
+            raise RuntimeError(
+                "首次启动必须配置 AUTH_BOOTSTRAP_ADMIN_PASSWORD；已有 users.json 的部署无需配置"
+            )
+        self.validate_password_policy("admin", bootstrap_password)
         self.users_file.parent.mkdir(parents=True, exist_ok=True)
         default_users = [
             {
                 "username": "admin",
-                "password_hash": self.hash_password(os.environ["AUTH_BOOTSTRAP_ADMIN_PASSWORD"]),
+                "password_hash": self.hash_password(bootstrap_password),
                 "role": "admin",
                 "must_change_password": True,
                 "password_changed_at": "",
@@ -117,6 +133,7 @@ class AuthManager:
         ]
         with open(self.users_file, "w", encoding="utf-8") as f:
             json.dump({"users": default_users}, f, ensure_ascii=False, indent=2)
+        self._bootstrap_admin_password = None
 
     @staticmethod
     def hash_password(password: str, iterations: int = PASSWORD_HASH_ITERATIONS) -> str:

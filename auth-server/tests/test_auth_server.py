@@ -16,6 +16,7 @@ ISSUER = "http://auth-server-test:5056"
 AUDIENCE = "meta-wise"
 STRONG_PASSWORD = "Str0ng!Pass"
 NEW_STRONG_PASSWORD = "N3w!Str0ngPass"
+BOOTSTRAP_ADMIN_PASSWORD = "TestBootstrap#2026"
 
 
 def make_config(tmp_path, **overrides):
@@ -26,6 +27,7 @@ def make_config(tmp_path, **overrides):
         access_ttl_seconds=900,
         refresh_ttl_seconds=259_200,
         admin_token=ADMIN_TOKEN,
+        bootstrap_admin_password=BOOTSTRAP_ADMIN_PASSWORD,
         host="127.0.0.1",
         port=5056,
         user_max_count=10,
@@ -46,7 +48,7 @@ def registration_disabled_client(tmp_path):
     ).test_client()
 
 
-def login(client, username="admin", password="admin123"):
+def login(client, username="admin", password=BOOTSTRAP_ADMIN_PASSWORD):
     return client.post(
         "/token",
         data={"grant_type": "password", "username": username, "password": password},
@@ -124,7 +126,11 @@ def test_unsupported_grant_type(client):
 def test_token_accepts_json_body(client):
     resp = client.post(
         "/token",
-        json={"grant_type": "password", "username": "admin", "password": "<REDACTED_WEAK_PASSWORD>"},
+        json={
+            "grant_type": "password",
+            "username": "admin",
+            "password": BOOTSTRAP_ADMIN_PASSWORD,
+        },
     )
     assert resp.status_code == 200
 
@@ -262,12 +268,24 @@ def test_change_password_error_messages(client):
 
     resp = client.put(
         "/admin/change-password",
-        json={"username": "admin", "old_password": "admin123", "new_password": "admin123"},
+        json={
+            "username": "admin",
+            "old_password": BOOTSTRAP_ADMIN_PASSWORD,
+            "new_password": BOOTSTRAP_ADMIN_PASSWORD,
+        },
         headers=admin_headers(),
     )
     assert resp.status_code == 400
     violations = resp.get_json()["violations"]
     assert "same_as_old" in violations
+
+
+def test_bootstrap_requires_explicit_strong_password(tmp_path):
+    with pytest.raises(RuntimeError, match="AUTH_BOOTSTRAP_ADMIN_PASSWORD"):
+        create_app(make_config(tmp_path, bootstrap_admin_password=None))
+
+    with pytest.raises(ValueError, match="密码复杂度"):
+        create_app(make_config(tmp_path, bootstrap_admin_password="admin123"))
 
 
 # ------------------------------------------------------------------ 密码策略
@@ -469,6 +487,7 @@ def test_zero_user_max_count_allows_admin_created_users(tmp_path):
         {
             "AUTH_SERVER_DATA_DIR": str(tmp_path / "data"),
             "AUTH_SERVER_ADMIN_TOKEN": ADMIN_TOKEN,
+            "AUTH_BOOTSTRAP_ADMIN_PASSWORD": BOOTSTRAP_ADMIN_PASSWORD,
             "AUTH_USER_MAX_COUNT": "0",
         }
     )

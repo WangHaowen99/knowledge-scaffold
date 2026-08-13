@@ -151,6 +151,7 @@ def test_preflight_uses_legacy_mcp_host_port_without_root_config_override(
     (backend_root / ".env").write_text(
         "AUTH_SERVER_URL=http://auth-server:5056\n"
         "AUTH_SERVER_ADMIN_TOKEN=test-admin-token-with-sufficient-length\n"
+        "AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n"
         "MCP_SERVER_PORT=7488\n"
         "MCP_TOKEN_SECRET=test-mcp-token-secret-with-sufficient-length\n"
         "USER_MAX_COUNT=10\n"
@@ -301,6 +302,7 @@ def test_preflight_supports_docker_compose_v1_fallback_for_release_port_resoluti
     (backend_root / ".env").write_text(
         "AUTH_SERVER_URL=http://auth-server:5056\n"
         "AUTH_SERVER_ADMIN_TOKEN=test-admin-token-with-sufficient-length\n"
+        "AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n"
         "MCP_SERVER_PORT=7488\n"
         "MCP_TOKEN_SECRET=test-mcp-token-secret-with-sufficient-length\n"
         "USER_MAX_COUNT=10\n"

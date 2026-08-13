@@ -13,7 +13,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
   现有文件放进 `<DATA_DIR>/users.json` 即可直接登录，用户无需重设密码。
 - 吊销语义：改密 / 管理员重置 / /revoke 时 `token_version+1`，全量吊销该用户 refresh token；
   已签发的 access token 在 ≤ TTL 内自然失效（决策 D2 的显式放宽）。
-- 首启无用户文件时 bootstrap `admin/<REDACTED_INITIAL_PASSWORD>`（role=admin、强制改密）。
+- 首启无用户文件时使用环境变量 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建 `admin`（role=admin、强制改密）；未配置或不符合密码策略时拒绝启动。
 
 ## 端点清单
 
@@ -76,6 +76,7 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `AUTH_ACCESS_TTL_SECONDS` | `900` | access TTL，硬上限 3600 |
 | `AUTH_REFRESH_TTL_SECONDS` | `259200` | refresh TTL |
 | `AUTH_SERVER_ADMIN_TOKEN` | 未设置 | Admin API 共享密钥；未设置则 /admin/* 全部 503 |
+| `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | 未设置 | 首次创建 users.json 时必填的管理员初始强密码；已有用户文件时无需配置 |
 | `AUTH_SERVER_HOST` / `AUTH_SERVER_PORT` | `127.0.0.1` / `5056` | 监听地址与端口 |
 | `AUTH_USER_MAX_COUNT` | `1000` | 用户数量上限；设为 `0` 表示不限制 |
 | `AUTH_ENABLE_REGISTRATION` | `true` | 自助注册开关；设为 `false` 可关闭 |
@@ -85,17 +86,20 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 ## 运行
 
 ```bash
-# 开发
+# 开发（初次启动须在本地环境中提供独立强密码）
 cd auth-server
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python run.py            # http://127.0.0.1:5056
+AUTH_BOOTSTRAP_ADMIN_PASSWORD='<独立强密码>' .venv/bin/python run.py
 
 # 测试
 .venv/bin/python -m pytest tests -q
 
 # 容器（数据挂 /data；不要 publish 端口到宿主机，走内部网络）
 docker build -t meta-wise-auth-server .
-docker run -v auth-data:/data -e AUTH_SERVER_ADMIN_TOKEN=... meta-wise-auth-server
+docker run -v auth-data:/data \
+  -e AUTH_SERVER_ADMIN_TOKEN='<独立管理令牌>' \
+  -e AUTH_BOOTSTRAP_ADMIN_PASSWORD='<独立强密码>' \
+  meta-wise-auth-server
 ```
 
 ## 明确不做（v1）

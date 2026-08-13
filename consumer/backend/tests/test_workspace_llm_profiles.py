@@ -15,9 +15,9 @@ def _build_workspace_routes_client(tmp_path):
     app = Flask(__name__)
     app.config["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "admin123")
+    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
-    user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
     app.config["AUTH_MANAGER"] = auth_manager
     app.register_blueprint(workspaces_bp)
     client = app.test_client()

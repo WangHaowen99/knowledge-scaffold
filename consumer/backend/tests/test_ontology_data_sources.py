@@ -75,9 +75,9 @@ def _build_test_client(
     app.config["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     if username == "admin":
-        user = auth_manager.authenticate("admin", "admin123")
+        user = auth_manager.authenticate("admin", "TestBootstrap#2026")
         assert user is not None
-        user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
     else:
         temporary_password = "UserStrong123!"
         auth_manager.create_user(username, temporary_password, role=role)

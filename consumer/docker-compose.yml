@@ -128,7 +128,8 @@ services:
 
   # 独立鉴权服务（必备组件）：remote 是唯一鉴权路径，backend 依赖其健康后启动。
   # 需在 backend/.env 设置 AUTH_SERVER_URL=http://auth-server:5056、
-  # AUTH_SERVER_ADMIN_TOKEN=<与下方一致>。不发布宿主端口，仅 backend 经内网访问（ADR D4）。
+  # AUTH_SERVER_ADMIN_TOKEN=<与下方一致>、AUTH_BOOTSTRAP_ADMIN_PASSWORD=<独立强密码>。
+  # 不发布宿主端口，仅 backend 经内网访问（ADR D4）。
   auth-server:
     build:
       context: ../auth-server

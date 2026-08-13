@@ -94,7 +94,7 @@ access token 过期后前端对 401 自动静默续期（单飞 `/auth/refresh`�
 
 已知限制：
 
-- 强制改密用户（如 auth-server 首启的 `admin/<REDACTED_INITIAL_PASSWORD>`、管理员重置后的临时密码）会被本服务拒绝登录（403 `PASSWORD_CHANGE_REQUIRED`）——modeling 无改密入口，请先在管理端完成改密。
+- 强制改密用户（如 auth-server 首启创建的 `admin`、管理员重置后的临时密码）会被本服务拒绝登录（403 `PASSWORD_CHANGE_REQUIRED`）——modeling 无改密入口，请先在管理端完成改密。
 - auth-server 在 compose 里默认不发布宿主端口，modeling 需与它同网络部署，本机联调时再暴露 5056。
 
 ## 验证
