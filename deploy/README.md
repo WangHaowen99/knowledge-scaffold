@@ -196,8 +196,9 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5100/health   # 预�
 # 登录链路（预期 200，验证 modeling → consumer 转发；密码为改密后的值）：
 curl -fsS -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:5100/auth/login \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"<改密后的密码>"}'
-# 启用 --with-eval 时（预期 mysqld is alive）：
-docker exec mw-eval-mysql mysqladmin ping -uroot -p<REDACTED> 2>/dev/null
+# 启用 --with-eval 时（预期 mysqld is alive；密码经临时环境变量传入，不进入命令参数）：
+docker exec -e MYSQL_PWD="${EVAL_MYSQL_ROOT_PASSWORD:?请先设置评测库密码}" \
+  mw-eval-mysql mysqladmin ping -uroot 2>/dev/null
 ```
 
 ## 8. 运维：升级 / 备份 / 停止
