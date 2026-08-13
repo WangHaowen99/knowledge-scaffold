@@ -126,6 +126,23 @@ test('ZIP 中带结构化规格时优先使用规格且保留包文件', () => {
   assert.ok(!Object.hasOwn(imported.files, 'model/package-spec.json'));
 });
 
+test('ZIP 导入保留术语 binding 和字段引用', () => {
+  const spec = demoSpec();
+  spec.valueBindings = [{
+    key: 'airport-code',
+    resource: '机场中文代号',
+    valueField: 'ARP_CD',
+    semanticField: '机场名',
+  }];
+  spec.objects[0].fields[0].valueBindingRef = 'airport-code';
+  const files = renderPackage(spec);
+
+  const imported = parsePackageArchive(zipPackage(files, 'import-demo'));
+
+  assert.deepEqual(imported.spec.valueBindings, spec.valueBindings);
+  assert.equal(imported.spec.objects[0].fields[0].valueBindingRef, 'airport-code');
+});
+
 test('ZIP 中的二进制附件按原始字节保留且不作为文本解析', () => {
   const spec = demoSpec();
   const rendered = renderPackage(spec);
