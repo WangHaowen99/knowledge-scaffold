@@ -4,7 +4,7 @@ services:
     toolset: search
     title: 知识检索
     summary: 原子检索工具集
-    description: 提供不调用 LLM 的 schema、属性过滤、路径查询、统计、聚合、邻域、最短路径和业务逻辑读取等原子检索工具。
+    description: 提供不调用 LLM 的 schema、属性过滤、路径查询、统计、聚合、邻域、最短路径和业务逻辑读取等原子检索工具。客户端调用时入参必须显式传入 ontology_id。
     icon: search
     tags:
       - 图谱查询

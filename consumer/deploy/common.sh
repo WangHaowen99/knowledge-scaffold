@@ -119,17 +119,72 @@ ensure_env_files() {
     fi
 }
 
-require_mcp_token_secret() {
+ensure_mcp_token_secret() {
     local env_file="${BUNDLE_ROOT}/backend/.env"
-    local secret
+    local secret generated_secret
     require_file "${env_file}"
-    secret="$(sed -n 's/^[[:space:]]*MCP_TOKEN_SECRET[[:space:]]*=[[:space:]]*//p' "${env_file}" | tail -n 1)"
+    secret="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?MCP_TOKEN_SECRET[[:space:]]*=[[:space:]]*//p' "${env_file}" | tail -n 1)"
     secret="${secret%\"}"
     secret="${secret#\"}"
     secret="${secret%\'}"
     secret="${secret#\'}"
+    if [ -z "${secret}" ]; then
+        generated_secret="$(generate_mcp_token_secret)"
+        write_mcp_token_secret "${env_file}" "${generated_secret}"
+        log "MCP_TOKEN_SECRET was missing; generated and saved an independent secret in backend/.env"
+        return 0
+    fi
     [ "${#secret}" -ge 32 ] || die \
         "Set MCP_TOKEN_SECRET to an independent random value of at least 32 characters in ${env_file}"
+}
+
+generate_mcp_token_secret() {
+    local generated_secret
+    if command -v openssl >/dev/null 2>&1; then
+        generated_secret="$(openssl rand -hex 32)" || die "Failed to generate MCP_TOKEN_SECRET"
+    elif command -v python3 >/dev/null 2>&1; then
+        generated_secret="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            || die "Failed to generate MCP_TOKEN_SECRET"
+    else
+        die "Cannot generate MCP_TOKEN_SECRET: openssl or Python 3 is required"
+    fi
+    [ "${#generated_secret}" -eq 64 ] || die "Failed to generate MCP_TOKEN_SECRET"
+    printf '%s' "${generated_secret}"
+}
+
+write_mcp_token_secret() {
+    local env_file="$1"
+    local secret="$2"
+    local temp_file
+    temp_file="$(mktemp "${env_file}.tmp.XXXXXX")" || die "Cannot update ${env_file}"
+    chmod 600 "${temp_file}" || {
+        rm -f "${temp_file}"
+        die "Cannot secure temporary configuration file"
+    }
+    if ! awk -v secret="${secret}" '
+        BEGIN { updated = 0 }
+        /^[[:space:]]*(export[[:space:]]+)?MCP_TOKEN_SECRET[[:space:]]*=/ {
+            if (!updated) {
+                print "MCP_TOKEN_SECRET=" secret
+                updated = 1
+            }
+            next
+        }
+        { print }
+        END {
+            if (!updated) {
+                print "MCP_TOKEN_SECRET=" secret
+            }
+        }
+    ' "${env_file}" > "${temp_file}"; then
+        rm -f "${temp_file}"
+        die "Cannot update ${env_file}"
+    fi
+    mv "${temp_file}" "${env_file}" || {
+        rm -f "${temp_file}"
+        die "Cannot update ${env_file}"
+    }
+    chmod 600 "${env_file}" || die "Cannot secure ${env_file}"
 }
 
 detect_host_arch() {

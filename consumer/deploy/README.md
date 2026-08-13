@@ -75,7 +75,7 @@ cd /opt
 tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
-3. 进入安装目录，从示例创建 `backend/.env`，填入互不相同的 `AUTH_SERVER_ADMIN_TOKEN`、`AUTH_BOOTSTRAP_ADMIN_PASSWORD` 与 `MCP_TOKEN_SECRET`，确认两个用户上限一致，再执行部署：
+3. 进入安装目录，从示例创建 `backend/.env`，配置 `AUTH_SERVER_ADMIN_TOKEN`，确认两个用户上限一致，再执行部署：
 
 ```bash
 cd /opt/onto-agent
@@ -83,6 +83,8 @@ cp backend/.env.example backend/.env
 # 编辑 backend/.env
 ./deploy/deploy.sh
 ```
+
+首次部署时，若 `backend/.env` 中未配置或配置为空 `MCP_TOKEN_SECRET`，部署脚本会生成独立随机值并写回该文件，不会打印密钥。已配置但不足 32 个字符时仍会中止部署，避免静默覆盖已有配置；升级和重启会继续使用已保存的值。
 
 升级旧安装时，如果安装目录根部已有 `.env`，部署脚本只会保留其中的 `BACKEND_PORT`、`FRONTEND_PORT`、`MCP_SERVER_PORT` 三个宿主端口；其他变量不会传给 Compose。同名端口以根目录 `.env` 为准，新安装仍统一在 `backend/.env` 中维护配置。
 
@@ -249,7 +251,7 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 发布部署默认启动 `onto-agent-mcp` 容器，复用后端镜像和 `.onto-runtime`：
 
-启用前必须在 `backend/.env` 中配置独立的 `MCP_TOKEN_SECRET`（至少 32 个字符）。Token 明文仅在创建响应中返回一次，运行目录中只保存哈希；请在生成后立即复制并妥善保管。
+发布包首次部署时，`backend/.env` 中缺失或为空的 `MCP_TOKEN_SECRET` 会由部署脚本自动生成独立随机值（至少 32 个字符）并以受限文件权限保存；直接使用其他启动方式时仍需自行配置。已填写的值必须至少 32 个字符，部署脚本不会覆盖。Token 明文仅在创建响应中返回一次，运行目录中只保存哈希；请妥善保管。
 
 - Flask 管理接口：`/agentic/mcp/*`
 - MCP endpoint 按 `MCP_TRANSPORT` 暴露相应协议；默认 `both` 同时提供：

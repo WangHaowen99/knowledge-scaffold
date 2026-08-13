@@ -128,6 +128,97 @@ printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
     )
 
 
+def _run_mcp_secret_setup(tmp_path, env_content):
+    bundle_root = tmp_path / "consumer"
+    deploy_root = bundle_root / "deploy"
+    backend_root = bundle_root / "backend"
+    deploy_root.mkdir(parents=True)
+    backend_root.mkdir()
+    shutil.copyfile(DEPLOY_ROOT / "common.sh", deploy_root / "common.sh")
+    env_file = backend_root / ".env"
+    env_file.write_text(env_content, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; ensure_mcp_token_secret',
+            "bash",
+            str(deploy_root / "common.sh"),
+        ],
+        cwd=bundle_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, env_file
+
+
+def test_release_preflight_generates_missing_mcp_token_secret(tmp_path):
+    result, env_file = _run_mcp_secret_setup(
+        tmp_path,
+        "OTHER_SETTING=enabled\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "generated and saved" in result.stdout
+    assert subprocess.run(
+        ["grep", "-q", r"^MCP_TOKEN_SECRET=[0-9a-f]\{64\}$", str(env_file)],
+        check=False,
+    ).returncode == 0
+    assert oct(env_file.stat().st_mode & 0o777) == "0o600"
+
+
+def test_release_preflight_generates_empty_mcp_token_secret(tmp_path):
+    result, env_file = _run_mcp_secret_setup(
+        tmp_path,
+        "MCP_TOKEN_SECRET=\nOTHER_SETTING=enabled\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "generated and saved" in result.stdout
+    assert subprocess.run(
+        ["grep", "-q", r"^MCP_TOKEN_SECRET=[0-9a-f]\{64\}$", str(env_file)],
+        check=False,
+    ).returncode == 0
+    assert env_file.read_text(encoding="utf-8").count("MCP_TOKEN_SECRET=") == 1
+
+
+def test_release_preflight_preserves_existing_mcp_token_secret(tmp_path):
+    configured_value = "synthetic-existing-mcp-secret-value"
+    result, env_file = _run_mcp_secret_setup(
+        tmp_path,
+        f"MCP_TOKEN_SECRET={configured_value}\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert env_file.read_text(encoding="utf-8") == f"MCP_TOKEN_SECRET={configured_value}\n"
+
+
+def test_release_preflight_preserves_exported_mcp_token_secret(tmp_path):
+    configured_value = "synthetic-exported-mcp-secret-value"
+    result, env_file = _run_mcp_secret_setup(
+        tmp_path,
+        f"export MCP_TOKEN_SECRET={configured_value}\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert env_file.read_text(encoding="utf-8") == f"export MCP_TOKEN_SECRET={configured_value}\n"
+
+
+def test_release_preflight_rejects_weak_existing_mcp_token_secret(tmp_path):
+    result, env_file = _run_mcp_secret_setup(
+        tmp_path,
+        "MCP_TOKEN_SECRET=synthetic-weak-value\n",
+    )
+
+    assert result.returncode != 0
+    assert "at least 32 characters" in result.stderr
+    assert env_file.read_text(encoding="utf-8") == "MCP_TOKEN_SECRET=synthetic-weak-value\n"
+
+
 def test_preflight_uses_legacy_mcp_host_port_without_root_config_override(
     tmp_path,
 ):
