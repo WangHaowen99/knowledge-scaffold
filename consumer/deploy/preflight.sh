@@ -30,7 +30,7 @@ fi
 
 ensure_runtime_layout
 ensure_env_files
-require_mcp_token_secret
+ensure_mcp_token_secret
 
 command -v python3 >/dev/null 2>&1 || die "Python 3 is required for deployment validation"
 build_compose_env_args
