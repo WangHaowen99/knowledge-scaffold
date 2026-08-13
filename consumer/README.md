@@ -38,7 +38,7 @@ AUTH_SERVER_PORT=5056 python run.py
 说明：
 
 - `backend/.env` 必须配置 `AUTH_SERVER_URL`（本地开发如 `http://localhost:5056`，容器内为 `http://auth-server:5056`），否则后端启动直接报错。
-- auth-server 首次启动会自动 bootstrap 管理员账号 `admin` / `admin123`，首次登录会被强制修改密码。
+- auth-server 首次启动使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`，未配置或密码不符合策略时拒绝启动；首次登录会被强制修改密码。
 - 使用 Docker Compose 部署时无需单独启动：auth-server 已是 compose 必备服务，会随 `docker compose up` 一并拉起。
 
 ### 2. 准备后端
@@ -340,6 +340,7 @@ data: { ... }
 | `EXECUTION_STORAGE_DIR` | 执行记录存储目录 |
 | `AUTH_SERVER_URL` | 独立 auth-server 地址【必填】，如 `http://auth-server:5056`，未配置后端启动报错 |
 | `AUTH_SERVER_ADMIN_TOKEN` | 与 auth-server 共享的管理令牌，用户管理必填 |
+| `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | 首次创建 auth-server 用户文件时必填的管理员初始强密码；初始化后可移除 |
 | `AUTH_SERVER_AUDIENCE` | JWT 本地验签 audience，默认 `meta-wise` |
 | `AUTH_SERVER_ISSUER` | JWT issuer，留空 = 使用 `AUTH_SERVER_URL` |
 | `SECRET_ENCRYPTION_KEY` | 可选的 32 字节 base64 加密根密钥，用于加密落盘 API key 和业务数据源 secret |

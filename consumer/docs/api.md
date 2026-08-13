@@ -157,7 +157,7 @@ X-Accel-Buffering: no
 ```json
 {
   "username": "admin",
-  "password": "<REDACTED_WEAK_PASSWORD>"
+  "password": "<管理员当前密码>"
 }
 ```
 
@@ -187,7 +187,7 @@ X-Accel-Buffering: no
 - `token` 是短期 access token，用于 `Authorization: Bearer`。
 - `refresh_token` 仅提交给 `/auth/refresh` 或 `/auth/logout`。浏览器应在受保护存储中保存并在 401 时做单次刷新，禁止写入日志或 URL。
 - 通用 Python/TypeScript SDK 只接收 access token，不持有 refresh token。
-- 首次空用户库会生成开发账号 `admin / <REDACTED_INITIAL_PASSWORD>`，该账号必须立即改密。
+- 首次空用户库使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`；未配置或不符合密码策略时 auth-server 拒绝启动。该账号首次登录必须立即改密。
 
 ### 2.1.1 `POST /auth/refresh`
 

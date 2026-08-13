@@ -57,13 +57,19 @@ class UserView:
 
 
 class UserStore:
-    def __init__(self, users_file: str | Path, user_max_count: int = 1000) -> None:
+    def __init__(
+        self,
+        users_file: str | Path,
+        user_max_count: int = 1000,
+        bootstrap_admin_password: Optional[str] = None,
+    ) -> None:
         self.users_file = Path(users_file)
         user_max_count = int(user_max_count)
         self._user_max_count = 0 if user_max_count == 0 else max(1, user_max_count)
         self._lock = threading.Lock()
         self._users_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._users_mtime: Optional[float] = None
+        self._bootstrap_admin_password = bootstrap_admin_password
         self.ensure_users_file()
 
     # ------------------------------------------------------------------ 哈希
@@ -147,10 +153,16 @@ class UserStore:
     def ensure_users_file(self) -> None:
         if self.users_file.exists():
             return
+        bootstrap_password = self._bootstrap_admin_password
+        if not bootstrap_password:
+            raise RuntimeError(
+                "首次启动必须配置 AUTH_BOOTSTRAP_ADMIN_PASSWORD；已有 users.json 的部署无需配置"
+            )
+        validate_password_policy("admin", bootstrap_password)
         default_users = {
             "admin": {
                 "username": "admin",
-                "password_hash": self.hash_password(os.environ["AUTH_BOOTSTRAP_ADMIN_PASSWORD"]),
+                "password_hash": self.hash_password(bootstrap_password),
                 "role": "admin",
                 "must_change_password": True,
                 "password_changed_at": "",
@@ -159,6 +171,7 @@ class UserStore:
             },
         }
         self._save_users(default_users)
+        self._bootstrap_admin_password = None
 
     def _load_users(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:

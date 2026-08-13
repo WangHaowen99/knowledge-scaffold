@@ -96,12 +96,13 @@ npx tsx scripts/nl2sql-service.ts     # 监听 5600
 
 ### 3.3 形态 C：启用解耦鉴权（opt-in）
 
-1. 编辑 `consumer/backend/.env`，加入三行（`AUTH_SERVER_ADMIN_TOKEN` 自定义一个强随机串）：
+1. 编辑 `consumer/backend/.env`，加入四行；管理令牌与管理员初始密码必须分别设置，禁止复用：
 
 ```bash
 AUTH_MODE=remote
 AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>
+AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次启动使用的独立强密码>
 ```
 
 2. 启动：
@@ -111,11 +112,11 @@ cd $REPO
 ./deploy/deploy-stack.sh up --with-auth
 ```
 
-脚本会校验三行齐全（缺任意一行即 `[FAIL]` 中止并打印上述模板），并把 `AUTH_SERVER_ADMIN_TOKEN` 同步注入 auth-server 容器（backend 经 env_file、auth-server 经 compose 变量插值，两边必须一致——脚本自动保证）。auth-server 不暴露宿主端口，仅 backend 经容器网访问；首启引导账号 `admin/<REDACTED_INITIAL_PASSWORD>`（强制改密）。自助注册默认开启，注册为一步直接建号，无邮箱验证码，无需任何 SMTP/邮件配置；不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
+脚本会校验四行齐全（缺任意一行即 `[FAIL]` 中止并打印上述模板），并把配置注入 auth-server 容器；敏感值不会写入日志。auth-server 不暴露宿主端口，仅 backend 经容器网访问；首启使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员 `admin` 并强制改密。自助注册默认开启，注册为一步直接建号，无邮箱验证码，无需任何 SMTP/邮件配置；不允许自行建号时设置 `AUTH_ENABLE_REGISTRATION=false`。
 
 ## 4. 首次初始化（部署后必做）
 
-1. **consumer 改密**：打开 `http://localhost:8888`，用 `admin/<REDACTED_INITIAL_PASSWORD>` 登录，按提示修改初始密码。
+1. **consumer 改密**：打开 `http://localhost:8888`，用 `admin` 和配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 登录，按提示修改初始密码；`users.json` 创建后可从环境中移除该初始密码。
 2. **consumer 配模型**：控制台 → 配置中心 → 全局配置 → 模型池：添加 OpenAI-compatible 模型并「测试」通过、设为默认。（若已在 `backend/.env` 配了 `LLM_*` 可跳过。）
 3. **建模工作台配置**（形态 B/C/D）：打开 `http://localhost:5100`，用 consumer 账号登录 → 右上角「⚙ 配置中心」：
    - **大模型**：填 Base URL / 模型名 / API Key，点「测试有效性」须通过；试玩填 `faux`。（compose 已注入 `MODELING_LLM_*` 时可跳过。）
@@ -133,7 +134,9 @@ cd $REPO/consumer
 cp -n backend/.env.example backend/.env || true
 docker compose up -d --build
 #   启用 auth 时（Admin Token 须以环境变量传给 auth-server 容器，与 backend/.env 中同值）：
-#   AUTH_SERVER_ADMIN_TOKEN=<与 backend/.env 同值> docker compose --profile auth up -d --build
+#   AUTH_SERVER_ADMIN_TOKEN=<与 backend/.env 同值> \
+#   AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次启动使用的独立强密码> \
+#   docker compose --profile auth up -d --build
 curl -fsS http://127.0.0.1:5055/health            # 预期 HTTP 200
 
 # 2) 探测 consumer 网络名（modeling compose 需要）
@@ -157,7 +160,8 @@ curl -fsS http://127.0.0.1:5100/health            # 预期 HTTP 200
 | --- | --- | --- |
 | `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` | 未设置 | OpenAI-compatible 模型；也可部署后在控制台系统设置页配置 |
 | `AUTH_MODE` | `local` | `remote` 时对接 auth-server（见 3.3） |
-| `AUTH_SERVER_URL` / `AUTH_SERVER_ADMIN_TOKEN` | 空 | 仅 `AUTH_MODE=remote` 时必填 |
+| `AUTH_SERVER_URL` / `AUTH_SERVER_ADMIN_TOKEN` | 空 | remote 鉴权必填 |
+| `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | 空 | 首次创建 auth-server 用户文件时必填；初始化后可移除 |
 | compose：`TAG` | `latest` | 镜像 tag |
 | compose：`BACKEND_PORT` / `FRONTEND_PORT` | `5055` / `8888` | 宿主端口映射 |
 
@@ -178,7 +182,7 @@ curl -fsS http://127.0.0.1:5100/health            # 预期 HTTP 200
 
 ### 6.3 auth-server（compose 透传，前缀 `AUTH_`）
 
-常用（compose 透传，在宿主 shell 设置即生效）：`AUTH_SERVER_ADMIN_TOKEN`（Admin API 共享密钥，须与 backend/.env 一致，编排脚本自动同步）、`AUTH_ENABLE_REGISTRATION`（默认 `true`；设为 `false` 可关闭自助注册）。注册一步直接建号，无邮箱验证码，无需 SMTP。其余变量（如 `AUTH_ACCESS_TTL_SECONDS`）compose 未透传，需改 compose 或裸机运行才能覆盖；完整表见 [auth-server/README.md](../auth-server/README.md)。
+常用（compose 透传，在宿主 shell 设置即生效）：`AUTH_SERVER_ADMIN_TOKEN`（Admin API 共享密钥，须与 backend/.env 一致，编排脚本自动同步）、`AUTH_BOOTSTRAP_ADMIN_PASSWORD`（首次创建用户文件时使用的独立强密码）、`AUTH_ENABLE_REGISTRATION`（默认 `true`；设为 `false` 可关闭自助注册）。注册一步直接建号，无邮箱验证码，无需 SMTP。其余变量（如 `AUTH_ACCESS_TTL_SECONDS`）compose 未透传，需改 compose 或裸机运行才能覆盖；完整表见 [auth-server/README.md](../auth-server/README.md)。
 
 ## 7. 验证清单（机器可执行）
 

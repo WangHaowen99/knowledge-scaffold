@@ -41,7 +41,7 @@ NO_PROXY='localhost,127.0.0.1' no_proxy='localhost,127.0.0.1' ./venv/bin/python 
 ```
 
 - 端口 5055 硬编码在 `server_config.py`。
-- 首次启动自动创建 `consumer/.onto-runtime/`，默认账号 admin / <REDACTED_INITIAL_PASSWORD>，
+- 首次启动使用 `AUTH_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号 `admin`，
   **强制改密**（`PUT /auth/change-password`，新密码不能包含用户名）。
 - 就绪检查：`GET /api/system-config/readiness`（需登录）→ `ready: true`。
 

@@ -16,17 +16,20 @@ def test_from_env_loads_project_dotenv(tmp_path, monkeypatch):
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
         "AUTH_SERVER_ISSUER=http://127.0.0.1:5056\n"
-        "AUTH_SERVER_ADMIN_TOKEN=dotenv-admin-token\n",
+        "AUTH_SERVER_ADMIN_TOKEN=dotenv-admin-token\n"
+        "AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(config_module, "_DOTENV_PATH", dotenv_path)
     monkeypatch.delenv("AUTH_SERVER_ISSUER", raising=False)
     monkeypatch.delenv("AUTH_SERVER_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AUTH_BOOTSTRAP_ADMIN_PASSWORD", raising=False)
 
     config = AuthServerConfig.from_env()
 
     assert config.issuer == "http://127.0.0.1:5056"
     assert config.admin_token == "dotenv-admin-token"
+    assert config.bootstrap_admin_password == "TestBootstrap#2026"
 
 
 def test_existing_environment_takes_precedence_over_dotenv(tmp_path, monkeypatch):

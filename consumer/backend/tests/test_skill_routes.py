@@ -7,7 +7,7 @@ from api.auth.auth import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
-def _build_test_client(tmp_path, username: str = "admin", password: str = "admin123"):
+def _build_test_client(tmp_path, username: str = "admin", password: str = "TestBootstrap#2026"):
     app = Flask(__name__)
     app.config["TESTING"] = True
 
@@ -114,7 +114,7 @@ def test_delete_skill_rejects_traversal_name_without_deleting_workspace(tmp_path
         encoding="utf-8",
     )
 
-    client, headers = _build_test_client(tmp_path, username="admin", password="admin123")
+    client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     response = client.delete("/agentic/skills/%2E%2E", headers=headers)
 
     assert response.status_code == 400

@@ -1,7 +1,7 @@
 # 解耦用户管理鉴权系统：架构决策
 
 > 状态：提议（待评审）· 2026-07-09 · 分支 `feat/decoupled-auth`
-> 结论依据：对现有认证实现的代码调研（`agentic/services/auth.py` 459 行、13 个后端文件 80+ 处鉴权装饰、前端 21 处 authFetch + 8 处 useAuthContext、SDK 双语言、agent_eval 登录适配器）。
+> 结论依据：对现有认证实现的代码调研（`agentic/services/auth.py` 459 行、13 个后端文件 80+ 处鉴权装饰、前端 21 处 authFetch + 8 处 useAuthContext、SDK 双语言和外部登录适配器）。
 
 ## Context
 
@@ -36,7 +36,7 @@
 
 - HTTP 门面冻结：`POST /auth/login {username,password}→{token, user:{username,role,password_change_required}}`、
   `/auth/me`、`/auth/users*` CRUD、401/403 语义、`PASSWORD_CHANGE_REQUIRED`/`PASSWORD_POLICY_FAILED` 错误码、
-  Bearer 头、`X-Workspace-Id`。注意：登录响应字段名是 `token` 而非 `access_token`——agent_eval 默认配置与
+  Bearer 头、`X-Workspace-Id`。注意：登录响应字段名是 `token` 而非 `access_token`——外部适配器默认配置与
   外部脚本依赖它，不得"顺手标准化"。
 - Python 接缝：`require_auth(roles=)`/`require_role`/`get_current_user`/`get_auth_manager`/
   `app.config["AUTH_MANAGER"]` 同名同签名；内部抽 `AuthBackend` 协议——现有 AuthManager 即

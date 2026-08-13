@@ -25,7 +25,11 @@ def create_app(config: Optional[AuthServerConfig] = None) -> Flask:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     app = Flask(__name__)
-    user_store = UserStore(cfg.data_dir / "users.json", user_max_count=cfg.user_max_count)
+    user_store = UserStore(
+        cfg.data_dir / "users.json",
+        user_max_count=cfg.user_max_count,
+        bootstrap_admin_password=cfg.bootstrap_admin_password,
+    )
     key_manager = KeyManager(cfg.data_dir / "keys")
     token_service = TokenService(cfg, key_manager)
 

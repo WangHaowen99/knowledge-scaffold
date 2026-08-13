@@ -40,8 +40,6 @@ Domain knowledge packages are built and exported as ZIP files by the modeling wo
     + Authentication is provided by the standalone auth server (`auth-server/`, an OAuth2/OIDC subset): consumer and modeling share one account system, the backend requires `AUTH_SERVER_URL`, and self-registration is enabled by default (one-step signup, no email verification code; it can be disabled explicitly).
 - ✅ **Protocols and SDK**
     + A2A and ACP adapter layers plus an SDK expose the same runtime capabilities to external systems.
-- ✅ **Evaluation platform**
-    + `evaluation/agent_eval/` evaluates agent quality against scenario test cases: evaluation runs, trace replay, capability inventories, test-case generation.
 - ✅ **Knowledge-package modeling workbench (design time)**
     + An expert-facing web modeling tool (`modeling/`, Fastify + React + SQLite): upload Excel data tables and business documents, then follow a fixed trunk workflow — **project setup → material upload & parsing → domain analysis → knowledge-elicitation interview → package generation → package refinement → test-case entry → evaluation runs → optimization suggestions & application**.
     + **Interview-style knowledge elicitation**: the system reads the material and produces a domain overview, candidate business objects, and "domain questions" (business questions the finished package must answer), then interviews the expert in batches — object boundaries, field semantics, calculation rules — and turns the answers into modeling evidence.
@@ -190,7 +188,6 @@ Repository layout:
 ├── modeling/                 # Design-time modeling workbench (Fastify + React + SQLite)
 ├── auth-server/              # Standalone auth service (OAuth2/OIDC subset, required by consumer/modeling)
 ├── common/                   # Lightweight shared code across modules
-├── evaluation/agent_eval/    # Agent evaluation platform
 ├── deploy/                   # Full-stack deployment guide and orchestration scripts
 └── docs/                     # Repository-level docs (translated READMEs, etc.)
 ```
@@ -245,7 +242,6 @@ Documentation map:
 | [modeling/docs/design.md](../modeling/docs/design.md) | Modeling tool design: positioning, workflow, data model, evaluation loop |
 | [modeling/docs/real-e2e-setup.md](../modeling/docs/real-e2e-setup.md) | Real end-to-end modeling–evaluation environment setup |
 | [auth-server/README.md](../auth-server/README.md) | Standalone auth service: endpoints, configuration, and operation |
-| [evaluation/agent_eval/docs/architecture.md](../evaluation/agent_eval/docs/architecture.md) | Evaluation platform architecture |
 
 # ❓ FAQ
 

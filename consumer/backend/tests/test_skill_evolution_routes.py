@@ -80,8 +80,8 @@ def _build_app(tmp_path, monkeypatch, tasks):
     app = Flask(__name__)
     app.config["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    admin = auth_manager.authenticate("admin", "admin123")
-    admin = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+    admin = auth_manager.authenticate("admin", "TestBootstrap#2026")
+    admin = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
     app.config["AUTH_MANAGER"] = auth_manager
     app.register_blueprint(skill_evolution_bp)
 

@@ -1583,8 +1583,8 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
         {
             "role": "user",
             "content": (
-                "第1批：示例原料A，2.574万吨，周期1.5天，减一线去辅助生产线A；\n"
-                "第2批：示例原料B，4.437万吨，周期2.75天，减一线去辅助生产线B。"
+                "第1批：示例原料A，2.5万吨，周期1.5天，减一线去辅助生产线A；\n"
+                "第2批：示例原料B，4.0万吨，周期2.5天，减一线去辅助生产线B。"
             ),
         },
         {
@@ -1605,8 +1605,8 @@ def test_execute_script_allows_structured_rows_from_current_business_query(monke
             "operation_key": "process_records",
             "arguments": {
                 "batchPlans": [
-                    {"name": "示例原料A", "quantity": 2.574, "days": 1.5, "route": "辅助生产线A"},
-                    {"name": "示例原料B", "quantity": 4.437, "days": 2.75, "route": "辅助生产线B"},
+                    {"name": "示例原料A", "quantity": 2.5, "days": 1.5, "route": "辅助生产线A"},
+                    {"name": "示例原料B", "quantity": 4.0, "days": 2.5, "route": "辅助生产线B"},
                 ],
                 "productYieldData": [
                     {"ProductName": "常一线", "Yield_1_Percent": 1.81, "RefineryUnitID": 10, "LogicTankID": 21},

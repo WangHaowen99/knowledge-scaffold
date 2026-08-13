@@ -25,6 +25,7 @@ from preflight_config import (  # noqa: E402
 VALID_ENV = """\
 AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=auth-admin-token-that-is-long
+AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026
 MCP_SERVER_PORT=7488
 MCP_TOKEN_SECRET=mcp-signing-secret-that-is-independent-and-long
 USER_MAX_COUNT=10
@@ -231,6 +232,54 @@ services:
         error_types = {item["type"] for item in report["errors"]}
         self.assertIn("mcp_secret_reuses_auth_admin_token", error_types)
         self.assertIn("user_limit_mismatch", error_types)
+
+    def test_rejects_missing_or_reused_bootstrap_password(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV.replace("AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n", ""),
+            encoding="utf-8",
+        )
+        missing = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+        self.assertIn(
+            "weak_or_missing_bootstrap_admin_password",
+            {item["type"] for item in missing["errors"]},
+        )
+
+        self.env_file.write_text(
+            VALID_ENV.replace(
+                "TestBootstrap#2026", "auth-admin-token-that-is-long"
+            ),
+            encoding="utf-8",
+        )
+        reused = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+        self.assertIn(
+            "bootstrap_password_reuses_auth_admin_token",
+            {item["type"] for item in reused["errors"]},
+        )
+
+    def test_existing_auth_user_store_does_not_require_bootstrap_password(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV.replace("AUTH_BOOTSTRAP_ADMIN_PASSWORD=TestBootstrap#2026\n", ""),
+            encoding="utf-8",
+        )
+        user_store = self.root / ".onto-auth" / "users.json"
+        user_store.parent.mkdir()
+        user_store.write_text('{"users": []}', encoding="utf-8")
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+
+        self.assertTrue(report["ok"])
 
     def test_graph_config_requires_scope_and_encrypted_secret(self) -> None:
         self.env_file.write_text(VALID_ENV, encoding="utf-8")

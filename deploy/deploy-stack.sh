@@ -132,20 +132,23 @@ cmd_up() {
 
     local auth_args=()
     if [ "$with_auth" -eq 1 ]; then
-      local mode url token
+      local mode url token bootstrap_password
       mode="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_MODE)"
       url="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_URL)"
       token="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_SERVER_ADMIN_TOKEN)"
-      if [ "$mode" != "remote" ] || [ -z "$url" ] || [ -z "$token" ]; then
-        fail "--with-auth 需要先在 consumer/backend/.env 配好三行（然后重跑本命令）：
+      bootstrap_password="$(env_get "$CONSUMER_DIR/backend/.env" AUTH_BOOTSTRAP_ADMIN_PASSWORD)"
+      if [ "$mode" != "remote" ] || [ -z "$url" ] || [ -z "$token" ] || \
+         { [ ! -f "$CONSUMER_DIR/.onto-auth/users.json" ] && [ -z "$bootstrap_password" ]; }; then
+        fail "--with-auth 需要先在 consumer/backend/.env 配好以下参数（然后重跑本命令；已有 .onto-auth/users.json 时可省略最后一项）：
   AUTH_MODE=remote
   AUTH_SERVER_URL=http://auth-server:5056
-  AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>" 2
+  AUTH_SERVER_ADMIN_TOKEN=<自定义共享密钥>
+  AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次启动使用的独立强密码>" 2
       fi
       # auth-server 容器经 compose 插值取该密钥（backend 经 env_file 各取各的），必须导出保证两边一致
       export AUTH_SERVER_ADMIN_TOKEN="$token"
       auth_args=(--profile auth)
-      ok "auth-server 已启用（AUTH_MODE=remote，Admin Token 已同步注入 auth-server 容器）"
+      ok "auth-server 已启用（管理令牌与首次启动密码均从 backend/.env 注入，值不写入日志）"
     fi
 
     log "启动 consumer（TAG=$TAG）…"
@@ -182,7 +185,7 @@ cmd_up() {
 
   echo
   ok "部署完成。访问入口："
-  [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin/<REDACTED_INITIAL_PASSWORD>（首次登录强制改密）"
+  [ "$modeling_only" -eq 0 ] && log "  控制台（consumer）  http://localhost:${FRONTEND_PORT:-8888}   初始账号 admin（密码取 AUTH_BOOTSTRAP_ADMIN_PASSWORD，首次登录强制改密）"
   [ "$consumer_only" -eq 0 ] && log "  建模工作台          http://localhost:${MODELING_PORT:-5100}   用 consumer 账号登录"
   log "后续初始化步骤见 deploy/README.md 第 4 节。"
 }

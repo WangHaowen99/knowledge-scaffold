@@ -47,9 +47,9 @@ def _build_client(tmp_path, monkeypatch):
     client = app.test_client()
     with app.app_context():
         auth_manager = get_auth_manager()
-        user = auth_manager.authenticate("admin", "admin123")
+        user = auth_manager.authenticate("admin", "TestBootstrap#2026")
         assert user is not None
-        user = auth_manager.change_password("admin", "admin123", "RootStrong123!")
+        user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
         create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
         token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}

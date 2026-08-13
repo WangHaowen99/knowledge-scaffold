@@ -34,6 +34,7 @@ from auth_server import create_app as create_auth_server_app  # noqa: E402
 from auth_server.config import AuthServerConfig  # noqa: E402
 
 ADMIN_TOKEN = "test-admin-token"
+BOOTSTRAP_ADMIN_PASSWORD = "TestBootstrap#2026"
 STRONG_PASSWORD = "Zq7#Wmx2Lp8!"
 STRONG_PASSWORD_2 = "Kv3$Ntb6Rd5?"
 
@@ -63,6 +64,7 @@ def auth_server(tmp_path):
         audience="meta-wise",
         access_ttl_seconds=60,  # server 允许的最小值；测试内旧 access 始终处于 TTL 窗口
         admin_token=ADMIN_TOKEN,
+        bootstrap_admin_password=BOOTSTRAP_ADMIN_PASSWORD,
         enable_registration=True,
     )
     app = create_auth_server_app(config)
@@ -131,7 +133,7 @@ class _StubSession:
 
 
 def test_password_login_issue_and_verify(backend):
-    result = backend.login("admin", "admin123")
+    result = backend.login("admin", "TestBootstrap#2026")
     assert result is not None
     user = result.user
     assert user.username == "admin"
@@ -163,7 +165,7 @@ def test_concurrent_same_username_logins_keep_token_pairs_isolated(backend):
 
     def login_once():
         barrier.wait(timeout=5)
-        return backend.login("admin", "admin123")
+        return backend.login("admin", "TestBootstrap#2026")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(login_once) for _ in range(2)]
@@ -231,7 +233,7 @@ def test_jwks_refresh_throttles_unknown_kids_and_drops_removed_key(monkeypatch):
 
 
 def test_verify_token_rejects_non_access_tokens(backend):
-    result = backend.login("admin", "admin123")
+    result = backend.login("admin", "TestBootstrap#2026")
     assert result is not None and result.refresh_token
 
     # refresh token 不能当访问凭据（typ != access）
@@ -243,7 +245,7 @@ def test_verify_token_rejects_non_access_tokens(backend):
 
 
 def test_refresh_tokens_rotates_pair(backend):
-    result = backend.login("admin", "admin123")
+    result = backend.login("admin", "TestBootstrap#2026")
     assert result is not None and result.refresh_token
 
     renewed = backend.refresh_tokens(result.refresh_token)
@@ -258,10 +260,10 @@ def test_refresh_tokens_rotates_pair(backend):
 
 
 def test_change_password_revokes_refresh_but_old_access_survives_ttl(backend):
-    old_login = backend.login("admin", "admin123")
+    old_login = backend.login("admin", "TestBootstrap#2026")
     assert old_login is not None and old_login.refresh_token
 
-    changed = backend.change_password("admin", "admin123", "NewRemote#2026")
+    changed = backend.change_password("admin", "TestBootstrap#2026", "NewRemote#2026")
     assert changed.username == "admin"
     assert changed.password_change_required is False
 
@@ -272,7 +274,7 @@ def test_change_password_revokes_refresh_but_old_access_survives_ttl(backend):
     still_valid = backend.verify_token(old_login.access_token)
     assert still_valid is not None and still_valid.username == "admin"
 
-    assert backend.login("admin", "admin123") is None
+    assert backend.login("admin", "TestBootstrap#2026") is None
     renewed = backend.login("admin", "NewRemote#2026")
     assert renewed is not None and renewed.user.password_change_required is False
 
@@ -352,7 +354,7 @@ def test_auth_server_down_raises_unavailable(tmp_path):
     backend = RemoteAuthBackend(dead_url, admin_token=ADMIN_TOKEN)
 
     with pytest.raises(ValueError, match="认证服务暂不可用"):
-        backend.login("admin", "admin123")
+        backend.login("admin", "TestBootstrap#2026")
     with pytest.raises(ValueError, match="认证服务暂不可用"):
         backend.refresh_tokens("some-refresh-token")
     with pytest.raises(ValueError, match="认证服务暂不可用"):
@@ -368,7 +370,7 @@ def test_login_and_refresh_routes_remote_mode(auth_server):
     backend = RemoteAuthBackend(auth_server.base_url, admin_token=ADMIN_TOKEN)
     client = _build_consumer_app(backend).test_client()
 
-    login = client.post("/auth/login", json={"username": "admin", "password": "<REDACTED_WEAK_PASSWORD>"})
+    login = client.post("/auth/login", json={"username": "admin", "password": "TestBootstrap#2026"})
     assert login.status_code == 200
     data = login.get_json()
     # 冻结契约 {token, user} 之上的加法扩展
@@ -449,7 +451,7 @@ def test_build_runtime_services_assembles_remote_backend(auth_server, tmp_path, 
     assert isinstance(remote, RemoteAuthBackend)
 
     # 装配后端可用：真 HTTP 打到 fixture 起的 auth server
-    result = remote.login("admin", "admin123")
+    result = remote.login("admin", "TestBootstrap#2026")
     assert result is not None and result.user.role == "admin"
 
 

@@ -31,7 +31,6 @@
 | 知识消费与推理 | [`consumer/`](consumer/) | React 控制台、Flask API、openJiuwen Agent Runtime、MCP、SDK 和部署脚本 |
 | 知识包建模 | [`modeling/`](modeling/) | 从业务资料生成、检查、评测、优化和导出知识包，并支持 Neo4j 图数据导入 |
 | 统一鉴权 | [`auth-server/`](auth-server/) | 独立 OAuth2/OIDC 子集服务，供 consumer 与 modeling 共用账号体系 |
-| Agent 评测 | [`evaluation/agent_eval/`](evaluation/agent_eval/) | 独立 Web/CLI 评测平台，管理用例、断言、指标、Trace 和报告 |
 
 ## 核心能力
 
@@ -122,6 +121,7 @@ cp backend/.env.example backend/.env
 ```dotenv
 AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=<至少16个字符的独立随机值>
+AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次启动使用的独立强密码>
 MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
 USER_MAX_COUNT=10
 AUTH_USER_MAX_COUNT=10
@@ -142,7 +142,7 @@ export AUTH_USER_MAX_COUNT=10
 | Consumer API | `http://localhost:5055` |
 | MCP 健康检查 | `http://localhost:7488/health` |
 
-首次登录使用 `admin / <REDACTED_INITIAL_PASSWORD>`，系统会要求立即修改密码。登录后进入“配置中心 → 全局配置 → 模型池”，添加 OpenAI-compatible 模型并设为默认模型。
+首次登录使用 `admin` 和你配置的 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`，系统会要求立即修改密码。登录后进入“配置中心 → 全局配置 → 模型池”，添加 OpenAI-compatible 模型并设为默认模型。`users.json` 创建后可从环境中移除该初始密码。
 
 ### 首次完成一次推理
 
@@ -217,7 +217,6 @@ docker compose -p mw-modeling \
 │   └── sdk/                  # Python / TypeScript SDK
 ├── modeling/                 # Fastify + React + SQLite 知识包建模工作台
 ├── auth-server/              # 独立认证与用户服务
-├── evaluation/agent_eval/    # 独立 Agent 评测平台
 ├── common/                   # 跨模块轻量公共代码
 ├── deploy/                   # 全栈构建与发布入口
 └── docs/                     # 仓库级设计与说明文档
@@ -267,7 +266,6 @@ python -m pytest tests -q
 | [modeling/README.md](modeling/README.md) | 建模工作台运行方式和接口 |
 | [modeling/docs/design.md](modeling/docs/design.md) | 建模工作流、数据模型和评测闭环 |
 | [auth-server/README.md](auth-server/README.md) | 鉴权端点、配置和数据目录 |
-| [evaluation/agent_eval/README.md](evaluation/agent_eval/README.md) | Agent 评测平台使用说明 |
 
 ## 参与贡献
 
