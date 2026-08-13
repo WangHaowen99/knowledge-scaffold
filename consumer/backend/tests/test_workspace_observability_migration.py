@@ -327,6 +327,7 @@ def test_existing_canonical_target_is_preserved_while_missing_targets_are_create
         "alpha",
         {
             "enabled": False,
+            "mode": "local",
             "local": {"retention_days": 3},
             "langfuse": {
                 "public_key": "",
@@ -775,25 +776,17 @@ def test_normal_workspace_observability_reads_never_modify_persisted_files(
         "demo",
         {
             "enabled": True,
+            "mode": "local",
             "local": {"retention_days": 7},
             "langfuse": {
-                "public_key": "read-only-public",
+                "public_key": "",
                 "secret_key": "read-only-secret",
-                "base_url": "https://langfuse.example",
+                "base_url": "",
                 "debug": False,
             },
         },
     )
     before = _tree_snapshot(runtime_root)
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-    monkeypatch.setattr(
-        "integration.observability.workspace_config.requests.get",
-        lambda *_args, **_kwargs: FakeResponse(),
-    )
 
     assert get_workspace_observability_config("demo")["local"]["retention_days"] == 7
     assert get_public_workspace_observability_config("demo")["langfuse"]["has_secret_key"] is True

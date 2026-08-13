@@ -45,22 +45,12 @@ _DEFAULT_MAX_PENDING_SPANS_TOTAL = 10000
 class _WorkspaceExporterFanout:
     """Keep one queue per workspace while isolating exporter failures."""
 
-    def __init__(
-        self,
-        exporters: Iterable[Any],
-        *,
-        async_exporters: Iterable[Any] = (),
-    ) -> None:
+    def __init__(self, exporters: Iterable[Any]) -> None:
         self._exporters = [exporter for exporter in exporters if exporter is not None]
-        self._async_buses = [
-            ObservabilityBus(exporter)
-            for exporter in async_exporters
-            if exporter is not None
-        ]
 
     @property
     def available(self) -> bool:
-        return bool(self._exporters or self._async_buses)
+        return bool(self._exporters)
 
     def export(self, event: RuntimeEvent) -> None:
         for exporter in self._exporters:
@@ -68,10 +58,6 @@ class _WorkspaceExporterFanout:
                 exporter.export(event)
             except Exception:
                 logger.warning("Workspace observability exporter failed", exc_info=True)
-        if event.type == _OTEL_METRIC_EXPORTED:
-            return
-        for bus in self._async_buses:
-            bus.emit(event)
 
     def record_drop(self, event: RuntimeEvent) -> None:
         for exporter in self._exporters:
@@ -102,8 +88,6 @@ class _WorkspaceExporterFanout:
                 close()
             except Exception:
                 logger.warning("Workspace observability exporter close failed", exc_info=True)
-        for bus in self._async_buses:
-            bus.close(timeout=0.0)
 
 
 class WorkspaceObservabilityRouter:
@@ -176,6 +160,10 @@ class WorkspaceObservabilityRouter:
             if existing and existing != resolved_workspace_id:
                 return False
             self._run_workspaces[resolved_run_id] = resolved_workspace_id
+            observer = self._get_observer(resolved_workspace_id)
+            if observer is None:
+                self._run_workspaces.pop(resolved_run_id, None)
+                return False
             return True
 
     def release_run(self, run_id: str) -> None:
@@ -422,26 +410,25 @@ class WorkspaceObservabilityRouter:
         if not bool(config.get("enabled")):
             return None
 
-        exporters: list[object] = []
-        async_exporters: list[object] = []
-        log_dir = get_workspace_observability_log_dir(workspace_id)
-        try:
-            exporters.append(LocalPerfExporter(config, log_dir=log_dir))
-        except Exception:
-            logger.warning(
-                "Failed to initialize local observability exporter: workspace_id=%s",
-                workspace_id,
-                exc_info=True,
-            )
+        mode = str(config.get("mode") or "local").strip().lower()
+        if mode not in {"local", "langfuse"}:
+            logger.warning("Unknown workspace observability mode=%s workspace_id=%s", mode, workspace_id)
+            return None
 
-        langfuse_config = config.get("langfuse") if isinstance(config.get("langfuse"), dict) else {}
-        langfuse_ready = all(
-            str(langfuse_config.get(name) or "").strip()
-            for name in ("public_key", "secret_key", "base_url")
-        )
-        if langfuse_ready:
+        exporters: list[object] = []
+        log_dir = get_workspace_observability_log_dir(workspace_id)
+        if mode == "local":
             try:
-                async_exporters.append(create_langfuse_exporter(config))
+                exporters.append(LocalPerfExporter(config, log_dir=log_dir))
+            except Exception:
+                logger.warning(
+                    "Failed to initialize local observability exporter: workspace_id=%s",
+                    workspace_id,
+                    exc_info=True,
+                )
+        else:
+            try:
+                exporters.append(create_langfuse_exporter(config))
             except Exception:
                 logger.warning(
                     "Failed to initialize Langfuse exporter: workspace_id=%s",
@@ -474,25 +461,7 @@ class WorkspaceObservabilityRouter:
                         logger.warning("Unavailable workspace exporter close failed", exc_info=True)
                 continue
             available_exporters.append(exporter)
-        available_async_exporters = []
-        for exporter in async_exporters:
-            if getattr(exporter, "available", True) is False:
-                close = getattr(exporter, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        logger.warning("Unavailable async workspace exporter close failed", exc_info=True)
-                continue
-            available_async_exporters.append(exporter)
-        return (
-            _WorkspaceExporterFanout(
-                available_exporters,
-                async_exporters=available_async_exporters,
-            )
-            if available_exporters or available_async_exporters
-            else None
-        )
+        return _WorkspaceExporterFanout(available_exporters) if available_exporters else None
 
 
 def create_workspace_observability_router() -> WorkspaceObservabilityRouter:

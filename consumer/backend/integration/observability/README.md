@@ -20,9 +20,9 @@ RuntimeEventDispatcher
         |       |
         |       +--> ObservabilityBus(_WorkspaceExporterFanout)
         |               |
-        |               +--> LocalPerfExporter -> workspace 本地 OpenTelemetry JSONL record
-        |               +--> LangfuseExporter -> LangfuseTraceAdapter -> Langfuse SDK client
-        |               +--> SpeedscopeExporter -> 会话级 .speedscope.json
+        |               +--> mode=local -> LocalPerfExporter -> workspace 本地 OpenTelemetry JSONL record
+        |               +--> mode=langfuse -> LangfuseExporter -> LangfuseTraceAdapter -> Langfuse SDK client
+        |               +--> 两种 mode -> SpeedscopeExporter -> 会话级 .speedscope.json
         |
         +--> Platform manager observer
                 |
@@ -35,10 +35,11 @@ RuntimeEventDispatcher
 .onto-runtime/workspaces/<workspace_id>/observability_config.json
 ```
 
-每个 workspace 的本地观测是主事实源，Langfuse 只作为可选出口：
+每个 workspace 继续选择一个观测数据输出目标：
 
-- 开启观测：异步写该 workspace 下的本地 OpenTelemetry JSONL，并生成 Speedscope 会话文件。
-- 配置完整的 Langfuse 地址和密钥：在本地写入完成后额外导出到对应 Langfuse project。
+- `mode=local`：异步写该 workspace 下的本地 OpenTelemetry JSONL。
+- `mode=langfuse`：使用该 workspace 的 Langfuse 地址和密钥发送到对应 Langfuse project，不同时写本地记录。
+- 两种模式都生成 Speedscope 会话文件。
 - `enabled=false`：该 workspace 不输出 local/Langfuse 观测数据。
 
 `enabled=false` 只影响 workspace 观测，不影响 onto-platform connector。PlatformExporter 的配置和生命周期由 `backend/agentic/platform/manager.py` 独立管理，继续读取 `.onto-runtime/config/platform_config.json`。
@@ -53,7 +54,7 @@ RuntimeEventDispatcher
 
 ## 本地性能分析
 
-本地 OpenTelemetry JSONL 可在系统内分析：
+`mode=local` 写出的本地 OpenTelemetry JSONL 可在系统内分析：
 
 - 聊天区“性能分析”只读取当前会话关联到的本地 perf 记录。
 - 管理员用户菜单“本地观测分析”读取 workspace perf 目录内的保留窗口记录，可按工作空间、状态、模型供应商和 Agent 模式过滤；不指定 workspace 时聚合所有 workspace。
@@ -264,4 +265,4 @@ RuntimeEventDispatcher
 - 只有需要理解 SDK 调用、数据清洗或 flush/close 行为时，再看 `LangfuseTraceAdapter`。
 ## Speedscope session traces
 
-Workspace observability is the only Speedscope control plane. `enabled=false` writes no local OpenTelemetry or Speedscope data. With `enabled=true`, the workspace session's evented `.speedscope.json` trace is generated from the unified runtime events and can be merged with the existing sampled code-frame profile. The trace is stored below `runtime/observability/speedscope/<user>/` and uses `speedscope.retention_days` for retention. The session download endpoint is `GET /agentic/sessions/<session_id>/performance/speedscope`; regular users are limited to their own sessions and workspace admins may download any session in the workspace.
+Workspace observability is the only Speedscope control plane. `enabled=false` writes no local OpenTelemetry, Langfuse, or Speedscope data. With `enabled=true`, both `mode=local` and `mode=langfuse` generate the workspace session's evented `.speedscope.json` trace from unified spans and events. The trace is stored below `runtime/observability/speedscope/<user>/` and uses `speedscope.retention_days` for retention. The session download endpoint is `GET /agentic/sessions/<session_id>/performance/speedscope`; regular users are limited to their own sessions and workspace admins may download any session in the workspace.

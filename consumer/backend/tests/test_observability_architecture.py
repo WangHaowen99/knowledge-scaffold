@@ -166,36 +166,6 @@ def test_runtime_metrics_use_only_bounded_aggregation_dimensions(monkeypatch):
     )
 
 
-def test_workspace_fanout_writes_local_before_blocked_langfuse_finishes():
-    from integration.observability import RuntimeEvent, RuntimeEventType
-    from integration.observability.workspace_router import _WorkspaceExporterFanout
-
-    langfuse_started = threading.Event()
-    release_langfuse = threading.Event()
-
-    def block_langfuse(_event):
-        langfuse_started.set()
-        release_langfuse.wait(timeout=1)
-
-    local_exporter = Mock()
-    langfuse_exporter = Mock()
-    langfuse_exporter.export.side_effect = block_langfuse
-    fanout = _WorkspaceExporterFanout(
-        [local_exporter],
-        async_exporters=[langfuse_exporter],
-    )
-    try:
-        event = RuntimeEvent(type=RuntimeEventType.RUN_FINISHED, run_id="run-async-langfuse")
-        fanout.export(event)
-        assert langfuse_started.wait(timeout=1)
-
-        local_exporter.export.assert_called_once_with(event)
-        assert release_langfuse.is_set() is False
-    finally:
-        release_langfuse.set()
-        fanout.close()
-
-
 def test_local_perf_exporter_writes_metrics_without_rich_llm_content(tmp_path, monkeypatch):
     import json
 
@@ -1283,15 +1253,15 @@ def test_retired_run_metrics_stay_on_the_original_workspace_router():
 
     initialize_open_telemetry()
     old_metrics = []
-    old_observer = Mock()
-    old_observer.emit.return_value = True
-    old_observer.emit_metric.side_effect = old_metrics.append
-    new_observer = Mock()
+    old_exporter = Mock()
+    old_exporter.export.side_effect = lambda event: old_metrics.append(event)
+    new_exporter = Mock()
     old_router = WorkspaceObservabilityRouter()
-    old_router._observers_by_workspace["demo"] = old_observer
+    old_router._build_exporter = lambda workspace_id: old_exporter
     new_router = None
     try:
         assert old_router.reserve_run("run-before-refresh", "demo") is True
+        assert "demo" in old_router._observers_by_workspace
         assert old_router.emit(RuntimeEvent(
             type=RuntimeEventType.RUN_STARTED,
             run_id="run-before-refresh",
@@ -1301,7 +1271,8 @@ def test_retired_run_metrics_stay_on_the_original_workspace_router():
 
         old_router.retire()
         new_router = WorkspaceObservabilityRouter()
-        new_router._observers_by_workspace["demo"] = new_observer
+        new_router._build_exporter = lambda workspace_id: new_exporter
+        assert new_router.reserve_run("run-after-refresh", "demo") is True
 
         assert old_router.emit(RuntimeEvent(
             type=RuntimeEventType.RUN_FINISHED,
@@ -1318,13 +1289,18 @@ def test_retired_run_metrics_stay_on_the_original_workspace_router():
         old_metric_names = {
             event.payload["otel_record"]["name"]
             for event in old_metrics
+            if event.type == "otel.metric.exported"
         }
         assert "agent.run.count" in old_metric_names
         assert "agent.run.duration" in old_metric_names
-        new_observer.emit_metric.assert_not_called()
+        assert all(
+            call.args[0].type != "otel.metric.exported"
+            for call in new_exporter.export.call_args_list
+        )
     finally:
         old_router.release_run("run-before-refresh")
         if new_router is not None:
+            new_router.release_run("run-after-refresh")
             new_router.close()
 
 
@@ -1668,6 +1644,7 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
         "alpha",
         {
             "enabled": True,
+            "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-alpha",
                 "secret_key": "sk-alpha",
@@ -1679,6 +1656,7 @@ def test_workspace_router_routes_events_by_run_started_workspace(tmp_path, monke
         "beta",
         {
             "enabled": True,
+            "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-beta",
                 "secret_key": "sk-beta",
@@ -1768,7 +1746,7 @@ def test_workspace_router_local_exporter_writes_under_workspace_runtime(tmp_path
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     update_workspace_observability_config(
         "alpha",
-        {"enabled": True, "local": {"retention_days": 30}},
+        {"enabled": True, "mode": "local", "local": {"retention_days": 30}},
     )
 
     router = WorkspaceObservabilityRouter()
@@ -1855,6 +1833,7 @@ def test_observer_provider_keeps_workspace_observer_when_one_config_fails(tmp_pa
         if workspace_id == "beta":
             return {
                 "enabled": True,
+                "mode": "local",
                 "local": {"retention_days": 30},
                 "langfuse": {"public_key": "", "secret_key": "", "base_url": "", "debug": False},
             }
@@ -1893,6 +1872,7 @@ def test_bad_workspace_langfuse_config_does_not_block_platform_dispatch(tmp_path
         "alpha",
         {
             "enabled": True,
+            "mode": "langfuse",
             "langfuse": {
                 "public_key": "pk-alpha",
                 "base_url": "https://langfuse-alpha.example",

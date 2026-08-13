@@ -80,7 +80,6 @@ def _migration_report(report, migration_id):
 
 def test_shared_runner_registers_explicit_phase_and_failure_policy():
     from migrations.observability_workspace_config_v1 import MIGRATION_ID as OBSERVABILITY_ID
-    from migrations.observability_workspace_mode_v2 import MIGRATION_ID as OBSERVABILITY_MODE_ID
     from migrations.ontology_data_sources_direct_v2 import MIGRATION_ID as DATA_SOURCE_ID
     from migrations.system_config_model_profiles_v1 import MIGRATION_ID as MODEL_CONFIG_ID
     from migrations.system_config_secret_encryption_v1 import MIGRATION_ID as SECRET_CONFIG_ID
@@ -95,7 +94,6 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
         WORKSPACE_MCP_ID,
         DATA_SOURCE_ID,
         OBSERVABILITY_ID,
-        OBSERVABILITY_MODE_ID,
         MODEL_CONFIG_ID,
         SECRET_CONFIG_ID,
     ]
@@ -105,12 +103,10 @@ def test_shared_runner_registers_explicit_phase_and_failure_policy():
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
         MigrationPhase.STARTUP,
-        MigrationPhase.STARTUP,
     ]
     assert [migration.failure_policy for migration in REGISTERED_MIGRATIONS] == [
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.BLOCKING,
-        MigrationFailurePolicy.NON_BLOCKING,
         MigrationFailurePolicy.NON_BLOCKING,
         MigrationFailurePolicy.BLOCKING,
         MigrationFailurePolicy.BLOCKING,
@@ -471,7 +467,6 @@ def test_registered_issue_1_13_and_14_migrations_preserve_each_others_data(
         "workspace-mcp-endpoint-id-v1",
         "ontology-data-sources-direct-v2",
         "observability-workspace-config-v1",
-        "observability-workspace-mode-v2",
         "system-config-model-profiles-v1",
         "system-config-secret-encryption-v1",
     ]

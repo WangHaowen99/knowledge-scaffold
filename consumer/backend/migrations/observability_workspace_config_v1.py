@@ -269,6 +269,7 @@ def _normalize_global_observability(
         mode = str(raw.get("mode") or "").strip().lower()
         if mode not in {"local", "langfuse"}:
             raise ValueError("mode 必须是 local 或 langfuse")
+        normalized["mode"] = mode
 
     if "local" in raw:
         local = raw.get("local")

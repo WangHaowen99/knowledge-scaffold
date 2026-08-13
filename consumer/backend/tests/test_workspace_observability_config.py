@@ -22,6 +22,7 @@ def test_workspace_observability_defaults_to_disabled_local(tmp_path, monkeypatc
 
     assert get_workspace_observability_config("demo") == {
         "enabled": False,
+        "mode": "local",
         "local": {"retention_days": 30},
         "speedscope": {"retention_days": 30},
         "langfuse": {
@@ -46,6 +47,7 @@ def test_workspace_observability_update_encrypts_and_masks_langfuse_secret(tmp_p
         "demo",
         {
             "enabled": True,
+            "mode": "langfuse",
             "local": {"retention_days": 14},
             "speedscope": {"retention_days": 7},
             "langfuse": {
@@ -131,7 +133,7 @@ def test_workspace_observability_rejects_unknown_and_invalid_values(tmp_path, mo
     with pytest.raises(ValueError, match="Unknown observability config key"):
         update_workspace_observability_config("demo", {"future": True})
 
-    with pytest.raises(ValueError, match="Unknown observability config key: mode"):
+    with pytest.raises(ValueError, match="mode must be local or langfuse"):
         update_workspace_observability_config("demo", {"mode": "otlp"})
 
     with pytest.raises(ValueError, match="local.retention_days must be greater than or equal to 1"):

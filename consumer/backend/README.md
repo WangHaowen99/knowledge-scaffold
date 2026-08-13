@@ -33,7 +33,7 @@ Runtime ontology and skill assets now live under the `consumer/` application roo
 - Skill CRUD, ontology import/file APIs, operation evolution review, and workspace runtime config APIs
 - Provider schemas and one workspace-local private business data source per ontology
 - Agent-to-Agent (A2A) and ACP protocol adapters over the same orchestrator/runtime
-- Local performance analysis from the workspace OpenTelemetry backend plus optional Langfuse export
+- Workspace-selected local OpenTelemetry analysis or Langfuse export
 - Skill ontology parser pipeline (`skill_parser/`)
 - Runtime system config API
 - Workspace-scoped resource management
@@ -239,9 +239,9 @@ Notes:
 - The main ReAct loop runs on openJiuwen. Install the backend dependencies from `backend/requirements.txt`.
 - `business_data_search` resolves one private source by `workspace_id + ontology_id`. Save `provider + config` through `/agentic/ontologies/{ontology_id}/data-source`; credentials remain in workspace runtime storage, outside the ontology package.
 - `web_search` is optional and disabled by default. Configure `web_search` through system settings or `WEB_SEARCH_*` environment variables before the tool is exposed to the model.
-- Observability output is configured per workspace through `/agentic/workspaces/<workspace_id>/observability-config` or the configuration center's workspace observability section. Enabled workspaces always write local OpenTelemetry records; a complete Langfuse target adds an optional export. Global system config no longer exposes an `observability` section, and the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
-- The chat UI analyzes the current workspace's local OpenTelemetry records. Admins can also aggregate and filter local observations across workspaces, but that dashboard is an analysis view rather than global observability configuration. Neither view reads Langfuse data or old direct perf logger records.
-- Workspace observability is the only Speedscope control plane. When `enabled=false`, the workspace writes no local OpenTelemetry or Speedscope output. When enabled, it writes local OpenTelemetry records plus an evented session trace; a configured Langfuse target is exported alongside them. Speedscope traces are stored under `<PROJECT_ROOT>/workspaces/<workspace_id>/runtime/observability/speedscope/<user>/` and follow `speedscope.retention_days` (30 days by default).
+- Observability output is configured per workspace through `/agentic/workspaces/<workspace_id>/observability-config` or the configuration center's workspace observability section. Each workspace continues to select either local OpenTelemetry records or Langfuse as its output target. Global system config no longer exposes an `observability` section, and the old `LANGFUSE_*` and `OBSERVABILITY_*` environment variables are not read.
+- With `mode=local`, the chat UI analyzes the current workspace's local OpenTelemetry records. Admins can also aggregate and filter local observations across workspaces, but that dashboard is an analysis view rather than global observability configuration. Neither view reads Langfuse data or old direct perf logger records. With `mode=langfuse`, no new local records are written and product views retain only existing local history.
+- Workspace observability is the only Speedscope control plane. When `enabled=false`, the workspace writes no local OpenTelemetry, Langfuse, or Speedscope output. When enabled, `mode=local` writes local OpenTelemetry records plus an evented session trace, while `mode=langfuse` writes Langfuse plus the same evented session trace. Speedscope traces are stored under `<PROJECT_ROOT>/workspaces/<workspace_id>/runtime/observability/speedscope/<user>/` and follow `speedscope.retention_days` (30 days by default).
 - Speedscope traces contain stage names, status, and timing only. They exclude user questions, prompts, reasoning, answers, tool arguments, SQL parameters, and tool output. The current session trace is available from `GET /agentic/sessions/{session_id}/performance/speedscope`; regular users can download their own sessions and workspace admins can download any session in that workspace.
 - If you use GLM directly, the recommended endpoint example is `https://open.bigmodel.cn/api/paas/v4`.
 

@@ -505,14 +505,20 @@ function WorkspaceObservability() {
   };
   if (!config) return <SectionCard><div className="empty">加载中…</div></SectionCard>;
   return (
-    <SectionCard title="工作空间观测" description="运行观测默认写入本地；配置 Langfuse 后可同时导出。">
+    <SectionCard title="工作空间观测" description="为当前空间选择本地日志或独立 Langfuse 项目。">
       {!canEdit && <ReadOnlyBanner who="平台管理员" />}
       <Field label="启用观测"><Toggle on={Boolean(effective.enabled)} disabled={!canEdit} onChange={(value) => set('enabled', value)} /></Field>
+      <Field label="观测模式"><select disabled={!canEdit} value={effective.mode || 'local'} onChange={(event) => set('mode', event.target.value)}><option value="local">本地日志</option><option value="langfuse">Langfuse</option></select></Field>
       <Field label="Speedscope 保留天数"><input type="number" disabled={!canEdit} value={effective.speedscope.retention_days || 30} onChange={(event) => setNested('speedscope', 'retention_days', Number(event.target.value))} /></Field>
-      <Field label="日志保留天数"><input type="number" disabled={!canEdit} value={effective.local.retention_days || 30} onChange={(event) => setNested('local', 'retention_days', Number(event.target.value))} /></Field>
-      <Field label="Langfuse 地址"><input disabled={!canEdit} value={effective.langfuse.base_url || ''} onChange={(event) => setNested('langfuse', 'base_url', event.target.value)} /></Field>
-      <Field label="Public Key"><input disabled={!canEdit} value={effective.langfuse.public_key || ''} onChange={(event) => setNested('langfuse', 'public_key', event.target.value)} /></Field>
-      <Field label="Secret Key" hint={config.langfuse?.has_secret_key ? '已配置，留空保留' : '尚未配置'}><input type="password" disabled={!canEdit} value={draft.langfuse?.secret_key || ''} onChange={(event) => setNested('langfuse', 'secret_key', event.target.value)} /></Field>
+      {effective.mode === 'local' ? (
+        <Field label="日志保留天数"><input type="number" disabled={!canEdit} value={effective.local.retention_days || 30} onChange={(event) => setNested('local', 'retention_days', Number(event.target.value))} /></Field>
+      ) : (
+        <>
+          <Field label="Langfuse 地址"><input disabled={!canEdit} value={effective.langfuse.base_url || ''} onChange={(event) => setNested('langfuse', 'base_url', event.target.value)} /></Field>
+          <Field label="Public Key"><input disabled={!canEdit} value={effective.langfuse.public_key || ''} onChange={(event) => setNested('langfuse', 'public_key', event.target.value)} /></Field>
+          <Field label="Secret Key" hint={config.langfuse?.has_secret_key ? '已配置，留空保留' : '尚未配置'}><input type="password" disabled={!canEdit} value={draft.langfuse?.secret_key || ''} onChange={(event) => setNested('langfuse', 'secret_key', event.target.value)} /></Field>
+        </>
+      )}
       <div className="foot"><span className="who">{msg}</span>{canEdit && <><button className="btn" onClick={() => submit(true)}>测试</button><button className="btn btn-p" disabled={!Object.keys(draft).length} onClick={() => submit(false)}>保存</button></>}</div>
     </SectionCard>
   );
