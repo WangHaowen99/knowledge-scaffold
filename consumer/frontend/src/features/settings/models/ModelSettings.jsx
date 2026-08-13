@@ -121,6 +121,8 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
       description="连接测试直接使用当前未保存草稿；密钥留空会沿用已保存密钥。"
       onClose={onClose}
       wide
+      closeOnOverlayClick={false}
+      closeOnEscape={false}
       actions={<>
         <button type="button" className="btn" disabled={busy || testing} onClick={onClose}>取消</button>
         <button type="button" className="btn" disabled={busy || testing} onClick={test}>{testing ? '测试中…' : '测试草稿'}</button>
@@ -369,21 +371,21 @@ export function GlobalModelSettings({
         setNotice({ type: 'error', message: decision.message });
         setDeleteTarget(null);
         setDeleteServerFingerprint('');
+        setBusy('');
         return;
       }
     } catch (error) {
       setNotice({ type: 'error', message: `${error?.message || '模型引用核对失败'}；已阻止删除` });
       setDeleteTarget(null);
       setDeleteServerFingerprint('');
-      return;
-    } finally {
       setBusy('');
+      return;
     }
+    const targetName = deleteTarget.name || deleteTarget.id;
     const next = { ...draft, profiles: removeProfile(draft.profiles, deleteTarget.id) };
-    if (await save(next, `全局模型「${deleteTarget.name || deleteTarget.id}」已删除`)) {
-      setDeleteTarget(null);
-      setDeleteServerFingerprint('');
-    }
+    setDeleteTarget(null);
+    setDeleteServerFingerprint('');
+    await save(next, `全局模型「${targetName}」已删除`);
   };
 
   return (
@@ -455,6 +457,10 @@ export function WorkspaceModelSettings({ workspaceId, canEdit = false, request =
   const requestSequence = useRef(0);
   const scopeRef = useRef(workspaceId);
   scopeRef.current = workspaceId;
+  // 组件卸载后失效 scopeRef，阻止异步闭包（如删除核验返回后）继续向旧工作空间执行写入。
+  // ConfigCenter 用 key={workspaceId:section} 挂载，切换空间会卸载旧实例而非更新 props，
+  // 所以 scopeRef.current 会停留在旧空间 ID，仅靠 workspaceId 比较无法识别已卸载的实例。
+  useEffect(() => () => { scopeRef.current = null; }, []);
 
   const load = useCallback(async (signal, { preserveNotice = false } = {}) => {
     const scope = workspaceId;
@@ -550,6 +556,7 @@ export function WorkspaceModelSettings({ workspaceId, canEdit = false, request =
 
   const persistProfiles = async (profiles = draftProfiles, successMessage = '空间私有模型已保存') => {
     const scope = workspaceId;
+    if (scopeRef.current !== scope) return false;
     setBusy('save-profiles');
     setNotice(null);
     try {
@@ -647,28 +654,34 @@ export function WorkspaceModelSettings({ workspaceId, canEdit = false, request =
     }
   };
   const confirmDelete = async () => {
+    const scope = workspaceId;
     setBusy('check-delete');
     try {
       const decision = await latestPrivateDeleteDecision(deleteTarget, deleteServerFingerprint);
       if (!decision.allowed) {
-        setNotice({ type: 'error', message: decision.message });
-        setDeleteTarget(null);
-        setDeleteServerFingerprint('');
+        if (scopeRef.current === scope) {
+          setNotice({ type: 'error', message: decision.message });
+          setDeleteTarget(null);
+          setDeleteServerFingerprint('');
+          setBusy('');
+        }
         return;
       }
     } catch (error) {
-      if (scopeRef.current === workspaceId) setNotice({ type: 'error', message: `${error?.message || '空间模型引用核对失败'}；已阻止删除` });
-      setDeleteTarget(null);
-      setDeleteServerFingerprint('');
+      if (scopeRef.current === scope) {
+        setNotice({ type: 'error', message: `${error?.message || '空间模型引用核对失败'}；已阻止删除` });
+        setDeleteTarget(null);
+        setDeleteServerFingerprint('');
+        setBusy('');
+      }
       return;
-    } finally {
-      if (scopeRef.current === workspaceId) setBusy('');
     }
+    const targetName = deleteTarget.name || deleteTarget.id;
     const nextProfiles = removeProfile(draftProfiles, deleteTarget.id);
-    if (await persistProfiles(nextProfiles, `空间私有模型「${deleteTarget.name || deleteTarget.id}」已删除`)) {
-      setDeleteTarget(null);
-      setDeleteServerFingerprint('');
-    }
+    if (scopeRef.current !== scope) return;
+    setDeleteTarget(null);
+    setDeleteServerFingerprint('');
+    await persistProfiles(nextProfiles, `空间私有模型「${targetName}」已删除`);
   };
 
   return (

@@ -59,15 +59,20 @@ export function Table({ children, className = '', ...props }) {
   return <table className={`dt ${className}`.trim()} {...props}>{children}</table>;
 }
 
-export function Modal({ title, description, children, actions, onClose, wide = false }) {
+export function Modal({ title, description, children, actions, onClose, wide = false,
+                       closeOnOverlayClick = true, closeOnEscape = true }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(onClose);
+  const closeOnOverlayClickRef = useRef(closeOnOverlayClick);
+  const closeOnEscapeRef = useRef(closeOnEscape);
   const titleId = useId();
   const descriptionId = useId();
 
   useEffect(() => {
     closeRef.current = onClose;
-  }, [onClose]);
+    closeOnOverlayClickRef.current = closeOnOverlayClick;
+    closeOnEscapeRef.current = closeOnEscape;
+  }, [onClose, closeOnOverlayClick, closeOnEscape]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement;
@@ -78,6 +83,7 @@ export function Modal({ title, description, children, actions, onClose, wide = f
     (focusable()[0] || dialog)?.focus();
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
+        if (!closeOnEscapeRef.current) return;
         event.preventDefault();
         closeRef.current?.();
         return;
@@ -111,7 +117,7 @@ export function Modal({ title, description, children, actions, onClose, wide = f
 
   return (
     <div className="ui-modal-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose?.();
+      if (closeOnOverlayClickRef.current && event.target === event.currentTarget) onClose?.();
     }}>
       <section ref={dialogRef} className={`ui-modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true"
         aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1}>

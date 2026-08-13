@@ -94,16 +94,24 @@
   margin: 0 auto 0 0;
 }
 
+/* 模型编辑弹窗使用默认 560px 宽度，标签列缩窄以让输入框获得更多空间 */
+.mw-model-form .fieldrow { padding: 4px 0; }
+.mw-model-form .fieldrow .fl {
+  width: 150px;
+}
+
 .mw-model-form .fieldrow > input,
 .mw-model-form .fieldrow > select {
-  min-width: min(360px, 55vw);
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
 }
 
 .mw-model-form-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(130px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 11px;
+  margin-top: 11px;
 }
 
 .mw-model-form-grid label {
