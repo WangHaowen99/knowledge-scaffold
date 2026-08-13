@@ -54,14 +54,14 @@
 .mwr .ui-empty strong { color: var(--ink2); font-size: 13px; }
 .mwr .ui-empty span { max-width: 420px; line-height: 1.55; }
 .mwr .ui-empty.compact { padding: 18px 0; }
-.mwr .ui-modal-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(16, 20, 28, .42); display: grid; place-items: center; padding: 24px; }
-.mwr .ui-modal { width: min(560px, 100%); max-height: calc(100vh - 48px); overflow: hidden; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--hair); border-radius: var(--radius-lg); box-shadow: 0 22px 60px rgba(0, 0, 0, .2); }
+.mwr .ui-modal-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(16, 20, 28, .42); display: grid; place-items: center; padding: 20px 24px; }
+.mwr .ui-modal { width: min(560px, 100%); max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); overflow: hidden; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--hair); border-radius: var(--radius-lg); box-shadow: 0 22px 60px rgba(0, 0, 0, .2); }
 .mwr .ui-modal.wide { width: min(960px, 100%); }
-.mwr .ui-modal > header { display: flex; justify-content: space-between; gap: 16px; padding: 18px 20px 14px; border-bottom: 1px solid var(--hair); }
+.mwr .ui-modal > header { display: flex; justify-content: space-between; gap: 16px; padding: 12px 20px 8px; border-bottom: 1px solid var(--hair); }
 .mwr .ui-modal h3 { margin: 0; }
-.mwr .ui-modal header p { margin: 5px 0 0; color: var(--muted); font-size: 12.5px; }
-.mwr .ui-modal-body { padding: 18px 20px; overflow: auto; }
-.mwr .ui-modal > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--hair); }
+.mwr .ui-modal header p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+.mwr .ui-modal-body { padding: 12px 20px; overflow: auto; }
+.mwr .ui-modal > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--hair); }
 /* ---- Markdown 视图 ---- */
 .mwr .mdv { font-size: 13.5px; line-height: 1.8; color: #26251f; }
 .mwr .mdv h1 { font-size: 19px; font-weight: 750; margin: 4px 0 10px; padding-bottom: 8px; border-bottom: 1px solid #eceae2; }

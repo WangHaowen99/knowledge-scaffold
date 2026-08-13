@@ -45,12 +45,11 @@
 .mwr .vercard .vn { font-size: 12px; font-weight: 650; color: var(--ink2); }
 .mwr .vercard .vv { font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
 /* ---- 二、三阶段：反馈、空状态、折叠导航与页面动效 ---- */
-.mwr .surface-stage { min-width: 0; animation: surface-enter var(--motion-normal) both; }
+.mwr .surface-stage { min-width: 0; }
 .mwr .surface-loading { width: min(900px, 100%); margin: 20px auto; padding: 24px; background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
 .mwr .workspace-empty-state { display: grid; place-items: center; align-content: center; width: min(900px, calc(100% - 40px)); margin: 20px auto; padding: 48px 24px; background: var(--surface-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
 .mwr .content-full .surface-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .mwr .content-full .surface-stage > * { flex: 1; min-height: 0; }
-@keyframes surface-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
 .mwr .desktop-sidebar-toggle { display: flex; }
 @media (min-width: 901px) {
