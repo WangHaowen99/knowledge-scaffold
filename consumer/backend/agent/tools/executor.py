@@ -2,21 +2,54 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
+import weakref
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from agent.exceptions import WorkflowCancelledError
+from agent.runtime.async_utils import (
+    call_async_or_thread,
+    find_group_exception,
+    is_async_callable,
+)
 from utils.logging import get_logger
-from utils.streaming import stream_writer_context, try_get_stream_writer
+from utils.streaming import try_get_stream_writer
 from agent.tools.base import BaseTool, ToolBatchResult, ToolContext, ToolInvocation, ToolOutcome
 from agent.tools.events import emit_protocol_event, emit_tool_finished, emit_tool_started
 
 logger = get_logger("tools.executor")
+
+
+_MAX_BACKGROUND_SYNC_TOOL_TASKS = 32
+
+
+@dataclass
+class _BackgroundSyncToolState:
+    """Bound and observable ownership for sync workers past a tool deadline."""
+
+    tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+
+
+_BACKGROUND_SYNC_TOOL_STATES: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, _BackgroundSyncToolState
+] = weakref.WeakKeyDictionary()
+_BACKGROUND_SYNC_TOOL_STATES_LOCK = threading.Lock()
+
+
+def _background_sync_tool_state() -> _BackgroundSyncToolState:
+    loop = asyncio.get_running_loop()
+    with _BACKGROUND_SYNC_TOOL_STATES_LOCK:
+        state = _BACKGROUND_SYNC_TOOL_STATES.get(loop)
+        if state is None:
+            state = _BackgroundSyncToolState()
+            _BACKGROUND_SYNC_TOOL_STATES[loop] = state
+        return state
 
 _SAFE_SCRIPT_EXECUTION_ERROR = "Error: Script execution failed due to an internal error."
 
@@ -31,10 +64,34 @@ def execute_tool_batch(
     tool_calls: Sequence[ToolInvocation],
     context: ToolContext,
 ) -> ToolBatchResult:
-    """Execute normalized invocations, then aggregate outcomes.
+    """Run the native-async tool core for legacy synchronous callers.
+
+    Async runtime code must call :func:`aexecute_tool_batch` directly. Keeping
+    this wrapper preserves the existing registry API without maintaining a
+    second scheduling implementation.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "execute_tool_batch() cannot run inside an event loop; "
+            "await aexecute_tool_batch() instead"
+        )
+    return asyncio.run(aexecute_tool_batch(tool_calls, context))
+
+
+async def aexecute_tool_batch(
+    tool_calls: Sequence[ToolInvocation],
+    context: ToolContext,
+) -> ToolBatchResult:
+    """Execute normalized invocations without blocking the caller event loop.
 
     Provider-specific payloads, including OpenAI ``tool_calls`` dictionaries,
     must be converted by the owning adapter before reaching this boundary.
+    Native async tools are awaited directly; synchronous tools are isolated by
+    :func:`asyncio.to_thread` in :func:`_ainvoke_tool`.
     """
     if not tool_calls:
         return ToolBatchResult()
@@ -58,11 +115,15 @@ def execute_tool_batch(
     outputs = list(early_outputs)
     pending_safe_batch: List[Dict[str, Any]] = []
 
-    def flush_safe_batch() -> bool:
+    async def flush_safe_batch() -> bool:
         nonlocal pending_safe_batch
         if not pending_safe_batch:
             return False
-        batch_outputs = _execute_parallel_batch(pending_safe_batch, context, subagent_event_emitter)
+        batch_outputs = await _aexecute_parallel_batch(
+            pending_safe_batch,
+            context,
+            subagent_event_emitter,
+        )
         outputs.extend(batch_outputs)
         pending_safe_batch = []
         return any(output["outcome"].terminal for output in batch_outputs)
@@ -71,16 +132,16 @@ def execute_tool_batch(
         if task["spec"].concurrency_safe:
             pending_safe_batch.append(task)
             continue
-        if flush_safe_batch():
+        if await flush_safe_batch():
             outputs.extend(_build_skipped_outputs(tasks[position:]))
             break
-        output = _execute_single_task(task, context, subagent_event_emitter)
+        output = await _aexecute_single_task(task, context, subagent_event_emitter)
         outputs.append(output)
         if output["outcome"].terminal:
             outputs.extend(_build_skipped_outputs(tasks[position + 1:]))
             break
     else:
-        flush_safe_batch()
+        await flush_safe_batch()
 
     outputs.sort(key=lambda item: item["index"])
     return _aggregate_outputs(outputs)
@@ -239,45 +300,67 @@ def _build_tool_task(
     }
 
 
-def _execute_parallel_batch(
+async def _aexecute_parallel_batch(
     batch: List[Dict[str, Any]],
     context: ToolContext,
     subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
 ) -> List[Dict[str, Any]]:
     global_limit = max(1, int(context.agent_config.parallel_default_max_workers or 1))
-    captured_writer = try_get_stream_writer()
+    global_semaphore = asyncio.Semaphore(global_limit)
     tool_limits = {
-        task["name"]: threading.BoundedSemaphore(
+        task["name"]: asyncio.Semaphore(
             max(1, int(task["spec"].max_parallelism or global_limit))
         )
         for task in batch
     }
     outputs_by_index: Dict[int, Dict[str, Any]] = {}
 
-    def run_task(task: Dict[str, Any]) -> Dict[str, Any]:
-        semaphore = tool_limits[task["name"]]
-        with semaphore:
-            if captured_writer:
-                with stream_writer_context(captured_writer):
-                    return _execute_single_task(task, context, subagent_event_emitter)
-            return _execute_single_task(task, context, subagent_event_emitter)
+    async def run_task(task: Dict[str, Any]) -> None:
+        async with global_semaphore:
+            async with tool_limits[task["name"]]:
+                outputs_by_index[task["index"]] = await _aexecute_single_task(
+                    task,
+                    context,
+                    subagent_event_emitter,
+                )
 
-    def run_task_with_context(captured_context, task: Dict[str, Any]) -> Dict[str, Any]:
-        return captured_context.run(run_task, task)
-
-    with ThreadPoolExecutor(max_workers=min(global_limit, len(batch))) as executor:
-        future_map = {
-            executor.submit(run_task_with_context, copy_context(), task): task
-            for task in batch
-        }
-        for future in as_completed(future_map):
-            task = future_map[future]
-            outputs_by_index[task["index"]] = future.result()
+    try:
+        async with asyncio.TaskGroup() as task_group:
+            for task in batch:
+                task_group.create_task(
+                    run_task(task),
+                    name="tool-{}-{}".format(task["name"], task["index"]),
+                )
+    except BaseExceptionGroup as exc_group:
+        cancellation = find_group_exception(exc_group, WorkflowCancelledError)
+        if cancellation is not None:
+            raise cancellation
+        raise
 
     return [outputs_by_index[task["index"]] for task in batch]
 
 
 def _execute_single_task(
+    task: Dict[str, Any],
+    context: ToolContext,
+    subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
+) -> Dict[str, Any]:
+    """Compatibility wrapper for tests and legacy synchronous integrations."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "_execute_single_task() cannot run inside an event loop; "
+            "await _aexecute_single_task() instead"
+        )
+    return asyncio.run(
+        _aexecute_single_task(task, context, subagent_event_emitter)
+    )
+
+
+async def _aexecute_single_task(
     task: Dict[str, Any],
     context: ToolContext,
     subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
@@ -290,6 +373,8 @@ def _execute_single_task(
     tool_call_id = task.get("tool_call_id")
     started_at_ms = _now_monotonic_ms()
     error_message: Optional[str] = None
+    error_code: Optional[str] = None
+    timeout_seconds: Optional[float] = None
 
     emit_tool_started(
         context=context,
@@ -335,11 +420,14 @@ def _execute_single_task(
                 )
 
             try:
-                outcome = spec.execute(
+                timeout_seconds = _resolve_tool_timeout_seconds(context)
+                outcome = await _ainvoke_tool(
+                    spec,
                     args=args,
                     context=context,
                     tool_call_id=tool_call_id,
                     event_emitter=event_emitter,
+                    timeout_seconds=timeout_seconds,
                 )
                 terminal_status = _resolve_outcome_status(outcome)
                 if terminal_status == "error":
@@ -347,6 +435,19 @@ def _execute_single_task(
             except WorkflowCancelledError:
                 logger.info("Tool execution cancelled for %s", name)
                 raise
+            except TimeoutError:
+                logger.warning(
+                    "Tool execution timed out tool=%s timeout_seconds=%s",
+                    name,
+                    timeout_seconds,
+                )
+                error_code = "TOOL_TIMEOUT"
+                error_message = "工具执行超时 {}（{} 秒）".format(
+                    name,
+                    _format_timeout_seconds(timeout_seconds),
+                )
+                outcome = ToolOutcome(content=error_message)
+                terminal_status = "error"
             except Exception as exc:
                 logger.error("Tool execution failed for %s", name, exc_info=True)
                 public_error = (
@@ -368,6 +469,8 @@ def _execute_single_task(
         raw_output=str(outcome.content if outcome.content is not None else ""),
         error=error_message,
         elapsed_ms=elapsed_ms,
+        error_code=error_code,
+        timeout_seconds=timeout_seconds if error_code == "TOOL_TIMEOUT" else None,
     )
 
     return {
@@ -381,6 +484,123 @@ def _execute_single_task(
             "elapsed_ms": elapsed_ms,
         },
     }
+
+
+async def _ainvoke_tool(
+    spec: BaseTool,
+    *,
+    args: Dict[str, Any],
+    context: ToolContext,
+    tool_call_id: Optional[str],
+    event_emitter: Optional[Callable[..., Any]],
+    timeout_seconds: float,
+) -> ToolOutcome:
+    """Invoke one tool through its native async or sync compatibility API."""
+    call_kwargs = {
+        "args": args,
+        "context": context,
+        "tool_call_id": tool_call_id,
+        "event_emitter": event_emitter,
+    }
+    async_execute = getattr(spec, "aexecute", None)
+    if callable(async_execute):
+        return await _ainvoke_callable_with_timeout(
+            async_execute,
+            timeout_seconds=timeout_seconds,
+            run_id=context.run_id,
+            task_name="async-tool-{}".format(spec.name),
+            **call_kwargs,
+        )
+
+    execute = getattr(spec, "execute", None)
+    if not callable(execute):
+        raise TypeError("Tool '{}' has no execute/aexecute method".format(spec.name))
+    return await _ainvoke_callable_with_timeout(
+        execute,
+        timeout_seconds=timeout_seconds,
+        run_id=context.run_id,
+        task_name="sync-tool-{}".format(spec.name),
+        **call_kwargs,
+    )
+
+
+async def _ainvoke_callable_with_timeout(
+    func: Callable[..., ToolOutcome],
+    *,
+    timeout_seconds: float,
+    run_id: Optional[str],
+    task_name: str,
+    **kwargs: Any,
+) -> ToolOutcome:
+    if is_async_callable(func):
+        async with asyncio.timeout(timeout_seconds):
+            return await call_async_or_thread(
+                func,
+                run_id=run_id,
+                task_name=task_name,
+                **kwargs,
+            )
+
+    state = _background_sync_tool_state()
+    if len(state.tasks) >= _MAX_BACKGROUND_SYNC_TOOL_TASKS:
+        raise TimeoutError(
+            "sync tool background worker capacity is exhausted"
+        )
+    invocation = asyncio.create_task(
+        call_async_or_thread(
+            func,
+            run_id=run_id,
+            task_name=task_name,
+            **kwargs,
+        ),
+        name="{}-deadline".format(task_name),
+    )
+    state.tasks.add(invocation)
+    invocation.add_done_callback(
+        lambda task, owned_state=state: _consume_background_tool_result(
+            task,
+            owned_state,
+        )
+    )
+    try:
+        done, _ = await asyncio.wait({invocation}, timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        invocation.cancel()
+        try:
+            await invocation
+        except asyncio.CancelledError:
+            pass
+        raise
+    if invocation in done:
+        return invocation.result()
+
+    # Python cannot kill a running thread. After the public deadline expires,
+    # retain ownership until the worker settles. Admission above caps all live
+    # sync workers so permanently blocked tools cannot grow without bound.
+    raise TimeoutError
+
+
+def _consume_background_tool_result(
+    task: asyncio.Task[Any],
+    state: _BackgroundSyncToolState,
+) -> None:
+    state.tasks.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+def _resolve_tool_timeout_seconds(context: ToolContext) -> float:
+    raw_timeout = getattr(context.agent_config, "tool_timeout_seconds", 600)
+    try:
+        timeout_seconds = float(raw_timeout)
+    except (TypeError, ValueError):
+        timeout_seconds = 600.0
+    return max(0.001, timeout_seconds)
+
+
+def _format_timeout_seconds(timeout_seconds: Optional[float]) -> str:
+    value = float(timeout_seconds or 0)
+    return str(int(value)) if value.is_integer() else "{:g}".format(value)
 
 
 def _build_skipped_outputs(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

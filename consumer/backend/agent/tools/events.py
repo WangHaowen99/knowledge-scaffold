@@ -315,6 +315,8 @@ def emit_tool_finished(
     raw_output: str,
     error: Optional[str],
     elapsed_ms: int,
+    error_code: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
 ) -> None:
     payload = build_tool_finished_payload(
         tool_name=tool_name,
@@ -323,6 +325,8 @@ def emit_tool_finished(
         raw_output=raw_output,
         error=error,
         elapsed_ms=elapsed_ms,
+        error_code=error_code,
+        timeout_seconds=timeout_seconds,
     )
     observability_payload = dict(payload)
     if tool_name in _FULL_TRACE_OUTPUT_TOOLS:
@@ -344,6 +348,8 @@ def build_tool_finished_payload(
     raw_output: str,
     error: Optional[str],
     elapsed_ms: int,
+    error_code: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Build the bounded public payload and persist its complete output."""
     text = redact_sensitive_text(raw_output)
@@ -365,6 +371,10 @@ def build_tool_finished_payload(
         "error": redact_sensitive_text(error),
         "elapsed_ms": elapsed_ms,
     }
+    if error_code:
+        payload["error_code"] = str(error_code).strip()[:160]
+    if timeout_seconds is not None:
+        payload["timeout_seconds"] = max(0, float(timeout_seconds))
     output_projection = _build_output_projection(tool_name, text)
     if output_projection is not None:
         payload["output_projection"] = output_projection

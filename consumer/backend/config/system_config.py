@@ -127,6 +127,7 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "sub_agent_max_concurrency": {"env": "AGENT_SUB_AGENT_MAX_CONCURRENCY", "type": "int", "default": 6},
         "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default":10},
         "parallel_default_max_workers": {"env": "AGENT_PARALLEL_DEFAULT_MAX_WORKERS", "type": "int", "default": 10},
+        "tool_timeout_seconds": {"env": "AGENT_TOOL_TIMEOUT_SECONDS", "type": "int", "default": 600},
         "context_max_rounds": {"env": "AGENT_CONTEXT_MAX_ROUNDS", "type": "int", "default": 10},
         "runtime_warmup_enabled": {"env": "AGENT_RUNTIME_WARMUP_ENABLED", "type": "bool", "default": True},
         # Operation evolution thresholds
@@ -1682,6 +1683,7 @@ def _agent_config_for_connection_check(effective: dict[str, Any]) -> Any:
         sub_agent_max_concurrency=int(effective["sub_agent_max_concurrency"]),
         sub_agent_max_depth=int(effective["sub_agent_max_depth"]),
         parallel_default_max_workers=int(effective["parallel_default_max_workers"]),
+        tool_timeout_seconds=max(1, int(effective.get("tool_timeout_seconds") or 600)),
         context_max_rounds=int(effective["context_max_rounds"]),
         runtime_warmup_enabled=bool(effective.get("runtime_warmup_enabled", True)),
         execute_script_timeout=int(effective.get("execute_script_timeout") or 300),

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.exceptions import WorkflowCancelledError
+from agent.runtime.async_utils import run_sync_compat
 from llm import get_llm_router
 from utils.logging import get_logger
 from ontology.ontologies import build_ontologies_section
@@ -156,6 +158,112 @@ class SubAgent:
         parent_selected_ontology_id: Optional[str] = None,
         parent_selected_ontology_version: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Compatibility entry point for legacy synchronous sub-agent callers."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "SubAgent.execute() cannot run inside an event loop; "
+                "await SubAgent.aexecute() instead"
+            )
+        return asyncio.run(
+            self._aexecute_core(
+                task,
+                context,
+                run_id=run_id,
+                session_id=session_id,
+                event_emitter=event_emitter,
+                task_id=task_id,
+                parent_tool_call_id=parent_tool_call_id,
+                parent_agent_mode=parent_agent_mode,
+                group_id=group_id,
+                depth=depth,
+                parent_subagent_id=parent_subagent_id,
+                root_tool_call_id=root_tool_call_id,
+                parent_model_profile_id=parent_model_profile_id,
+                parent_workspace_id=parent_workspace_id,
+                subagent_manager=subagent_manager,
+                protocol_event_observer=protocol_event_observer,
+                observer=observer,
+                parent_selected_ontology_id=parent_selected_ontology_id,
+                parent_selected_ontology_version=parent_selected_ontology_version,
+                use_native_async_engine=False,
+            )
+        )
+
+    async def aexecute(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        run_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        task_id: Optional[str] = None,
+        parent_tool_call_id: Optional[str] = None,
+        parent_agent_mode: Optional[str] = None,
+        group_id: Optional[str] = None,
+        depth: Optional[int] = None,
+        parent_subagent_id: Optional[str] = None,
+        root_tool_call_id: Optional[str] = None,
+        parent_model_profile_id: Optional[str] = None,
+        parent_workspace_id: Optional[str] = None,
+        subagent_manager: Any = None,
+        protocol_event_observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        observer: Any = None,
+        parent_selected_ontology_id: Optional[str] = None,
+        parent_selected_ontology_version: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Execute a child agent directly on the caller's event loop."""
+        return await self._aexecute_core(
+            task,
+            context,
+            run_id=run_id,
+            session_id=session_id,
+            event_emitter=event_emitter,
+            task_id=task_id,
+            parent_tool_call_id=parent_tool_call_id,
+            parent_agent_mode=parent_agent_mode,
+            group_id=group_id,
+            depth=depth,
+            parent_subagent_id=parent_subagent_id,
+            root_tool_call_id=root_tool_call_id,
+            parent_model_profile_id=parent_model_profile_id,
+            parent_workspace_id=parent_workspace_id,
+            subagent_manager=subagent_manager,
+            protocol_event_observer=protocol_event_observer,
+            observer=observer,
+            parent_selected_ontology_id=parent_selected_ontology_id,
+            parent_selected_ontology_version=parent_selected_ontology_version,
+            use_native_async_engine=True,
+        )
+
+    async def _aexecute_core(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        run_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        task_id: Optional[str] = None,
+        parent_tool_call_id: Optional[str] = None,
+        parent_agent_mode: Optional[str] = None,
+        group_id: Optional[str] = None,
+        depth: Optional[int] = None,
+        parent_subagent_id: Optional[str] = None,
+        root_tool_call_id: Optional[str] = None,
+        parent_model_profile_id: Optional[str] = None,
+        parent_workspace_id: Optional[str] = None,
+        subagent_manager: Any = None,
+        protocol_event_observer: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        observer: Any = None,
+        parent_selected_ontology_id: Optional[str] = None,
+        parent_selected_ontology_version: Optional[str] = None,
+        use_native_async_engine: bool,
+    ) -> Dict[str, Any]:
         logger.info("Sub-agent executing task: %s...", task[:100])
         subagent_id = "sub_{}".format(uuid.uuid4().hex[:10])
         resolved_task_id = str(task_id) if task_id is not None else ""
@@ -282,18 +390,27 @@ class SubAgent:
             agent_config = get_llm_router().agent_config
             iteration_limit = agent_config.sub_agent_max_iterations if agent_config else 10
 
-            final_state = engine.run(
-                initial_state,
-                caller="subagent",
-                system_prompt=system_prompt,
-                iteration_limit=iteration_limit,
-                token_callback=emit_token,
-                tool_event_emitter=emit_engine_event,
-                protocol_event_observer=protocol_event_observer,
-                subagent_manager=subagent_manager,
-                subagent_lineage=runtime_lineage,
-                observer=observer,
-            )
+            engine_kwargs = {
+                "caller": "subagent",
+                "system_prompt": system_prompt,
+                "iteration_limit": iteration_limit,
+                "token_callback": emit_token,
+                "tool_event_emitter": emit_engine_event,
+                "protocol_event_observer": protocol_event_observer,
+                "subagent_manager": subagent_manager,
+                "subagent_lineage": runtime_lineage,
+                "observer": observer,
+            }
+            if use_native_async_engine:
+                final_state = await engine.arun(initial_state, **engine_kwargs)
+            else:
+                final_state = await run_sync_compat(
+                    engine.run,
+                    initial_state,
+                    run_id=run_id,
+                    task_name="legacy-subagent-engine",
+                    **engine_kwargs,
+                )
             emit("subagent.progress", {**common, "status": "running", "step": "llm_call_finished", "meta": {}})
 
             output_text = str(final_state.get("final_output") or "").strip()
@@ -312,6 +429,10 @@ class SubAgent:
         except WorkflowCancelledError as exc:
             logger.info("Sub-agent cancelled: %s", exc.message)
             emit("subagent.finished", {**common, "status": "cancelled", "error": exc.message})
+            raise
+        except asyncio.CancelledError:
+            logger.info("Sub-agent task was cancelled")
+            emit("subagent.finished", {**common, "status": "cancelled", "error": "cancelled"})
             raise
         except Exception as exc:
             logger.exception("Sub-agent failed: %s", exc)
