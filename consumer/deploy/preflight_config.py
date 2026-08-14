@@ -568,16 +568,10 @@ def validate_config(
     elif mcp_port != 7488:
         errors.append({"type": "mcp_container_port_must_be_7488", "port": mcp_port})
 
-    user_limit = _positive_int(env.get("USER_MAX_COUNT", ""))
-    auth_user_limit = _positive_int(env.get("AUTH_USER_MAX_COUNT", ""))
-    if user_limit is None or auth_user_limit is None:
-        errors.append({"type": "user_limits_must_be_explicit"})
-    elif user_limit != auth_user_limit:
-        errors.append({
-            "type": "user_limit_mismatch",
-            "user_max_count": user_limit,
-            "auth_user_max_count": auth_user_limit,
-        })
+    # User-count limits are retired. Keep the report shape for consumers of
+    # the preflight artifact, but ignore legacy env values entirely.
+    user_limit = 0
+    auth_user_limit = 0
 
     storage_errors, storage_warnings, storage_contract = _release_storage_findings(
         env,

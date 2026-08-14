@@ -18,9 +18,6 @@ from typing import Any, Dict, Iterable, Optional, Protocol
 
 from flask import current_app, g, jsonify, request
 
-from config import LimitsConfig
-
-
 @dataclass(frozen=True)
 class AuthUser:
     username: str
@@ -350,9 +347,6 @@ class AuthManager:
         users = self._load_users()
         if username in users:
             raise ValueError(f"用户 {username} 已存在")
-        max_users = LimitsConfig.from_env().user_max_count
-        if len(users) >= max_users:
-            raise ValueError("用户数量已达上限: {}".format(max_users))
         users[username] = {
             "username": username,
             "password_hash": self.hash_password(password),

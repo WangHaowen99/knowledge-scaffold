@@ -123,14 +123,11 @@ AUTH_SERVER_URL=http://auth-server:5056
 AUTH_SERVER_ADMIN_TOKEN=<至少16个字符的独立随机值>
 AUTH_BOOTSTRAP_ADMIN_PASSWORD=<首次启动使用的独立强密码>
 MCP_TOKEN_SECRET=<至少32个字符、且与上项不同的随机值>
-USER_MAX_COUNT=10
-AUTH_USER_MAX_COUNT=10
 ```
 
 启动服务：
 
 ```bash
-export AUTH_USER_MAX_COUNT=10
 ./run_docker.sh latest all
 ```
 

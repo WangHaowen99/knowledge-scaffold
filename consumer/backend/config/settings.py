@@ -158,7 +158,7 @@ class LimitsConfig:
     """Business/runtime limits shared by route and storage boundaries."""
 
     run_tps: int = 50
-    user_max_count: int = 10
+    user_max_count: int = 0
     workspace_max_count: int = 50
     ontology_max_count_per_workspace: int = 10
     ontology_object_max_count: int = 200
@@ -182,7 +182,7 @@ class LimitsConfig:
         config = load_ops_config()["limits"]
         return cls(
             run_tps=max(1, int(config["run_tps"])),
-            user_max_count=max(1, int(config["user_max_count"])),
+            user_max_count=0,
             workspace_max_count=max(1, int(config["workspace_max_count"])),
             ontology_max_count_per_workspace=max(1, int(config["ontology_max_count_per_workspace"])),
             ontology_object_max_count=max(1, int(config["ontology_object_max_count"])),

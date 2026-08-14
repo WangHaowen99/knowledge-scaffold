@@ -360,8 +360,8 @@ exit 1
         (deploy_root / "state" / "preflight-config.json").read_text()
     )
     assert report["limits"] == {
-        "user_max_count": 10,
-        "auth_user_max_count": 10,
+        "user_max_count": 0,
+        "auth_user_max_count": 0,
     }
     assert report["host_ports"] == {
         "backend": 5100,

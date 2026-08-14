@@ -14,7 +14,6 @@ PlatformGetTransport = Callable[[str, dict[str, str], float], dict[str, Any]]
 
 OPS_CONFIG_LIMIT_FIELDS = {
     "run_tps",
-    "user_max_count",
     "workspace_max_count",
     "ontology_max_count_per_workspace",
     "ontology_object_max_count",
