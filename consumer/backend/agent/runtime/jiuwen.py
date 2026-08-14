@@ -218,11 +218,11 @@ class JiuwenAsyncAgentRuntime:
         normalized_run_id = str(run_id or "").strip()
         with self._runs_lock:
             active = self._runs.get(normalized_run_id)
-            if (
-                active is None
-                or active.terminal_committed
-                or (active.task is not None and active.task.done())
-            ):
+            if active is None:
+                return False
+            if active.terminal_committed:
+                return False
+            if active.task is not None and active.task.done():
                 return False
             active.cancel_requested = True
             active.cancel_reason = str(reason or "cancelled")
@@ -428,15 +428,12 @@ class JiuwenAsyncAgentRuntime:
     @staticmethod
     def _classify_runtime_error(exc: BaseException) -> tuple[str, int | None]:
         chain = JiuwenAsyncAgentRuntime._exception_chain(exc)
-        status_code = next(
-            (
-                code
-                for item in chain
-                if (code := JiuwenAsyncAgentRuntime._exception_status_code(item))
-                is not None
-            ),
-            None,
-        )
+        status_code = None
+        for item in chain:
+            candidate = JiuwenAsyncAgentRuntime._exception_status_code(item)
+            if candidate is not None:
+                status_code = candidate
+                break
         type_names = {type(item).__name__.lower() for item in chain}
         if any(isinstance(item, (TimeoutError, asyncio.TimeoutError)) for item in chain) or any(
             "timeout" in name for name in type_names
@@ -449,16 +446,7 @@ class JiuwenAsyncAgentRuntime:
             for name in type_names
         ):
             return "authentication", status_code
-        if any(isinstance(item, ConnectionError) for item in chain) or any(
-            any(token in name for token in (
-                "connection",
-                "connecterror",
-                "networkerror",
-                "transporterror",
-                "connectorerror",
-            ))
-            for name in type_names
-        ):
+        if JiuwenAsyncAgentRuntime._contains_connection_error(chain, type_names):
             return "connection", status_code
         if status_code is not None:
             return (
@@ -466,6 +454,26 @@ class JiuwenAsyncAgentRuntime:
                 status_code,
             )
         return "internal", None
+
+    @staticmethod
+    def _contains_connection_error(
+        chain: list[BaseException],
+        type_names: set[str],
+    ) -> bool:
+        if any(isinstance(item, ConnectionError) for item in chain):
+            return True
+        connection_tokens = (
+            "connection",
+            "connecterror",
+            "networkerror",
+            "transporterror",
+            "connectorerror",
+        )
+        for name in type_names:
+            for token in connection_tokens:
+                if token in name:
+                    return True
+        return False
 
     @staticmethod
     def _exception_chain(exc: BaseException) -> list[BaseException]:

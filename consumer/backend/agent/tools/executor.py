@@ -334,7 +334,7 @@ async def _aexecute_parallel_batch(
     except BaseExceptionGroup as exc_group:
         cancellation = find_group_exception(exc_group, WorkflowCancelledError)
         if cancellation is not None:
-            raise cancellation
+            raise cancellation from exc_group
         raise
 
     return [outputs_by_index[task["index"]] for task in batch]

@@ -305,17 +305,18 @@ class PublicEventAdapter:
             return sanitized
         return value
 
-    def _sanitize_source(self, source: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    @staticmethod
+    def _sanitize_source(source: Mapping[str, Any] | None) -> dict[str, Any] | None:
         if not source:
             return None
-        return {
-            key: value
-            for key, value in {
-                "node": str(source.get("node") or "").strip() or None,
-                "component": str(source.get("component") or "").strip() or None,
-            }.items()
-            if value is not None
-        } or None
+        sanitized: dict[str, Any] = {}
+        node = str(source.get("node") or "").strip()
+        if node:
+            sanitized["node"] = node
+        component = str(source.get("component") or "").strip()
+        if component:
+            sanitized["component"] = component
+        return sanitized or None
 
     @staticmethod
     def _normalized_key(key: str) -> str:

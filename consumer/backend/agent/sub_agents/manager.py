@@ -162,7 +162,7 @@ class SubAgentManager:
                 task_count=len(tasks),
                 completed_count=len(results_by_id),
             )
-            raise cancellation
+            raise cancellation from exc_group
         finally:
             for _ in range(reserved_slots):
                 semaphore.release()
@@ -523,12 +523,13 @@ class SubAgentManager:
 
         def record_step(step: str) -> None:
             normalized = str(step or "").strip()
-            if (
-                not normalized
-                or (key_steps and key_steps[-1] == normalized)
-                or normalized in key_steps
-                or len(key_steps) >= 8
-            ):
+            if not normalized:
+                return
+            if key_steps and key_steps[-1] == normalized:
+                return
+            if normalized in key_steps:
+                return
+            if len(key_steps) >= 8:
                 return
             key_steps.append(normalized)
 
@@ -621,8 +622,10 @@ class SubAgentManager:
                 self._async_semaphore = asyncio.BoundedSemaphore(self.max_concurrency)
             else:
                 raise RuntimeError("SubAgentManager is bound to a different event loop")
-        assert self._async_semaphore is not None
-        return self._async_semaphore
+        semaphore = self._async_semaphore
+        if semaphore is None:
+            raise RuntimeError("SubAgentManager semaphore initialization failed")
+        return semaphore
 
     @staticmethod
     def _emit_group_started(

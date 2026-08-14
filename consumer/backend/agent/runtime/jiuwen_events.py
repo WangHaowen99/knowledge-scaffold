@@ -290,14 +290,16 @@ class JiuwenRuntimeEventBridge:
             terminal = self._pending_terminal
             self._pending_terminal = None
             self.queue.put_nowait(terminal)
-        if (
-            self._close_pending
-            and self._pending_terminal is None
-            and not self._closed_enqueued
-            and not self.queue.full()
-        ):
-            self.queue.put_nowait(self._closed)
-            self._closed_enqueued = True
+        if not self._close_pending:
+            return
+        if self._pending_terminal is not None:
+            return
+        if self._closed_enqueued:
+            return
+        if self.queue.full():
+            return
+        self.queue.put_nowait(self._closed)
+        self._closed_enqueued = True
 
     def _event(
         self,

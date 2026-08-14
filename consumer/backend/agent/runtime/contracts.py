@@ -45,7 +45,13 @@ class RuntimeHistoryMessage(BaseModel):
     @model_validator(mode="after")
     def _validate_role_shape(self) -> "RuntimeHistoryMessage":
         if self.role == "user":
-            if self.tool_calls or self.tool_call_id or self.name or self.reasoning_content:
+            forbidden_fields = (
+                self.tool_calls,
+                self.tool_call_id,
+                self.name,
+                self.reasoning_content,
+            )
+            if any(forbidden_fields):
                 raise ValueError("user history message cannot contain tool or reasoning fields")
         elif self.role == "assistant":
             if self.tool_call_id or self.name:

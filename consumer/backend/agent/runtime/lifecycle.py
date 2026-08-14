@@ -89,7 +89,10 @@ class JiuwenRunnerLifecycle:
                 return False
             self._require_owner(loop)
             transition_lock = self._transition_lock
-        assert transition_lock is not None
+        if transition_lock is None:
+            raise JiuwenRuntimeLifecycleError(
+                "openJiuwen Runner transition lock is unavailable"
+            )
 
         async with transition_lock:
             with self._guard:
@@ -133,12 +136,7 @@ class JiuwenRunnerLifecycle:
         with self._guard:
             if self._state == "stopping":
                 raise JiuwenRuntimeLifecycleError("openJiuwen Runner is stopping")
-            if (
-                self._owner_loop is not None
-                and self._owner_loop is not loop
-                and self._state == "stopped"
-                and self._owner_loop.is_closed()
-            ):
+            if self._can_rebind_closed_owner(loop):
                 # A failed startup can leave the binding attached to the loop
                 # that attempted it. Once that loop is closed there can be no
                 # queued transition using its lock, so a later app startup may
@@ -158,8 +156,22 @@ class JiuwenRunnerLifecycle:
                     raise JiuwenRuntimeLifecycleError(
                         message.format(self._mode, mode)
                     )
-            assert self._transition_lock is not None
-            return self._transition_lock
+            transition_lock = self._transition_lock
+            if transition_lock is None:
+                raise JiuwenRuntimeLifecycleError(
+                    "openJiuwen Runner transition lock is unavailable"
+                )
+            return transition_lock
+
+    def _can_rebind_closed_owner(self, loop: asyncio.AbstractEventLoop) -> bool:
+        owner_loop = self._owner_loop
+        if owner_loop is None:
+            return False
+        if owner_loop is loop:
+            return False
+        if self._state != "stopped":
+            return False
+        return owner_loop.is_closed()
 
     def _require_owner(self, loop: asyncio.AbstractEventLoop) -> None:
         if self._owner_loop is not loop:
