@@ -213,7 +213,42 @@ services:
         self.assertEqual(report["auth"]["issuer"], "")
         self.assertEqual(report["auth"]["audience"], "")
 
-    def test_rejects_divergent_limits_and_reused_secret(self) -> None:
+    def test_legacy_user_limits_are_ignored(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV.replace("AUTH_USER_MAX_COUNT=10", "AUTH_USER_MAX_COUNT=11"),
+            encoding="utf-8",
+        )
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["limits"], {
+            "user_max_count": 0,
+            "auth_user_max_count": 0,
+        })
+
+    def test_missing_user_limits_default_to_unlimited(self) -> None:
+        self.env_file.write_text(
+            VALID_ENV.replace("USER_MAX_COUNT=10\n", "")
+            .replace("AUTH_USER_MAX_COUNT=10\n", ""),
+            encoding="utf-8",
+        )
+
+        report = validate_config(
+            self.env_file,
+            self.root / ".onto-runtime",
+            compose_file=self.compose_file,
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["limits"]["user_max_count"], 0)
+        self.assertEqual(report["limits"]["auth_user_max_count"], 0)
+
+    def test_rejects_reused_secret(self) -> None:
         shared = "shared-secret-that-is-long-enough-for-both"
         self.env_file.write_text(
             VALID_ENV.replace("auth-admin-token-that-is-long", shared)
@@ -231,7 +266,7 @@ services:
         self.assertFalse(report["ok"])
         error_types = {item["type"] for item in report["errors"]}
         self.assertIn("mcp_secret_reuses_auth_admin_token", error_types)
-        self.assertIn("user_limit_mismatch", error_types)
+        self.assertNotIn("user_limit_mismatch", error_types)
 
     def test_rejects_missing_or_reused_bootstrap_password(self) -> None:
         self.env_file.write_text(

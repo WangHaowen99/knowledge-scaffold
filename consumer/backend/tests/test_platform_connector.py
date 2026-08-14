@@ -717,7 +717,6 @@ def test_platform_policy_maps_snapshot_to_agent_ops_config_fields():
             "checksum": "sha256:test",
             "limits": {
                 "run_tps": 50,
-                "user_max_count": 100,
                 "workspace_max_count": 5,
                 "ontology_max_count_per_workspace": 20,
                 "ontology_object_max_count": 200,
@@ -740,7 +739,6 @@ def test_platform_policy_maps_snapshot_to_agent_ops_config_fields():
         "checksum": "sha256:test",
         "limits": {
             "run_tps": 50,
-            "user_max_count": 100,
             "workspace_max_count": 5,
             "ontology_max_count_per_workspace": 20,
             "ontology_object_max_count": 200,

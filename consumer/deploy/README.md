@@ -75,7 +75,7 @@ cd /opt
 tar -xzf onto-agent-<版本号>-linux-<架构>.tar.gz
 ```
 
-3. 进入安装目录，从示例创建 `backend/.env`，配置 `AUTH_SERVER_ADMIN_TOKEN`，确认两个用户上限一致，再执行部署：
+3. 进入安装目录，从示例创建 `backend/.env`，配置 `AUTH_SERVER_ADMIN_TOKEN`，再执行部署。用户数量不受配置限制，旧版的 `USER_MAX_COUNT` 和 `AUTH_USER_MAX_COUNT` 可删除：
 
 ```bash
 cd /opt/onto-agent

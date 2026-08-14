@@ -60,12 +60,10 @@ class UserStore:
     def __init__(
         self,
         users_file: str | Path,
-        user_max_count: int = 1000,
+        user_max_count: int = 0,
         bootstrap_admin_password: Optional[str] = None,
     ) -> None:
         self.users_file = Path(users_file)
-        user_max_count = int(user_max_count)
-        self._user_max_count = 0 if user_max_count == 0 else max(1, user_max_count)
         self._lock = threading.Lock()
         self._users_cache: Optional[Dict[str, Dict[str, Any]]] = None
         self._users_mtime: Optional[float] = None
@@ -332,8 +330,6 @@ class UserStore:
         users = self._load_users()
         if username in users:
             raise ValueError(f"用户 {username} 已存在")
-        if self._user_max_count > 0 and len(users) >= self._user_max_count:
-            raise ValueError("用户数量已达上限: {}".format(self._user_max_count))
         users[username] = {
             "username": username,
             "password_hash": self.hash_password(password),
@@ -362,8 +358,6 @@ class UserStore:
             raise ValueError(f"用户 {username} 已存在")
         if any(normalize_email(r.get("email")) == email for r in users.values()):
             raise ValueError("邮箱已被注册")
-        if self._user_max_count > 0 and len(users) >= self._user_max_count:
-            raise ValueError("用户数量已达上限: {}".format(self._user_max_count))
         users[username] = {
             "username": username,
             "password_hash": password_hash,

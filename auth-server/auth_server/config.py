@@ -22,7 +22,8 @@ DEFAULT_ISSUER = "http://auth-server:5056"
 DEFAULT_AUDIENCE = "meta-wise"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5056
-DEFAULT_USER_MAX_COUNT = 1000
+# 0 disables the user-count limit. Deployments may set a positive value.
+DEFAULT_USER_MAX_COUNT = 0
 DEFAULT_ENABLE_REGISTRATION = True
 
 
@@ -91,12 +92,8 @@ class AuthServerConfig:
         bootstrap_admin_password = str(self.bootstrap_admin_password or "") or None
         object.__setattr__(self, "bootstrap_admin_password", bootstrap_admin_password)
 
-        user_max_count = int(self.user_max_count)
-        object.__setattr__(
-            self,
-            "user_max_count",
-            0 if user_max_count == 0 else max(1, user_max_count),
-        )
+        # User-count limits are retired; retain the field for old callers.
+        object.__setattr__(self, "user_max_count", 0)
 
         object.__setattr__(self, "enable_registration", bool(self.enable_registration))
 
@@ -115,7 +112,7 @@ class AuthServerConfig:
             bootstrap_admin_password=env.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD"),
             host=str(env.get("AUTH_SERVER_HOST") or DEFAULT_HOST).strip(),
             port=_int_env(env, "AUTH_SERVER_PORT", DEFAULT_PORT),
-            user_max_count=_int_env(env, "AUTH_USER_MAX_COUNT", DEFAULT_USER_MAX_COUNT),
+            user_max_count=DEFAULT_USER_MAX_COUNT,
             enable_registration=_bool_env(
                 env, "AUTH_ENABLE_REGISTRATION", DEFAULT_ENABLE_REGISTRATION
             ),

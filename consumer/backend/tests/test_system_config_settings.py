@@ -868,7 +868,7 @@ def test_limits_config_reads_ops_config_instead_of_system_config(tmp_path, monke
     assert limits.run_tps == 12
     assert limits.workspace_max_count == 7
     assert limits.data_connection_configs_max_per_workspace == 8
-    assert limits.user_max_count == 9
+    assert limits.user_max_count == 0
     assert limits.ontology_max_count_per_workspace == 6
     assert limits.ontology_object_max_count == 201
     assert limits.ontology_operation_max_count == 101
@@ -931,7 +931,7 @@ def test_limits_config_uses_env_when_ops_config_field_is_missing(tmp_path, monke
     assert limits.run_tps == 11
     assert limits.workspace_max_count == 6
     assert limits.data_connection_configs_max_per_workspace == 9
-    assert limits.user_max_count == 4
+    assert limits.user_max_count == 0
     assert limits.ontology_max_count_per_workspace == 3
     assert limits.ontology_object_max_count == 202
     assert limits.ontology_operation_max_count == 102

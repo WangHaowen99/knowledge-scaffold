@@ -78,7 +78,6 @@ meta-wise 解耦鉴权系统的**预置 auth server v1**。设计依据见
 | `AUTH_SERVER_ADMIN_TOKEN` | 未设置 | Admin API 共享密钥；未设置则 /admin/* 全部 503 |
 | `AUTH_BOOTSTRAP_ADMIN_PASSWORD` | 未设置 | 首次创建 users.json 时必填的管理员初始强密码；已有用户文件时无需配置 |
 | `AUTH_SERVER_HOST` / `AUTH_SERVER_PORT` | `127.0.0.1` / `5056` | 监听地址与端口 |
-| `AUTH_USER_MAX_COUNT` | `1000` | 用户数量上限；设为 `0` 表示不限制 |
 | `AUTH_ENABLE_REGISTRATION` | `true` | 自助注册开关；设为 `false` 可关闭 |
 
 限流窗口（每小时 5 次）为 `registration.py` 内常量，不做 env。
