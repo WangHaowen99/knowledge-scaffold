@@ -316,7 +316,7 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
                 <div className="doc-h">
                   <span>≡ {fileEntry?.name || parts.at(-1)}</span>
                   <span className="viewtog">
-                    {isMd && !editing && <><button className={view !== 'source' ? 'on' : ''} onClick={() => setView('render')}>渲染</button><button className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button></>}
+                    {isMd && !editing && <><button type="button" aria-pressed={view !== 'source'} className={view !== 'source' ? 'on' : ''} onClick={() => setView('render')}>渲染</button><button type="button" aria-pressed={view === 'source'} className={view === 'source' ? 'on' : ''} onClick={() => setView('source')}>源码</button></>}
                     {canEditFile && !editing && <button className="btn" onClick={() => { setEditContent(content); setEditing(true); }}>编辑</button>}
                     {editing && <><button className="btn" onClick={() => { setEditing(false); setEditContent(content); }}>取消</button><button className="btn btn-p" disabled={fileBusy === 'save'} onClick={saveFile}>{fileBusy === 'save' ? '保存中…' : '保存'}</button></>}
                   </span>
