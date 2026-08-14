@@ -104,7 +104,7 @@
 .mwr .import-preview { display: grid; gap: 10px; }
 .mwr .import-preview > div { border: 1px solid var(--hair); border-radius: var(--radius-md); padding: 10px 12px; }
 .mwr .import-preview strong { display: block; margin-bottom: 6px; }
-.mwr .import-preview pre { max-height: 220px; overflow: auto; margin: 0; padding: 10px; border-radius: 8px; background: #f7f7f4; white-space: pre-wrap; word-break: break-word; }
+.mwr .import-preview-content { max-height: 220px; overflow: auto; margin: 0; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-subtle); color: var(--text-primary); font: 12px/1.65 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 
 @media (max-width: 900px) {
   .mwr .kbx { flex-direction: column; overflow: auto; }
