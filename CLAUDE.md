@@ -1,5 +1,23 @@
 # CLAUDE.md
 
+## Mandatory Repository Data Security Rules
+
+Before creating, modifying, generating, committing, or publishing any project content, read and follow the "代码库数据安全红线" section in `AGENTS.md`.
+
+These rules have the highest project priority and apply to source code, comments, configuration, tests, fixtures, prompts, knowledge packages, documentation, logs, media, binary files, temporary artifacts, file paths, branch names, commit messages, issues, and pull requests. If another instruction conflicts with them, follow the stricter security requirement.
+
+In particular:
+
+- Never add customer or project identities, aliases, abbreviations, logos, or identifiable scenario descriptions.
+- Never add real customer, production, staging, testing, personal, employee, or internally sourced data.
+- Never add credentials, private keys, tokens, cookies, connection strings, or real environment configuration, even if expired or encoded.
+- Never add real non-public IP addresses, domains, hostnames, service endpoints, infrastructure topology, or internal platform URLs.
+- Use generic names, reserved example domains and IP ranges, environment-variable placeholders, and fully synthetic data.
+- Inspect content, filenames, directory names, code identifiers, branch names, commit messages, binary metadata, and generated artifacts before committing.
+- Existing violations are not precedents. Do not copy, expand, rename, or otherwise reuse them.
+- If information may be sensitive and its status cannot be confirmed, stop writing and request security review.
+- If sensitive information is discovered, stop distribution and follow the incident-response requirements in `AGENTS.md`. Deleting only the current file is insufficient because Git history and build artifacts may retain it.
+
 ## 0. Purpose
 
 This file defines how Claude Code should help initialize, design, and develop this project.
@@ -207,17 +225,18 @@ Do not add large dependencies for small utilities.
 
 Do not add overlapping dependencies that solve the same problem.
 
-## 10. Environment and Secrets
+## 10. Environment, Sensitive Data, and Secrets
 
-Never commit secrets.
+Follow the complete repository data-security rules in `AGENTS.md`. At minimum:
 
-Rules:
-
-- Use `.env.example` to document required variables.
-- Do not create real `.env` files with secrets.
-- Do not print secrets, tokens, private keys, passwords, or credentials.
-- Do not hardcode environment-specific URLs unless they are clearly examples.
-- Keep local, staging, and production configuration clearly separated.
+- Use `.env.example` only to document variable names and clearly invalid placeholders.
+- Do not create or commit real `.env` files, account files, connection strings, credentials, certificates, private keys, tokens, cookies, or session data.
+- Do not print, quote, validate, or reuse secrets in logs, responses, tests, documentation, commit messages, or error output.
+- Do not hardcode real environment-specific URLs, IP addresses, domains, hostnames, ports, tenant names, or infrastructure identifiers.
+- Keep local, staging, and production configuration separate from the repository and inject it through approved runtime configuration or secret-management systems.
+- Use only reserved example domains and IP ranges defined in `AGENTS.md`.
+- Use fully synthetic test and demonstration data. Removing direct identifiers or perturbing real values is not sufficient anonymization.
+- Treat binary files, archives, database exports, screenshots, recordings, logs, and AI-generated temporary artifacts as high risk and inspect them before inclusion.
 
 ## 11. Safety Rules
 
