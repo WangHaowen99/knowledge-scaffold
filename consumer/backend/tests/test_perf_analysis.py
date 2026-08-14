@@ -636,3 +636,55 @@ def test_local_otel_store_rolls_partitions_and_rebuilds_index(tmp_path):
     )
     assert [record["run_id"] for record in result.records] == ["run-index-b"]
     assert len(list(tmp_path.glob("*.idx"))) == 2
+
+
+def test_local_otel_store_repairs_unindexed_data_before_append(tmp_path):
+    from integration.observability.local_storage import (
+        IndexedLocalOTelStore,
+        read_or_rebuild_index,
+    )
+
+    store = IndexedLocalOTelStore(tmp_path, retention_days=30)
+    records = [
+        _record("run-index-{}".format(suffix), ts_ms=_ts_ms(2026, 5, 22, 12, minute))
+        for minute, suffix in enumerate(("a", "b", "c"))
+    ]
+    store.append(records[0])
+    data_path = tmp_path / "otel_trace-2026-05-22.log"
+    with data_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(records[1]) + "\n")
+
+    store.append(records[2])
+
+    sidecar_path = data_path.with_name(data_path.name + ".idx")
+    raw_entries = [
+        json.loads(line)
+        for line in sidecar_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [entry["run_id"] for entry in raw_entries] == [
+        "run-index-a",
+        "run-index-b",
+        "run-index-c",
+    ]
+
+    entries = read_or_rebuild_index(data_path)
+    assert [entry["run_id"] for entry in entries] == [
+        "run-index-a",
+        "run-index-b",
+        "run-index-c",
+    ]
+    assert entries[0]["offset"] == 0
+    assert all(
+        current["data_size"] == following["offset"]
+        for current, following in zip(entries, entries[1:])
+    )
+
+    index_lines = sidecar_path.read_text(encoding="utf-8").splitlines()
+    sidecar_path.write_text("\n".join((index_lines[0], index_lines[2])) + "\n", encoding="utf-8")
+
+    rebuilt_entries = read_or_rebuild_index(data_path)
+    assert [entry["run_id"] for entry in rebuilt_entries] == [
+        "run-index-a",
+        "run-index-b",
+        "run-index-c",
+    ]

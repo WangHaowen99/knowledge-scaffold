@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from utils.logging import get_logger
 from workspace.workspaces import get_current_workspace_id, validate_workspace_id
@@ -304,13 +304,12 @@ class WorkspaceObservabilityRouter:
             return
         with self._lock:
             spans = self._pending_spans_by_run.pop(run_id, [])
-            self._pending_span_count = max(0, self._pending_span_count - len(spans))
             workspace_id = self._run_workspaces.get(run_id, "")
         consumers = _take_runtime_event_consumers(run_id)
         if not spans:
             return
         spans = _order_spans_parent_first(spans)
-        events = runtime_events_from_spans(spans)
+        events = runtime_events_from_spans(spans) if consumers else []
         for consumer in consumers:
             for event in events:
                 try:
@@ -321,14 +320,26 @@ class WorkspaceObservabilityRouter:
         if not workspace_id:
             workspace_id = next((span.workspace_id for span in spans if span.workspace_id), "")
         if not workspace_id:
+            self._release_pending_span_capacity(len(spans))
             return
         observer = self._get_observer(workspace_id, allow_closed=True)
         if observer is None:
+            self._release_pending_span_capacity(len(spans))
             return
-        for span in spans:
-            observer.emit(_span_export_event(span, workspace_id=workspace_id))
-        for event in events:
-            observer.emit(event)
+        try:
+            accepted = observer.emit_batch(
+                lambda: _run_export_events(spans, workspace_id=workspace_id),
+                on_complete=lambda: self._release_pending_span_capacity(len(spans)),
+            )
+        except Exception:
+            self._release_pending_span_capacity(len(spans))
+            raise
+        if not accepted:
+            self._release_pending_span_capacity(len(spans))
+
+    def _release_pending_span_capacity(self, count: int) -> None:
+        with self._lock:
+            self._pending_span_count = max(0, self._pending_span_count - max(0, int(count)))
 
     def _is_closed(self) -> bool:
         with self._lock:
@@ -368,7 +379,14 @@ class WorkspaceObservabilityRouter:
             if workspace_id in self._observers_by_workspace:
                 return self._observers_by_workspace[workspace_id]
             exporter = self._build_exporter(workspace_id)
-            observer = ObservabilityBus(exporter) if exporter is not None else None
+            observer = (
+                ObservabilityBus(
+                    exporter,
+                    batch_queue_size=self._max_pending_spans_total,
+                )
+                if exporter is not None
+                else None
+            )
             self._observers_by_workspace[workspace_id] = observer
             return observer
 
@@ -380,6 +398,14 @@ class WorkspaceObservabilityRouter:
             per_run_limit = self._max_pending_spans_per_run
             if span.name != "agent.run":
                 per_run_limit = max(0, per_run_limit - 1)
+            if (
+                span.name == "agent.run"
+                and self._pending_span_count >= self._max_pending_spans_total
+                and self._discard_pending_detail_span(preferred_run_id=span.run_id)
+            ):
+                self._pending_span_drop_count += 1
+                spans = self._pending_spans_by_run.get(span.run_id)
+                current_count = len(spans) if spans is not None else 0
             if current_count >= per_run_limit or self._pending_span_count >= self._max_pending_spans_total:
                 self._pending_span_drop_count += 1
                 drop_count = self._pending_span_drop_count
@@ -399,6 +425,26 @@ class WorkspaceObservabilityRouter:
                 span.run_id,
                 drop_count,
             )
+
+    def _discard_pending_detail_span(self, *, preferred_run_id: str) -> bool:
+        ordered_run_ids = [preferred_run_id] + [
+            run_id
+            for run_id in self._pending_spans_by_run
+            if run_id != preferred_run_id
+        ]
+        for run_id in ordered_run_ids:
+            spans = self._pending_spans_by_run.get(run_id)
+            if not spans:
+                continue
+            for index in range(len(spans) - 1, -1, -1):
+                if spans[index].name == "agent.run":
+                    continue
+                spans.pop(index)
+                self._pending_span_count = max(0, self._pending_span_count - 1)
+                if not spans:
+                    self._pending_spans_by_run.pop(run_id, None)
+                return True
+        return False
 
     def _build_exporter(self, workspace_id: str) -> object | None:
         try:
@@ -576,6 +622,16 @@ def _span_export_event(
         },
         timestamp_ms=span.end_ms,
     )
+
+
+def _run_export_events(
+    spans: Sequence[OTelSpanSnapshot],
+    *,
+    workspace_id: str,
+) -> Iterable[RuntimeEvent]:
+    for span in spans:
+        yield _span_export_event(span, workspace_id=workspace_id)
+    yield from runtime_events_from_spans(spans)
 
 
 def _optional_int(value: Any) -> int | None:

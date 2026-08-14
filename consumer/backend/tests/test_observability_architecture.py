@@ -1338,11 +1338,72 @@ def test_workspace_router_pending_span_buffer_is_bounded():
         assert sum(len(items) for items in router._pending_spans_by_run.values()) == 4
         assert len(router._pending_spans_by_run["run-a"]) == 3
         assert len(router._pending_spans_by_run["run-b"]) == 1
+        assert router._pending_spans_by_run["run-b"][0].name == "agent.run"
         assert router._pending_span_drop_count == 6
 
         router._flush_run("run-a")
         assert router._pending_span_count == 1
     finally:
+        router.close(timeout=1)
+
+
+def test_workspace_router_exports_large_run_as_one_queue_batch(monkeypatch):
+    from integration.observability import ObservabilityBus, RuntimeEventType
+    from integration.observability.otel_data import OTelEventSnapshot, OTelSpanSnapshot
+    from integration.observability.workspace_router import WorkspaceObservabilityRouter
+
+    exported = []
+    exporter = Mock(
+        export=lambda event: exported.append(event),
+        flush=lambda: None,
+        close=lambda: None,
+    )
+    bus = ObservabilityBus(exporter, queue_size=1, flush_interval_seconds=10)
+    router = WorkspaceObservabilityRouter(max_pending_spans_per_run=600)
+    monkeypatch.setattr(router, "_get_observer", lambda *args, **kwargs: bus)
+    router._run_workspaces["run-large"] = "workspace_demo"
+
+    try:
+        root_span_id = "1" * 16
+        for index in range(600):
+            terminal = index == 599
+            event_type = RuntimeEventType.RUN_FINISHED if terminal else RuntimeEventType.TOOL_FINISHED
+            router.export_otel_span(
+                OTelSpanSnapshot(
+                    name="agent.run" if terminal else "tool.call",
+                    trace_id="2" * 32,
+                    span_id=root_span_id if terminal else format(index + 2, "016x"),
+                    parent_span_id=None if terminal else root_span_id,
+                    start_ms=1000,
+                    end_ms=3000 if terminal else 2000,
+                    status="ok",
+                    attributes={
+                        "agent.run_id": "run-large",
+                        "agent.session_id": "session-large",
+                        "agent.workspace_id": "workspace_demo",
+                    },
+                    events=(
+                        OTelEventSnapshot(
+                            name="agent.runtime_event",
+                            timestamp_ms=3000 if terminal else 2000,
+                            attributes={
+                                "agent.event.type": event_type,
+                                "agent.event.payload_json": '{"status":"success"}',
+                            },
+                        ),
+                    ),
+                    scope_name="test",
+                )
+            )
+
+        router.release_run("run-large")
+        bus.close(timeout=2)
+
+        assert len(exported) == 1200
+        assert sum(event.type == RuntimeEventType.RUN_FINISHED for event in exported) == 1
+        assert router._pending_span_count == 0
+    finally:
+        bus.close(timeout=2)
         router.close(timeout=1)
 
 

@@ -62,6 +62,7 @@ class IndexedLocalOTelStore:
         if not partitions:
             return base
         current = max(partitions, key=lambda path: _partition_number(path, base.name) or 0)
+        _repair_trailing_index(current)
         try:
             current_size = current.stat().st_size
         except OSError:
@@ -190,6 +191,7 @@ def _load_index(data_path: Path, *, source_size: int) -> Optional[list[dict[str,
     if not path.exists():
         return [] if source_size == 0 else None
     entries: list[dict[str, Any]] = []
+    expected_offset = 0
     try:
         with path.open("r", encoding="utf-8") as lines:
             for line in lines:
@@ -199,9 +201,14 @@ def _load_index(data_path: Path, *, source_size: int) -> Optional[list[dict[str,
                 offset = int(entry.get("offset"))
                 length = int(entry.get("length"))
                 data_size = int(entry.get("data_size"))
-                if offset < 0 or length <= 0 or data_size != offset + length:
+                if (
+                    offset != expected_offset
+                    or length <= 0
+                    or data_size != offset + length
+                ):
                     return None
                 entries.append(entry)
+                expected_offset = data_size
     except (OSError, TypeError, ValueError):
         return None
     if source_size == 0:
@@ -209,6 +216,43 @@ def _load_index(data_path: Path, *, source_size: int) -> Optional[list[dict[str,
     if not entries or int(entries[-1].get("data_size") or -1) != source_size:
         return None
     return entries
+
+
+def _repair_trailing_index(data_path: Path) -> None:
+    try:
+        source_size = data_path.stat().st_size
+    except OSError:
+        return
+    if _last_indexed_data_size(data_path) == source_size:
+        return
+    _rebuild_index(data_path, source_size=source_size)
+
+
+def _last_indexed_data_size(data_path: Path) -> Optional[int]:
+    path = index_path(data_path)
+    if not path.exists():
+        return 0 if not data_path.exists() or data_path.stat().st_size == 0 else None
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            position = stream.tell()
+            if position == 0:
+                return 0
+            buffer = b""
+            while position > 0:
+                chunk_size = min(4096, position)
+                position -= chunk_size
+                stream.seek(position)
+                buffer = stream.read(chunk_size) + buffer
+                lines = [line for line in buffer.splitlines() if line.strip()]
+                if lines and (position == 0 or len(lines) > 1):
+                    entry = json.loads(lines[-1].decode("utf-8"))
+                    if not isinstance(entry, dict):
+                        return None
+                    return int(entry.get("data_size"))
+    except (OSError, TypeError, ValueError):
+        return None
+    return None
 
 
 def _rebuild_index(data_path: Path, *, source_size: int) -> list[dict[str, Any]]:
