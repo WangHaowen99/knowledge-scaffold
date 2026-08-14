@@ -354,12 +354,12 @@ export default function KnowledgeWorkbench({ kb, focusRequest, traceMessages = [
 }
 
 function ImportPreview({ preview }) {
-  if (typeof preview === 'string') return <pre className="srcview">{preview}</pre>;
+  if (typeof preview === 'string') return <pre className="import-preview-content">{preview}</pre>;
   const entries = Array.isArray(preview) ? preview : Object.entries(preview || {});
   if (!entries.length) return <EmptyState compact title="服务端未返回额外预览信息" />;
   return <div className="import-preview">{Array.isArray(preview)
-    ? preview.map((item, index) => <pre key={item.path || index}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</pre>)
-    : entries.map(([key, value]) => <div key={key}><strong>{key}</strong><pre>{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre></div>)}</div>;
+    ? preview.map((item, index) => <pre className="import-preview-content" key={item.path || index}>{typeof item === 'string' ? item : JSON.stringify(item, null, 2)}</pre>)
+    : entries.map(([key, value]) => <div key={key}><strong>{key}</strong><pre className="import-preview-content">{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre></div>)}</div>;
 }
 
 function stripFrontmatter(markdown) {
