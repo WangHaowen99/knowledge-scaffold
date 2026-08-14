@@ -65,6 +65,21 @@ test('chat data source action opens the selected ontology data tab', () => {
   assert.equal(appShellSource.includes("if (sf === 'kb' && ontologyId) kb.selectPkg(ontologyId);"), true);
 });
 
+test('session knowledge package options include the stable package id', () => {
+  assert.equal(chatSource.includes('{packageDisplayLabel(ontology)}'), true);
+});
+
+test('session version appears directly after the knowledge package selector', () => {
+  const ontologySelect = chatSource.indexOf('<select value={selectedOntologyId}');
+  const versionNote = chatSource.indexOf('{displayedOntologyVersion && (', ontologySelect);
+  const configRowEnd = chatSource.indexOf('</div>', ontologySelect);
+
+  assert.ok(ontologySelect >= 0);
+  assert.ok(versionNote > ontologySelect);
+  assert.ok(versionNote < configRowEnd);
+  assert.equal((chatSource.match(/<div className="chat-config-locks">/g) || []).length, 1);
+});
+
 test('chat activity refreshes session ordering at send and terminal stream states', () => {
   assert.equal(chatSource.includes('onSessionUpdated: refreshSessionTime'), true);
   assert.equal(agenticStreamSource.includes('onSessionUpdated?.();'), true);

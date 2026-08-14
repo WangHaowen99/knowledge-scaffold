@@ -9,6 +9,7 @@ import {
   directoryExpansionKey,
   isVersionExpanded,
   kbTreeExpansionStorageKey,
+  packageDisplayLabel,
   packageExpansionKey,
   packageVersions,
   readKbTreeExpansion,
@@ -109,6 +110,15 @@ test('package versions keep the active version first and remove duplicates', () 
     }),
     ['2.0.0', '2.0.1', '1.9.9'],
   );
+});
+
+test('package display label appends the stable id to the display name', () => {
+  assert.equal(
+    packageDisplayLabel({ name: '示例知识包', id: 'sample-knowledge-package' }),
+    '示例知识包（sample-knowledge-package）',
+  );
+  assert.equal(packageDisplayLabel({ name: 'demo', id: 'demo' }), 'demo');
+  assert.equal(packageDisplayLabel({ id: 'demo' }), 'demo');
 });
 
 test('directory expansion state is isolated by package version', () => {

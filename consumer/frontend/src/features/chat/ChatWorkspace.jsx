@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUpRight, BrainCircuit, Check, ChevronDown, Gauge, GitBranch, PanelRightClose, PanelRightOpen, Sparkles } from 'lucide-react';
 import { useAuthContext } from '../auth';
+import { packageDisplayLabel } from '../knowledge';
 import { authFetch } from '../../shared/api/auth';
 import { StatusTag } from '../../shared/ui/primitives';
 import ConversationView from './components/ConversationView';
@@ -572,17 +573,15 @@ export default function ChatWorkspace({
               disabled={sessionLocked || isSubmitting || streamState.isLoading}
               onChange={(event) => setSelectedOntologyId(event.target.value)}>
               <option value="">自动选择知识包</option>
-              {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{ontology.name || ontology.id}</option>)}
+              {ontologies.map((ontology) => <option key={ontology.id} value={ontology.id}>{packageDisplayLabel(ontology)}</option>)}
             </select>
-            {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
-          </div>
-          {displayedOntologyVersion && (
-            <div className="chat-config-locks">
-              <span className="session-lock-note">
+            {displayedOntologyVersion && (
+              <span className="session-version-note">
                 {sessionLocked ? `Locked version ${displayedOntologyVersion}` : `Current active ${displayedOntologyVersion}`}
               </span>
-            </div>
-          )}
+            )}
+            {sessionLocked && <span className="session-lock-note">🔒 会话配置已锁定</span>}
+          </div>
           {pendingInteraction ? (
             <InteractionComposer
               interaction={pendingInteraction}
