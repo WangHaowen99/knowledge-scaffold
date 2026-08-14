@@ -482,6 +482,16 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at    TEXT NOT NULL
 );
 
+-- 已认证用户的 LLM 页面配置。部署环境变量作为未覆盖字段的默认值。
+CREATE TABLE IF NOT EXISTS user_llm_settings (
+  username      TEXT PRIMARY KEY,
+  base_url      TEXT,
+  model         TEXT,
+  api_key       TEXT,
+  max_tokens    INTEGER CHECK (max_tokens IS NULL OR max_tokens BETWEEN 1 AND 1000000),
+  updated_at    TEXT NOT NULL
+);
+
 -- 项目级评测数据源。由 modeling 持久化公开配置；密钥不落库。
 CREATE TABLE IF NOT EXISTS project_data_sources (
   project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

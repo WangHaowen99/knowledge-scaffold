@@ -20,7 +20,7 @@
 | 7 | 流程事实源 | 多流程只保存一份结构化 `diagrams/processes.json`；画布可增删改流程、节点和连线，Mermaid 文件只由结构化文档单向派生，人工确认后才允许知识生成 |
 | 8 | 评测与优化 | **LLM Judge** 判分（通过/部分/失败+理由，专家可改判）→ 优化器输出**结构化建议**（精确到文件段落、预期修复的用例）→ 逐条采纳后 agent 改包、**版本递增、自动重评**；使用 Modeling 内置轻量评测 |
 | 9 | 持久化 | **SQLite** 保存项目、任务图、交互、索引和评测状态；`isomorphic-git` 工件仓库保存知识包文件及不可变 revision。人工草稿、候选、检查、评测、图导入和发布都绑定 revision；两者随同一持久卷备份 |
-| 10 | LLM 配置 | modeling 独立 `.env`（`MODELING_LLM_BASE_URL/MODEL/API_KEY` + 可选轻量模型），OpenAI-compatible 直喂 pi；**不**从 consumer 取密钥（不破坏「密钥永不出全局层」） |
+| 10 | LLM 配置 | `.env` 提供部署默认模型；认证用户可独立覆盖 Base URL、模型、API Key 和输出上限，所有同步及后台 LLM 任务按发起用户读取配置。OpenAI-compatible 直喂 pi，**不**从 consumer 取密钥 |
 | 11 | 工作流 | 用户可见流程固定为 9 步；建模阶段只有一份可编辑、可恢复的 `AiConstructionTaskGraph`，允许在封闭任务类型内新增、拆分、合并、重排、跳过和重做。场景、数据源、评测、诊断、优化和发布状态直接来自各自事实记录 |
 | 12 | 前端 | 项目只按 `kind` 路由：`modeling` 进入 `AiConstructionWorkbench`，导入知识包的 `package` 项目进入 `PackageWorkspace`。建模工作台内嵌同一个知识包工作区，不保留旧 Workbench 或版本化 UI 实现 |
 

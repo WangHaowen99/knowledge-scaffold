@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { getDb } from './db/index.js';
+import { currentLlmUser, runWithLlmUser } from './llm/user-context.js';
 
 export class OperationAlreadyRunningError extends Error {
   constructor() {
@@ -102,7 +103,8 @@ export class InFlightOperations {
     }, Math.max(1_000, Math.floor(INFLIGHT_TTL_MS / 3)));
     renewal.unref?.();
     try {
-      return await task();
+      const username = currentLlmUser();
+      return await (username ? runWithLlmUser(username, task) : task());
     } finally {
       clearInterval(renewal);
       this.release(key, token);

@@ -21,6 +21,7 @@ import {
 import { validateSpecIntegrity } from '../workflow/spec-validation.js';
 import { EvaluationAuthSession } from './auth-session.js';
 import type { Testcase } from '../workflow/m3-repo.js';
+import { currentLlmUser, runWithLlmUser } from '../llm/user-context.js';
 
 // 评测引擎（M3 核心）：评测工作空间 → 导入包 → 复用本体级数据源 →
 // 逐用例 runs/sync（串行 + 退避）→ Judge → 落轮次结果。
@@ -218,13 +219,15 @@ export function startEvaluation(
   activeProjects.add(projectId);
   activeWorkspaces.add(workspaceId);
   const controller = new AbortController();
+  const llmUser = currentLlmUser() ?? opts.owner;
   // 后台执行（单进程内异步任务；进度与日志写库供轮询）
-  const roundExecution = Promise.resolve().then(() => {
+  const executeRound = () => Promise.resolve().then(() => {
     assertEvaluationNotCancelled(controller.signal);
     return dependencies.runRound
       ? dependencies.runRound({ roundId: round.id, projectId, signal: controller.signal })
       : runRound(round.id, opts, latest, testcases, dataSource, workspaceId, controller.signal);
   });
+  const roundExecution = llmUser ? runWithLlmUser(llmUser, executeRound) : executeRound();
   const completion = roundExecution
     .catch((e) => {
       if (controller.signal.aborted) return;

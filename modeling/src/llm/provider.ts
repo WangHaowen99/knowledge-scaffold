@@ -1,6 +1,7 @@
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
 import { config } from '../config.js';
-import { getLlmSettings } from '../settings/repo.js';
+import { getLlmSettings, hasUserLlmProviderOverride } from '../settings/repo.js';
+import { currentLlmUser } from './user-context.js';
 
 // pi agent 的 LLM 依赖：一个 model 对象 + streamFn + getApiKey。
 // 真实端点走 openai-completions；冒烟/测试可注入 faux（见 scripts/smoke-nodes.ts）。
@@ -27,7 +28,7 @@ function buildModel(baseUrl: string, modelId: string, maxTokens: number): any {
   };
 }
 
-// LLM 配置来源：配置中心（settings 表）优先，env 兜底——每次构建即时读取，页面改完即生效。
+// LLM 配置来源：认证用户配置优先，部署 env 兜底——每次构建即时读取，页面改完即生效。
 export function buildLlm(): LlmDeps {
   const llm = getLlmSettings();
   if (llm.baseUrl === 'faux') return buildFauxModeler();
@@ -46,13 +47,19 @@ export interface TaskLlmOptions {
 }
 
 /**
- * 领域分析和知识生成优先使用部署侧任务模型；未单独配置时回退页面主模型。
+ * 用户覆盖了端点/模型/Key 时，领域分析和知识生成使用该用户模型；否则优先使用
+ * 部署侧任务模型，未配置任务模型时回退部署主模型。
  * 部分配置直接报错，避免后台任务静默跑到错误端点。
  */
 export function buildTaskLlm(options: TaskLlmOptions = {}): LlmDeps {
   const task = config.taskLlm;
   const configured = Boolean(task.baseUrl || task.model || task.apiKey);
-  if (!configured) {
+  const user = currentLlmUser();
+  const userLlm = getLlmSettings(user);
+  // 一旦用户在页面配置过 LLM，所有建模任务都使用该配置；部署侧 task LLM
+  // 只作为没有用户覆盖时的可选默认值，避免后台任务绕过用户隔离。
+  const userConfigured = Boolean(user && hasUserLlmProviderOverride(user));
+  if (!configured || userConfigured) {
     const llm = buildLlm();
     return options.maxTokensCap
       ? { ...llm, model: { ...llm.model, maxTokens: Math.min(llm.model.maxTokens, options.maxTokensCap) } }
@@ -62,7 +69,7 @@ export function buildTaskLlm(options: TaskLlmOptions = {}): LlmDeps {
     throw new Error('任务 LLM 配置不完整（MODELING_TASK_LLM_BASE_URL 和 MODELING_TASK_LLM_MODEL 必须同时设置）');
   }
   if (task.baseUrl === 'faux') return buildFauxModeler();
-  const configuredMaxTokens = getLlmSettings().maxTokens;
+  const configuredMaxTokens = userLlm.maxTokens;
   const maxTokens = options.maxTokensCap
     ? Math.min(configuredMaxTokens, options.maxTokensCap)
     : configuredMaxTokens;
