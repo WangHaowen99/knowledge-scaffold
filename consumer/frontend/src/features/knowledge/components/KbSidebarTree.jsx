@@ -6,6 +6,7 @@ import {
   buildVisibleTreeRows,
   directoryExpansionKey,
   isVersionExpanded,
+  packageDisplayLabel,
   packageExpansionKey,
   packageVersions,
   readKbTreeExpansion,
@@ -88,19 +89,21 @@ export default function KbSidebarTree({ kb }) {
       {!pkgsLoading && !packagesError && !packages.length && <div className="kbt-empty">暂无知识包</div>}
       {packages.map((pkg) => {
         const packageExpanded = expandedKeys.has(packageExpansionKey(pkg.id));
+        const packageLabel = packageDisplayLabel(pkg);
         const activeVersion = pkg.active_version || pkg.version || '';
         const versions = packageVersions(pkg);
         return (
           <div key={pkg.id} className="kbt-package">
             <div className={`kbt-pkg ${pkg.id === pkgId ? 'on' : ''}`}>
               <button type="button" className="kbt-toggle" aria-expanded={packageExpanded}
-                aria-label={`${packageExpanded ? '折叠' : '展开'}知识包 ${pkg.name || pkg.id}`}
+                aria-label={`${packageExpanded ? '折叠' : '展开'}知识包 ${packageLabel}`}
                 onClick={() => togglePackage(pkg)}>
                 {packageExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               </button>
-              <button type="button" className="kbt-pkg-select" onClick={() => selectPkg(pkg.id)}>
+              <button type="button" className="kbt-pkg-select" title={packageLabel}
+                onClick={() => selectPkg(pkg.id)}>
                 <PackageOpen className="kbt-icon" size={14} />
-                <span className="nm">{pkg.name || pkg.id}</span>
+                <span className="nm">{packageLabel}</span>
               </button>
             </div>
             {packageExpanded && (

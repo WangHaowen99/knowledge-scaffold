@@ -34,6 +34,13 @@ export function packageVersions(pkg) {
   });
 }
 
+export function packageDisplayLabel(pkg) {
+  const name = String(pkg?.name || '').trim();
+  const id = String(pkg?.id || '').trim();
+  if (name && id && name !== id) return `${name}（${id}）`;
+  return name || id;
+}
+
 export function readKbTreeExpansion(storage, workspaceId) {
   if (!storage || !normalizedWorkspaceId(workspaceId)) return null;
   try {
