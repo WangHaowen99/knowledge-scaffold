@@ -141,13 +141,13 @@ after(async () => {
   await new Promise<void>((r) => upstream.close(() => r()));
 });
 
-function signToken(claims: Record<string, unknown> = {}) {
+function signToken(claims: Record<string, unknown> = {}, subject = 'alice') {
   return new SignJWT({ typ: 'access', role: 'user', ver: 1, pwd_cr: false, ...claims })
     .setProtectedHeader({ alg: 'RS256', kid: KID })
     .setIssuedAt()
     .setIssuer(ISS)
     .setAudience(AUD)
-    .setSubject('alice')
+    .setSubject(subject)
     .setExpirationTime('15m')
     .sign(privateKey);
 }
@@ -365,6 +365,71 @@ test('/api/me：合法 token → 200；typ=refresh 的 token → 401；无 token
 
   res = await app.inject({ method: 'GET', url: '/api/me' });
   assert.equal(res.statusCode, 401);
+});
+
+test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
+  const aliceToken = await signToken({}, 'settings_user_a');
+  const bobToken = await signToken({}, 'settings_user_b');
+  const aliceHeaders = { authorization: `Bearer ${aliceToken}` };
+  const bobHeaders = { authorization: `Bearer ${bobToken}` };
+
+  let response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers: aliceHeaders,
+    payload: {
+      llmBaseUrl: 'https://user-a.example.com/v1', llmModel: 'model-a',
+      llmApiKey: 'synthetic-key-a', llmMaxTokens: '4096',
+    },
+  });
+  assert.equal(response.statusCode, 200);
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers: bobHeaders,
+    payload: {
+      llmBaseUrl: 'https://user-b.example.com/v1', llmModel: 'model-b',
+      llmApiKey: 'synthetic-key-b', llmMaxTokens: '6144',
+    },
+  });
+  assert.equal(response.statusCode, 200);
+
+  const alice = await app.inject({ method: 'GET', url: '/api/settings', headers: aliceHeaders });
+  const bob = await app.inject({ method: 'GET', url: '/api/settings', headers: bobHeaders });
+  assert.equal(alice.statusCode, 200);
+  assert.equal(bob.statusCode, 200);
+  assert.deepEqual(alice.json().llm, {
+    baseUrl: 'https://user-a.example.com/v1', model: 'model-a', maxTokens: 4096,
+    apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
+  });
+  assert.deepEqual(bob.json().llm, {
+    baseUrl: 'https://user-b.example.com/v1', model: 'model-b', maxTokens: 6144,
+    apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
+  });
+  assert.doesNotMatch(alice.body, /synthetic-key/);
+  assert.doesNotMatch(bob.body, /synthetic-key/);
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers: aliceHeaders,
+    payload: { llmBaseUrl: 'https://invalid-update.example.com/v1', llmMaxTokens: '0' },
+  });
+  assert.equal(response.statusCode, 400);
+  const unchanged = await app.inject({ method: 'GET', url: '/api/settings', headers: aliceHeaders });
+  assert.equal(unchanged.json().llm.baseUrl, 'https://user-a.example.com/v1');
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers: aliceHeaders,
+    payload: { llmApiKeyClear: true },
+  });
+  assert.equal(response.statusCode, 200);
+  const aliceCleared = await app.inject({ method: 'GET', url: '/api/settings', headers: aliceHeaders });
+  const bobUnchanged = await app.inject({ method: 'GET', url: '/api/settings', headers: bobHeaders });
+  assert.equal(aliceCleared.json().llm.personalApiKeySet, false);
+  assert.equal(bobUnchanged.json().llm.personalApiKeySet, true);
+
+  const [aliceConcurrent, bobConcurrent] = await Promise.all([
+    app.inject({ method: 'GET', url: '/api/settings', headers: aliceHeaders }),
+    app.inject({ method: 'GET', url: '/api/settings', headers: bobHeaders }),
+  ]);
+  assert.equal(aliceConcurrent.json().llm.baseUrl, 'https://user-a.example.com/v1');
+  assert.equal(bobConcurrent.json().llm.baseUrl, 'https://user-b.example.com/v1');
 });
 
 test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和原始文件快照', async () => {

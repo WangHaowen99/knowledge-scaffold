@@ -15,6 +15,7 @@
  */
 import { runWithProjectLease, type ProjectOperationLease } from './lease.js';
 import { OperationCancelledError, type InFlightOperations } from '../in-flight-operations.js';
+import { currentLlmUser, runWithLlmUser } from '../llm/user-context.js';
 
 export interface BackgroundJobOptions {
   jobs: InFlightOperations;
@@ -31,7 +32,8 @@ export interface BackgroundJobOptions {
 }
 
 export function startBackgroundJob(options: BackgroundJobOptions): void {
-  void options.jobs.run(options.key, options.operation, async () => {
+  const username = currentLlmUser();
+  const task = async () => options.jobs.run(options.key, options.operation, async () => {
     await runWithProjectLease(options.leases, {
       projectId: options.projectId,
       operation: options.operation,
@@ -40,7 +42,8 @@ export function startBackgroundJob(options: BackgroundJobOptions): void {
     }, async () => {
       await options.run();
     });
-  }).catch((error) => {
+  });
+  void (username ? runWithLlmUser(username, task) : task()).catch((error) => {
     const reason = error instanceof OperationCancelledError
       // 取消不是失败：用户自己按的，文案要说清楚是按他的要求停的，
       // 否则界面上会变成一条看不懂的报错，让人以为出了问题

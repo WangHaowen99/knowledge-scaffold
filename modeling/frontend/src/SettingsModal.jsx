@@ -6,7 +6,8 @@ export function SettingsModalOverlay({ children }) {
 }
 
 // 配置中心：LLM（建模/判分用的大模型端点）· consumer（评测目标服务）· 评测（评测库与数据源默认值）。
-// 优先级统一为：页面配置 > 环境变量。api key 保存后不回显；测试失败展示服务端原始错误便于排障。
+// LLM 页面配置按当前登录用户隔离并优先于环境变量。api key 保存后不回显；
+// 测试失败展示服务端原始错误便于排障。
 export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   const [tab, setTab] = useState(tabProp);
   // 操作引导逐 tab 讲解时经 props 切换
@@ -22,6 +23,7 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
     setS(d);
     setForm({
       llmBaseUrl: d.llm.baseUrl, llmModel: d.llm.model, llmMaxTokens: String(d.llm.maxTokens), llmApiKey: '',
+      llmApiKeyClear: false,
       consumerApiUrl: d.consumerApiUrl,
       evalDbUrl: d.evalDbUrl,
       evalBindingProvider: d.evalBinding.provider, evalBindingUrl: d.evalBinding.url,
@@ -38,6 +40,7 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   }, [saving, onClose]);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const setValue = (k, value) => setForm((f) => ({ ...f, [k]: value }));
   const save = async () => {
     setSaving(true); setMsg('');
     try { await saveSettings(form); setMsg('✓ 已保存'); await load(); }
@@ -67,7 +70,10 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
           <button className={tab === 'eval' ? 'on' : ''} onClick={() => setTab('eval')}>评测数据</button>
         </div>
 
-        {tab === 'llm' && <div data-tour="cfg-llm"><LlmTab form={form} set={set} apiKeySet={s.llm.apiKeySet} source={s.llm.source} /></div>}
+        {tab === 'llm' && <div data-tour="cfg-llm"><LlmTab
+          form={form} set={set} apiKeySet={s.llm.apiKeySet}
+          setValue={setValue} personalApiKeySet={s.llm.personalApiKeySet} source={s.llm.source}
+        /></div>}
         {tab === 'consumer' && <div data-tour="cfg-consumer"><ConsumerTab form={form} set={set} authIssuerUrl={s.authIssuerUrl} source={s.consumerApiUrlSource} /></div>}
         {tab === 'eval' && <div data-tour="cfg-eval"><EvalTab form={form} set={set} /></div>}
 
@@ -81,7 +87,7 @@ export default function SettingsModal({ onClose, tab: tabProp = 'llm' }) {
   );
 }
 
-function LlmTab({ form, set, apiKeySet, source }) {
+function LlmTab({ form, set, setValue, apiKeySet, personalApiKeySet, source }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -96,7 +102,7 @@ function LlmTab({ form, set, apiKeySet, source }) {
   return (
     <div>
       <div className="field">
-        <label>Base URL <span className="lbl-src">{source === 'settings' ? '页面配置' : '环境变量'}</span></label>
+        <label>Base URL <span className="lbl-src">{source === 'user' ? '个人配置' : '环境变量默认值'}</span></label>
         <input value={form.llmBaseUrl ?? ''} onChange={set('llmBaseUrl')} placeholder="https://api.example.com/v1（填 faux 进入演示模式）" />
       </div>
       <div className="field">
@@ -105,8 +111,18 @@ function LlmTab({ form, set, apiKeySet, source }) {
       </div>
       <div className="field">
         <label>API Key {apiKeySet ? <span className="tag tag-ok" style={{ marginLeft: 6 }}>已配置</span> : <span className="tag tag-draft" style={{ marginLeft: 6 }}>未配置</span>}</label>
-        <input type="password" value={form.llmApiKey ?? ''} onChange={set('llmApiKey')}
+        <input type="password" value={form.llmApiKey ?? ''} onChange={(event) => {
+          set('llmApiKey')(event);
+          setValue('llmApiKeyClear', false);
+        }}
           placeholder={apiKeySet ? '留空 = 保持现有 key 不变' : '粘贴 API Key'} autoComplete="new-password" />
+        {personalApiKeySet && (
+          <button type="button" className="btn cfg-key-clear"
+            disabled={form.llmApiKeyClear === true}
+            onClick={() => { setValue('llmApiKey', ''); setValue('llmApiKeyClear', true); }}>
+            {form.llmApiKeyClear ? '保存后清除个人 Key' : '清除个人 Key'}
+          </button>
+        )}
       </div>
       <div className="field">
         <label>单次输出上限</label>

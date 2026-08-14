@@ -37,7 +37,18 @@ import { normalizeFlowchartDocument } from './flowchart/document.js';
 import { renderDiagramFiles } from './flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
-import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
+import {
+  deleteSetting,
+  deleteUserLlmSetting,
+  getConsumerApiUrl,
+  getEvalBindingDefaults,
+  getLlmSettings,
+  getLlmSource,
+  getSetting,
+  getUserLlmSetting,
+  setSetting,
+  setUserLlmSetting,
+} from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
 import {
@@ -129,6 +140,7 @@ import {
   retireOptimizationCandidatesForDiagnosisRerun,
 } from './evaluation/optimization-candidate.js';
 import { buildLlm } from './llm/provider.js';
+import { runWithLlmRequest } from './llm/user-context.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
@@ -352,13 +364,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
   // 以下均需认证
   app.register(async (r) => {
+    r.addHook('onRequest', (_req, _reply, done) => runWithLlmRequest(done));
     r.addHook('preHandler', requireAuth);
 
     r.get('/api/me', async (req) => ({ user: req.user }));
 
     // ---- 服务设置（consumer 评测端点页面可配置） ----
-    r.get('/api/settings', async () => {
-      const llm = getLlmSettings();
+    r.get('/api/settings', async (req) => {
+      const username = req.user!.username;
+      const llm = getLlmSettings(username);
       const binding = getEvalBindingDefaults();
       return {
         consumerApiUrl: getConsumerApiUrl(),
@@ -367,7 +381,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         llm: {
           baseUrl: llm.baseUrl, model: llm.model, maxTokens: llm.maxTokens,
           apiKeySet: !!llm.apiKey, // key 不回显
-          source: getSetting('llm_base_url') ? 'settings' : 'env',
+          personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
+          source: getLlmSource(username),
+          userIsolated: true,
         },
         evalBinding: binding,
       };
@@ -375,21 +391,44 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
 
     r.put('/api/settings', async (req, reply) => {
       const b = (req.body ?? {}) as Record<string, unknown>;
+      const username = req.user!.username;
       const put = (key: string, v: unknown) => {
         if (v === undefined) return; // 未提交 = 不修改
         const s = String(v).trim();
         s ? setSetting(key, s) : deleteSetting(key); // 空串 = 清除（回退 env）
       };
+      let normalizedMaxTokens: string | undefined;
+      if (b.llmMaxTokens !== undefined) {
+        normalizedMaxTokens = String(b.llmMaxTokens).trim();
+        if (normalizedMaxTokens) {
+          const maxTokens = Number(normalizedMaxTokens);
+          if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_000_000) {
+            return reply.code(400).send({ error: 'llmMaxTokens 必须是 1 到 1000000 的整数' });
+          }
+        }
+      }
       if (b.consumerApiUrl !== undefined) {
         const v = String(b.consumerApiUrl).trim();
         if (v && !/^https?:\/\//.test(v)) return reply.code(400).send({ error: 'consumerApiUrl 必须是 http(s) 地址' });
         put('consumer_api_url', v);
       }
-      put('llm_base_url', b.llmBaseUrl);
-      put('llm_model', b.llmModel);
-      put('llm_max_tokens', b.llmMaxTokens);
-      if (b.llmApiKey !== undefined && String(b.llmApiKey) !== '') put('llm_api_key', b.llmApiKey); // key 留空 = 保持不变
-      if (b.llmApiKeyClear === true) deleteSetting('llm_api_key');
+      const putUserLlm = (
+        key: 'base_url' | 'model' | 'max_tokens',
+        value: unknown,
+      ) => {
+        if (value === undefined) return;
+        const setting = String(value).trim();
+        setting
+          ? setUserLlmSetting(username, key, setting)
+          : deleteUserLlmSetting(username, key);
+      };
+      putUserLlm('base_url', b.llmBaseUrl);
+      putUserLlm('model', b.llmModel);
+      if (normalizedMaxTokens !== undefined) putUserLlm('max_tokens', normalizedMaxTokens);
+      if (b.llmApiKey !== undefined && String(b.llmApiKey) !== '') {
+        setUserLlmSetting(username, 'api_key', String(b.llmApiKey));
+      } // key 留空 = 保持当前用户现有 key 不变
+      if (b.llmApiKeyClear === true) deleteUserLlmSetting(username, 'api_key');
       put('eval_binding_provider', b.evalBindingProvider);
       put('eval_binding_url', b.evalBindingUrl);
       put('eval_binding_token', b.evalBindingToken);
@@ -400,7 +439,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     // LLM 有效性测试：最小 chat/completions 调用；失败时返回原始错误（供排障）
     r.post('/api/settings/llm/test', async (req) => {
       const b = (req.body ?? {}) as Record<string, string>;
-      const saved = getLlmSettings();
+      const saved = getLlmSettings(req.user!.username);
       const baseUrl = (b.baseUrl || saved.baseUrl).replace(/\/+$/, '');
       const apiKey = b.apiKey || saved.apiKey;
       const model = b.model || saved.model;

@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { decodeJwt } from 'jose';
 import { getAuthClient } from './client.js';
 import type { AuthUser } from '../types.js';
+import { enterLlmUser } from '../llm/user-context.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -33,6 +34,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const cached = cache.get(token);
   if (cached && cached.exp > Date.now()) {
     req.user = cached.user;
+    enterLlmUser(cached.user.username);
     return;
   }
   const user = await getAuthClient().verify(token);
@@ -50,4 +52,5 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   }
   cache.set(token, { user, exp });
   req.user = user;
+  enterLlmUser(user.username);
 }

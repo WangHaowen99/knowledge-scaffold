@@ -60,6 +60,11 @@ npx tsx --env-file=.env src/server.ts
 NODE_OPTIONS=--experimental-sqlite npx tsx --env-file=.env src/server.ts
 ```
 
+`MODELING_LLM_*` 是所有账号的部署默认值。登录后在配置中心保存的 LLM 端点、模型、
+API Key 和输出上限按用户名独立存储，只用于该用户发起的建模、校验、评测和优化任务；
+配置接口不会回显 API Key。`MODELING_TASK_LLM_*` 在用户没有覆盖个人端点、模型或 Key
+时作为部署侧任务模型默认值。
+
 服务默认 `http://localhost:5100`。
 
 前端开发服务：

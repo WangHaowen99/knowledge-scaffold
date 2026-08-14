@@ -1152,6 +1152,7 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .cfg-tabs button { border: none; background: none; padding: 8px 14px; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; cursor: pointer; font-weight: 600; transition: color .15s, border-color .15s; }
 .mwr .cfg-tabs button:hover { color: var(--ink2); }
 .mwr .cfg-tabs button.on { color: var(--blue-d); border-bottom-color: var(--blue); font-weight: 650; }
+.mwr .cfg-key-clear { margin-top: 7px; }
 .mwr .cfg-test { border: 1px solid var(--hair); border-radius: 11px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; }
 .mwr .cfg-test.ok { border-color: #b7e2cd; background: #f0faf5; }
 .mwr .cfg-test.bad { border-color: #f2c9c5; background: #fdf3f2; }
