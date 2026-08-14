@@ -74,6 +74,17 @@ const optionValue = (option, index) => typeof option === 'object'
   ? String(option.value ?? option.id ?? option.key ?? index)
   : String(option);
 
+export function toggleQuestionSelection(selected, value, multiple) {
+  if (!multiple) return [value];
+  if (value === '__none__') {
+    return selected.includes('__none__') ? [] : ['__none__'];
+  }
+  const concrete = selected.filter((item) => item !== '__none__');
+  return concrete.includes(value)
+    ? concrete.filter((item) => item !== value)
+    : [...concrete, value];
+}
+
 const optionLabel = (option) => typeof option === 'object'
   ? asText(option.label ?? option.name ?? option.text ?? option.value)
   : asText(option);
@@ -273,9 +284,7 @@ function QuestionForm({ interaction, draft, setDraft, busy, submit }) {
 
   const toggle = (id, value, multiple) => {
     const answer = draft.answers?.[id] || { selected: [] };
-    const selected = multiple
-      ? (answer.selected.includes(value) ? answer.selected.filter((item) => item !== value) : [...answer.selected, value])
-      : [value];
+    const selected = toggleQuestionSelection(answer.selected, value, multiple);
     update(id, { selected, skipped: false, ...(!multiple && value !== '__other__' ? { other: '' } : {}) });
   };
 

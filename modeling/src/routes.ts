@@ -40,7 +40,14 @@ import { advanceStage as setProjectStage } from './projects/repo.js';
 import { getSetting, setSetting, deleteSetting, getConsumerApiUrl, getLlmSettings, getEvalBindingDefaults } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
-import { runRuleChecks, runSemanticCheck, runFormatChecks, saveCheck, getCheck } from './workflow/package-check.js';
+import {
+  currentPackageCheckView,
+  getCheck,
+  runFormatChecks,
+  runRuleChecks,
+  runSemanticCheck,
+  saveCheck,
+} from './workflow/package-check.js';
 import { getPackageErrorDeferral } from './workflow/package-error-deferral.js';
 import {
   acceptPackageWarnings,
@@ -1159,9 +1166,14 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.get('/api/projects/:id/package/check', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
-      const check = getCheck(c.p.id);
+      const currentPackage = await packageArtifacts.current(c.p.id);
+      const view = currentPackageCheckView(
+        getCheck(c.p.id),
+        currentPackage?.revision.oid ?? null,
+      );
+      const check = view.check;
       return {
-        check,
+        ...view,
         errorDeferral: check?.revision ? getPackageErrorDeferral(c.p.id, check.revision) : null,
         warningReview: check?.revision ? getPackageWarningReview(c.p.id, check.revision) : null,
         repair: packageRepairAvailability({

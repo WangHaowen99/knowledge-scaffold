@@ -29,10 +29,11 @@ const appendFileAction = (projectId: string, path: unknown) => {
 
 // ---- 体检面板只列发现，处理动作交给建模助手 ----
 
-test('体检面板不再自带手动检查按钮', () => {
-  assert.ok(!packageCheckSource.includes('检查内容'));
+test('体检面板的重新检查入口由工作区统一执行', () => {
+  assert.ok(packageCheckSource.includes("check ? '重新检查' : '执行检查'"));
+  assert.ok(packageCheckSource.includes('onRecheck'));
   assert.ok(!packageCheckSource.includes('runPackageCheck'));
-  // 自动重查仍由工作区驱动，面板只展示状态
+  // 自动和手动重查都由工作区驱动，面板不直接维护第二套检查请求状态
   assert.ok(packageCheckSource.includes('rechecking'));
 });
 
@@ -65,6 +66,12 @@ test('忽略待办要能在助手栏渲染，否则又是「后端说有待办�
     isConstructionInteraction({ type: 'question_batch', payload: { purpose: 'check_finding_ignore' } }),
     true,
   );
+});
+
+test('忽略接口成功后立即使用返回待办，不等待下一轮 session 才恢复按钮', () => {
+  assert.match(packageCheckSource, /const result = await ignorePackageCheckFinding/);
+  assert.match(packageCheckSource, /onInteractionOpened\?\.\(result\)/);
+  assert.match(packageCheckSource, /openedIgnore \? '前往助手处理' : '忽略'/);
 });
 
 // ---- 动作可以指向具体文件 ----

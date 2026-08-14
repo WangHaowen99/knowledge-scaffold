@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   blockingPendingInteractions,
   evidenceProblemActions,
-  isStaleRepairInteraction,
+  isStaleRevisionBoundInteraction,
   pendingInteractionActions,
 } from '../src/authoring/construction-completion.js';
 import { completionBlockerMessage } from '../frontend/src/completionBlocker.js';
@@ -32,14 +32,17 @@ test('无法识别的问题项不产生动作', () => {
   assert.deepEqual(evidenceProblemActions(['莫名其妙的问题', '']), []);
 });
 
-test('修订变化后的受控修复待办被判定为失效', () => {
+test('修订变化后的内容绑定待办被判定为失效', () => {
   const stale = interaction({
     payload: { purpose: 'controlled_repair' }, baseRevision: 'rev-old',
   });
-  assert.equal(isStaleRepairInteraction(stale, 'rev-new'), true);
-  assert.equal(isStaleRepairInteraction(stale, 'rev-old'), false);
-  // 非受控修复类待办不受修订影响
-  assert.equal(isStaleRepairInteraction(
+  assert.equal(isStaleRevisionBoundInteraction(stale, 'rev-new'), true);
+  assert.equal(isStaleRevisionBoundInteraction(stale, 'rev-old'), false);
+  assert.equal(isStaleRevisionBoundInteraction(interaction({
+    payload: { purpose: 'check_finding_ignore' }, baseRevision: 'rev-old',
+  }), 'rev-new'), true);
+  // 非内容绑定类待办不受修订影响
+  assert.equal(isStaleRevisionBoundInteraction(
     interaction({ payload: { purpose: 'modeling_brief' }, baseRevision: 'rev-old' }),
     'rev-new',
   ), false);
@@ -49,9 +52,10 @@ test('修订变化后的受控修复待办被判定为失效', () => {
  * 后端计数与助手栏渲染必须用同一套规则：
  * 否则会出现「被拦住，但界面上找不到任何要处理的事项」的死路。
  */
-test('失效的受控修复待办不再阻塞建模完成', () => {
+test('失效的内容绑定待办不再阻塞建模完成', () => {
   const blocking = blockingPendingInteractions([
     interaction({ id: 'stale', payload: { purpose: 'controlled_repair' }, baseRevision: 'rev-old' }),
+    interaction({ id: 'stale-ignore', payload: { purpose: 'check_finding_ignore' }, baseRevision: 'rev-old' }),
     interaction({ id: 'live', payload: { purpose: 'modeling_brief', title: '请确认建模目标' } }),
   ], 'rev-new');
   assert.deepEqual(blocking.map((item) => item.id), ['live']);

@@ -18,6 +18,15 @@ export interface ScriptContract {
   contract: string;
 }
 
+export class ScriptDecisionInputError extends Error {
+  readonly code = 'INVALID_INPUT';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScriptDecisionInputError';
+  }
+}
+
 const HIGH_SIGNAL = /(计算|公式|聚合|汇总|求和|平均|比率|比例|收率|换算|日期|天数|周期|金额|成本|产量|数量|数值|精确转换)/;
 const MEDIUM_SIGNAL = /(排序|排名|分配|去重|格式转换|编码转换|批量转换)/;
 const OPEN_SEMANTIC = /(经验判断|综合研判|开放式|语义分析|主观判断|人工判断)/;
@@ -79,7 +88,7 @@ export function parseScriptDecisionResponse(
   candidates: ScriptCandidate[],
 ): ScriptDecision {
   if (!response || typeof response !== 'object' || !Array.isArray((response as any).answers)) {
-    throw new Error('请选择需要生成脚本的业务操作，或选择本轮暂不生成');
+    throw new ScriptDecisionInputError('请选择需要生成脚本的业务操作，或选择本轮暂不生成');
   }
   const answer = (response as any).answers.find(
     (item: any) => String(item?.questionId ?? '') === 'script_candidates',
@@ -89,14 +98,18 @@ export function parseScriptDecisionResponse(
       .map((item: unknown) => String(item).trim())
       .filter((item: string) => Boolean(item)))]
     : [];
-  if (!selected.length) throw new Error('请选择需要生成脚本的业务操作，或选择本轮暂不生成');
+  if (!selected.length) {
+    throw new ScriptDecisionInputError('请选择需要生成脚本的业务操作，或选择本轮暂不生成');
+  }
   if (selected.includes('__none__') && selected.length > 1) {
-    throw new Error('“本轮暂不生成脚本”不能同时与具体业务操作一起选择');
+    throw new ScriptDecisionInputError('“本轮暂不生成脚本”不能同时与具体业务操作一起选择');
   }
   if (selected.length === 1 && selected[0] === '__none__') return { selectedOperationKeys: [] };
   const allowed = new Set(candidates.map((item) => item.operationKey));
   const unknown = selected.filter((item) => !allowed.has(item));
-  if (unknown.length) throw new Error(`选择的 operation 不属于当前候选：${unknown.join('、')}`);
+  if (unknown.length) {
+    throw new ScriptDecisionInputError(`选择的 operation 不属于当前候选：${unknown.join('、')}`);
+  }
   return { selectedOperationKeys: selected };
 }
 

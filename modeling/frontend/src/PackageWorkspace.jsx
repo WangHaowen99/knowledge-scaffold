@@ -41,6 +41,7 @@ import {
   liveAiConstructionMessage,
   mergeAiConstructionSession,
   prependAiConstructionMessagePage,
+  upsertPendingAuthoringInteraction,
   upsertAiConstructionMessage,
 } from './aiConstructionLiveState.js';
 import { FlowchartAddDialog, FlowchartEditor } from './flowchart-editor/index.js';
@@ -114,6 +115,8 @@ export default function PackageWorkspace({
   const [candidatePreview, setCandidatePreview] = useState(null);
   const [candidateRefreshKey, setCandidateRefreshKey] = useState(0);
   const [candidateAttentionKey, setCandidateAttentionKey] = useState('');
+  const [pendingInteractionAttentionKey, setPendingInteractionAttentionKey] = useState('');
+  const activeCheckRunsRef = useRef(0);
   const sessionCursorRef = useRef(0);
   // 回放闸门与合并加载的定时器跨事件存活，因此放在 ref 而不是订阅副作用的闭包里
   const eventStateRef = useRef({ gate: null, loadTimer: null });
@@ -138,6 +141,53 @@ export default function PackageWorkspace({
   const refreshCandidateRevisions = useCallback(() => {
     setCandidateRefreshKey((value) => value + 1);
   }, []);
+  const focusPendingInteraction = useCallback((interaction) => {
+    if (!interaction?.id) return;
+    setPendingInteractionAttentionKey(`${interaction.id}:${Date.now()}`);
+  }, []);
+  const openPendingInteraction = useCallback((result) => {
+    if (!result?.interaction) return;
+    const cursor = Number(result.cursor ?? 0) || 0;
+    sessionCursorRef.current = Math.max(sessionCursorRef.current, cursor);
+    setSession((current) => upsertPendingAuthoringInteraction(
+      current,
+      result.interaction,
+      cursor,
+    ));
+    focusPendingInteraction(result.interaction);
+  }, [focusPendingInteraction]);
+  const applyPackageCheckResult = useCallback((result) => {
+    setCheck({
+      version: result.version,
+      revision: result.revision,
+      findings: result.findings,
+      createdAt: result.createdAt ?? new Date().toISOString(),
+    });
+    setWarningReview(result.warningReview ?? null);
+    setErrorDeferral(result.errorDeferral ?? null);
+    setRepairAvailability(result.repair ?? null);
+  }, []);
+  const startCheckRun = useCallback(() => {
+    activeCheckRunsRef.current += 1;
+    setRechecking(true);
+    setCheckError('');
+  }, []);
+  const finishCheckRun = useCallback(() => {
+    activeCheckRunsRef.current = Math.max(0, activeCheckRunsRef.current - 1);
+    if (activeCheckRunsRef.current === 0) setRechecking(false);
+  }, []);
+  const recheckPackage = useCallback(async () => {
+    startCheckRun();
+    try {
+      const result = await runPackageCheck(projectId);
+      applyPackageCheckResult(result);
+      window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
+    } catch (cause) {
+      setCheckError(cause instanceof Error ? cause.message : '体检失败');
+    } finally {
+      finishCheckRun();
+    }
+  }, [applyPackageCheckResult, finishCheckRun, projectId, startCheckRun]);
 
   useEffect(() => {
     if (!embedded) return;
@@ -232,15 +282,7 @@ export default function PackageWorkspace({
         setRepairAvailability(result.repair ?? null);
       },
       onChecked: (result) => {
-        setCheck({
-          version: result.version,
-          revision: result.revision,
-          findings: result.findings,
-          createdAt: new Date().toISOString(),
-        });
-        setWarningReview(result.warningReview);
-        setErrorDeferral(result.errorDeferral ?? null);
-        setRepairAvailability(result.repair ?? null);
+        applyPackageCheckResult(result);
       },
       onPackageUpdated: () => {
         setCheck(null);
@@ -249,11 +291,11 @@ export default function PackageWorkspace({
         setRepairAvailability(null);
       },
       onError: (cause) => setCheckError(cause instanceof Error ? cause.message : '体检失败'),
-      onRecheckStart: () => { setRechecking(true); setCheckError(''); },
-      onRecheckFinish: () => setRechecking(false),
+      onRecheckStart: startCheckRun,
+      onRecheckFinish: finishCheckRun,
     });
     return () => sync.stop();
-  }, [projectId]);
+  }, [applyPackageCheckResult, finishCheckRun, projectId, startCheckRun]);
   useEffect(() => {
     setOlderMessagesBusy(false);
     setOlderMessagesError('');
@@ -583,19 +625,21 @@ export default function PackageWorkspace({
         if (flowchartDraftError && !flowchartDraft) return <div className="empty">{flowchartDraftError}</div>;
         if (!flowchartDraft) return <div className="empty">流程图草稿尚未就绪</div>;
         return <>
-          <FlowchartEditor
-            key={`${projectId}:${processReview.id}`}
-            document={flowchartDraft.document}
-            savedRevision={flowchartDraft.draftRevision}
-            disabled={interactionBusy || flowchartAddBusy || flowchartSubmitBusy}
-            onSave={saveCurrentFlowchartDraft}
-            onStateChange={setFlowchartEditorState}
-            onRecommendDiagram={() => {
-              setFlowchartAddError('');
-              setFlowchartAddOpen(true);
-            }}
-            onCreateBlankDiagram={() => { void addFlowchart({ mode: 'blank' }); }}
-          />
+          <div className="rv-flowchart">
+            <FlowchartEditor
+              key={`${projectId}:${processReview.id}`}
+              document={flowchartDraft.document}
+              savedRevision={flowchartDraft.draftRevision}
+              disabled={interactionBusy || flowchartAddBusy || flowchartSubmitBusy}
+              onSave={saveCurrentFlowchartDraft}
+              onStateChange={setFlowchartEditorState}
+              onRecommendDiagram={() => {
+                setFlowchartAddError('');
+                setFlowchartAddOpen(true);
+              }}
+              onCreateBlankDiagram={() => { void addFlowchart({ mode: 'blank' }); }}
+            />
+          </div>
           <FlowchartAddDialog
             open={flowchartAddOpen}
             candidates={flowchartDraft.availableCandidates}
@@ -747,7 +791,12 @@ export default function PackageWorkspace({
                     repair: repairAvailability,
                     rechecking,
                     error: checkError,
+                    pendingInteractions,
+                    packageRevision: pkg?.revision ?? '',
                   }}
+                  onCheckRecheck={recheckPackage}
+                  onCheckInteractionOpened={openPendingInteraction}
+                  onCheckInteractionFocus={focusPendingInteraction}
                   wideStage={activeTab === 'edit' && Boolean(processReview)}
                   onDirtyChange={setPackageDraftDirty}
                   onFileSelected={() => {
@@ -775,6 +824,7 @@ export default function PackageWorkspace({
               packageRevision={pkg?.revision ?? ''}
               activeOperation={activeOperationOf(session)}
               pendingInteraction={constructionInteraction}
+              pendingInteractionAttentionKey={pendingInteractionAttentionKey}
               candidateRevisionAttentionKey={candidateAttentionKey}
               candidateRevisionPanel={<CandidateRevisionPanel projectId={projectId}
                 refreshKey={candidateRefreshKey}

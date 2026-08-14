@@ -130,6 +130,7 @@ export default function PackageChat({
   // 后端正持有写租约时，待办要显示成「已提交，正在处理」而不是可点的表单
   activeOperation = null,
   pendingInteraction,
+  pendingInteractionAttentionKey = '',
   flowchartDraftState,
   candidateRevisionPanel,
   candidateRevisionAttentionKey = '',
@@ -168,6 +169,7 @@ export default function PackageChat({
   // 计时也走服务端开始时间，刷新后不会从 0 秒重新数
   const sec = useElapsed(!!busy, localBusy ? undefined : serverRun?.createdAt);
   const bodyRef = useRef(null);
+  const pendingInteractionRef = useRef(null);
   const loadingOlderRef = useRef(false);
   const materialInputRef = useRef(null);
   const timeline = useMemo(() => mergePackageChatTimeline({ turns, structuredMessages }), [turns, structuredMessages]);
@@ -205,6 +207,22 @@ export default function PackageChat({
     if (!candidateRevisionAttentionKey) return;
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });
   }, [candidateRevisionAttentionKey]);
+  useEffect(() => {
+    if (!pendingInteractionAttentionKey || !pendingInteraction) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' });
+      pendingInteractionRef.current?.focus({ preventScroll: true });
+      pendingInteractionRef.current?.classList.add('is-attention');
+    });
+    const timer = window.setTimeout(() => {
+      pendingInteractionRef.current?.classList.remove('is-attention');
+    }, 1_600);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      pendingInteractionRef.current?.classList.remove('is-attention');
+    };
+  }, [pendingInteraction?.id, pendingInteractionAttentionKey]);
 
   const loadOlder = async () => {
     if (!hasOlderMessages || olderMessagesBusy || !onLoadOlderMessages) return;
@@ -865,6 +883,7 @@ export default function PackageChat({
             actionsEnabled={canUseStructuredMessageActions({
               busy: Boolean(busy),
               constructionStatus: aiConstruction?.status,
+              message: entry.item,
               messageId: entry.item.id,
               latestActionMessageId,
             })}
@@ -933,7 +952,7 @@ export default function PackageChat({
           onCancel={() => setTaskEditConfig(null)}
         />}
         {pendingInteraction && (
-          <div className="ac-message-interaction">
+          <div ref={pendingInteractionRef} className="ac-message-interaction" tabIndex={-1}>
             <PendingInteraction
               interaction={pendingInteraction}
               busy={Boolean(busy)}

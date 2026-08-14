@@ -8,7 +8,7 @@ import PackageChat, {
   interactionResponseChangedPackage,
   shouldOpenWarningReview,
 } from '../frontend/src/PackageChat.jsx';
-import PendingInteraction from '../frontend/src/PendingInteraction.jsx';
+import PendingInteraction, { toggleQuestionSelection } from '../frontend/src/PendingInteraction.jsx';
 import PaneResizeHandle from '../frontend/src/PaneResizeHandle.jsx';
 import { resizePaneWidth } from '../frontend/src/paneResize.js';
 import {
@@ -56,6 +56,17 @@ test('确认知识包修复方案后显示明确的修复进度而不是普通�
   assert.equal(interactionBusyState('script_contract'), 'script_generation');
   assert.equal(interactionBusyState('script_generation'), 'script_apply');
   assert.equal(interactionBusyState('modeling_brief'), 'interaction');
+});
+
+test('脚本候选允许多选具体流程，但暂不生成与具体流程互斥', () => {
+  assert.deepEqual(toggleQuestionSelection(['CalculateScore'], 'AllocateVolume', true), [
+    'CalculateScore', 'AllocateVolume',
+  ]);
+  assert.deepEqual(toggleQuestionSelection(['CalculateScore', 'AllocateVolume'], '__none__', true), [
+    '__none__',
+  ]);
+  assert.deepEqual(toggleQuestionSelection(['__none__'], 'CalculateScore', true), ['CalculateScore']);
+  assert.deepEqual(toggleQuestionSelection(['__none__'], '__none__', true), []);
 });
 
 test('知识包建模助手支持继续加载更早的会话消息', () => {
@@ -313,6 +324,28 @@ test('旧修订的受控修复待办不会覆盖当前版本的继续修复动�
   }, 'rev-current'), true);
 });
 
+test('旧修订的告警放行待办刷新后不再重复展示', () => {
+  assert.equal(isCurrentConstructionInteraction({
+    type: 'question_batch', baseRevision: 'rev-old',
+    payload: { purpose: 'check_finding_ignore' },
+  }, 'rev-current'), false);
+  assert.equal(isCurrentConstructionInteraction({
+    type: 'question_batch', baseRevision: 'rev-current',
+    payload: { purpose: 'check_finding_ignore' },
+  }, 'rev-current'), true);
+  const selected = selectCurrentConstructionInteraction([
+    {
+      id: 'ignore-old', type: 'question_batch', baseRevision: 'rev-old',
+      payload: { purpose: 'check_finding_ignore' },
+    },
+    {
+      id: 'goal-current', type: 'question_batch', baseRevision: 'rev-current',
+      payload: { purpose: 'modeling_brief' },
+    },
+  ], 'rev-current');
+  assert.equal(selected?.id, 'goal-current');
+});
+
 test('受控修复确认优先于更早创建的暂缓理由表单', () => {
   const selected = selectCurrentConstructionInteraction([
     {
@@ -374,7 +407,7 @@ test('只有一个明确修复建议时优先展示采用建议选项', () => {
 
 test('流程图待确认时中栏展示可编辑草稿且右栏提交已保存修订', () => {
   assert.match(packageWorkspaceSource, /processReview/);
-  assert.match(packageWorkspaceSource, /<FlowchartEditor/);
+  assert.match(packageWorkspaceSource, /<div className="rv-flowchart">\s*<FlowchartEditor/);
   assert.match(packageWorkspaceSource, /getFlowchartDraft/);
   assert.match(packageWorkspaceSource, /saveCurrentFlowchartDraft/);
   assert.match(packageWorkspaceSource, /addFlowchart/);
@@ -527,6 +560,14 @@ test('知识包校验存在错误时可从检查栏自动修复', () => {
   assert.match(packageCheckSource, /根据当前检查结果自动修改知识包，并重新检查/);
 });
 
+test('知识包检查栏始终提供当前可操作的重新检查入口', () => {
+  assert.match(packageCheckSource, /onRecheck/);
+  assert.match(packageCheckSource, /check \? '重新检查' : '执行检查'/);
+  assert.match(reviewPanelSource, /onRecheck=\{onCheckRecheck\}/);
+  assert.match(packageWorkspaceSource, /const recheckPackage = useCallback/);
+  assert.match(packageWorkspaceSource, /onCheckRecheck=\{recheckPackage\}/);
+});
+
 test('动态任务弹层压平为单层卡片容器', () => {
   assert.match(stylesSource, /pchat-task-status__popover[^}]*padding:\s*0/);
   assert.match(stylesSource, /pchat-task-status__popover \.ac-message-card[^}]*border:\s*0[^}]*box-shadow:\s*none/);
@@ -662,7 +703,8 @@ test('自动重查挂在工作区而不是体检面板，评测与诊断页签�
   );
   // 体检面板只在「编辑与检查」页签渲染，重查跟着它走会漏掉其余页签
   assert.match(packageWorkspaceSource, /synchronizePackageCheck\(\{/);
-  assert.match(packageWorkspaceSource, /onRecheckStart: \(\) => \{ setRechecking\(true\)/);
+  assert.match(packageWorkspaceSource, /const startCheckRun = useCallback/);
+  assert.match(packageWorkspaceSource, /onRecheckStart: startCheckRun/);
   assert.doesNotMatch(packageCheckSource, /synchronizePackageCheck/);
   assert.match(packageCheckSource, /rechecking = false/);
   assert.match(packageWorkspaceSource, /packageCheck=\{\{/);

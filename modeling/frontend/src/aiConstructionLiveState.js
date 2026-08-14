@@ -70,6 +70,28 @@ export function mergeAiConstructionSession(current, refreshed) {
   };
 }
 
+export function upsertPendingAuthoringInteraction(session, interaction, cursor) {
+  if (!session || !interaction?.id) return session;
+  const pendingInteractions = session.authoring?.pendingInteractions ?? [];
+  const nextPending = pendingInteractions.some((item) => item?.id === interaction.id)
+    ? pendingInteractions.map((item) => item?.id === interaction.id ? interaction : item)
+    : [...pendingInteractions, interaction];
+  const nextCursor = Math.max(Number(session.cursor ?? 0), Number(cursor ?? 0));
+  const lastEventSeq = Math.max(
+    Number(session.authoring?.lastEventSeq ?? 0),
+    Number(cursor ?? 0),
+  );
+  return {
+    ...session,
+    ...(Number.isFinite(nextCursor) ? { cursor: nextCursor } : {}),
+    authoring: {
+      ...(session.authoring ?? {}),
+      pendingInteractions: nextPending,
+      ...(Number.isFinite(lastEventSeq) ? { lastEventSeq } : {}),
+    },
+  };
+}
+
 export function prependAiConstructionMessagePage(session, page) {
   const messages = mergeAiConstructionMessages(
     page?.messages ?? [],

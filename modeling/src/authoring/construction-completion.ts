@@ -69,17 +69,19 @@ function interactionTitle(interaction: AuthoringInteraction): string {
 }
 
 /**
- * 受控修复类待办一旦知识包修订变化就不再可处理，助手栏也不会渲染它
+ * 与知识包内容绑定的待办一旦修订变化就不再可处理，助手栏也不会渲染它
  * （见 frontend/src/constructionInteraction.js 的同名规则）。
  * 后端若仍把它算进阻塞项，用户会被拦住却在界面上找不到任何要处理的东西。
  */
-export function isStaleRepairInteraction(
+export function isStaleRevisionBoundInteraction(
   interaction: AuthoringInteraction,
   currentRevision: string | undefined,
 ): boolean {
   const purpose = String(interaction.payload?.purpose ?? '');
-  const controlledRepair = purpose === 'controlled_repair' || purpose === 'controlled_repair_expert';
-  if (!controlledRepair) return false;
+  const revisionBound = purpose === 'controlled_repair'
+    || purpose === 'controlled_repair_expert'
+    || purpose === 'check_finding_ignore';
+  if (!revisionBound) return false;
   if (!interaction.baseRevision || !currentRevision) return false;
   return interaction.baseRevision !== currentRevision;
 }
@@ -89,7 +91,7 @@ export function blockingPendingInteractions(
   currentRevision: string | undefined,
 ): BlockingPendingInteraction[] {
   return pending
-    .filter((interaction) => !isStaleRepairInteraction(interaction, currentRevision))
+    .filter((interaction) => !isStaleRevisionBoundInteraction(interaction, currentRevision))
     .map((interaction) => ({
       id: interaction.id,
       type: interaction.type,

@@ -48,6 +48,18 @@ function latestConfirmedPackageRevision(
   return latest?.packageRevisionOid;
 }
 
+function confirmedMilestonePackageRevision(
+  snapshot: AiConstructionTaskGraphSnapshot,
+  milestoneId: string,
+): string | undefined {
+  return snapshot.milestones?.find((milestone) => (
+    milestone.id === milestoneId
+  ))?.confirmedRevisionOid
+    ?? [...(snapshot.confirmations ?? [])].reverse().find(
+      (confirmation) => confirmation.milestoneId === milestoneId,
+    )?.packageRevisionOid;
+}
+
 export interface MaterialAnalysisProgressInput {
   title: string;
   summary?: string;
@@ -1603,8 +1615,9 @@ export class AiConstructionOrchestrator {
       const current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
       const taskId = current.progress.currentTaskId ?? undefined;
-      const message = this.messages.ensure(projectId, {
-        key: `check.finding.review.${input.packageRevisionOid.slice(0, 12)}.${input.findingId}`,
+      // 每次点击“去修改”都生成一张新的当前操作卡。复用旧消息会让用户完成
+      // 忽略后再次点击时仍落到历史卡片，只能看到“已不可操作”。
+      const message = this.messages.append(projectId, {
         role: 'assistant',
         taskId,
         blocks: [
@@ -2001,9 +2014,9 @@ export class AiConstructionOrchestrator {
         if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
         task = refreshedTask;
       }
-      const packageRevision = confirmedSnapshot.confirmations.find(
-        (item) => item.milestoneId === 'materials_ready',
-      )?.packageRevisionOid;
+      const packageRevision = confirmedMilestonePackageRevision(
+        confirmedSnapshot, 'materials_ready',
+      );
       const started = this.state.apply({
         kind: 'start_run',
         projectId,
@@ -2131,9 +2144,9 @@ export class AiConstructionOrchestrator {
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
   ): AiConstructionAdvanceResult {
     let current = initial;
-    const inputRevisionOid = confirmedSnapshot.confirmations.find(
-      (item) => item.milestoneId === 'deterministic_confirmed',
-    )?.packageRevisionOid;
+    const inputRevisionOid = confirmedMilestonePackageRevision(
+      confirmedSnapshot, 'deterministic_confirmed',
+    );
     const deterministicTask = current.tasks.find((item) => item.milestoneId === 'deterministic_confirmed'
       && item.kind === 'script_generation' && item.status === 'completed')
       ?? current.tasks.find((item) => item.milestoneId === 'deterministic_confirmed'
@@ -2648,9 +2661,9 @@ export class AiConstructionOrchestrator {
     let current = initial;
     const validationTask = current.tasks.find((item) => item.kind === 'package_validation'
       && item.milestoneId === 'knowledge_confirmed');
-    const inputRevisionOid = confirmedSnapshot.confirmations.find(
-      (item) => item.milestoneId === 'knowledge_confirmed',
-    )?.packageRevisionOid;
+    const inputRevisionOid = confirmedMilestonePackageRevision(
+      confirmedSnapshot, 'knowledge_confirmed',
+    );
     let task = current.tasks.find((item) => item.kind === 'script_decision'
       && item.milestoneId === 'deterministic_confirmed'
       && !['cancelled', 'stale'].includes(item.status));
@@ -2667,7 +2680,8 @@ export class AiConstructionOrchestrator {
         },
       });
       task = current.tasks.find((item) => item.kind === 'script_decision'
-        && item.milestoneId === 'deterministic_confirmed');
+        && item.milestoneId === 'deterministic_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!task) throw new Error('确定性脚本决策任务创建失败');
 
@@ -2745,9 +2759,9 @@ export class AiConstructionOrchestrator {
     let current = initial;
     const processTask = current.tasks.find((item) => item.kind === 'process_review'
       && item.milestoneId === 'process_confirmed');
-    const inputRevisionOid = confirmedSnapshot.confirmations.find(
-      (item) => item.milestoneId === 'process_confirmed',
-    )?.packageRevisionOid;
+    const inputRevisionOid = confirmedMilestonePackageRevision(
+      confirmedSnapshot, 'process_confirmed',
+    );
     let operationTask = current.tasks.find((item) => item.kind === 'operation_extraction'
       && item.milestoneId === 'knowledge_confirmed'
       && !['cancelled', 'stale'].includes(item.status));
