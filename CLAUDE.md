@@ -11,7 +11,8 @@ In particular:
 - Never add customer or project identities, aliases, abbreviations, logos, or identifiable scenario descriptions.
 - Never add real customer, production, staging, testing, personal, employee, or internally sourced data.
 - Never add credentials, private keys, tokens, cookies, connection strings, or real environment configuration, even if expired or encoded.
-- Never add real non-public IP addresses, domains, hostnames, service endpoints, infrastructure topology, or internal platform URLs.
+- Never add any customer-internal URL or identifiable part of one, including protocols, domains, ports, paths, query parameters, fragments, short links, redirects, partially masked values, or URLs appearing in logs, screenshots, recordings, documentation, and configuration.
+- Never add real non-public IP addresses, domains, hostnames, service endpoints, or infrastructure topology.
 - Use generic names, reserved example domains and IP ranges, environment-variable placeholders, and fully synthetic data.
 - Inspect content, filenames, directory names, code identifiers, branch names, commit messages, binary metadata, and generated artifacts before committing.
 - Existing violations are not precedents. Do not copy, expand, rename, or otherwise reuse them.
@@ -232,7 +233,8 @@ Follow the complete repository data-security rules in `AGENTS.md`. At minimum:
 - Use `.env.example` only to document variable names and clearly invalid placeholders.
 - Do not create or commit real `.env` files, account files, connection strings, credentials, certificates, private keys, tokens, cookies, or session data.
 - Do not print, quote, validate, or reuse secrets in logs, responses, tests, documentation, commit messages, or error output.
-- Do not hardcode real environment-specific URLs, IP addresses, domains, hostnames, ports, tenant names, or infrastructure identifiers.
+- Do not add any customer-internal URL or identifiable part of one, including URLs from development, testing, staging, production, or other internal environments. This prohibition also applies to expired, inaccessible, partially masked, logged, captured, documented, redirected, or configuration-embedded URLs.
+- Do not hardcode real environment-specific IP addresses, domains, hostnames, ports, tenant names, or infrastructure identifiers.
 - Keep local, staging, and production configuration separate from the repository and inject it through approved runtime configuration or secret-management systems.
 - Use only reserved example domains and IP ranges defined in `AGENTS.md`.
 - Use fully synthetic test and demonstration data. Removing direct identifiers or perturbing real values is not sufficient anonymization.
