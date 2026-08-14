@@ -5,6 +5,7 @@ const CODE_TITLE = {
   PENDING_INTERACTIONS: '还有待确认事项未处理',
   REPAIR_TARGET_UNRESOLVED: '这条问题需要先确定修改目标',
   PACKAGE_WARNINGS_UNREVIEWED: '可暂缓的提醒尚未复核',
+  CHECK_FINDING_REVIEW_STALE: '这条告警放行已过期',
 };
 
 const LOCATION_HINT = {

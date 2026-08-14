@@ -54,11 +54,15 @@ export function latestStructuredActionMessageId(timeline = []) {
 export function canUseStructuredMessageActions({
   busy = false,
   constructionStatus = 'active',
+  message,
   messageId,
   latestActionMessageId,
 }) {
+  const packageCheckReview = (message?.blocks ?? []).some((block) => (
+    block?.type === 'status' && String(block.title ?? '').startsWith('处理校验发现：')
+  ));
   return !busy
-    && constructionStatus !== 'completed'
+    && (constructionStatus !== 'completed' || packageCheckReview)
     && Boolean(messageId)
     && messageId === latestActionMessageId;
 }

@@ -6,6 +6,7 @@ import {
   identifyScriptCandidates,
   parseScriptContractResponse,
   parseScriptDecisionResponse,
+  ScriptDecisionInputError,
 } from '../src/ai-construction/deterministic-capability.js';
 import type { SpecOperation } from '../src/types.js';
 
@@ -77,7 +78,11 @@ test('脚本决策只接受候选 operation，且暂不生成不能与具体项�
   }, candidates).selectedOperationKeys, []);
   assert.throws(() => parseScriptDecisionResponse({
     answers: [{ questionId: 'script_candidates', selected: ['CalculateYield', '__none__'] }],
-  }, candidates), /不能同时/);
+  }, candidates), (error) => (
+    error instanceof ScriptDecisionInputError
+    && error.code === 'INVALID_INPUT'
+    && /不能同时/.test(error.message)
+  ));
   assert.throws(() => parseScriptDecisionResponse({
     answers: [{ questionId: 'script_candidates', selected: ['UnknownOperation'] }],
   }, candidates), /不属于当前候选/);

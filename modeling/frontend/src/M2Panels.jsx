@@ -39,6 +39,9 @@ export function ReviewPanel({
   packageDraft: suppliedPackageDraft = null,
   packageRepairBusy = '',
   onDraftChange,
+  onCheckRecheck,
+  onCheckInteractionOpened,
+  onCheckInteractionFocus,
 }) {
   const [pkg, setPkg] = useState(null);
   const [err, setErr] = useState('');
@@ -572,7 +575,12 @@ export function ReviewPanel({
       errorDeferral={packageCheck?.errorDeferral ?? null}
       repair={packageCheck?.repair ?? null}
       rechecking={packageCheck?.rechecking ?? false}
-      error={packageCheck?.error ?? ''} />
+      error={packageCheck?.error ?? ''}
+      pendingInteractions={packageCheck?.pendingInteractions ?? []}
+      packageRevision={packageCheck?.packageRevision ?? ''}
+      onRecheck={onCheckRecheck}
+      onInteractionOpened={onCheckInteractionOpened}
+      onInteractionFocus={onCheckInteractionFocus} />
     {repairInProgress && (
       <div className="stale-banner" role="status">{PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE}</div>
     )}

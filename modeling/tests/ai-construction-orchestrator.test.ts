@@ -1022,6 +1022,72 @@ test('没有脚本需求时明确确认后可以结束确定性能力阶段', ()
   ]);
 });
 
+test('重做知识校验后重新进入会忽略旧任务并补建脚本决策', () => {
+  const project = createMaterialFirstProject('重做知识校验后恢复');
+  const { graph, snapshot } = advanceGraphToDeterministic(project.id);
+  const state = new AuthoringState(getDb());
+  const orchestrator = new AiConstructionOrchestrator({ db: getDb(), graph, state });
+  const decision = orchestrator.advanceAfterMilestoneConfirmation(project.id, snapshot);
+  const staleDecisionTask = decision.aiConstruction.tasks.find(
+    (item) => item.kind === 'script_decision',
+  )!;
+  const answered = state.apply({
+    kind: 'respond_interaction', projectId: project.id, interactionId: decision.interaction!.id,
+    responseId: 'script-decision-before-redo', response: { answers: [] },
+  });
+  if (answered.kind !== 'interaction') throw new Error('回答确定性脚本问题失败');
+  state.apply({
+    kind: 'update_run', projectId: project.id, runId: answered.run.id, status: 'completed',
+    result: { purpose: 'script_decision', selectedCandidates: [] },
+  });
+  let current = orchestrator.completeScriptDecision(project.id, {
+    taskId: staleDecisionTask.id,
+    packageRevisionOid: 'revision-knowledge_confirmed',
+    selectedCandidates: [],
+    messageKey: 'script.decision.before.redo',
+  }).aiConstruction;
+  current = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: current.revision,
+    milestoneId: 'deterministic_confirmed', packageRevisionOid: 'revision-deterministic',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  current = orchestrator.advanceAfterMilestoneConfirmation(project.id, current).aiConstruction;
+  const staleCompletionTask = current.tasks.find((item) => item.kind === 'completion_review')!;
+  current = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: current.revision,
+    milestoneId: 'construction_completed', packageRevisionOid: 'revision-completed',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+
+  const validationTask = current.tasks.find((item) => item.kind === 'package_validation')!;
+  current = graph.adjust(project.id, {
+    expectedRevision: current.revision, taskId: validationTask.id, action: 'redo',
+    actor: 'alice', reason: '知识包出现新的阻断错误，需要重新校验',
+  }).graph;
+  assert.equal(current.tasks.find((item) => item.id === staleDecisionTask.id)?.status, 'stale');
+  assert.equal(current.tasks.find((item) => item.id === staleCompletionTask.id)?.status, 'stale');
+
+  current = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: current.revision,
+    taskId: validationTask.id, outputRevisionOid: 'revision-revalidated',
+  });
+  current = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: current.revision,
+    milestoneId: 'knowledge_confirmed', packageRevisionOid: 'revision-revalidated',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+
+  const resumed = orchestrator.advanceAfterMilestoneConfirmation(project.id, current);
+  const decisionTasks = resumed.aiConstruction.tasks.filter(
+    (item) => item.kind === 'script_decision',
+  );
+  assert.deepEqual(decisionTasks.map((item) => item.status), ['stale', 'waiting_user']);
+  assert.notEqual(decisionTasks[1].id, staleDecisionTask.id);
+  assert.equal(decisionTasks[1].inputRevisionOid, 'revision-revalidated');
+  assert.equal(resumed.interaction?.payload.taskId, decisionTasks[1].id);
+  assert.equal(resumed.interaction?.baseRevision, 'revision-revalidated');
+});
+
 /**
  * 复现：知识结构里程碑确认后，知识包再出阻断错误时无法发起受控修复。
  * 六个修复编排方法都硬编码 knowledge_confirmed，而任务图要求里程碑 active 才能规划/推进任务。

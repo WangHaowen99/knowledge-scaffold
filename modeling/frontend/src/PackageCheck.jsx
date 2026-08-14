@@ -4,6 +4,10 @@ import {
   repairAiConstructionKnowledge,
   reviewPackageCheckFinding,
 } from './authoring-api.js';
+import {
+  currentFindingIgnoreInteraction,
+  findingIgnoreInteraction,
+} from './checkFindingHandoff.js';
 
 // 知识包体检面板（知识包完善页顶部）：规则引擎 + 语义 agent 的结构化发现。
 //
@@ -25,6 +29,11 @@ export default function PackageCheck({
   repair: repairAvailability = null,
   rechecking = false,
   error: suppliedError = '',
+  pendingInteractions = [],
+  packageRevision = '',
+  onRecheck,
+  onInteractionOpened,
+  onInteractionFocus,
 }) {
   const [manualWarningReview, setManualWarningReview] = useState(null);
   const [open, setOpen] = useState(false);
@@ -61,14 +70,20 @@ export default function PackageCheck({
     };
   }, [projectId]);
 
-  // 两个按钮走同一条路：请求后端在助手里落一张卡片/一条待办，再让工作区刷新把它取回来。
+  // 两个按钮走同一条路：请求后端在助手里落一张卡片/一条待办；忽略表单会立即
+  // 注入当前会话，后续刷新只负责与服务端最终状态对账。
   const handOff = async (finding, mode) => {
     if (handoffId) return;
     setHandoffId(`${finding.id}:${mode}`);
     setErr('');
     try {
-      if (mode === 'ignore') await ignorePackageCheckFinding(projectId, finding.id);
-      else await reviewPackageCheckFinding(projectId, finding.id);
+      if (mode === 'ignore') {
+        const result = await ignorePackageCheckFinding(projectId, finding.id);
+        if (!result?.interaction) throw new Error('服务端未返回告警放行表单，请重试');
+        onInteractionOpened?.(result);
+      } else {
+        await reviewPackageCheckFinding(projectId, finding.id);
+      }
       window.dispatchEvent(new CustomEvent('mw-package-check-updated'));
     } catch (error) {
       setErr(error instanceof Error ? error.message : '交给建模助手失败');
@@ -82,6 +97,8 @@ export default function PackageCheck({
   } : null;
   const warningByFindingId = new Map((warningReview?.items ?? []).map((item) => [item.finding?.id, item]));
   const deferred = Boolean(errorDeferral?.valid && errorDeferral.revision === check?.revision);
+  const currentRevision = packageRevision || check?.revision;
+  const pendingIgnore = currentFindingIgnoreInteraction(pendingInteractions, currentRevision);
 
   const repair = async () => {
     if (repairing) return;
@@ -117,6 +134,14 @@ export default function PackageCheck({
             <span style={{ color: 'var(--muted)' }}>{open ? '收起 ▾' : '展开 ▸'}</span>
           </button>
         )}
+        <button type="button" className="btn"
+          disabled={!onRecheck || rechecking || repairing || Boolean(handoffId) || Boolean(packageDraft)}
+          title={packageDraft
+            ? '请先发布或放弃人工编辑草稿，再重新检查正式知识包'
+            : '对当前知识包内容重新执行规则检查和语义检查'}
+          onClick={() => { void onRecheck?.(); }}>
+          {rechecking ? '检查中…' : check ? '重新检查' : '执行检查'}
+        </button>
         {counts?.错误 > 0 && (
           <button type="button" className="btn btn-p"
             disabled={repairing || rechecking
@@ -137,6 +162,12 @@ export default function PackageCheck({
             const ignorable = f.severity === '错误' || f.severity === '警告';
             const accepted = f.severity === '警告' && warningByFindingId.get(f.id)?.accepted;
             const alreadyIgnored = accepted || (f.severity === '错误' && deferred);
+            const openedIgnore = findingIgnoreInteraction(
+              pendingInteractions,
+              f,
+              currentRevision,
+            );
+            const anotherIgnoreIsOpen = Boolean(pendingIgnore && !openedIgnore);
             return (
               <div key={f.id} className="pcheck-item">
                 <span className={`tag ${SEV_TAG[f.severity] ?? 'tag-lang'}`}>{f.severity}</span>
@@ -152,10 +183,19 @@ export default function PackageCheck({
                 </button>
                 {ignorable && !alreadyIgnored && (
                   <button type="button" className="btn pcheck-act"
-                    disabled={Boolean(handoffId)}
-                    title="在建模助手里说明理由后忽略"
-                    onClick={() => { void handOff(f, 'ignore'); }}>
-                    {handoffId === `${f.id}:ignore` ? '正在打开…' : '忽略'}
+                    disabled={Boolean(handoffId) || anotherIgnoreIsOpen}
+                    title={anotherIgnoreIsOpen
+                      ? '请先在建模助手中完成当前告警放行表单'
+                      : openedIgnore
+                      ? '告警放行表单已在建模助手中打开，点击前往处理'
+                      : '在建模助手里说明理由后忽略'}
+                    onClick={() => {
+                      if (openedIgnore) onInteractionFocus?.(openedIgnore);
+                      else void handOff(f, 'ignore');
+                    }}>
+                    {handoffId === `${f.id}:ignore`
+                      ? '正在打开…'
+                      : openedIgnore ? '前往助手处理' : '忽略'}
                   </button>
                 )}
               </div>

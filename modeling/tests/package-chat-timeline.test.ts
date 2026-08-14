@@ -36,6 +36,30 @@ test('AI 辅助构建完成后历史动作卡全部只读', () => {
   }), true);
 });
 
+test('建模完成后最新的校验发现处理卡仍可修改知识包', () => {
+  const message = {
+    id: 'finding-review',
+    blocks: [
+      { type: 'status', title: '处理校验发现：命名建议' },
+      { type: 'next_actions', actions: [{ id: 'open_package_file' }] },
+    ],
+  };
+  assert.equal(canUseStructuredMessageActions({
+    busy: false,
+    constructionStatus: 'completed',
+    message,
+    messageId: message.id,
+    latestActionMessageId: message.id,
+  }), true);
+  assert.equal(canUseStructuredMessageActions({
+    busy: false,
+    constructionStatus: 'completed',
+    message,
+    messageId: message.id,
+    latestActionMessageId: 'newer-card',
+  }), false);
+});
+
 test('只有建模最终确认成功后才导航到场景推演', () => {
   assert.equal(milestoneNavigationTarget('construction_completed'), 'scenario');
   assert.equal(milestoneNavigationTarget('knowledge_confirmed'), '');

@@ -1139,6 +1139,7 @@ body { background: #f2f4f8; overflow: hidden; }
 }
 .mwr .ac-message-unsupported { margin: 10px 12px; border: 1px dashed #d5dae3; border-radius: 9px; padding: 8px 10px; color: var(--muted); font-size: 11px; }
 .mwr .ac-message-interaction { margin-bottom: 12px; border: 1px solid #dce7f6; border-radius: 14px; padding: 13px; background: #fff; box-shadow: 0 6px 18px -14px rgba(32, 82, 145, .55); }
+.mwr .ac-message-interaction.is-attention { border-color: #4f8fe8; box-shadow: 0 0 0 3px rgba(79, 143, 232, .16), 0 10px 24px -16px rgba(32, 82, 145, .8); transition: border-color .2s ease, box-shadow .2s ease; }
 .mwr .pchat-input { position: sticky; z-index: 2; bottom: 0; flex: none; display: flex; gap: 8px; padding: 12px 14px 14px; border-top: 1px solid var(--hair); background: #fff; box-shadow: 0 -8px 18px -18px rgba(16, 24, 40, .45); }
 .mwr .pchat-input textarea { flex: 1; border: 1px solid #dde1e9; border-radius: 10px; padding: 8px 10px; font-size: 12.5px; resize: none; transition: border-color .15s, box-shadow .15s; }
 .mwr .pchat-input textarea:focus { outline: none; border-color: var(--blue-l); box-shadow: var(--ring); }

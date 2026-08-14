@@ -10,6 +10,7 @@ import {
   identifyScriptCandidates,
   parseScriptContractResponse,
   parseScriptDecisionResponse,
+  ScriptDecisionInputError,
   type ScriptCandidate,
 } from '../ai-construction/deterministic-capability.js';
 import {
@@ -245,6 +246,9 @@ function sendStateError(reply: FastifyReply, error: unknown) {
   if (error instanceof ProcessInterviewInputError) {
     return reply.code(400).send({ error: error.message, code: error.code });
   }
+  if (error instanceof ScriptDecisionInputError) {
+    return reply.code(400).send({ error: error.message, code: error.code });
+  }
   throw error;
 }
 
@@ -364,9 +368,15 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   const knowledgeRunner = options.knowledgeRunner ?? new KnowledgeStructureRunner({
     orchestrator: orchestrator as AiConstructionOrchestrator,
   });
-  const cancelPendingFindingIgnoreInteractions = (projectId: string): number => {
+  const cancelPendingFindingIgnoreInteractions = (
+    projectId: string,
+    supersededBy: 'controlled_repair' | 'package_revision_changed' = 'controlled_repair',
+    currentRevision?: string,
+  ): number => {
     const pending = state.snapshot(projectId).pendingInteractions.filter(
-      (interaction) => interaction.payload.purpose === 'check_finding_ignore',
+      (interaction) => interaction.payload.purpose === 'check_finding_ignore'
+        && (!currentRevision
+          || Boolean(interaction.baseRevision && interaction.baseRevision !== currentRevision)),
     );
     for (const interaction of pending) {
       state.apply({
@@ -376,7 +386,8 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         status: 'cancelled',
         result: {
           purpose: 'check_finding_ignore',
-          supersededBy: 'controlled_repair',
+          supersededBy,
+          ...(currentRevision ? { currentRevision } : {}),
         },
       });
     }
@@ -386,19 +397,22 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     const currentPackage = await packages.current(projectId);
     if (!currentPackage) throw new Error('当前项目没有知识包草稿');
     const construction = graph.snapshot(projectId);
-    const confirmation = construction?.confirmations.find(
-      (item) => item.milestoneId === 'process_confirmed',
-    );
-    if (!confirmation) {
+    const confirmedRevisionOid = construction?.milestones?.find(
+      (item) => item.id === 'process_confirmed',
+    )?.confirmedRevisionOid
+      ?? [...(construction?.confirmations ?? [])].reverse().find(
+        (item) => item.milestoneId === 'process_confirmed',
+      )?.packageRevisionOid;
+    if (!confirmedRevisionOid) {
       throw new AuthoringStateError('INVALID_TRANSITION', '业务流程尚未确认，请先确认流程图');
     }
     const snapshot = await packages.readPackageFiles(projectId, currentPackage.revision.oid);
     // 早先这里比对包修订 OID，但生成知识结构、自动修复、人工改包都会产生新修订，
     // 于是流程内容没动也会被判为「未确认」——「重新生成知识结构」因此必然失败。
     // 改为比对流程文档本身：只有流程真的被改过才要求重新确认。
-    if (confirmation.packageRevisionOid !== currentPackage.revision.oid) {
+    if (confirmedRevisionOid !== currentPackage.revision.oid) {
       const confirmed = await packages
-        .readPackageFiles(projectId, confirmation.packageRevisionOid)
+        .readPackageFiles(projectId, confirmedRevisionOid)
         .catch(() => null);
       const confirmedProcesses = confirmed?.files['diagrams/processes.json'];
       if (!confirmedProcesses) {
@@ -489,6 +503,16 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         name: project.name,
         description: project.background || `${project.name} 的 AI 辅助构建草稿`,
       });
+    }
+
+    // 告警放行只对用户当时看到的知识包内容有效。知识包可能由人工编辑、候选接受、
+    // 自动修复或版本恢复等不同入口产生新修订，不能要求每个写入口分别记得关闭旧表单。
+    // 会话读取是这些变更回到工作台时的统一对账点：在返回快照前结束旧 run，避免前端
+    // 隐藏了失效表单，但原始 pendingInteractions 仍继续禁用「完成建模」。
+    if (currentPackage) {
+      cancelPendingFindingIgnoreInteractions(
+        project.id, 'package_revision_changed', currentPackage.revision.oid,
+      );
     }
 
     const latestRevision = revisions.latest(project.id);
@@ -1490,6 +1514,11 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       // 助手栏一次只渲染一条待办。这里不拦的话，新开的忽略表单会被已有待办挡住，
       // 用户点了「忽略」界面上什么都不会发生；而待办没有取消入口，让它抢占插槽又会把
       // 人困在必填理由里退不出去。所以先处理完手上的那条再来。
+      // 内容更新后旧放行表单只对旧修订有效。先关闭它们，否则它们会继续占住
+      // 助手栏和 pending[0]，导致最新检查结果无法重新发起放行。
+      cancelPendingFindingIgnoreInteractions(
+        project.id, 'package_revision_changed', loaded.revision,
+      );
       const pending = state.snapshot(project.id).pendingInteractions;
       const existing = pending.find(
         (item) => item.type === 'question_batch'
@@ -1793,9 +1822,12 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           }
           // 忽略记录只对当时看到的那份内容成立，内容变了必须重新判断
           if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+            cancelPendingFindingIgnoreInteractions(
+              project.id, 'package_revision_changed', currentPackage.revision.oid,
+            );
             return reply.code(409).send({
-              error: '知识包内容已经变化，请重新检查后再决定是否忽略',
-              code: 'REVISION_CONFLICT',
+              error: '知识包内容已经变化，旧的告警放行已失效，请基于最新检查结果重新选择',
+              code: 'CHECK_FINDING_REVIEW_STALE',
             });
           }
           const answers = Array.isArray(response.answers) ? response.answers : [];

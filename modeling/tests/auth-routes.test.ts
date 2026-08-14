@@ -738,6 +738,67 @@ test('版本汇总 API：按工件修订关联评测并单列未版本化的当�
   )), false);
 });
 
+test('知识包检查查询隐藏旧修订发现并声明当前修订需要重检', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers,
+    payload: { name: '检查修订一致性项目' },
+  });
+  assert.equal(created.statusCode, 201, created.body);
+  const projectId = created.json().project.id;
+  const [{ getPackageArtifactStore }, { saveCheck }] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/workflow/package-check.js'),
+  ]);
+  const store = getPackageArtifactStore();
+  const initial = await store.ensureProject(projectId);
+  const checkedRevision = await store.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'check-revision-package',
+      name: '检查修订一致性知识包',
+      description: '验证旧检查结果不会作为当前修订问题展示',
+      version: '1.0.0-rc.1',
+      language: 'zh-CN',
+      status: 'review',
+      defaultProviderAlias: 'data',
+      objects: [],
+      operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    note: '形成已检查修订',
+    action: {
+      cause: 'generation', summary: '形成已检查修订', actorKind: 'agent', actorName: '助手',
+    },
+  });
+  saveCheck(projectId, checkedRevision.packageVersion, [{
+    id: 'old-finding', source: 'rule', severity: '错误', category: '旧问题',
+    target: 'package/index.md', message: '只属于旧修订的问题',
+  }], checkedRevision.revision.oid);
+
+  const indexFile = await store.readFile(projectId, 'package/index.md');
+  const current = await store.saveFile(projectId, {
+    expectedRevision: checkedRevision.revision.oid,
+    path: 'package/index.md',
+    content: `${indexFile.content}\n当前修订已经变化。\n`,
+    action: {
+      cause: 'manual_edit', summary: '形成待重检修订', actorKind: 'user', actorName: 'alice',
+    },
+  });
+
+  const response = await app.inject({
+    method: 'GET', url: `/api/projects/${projectId}/package/check`, headers,
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().currentRevision, current.revision.oid);
+  assert.equal(response.json().stale, true);
+  assert.equal(response.json().check, null);
+  assert.equal(response.json().warningReview, null);
+  assert.equal(response.json().errorDeferral, null);
+  assert.doesNotMatch(response.body, /old-finding|只属于旧修订的问题/);
+});
+
 test('验证候选完成发布警告确认后提升为对应稳定版本并固化已知限制', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
@@ -800,6 +861,9 @@ test('验证候选完成发布警告确认后提升为对应稳定版本并固�
   const checked = await app.inject({
     method: 'GET', url: `/api/projects/${projectId}/package/check`, headers,
   });
+  assert.equal(checked.json().currentRevision, candidate.revision.oid);
+  assert.equal(checked.json().stale, false);
+  assert.equal(checked.json().check.revision, candidate.revision.oid);
   const warning = checked.json().warningReview.items[0];
   const accepted = await app.inject({
     method: 'POST', url: `/api/projects/${projectId}/package/warnings/accept`, headers,

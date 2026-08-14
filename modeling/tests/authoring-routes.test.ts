@@ -608,6 +608,26 @@ test('脚本候选和契约待办连续推进到受控变更方案', async (t) =
     },
   });
 
+  const invalidSelection = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${decision.interaction.id}/respond`,
+    payload: {
+      requestId: 'script-decision-invalid',
+      response: {
+        answers: [{
+          questionId: 'script_candidates', selected: ['CalculateScore', '__none__'],
+        }],
+      },
+    },
+  });
+  assert.equal(invalidSelection.statusCode, 400, invalidSelection.body);
+  assert.equal(invalidSelection.json().code, 'INVALID_INPUT');
+  assert.match(invalidSelection.json().error, /不能同时/);
+  assert.equal(
+    state.snapshot(project.id).pendingInteractions.some((item) => item.id === decision.interaction.id),
+    true,
+  );
+
   const selected = await app.inject({
     method: 'POST',
     url: `/api/projects/${project.id}/interactions/${decision.interaction.id}/respond`,
@@ -1517,7 +1537,8 @@ test('「去修改」在助手里落一张卡片，并指向这条发现对应�
     target: 'objects/index.md', message: '缺少引用', suggestion: '补上来源引用',
   } as any], 'pkg-draft');
 
-  const response = await handOff(findingApp(t), project.id, 'review', 'f1');
+  const app = findingApp(t);
+  const response = await handOff(app, project.id, 'review', 'f1');
   assert.equal(response.statusCode, 200, response.body);
   const blocks = response.json().message.blocks;
   const actions = blocks.find((block: any) => block.type === 'next_actions').actions;
@@ -1527,6 +1548,11 @@ test('「去修改」在助手里落一张卡片，并指向这条发现对应�
   // target 是包内路径时才给「打开文件」，路径要跟着这条发现走
   assert.equal(actions[1].path, 'objects/index.md');
   assert.match(blocks.find((block: any) => block.type === 'text').text, /补上来源引用/);
+
+  const reopened = await handOff(app, project.id, 'review', 'f1');
+  assert.equal(reopened.statusCode, 200, reopened.body);
+  assert.notEqual(reopened.json().message.id, response.json().message.id);
+  assert.ok(reopened.json().message.seq > response.json().message.seq);
 });
 
 test('target 是语义目标时也把目标交给前端解析到具体文件', async (t) => {
@@ -1581,6 +1607,114 @@ test('「忽略」只是开一条待办收理由，不会当场落审计记录',
     .filter((item: any) => item.accepted);
   assert.equal(accepted.length, 1);
   assert.equal(accepted[0].finding.id, 'w1');
+});
+
+test('知识包修订变化后旧告警放行待办失效，刷新可基于最新检查重新发起', async (t) => {
+  const project = createProject({ owner: 'alice', name: '告警放行修订冲突恢复' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  const finding = {
+    id: 'w-stale', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any;
+  let currentRevision = 'pkg-before';
+  saveCheck(project.id, '0.1.0', [finding], currentRevision);
+  const app = routeApp(t, 'alice', {
+    packages: {
+      async current() {
+        return {
+          revision: { oid: currentRevision },
+          packageVersion: '0.1.0',
+          spec: { status: 'draft', objects: [], operations: [] },
+        };
+      },
+    } as any,
+  });
+
+  const opened = await handOff(app, project.id, 'ignore', finding.id);
+  assert.equal(opened.statusCode, 200, opened.body);
+  const staleInteraction = opened.json().interaction;
+  assert.equal(staleInteraction.baseRevision, 'pkg-before');
+
+  currentRevision = 'pkg-after';
+  saveCheck(project.id, '0.1.1', [finding], currentRevision);
+  const staleAnswer = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${staleInteraction.id}/respond`,
+    payload: {
+      requestId: 'ignore-stale-answer',
+      response: { answers: [{ questionId: 'ignore_reason', other: '下一版本统一调整命名' }] },
+    },
+  });
+  assert.equal(staleAnswer.statusCode, 409, staleAnswer.body);
+  assert.equal(staleAnswer.json().code, 'CHECK_FINDING_REVIEW_STALE');
+  assert.deepEqual(staleAnswer.json().nextActions.map((item: any) => item.id), [
+    'view_validation', 'run_package_check',
+  ]);
+  assert.equal(getAuthoringState().interaction(project.id, staleInteraction.id)?.status, 'cancelled');
+  assert.equal(
+    getAuthoringState().snapshot(project.id).pendingInteractions
+      .some((item) => item.id === staleInteraction.id),
+    false,
+  );
+
+  const reopened = await handOff(app, project.id, 'ignore', finding.id);
+  assert.equal(reopened.statusCode, 200, reopened.body);
+  assert.notEqual(reopened.json().interaction.id, staleInteraction.id);
+  assert.equal(reopened.json().interaction.baseRevision, 'pkg-after');
+});
+
+test('读取项目会话会自动取消旧修订的告警放行待办', async (t) => {
+  const project = createProject({ owner: 'alice', name: '告警放行会话自动对账' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  const finding = {
+    id: 'w-session-stale', source: 'rule', severity: '警告', category: '命名建议',
+    target: 'objects/index.md', message: '命名不一致',
+  } as any;
+  let currentRevision = 'pkg-session-before';
+  saveCheck(project.id, '0.1.0', [finding], currentRevision);
+  const packages = {
+    async ensureProject() {},
+    async current() {
+      return {
+        revision: { oid: currentRevision },
+        packageVersion: '0.1.0',
+        spec: { status: 'draft', objects: [], operations: [] },
+      };
+    },
+    async countPendingCandidateRevisions() { return 0; },
+  };
+  const app = routeApp(t, 'alice', { packages });
+
+  const opened = await handOff(app, project.id, 'ignore', finding.id);
+  assert.equal(opened.statusCode, 200, opened.body);
+  const staleInteraction = opened.json().interaction;
+  assert.equal(staleInteraction.baseRevision, 'pkg-session-before');
+
+  currentRevision = 'pkg-session-after';
+  saveCheck(project.id, '0.1.1', [], currentRevision);
+  const refreshed = await app.inject({
+    method: 'GET', url: `/api/projects/${project.id}/session`,
+  });
+  assert.equal(refreshed.statusCode, 200, refreshed.body);
+  assert.equal(
+    refreshed.json().authoring.pendingInteractions
+      .some((item: any) => item.id === staleInteraction.id),
+    false,
+  );
+  assert.equal(
+    refreshed.json().authoring.activeRuns
+      .some((item: any) => item.id === staleInteraction.runId),
+    false,
+  );
+  assert.equal(getAuthoringState().interaction(project.id, staleInteraction.id)?.status, 'cancelled');
+  const run = getDb().prepare('SELECT status, result_json FROM authoring_runs WHERE id = ?')
+    .get(staleInteraction.runId) as { status: string; result_json: string };
+  assert.equal(run.status, 'cancelled');
+  assert.deepEqual(JSON.parse(run.result_json), {
+    currentRevision: 'pkg-session-after',
+    purpose: 'check_finding_ignore',
+    supersededBy: 'package_revision_changed',
+  });
 });
 
 test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开的那一条', async (t) => {
