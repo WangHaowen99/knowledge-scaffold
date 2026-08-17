@@ -9,7 +9,10 @@ from shared_capabilities.business_data import (
     ProviderResult,
     UnsupportedCapabilityError,
 )
-from shared_capabilities.ontology_script_sdk import DataProviderClient
+from shared_capabilities.ontology_script_sdk import (
+    DataProviderClient,
+    load_effective_connection,
+)
 from shared_capabilities.ontology_script_sdk.connection_env import (
     SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
 )
@@ -37,6 +40,31 @@ def test_script_client_requires_version_one_envelope(monkeypatch):
     )
     with pytest.raises(ConnectionEnvelopeError, match="version"):
         DataProviderClient()
+
+
+def test_public_sdk_exposes_effective_connection_for_graph_snapshot_handlers(
+    monkeypatch,
+):
+    envelope = {
+        **_envelope("neo4j"),
+        "endpoint": "bolt://snapshot.example:7687",
+        "auth": {
+            "type": "mindsdb_password",
+            "username": "reader",
+            "password": "placeholder",
+        },
+        "options": {"database": "snapshot_20260808"},
+    }
+    monkeypatch.setenv(
+        SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
+        json.dumps(envelope),
+    )
+
+    connection = load_effective_connection()
+
+    assert connection.provider == "neo4j"
+    assert connection.endpoint == "bolt://snapshot.example:7687"
+    assert connection.options["database"] == "snapshot_20260808"
 
 
 def test_script_client_allows_dataagent_and_checks_provider_capabilities(monkeypatch):

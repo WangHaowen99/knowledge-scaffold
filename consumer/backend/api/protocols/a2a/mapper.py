@@ -15,8 +15,10 @@ def map_run_status_to_a2a(
     if run_status is None:
         return A2ATaskState.NOT_FOUND
 
-    if run_status in {RunStatus.RUNNING, RunStatus.AWAITING}:
+    if run_status == RunStatus.RUNNING:
         return A2ATaskState.IN_PROGRESS
+    if run_status == RunStatus.AWAITING:
+        return A2ATaskState.INPUT_REQUIRED
     if run_status == RunStatus.FAILED:
         return A2ATaskState.FAILED
     if run_status == RunStatus.CANCELLED:

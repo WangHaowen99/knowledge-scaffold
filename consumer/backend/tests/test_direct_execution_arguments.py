@@ -11,12 +11,49 @@ import agent.direct_execution.runner as direct_runner_module
 from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_business_placeholder_keys,
+    extract_runtime_argument_keys,
     extract_runtime_requirements,
     runtime_context_field,
 )
 from agent.direct_execution.models import RouteDecision, RuntimeContext
 from agent.direct_execution.router import OperationDirectRouter
 from agent.tools.script_parameters import is_runtime_parameter, runtime_parameter_field
+
+
+def test_extract_runtime_argument_keys_covers_structured_and_legacy_aliases():
+    structured = extract_runtime_argument_keys(
+        script_parameters=[
+            {
+                "name": "session_id",
+                "flag": "--session-id",
+                "aliases": ["session"],
+                "runtime": True,
+            },
+            {"name": "payload", "flag": "--payload"},
+        ]
+    )
+    legacy = extract_runtime_argument_keys(
+        script_args=["--run-id", "<runtime.run_id>", "--payload", "<payload>"]
+    )
+
+    assert {"session_id", "session-id", "--session-id", "session"}.issubset(structured)
+    assert {"run_id", "run-id", "--run-id"}.issubset(legacy)
+    assert "payload" not in structured
+    assert "payload" not in legacy
+
+
+def test_extract_runtime_argument_keys_includes_canonical_field_behind_alias():
+    keys = extract_runtime_argument_keys(
+        script_parameters=[
+            {
+                "name": "sid",
+                "flag": "--sid",
+                "placeholder": "<runtime.session_id>",
+            }
+        ]
+    )
+
+    assert {"sid", "--sid", "session_id", "session-id", "--session-id"}.issubset(keys)
 
 
 @pytest.mark.parametrize(
@@ -163,6 +200,41 @@ def test_direct_object_and_array_parameters_are_json_encoded():
     assert error is None
     assert json.loads(args[1]) == {"plant": "A"}
     assert json.loads(args[3]) == [1, 2]
+
+
+def test_deterministic_structured_parameters_use_canonical_json_without_changing_legacy_default():
+    parameters = [
+        {"name": "payload", "flag": "--payload", "required": True, "type": "object"}
+    ]
+    left = {"payload": {"b": 2, "a": {"d": 4, "c": 3}}}
+    right = {"payload": {"a": {"c": 3, "d": 4}, "b": 2}}
+
+    legacy_left, _, _ = build_direct_cli_args(
+        script_parameters=parameters,
+        business_arguments=left,
+    )
+    legacy_right, _, _ = build_direct_cli_args(
+        script_parameters=parameters,
+        business_arguments=right,
+    )
+    deterministic_left, missing_left, error_left = build_direct_cli_args(
+        script_parameters=parameters,
+        business_arguments=left,
+        canonicalize_structured=True,
+    )
+    deterministic_right, missing_right, error_right = build_direct_cli_args(
+        script_parameters=parameters,
+        business_arguments=right,
+        canonicalize_structured=True,
+    )
+
+    assert legacy_left != legacy_right
+    assert deterministic_left == deterministic_right == [
+        "--payload",
+        '{"a":{"c":3,"d":4},"b":2}',
+    ]
+    assert (missing_left, error_left) == ([], None)
+    assert (missing_right, error_right) == ([], None)
 
 
 def test_direct_optional_runtime_parameter_can_be_omitted_without_context():
@@ -334,6 +406,40 @@ def test_direct_explicit_runtime_ontology_uses_selected_ontology_context():
         [],
         None,
     )
+
+
+@pytest.mark.parametrize(
+    ("runtime_name", "flag"),
+    [
+        ("selected_ontology_version", "--selected-ontology-version"),
+        ("ontology_version", "--ontology-version"),
+    ],
+)
+def test_direct_explicit_runtime_ontology_version_uses_selected_version_context(
+    runtime_name,
+    flag,
+):
+    args, missing, error = build_direct_cli_args(
+        script_parameters=[
+            {
+                "name": runtime_name,
+                "flag": flag,
+                "placeholder": "<runtime.{}>".format(runtime_name),
+                "required": True,
+                "type": "string",
+            }
+        ],
+        business_arguments={runtime_name: "forged-version"},
+        runtime_context=RuntimeContext(
+            session_id="session-1",
+            run_id="run-1",
+            turn_id=1,
+            selected_ontology_id="selected-ontology",
+            selected_ontology_version="1.2.3",
+        ),
+    )
+
+    assert (args, missing, error) == ([flag, "1.2.3"], [], None)
 
 
 def test_explicit_runtime_user_id_uses_backend_context():

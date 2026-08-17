@@ -110,6 +110,7 @@ export const conversationKindForSegment = (segment) => {
   if (type === 'subagent' || type === 'subagent_group') return 'subagent';
   if (type === 'reasoning') return 'reasoning';
   if (type === 'content') return 'content';
+  if (type === 'artifacts') return 'artifacts';
   return type || 'unknown';
 };
 
@@ -378,6 +379,18 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     block.parsedOutput = block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
     block.error = stringValue(meta.error) || progressError;
     block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
+  }
+  if (kind === 'artifacts') {
+    block.artifacts = (Array.isArray(meta.artifacts) ? meta.artifacts : [])
+      .filter(plainObject)
+      .map((artifact, artifactIndex) => ({
+        key: stringValue(artifact.output_ref || artifact.name || artifactIndex),
+        name: stringValue(artifact.name || `artifact-${artifactIndex + 1}`),
+        mediaType: stringValue(artifact.media_type || artifact.content_type),
+        size: numberValue(artifact.size),
+        sha256: stringValue(artifact.sha256),
+        outputRef: stringValue(artifact.output_ref),
+      }));
   }
   if (kind === 'web_search') {
     const parsedOutput = plainObject(block.parsedOutput) ? block.parsedOutput : {};

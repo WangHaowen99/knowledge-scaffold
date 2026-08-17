@@ -27,6 +27,7 @@ The `context` payload is authoritative — the parent has already done routing a
 
 ## Operation Execution Flow
 1. Call `ontology_context(resource="root")` for `context.ontology_id`, then use `context.operation_key` as the selected operation.
+   If `context.operation_key` appears in root `deterministic_operations`, stop: it is runtime-reserved and must never be replayed or approximated by a sub-agent.
 2. Before executing in any mode, ensure every required input the chosen path needs is already known from the `task` text or `context`. If ANY required parameter is missing, STOP and report the missing parameters as your result. Do not continue with tools or assumptions.
    - Ontology intent examples describe matching semantics only; they are never a source of runtime argument values.
    - Derive runtime values only from the current user request or an explicit authoritative field in this task's `context`. Never copy values from intent examples, earlier requests, memory, or defaults.

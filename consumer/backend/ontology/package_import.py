@@ -22,6 +22,10 @@ from ontology.legacy_package_converter import (
     convert_legacy_package_in_place,
     finalize_v01_package_in_place,
 )
+from ontology.operation_execution import (
+    DeterministicPackageError,
+    validate_and_lock_deterministic_operations,
+)
 
 
 SUPPORTED_IMPORT_MANIFEST_KINDS = frozenset({"ontology", "ontology-package"})
@@ -29,6 +33,10 @@ SUPPORTED_IMPORT_MANIFEST_KINDS = frozenset({"ontology", "ontology-package"})
 
 class PackageNormalizationError(ValueError):
     """A client-visible invalid package error raised during normalization."""
+
+    def __init__(self, message: str, *, code: str = "invalid_ontology_package") -> None:
+        super().__init__(message)
+        self.code = str(code or "invalid_ontology_package")
 
 
 @dataclass(frozen=True)
@@ -153,6 +161,12 @@ def normalize_imported_package(source_root: Path, target_root: Path) -> PackageN
     finalized, finalization_warnings = finalize_v01_package_in_place(target)
     generated.extend(finalized)
     warnings.extend(finalization_warnings)
+    try:
+        deterministic_specs = validate_and_lock_deterministic_operations(target)
+    except DeterministicPackageError as exc:
+        raise PackageNormalizationError(str(exc), code=exc.code) from exc
+    if deterministic_specs:
+        generated.append(".deterministic-lock.json")
     return PackageNormalizationResult(
         root=target,
         generated_files=tuple(dict.fromkeys(generated)),

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "runner_protocol": "v2",
+  "upstream": {
+    "repository": "https://gitcode.com/openJiuwen/jiuwenswarm.git",
+    "commit": "d7c2ab2f299cd2c73201afb41ebb8b9c00cc7015"
+  },
+  "python": {
+    "executable": "/usr/bin/python3"
+  },
+  "revision_file": "/app/sandbox-runtime/python/.runtime-revision",
+  "shared_revision_file": "/run/onto-runtime-attestation/revision",
+  "requirements_file": "runtime-requirements.txt",
+  "allowed_external_import_roots": [
+    "certifi",
+    "charset_normalizer",
+    "idna",
+    "neo4j",
+    "requests",
+    "urllib3"
+  ],
+  "allowed_runtime_imports": {
+    "shared_capabilities.ontology_script_sdk": [
+      "BusinessDataProviderError",
+      "ConnectionEnvelopeError",
+      "DataProviderClient",
+      "ProviderInternalError",
+      "ProviderProtocolError",
+      "ProviderTransportError",
+      "UnsupportedCapabilityError",
+      "UnsupportedProviderError",
+      "load_effective_connection"
+    ]
+  }
+}

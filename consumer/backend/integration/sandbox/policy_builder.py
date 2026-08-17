@@ -69,6 +69,8 @@ class PolicyContext:
     memory_max: str
     cpu_max: float
     pids_max: int
+    writable_paths: tuple[Path, ...] = ()
+    read_only_paths: tuple[Path, ...] = ()
 
 
 def _normalize_service_url(url: str) -> str:
@@ -99,6 +101,8 @@ def extract_port_from_url(url: str | None) -> int | None:
         return 80
     if scheme == "https":
         return 443
+    if scheme in {"bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc"}:
+        return 7687
     return None
 
 
@@ -117,10 +121,10 @@ def build_egress_target_rules(data_proxy_url: str | None) -> tuple[list[str], li
     if not host:
         return [], []
     try:
-        ipaddress.ip_address(host)
+        address = ipaddress.ip_address(host)
     except ValueError:
         return [host], []
-    return [], [f"{host}/32"]
+    return [], ["{}/{}".format(address.compressed, address.max_prefixlen)]
 
 
 def _as_container_path(path: Path) -> str:
@@ -139,16 +143,31 @@ def _read_only_bind(path: Path) -> dict[str, str]:
     }
 
 
+def _read_write_bind(path: Path) -> dict[str, str]:
+    resolved = _as_container_path(path)
+    return {
+        "host_path": resolved,
+        "sandbox_path": resolved,
+        "mode": "rw",
+    }
+
+
 class OntoSandboxPolicyBuilder:
     """Build a jiuwenbox policy dict for one run-scoped sandbox."""
 
     @classmethod
     def build(cls, ctx: PolicyContext) -> dict:
         run_short = ctx.run_id.replace("-", "")[:8] or "run"
+        configured_read_only_paths = ctx.read_only_paths or (ctx.workspace_root,)
+        read_only_paths = tuple(
+            dict.fromkeys(Path(path).resolve() for path in configured_read_only_paths)
+        )
         bind_mounts: list[dict[str, str]] = [
-            _read_only_bind(ctx.workspace_root),
+            *(_read_only_bind(path) for path in read_only_paths),
             _read_only_bind(ctx.sandbox_runtime_python_dir),
         ]
+        writable_paths = tuple(Path(path).resolve() for path in ctx.writable_paths)
+        bind_mounts.extend(_read_write_bind(path) for path in writable_paths)
         bind_mounts.extend(_SYSTEM_BIND_MOUNTS)
 
         allowed_domains, allowed_ips = build_egress_target_rules(ctx.data_proxy_url)
@@ -175,10 +194,13 @@ class OntoSandboxPolicyBuilder:
                     "/lib64",
                     "/etc",
                     "/opt",
-                    _as_container_path(ctx.workspace_root),
+                    *(_as_container_path(path) for path in read_only_paths),
                     _as_container_path(ctx.sandbox_runtime_python_dir),
                 ],
-                "read_write": ["/tmp"],
+                "read_write": [
+                    "/tmp",
+                    *(_as_container_path(path) for path in writable_paths),
+                ],
                 "bind_mounts": bind_mounts,
                 "device": [
                     {"host_path": "/dev/null", "sandbox_path": "/dev/null"},

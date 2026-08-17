@@ -14,15 +14,18 @@ from ontology.ontology_catalog import (
     find_exact_object_data_mapping_result,
     find_script_entry,
     load_script_catalog,
+    split_markdown_frontmatter,
     resolve_field_reference,
     resolve_object_reference,
 )
 from ontology.package_import import (
+    PackageNormalizationError,
     inspect_importable_package,
     normalize_imported_package,
     validate_imported_field_aliases,
     validate_imported_object_aliases,
 )
+from ontology.operation_execution import DeterministicPackageError
 
 
 V01_MANIFEST = """\
@@ -217,6 +220,29 @@ def test_normalize_v01_keeps_only_new_layout_and_completes_required_indexes(tmp_
     assert entry["parameters"][0]["name"] == "part_code"
 
 
+def test_normalization_preserves_deterministic_validation_error_code(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "normalized"
+    _write_v01_package(source)
+    monkeypatch.setattr(
+        "ontology.package_import.validate_and_lock_deterministic_operations",
+        lambda _root: (_ for _ in ()).throw(
+            DeterministicPackageError(
+                "execution_schema_invalid",
+                "invalid deterministic schema",
+            )
+        ),
+    )
+
+    with pytest.raises(PackageNormalizationError) as exc:
+        normalize_imported_package(source, target)
+
+    assert exc.value.code == "execution_schema_invalid"
+
+
 def test_normalize_legacy_package_converts_lists_and_script_mapping_once(tmp_path):
     source = tmp_path / "source"
     target = tmp_path / "normalized"
@@ -289,7 +315,7 @@ def test_normalize_legacy_package_projects_aliases_and_removes_empty_field_alias
 
     object_path = target / "objects" / "Warehouse.md"
     converted = object_path.read_text(encoding="utf-8")
-    frontmatter = yaml.safe_load(converted.split("---", 2)[1])
+    frontmatter, _body = split_markdown_frontmatter(converted)
     assert frontmatter["resource"] == "object"
     assert frontmatter["key"] == "Warehouse"
     assert frontmatter["title"] == "Warehouse"
@@ -427,7 +453,7 @@ def test_normalize_legacy_package_limits_field_alias_cleanup_to_markdown_tables(
     normalize_imported_package(source, target)
 
     converted = (target / "objects" / "Part.md").read_text(encoding="utf-8")
-    frontmatter = yaml.safe_load(converted.split("---", 2)[1])
+    frontmatter, _body = split_markdown_frontmatter(converted)
     assert "frontmatter_example | 不应修改 | 无" in frontmatter["custom_example"]
     assert "| 代码示例 | code_example | 不应修改 | 无 |" in converted
     assert "| 注释示例 | comment_example | 不应修改 | 无 |" in converted

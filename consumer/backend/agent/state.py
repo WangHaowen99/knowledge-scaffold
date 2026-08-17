@@ -25,6 +25,9 @@ class TurnExecutionRecord(TypedDict):
     interaction_context_consumed_at: NotRequired[str]
     interaction_context_consumed_by_turn_id: NotRequired[int]
     prior_interaction_cancellation: NotRequired[Dict[str, Any]]
+    deterministic_checkpoint: NotRequired[Dict[str, Any]]
+    prior_deterministic_checkpoint: NotRequired[Dict[str, Any]]
+    prior_interaction_response: NotRequired[Dict[str, Any]]
 
 
 class SessionExecutionHistory(TypedDict):

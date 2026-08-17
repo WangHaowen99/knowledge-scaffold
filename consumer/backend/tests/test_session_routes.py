@@ -17,6 +17,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     ExecutionStore,
 )
+from utils.streaming import build_agent_event
 from workspace.workspaces import create_workspace
 
 
@@ -614,6 +615,12 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
     )
     assert response.headers["X-Tool-Call-Id"] == "call-output"
     assert response.headers["X-Tool-Output-Ref"] == artifact["output_ref"]
+    assert response.headers["X-Tool-Output-SHA256"] == artifact["sha256"]
+    assert "X-Tool-Output-SHA256" in response.headers[
+        "Access-Control-Expose-Headers"
+    ]
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Content-Security-Policy"] == "sandbox; default-src 'none'"
 
 
 def test_get_tool_output_rejects_invalid_workspace_before_store_lookup(
@@ -716,6 +723,54 @@ def test_get_session_exposes_active_run_status_for_resume(tmp_path, monkeypatch)
     payload = response.get_json()
     assert payload["active_run_id"] == "run-live"
     assert payload["active_run_status"] == "interrupted"
+
+
+def test_list_session_turns_recovers_pending_deterministic_terminal(
+    tmp_path,
+    monkeypatch,
+):
+    client, headers = _build_test_client(tmp_path)
+    session_id = "sess-terminal-route-recovery"
+    chat_store = ChatStore(str(tmp_path / "route-recovery-chats"))
+    execution_store = ExecutionStore(str(tmp_path / "route-recovery-executions"))
+    chat_store.create_session(session_id=session_id)
+    execution_store.start_turn(
+        session_id,
+        1,
+        "run-route-recovery",
+        "query",
+    )
+    events = [
+        build_agent_event(
+            run_id="run-route-recovery",
+            session_id=session_id,
+            turn_id=1,
+            event_type="turn.finished",
+            source={"node": "deterministic_execution", "component": "service"},
+            payload={"status": "success"},
+        )
+    ]
+    execution_store.prepare_deterministic_terminal(
+        session_id,
+        1,
+        status="success",
+        final_output={"status": "success"},
+        llm_context=[{"role": "assistant", "content": "ok"}],
+        events=events,
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, execution_store),
+    )
+
+    response = client.get(
+        "/agentic/sessions/{}/turns".format(session_id),
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["turns"][0]["status"] == "success"
+    assert execution_store.get_pending_deterministic_terminal(session_id) is None
 
 
 class _FakeRunHandle:

@@ -31,7 +31,9 @@ from pydantic import BaseModel, Field
 
 from llm import LLMPurpose, get_llm_router
 from utils.logging import get_logger
+from ontology.mutation_lock import ontology_mutation_lock
 from ontology.ontologies import get_ontology_version_dir
+from ontology.operation_execution import is_deterministic_package_locked
 from workspace.workspaces import get_workspace_paths, get_workspaces_root
 from agent.evolution.buffer import ProposalBuffer
 from agent.evolution.models import Aggregate
@@ -328,6 +330,17 @@ class OperationPatcher:
             return
         staged_path = op_path.with_suffix(op_path.suffix + ".staged")
         meta_path = staged_path.with_suffix(staged_path.suffix + ".meta.json")
+        ontology_version_dir = op_path.parent.parent
+        ontology_dir = (
+            ontology_version_dir.parent.parent
+            if ontology_version_dir.parent.name == "versions"
+            else ontology_version_dir
+        )
+
+        # Staged sidecars live inside the version payload and would invalidate
+        # a deterministic package lock even when they are never applied.
+        if is_deterministic_package_locked(ontology_version_dir):
+            return
 
         # Gate ③.a — never overwrite a pending staged file
         if staged_path.exists():
@@ -383,24 +396,47 @@ class OperationPatcher:
             return
 
         try:
-            staged_path.write_text(new_md, encoding="utf-8")
-            meta_path.write_text(
-                json.dumps(
-                    {
-                        "ontology_id": ontology_id,
-                        "workspace_id": workspace_id,
-                        "operation_key": operation_key,
-                        "fingerprints": merged_fps,
-                        "created_at": time.time(),
-                        "original_sha": _sha256(current_md),
-                        "change_summary": result.change_summary or "",
-                        "auto_apply": bool(self._current_config().auto_apply),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
+            with ontology_mutation_lock(ontology_dir):
+                locked_op_path = resolve_operation_md(
+                    ontology_id,
+                    operation_key,
+                    workspace_id=workspace_id,
+                )
+                if locked_op_path is None or locked_op_path != op_path:
+                    return
+                locked_version_dir = locked_op_path.parent.parent
+                if is_deterministic_package_locked(locked_version_dir):
+                    return
+                staged_path = locked_op_path.with_suffix(locked_op_path.suffix + ".staged")
+                meta_path = staged_path.with_suffix(staged_path.suffix + ".meta.json")
+                if staged_path.exists():
+                    return
+                locked_current_md = locked_op_path.read_text(encoding="utf-8")
+                if _sha256(locked_current_md) != _sha256(current_md):
+                    logger.info(
+                        "patcher: operation changed during merge for %s/%s — skipping",
+                        ontology_id,
+                        operation_key,
+                    )
+                    return
+                staged_path.write_text(new_md, encoding="utf-8")
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "ontology_id": ontology_id,
+                            "workspace_id": workspace_id,
+                            "operation_key": operation_key,
+                            "fingerprints": merged_fps,
+                            "created_at": time.time(),
+                            "original_sha": _sha256(locked_current_md),
+                            "change_summary": result.change_summary or "",
+                            "auto_apply": bool(self._current_config().auto_apply),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
         except Exception:
             logger.exception("patcher: failed to write staged for %s/%s", ontology_id, operation_key)
             return

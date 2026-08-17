@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { formatOutputBytes, resolveToolOutputUrl } from './toolOutput.js';
+import {
+  formatOutputBytes,
+  outputResponseDigestMatches,
+  parseOutputResponse,
+  resolveToolOutputUrl,
+} from './toolOutput.js';
 
 test('resolveToolOutputUrl binds an opaque ref to the active session and run', () => {
   assert.equal(
@@ -24,4 +29,38 @@ test('formatOutputBytes formats valid byte counts and ignores invalid values', (
   assert.equal(formatOutputBytes(2 * 1024 * 1024), '2.0 MB');
   assert.equal(formatOutputBytes(-1), '');
   assert.equal(formatOutputBytes('invalid'), '');
+});
+
+test('parseOutputResponse preserves raw JSON artifact content', async () => {
+  const source = '{"output":"business value","error":"diagnostic","other":1}';
+  const response = new Response(source, {
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  assert.equal(await parseOutputResponse(response, { raw: true }), source);
+});
+
+test('parseOutputResponse still unwraps regular tool output envelopes', async () => {
+  const response = new Response('{"output":"tool result","other":1}', {
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  assert.equal(await parseOutputResponse(response), 'tool result');
+});
+
+test('outputResponseDigestMatches rejects a mismatched authoritative artifact', () => {
+  const response = {
+    headers: new Headers({ 'X-Tool-Output-SHA256': 'sha256:stored' }),
+  };
+
+  assert.equal(
+    outputResponseDigestMatches(response, 'sha256:expected'),
+    false,
+  );
+  assert.equal(
+    outputResponseDigestMatches(response, 'sha256:stored'),
+    true,
+  );
+  assert.equal(outputResponseDigestMatches({ headers: new Headers() }, 'sha256:expected'), false);
+  assert.equal(outputResponseDigestMatches({ headers: new Headers() }, ''), true);
 });

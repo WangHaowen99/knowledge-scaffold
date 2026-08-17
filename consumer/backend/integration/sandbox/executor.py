@@ -3,17 +3,55 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from workspace.workspaces import get_workspace_project_root, get_workspaces_root
 from .config import SandboxConfig, load_sandbox_config
-from .data_proxy import get_data_connection_secret_manager
+from .data_proxy import PreparedDataConnection, get_data_connection_secret_manager
 from .env_allowlist import build_script_env
-from .errors import SandboxUnavailableError
+from .errors import SandboxExecError, SandboxUnavailableError
 from .paths import posix_path_string, to_sandbox_script_path
 from .policy_builder import PolicyContext
 from .registry import get_run_sandbox_registry
+from .runtime_contract import sandbox_runtime_revision, sandbox_runtime_revision_file
+
+
+_RUNTIME_ATTESTATION_CODE = (
+    "from pathlib import Path; import sys; "
+    "print(Path(sys.argv[1]).read_text(encoding='utf-8').strip())"
+)
+
+
+def _attest_sandbox_runtime(
+    registry: Any,
+    sandbox_id: str,
+    *,
+    config: SandboxConfig,
+    timeout_seconds: int,
+) -> None:
+    """Fail closed unless this sandbox exposes the expected runtime revision."""
+    try:
+        attestation = registry.exec_in_sandbox(
+            sandbox_id,
+            [
+                config.python_bin,
+                "-c",
+                _RUNTIME_ATTESTATION_CODE,
+                sandbox_runtime_revision_file(),
+            ],
+            timeout_seconds=min(5, max(1, int(timeout_seconds))),
+        )
+    except Exception as exc:
+        raise SandboxUnavailableError(
+            "sandbox runtime revision could not be verified"
+        ) from exc
+    if (
+        int(attestation.exit_code) != 0
+        or str(attestation.stdout or "").strip() != sandbox_runtime_revision()
+    ):
+        raise SandboxUnavailableError("sandbox runtime revision mismatch")
 
 
 def _resolve_workspace_mount_root(workspace_id: str | None) -> Path:
@@ -78,6 +116,16 @@ class SandboxScriptExecutor:
         workspace_id: str | None,
         ontology_id: str | None,
         timeout_seconds: int,
+        env_overrides: Mapping[str, str] | None = None,
+        prepare_data_connection: bool = True,
+        include_data_connection_env: bool = True,
+        network_endpoint: str | None = None,
+        writable_paths: Sequence[Path] = (),
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
+        file_size_limit_bytes: int | None = None,
+        cancel_event: Any = None,
+        restrict_filesystem_to_ontology: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         workspace_root = _resolve_workspace_mount_root(workspace_id)
         sandbox_script_path = Path(
@@ -100,12 +148,32 @@ class SandboxScriptExecutor:
             if ontology_dir is not None
             else None
         )
+        if restrict_filesystem_to_ontology:
+            if resolved_ontology_dir is None:
+                raise SandboxUnavailableError(
+                    "ontology directory is required for restricted sandbox execution"
+                )
+            try:
+                sandbox_script_path.relative_to(resolved_ontology_dir)
+            except ValueError as exc:
+                raise SandboxUnavailableError(
+                    "script path is outside the restricted ontology directory"
+                ) from exc
 
-        prepared_connection = get_data_connection_secret_manager().prepare(
-            run_id=run_id,
-            workspace_id=workspace_id,
-            ontology_id=ontology_id,
-        )
+        if prepare_data_connection:
+            prepared_connection = get_data_connection_secret_manager().prepare(
+                run_id=run_id,
+                workspace_id=workspace_id,
+                ontology_id=ontology_id,
+            )
+        else:
+            prepared_connection = PreparedDataConnection(env={}, data_proxy_url=None)
+        resolved_writable_paths: list[Path] = []
+        for raw_path in writable_paths:
+            path = Path(raw_path)
+            if path.is_symlink() or not path.is_dir():
+                raise SandboxUnavailableError("sandbox writable path must be a regular directory")
+            resolved_writable_paths.append(path.resolve())
         runtime_python_dir = Path(self._config.sandbox_runtime_root) / "python"
         ctx = PolicyContext(
             run_id=run_id,
@@ -113,34 +181,114 @@ class SandboxScriptExecutor:
             ontology_id=ontology_id,
             workspace_root=workspace_root,
             sandbox_runtime_python_dir=runtime_python_dir,
-            data_proxy_url=prepared_connection.data_proxy_url,
+            data_proxy_url=(
+                str(network_endpoint or "").strip()
+                or prepared_connection.data_proxy_url
+            ),
             memory_max=self._config.memory_max,
             cpu_max=self._config.cpu_max,
             pids_max=self._config.pids_max,
+            writable_paths=tuple(resolved_writable_paths),
+            read_only_paths=(resolved_ontology_dir,) if restrict_filesystem_to_ontology else (),
         )
         registry = get_run_sandbox_registry()
         sandbox_id = registry.ensure(ctx)
 
+        if (
+            str((env_overrides or {}).get("DETERMINISTIC_EXECUTION") or "").strip()
+            == "1"
+        ):
+            _attest_sandbox_runtime(
+                registry,
+                sandbox_id,
+                config=self._config,
+                timeout_seconds=timeout_seconds,
+            )
+
         sandbox_script = posix_path_string(sandbox_script_path)
         command = [self._config.python_bin, "-u", sandbox_script, *cli_args]
+        if (
+            stdout_limit_bytes is not None
+            or stderr_limit_bytes is not None
+            or file_size_limit_bytes is not None
+        ):
+            command = [
+                self._config.python_bin,
+                "-m",
+                "onto_sandbox_runtime.bounded_runner",
+                "--stdout-limit-bytes",
+                str(max(0, int(stdout_limit_bytes or 0))),
+                "--stderr-limit-bytes",
+                str(max(0, int(stderr_limit_bytes or 0))),
+                "--file-size-limit-bytes",
+                str(max(0, int(file_size_limit_bytes or 0))),
+                "--",
+                *command,
+            ]
         ontology_pythonpath = (
             posix_path_string(resolved_ontology_dir)
             if resolved_ontology_dir is not None
             else None
         )
+        effective_env_overrides = dict(env_overrides or {})
+        if include_data_connection_env:
+            # The run-scoped proxy payload is authoritative for generic
+            # sandbox calls and must replace any host-side secret envelope.
+            effective_env_overrides.update(prepared_connection.env)
         env = build_script_env(
-            env_overrides=prepared_connection.env,
+            env_overrides=effective_env_overrides,
             ontology_dir=ontology_pythonpath,
             runtime_python_path=posix_path_string(runtime_python_dir),
         )
 
-        result = registry.exec_in_sandbox(
-            sandbox_id,
-            command,
-            workdir=posix_path_string(workspace_root),
-            env=env,
-            timeout_seconds=max(1, int(timeout_seconds)),
-        )
+        exec_kwargs = {
+            "workdir": posix_path_string(
+                resolved_ontology_dir
+                if restrict_filesystem_to_ontology and resolved_ontology_dir is not None
+                else workspace_root
+            ),
+            "env": env,
+            "timeout_seconds": max(1, int(timeout_seconds)),
+        }
+        if cancel_event is None:
+            result = registry.exec_in_sandbox(sandbox_id, command, **exec_kwargs)
+        else:
+            result_holder: dict[str, Any] = {}
+            finished = threading.Event()
+
+            def execute() -> None:
+                try:
+                    result_holder["result"] = registry.exec_in_sandbox(
+                        sandbox_id,
+                        command,
+                        **exec_kwargs,
+                    )
+                except BaseException as exc:  # propagated in the caller thread
+                    result_holder["error"] = exc
+                finally:
+                    finished.set()
+
+            worker = threading.Thread(
+                target=execute,
+                name="sandbox-exec-{}".format(run_id),
+                daemon=True,
+            )
+            worker.start()
+            while not finished.wait(0.05):
+                if cancel_event.is_set():
+                    # Deleting the run-scoped sandbox terminates the process even
+                    # though the HTTP exec request may still be unwinding.
+                    registry.release(run_id)
+                    raise SandboxExecError("exec cancelled in sandbox {}".format(sandbox_id))
+            if cancel_event.is_set():
+                registry.release(run_id)
+                raise SandboxExecError("exec cancelled in sandbox {}".format(sandbox_id))
+            error = result_holder.get("error")
+            if error is not None:
+                raise error
+            result = result_holder.get("result")
+            if result is None:
+                raise SandboxExecError("sandbox exec returned no result")
         return subprocess.CompletedProcess(
             args=command,
             returncode=result.exit_code,

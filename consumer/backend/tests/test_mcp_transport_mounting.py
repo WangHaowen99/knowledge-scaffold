@@ -166,6 +166,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
     tmp_path,
 ):
     resolved_endpoint_ids: list[str] = []
+    captured_chat_args: list[dict] = []
 
     monkeypatch.setattr(
         mcp_server,
@@ -201,15 +202,16 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
         )
 
     monkeypatch.setattr(mcp_server, "resolve_mcp_scope_from_token", resolve_scope)
-    monkeypatch.setattr(
-        mcp_server,
-        "execute_chat_tool",
-        lambda _args, *, scope: {
+
+    def execute_chat_tool(args, *, scope):
+        captured_chat_args.append(dict(args))
+        return {
             "ok": True,
             "workspace_id": scope.workspace_id,
             "endpoint_id": resolved_endpoint_ids[-1],
-        },
-    )
+        }
+
+    monkeypatch.setattr(mcp_server, "execute_chat_tool", execute_chat_tool)
     app = mcp_server.create_mcp_http_root_app(
         _config(tmp_path, "streamable-http"),
     )
@@ -303,7 +305,10 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
                         "method": "tools/call",
                         "params": {
                             "name": "chat",
-                            "arguments": {"query": "hello"},
+                            "arguments": {
+                                "query": "hello",
+                                "requested_operation_key": "query_exact",
+                            },
                         },
                     },
                 )
@@ -331,6 +336,7 @@ def test_real_fastmcp_streamable_http_preserves_dynamic_endpoint_context(
         asyncio.set_event_loop(None)
 
     assert resolved_endpoint_ids == [ENDPOINT_ID]
+    assert captured_chat_args[0]["requested_operation_key"] == "query_exact"
 
 
 def test_workspace_endpoint_binding_app_validates_and_resets_context():

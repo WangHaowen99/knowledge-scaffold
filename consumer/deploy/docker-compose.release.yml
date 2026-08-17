@@ -8,12 +8,15 @@ services:
     volumes:
       - ./.onto-runtime:/app/.onto-runtime
       - onto-jiuwenbox-sock:/run/jiuwenbox:ro
+      - onto-jiuwenbox-runtime:/run/onto-runtime-attestation:ro
+      - onto-deterministic-artifacts:/run/onto-deterministic-artifacts
     env_file:
       - ./backend/.env
     environment:
       - FLASK_APP=run.py
       - PYTHONUNBUFFERED=1
       - PROJECT_ROOT=/app/.onto-runtime
+      - DETERMINISTIC_ARTIFACT_STAGING_ROOT=/run/onto-deterministic-artifacts
       - CHAT_STORAGE_DIR=/app/.onto-runtime/data/chats
       - EXECUTION_STORAGE_DIR=/app/.onto-runtime/data/executions
       - MCP_SERVER_HOST=mcp
@@ -43,6 +46,8 @@ services:
     volumes:
       - ./.onto-runtime:/app/.onto-runtime:ro
       - onto-jiuwenbox-sock:/run/jiuwenbox
+      - onto-jiuwenbox-runtime:/run/onto-runtime-attestation
+      - onto-deterministic-artifacts:/run/onto-deterministic-artifacts
       - ./deploy/jiuwenbox-policy.yaml:/app/jiuwenbox-policy.yaml:ro
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     cap_add:
@@ -127,4 +132,6 @@ services:
       - AUTH_ENABLE_REGISTRATION=${AUTH_ENABLE_REGISTRATION:-true}
 
 volumes:
+  onto-deterministic-artifacts:
   onto-jiuwenbox-sock:
+  onto-jiuwenbox-runtime:

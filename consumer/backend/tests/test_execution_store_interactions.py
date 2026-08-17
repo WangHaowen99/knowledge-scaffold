@@ -32,6 +32,42 @@ def _seed_choice_checkpoint(store: ExecutionStore, session_id: str = "sess-choic
     return interaction
 
 
+def _seed_input_checkpoint(store: ExecutionStore, session_id: str = "sess-input") -> dict:
+    interaction = {
+        "id": "interaction_call_input",
+        "type": "input",
+        "prompt": "请输入值",
+    }
+    store.start_turn(
+        session_id=session_id,
+        turn_id=1,
+        run_id="run-input",
+        user_request="start",
+    )
+    store.await_turn(
+        session_id=session_id,
+        turn_id=1,
+        final_output={"type": "user_interaction", "interaction": interaction},
+    )
+    return interaction
+
+
+@pytest.mark.parametrize("value", [5, 5.25, True, {"region": "north"}, [1, 2]])
+def test_input_interaction_preserves_standard_json_value_types(tmp_path, value):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    interaction = _seed_input_checkpoint(store)
+    response = {
+        "interaction_id": interaction["id"],
+        "type": "input",
+        "value": value,
+    }
+
+    canonical = store.validate_interaction_response("sess-input", response)
+
+    assert canonical == response
+    assert type(canonical["value"]) is type(value)
+
+
 def test_interaction_response_survives_backend_process_reload_and_is_consumed(tmp_path):
     storage_dir = tmp_path / "executions"
     store = ExecutionStore(str(storage_dir))
@@ -65,6 +101,71 @@ def test_interaction_response_survives_backend_process_reload_and_is_consumed(tm
 
     with pytest.raises(InteractionCheckpointError, match="no pending interaction"):
         reloaded_store.validate_interaction_response("sess-choice", response)
+
+
+def test_deterministic_terminal_journal_restores_cache_when_atomic_save_fails(
+    tmp_path,
+    monkeypatch,
+):
+    storage_dir = tmp_path / "executions"
+    session_id = "sess-terminal-save-failure"
+    store = ExecutionStore(str(storage_dir))
+    store.start_turn(
+        session_id=session_id,
+        turn_id=1,
+        run_id="run-terminal-save-failure",
+        user_request="query",
+    )
+    events = [
+        {
+            "event": "agent.v2",
+            "data": {
+                "event_id": "event-terminal-save-failure",
+                "type": "turn.finished",
+            },
+        }
+    ]
+    original_save = store._save_session
+
+    def fail_save(_session_id):
+        raise OSError("simulated atomic save failure")
+
+    monkeypatch.setattr(store, "_save_session", fail_save)
+    with pytest.raises(OSError, match="atomic save failure"):
+        store.prepare_deterministic_terminal(
+            session_id,
+            1,
+            status="success",
+            final_output={"status": "success"},
+            summary=None,
+            llm_context=[{"role": "assistant", "content": "ok"}],
+            events=events,
+        )
+    assert store.get_pending_deterministic_terminal(session_id) is None
+    assert ExecutionStore(str(storage_dir)).get_pending_deterministic_terminal(
+        session_id
+    ) is None
+
+    monkeypatch.setattr(store, "_save_session", original_save)
+    store.prepare_deterministic_terminal(
+        session_id,
+        1,
+        status="success",
+        final_output={"status": "success"},
+        summary=None,
+        llm_context=[{"role": "assistant", "content": "ok"}],
+        events=events,
+    )
+    monkeypatch.setattr(store, "_save_session", fail_save)
+    with pytest.raises(OSError, match="atomic save failure"):
+        store.commit_deterministic_terminal(session_id, 1)
+
+    assert store.get_turn(session_id, 1)["status"] == "running"
+    assert store.get_pending_deterministic_terminal(session_id) is not None
+    assert store.get_llm_context(session_id) == []
+    reloaded = ExecutionStore(str(storage_dir))
+    assert reloaded.get_turn(session_id, 1)["status"] == "running"
+    assert reloaded.get_pending_deterministic_terminal(session_id) is not None
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,11 @@ _RUNTIME_PARAMETER_FIELDS = {
     "workspace_id",
     "selected_ontology_id",
 }
-_EXPLICIT_RUNTIME_PARAMETER_FIELDS = _RUNTIME_PARAMETER_FIELDS | {"ontology_id"}
+_EXPLICIT_RUNTIME_PARAMETER_FIELDS = _RUNTIME_PARAMETER_FIELDS | {
+    "ontology_id",
+    "ontology_version",
+    "selected_ontology_version",
+}
 
 
 def _explicit_runtime_requested(parameter: Mapping[str, Any]) -> bool:

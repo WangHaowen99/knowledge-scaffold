@@ -121,7 +121,10 @@ let fallbackCredentialLockTail = Promise.resolve();
 const withCredentialLock = async (callback) => {
   const locks = globalThis.navigator?.locks;
   if (typeof locks?.request === 'function') {
-    return locks.request(AUTH_STORAGE_LOCK, callback);
+    // Keep synchronous callback failures inside the Promise contract. This is
+    // equivalent in browsers and prevents Node's Web Locks implementation from
+    // retaining the lock after a synchronous throw in tests/SSR environments.
+    return locks.request(AUTH_STORAGE_LOCK, async () => callback());
   }
   // Tests and storage-restricted environments still need real serialization
   // across awaits; the event loop alone does not protect a network transaction.

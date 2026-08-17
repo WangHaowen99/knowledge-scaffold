@@ -148,12 +148,24 @@ def create_task():
     if not message:
         return jsonify({"error": "message is required"}), 400
 
+    raw_context = payload.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return jsonify({"error": "context must be an object"}), 400
+    raw_arguments = payload.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return jsonify({"error": "arguments must be an object"}), 400
+    task_context = dict(raw_context or {})
+    if raw_arguments is not None:
+        task_context["arguments"] = dict(raw_arguments)
+    requested_operation_key = str(payload.get("requested_operation_key") or "").strip()
+    if requested_operation_key:
+        task_context["requested_operation_key"] = requested_operation_key
     req = A2ATaskCreateRequest(
         message=message,
         session_id=payload.get("session_id") or None,
         task_id=str(payload.get("task_id") or "").strip() or None,
         context=set_user_interaction_capability(
-            dict(payload.get("context") or {}),
+            task_context,
             supported=False,
         ),
     )
@@ -192,7 +204,13 @@ def cancel_task(task_id: str):
         return jsonify({"error": "Task not found"}), 404
     ok = service.cancel_task(task_id)
     if not ok:
-        return jsonify({"error": "Task not found"}), 404
+        snapshot = service.get_task(task_id)
+        if snapshot.state.value == "not_found":
+            return jsonify({"error": "Task not found"}), 404
+        return jsonify({
+            "error": "Task is not cancellable in its current state",
+            "task": snapshot.to_dict(),
+        }), 409
     snapshot = service.get_task(task_id)
     return jsonify({"success": True, "task": snapshot.to_dict()})
 
@@ -259,8 +277,20 @@ def create_task_and_stream():
 
     task_id = str(payload.get("task_id") or "").strip() or None
     session_id = str(payload.get("session_id") or "").strip()
+    raw_context = payload.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return jsonify({"error": "context must be an object"}), 400
+    raw_arguments = payload.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return jsonify({"error": "arguments must be an object"}), 400
+    stream_context = dict(raw_context or {})
+    if raw_arguments is not None:
+        stream_context["arguments"] = dict(raw_arguments)
+    requested_operation_key = str(payload.get("requested_operation_key") or "").strip()
+    if requested_operation_key:
+        stream_context["requested_operation_key"] = requested_operation_key
     context = set_user_interaction_capability(
-        dict(payload.get("context") or {}),
+        stream_context,
         supported=False,
     )
 

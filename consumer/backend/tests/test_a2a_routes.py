@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from flask import Flask
+import pytest
 
 from api.protocols.a2a.models import A2ATaskSnapshot, A2ATaskState
 from api.routes.a2a import a2a_bp
@@ -45,6 +46,19 @@ class _FakeChatStore:
     def get_session(self, session_id):
         del session_id
         return self.session
+
+
+class _CapturingTaskService:
+    def __init__(self):
+        self.request = None
+
+    def create_task(self, request):
+        self.request = request
+        return A2ATaskSnapshot(
+            id="task-arguments",
+            session_id=request.session_id,
+            state=A2ATaskState.PENDING,
+        )
 
 
 def _build_test_client(tmp_path, monkeypatch):
@@ -94,6 +108,71 @@ def test_get_task_returns_404_for_not_found(monkeypatch, tmp_path):
     assert resp.status_code == 404
     payload = resp.get_json()
     assert payload["task"]["state"] == "not_found"
+
+
+def test_cancel_task_reports_conflict_for_input_required_task(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    snapshot = A2ATaskSnapshot(
+        id="task-awaiting",
+        session_id="session-awaiting",
+        state=A2ATaskState.INPUT_REQUIRED,
+    )
+    service = _FakeTaskService(snapshot=snapshot)
+    service.cancel_task = lambda _task_id: False
+    monkeypatch.setattr("api.routes.a2a._build_task_service", lambda: service)
+
+    response = client.delete("/a2a/tasks/task-awaiting", headers=headers)
+
+    assert response.status_code == 409
+    assert response.get_json()["task"]["state"] == "input_required"
+
+
+def test_create_task_passes_structured_arguments_in_context(monkeypatch, tmp_path):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    service = _CapturingTaskService()
+    monkeypatch.setattr("api.routes.a2a._build_task_service", lambda: service)
+
+    resp = client.post(
+        "/a2a/tasks",
+        headers=headers,
+        json={
+            "message": "Query Exact",
+            "session_id": "session-arguments",
+            "arguments": {"code": "CODE-42"},
+        },
+    )
+
+    assert resp.status_code == 202
+    assert service.request.context["arguments"] == {"code": "CODE-42"}
+
+
+@pytest.mark.parametrize("endpoint", ["/a2a/tasks", "/a2a/tasks/stream"])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("context", ["invalid"], "context must be an object"),
+        ("arguments", ["invalid"], "arguments must be an object"),
+    ],
+)
+def test_a2a_routes_reject_non_object_structured_fields(
+    monkeypatch,
+    tmp_path,
+    endpoint,
+    field,
+    value,
+    message,
+):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+    payload = {
+        "message": "Query Exact",
+        "session_id": "session-invalid-structured-field",
+        field: value,
+    }
+
+    response = client.post(endpoint, headers=headers, json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json() == {"error": message}
 
 
 def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tmp_path):

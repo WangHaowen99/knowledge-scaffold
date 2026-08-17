@@ -104,6 +104,16 @@ SCRIPT_LIVE_LOG_ENABLED = (
     in {"1", "true", "yes", "y", "on"}
 )
 
+
+class _ScriptOutputLimitExceeded(RuntimeError):
+    def __init__(self, stream_name: str) -> None:
+        super().__init__("{} output exceeds limit".format(stream_name))
+        self.stream_name = stream_name
+
+
+class _ScriptExecutionCancelled(RuntimeError):
+    pass
+
 EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
@@ -186,6 +196,7 @@ def build_execute_script_tool_schema(
                 entry
                 for entry in load_script_catalog(Path(ontology.ontology_dir).resolve())
                 if bool(entry.get("_is_bound_operation", True))
+                and not entry.get("_is_deterministic_handler")
                 and str(entry.get("operation_key") or "").strip()
             ]
             if not ontology_catalog:
@@ -643,11 +654,122 @@ def _run_with_live_logging(
     )
 
 
+def _run_with_bounded_output(
+    cmd: List[str],
+    *,
+    cwd: str,
+    env: Dict[str, str],
+    timeout_seconds: int,
+    stdout_limit_bytes: int,
+    stderr_limit_bytes: int,
+    cancel_event: Optional[threading.Event] = None,
+) -> subprocess.CompletedProcess[str]:
+    """Capture deterministic script output without unbounded allocation."""
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+    )
+    outputs = {"stdout": bytearray(), "stderr": bytearray()}
+    limits = {
+        "stdout": max(1, int(stdout_limit_bytes)),
+        "stderr": max(1, int(stderr_limit_bytes)),
+    }
+    overflow: list[str] = []
+    overflow_event = threading.Event()
+
+    def read_stream(stream_name: str, pipe: Any) -> None:
+        try:
+            while True:
+                chunk = pipe.read(8192)
+                if not chunk:
+                    return
+                remaining = limits[stream_name] + 1 - len(outputs[stream_name])
+                if remaining > 0:
+                    outputs[stream_name].extend(chunk[:remaining])
+                if len(outputs[stream_name]) > limits[stream_name]:
+                    if not overflow:
+                        overflow.append(stream_name)
+                    overflow_event.set()
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+                    return
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    threads = [
+        threading.Thread(target=read_stream, args=("stdout", proc.stdout), daemon=True),
+        threading.Thread(target=read_stream, args=("stderr", proc.stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + max(1, int(timeout_seconds))
+    cancelled = False
+    timed_out = False
+    while proc.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            cancelled = True
+            proc.terminate()
+            break
+        if overflow_event.is_set():
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            proc.terminate()
+            break
+        time.sleep(0.02)
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+    for thread in threads:
+        thread.join(timeout=2)
+
+    stdout = bytes(outputs["stdout"]).decode("utf-8", errors="replace")
+    stderr = bytes(outputs["stderr"]).decode("utf-8", errors="replace")
+    if cancelled:
+        raise _ScriptExecutionCancelled("script execution cancelled")
+    if timed_out:
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=timeout_seconds,
+            output=stdout,
+            stderr=stderr,
+        )
+    if overflow:
+        raise _ScriptOutputLimitExceeded(overflow[0])
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=int(proc.returncode or 0),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def _spawn_with_args_file(
     resolved_path: Path,
     cli_args: List[str],
     env: Dict[str, str],
     cwd: str,
+    bounded_output: Optional[Mapping[str, Any]] = None,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess:
     """Write oversize CLI args to a temp file and run a loader script.
@@ -693,6 +815,16 @@ def _spawn_with_args_file(
         )
 
         try:
+            if bounded_output is not None:
+                return _run_with_bounded_output(
+                    [sys.executable, "-u", loader_path],
+                    cwd=cwd,
+                    env=child_env,
+                    timeout_seconds=int(kwargs.get("timeout", 300)),
+                    stdout_limit_bytes=int(bounded_output["stdout_limit_bytes"]),
+                    stderr_limit_bytes=int(bounded_output["stderr_limit_bytes"]),
+                    cancel_event=bounded_output.get("cancel_event"),
+                )
             if SCRIPT_LIVE_LOG_ENABLED:
                 timeout_seconds = int(kwargs.get("timeout", 300))
                 return _run_with_live_logging(
@@ -768,6 +900,19 @@ def handle_execute_script_path(
     workspace_id: Optional[str] = None,
     ontology_id: Optional[str] = None,
     ontology_dir: Optional[Path] = None,
+    clean_env: bool = False,
+    include_stderr_on_success: bool = True,
+    stdout_limit_bytes: Optional[int] = None,
+    stderr_limit_bytes: Optional[int] = None,
+    file_size_limit_bytes: Optional[int] = None,
+    cancel_event: Optional[threading.Event] = None,
+    sandbox_prepare_data_connection: bool = True,
+    sandbox_include_data_connection_env: bool = True,
+    sandbox_network_endpoint: Optional[str] = None,
+    sandbox_writable_paths: Sequence[Path] = (),
+    sandbox_run_id: Optional[str] = None,
+    sandbox_required: bool = False,
+    sandbox_restrict_filesystem_to_ontology: bool = False,
 ) -> str:
     """Run a Python script relative to project root and return its output.
 
@@ -862,6 +1007,26 @@ def handle_execute_script_path(
                 return (
                     "Error: Access denied - script must be within current ontology scripts directory"
                 )
+            if caller != "deterministic_service":
+                try:
+                    from ontology.operation_execution import (
+                        protected_handler_paths,
+                    )
+
+                    protected_paths = protected_handler_paths(ontology_root)
+                except Exception:
+                    logger.exception(
+                        "Failed to classify deterministic handler protection (%s)",
+                        call_context,
+                    )
+                    return "Error: deterministic_operation_protection_unavailable"
+                if resolved_path in protected_paths:
+                    logger.warning(
+                        "Blocked deterministic handler bypass (%s): script_path=%s",
+                        call_context,
+                        script_path,
+                    )
+                    return "Error: deterministic_operation_protected"
 
         if resolved_path.suffix.lower() != ".py":
             logger.warning(
@@ -890,7 +1055,24 @@ def handle_execute_script_path(
             )
             return "Error: '{}' is not a file".format(script_path)
 
-        child_env = os.environ.copy()
+        if clean_env:
+            allowed_host_names = {
+                "PATH",
+                "SYSTEMROOT",
+                "WINDIR",
+                "TEMP",
+                "TMP",
+                "TMPDIR",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+            }
+            child_env = {
+                key: value
+                for key, value in os.environ.items()
+                if key in allowed_host_names
+            }
+        else:
+            child_env = os.environ.copy()
         pythonpath_parts: List[str] = [str(BACKEND_DIR)]
         if extra_pythonpath_dirs:
             for d in extra_pythonpath_dirs:
@@ -939,6 +1121,14 @@ def handle_execute_script_path(
         fallback_error: Any = None
         fallback_blocked_message = ""
 
+        if sandbox_required and not sandbox_config.enabled:
+            logger.error(
+                "Sandbox is required for this script execution (%s): script_path=%s",
+                call_context,
+                script_path,
+            )
+            return "Error: Sandbox required for deterministic execution."
+
         if sandbox_config.enabled:
             if sys.platform != "linux":
                 fallback_reason = "unsupported_platform"
@@ -964,10 +1154,22 @@ def handle_execute_script_path(
                         cli_args=cli_args,
                         project_root=base_resolved,
                         ontology_dir=ontology_dir,
-                        run_id=str(run_id),
+                        run_id=str(sandbox_run_id or run_id),
                         workspace_id=workspace_id,
                         ontology_id=ontology_id,
                         timeout_seconds=max(1, int(timeout_seconds)),
+                        env_overrides=env_overrides,
+                        prepare_data_connection=sandbox_prepare_data_connection,
+                        include_data_connection_env=sandbox_include_data_connection_env,
+                        network_endpoint=sandbox_network_endpoint,
+                        writable_paths=sandbox_writable_paths,
+                        stdout_limit_bytes=stdout_limit_bytes,
+                        stderr_limit_bytes=stderr_limit_bytes,
+                        file_size_limit_bytes=file_size_limit_bytes,
+                        cancel_event=cancel_event,
+                        restrict_filesystem_to_ontology=(
+                            sandbox_restrict_filesystem_to_ontology
+                        ),
                     )
                 except SandboxUnsupportedProviderError as exc:
                     fallback_reason = "unsupported_provider"
@@ -1017,6 +1219,8 @@ def handle_execute_script_path(
                     completed = None
 
             if completed is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Error: Script execution cancelled."
                 if fallback_reason is None:
                     logger.error(
                         "Sandbox executor returned no process result (%s): script_path=%s",
@@ -1025,7 +1229,9 @@ def handle_execute_script_path(
                     )
                     return _SCRIPT_EXECUTION_INTERNAL_ERROR
                 blocked = _fallback_or_error(
-                    fallback_local=sandbox_config.fallback_local,
+                    fallback_local=(
+                        sandbox_config.fallback_local and not sandbox_required
+                    ),
                     mode=execution_mode,
                     reason=fallback_reason,
                     blocked_message=fallback_blocked_message,
@@ -1042,18 +1248,36 @@ def handle_execute_script_path(
                 run_locally = True
 
         if completed is None and run_locally:
+            bounded_output = None
+            if stdout_limit_bytes is not None or stderr_limit_bytes is not None:
+                bounded_output = {
+                    "stdout_limit_bytes": max(1, int(stdout_limit_bytes or 1)),
+                    "stderr_limit_bytes": max(1, int(stderr_limit_bytes or 1)),
+                    "cancel_event": cancel_event,
+                }
             if oversize_args:
                 completed = _spawn_with_args_file(
                     resolved_path=resolved_path,
                     cli_args=cli_args,
                     env=child_env,
                     cwd=str(base_resolved),
+                    bounded_output=bounded_output,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=max(1, int(timeout_seconds)),
                     check=False,
+                )
+            elif bounded_output is not None:
+                completed = _run_with_bounded_output(
+                    [sys.executable, "-u", str(resolved_path), *cli_args],
+                    cwd=str(base_resolved),
+                    env=child_env,
+                    timeout_seconds=max(1, int(timeout_seconds)),
+                    stdout_limit_bytes=bounded_output["stdout_limit_bytes"],
+                    stderr_limit_bytes=bounded_output["stderr_limit_bytes"],
+                    cancel_event=cancel_event,
                 )
             elif SCRIPT_LIVE_LOG_ENABLED:
                 completed = _run_with_live_logging(
@@ -1085,6 +1309,16 @@ def handle_execute_script_path(
 
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: Script execution cancelled."
+        if stdout_limit_bytes is not None and len(stdout.encode("utf-8")) > int(
+            stdout_limit_bytes
+        ):
+            return "Error: Script stdout output exceeds the configured limit."
+        if stderr_limit_bytes is not None and len(stderr.encode("utf-8")) > int(
+            stderr_limit_bytes
+        ):
+            return "Error: Script stderr output exceeds the configured limit."
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         logger.info(
             (
@@ -1117,11 +1351,34 @@ def handle_execute_script_path(
             public_error = _extract_public_script_error(stderr)
             return "{} {}".format(error, public_error) if public_error else error
 
-        result = _combine_process_output(stdout=stdout, stderr=stderr)
+        if stderr and not include_stderr_on_success:
+            logger.info(
+                "Successful script wrote diagnostic stderr (%s): stderr_chars=%s",
+                call_context,
+                len(stderr),
+            )
+        result = (
+            _combine_process_output(stdout=stdout, stderr=stderr)
+            if include_stderr_on_success
+            else stdout
+        )
         if result:
             return result
         return "Script executed successfully with no output."
 
+    except _ScriptOutputLimitExceeded as exc:
+        logger.warning(
+            "Python script %s output exceeded limit (%s): script_path=%s",
+            exc.stream_name,
+            call_context,
+            script_path,
+        )
+        return "Error: Script {} output exceeds the configured limit.".format(
+            exc.stream_name
+        )
+    except _ScriptExecutionCancelled:
+        logger.info("Python script cancelled (%s): script_path=%s", call_context, script_path)
+        return "Error: Script execution cancelled."
     except subprocess.TimeoutExpired as exc:
         timeout_stdout = (exc.stdout or "")
         timeout_stderr = (exc.stderr or "")
@@ -1530,6 +1787,18 @@ def handle_execute_script(
     assert ontology is not None
 
     ontology_dir = Path(ontology.ontology_dir).resolve()
+    try:
+        from ontology.operation_execution import is_deterministic_operation
+
+        if is_deterministic_operation(ontology_dir, operation_key):
+            return "Error: deterministic_operation_protected"
+    except Exception:
+        logger.exception(
+            "Failed to classify deterministic operation protection: ontology_id=%s operation_key=%s",
+            ontology.id,
+            operation_key,
+        )
+        return "Error: deterministic_operation_protection_unavailable"
     script_catalog = load_script_catalog(ontology_dir)
     script_entry = find_script_entry(script_catalog, operation_key, bound_only=True)
     if script_entry is None:
@@ -2010,9 +2279,10 @@ class ExecuteScriptTool:
         del event_emitter
         ontology_id = str(args.get("ontology_id") or "").strip()
         operation_key = str(args.get("operation_key") or "").strip()
+        context_messages = getattr(context, "messages", ()) or ()
         if ontology_id and operation_key:
             successful_calls = _prior_successful_operation_calls(
-                context.messages,
+                context_messages,
                 ontology_id=ontology_id,
                 operation_key=operation_key,
                 current_tool_call_id=tool_call_id,
@@ -2050,8 +2320,8 @@ class ExecuteScriptTool:
         if isinstance(argument_values, Mapping):
             consistency_errors = _validate_structured_arguments_against_request(
                 argument_values,
-                _latest_user_request(context.messages),
-                _current_turn_business_data_evidence(context.messages),
+                _latest_user_request(context_messages),
+                _current_turn_business_data_evidence(context_messages),
             )
             if consistency_errors:
                 return ToolOutcome(content=(

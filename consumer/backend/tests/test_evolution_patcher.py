@@ -162,3 +162,33 @@ def test_init_operation_patcher_updates_existing_singleton_config(monkeypatch):
     assert [cfg.min_occurrences for cfg in first.updated] == [7]
 
     registry.reset_operation_patcher()
+
+
+def test_patcher_does_not_stage_sidecars_inside_deterministic_version(
+    monkeypatch,
+    tmp_path,
+):
+    version_dir = tmp_path / "ontology" / "versions" / "1.0.0"
+    operations_dir = version_dir / "operations"
+    operations_dir.mkdir(parents=True)
+    op_path = operations_dir / "OP_A.md"
+    op_path.write_text("# OP_A\n", encoding="utf-8")
+    (version_dir / ".deterministic-lock.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "agent.evolution.patcher.resolve_operation_md",
+        lambda *_args, **_kwargs: op_path,
+    )
+    patcher = OperationPatcher(buffer=object(), config=PatcherConfig())
+    monkeypatch.setattr(
+        patcher,
+        "_llm_merge",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("deterministic package must be rejected before LLM")
+        ),
+    )
+
+    patcher._scan("example", "OP_A", workspace_id="workspace-a")
+
+    assert not op_path.with_suffix(".md.staged").exists()
+    assert not op_path.with_suffix(".md.staged.meta.json").exists()

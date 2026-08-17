@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch,
+  AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, FileText, GitBranch,
   Globe2, Loader2, Search, Wrench,
 } from 'lucide-react';
 
@@ -103,11 +103,42 @@ function ConversationBlock({ block, turn, answerText, sessionId, runState }) {
   if (block.kind === 'business_data') return <BusinessDataResult block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'web_search') return <WebSearchSources block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'tool') return <ToolCallBlock block={block} sessionId={sessionId} runId={turn.runId} />;
+  if (block.kind === 'artifacts') return <ArtifactBlock block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'subagent') return <SubagentGroup block={block} sessionId={sessionId} runId={turn.runId} />;
   if (block.kind === 'status' || block.kind === 'awaiting') {
     return <RunStatusBlock block={block} turn={turn} answerText={answerText} runState={runState} />;
   }
   return block.text ? <div className="conversation-state-block"><Circle size={11} />{block.text}</div> : null;
+}
+
+export function ArtifactBlock({ block, sessionId = '', runId = '' }) {
+  const artifacts = Array.isArray(block.artifacts) ? block.artifacts : [];
+  if (artifacts.length === 0) return null;
+  return (
+    <details className="conversation-process tool-process status-finished" open data-block-key={block.key}>
+      <summary><FileText size={14} /><span>执行制品（{artifacts.length}）</span><BlockMeta status="finished" /></summary>
+      <div className="conversation-process-body">
+        {artifacts.map((artifact) => (
+          <section className="tool-input" key={artifact.key}>
+            <strong>{artifact.name}</strong>
+            {(artifact.mediaType || artifact.size != null) && (
+              <div>{[artifact.mediaType, artifact.size != null ? `${artifact.size} bytes` : ''].filter(Boolean).join(' · ')}</div>
+            )}
+            <ToolOutput
+              meta={{
+                output_ref: artifact.outputRef,
+                output_size: artifact.size,
+                sha256: artifact.sha256,
+              }}
+              sessionId={sessionId}
+              runId={runId}
+              rawOutput
+            />
+          </section>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 export function AgentContent({ block }) {

@@ -128,6 +128,8 @@ def _ensure_registry_entry(run_id: str) -> Dict[str, Any] | None:
                 "updated_at": run.updated_at,
                 "messages": run.metadata.get("acp_messages", []),
                 "error": run.error,
+                "error_code": run.metadata.get("error_code"),
+                "result": run.result if run.result is not None else run.metadata.get("acp_result"),
             }
             with _ACP_REGISTRY_LOCK:
                 _ACP_RUN_REGISTRY[run_id] = entry
@@ -172,9 +174,15 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
         existing = orch.run_store.get_run(run_id)
         if existing:
             if error:
-                orch.run_store.fail_run(run_id, error)
+                persisted = orch.run_store.fail_run(run_id, error)
             else:
-                orch.run_store.update_status(run_id, store_status)
+                persisted = orch.run_store.update_status(run_id, store_status)
+            if persisted is not None and persisted.status != store_status:
+                try:
+                    acp_status = RunStatus(persisted.status.value)
+                except ValueError:
+                    acp_status = RunStatus.RUNNING
+                entry["status"] = acp_status
             orch.run_store.update_metadata(run_id, {
                 "source": "acp",
                 "workspace_id": entry.get("workspace_id"),
@@ -188,6 +196,8 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
                 "acp_user_id": entry.get("user_id"),
                 "acp_messages": entry.get("messages", []),
                 "acp_status": acp_status.value if isinstance(acp_status, RunStatus) else str(acp_status),
+                "error_code": entry.get("error_code"),
+                "acp_result": entry.get("result"),
             })
         else:
             orch.run_store.create_run(
@@ -206,6 +216,8 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
                     "acp_user_id": entry.get("user_id"),
                     "acp_messages": entry.get("messages", []),
                     "acp_status": acp_status.value if isinstance(acp_status, RunStatus) else str(acp_status),
+                    "error_code": entry.get("error_code"),
+                    "acp_result": entry.get("result"),
                 },
             )
             if error:
@@ -504,15 +516,29 @@ def _map_orch_event_to_acp_sse(
         status = payload.get("status", "")
         if status == "error":
             error_msg = payload.get("error", "Turn failed")
-            yield ("run.failed", {
+            failed_payload = {
                 "type": "run.failed",
                 "run_id": run_id,
                 "error": error_msg,
-            })
+                "error_code": payload.get("error_code"),
+            }
+            if payload.get("final_output") is not None:
+                failed_payload["result"] = payload["final_output"]
+            yield ("run.failed", failed_payload)
         elif status == "awaiting_input":
             awaiting = _awaiting_data_from_final_output(payload.get("final_output"), run_id=run_id)
             if awaiting:
                 yield ("run.awaiting", awaiting)
+        elif status == "cancelled":
+            cancelled_payload = {
+                "type": "run.cancelled",
+                "run_id": run_id,
+                "error": payload.get("error") or "Run cancelled",
+                "cancel_reason": payload.get("cancel_reason"),
+            }
+            if payload.get("final_output") is not None:
+                cancelled_payload["result"] = payload["final_output"]
+            yield ("run.cancelled", cancelled_payload)
         elif status == "success":
             final_text = coerce_final_output_to_text(payload.get("final_output"))
             if final_text:
@@ -596,18 +622,29 @@ def create_run():
     if not user_query:
         return jsonify({"detail": "No user message provided"}), 400
 
+    raw_context = payload.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return jsonify({"detail": "context must be an object"}), 400
+    raw_arguments = payload.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return jsonify({"detail": "arguments must be an object"}), 400
     try:
         session_id = validate_session_id(
-            payload.get("context", {}).get("session_id")
+            (raw_context or {}).get("session_id")
             or f"sess_{uuid.uuid4().hex[:8]}"
         )
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     user_lang = payload.get("lang")
     user_context = set_user_interaction_capability(
-        dict(payload.get("context") or {}),
+        dict(raw_context or {}),
         supported=True,
     )
+    if raw_arguments is not None:
+        user_context["arguments"] = dict(raw_arguments)
+    requested_operation_key = str(payload.get("requested_operation_key") or "").strip()
+    if requested_operation_key:
+        user_context["requested_operation_key"] = requested_operation_key
     current_user = get_current_user()
 
     with bind_log_context(workspace_id=workspace_id, run_id=run_id, session_id=session_id):
@@ -625,6 +662,8 @@ def create_run():
             "created_at": datetime.now(timezone.utc),
             "messages": [],
             "error": None,
+            "error_code": None,
+            "result": None,
         }
         with _ACP_REGISTRY_LOCK:
             _ACP_RUN_REGISTRY[run_id] = entry
@@ -659,6 +698,8 @@ def get_run_status(run_id: str):
             "status": entry.get("status", RunStatus.PENDING).value,
             "messages": entry.get("messages", []),
             "error": entry.get("error"),
+            "error_code": entry.get("error_code"),
+            "result": entry.get("result"),
             "created_at": entry["created_at"].isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -676,6 +717,7 @@ def get_run_status(run_id: str):
                 "completed_at": run.completed_at.isoformat() if run.completed_at else None,
                 "result": run.result,
                 "error": run.error,
+                "error_code": run.metadata.get("error_code"),
             })
     except Exception:
         pass
@@ -723,7 +765,9 @@ def execute_run(run_id: str):
                 final_answer = ""
                 final_status = RunStatus.COMPLETED
                 error_msg = None
+                error_code = None
                 awaiting_data = None
+                terminal_result = None
 
                 for orch_event in orch.run(
                     user_request=user_query,
@@ -752,6 +796,7 @@ def execute_run(run_id: str):
 
                     elif evt_type == "turn.finished":
                         status = evt_payload.get("status", "")
+                        terminal_result = evt_payload.get("final_output")
                         if status == "success":
                             final_answer = _merge_terminal_answer(
                                 final_answer,
@@ -760,6 +805,7 @@ def execute_run(run_id: str):
                         elif status == "error":
                             final_status = RunStatus.FAILED
                             error_msg = evt_payload.get("error", "Turn failed")
+                            error_code = evt_payload.get("error_code")
                         elif status == "awaiting_input":
                             final_status = RunStatus.AWAITING
                             awaiting_data = _awaiting_data_from_final_output(
@@ -770,6 +816,9 @@ def execute_run(run_id: str):
                                 final_answer = coerce_final_output_to_text(
                                     evt_payload.get("final_output")
                                 )
+                        elif status == "cancelled":
+                            final_status = RunStatus.CANCELLED
+                            error_msg = evt_payload.get("error") or "Run cancelled"
 
                 # 更新 registry
                 messages = []
@@ -779,6 +828,8 @@ def execute_run(run_id: str):
                     messages.append(agent_msg)
                 entry["status"] = final_status
                 entry["error"] = error_msg
+                entry["error_code"] = error_code
+                entry["result"] = terminal_result
                 if awaiting_data:
                     entry["awaiting"] = awaiting_data
                 else:
@@ -793,6 +844,8 @@ def execute_run(run_id: str):
                     updated_at=datetime.now(timezone.utc),
                     awaiting=_build_await_response(awaiting_data),
                     error=error_msg,
+                    error_code=error_code,
+                    result=terminal_result,
                 )
 
                 return jsonify(result.model_dump(mode="json"))
@@ -828,6 +881,9 @@ def _stream_orchestrator_events(
     awaiting_input = False
     awaiting_data = None
     error_msg = None
+    error_code = None
+    terminal_result = None
+    cancelled = False
 
     try:
         try:
@@ -842,6 +898,14 @@ def _stream_orchestrator_events(
                     requested_run_id=run_id,
                     allow_existing_acp_run_id=True,
                 ):
+                    orch_data = (
+                        orch_event.get("data", {})
+                        if isinstance(orch_event, dict)
+                        and orch_event.get("event") == "agent.v2"
+                        else orch_event
+                    )
+                    if isinstance(orch_data, dict) and orch_data.get("type") == "turn.finished":
+                        terminal_result = (orch_data.get("payload") or {}).get("final_output")
                     # 逐一映射事件到 ACP SSE
                     for sse_event_type, sse_data in _map_orch_event_to_acp_sse(
                         orch_event, run_id, tool_op_map, suppress_keywords
@@ -851,9 +915,13 @@ def _stream_orchestrator_events(
                             final_answer += sse_data.get("text", "")
                         elif sse_event_type == "run.failed":
                             error_msg = sse_data.get("error", "Unknown error")
+                            error_code = sse_data.get("error_code")
                         elif sse_event_type == "run.awaiting":
                             awaiting_input = True
                             awaiting_data = sse_data
+                        elif sse_event_type == "run.cancelled":
+                            cancelled = True
+                            error_msg = sse_data.get("error") or "Run cancelled"
 
                         yield f"event: {sse_event_type}\ndata: {json.dumps(sse_data, ensure_ascii=False)}\n\n"
 
@@ -871,19 +939,32 @@ def _stream_orchestrator_events(
             yield f"event: run.failed\ndata: {json.dumps({'type': 'run.failed', 'run_id': run_id, 'error': error_msg}, ensure_ascii=False)}\n\n"
 
         # ── 最终状态事件 ──────────────────────────────────────────
-        if not awaiting_input and not error_msg:
+        if cancelled:
+            entry["status"] = RunStatus.CANCELLED
+            entry["error"] = error_msg
+            entry["error_code"] = None
+            entry["result"] = terminal_result
+        elif not awaiting_input and not error_msg:
             if final_answer:
                 agent_msg = _build_agent_message(final_answer)
                 entry.setdefault("messages", []).append(agent_msg)
             entry["status"] = RunStatus.COMPLETED
             entry["error"] = None
-            yield f"event: run.completed\ndata: {json.dumps({'type': 'run.completed', 'run_id': run_id}, ensure_ascii=False)}\n\n"
+            entry["error_code"] = None
+            entry["result"] = terminal_result
+            completed_payload = {"type": "run.completed", "run_id": run_id}
+            if terminal_result is not None:
+                completed_payload["result"] = terminal_result
+            yield f"event: run.completed\ndata: {json.dumps(completed_payload, ensure_ascii=False)}\n\n"
         elif error_msg:
             entry["status"] = RunStatus.FAILED
             entry["error"] = error_msg
+            entry["error_code"] = error_code
+            entry["result"] = terminal_result
         elif awaiting_data:
             entry["status"] = RunStatus.AWAITING
             entry["awaiting"] = awaiting_data
+            entry["result"] = terminal_result
     finally:
         entry["updated_at"] = datetime.now(timezone.utc)
         _persist_to_runstore(run_id, entry)
@@ -950,18 +1031,29 @@ def execute_stream():
     if not user_query:
         return jsonify({"detail": "No user message provided"}), 400
 
+    raw_context = payload.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return jsonify({"detail": "context must be an object"}), 400
+    raw_arguments = payload.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return jsonify({"detail": "arguments must be an object"}), 400
     try:
         session_id = validate_session_id(
-            payload.get("context", {}).get("session_id")
+            (raw_context or {}).get("session_id")
             or f"sess_{uuid.uuid4().hex[:8]}"
         )
     except ValueError as exc:
         return jsonify({"detail": str(exc)}), 400
     user_lang = payload.get("lang")
     user_context = set_user_interaction_capability(
-        dict(payload.get("context") or {}),
+        dict(raw_context or {}),
         supported=True,
     )
+    if raw_arguments is not None:
+        user_context["arguments"] = dict(raw_arguments)
+    requested_operation_key = str(payload.get("requested_operation_key") or "").strip()
+    if requested_operation_key:
+        user_context["requested_operation_key"] = requested_operation_key
     current_user = get_current_user()
 
     if user_lang:
@@ -983,6 +1075,8 @@ def execute_stream():
             "updated_at": datetime.now(timezone.utc),
             "messages": [],
             "error": None,
+            "error_code": None,
+            "result": None,
         }
         with _ACP_REGISTRY_LOCK:
             _ACP_RUN_REGISTRY[run_id] = entry
@@ -1058,7 +1152,9 @@ def respond_to_await(run_id: str):
                 final_answer = ""
                 final_status = RunStatus.COMPLETED
                 error_msg = None
+                error_code = None
                 awaiting_data = None
+                terminal_result = None
 
                 for orch_event in orch.run(
                     user_request=user_response,
@@ -1087,6 +1183,7 @@ def respond_to_await(run_id: str):
 
                     elif evt_type == "turn.finished":
                         status = evt_payload.get("status", "")
+                        terminal_result = evt_payload.get("final_output")
                         if status == "success":
                             final_answer = _merge_terminal_answer(
                                 final_answer,
@@ -1095,6 +1192,7 @@ def respond_to_await(run_id: str):
                         elif status == "error":
                             final_status = RunStatus.FAILED
                             error_msg = evt_payload.get("error", "Turn failed")
+                            error_code = evt_payload.get("error_code")
                         elif status == "awaiting_input":
                             final_status = RunStatus.AWAITING
                             awaiting_data = _awaiting_data_from_final_output(
@@ -1105,6 +1203,9 @@ def respond_to_await(run_id: str):
                                 final_answer = coerce_final_output_to_text(
                                     evt_payload.get("final_output")
                                 )
+                        elif status == "cancelled":
+                            final_status = RunStatus.CANCELLED
+                            error_msg = evt_payload.get("error") or "Run cancelled"
 
                 messages = []
                 if final_answer:
@@ -1113,6 +1214,8 @@ def respond_to_await(run_id: str):
                     messages.append(agent_msg)
                 entry["status"] = final_status
                 entry["error"] = error_msg
+                entry["error_code"] = error_code
+                entry["result"] = terminal_result
                 if awaiting_data:
                     entry["awaiting"] = awaiting_data
                 else:
@@ -1127,6 +1230,8 @@ def respond_to_await(run_id: str):
                     updated_at=datetime.now(timezone.utc),
                     awaiting=_build_await_response(awaiting_data),
                     error=error_msg,
+                    error_code=error_code,
+                    result=terminal_result,
                 )
 
                 return jsonify(result.model_dump(mode="json"))
@@ -1220,14 +1325,43 @@ def cancel_run(run_id: str):
     if not entry:
         return jsonify({"detail": "Run not found"}), 404
 
+    with _ACP_REGISTRY_LOCK:
+        current_status = _entry_status(entry)
+        if current_status not in {RunStatus.PENDING, RunStatus.RUNNING}:
+            return jsonify({
+                "detail": _TERMINAL_RUN_DETAILS.get(
+                    current_status,
+                    "Run is not cancellable",
+                ),
+                "run_id": run_id,
+                "status": current_status.value,
+                "cancelled": False,
+            }), 409
+
+    orch = None
     try:
         orch = _get_orchestrator()
-        orch.cancel_run(run_id)
+        cancelled = bool(orch.cancel_run(run_id))
     except Exception as e:
         logger.warning("[ACP] Cancel via orchestrator failed: %s", e)
+        cancelled = False
+    if not cancelled:
+        latest = orch.run_store.get_run(run_id) if orch is not None else None
+        latest_status = (
+            latest.status.value
+            if latest is not None
+            else _entry_status(entry).value
+        )
+        return jsonify({
+            "detail": "Run is not cancellable in its current state",
+            "run_id": run_id,
+            "status": latest_status,
+            "cancelled": False,
+        }), 409
 
-    entry["status"] = RunStatus.CANCELLED
-    entry["updated_at"] = datetime.now(timezone.utc)
+    with _ACP_REGISTRY_LOCK:
+        entry["status"] = RunStatus.CANCELLED
+        entry["updated_at"] = datetime.now(timezone.utc)
     _persist_to_runstore(run_id, entry)
     return jsonify({"run_id": run_id, "status": "cancelled"})
 

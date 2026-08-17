@@ -1,5 +1,6 @@
-"""Only supported business-data API for maintained ontology scripts."""
+"""Supported business-data APIs for maintained ontology scripts."""
 
+from .connection_env import load_effective_connection
 from .data_provider_client import DataProviderClient
 from .errors import (
     BusinessDataProviderError,
@@ -15,6 +16,7 @@ __all__ = [
     "BusinessDataProviderError",
     "ConnectionEnvelopeError",
     "DataProviderClient",
+    "load_effective_connection",
     "ProviderInternalError",
     "ProviderProtocolError",
     "ProviderTransportError",

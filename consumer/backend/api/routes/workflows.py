@@ -71,6 +71,35 @@ def _reject_if_run_rate_limited(orchestrator):
     return None
 
 
+def _deterministic_preflight(
+    orchestrator: Any,
+    *,
+    user_request: str,
+    user_context: Dict[str, Any],
+    arguments: Optional[Dict[str, Any]],
+    session_id: str,
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+) -> bool:
+    preflight = getattr(
+        orchestrator,
+        "is_deterministic_request_potentially_applicable",
+        None,
+    )
+    if not callable(preflight):
+        return False
+    return bool(
+        preflight(
+            user_request=user_request,
+            user_context=user_context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+        )
+    )
+
+
 def _traceparent_from_request() -> Optional[W3CTraceParent]:
     return parse_traceparent(request.headers.get("traceparent"))
 
@@ -225,6 +254,7 @@ class AgenticRunHandle:
         slot_limit_user_id: str,
         traceparent: str = "",
         event_observer: Optional[Callable[[Dict[str, Any]], None]] = None,
+        deterministic_preflight_result: Optional[bool] = None,
     ) -> None:
         self.run_id = run_id
         self.active_run_id = run_id
@@ -239,6 +269,7 @@ class AgenticRunHandle:
         self.slot_limit_user_id = slot_limit_user_id
         self.traceparent = str(traceparent or "")
         self.event_observer = event_observer
+        self.deterministic_preflight_result = deterministic_preflight_result
         self.done = threading.Event()
         self._lock = threading.RLock()
         self._subscribers: Dict[str, "queue.Queue[Any]"] = {}
@@ -339,6 +370,7 @@ class AgenticRunHandle:
                     workspace_id=self.workspace_id,
                     requested_run_id=self.run_id,
                     traceparent=self.traceparent,
+                    deterministic_preflight_result=self.deterministic_preflight_result,
                 ):
                     envelope = _extract_agent_envelope(event)
                     if envelope:
@@ -658,11 +690,21 @@ def start_workflow_stream():
     except TraceParentValidationError as exc:
         return _invalid_traceparent_response(exc)
 
+    raw_context = data.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return jsonify({"error": "context must be an object"}), 400
     user_context = set_user_interaction_capability(
-        dict(data.get("context") or {}),
+        dict(raw_context or {}),
         supported=True,
     )
+    top_level_operation_key = str(data.get("requested_operation_key") or "").strip()
+    context_operation_key = str(user_context.get("requested_operation_key") or "").strip()
+    requested_operation_key = top_level_operation_key or context_operation_key
+    if requested_operation_key:
+        user_context["requested_operation_key"] = requested_operation_key
     arguments = data.get("arguments")
+    if arguments is not None and not isinstance(arguments, dict):
+        return jsonify({"error": "arguments must be an object"}), 400
     raw_session_id = data.get("session_id")
     requested_run_id = str(data.get("run_id") or "").strip() or None
     workspace_id = _get_request_workspace_id()
@@ -674,19 +716,29 @@ def start_workflow_stream():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
-    try:
-        resolve_effective_llm_profile_config(
-            requested_model_profile_id or None,
-            allow_default_fallback=not bool(requested_model_profile_id),
-            workspace_id=workspace_id,
-        )
-    except SystemConfigValidationError as exc:
-        return jsonify({"error": str(exc)}), 400
+    orchestrator = _get_orchestrator()
+    defer_llm_validation = _deterministic_preflight(
+        orchestrator,
+        user_request=user_request,
+        user_context=user_context,
+        arguments=arguments,
+        session_id=session_id,
+        user_id=current_user.username,
+        workspace_id=workspace_id,
+    )
+    if not defer_llm_validation:
+        requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
+        try:
+            resolve_effective_llm_profile_config(
+                requested_model_profile_id or None,
+                allow_default_fallback=not bool(requested_model_profile_id),
+                workspace_id=workspace_id,
+            )
+        except SystemConfigValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     logger.info("Starting agentic workflow stream")
 
-    orchestrator = _get_orchestrator()
     admission_queue = _get_run_admission_queue(orchestrator)
     limit = 100 if current_user.role == "admin" else 1
     run_id = requested_run_id or "agentic-{}".format(uuid.uuid4().hex)
@@ -740,6 +792,7 @@ def start_workflow_stream():
         slot_manager=admission_queue,
         slot_limit_user_id=current_user.username,
         traceparent=trace_context.value if trace_context is not None else "",
+        deterministic_preflight_result=True if defer_llm_validation else None,
     )
 
     if admission_queue.try_acquire(current_user.username, limit):
@@ -887,7 +940,16 @@ def cancel_run(run_id: str):
     success = orchestrator.cancel_run(run_id, reason=reason)
 
     if not success:
-        return jsonify({"error": "Run not found"}), 404
+        current_run = orchestrator.run_store.get_run(run_id)
+        if current_run is None:
+            return jsonify({"error": "Run not found"}), 404
+        return jsonify({
+            "success": False,
+            "cancelled": False,
+            "was_queued": was_queued,
+            "status": current_run.status.value,
+            "error": "Run is not cancellable in its current state",
+        }), 409
 
     if was_queued and run is not None:
         metadata = dict(run.metadata or {})
@@ -970,31 +1032,27 @@ def start_workflow_sync():
     if not user_request:
         return jsonify({"error": "Request is required"}), 400
 
+    raw_context = data.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return jsonify({"error": "context must be an object"}), 400
     user_context = set_user_interaction_capability(
-        dict(data.get("context") or {}),
+        dict(raw_context or {}),
         supported=False,
     )
+    top_level_operation_key = str(data.get("requested_operation_key") or "").strip()
+    context_operation_key = str(user_context.get("requested_operation_key") or "").strip()
+    requested_operation_key = top_level_operation_key or context_operation_key
+    if requested_operation_key:
+        user_context["requested_operation_key"] = requested_operation_key
+    arguments = data.get("arguments")
+    if arguments is not None and not isinstance(arguments, dict):
+        return jsonify({"error": "arguments must be an object"}), 400
     workspace_id = _get_request_workspace_id()
-    requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
-    try:
-        resolve_effective_llm_profile_config(
-            requested_model_profile_id or None,
-            allow_default_fallback=not bool(requested_model_profile_id),
-            workspace_id=workspace_id,
-        )
-    except SystemConfigValidationError as exc:
-        return jsonify({"error": str(exc)}), 400
 
     current_user = get_current_user()
     if not current_user:
         return jsonify({"error": "Unauthorized"}), 401
 
-    try:
-        trace_context = _traceparent_from_request()
-    except TraceParentValidationError as exc:
-        return _invalid_traceparent_response(exc)
-
-    arguments = data.get("arguments")
     raw_session_id = data.get("session_id")
     try:
         session_id = validate_session_id(
@@ -1002,9 +1060,35 @@ def start_workflow_sync():
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    logger.info("Starting agentic workflow sync, session=%s", session_id)
 
     orchestrator = _get_orchestrator()
+    defer_llm_validation = _deterministic_preflight(
+        orchestrator,
+        user_request=user_request,
+        user_context=user_context,
+        arguments=arguments,
+        session_id=session_id,
+        user_id=current_user.username,
+        workspace_id=workspace_id,
+    )
+    if not defer_llm_validation:
+        requested_model_profile_id = str(user_context.get("model_profile_id") or "").strip()
+        try:
+            resolve_effective_llm_profile_config(
+                requested_model_profile_id or None,
+                allow_default_fallback=not bool(requested_model_profile_id),
+                workspace_id=workspace_id,
+            )
+        except SystemConfigValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    try:
+        trace_context = _traceparent_from_request()
+    except TraceParentValidationError as exc:
+        return _invalid_traceparent_response(exc)
+
+    logger.info("Starting agentic workflow sync, session=%s", session_id)
+
     rate_limit_response = _reject_if_run_rate_limited(orchestrator)
     if rate_limit_response is not None:
         return rate_limit_response
@@ -1023,6 +1107,7 @@ def start_workflow_sync():
     run_id = None
     last_status = "success"
     last_error = ""
+    last_error_code = ""
     tool_calls = []
     tool_failures = []
 
@@ -1036,6 +1121,7 @@ def start_workflow_sync():
                 user_id=current_user.username,
                 workspace_id=workspace_id,
                 traceparent=trace_context.value if trace_context is not None else "",
+                deterministic_preflight_result=True if defer_llm_validation else None,
             ):
                 event_data = event.get("data", event) if isinstance(event, dict) else event
                 if not isinstance(event_data, dict):
@@ -1066,6 +1152,7 @@ def start_workflow_sync():
                     payload = event_data.get("payload", {})
                     last_status = payload.get("status", "success")
                     last_error = str(payload.get("error") or "").strip()
+                    last_error_code = str(payload.get("error_code") or "").strip()
                     if "final_output" in payload:
                         value = payload["final_output"]
                         if isinstance(value, str):
@@ -1082,7 +1169,7 @@ def start_workflow_sync():
                         elif value is None:
                             final_output = ""
                         else:
-                            final_output = json.dumps(value, ensure_ascii=False)
+                            final_output = value
     except Exception as exc:
         logger.exception("Error in workflow sync")
         return jsonify({
@@ -1103,6 +1190,8 @@ def start_workflow_sync():
     }
     if last_error:
         response_body["error"] = last_error
+    if last_error_code:
+        response_body["error_code"] = last_error_code
     if pending_user_interaction is not None:
         response_body["pending_user_interaction"] = pending_user_interaction
     if include_trace:

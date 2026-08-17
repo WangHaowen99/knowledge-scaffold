@@ -31,14 +31,27 @@ logger = get_logger("stores.chat")
 
 _SNAPSHOT_FILENAME = "snapshot.json"
 _EVENT_LOG_FILENAME = "events.jsonl"
+_EVENT_LOG_GENERATION_FIELD = "_chat_store_generation"
 _TOOL_OUTPUTS_DIRNAME = "tool-outputs"
 _TOOL_OUTPUT_REF_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_TOOL_OUTPUT_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TOOL_OUTPUT_METADATA_MAX_BYTES = 64 * 1024
 _INTERACTION_CANCELLED_EVENT_TYPE = "interaction_cancelled"
 _LEGACY_MIGRATED_SUFFIX = ".migrated"
-_STORAGE_VERSION = "append-only-v1"
+_STORAGE_VERSION = "append-only-v2"
 _SUPPORTED_EVENT_NAMES = {"chat_message", "agent.v2"}
 _POST_TERMINAL_MODEL_EVENT_TYPES = {"token.delta", "reasoning.summary"}
+
+
+def _fsync_directory(path: Path) -> None:
+    """Durably publish a directory entry on platforms that support it."""
+    if os.name == "nt":  # pragma: no cover - Windows cannot open directories.
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _public_chat_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -84,7 +97,7 @@ def _public_chat_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 class ToolOutputLimits:
     """Storage quotas for durable, truncated tool outputs."""
 
-    max_output_bytes: int = 8 * 1024 * 1024
+    max_output_bytes: int = 10 * 1024 * 1024
     max_run_bytes: int = 64 * 1024 * 1024
     max_session_bytes: int = 256 * 1024 * 1024
     max_run_count: int = 64
@@ -144,6 +157,7 @@ class _FileChatSession:
     created_at: str = ""
     updated_at: str = ""
     active_run_id: Optional[str] = None
+    event_log_generation: int = 0
     storage_version: str = _STORAGE_VERSION
 
     @property
@@ -161,6 +175,10 @@ class _FileChatSession:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "_FileChatSession":
+        try:
+            event_log_generation = max(0, int(data.get("event_log_generation") or 0))
+        except (TypeError, ValueError):
+            event_log_generation = 0
         return cls(
             id=data.get("id", ""),
             title=data.get("title", ""),
@@ -170,6 +188,7 @@ class _FileChatSession:
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
             active_run_id=data.get("active_run_id"),
+            event_log_generation=event_log_generation,
             storage_version=data.get("storage_version", _STORAGE_VERSION),
         )
 
@@ -328,11 +347,30 @@ class _AppendOnlyChatStore:
             return None
         try:
             output_size = int(record.get("output_size"))
+            version = int(record.get("version") or 1)
         except (TypeError, ValueError):
             return None
         if output_size < 0 or output_size > self._tool_output_limits.max_output_bytes:
             return None
+        if version not in {1, 2, 3}:
+            return None
+        if version >= 3 and not _TOOL_OUTPUT_SHA256_PATTERN.fullmatch(
+            str(record.get("sha256") or "")
+        ):
+            return None
         return record
+
+    @staticmethod
+    def _tool_output_bytes_match_record(
+        record: Dict[str, Any],
+        payload: bytes,
+    ) -> bool:
+        if len(payload) != int(record.get("output_size") or 0):
+            return False
+        if int(record.get("version") or 1) < 3:
+            return True
+        actual = "sha256:" + hashlib.sha256(payload).hexdigest()
+        return actual == str(record.get("sha256") or "")
 
     def _legacy_session_path(self, session_id: str) -> str:
         normalized = validate_session_id(session_id)
@@ -364,7 +402,12 @@ class _AppendOnlyChatStore:
 
         return self._migrate_legacy_session_unlocked(session_id)
 
-    def _write_snapshot_unlocked(self, session: _FileChatSession) -> None:
+    def _write_snapshot_unlocked(
+        self,
+        session: _FileChatSession,
+        *,
+        durable: bool = False,
+    ) -> None:
         """Atomically write the compact snapshot."""
         self._ensure_session_dir_unlocked(session.id)
         session.storage_version = _STORAGE_VERSION
@@ -372,12 +415,19 @@ class _AppendOnlyChatStore:
         tmp_path = "{}.tmp".format(path)
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(session.to_dict(), f, ensure_ascii=False, indent=2)
+            if durable:
+                f.flush()
+                os.fsync(f.fileno())
         os.replace(tmp_path, path)
+        if durable:
+            _fsync_directory(Path(path).parent)
 
     def _truncate_event_log_unlocked(self, session_id: str) -> None:
         self._ensure_session_dir_unlocked(session_id)
-        with open(self._event_log_path(session_id), "w", encoding="utf-8"):
-            pass
+        path = Path(self._event_log_path(session_id))
+        with path.open("w", encoding="utf-8") as stream:
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _migrate_legacy_session_unlocked(
         self,
@@ -405,13 +455,16 @@ class _AppendOnlyChatStore:
 
         return session
 
-    def _read_event_log_unlocked(self, session_id: str) -> List[Dict[str, Any]]:
+    def _read_event_log_unlocked(
+        self,
+        session_id: str,
+    ) -> List[tuple[int, Dict[str, Any]]]:
         """Read raw appended events from JSONL."""
         path = self._event_log_path(session_id)
         if not os.path.exists(path):
             return []
 
-        events: List[Dict[str, Any]] = []
+        events: List[tuple[int, Dict[str, Any]]] = []
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for line_number, line in enumerate(f, start=1):
@@ -428,7 +481,18 @@ class _AppendOnlyChatStore:
                         )
                         continue
                     if isinstance(event, dict):
-                        events.append(event)
+                        raw_generation = event.pop(_EVENT_LOG_GENERATION_FIELD, 0)
+                        try:
+                            generation = max(0, int(raw_generation))
+                        except (TypeError, ValueError):
+                            logger.warning(
+                                "Skipping chat event with invalid log generation "
+                                "session=%s line=%s",
+                                session_id,
+                                line_number,
+                            )
+                            continue
+                        events.append((generation, event))
         except IOError:
             logger.warning("Failed to read chat event log for session %s", session_id)
 
@@ -438,12 +502,78 @@ class _AppendOnlyChatStore:
         self,
         session_id: str,
         events: List[Dict[str, Any]],
+        *,
+        generation: int,
     ) -> None:
         self._ensure_session_dir_unlocked(session_id)
-        with open(self._event_log_path(session_id), "a", encoding="utf-8") as f:
+        self._repair_event_log_tail_unlocked(session_id)
+        with open(self._event_log_path(session_id), "ab") as f:
             for event in events:
-                f.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-                f.write("\n")
+                stored_event = deepcopy(event)
+                stored_event[_EVENT_LOG_GENERATION_FIELD] = generation
+                payload = json.dumps(
+                    stored_event,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                f.write(payload)
+                f.write(b"\n")
+
+    def _sync_event_log_unlocked(self, session_id: str) -> None:
+        """Force an already appended terminal batch and its path to storage."""
+        path = Path(self._event_log_path(session_id))
+        with path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        _fsync_directory(path.parent)
+
+    def _repair_event_log_tail_unlocked(self, session_id: str) -> None:
+        """Restore a safe JSONL boundary after an interrupted append.
+
+        Only the final unterminated line can be in-flight. A complete JSON
+        object merely needs its missing newline; an invalid tail is truncated
+        so the next append cannot be concatenated into an unreadable line.
+        """
+        path = self._event_log_path(session_id)
+        if not os.path.exists(path):
+            return
+        with open(path, "r+b") as stream:
+            stream.seek(0, os.SEEK_END)
+            end = stream.tell()
+            if end == 0:
+                return
+            stream.seek(end - 1)
+            if stream.read(1) == b"\n":
+                return
+
+            cursor = end
+            line_start = 0
+            while cursor > 0:
+                read_size = min(8192, cursor)
+                cursor -= read_size
+                stream.seek(cursor)
+                chunk = stream.read(read_size)
+                newline_index = chunk.rfind(b"\n")
+                if newline_index >= 0:
+                    line_start = cursor + newline_index + 1
+                    break
+
+            stream.seek(line_start)
+            tail = stream.read(end - line_start)
+            try:
+                decoded = tail.decode("utf-8")
+                complete_event = json.loads(decoded)
+                valid = isinstance(complete_event, dict)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                valid = False
+
+            if valid:
+                stream.seek(end)
+                stream.write(b"\n")
+            else:
+                stream.seek(line_start)
+                stream.truncate()
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _valid_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         valid_events: List[Dict[str, Any]] = []
@@ -494,7 +624,9 @@ class _AppendOnlyChatStore:
         snapshot: _FileChatSession,
     ) -> _FileChatSession:
         session = _FileChatSession.from_dict(snapshot.to_dict())
-        for event in self._read_event_log_unlocked(session.id):
+        for generation, event in self._read_event_log_unlocked(session.id):
+            if generation < session.event_log_generation:
+                continue
             self._apply_event_to_session(session, event)
         return session
 
@@ -665,7 +797,11 @@ class _AppendOnlyChatStore:
                 "data": event_data,
                 "ts": int(time.time() * 1000)
             }
-            self._append_events_to_log_unlocked(session_id, [event])
+            self._append_events_to_log_unlocked(
+                session_id,
+                [event],
+                generation=session.event_log_generation,
+            )
             session.updated_at = self._now_iso()
 
             # Auto-set title from first user message if empty
@@ -723,7 +859,11 @@ class _AppendOnlyChatStore:
                 },
                 "ts": int(time.time() * 1000),
             }
-            self._append_events_to_log_unlocked(session_id, [event])
+            self._append_events_to_log_unlocked(
+                session_id,
+                [event],
+                generation=snapshot.event_log_generation,
+            )
             snapshot.updated_at = self._now_iso()
             self._write_snapshot_unlocked(snapshot)
             return self._get_session_unlocked(session_id)
@@ -793,12 +933,84 @@ class _AppendOnlyChatStore:
             if not session:
                 return None
 
-            self._append_events_to_log_unlocked(session_id, event_list)
+            self._append_events_to_log_unlocked(
+                session_id,
+                event_list,
+                generation=session.event_log_generation,
+            )
             # NOTE: snapshot.json is intentionally NOT rewritten here.
             # High-frequency events (e.g. token.delta) would cause excessive I/O.
             # compact_session() folds events into snapshot at turn end,
             # and get_session() replays the JSONL log for a complete view.
             return session
+
+    def append_events_once(
+        self,
+        session_id: str,
+        events: List[Dict[str, Any]],
+    ) -> Optional[_FileChatSession]:
+        """Idempotently append agent events during crash recovery."""
+        event_list = self._valid_events(list(events or []))
+        if not event_list:
+            return self.get_session(session_id)
+        with self._lock_for_session(session_id):
+            snapshot = self._read_snapshot_unlocked(session_id)
+            if not snapshot:
+                return None
+            current = self._replay_event_log_unlocked(snapshot)
+            existing_ids = {
+                str(data.get("event_id") or "")
+                for event in current.events
+                if isinstance(event, dict)
+                for data in [event.get("data")]
+                if isinstance(data, dict) and str(data.get("event_id") or "")
+            }
+            missing_events = []
+            for event in event_list:
+                data = event.get("data") if isinstance(event, dict) else None
+                event_id = (
+                    str(data.get("event_id") or "")
+                    if isinstance(data, dict)
+                    else ""
+                )
+                if event_id and event_id in existing_ids:
+                    continue
+                missing_events.append(event)
+                if event_id:
+                    existing_ids.add(event_id)
+            if missing_events:
+                self._append_events_to_log_unlocked(
+                    session_id,
+                    missing_events,
+                    generation=snapshot.event_log_generation,
+                )
+            verified = self._replay_event_log_unlocked(snapshot)
+            verified_ids = {
+                str(data.get("event_id") or "")
+                for event in verified.events
+                if isinstance(event, dict)
+                for data in [event.get("data")]
+                if isinstance(data, dict) and str(data.get("event_id") or "")
+            }
+            intended_ids = {
+                str(data.get("event_id") or "")
+                for event in event_list
+                if isinstance(event, dict)
+                for data in [event.get("data")]
+                if isinstance(data, dict) and str(data.get("event_id") or "")
+            }
+            if not intended_ids.issubset(verified_ids):
+                raise IOError("Recovered chat events are not visible after append")
+            return verified
+
+    def sync_event_log(self, session_id: str) -> Optional[_FileChatSession]:
+        """Make prior event appends durable without slowing normal streaming."""
+        with self._lock_for_session(session_id):
+            snapshot = self._read_snapshot_unlocked(session_id)
+            if not snapshot:
+                return None
+            self._sync_event_log_unlocked(session_id)
+            return snapshot
 
     def append_event(self, session_id: str, event: Dict[str, Any]) -> Optional[_FileChatSession]:
         """Append a streamed event to a chat session."""
@@ -810,6 +1022,9 @@ class _AppendOnlyChatStore:
         run_id: str,
         tool_call_id: Optional[str],
         output: str,
+        *,
+        content_type: str = "text/plain; charset=utf-8",
+        output_ref: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Persist a bounded tool output for the lifetime of its chat session."""
         normalized_session_id = validate_session_id(session_id)
@@ -828,16 +1043,30 @@ class _AppendOnlyChatStore:
                 self._tool_output_limits.max_output_bytes,
             )
             return None
-        output_ref = uuid.uuid4().hex
+        normalized_output_ref = str(output_ref or "").strip().lower()
+        if output_ref is None:
+            normalized_output_ref = uuid.uuid4().hex
+        elif not _TOOL_OUTPUT_REF_PATTERN.fullmatch(normalized_output_ref):
+            raise ValueError("output_ref is invalid")
+        normalized_content_type = str(content_type or "").strip()
+        if (
+            not normalized_content_type
+            or len(normalized_content_type) > 255
+            or "\r" in normalized_content_type
+            or "\n" in normalized_content_type
+        ):
+            normalized_content_type = "text/plain; charset=utf-8"
+        output_sha256 = "sha256:" + hashlib.sha256(output_bytes).hexdigest()
         record = {
-            "version": 2,
-            "output_ref": output_ref,
+            "version": 3,
+            "output_ref": normalized_output_ref,
             "session_id": normalized_session_id,
             "run_id": normalized_run_id,
             "tool_call_id": str(tool_call_id or "").strip() or None,
-            "content_type": "text/plain; charset=utf-8",
+            "content_type": normalized_content_type,
             "output_size": output_size,
-            "output_file": "{}.txt".format(output_ref),
+            "sha256": output_sha256,
+            "output_file": "{}.txt".format(normalized_output_ref),
             "created_at": self._now_iso(),
         }
         metadata_bytes = json.dumps(
@@ -871,19 +1100,35 @@ class _AppendOnlyChatStore:
             path = self._tool_output_path(
                 normalized_session_id,
                 normalized_run_id,
-                output_ref,
+                normalized_output_ref,
             )
             content_path = path.with_suffix(".txt")
+            if path.exists() or content_path.exists():
+                raise RuntimeError("output_ref already exists")
+            run_output_dir = path.parent
+            tool_outputs_dir = run_output_dir.parent
+            session_dir = tool_outputs_dir.parent
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = path.with_suffix(".json.tmp")
             tmp_content_path = content_path.with_suffix(".txt.tmp")
             try:
                 with open(tmp_content_path, "wb") as f:
                     f.write(output_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())
                 with open(tmp_path, "wb") as f:
                     f.write(metadata_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())
+                # Publish content first and metadata as the visibility marker.
+                # The terminal event batch may be synced immediately after this
+                # method returns, so both files and their directory entries must
+                # already be crash-durable at that point.
                 os.replace(tmp_content_path, content_path)
                 os.replace(tmp_path, path)
+                _fsync_directory(run_output_dir)
+                _fsync_directory(tool_outputs_dir)
+                _fsync_directory(session_dir)
             except OSError:
                 for candidate in (tmp_path, tmp_content_path, path, content_path):
                     try:
@@ -893,8 +1138,10 @@ class _AppendOnlyChatStore:
                 raise
 
         return {
-            "output_ref": output_ref,
+            "output_ref": normalized_output_ref,
             "output_size": record["output_size"],
+            "content_type": record["content_type"],
+            "sha256": record["sha256"],
         }
 
     def get_tool_output(
@@ -931,7 +1178,11 @@ class _AppendOnlyChatStore:
                         return None
                     with open(content_path, "rb") as f:
                         raw_output = f.read(self._tool_output_limits.max_output_bytes + 1)
-                    output = raw_output.decode("utf-8")
+                    output = (
+                        raw_output.decode("utf-8")
+                        if self._tool_output_bytes_match_record(record, raw_output)
+                        else None
+                    )
                 except (IOError, OSError, UnicodeDecodeError):
                     output = None
         if not isinstance(output, str) or record["output_size"] != len(output.encode("utf-8")):
@@ -943,6 +1194,58 @@ class _AppendOnlyChatStore:
             )
             return None
         return {**record, "output": output}
+
+    def delete_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+        *,
+        missing_ok: bool = False,
+    ) -> bool:
+        """Delete one scoped output during a failed multi-artifact transaction."""
+        normalized_session_id = validate_session_id(session_id)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id is required")
+        with self._lock_for_session(normalized_session_id):
+            if not self._read_snapshot_unlocked(normalized_session_id):
+                return bool(missing_ok)
+            record = self._load_tool_output_metadata_unlocked(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            metadata_path = self._tool_output_path(
+                normalized_session_id,
+                normalized_run_id,
+                output_ref,
+            )
+            content_path = metadata_path.with_suffix(".txt")
+            if record is None and not missing_ok:
+                return False
+            try:
+                # Keep metadata as the retry marker until the payload is gone.
+                # Deleting metadata first can make a failed payload deletion
+                # permanently unreachable to subsequent rollback attempts.
+                content_path.unlink(missing_ok=True)
+                metadata_path.unlink(missing_ok=missing_ok)
+                if metadata_path.parent.is_dir():
+                    _fsync_directory(metadata_path.parent)
+            except OSError:
+                logger.warning(
+                    "Failed to rollback tool output session=%s run=%s ref=%s",
+                    normalized_session_id,
+                    normalized_run_id,
+                    output_ref,
+                    exc_info=True,
+                )
+                return False
+            try:
+                metadata_path.parent.rmdir()
+            except OSError:
+                pass
+            return True
 
     def get_tool_output_file(
         self,
@@ -978,22 +1281,33 @@ class _AppendOnlyChatStore:
                 ):
                     return None
                 artifact_path = metadata_path
+                artifact_bytes = None
                 response_content_type = "application/json; charset=utf-8"
             else:
                 artifact_path = metadata_path.with_suffix(".txt")
                 try:
-                    if artifact_path.stat().st_size != record["output_size"]:
+                    with artifact_path.open("rb") as stream:
+                        artifact_bytes = stream.read(
+                            self._tool_output_limits.max_output_bytes + 1
+                        )
+                    if not self._tool_output_bytes_match_record(
+                        record,
+                        artifact_bytes,
+                    ):
                         return None
                 except OSError:
                     return None
                 response_content_type = (
                     record.get("content_type") or "text/plain; charset=utf-8"
                 )
-        return {
+        result = {
             **record,
             "artifact_path": str(artifact_path),
             "response_content_type": response_content_type,
         }
+        if artifact_bytes is not None:
+            result["artifact_bytes"] = artifact_bytes
+        return result
 
     def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get stored session history (TurnSummary list) for a session."""
@@ -1059,7 +1373,11 @@ class _AppendOnlyChatStore:
                 return None
 
             session.updated_at = self._now_iso()
-            self._write_snapshot_unlocked(session)
+            # The snapshot now covers every event from the current generation.
+            # Publish the next generation before truncating so a crash between
+            # the two durable writes leaves stale JSONL records distinguishable.
+            session.event_log_generation += 1
+            self._write_snapshot_unlocked(session, durable=True)
             self._truncate_event_log_unlocked(session_id)
             return session
 
@@ -1339,12 +1657,27 @@ class ChatStore:
         session = self._store.append_events(session_id, event_list)
         return session is not None
 
+    def append_events_once(self, session_id: str, events: List[Dict[str, Any]]) -> bool:
+        """Idempotently append terminal events during crash recovery."""
+        event_list = list(events or [])
+        if not event_list:
+            return True
+        session = self._store.append_events_once(session_id, event_list)
+        return session is not None
+
+    def sync_event_log(self, session_id: str) -> bool:
+        """Force previously appended events to durable storage."""
+        return self._store.sync_event_log(session_id) is not None
+
     def store_tool_output(
         self,
         session_id: str,
         run_id: str,
         tool_call_id: Optional[str],
         output: str,
+        *,
+        content_type: str = "text/plain; charset=utf-8",
+        output_ref: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Persist complete output while stream events retain only a preview."""
         return self._store.store_tool_output(
@@ -1352,6 +1685,8 @@ class ChatStore:
             run_id,
             tool_call_id,
             output,
+            content_type=content_type,
+            output_ref=output_ref,
         )
 
     def get_tool_output(
@@ -1362,6 +1697,22 @@ class ChatStore:
     ) -> Optional[Dict[str, Any]]:
         """Return a complete output scoped to this store, session, and run."""
         return self._store.get_tool_output(session_id, run_id, output_ref)
+
+    def delete_tool_output(
+        self,
+        session_id: str,
+        run_id: str,
+        output_ref: str,
+        *,
+        missing_ok: bool = False,
+    ) -> bool:
+        """Rollback one complete output scoped to this session and run."""
+        return self._store.delete_tool_output(
+            session_id,
+            run_id,
+            output_ref,
+            missing_ok=missing_ok,
+        )
 
     def get_tool_output_file(
         self,

@@ -587,6 +587,7 @@ def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[M
         session_id: Annotated[str, Field(description="可选会话 ID。")] = "",
         model_profile_id: Annotated[str, Field(description="可选模型配置 ID。")] = "",
         arguments: Annotated[dict[str, Any] | None, Field(description="可选结构化参数。")] = None,
+        requested_operation_key: Annotated[str, Field(description="可选确定性 Operation key。")] = "",
         include_trace: Annotated[bool, Field(description="是否返回脱敏后的执行 Trace，默认关闭。")] = False,
     ) -> dict[str, Any]:
         """与 MetaWise 主 Agent 进行单轮知识问答；需要确定性图数据时优先使用知识检索工具。"""
@@ -595,6 +596,7 @@ def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[M
             "session_id": session_id,
             "model_profile_id": model_profile_id,
             "arguments": arguments or {},
+            "requested_operation_key": requested_operation_key,
             "include_trace": include_trace,
         }
         return call_with_scope("mcp:chat", lambda scope: execute_chat_tool(args, scope=scope))

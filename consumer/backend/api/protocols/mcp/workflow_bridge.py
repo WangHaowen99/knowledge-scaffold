@@ -59,24 +59,63 @@ def execute_mcp_chat_workflow(
             trace=_trace_snapshot(trace_collector),
         )
 
-    context = set_user_interaction_capability(
-        dict(data.get("context") or {}),
-        supported=False,
-    )
-    requested_profile = str(context.get("model_profile_id") or "").strip()
-    try:
-        resolve_effective_llm_profile_config(
-            requested_profile or None,
-            allow_default_fallback=not bool(requested_profile),
-            workspace_id=scope.workspace_id,
-        )
-    except SystemConfigValidationError as exc:
+    raw_context = data.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
         return _bridge_error(
-            "INVALID_MODEL_PROFILE",
-            str(exc),
+            "INVALID_TOOL_ARGUMENTS",
+            "context 必须是对象",
             status_code=400,
             trace=_trace_snapshot(trace_collector),
         )
+    context = set_user_interaction_capability(
+        dict(raw_context or {}),
+        supported=False,
+    )
+    top_level_operation_key = str(data.get("requested_operation_key") or "").strip()
+    context_operation_key = str(context.get("requested_operation_key") or "").strip()
+    requested_operation_key = top_level_operation_key or context_operation_key
+    if requested_operation_key:
+        context["requested_operation_key"] = requested_operation_key
+    raw_arguments = data.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
+        return _bridge_error(
+            "INVALID_TOOL_ARGUMENTS",
+            "arguments 必须是对象",
+            status_code=400,
+            trace=_trace_snapshot(trace_collector),
+        )
+    arguments = raw_arguments
+    requested_profile = str(context.get("model_profile_id") or "").strip()
+    preflight = getattr(
+        orchestrator,
+        "is_deterministic_request_potentially_applicable",
+        None,
+    )
+    defer_llm_validation = bool(
+        callable(preflight)
+        and preflight(
+            user_request=query,
+            user_context=context,
+            arguments=arguments,
+            session_id=session_id,
+            user_id=scope.username,
+            workspace_id=scope.workspace_id,
+        )
+    )
+    if not defer_llm_validation:
+        try:
+            resolve_effective_llm_profile_config(
+                requested_profile or None,
+                allow_default_fallback=not bool(requested_profile),
+                workspace_id=scope.workspace_id,
+            )
+        except SystemConfigValidationError as exc:
+            return _bridge_error(
+                "INVALID_MODEL_PROFILE",
+                str(exc),
+                status_code=400,
+                trace=_trace_snapshot(trace_collector),
+            )
 
     limiter = getattr(orchestrator, "run_rate_limiter", None)
     try_acquire_rate = getattr(limiter, "try_acquire", None)
@@ -95,7 +134,6 @@ def execute_mcp_chat_workflow(
         orchestrator.run_admission_queue = admission_queue
 
     run_id = "mcp-{}".format(uuid.uuid4().hex)
-    arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else None
     metadata = {
         "source": "mcp_chat",
         "session_id": session_id,
@@ -124,6 +162,7 @@ def execute_mcp_chat_workflow(
         slot_limit_user_id=scope.username,
         traceparent=scope.traceparent,
         event_observer=trace_collector.consume if trace_collector is not None else None,
+        deterministic_preflight_result=defer_llm_validation,
     )
     registry = get_run_registry()
     admitted = threading.Event()
@@ -216,6 +255,8 @@ def execute_mcp_chat_workflow(
         "status": status,
         "resumable": status == "awaiting_input",
     }
+    if final_output is not None:
+        result["final_output"] = final_output
     if status == "success":
         response = {
             "ok": True,
@@ -242,11 +283,21 @@ def execute_mcp_chat_workflow(
         }
         _attach_trace(response, trace_collector)
         return response, 200
+    final_error = final_output.get("error") if isinstance(final_output, dict) else None
+    deterministic_error_code = str(
+        terminal_payload.get("error_code")
+        or (final_error.get("code") if isinstance(final_error, dict) else "")
+        or ""
+    ).strip()
     return _bridge_error(
-        "MCP_CHAT_WORKFLOW_FAILED",
+        deterministic_error_code or "MCP_CHAT_WORKFLOW_FAILED",
         str(terminal_payload.get("error") or "MCP chat workflow 未成功完成"),
         status_code=500,
-        retriable=status not in {"cancelled"},
+        retriable=(
+            bool(final_error.get("retryable"))
+            if isinstance(final_error, dict) and "retryable" in final_error
+            else status not in {"cancelled"}
+        ),
         run_id=handle.active_run_id or run_id,
         session_id=session_id,
         result=result,

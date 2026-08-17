@@ -1784,8 +1784,18 @@ def _first_markdown_table_headers(markdown: str) -> List[str]:
 
 def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
     """Load executable script metadata from v0.1 ``scripts/*.md`` descriptors."""
+    from ontology.operation_execution import (
+        normalize_operation_token,
+        protected_operation_keys,
+    )
+
     catalog: List[Dict[str, Any]] = []
     seen: Set[str] = set()
+    protected_keys = {
+        normalize_operation_token(item)
+        for item in protected_operation_keys(ontology_dir)
+        if normalize_operation_token(item)
+    }
 
     scripts_dir = ontology_dir / "scripts"
     if scripts_dir.is_dir():
@@ -1799,9 +1809,42 @@ def load_script_catalog(ontology_dir: Path) -> List[Dict[str, Any]]:
             if key in seen:
                 continue
             seen.add(key)
+            entry["_is_deterministic_handler"] = (
+                normalize_operation_token(entry.get("operation_key"))
+                in protected_keys
+            )
             catalog.append(entry)
 
     return catalog
+
+
+def load_script_entry_from_descriptor(
+    ontology_dir: Path,
+    descriptor_path: Any,
+) -> Optional[Dict[str, Any]]:
+    """Load one script descriptor by its package-relative identity.
+
+    Deterministic execution uses the descriptor selected during package
+    qualification.  Looking it up by ``script_key`` is unsafe because legacy
+    packages are allowed to contain the same key on another bound script.
+    """
+    ontology_root = Path(ontology_dir).resolve()
+    scripts_root = (ontology_root / "scripts").resolve()
+    raw_path = str(descriptor_path or "").strip().replace("\\", "/")
+    if not raw_path:
+        return None
+    candidate = (ontology_root / raw_path).resolve()
+    try:
+        candidate.relative_to(scripts_root)
+    except ValueError:
+        return None
+    if (
+        candidate.suffix.casefold() != ".md"
+        or candidate.name.casefold() == "index.md"
+        or not candidate.is_file()
+    ):
+        return None
+    return _script_entry_from_markdown(candidate, ontology_dir=ontology_root)
 
 
 def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1814,6 +1857,7 @@ def public_script_catalog(catalog: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         })
         for entry in catalog
         if entry.get("_is_bound_operation")
+        and not entry.get("_is_deterministic_handler")
         and str(entry.get("operation_key") or entry.get("script_key") or "").strip()
     ]
 
@@ -1899,6 +1943,7 @@ def _script_entry_from_markdown(path: Path, *, ontology_dir: Path) -> Optional[D
         "_script_doc_path": str(path.resolve()),
         "_resolved_script_path": str(resolved_script_path),
         "_is_bound_operation": is_bound_operation,
+        "data_access": str(frontmatter.get("data_access") or "").strip().casefold(),
     }
     return entry
 
@@ -2117,25 +2162,86 @@ def find_script_entry(
 
 
 def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dict[str, Any]:
+    from ontology.operation_execution import protected_operation_keys
+
     root_index_text = read_optional_text(ontology_dir / "index.md")
     operations_text = read_optional_text(ontology_dir / "operations" / "index.md")
     objects_text = read_optional_text(ontology_dir / "objects" / "index.md")
     rules_text = read_optional_text(ontology_dir / "rules" / "index.md")
     metrics_text = read_optional_text(ontology_dir / "metrics" / "index.md")
     script_catalog = load_script_catalog(ontology_dir)
+    deterministic_keys = protected_operation_keys(ontology_dir)
+    operations_catalog = parse_markdown_table(operations_text) or operations_text
 
-    return {
+    payload = {
         "ontology": {
             "name": ontology.name,
             "description": ontology.description,
         },
         "root_index": _compact_markdown_body(root_index_text),
-        "operations_catalog": parse_markdown_table(operations_text) or operations_text,
+        "operations_catalog": _public_operations_catalog(
+            operations_catalog,
+            deterministic_keys=deterministic_keys,
+        ),
         "objects_catalog": parse_markdown_table(objects_text) or objects_text,
         "rules_catalog": parse_markdown_table(rules_text) or rules_text,
         "metrics_catalog": parse_markdown_table(metrics_text) or metrics_text,
         "script_catalog": public_script_catalog(script_catalog),
     }
+    if deterministic_keys:
+        payload["deterministic_operations"] = sorted(
+            deterministic_keys,
+            key=lambda item: item.encode("utf-8"),
+        )
+    return payload
+
+
+def _public_operations_catalog(
+    catalog: Any,
+    *,
+    deterministic_keys: frozenset[str],
+) -> Any:
+    """Hide authoritative operations from Agent/manual execution catalogs."""
+    if not deterministic_keys or not isinstance(catalog, list):
+        return catalog
+    def normalize(value: Any) -> str:
+        return " ".join(str(value or "").strip().casefold().split())
+
+    normalized_keys = {
+        normalize(key)
+        for key in deterministic_keys
+        if normalize(key)
+    }
+    result: list[Any] = []
+    for row in catalog:
+        if not isinstance(row, dict):
+            result.append(row)
+            continue
+        operation_key = _object_row_value(
+            row,
+            (
+                "operation_key",
+                "operation key",
+                "操作 key",
+                "流程 key",
+                "名称",
+                "name",
+                "key",
+            ),
+        )
+        if not operation_key:
+            operation_key = next(
+                (
+                    str(value or "").strip()
+                    for value in row.values()
+                    if isinstance(value, (str, int, float))
+                ),
+                "",
+            )
+        if normalize(operation_key) in normalized_keys:
+            continue
+        result.append(row)
+    return result
 
 
 def _compact_markdown_body(markdown: str) -> str:
@@ -2152,6 +2258,17 @@ def format_root_payload_compact(
     ontology_name = _compact_inline_text(_get_dict_value(ontology, "name"))
     ontology_description = _compact_inline_text(_get_dict_value(ontology, "description"))
 
+    deterministic_operations = root_payload.get("deterministic_operations")
+    deterministic_lines = (
+        [
+            "",
+            "deterministic_operations (runtime-reserved; never execute manually):",
+            *_format_catalog(deterministic_operations),
+        ]
+        if deterministic_operations
+        else []
+    )
+
     return [
         "id: {}".format(ontology_id),
         "ontology: {}".format(
@@ -2161,6 +2278,7 @@ def format_root_payload_compact(
         "",
         "operations_catalog:",
         *_format_catalog(root_payload.get("operations_catalog")),
+        *deterministic_lines,
         "",
         "objects_catalog:",
         *_format_catalog(root_payload.get("objects_catalog")),
