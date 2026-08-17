@@ -12,6 +12,7 @@ parlant*
 logs/
 data/
 .env
+**/.llm-config-encryption-key
 logs*
 /data*/
 .obsidian

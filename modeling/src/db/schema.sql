@@ -492,6 +492,34 @@ CREATE TABLE IF NOT EXISTS user_llm_settings (
   updated_at    TEXT NOT NULL
 );
 
+-- Modeling 平台级 LLM 默认值。admin 只负责维护，配置不归属于 admin 个人账号。
+-- API Key 使用部署密钥加密后保存；接口和日志均不得返回密文或明文。
+CREATE TABLE IF NOT EXISTS llm_default_settings (
+  purpose             TEXT PRIMARY KEY CHECK (purpose IN ('main', 'task')),
+  base_url            TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  api_key_ciphertext  TEXT,
+  max_tokens          INTEGER NOT NULL CHECK (max_tokens BETWEEN 1 AND 1000000),
+  revision            INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+  updated_by          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+
+-- 平台默认只作为模板。新用户注册或用户主动同步时复制为独立快照；
+-- admin 后续修改/删除模板不会改变既有用户快照。
+CREATE TABLE IF NOT EXISTS user_llm_default_snapshots (
+  username            TEXT NOT NULL,
+  purpose             TEXT NOT NULL CHECK (purpose IN ('main', 'task')),
+  base_url            TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  api_key_ciphertext  TEXT,
+  max_tokens          INTEGER NOT NULL CHECK (max_tokens BETWEEN 1 AND 1000000),
+  default_revision    INTEGER NOT NULL CHECK (default_revision >= 1),
+  assigned_via        TEXT NOT NULL CHECK (assigned_via IN ('registration', 'sync')),
+  assigned_at         TEXT NOT NULL,
+  PRIMARY KEY (username, purpose)
+);
+
 -- 项目级评测数据源。由 modeling 持久化公开配置；密钥不落库。
 CREATE TABLE IF NOT EXISTS project_data_sources (
   project_id        TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,

@@ -1,6 +1,23 @@
 import { getDb, nowIso } from '../db/index.js';
 import { config } from '../config.js';
 import { currentLlmUser } from '../llm/user-context.js';
+import {
+  hasLlmProviderOverride,
+  resolveLlmSettings,
+  resolveLlmSource,
+  resolveTaskLlmSettings,
+  type LegacyLlmSettingsSnapshot,
+  type LlmSettingSource,
+  type LlmSettings,
+  type UserLlmSettingsSnapshot,
+} from './llm-resolver.js';
+import {
+  deleteUserLlmDefaultSnapshots,
+  getUserLlmDefaultSnapshot,
+  getUserLlmDefaultSnapshotMaxTokens,
+} from './llm-default-snapshots-repo.js';
+
+export type { LlmSettingSource, LlmSettings } from './llm-resolver.js';
 
 // 服务设置：页面可配置的键值（存 SQLite），env 只作默认值/兜底。
 export function getSetting(key: string): string | null {
@@ -76,11 +93,20 @@ export function setUserLlmSetting(username: string, key: UserLlmSettingKey, valu
       throw new Error('LLM 单次输出上限必须是 1 到 1000000 的整数');
     }
   }
-  getDb().prepare(`INSERT INTO user_llm_settings (username, ${column}, updated_at)
-    VALUES (?,?,?)
-    ON CONFLICT(username) DO UPDATE SET
-      ${column} = excluded.${column}, updated_at = excluded.updated_at`)
-    .run(normalized, setting, nowIso());
+  const db = getDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (column !== 'max_tokens') deleteUserLlmDefaultSnapshots(normalized);
+    db.prepare(`INSERT INTO user_llm_settings (username, ${column}, updated_at)
+      VALUES (?,?,?)
+      ON CONFLICT(username) DO UPDATE SET
+        ${column} = excluded.${column}, updated_at = excluded.updated_at`)
+      .run(normalized, setting, nowIso());
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction 已结束时忽略 */ }
+    throw error;
+  }
 }
 
 export function deleteUserLlmSetting(username: string, key: UserLlmSettingKey): void {
@@ -94,34 +120,151 @@ export function deleteUserLlmSetting(username: string, key: UserLlmSettingKey): 
       AND api_key IS NULL AND max_tokens IS NULL`).run(normalized);
 }
 
-export type LlmSettingSource = 'user' | 'settings' | 'env';
+export interface UpdateUserLlmSettingsInput {
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+  apiKeyClear?: boolean;
+  providerClear?: boolean;
+  maxTokens?: string;
+}
+
+export class UserLlmSettingsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UserLlmSettingsValidationError';
+  }
+}
+
+function validateUserLlmBaseUrl(baseUrl: string): void {
+  if (baseUrl === 'faux') return;
+  try {
+    const parsed = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('invalid');
+  } catch {
+    throw new UserLlmSettingsValidationError('个人 LLM Base URL 必须是无内嵌凭据的 http(s) 地址，或填写 faux');
+  }
+}
+
+/**
+ * 页面/API 的个人 LLM patch 先合并成完整草稿，再在单个事务中提交。
+ * Key 留空表示保留；修改 provider 会脱离已同步快照，providerClear 回退部署配置。
+ */
+export function updateUserLlmSettings(username: string, input: UpdateUserLlmSettingsInput): void {
+  const normalized = normalizedUsername(username);
+  const current = userLlmRow(normalized);
+  const providerChanged = input.providerClear === true
+    || input.baseUrl !== undefined
+    || input.model !== undefined
+    || input.apiKey !== undefined
+    || input.apiKeyClear === true;
+  let baseUrl = current?.base_url ?? null;
+  let model = current?.model ?? null;
+  let apiKey = current?.api_key ?? null;
+  let maxTokens = current?.max_tokens
+    ?? (providerChanged ? (getUserLlmDefaultSnapshotMaxTokens(normalized) ?? null) : null);
+
+  if (input.providerClear === true) {
+    if (input.baseUrl || input.model || input.apiKey) {
+      throw new UserLlmSettingsValidationError('llmProviderClear 不能与个人 provider 字段同时提交');
+    }
+    baseUrl = null;
+    model = null;
+    apiKey = null;
+  } else {
+    if (input.baseUrl !== undefined) baseUrl = input.baseUrl.trim() || null;
+    if (input.model !== undefined) model = input.model.trim() || null;
+    if (input.apiKeyClear === true) apiKey = null;
+    else if (input.apiKey !== undefined && input.apiKey !== '') apiKey = input.apiKey;
+  }
+  if (input.maxTokens !== undefined) {
+    const value = input.maxTokens.trim();
+    if (!value) maxTokens = null;
+    else {
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 1_000_000) {
+        throw new UserLlmSettingsValidationError('llmMaxTokens 必须是 1 到 1000000 的整数');
+      }
+      maxTokens = parsed;
+    }
+  }
+
+  const providerConfigured = [baseUrl, model, apiKey].some((value) => value !== null);
+  if (providerConfigured && (!baseUrl || !model)) {
+    throw new UserLlmSettingsValidationError('个人 LLM 覆盖的 Base URL 与模型名必须同时设置');
+  }
+  if (baseUrl) validateUserLlmBaseUrl(baseUrl);
+
+  const db = getDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    if (providerChanged) deleteUserLlmDefaultSnapshots(normalized);
+    if ([baseUrl, model, apiKey, maxTokens].every((value) => value === null)) {
+      db.prepare('DELETE FROM user_llm_settings WHERE username = ?').run(normalized);
+    } else {
+      db.prepare(`INSERT INTO user_llm_settings (
+          username, base_url, model, api_key, max_tokens, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(username) DO UPDATE SET
+          base_url = excluded.base_url,
+          model = excluded.model,
+          api_key = excluded.api_key,
+          max_tokens = excluded.max_tokens,
+          updated_at = excluded.updated_at`)
+        .run(normalized, baseUrl, model, apiKey, maxTokens, nowIso());
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction 已结束时忽略 */ }
+    throw error;
+  }
+}
+
+function userLlmSnapshot(username: string | undefined): UserLlmSettingsSnapshot | undefined {
+  const row = username ? userLlmRow(username) : undefined;
+  return row ? {
+    baseUrl: row.base_url,
+    model: row.model,
+    apiKey: row.api_key,
+    maxTokens: row.max_tokens,
+  } : undefined;
+}
+
+function legacyLlmSnapshot(): LegacyLlmSettingsSnapshot {
+  return {
+    baseUrl: getSetting('llm_base_url'),
+    model: getSetting('llm_model'),
+    apiKey: getSetting('llm_api_key'),
+    maxTokens: getSetting('llm_max_tokens'),
+  };
+}
+
+function resolverInput(username: string | undefined) {
+  return {
+    username,
+    personal: userLlmSnapshot(username),
+    assignedDefaults: username ? {
+      main: getUserLlmDefaultSnapshot(username, 'main'),
+      task: getUserLlmDefaultSnapshot(username, 'task'),
+    } : undefined,
+    legacy: username ? undefined : legacyLlmSnapshot(),
+  };
+}
 
 export function getLlmSource(username: string | undefined = currentLlmUser()): LlmSettingSource {
-  if (username) return getUserLlmSetting(username, 'base_url') !== null ? 'user' : 'env';
-  return getSetting('llm_base_url') !== null ? 'settings' : 'env';
+  return resolveLlmSource(resolverInput(username));
 }
 
 export function hasUserLlmProviderOverride(username: string): boolean {
-  const personal = userLlmRow(username);
-  return Boolean(personal && [personal.base_url, personal.model, personal.api_key]
-    .some((value) => value !== null));
+  return hasLlmProviderOverride(userLlmSnapshot(username));
 }
 
-// LLM 配置：当前用户页面配置优先，认证请求回退 env；旧版全局设置只供无认证脚本兼容。
-// 无认证上下文的 CLI/测试沿用旧版全局设置与 env，不会读取任一用户的配置。
-export interface LlmSettings { baseUrl: string; model: string; apiKey: string; maxTokens: number; }
 export function getLlmSettings(username: string | undefined = currentLlmUser()): LlmSettings {
-  const personal = username ? userLlmRow(username) : undefined;
-  // 旧版 settings.llm_* 可能由任意历史用户写入，无法确认归属。认证请求不能
-  // 将其作为默认值，否则新用户会继承他人的端点或密钥；仅无用户 CLI 保留兼容读取。
-  const legacy = (key: string): string | null => (username ? null : getSetting(key));
-  return {
-    baseUrl: (personal?.base_url || legacy('llm_base_url') || config.llm.baseUrl || '').trim(),
-    model: (personal?.model || legacy('llm_model') || config.llm.model || '').trim(),
-    apiKey: (personal?.api_key || legacy('llm_api_key') || config.llm.apiKey || '').trim(),
-    maxTokens: Number(personal?.max_tokens
-      || legacy('llm_max_tokens') || process.env.MODELING_LLM_MAX_TOKENS || 8192),
-  };
+  return resolveLlmSettings(resolverInput(username));
+}
+
+export function getTaskLlmSettings(username: string | undefined = currentLlmUser()): LlmSettings {
+  return resolveTaskLlmSettings(resolverInput(username));
 }
 
 // 评测数据源默认值（评测运行面板预填，减少每轮手输）。
