@@ -1,30 +1,45 @@
 ---
 scope: deterministic-execution-v2
-module: agent-runtime
+module: consumer
 feature_type: functional
 feature_id: FEAT-DET-001
 status: active
 updated: 2026-08-17
 ---
 
-# 确定性执行策略
+# Consumer 确定性执行策略
 
 ## 1. 特性定位
 
-FEAT-DET-001 定义当前版本的确定性 Operation 执行事实：知识包中的 Operation 只有显式声明 `execution.type: deterministic`，并在导入阶段完成严格校验和锁定后，才可以在 Agent Loop 之前进入确定性执行分支。该分支负责受控路由、结构化输入、可选 Parser、单次 Handler 执行、只读数据快照绑定、沙箱隔离、权威结果封装以及终态事务提交。
+FEAT-DET-001 是 knowledge-scaffold 项目内的特性标识，定义 `consumer` 模块当前版本的确定性 Operation 执行事实：知识包中的 Operation 只有显式声明 `execution.type: deterministic`，并在 Consumer Backend 导入阶段完成严格校验和锁定后，才可以在 Agent Loop 之前进入确定性执行分支。该分支负责受控路由、结构化输入、可选 Parser、单次 Handler 执行、只读数据快照绑定、沙箱隔离、权威结果封装以及终态事务提交。本编号不表示该特性属于外部参考文档的模块或编号体系。
+
+Front Matter 中的 `scope` 表示本文约束的确定性执行 v2 契约范围，`module` 表示该契约在当前仓库中的主要交付责任模块；两者都不等同于某个 Python 包名。
 
 本特性解决的问题是：对于已经具备明确输入、固定算法和可验证输出契约的 Operation，运行时不应继续依赖模型选择工具、补全参数或解释结果。相同的知识包版本、结构化参数、运行时修订和数据修订应形成可审计的结果证据；任何包内容、运行时、数据作用域或输出契约变化都必须使当前执行失败关闭，而不是静默退回模型执行。
 
-当前版本保留 Agent Loop 作为兼容主路径。未声明确定性执行、未选择知识包或未命中确定性 Operation 的请求返回 `NotApplicable`，随后进入既有直接执行或 Agent Loop。只要请求已经选中确定性 Operation，功能关闭、锁缺失、输入不合法、Provider 不合格、沙箱不可用、输出不合规或持久化失败都必须形成确定性失败，不得降级到另一条执行路径。
+当前版本在 `consumer` 中保留 Agent Loop 作为兼容主路径。未声明确定性执行、未选择知识包或未命中确定性 Operation 的请求返回 `NotApplicable`，随后进入既有直接执行或 Agent Loop。只要请求已经选中确定性 Operation，功能关闭、锁缺失、输入不合法、Provider 不合格、沙箱不可用、输出不合规或持久化失败都必须形成确定性失败，不得降级到另一条执行路径。
+
+### 1.1 模块归属与组件边界
+
+`module: consumer` 表示该特性由知识消费与推理模块端到端负责，而不是把 `agent`、`direct_execution`、`ontology` 或 `sandbox` 等 Python 包声明为仓库级模块。当前组件边界如下：
+
+| Consumer 组件 | 本特性职责 |
+|---|---|
+| `consumer/backend` | 主要所有者；负责包导入校验、路由、Parser/Handler 执行、Provider 绑定、终态事务、协议投影和权限复用。 |
+| `consumer/frontend` | 消费统一终态事件和权威结果信封，展示结构化结果与产物，不重新计算业务结果。 |
+| `consumer/deploy` 与 JiuwenBox 镜像 | 构建固定沙箱运行时、发布镜像修订证明、装配共享卷和产物暂存目录。 |
+| `consumer/sdk` | 当前版本不新增专用 SDK 方法；未来若暴露确定性结果类型，必须复用同一结果信封。 |
+| `modeling` | 不属于本特性的当前实现范围；不自动生成或升级确定性声明。 |
+| `auth-server` | 不拥有确定性执行状态；Consumer Backend 复用既有身份、工作空间权限和认证边界。 |
 
 本特性面向以下角色：
 
 - 知识包开发者：通过 Operation Front Matter、Schema、Parser 和 Handler 描述确定性契约。
 - 知识包发布与导入方：在安装版本前完成静态校验并生成包锁。
-- Agent Runtime：在模型解析之前识别确定性请求，执行并提交权威结果。
+- Consumer Backend：在模型配置解析之前识别确定性请求，执行并提交权威结果。
 - 数据源运维方：为允许的数据 Provider 声明只读、不可变且隔离的数据修订。
-- 部署运维方：构建应用与沙箱运行时修订，并提供可验证的共享证明。
-- 协议与前端集成方：透传并展示同一结果信封，不重新计算业务结果。
+- Consumer 部署运维方：构建 Consumer Backend 与沙箱运行时修订，并提供可验证的共享证明。
+- Consumer 协议、SDK 与前端集成方：透传并展示同一结果信封，不重新计算业务结果。
 - 测试与验收团队：按本特性定义的成功、等待、失败、取消和恢复语义进行验证。
 
 ## 2. 当前版本能力要求
@@ -43,14 +58,14 @@ FEAT-DET-001 定义当前版本的确定性 Operation 执行事实：知识包�
 | Schema 契约 | MUST | 输入和输出必须使用可离线解析的 JSON Schema Draft 2020-12 对象根。远程 `$ref`、远程动态引用、嵌套 `$id`、重复 JSON key 和非标准 JSON 常量必须被拒绝。 |
 | 可选 Parser | MAY | Operation 可以声明独立 Python Parser，把自然语言或显式参数转为结构化业务参数。Parser 必须位于 `scripts/`，且不能与 Handler 共用同一文件。 |
 | 参数优先级 | MUST | 恢复检查点参数、Parser 参数和当前请求显式参数按此顺序合并，当前显式参数优先。Parser 不得重新打开已确认问题或覆盖运行时拥有字段。 |
-| 运行时字段隔离 | MUST | session、run、turn、user、workspace、ontology 等运行时拥有参数只能由 Runtime 注入，不得由请求、Schema、Parser 或检查点伪造。 |
+| 运行时字段隔离 | MUST | session、run、turn、user、workspace、ontology 等运行时拥有参数只能由 Consumer Backend 注入，不得由请求、Schema、Parser 或检查点伪造。 |
 | 缺参交互 | MUST | 缺少必填字段且当前协议支持交互时，必须返回 `AwaitingInput`，并持久化绑定 Operation、包修订、运行时修订和 Provider 修订的检查点。 |
 | 非交互缺参 | MUST | 当前入口不支持用户交互时，缺少必填字段必须返回稳定失败，不得通过模型补全或以空值执行。 |
 | 单次 Handler 执行 | MUST | 一个成功结果的 Handler 必须执行一次，权威信封中的 `handler_execution_count` 固定为 `1`。Parser 与 Handler 使用独立执行身份。 |
 | 沙箱强制隔离 | MUST | Parser 和 Handler 必须在受支持沙箱中执行。确定性分支不得使用本地进程回退。沙箱不可用、释放失败或证明不匹配都必须失败关闭。 |
 | 运行时修订证明 | MUST | 应用运行时修订必须绑定行为相关源码、解释器与安装发行包；沙箱修订必须绑定运行契约、架构、依赖和 Runner 代码。执行前后必须验证修订未变化。 |
-| 固定执行环境 | MUST | Runtime 必须注入固定环境、只读知识包、受限网络端点、超时、输出上限和独立产物目录；Handler 不得获得未声明的环境能力。 |
-| 受限 Python 闭包 | MUST | 构建期必须拒绝随机数、当前时间、动态导入、子进程、进程派生和其他不允许的非确定性 API；外部依赖和 Runtime SDK 导入必须位于部署契约允许列表。 |
+| 固定执行环境 | MUST | Consumer Backend 必须注入固定环境、只读知识包、受限网络端点、超时、输出上限和独立产物目录；Handler 不得获得未声明的环境能力。 |
+| 受限 Python 闭包 | MUST | 构建期必须拒绝随机数、当前时间、动态导入、子进程、进程派生和其他不允许的非确定性 API；外部依赖和沙箱运行时 SDK 导入必须位于部署契约允许列表。 |
 | Provider 修订绑定 | MUST | `data_access: workspace_provider` 只允许当前支持的只读图数据 Provider，并要求数据修订、访问范围修订、不可变快照声明、隔离声明和完整物理选择器。 |
 | Provider 凭据保护 | MUST | 凭据必须位于独立认证字段，禁止嵌入 endpoint、query 或 fragment。凭据不得进入作用域摘要、结果、产物、公开错误或日志。 |
 | Provider 网络收敛 | MUST | Handler 只能访问本次已绑定 Provider 的有效网络端点。模型型 Provider、未固定数据修订或可变快照不得用于确定性执行。 |
@@ -61,9 +76,9 @@ FEAT-DET-001 定义当前版本的确定性 Operation 执行事实：知识包�
 | 权威结果信封 | MUST | 成功结果必须包含结构化结果、产物引用、Operation 身份、包修订、Handler 摘要、运行时修订、依赖修订、参数摘要、结果摘要、耗时和单次执行计数，并标记 `authoritative: true`。 |
 | 终态事务 | MUST | 成功、等待和失败必须在串行事务内协调事件日志、会话上下文、检查点、产物日志和 RunStore 状态；进程异常后必须能够恢复待提交终态。 |
 | 取消优先 | MUST | 取消信号必须传递给包校验、Parser、Handler 和产物监控。已确认的 `CANCELLED` 终态不得被迟到的成功或失败覆盖。 |
-| 协议结果一致性 | MUST | HTTP、A2A、ACP、MCP 与前端必须消费同一编排事件和最终结果信封，保留结构化结果、产物引用和稳定错误码，不得在协议层重新执行业务计算。 |
+| 协议结果一致性 | MUST | Consumer 的 HTTP、A2A、ACP、MCP 与 Frontend 必须消费同一编排事件和最终结果信封，保留结构化结果、产物引用和稳定错误码，不得在协议层重新执行业务计算。 |
 | 自动推断旧包语义 | OUT | 当前版本不根据脚本内容或 Operation 名称自动把旧知识包升级为确定性包。 |
-| 任意本地脚本回退 | OUT | 当前版本不允许在沙箱失败时改用 Backend 本地进程执行 Parser 或 Handler。 |
+| 任意本地脚本回退 | OUT | 当前版本不允许在沙箱失败时改用 Consumer Backend 本地进程执行 Parser 或 Handler。 |
 | 任意外部数据源 | OUT | 当前版本不承诺对未支持 Provider、可变查询结果或无物理快照选择器的数据源提供确定性保证。 |
 
 ## 3. 外部接口与入口要求
@@ -74,12 +89,12 @@ FEAT-DET-001 定义当前版本的确定性 Operation 执行事实：知识包�
 | Operation key 与 aliases | 知识包 YAML | 作为确定性路由 token；与其他 Operation 冲突、NFKC 归一化后重复或一个 key 多处声明时必须拒绝发布。 |
 | Handler descriptor | 知识包 Markdown/YAML | 必须唯一绑定 Operation，提供 Python entrypoint；`data_access` 只能是 `none` 或 `workspace_provider`。 |
 | `.deterministic-lock.json` | 安装产物 | 是运行时读取的包完整性索引。当前实现写入锁版本 2，并兼容读取版本 1；缺失、损坏或与声明不一致时必须失败关闭。 |
-| `DETERMINISTIC_EXECUTION_ENABLED` | Runtime 配置 | 控制确定性 Handler 是否允许执行，默认关闭。该开关不改变包保护、路由识别或失败关闭语义。 |
-| `DETERMINISTIC_ARTIFACT_STAGING_ROOT` | Runtime 配置 | 可选的共享绝对目录，用于 Backend 与沙箱之间的产物暂存。相对路径、不可创建目录或租约刷新失败必须拒绝执行。 |
-| 沙箱运行契约 | JSON + requirements | 固定 Runner 协议、Python 入口、允许的外部依赖和公开 Runtime SDK 导出，并参与沙箱运行时修订计算。 |
-| 共享沙箱证明 | 只读文件 | 发布部署中由沙箱镜像写入，Backend 必须读取并与期望修订比较；缺失、格式错误或不匹配时不得执行。 |
-| 显式 Operation 请求 | Runtime context / arguments | 调用方可以通过上下文中的 Operation key 和结构化 arguments 请求执行。显式确定性 key 的预检不得依赖 LLM 校验。 |
-| 用户交互响应 | Runtime interaction | 必须携带与待处理检查点一致的 interaction id 和结构化值；过期、Operation 改变或修订改变时返回 `stale_checkpoint`。 |
+| `DETERMINISTIC_EXECUTION_ENABLED` | Consumer Backend 配置 | 控制确定性 Handler 是否允许执行，默认关闭。该开关不改变包保护、路由识别或失败关闭语义。 |
+| `DETERMINISTIC_ARTIFACT_STAGING_ROOT` | Consumer Backend 与 Deploy 配置 | 可选的共享绝对目录，用于 Consumer Backend 与沙箱之间的产物暂存。相对路径、不可创建目录或租约刷新失败必须拒绝执行。 |
+| 沙箱运行契约 | JSON + requirements | 固定 Runner 协议、Python 入口、允许的外部依赖和公开沙箱运行时 SDK 导出，并参与沙箱运行时修订计算。 |
+| 共享沙箱证明 | Consumer Deploy 只读文件 | 发布部署中由 JiuwenBox 镜像启动脚本写入共享卷，Consumer Backend 必须只读挂载并与期望修订比较；缺失、格式错误或不匹配时不得执行。 |
+| 显式 Operation 请求 | Consumer Backend context / arguments | 调用方可以通过上下文中的 Operation key 和结构化 arguments 请求执行。显式确定性 key 的预检不得依赖 LLM 校验。 |
+| 用户交互响应 | Consumer Backend interaction | 必须携带与待处理检查点一致的 interaction id 和结构化值；过期、Operation 改变或修订改变时返回 `stale_checkpoint`。 |
 | 成功结果信封 | JSON object | 顶层包含 `status`、`text`、`structured_result`、`artifacts` 和 `execution`。`execution` 是证明和审计字段，不是重新执行指令。 |
 | 失败结果信封 | JSON object | 包含稳定错误 code、公开 message、`retryable: false` 以及非权威、未完成的 execution 标记；内部异常细节不得穿透协议边界。 |
 | 现有协议入口 | HTTP / A2A / ACP / MCP | 本特性不新增独立 northbound endpoint。所有入口必须通过同一 Orchestrator 分支获得确定性语义。 |
@@ -105,19 +120,19 @@ execution:
 
 | 场景 | 前置条件 | 用户/系统动作 | 期望行为 |
 |---|---|---|---|
-| 旧知识包请求 | 已选择的包没有确定性 Operation | 用户发起普通请求 | 预检返回不适用，不进行完整包哈希，不阻塞既有直接执行或 Agent Loop。 |
-| 显式确定性执行 | 包已锁定、功能启用、参数完整 | 调用方提供 Operation key 和 JSON arguments | Runtime 不解析模型配置，验证包和运行时后在沙箱执行一次 Handler，提交权威结果信封。 |
-| 别名命令执行 | 请求以唯一 Operation 别名和明确参数形态发起 | Runtime 执行受限匹配 | 唯一命中时进入确定性分支；只是解释、否定或模糊提及 Operation 时不得执行。 |
-| 功能关闭 | 请求明确命中确定性 Operation，但开关关闭 | Runtime 完成包识别 | 返回 `feature_disabled`，不启动 Handler，也不回落到模型。 |
-| 输入不足且支持交互 | Schema 缺少必填字段 | Runtime 请求用户补充 | Run 进入等待状态，持久化检查点；恢复时重新验证包、运行时和 Provider 修订，Handler 只执行一次。 |
-| 输入不足且不支持交互 | 当前协议不支持继续交互 | Runtime 校验输入 | 返回稳定缺参失败，不调用 Parser 以外的补全机制，不进入 Agent Loop。 |
-| Parser 解析 | Operation 声明独立 Parser | Runtime 将请求和显式参数传入 Parser | Parser 在独立沙箱中返回结构化参数或待确认问题；显式参数优先，运行时字段不可覆盖。 |
-| 只读快照查询 | Handler 声明 `workspace_provider` 且数据源满足确定性约束 | Runtime 绑定当前 workspace、知识包版本、物理选择器和数据修订 | Handler 只能访问已绑定端点；结果信封记录无凭据的依赖修订和作用域摘要。 |
-| 包执行前被修改 | 锁文件或任一包文件与安装时不一致 | Runtime 验证完整包 | 在 Parser/Handler 启动前返回完整性失败。 |
-| Handler 执行中包或运行时变化 | Handler 已启动，随后包或运行时证明变化 | Runtime 执行后复检 | 当前输出和产物全部失效，返回失败且不形成权威成功。 |
+| 旧知识包请求 | 已选择的包没有确定性 Operation | 用户发起普通请求 | Consumer Backend 预检返回不适用，不进行完整包哈希，不阻塞既有直接执行或 Agent Loop。 |
+| 显式确定性执行 | 包已锁定、功能启用、参数完整 | 调用方提供 Operation key 和 JSON arguments | Consumer Backend 不解析模型配置，验证包和运行时后在沙箱执行一次 Handler，提交权威结果信封。 |
+| 别名命令执行 | 请求以唯一 Operation 别名和明确参数形态发起 | Consumer Backend 执行受限匹配 | 唯一命中时进入确定性分支；只是解释、否定或模糊提及 Operation 时不得执行。 |
+| 功能关闭 | 请求明确命中确定性 Operation，但开关关闭 | Consumer Backend 完成包识别 | 返回 `feature_disabled`，不启动 Handler，也不回落到模型。 |
+| 输入不足且支持交互 | Schema 缺少必填字段 | Consumer Backend 请求用户补充 | Run 进入等待状态，持久化检查点；恢复时重新验证包、运行时和 Provider 修订，Handler 只执行一次。 |
+| 输入不足且不支持交互 | 当前协议不支持继续交互 | Consumer Backend 校验输入 | 返回稳定缺参失败，不调用 Parser 以外的补全机制，不进入 Agent Loop。 |
+| Parser 解析 | Operation 声明独立 Parser | Consumer Backend 将请求和显式参数传入 Parser | Parser 在独立沙箱中返回结构化参数或待确认问题；显式参数优先，运行时字段不可覆盖。 |
+| 只读快照查询 | Handler 声明 `workspace_provider` 且数据源满足确定性约束 | Consumer Backend 绑定当前 workspace、知识包版本、物理选择器和数据修订 | Handler 只能访问已绑定端点；结果信封记录无凭据的依赖修订和作用域摘要。 |
+| 包执行前被修改 | 锁文件或任一包文件与安装时不一致 | Consumer Backend 验证完整包 | 在 Parser/Handler 启动前返回完整性失败。 |
+| Handler 执行中包或运行时变化 | Handler 已启动，随后包或运行时证明变化 | Consumer Backend 执行后复检 | 当前输出和产物全部失效，返回失败且不形成权威成功。 |
 | 产物超限或含受保护值 | Handler 写入不合规产物 | 产物监控检测到策略违反 | 取消 Handler、释放沙箱、冻结目录并回滚同批产物，返回稳定策略失败。 |
-| 用户取消 | Run 正在校验、解析或执行 | 用户发出取消请求 | Runtime 终止沙箱并提交取消事件；迟到输出不得把 Run 改成成功或失败。 |
-| 终态提交中断 | 事件或终态日志准备完成，但进程在提交边界异常 | 下一次会话读取或运行触发恢复 | Runtime 根据待提交日志去重、提交或回滚，避免成功状态、消息、事件和产物不一致。 |
+| 用户取消 | Run 正在校验、解析或执行 | 用户发出取消请求 | Consumer Backend 终止沙箱并提交取消事件；迟到输出不得把 Run 改成成功或失败。 |
+| 终态提交中断 | 事件或终态日志准备完成，但进程在提交边界异常 | 下一次会话读取或运行触发恢复 | Consumer Backend 根据待提交日志去重、提交或回滚，避免成功状态、消息、事件和产物不一致。 |
 
 ## 5. 行为语义与边界
 
@@ -125,7 +140,7 @@ execution:
 
 #### 5.1.1 选择与回落语义
 
-- Runtime 在 LLM Profile 解析前进行只读预检。显式 key、检查点或可能命中的命令形态可以使模型解析延迟。
+- Consumer Backend 在 LLM Profile 解析前进行只读预检。显式 key、检查点或可能命中的命令形态可以使模型解析延迟。
 - 预检只用于控制路由成本，不能代替执行阶段的完整锁校验。
 - `NotApplicable` 表示本特性没有取得请求所有权，允许继续其他执行路径。
 - 一旦选中确定性 Operation，本分支取得请求所有权。后续任何错误均形成确定性失败，不允许 Agent Loop 修复、润色或重算。
@@ -157,8 +172,8 @@ execution:
 
 #### 5.1.5 沙箱与运行时修订语义
 
-- 应用运行时修订绑定 Backend 行为文件、Python 实现和安装发行包；沙箱修订绑定运行契约、依赖、架构和执行代码。
-- 发布部署必须通过只读共享证明把沙箱镜像修订提供给 Backend。环境变量只作为受控开发后备，不能覆盖有效的构建或共享证明。
+- 应用运行时修订绑定 Consumer Backend 行为文件、Python 实现和安装发行包；沙箱修订绑定运行契约、依赖、架构和执行代码。
+- 发布部署必须通过只读共享证明把沙箱镜像修订提供给 Consumer Backend。环境变量只作为受控开发后备，不能覆盖有效的构建或共享证明。
 - Parser 和 Handler 使用隔离执行身份；取消或严格释放失败时，相关沙箱必须保留为失败事实，不能把未完全终止的输出视为权威。
 - Handler 完成后必须先销毁运行沙箱及其后代进程，再冻结和检查 stdout 与产物，避免后台进程继续修改结果。
 - 执行前记录的运行时修订必须在 Handler 后再次读取并完全一致。
@@ -166,10 +181,10 @@ execution:
 #### 5.1.6 输出、产物与权威结果语义
 
 - Handler stdout 是唯一结构化主结果，必须解析为标准 JSON 对象并满足输出 Schema。
-- 产物是主结果的有界附属输出，只能通过 Runtime 提供的暂存目录产生。Runtime 必须限制数量、大小、路径、树条目数、媒体类型和名称唯一性。
+- 产物是主结果的有界附属输出，只能通过 Consumer Backend 与 JiuwenBox 共享的暂存目录产生。Consumer Backend 必须限制数量、大小、路径、树条目数、媒体类型和名称唯一性。
 - 写入持久化存储后的 `output_ref`、size 和 sha256 必须与冻结产物一致。存储层擅自改变引用或摘要必须视为失败。
 - 成功信封的 `arguments_sha256` 只覆盖业务参数，不包含运行时拥有参数或秘密；`result_sha256` 覆盖结构化结果与产物的稳定元数据。
-- 前端可以从 `text`、`formatted_result`、`message` 或结构化 JSON 生成展示内容，但不得改变 `structured_result` 和 `execution` 事实。
+- Consumer Frontend 可以从 `text`、`formatted_result`、`message` 或结构化 JSON 生成展示内容，但不得改变 `structured_result` 和 `execution` 事实。
 
 #### 5.1.7 终态、恢复与取消语义
 
@@ -214,30 +229,71 @@ execution:
 | 协议私有结果 | 不为 HTTP、A2A、ACP 或 MCP 定义不同的业务结果结构；协议只做兼容映射。 |
 | 同版本在线变更 | 不允许已锁定版本原地编辑或自动演进；必须产生新版本与新锁。 |
 | 无界产物与二进制输出 | 不接受任意数量、任意大小、任意路径或未允许媒体类型的产物。 |
+| Modeling 自动生成 | 当前版本不要求 `modeling` 自动创建、升级或验证确定性声明；Consumer 导入边界仍是安装前的权威校验点。 |
+| Auth 独立执行语义 | 当前版本不在 `auth-server` 中新增执行状态、结果或沙箱能力；认证模块只提供既有身份与授权事实。 |
+| 专用 SDK 接口 | 当前版本不新增只服务于确定性执行的 SDK 方法或协议；已有调用入口继续返回统一终态结果。 |
 
 ## 6. 对下游设计与实现的约束
 
-- 知识包导入与新版本安装必须调用确定性 Operation 校验和锁生成；不得通过复制预制锁跳过当前代码校验。
-- Operation、脚本编辑器和在线演进服务必须查询锁定状态，并拒绝修改受保护的 Operation、Handler 或上下文。
-- Orchestrator 必须在 LLM 配置解析前完成只读预检，并坚持“只有 `NotApplicable` 才允许回落”的分支规则。
+- `consumer/backend` 的知识包导入与新版本安装必须调用确定性 Operation 校验和锁生成；不得通过复制预制锁跳过当前代码校验。
+- `consumer/backend` 的 Operation、脚本编辑器和在线演进服务必须查询锁定状态，并拒绝修改受保护的 Operation、Handler 或上下文。
+- Consumer Orchestrator 必须在 LLM 配置解析前完成只读预检，并坚持“只有 `NotApplicable` 才允许回落”的分支规则。
 - Parser、Handler、Provider、Schema、包锁或运行时证明新增任何能力时，必须同步更新包修订或运行时修订材料。
-- 沙箱镜像构建必须使用版本化运行契约和固定依赖生成证明；Backend 与沙箱必须共享同一只读证明表面。
-- Provider 配置必须把秘密放在专用认证字段，并提供数据修订、访问范围修订、不可变快照、隔离声明和完整物理选择器。
-- 协议适配层必须保留 `turn.finished` 的结构化 final output、稳定错误码、等待交互和取消状态；不得只保留展示文本。
-- 前端必须把确定性信封视为权威结果，展示结构化结果与有效产物引用，不调用模型二次润色。
-- 测试必须覆盖：包锁构建与篡改、路由冲突、Schema/Parser/Handler 契约、运行时字段隔离、缺参恢复、Provider 修订变化、凭据脱敏、沙箱证明、单次执行、超时与取消、输出及产物限制、终态与产物恢复、协议透传和旧 Agent Loop 回归。
-- 新增 Provider、产物类型、网络能力、恢复语义或成功信封字段前，必须先更新本特性文档及相应安全边界，再进入实现。
+- `consumer/deploy` 构建 JiuwenBox 镜像时必须使用版本化运行契约和固定依赖生成证明；Consumer Backend 只能只读消费由 JiuwenBox 启动脚本发布到共享卷的证明。
+- Consumer 的 Provider 配置必须把秘密放在专用认证字段，并提供数据修订、访问范围修订、不可变快照、隔离声明和完整物理选择器。
+- `consumer/backend` 的 HTTP、A2A、ACP 和 MCP 适配层必须保留 `turn.finished` 的结构化 final output、稳定错误码、等待交互和取消状态；不得只保留展示文本。
+- `consumer/frontend` 必须把确定性信封视为权威结果，展示结构化结果与有效产物引用，不调用模型二次润色。
+- `consumer/sdk` 未来若增加结果类型或便捷方法，必须保留 `structured_result`、`artifacts` 和 `execution`，不得定义另一套确定性业务结果结构。
+- `modeling` 若未来生成确定性 Operation，输出仍必须经过 Consumer 导入校验，不能自行生成并复制 `.deterministic-lock.json`。
+- `auth-server` 的变更不得承接 Handler 执行状态或结果；Consumer 只复用其身份与授权结论。
+- 测试必须覆盖：包锁构建与篡改、路由冲突、Schema/Parser/Handler 契约、运行时字段隔离、缺参恢复、Provider 修订变化、凭据脱敏、沙箱证明、单次执行、超时与取消、输出及产物限制、终态与产物恢复、协议透传、前端投影和旧 Agent Loop 回归。
+- 新增 Provider、产物类型、网络能力、恢复语义、协议投影或成功信封字段前，必须先更新本特性文档及相应安全边界，再进入实现。
 
 ## 7. 关联实现与验证
 
+### 7.1 Consumer Backend 核心实现
+
 - `consumer/backend/ontology/operation_execution.py`：确定性包声明、静态校验、锁生成与完整性验证。
 - `consumer/backend/agent/direct_execution/service.py`：路由、Parser、输入校验、Handler、Provider、产物和结果信封执行主链。
+- `consumer/backend/agent/direct_execution/contracts.py`：`NotApplicable`、`AwaitingInput`、`Completed` 和 `Failed` 结果契约。
 - `consumer/backend/agent/direct_execution/audit.py`：应用/沙箱运行时修订与权威结果信封。
+- `consumer/backend/agent/direct_execution/build_revision.py`：Consumer Backend 行为文件与已安装依赖的构建修订计算。
 - `consumer/backend/agent/core/orchestrator.py`：预检、模型解析延迟、结果事件、终态事务、取消和回落。
 - `consumer/backend/persistence/deterministic_terminal.py`：待提交终态和产物日志恢复。
-- `consumer/backend/integration/sandbox/runtime-contract.json`：沙箱 Runner、依赖与公开 SDK 契约。
+- `consumer/backend/persistence/execution_store.py` 与 `consumer/backend/persistence/run_store.py`：检查点、终态事务、取消优先和不可改写终态。
+- `consumer/backend/agent/tools/business_data/deterministic.py`：只读图 Provider、数据修订、访问范围与物理快照绑定。
+- `consumer/backend/agent/tools/business_data/endpoint_security.py`：Provider endpoint 中认证材料、敏感查询参数和 fragment 的拒绝规则。
+- `consumer/backend/integration/sandbox/runtime_contract.py`：沙箱运行契约加载、运行时修订计算和共享证明读取。
+- `consumer/backend/integration/sandbox/runtime-contract.json`：沙箱 Runner、依赖与公开沙箱运行时 SDK 契约。
 - `consumer/backend/onto_sandbox_runtime/bounded_runner.py`：stdout、stderr、文件大小和进程生命周期限制。
+
+### 7.2 Consumer Deploy 与 JiuwenBox
+
+- `consumer/deploy/build_jiuwenbox.sh`：固定上游修订，构建行为 payload，并把镜像 ID 纳入沙箱运行时修订。
+- `consumer/deploy/jiuwenbox/Dockerfile`：安装固定依赖、写入镜像内修订并配置证明发布入口。
+- `consumer/deploy/jiuwenbox/runtime-entrypoint.sh`：启动时将镜像修订原子发布到共享证明卷，然后继续原始服务命令。
+- `consumer/docker-compose.yml` 与 `consumer/deploy/docker-compose.release.yml`：装配只读证明卷和 Consumer Backend/JiuwenBox 共享产物目录。
+
+### 7.3 Consumer 协议与前端投影
+
+- `consumer/backend/api/protocols/a2a/`、`consumer/backend/api/protocols/acp/server.py` 与 `consumer/backend/api/protocols/mcp/workflow_bridge.py`：复用 Consumer Orchestrator 的等待、完成、失败和取消事实。
+- `consumer/backend/api/routes/workflows.py`、`consumer/backend/api/routes/sessions.py` 与 `consumer/backend/api/routes/operations.py`：工作流入口、会话交互和锁定 Operation 的 HTTP 边界。
+- `consumer/frontend/src/features/chat/lib/streamHelpers.js`：从统一终态事件读取权威信封、结构化结果和产物。
+- `consumer/frontend/src/features/chat/lib/conversationModel.js` 与 `consumer/frontend/src/features/chat/components/ConversationView.jsx`：把产物投影为稳定会话块并提供展示入口。
+
+### 7.4 验证入口
+
 - `consumer/backend/tests/test_deterministic_package.py`：包契约、锁、不可变性和静态安全验证。
 - `consumer/backend/tests/test_deterministic_execution_service.py`：执行、交互、Provider、沙箱、输出和产物验证。
 - `consumer/backend/tests/test_deterministic_provider_revision.py`：数据修订、物理作用域和凭据隔离验证。
 - `consumer/backend/tests/test_deterministic_runtime_revision.py`：应用与沙箱运行时证明验证。
+- `consumer/backend/tests/test_orchestrator_runtime.py`、`consumer/backend/tests/test_sandbox.py` 和协议回归测试：模型解析延迟、终态事务、取消、沙箱证明与跨协议一致性验证。
+- `consumer/frontend/src/features/chat/lib/streamHelpers.test.js`、`conversationModel.test.js` 和 `toolOutput.test.js`：权威结果、产物和旧结果兼容投影验证。
+
+## 8. 关联文档
+
+- [项目模块与仓库结构](../../README.md#核心组成)：定义 `consumer`、`modeling` 和 `auth-server` 的仓库级模块边界。
+- [Consumer Agent 规格](./consumer-agent-specs.md)：Consumer Agent 的入口、限制和运行约束。
+- [JiuwenBox 沙箱设计](./jiuwenbox-sandbox-design.md)：脚本隔离、策略和部署边界。
+- [Operation 直接脚本执行设计](./superpowers/specs/2026-05-10-operation-direct-script-execution-design.md)：既有直接执行分支及其兼容关系。
+- [Consumer API](./api.md)：HTTP、SSE、A2A 和 ACP 的现有接口约定。
