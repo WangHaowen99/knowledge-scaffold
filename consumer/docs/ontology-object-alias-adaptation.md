@@ -137,7 +137,7 @@ key
 - 如规范化后的比较键全部为 ASCII，再执行 `casefold()`；非 ASCII 文本不做大小写转换。
 - 比较键只用于匹配和去重，返回的正式 key 必须保留 frontmatter `key` 的原始值。
 - 新包的别名列规范使用中文顿号“、”分隔；为兼容现有转换产物，解析时同时支持中英文逗号、分号和 `/`。
-- `/` 是对象别名的标准分隔符，`SourceItem/TargetItem` 解析为 `SourceItem`、`TargetItem` 两个别名，不作为单个别名保存。目录单元格、frontmatter 字符串和 `aliases` 列表中的每个元素都使用同一拆分规则；source 和 converted 两种导入模式必须保持一致。
+- `/` 是对象别名的标准分隔符，`SourceItem/TargetItem` 解析为 `SourceItem`、`TargetItem` 两个别名，不作为单个别名保存。目录单元格、frontmatter 字符串和 `aliases` 列表中的每个元素都使用同一拆分规则，导入校验与运行时解析必须保持一致。
 - 不做模糊匹配、拼音匹配或向量召回。
 
 解析顺序：
@@ -226,7 +226,7 @@ content:
 校验结果处理：
 
 - 任何 error 都必须在安装本体版本之前阻断导入，导入 API 返回 HTTP 400 和可定位到对象、字段及冲突值的错误信息。
-- warning 不阻断导入，但必须进入导入 API 现有返回体的 `warnings` 结构，不只写服务端日志。当前 `warnings` 是包含 `objects`、`objects_index` 和 `operations` 等列表的结构化对象，本期在同一对象下增加 `object_aliases: []`，不改变 `warnings` 的顶层类型。converted 和 source 两种导入模式都使用该分类返回别名 warning，不将其混入 `normalization_warnings`。
+- warning 不阻断导入，但必须进入导入 API 现有返回体的 `warnings` 结构，不只写服务端日志。当前 `warnings` 是包含 `objects`、`objects_index` 和 `operations` 等列表的结构化对象，本期在同一对象下增加 `object_aliases: []`，不改变 `warnings` 的顶层类型。导入校验统一使用该分类返回别名 warning，不将其混入 `normalization_warnings`。
 - 别名校验函数应同时返回 `errors` 和 `warnings`，由导入路由统一转换为阻断响应和成功响应中的 warning 分类。
 - 校验必须遍历完整对象目录和详情集，聚合全部 errors 和 warnings 后再统一返回，不采用首个错误即短路的策略。为保持现有错误响应顶层形态，导入路由仍可返回单一 `error` 字符串，但必须按稳定顺序组合全部校验错误，便于使用者一次性修正。
 - enable 切换本期不重复执行别名校验，避免在运行时状态切换中引入新的 warning 传播通道。对于绕过导入流程的历史包或本地包，仍由运行时固定优先级和歧义检测做安全降级。
@@ -271,10 +271,10 @@ content:
 
 ### 4.2 导入与校验流程
 
-导入校验发生在版本安装前，source 和 converted 两种模式共用相同的最终校验口径：
+导入校验发生在版本安装前，统一按以下口径执行：
 
-1. 将上传包解压到临时目录，确定唯一包根目录。
-2. converted 包先标准化为 v0.1；source 包先生成暂存版本目录。
+1. 将上传包解压到临时目录，确定唯一 v0.1 包根目录。
+2. 将 v0.1 包复制到暂存目录（`normalize_imported_package`），作为版本安装的候选内容。
 3. 读取 `objects/index.md`，识别兼容的 key、title 和 alias 表头。
 4. 逐个读取 `objects/*.md` 的 UTF-8 内容和 YAML frontmatter，建立详情定义集合。
 5. 对目录与详情做一致性校验：
@@ -551,7 +551,7 @@ usage    -> 不写入本体对象 object_context_usage
 4. 目录别名与详情 `aliases` 只有顺序或分隔符差异时视为一致；归一化后集合不一致时校验失败，错误信息包含对象 key 及两侧别名值。
 5. 目录对象 key 列与详情 frontmatter `key` 不一致时阻断导入。
 6. 同一包中存在多个别名校验 error 时，导入返回 HTTP 400，且 `error` 字符串按稳定顺序包含全部错误，不只返回第一个。
-7. 只存在别名重复或空值等 warning 时导入成功，converted 和 source 两种模式的返回体都保持 `warnings` 为对象，并包含 `warnings.object_aliases`。
+7. 只存在别名重复或空值等 warning 时导入成功，返回体保持 `warnings` 为对象，并包含 `warnings.object_aliases`。
 8. 没有别名列的旧包仍能加载和查询。
 
 ### 6.3 业务数据查询

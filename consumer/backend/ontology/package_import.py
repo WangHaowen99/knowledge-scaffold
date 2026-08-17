@@ -16,15 +16,10 @@ from ontology.ontology_catalog import (
     validate_object_aliases,
     validate_object_data_mappings,
 )
-from ontology.legacy_package_converter import (
-    LEGACY_FILE_NAMES,
-    V01_SCHEMA_VERSION,
-    convert_legacy_package_in_place,
-    finalize_v01_package_in_place,
-)
 
 
-SUPPORTED_IMPORT_MANIFEST_KINDS = frozenset({"ontology", "ontology-package"})
+V01_SCHEMA_VERSION = "0.1"
+SUPPORTED_IMPORT_MANIFEST_KINDS = frozenset({"ontology-package"})
 
 
 class PackageNormalizationError(ValueError):
@@ -70,7 +65,7 @@ def validate_imported_field_aliases(root: Path) -> FieldAliasValidationResult:
 
 
 def has_importable_package_layout(root: Path) -> bool:
-    """Return whether an extracted root has a v0.1 or temporary legacy package layout."""
+    """Return whether an extracted root has a v0.1 package layout."""
     package_root = Path(root)
     new_indexes = (
         package_root / "index.md",
@@ -79,13 +74,11 @@ def has_importable_package_layout(root: Path) -> bool:
     )
     if any(path.is_file() for path in new_indexes):
         return True
-    if any((package_root / name).is_file() for name in LEGACY_FILE_NAMES):
-        return True
-    return any(path.is_file() for path in package_root.glob("*-list.md"))
+    return False
 
 
 def inspect_importable_package(root: Path) -> Optional[ImportableOntologyPackage]:
-    """Inspect v0.1 packages and legacy packages accepted by the temporary converter."""
+    """Inspect a conformant v0.1 ontology package."""
     package_root = Path(root)
     manifest_path = package_root / "manifest.yaml"
     if not manifest_path.is_file() or manifest_path.is_symlink():
@@ -101,7 +94,7 @@ def inspect_importable_package(root: Path) -> Optional[ImportableOntologyPackage
     kind = str(raw.get("kind") or "").strip()
     if kind not in SUPPORTED_IMPORT_MANIFEST_KINDS:
         return None
-    if kind == "ontology-package" and str(raw.get("schema_version") or "").strip() != V01_SCHEMA_VERSION:
+    if str(raw.get("schema_version") or "").strip() != V01_SCHEMA_VERSION:
         return None
 
     ontology_id = str(raw.get("id") or "").strip()
@@ -111,18 +104,26 @@ def inspect_importable_package(root: Path) -> Optional[ImportableOntologyPackage
     if not all((ontology_id, name, description, version)):
         return None
 
+    required_paths = (
+        package_root / "index.md",
+        package_root / "objects" / "index.md",
+        package_root / "operations" / "index.md",
+    )
+    if any(not path.is_file() or path.is_symlink() for path in required_paths):
+        return None
+
     return ImportableOntologyPackage(
         root=package_root,
         ontology_id=ontology_id,
         name=name,
         description=description,
         version=version,
-        source_format="v0.1" if kind == "ontology-package" else "legacy",
+        source_format="v0.1",
     )
 
 
 def normalize_imported_package(source_root: Path, target_root: Path) -> PackageNormalizationResult:
-    """Copy an import package and leave only the v0.1 directory contract in the copy."""
+    """Copy a conformant v0.1 package to a clean staging directory."""
     source = Path(source_root)
     target = Path(target_root)
     package = inspect_importable_package(source)
@@ -135,28 +136,10 @@ def normalize_imported_package(source_root: Path, target_root: Path) -> PackageN
 
     _reject_symbolic_links(source)
     shutil.copytree(source, target)
-
-    generated: list[str] = []
-    warnings: list[str] = []
-    contains_legacy_artifacts = any((target / name).is_file() for name in LEGACY_FILE_NAMES) or any(
-        target.glob("*-list.md")
-    )
-    if package.source_format == "legacy" or contains_legacy_artifacts:
-        try:
-            converted, conversion_warnings = convert_legacy_package_in_place(target)
-        except (OSError, ValueError) as exc:
-            message = str(exc).strip() or "Invalid ontology package"
-            raise PackageNormalizationError(message) from exc
-        generated.extend(converted)
-        warnings.extend(conversion_warnings)
-
-    finalized, finalization_warnings = finalize_v01_package_in_place(target)
-    generated.extend(finalized)
-    warnings.extend(finalization_warnings)
     return PackageNormalizationResult(
         root=target,
-        generated_files=tuple(dict.fromkeys(generated)),
-        warnings=tuple(warnings),
+        generated_files=(),
+        warnings=(),
     )
 
 

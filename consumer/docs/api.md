@@ -1232,6 +1232,196 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 { "error": "Ontology not found" }
 ```
 
+### 6.7.1 `PUT /agentic/ontologies/{ontology_id}/status` (`admin`)
+
+启用或停用 ontology。
+
+请求体（JSON）：
+
+```json
+{ "enabled": false }
+```
+
+行为说明：
+
+- `enabled` 为必填布尔值；缺失返回 `400`
+- 停用后 ontology 不再参与 Agent 检索上下文
+
+请求体校验失败响应 `400`：`{ "error": "\`enabled\` is required" }` 或 `{ "error": "\`enabled\` must be a boolean" }`
+
+响应 `200`：
+
+```json
+{
+  "success": true,
+  "ontology_id": "example-domain-operations-manual",
+  "enabled": false
+}
+```
+
+响应 `404`：`{ "error": "Ontology not found" }`
+
+### 6.7.2 `PUT /agentic/ontologies/{ontology_id}/active-version` (`admin`)
+
+切换 ontology 的激活版本。
+
+请求体（JSON）：
+
+```json
+{ "version": "2.0.0" }
+```
+
+行为说明：
+
+- `version` 必填且必须匹配 `[A-Za-z0-9][A-Za-z0-9._-]*`；非法版本返回 `400`
+- 目标版本不存在时返回 `400`（`ValueError` 消息）
+
+响应 `200`：
+
+```json
+{
+  "success": true,
+  "ontology_id": "example-domain-operations-manual",
+  "active_version": "2.0.0",
+  "version": "2.0.0",
+  "versions": ["1.0.0", "2.0.0"]
+}
+```
+
+响应 `404`：`{ "error": "Ontology not found" }`
+
+### 6.7.3 `GET /agentic/ontologies/{ontology_id}/graph`
+
+返回 ontology 指定版本的节点与边图谱快照。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `version` | string | 否 | 目标版本；不传时使用当前激活版本 |
+
+行为说明：
+
+- 节点来源：`graph/nodes`（存在时）合并 `operations/*.md` 与 `objects/*.md` 自动生成的节点
+- 边来源：`graph/edges`（存在时）合并自动生成的流程-对象依赖边
+
+响应 `200`：
+
+```json
+{
+  "ontology_id": "example-domain-operations-manual",
+  "name": "示例业务执行手册",
+  "description": "...",
+  "version": "2.0.0",
+  "nodes": [
+    {
+      "id": "op-query-part",
+      "type": "operation",
+      "label": "查询零件",
+      "source": "operations/QueryPart.md"
+    }
+  ],
+  "edges": [
+    {
+      "source": "op-query-part",
+      "target": "obj-part",
+      "type": "uses"
+    }
+  ],
+  "stats": {
+    "node_count": 12,
+    "edge_count": 18,
+    "operation_count": 8,
+    "object_count": 4
+  }
+}
+```
+
+响应 `404`：`{ "error": "Ontology not found" }` 或 `{ "error": "Ontology version not found" }`
+
+### 6.7.4 `GET /agentic/ontologies/{ontology_id}/tree`
+
+返回指定版本目录的目录树，供编辑器/浏览器展示。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `version` | string | 否 | 目标版本；不传时使用当前激活版本 |
+
+行为说明：
+
+- 每个条目包含 `path`、`type`（`dir`/`file`）、`name` 与 `children`（目录递归展开）
+- 与编辑器文件列表共用同一套过滤：排除 `origin_data`、`dataset(s)`、`__pycache__`、隐藏目录等私有/运行时目录，以及任何符号链接
+- `excluded` 列出当前生效的排除目录名清单
+
+响应 `200`：
+
+```json
+{
+  "ontology_id": "example-domain-operations-manual",
+  "version": "2.0.0",
+  "excluded": ["datasets", "dataset", "origin-data", "origin_data"],
+  "entries": [
+    {
+      "path": "operations",
+      "name": "operations",
+      "type": "dir",
+      "children": [
+        {
+          "path": "operations/QueryPart.md",
+          "name": "QueryPart.md",
+          "type": "file"
+        }
+      ]
+    }
+  ]
+}
+```
+
+安全错误响应 `400`：`{ "error": "Invalid file path" }`
+
+### 6.7.5 `GET /agentic/ontologies/{ontology_id}/raw-file`
+
+读取指定版本内的单个文本文件内容。
+
+查询参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `path` | string | 是 | 版本目录内相对路径，如 `operations/QueryPart.md` |
+| `version` | string | 否 | 目标版本；不传时使用当前激活版本 |
+
+行为说明：
+
+- 只允许读取版本目录内的普通文件；绝对路径、目录穿越（`..`）、含 `.`/空段的非规范路径、符号链接（文件或祖先目录）均拒绝
+- 只返回 UTF-8 文本；二进制文件、非 UTF-8、超过在线阅读上限的大文件拒绝
+- 版本目录本身不允许是符号链接
+
+响应 `200`：
+
+```json
+{
+  "ontology_id": "example-domain-operations-manual",
+  "version": "2.0.0",
+  "path": "operations/QueryPart.md",
+  "name": "QueryPart.md",
+  "size": 512,
+  "content": "# Query part\n"
+}
+```
+
+安全错误响应：
+
+| 状态码 | `error` |
+| --- | --- |
+| `400` | `Invalid file path` |
+| `400` | `Binary file is not viewable` |
+| `400` | `File too large to view online` |
+| `400` | `File encoding must be UTF-8` |
+| `404` | `File not found` |
+| `500` | `Failed to read file` |
+
 ### 6.8 `POST /agentic/ontologies/import-zip` (`admin`)
 
 上传 `.zip` 包并导入为 ontology；必要时自动创建或覆盖目标 ontology 目录。
@@ -1246,15 +1436,11 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
 行为说明：
 
 - 仅支持 `.zip`
-- 支持两类上传包：
-  - 源格式包：需能识别出有效源目录（包含 `object` 与 `logic`），服务端会自动转换成 ontology 格式
-  - v0.1 ontology 包：`manifest.yaml` 声明 `kind: ontology-package`、`schema_version: 0.1`，目录清单使用各目录的 `index.md`
-- 源格式包会优先从 `SKILL.md` frontmatter 读取 `id` / `name` / `description`
-- 源格式包如果额外包含 `action/` 目录，会复制其中 Python 脚本和 `.env` 文件到目标 `scripts/`，并生成 `scripts/index.md` 与 `scripts/<key>.md` 描述文件；脚本顶部可用 `# 工具流程: <操作名>` 声明对应的 `logic/<操作名>.md`
-- 迁移期旧格式包会在导入边界一次性转换；安装目录不生成或保留 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`
-- 已转换 ontology 包会直接使用 `manifest.yaml` 中的元数据
+- 支持 v0.1 ontology 包：`manifest.yaml` 声明 `kind: ontology-package`、`schema_version: 0.1`，目录清单使用各目录的 `index.md`
+- 服务端不再接受源格式包（`object`/`logic` 结构）。旧格式包需先用离线转换脚本转为 v0.1 格式后上传，见《ontology 包转换指南》；安装目录不生成或保留 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`
+- 直接使用 `manifest.yaml` 中的元数据
 - 如果目标 ontology 已存在且未传 `overwrite=true`，会返回确认型冲突
-- 传 `overwrite=true` 时，不论是源格式包还是已转换包，都会以新导入结果整体替换目标 ontology 目录，不保留旧残留文件
+- 传 `overwrite=true` 时，会以新导入结果整体替换目标 ontology 目录，不保留旧残留文件
 
 冲突响应 `409`：
 
@@ -1274,9 +1460,10 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
   "success": true,
   "created": true,
   "overwritten": false,
-  "import_mode": "source",
   "ontology_id": "example-domain-operations-manual",
   "ontology_name": "示例业务执行手册",
+  "version": "1.0.0",
+  "active_version": "1.0.0",
   "source_root": "/tmp/.../unzipped/project",
   "objects_count": 12,
   "operations_count": 18,
@@ -1289,17 +1476,38 @@ Content-Disposition: attachment; filename="{ontology_id}-{version}.zip"
     "operations": [],
     "object_aliases": [],
     "field_aliases": []
+  },
+  "normalization_warnings": [],
+  "preview": {
+    "source": {
+      "files": [
+        {
+          "path": "objects/index.md",
+          "size": 128,
+          "content": "...",
+          "truncated": false,
+          "binary": false
+        }
+      ],
+      "total_files": 12,
+      "truncated": false
+    },
+    "result": {
+      "files": [],
+      "total_files": 0,
+      "truncated": false
+    }
   }
 }
 ```
 
 说明：
 
-- `import_mode=source`：表示上传的是源格式包，服务端已执行格式转换
-- `import_mode=converted`：表示上传的是已转换完成的 ontology 包，服务端直接导入目录内容
 - 新导入 ontology 不继承默认连接，`business_data_configured` 初始为 `false`；需要在导入后显式配置该 ontology 的数据源
 - `warnings.object_aliases`：对象别名中的重复、空值等非阻断问题；不会阻止导入
 - `warnings.field_aliases`：字段别名中的重复、空值等非阻断问题；不会阻止导入
+- `normalization_warnings`：v0.1 目录规范化（目录整理、引用调整等）过程中产生的非阻断提示；空列表表示没有这类提示
+- `preview`：导入前后文件清单，`source` 为上传播包临时品目录，`result` 为规范化后的版本目录；`files` 仅包含前若干项，`truncated` 表示因长度被截断，`binary` 表示非文本文件（不返回 `content`）
 - 对象或字段名称存在歧义、冲突等 error 时，接口返回 `400` 并在安装版本前终止导入，不会进入上述 warning 列表
 
 ---

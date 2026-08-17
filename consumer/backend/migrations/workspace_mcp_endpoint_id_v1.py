@@ -152,11 +152,15 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             marker_file.flush()
             os.fsync(marker_file.fileno())
         os.replace(temporary, path)
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        # Windows does not support opening a directory with os.open(); keep
+        # the directory fsync as a POSIX-only durability enhancement, matching
+        # system_config_v1_support._fsync_directory.
+        if os.name != "nt":
+            directory_descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
     finally:
         if descriptor >= 0:
             os.close(descriptor)

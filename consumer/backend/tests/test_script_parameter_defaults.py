@@ -4,10 +4,6 @@ from ontology.ontology_catalog import (
     _parse_script_parameters_from_markdown,
     public_script_catalog,
 )
-from ontology.legacy_package_converter import (
-    _normalize_legacy_parameters,
-    _write_script_descriptor,
-)
 
 
 def test_script_parameter_default_round_trips_into_execution_catalog():
@@ -41,26 +37,4 @@ def test_script_parameter_default_round_trips_into_execution_catalog():
     assert args[-2:] == ["--mode", "standard"]
 
 
-def test_legacy_package_conversion_preserves_parameter_defaults(tmp_path):
-    parameters = _normalize_legacy_parameters([
-        {
-            "name": "strict",
-            "flag": "--strict",
-            "type": "boolean",
-            "required": False,
-            "default": False,
-        },
-    ])
 
-    descriptor = tmp_path / "scripts" / "validate.md"
-    _write_script_descriptor(
-        descriptor,
-        script_key="validate",
-        operation_key="validate_records",
-        entrypoint="scripts/validate.py",
-        parameters=parameters,
-    )
-
-    reparsed = _parse_script_parameters_from_markdown(descriptor.read_text(encoding="utf-8"))
-    assert reparsed[0]["required"] is False
-    assert reparsed[0]["default"] is False
