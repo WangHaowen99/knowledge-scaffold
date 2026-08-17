@@ -47,7 +47,7 @@ def test_public_sdk_exposes_effective_connection_for_graph_snapshot_handlers(
 ):
     envelope = {
         **_envelope("neo4j"),
-        "endpoint": "bolt://snapshot.example:7687",
+        "endpoint": "bolt://service.example.net:7687",
         "auth": {
             "type": "mindsdb_password",
             "username": "reader",
@@ -63,7 +63,7 @@ def test_public_sdk_exposes_effective_connection_for_graph_snapshot_handlers(
     connection = load_effective_connection()
 
     assert connection.provider == "neo4j"
-    assert connection.endpoint == "bolt://snapshot.example:7687"
+    assert connection.endpoint == "bolt://service.example.net:7687"
     assert connection.options["database"] == "snapshot_20260808"
 
 
