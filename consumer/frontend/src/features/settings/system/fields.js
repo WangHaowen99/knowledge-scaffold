@@ -1,8 +1,6 @@
 import { assertSystemConfigSection } from './model.js';
 
 export const SYSTEM_SETTINGS_PANEL_SECTIONS = Object.freeze([
-  'llm',
-  'storage',
   'auth',
   'agent',
   'memory',
@@ -12,14 +10,6 @@ export const SYSTEM_SETTINGS_PANEL_SECTIONS = Object.freeze([
 ]);
 
 export const SYSTEM_SETTINGS_SECTION_META = Object.freeze({
-  llm: {
-    title: '旧版模型兼容配置',
-    description: '保留旧版单模型运行参数。模型池与默认主/任务模型由“模型池”页面统一管理。',
-  },
-  storage: {
-    title: '存储',
-    description: '配置会话、执行记录、运行根目录与本地用户文件路径。',
-  },
   auth: {
     title: '鉴权',
     description: '配置本地签名、Token 有效期以及远端鉴权服务。密钥输入留空时保留现有值。',
@@ -88,20 +78,6 @@ const toggle = (name, label, options = {}) => ({ name, label, type: 'checkbox', 
 const secret = (name, label, options = {}) => ({ name, label, type: 'password', secret: true, ...options });
 
 export const SYSTEM_CONFIG_FIELDS = Object.freeze({
-  llm: [
-    text('base_url', '基础 URL', { placeholder: 'https://api.example.com/v1' }),
-    text('model', '模型名称'),
-    secret('api_key', 'API Key', { hasField: 'has_api_key', clearField: 'clear_api_key' }),
-    number('timeout', '超时（秒）', { min: 1 }),
-    number('max_tokens', '最大 Tokens', { min: 1 }),
-    number('temperature', 'Temperature', { min: 0, step: 0.1 }),
-  ],
-  storage: [
-    text('chat_storage_dir', '会话记录目录'),
-    text('execution_storage_dir', '执行记录目录'),
-    text('project_root', '运行根目录'),
-    text('auth_users_file', '本地用户文件'),
-  ],
   auth: [
     secret('auth_secret', '本地签名密钥', { hasField: 'has_auth_secret', clearField: 'clear_auth_secret' }),
     number('auth_token_ttl_seconds', 'Token 有效期（秒）', { min: 1 }),

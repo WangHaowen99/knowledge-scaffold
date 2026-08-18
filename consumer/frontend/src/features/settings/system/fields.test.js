@@ -13,8 +13,6 @@ import {
 
 test('default panel owns all non-model-pool backend sections and no removed sections', () => {
   assert.deepEqual(SYSTEM_SETTINGS_PANEL_SECTIONS, [
-    'llm',
-    'storage',
     'auth',
     'agent',
     'memory',
@@ -22,6 +20,8 @@ test('default panel owns all non-model-pool backend sections and no removed sect
     'direct_execution',
     'skill_evolution',
   ]);
+  assert.equal('llm' in SYSTEM_CONFIG_FIELDS, false);
+  assert.equal('storage' in SYSTEM_CONFIG_FIELDS, false);
   assert.equal('llm_profiles' in SYSTEM_CONFIG_FIELDS, false);
   assert.equal('observability' in SYSTEM_CONFIG_FIELDS, false);
   assert.equal('task_llm' in SYSTEM_CONFIG_FIELDS, false);
@@ -83,22 +83,6 @@ test('payload builder removes public secret flags and preserves saved secrets wh
 });
 
 test('payload builder sends new secrets or explicit supported clear flags', () => {
-  assert.deepEqual(buildSystemConfigSectionPayload('llm', {
-    base_url: 'https://llm.example/v1',
-    model: 'chat',
-    api_key: 'new-secret',
-    has_api_key: true,
-    timeout: 30,
-    max_tokens: 1024,
-    temperature: 0.2,
-  }), {
-    base_url: 'https://llm.example/v1',
-    model: 'chat',
-    api_key: 'new-secret',
-    timeout: 30,
-    max_tokens: 1024,
-    temperature: 0.2,
-  });
   assert.deepEqual(buildSystemConfigSectionPayload('auth', {
     auth_secret: '',
     has_auth_secret: true,
@@ -111,6 +95,14 @@ test('payload builder sends new secrets or explicit supported clear flags', () =
 });
 
 test('payload builder refuses independent model pool and removed observability ownership', () => {
+  assert.throws(
+    () => buildSystemConfigSectionPayload('llm', {}),
+    /由独立设置功能管理/,
+  );
+  assert.throws(
+    () => buildSystemConfigSectionPayload('storage', {}),
+    /由独立设置功能管理/,
+  );
   assert.throws(
     () => buildSystemConfigSectionPayload('llm_profiles', {}),
     /由独立设置功能管理/,
@@ -135,9 +127,9 @@ test('tab and panel ids stay paired while module instances only reset after an i
 });
 
 test('tab keyboard navigation wraps and supports Home and End', () => {
-  assert.equal(nextSystemSettingsTab('llm', 'ArrowLeft'), 'skill_evolution');
-  assert.equal(nextSystemSettingsTab('skill_evolution', 'ArrowRight'), 'llm');
-  assert.equal(nextSystemSettingsTab('agent', 'Home'), 'llm');
+  assert.equal(nextSystemSettingsTab('auth', 'ArrowLeft'), 'skill_evolution');
+  assert.equal(nextSystemSettingsTab('skill_evolution', 'ArrowRight'), 'auth');
+  assert.equal(nextSystemSettingsTab('agent', 'Home'), 'auth');
   assert.equal(nextSystemSettingsTab('agent', 'End'), 'skill_evolution');
   assert.equal(nextSystemSettingsTab('agent', 'Enter'), 'agent');
 });
