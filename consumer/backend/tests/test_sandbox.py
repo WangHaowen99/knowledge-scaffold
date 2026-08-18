@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import integration.sandbox.executor as sandbox_executor_module
+import onto_sandbox_runtime.bounded_runner as bounded_runner_module
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 from integration.sandbox.config import SandboxConfig, load_sandbox_config
@@ -668,6 +669,15 @@ def test_bounded_sandbox_runner_stops_oversized_output():
     assert "ONTO_PUBLIC_ERROR:" in completed.stderr
     assert '"code":"OUTPUT_LIMIT"' in completed.stderr
     assert "stdout output exceeds limit" in completed.stderr
+
+
+def test_bounded_sandbox_runner_rejects_non_python_executable():
+    with pytest.raises(ValueError, match="trusted Python interpreter"):
+        bounded_runner_module.run_bounded(
+            [sys.executable + ".untrusted", "--version"],
+            stdout_limit_bytes=32,
+            stderr_limit_bytes=32,
+        )
 
 
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires POSIX resource limits")

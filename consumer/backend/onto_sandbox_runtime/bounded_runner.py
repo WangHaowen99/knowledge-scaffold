@@ -25,6 +25,23 @@ _FILE_SIZE_LIMIT_EXIT_CODE = 126
 logger = logging.getLogger("onto_sandbox_runtime.bounded_runner")
 
 
+def _validated_python_argv(command: Sequence[str]) -> list[str]:
+    """Return a shell-free argv restricted to the sandbox Python runtime."""
+    argv = list(command)
+    if not argv:
+        raise ValueError("command is required")
+    for argument in argv:
+        if not isinstance(argument, str):
+            raise ValueError("command contains an invalid argument")
+        if "\x00" in argument:
+            raise ValueError("command contains an invalid argument")
+    requested_executable = os.path.normcase(os.path.realpath(argv[0]))
+    trusted_executable = os.path.normcase(os.path.realpath(sys.executable))
+    if requested_executable != trusted_executable:
+        raise ValueError("command must use the trusted Python interpreter")
+    return argv
+
+
 def _log_public_error(payload: dict[str, str]) -> None:
     logger.error(
         "ONTO_PUBLIC_ERROR: %s",
@@ -82,8 +99,7 @@ def run_bounded(
     file_size_limit_bytes: int = 0,
 ) -> int:
     """Execute ``command`` and forward output only when both streams fit."""
-    if not command:
-        raise ValueError("command is required")
+    argv = _validated_python_argv(command)
     limits = {
         "stdout": max(0, int(stdout_limit_bytes)),
         "stderr": max(0, int(stderr_limit_bytes)),
@@ -100,13 +116,16 @@ def run_bounded(
                 (file_size_limit, file_size_limit),
             )
 
-    process = subprocess.Popen(
-        list(command),
+    # Security review: execution is confined to the sandbox Python runtime;
+    # argv is validated, passed as a sequence, and never parsed by a shell.
+    process = subprocess.Popen(  # NOSONAR(S4721)
+        argv,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
         preexec_fn=apply_child_limits if file_size_limit > 0 else None,
         shell=False,
+        close_fds=True,
     )
 
     def read_stream(name: str, stream: BinaryIO) -> None:

@@ -654,6 +654,23 @@ def _run_with_live_logging(
     )
 
 
+def _validated_python_argv(command: Sequence[str]) -> list[str]:
+    """Return a shell-free argv restricted to the current Python executable."""
+    argv = list(command)
+    if not argv:
+        raise ValueError("script command is required")
+    for argument in argv:
+        if not isinstance(argument, str):
+            raise ValueError("script command contains an invalid argument")
+        if "\x00" in argument:
+            raise ValueError("script command contains an invalid argument")
+    requested_executable = os.path.normcase(os.path.realpath(argv[0]))
+    trusted_executable = os.path.normcase(os.path.realpath(sys.executable))
+    if requested_executable != trusted_executable:
+        raise ValueError("script command must use the trusted Python interpreter")
+    return argv
+
+
 def _run_with_bounded_output(
     cmd: List[str],
     *,
@@ -665,14 +682,18 @@ def _run_with_bounded_output(
     cancel_event: Optional[threading.Event] = None,
 ) -> subprocess.CompletedProcess[str]:
     """Capture deterministic script output without unbounded allocation."""
-    proc = subprocess.Popen(
-        cmd,
+    argv = _validated_python_argv(cmd)
+    # Security review: argv is restricted to this process's Python interpreter,
+    # is passed as a sequence, and is never parsed by a shell.
+    proc = subprocess.Popen(  # NOSONAR(S4721)
+        argv,
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=False,
         shell=False,
+        close_fds=True,
     )
     outputs = {"stdout": bytearray(), "stderr": bytearray()}
     limits = {

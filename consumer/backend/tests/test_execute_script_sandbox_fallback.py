@@ -51,6 +51,13 @@ def _completed(
     )
 
 
+def test_bounded_runner_rejects_non_python_executable():
+    with pytest.raises(ValueError, match="trusted Python interpreter"):
+        execute_script_module._validated_python_argv(
+            [execute_script_module.sys.executable + ".untrusted", "--version"]
+        )
+
+
 def test_live_log_does_not_bypass_sandbox(tmp_path, monkeypatch):
     script = _write_script(tmp_path)
     extra_package_dir = tmp_path / "extra-package"
