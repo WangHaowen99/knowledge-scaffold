@@ -219,7 +219,11 @@ export default function WorkspaceAdminPanel({
     if (!result) return;
     setDialog(null);
     setDraft({ ...EMPTY_DRAFT });
-    await loadWorkspaces({ quiet: true });
+    const refreshed = await loadWorkspaces({ quiet: true });
+    if (isCreate) {
+      const newId = result.payload?.id || id;
+      await onWorkspaceChange?.(newId);
+    }
   };
 
   const setDefault = async (workspace) => {
