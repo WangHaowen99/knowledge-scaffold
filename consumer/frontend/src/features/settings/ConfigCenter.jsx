@@ -231,7 +231,7 @@ function PlatformAccess() {
   };
   if (!config) return <SectionCard><div className="empty">加载中…</div></SectionCard>;
   return (
-    <SectionCard title="onto-platform 接入" description="统一配置运行实例注册、策略快照和 Trace 上报目标。">
+    <SectionCard title="运维监控平台接入" description="统一配置运行实例注册、策略快照和 Trace 上报目标。">
       {!canEdit && <ReadOnlyBanner who="平台管理员" />}
       <Field label="启用平台接入"><Toggle on={Boolean(effective.enabled)} disabled={!canEdit} onChange={(value) => set('enabled', value)} /></Field>
       <Field label="平台地址"><input disabled={!canEdit} value={effective.base_url || ''} onChange={(event) => set('base_url', event.target.value)} /></Field>
