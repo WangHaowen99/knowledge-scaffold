@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateGeneratedScriptSafety } from '../src/workflow/script-safety.js';
+import {
+  validateGeneratedScriptSafety,
+  validateGeneratedScriptSecurity,
+} from '../src/workflow/script-safety.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import { runFormatChecks } from '../src/workflow/package-check.js';
 import { validateSpecIntegrity } from '../src/workflow/spec-validation.js';
@@ -25,6 +28,43 @@ function script(sourceCode: string): SpecScript {
     sourceCode,
   };
 }
+
+test('generated scripts allow non-builtin module methods such as re.compile', () => {
+  assert.doesNotThrow(() => validateGeneratedScriptSafety(script(`
+import argparse
+import json
+import re
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-json", required=True)
+    args = parser.parse_args()
+    pattern = re.compile(r"^plan_[0-9]+$")
+    spaced_pattern = re . compile(r"^tank_[0-9]+$")
+    print(json.dumps({
+        "result": bool(pattern.match(json.loads(args.input_json)["plan"]))
+            or bool(spaced_pattern.match("tank_1"))
+    }))
+
+if __name__ == "__main__":
+    main()
+`)));
+});
+
+test('generated scripts still reject direct dynamic execution builtins', () => {
+  for (const sourceCode of [
+    'eval("1 + 1")',
+    'exec("result = 2")',
+    'compile("result = 2", "<string>", "exec")',
+    '__import__("os")',
+    'import builtins\nbuiltins.compile("result = 2", "<string>", "exec")',
+  ]) {
+    assert.throws(
+      () => validateGeneratedScriptSecurity(script(sourceCode)),
+      /脚本安全检查失败.*动态执行/,
+    );
+  }
+});
 
 test('generated scripts reject unresolved runtime data stubs', () => {
   assert.throws(() => validateGeneratedScriptSafety(script(`

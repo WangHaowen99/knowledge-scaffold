@@ -12,11 +12,44 @@ const FORBIDDEN: { pattern: RegExp; label: string }[] = [
   { pattern: /\b(?:import|from)\s+subprocess\b|\bsubprocess\s*\./, label: 'subprocess' },
   { pattern: /\b(?:import|from)\s+(?:ctypes|multiprocessing|pickle|marshal)\b/, label: '高风险模块' },
   { pattern: /\b(?:import|from)\s+(?:requests|httpx|aiohttp|socket)\b|\bfrom\s+urllib\.request\b|\burlopen\s*\(/, label: '网络访问' },
-  { pattern: /\b(?:eval|exec|compile|__import__)\s*\(/, label: '动态执行' },
   { pattern: /\bos\s*\.\s*(?:system|popen|spawn\w*)\s*\(/, label: '系统命令' },
   { pattern: /\bshutil\s*\.\s*rmtree\s*\(/, label: '递归删除' },
   { pattern: /\bopen\s*\([^\n]*,[^\n]*["'][wax+][^"']*["']/, label: '文件写入' },
 ];
+
+const DYNAMIC_EXECUTION_FUNCTIONS = new Set(['eval', 'exec', 'compile', '__import__']);
+
+/**
+ * Detect calls to Python's dynamic-execution builtins without confusing
+ * ordinary module methods such as re.compile() with the builtin compile().
+ * The syntax tree also lets us keep qualified builtins calls blocked.
+ */
+function containsDynamicExecution(sourceCode: string): boolean {
+  let found = false;
+  pythonParser.parse(sourceCode).iterate({
+    enter(node) {
+      if (found) return false;
+      if (node.name !== 'CallExpression') return;
+
+      const callee = node.node.firstChild;
+      if (!callee) return;
+      if (callee.name === 'VariableName') {
+        found = DYNAMIC_EXECUTION_FUNCTIONS.has(sourceCode.slice(callee.from, callee.to));
+        return;
+      }
+      if (callee.name !== 'MemberExpression') return;
+
+      const receiver = callee.firstChild;
+      const property = callee.lastChild;
+      if (receiver?.name !== 'VariableName' || property?.name !== 'PropertyName') return;
+      const receiverName = sourceCode.slice(receiver.from, receiver.to);
+      const propertyName = sourceCode.slice(property.from, property.to);
+      found = (receiverName === 'builtins' || receiverName === '__builtins__')
+        && DYNAMIC_EXECUTION_FUNCTIONS.has(propertyName);
+    },
+  });
+  return found;
+}
 
 export function validateGeneratedScriptSecurity(script: SpecScript): void {
   if (script.sourceCode.length > 100_000) {
@@ -26,6 +59,9 @@ export function validateGeneratedScriptSecurity(script: SpecScript): void {
     if (rule.pattern.test(script.sourceCode)) {
       throw new Error(`脚本安全检查失败（${script.key}）：禁止使用 ${rule.label}`);
     }
+  }
+  if (containsDynamicExecution(script.sourceCode)) {
+    throw new Error(`脚本安全检查失败（${script.key}）：禁止使用 动态执行`);
   }
 }
 
