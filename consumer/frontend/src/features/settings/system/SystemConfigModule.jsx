@@ -67,7 +67,7 @@ export default function SystemConfigModule({
           {showTest && (
             <button type="button" className="btn" disabled={!canEdit || busy}
               onClick={() => controller.testConnection()}>
-              {controller.busyAction === 'test' ? '测试中…' : '测试当前草稿'}
+              {controller.busyAction === 'test' ? '测试中…' : '测试'}
             </button>
           )}
           <button type="button" className="btn" disabled={!canEdit || busy || !controller.isDirty}
