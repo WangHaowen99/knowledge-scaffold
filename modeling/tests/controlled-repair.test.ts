@@ -843,3 +843,78 @@ test('业务决策解析忽略目标选择那道题', async () => {
   } as any);
   assert.equal(decision, '按业务口径分别编号');
 });
+
+test('资源目标只接受合法类型，业务决策中的冒号不能被当成目标', async () => {
+  const { parseExpertRepairTarget } = await import('../src/ai-construction/controlled-repair.js');
+  assert.equal(parseExpertRepairTarget({
+    answers: [{
+      questionId: 'repair_target',
+      selected: ['step_8_field_fix:replace missing_field with actual_field'],
+    }],
+  } as any), undefined);
+  assert.equal(parseExpertRepairTarget({
+    answers: [{
+      questionId: 'repair_target',
+      selected: ['required:true'],
+    }],
+  } as any), undefined);
+});
+
+test('伪造修复目标在写入回答前被拒绝且原待办保持可重试', async (t) => {
+  const { project, store, state, attempts, orchestrator, adapter } = await fixture(t);
+  const before = await store.current(project.id);
+  await store.savePackageVersion(project.id, {
+    expectedRevision: before!.revision.oid,
+    spec: {
+      ...before!.spec,
+      objects: [
+        { key: 'lead', title: '营销线索', description: '营销线索', fields: [] },
+        { key: 'bid', title: '招投标线索', description: '招投标线索', fields: [] },
+      ],
+      operations: [{
+        key: 'recommend', title: '产品推荐', description: '根据线索推荐产品',
+        inputs: [], outputs: [], flow: ['读取 object:bid'], relatedObjects: ['bid'],
+      }],
+    },
+    coverage: before!.coverage,
+    action: {
+      cause: 'test_setup', summary: '准备多目标发现', actorKind: 'system', actorName: '测试',
+    },
+  });
+  const findings = [finding({
+    id: 'field-reference', category: '字段引用错误',
+    target: 'recommend、bid',
+    message: 'operation recommend 引用了 object bid 中不存在的字段',
+    suggestion: '将操作中的错误字段改为招投标对象真实字段',
+  })];
+  const runner = new ControlledRepairRunner({
+    orchestrator, packages: store, state, adapter, attempts,
+    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings }),
+    checkReader: () => null,
+  });
+  const waiting = await runner.run(project, { tables: [], documents: [] });
+  assert.equal(waiting.interaction?.type, 'question_batch');
+
+  await assert.rejects(runner.answerExpertDecision(
+    project,
+    waiting.interaction!,
+    'forged-target',
+    {
+      answers: [
+        {
+          questionId: 'expert_decision',
+          selected: ['step_8_field_fix:replace missing_field with actual_field'],
+        },
+        {
+          questionId: 'repair_target',
+          selected: ['step_8_field_fix:replace missing_field with actual_field'],
+        },
+      ],
+    },
+  ), /需要先确定要修改哪一个/);
+
+  const snapshot = state.snapshot(project.id);
+  assert.equal(state.interaction(project.id, waiting.interaction!.id)?.status, 'pending');
+  assert.equal(snapshot.pendingInteractions.filter((item) => item.type === 'change_plan').length, 0);
+  assert.equal(snapshot.activeRuns.length, 1);
+});
