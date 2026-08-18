@@ -134,8 +134,8 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
           <input aria-label="模型标识" autoFocus disabled={isEdit} value={draft.id} onChange={(event) => update('id', event.target.value)} />
         </FieldRow>
         <FieldRow label="显示名称 *"><input aria-label="模型显示名称" value={draft.name} onChange={(event) => update('name', event.target.value)} /></FieldRow>
-        <FieldRow label="Provider">
-          <select aria-label="模型 Provider" value={draft.provider} onChange={(event) => pickProvider(event.target.value)}>
+        <FieldRow label="模型厂商">
+          <select aria-label="模型厂商" value={draft.provider} onChange={(event) => pickProvider(event.target.value)}>
             {Object.entries(PROVIDERS).map(([id, provider]) => <option key={id} value={id}>{provider.label}</option>)}
           </select>
         </FieldRow>
@@ -185,7 +185,7 @@ function GlobalModelTable({ config, canEdit, busy, tests, inventory, onEdit, onT
   return (
     <div className="mw-model-table-wrap">
       <Table>
-        <thead><tr><th>模型</th><th>Provider / 接口</th><th>密钥</th><th>状态</th><th>连接测试</th>{canEdit && <th>操作</th>}</tr></thead>
+        <thead><tr><th>模型</th><th>模型厂商 / 接口</th><th>密钥</th><th>状态</th><th>连接测试</th>{canEdit && <th>操作</th>}</tr></thead>
         <tbody>
           {config.profiles.map((profile) => {
             const decision = globalProfileDeleteDecision({ profileId: profile.id, config, referenceInventory: inventory });
@@ -717,7 +717,7 @@ export function WorkspaceModelSettings({ workspaceId, canEdit = false, request =
       <h4 className="mw-model-subtitle">空间私有模型</h4>
       {!draftProfiles.length ? <EmptyState title="当前空间暂无私有模型" description="可继续使用全局模型，或新增仅本空间可见的模型。" /> : (
         <div className="mw-model-table-wrap"><Table>
-          <thead><tr><th>模型</th><th>Provider / 接口</th><th>密钥</th><th>状态</th><th>连接测试</th>{canEdit && <th>操作</th>}</tr></thead>
+          <thead><tr><th>模型</th><th>模型厂商 / 接口</th><th>密钥</th><th>状态</th><th>连接测试</th>{canEdit && <th>操作</th>}</tr></thead>
           <tbody>{draftProfiles.map((profile) => {
             const decision = workspaceProfileDeleteDecision({ profileId: profile.id, profiles: draftProfiles, runtime, runtimeKnown });
             return <tr key={profile.id}>
