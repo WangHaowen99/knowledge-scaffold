@@ -376,6 +376,31 @@ test('/api/me：合法 token → 200；typ=refresh 的 token → 401；无 token
   assert.equal(res.statusCode, 401);
 });
 
+test('过期 token 访问不存在项目只返回一次 401，后续请求仍可处理', async () => {
+  const now = Math.floor(Date.now() / 1_000);
+  const expired = await new SignJWT({ typ: 'access', role: 'user', ver: 1, pwd_cr: false })
+    .setProtectedHeader({ alg: 'RS256', kid: KID })
+    .setIssuedAt(now - 120)
+    .setIssuer(ISS)
+    .setAudience(AUD)
+    .setSubject('expired-user')
+    .setExpirationTime(now - 60)
+    .sign(privateKey);
+
+  const response = await app.inject({
+    method: 'GET',
+    url: '/api/projects/project_missing',
+    headers: { authorization: `Bearer ${expired}` },
+  });
+
+  assert.equal(response.statusCode, 401, response.body);
+  assert.deepEqual(response.json(), { error: '认证失败或令牌已过期' });
+
+  const health = await app.inject({ method: 'GET', url: '/health' });
+  assert.equal(health.statusCode, 200);
+  assert.deepEqual(health.json(), { status: 'ok' });
+});
+
 test('平台 LLM 默认配置 API 同时要求登录和 admin 角色', async () => {
   let response = await app.inject({ method: 'GET', url: '/api/admin/llm-defaults' });
   assert.equal(response.statusCode, 401);

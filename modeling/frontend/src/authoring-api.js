@@ -236,7 +236,14 @@ const abortError = (error) => error?.name === 'AbortError';
 
 async function responseError(response) {
   const data = await response.json().catch(() => ({}));
-  return new Error(data.error || `连接失败（${response.status}）`);
+  return Object.assign(new Error(data.error || `连接失败（${response.status}）`), {
+    status: response.status,
+    data,
+  });
+}
+
+export function isTerminalProjectEventError(error) {
+  return [401, 403, 404, 410].includes(Number(error?.status));
 }
 
 /**
@@ -314,6 +321,7 @@ export function subscribeProjectEvents(id, {
     } catch (error) {
       if (stopped || activeController.signal.aborted || abortError(error)) return;
       reportError(error);
+      if (isTerminalProjectEventError(error)) return;
       scheduleReconnect(connect);
     } finally {
       if (activeReader) {
