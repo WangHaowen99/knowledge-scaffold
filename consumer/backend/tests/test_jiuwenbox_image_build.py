@@ -78,6 +78,16 @@ def test_jiuwenbox_overlay_contains_shared_capabilities_and_runtime_dependencies
     assert "import onto_sandbox_runtime.bounded_runner" in dockerfile
 
 
+def test_jiuwenbox_overlay_preserves_default_server_startup_command():
+    dockerfile = _read("deploy/jiuwenbox/Dockerfile")
+    entrypoint = 'ENTRYPOINT ["/usr/local/bin/onto-jiuwenbox-entrypoint"]'
+    command = 'CMD ["python3", "-m", "jiuwenbox.server.launcher"]'
+
+    assert entrypoint in dockerfile
+    assert command in dockerfile
+    assert dockerfile.index(entrypoint) < dockerfile.index(command)
+
+
 def test_backend_and_compose_do_not_package_or_mount_sandbox_runtime():
     backend_dockerfile = _read("backend/Dockerfile")
     compose_files = [

@@ -20,6 +20,7 @@ RUN PYTHONPATH=/app/sandbox-runtime/python \
 RUN chmod 0555 /usr/local/bin/onto-jiuwenbox-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/onto-jiuwenbox-entrypoint"]
+CMD ["python3", "-m", "jiuwenbox.server.launcher"]
 
 FROM ${RUNTIME_PAYLOAD_IMAGE} AS runtime-attested
 
