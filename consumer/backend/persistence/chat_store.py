@@ -93,6 +93,20 @@ def _public_chat_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return public_events
 
 
+def _event_ids(events: List[Dict[str, Any]]) -> set[str]:
+    event_ids = set()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        event_id = str(data.get("event_id") or "")
+        if event_id:
+            event_ids.add(event_id)
+    return event_ids
+
+
 @dataclass(frozen=True)
 class ToolOutputLimits:
     """Storage quotas for durable, truncated tool outputs."""
@@ -958,13 +972,7 @@ class _AppendOnlyChatStore:
             if not snapshot:
                 return None
             current = self._replay_event_log_unlocked(snapshot)
-            existing_ids = {
-                str(data.get("event_id") or "")
-                for event in current.events
-                if isinstance(event, dict)
-                for data in [event.get("data")]
-                if isinstance(data, dict) and str(data.get("event_id") or "")
-            }
+            existing_ids = _event_ids(current.events)
             missing_events = []
             for event in event_list:
                 data = event.get("data") if isinstance(event, dict) else None
@@ -985,20 +993,8 @@ class _AppendOnlyChatStore:
                     generation=snapshot.event_log_generation,
                 )
             verified = self._replay_event_log_unlocked(snapshot)
-            verified_ids = {
-                str(data.get("event_id") or "")
-                for event in verified.events
-                if isinstance(event, dict)
-                for data in [event.get("data")]
-                if isinstance(data, dict) and str(data.get("event_id") or "")
-            }
-            intended_ids = {
-                str(data.get("event_id") or "")
-                for event in event_list
-                if isinstance(event, dict)
-                for data in [event.get("data")]
-                if isinstance(data, dict) and str(data.get("event_id") or "")
-            }
+            verified_ids = _event_ids(verified.events)
+            intended_ids = _event_ids(event_list)
             if not intended_ids.issubset(verified_ids):
                 raise IOError("Recovered chat events are not visible after append")
             return verified
@@ -1049,12 +1045,9 @@ class _AppendOnlyChatStore:
         elif not _TOOL_OUTPUT_REF_PATTERN.fullmatch(normalized_output_ref):
             raise ValueError("output_ref is invalid")
         normalized_content_type = str(content_type or "").strip()
-        if (
-            not normalized_content_type
-            or len(normalized_content_type) > 255
-            or "\r" in normalized_content_type
-            or "\n" in normalized_content_type
-        ):
+        invalid_content_type = not normalized_content_type or len(normalized_content_type) > 255
+        contains_newline = "\r" in normalized_content_type or "\n" in normalized_content_type
+        if invalid_content_type or contains_newline:
             normalized_content_type = "text/plain; charset=utf-8"
         output_sha256 = "sha256:" + hashlib.sha256(output_bytes).hexdigest()
         record = {

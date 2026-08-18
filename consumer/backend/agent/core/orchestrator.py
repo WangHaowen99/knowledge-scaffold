@@ -79,6 +79,24 @@ logger = get_logger("orchestrator")
 _PUBLIC_LLM_ERROR_DETAIL_MAX_LENGTH = 800
 
 
+def _pending_terminal_matches(
+    pending: Any,
+    turn_id: int,
+    status: str,
+    events: List[Dict[str, Any]],
+    final_output: Dict[str, Any],
+) -> bool:
+    if not isinstance(pending, dict):
+        return False
+    if pending.get("turn_id") != turn_id:
+        return False
+    if str(pending.get("status") or "") != status:
+        return False
+    if pending.get("events") != events:
+        return False
+    return pending.get("final_output") == final_output
+
+
 def _persist_deterministic_terminal_once(
     execution_store: ExecutionStore,
     chat_store: ChatStore,
@@ -106,12 +124,12 @@ def _persist_deterministic_terminal_once(
             execution_store.commit_deterministic_terminal(session_id, turn_id)
         except Exception:
             pending = execution_store.get_pending_deterministic_terminal(session_id)
-            if (
-                isinstance(pending, dict)
-                and pending.get("turn_id") == turn_id
-                and str(pending.get("status") or "") == status
-                and pending.get("events") == events
-                and pending.get("final_output") == final_output
+            if _pending_terminal_matches(
+                pending,
+                turn_id,
+                status,
+                events,
+                final_output,
             ):
                 logger.warning(
                     "Deferred deterministic terminal ExecutionStore commit "
@@ -148,12 +166,12 @@ def _persist_deterministic_terminal_once(
                 raise RuntimeError(
                     "deterministic terminal recovery durability sync failed"
                 )
-        except Exception:
+        except Exception as recovery_error:
             execution_store.abort_deterministic_terminal(session_id, turn_id)
-            raise append_error
+            raise append_error from recovery_error
         if not recovered:
             execution_store.abort_deterministic_terminal(session_id, turn_id)
-            raise append_error
+            raise
         commit_or_defer()
         return
     if not saved:
@@ -846,6 +864,10 @@ class AgenticOrchestrator:
 
         logger.info("AgenticOrchestrator initialized with memory factory")
 
+    def _deterministic_run_is_active(self, run_id: str) -> bool:
+        active_run = self.run_store.get_run(run_id)
+        return active_run is not None and active_run.status == RunStatus.RUNNING
+
     def is_deterministic_request_potentially_applicable(
         self,
         *,
@@ -880,10 +902,7 @@ class AgenticOrchestrator:
                 execution_store,
                 chat_store,
                 normalized_session_id,
-                run_is_active=lambda pending_run_id: bool(
-                    (active_run := self.run_store.get_run(pending_run_id))
-                    and active_run.status == RunStatus.RUNNING
-                ),
+                run_is_active=self._deterministic_run_is_active,
             )
         session_metadata = dict(getattr(session, "metadata", {}) or {})
         selected_ontology_id = str(
@@ -1123,10 +1142,7 @@ class AgenticOrchestrator:
                 execution_store,
                 chat_store,
                 session_id,
-                run_is_active=lambda pending_run_id: bool(
-                    (active_run := self.run_store.get_run(pending_run_id))
-                    and active_run.status == RunStatus.RUNNING
-                ),
+                run_is_active=self._deterministic_run_is_active,
             )
         session_metadata = dict(getattr(session, "metadata", {}) or {})
         locked_selected_ontology_id = str(session_metadata.get("selected_ontology_id") or "").strip()
@@ -1854,7 +1870,8 @@ class AgenticOrchestrator:
                 return
 
             if isinstance(deterministic_outcome, DeterministicCompleted):
-                assert deterministic_envelope is not None
+                if deterministic_envelope is None:
+                    raise RuntimeError("deterministic result envelope is unavailable")
                 envelope = deterministic_envelope
                 raw_tool_output = json.dumps(
                     envelope.get("structured_result"),
@@ -2267,7 +2284,8 @@ class AgenticOrchestrator:
                 compact_chat_session()
                 return
 
-            assert isinstance(deterministic_outcome, DeterministicNotApplicable)
+            if not isinstance(deterministic_outcome, DeterministicNotApplicable):
+                raise RuntimeError("deterministic execution returned an unknown outcome")
             deterministic_branch_active = False
 
             if defer_llm_profile:

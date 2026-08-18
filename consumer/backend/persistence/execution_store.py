@@ -15,7 +15,7 @@ import json
 import os
 import threading
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +44,10 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _latest_pending_interaction(
@@ -490,12 +494,13 @@ class ExecutionStore:
                     "output_refs": [],
                 }
                 transactions[normalized_run_id] = transaction
-            elif (
-                not isinstance(transaction, dict)
-                or transaction.get("turn_id") != turn_id
-                or str(transaction.get("run_id") or "") != normalized_run_id
-                or not isinstance(transaction.get("output_refs"), list)
-            ):
+            elif not isinstance(transaction, dict):
+                raise RuntimeError("deterministic artifact transaction is invalid")
+            elif transaction.get("turn_id") != turn_id:
+                raise RuntimeError("deterministic artifact transaction is invalid")
+            elif str(transaction.get("run_id") or "") != normalized_run_id:
+                raise RuntimeError("deterministic artifact transaction is invalid")
+            elif not isinstance(transaction.get("output_refs"), list):
                 raise RuntimeError("deterministic artifact transaction is invalid")
             for normalized_ref in normalized_refs:
                 if normalized_ref not in transaction["output_refs"]:
@@ -589,12 +594,13 @@ class ExecutionStore:
                 ),
                 None,
             )
-            if (
-                turn is None
-                or str(turn.get("run_id") or "") != normalized_run_id
-                or str(turn.get("status") or "") != "success"
-                or transaction.get("turn_id") != turn_id
-            ):
+            if turn is None:
+                raise RuntimeError("deterministic artifacts have no committed success")
+            if str(turn.get("run_id") or "") != normalized_run_id:
+                raise RuntimeError("deterministic artifacts have no committed success")
+            if str(turn.get("status") or "") != "success":
+                raise RuntimeError("deterministic artifacts have no committed success")
+            if transaction.get("turn_id") != turn_id:
                 raise RuntimeError("deterministic artifacts have no committed success")
 
             updated_history = deepcopy(history)
@@ -663,7 +669,7 @@ class ExecutionStore:
                 "version": 1,
                 "turn_id": turn_id,
                 "status": status,
-                "completed_at": datetime.now().isoformat(),
+                "completed_at": _utc_now_iso(),
                 "final_output": deepcopy(final_output),
                 "summary": summary,
                 "llm_context": deepcopy(llm_context),
@@ -701,7 +707,7 @@ class ExecutionStore:
             )
             if turn is None:
                 raise RuntimeError("deterministic terminal turn is missing")
-            turn["end_time"] = updated_pending.get("completed_at") or datetime.now().isoformat()
+            turn["end_time"] = updated_pending.get("completed_at") or _utc_now_iso()
             turn["status"] = status
             turn["final_output"] = deepcopy(updated_pending.get("final_output"))
             turn["summary"] = updated_pending.get("summary")

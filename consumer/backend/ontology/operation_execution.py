@@ -530,13 +530,15 @@ def _validate_locked_operation_index(
                 "deterministic_lock_invalid",
                 "Deterministic package lock files are invalid.",
             )
-        operation_paths = {
-            str(entry.get("path") or "")
-            for entry in raw_entries
-            if isinstance(entry, Mapping)
-            and str(entry.get("path") or "").startswith("operations/")
-            and str(entry.get("path") or "").casefold().endswith(".md")
-        }
+        operation_paths = set()
+        for entry in raw_entries:
+            if not isinstance(entry, Mapping):
+                continue
+            entry_path = str(entry.get("path") or "")
+            if not entry_path.startswith("operations/"):
+                continue
+            if entry_path.casefold().endswith(".md"):
+                operation_paths.add(entry_path)
         verify_deterministic_package_lock(
             root,
             lock=lock,
@@ -805,14 +807,12 @@ def _validate_deterministic_operations(
         _validate_json_schema(input_schema_path, require_object_root=True)
         _validate_json_schema(output_schema_path, require_object_root=True)
 
-        matching_scripts = [
-            (path, raw)
-            for path, raw in script_records
-            if normalize_operation_token(
-                raw.get("bound_operation") or raw.get("operation_key") or ""
-            )
-            == normalize_operation_token(operation_key)
-        ]
+        matching_scripts = []
+        normalized_operation_key = normalize_operation_token(operation_key)
+        for path, raw in script_records:
+            bound_operation = raw.get("bound_operation") or raw.get("operation_key")
+            if normalize_operation_token(bound_operation or "") == normalized_operation_key:
+                matching_scripts.append((path, raw))
         if not matching_scripts:
             raise DeterministicPackageError(
                 "deterministic_handler_missing",
@@ -1358,12 +1358,9 @@ def _required_execution_path(root: Path, value: Any, field: str) -> Path:
 
 def _resolve_package_file(root: Path, value: Any, field: str) -> Path:
     raw = str(value or "").strip().replace("\\", "/")
-    if (
-        not raw
-        or raw.startswith("/")
-        or re.match(r"^[A-Za-z]:", raw)
-        or any(part in {"", ".", ".."} for part in raw.split("/"))
-    ):
+    absolute_path = raw.startswith("/") or bool(re.match(r"^[A-Za-z]:", raw))
+    invalid_parts = any(part in {"", ".", ".."} for part in raw.split("/"))
+    if not raw or absolute_path or invalid_parts:
         raise DeterministicPackageError(
             "execution_path_invalid",
             "Deterministic execution.{} path is invalid.".format(field),
@@ -1411,7 +1408,7 @@ def _validate_json_schema(path: Path, *, require_object_root: bool) -> None:
         )
     except DeterministicPackageError:
         raise
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise DeterministicPackageError(
             "execution_schema_invalid",
             "Schema '{}' is not valid UTF-8 JSON.".format(path.name),

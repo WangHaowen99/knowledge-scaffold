@@ -582,7 +582,7 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
 def _register_chat_tool(mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]) -> None:
     @mcp.tool()
-    def chat(
+    def chat(  # pylint: disable=huawei-too-many-arguments
         query: Annotated[str, Field(description="用户问题。")],
         session_id: Annotated[str, Field(description="可选会话 ID。")] = "",
         model_profile_id: Annotated[str, Field(description="可选模型配置 ID。")] = "",

@@ -10,6 +10,22 @@ from utils.logging import get_logger
 logger = get_logger("persistence.deterministic_terminal")
 
 
+def _artifact_transaction_fields(transaction: dict) -> tuple[int, str, list[str]]:
+    turn_id = transaction.get("turn_id")
+    run_id = str(transaction.get("run_id") or "").strip()
+    output_refs = transaction.get("output_refs")
+    if not isinstance(turn_id, int) or not run_id:
+        raise RuntimeError("deterministic artifact recovery record is invalid")
+    if not isinstance(output_refs, list):
+        raise RuntimeError("deterministic artifact recovery record is invalid")
+    for output_ref in output_refs:
+        if not isinstance(output_ref, str) or len(output_ref) != 32:
+            raise RuntimeError("deterministic artifact recovery record is invalid")
+        if any(character not in "0123456789abcdef" for character in output_ref):
+            raise RuntimeError("deterministic artifact recovery record is invalid")
+    return turn_id, run_id, output_refs
+
+
 def recover_pending_deterministic_terminal(
     execution_store: ExecutionStore,
     chat_store: ChatStore,
@@ -56,24 +72,7 @@ def recover_pending_deterministic_artifacts(
     snapshot_by_run_id = {}
     inactive_run_ids = set()
     for transaction in snapshot:
-        turn_id = transaction.get("turn_id")
-        run_id = str(transaction.get("run_id") or "").strip()
-        output_refs = transaction.get("output_refs")
-        if (
-            not isinstance(turn_id, int)
-            or not run_id
-            or not isinstance(output_refs, list)
-            or any(
-                not isinstance(output_ref, str)
-                or len(output_ref) != 32
-                or any(
-                    character not in "0123456789abcdef"
-                    for character in output_ref
-                )
-                for output_ref in output_refs
-            )
-        ):
-            raise RuntimeError("deterministic artifact recovery record is invalid")
+        _, run_id, _ = _artifact_transaction_fields(transaction)
         snapshot_by_run_id[run_id] = transaction
         if run_is_active is None or not run_is_active(run_id):
             inactive_run_ids.add(run_id)
@@ -83,24 +82,7 @@ def recover_pending_deterministic_artifacts(
         for transaction in execution_store.get_pending_deterministic_artifacts(
             session_id
         ):
-            turn_id = transaction.get("turn_id")
-            run_id = str(transaction.get("run_id") or "").strip()
-            output_refs = transaction.get("output_refs")
-            if (
-                not isinstance(turn_id, int)
-                or not run_id
-                or not isinstance(output_refs, list)
-                or any(
-                    not isinstance(output_ref, str)
-                    or len(output_ref) != 32
-                    or any(
-                        character not in "0123456789abcdef"
-                        for character in output_ref
-                    )
-                    for output_ref in output_refs
-                )
-            ):
-                raise RuntimeError("deterministic artifact recovery record is invalid")
+            turn_id, run_id, output_refs = _artifact_transaction_fields(transaction)
             if run_id not in inactive_run_ids:
                 continue
             # A writer may have reserved more refs after the snapshot. Leave a

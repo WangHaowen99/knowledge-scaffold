@@ -28,6 +28,19 @@ def _canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _valid_runtime_import_map(value: Any) -> bool:
+    if not isinstance(value, dict) or not value:
+        return False
+    for module, exports in value.items():
+        if not str(module or "").strip():
+            return False
+        if not isinstance(exports, list) or not exports:
+            return False
+        if any(not str(name or "").strip() for name in exports):
+            return False
+    return True
+
+
 @lru_cache(maxsize=1)
 def load_sandbox_runtime_contract() -> Mapping[str, Any]:
     """Load and minimally validate the image contract shipped with backend."""
@@ -37,30 +50,30 @@ def load_sandbox_runtime_contract() -> Mapping[str, Any]:
     upstream = payload.get("upstream")
     python_contract = payload.get("python")
     allowed_roots = payload.get("allowed_external_import_roots")
-    allowed_runtime_imports = payload.get("allowed_runtime_imports")
+    runtime_import_map = payload.get("allowed_runtime_imports")
     revision_file = str(payload.get("revision_file") or "").strip()
     shared_revision_file = str(payload.get("shared_revision_file") or "").strip()
-    if (
-        not isinstance(upstream, dict)
-        or not str(payload.get("runner_protocol") or "").strip()
-        or not str(upstream.get("commit") or "").strip()
-        or not isinstance(python_contract, dict)
-        or not str(python_contract.get("executable") or "").strip()
-        or not isinstance(allowed_roots, list)
-        or not all(str(item or "").strip() for item in allowed_roots)
-        or not isinstance(allowed_runtime_imports, dict)
-        or not allowed_runtime_imports
-        or not all(
-            str(module or "").strip()
-            and isinstance(exports, list)
-            and exports
-            and all(str(name or "").strip() for name in exports)
-            for module, exports in allowed_runtime_imports.items()
-        )
-        or not revision_file.startswith("/app/sandbox-runtime/python/")
-        or not shared_revision_file.startswith("/run/onto-runtime-attestation/")
-        or payload.get("requirements_file") != _REQUIREMENTS_PATH.name
-    ):
+    if not isinstance(upstream, dict):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not str(payload.get("runner_protocol") or "").strip():
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not str(upstream.get("commit") or "").strip():
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not isinstance(python_contract, dict):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not str(python_contract.get("executable") or "").strip():
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not isinstance(allowed_roots, list):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not all(str(item or "").strip() for item in allowed_roots):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not _valid_runtime_import_map(runtime_import_map):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not revision_file.startswith("/app/sandbox-runtime/python/"):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not shared_revision_file.startswith("/run/onto-runtime-attestation/"):
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if payload.get("requirements_file") != _REQUIREMENTS_PATH.name:
         raise RuntimeError("sandbox runtime contract is incomplete")
     return payload
 

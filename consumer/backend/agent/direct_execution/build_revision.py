@@ -55,12 +55,14 @@ def _application_file_entries(root: Path) -> list[dict[str, str]]:
         symlink_directories = [
             name for name in directory_names if (current / name).is_symlink()
         ]
-        directory_names[:] = sorted(
-            name
-            for name in directory_names
-            if name not in _IGNORED_DIRECTORY_NAMES
-            and not (current / name).is_symlink()
-        )
+        included_directories = []
+        for name in directory_names:
+            if name in _IGNORED_DIRECTORY_NAMES:
+                continue
+            if (current / name).is_symlink():
+                continue
+            included_directories.append(name)
+        directory_names[:] = sorted(included_directories)
         for name in sorted([*file_names, *symlink_directories]):
             path = current / name
             if not _included_application_file(path, root):
@@ -105,15 +107,15 @@ def calculate_application_build_revision(
     if distributions is None:
         distribution_entries = _installed_distribution_entries()
     else:
+        normalized_distributions = set()
+        for name, version in distributions:
+            normalized_name = str(name).strip().casefold()
+            normalized_version = str(version).strip()
+            if normalized_name and normalized_version:
+                normalized_distributions.add((normalized_name, normalized_version))
         distribution_entries = [
-            {"name": str(name).strip().casefold(), "version": str(version).strip()}
-            for name, version in sorted(
-                {
-                    (str(name).strip().casefold(), str(version).strip())
-                    for name, version in distributions
-                    if str(name).strip() and str(version).strip()
-                }
-            )
+            {"name": name, "version": version}
+            for name, version in sorted(normalized_distributions)
         ]
     runtime_entry = dict(
         runtime

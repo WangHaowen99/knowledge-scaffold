@@ -672,6 +672,7 @@ def _run_with_bounded_output(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=False,
+        shell=False,
     )
     outputs = {"stdout": bytearray(), "stderr": bytearray()}
     limits = {
@@ -682,15 +683,19 @@ def _run_with_bounded_output(
     overflow_event = threading.Event()
 
     def read_stream(stream_name: str, pipe: Any) -> None:
+        limit = limits.get(stream_name)
+        output = outputs.get(stream_name)
+        if limit is None or output is None:
+            raise RuntimeError("script output stream is invalid")
         try:
             while True:
                 chunk = pipe.read(8192)
                 if not chunk:
                     return
-                remaining = limits[stream_name] + 1 - len(outputs[stream_name])
+                remaining = limit + 1 - len(output)
                 if remaining > 0:
-                    outputs[stream_name].extend(chunk[:remaining])
-                if len(outputs[stream_name]) > limits[stream_name]:
+                    output.extend(chunk[:remaining])
+                if len(output) > limit:
                     if not overflow:
                         overflow.append(stream_name)
                     overflow_event.set()
@@ -705,11 +710,14 @@ def _run_with_bounded_output(
             except OSError:
                 pass
 
-    assert proc.stdout is not None
-    assert proc.stderr is not None
+    stdout_pipe = proc.stdout
+    stderr_pipe = proc.stderr
+    if stdout_pipe is None or stderr_pipe is None:
+        proc.terminate()
+        raise RuntimeError("script output pipes are unavailable")
     threads = [
-        threading.Thread(target=read_stream, args=("stdout", proc.stdout), daemon=True),
-        threading.Thread(target=read_stream, args=("stderr", proc.stderr), daemon=True),
+        threading.Thread(target=read_stream, args=("stdout", stdout_pipe), daemon=True),
+        threading.Thread(target=read_stream, args=("stderr", stderr_pipe), daemon=True),
     ]
     for thread in threads:
         thread.start()

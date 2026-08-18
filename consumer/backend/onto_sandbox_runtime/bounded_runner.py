@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import resource
 import signal
@@ -21,6 +22,14 @@ from typing import BinaryIO, Sequence
 
 _OUTPUT_LIMIT_EXIT_CODE = 125
 _FILE_SIZE_LIMIT_EXIT_CODE = 126
+logger = logging.getLogger("onto_sandbox_runtime.bounded_runner")
+
+
+def _log_public_error(payload: dict[str, str]) -> None:
+    logger.error(
+        "ONTO_PUBLIC_ERROR: %s",
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def _process_group_exists(process_group_id: int) -> bool:
@@ -97,6 +106,7 @@ def run_bounded(
         stderr=subprocess.PIPE,
         start_new_session=True,
         preexec_fn=apply_child_limits if file_size_limit > 0 else None,
+        shell=False,
     )
 
     def read_stream(name: str, stream: BinaryIO) -> None:
@@ -121,11 +131,14 @@ def run_bounded(
         finally:
             stream.close()
 
-    assert process.stdout is not None
-    assert process.stderr is not None
+    stdout_pipe = process.stdout
+    stderr_pipe = process.stderr
+    if stdout_pipe is None or stderr_pipe is None:
+        _terminate_process_group(process)
+        raise RuntimeError("sandbox runner output pipes are unavailable")
     readers = [
-        threading.Thread(target=read_stream, args=("stdout", process.stdout), daemon=True),
-        threading.Thread(target=read_stream, args=("stderr", process.stderr), daemon=True),
+        threading.Thread(target=read_stream, args=("stdout", stdout_pipe), daemon=True),
+        threading.Thread(target=read_stream, args=("stderr", stderr_pipe), daemon=True),
     ]
     for reader in readers:
         reader.start()
@@ -144,11 +157,7 @@ def run_bounded(
             "code": "OUTPUT_LIMIT",
             "message": "{} output exceeds limit".format(stream_name),
         }
-        sys.stderr.write(
-            "ONTO_PUBLIC_ERROR: {}\n".format(
-                json.dumps(payload, sort_keys=True, separators=(",", ":"))
-            )
-        )
+        _log_public_error(payload)
         return _OUTPUT_LIMIT_EXIT_CODE
 
     file_limit_error = (
@@ -161,11 +170,7 @@ def run_bounded(
             "code": "ARTIFACT_LIMIT",
             "message": "artifact file exceeds limit",
         }
-        sys.stderr.write(
-            "ONTO_PUBLIC_ERROR: {}\n".format(
-                json.dumps(payload, sort_keys=True, separators=(",", ":"))
-            )
-        )
+        _log_public_error(payload)
         return _FILE_SIZE_LIMIT_EXIT_CODE
 
     sys.stdout.buffer.write(outputs["stdout"])

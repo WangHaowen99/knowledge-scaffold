@@ -370,7 +370,7 @@ class DeterministicExecutionService:
 
         try:
             input_schema = self._load_json(ontology_dir / spec.input_schema_path)
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             return Failed(
                 "package_integrity_mismatch",
                 "The deterministic package changed before execution.",
@@ -468,12 +468,13 @@ class DeterministicExecutionService:
                 return runtime_failure
             parser_arguments = dict(parser_result.get("arguments") or {})
             known_argument_names = set(checkpoint_arguments) | set(request.arguments)
-            issues = [
-                issue
-                for issue in (parser_result.get("issues") or [])
-                if not isinstance(issue, Mapping)
-                or str(issue.get("field") or "").strip() not in known_argument_names
-            ]
+            issues = []
+            for issue in parser_result.get("issues") or []:
+                if isinstance(issue, Mapping):
+                    field = str(issue.get("field") or "").strip()
+                    if field in known_argument_names:
+                        continue
+                issues.append(issue)
             if issues:
                 return self._await_for_issue(
                     issue=issues[0],
@@ -501,12 +502,13 @@ class DeterministicExecutionService:
             if request.checkpoint
             else []
         )
-        unresolved_parser_issues = [
-            issue
-            for issue in pending_parser_issues
-            if not isinstance(issue, Mapping)
-            or str(issue.get("field") or "").strip() not in request.arguments
-        ]
+        unresolved_parser_issues = []
+        for issue in pending_parser_issues:
+            if isinstance(issue, Mapping):
+                field = str(issue.get("field") or "").strip()
+                if field in request.arguments:
+                    continue
+            unresolved_parser_issues.append(issue)
         if unresolved_parser_issues:
             return self._await_for_issue(
                 issue=unresolved_parser_issues[0],
@@ -529,7 +531,7 @@ class DeterministicExecutionService:
             )
         try:
             output_schema = self._load_json(ontology_dir / spec.output_schema_path)
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             return Failed(
                 "package_integrity_mismatch",
                 "The deterministic package changed before execution.",
@@ -811,7 +813,7 @@ class DeterministicExecutionService:
                 )
             try:
                 structured_result = self._strict_json_loads(handler_output)
-            except (json.JSONDecodeError, ValueError) as exc:
+            except ValueError as exc:
                 return Failed(
                     "invalid_json_output",
                     "Deterministic handler did not return valid JSON.",
@@ -1210,7 +1212,7 @@ class DeterministicExecutionService:
             )
         try:
             parsed = self._strict_json_loads(output)
-        except (json.JSONDecodeError, ValueError) as exc:
+        except ValueError as exc:
             return Failed(
                 "parser_invalid_output",
                 "Deterministic parser did not return valid JSON.",
@@ -1225,13 +1227,14 @@ class DeterministicExecutionService:
             )
         required_fields = {"matched", "arguments", "issues"}
         unknown = set(parsed) - {"matched", "arguments", "issues"}
-        if (
-            unknown
-            or not required_fields.issubset(parsed)
-            or not isinstance(parsed.get("matched"), bool)
-            or not isinstance(parsed.get("arguments"), dict)
-            or not isinstance(parsed.get("issues"), list)
-        ):
+        invalid_contract = bool(unknown or not required_fields.issubset(parsed))
+        if not invalid_contract:
+            invalid_contract = not isinstance(
+                parsed.get("matched"), bool
+            ) or not isinstance(parsed.get("arguments"), dict)
+        if not invalid_contract:
+            invalid_contract = not isinstance(parsed.get("issues"), list)
+        if invalid_contract:
             return Failed(
                 "parser_invalid_output",
                 "Deterministic parser output contract is invalid.",
@@ -1241,12 +1244,12 @@ class DeterministicExecutionService:
             parsed["arguments"],
             runtime_argument_keys,
         )
-        parser_runtime_fields.extend(
-            str(issue.get("field") or "").strip()
-            for issue in parsed["issues"]
-            if isinstance(issue, Mapping)
-            and str(issue.get("field") or "").strip() in runtime_argument_keys
-        )
+        for issue in parsed["issues"]:
+            if not isinstance(issue, Mapping):
+                continue
+            field = str(issue.get("field") or "").strip()
+            if field in runtime_argument_keys:
+                parser_runtime_fields.append(field)
         parser_runtime_fields = sorted(
             set(parser_runtime_fields),
             key=lambda item: item.encode("utf-8"),
@@ -1266,8 +1269,8 @@ class DeterministicExecutionService:
             )
         return parsed
 
+    @staticmethod
     def _run_script(
-        self,
         *,
         script_relative: str,
         cli_args: list[str],
@@ -1707,26 +1710,31 @@ class DeterministicExecutionService:
         checkpoint_arguments = checkpoint.get("arguments")
         missing_fields = checkpoint.get("missing_fields")
         pending_parser_issues = checkpoint.get("pending_parser_issues")
-        if (
-            checkpoint.get("source") != "deterministic_execution"
-            or not isinstance(checkpoint_arguments, Mapping)
-            or not isinstance(missing_fields, list)
-            or (
-                pending_parser_issues is not None
-                and not isinstance(pending_parser_issues, list)
+        invalid_shape = checkpoint.get("source") != "deterministic_execution"
+        if not invalid_shape:
+            invalid_shape = not isinstance(
+                checkpoint_arguments, Mapping
+            ) or not isinstance(missing_fields, list)
+        if not invalid_shape and pending_parser_issues is not None:
+            invalid_shape = not isinstance(pending_parser_issues, list)
+        revision_mismatch = any(
+            str(checkpoint.get(key) or "") != str(value)
+            for key, value in expected.items()
+        )
+        invalid_dependency = checkpoint_provider != expected_provider
+        runtime_fields_present = bool(
+            _runtime_owned_checkpoint_names(
+                checkpoint,
+                runtime_argument_keys,
             )
-            or any(
-                str(checkpoint.get(key) or "") != str(value)
-                for key, value in expected.items()
+        )
+        if invalid_shape or revision_mismatch or invalid_dependency:
+            return Failed(
+                "stale_checkpoint",
+                "Deterministic checkpoint no longer matches the active version.",
+                operation_key=spec.operation_key,
             )
-            or checkpoint_provider != expected_provider
-            or bool(
-                _runtime_owned_checkpoint_names(
-                    checkpoint,
-                    runtime_argument_keys,
-                )
-            )
-        ):
+        if runtime_fields_present:
             return Failed(
                 "stale_checkpoint",
                 "Deterministic checkpoint no longer matches the active version.",
@@ -1841,12 +1849,12 @@ class DeterministicExecutionService:
                     "Deterministic artifact contains protected provider credentials.",
                 )
             normalized_key = name.casefold()
-            if (
-                not name
-                or name.startswith("/")
-                or any(part in {"", ".", ".."} for part in name.split("/"))
-                or normalized_key in normalized_names
-            ):
+            invalid_root = not name or name.startswith("/")
+            invalid_parts = any(
+                part in {"", ".", ".."} for part in name.split("/")
+            )
+            duplicate_name = normalized_key in normalized_names
+            if invalid_root or invalid_parts or duplicate_name:
                 return Failed(
                     "artifact_policy_violation",
                     "Artifact names must be unique and portable.",
@@ -2037,28 +2045,34 @@ class DeterministicExecutionService:
         return tuple(sorted(values, key=lambda item: (-len(item), item)))
 
     @staticmethod
-    def _value_contains_secret(value: Any, secrets: tuple[str, ...]) -> bool:
-        if not secrets:
+    def _value_contains_secret(value: Any, secret_values: tuple[str, ...]) -> bool:
+        if not secret_values:
             return False
         if isinstance(value, Mapping):
             return any(
-                DeterministicExecutionService._value_contains_secret(item, secrets)
+                DeterministicExecutionService._value_contains_secret(
+                    item,
+                    secret_values,
+                )
                 for pair in value.items()
                 for item in pair
             )
         if isinstance(value, (list, tuple, set)):
             return any(
-                DeterministicExecutionService._value_contains_secret(item, secrets)
+                DeterministicExecutionService._value_contains_secret(
+                    item,
+                    secret_values,
+                )
                 for item in value
             )
         if not isinstance(value, str):
             return False
-        return any(secret in value for secret in secrets)
+        return any(secret in value for secret in secret_values)
 
     @staticmethod
-    def _redact_secret_values(value: str, secrets: tuple[str, ...]) -> str:
+    def _redact_secret_values(value: str, secret_values: tuple[str, ...]) -> str:
         redacted = str(value or "")
-        for secret in secrets:
+        for secret in secret_values:
             redacted = redacted.replace(secret, "[REDACTED]")
         return redacted
 
