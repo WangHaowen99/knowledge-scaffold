@@ -137,6 +137,14 @@ export function validateOperationBatch(
   const metricKeys = new Set(available.metrics.map((item) => normalizeKey(item.key)));
   let invalidReferenceCount = 0;
   for (const operation of operations) {
+    if (operation.script?.key) {
+      invalidReferenceCount += 1;
+      issues.push(`操作 ${operation.key} 在业务操作提取阶段引用了尚未生成的脚本 ${operation.script.key}；请移除 script，脚本将在后续确定性阶段单独生成`);
+    }
+    if ((operation.flow ?? []).some((step) => /\bscript\s*:/i.test(step))) {
+      invalidReferenceCount += 1;
+      issues.push(`操作 ${operation.key} 在业务操作提取阶段的 flow 中引用了尚未生成的脚本；请移除 script:<key>，脚本将在后续确定性阶段单独生成`);
+    }
     for (const objectKey of operation.relatedObjects ?? []) {
       if (objectKeys.has(normalizeKey(objectKey))) continue;
       invalidReferenceCount += 1;
