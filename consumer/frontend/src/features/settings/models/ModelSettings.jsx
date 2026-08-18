@@ -118,15 +118,15 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
   return (
     <Modal
       title={isEdit ? `编辑模型 · ${initial.name || originalId}` : `新增${scope === 'global' ? '全局' : '空间私有'}模型`}
-      description="连接测试直接使用当前未保存草稿；密钥留空会沿用已保存密钥。"
+      description="连接测试直接使用当前草稿；密钥留空沿用已保存密钥。"
       onClose={onClose}
       wide
       closeOnOverlayClick={false}
       closeOnEscape={false}
       actions={<>
         <button type="button" className="btn" disabled={busy || testing} onClick={onClose}>取消</button>
-        <button type="button" className="btn" disabled={busy || testing} onClick={test}>{testing ? '测试中…' : '测试草稿'}</button>
-        <button type="button" className="btn btn-p" disabled={busy || testing} onClick={save}>应用到草稿</button>
+        <button type="button" className="btn" disabled={busy || testing} onClick={test}>{testing ? '测试中…' : '测试'}</button>
+        <button type="button" className="btn btn-p" disabled={busy || testing} onClick={save}>应用</button>
       </>}
     >
       <div className="mw-model-form">
@@ -141,7 +141,7 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
         </FieldRow>
         <FieldRow label="接口地址 *"><input aria-label="模型接口地址" value={draft.base_url} onChange={(event) => update('base_url', event.target.value)} /></FieldRow>
         <FieldRow label="模型名称 *"><input aria-label="模型调用名称" value={draft.model} onChange={(event) => update('model', event.target.value)} /></FieldRow>
-        <FieldRow label="API 密钥" hint={initial?.has_api_key ? '已配置；留空保留原密钥，密钥不会回显' : '密钥不会回显；可先填写后测试草稿'}>
+        <FieldRow label="API 密钥" hint={initial?.has_api_key ? '已配置；留空保留原密钥，密钥不会回显' : '密钥不会回显；可先填写后测试'}>
           <input aria-label="模型 API 密钥" type="password" autoComplete="new-password" value={draft.api_key} placeholder={initial?.has_api_key ? '••••••（留空保留）' : ''}
             onChange={(event) => update('api_key', event.target.value)} />
         </FieldRow>
@@ -156,6 +156,9 @@ function ProfileEditor({ scope, initial, profiles, busy, onClose, onSaveDraft, o
           <div className={`mw-model-test-message ${testResult.success ? 'success' : 'error'}`} role="status">
             {testResult.message || (testResult.success ? '连接测试成功' : '连接测试失败')}
           </div>
+        )}
+        {testResult && !testResult.success && (
+          <div className="mw-model-muted" role="note">上次测试未通过，仍可应用后到列表中重新测试。</div>
         )}
       </div>
     </Modal>
