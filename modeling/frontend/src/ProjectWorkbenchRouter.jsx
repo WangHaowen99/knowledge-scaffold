@@ -13,6 +13,13 @@ export function projectWorkbenchMode(session) {
   return 'ai_construction';
 }
 
+export function projectAccessFailureKind(error) {
+  const status = Number(error?.status);
+  if (status === 401) return 'authentication_required';
+  if ([403, 404, 410].includes(status)) return 'project_unavailable';
+  return null;
+}
+
 /**
  * 工作流步骤状态只在事件到达时重取，且合并成批：
  * 事件常常成组到达（一次编排会写多条消息），逐条重取会让整个工作台反复抖动。
@@ -38,9 +45,21 @@ export default function ProjectWorkbenchRouter({
   projectId,
   initialSession = null,
   onUnsavedChange,
+  onProjectUnavailable,
+  onAuthenticationRequired,
 }) {
   const [session, setSession] = useState(initialSession);
   const [error, setError] = useState('');
+
+  const handleAccessFailure = useCallback((cause) => {
+    const kind = projectAccessFailureKind(cause);
+    if (!kind) return false;
+    setSession(null);
+    setError(cause instanceof Error ? cause.message : '项目工作台不可用');
+    if (kind === 'authentication_required') onAuthenticationRequired?.(cause);
+    else onProjectUnavailable?.(cause);
+    return true;
+  }, [onAuthenticationRequired, onProjectUnavailable]);
 
   const load = useCallback(async (options) => {
     // 进入项目时对账一次状态机；事件驱动的刷新保持纯读
@@ -51,10 +70,12 @@ export default function ProjectWorkbenchRouter({
       setError('');
       return next;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '项目工作台加载失败');
+      if (!handleAccessFailure(cause)) {
+        setError(cause instanceof Error ? cause.message : '项目工作台加载失败');
+      }
       throw cause;
     }
-  }, [projectId]);
+  }, [handleAccessFailure, projectId]);
 
   useEffect(() => {
     if (initialSession?.project?.id === projectId) return;
@@ -77,7 +98,7 @@ export default function ProjectWorkbenchRouter({
         onUnsavedChange={onUnsavedChange} />;
 
   return (
-    <ProjectEventStreamProvider key={projectId} projectId={projectId}>
+    <ProjectEventStreamProvider key={projectId} projectId={projectId} onError={handleAccessFailure}>
       <WorkflowRefreshOnEvents projectId={projectId} onRefresh={load} />
       {content}
     </ProjectEventStreamProvider>
