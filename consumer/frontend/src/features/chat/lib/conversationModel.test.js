@@ -144,6 +144,25 @@ test('awaiting interaction is a terminal renderer block with a stable lifecycle 
   assert.equal(awaiting.blocks.at(-1).key, running.blocks.at(-1).key);
 });
 
+test('structured runtime errors render their public message instead of object text', () => {
+  const turn = buildConversationViewModel([{
+    ...assistantMessage,
+    status: 'error',
+    content: '',
+    streamSegments: [],
+    meta: {
+      error: {
+        error_code: 'MODEL_PROVIDER_ERROR',
+        message: '模型服务请求失败',
+        source: 'model',
+      },
+    },
+  }]).turns[0];
+
+  assert.equal(turn.error, '模型服务请求失败');
+  assert.equal(turn.blocks.at(-1).text, '模型服务请求失败');
+});
+
 test('web search and generic tools remain distinct renderer kinds', () => {
   const message = {
     ...assistantMessage,

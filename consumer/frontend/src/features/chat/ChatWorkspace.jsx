@@ -464,6 +464,7 @@ export default function ChatWorkspace({
       modelProfileId,
       selectedOntologyId,
       onSessionUpdated: refreshSessionTime,
+      interactionRunId: pendingInteraction.runId,
       interactionResponse: {
         interaction_id: pendingInteraction.id,
         type: response?.type || pendingInteraction.type || 'input',

@@ -10,6 +10,7 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import patch
 
 import agent.core.jiuwen_engine as jiuwen_engine
+from agent.runtime.async_utils import run_sync_compat
 from agent.core.jiuwen_engine import (
     JiuwenEngineEventBufferFull,
     JiuwenReactLoopEngine,
@@ -299,7 +300,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
                         event_writer({"index": index})
 
                 try:
-                    await asyncio.to_thread(burst)
+                    await run_sync_compat(burst)
                     await asyncio.Event().wait()
                 finally:
                     cleaned.set()

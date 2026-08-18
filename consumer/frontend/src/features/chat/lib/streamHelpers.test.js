@@ -261,6 +261,56 @@ test('turn finished error stores provider detail in message meta', () => {
   assert.equal(state.meta.error, error);
 });
 
+test('turn finished extracts a display message from structured runtime errors', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(
+    state,
+    envelope('turn.finished', {
+      status: 'failed',
+      error: {
+        error_code: 'MODEL_PROVIDER_ERROR',
+        message: '模型服务请求失败',
+        retriable: false,
+        source: 'model',
+        details: {},
+      },
+    }, 1),
+  );
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.meta.error, '模型服务请求失败');
+});
+
+test('completed tools with an empty error field do not gain a fallback error', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('tool.started', {
+    tool_name: 'ontology_context',
+    tool_call_id: 'call-success',
+  }, 1));
+  state = applyAgentV2Event(state, envelope('tool.finished', {
+    tool_name: 'ontology_context',
+    tool_call_id: 'call-success',
+    status: 'completed',
+    output_preview: 'synthetic result',
+    error: '',
+  }, 2));
+
+  const tool = state.streamSegments[0];
+  assert.equal(tool.toolStatus, 'completed');
+  assert.equal(tool.meta.error, '');
+
+  const trace = buildTraceViewModel([{
+    id: 'success-with-empty-error',
+    role: 'assistant',
+    status: 'finished',
+    streamSegments: state.streamSegments,
+  }]);
+  assert.equal(trace.turns[0].nodes[0].status, 'finished');
+  assert.equal(trace.turns[0].nodes[0].error, '');
+});
+
 test('turn finished awaiting input keeps interaction state without error', () => {
   let state = { streamSegments: [], status: 'running', isLoading: true };
   const interaction = {
@@ -288,6 +338,23 @@ test('turn finished awaiting input keeps interaction state without error', () =>
   assert.equal(state.content, '请选择处理方式');
   assert.equal(state.options[0].id, 'a');
   assert.equal(state.interaction.id, 'interaction_call_user');
+});
+
+test('interaction requested exposes its public prompt before the terminal event', () => {
+  const state = applyAgentV2Event(
+    { streamSegments: [], status: 'running', isLoading: true },
+    envelope('interaction.requested', {
+      interaction_id: 'interaction_synthetic_input',
+      type: 'input',
+      prompt: 'Provide a synthetic input value',
+      options: [],
+    }, 1),
+  );
+
+  assert.equal(state.interaction.id, 'interaction_synthetic_input');
+  assert.equal(state.interaction.prompt, 'Provide a synthetic input value');
+  assert.equal(state.content, 'Provide a synthetic input value');
+  assert.equal(state.messageType, 'user_interaction');
 });
 
 test('standalone whitespace token deltas do not create empty stream segments', () => {
@@ -557,4 +624,103 @@ test('turn finished appends final output after tool-only stream segments', () =>
   assert.equal(state.streamSegments[0].meta.output_preview, '查询完成');
   assert.equal(state.streamSegments[1].text, '最终处理成本为 3000 元。');
   assert.equal(state.streamSegments[1].parentKey, 'iteration:main:1');
+});
+
+test('streamed agent output is grouped under its runtime iteration', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('token.delta', {
+    text: 'synthetic answer',
+    iteration: 2,
+  }, 1));
+  state = applyAgentV2Event(state, envelope('iteration.completed', {
+    iteration: 2,
+    status: 'final_output',
+    total_elapsed_ms: 25,
+  }, 2));
+  state = applyAgentV2Event(state, envelope('turn.finished', {
+    status: 'completed',
+    content: 'synthetic answer',
+  }, 3));
+
+  const trace = buildTraceViewModel([{
+    id: 'streamed-output-iteration',
+    role: 'assistant',
+    status: 'finished',
+    iterationMetrics: state.iterationMetrics,
+    streamSegments: state.streamSegments,
+  }]);
+  const iteration = trace.turns[0].iterations[0];
+  assert.equal(iteration.metrics.iteration, 2);
+  assert.deepEqual(iteration.children.map((node) => node.type), ['content']);
+  assert.equal(
+    trace.turns[0].nodes.filter((node) => node.type === 'content').length,
+    0,
+  );
+});
+
+test('public async runtime tool payload uses the contracted name field', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('tool.started', {
+    name: 'ontology_context',
+    tool_call_id: 'call-public-1',
+    input_preview: { resource: 'root' },
+    iteration: 1,
+  }, 1));
+  state = applyAgentV2Event(state, envelope('tool.finished', {
+    name: 'ontology_context',
+    tool_call_id: 'call-public-1',
+    status: 'completed',
+    elapsed_ms: 10,
+    output_preview: 'synthetic output',
+    output_size: 128,
+    output_truncated: false,
+    iteration: 1,
+  }, 2));
+  state = applyAgentV2Event(state, envelope('iteration.completed', {
+    iteration: 1,
+    status: 'continue',
+    total_elapsed_ms: 10,
+  }, 3));
+
+  assert.equal(state.streamSegments.length, 1);
+  assert.equal(state.streamSegments[0].meta.name, 'ontology_context');
+  assert.equal(state.streamSegments[0].text, '调用工具: ontology_context');
+  assert.equal(state.streamSegments[0].finished, true);
+  const trace = buildTraceViewModel([{
+    id: 'public-tool-contract',
+    role: 'assistant',
+    status: 'finished',
+    iterationMetrics: state.iterationMetrics,
+    streamSegments: state.streamSegments,
+  }]);
+  const tool = trace.turns[0].iterations[0].children[0];
+  assert.equal(tool.toolName, 'ontology_context');
+  assert.deepEqual(tool.input, { resource: 'root' });
+  assert.equal(tool.outputSize, 128);
+});
+
+test('public async runtime terminal uses content and structured_content fields', () => {
+  let state = { streamSegments: [], status: 'running', isLoading: true };
+
+  state = applyAgentV2Event(state, envelope('turn.finished', {
+    status: 'completed',
+    content: '公共契约最终结果',
+  }, 1));
+
+  assert.equal(state.status, 'finished');
+  assert.equal(state.content, '公共契约最终结果');
+  assert.equal(state.streamSegments[0].text, '公共契约最终结果');
+});
+
+test('public async runtime reasoning delta maps to the reasoning channel', () => {
+  const state = applyAgentV2Event(
+    { streamSegments: [], status: 'running', isLoading: true },
+    envelope('reasoning.delta', { text: '分析步骤' }, 1),
+  );
+
+  assert.equal(state.reasoning, '分析步骤');
+  assert.equal(state.streamSegments[0].type, 'reasoning');
+  assert.equal(state.content || '', '');
 });

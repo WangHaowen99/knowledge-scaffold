@@ -4,6 +4,7 @@
 
 import { useRef, useCallback, useLayoutEffect } from 'react';
 import createLogger from '../../../shared/lib/logger';
+import { authFetch } from '../../../shared/api/auth';
 import {
   AGENT_STREAM_EVENT,
   applyAgentV2Event,
@@ -18,6 +19,15 @@ const logger = createLogger('AgenticStream');
 const TURN_STEP_LABEL = 'turn_stream';
 const TURN_DISPLAY_NAME = '本体消费智能体';
 const FRAME_FLUSH_DELAY_MS = 16;
+
+const normalizedTurnId = (turnId) => {
+  if (turnId == null || String(turnId).trim() === '') return '';
+  return String(turnId).trim();
+};
+
+const turnTrackingKey = (runId, turnId = null) => (
+  `${runId}::${normalizedTurnId(turnId) || 'pending'}`
+);
 
 const scheduleFrame = (callback) => {
   if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
@@ -48,12 +58,15 @@ const applyMessageUpdaters = (messages, updaters = []) => {
 };
 
 const AGENTIC_CONFIG = {
-  endpoint: '/agentic/runs/stream',
-  buildPayload: (message, sessionId, context = {}, runId = null) => ({
+  endpoint: '/agentic/runs',
+  buildPayload: (message, sessionId, options = {}) => ({
     request: message,
     session_id: sessionId,
-    run_id: runId,
-    context,
+    agent_mode: options.agentMode || 'quick',
+    llm_request_mode: options.llmRequestMode || 'stream',
+    model_profile_id: options.modelProfileId || '',
+    arguments: options.arguments || null,
+    include_trace: options.includeTrace === true,
   }),
 };
 
@@ -171,9 +184,18 @@ const useAgenticStream = ({
     ensureScheduledFlush();
   }, [ensureScheduledFlush, flushQueuedMessageUpdates, resolveTargetSessionId]);
 
-  const clearRunTracking = useCallback((runId) => {
+  const clearRunTracking = useCallback((runId, turnId = null) => {
     if (!runId) return;
-    turnMessageIdsRef.current.delete(runId);
+    const normalized = normalizedTurnId(turnId);
+    if (normalized) {
+      turnMessageIdsRef.current.delete(turnTrackingKey(runId, normalized));
+      return;
+    }
+    const next = new Map(turnMessageIdsRef.current);
+    for (const key of next.keys()) {
+      if (key.startsWith(`${runId}::`)) next.delete(key);
+    }
+    turnMessageIdsRef.current = next;
   }, []);
 
   const rebindRunTracking = useCallback((fromRunId, toRunId, targetSessionId = null, options = {}) => {
@@ -183,11 +205,19 @@ const useAgenticStream = ({
       && !isMessageUpdateScopeCurrent(options.scopeEpoch, scopeEpochRef.current)
     ) return;
 
-    const trackedId = turnMessageIdsRef.current.get(fromRunId);
+    const trackedEntries = Array.from(turnMessageIdsRef.current.entries())
+      .filter(([key]) => key.startsWith(`${fromRunId}::`));
+    const trackedId = trackedEntries[0]?.[1];
     if (trackedId) {
       const remappedId = trackedId === `${fromRunId}:turn` ? `${toRunId}:turn` : trackedId;
-      turnMessageIdsRef.current.delete(fromRunId);
-      turnMessageIdsRef.current.set(toRunId, remappedId);
+      trackedEntries.forEach(([key, messageId]) => {
+        const turnId = key.slice(`${fromRunId}::`.length);
+        turnMessageIdsRef.current.delete(key);
+        turnMessageIdsRef.current.set(
+          turnTrackingKey(toRunId, turnId === 'pending' ? null : turnId),
+          messageId === `${fromRunId}:turn` ? remappedId : messageId,
+        );
+      });
     }
 
     queueMessageUpdate((prev) => {
@@ -211,29 +241,64 @@ const useAgenticStream = ({
         ts: Date.now(),
       };
 
-      turnMessageIdsRef.current.set(toRunId, nextId);
-      turnMessageIdsRef.current.delete(fromRunId);
+      const currentTurnId = normalizedTurnId(current.turnId);
+      turnMessageIdsRef.current.set(turnTrackingKey(toRunId, currentTurnId), nextId);
       return next;
     }, targetSessionId, options);
   }, [queueMessageUpdate]);
 
-  const upsertTurnBubble = useCallback((runId, updater, targetSessionId = null, options = {}) => {
+  const upsertTurnBubble = useCallback((
+    runId,
+    turnId,
+    updater,
+    targetSessionId = null,
+    options = {},
+  ) => {
     queueMessageUpdate((prev) => {
       const next = prev.slice();
-      const existingId = turnMessageIdsRef.current.get(runId);
+      const eventTurnId = normalizedTurnId(turnId);
+      const trackingKey = turnTrackingKey(runId, eventTurnId);
+      const existingId = turnMessageIdsRef.current.get(trackingKey);
 
       let idx = existingId ? next.findIndex((msg) => msg.id === existingId) : -1;
       if (idx === -1) {
         idx = next.findIndex(
-          (msg) => msg.runId === runId && msg.kind === 'agent_step' && msg.stepLabel === TURN_STEP_LABEL
+          (msg) => (
+            msg.runId === runId
+            && msg.kind === 'agent_step'
+            && msg.stepLabel === TURN_STEP_LABEL
+            && normalizedTurnId(msg.turnId) === eventTurnId
+          )
         );
+      }
+      if (idx === -1 && eventTurnId) {
+        idx = next.findIndex(
+          (msg) => (
+            msg.runId === runId
+            && msg.kind === 'agent_step'
+            && msg.stepLabel === TURN_STEP_LABEL
+            && !normalizedTurnId(msg.turnId)
+          )
+        );
+      }
+      if (idx === -1 && !eventTurnId) {
+        for (let index = next.length - 1; index >= 0; index -= 1) {
+          const msg = next[index];
+          if (msg.runId === runId && msg.kind === 'agent_step' && msg.stepLabel === TURN_STEP_LABEL) {
+            idx = index;
+            break;
+          }
+        }
       }
 
       if (idx === -1) {
-        const id = existingId || `${runId}:turn`;
+        const id = existingId || (
+          eventTurnId ? `${runId}:turn:${eventTurnId}` : `${runId}:turn`
+        );
         const base = {
           id,
           runId,
+          ...(eventTurnId ? { turnId: eventTurnId } : {}),
           role: 'assistant',
           kind: 'agent_step',
           stepLabel: TURN_STEP_LABEL,
@@ -252,20 +317,25 @@ const useAgenticStream = ({
         };
         const patch = typeof updater === 'function' ? updater(base) : updater;
         next.push({ ...base, ...patch, ts: Date.now() });
-        turnMessageIdsRef.current.set(runId, id);
+        turnMessageIdsRef.current.set(trackingKey, id);
         return next;
       }
 
       const current = next[idx];
       const patch = typeof updater === 'function' ? updater(current) : updater;
-      next[idx] = { ...current, ...patch, ts: Date.now() };
-      turnMessageIdsRef.current.set(runId, next[idx].id);
+      next[idx] = {
+        ...current,
+        ...(eventTurnId ? { turnId: eventTurnId } : {}),
+        ...patch,
+        ts: Date.now(),
+      };
+      turnMessageIdsRef.current.set(trackingKey, next[idx].id);
       return next;
     }, targetSessionId, options);
   }, [queueMessageUpdate]);
 
-  const finalizeErroredRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null) => {
-    upsertTurnBubble(runId, (current) => {
+  const finalizeErroredRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null, turnId = null) => {
+    upsertTurnBubble(runId, turnId, (current) => {
       const next = applyAgentV2Event(current, {
         protocol: 'agent-stream.v2',
         type: 'turn.finished',
@@ -280,11 +350,11 @@ const useAgenticStream = ({
         streamSegments: closeOpenSegment(next.streamSegments || []),
       };
     }, targetSessionId, { immediate: true, scopeEpoch });
-    clearRunTracking(runId);
+    clearRunTracking(runId, turnId);
   }, [clearRunTracking, upsertTurnBubble]);
 
-  const finalizeCancelledRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null) => {
-    upsertTurnBubble(runId, (current) => {
+  const finalizeCancelledRun = useCallback((runId, errorText, targetSessionId = null, scopeEpoch = null, turnId = null) => {
+    upsertTurnBubble(runId, turnId, (current) => {
       const next = applyAgentV2Event(current, {
         protocol: 'agent-stream.v2',
         type: 'turn.finished',
@@ -300,7 +370,7 @@ const useAgenticStream = ({
         streamSegments: closeOpenSegment(next.streamSegments || []),
       };
     }, targetSessionId, { immediate: true, scopeEpoch });
-    clearRunTracking(runId);
+    clearRunTracking(runId, turnId);
   }, [clearRunTracking, upsertTurnBubble]);
 
   const createEventDispatcher = useCallback((runId, targetSessionId = null, runLifecycle = null) => {
@@ -321,8 +391,13 @@ const useAgenticStream = ({
         return false;
       }
 
+      // run.started is consumed by StreamManager for lifecycle state, but it
+      // is not a turn event and must not create a visible assistant bubble.
+      if (envelope.type === 'run.started') return false;
+
       const activeRunId = runLifecycle?.activeRunId || currentRunIdRef.current || runId;
       const eventRunId = envelope.run_id || activeRunId;
+      const eventTurnId = normalizedTurnId(envelope.turn_id);
       const isTerminalEnvelope = envelope.type === 'turn.finished';
       if (envelope.run_id && envelope.run_id !== activeRunId) {
         rebindRunTracking(activeRunId, envelope.run_id, targetSessionId, {
@@ -333,17 +408,19 @@ const useAgenticStream = ({
 
       if (runLifecycle) {
         runLifecycle.activeRunId = eventRunId;
+        if (eventTurnId) runLifecycle.activeTurnId = eventTurnId;
       }
       currentRunIdRef.current = eventRunId;
       upsertTurnBubble(
         eventRunId,
+        eventTurnId,
         (current) => applyAgentV2Event(current, envelope),
         targetSessionId,
         { immediate: isTerminalEnvelope, scopeEpoch: runLifecycle?.scopeEpoch },
       );
 
       if (isTerminalEnvelope) {
-        clearRunTracking(eventRunId);
+        clearRunTracking(eventRunId, eventTurnId);
       }
 
       return false;
@@ -355,7 +432,8 @@ const useAgenticStream = ({
     onComplete: (terminalStatus = 'success') => {
       if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
       const trackedRunId = runLifecycle.activeRunId || runId;
-      upsertTurnBubble(trackedRunId, (current) => ({
+      const trackedTurnId = runLifecycle.activeTurnId || null;
+      upsertTurnBubble(trackedRunId, trackedTurnId, (current) => ({
         ...current,
         status: current.status === 'running' || current.status === 'queued'
           ? messageStatusForTerminalRun(terminalStatus)
@@ -364,7 +442,7 @@ const useAgenticStream = ({
         streamSegments: closeOpenSegment(current.streamSegments || []),
         currentSegmentType: null,
       }), targetSessionId, { immediate: true, scopeEpoch: runLifecycle.scopeEpoch });
-      clearRunTracking(trackedRunId);
+      clearRunTracking(trackedRunId, trackedTurnId);
       onSessionUpdated?.();
     },
     onError: (error, isAbort) => {
@@ -376,6 +454,7 @@ const useAgenticStream = ({
           'Workflow cancelled by user',
           targetSessionId,
           runLifecycle.scopeEpoch,
+          runLifecycle.activeTurnId || null,
         );
         onSessionUpdated?.();
         return;
@@ -386,6 +465,7 @@ const useAgenticStream = ({
         error.message || 'Unknown stream error',
         targetSessionId,
         runLifecycle.scopeEpoch,
+        runLifecycle.activeTurnId || null,
       );
       onSessionUpdated?.();
     },
@@ -432,22 +512,16 @@ const useAgenticStream = ({
     logger.info('Starting agentic workflow', { runId, sessionId: activeSessionId });
 
     const streamUrl = AGENTIC_CONFIG.endpoint;
-    const contextPayload = {};
-    if (selectedOntologyId) {
-      contextPayload.selected_ontology_id = selectedOntologyId;
-    }
-    contextPayload.agent_mode = agentMode;
-    if (modelProfileId) {
-      contextPayload.model_profile_id = modelProfileId;
-    }
-    if (interactionResponse) {
-      contextPayload.interaction_response = interactionResponse;
-    }
     const streamPayload = AGENTIC_CONFIG.buildPayload(
       message.trim(),
       activeSessionId,
-      contextPayload,
-      runId,
+      {
+        agentMode,
+        llmRequestMode: 'stream',
+        modelProfileId,
+        arguments: selectedOntologyId ? { selected_ontology_id: selectedOntologyId } : null,
+        includeTrace: true,
+      },
     );
 
     if (!streamManager || !activeSessionId) {
@@ -455,7 +529,61 @@ const useAgenticStream = ({
       return;
     }
 
-    upsertTurnBubble(runId, { status: 'running', isLoading: true }, activeSessionId, { immediate: true });
+    // HITL resumes the existing run and subscribes from its last cursor.
+    if (interactionResponse) {
+      const currentState = streamManager.getStreamState(activeSessionId);
+      const interactionRunId = String(
+        options?.interactionRunId || currentState?.runId || ''
+      ).trim();
+      if (!interactionRunId) {
+        finalizeErroredRun(runId, 'Missing run id for interaction resume', activeSessionId);
+        return;
+      }
+      try {
+        const interactionResult = await authFetch(
+          `/agentic/runs/${encodeURIComponent(interactionRunId)}/interact`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(interactionResponse),
+          },
+        );
+        const interactionPayload = await interactionResult.json().catch(() => ({}));
+        if (!interactionResult.ok) {
+          const detail = interactionPayload?.error?.detail
+            || interactionPayload?.error
+            || 'Interaction resume failed';
+          throw new Error(detail);
+        }
+        const interactionLifecycle = {
+          activeRunId: interactionRunId,
+          scopeEpoch: scopeEpochRef.current,
+        };
+        await streamManager.resumeRunForSession(
+          activeSessionId,
+          interactionRunId,
+          currentState?.cursor || 0,
+          {
+            ...createStreamCallbacks(
+              interactionRunId,
+              activeSessionId,
+              interactionLifecycle,
+              onSessionUpdated,
+            ),
+            status: interactionPayload.status || 'running',
+          },
+        );
+      } catch (error) {
+        finalizeErroredRun(
+          interactionRunId,
+          error?.message || 'Interaction resume failed',
+          activeSessionId,
+        );
+      }
+      return;
+    }
+
+    upsertTurnBubble(runId, null, { status: 'running', isLoading: true }, activeSessionId, { immediate: true });
 
     const streamCallbacks = createStreamCallbacks(
       runId,
@@ -472,6 +600,7 @@ const useAgenticStream = ({
     );
   }, [
     createStreamCallbacks,
+    finalizeErroredRun,
     queueMessageUpdate,
     sessionId,
     streamManager,
@@ -490,7 +619,7 @@ const useAgenticStream = ({
 
     const runLifecycle = { activeRunId: normalizedRunId, scopeEpoch: scopeEpochRef.current };
     currentRunIdRef.current = normalizedRunId;
-    upsertTurnBubble(normalizedRunId, (current) => ({
+    upsertTurnBubble(normalizedRunId, null, (current) => ({
       ...current,
       status: status === 'queued' ? 'queued' : 'running',
       isLoading: true,

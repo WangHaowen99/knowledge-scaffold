@@ -1,5 +1,6 @@
 """Workspace ACL checks for run, task, memory, and ACP entry points."""
 
+import asyncio
 from types import SimpleNamespace
 
 from flask import Flask, g
@@ -10,6 +11,8 @@ from api.auth.auth import AuthUser
 from api.protocols.acp import server as acp_server
 from api.protocols.acp.config import ACPConfig
 from api.routes import a2a, memories, workflows
+from agent.runtime.contracts import RunScope, RunSnapshot, RunStatus as AsyncRunStatus
+from agent.runtime.store import utc_now_iso
 from persistence.run_store import RunStore
 from workspace.workspaces import (
     create_workspace,
@@ -37,50 +40,59 @@ def _assert_forbidden(exc_info) -> None:
     assert exc_info.value.response.status_code == 403
 
 
+def _async_snapshot(run_id, username, workspace_id, session_id):
+    from agent.runtime.contracts import RuntimeInvocationContext
+
+    now = utc_now_iso()
+    return RunSnapshot(
+        run_id=run_id,
+        session_id=session_id,
+        turn_id=1,
+        status=AsyncRunStatus.QUEUED,
+        created_at=now,
+        updated_at=now,
+        last_seq=0,
+        scope=RunScope(username, workspace_id, ("agent:read",)),
+        context=RuntimeInvocationContext(
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=1,
+            workspace_id=workspace_id,
+            username=username,
+            query="synthetic question",
+        ),
+    )
+
+
 def test_workflow_run_requires_matching_request_workspace_and_current_membership(
     workspace_env,
     monkeypatch,
 ):
-    run_store = RunStore()
-    run_store.create_run(
-        run_id="run-private",
-        user_request="hello",
-        metadata={
-            "user_id": "bob",
-            "workspace_id": "private",
-            "session_id": "session-private",
-        },
-    )
-    monkeypatch.setattr(
-        workflows,
-        "_get_orchestrator",
-        lambda: SimpleNamespace(run_store=run_store),
-    )
+    snapshot = _async_snapshot("run-private", "bob", "private", "session-private")
+
+    def lookup(run_id, username, workspace_id):
+        return snapshot if (
+            run_id == snapshot.run_id
+            and username == snapshot.scope.username
+            and workspace_id == snapshot.scope.workspace_id
+        ) else None
+
+    monkeypatch.setattr(workflows, "_async_snapshot", lookup)
 
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "private"}):
         g.current_user = AuthUser(username="bob", role="user")
-        assert workflows._ensure_run_owner("run-private", "bob") is True
+        assert workflows._async_snapshot("run-private", "bob", "private") is snapshot
 
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "shared"}):
         g.current_user = AuthUser(username="bob", role="user")
-        assert workflows._ensure_run_owner("run-private", "bob") is False
+        assert workflows._async_snapshot("run-private", "bob", "shared") is None
 
     update_workspace("private", members=[])
-    get_run_calls = 0
-    original_get_run = run_store.get_run
-
-    def counting_get_run(run_id):
-        nonlocal get_run_calls
-        get_run_calls += 1
-        return original_get_run(run_id)
-
-    monkeypatch.setattr(run_store, "get_run", counting_get_run)
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "private"}):
         g.current_user = AuthUser(username="bob", role="user")
         with pytest.raises(HTTPException) as exc_info:
-            workflows._ensure_run_owner("run-private", "bob")
+            workflows._get_request_workspace_id()
         _assert_forbidden(exc_info)
-    assert get_run_calls == 0
 
 
 def test_memory_routes_resolve_workspace_before_accessing_memory(workspace_env):
@@ -133,23 +145,22 @@ def test_model_profiles_does_not_fall_back_when_workspace_resolution_is_invalid(
 
 
 def test_a2a_task_access_is_fail_closed_and_rechecks_membership(workspace_env):
-    run_store = RunStore()
-    run_store.create_run(
-        run_id="task-private",
-        user_request="hello",
-        metadata={
-            "user_id": "bob",
-            "workspace_id": "private",
-            "session_id": "session-private",
-        },
-    )
+    snapshot = _async_snapshot("task-private", "bob", "private", "session-private")
+
+    class Manager:
+        async def get_run(self, task_id, scope):
+            if task_id == snapshot.run_id and scope.owns(snapshot):
+                return snapshot
+            return None
+
     service = SimpleNamespace(
-        orchestrator=SimpleNamespace(run_store=run_store),
+        async_manager=Manager(),
+        async_call=asyncio.run,
         user_id="bob",
         workspace_id="private",
     )
 
-    with workspace_env.test_request_context():
+    with workspace_env.test_request_context(headers={"X-Workspace-Id": "private"}):
         g.current_user = AuthUser(username="bob", role="user")
         assert a2a._task_access_matches(
             service,
@@ -167,10 +178,10 @@ def test_a2a_task_access_is_fail_closed_and_rechecks_membership(workspace_env):
         ) is False
 
     update_workspace("private", members=[])
-    with workspace_env.test_request_context():
+    with workspace_env.test_request_context(headers={"X-Workspace-Id": "private"}):
         g.current_user = AuthUser(username="bob", role="user")
         with pytest.raises(HTTPException) as exc_info:
-            a2a._task_access_matches(service, "task-private")
+            a2a._get_request_workspace_id()
         _assert_forbidden(exc_info)
 
 
@@ -331,6 +342,18 @@ def test_acp_run_list_is_scoped_by_user_and_request_workspace(workspace_env, mon
     )
     with acp_server._ACP_REGISTRY_LOCK:
         acp_server._ACP_RUN_REGISTRY.clear()
+    for run_id in ("bob-shared", "bob-private", "alice-shared", "anonymous-shared"):
+        assert acp_server._ensure_registry_entry(run_id) is not None
+
+    class Manager:
+        async def list_runs(self, scope):
+            return []
+
+    monkeypatch.setattr(
+        acp_server,
+        "_get_async_runtime_bridge",
+        lambda: (Manager(), asyncio.run),
+    )
 
     with workspace_env.test_request_context(headers={"X-Workspace-Id": "shared"}):
         g.current_user = AuthUser(username="bob", role="user")

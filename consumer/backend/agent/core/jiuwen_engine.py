@@ -26,7 +26,7 @@ from integration.observability import bind_observability_context
 from integration.observability.stack_profiler import profile_current_thread
 from llm import LLMPurpose, get_llm_router
 from llm.provider_adapters import get_provider_adapter
-from ..tools.executor import aexecute_tool_batch, execute_tool_batch
+from ..tools.executor import aexecute_tool_batch
 from ..tools.base import ToolContext
 from llm.llm_request_mode import is_llm_streaming_enabled
 from utils.logging import bind_log_context, get_logger
@@ -268,9 +268,8 @@ class _JiuwenEngineEventBuffer:
 
 
 def register_current_runtime_tools(*args: Any, **kwargs: Any) -> list[Any]:
-    # This function is called from the native async engine core. Keep the
-    # synchronous symbol imported for legacy integrations/tests, but never
-    # route the async production path through asyncio.run() in a worker thread.
+    # The native engine has one tool scheduling path. Legacy callers enter
+    # through the sync Engine wrapper, not through a second tool executor.
     kwargs.setdefault("tool_batch_executor", aexecute_tool_batch)
     kwargs.setdefault("import_module", importlib.import_module)
     return _register_current_runtime_tools(*args, **kwargs)

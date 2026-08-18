@@ -32,7 +32,8 @@ def emit_token_delta_event(
     source_node: Optional[str] = None,
 ) -> None:
     normalized_channel = "reasoning" if channel == "reasoning" else "content"
-    callback_meta = dict(meta or {}) or None
+    callback_meta = dict(meta or {})
+    callback_meta.setdefault("iteration", max(1, int(iteration or 1)))
     if callable(token_callback):
         token_callback(normalized_channel, text, callback_meta)
         return

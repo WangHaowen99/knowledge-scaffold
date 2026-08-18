@@ -2,6 +2,7 @@ import { buildMessagesFromEvents } from './messageBuilder.js';
 import {
   AGENT_STREAM_EVENT,
   isAgentV2Envelope,
+  publicErrorMessage,
 } from './streamHelpers.js';
 
 const TERMINAL_STATUSES = new Set(['finished', 'error', 'cancelled', 'awaiting']);
@@ -233,7 +234,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           terminal: Boolean(event?.finished),
           text: event?.kind === 'tool'
             ? stringValue(event?.text || event?.message)
-            : stringValue(event?.text || event?.error),
+            : stringValue(event?.text || publicErrorMessage(event?.error)),
           toolName: stringValue(event?.toolName),
           toolCallId: stringValue(event?.toolCallId),
           input: event?.input ?? null,
@@ -247,7 +248,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
           parsedOutput: plainObject(event?.outputProjection ?? event?.output_projection)
             ? (event?.outputProjection ?? event?.output_projection)
             : parseOutput(event?.output),
-          error: stringValue(event?.error) || progressError,
+          error: publicErrorMessage(event?.error) || progressError,
           progress,
           startedAt,
           endedAt,
@@ -287,7 +288,7 @@ const normalizeSubagentGroup = (group, parentKey) => {
         status: normalizeConversationStatus(child?.status, !child?.endTs),
         terminal: Boolean(child?.endTs) || ['completed', 'error', 'cancelled'].includes(stringValue(child?.status)),
         result: child?.result ?? null,
-        error: stringValue(child?.error),
+        error: publicErrorMessage(child?.error),
         startedAt: childStartedAt,
         endedAt: childEndedAt,
         durationMs: elapsedValue(childStartedAt, childEndedAt),
@@ -331,7 +332,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
   const startedAt = timestampValue(segment?.startTs ?? segment?.ts);
   const endedAt = timestampValue(segment?.endTs);
   const meta = segment?.meta || {};
-  const toolName = stringValue(meta.tool_name);
+  const toolName = stringValue(meta.tool_name || meta.name);
   const progress = kind === 'business_data'
     ? normalizeProgress(meta.db_events, kind, key)
     : kind === 'web_search'
@@ -376,7 +377,7 @@ const normalizeSegment = (segment, index, messageKey, occurrences) => {
     block.outputTruncated = Boolean(meta.output_truncated);
     block.outputProjection = plainObject(meta.output_projection) ? meta.output_projection : null;
     block.parsedOutput = block.outputProjection || parseOutput(meta.output ?? meta.output_preview);
-    block.error = stringValue(meta.error) || progressError;
+    block.error = publicErrorMessage(meta.error) || progressError;
     block.durationMs = numberValue(meta.elapsed_ms) ?? block.durationMs;
   }
   if (kind === 'web_search') {
@@ -420,7 +421,8 @@ const lifecycleBlock = (message, messageKey, status, order) => {
     terminal: TERMINAL_STATUSES.has(status),
     text: awaiting
       ? stringValue(message?.interaction?.prompt || message?.content)
-      : stringValue(message?.meta?.error || message?.meta?.cancel_reason),
+      : publicErrorMessage(message?.meta?.error)
+        || stringValue(message?.meta?.cancel_reason),
     interaction: awaiting ? (message?.interaction || null) : null,
     startedAt,
     endedAt: startedAt,
@@ -486,7 +488,7 @@ const normalizeMessage = (message, index, occurrences) => {
     content: stringValue(message?.content),
     interaction: message?.interaction || null,
     options: Array.isArray(message?.options) ? message.options : [],
-    error: stringValue(message?.meta?.error),
+    error: publicErrorMessage(message?.meta?.error),
     cancelReason: stringValue(message?.meta?.cancel_reason),
     startedAt,
     endedAt,

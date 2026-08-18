@@ -51,11 +51,6 @@ def _get_request_workspace_id():
     return get_request_workspace_id()
 
 
-def _get_run_registry():
-    from api.routes.workflows import get_run_registry
-    return get_run_registry()
-
-
 def _resolve_selected_ontology_selection(value, *, workspace_id: str):
     """Validate and canonicalize the optional session ontology selection."""
     selected_ontology_id = str(value or "").strip()
@@ -125,16 +120,6 @@ def _last_turn_status(events) -> str:
     return ""
 
 
-def _handle_matches_scope(handle, *, user_id: str, workspace_id: str) -> bool:
-    return (
-        handle is not None
-        and bool(user_id)
-        and bool(workspace_id)
-        and getattr(handle, "user_id", None) == user_id
-        and getattr(handle, "workspace_id", None) == workspace_id
-    )
-
-
 def _run_matches_scope(run, *, user_id: str, workspace_id: str) -> bool:
     metadata = dict(getattr(run, "metadata", {}) or {})
     return (
@@ -148,37 +133,23 @@ def _run_matches_scope(run, *, user_id: str, workspace_id: str) -> bool:
 
 def _session_runtime_payload(
     session,
-    handle=None,
     *,
     user_id: str,
     workspace_id: str,
+    async_runs_by_session=None,
 ) -> dict:
     active_run_id = str(getattr(session, "active_run_id", "") or "").strip()
-    if not _handle_matches_scope(handle, user_id=user_id, workspace_id=workspace_id):
-        handle = None
-    if handle is None:
-        registry = _get_run_registry()
-        active_handle = registry.get(active_run_id) if active_run_id else None
-        if not _handle_matches_scope(
-            active_handle,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        ):
-            active_handle = None
-        handle = active_handle or registry.find_by_session(
-            session.id,
+    if async_runs_by_session is None:
+        async_runs_by_session = _async_runs_by_session(
             user_id=user_id,
             workspace_id=workspace_id,
         )
-    if handle is not None:
-        runtime = handle.runtime_snapshot()
-        status = runtime.get("status") or "running"
-        if not handle.done.is_set():
-            status = "running"
+    latest = async_runs_by_session.get(session.id)
+    if latest is not None:
         return {
-            "active_run_id": runtime.get("active_run_id") or active_run_id,
-            "active_run_status": status,
-            "last_seq": runtime.get("last_seq", 0),
+            "active_run_id": latest.run_id,
+            "active_run_status": latest.status.value,
+            "last_seq": latest.last_seq,
         }
     if active_run_id:
         try:
@@ -209,6 +180,30 @@ def _session_runtime_payload(
     }
 
 
+def _async_runs_by_session(*, user_id: str, workspace_id: str) -> dict:
+    try:
+        from agent.runtime.bootstrap import call_async_run, get_async_run_manager
+        from agent.runtime.contracts import RunScope
+
+        snapshots = call_async_run(
+            get_async_run_manager().list_runs(
+                RunScope(
+                    username=user_id,
+                    workspace_id=workspace_id,
+                    scopes=("agent:read",),
+                )
+            )
+        )
+    except (RuntimeError, ImportError):
+        return {}
+    result = {}
+    for snapshot in snapshots:
+        current = result.get(snapshot.session_id)
+        if current is None or snapshot.updated_at > current.updated_at:
+            result[snapshot.session_id] = snapshot
+    return result
+
+
 @sessions_bp.route("/sessions", methods=["GET"])
 @require_auth()
 def list_sessions():
@@ -221,9 +216,7 @@ def list_sessions():
     user_id = current_user.username if current_user else ""
     chat_store, _execution_store = _get_user_stores()
     sessions = chat_store.list_sessions()
-    # One locked pass over the registry, then O(1) lookups per session —
-    # avoids an O(runs) scan (and lock acquire) for every session in the list.
-    handles_by_session = _get_run_registry().snapshot_by_session(
+    async_runs_by_session = _async_runs_by_session(
         user_id=user_id,
         workspace_id=workspace_id,
     )
@@ -234,9 +227,9 @@ def list_sessions():
                 **s.to_dict(),
                 **_session_runtime_payload(
                     s,
-                    handles_by_session.get(s.id),
                     user_id=user_id,
                     workspace_id=workspace_id,
+                    async_runs_by_session=async_runs_by_session,
                 ),
             }
             for s in sessions

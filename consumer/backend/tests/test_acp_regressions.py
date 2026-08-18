@@ -9,6 +9,7 @@ from api.protocols.acp.models import RunStatus
 from api.protocols.acp.server import (
     _build_await_response,
     _claim_acp_run,
+    _interaction_response_values,
     _map_orch_event_to_acp_sse,
     _merge_terminal_answer,
 )
@@ -32,6 +33,94 @@ def test_acp_stream_does_not_emit_answer_for_token_delta():
     assert mapped == [
         ("message_delta", {"type": "message_delta", "text": "hello", "run_id": "run_1"}),
     ]
+
+
+def test_acp_completed_terminal_maps_answer_then_completed_event():
+    event = {
+        "event": "agent.v2",
+        "data": {
+            "type": "turn.finished",
+            "payload": {"status": "completed", "final_output": "synthetic answer"},
+        },
+    }
+
+    mapped = list(_map_orch_event_to_acp_sse(event, "run_1", {}, []))
+
+    assert mapped == [
+        (
+            "answer",
+            {"type": "answer", "text": "synthetic answer", "run_id": "run_1"},
+        ),
+        ("run.completed", {"type": "run.completed", "run_id": "run_1"}),
+    ]
+
+
+def test_acp_public_runtime_fields_map_tool_reasoning_and_terminal_content():
+    reasoning = {
+        "type": "reasoning.delta",
+        "payload": {"text": "synthetic reasoning"},
+    }
+    tool = {
+        "type": "tool.started",
+        "payload": {
+            "name": "synthetic_tool",
+            "tool_call_id": "tool_demo",
+        },
+    }
+    terminal = {
+        "type": "turn.finished",
+        "payload": {"status": "completed", "content": "synthetic answer"},
+    }
+
+    assert list(_map_orch_event_to_acp_sse(reasoning, "run_demo", {}, [])) == [
+        (
+            "thinking",
+            {
+                "type": "thinking",
+                "text": "synthetic reasoning",
+                "run_id": "run_demo",
+            },
+        )
+    ]
+    assert list(_map_orch_event_to_acp_sse(tool, "run_demo", {}, [])) == [
+        (
+            "thinking",
+            {
+                "type": "thinking",
+                "text": "调用工具: synthetic_tool",
+                "run_id": "run_demo",
+            },
+        )
+    ]
+    assert list(_map_orch_event_to_acp_sse(terminal, "run_demo", {}, [])) == [
+        (
+            "answer",
+            {"type": "answer", "text": "synthetic answer", "run_id": "run_demo"},
+        ),
+        ("run.completed", {"type": "run.completed", "run_id": "run_demo"}),
+    ]
+
+
+def test_acp_interaction_option_id_maps_to_canonical_option_value():
+    interaction_id, value, option_id = _interaction_response_values(
+        {
+            "await_id": "interaction_demo",
+            "option_id": "option_a",
+            "response_text": "Option A",
+        },
+        {
+            "id": "interaction_demo",
+            "type": "single_choice",
+            "options": [
+                {"id": "option_a", "label": "Option A", "value": "value_a"},
+            ],
+        },
+        "Option A",
+    )
+
+    assert interaction_id == "interaction_demo"
+    assert option_id == "option_a"
+    assert value == "value_a"
 
 
 def test_acp_suppressed_execute_script_does_not_emit_started_or_finished_events():
@@ -284,6 +373,7 @@ def test_acp_stream_emits_answer_for_structured_success_output():
 
     assert mapped == [
         ("answer", {"type": "answer", "text": "Structured final answer", "run_id": "run_1"}),
+        ("run.completed", {"type": "run.completed", "run_id": "run_1"}),
     ]
 
 

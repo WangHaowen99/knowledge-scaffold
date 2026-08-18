@@ -1,7 +1,6 @@
 """HTTP route tests for chat session management."""
 
 import json
-import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -9,7 +8,6 @@ from flask import Flask
 
 from config.workspace_llm_profiles import update_workspace_llm_profiles
 from api.routes.sessions import sessions_bp
-from api.routes.workflows import AgenticRunRegistry
 from api.auth.auth import AuthManager
 from persistence.chat_store import ChatStore
 from persistence.execution_store import (
@@ -718,63 +716,7 @@ def test_get_session_exposes_active_run_status_for_resume(tmp_path, monkeypatch)
     assert payload["active_run_status"] == "interrupted"
 
 
-class _FakeRunHandle:
-    """Stand-in for AgenticRunHandle for list-enrichment tests."""
-
-    def __init__(
-        self,
-        session_id,
-        run_id,
-        *,
-        user_id="admin",
-        workspace_id="test-workspace",
-        status="running",
-        done=False,
-        last_seq=0,
-    ):
-        self.session_id = session_id
-        self.run_id = run_id
-        self.active_run_id = run_id
-        self.user_id = user_id
-        self.workspace_id = workspace_id
-        self._status = status
-        self._last_seq = last_seq
-        self.done = threading.Event()
-        if done:
-            self.done.set()
-
-    def runtime_snapshot(self):
-        return {"active_run_id": self.active_run_id, "status": self._status, "last_seq": self._last_seq}
-
-
-class _FakeRunRegistry:
-    def __init__(self, handles):
-        self._handles = list(handles)
-
-    def snapshot_by_session(self, *, user_id, workspace_id):
-        return {
-            h.session_id: h
-            for h in self._handles
-            if h.session_id and h.user_id == user_id and h.workspace_id == workspace_id
-        }
-
-    def get(self, run_id):
-        return next((h for h in self._handles if h.run_id == run_id), None)
-
-    def find_by_session(self, session_id, *, user_id, workspace_id):
-        return next(
-            (
-                h
-                for h in self._handles
-                if h.session_id == session_id
-                and h.user_id == user_id
-                and h.workspace_id == workspace_id
-            ),
-            None,
-        )
-
-
-def test_list_sessions_enriches_with_live_run_handle_in_one_pass(tmp_path, monkeypatch):
+def test_list_sessions_enriches_with_async_run_snapshot_in_one_pass(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path)
     chat_store = ChatStore(str(tmp_path / "chats"))
     chat_store.create_session(session_id="sess-a", title="A")
@@ -785,14 +727,23 @@ def test_list_sessions_enriches_with_live_run_handle_in_one_pass(tmp_path, monke
         "api.routes.sessions._get_request_workspace_id",
         lambda: "test-workspace",
     )
-    live_handle = _FakeRunHandle("sess-a", "run-a", status="running", done=False, last_seq=7)
-    monkeypatch.setattr("api.routes.sessions._get_run_registry", lambda: _FakeRunRegistry([live_handle]))
+    live_run = SimpleNamespace(
+        session_id="sess-a",
+        run_id="run-a",
+        status=SimpleNamespace(value="running"),
+        last_seq=7,
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    monkeypatch.setattr(
+        "api.routes.sessions._async_runs_by_session",
+        lambda **_kwargs: {"sess-a": live_run},
+    )
 
     response = client.get("/agentic/sessions", headers=headers)
 
     assert response.status_code == 200
     by_id = {s["id"]: s for s in response.get_json()["sessions"]}
-    # Live handle resolved from the one-pass snapshot -> running, no O(runs) scan.
+    # The manager snapshot is loaded once for the whole session listing.
     assert by_id["sess-a"]["active_run_status"] == "running"
     assert by_id["sess-a"]["active_run_id"] == "run-a"
     assert by_id["sess-a"]["last_seq"] == 7
@@ -851,7 +802,7 @@ def test_get_session_reports_missing_workspace_as_bad_request(tmp_path, monkeypa
     assert response.get_json() == {"detail": "当前不存在任何工作空间"}
 
 
-def test_list_sessions_does_not_attach_foreign_handle_with_same_session_id(tmp_path, monkeypatch):
+def test_list_sessions_does_not_attach_run_outside_async_scope(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path)
     chat_store = ChatStore(str(tmp_path / "chats"))
     chat_store.create_session(session_id="shared-session", title="Mine")
@@ -861,17 +812,10 @@ def test_list_sessions_does_not_attach_foreign_handle_with_same_session_id(tmp_p
         lambda: "my-workspace",
     )
 
-    registry = AgenticRunRegistry()
-    foreign_handle = _FakeRunHandle(
-        "shared-session",
-        "foreign-run",
-        user_id="alice",
-        workspace_id="private-workspace",
-        last_seq=41,
+    monkeypatch.setattr(
+        "api.routes.sessions._async_runs_by_session",
+        lambda **_kwargs: {},
     )
-    with registry._lock:
-        registry._runs[foreign_handle.run_id] = foreign_handle
-    monkeypatch.setattr("api.routes.sessions._get_run_registry", lambda: registry)
 
     response = client.get("/agentic/sessions", headers=headers)
 

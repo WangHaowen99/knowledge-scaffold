@@ -11,7 +11,11 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import createLogger from '../../../shared/lib/logger';
 import { authFetch } from '../../../shared/api/auth';
-import { AGENT_STREAM_EVENT, isAgentV2Envelope } from '../lib/streamHelpers';
+import {
+  AGENT_STREAM_EVENT,
+  isAgentV2Envelope,
+  publicErrorMessage,
+} from '../lib/streamHelpers';
 import { parseSSEMessage, takeSSEFrames } from '../lib/sse';
 import {
   buildRunEventsUrl,
@@ -79,11 +83,17 @@ const buildCancelUrl = (streamUrl, runId) => {
     return null;
   }
 
-  if (!url.pathname.endsWith('/agentic/runs/stream')) {
+  if (
+    !url.pathname.endsWith('/agentic/runs/stream')
+    && !url.pathname.endsWith('/agentic/runs')
+  ) {
     return null;
   }
 
-  url.pathname = url.pathname.replace(/\/agentic\/runs\/stream\/?$/, `/agentic/runs/${runId}/cancel`);
+  url.pathname = url.pathname.replace(
+    /\/agentic\/runs(?:\/stream)?\/?$/,
+    `/agentic/runs/${runId}/cancel`,
+  );
   url.search = '';
   url.hash = '';
   return url.toString();
@@ -135,7 +145,7 @@ const useStreamManager = () => {
           sessionId,
           reason,
           status: res.status,
-          error: payload.error || payload.detail || '',
+          error: publicErrorMessage(payload.error ?? payload.detail),
         });
         return { ok: false };
       }
@@ -279,6 +289,27 @@ const useStreamManager = () => {
           return { terminalStatus: '', superseded: true };
         }
 
+        if (
+          data
+          && typeof data === 'object'
+          && data.schema_version
+          && typeof data.event_type === 'string'
+        ) {
+          data = {
+            protocol: 'agent-stream.v2',
+            event_id: data.event_id,
+            seq: data.seq,
+            ts: Date.parse(data.created_at) || Date.now(),
+            session_id: data.session_id,
+            run_id: data.run_id,
+            turn_id: data.turn_id,
+            type: data.event_type,
+            source: data.source || {},
+            payload: data.payload || {},
+          };
+          event = AGENT_STREAM_EVENT;
+        }
+
         if (event === AGENT_STREAM_EVENT && isAgentV2Envelope(data)) {
           const classification = classifyEnvelope(
             data,
@@ -345,6 +376,8 @@ const useStreamManager = () => {
     abortControllersRef.current.delete(sessionId);
     streamMetaRef.current.delete(sessionId);
     updateStreamState(sessionId, {
+      runId: activeMeta.runId,
+      cursor: activeMeta.lastSeq,
       isLoading: false,
       status,
       queue: null,
@@ -367,7 +400,10 @@ const useStreamManager = () => {
           });
           const statusPayload = await statusResponse.json().catch(() => ({}));
           if (!statusResponse.ok) {
-            throw new Error(statusPayload.error || `Run status failed with ${statusResponse.status}`);
+            throw new Error(publicErrorMessage(
+              statusPayload.error ?? statusPayload.detail,
+              `Run status failed with ${statusResponse.status}`,
+            ));
           }
 
           meta.runStatus = String(statusPayload.status || 'queued');
@@ -441,11 +477,17 @@ const useStreamManager = () => {
           if (isTerminalRunStatus(goneStatus)) {
             return { terminalStatus: goneStatus, superseded: false, receivedEvent: false };
           }
-          throw new Error(payload.error || 'Run event stream is no longer available');
+          throw new Error(publicErrorMessage(
+            payload.error ?? payload.detail,
+            'Run event stream is no longer available',
+          ));
         }
         if (!response.ok || !response.body) {
           const payload = await response.json().catch(() => ({}));
-          throw new Error(payload.error || `Run event stream failed with ${response.status}`);
+          throw new Error(publicErrorMessage(
+            payload.error ?? payload.detail,
+            `Run event stream failed with ${response.status}`,
+          ));
         }
 
         const result = await processStream(
@@ -550,7 +592,10 @@ const useStreamManager = () => {
       } else {
         if (!res.ok || !res.body) {
           const data = await res.json().catch(() => ({}));
-          throw new Error(data?.error || `Stream failed with status ${res.status}`);
+          throw new Error(publicErrorMessage(
+            data?.error ?? data?.detail,
+            `Stream failed with status ${res.status}`,
+          ));
         }
         const meta = streamMetaRef.current.get(sessionId);
         if (meta?.streamToken === streamToken) {
@@ -611,7 +656,7 @@ const useStreamManager = () => {
     abortStreamController(abortControllersRef.current.get(sessionId), { silent: true });
     abortControllersRef.current.set(sessionId, controller);
     streamMetaRef.current.set(sessionId, {
-      streamUrl: '/agentic/runs/stream',
+      streamUrl: '/agentic/runs',
       runId,
       runType: null,
       runStatus: status === 'queued' ? 'queued' : 'running',

@@ -8,6 +8,19 @@ from persistence.run_store import RunStatus
 from api.protocols.a2a.models import A2ATaskState
 
 
+def map_public_event_to_a2a_update(event: Any) -> Dict[str, Any]:
+    """Project the B public event without exposing consumer-only fields."""
+    return {
+        "task_id": event.run_id,
+        "session_id": event.session_id,
+        "event_type": event.event_type,
+        "timestamp": event.created_at,
+        "source": event.source or {},
+        "payload": event.payload,
+        "seq": event.seq,
+    }
+
+
 def map_run_status_to_a2a(
     run_status: Optional[RunStatus],
 ) -> A2ATaskState:

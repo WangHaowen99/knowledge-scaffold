@@ -1,12 +1,9 @@
-"""ACP Server — Agent Communication Protocol REST API (Flask Blueprint).
-
-遵循 A2A 适配器模式：路由层只做请求解析与事件映射，
-内部完全复用 AgenticOrchestrator.run() 获得持久化、记忆、反射等基础设施。
-"""
+"""ACP REST adapter over the canonical asynchronous run platform."""
 
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -29,11 +26,15 @@ from workspace.workspaces import (
     get_workspace_runtime_config,
     resolve_workspace_id,
     user_can_access_workspace,
-    workspace_scope,
 )
 
 from api.protocols.acp.config import get_config, ACPConfig
 from api.protocols.acp.models import MessagePartType, MessageRole, RunResponse, RunStatus
+from agent.runtime.bridge import public_event_envelope, wait_for_run
+from agent.runtime.contracts import RunScope, RuntimeInvocationContext
+from agent.runtime.event_bus import STREAM_CLOSED, STREAM_RECONNECT
+from agent.core.shared.modes import resolve_agent_mode
+from llm.llm_request_mode import normalize_llm_request_mode
 
 logger = get_logger("acp.server")
 
@@ -41,8 +42,7 @@ logger = get_logger("acp.server")
 # ACP run registry — protocol layer metadata only
 # ---------------------------------------------------------------------------
 # _ACP_RUN_REGISTRY 只保留协议层元数据引用（messages、context、session 映射等）。
-# 实际运行状态持久化委托给 Orchestrator.run_store（RunStore），
-# 服务重启后 registry 从 RunStore 按需重建。
+# AsyncRunManager 是执行启动后的唯一状态来源；RunStore 仅保留 ACP 协议投影。
 _ACP_RUN_REGISTRY: Dict[str, Dict[str, Any]] = {}
 _ACP_REGISTRY_LOCK = threading.RLock()
 
@@ -124,6 +124,7 @@ def _ensure_registry_entry(run_id: str) -> Dict[str, Any] | None:
                 "lang": run.metadata.get("acp_lang"),
                 "user_id": run.metadata.get("acp_user_id") or run.metadata.get("user_id"),
                 "status": RunStatus(run.metadata.get("acp_status", "pending")),
+                "runtime_started": bool(run.metadata.get("acp_runtime_started", False)),
                 "created_at": run.created_at,
                 "updated_at": run.updated_at,
                 "messages": run.metadata.get("acp_messages", []),
@@ -188,6 +189,7 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
                 "acp_user_id": entry.get("user_id"),
                 "acp_messages": entry.get("messages", []),
                 "acp_status": acp_status.value if isinstance(acp_status, RunStatus) else str(acp_status),
+                "acp_runtime_started": bool(entry.get("runtime_started", False)),
             })
         else:
             orch.run_store.create_run(
@@ -206,6 +208,7 @@ def _persist_to_runstore(run_id: str, entry: Dict[str, Any]) -> None:
                     "acp_user_id": entry.get("user_id"),
                     "acp_messages": entry.get("messages", []),
                     "acp_status": acp_status.value if isinstance(acp_status, RunStatus) else str(acp_status),
+                    "acp_runtime_started": bool(entry.get("runtime_started", False)),
                 },
             )
             if error:
@@ -300,6 +303,144 @@ def _resolve_acp_request_workspace_id() -> str:
     return _enforce_acp_workspace_access(resolve_workspace_id(request))
 
 
+def _get_async_runtime_bridge():
+    """Return the manager bound to the current production orchestrator."""
+    from agent.runtime.bootstrap import (
+        async_manager_matches,
+        call_async_run,
+        get_async_run_manager,
+    )
+
+    orchestrator = _get_orchestrator()
+    if not async_manager_matches(orchestrator):
+        raise RuntimeError("ACP async runtime is not bound to the current orchestrator")
+    return get_async_run_manager(), call_async_run
+
+
+def _async_context_for_acp(run_id: str, entry: Dict[str, Any]) -> RuntimeInvocationContext:
+    context = dict(entry.get("user_context") or {})
+    return RuntimeInvocationContext(
+        run_id=run_id,
+        session_id=str(entry.get("session_id") or ""),
+        turn_id=1,
+        workspace_id=str(entry.get("workspace_id") or ""),
+        username=str(entry.get("user_id") or "anonymous"),
+        query=str(entry.get("user_query") or ""),
+        agent_mode=resolve_agent_mode(context),
+        llm_request_mode=normalize_llm_request_mode(
+            context.get("llm_request_mode")
+        ),
+        model_profile_id=str(context.get("model_profile_id") or "").strip() or None,
+        arguments=(
+            dict(context.get("arguments"))
+            if isinstance(context.get("arguments"), dict)
+            else None
+        ),
+        include_trace=False,
+        supports_user_interaction=True,
+        allow_existing_run_id=True,
+    )
+
+
+def _ensure_async_acp_run(run_id: str, entry: Dict[str, Any]):
+    manager, call_async = _get_async_runtime_bridge()
+    scope = RunScope(
+        username=str(entry.get("user_id") or "anonymous"),
+        workspace_id=str(entry.get("workspace_id") or ""),
+        scopes=("agent:run", "agent:read", "agent:cancel", "agent:interact"),
+    )
+    snapshot = call_async(manager.get_run(run_id, scope))
+    if snapshot is None:
+        snapshot, _created = call_async(
+            manager.create_run(_async_context_for_acp(run_id, entry), scope)
+        )
+    with _ACP_REGISTRY_LOCK:
+        entry["runtime_started"] = True
+        entry["updated_at"] = datetime.now(timezone.utc)
+    _persist_to_runstore(run_id, entry)
+    return manager, call_async
+
+
+def _acp_response_from_async_snapshot(snapshot, entry: Dict[str, Any]) -> RunResponse:
+    status = {
+        "queued": RunStatus.PENDING,
+        "running": RunStatus.RUNNING,
+        "awaiting_input": RunStatus.AWAITING,
+        "completed": RunStatus.COMPLETED,
+        "failed": RunStatus.FAILED,
+        "cancelled": RunStatus.CANCELLED,
+    }.get(snapshot.status.value, RunStatus.FAILED)
+    content = None
+    if snapshot.result is not None:
+        content = snapshot.result.content or coerce_final_output_to_text(
+            snapshot.result.structured_content
+        )
+    messages = [_build_agent_message(content)] if content else []
+    awaiting = _build_await_response(snapshot.pending_interaction)
+    return RunResponse(
+        run_id=snapshot.run_id,
+        status=status,
+        messages=messages,
+        created_at=datetime.fromisoformat(snapshot.created_at.replace("Z", "+00:00")),
+        updated_at=datetime.fromisoformat(snapshot.updated_at.replace("Z", "+00:00")),
+        awaiting=awaiting,
+        error=snapshot.error.message if snapshot.error else None,
+    )
+
+
+def _acp_sse_from_public_event(
+    event: Any,
+    *,
+    run_id: str,
+    entry: Dict[str, Any],
+    workspace_id: str,
+    tool_op_map: Dict[str, str],
+) -> Generator[str, None, None]:
+    envelope = public_event_envelope(event)
+    for event_type, sse_data in _map_orch_event_to_acp_sse(
+        envelope,
+        run_id,
+        tool_op_map,
+        _suppress_keywords_from_runtime_config(workspace_id),
+    ):
+        yield "event: {}\ndata: {}\n\n".format(
+            event_type,
+            json.dumps(sse_data, ensure_ascii=False),
+        )
+    if event.event_type != "turn.finished":
+        return
+
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    final_text = coerce_final_output_to_text(_terminal_output(payload))
+    raw_error = payload.get("error")
+    if isinstance(raw_error, dict):
+        public_error = str(raw_error.get("message") or "Run failed")
+    else:
+        public_error = str(raw_error or "") or None
+    with _ACP_REGISTRY_LOCK:
+        entry["status"] = {
+            "completed": RunStatus.COMPLETED,
+            "failed": RunStatus.FAILED,
+            "cancelled": RunStatus.CANCELLED,
+            "awaiting_input": RunStatus.AWAITING,
+        }.get(event.status, RunStatus.FAILED)
+        entry["error"] = public_error
+        entry["updated_at"] = datetime.now(timezone.utc)
+        if final_text:
+            entry.setdefault("messages", []).append(
+                _build_agent_message(final_text)
+            )
+        awaiting_data = _awaiting_data_from_final_output(
+            _terminal_output(payload),
+            run_id=run_id,
+        )
+        if awaiting_data is not None:
+            entry["awaiting"] = awaiting_data
+        else:
+            entry.pop("awaiting", None)
+    _persist_to_runstore(run_id, entry)
+
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -348,22 +489,95 @@ def _build_await_response(awaiting_data: Optional[Dict[str, Any]]) -> Optional[D
         return None
     interaction = awaiting_data.get("interaction")
     if not isinstance(interaction, dict):
-        interaction = {}
+        interaction = awaiting_data
     await_id = str(
         awaiting_data.get("tool_call_id")
         or interaction.get("tool_call_id")
         or interaction.get("id")
         or ""
     ).strip()
-    question = str(awaiting_data.get("question") or "").strip()
+    question = str(
+        awaiting_data.get("question")
+        or awaiting_data.get("prompt")
+        or awaiting_data.get("text")
+        or interaction.get("prompt")
+        or ""
+    ).strip()
     if not await_id and not question:
         return None
     return {
         "await_id": await_id,
         "message": _build_agent_message(question),
-        "options": awaiting_data.get("options") or None,
+        "options": awaiting_data.get("options") or interaction.get("options") or None,
         "timeout": None,
     }
+
+
+def _terminal_output(payload: Dict[str, Any]) -> Any:
+    if payload.get("structured_content") is not None:
+        return payload.get("structured_content")
+    if payload.get("content") is not None:
+        return payload.get("content")
+    return payload.get("final_output")
+
+
+def _interaction_response_values(
+    payload: Dict[str, Any],
+    pending: Dict[str, Any],
+    user_response: str,
+) -> tuple[str, Any, Optional[str]]:
+    response = payload.get("response")
+    response = response if isinstance(response, dict) else {}
+    metadata = response.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    interaction_id = str(
+        payload.get("await_id")
+        or payload.get("interaction_id")
+        or pending.get("id")
+        or pending.get("interaction_id")
+        or ""
+    ).strip()
+    option_id = str(
+        payload.get("option_id")
+        or payload.get("selected_option_id")
+        or response.get("option_id")
+        or response.get("selected_option_id")
+        or metadata.get("option_id")
+        or metadata.get("selected_option_id")
+        or ""
+    ).strip() or None
+    options = pending.get("options")
+    options = options if isinstance(options, list) else []
+    selected = next(
+        (
+            option
+            for option in options
+            if isinstance(option, dict)
+            and (
+                (option_id and str(option.get("id") or option.get("option_id") or "") == option_id)
+                or (
+                    not option_id
+                    and user_response
+                    in {
+                        str(option.get("id") or option.get("option_id") or ""),
+                        str(option.get("value") or ""),
+                        str(option.get("label") or ""),
+                    }
+                )
+            )
+        ),
+        None,
+    )
+    if selected is not None:
+        option_id = str(
+            selected.get("id") or selected.get("option_id") or ""
+        ).strip() or None
+        value = selected.get("value")
+        if value is None:
+            value = user_response or option_id
+    else:
+        value = user_response
+    return interaction_id, value, option_id
 
 
 def _merge_terminal_answer(existing_answer: str, final_output: Any) -> str:
@@ -399,7 +613,7 @@ def _map_orch_event_to_acp_sse(
     tool_op_map: Dict[str, str],
     suppress_keywords: List[str],
 ) -> Generator[Tuple[str, Dict[str, Any]], None, None]:
-    """Map a single orchestrator.run() event to ACP SSE (event_type, data) pairs.
+    """Map one public runtime envelope to ACP SSE event/data pairs.
 
     Yields (event_type, data_dict) for each ACP SSE message to emit.
     Nothing is yielded for internal/no-op events.
@@ -413,9 +627,13 @@ def _map_orch_event_to_acp_sse(
     payload = data.get("payload", {})
 
     # ── token.delta ──────────────────────────────────────────────
-    if event_type == "token.delta":
+    if event_type in {"token.delta", "reasoning.delta"}:
         text = payload.get("text", "")
-        channel = payload.get("channel", "content")
+        channel = (
+            "reasoning"
+            if event_type == "reasoning.delta"
+            else payload.get("channel", "content")
+        )
         if channel == "content" and text:
             delta = {"type": "message_delta", "text": text, "run_id": run_id}
             yield ("message_delta", delta)
@@ -424,7 +642,7 @@ def _map_orch_event_to_acp_sse(
 
     # ── tool.started ─────────────────────────────────────────────
     elif event_type == "tool.started":
-        tool_name = payload.get("tool_name", "")
+        tool_name = payload.get("name") or payload.get("tool_name", "")
         message = payload.get("message", "")
         tc_id = payload.get("tool_call_id", "")
         tool_input = payload.get("input", {})  # 保存工具输入
@@ -464,7 +682,7 @@ def _map_orch_event_to_acp_sse(
 
     # ── tool.finished ────────────────────────────────────────────
     elif event_type == "tool.finished":
-        tool_name = payload.get("tool_name", "")
+        tool_name = payload.get("name") or payload.get("tool_name", "")
         if tool_name == "ontology_context":
             return
         tc_id = payload.get("tool_call_id", "")
@@ -502,7 +720,7 @@ def _map_orch_event_to_acp_sse(
     # ── turn.finished ────────────────────────────────────────────
     elif event_type == "turn.finished":
         status = payload.get("status", "")
-        if status == "error":
+        if status in {"error", "failed"}:
             error_msg = payload.get("error", "Turn failed")
             yield ("run.failed", {
                 "type": "run.failed",
@@ -510,13 +728,19 @@ def _map_orch_event_to_acp_sse(
                 "error": error_msg,
             })
         elif status == "awaiting_input":
-            awaiting = _awaiting_data_from_final_output(payload.get("final_output"), run_id=run_id)
+            awaiting = _awaiting_data_from_final_output(
+                _terminal_output(payload),
+                run_id=run_id,
+            )
             if awaiting:
                 yield ("run.awaiting", awaiting)
-        elif status == "success":
-            final_text = coerce_final_output_to_text(payload.get("final_output"))
+        elif status in {"success", "completed"}:
+            final_text = coerce_final_output_to_text(_terminal_output(payload))
             if final_text:
                 yield ("answer", {"type": "answer", "text": final_text, "run_id": run_id})
+            yield ("run.completed", {"type": "run.completed", "run_id": run_id})
+        elif status in {"cancelled", "canceled"}:
+            yield ("run.cancelled", {"type": "run.cancelled", "run_id": run_id})
 
     # ── dag_performance → progress ───────────────────────────────
     elif event_type == "dag_performance":
@@ -625,6 +849,7 @@ def create_run():
             "created_at": datetime.now(timezone.utc),
             "messages": [],
             "error": None,
+            "runtime_started": False,
         }
         with _ACP_REGISTRY_LOCK:
             _ACP_RUN_REGISTRY[run_id] = entry
@@ -649,11 +874,30 @@ def create_run():
 @acp_bp.route("/runs/<run_id>", methods=["GET"])
 @require_acp_auth()
 def get_run_status(run_id: str):
-    """查询运行状态（优先查 registry 缓存，回退到 Orchestrator.run_store）。"""
+    """Return the ACP projection of the canonical async run."""
     if not _ensure_acp_run_owner(run_id):
         return jsonify({"detail": "Run not found"}), 404
     entry = _ensure_registry_entry(run_id)
     if entry:
+        manager, call_async = _get_async_runtime_bridge()
+        try:
+            scope = RunScope(
+                username=str(entry.get("user_id") or "anonymous"),
+                workspace_id=str(entry.get("workspace_id") or ""),
+                scopes=("agent:read",),
+            )
+            snapshot = call_async(manager.get_run(run_id, scope))
+            if snapshot is not None:
+                return jsonify(
+                    _acp_response_from_async_snapshot(snapshot, entry).model_dump(
+                        mode="json"
+                    )
+                )
+            if entry.get("runtime_started"):
+                return jsonify({"detail": "Run state is unavailable"}), 503
+        except Exception:
+            logger.exception("[ACP] Async status lookup failed: %s", run_id)
+            return jsonify({"detail": "Run status lookup failed"}), 503
         return jsonify({
             "run_id": run_id,
             "status": entry.get("status", RunStatus.PENDING).value,
@@ -663,153 +907,57 @@ def get_run_status(run_id: str):
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    # 再查 orchestrator.run_store
-    try:
-        orch = _get_orchestrator()
-        run = orch.run_store.get_run(run_id)
-        if run:
-            return jsonify({
-                "run_id": run.run_id,
-                "status": run.status.value,
-                "created_at": run.created_at.isoformat(),
-                "updated_at": run.updated_at.isoformat(),
-                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-                "result": run.result,
-                "error": run.error,
-            })
-    except Exception:
-        pass
-
     return jsonify({"detail": "Run not found"}), 404
 
 
 @acp_bp.route("/runs/<run_id>/execute", methods=["POST"])
 @require_acp_auth()
 def execute_run(run_id: str):
-    """同步执行：收集 Orchestrator 所有事件后返回最终结果 JSON。"""
+    """Synchronously wait for one canonical async run and return ACP JSON."""
     if not _ensure_acp_run_owner(run_id):
         return jsonify({"detail": "Run not found"}), 404
     entry = _ensure_registry_entry(run_id)
     if not entry:
         return jsonify({"detail": "Run not found"}), 404
 
-    workspace_id = entry["workspace_id"]
-    session_id = entry["session_id"]
-    user_query = entry["user_query"]
-    user_context = set_user_interaction_capability(
-        dict(entry.get("user_context") or {}),
-        supported=True,
+    claimed, detail, status_code = _claim_acp_run(
+        entry,
+        allowed_statuses={RunStatus.PENDING},
     )
-    user_lang = entry.get("lang")
-    current_user = get_current_user()
+    if not claimed:
+        return jsonify({"detail": detail}), status_code
+    _persist_to_runstore(run_id, entry)
 
-    if user_lang:
-        user_context["lang"] = user_lang
-
-    with bind_log_context(workspace_id=workspace_id, run_id=run_id, session_id=session_id):
-        logger.info("[ACP] Executing run: %s", run_id)
-
-        claimed, detail, status_code = _claim_acp_run(
-            entry,
-            allowed_statuses={RunStatus.PENDING},
+    try:
+        manager, call_async = _ensure_async_acp_run(run_id, entry)
+        scope = RunScope(
+            username=str(entry.get("user_id") or "anonymous"),
+            workspace_id=str(entry.get("workspace_id") or ""),
+            scopes=("agent:run", "agent:read", "agent:cancel", "agent:interact"),
         )
-        if not claimed:
-            return jsonify({"detail": detail}), status_code
+        snapshot = wait_for_run(
+            manager,
+            call_async,
+            run_id,
+            scope,
+            timeout_seconds=600,
+        )
+        response = _acp_response_from_async_snapshot(snapshot, entry)
+        with _ACP_REGISTRY_LOCK:
+            entry["status"] = response.status
+            entry["error"] = response.error
         _persist_to_runstore(run_id, entry)
-
-        try:
-            with workspace_scope(workspace_id):
-                orch = _get_orchestrator()
-                final_answer = ""
-                final_status = RunStatus.COMPLETED
-                error_msg = None
-                awaiting_data = None
-
-                for orch_event in orch.run(
-                    user_request=user_query,
-                    user_context=user_context,
-                    session_id=session_id,
-                    user_id=current_user.username if current_user else "anonymous",
-                    workspace_id=workspace_id,
-                    requested_run_id=run_id,
-                    allow_existing_acp_run_id=True,
-                ):
-                    data = (
-                        orch_event.get("data", {})
-                        if orch_event.get("event") == "agent.v2"
-                        else orch_event
-                    )
-                    if not isinstance(data, dict):
-                        continue
-                    evt_type = data.get("type", "")
-                    evt_payload = data.get("payload", {})
-
-                    if evt_type == "token.delta":
-                        text = evt_payload.get("text", "")
-                        channel = evt_payload.get("channel", "content")
-                        if channel == "content" and text:
-                            final_answer += text
-
-                    elif evt_type == "turn.finished":
-                        status = evt_payload.get("status", "")
-                        if status == "success":
-                            final_answer = _merge_terminal_answer(
-                                final_answer,
-                                evt_payload.get("final_output"),
-                            )
-                        elif status == "error":
-                            final_status = RunStatus.FAILED
-                            error_msg = evt_payload.get("error", "Turn failed")
-                        elif status == "awaiting_input":
-                            final_status = RunStatus.AWAITING
-                            awaiting_data = _awaiting_data_from_final_output(
-                                evt_payload.get("final_output"),
-                                run_id=run_id,
-                            )
-                            if not final_answer:
-                                final_answer = coerce_final_output_to_text(
-                                    evt_payload.get("final_output")
-                                )
-
-                # 更新 registry
-                messages = []
-                if final_answer:
-                    agent_msg = _build_agent_message(final_answer)
-                    entry["messages"].append(agent_msg)
-                    messages.append(agent_msg)
-                entry["status"] = final_status
-                entry["error"] = error_msg
-                if awaiting_data:
-                    entry["awaiting"] = awaiting_data
-                else:
-                    entry.pop("awaiting", None)
-                _persist_to_runstore(run_id, entry)
-
-                result = RunResponse(
-                    run_id=run_id,
-                    status=final_status,
-                    messages=messages,
-                    created_at=entry["created_at"],
-                    updated_at=datetime.now(timezone.utc),
-                    awaiting=_build_await_response(awaiting_data),
-                    error=error_msg,
-                )
-
-                return jsonify(result.model_dump(mode="json"))
-
-        except Exception as e:
-            logger.exception("[ACP] Run execution failed: %s", run_id)
+        return jsonify(response.model_dump(mode="json"))
+    except TimeoutError:
+        logger.warning("[ACP] Async execution timed out: %s", run_id)
+        return jsonify({"detail": "Run execution timed out"}), 504
+    except Exception:
+        logger.exception("[ACP] Async execution failed: %s", run_id)
+        with _ACP_REGISTRY_LOCK:
             entry["status"] = RunStatus.FAILED
-            entry["error"] = str(e)
-            _persist_to_runstore(run_id, entry)
-            return jsonify(RunResponse(
-                run_id=run_id,
-                status=RunStatus.FAILED,
-                messages=[],
-                created_at=entry["created_at"],
-                updated_at=datetime.now(timezone.utc),
-                error=str(e),
-            ).model_dump(mode="json")), 500
+            entry["error"] = "Run execution failed"
+        _persist_to_runstore(run_id, entry)
+        return jsonify({"detail": "Run execution failed"}), 500
 
 
 def _stream_orchestrator_events(
@@ -820,73 +968,78 @@ def _stream_orchestrator_events(
     workspace_id: str,
     session_id: str,
     user_id: str,
+    after_seq: int = 0,
 ) -> Generator[str, None, None]:
-    """核心流式生成器：调用 Orchestrator.run() 并将事件映射为 ACP SSE。"""
-    suppress_keywords = _suppress_keywords_from_runtime_config(workspace_id)
-    tool_op_map: Dict[str, str] = {}
-    final_answer = ""
-    awaiting_input = False
-    awaiting_data = None
-    error_msg = None
-
+    """Subscribe to PublicEvents and project them to ACP SSE."""
+    manager, call_async = _get_async_runtime_bridge()
     try:
-        try:
-            with workspace_scope(workspace_id):
-                orch = _get_orchestrator()
-                for orch_event in orch.run(
-                    user_request=user_query,
-                    user_context=user_context,
-                    session_id=session_id,
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                    requested_run_id=run_id,
-                    allow_existing_acp_run_id=True,
-                ):
-                    # 逐一映射事件到 ACP SSE
-                    for sse_event_type, sse_data in _map_orch_event_to_acp_sse(
-                        orch_event, run_id, tool_op_map, suppress_keywords
-                    ):
-                        # 跟踪状态
-                        if sse_event_type == "answer":
-                            final_answer += sse_data.get("text", "")
-                        elif sse_event_type == "run.failed":
-                            error_msg = sse_data.get("error", "Unknown error")
-                        elif sse_event_type == "run.awaiting":
-                            awaiting_input = True
-                            awaiting_data = sse_data
-
-                        yield f"event: {sse_event_type}\ndata: {json.dumps(sse_data, ensure_ascii=False)}\n\n"
-
-                        # 遇到 await 时停止流式输出
-                        if sse_event_type == "run.awaiting":
-                            break
-
-                    # 外层 break（停止 orchestrator 事件迭代）
-                    if awaiting_input:
-                        break
-
-        except Exception as exc:
-            logger.exception("[ACP] Stream execution failed: run_id=%s", run_id)
-            error_msg = str(exc)
-            yield f"event: run.failed\ndata: {json.dumps({'type': 'run.failed', 'run_id': run_id, 'error': error_msg}, ensure_ascii=False)}\n\n"
-
-        # ── 最终状态事件 ──────────────────────────────────────────
-        if not awaiting_input and not error_msg:
-            if final_answer:
-                agent_msg = _build_agent_message(final_answer)
-                entry.setdefault("messages", []).append(agent_msg)
-            entry["status"] = RunStatus.COMPLETED
-            entry["error"] = None
-            yield f"event: run.completed\ndata: {json.dumps({'type': 'run.completed', 'run_id': run_id}, ensure_ascii=False)}\n\n"
-        elif error_msg:
-            entry["status"] = RunStatus.FAILED
-            entry["error"] = error_msg
-        elif awaiting_data:
-            entry["status"] = RunStatus.AWAITING
-            entry["awaiting"] = awaiting_data
-    finally:
-        entry["updated_at"] = datetime.now(timezone.utc)
+        scope = RunScope(
+            username=str(user_id or "anonymous"),
+            workspace_id=str(workspace_id or ""),
+            scopes=("agent:run", "agent:read"),
+        )
+        snapshot = call_async(manager.get_run(run_id, scope))
+        if snapshot is None:
+            entry["workspace_id"] = workspace_id
+            entry["session_id"] = session_id
+            entry["user_id"] = user_id
+            context = _async_context_for_acp(run_id, entry)
+            call_async(manager.create_run(context, scope))
+        with _ACP_REGISTRY_LOCK:
+            entry["runtime_started"] = True
+            entry["updated_at"] = datetime.now(timezone.utc)
         _persist_to_runstore(run_id, entry)
+        subscription = call_async(
+            manager.subscribe(run_id, scope, after_seq=after_seq)
+        )
+    except Exception:
+        logger.exception("[ACP] Async subscription failed: %s", run_id)
+        yield "event: run.failed\ndata: {}\n\n".format(
+            json.dumps(
+                {
+                    "type": "run.failed",
+                    "run_id": run_id,
+                    "error": "Run subscription failed",
+                }
+            )
+        )
+        return
+
+    tool_op_map: Dict[str, str] = {}
+    try:
+        for event in subscription.replay:
+            yield from _acp_sse_from_public_event(
+                event,
+                run_id=run_id,
+                entry=entry,
+                workspace_id=workspace_id,
+                tool_op_map=tool_op_map,
+            )
+            if event.event_type == "turn.finished":
+                return
+        if subscription.closed:
+            return
+        while True:
+            try:
+                item = subscription.queue.get(timeout=15)
+            except queue.Empty:
+                yield ": heartbeat\n\n"
+                continue
+            if item is STREAM_CLOSED or item is STREAM_RECONNECT:
+                return
+            if not hasattr(item, "event_type"):
+                return
+            yield from _acp_sse_from_public_event(
+                item,
+                run_id=run_id,
+                entry=entry,
+                workspace_id=workspace_id,
+                tool_op_map=tool_op_map,
+            )
+            if item.event_type == "turn.finished":
+                return
+    finally:
+        call_async(manager.unsubscribe(subscription))
 
 
 @acp_bp.route("/runs/<run_id>/stream", methods=["POST"])
@@ -983,6 +1136,7 @@ def execute_stream():
             "updated_at": datetime.now(timezone.utc),
             "messages": [],
             "error": None,
+            "runtime_started": False,
         }
         with _ACP_REGISTRY_LOCK:
             _ACP_RUN_REGISTRY[run_id] = entry
@@ -1010,7 +1164,7 @@ def execute_stream():
 @acp_bp.route("/runs/<run_id>/await", methods=["POST"])
 @require_acp_auth()
 def respond_to_await(run_id: str):
-    """响应 await 请求（同步模式）。"""
+    """Resume a HITL checkpoint and synchronously return the next phase."""
     if not _ensure_acp_run_owner(run_id):
         return jsonify({"detail": "Run not found"}), 404
     entry = _ensure_registry_entry(run_id)
@@ -1020,130 +1174,55 @@ def respond_to_await(run_id: str):
         return jsonify({"detail": "Run is not in awaiting state"}), 400
 
     payload = request.get_json(silent=True) or {}
-    workspace_id = entry["workspace_id"]
-    session_id = entry["session_id"]
-    user_lang = entry.get("lang")
-    current_user = get_current_user()
-
-    # 提取用户响应
     response_msg = payload.get("response", {})
     user_response = _extract_text_from_messages([response_msg]) if response_msg else ""
     if not user_response:
-        user_response = payload.get("response_text", "")
+        user_response = str(payload.get("response_text") or "")
 
-    user_context = set_user_interaction_capability(
-        dict(entry.get("user_context") or {}),
-        supported=True,
-    )
-    user_context["interaction_response"] = {
-        "interaction_id": payload.get("await_id", ""),
-        "value": user_response,
-    }
-    if user_lang:
-        user_context["lang"] = user_lang
-
-    with bind_log_context(workspace_id=workspace_id, run_id=run_id, session_id=session_id):
-        logger.info("[ACP] Responding to await: %s", run_id)
-        claimed, detail, status_code = _claim_acp_run(
-            entry,
-            allowed_statuses={RunStatus.AWAITING},
+    manager, call_async = _get_async_runtime_bridge()
+    try:
+        scope = RunScope(
+            username=str(entry.get("user_id") or "anonymous"),
+            workspace_id=str(entry.get("workspace_id") or ""),
+            scopes=("agent:interact", "agent:read"),
         )
-        if not claimed:
-            return jsonify({"detail": detail}), status_code
+        snapshot = call_async(manager.get_run(run_id, scope))
+        if snapshot is None or snapshot.pending_interaction is None:
+            return jsonify({"detail": "Run is not awaiting an interaction"}), 409
+        interaction_id, value, option_id = _interaction_response_values(
+            payload,
+            snapshot.pending_interaction,
+            user_response,
+        )
+        previous_last_seq = snapshot.last_seq
+        call_async(
+            manager.interact(
+                run_id,
+                scope,
+                interaction_id=interaction_id,
+                value=value,
+                option_id=option_id,
+            )
+        )
+        final_snapshot = wait_for_run(
+            manager,
+            call_async,
+            run_id,
+            scope,
+            timeout_seconds=600,
+            after_seq=previous_last_seq,
+        )
+        response = _acp_response_from_async_snapshot(final_snapshot, entry)
+        with _ACP_REGISTRY_LOCK:
+            entry["status"] = response.status
+            entry["error"] = response.error
         _persist_to_runstore(run_id, entry)
-
-        try:
-            with workspace_scope(workspace_id):
-                orch = _get_orchestrator()
-                final_answer = ""
-                final_status = RunStatus.COMPLETED
-                error_msg = None
-                awaiting_data = None
-
-                for orch_event in orch.run(
-                    user_request=user_response,
-                    user_context=user_context,
-                    session_id=session_id,
-                    user_id=current_user.username if current_user else "anonymous",
-                    workspace_id=workspace_id,
-                    requested_run_id=run_id,
-                    allow_existing_acp_run_id=True,
-                ):
-                    data = (
-                        orch_event.get("data", {})
-                        if orch_event.get("event") == "agent.v2"
-                        else orch_event
-                    )
-                    if not isinstance(data, dict):
-                        continue
-                    evt_type = data.get("type", "")
-                    evt_payload = data.get("payload", {})
-
-                    if evt_type == "token.delta":
-                        text = evt_payload.get("text", "")
-                        channel = evt_payload.get("channel", "content")
-                        if channel == "content" and text:
-                            final_answer += text
-
-                    elif evt_type == "turn.finished":
-                        status = evt_payload.get("status", "")
-                        if status == "success":
-                            final_answer = _merge_terminal_answer(
-                                final_answer,
-                                evt_payload.get("final_output"),
-                            )
-                        elif status == "error":
-                            final_status = RunStatus.FAILED
-                            error_msg = evt_payload.get("error", "Turn failed")
-                        elif status == "awaiting_input":
-                            final_status = RunStatus.AWAITING
-                            awaiting_data = _awaiting_data_from_final_output(
-                                evt_payload.get("final_output"),
-                                run_id=run_id,
-                            )
-                            if not final_answer:
-                                final_answer = coerce_final_output_to_text(
-                                    evt_payload.get("final_output")
-                                )
-
-                messages = []
-                if final_answer:
-                    agent_msg = _build_agent_message(final_answer)
-                    entry["messages"].append(agent_msg)
-                    messages.append(agent_msg)
-                entry["status"] = final_status
-                entry["error"] = error_msg
-                if awaiting_data:
-                    entry["awaiting"] = awaiting_data
-                else:
-                    entry.pop("awaiting", None)
-                _persist_to_runstore(run_id, entry)
-
-                result = RunResponse(
-                    run_id=run_id,
-                    status=final_status,
-                    messages=messages,
-                    created_at=entry["created_at"],
-                    updated_at=datetime.now(timezone.utc),
-                    awaiting=_build_await_response(awaiting_data),
-                    error=error_msg,
-                )
-
-                return jsonify(result.model_dump(mode="json"))
-
-        except Exception as e:
-            logger.exception("[ACP] Await execution failed: %s", run_id)
-            entry["status"] = RunStatus.FAILED
-            entry["error"] = str(e)
-            _persist_to_runstore(run_id, entry)
-            return jsonify(RunResponse(
-                run_id=run_id,
-                status=RunStatus.FAILED,
-                messages=[],
-                created_at=entry["created_at"],
-                updated_at=datetime.now(timezone.utc),
-                error=str(e),
-            ).model_dump(mode="json")), 500
+        return jsonify(response.model_dump(mode="json"))
+    except TimeoutError:
+        return jsonify({"detail": "Run interaction timed out"}), 504
+    except Exception:
+        logger.exception("[ACP] Async await failed: %s", run_id)
+        return jsonify({"detail": "Run interaction failed"}), 409
 
 
 @acp_bp.route("/runs/<run_id>/interact_stream", methods=["POST"])
@@ -1161,7 +1240,6 @@ def interact_stream(run_id: str):
     payload = request.get_json(silent=True) or {}
     workspace_id = entry["workspace_id"]
     session_id = entry["session_id"]
-    user_lang = entry.get("lang")
     current_user = get_current_user()
 
     # 提取用户响应
@@ -1170,36 +1248,51 @@ def interact_stream(run_id: str):
     if not user_response:
         user_response = payload.get("response_text", "")
 
-    user_context = set_user_interaction_capability(
-        dict(entry.get("user_context") or {}),
-        supported=True,
-    )
-    user_context["interaction_response"] = {
-        "interaction_id": payload.get("await_id", ""),
-        "value": user_response,
-    }
-    if user_lang:
-        user_context["lang"] = user_lang
-
     with bind_log_context(workspace_id=workspace_id, run_id=run_id, session_id=session_id):
         logger.info("[ACP] interact_stream: %s", run_id)
-        claimed, detail, status_code = _claim_acp_run(
-            entry,
-            allowed_statuses={RunStatus.AWAITING},
-        )
-        if not claimed:
-            return jsonify({"detail": detail}), status_code
-        _persist_to_runstore(run_id, entry)
+        manager, call_async = _get_async_runtime_bridge()
+        try:
+            scope = RunScope(
+                username=str(entry.get("user_id") or "anonymous"),
+                workspace_id=str(workspace_id or ""),
+                scopes=("agent:interact", "agent:read"),
+            )
+            before = call_async(manager.get_run(run_id, scope))
+            if before is None or before.pending_interaction is None:
+                return jsonify({"detail": "Run is not awaiting an interaction"}), 409
+            interaction_id, value, option_id = _interaction_response_values(
+                payload,
+                before.pending_interaction,
+                user_response,
+            )
+            after_seq = before.last_seq
+            call_async(
+                manager.interact(
+                    run_id,
+                    scope,
+                    interaction_id=interaction_id,
+                    value=value,
+                    option_id=option_id,
+                )
+            )
+            with _ACP_REGISTRY_LOCK:
+                entry["status"] = RunStatus.RUNNING
+                entry["updated_at"] = datetime.now(timezone.utc)
+            _persist_to_runstore(run_id, entry)
+        except Exception:
+            logger.exception("[ACP] Async interact stream failed: %s", run_id)
+            return jsonify({"detail": "Run interaction failed"}), 409
 
         return Response(
             _stream_orchestrator_events(
                 run_id=run_id,
                 entry=entry,
                 user_query=user_response,
-                user_context=user_context,
+                user_context=dict(entry.get("user_context") or {}),
                 workspace_id=workspace_id,
                 session_id=session_id,
                 user_id=current_user.username if current_user else "anonymous",
+                after_seq=after_seq,
             ),
             mimetype="text/event-stream",
             headers={
@@ -1220,71 +1313,77 @@ def cancel_run(run_id: str):
     if not entry:
         return jsonify({"detail": "Run not found"}), 404
 
+    manager, call_async = _get_async_runtime_bridge()
     try:
-        orch = _get_orchestrator()
-        orch.cancel_run(run_id)
-    except Exception as e:
-        logger.warning("[ACP] Cancel via orchestrator failed: %s", e)
-
-    entry["status"] = RunStatus.CANCELLED
-    entry["updated_at"] = datetime.now(timezone.utc)
-    _persist_to_runstore(run_id, entry)
-    return jsonify({"run_id": run_id, "status": "cancelled"})
+        scope = RunScope(
+            username=str(entry.get("user_id") or "anonymous"),
+            workspace_id=str(entry.get("workspace_id") or ""),
+            scopes=("agent:read", "agent:cancel"),
+        )
+        snapshot = call_async(manager.get_run(run_id, scope))
+        if snapshot is not None:
+            snapshot = call_async(
+                manager.cancel_run(run_id, scope, reason="acp_cancel")
+            )
+        elif entry.get("runtime_started"):
+            return jsonify({"detail": "Run state is unavailable"}), 503
+        with _ACP_REGISTRY_LOCK:
+            entry["status"] = RunStatus.CANCELLED
+            entry["updated_at"] = datetime.now(timezone.utc)
+        _persist_to_runstore(run_id, entry)
+        return jsonify({
+            "run_id": run_id,
+            "status": snapshot.status.value if snapshot is not None else "cancelled",
+        })
+    except Exception:
+        logger.exception("[ACP] Async cancel failed: %s", run_id)
+        return jsonify({"detail": "Run cancellation failed"}), 409
 
 
 @acp_bp.route("/runs", methods=["GET"])
 @require_acp_auth()
 def list_runs():
-    """列出当前用户的 ACP 运行记录（优先从 RunStore 读取）。"""
+    """列出当前用户的 ACP 运行记录。"""
     current_user = get_current_user()
     current_username = current_user.username if current_user else None
     request_workspace_id = _resolve_acp_request_workspace_id()
+    username = str(current_username or "anonymous")
+    try:
+        manager, call_async = _get_async_runtime_bridge()
+        snapshots = call_async(manager.list_runs(RunScope(
+            username=username,
+            workspace_id=request_workspace_id,
+            scopes=("agent:read",),
+        )))
+    except Exception:
+        logger.exception("[ACP] Async run listing failed")
+        return jsonify({"detail": "Run listing failed"}), 503
+    snapshots_by_id = {snapshot.run_id: snapshot for snapshot in snapshots}
     runs = []
 
-    # 从 RunStore 读取持久化的 ACP runs
-    try:
-        orch = _get_orchestrator()
-        store_runs = orch.run_store.list_runs(limit=200)
-        for r in store_runs:
-            if r.metadata.get("source") == "acp":
-                run_user_id = str(
-                    r.metadata.get("acp_user_id") or r.metadata.get("user_id") or ""
-                ).strip()
-                if current_username and run_user_id != current_username:
-                    continue
-                if current_username is None and run_user_id:
-                    continue
-                workspace_id = str(
-                    r.metadata.get("acp_workspace_id") or r.metadata.get("workspace_id") or ""
-                ).strip()
-                if workspace_id != request_workspace_id or not _acp_workspace_access_allowed(workspace_id):
-                    continue
-                runs.append({
-                    "run_id": r.run_id,
-                    "status": r.status.value,
-                    "created_at": r.created_at.isoformat(),
-                    "updated_at": r.updated_at.isoformat(),
-                })
-    except Exception:
-        pass
-
-    # 补充 registry 中尚未持久化的运行
-    seen = {r["run_id"] for r in runs}
     with _ACP_REGISTRY_LOCK:
         registry_snapshot = list(_ACP_RUN_REGISTRY.items())
     for run_id, entry in registry_snapshot:
-        if run_id not in seen:
-            entry_user_id = str(entry.get("user_id") or "").strip()
-            if current_username and entry_user_id != current_username:
-                continue
-            if current_username is None and entry_user_id:
-                continue
-            workspace_id = str(entry.get("workspace_id") or "").strip()
-            if workspace_id != request_workspace_id or not _acp_workspace_access_allowed(workspace_id):
-                continue
+        entry_user_id = str(entry.get("user_id") or "").strip()
+        if current_username and entry_user_id != current_username:
+            continue
+        if current_username is None and entry_user_id:
+            continue
+        workspace_id = str(entry.get("workspace_id") or "").strip()
+        if workspace_id != request_workspace_id or not _acp_workspace_access_allowed(workspace_id):
+            continue
+        snapshot = snapshots_by_id.get(run_id)
+        if snapshot is not None:
             runs.append({
                 "run_id": run_id,
-                "status": entry.get("status", RunStatus.PENDING).value,
+                "status": snapshot.status.value,
+                "created_at": snapshot.created_at,
+                "updated_at": snapshot.updated_at,
+            })
+        elif not entry.get("runtime_started"):
+            runs.append({
+                "run_id": run_id,
+                "status": _entry_status(entry).value,
                 "created_at": entry.get("created_at", datetime.now(timezone.utc)).isoformat(),
                 "updated_at": entry.get("updated_at", datetime.now(timezone.utc)).isoformat(),
             })

@@ -7,13 +7,13 @@ import unittest
 from types import SimpleNamespace
 
 from agent.runtime import (
-    FixedAsyncAgentRuntime,
     JiuwenAsyncAgentRuntime,
     PublicEvent,
     PublicEventAdapter,
     RuntimeEvent,
     RuntimeInvocationContext,
 )
+from agent.runtime.mock import FixedAsyncAgentRuntime
 
 
 def _context(run_id: str, **arguments) -> RuntimeInvocationContext:

@@ -1763,7 +1763,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FakeAgent(),
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -2182,9 +2182,10 @@ def test_jiuwen_loop_engine_routes_stream_tokens_to_token_callback(monkeypatch):
 
     assert callbacks[0][0:2] == ("reasoning", "先分析")
     assert callbacks[0][2]["reasoning_block_id"].startswith("reasoning_")
+    assert callbacks[0][2]["iteration"] == 1
     assert callbacks[1:] == [
-        ("content", "处理中", None),
-        ("content", "最终答案", None),
+        ("content", "处理中", {"iteration": 1}),
+        ("content", "最终答案", {"iteration": 1}),
     ]
     assert [
         event["data"]["type"]
@@ -3348,7 +3349,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
         fake_create_default_agent,
     )
     monkeypatch.setattr(
-        "agent.core.jiuwen_engine.execute_tool_batch",
+        "agent.core.jiuwen_engine.aexecute_tool_batch",
         fake_executor,
     )
 
@@ -3511,7 +3512,7 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         fake_create_default_agent,
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -3747,7 +3748,7 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: fake_agent,
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -3874,7 +3875,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FakeAgent(),
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {
@@ -3990,7 +3991,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: FailingAfterToolAgent(),
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     observer = RecordingObserver()
@@ -4092,7 +4093,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         lambda **_kwargs: CancellingAfterToolAgent(),
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     observer = RecordingObserver()
@@ -4198,7 +4199,7 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
         "agent.core.jiuwen_engine.create_default_jiuwen_agent",
         fake_create_default_agent,
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     state = {

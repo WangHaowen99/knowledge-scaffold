@@ -16,8 +16,21 @@ _IGNORED_MODEL_REQUEST_LABELS = frozenset({"reasoning_summary"})
 _PROTOCOL_EVENT_TYPES = frozenset(
     {
         "tool.started",
+        "tool.progress",
         "tool.finished",
+        "subagent.started",
+        "subagent.delta",
+        "subagent.progress",
+        "subagent.finished",
+        "subagent_group.started",
+        "subagent_group.finished",
         "interaction.requested",
+    }
+)
+_ENGINE_EVENT_TYPES = frozenset(
+    {
+        "iteration.completed",
+        "reasoning.summary",
     }
 )
 _STATUS_ALIASES = {
@@ -29,6 +42,10 @@ _STATUS_ALIASES = {
 
 class RuntimeEventBufferFull(RuntimeError):
     """Raised when internal producers outrun the bounded runtime consumer."""
+
+    error_code = "RUNTIME_EVENT_BUFFER_FULL"
+    public_message = "Jiuwen runtime event buffer is full"
+    retriable = False
 
 
 class JiuwenRuntimeEventBridge:
@@ -147,6 +164,39 @@ class JiuwenRuntimeEventBridge:
             )
         )
 
+    def engine_event(self, event: Any) -> None:
+        """Forward selected legacy Engine events without duplicating callbacks."""
+        if not isinstance(event, Mapping):
+            return
+        data = event.get("data")
+        if not isinstance(data, Mapping):
+            data = event
+        normalized_type = str(
+            data.get("type") or data.get("event_type") or ""
+        ).strip().lower()
+        if normalized_type not in _ENGINE_EVENT_TYPES:
+            return
+        payload = data.get("payload")
+        normalized_payload = dict(payload) if isinstance(payload, Mapping) else {}
+        source = data.get("source")
+        normalized_source = dict(source) if isinstance(source, Mapping) else {}
+        component = str(
+            normalized_source.get("component")
+            or ("iteration" if normalized_type == "iteration.completed" else "model")
+        ).strip()
+        source_node = str(
+            normalized_source.get("node") or self.source_node
+        ).strip()
+        self._publish(
+            self._event(
+                normalized_type,
+                "running",
+                normalized_payload,
+                component=component,
+                source_node=source_node,
+            )
+        )
+
     def turn_started(self) -> RuntimeEvent:
         return self._event(
             "turn.started",
@@ -202,21 +252,30 @@ class JiuwenRuntimeEventBridge:
         overflow = False
         with self._buffer_lock:
             if not self._accepting:
+                if self._overflowed:
+                    raise RuntimeEventBufferFull(
+                        "Jiuwen runtime event buffer is full"
+                    )
                 return
             if self._buffered_count >= self.max_buffer_size:
                 self._accepting = False
+                self._overflowed = True
                 overflow = True
             else:
                 self._buffered_count += 1
 
         if overflow:
             if threading.get_ident() == self._loop_thread_id:
-                self._record_overflow()
-                raise RuntimeEventBufferFull(
-                    "Jiuwen runtime event buffer is full"
-                )
-            self._loop.call_soon_threadsafe(self._record_overflow)
-            return
+                self._record_overflow_now()
+            else:
+                self._loop.call_soon_threadsafe(self._record_overflow_now)
+            # Callback producers must stop as well as the async consumer. In
+            # particular, silently returning here lets a synchronous SDK/tool
+            # worker continue emitting after the owning Agent task has been
+            # cancelled, leaving an orphan thread during loop shutdown.
+            raise RuntimeEventBufferFull(
+                "Jiuwen runtime event buffer is full"
+            )
         if threading.get_ident() == self._loop_thread_id:
             self._put_reserved_nowait(event)
             return
@@ -237,7 +296,10 @@ class JiuwenRuntimeEventBridge:
             # correct. Treat it as an overflow rather than leaking a callback
             # exception from the event loop.
             self._rollback_reserved_slot()
-            self._record_overflow()
+            with self._buffer_lock:
+                self._accepting = False
+                self._overflowed = True
+            self._record_overflow_now()
 
     def _rollback_reserved_slot(self) -> None:
         with self._buffer_lock:
@@ -247,10 +309,9 @@ class JiuwenRuntimeEventBridge:
         with self._buffer_lock:
             self._accepting = False
 
-    def _record_overflow(self) -> None:
-        if self._overflowed:
+    def _record_overflow_now(self) -> None:
+        if self._terminal_committed:
             return
-        self._overflowed = True
         self._stop_accepting()
         self._terminal_committed = True
         self._pending_terminal = self.turn_finished(
@@ -308,6 +369,7 @@ class JiuwenRuntimeEventBridge:
         payload: Mapping[str, Any],
         *,
         component: str,
+        source_node: str | None = None,
     ) -> RuntimeEvent:
         return RuntimeEvent(
             event_type=event_type,
@@ -315,7 +377,10 @@ class JiuwenRuntimeEventBridge:
             run_id=self.context.run_id,
             session_id=self.context.session_id,
             turn_id=self.context.turn_id,
-            source={"node": self.source_node, "component": component},
+            source={
+                "node": str(source_node or self.source_node),
+                "component": component,
+            },
             payload=dict(payload or {}),
         )
 

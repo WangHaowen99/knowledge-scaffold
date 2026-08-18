@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
 from agent.exceptions import AgentLoopStalledError
+from agent.runtime.async_utils import run_sync_compat
 from agent.sub_agents.base import SubAgent
 from agent.sub_agents.manager import SubAgentManager, SubAgentTaskSpec
 from agent.tools.base import (
@@ -114,7 +115,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                     _context(),
                 )
             )
-            await asyncio.wait_for(asyncio.to_thread(started.wait, 1), timeout=2)
+            await asyncio.wait_for(run_sync_compat(started.wait, 1), timeout=2)
             await asyncio.sleep(0)
             self.assertFalse(task.done())
             self.assertIsNot(observed["thread"], threading.current_thread())
@@ -198,7 +199,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                     _context(),
                 )
             )
-            await asyncio.wait_for(asyncio.to_thread(started.wait, 1), timeout=2)
+            await asyncio.wait_for(run_sync_compat(started.wait, 1), timeout=2)
             task.cancel()
             await asyncio.sleep(0.02)
             self.assertFalse(task.done())
@@ -217,7 +218,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 return ToolOutcome(content="wrapped")
 
         with patch.dict(TOOL_SPECS, {SyncTool.name: SyncTool()}):
-            result = await asyncio.to_thread(
+            result = await run_sync_compat(
                 execute_tool_batch,
                 [_invocation(SyncTool.name, "call-wrapper")],
                 _context(),
@@ -383,7 +384,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(finished.is_set())
             finally:
                 release.set()
-                await asyncio.wait_for(asyncio.to_thread(finished.wait), timeout=2)
+                await asyncio.wait_for(run_sync_compat(finished.wait), timeout=2)
 
         self.assertIn("工具执行超时", result.messages[0]["content"])
         finished_events = [
@@ -421,8 +422,10 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(state.tasks), 1)
             finally:
                 release.set()
-                await asyncio.wait_for(asyncio.to_thread(finished.wait), timeout=2)
-                await asyncio.sleep(0)
+                await asyncio.wait_for(run_sync_compat(finished.wait), timeout=2)
+                async with asyncio.timeout(1):
+                    while executor_module._background_sync_tool_state().tasks:
+                        await asyncio.sleep(0.005)
 
         self.assertEqual(len(executor_module._background_sync_tool_state().tasks), 0)
 
@@ -497,7 +500,7 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
             patch("agent.sub_agents.base.build_skills_section", return_value=""),
         )
         with common_patches[0], common_patches[1], common_patches[2], common_patches[3]:
-            sync_result = await asyncio.to_thread(SubAgent().execute, "sync task")
+            sync_result = await run_sync_compat(SubAgent().execute, "sync task")
             async_result = await SubAgent().aexecute("async task")
 
         self.assertEqual(sync_result["output"], "sync-result")

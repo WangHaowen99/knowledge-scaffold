@@ -1,9 +1,19 @@
 """Shared contracts for the consumer/openJiuwen async runtime boundary."""
 
-from .async_utils import call_async_or_thread, find_group_exception, run_sync_compat
+from .async_utils import (
+    call_async_or_thread,
+    find_group_exception,
+    run_sync_compat,
+    shutdown_sync_runtime_executor,
+)
 from .adapter import PublicEventAdapter
 from .contracts import (
     AsyncAgentRuntime,
+    PublicEventSink,
+    RunScope,
+    RunSnapshot,
+    RunStatus,
+    RunView,
     RuntimeErrorInfo,
     RuntimeEventSink,
     RuntimeHistoryMessage,
@@ -23,22 +33,30 @@ from .lifecycle import (
     jiuwen_runtime_lifespan,
     shutdown_legacy_jiuwen_runtime,
 )
-from .mock import FixedAsyncAgentRuntime, ListRuntimeEventSink
+from .manager import AsyncRunManager
+from .service import AsyncExecutionService
+from .store import InMemoryRunRepository
 
 __all__ = [
     "AsyncAgentRuntime",
+    "AsyncExecutionService",
+    "AsyncRunManager",
     "call_async_or_thread",
-    "FixedAsyncAgentRuntime",
+    "InMemoryRunRepository",
     "JiuwenRunnerLifecycle",
     "JiuwenRunnerLifecycleSnapshot",
     "JiuwenRuntimeLifecycleError",
     "JiuwenAsyncAgentRuntime",
     "JiuwenRuntimeEventBridge",
     "LegacyJiuwenLoopRunner",
-    "ListRuntimeEventSink",
     "PublicEvent",
     "PublicEventAdapter",
     "PublicEventDraft",
+    "PublicEventSink",
+    "RunScope",
+    "RunSnapshot",
+    "RunStatus",
+    "RunView",
     "RuntimeErrorInfo",
     "RuntimeEventBufferFull",
     "RuntimeEvent",
@@ -51,5 +69,6 @@ __all__ = [
     "find_group_exception",
     "jiuwen_runtime_lifespan",
     "run_sync_compat",
+    "shutdown_sync_runtime_executor",
     "shutdown_legacy_jiuwen_runtime",
 ]

@@ -781,7 +781,7 @@ def test_jiuwen_loop_propagates_stall_when_runtime_swallows_tool_exception(monke
             max_tokens=1024,
         ),
     )
-    monkeypatch.setattr("agent.core.jiuwen_engine.execute_tool_batch", fake_executor)
+    monkeypatch.setattr("agent.core.jiuwen_engine.aexecute_tool_batch", fake_executor)
 
     engine = JiuwenReactLoopEngine(agent_config=config)
     monkeypatch.setattr(engine, "_tools_schema_for_state", lambda *_args, **_kwargs: [tool_schema])

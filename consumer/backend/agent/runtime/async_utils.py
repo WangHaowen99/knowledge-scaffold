@@ -3,11 +3,58 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
+import concurrent.futures
 import inspect
+import threading
+from contextvars import copy_context
 from typing import Any, Callable, Optional, TypeVar
 
 
 T = TypeVar("T")
+
+
+_SYNC_EXECUTOR_LOCK = threading.Lock()
+_SYNC_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+_PROFILE_CURRENT_THREAD: Any = None
+_PROFILE_CURRENT_THREAD_RESOLVED = False
+_SYNC_RESULT_POLL_SECONDS = 0.005
+
+
+def _get_sync_runtime_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _SYNC_EXECUTOR
+    with _SYNC_EXECUTOR_LOCK:
+        if _SYNC_EXECUTOR is None:
+            _SYNC_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                thread_name_prefix="consumer-sync-runtime",
+            )
+        return _SYNC_EXECUTOR
+
+
+def _resolve_thread_profiler() -> Any:
+    """Resolve the optional profiler before entering an executor thread."""
+    global _PROFILE_CURRENT_THREAD, _PROFILE_CURRENT_THREAD_RESOLVED
+    if _PROFILE_CURRENT_THREAD_RESOLVED:
+        return _PROFILE_CURRENT_THREAD
+    try:
+        from integration.observability.stack_profiler import profile_current_thread
+    except ImportError:
+        profile_current_thread = None
+    _PROFILE_CURRENT_THREAD = profile_current_thread
+    _PROFILE_CURRENT_THREAD_RESOLVED = True
+    return _PROFILE_CURRENT_THREAD
+
+
+def shutdown_sync_runtime_executor(*, wait: bool = True) -> bool:
+    """Release the process-owned executor used by synchronous adapters."""
+    global _SYNC_EXECUTOR
+    with _SYNC_EXECUTOR_LOCK:
+        executor = _SYNC_EXECUTOR
+        _SYNC_EXECUTOR = None
+    if executor is None:
+        return False
+    executor.shutdown(wait=wait, cancel_futures=False)
+    return True
 
 
 def is_async_callable(func: Callable[..., Any]) -> bool:
@@ -54,20 +101,26 @@ async def run_sync_compat(
     from declaring cleanup complete while a tool can still mutate state.
     """
 
+    profile_current_thread = _resolve_thread_profiler() if run_id else None
+
     def invoke() -> T:
-        if run_id:
-            try:
-                from integration.observability.stack_profiler import profile_current_thread
-            except ImportError:
-                return func(*args, **kwargs)
+        if profile_current_thread is not None:
             with profile_current_thread(run_id):
                 return func(*args, **kwargs)
         return func(*args, **kwargs)
 
-    worker = asyncio.create_task(
-        asyncio.to_thread(invoke),
-        name=task_name,
-    )
+    caller_context = copy_context()
+    submitted = _get_sync_runtime_executor().submit(caller_context.run, invoke)
+
+    async def await_submitted() -> T:
+        # Some supported interpreter builds can lose the callback used by
+        # asyncio.wrap_future/run_in_executor after thread-local imports. Poll
+        # the process-owned Future so completion never depends on that bridge.
+        while not submitted.done():
+            await asyncio.sleep(_SYNC_RESULT_POLL_SECONDS)
+        return submitted.result()
+
+    worker = asyncio.create_task(await_submitted(), name=task_name)
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
@@ -98,3 +151,6 @@ def find_group_exception(
         if found is not None:
             return found
     return None
+
+
+atexit.register(shutdown_sync_runtime_executor)

@@ -29,6 +29,20 @@ test('does not reuse an interaction after the user has responded', () => {
   );
 });
 
+test('preserves the run that owns a pending interaction', () => {
+  const pending = findPendingInteraction([
+    {
+      role: 'assistant',
+      runId: 'run-pending-interaction',
+      status: 'awaiting',
+      interaction,
+    },
+  ]);
+
+  assert.equal(pending.id, interaction.id);
+  assert.equal(pending.runId, 'run-pending-interaction');
+});
+
 test('does not expose a completed historical interaction', () => {
   assert.equal(
     findPendingInteraction([

@@ -32,6 +32,81 @@ test('durable awaiting-input event restores interaction after page refresh', () 
   assert.equal(messages[0].isLoading, false);
 });
 
+test('run.started does not create a phantom turn during replay', () => {
+  const envelope = (type, turnId, seq, payload = {}) => ({
+    event: AGENT_STREAM_EVENT,
+    data: {
+      protocol: AGENT_STREAM_PROTOCOL,
+      type,
+      run_id: 'run-existing-session',
+      turn_id: turnId,
+      seq,
+      ts: 1000 + seq,
+      payload,
+    },
+  });
+
+  const messages = buildMessagesFromEvents([
+    envelope('run.started', 1, 1, { status: 'running' }),
+    envelope('turn.started', 3, 2, { turn_id: 3 }),
+    envelope('turn.finished', 3, 3, {
+      status: 'completed',
+      content: 'synthetic answer',
+    }),
+  ]);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].turnId, '3');
+  assert.equal(messages[0].status, 'finished');
+});
+
+test('successive interactions in one run restore as separate turn bubbles', () => {
+  const waitingOutput = (interactionId, text) => ({
+    status: 'awaiting_input',
+    final_output: {
+      type: 'user_interaction',
+      text,
+      interaction: { id: interactionId, type: 'input', prompt: text },
+    },
+  });
+  const messages = buildMessagesFromEvents([
+    {
+      event: AGENT_STREAM_EVENT,
+      data: {
+        protocol: AGENT_STREAM_PROTOCOL,
+        type: 'turn.finished',
+        run_id: 'run-successive-interactions',
+        turn_id: 1,
+        seq: 3,
+        payload: waitingOutput('interaction-first', 'Provide the first synthetic value'),
+      },
+    },
+    {
+      event: 'chat_message',
+      data: { role: 'user', content: 'synthetic response', metadata: {} },
+    },
+    {
+      event: AGENT_STREAM_EVENT,
+      data: {
+        protocol: AGENT_STREAM_PROTOCOL,
+        type: 'turn.finished',
+        run_id: 'run-successive-interactions',
+        turn_id: 2,
+        seq: 7,
+        payload: waitingOutput('interaction-second', 'Provide the second synthetic value'),
+      },
+    },
+  ]);
+
+  assert.equal(messages.length, 3);
+  assert.equal(messages[0].turnId, '1');
+  assert.equal(messages[0].interaction.id, 'interaction-first');
+  assert.equal(messages[1].role, 'user');
+  assert.equal(messages[2].turnId, '2');
+  assert.equal(messages[2].interaction.id, 'interaction-second');
+  assert.equal(messages[2].status, 'awaiting');
+});
+
 test('durable cancellation marker clears an awaiting interaction after refresh', () => {
   const messages = buildMessagesFromEvents([
     {

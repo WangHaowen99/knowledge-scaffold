@@ -2,26 +2,18 @@
 
 from __future__ import annotations
 
-import threading
 import uuid
-from contextlib import nullcontext
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
-from agent.core.shared.interaction_policy import set_user_interaction_capability
-from persistence.run_store import RunStatus
+from agent.core.shared.modes import resolve_agent_mode
+from llm.llm_request_mode import normalize_llm_request_mode
 from utils.identifiers import validate_session_id
-from utils.logging import get_logger
-from workspace.workspaces import workspace_scope
-from api.protocols.a2a.mapper import map_run_status_to_a2a
 from api.protocols.a2a.models import (
     A2ATaskCreateRequest,
     A2ATaskSnapshot,
     A2ATaskState,
-    iso_or_none,
 )
-
-
-logger = get_logger("a2a.service")
+from agent.runtime.errors import RunNotFoundError
 
 
 class A2ATaskService:
@@ -29,19 +21,19 @@ class A2ATaskService:
 
     def __init__(
         self,
-        orchestrator,
         chat_store,
-        execution_store,
         user_id: Optional[str],
         workspace_id: Optional[str],
-        flask_app: Optional[Any] = None,
+        async_manager: Any,
+        async_call: Any,
     ):
-        self.orchestrator = orchestrator
         self.chat_store = chat_store
-        self.execution_store = execution_store
         self.user_id = user_id
         self.workspace_id = workspace_id
-        self.flask_app = flask_app
+        self.async_manager = async_manager
+        self.async_call = async_call
+        if async_manager is None or not callable(async_call):
+            raise ValueError("A2A requires the canonical async run manager")
 
     def create_task(self, req: A2ATaskCreateRequest) -> A2ATaskSnapshot:
         task_id = self._allocate_task_id(req.task_id)
@@ -50,18 +42,51 @@ class A2ATaskService:
         if not self.chat_store.get_session(session_id):
             self.chat_store.create_session(session_id=session_id)
 
-        self._launch_background_task(
-            task_id=task_id,
-            session_id=session_id,
-            message=req.message,
-            context=dict(req.context or {}),
-        )
+        from agent.runtime.contracts import RunScope, RuntimeInvocationContext
 
+        context_data = dict(req.context or {})
+        supports_user_interaction = bool(
+            context_data.get("supports_user_interaction", False)
+        )
+        raw_arguments = context_data.get("arguments")
+        if raw_arguments is not None and not isinstance(raw_arguments, dict):
+            raise ValueError("arguments must be an object or null")
+        context = RuntimeInvocationContext(
+            run_id=task_id,
+            session_id=session_id,
+            turn_id=1,
+            workspace_id=str(self.workspace_id or ""),
+            username=str(self.user_id or ""),
+            query=req.message,
+            agent_mode=resolve_agent_mode(context_data),
+            llm_request_mode=normalize_llm_request_mode(
+                context_data.get("llm_request_mode")
+            ),
+            model_profile_id=(
+                str(context_data.get("model_profile_id") or "").strip() or None
+            ),
+            arguments=dict(raw_arguments) if raw_arguments is not None else None,
+            include_trace=False,
+            supports_user_interaction=supports_user_interaction,
+        )
+        self.async_call(
+            self.async_manager.create_run(
+                context,
+                RunScope(
+                    username=str(self.user_id or ""),
+                    workspace_id=str(self.workspace_id or ""),
+                    scopes=("agent:run", "agent:read", "agent:cancel"),
+                ),
+            )
+        )
+        created = self.get_task(task_id, session_id=session_id)
         return A2ATaskSnapshot(
             id=task_id,
             session_id=session_id,
-            state=A2ATaskState.PENDING,
-            metadata={"mode": "background"},
+            state=created.state,
+            created_at=created.created_at,
+            updated_at=created.updated_at,
+            metadata={"mode": "async_run_manager"},
         )
 
     def resolve_session_id(self, task_id: str, *, session_id: Optional[str] = None) -> Optional[str]:
@@ -69,148 +94,105 @@ class A2ATaskService:
         if normalized_session_id:
             return normalized_session_id
 
-        run = self.orchestrator.run_store.get_run(task_id)
-        if not run:
-            return None
-        return str((getattr(run, "metadata", {}) or {}).get("session_id") or "").strip() or None
+        from agent.runtime.contracts import RunScope
+
+        snapshot = self.async_call(
+            self.async_manager.get_run(
+                task_id,
+                RunScope(
+                    username=str(self.user_id or ""),
+                    workspace_id=str(self.workspace_id or ""),
+                    scopes=("agent:read",),
+                ),
+            )
+        )
+        return snapshot.session_id if snapshot is not None else None
 
     def get_task(self, task_id: str, *, session_id: Optional[str] = None) -> A2ATaskSnapshot:
-        run = self.orchestrator.run_store.get_run(task_id)
-        if not run:
+        from agent.runtime.contracts import RunScope
+
+        snapshot = self.async_call(
+            self.async_manager.get_run(
+                task_id,
+                RunScope(
+                    username=str(self.user_id or ""),
+                    workspace_id=str(self.workspace_id or ""),
+                    scopes=("agent:read",),
+                ),
+            )
+        )
+        if snapshot is not None:
+            result = snapshot.result.to_dict() if snapshot.result else None
+            error = snapshot.error.message if snapshot.error else None
             return A2ATaskSnapshot(
                 id=task_id,
-                session_id=session_id,
-                state=A2ATaskState.NOT_FOUND,
-                error="Task not found",
+                session_id=snapshot.session_id,
+                state=_map_async_status(snapshot.status),
+                created_at=snapshot.created_at,
+                updated_at=snapshot.updated_at,
+                completed_at=(
+                    snapshot.updated_at
+                    if snapshot.status.value in {"completed", "failed", "cancelled"}
+                    else None
+                ),
+                error=error,
+                result=result,
+                metadata={"mode": "async_run_manager", "last_seq": snapshot.last_seq},
             )
-
-        resolved_session_id = self.resolve_session_id(task_id, session_id=session_id)
-        state = map_run_status_to_a2a(run.status)
-
         return A2ATaskSnapshot(
             id=task_id,
-            session_id=resolved_session_id,
-            state=state,
-            created_at=iso_or_none(getattr(run, "created_at", None)),
-            updated_at=iso_or_none(getattr(run, "updated_at", None)),
-            completed_at=iso_or_none(getattr(run, "completed_at", None)),
-            error=getattr(run, "error", None),
-            result=getattr(run, "result", None),
-            metadata=dict(getattr(run, "metadata", {}) or {}),
+            session_id=session_id,
+            state=A2ATaskState.NOT_FOUND,
+            error="Task not found",
         )
 
     def cancel_task(self, task_id: str) -> bool:
-        return bool(self.orchestrator.cancel_run(task_id, reason="a2a_cancel"))
+        from agent.runtime.contracts import RunScope
 
-    def _launch_background_task(
-        self,
-        *,
-        task_id: str,
-        session_id: str,
-        message: str,
-        context: Dict[str, Any],
-    ) -> None:
-        thread = threading.Thread(
-            target=self._run_task_in_background,
-            kwargs={
-                "task_id": task_id,
-                "session_id": session_id,
-                "message": message,
-                "context": dict(context or {}),
-            },
-            name="a2a-task-{}".format(task_id),
-            daemon=True,
-        )
-        thread.start()
-
-    def _run_task_in_background(
-        self,
-        *,
-        task_id: str,
-        session_id: str,
-        message: str,
-        context: Dict[str, Any],
-    ) -> None:
         try:
-            context = set_user_interaction_capability(context, supported=False)
-            app_context = self.flask_app.app_context() if self.flask_app is not None else nullcontext()
-            with app_context:
-                with workspace_scope(self.workspace_id):
-                    for _event in self.orchestrator.run(
-                        user_request=message,
-                        user_context=context,
-                        session_id=session_id,
-                        user_id=self.user_id,
-                        workspace_id=self.workspace_id,
-                        requested_run_id=task_id,
-                    ):
-                        # Background mode currently ignores event forwarding.
-                        continue
-        except Exception:
-            logger.exception("A2A background task %s failed", task_id)
-            self._mark_task_failed(task_id=task_id, session_id=session_id, message=message)
-
-    def _mark_task_failed(self, *, task_id: str, session_id: str, message: str) -> None:
-        public_error = "Workflow execution failed"
-        run = self.orchestrator.run_store.get_run(task_id)
-        if run is None:
-            self.orchestrator.run_store.create_run(
-                run_id=task_id,
-                user_request=message,
-                metadata=self._build_run_metadata(session_id),
+            snapshot = self.async_call(
+                self.async_manager.cancel_run(
+                    task_id,
+                    RunScope(
+                        username=str(self.user_id or ""),
+                        workspace_id=str(self.workspace_id or ""),
+                        scopes=("agent:cancel",),
+                    ),
+                    reason="a2a_cancel",
+                )
             )
-            run = self.orchestrator.run_store.get_run(task_id)
-
-        if run is not None and run.status not in {
-            RunStatus.FAILED,
-            RunStatus.CANCELLED,
-            RunStatus.COMPLETED,
-        }:
-            self.orchestrator.run_store.fail_run(task_id, public_error)
-
-        turn = self._get_task_turn(session_id, task_id)
-        if not turn:
-            return
-
-        if str(turn.get("status") or "").strip() != "running":
-            return
-
-        turn_id = turn.get("turn_id")
-        if isinstance(turn_id, int):
-            self.execution_store.fail_turn(session_id=session_id, turn_id=turn_id, error=public_error)
-
-    def _build_run_metadata(self, session_id: str) -> Dict[str, Any]:
-        metadata: Dict[str, Any] = {
-            "session_id": session_id,
-            "mode": "background",
-        }
-        if self.user_id:
-            metadata["user_id"] = self.user_id
-        if self.workspace_id:
-            metadata["workspace_id"] = self.workspace_id
-        return metadata
+        except RunNotFoundError:
+            return False
+        return snapshot is not None
 
     def _allocate_task_id(self, requested_task_id: Optional[str]) -> str:
         normalized = str(requested_task_id or "").strip()
         if not normalized:
             return str(uuid.uuid4())
-        if self.orchestrator.run_store.get_run(normalized) is not None:
+        from agent.runtime.contracts import RunScope
+
+        existing = self.async_call(
+            self.async_manager.get_run(
+                normalized,
+                RunScope(
+                    username=str(self.user_id or ""),
+                    workspace_id=str(self.workspace_id or ""),
+                    scopes=("agent:read",),
+                ),
+            )
+        )
+        if existing is not None:
             raise ValueError("task_id already exists")
         return normalized
 
-    def _get_task_turn(self, session_id: Optional[str], task_id: str) -> Optional[Dict[str, Any]]:
-        if not session_id:
-            return None
-        history = self.execution_store.get_session_history(session_id)
-        if not history:
-            return None
-        turns = list(history.get("turns") or [])
-        if not turns:
-            return None
 
-        normalized_task_id = str(task_id or "").strip()
-        for turn in reversed(turns):
-            if str((turn or {}).get("run_id") or "").strip() != normalized_task_id:
-                continue
-            return turn or None
-        return None
+def _map_async_status(status: Any) -> A2ATaskState:
+    normalized = str(getattr(status, "value", status) or "")
+    return {
+        "queued": A2ATaskState.PENDING,
+        "running": A2ATaskState.IN_PROGRESS,
+        "awaiting_input": A2ATaskState.IN_PROGRESS,
+        "completed": A2ATaskState.COMPLETED,
+        "failed": A2ATaskState.FAILED,
+        "cancelled": A2ATaskState.CANCELED,
+    }.get(normalized, A2ATaskState.NOT_FOUND)

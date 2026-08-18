@@ -22,8 +22,17 @@ RuntimeEventType = Literal[
     "model.started",
     "token.delta",
     "reasoning.delta",
+    "reasoning.summary",
+    "iteration.completed",
     "tool.started",
+    "tool.progress",
     "tool.finished",
+    "subagent.started",
+    "subagent.delta",
+    "subagent.progress",
+    "subagent.finished",
+    "subagent_group.started",
+    "subagent_group.finished",
     "interaction.requested",
     "turn.finished",
 ]
@@ -34,14 +43,25 @@ PublicEventType = Literal[
     "model.started",
     "token.delta",
     "reasoning.delta",
+    "reasoning.summary",
+    "iteration.completed",
     "tool.started",
+    "tool.progress",
     "tool.finished",
+    "subagent.started",
+    "subagent.delta",
+    "subagent.progress",
+    "subagent.finished",
+    "subagent_group.started",
+    "subagent_group.finished",
     "interaction.requested",
     "interaction.resumed",
     "turn.finished",
 ]
 
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_TERMINAL_STATUSES = frozenset(
+    {"awaiting_input", "completed", "failed", "cancelled"}
+)
 _STATUS_ALIASES = {"success": "completed", "error": "failed"}
 
 
@@ -148,3 +168,6 @@ class PublicEvent(BaseModel):
     def _validate_terminal_event(self) -> "PublicEvent":
         _validate_turn_finished(self.event_type, self.status, self.payload)
         return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)

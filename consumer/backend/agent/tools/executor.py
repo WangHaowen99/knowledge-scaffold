@@ -472,6 +472,23 @@ async def _aexecute_single_task(
         error_code=error_code,
         timeout_seconds=timeout_seconds if error_code == "TOOL_TIMEOUT" else None,
     )
+    pending_interaction = (
+        outcome.state_updates.get("pending_user_interaction")
+        if isinstance(outcome.state_updates, dict)
+        else None
+    )
+    if isinstance(pending_interaction, dict) and pending_interaction:
+        emit_protocol_event(
+            context=context,
+            event_type="interaction.requested",
+            source={"node": "agent_loop", "component": "interaction"},
+            payload={
+                "interaction_id": pending_interaction.get("id"),
+                "type": pending_interaction.get("type"),
+                "prompt": pending_interaction.get("prompt"),
+                "options": list(pending_interaction.get("options") or []),
+            },
+        )
 
     return {
         "index": task["index"],

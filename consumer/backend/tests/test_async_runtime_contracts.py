@@ -8,8 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from agent.runtime import (
-    FixedAsyncAgentRuntime,
-    ListRuntimeEventSink,
     PublicEvent,
     PublicEventAdapter,
     PublicEventDraft,
@@ -19,6 +17,7 @@ from agent.runtime import (
     RuntimeInvocationContext,
     RuntimeResult,
 )
+from agent.runtime.mock import FixedAsyncAgentRuntime, ListRuntimeEventSink
 
 
 def _context(run_id: str = "run-01", **arguments) -> RuntimeInvocationContext:
@@ -293,6 +292,52 @@ def test_reasoning_and_terminal_trace_follow_include_trace_switch():
         "step": "model",
     }
     assert visible_terminal.payload["omitted"]["sensitive_fields_redacted"] == 1
+
+
+def test_public_adapter_preserves_interaction_prompt_but_not_internal_prompts():
+    interaction = {
+        "id": "interaction_synthetic",
+        "type": "input",
+        "prompt": "Provide a synthetic region code",
+        "options": [],
+    }
+    requested = RuntimeEvent(
+        event_type="interaction.requested",
+        status="awaiting_input",
+        run_id="run-interaction",
+        payload={
+            "interaction_id": interaction["id"],
+            "type": interaction["type"],
+            "prompt": interaction["prompt"],
+            "options": [],
+        },
+    )
+    terminal = RuntimeEvent(
+        event_type="turn.finished",
+        status="awaiting_input",
+        run_id="run-interaction",
+        payload={
+            "status": "awaiting_input",
+            "structured_content": {
+                "type": "user_interaction",
+                "text": interaction["prompt"],
+                "interaction": interaction,
+            },
+            "trace": {"prompt": "internal model prompt"},
+        },
+    )
+
+    requested_draft = PublicEventAdapter().adapt(requested)
+    terminal_draft = PublicEventAdapter(include_trace=True).adapt(terminal)
+
+    assert requested_draft is not None
+    assert requested_draft.payload["prompt"] == interaction["prompt"]
+    assert terminal_draft is not None
+    assert (
+        terminal_draft.payload["structured_content"]["interaction"]["prompt"]
+        == interaction["prompt"]
+    )
+    assert terminal_draft.payload["trace"]["prompt"] == "[REDACTED]"
 
 
 def test_fixed_runtime_success_and_tool_failure_flows():

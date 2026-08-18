@@ -28,6 +28,7 @@ from api.routes.errors import workspace_not_found_response
 from api.protocols.acp.server import acp_bp, set_orchestrator as acp_set_orchestrator
 from agent.skill_evolution.registry import init_skill_evolution_worker
 from api.routes.skill_evolution import skill_evolution_bp
+from agent.runtime.bootstrap import configure_async_run_manager
 
 logger = get_logger("routes")
 
@@ -57,6 +58,7 @@ def register_routes(
         user_store_manager=user_store_manager,
         agent_config=agent_config,
     )
+    configure_async_run_manager(get_orchestrator)
 
     # Register blueprints
     app.register_blueprint(workflows_bp)
@@ -100,6 +102,7 @@ def update_runtime_dependencies(
         agent_config=agent_config,
         run_store=previous_run_store,
     )
+    configure_async_run_manager(get_orchestrator)
     acp_set_orchestrator(_orchestrator)
 
 

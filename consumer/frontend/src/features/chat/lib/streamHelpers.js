@@ -5,10 +5,43 @@
 export const AGENT_STREAM_PROTOCOL = 'agent-stream.v2';
 export const AGENT_STREAM_EVENT = 'agent.v2';
 
-const TERMINAL_STATUSES = new Set(['success', 'error', 'cancelled', 'awaiting_input']);
+const TERMINAL_STATUSES = new Set([
+  'success', 'completed', 'error', 'failed', 'cancelled', 'awaiting_input',
+]);
 const BUSINESS_DATA_SEARCH_EVENT_TYPES = new Set(['start', 'intermediate', 'final', 'error']);
 const WEB_SEARCH_EVENT_TYPES = new Set(['start', 'final', 'error']);
 const DATA_SEARCH_TOOL_NAMES = new Set(['business_data_search']);
+
+export const publicErrorMessage = (value, fallback = '') => {
+  const visited = new Set();
+
+  const extract = (candidate, depth = 0) => {
+    if (candidate == null || depth > 4) return '';
+    if (typeof candidate === 'string') return candidate.trim();
+    if (typeof candidate === 'number') return String(candidate);
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        const message = extract(item, depth + 1);
+        if (message) return message;
+      }
+      return '';
+    }
+    if (typeof candidate !== 'object' || visited.has(candidate)) return '';
+    visited.add(candidate);
+
+    for (const key of ['message', 'detail', 'error', 'reason', 'description']) {
+      const message = extract(candidate[key], depth + 1);
+      if (message) return message;
+    }
+    return extract(candidate.error_code ?? candidate.code, depth + 1);
+  };
+
+  return extract(value) || (typeof fallback === 'string' ? fallback : '');
+};
+
+const hasPublicErrorValue = (value) => (
+  value != null && (typeof value !== 'string' || Boolean(value.trim()))
+);
 
 const TOOL_STATUS_ICON_MAP = {
   completed: 'completed',
@@ -39,17 +72,28 @@ const normalizeToolName = (value) => (
   typeof value === 'string' ? value.trim() : ''
 );
 
+const toolNameFromPayload = (payload = {}) => (
+  normalizeToolName(payload?.tool_name) || normalizeToolName(payload?.name)
+);
+
 const extractToolQuery = (meta = {}) => String(
   meta?.input?.query
+  ?? meta?.input_preview?.query
   ?? meta?.tool_input?.query
   ?? meta?.tool_args?.query
   ?? meta?.query
   ?? ''
 ).trim();
 
+const withPublicToolInput = (payload = {}) => (
+  payload?.input == null && payload?.input_preview != null
+    ? { ...payload, input: payload.input_preview }
+    : payload
+);
+
 const resolveToolLocator = (payload = {}) => {
   const toolCallId = normalizeToolCallId(payload?.tool_call_id);
-  const toolName = normalizeToolName(payload?.tool_name);
+  const toolName = toolNameFromPayload(payload);
   const query = extractToolQuery(payload);
 
   return {
@@ -298,9 +342,11 @@ const iterationParentKeyFromPayload = (payload = {}) => {
 
 const extractTurnFinishedOutput = (payload = {}) => {
   const statusRaw = typeof payload.status === 'string' ? payload.status.toLowerCase() : 'success';
-  const status = TERMINAL_STATUSES.has(statusRaw) ? statusRaw : 'success';
+  let status = TERMINAL_STATUSES.has(statusRaw) ? statusRaw : 'success';
+  if (status === 'completed') status = 'success';
+  if (status === 'failed') status = 'error';
 
-  const result = payload.final_output;
+  const result = payload.final_output ?? payload.structured_content ?? payload.content;
   let content = '';
   let options = null;
   let messageType = 'text';
@@ -321,7 +367,9 @@ const extractTurnFinishedOutput = (payload = {}) => {
     options,
     messageType,
     interaction,
-    error: payload.error || null,
+    error: hasPublicErrorValue(payload.error)
+      ? publicErrorMessage(payload.error, '运行失败')
+      : null,
     cancelReason: payload.cancel_reason || null,
   };
 };
@@ -356,7 +404,7 @@ const shouldAppendFinalContent = (segments = [], finalContent = '') => {
 };
 
 const extractBusinessDataSearchProgressEvent = (payload = {}, envelope = {}) => {
-  const toolName = normalizeToolName(payload?.tool_name);
+  const toolName = toolNameFromPayload(payload);
   if (!DATA_SEARCH_TOOL_NAMES.has(toolName)) return null;
 
   const rawEvent = payload?.progress?.business_data_search_event;
@@ -390,7 +438,7 @@ const appendBusinessDataSearchEventToMeta = (meta = {}, dbEvent = null) => {
 };
 
 const extractWebSearchProgressEvent = (payload = {}, envelope = {}) => {
-  const toolName = normalizeToolName(payload?.tool_name);
+  const toolName = toolNameFromPayload(payload);
   if (toolName !== 'web_search') return null;
 
   const rawEvent = payload?.progress?.web_search_event;
@@ -747,7 +795,7 @@ const appendChildEvent = (child, event) => {
 
 const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
   const toolCallId = typeof payload?.tool_call_id === 'string' ? payload.tool_call_id : '';
-  const toolName = typeof payload?.tool_name === 'string' ? payload.tool_name : '';
+  const toolName = toolNameFromPayload(payload);
   if (type === 'tool.started') {
     return {
       kind: 'tool',
@@ -1058,6 +1106,9 @@ export const applyAgentV2Event = (current, envelope) => {
 
   if (type === 'subagent.finished' && subagentIdInPayload) {
     const finalStatus = normalizeToolStatus(payload.status) || payload.status || 'completed';
+    const subagentError = hasPublicErrorValue(payload.error)
+      ? publicErrorMessage(payload.error, '子 Agent 执行失败')
+      : null;
     const updatedSegments = updateSubagentChildInSegments(
       next.streamSegments,
       subagentIdInPayload,
@@ -1074,7 +1125,7 @@ export const applyAgentV2Event = (current, envelope) => {
         endTs: envelope.ts || Date.now(),
         events: closeSubagentEventsForTerminal(child?.events, finalStatus, envelope.ts || Date.now()),
         result: payload.result || null,
-        error: payload.error || null,
+        error: subagentError,
       }),
     );
     if (updatedSegments) {
@@ -1096,13 +1147,15 @@ export const applyAgentV2Event = (current, envelope) => {
 
   if (
     next.terminalToolBatchReached
-    && (type === 'token.delta' || type === 'reasoning.summary')
+    && (type === 'token.delta' || type === 'reasoning.delta' || type === 'reasoning.summary')
   ) {
     return next;
   }
 
-  if (type === 'token.delta') {
-    const channel = payload.channel === 'reasoning' ? 'reasoning' : 'content';
+  if (type === 'token.delta' || type === 'reasoning.delta') {
+    const channel = type === 'reasoning.delta' || payload.channel === 'reasoning'
+      ? 'reasoning'
+      : 'content';
     const text = payload.text == null ? '' : String(payload.text);
     next.streamSegments = appendInlineTextSegment(next.streamSegments, {
       type: channel,
@@ -1136,6 +1189,22 @@ export const applyAgentV2Event = (current, envelope) => {
       next.terminalToolBatchReached = true;
     }
     next.currentSegmentType = null;
+    return next;
+  }
+
+  if (type === 'interaction.requested') {
+    const interactionId = String(payload.interaction_id || payload.id || '').trim();
+    if (!interactionId) return next;
+    const prompt = typeof payload.prompt === 'string' ? payload.prompt : '';
+    next.interaction = {
+      id: interactionId,
+      type: payload.type || 'input',
+      prompt,
+      options: Array.isArray(payload.options) ? payload.options : [],
+    };
+    next.options = next.interaction.options;
+    next.messageType = 'user_interaction';
+    if (prompt && !next.content) next.content = prompt;
     return next;
   }
 
@@ -1195,7 +1264,9 @@ export const applyAgentV2Event = (current, envelope) => {
   }
 
   if (type === 'tool.started') {
-    const locator = resolveToolLocator(payload);
+    const publicPayload = withPublicToolInput(payload);
+    const locator = resolveToolLocator(publicPayload);
+    const toolName = locator.toolName || 'unknown_tool';
     const targetIdx = hasToolLocator(locator)
       ? findLastSegmentIndex(
         next.streamSegments,
@@ -1208,9 +1279,9 @@ export const applyAgentV2Event = (current, envelope) => {
       next.streamSegments[targetIdx] = {
         ...target,
         state: 'running',
-        text: payload.message || target.text || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
+        text: publicPayload.message || target.text || `调用工具: ${toolName}`,
         node: sourceNode || target.node,
-        meta: mergeToolMeta(target.meta, payload),
+        meta: mergeToolMeta(target.meta, publicPayload),
         finished: false,
         startTs: target.startTs || envelope.ts || Date.now(),
         endTs: null,
@@ -1222,9 +1293,9 @@ export const applyAgentV2Event = (current, envelope) => {
       next.streamSegments.push({
         type: 'tool',
         state: 'running',
-        text: payload.message || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
+        text: publicPayload.message || `调用工具: ${toolName}`,
         node: sourceNode,
-        meta: payload,
+        meta: publicPayload,
         finished: false,
         toolStatus: null,
         startTs: envelope.ts || Date.now(),
@@ -1242,6 +1313,7 @@ export const applyAgentV2Event = (current, envelope) => {
   if (type === 'tool.progress') {
     const text = payload.message == null ? '' : String(payload.message);
     const locator = resolveToolLocator(payload);
+    const toolName = locator.toolName || 'unknown_tool';
     const dbSearchEvent = extractBusinessDataSearchProgressEvent(payload, envelope);
     const webSearchEvent = extractWebSearchProgressEvent(payload, envelope);
     const targetOpenIdx = findLastSegmentIndex(
@@ -1285,7 +1357,7 @@ export const applyAgentV2Event = (current, envelope) => {
         text: text
           || (dbSearchEvent ? `business_data_search ${dbSearchEvent.type}` : '')
           || (webSearchEvent ? `web_search ${webSearchEvent.type}` : '')
-          || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
+          || `调用工具: ${toolName}`,
         node: sourceNode,
         meta: appendWebSearchEventToMeta(
           appendBusinessDataSearchEventToMeta(mergeToolMeta({}, payload), dbSearchEvent),
@@ -1319,8 +1391,15 @@ export const applyAgentV2Event = (current, envelope) => {
 
   if (type === 'tool.finished') {
     const locator = resolveToolLocator(payload);
+    const toolName = locator.toolName || 'unknown_tool';
     const hasLocator = hasToolLocator(locator);
     const toolStatus = normalizeToolStatus(payload.status);
+    const toolError = hasPublicErrorValue(payload.error)
+      ? publicErrorMessage(payload.error, '工具执行失败')
+      : '';
+    const publicPayload = toolError
+      ? { ...payload, error: toolError }
+      : payload;
     const targetIdx = findLastSegmentIndex(
       next.streamSegments,
       (segment) => (
@@ -1334,9 +1413,9 @@ export const applyAgentV2Event = (current, envelope) => {
       const target = next.streamSegments[targetIdx];
       next.streamSegments[targetIdx] = {
         ...target,
-        meta: mergeToolMeta(target.meta, payload),
+        meta: mergeToolMeta(target.meta, publicPayload),
         state: toolStatus || 'completed',
-        text: target.text || payload.output_preview || '',
+        text: target.text || payload.output_preview || toolError,
         finished: true,
         toolStatus,
         startTs: target.startTs
@@ -1352,9 +1431,9 @@ export const applyAgentV2Event = (current, envelope) => {
       next.streamSegments.push({
         type: 'tool',
         state: toolStatus || 'completed',
-        text: payload.output_preview || payload.error || `工具完成: ${payload.tool_name || 'unknown_tool'}`,
+        text: payload.output_preview || toolError || `工具完成: ${toolName}`,
         node: sourceNode,
-        meta: payload,
+        meta: publicPayload,
         finished: true,
         toolStatus,
         startTs: Number.isFinite(Number(payload.elapsed_ms))

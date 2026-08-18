@@ -132,12 +132,22 @@ class PublicEventAdapter:
         self.max_text_length = int(max_text_length)
 
     def adapt(self, event: RuntimeEvent) -> PublicEventDraft | None:
-        if event.event_type == "reasoning.delta" and not self.include_trace:
+        if event.event_type in {"reasoning.delta", "reasoning.summary"} and not self.include_trace:
+            return None
+        if (
+            event.event_type == "subagent.delta"
+            and str(event.payload.get("channel") or "").strip().lower() == "reasoning"
+            and not self.include_trace
+        ):
             return None
 
         raw_payload = self._normalize_payload(event)
         stats = _SanitizeStats()
-        sanitized = self._sanitize(raw_payload, stats=stats)
+        sanitized = self._sanitize(
+            raw_payload,
+            stats=stats,
+            allow_public_interaction_prompt=self._allows_public_interaction_prompt(event),
+        )
         payload = dict(sanitized) if isinstance(sanitized, Mapping) else {"value": sanitized}
         if stats.text_fields_truncated or stats.sensitive_fields_redacted:
             payload["omitted"] = {
@@ -174,6 +184,7 @@ class PublicEventAdapter:
                 key=key,
                 path=(self._normalized_key(key),),
                 truncate_text=key not in {"content", "structured_content", "usage"},
+                allow_public_interaction_prompt=self._allows_public_interaction_prompt(event),
             )
         return payload
 
@@ -187,16 +198,38 @@ class PublicEventAdapter:
             model_profile_id = payload.get("model_profile_id")
             return {"model_profile_id": model_profile_id} if model_profile_id else {}
         if event_type in {"token.delta", "reasoning.delta"}:
-            return {"text": str(payload.get("text") or "")}
+            normalized = {"text": str(payload.get("text") or "")}
+            for key in ("iteration", "reasoning_block_id"):
+                if payload.get(key) not in (None, ""):
+                    normalized[key] = payload[key]
+            return normalized
+        if event_type == "reasoning.summary":
+            return {
+                "summary": str(payload.get("summary") or ""),
+                "reasoning_block_id": str(payload.get("reasoning_block_id") or ""),
+                "iteration": payload.get("iteration"),
+            }
+        if event_type == "iteration.completed":
+            return self._iteration_completed_payload(payload)
         if event_type == "tool.started":
             return self._tool_started_payload(payload)
         if event_type == "tool.finished":
             return self._tool_finished_payload(payload)
         if event_type == "interaction.requested":
+            options = []
+            for item in payload.get("options") or []:
+                if not isinstance(item, Mapping):
+                    continue
+                options.append({
+                    "id": item.get("id") or item.get("option_id"),
+                    "label": item.get("label"),
+                    "value": item.get("value"),
+                })
             return {
-                "interaction_id": payload.get("interaction_id"),
+                "interaction_id": payload.get("interaction_id") or payload.get("id"),
                 "type": payload.get("type"),
-                "options": payload.get("options") or [],
+                "prompt": payload.get("prompt") or payload.get("text"),
+                "options": options,
             }
         if event_type == "turn.finished":
             terminal_status = self._normalize_status(payload.get("status") or event.status)
@@ -215,9 +248,13 @@ class PublicEventAdapter:
             "name": payload.get("name") or payload.get("tool_name"),
             "tool_call_id": payload.get("tool_call_id"),
         }
-        for key in ("iteration", "batch_index"):
+        for key in ("iteration", "batch_index", "message"):
             if key in payload:
                 normalized[key] = payload[key]
+        if "input_preview" in payload:
+            normalized["input_preview"] = payload["input_preview"]
+        elif "input" in payload:
+            normalized["input_preview"] = payload["input"]
         return normalized
 
     def _tool_finished_payload(self, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -231,6 +268,10 @@ class PublicEventAdapter:
             "iteration",
             "batch_index",
             "output_preview",
+            "output_truncated",
+            "output_ref",
+            "output_size",
+            "output_projection",
             "error",
             "error_code",
             "timeout_seconds",
@@ -238,6 +279,30 @@ class PublicEventAdapter:
             if key in payload:
                 normalized[key] = payload[key]
         return normalized
+
+    @staticmethod
+    def _iteration_completed_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+        allowed = (
+            "iteration",
+            "status",
+            "model_elapsed_ms",
+            "setup_elapsed_ms",
+            "llm_elapsed_ms",
+            "llm_stream_elapsed_ms",
+            "llm_wall_elapsed_ms",
+            "tools_elapsed_ms",
+            "tools_window_elapsed_ms",
+            "tools_wall_elapsed_ms",
+            "tools_execution_elapsed_ms",
+            "tools_overlap_llm_ms",
+            "tools_after_llm_ms",
+            "tools_net_wait_ms",
+            "prompt_build_ms",
+            "total_elapsed_ms",
+            "tool_calls_count",
+            "tool_names",
+        )
+        return {key: payload[key] for key in allowed if key in payload}
 
     def _sanitize(
         self,
@@ -247,6 +312,7 @@ class PublicEventAdapter:
         key: str | None = None,
         path: tuple[str, ...] = (),
         truncate_text: bool = True,
+        allow_public_interaction_prompt: bool = False,
     ) -> Any:
         if key and self._is_sensitive_key(key) and not self._is_public_token_count(
             key,
@@ -255,7 +321,14 @@ class PublicEventAdapter:
         ):
             stats.sensitive_fields_redacted += 1
             return _REDACTED
-        if key and self._normalized_key(key) in _ALWAYS_PRIVATE_KEYS:
+        if (
+            key
+            and self._normalized_key(key) in _ALWAYS_PRIVATE_KEYS
+            and not (
+                allow_public_interaction_prompt
+                and self._is_public_interaction_prompt_path(path)
+            )
+        ):
             stats.sensitive_fields_redacted += 1
             return _REDACTED
         if key and not self.include_trace and self._normalized_key(key) in _TRACE_ONLY_KEYS:
@@ -269,6 +342,7 @@ class PublicEventAdapter:
                     key=str(child_key),
                     path=path + (self._normalized_key(str(child_key)),),
                     truncate_text=truncate_text,
+                    allow_public_interaction_prompt=allow_public_interaction_prompt,
                 )
                 for child_key, child_value in value.items()
                 if self._normalized_key(str(child_key)) not in _NEVER_PUBLIC_KEYS
@@ -280,6 +354,7 @@ class PublicEventAdapter:
                     stats=stats,
                     path=path,
                     truncate_text=truncate_text,
+                    allow_public_interaction_prompt=allow_public_interaction_prompt,
                 )
                 for item in value
             ]
@@ -346,6 +421,25 @@ class PublicEventAdapter:
             and isinstance(value, int)
             and not isinstance(value, bool)
             and value >= 0
+        )
+
+    @classmethod
+    def _is_public_interaction_prompt_path(cls, path: tuple[str, ...]) -> bool:
+        normalized = tuple(cls._normalized_key(part) for part in path)
+        return normalized == ("prompt",) or (
+            len(normalized) >= 2
+            and normalized[-2:] == ("interaction", "prompt")
+        )
+
+    @classmethod
+    def _allows_public_interaction_prompt(cls, event: RuntimeEvent) -> bool:
+        if event.event_type == "interaction.requested":
+            return True
+        return (
+            event.event_type == "turn.finished"
+            and cls._normalize_status(
+                event.payload.get("status") or event.status
+            ) == "awaiting_input"
         )
 
     @staticmethod

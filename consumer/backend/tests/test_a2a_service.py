@@ -1,20 +1,27 @@
-"""Tests for A2A task service safeguards and status projection."""
+"""Tests for the A2A projection over the canonical async run manager."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 
-from flask import Flask, current_app
+import pytest
 
-from api.protocols.a2a.models import A2ATaskState
+from agent.runtime.contracts import (
+    RunSnapshot,
+    RunStatus,
+    RuntimeInvocationContext,
+    RuntimeResult,
+)
+from agent.runtime.errors import RunNotFoundError
+from api.protocols.a2a.models import A2ATaskCreateRequest, A2ATaskState
 from api.protocols.a2a.service import A2ATaskService
-from persistence.run_store import RunStore, RunStatus
 
 
 class _FakeChatStore:
-    def __init__(self, sessions=None):
-        self.sessions = dict(sessions or {})
+    def __init__(self):
+        self.sessions = {}
 
     def get_session(self, session_id):
         return self.sessions.get(session_id)
@@ -25,154 +32,153 @@ class _FakeChatStore:
         return session
 
 
-class _FakeExecutionStore:
-    def __init__(self, history=None):
-        self.history = history
-        self.failed_turns = []
+class _FakeAsyncManager:
+    def __init__(self):
+        self.snapshots = {}
+        self.created_contexts = []
+        self.cancelled = []
 
-    def get_session_history(self, session_id):
-        del session_id
-        return self.history
+    async def create_run(self, context, scope):
+        self.created_contexts.append(context)
+        snapshot = _snapshot(context, RunStatus.QUEUED, scope=scope)
+        self.snapshots[context.run_id] = snapshot
+        return snapshot, True
 
-    def fail_turn(self, session_id, turn_id, error):
-        self.failed_turns.append(
-            {
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "error": error,
-            }
+    async def get_run(self, run_id, scope):
+        snapshot = self.snapshots.get(run_id)
+        if snapshot is None or not scope.owns(snapshot):
+            return None
+        return snapshot
+
+    async def cancel_run(self, run_id, scope, reason):
+        snapshot = await self.get_run(run_id, scope)
+        if snapshot is None:
+            raise RunNotFoundError(run_id)
+        self.cancelled.append((run_id, reason))
+        snapshot = replace(
+            snapshot,
+            status=RunStatus.CANCELLED,
+            result=RuntimeResult(status="cancelled"),
+        )
+        self.snapshots[run_id] = snapshot
+        return snapshot
+
+
+def _snapshot(context, status, *, scope, result=None):
+    return RunSnapshot(
+        run_id=context.run_id,
+        session_id=context.session_id,
+        turn_id=context.turn_id,
+        status=status,
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:01Z",
+        last_seq=1,
+        scope=scope,
+        context=context,
+        result=result,
+    )
+
+
+def _call(coroutine):
+    return asyncio.run(coroutine)
+
+
+def _service(manager=None):
+    return A2ATaskService(
+        chat_store=_FakeChatStore(),
+        user_id="operator_a",
+        workspace_id="workspace_demo",
+        async_manager=manager or _FakeAsyncManager(),
+        async_call=_call,
+    )
+
+
+def test_service_requires_canonical_async_dependencies():
+    with pytest.raises(ValueError, match="canonical async run manager"):
+        A2ATaskService(
+            chat_store=_FakeChatStore(),
+            user_id="operator_a",
+            workspace_id="workspace_demo",
+            async_manager=None,
+            async_call=None,
         )
 
 
-class _FakeOrchestrator:
-    def __init__(self, *, run_impl, run_store=None):
-        self._run_impl = run_impl
-        self.run_store = run_store or RunStore()
+def test_create_task_submits_runtime_context_and_projects_pending_state():
+    manager = _FakeAsyncManager()
+    service = _service(manager)
 
-    def run(self, **kwargs):
-        return self._run_impl(**kwargs)
-
-
-def test_get_task_ignores_other_run_awaiting_input():
-    run_store = RunStore()
-    run_store.create_run("task-a", "hello", metadata={"session_id": "session-1"})
-    run_store.complete_run("task-a", {"ok": True})
-
-    execution_store = _FakeExecutionStore(
-        {
-            "turns": [
-                {"turn_id": 1, "run_id": "task-a", "status": "success"},
-                {"turn_id": 2, "run_id": "task-b", "status": "awaiting_input"},
-            ]
-        }
-    )
-    service = A2ATaskService(
-        orchestrator=SimpleNamespace(run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=execution_store,
-        user_id="user-1",
-        workspace_id="ws-1",
+    task = service.create_task(
+        A2ATaskCreateRequest(
+            message="synthetic question",
+            session_id="session_demo",
+            task_id="task_demo",
+            context={
+                "model_profile_id": "profile_demo",
+                "arguments": {"selected_ontology_id": "ontology_demo"},
+            },
+        )
     )
 
-    snapshot = service.get_task("task-a")
+    assert task.state == A2ATaskState.PENDING
+    assert task.metadata == {"mode": "async_run_manager"}
+    context = manager.created_contexts[0]
+    assert context.run_id == "task_demo"
+    assert context.session_id == "session_demo"
+    assert context.username == "operator_a"
+    assert context.workspace_id == "workspace_demo"
+    assert context.supports_user_interaction is False
+    assert context.model_profile_id == "profile_demo"
 
-    assert snapshot.state == A2ATaskState.COMPLETED
 
-
-def test_get_task_ignores_stale_matching_awaiting_input_run():
-    run_store = RunStore()
-    run_store.create_run("task-a", "hello", metadata={"session_id": "session-1"})
-    run_store.complete_run("task-a", {"ok": True})
-
-    execution_store = _FakeExecutionStore(
-        {
-            "turns": [
-                {"turn_id": 1, "run_id": "task-a", "status": "awaiting_input"},
-            ]
-        }
+def test_get_task_projects_completed_runtime_result():
+    manager = _FakeAsyncManager()
+    service = _service(manager)
+    service.create_task(
+        A2ATaskCreateRequest(
+            message="synthetic question",
+            session_id="session_demo",
+            task_id="task_demo",
+        )
     )
-    service = A2ATaskService(
-        orchestrator=SimpleNamespace(run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=execution_store,
-        user_id="user-1",
-        workspace_id="ws-1",
-    )
-
-    snapshot = service.get_task("task-a")
-
-    assert snapshot.state == A2ATaskState.COMPLETED
-
-
-def test_background_task_enters_workspace_and_app_context(monkeypatch):
-    entered = {"workspace": None, "app_name": None}
-
-    @contextmanager
-    def fake_workspace_scope(workspace_id):
-        entered["workspace"] = workspace_id
-        yield workspace_id
-
-    monkeypatch.setattr("api.protocols.a2a.service.workspace_scope", fake_workspace_scope)
-
-    app = Flask("a2a-service-test")
-
-    def run_impl(**kwargs):
-        assert kwargs["workspace_id"] == "ws-1"
-        assert entered["workspace"] == "ws-1"
-        assert kwargs["user_context"]["supports_user_interaction"] is False
-        entered["app_name"] = current_app.name
-        yield {"event": "agent.v2", "data": {"run_id": kwargs["requested_run_id"]}}
-
-    service = A2ATaskService(
-        orchestrator=_FakeOrchestrator(run_impl=run_impl),
-        chat_store=_FakeChatStore(),
-        execution_store=_FakeExecutionStore(),
-        user_id="user-1",
-        workspace_id="ws-1",
-        flask_app=app,
+    queued = manager.snapshots["task_demo"]
+    manager.snapshots["task_demo"] = replace(
+        queued,
+        status=RunStatus.COMPLETED,
+        result=RuntimeResult(status="completed", content="synthetic answer"),
     )
 
-    service._run_task_in_background(
-        task_id="task-1",
-        session_id="session-1",
-        message="hello",
-        context={},
+    task = service.get_task("task_demo")
+
+    assert task.state == A2ATaskState.COMPLETED
+    assert task.result == {"status": "completed", "content": "synthetic answer"}
+    assert task.completed_at == task.updated_at
+
+
+def test_duplicate_task_id_is_rejected_by_runtime_repository_view():
+    service = _service()
+    request = A2ATaskCreateRequest(
+        message="synthetic question",
+        session_id="session_demo",
+        task_id="task_demo",
+    )
+    service.create_task(request)
+
+    with pytest.raises(ValueError, match="task_id already exists"):
+        service.create_task(request)
+
+
+def test_cancel_task_uses_async_manager_and_preserves_reason():
+    manager = _FakeAsyncManager()
+    service = _service(manager)
+    service.create_task(
+        A2ATaskCreateRequest(
+            message="synthetic question",
+            session_id="session_demo",
+            task_id="task_demo",
+        )
     )
 
-    assert entered["workspace"] == "ws-1"
-    assert entered["app_name"] == "a2a-service-test"
-
-
-def test_background_task_marks_failed_when_bootstrap_raises(monkeypatch):
-    @contextmanager
-    def fake_workspace_scope(workspace_id):
-        yield workspace_id
-
-    monkeypatch.setattr("api.protocols.a2a.service.workspace_scope", fake_workspace_scope)
-
-    run_store = RunStore()
-
-    def run_impl(**kwargs):
-        del kwargs
-        raise RuntimeError("boom")
-
-    service = A2ATaskService(
-        orchestrator=_FakeOrchestrator(run_impl=run_impl, run_store=run_store),
-        chat_store=_FakeChatStore(),
-        execution_store=_FakeExecutionStore(),
-        user_id="user-1",
-        workspace_id="ws-1",
-    )
-
-    service._run_task_in_background(
-        task_id="task-boot-fail",
-        session_id="session-1",
-        message="hello",
-        context={},
-    )
-
-    run = run_store.get_run("task-boot-fail")
-    assert run is not None
-    assert run.status == RunStatus.FAILED
-    assert run.error == "Workflow execution failed"
-    assert run.metadata["session_id"] == "session-1"
+    assert service.cancel_task("task_demo") is True
+    assert manager.cancelled == [("task_demo", "a2a_cancel")]
+    assert service.get_task("task_demo").state == A2ATaskState.CANCELED

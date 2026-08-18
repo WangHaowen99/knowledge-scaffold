@@ -12,6 +12,7 @@ const tracePanelSource = readFileSync(join(currentDir, 'components/TracePanel.js
 const chatCssSource = readFileSync(join(currentDir, 'chat.css'), 'utf8');
 const appShellSource = readFileSync(join(currentDir, '../../app/AppShell.jsx'), 'utf8');
 const agenticStreamSource = readFileSync(join(currentDir, 'hooks/useAgenticStream.js'), 'utf8');
+const streamManagerSource = readFileSync(join(currentDir, 'hooks/useStreamManager.js'), 'utf8');
 const chatSessionsSource = readFileSync(join(currentDir, 'hooks/useChatSessions.js'), 'utf8');
 
 test('automatic ontology selection does not claim that business data is ready', () => {
@@ -145,4 +146,23 @@ test('awaiting interaction can be cancelled by button or Escape', () => {
   assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
   assert.equal(chatSource.includes('取消（Esc）'), true);
   assert.equal(chatSource.includes('applyInteractionCancellation'), true);
+});
+
+test('awaiting interaction resumes the same run after its terminal SSE closes', () => {
+  assert.equal(
+    streamManagerSource.includes('runId: activeMeta.runId,\n      cursor: activeMeta.lastSeq,'),
+    true,
+  );
+  assert.equal(
+    agenticStreamSource.includes('options?.interactionRunId || currentState?.runId || \'\''),
+    true,
+  );
+  assert.equal(
+    agenticStreamSource.includes('currentState?.cursor || 0,'),
+    true,
+  );
+  assert.equal(
+    agenticStreamSource.includes('`/agentic/runs/${encodeURIComponent(interactionRunId)}/interact`'),
+    true,
+  );
 });

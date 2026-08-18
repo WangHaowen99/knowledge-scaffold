@@ -1,50 +1,101 @@
 """Minimal route tests for A2A adapter endpoints."""
 
-from types import SimpleNamespace
+import asyncio
+import queue
 
 from flask import Flask
 
+from agent.runtime.contracts import (
+    PublicEvent,
+    RunScope,
+    RunSnapshot,
+    RunStatus,
+    RuntimeInvocationContext,
+)
+from agent.runtime.event_bus import BlockingSubscription
 from api.protocols.a2a.models import A2ATaskSnapshot, A2ATaskState
 from api.routes.a2a import a2a_bp
 from api.auth.auth import AuthManager
-from persistence.run_store import RunStore
 from workspace.workspaces import create_workspace
 
 
+def _call(coroutine):
+    return asyncio.run(coroutine)
+
+
+class _FakeAsyncManager:
+    def __init__(self, snapshot=None, events=None):
+        self.snapshot = snapshot
+        self.events = list(events or [])
+        self.unsubscribed = []
+
+    async def get_run(self, task_id, scope):
+        if (
+            self.snapshot is None
+            or self.snapshot.run_id != task_id
+            or not scope.owns(self.snapshot)
+        ):
+            return None
+        return self.snapshot
+
+    async def subscribe(self, task_id, scope, after_seq=0):
+        snapshot = await self.get_run(task_id, scope)
+        if snapshot is None:
+            raise KeyError(task_id)
+        return BlockingSubscription(
+            run_id=task_id,
+            subscriber_id="subscriber_demo",
+            queue=queue.Queue(),
+            replay=[event for event in self.events if event.seq > after_seq],
+            closed=True,
+        )
+
+    async def unsubscribe(self, subscription):
+        self.unsubscribed.append(subscription.subscriber_id)
+
+
 class _FakeTaskService:
-    def __init__(self, snapshot=None):
+    def __init__(self, snapshot=None, events=None):
         self.snapshot = snapshot or A2ATaskSnapshot(
             id="task-not-exists",
             session_id=None,
             state=A2ATaskState.NOT_FOUND,
             error="Task not found",
         )
-        self.orchestrator = SimpleNamespace(run_store=RunStore())
         self.user_id = "admin"
         self.workspace_id = "a2a-test"
+        runtime_snapshot = None
         if self.snapshot.state != A2ATaskState.NOT_FOUND:
-            self.orchestrator.run_store.create_run(
-                run_id=self.snapshot.id,
-                user_request="test",
-                metadata={
-                    "user_id": self.user_id,
-                    "workspace_id": self.workspace_id,
-                    "session_id": self.snapshot.session_id,
-                },
+            scope = RunScope(
+                username=self.user_id,
+                workspace_id=self.workspace_id,
+                scopes=("agent:read",),
             )
+            context = RuntimeInvocationContext(
+                run_id=self.snapshot.id,
+                session_id=self.snapshot.session_id,
+                turn_id=1,
+                workspace_id=self.workspace_id,
+                username=self.user_id,
+                query="synthetic question",
+            )
+            runtime_snapshot = RunSnapshot(
+                run_id=self.snapshot.id,
+                session_id=self.snapshot.session_id,
+                turn_id=1,
+                status=RunStatus.COMPLETED,
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-01T00:00:01Z",
+                last_seq=max((event.seq for event in events or []), default=0),
+                scope=scope,
+                context=context,
+            )
+        self.async_manager = _FakeAsyncManager(runtime_snapshot, events=events)
+        self.async_call = _call
 
     def get_task(self, task_id, session_id=None):
         del task_id, session_id
         return self.snapshot
-
-
-class _FakeChatStore:
-    def __init__(self, session=None):
-        self.session = session
-
-    def get_session(self, session_id):
-        del session_id
-        return self.session
 
 
 def _build_test_client(tmp_path, monkeypatch):
@@ -99,18 +150,19 @@ def test_get_task_returns_404_for_not_found(monkeypatch, tmp_path):
 def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tmp_path):
     client, headers = _build_test_client(tmp_path, monkeypatch)
 
-    event = {
-        "event": "agent.v2",
-        "data": {
-            "run_id": "task-1",
-            "session_id": "session-1",
-            "type": "turn.finished",
-            "ts": 123,
-            "source": {"node": "orchestrator"},
-            "payload": {"status": "success"},
-        },
-    }
-    session = SimpleNamespace(events=[event])
+    event = PublicEvent(
+        schema_version="1.0",
+        event_id="task-1:1",
+        seq=1,
+        run_id="task-1",
+        session_id="session-1",
+        turn_id=1,
+        event_type="turn.finished",
+        status="completed",
+        source={"node": "runtime"},
+        payload={"status": "completed", "content": "synthetic answer"},
+        created_at="2026-01-01T00:00:01Z",
+    )
     snapshot = A2ATaskSnapshot(
         id="task-1",
         session_id="session-1",
@@ -119,11 +171,7 @@ def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tm
 
     monkeypatch.setattr(
         "api.routes.a2a._build_task_service",
-        lambda: _FakeTaskService(snapshot=snapshot),
-    )
-    monkeypatch.setattr(
-        "api.routes.a2a._get_user_stores",
-        lambda: (_FakeChatStore(session=session), None),
+        lambda: _FakeTaskService(snapshot=snapshot, events=[event]),
     )
 
     resp = client.get("/a2a/tasks/task-1/events", headers=headers)
