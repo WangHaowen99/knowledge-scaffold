@@ -5,7 +5,7 @@ export const CONFIG_CENTER_SCOPES = {
     sections: [
       { id: 'llm', name: '模型池' },
       { id: 'system', name: '系统配置' },
-      { id: 'platform', name: '平台接入' },
+      { id: 'platform', name: '运维监控平台接入' },
       { id: 'wsmgmt', name: '工作空间管理' },
       { id: 'users', name: '用户与授权' },
     ],
