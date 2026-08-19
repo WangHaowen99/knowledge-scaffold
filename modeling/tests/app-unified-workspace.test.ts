@@ -11,6 +11,8 @@ test('主导航不再提供独立打开知识包工作区入口', () => {
   assert.doesNotMatch(source, /projectView/);
   assert.match(source, /ProjectWorkbenchRouter/);
   assert.match(source, /统一建模工作台/);
+  assert.match(source, /onProjectUnavailable=\{handleProjectUnavailable\}/);
+  assert.match(source, /onAuthenticationRequired=\{handleAuthenticationRequired\}/);
   assert.doesNotMatch(tourSource, /生成后从右上角进入/);
   assert.doesNotMatch(tourSource, /data-tour="package-workspace"/);
 });

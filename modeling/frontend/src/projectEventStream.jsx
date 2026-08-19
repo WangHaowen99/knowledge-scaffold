@@ -12,9 +12,11 @@ const ProjectEventStreamContext = createContext(null);
  * 起始游标只在首次挂载时读取：连接建立后由 subscribeProjectEvents 自己按 seq 续传，
  * 若把游标放进依赖，每来一个事件都会重建连接。
  */
-export function ProjectEventStreamProvider({ projectId, initialCursor = 0, children }) {
+export function ProjectEventStreamProvider({ projectId, initialCursor = 0, onError, children }) {
   const handlers = useRef(null);
   if (handlers.current === null) handlers.current = new Set();
+  const errorHandler = useRef(onError);
+  errorHandler.current = onError;
   const startCursor = useRef(null);
   if (startCursor.current === null) {
     const parsed = Number(initialCursor);
@@ -28,6 +30,7 @@ export function ProjectEventStreamProvider({ projectId, initialCursor = 0, child
         try { handler(event); } catch { /* 单个订阅者异常不影响其他订阅者 */ }
       }
     },
+    onError: (error) => errorHandler.current?.(error),
   }), [projectId]);
 
   const stream = useMemo(() => ({
