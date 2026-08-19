@@ -1149,6 +1149,17 @@ test('存在必须修复的错误时拦截并给出修缮与暂缓两条出路',
   ]);
 });
 
+test('只有警告和提示时可以直接完成 AI 辅助建模', async (t) => {
+  const project = createProject({ owner: 'alice', name: '完成-非阻断发现' });
+  const { saveCheck } = await import('../src/workflow/package-check.js');
+  saveCheck(project.id, '0.1.0', [
+    { id: 'w1', source: 'rule', severity: '警告', category: '命名建议', target: 'objects/o1', message: '建议统一命名' } as any,
+    { id: 'h1', source: 'rule', severity: '提示', category: '可读性', target: 'objects/o1', message: '可以补充说明' } as any,
+  ], 'pkg-draft');
+  const response = await confirmCompletion(completionApp(t, project.id), project.id);
+  assert.equal(response.statusCode, 200, response.body);
+});
+
 test('缺证据时把明细和文件入口一起返回', async (t) => {
   const project = createProject({ owner: 'alice', name: '拦截-缺证据' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
@@ -1573,43 +1584,22 @@ test('target 是语义目标时也把目标交给前端解析到具体文件', a
   assert.equal(actions[1].path, 'ipo_detail_info');
 });
 
-test('「忽略」只是开一条待办收理由，不会当场落审计记录', async (t) => {
+test('AI 辅助建模中的警告不再创建忽略待办', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-忽略警告' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
-  const { getPackageWarningReview } = await import('../src/workflow/warning-acceptance.js');
   saveCheck(project.id, '0.1.0', [{
     id: 'w1', source: 'rule', severity: '警告', category: '命名建议',
     target: 'objects/index.md', message: '命名不一致',
   } as any], 'pkg-draft');
 
   const app = findingApp(t);
-  const opened = await handOff(app, project.id, 'ignore', 'w1');
-  assert.equal(opened.statusCode, 200, opened.body);
-  const interaction = opened.json().interaction;
-  assert.equal(interaction.payload.purpose, 'check_finding_ignore');
-  assert.equal(interaction.payload.scope, 'warning');
-  // 点了忽略还没落库——理由填完提交才算数
-  assert.equal(
-    getPackageWarningReview(project.id, 'pkg-draft').items.every((item: any) => !item.accepted),
-    true,
-  );
-
-  const answered = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
-    payload: {
-      requestId: 'ignore-w1',
-      response: { answers: [{ questionId: 'ignore_reason', other: '命名在下一版统一调整' }] },
-    },
-  });
-  assert.equal(answered.statusCode, 200, answered.body);
-  const accepted = getPackageWarningReview(project.id, 'pkg-draft').items
-    .filter((item: any) => item.accepted);
-  assert.equal(accepted.length, 1);
-  assert.equal(accepted[0].finding.id, 'w1');
+  const response = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 0);
 });
 
-test('知识包修订变化后旧告警放行待办失效，刷新可基于最新检查重新发起', async (t) => {
+test('警告不再支持旧的放行待办流程', async (t) => {
   const project = createProject({ owner: 'alice', name: '告警放行修订冲突恢复' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   const finding = {
@@ -1630,37 +1620,10 @@ test('知识包修订变化后旧告警放行待办失效，刷新可基于最�
     } as any,
   });
 
-  const opened = await handOff(app, project.id, 'ignore', finding.id);
-  assert.equal(opened.statusCode, 200, opened.body);
-  const staleInteraction = opened.json().interaction;
-  assert.equal(staleInteraction.baseRevision, 'pkg-before');
-
-  currentRevision = 'pkg-after';
-  saveCheck(project.id, '0.1.1', [finding], currentRevision);
-  const staleAnswer = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/interactions/${staleInteraction.id}/respond`,
-    payload: {
-      requestId: 'ignore-stale-answer',
-      response: { answers: [{ questionId: 'ignore_reason', other: '下一版本统一调整命名' }] },
-    },
-  });
-  assert.equal(staleAnswer.statusCode, 409, staleAnswer.body);
-  assert.equal(staleAnswer.json().code, 'CHECK_FINDING_REVIEW_STALE');
-  assert.deepEqual(staleAnswer.json().nextActions.map((item: any) => item.id), [
-    'view_validation', 'run_package_check',
-  ]);
-  assert.equal(getAuthoringState().interaction(project.id, staleInteraction.id)?.status, 'cancelled');
-  assert.equal(
-    getAuthoringState().snapshot(project.id).pendingInteractions
-      .some((item) => item.id === staleInteraction.id),
-    false,
-  );
-
-  const reopened = await handOff(app, project.id, 'ignore', finding.id);
-  assert.equal(reopened.statusCode, 200, reopened.body);
-  assert.notEqual(reopened.json().interaction.id, staleInteraction.id);
-  assert.equal(reopened.json().interaction.baseRevision, 'pkg-after');
+  const response = await handOff(app, project.id, 'ignore', finding.id);
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 0);
 });
 
 test('读取项目会话会自动取消旧修订的告警放行待办', async (t) => {
@@ -1685,10 +1648,19 @@ test('读取项目会话会自动取消旧修订的告警放行待办', async (t
   };
   const app = routeApp(t, 'alice', { packages });
 
-  const opened = await handOff(app, project.id, 'ignore', finding.id);
-  assert.equal(opened.statusCode, 200, opened.body);
-  const staleInteraction = opened.json().interaction;
-  assert.equal(staleInteraction.baseRevision, 'pkg-session-before');
+  const state = getAuthoringState();
+  const started = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '旧告警放行',
+    baseRevision: 'pkg-session-before', state: { purpose: 'check_finding_ignore' },
+  });
+  if (started.kind !== 'run') throw new Error('运行创建失败');
+  const opened = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: started.run.id,
+    type: 'question_batch', baseRevision: 'pkg-session-before',
+    payload: { purpose: 'check_finding_ignore', scope: 'warning', findingId: finding.id, title: '旧告警' },
+  });
+  if (opened.kind !== 'interaction') throw new Error('待办创建失败');
+  const staleInteraction = opened.interaction;
 
   currentRevision = 'pkg-session-after';
   saveCheck(project.id, '0.1.1', [], currentRevision);
@@ -1710,11 +1682,7 @@ test('读取项目会话会自动取消旧修订的告警放行待办', async (t
   const run = getDb().prepare('SELECT status, result_json FROM authoring_runs WHERE id = ?')
     .get(staleInteraction.runId) as { status: string; result_json: string };
   assert.equal(run.status, 'cancelled');
-  assert.deepEqual(JSON.parse(run.result_json), {
-    currentRevision: 'pkg-session-after',
-    purpose: 'check_finding_ignore',
-    supersededBy: 'package_revision_changed',
-  });
+  assert.equal(JSON.parse(run.result_json).disposition, 'archived_non_blocking_finding');
 });
 
 test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开的那一条', async (t) => {
@@ -1733,7 +1701,7 @@ test('忽略错误时说清会整批暂缓，不让人以为只忽略了点开�
   assert.match(String(payload.description), /全部 2 个必须修复的错误/);
 });
 
-test('理由太短不放行，待办仍然停在原地等人重填', async (t) => {
+test('警告不再创建理由待办，因此不存在警告理由校验阻塞', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-理由不足' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1742,18 +1710,12 @@ test('理由太短不放行，待办仍然停在原地等人重填', async (t) =
   } as any], 'pkg-draft');
 
   const app = findingApp(t);
-  const interaction = (await handOff(app, project.id, 'ignore', 'w1')).json().interaction;
-  const answered = await app.inject({
-    method: 'POST',
-    url: `/api/projects/${project.id}/interactions/${interaction.id}/respond`,
-    payload: { requestId: 'ignore-short', response: { answers: [{ questionId: 'ignore_reason', other: '略' }] } },
-  });
-  assert.equal(answered.statusCode, 400, answered.body);
-  assert.equal(answered.json().code, 'INVALID_INPUT');
-  assert.equal(getAuthoringState().interaction(project.id, interaction.id)?.status, 'pending');
+  const response = await handOff(app, project.id, 'ignore', 'w1');
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
 });
 
-test('提示类发现不给忽略通道', async (t) => {
+test('提示类发现不给 AI 辅助建模忽略通道', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-提示' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1763,7 +1725,7 @@ test('提示类发现不给忽略通道', async (t) => {
 
   const response = await handOff(findingApp(t), project.id, 'ignore', 'h1');
   assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'CHECK_FINDING_NOT_IGNORABLE');
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
 });
 
 test('开场先说「已就绪」再进入建模目标确认，而不是倒着来', async (t) => {
@@ -1786,7 +1748,7 @@ test('开场先说「已就绪」再进入建模目标确认，而不是倒着�
   assert.ok(welcome < goal, `欢迎语应排在建模目标确认之前，实际顺序：${JSON.stringify(titles)}`);
 });
 
-test('已有待办未处理时不开忽略表单——否则它会被挡住，用户点了没反应', async (t) => {
+test('已有待办不改变警告的非阻断语义', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-待办冲突' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [{
@@ -1807,12 +1769,10 @@ test('已有待办未处理时不开忽略表单——否则它会被挡住，�
 
   const response = await handOff(findingApp(t), project.id, 'ignore', 'w1');
   assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().code, 'PENDING_INTERACTION_FIRST');
-  // 报错要指名道姓，否则用户不知道该去处理哪一条
-  assert.match(response.json().error, /请先确认建模目标/);
+  assert.equal(response.json().code, 'CHECK_FINDING_NON_BLOCKING');
 });
 
-test('已有另一条暂缓待办时也不开新表单', async (t) => {
+test('多条警告都不会创建暂缓待办', async (t) => {
   const project = createProject({ owner: 'alice', name: '发现交接-暂缓互斥' });
   const { saveCheck } = await import('../src/workflow/package-check.js');
   saveCheck(project.id, '0.1.0', [
@@ -1822,9 +1782,10 @@ test('已有另一条暂缓待办时也不开新表单', async (t) => {
   const app = findingApp(t);
 
   const first = await handOff(app, project.id, 'ignore', 'w1');
-  assert.equal(first.statusCode, 200, first.body);
   const second = await handOff(app, project.id, 'ignore', 'w2');
+  assert.equal(first.statusCode, 409, first.body);
   assert.equal(second.statusCode, 409, second.body);
-  assert.equal(second.json().code, 'PENDING_INTERACTION_FIRST');
-  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 1);
+  assert.equal(first.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(second.json().code, 'CHECK_FINDING_NON_BLOCKING');
+  assert.equal(getAuthoringState().snapshot(project.id).pendingInteractions.length, 0);
 });

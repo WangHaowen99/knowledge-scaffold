@@ -25,7 +25,6 @@ export default function PackageCheck({
   packageDraft = null,
   check: suppliedCheck = null,
   errorDeferral: suppliedErrorDeferral = null,
-  warningReview: suppliedWarningReview = null,
   repair: repairAvailability = null,
   rechecking = false,
   error: suppliedError = '',
@@ -35,7 +34,6 @@ export default function PackageCheck({
   onInteractionOpened,
   onInteractionFocus,
 }) {
-  const [manualWarningReview, setManualWarningReview] = useState(null);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState('');
   const [handoffId, setHandoffId] = useState('');
@@ -44,17 +42,13 @@ export default function PackageCheck({
   // 助手侧的处理结果回流前，先本地生效，避免闪回旧结果
   const check = suppliedCheck;
   const errorDeferral = suppliedErrorDeferral;
-  const warningReview = manualWarningReview ?? suppliedWarningReview;
-
   useEffect(() => {
-    setManualWarningReview(null);
     setErr('');
   }, [projectId, suppliedCheck]);
 
   useEffect(() => {
     const openWarningReview = (event) => {
       if (event?.detail?.projectId && event.detail.projectId !== projectId) return;
-      if (event?.detail?.warningReview) setManualWarningReview(event.detail.warningReview);
       setOpen(true);
     };
     // 助手栏「查看校验结果」原先只往输入框预填一句话，现在直接展开体检结果
@@ -90,12 +84,10 @@ export default function PackageCheck({
     } finally { setHandoffId(''); }
   };
 
+  const blockingFindings = check?.findings.filter((f) => f.severity === '错误') ?? [];
   const counts = check ? {
-    错误: check.findings.filter((f) => f.severity === '错误').length,
-    警告: check.findings.filter((f) => f.severity === '警告').length,
-    提示: check.findings.filter((f) => f.severity === '提示').length,
+    错误: blockingFindings.length,
   } : null;
-  const warningByFindingId = new Map((warningReview?.items ?? []).map((item) => [item.finding?.id, item]));
   const deferred = Boolean(errorDeferral?.valid && errorDeferral.revision === check?.revision);
   const currentRevision = packageRevision || check?.revision;
   const pendingIgnore = currentFindingIgnoreInteraction(pendingInteractions, currentRevision);
@@ -129,8 +121,6 @@ export default function PackageCheck({
           <button className="pcheck-sum" onClick={() => setOpen((v) => !v)}>
             v{check.version}：
             <span className="tag tag-err">错误 {counts.错误}</span>
-            <span className="tag tag-draft">警告 {counts.警告}</span>
-            <span className="tag tag-lang">提示 {counts.提示}</span>
             <span style={{ color: 'var(--muted)' }}>{open ? '收起 ▾' : '展开 ▸'}</span>
           </button>
         )}
@@ -157,10 +147,10 @@ export default function PackageCheck({
       </div>
       {open && check && (
         <div className="pcheck-list">
-          {!check.findings.length && <div className="empty" style={{ padding: '10px 0' }}>✓ 未发现问题</div>}
-          {check.findings.map((f) => {
-            const ignorable = f.severity === '错误' || f.severity === '警告';
-            const accepted = f.severity === '警告' && warningByFindingId.get(f.id)?.accepted;
+          {!blockingFindings.length && <div className="empty" style={{ padding: '10px 0' }}>✓ 未发现需要处理的错误</div>}
+          {blockingFindings.map((f) => {
+            const ignorable = true;
+            const accepted = false;
             const alreadyIgnored = accepted || (f.severity === '错误' && deferred);
             const openedIgnore = findingIgnoreInteraction(
               pendingInteractions,

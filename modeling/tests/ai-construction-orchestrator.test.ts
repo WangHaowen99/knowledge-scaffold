@@ -266,14 +266,11 @@ test('知识包修复完成时将超长校验发现收敛为可展示摘要', ()
     },
   });
 
-  const finding = (completed.message.blocks.find((block) => block.type === 'validation') as any)
-    .findings[0];
+  const validationBlock = completed.message.blocks.find((block) => block.type === 'validation') as any;
+  assert.deepEqual(validationBlock?.counts, { errors: 0, warnings: 0, hints: 0 });
+  assert.equal(validationBlock?.findings, undefined);
   assert.equal(completed.aiConstruction.tasks.find((item) => item.kind === 'package_repair')?.status, 'completed');
   assert.equal(completed.aiConstruction.tasks.find((item) => item.kind === 'package_validation')?.status, 'completed');
-  assert.equal(finding.title, '校验发现');
-  assert.equal(finding.summary.length, 1_000);
-  assert.equal(finding.summary.endsWith('…'), true);
-  assert.equal(finding.target, undefined);
 });
 
 test('新项目只接受携带当前已确认目标的资料分析结果', () => {
@@ -810,7 +807,7 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
   assert.match((generated.message.blocks[1] as any).text, /operation 1 个/);
   assert.match((generated.message.blocks[1] as any).text, /错误 0/);
   assert.equal(generated.message.blocks[2].type, 'validation');
-  assert.deepEqual((generated.message.blocks[2] as any).counts, { errors: 0, warnings: 1, hints: 2 });
+  assert.deepEqual((generated.message.blocks[2] as any).counts, { errors: 0, warnings: 0, hints: 0 });
   assert.deepEqual((generated.message.blocks[3] as any).actions.map((item: any) => item.id), [
     'confirm_knowledge', 'review_knowledge_files',
   ]);

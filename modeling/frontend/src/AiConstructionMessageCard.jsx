@@ -8,8 +8,10 @@ import { effectiveTaskPlanTasks } from './taskPlanStatus.js';
  * 库里存量消息是旧词，改不了。新文案不要再依赖这张表：它是个白名单，
  * 漏一个词就会让用户同时看到两套叫法。
  */
-function friendlyRepairText(value) {
-  return String(value ?? '')
+function friendlyRepairText(value, hideNonBlocking = false) {
+  const text = String(value ?? '')
+    .replace(/\s*·\s*警告\s+\d+\s*·\s*提示\s+\d+/gu, hideNonBlocking ? '' : '$&');
+  return text
     .replaceAll('受控修复器', '知识包修复助手')
     .replaceAll('受控修复', '逐项修复')
     .replaceAll('自动修复仍有语义争议，正在准备专家复核', '这份修改还需要你确认后才能使用')
@@ -51,7 +53,7 @@ export function milestonePosition(milestoneId) {
   return index < 0 ? null : { index: index + 1, total: MILESTONE_ORDER.length };
 }
 
-function StatusBlock({ block }) {
+function StatusBlock({ block, hideNonBlocking = false }) {
   const stage = milestonePosition(block.milestoneId);
   const progress = Number.isFinite(Number(block.progress))
     ? Math.max(0, Math.min(100, Math.round(Number(block.progress))))
@@ -63,7 +65,7 @@ function StatusBlock({ block }) {
         {stage && <span className="ac-message-stage">阶段 {stage.index}/{stage.total}</span>}
         {progress != null && <span title={PROGRESS_HINT}>{progress}%</span>}
       </div>
-      {block.summary && <p>{friendlyRepairText(block.summary)}</p>}
+      {block.summary && <p>{friendlyRepairText(block.summary, hideNonBlocking)}</p>}
       {progress != null && (
         <div className="ac-message-progress" title={PROGRESS_HINT}
           aria-label={`建模进度 ${progress}%。${PROGRESS_HINT}`}>
@@ -129,11 +131,18 @@ const VALIDATION_SCOPE_LABEL = { node: '当前产物', incremental: '本次变�
 const FINDING_LABEL = { error: '错误', warning: '警告', hint: '提示' };
 function ValidationBlock({ block, onAction }) {
   const counts = block.counts ?? {};
+  const hideNonBlocking = block.scope !== 'release';
+  const findings = hideNonBlocking
+    ? (block.findings ?? []).filter((finding) => finding.severity === 'error')
+    : (block.findings ?? []);
+  if (hideNonBlocking && !counts.errors && !findings.length) return null;
   return <section className={`ac-message-validation${counts.errors ? ' has-errors' : ''}`}>
     <div className="ac-message-validation-head"><div><strong>{block.title}</strong><span>{VALIDATION_SCOPE_LABEL[block.scope] ?? '知识包校验'}</span></div>
-      <div className="ac-message-validation-counts"><span className="error">错误 {counts.errors ?? 0}</span><span className="warning">警告 {counts.warnings ?? 0}</span><span className="hint">提示 {counts.hints ?? 0}</span></div>
+      <div className="ac-message-validation-counts"><span className="error">错误 {counts.errors ?? 0}</span>
+        {!hideNonBlocking && <><span className="warning">警告 {counts.warnings ?? 0}</span><span className="hint">提示 {counts.hints ?? 0}</span></>}
+      </div>
     </div>
-    {(block.findings ?? []).length > 0 && <div className="ac-message-finding-list">{block.findings.map((finding, index) => <article key={`${finding.title}-${index}`} className={finding.severity}>
+    {findings.length > 0 && <div className="ac-message-finding-list">{findings.map((finding, index) => <article key={`${finding.title}-${index}`} className={finding.severity}>
       <div><span>{FINDING_LABEL[finding.severity] ?? '发现'}</span><strong>{finding.title}</strong></div><p>{finding.summary}</p>{finding.target && <code>{finding.target}</code>}
       <OpenFileButton path={finding.target} label="定位问题" onAction={onAction} />
     </article>)}</div>}
@@ -174,9 +183,9 @@ function ChangePlanBlock({ block }) {
   </section>;
 }
 
-function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hiddenActionIds, hideTaskPlan }) {
-  if (block?.type === 'status') return <StatusBlock block={block} />;
-  if (block?.type === 'text') return <div className="ac-message-text"><MarkdownContent>{friendlyRepairText(block.text)}</MarkdownContent></div>;
+function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hiddenActionIds, hideTaskPlan, hideNonBlocking }) {
+  if (block?.type === 'status') return <StatusBlock block={block} hideNonBlocking={hideNonBlocking} />;
+  if (block?.type === 'text') return <div className="ac-message-text"><MarkdownContent>{friendlyRepairText(block.text, hideNonBlocking)}</MarkdownContent></div>;
   if (block?.type === 'evidence') return <EvidenceBlock block={block} onAction={onAction} />;
   if (block?.type === 'validation') return <ValidationBlock block={block} onAction={onAction} />;
   // 任务计划只在助手栏顶部的状态浮层里展示；对话流里再放一遍既占地方又没有操作价值
@@ -209,8 +218,17 @@ export default function AiConstructionMessageCard({
   message, onAction, actionsEnabled = true, disabledActionIds = [], hiddenActionIds = [],
   hideTaskPlan = false,
 }) {
+  const findingStatus = (message?.blocks ?? []).find((block) => (
+    block?.type === 'status' && String(block.title ?? '').startsWith('处理校验发现：')
+  ));
+  if (/^(?:警告|提示)\s*·/u.test(String(findingStatus?.summary ?? ''))) return null;
   const timestamp = formatMessageTimestamp(message?.createdAt);
   const blocks = displayBlocks(message);
+  const hideNonBlocking = blocks.some((block) => (
+    block?.type === 'validation' && block.scope !== 'release'
+  )) || blocks.some((block) => (
+    block?.type === 'status' && block.milestoneId
+  ));
   const handleAction = onAction
     ? (action) => onAction(resolveLegacyFindingAction(message, action))
     : undefined;
@@ -219,7 +237,7 @@ export default function AiConstructionMessageCard({
       {blocks.map((block, index) => (
         <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={handleAction}
           actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
-          hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} />
+          hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} hideNonBlocking={hideNonBlocking} />
       ))}
       {timestamp && <time className="ac-message-time" dateTime={message.createdAt}>{timestamp}</time>}
     </article>

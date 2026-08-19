@@ -912,7 +912,9 @@ export class AiConstructionOrchestrator {
       }
       if (existing) return { aiConstruction: current, message: existing };
 
-      const validationSummary = `错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const validationSummary = `错误 ${input.validation.errors}`;
+      const blockingFindings = (input.validation.findings ?? [])
+        .filter((finding) => finding.severity === 'error');
       const message = this.messages.ensure(projectId, {
         key: input.messageKey, role: 'assistant', taskId: validationTask.id,
         blocks: [
@@ -939,10 +941,10 @@ export class AiConstructionOrchestrator {
             ].join('\n'),
           },
           { type: 'validation', title: '知识结构阶段校验', scope: 'milestone',
-            counts: { errors: input.validation.errors, warnings: input.validation.warnings, hints: input.validation.hints },
-            ...(input.validation.findings?.length ? {
-              findings: input.validation.findings.slice(0, 8).map((finding) => ({
-                severity: finding.severity,
+            counts: { errors: input.validation.errors, warnings: 0, hints: 0 },
+            ...(blockingFindings.length ? {
+              findings: blockingFindings.slice(0, 8).map((finding) => ({
+                severity: 'error' as const,
                 title: displayText(finding.title, 120, '校验发现'),
                 summary: displayText(finding.summary, 1_000, '详细说明见完整校验记录'),
                 ...(displayTarget(finding.target) ? { target: displayTarget(finding.target) } : {}),
@@ -1361,7 +1363,9 @@ export class AiConstructionOrchestrator {
         });
       }
 
-      const validationSummary = `错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const validationSummary = `错误 ${input.validation.errors}`;
+      const blockingFindings = (input.validation.findings ?? [])
+        .filter((finding) => finding.severity === '错误');
       const message = this.messages.ensure(projectId, {
         key: input.messageKey, role: 'assistant', taskId: repairTask.id,
         blocks: [
@@ -1382,13 +1386,12 @@ export class AiConstructionOrchestrator {
             type: 'validation', title: '修复后阶段校验', scope: 'milestone',
             counts: {
               errors: input.validation.errors,
-              warnings: input.validation.warnings,
-              hints: input.validation.hints,
+              warnings: 0,
+              hints: 0,
             },
-            ...(input.validation.findings?.length ? {
-              findings: input.validation.findings.slice(0, 8).map((finding) => ({
-                severity: finding.severity === '错误' ? 'error' as const
-                  : finding.severity === '警告' ? 'warning' as const : 'hint' as const,
+            ...(blockingFindings.length ? {
+              findings: blockingFindings.slice(0, 8).map((finding) => ({
+                severity: 'error' as const,
                 title: displayText(finding.category, 120, '校验发现'),
                 summary: displayText(finding.message, 1_000, '详细说明见完整校验记录'),
                 ...(displayTarget(finding.target) ? { target: displayTarget(finding.target) } : {}),
@@ -1612,6 +1615,9 @@ export class AiConstructionOrchestrator {
     input: CheckFindingCardInput,
   ): AiConstructionMaterialUpdate {
     return this.transaction(() => {
+      if (input.severity !== '错误') {
+        throw new Error('警告和提示不需要展示或处理，可以直接继续 AI 辅助建模');
+      }
       const current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
       const taskId = current.progress.currentTaskId ?? undefined;
@@ -1684,8 +1690,8 @@ export class AiConstructionOrchestrator {
     return this.transaction(() => {
       const current = this.graph.snapshot(projectId);
       if (!current) throw new Error('项目尚未初始化 AI 辅助构建');
-      if (input.scope === 'warning' && !input.fingerprint) {
-        throw new Error('忽略警告需要提供该条提醒的标识');
+      if (input.scope !== 'errors') {
+        throw new Error('警告和提示不需要处理，可以直接继续 AI 辅助建模');
       }
       const taskId = current.progress.currentTaskId ?? undefined;
       const existing = this.state.snapshot(projectId).pendingInteractions.find(
@@ -1695,7 +1701,7 @@ export class AiConstructionOrchestrator {
       );
       // 同一条发现重复点「忽略」不再开第二个待办，否则助手栏会堆出一串一样的表单
       if (existing) return { aiConstruction: current, interaction: existing };
-      const batched = input.scope === 'errors';
+      const batched = true;
       const started = this.state.apply({
         kind: 'start_run',
         projectId,
@@ -2424,7 +2430,7 @@ export class AiConstructionOrchestrator {
           taskId: task.id, outputRevisionOid: input.packageRevisionOid,
         });
       }
-      const summary = `脚本 ${input.scriptCount} 个 · 错误 ${input.validation.errors} · 警告 ${input.validation.warnings} · 提示 ${input.validation.hints}`;
+      const summary = `脚本 ${input.scriptCount} 个 · 错误 ${input.validation.errors}`;
       const message = existing ?? this.messages.ensure(projectId, {
         key: input.messageKey, role: 'assistant', taskId: task.id,
         blocks: [
