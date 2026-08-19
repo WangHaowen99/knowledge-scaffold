@@ -810,21 +810,18 @@ class OrchestratorSessionAdapter:
                 else ""
             )
 
-            interaction_response = None
-            if context.interaction_response:
-                interaction_response = execution_store.validate_interaction_response(
-                    context.session_id,
-                    dict(context.interaction_response),
-                )
-            turn_id = turn_count + 1
-            started_turn = execution_store.start_turn(
+            started_turn, interaction_response = execution_store.start_next_turn(
                 session_id=context.session_id,
-                turn_id=turn_id,
                 run_id=context.run_id,
                 user_request=context.query,
                 ontology_version=selected_ontology_version or None,
-                interaction_response=interaction_response,
+                interaction_response=(
+                    dict(context.interaction_response)
+                    if context.interaction_response
+                    else None
+                ),
             )
+            turn_id = int(started_turn["turn_id"])
             interaction_cancellation = (
                 started_turn.get("prior_interaction_cancellation")
                 if isinstance(started_turn, Mapping)
@@ -935,7 +932,11 @@ class OrchestratorSessionAdapter:
     ) -> None:
         with self._finalize_lock:
             _chat_store, execution_store = self._stores(context)
-            turn = execution_store.get_turn(context.session_id, context.turn_id)
+            turn = execution_store.get_turn(
+                context.session_id,
+                context.turn_id,
+                run_id=context.run_id,
+            )
             if turn is None:
                 return
             current_status = str(turn.get("status") or "")
@@ -977,6 +978,7 @@ class OrchestratorSessionAdapter:
                     context.turn_id,
                     final_output=final_output,
                     summary=None,
+                    run_id=context.run_id,
                 )
             elif result.status == "completed":
                 execution_store.complete_turn(
@@ -984,6 +986,7 @@ class OrchestratorSessionAdapter:
                     context.turn_id,
                     final_output=final_output,
                     summary=summary,
+                    run_id=context.run_id,
                 )
             elif result.status == "cancelled":
                 execution_store.cancel_turn(
@@ -991,6 +994,7 @@ class OrchestratorSessionAdapter:
                     context.turn_id,
                     reason="runtime_cancelled",
                     final_output=final_output,
+                    run_id=context.run_id,
                 )
             else:
                 execution_store.fail_turn(
@@ -1001,6 +1005,7 @@ class OrchestratorSessionAdapter:
                         if result.error is not None
                         else "运行失败"
                     ),
+                    run_id=context.run_id,
                 )
 
             history_source = result.history_messages or context.history_messages

@@ -29,6 +29,10 @@ class InteractionCheckpointError(ValueError):
     """Raised when a user response does not match the durable checkpoint."""
 
 
+class TurnOwnershipError(RuntimeError):
+    """Raised when a run attempts to update another run's turn."""
+
+
 INTERACTION_CANCELLED_MESSAGE = "我已主动取消上一条交互请求，未提供所请求的信息或选择。"
 INTERACTION_CANCELLED_NOTICE = "用户取消了操作"
 
@@ -257,42 +261,94 @@ class ExecutionStore:
         """
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
-            canonical_response = _validated_interaction_response(history, interaction_response)
-            started_at = datetime.now().isoformat()
-            if canonical_response is not None:
-                pending_turn = history["turns"][-1]
-                pending_turn["interaction_response"] = canonical_response
-                pending_turn["interaction_consumed_at"] = started_at
-
-            prior_interaction_cancellation = None
-            if canonical_response is None:
-                cancelled_turn, cancellation = _latest_unconsumed_interaction_cancellation(history)
-                if cancelled_turn is not None and cancellation is not None:
-                    prior_interaction_cancellation = dict(cancellation)
-                    cancelled_turn["interaction_context_consumed_at"] = started_at
-                    cancelled_turn["interaction_context_consumed_by_turn_id"] = turn_id
-
-            # Create new turn record
-            turn: TurnExecutionRecord = {
-                "turn_id": turn_id,
-                "session_id": session_id,
-                "run_id": run_id,
-                "user_request": user_request,
-                "start_time": started_at,
-                "end_time": None,
-                "status": "running",
-                "final_output": None,
-                "summary": None,
-                "ontology_version": ontology_version,
-            }
-            if prior_interaction_cancellation is not None:
-                turn["prior_interaction_cancellation"] = prior_interaction_cancellation
-
-            history["turns"].append(turn)
-            self._current_turns[session_id] = turn_id
-            self._save_session(session_id)
-
+            turn, _canonical_response = self._start_turn_unlocked(
+                history,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                user_request=user_request,
+                ontology_version=ontology_version,
+                interaction_response=interaction_response,
+            )
             return turn
+
+    def start_next_turn(
+        self,
+        session_id: str,
+        run_id: str,
+        user_request: str,
+        ontology_version: Optional[str] = None,
+        interaction_response: Optional[Dict[str, Any]] = None,
+    ) -> tuple[TurnExecutionRecord, Optional[Dict[str, Any]]]:
+        """Atomically allocate and start the next turn for one session."""
+        with self._lock_for_session(session_id):
+            history = self._load_session(session_id)
+            existing_turn_ids = [
+                int(turn.get("turn_id") or 0)
+                for turn in history.get("turns", [])
+                if isinstance(turn, dict)
+            ]
+            turn_id = max(existing_turn_ids, default=0) + 1
+            return self._start_turn_unlocked(
+                history,
+                session_id=session_id,
+                turn_id=turn_id,
+                run_id=run_id,
+                user_request=user_request,
+                ontology_version=ontology_version,
+                interaction_response=interaction_response,
+            )
+
+    def _start_turn_unlocked(
+        self,
+        history: SessionExecutionHistory,
+        *,
+        session_id: str,
+        turn_id: int,
+        run_id: str,
+        user_request: str,
+        ontology_version: Optional[str],
+        interaction_response: Optional[Dict[str, Any]],
+    ) -> tuple[TurnExecutionRecord, Optional[Dict[str, Any]]]:
+        canonical_response = _validated_interaction_response(
+            history,
+            interaction_response,
+        )
+        started_at = datetime.now().isoformat()
+        if canonical_response is not None:
+            pending_turn = history["turns"][-1]
+            pending_turn["interaction_response"] = canonical_response
+            pending_turn["interaction_consumed_at"] = started_at
+
+        prior_interaction_cancellation = None
+        if canonical_response is None:
+            cancelled_turn, cancellation = _latest_unconsumed_interaction_cancellation(
+                history
+            )
+            if cancelled_turn is not None and cancellation is not None:
+                prior_interaction_cancellation = dict(cancellation)
+                cancelled_turn["interaction_context_consumed_at"] = started_at
+                cancelled_turn["interaction_context_consumed_by_turn_id"] = turn_id
+
+        turn: TurnExecutionRecord = {
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "run_id": run_id,
+            "user_request": user_request,
+            "start_time": started_at,
+            "end_time": None,
+            "status": "running",
+            "final_output": None,
+            "summary": None,
+            "ontology_version": ontology_version,
+        }
+        if prior_interaction_cancellation is not None:
+            turn["prior_interaction_cancellation"] = prior_interaction_cancellation
+
+        history["turns"].append(turn)
+        self._current_turns[session_id] = turn_id
+        self._save_session(session_id)
+        return turn, canonical_response
 
     def validate_interaction_response(
         self,
@@ -366,6 +422,8 @@ class ExecutionStore:
         turn_id: int,
         final_output: Optional[Dict[str, Any]],
         summary: Optional[str],
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Finalize a turn with output and summary.
@@ -379,14 +437,12 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
 
-            # Find the turn
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "success"
-                    turn["final_output"] = final_output
-                    turn["summary"] = summary
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "success"
+                turn["final_output"] = final_output
+                turn["summary"] = summary
 
             self._save_session(session_id)
 
@@ -395,6 +451,8 @@ class ExecutionStore:
         session_id: str,
         turn_id: int,
         error: str,
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Mark a turn as failed.
@@ -407,14 +465,11 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
 
-            # Find the turn
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "failed"
-                    # Add error to final_output
-                    turn["final_output"] = {"error": error}
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "failed"
+                turn["final_output"] = {"error": error}
 
             self._save_session(session_id)
 
@@ -425,6 +480,8 @@ class ExecutionStore:
         reason: str,
         final_output: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Mark a turn as cancelled.
@@ -439,14 +496,13 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
 
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "cancelled"
-                    turn["final_output"] = final_output or {"cancel_reason": reason}
-                    if summary is not None:
-                        turn["summary"] = summary
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "cancelled"
+                turn["final_output"] = final_output or {"cancel_reason": reason}
+                if summary is not None:
+                    turn["summary"] = summary
 
             self._save_session(session_id)
 
@@ -456,6 +512,8 @@ class ExecutionStore:
         turn_id: int,
         final_output: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
+        *,
+        run_id: Optional[str] = None,
     ) -> None:
         """
         Mark a turn as waiting for user input.
@@ -466,16 +524,37 @@ class ExecutionStore:
         with self._lock_for_session(session_id):
             history = self._load_session(session_id)
 
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    turn["end_time"] = datetime.now().isoformat()
-                    turn["status"] = "awaiting_input"
-                    turn["final_output"] = final_output or {"status": "awaiting_input"}
-                    if summary is not None:
-                        turn["summary"] = summary
-                    break
+            turn = self._turn_for_update(history, turn_id, run_id)
+            if turn is not None:
+                turn["end_time"] = datetime.now().isoformat()
+                turn["status"] = "awaiting_input"
+                turn["final_output"] = final_output or {"status": "awaiting_input"}
+                if summary is not None:
+                    turn["summary"] = summary
 
             self._save_session(session_id)
+
+    @staticmethod
+    def _turn_for_update(
+        history: SessionExecutionHistory,
+        turn_id: int,
+        run_id: Optional[str],
+    ) -> Optional[TurnExecutionRecord]:
+        matching_turns = [
+            turn
+            for turn in history.get("turns", [])
+            if turn.get("turn_id") == turn_id
+        ]
+        if run_id is None:
+            return matching_turns[0] if matching_turns else None
+        if not matching_turns:
+            return None
+        for turn in matching_turns:
+            if turn.get("run_id") == run_id:
+                return turn
+        raise TurnOwnershipError(
+            "turn does not belong to run '{}'".format(run_id)
+        )
 
     def set_turn_feedback(
         self,
@@ -553,6 +632,8 @@ class ExecutionStore:
         self,
         session_id: str,
         turn_id: int,
+        *,
+        run_id: Optional[str] = None,
     ) -> Optional[TurnExecutionRecord]:
         """
         Get a specific turn's execution record.
@@ -569,11 +650,7 @@ class ExecutionStore:
             if not history:
                 return None
 
-            for turn in history["turns"]:
-                if turn["turn_id"] == turn_id:
-                    return turn
-
-            return None
+            return self._turn_for_update(history, turn_id, run_id)
 
     def get_recent_turns(
         self,

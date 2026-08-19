@@ -84,6 +84,8 @@ class AsyncRunManager:
         self._admission_condition = asyncio.Condition()
         self._admission_waiters: dict[tuple[str, str], list[str]] = {}
         self._admitted_runs: dict[tuple[str, str], dict[str, int]] = {}
+        self._admission_waiter_sessions: dict[str, tuple[str, str, str]] = {}
+        self._admitted_sessions: dict[tuple[str, str, str], str] = {}
         self._run_locks: dict[str, asyncio.Lock] = {}
         self._cancel_futures: dict[str, asyncio.Future[RunSnapshot]] = {}
         self._cancel_reasons: dict[str, str] = {}
@@ -671,6 +673,7 @@ class AsyncRunManager:
 
     async def _acquire_admission(self, snapshot: RunSnapshot) -> bool:
         key = (snapshot.scope.username, snapshot.scope.workspace_id)
+        session_key = (*key, snapshot.session_id)
         run_id = snapshot.run_id
         limit = max(1, int(snapshot.context.concurrency_limit))
         timeout = snapshot.context.admission_timeout_seconds
@@ -680,17 +683,29 @@ class AsyncRunManager:
                 waiters = self._admission_waiters.setdefault(key, [])
                 if run_id not in waiters:
                     waiters.append(run_id)
+                self._admission_waiter_sessions[run_id] = session_key
                 try:
                     while True:
                         active = self._admitted_runs.setdefault(key, {})
                         # A stricter active protocol request must not be bypassed
                         # by another surface supplying a larger per-user limit.
                         effective_limit = min([limit, *active.values()])
-                        if waiters and waiters[0] == run_id and len(active) < effective_limit:
-                            waiters.pop(0)
+                        first_eligible = next(
+                            (
+                                waiter
+                                for waiter in waiters
+                                if self._admission_waiter_sessions.get(waiter)
+                                not in self._admitted_sessions
+                            ),
+                            None,
+                        )
+                        if first_eligible == run_id and len(active) < effective_limit:
+                            waiters.remove(run_id)
                             if not waiters:
                                 self._admission_waiters.pop(key, None)
+                            self._admission_waiter_sessions.pop(run_id, None)
                             active[run_id] = limit
+                            self._admitted_sessions[session_key] = run_id
                             self._admission_condition.notify_all()
                             return
                         await self._admission_condition.wait()
@@ -699,6 +714,7 @@ class AsyncRunManager:
                         waiters.remove(run_id)
                     if not waiters:
                         self._admission_waiters.pop(key, None)
+                    self._admission_waiter_sessions.pop(run_id, None)
                     self._admission_condition.notify_all()
                     raise
 
@@ -719,6 +735,13 @@ class AsyncRunManager:
                 active.pop(snapshot.run_id, None)
                 if not active:
                     self._admitted_runs.pop(key, None)
+            session_key = (
+                snapshot.scope.username,
+                snapshot.scope.workspace_id,
+                snapshot.session_id,
+            )
+            if self._admitted_sessions.get(session_key) == snapshot.run_id:
+                self._admitted_sessions.pop(session_key, None)
             self._admission_condition.notify_all()
 
     async def _cancel_runtime_safely(self, run_id: str, reason: str) -> bool:

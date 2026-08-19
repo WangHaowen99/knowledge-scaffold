@@ -962,6 +962,125 @@ def test_mixed_admission_limits_do_not_bypass_stricter_active_run():
     asyncio.run(run_test())
 
 
+def test_same_session_runs_are_serialized_without_blocking_other_sessions():
+    async def run_test():
+        class _PerRunRuntime:
+            def __init__(self):
+                self.started = []
+                self.release = {}
+
+            async def execute(self, context, sink):
+                del sink
+                self.started.append(context.run_id)
+                gate = self.release.setdefault(context.run_id, asyncio.Event())
+                await gate.wait()
+                return RuntimeResult(status="completed", content="synthetic answer")
+
+            async def cancel(self, run_id, reason):
+                del reason
+                self.release.setdefault(run_id, asyncio.Event()).set()
+                return True
+
+        runtime = _PerRunRuntime()
+        manager = AsyncRunManager(runtime)
+        first = _context("run_session_first").model_copy(
+            update={"concurrency_limit": 100}
+        )
+        second = _context("run_session_second").model_copy(
+            update={
+                "query": "second synthetic request",
+                "concurrency_limit": 100,
+            }
+        )
+        independent = _context("run_other_session").model_copy(
+            update={
+                "session_id": "session_other",
+                "query": "independent synthetic request",
+                "concurrency_limit": 100,
+            }
+        )
+
+        await manager.create_run(first, _scope())
+        await _wait_for_status(manager, first.run_id, RunStatus.RUNNING)
+        await manager.create_run(second, _scope())
+        await manager.create_run(independent, _scope())
+
+        async def wait_for_independent():
+            while independent.run_id not in runtime.started:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(wait_for_independent(), timeout=1.0)
+        assert first.run_id in runtime.started
+        assert independent.run_id in runtime.started
+        assert second.run_id not in runtime.started
+
+        runtime.release[first.run_id].set()
+        await _wait_for_status(manager, first.run_id, RunStatus.COMPLETED)
+
+        async def wait_for_second():
+            while second.run_id not in runtime.started:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(wait_for_second(), timeout=1.0)
+        runtime.release[second.run_id].set()
+        runtime.release[independent.run_id].set()
+        await _wait_for_status(manager, second.run_id, RunStatus.COMPLETED)
+        await _wait_for_status(manager, independent.run_id, RunStatus.COMPLETED)
+
+    asyncio.run(run_test())
+
+
+def test_cancelling_same_session_waiter_releases_admission_state():
+    async def run_test():
+        class _PerRunRuntime:
+            def __init__(self):
+                self.started = []
+                self.release = {}
+
+            async def execute(self, context, sink):
+                del sink
+                self.started.append(context.run_id)
+                await self.release.setdefault(context.run_id, asyncio.Event()).wait()
+                return RuntimeResult(status="completed", content="synthetic answer")
+
+            async def cancel(self, run_id, reason):
+                del reason
+                self.release.setdefault(run_id, asyncio.Event()).set()
+                return True
+
+        runtime = _PerRunRuntime()
+        manager = AsyncRunManager(runtime)
+        first = _context("run_session_owner").model_copy(
+            update={"concurrency_limit": 100}
+        )
+        waiting = _context("run_session_waiting").model_copy(
+            update={"query": "waiting request", "concurrency_limit": 100}
+        )
+        following = _context("run_session_following").model_copy(
+            update={"query": "following request", "concurrency_limit": 100}
+        )
+
+        await manager.create_run(first, _scope())
+        await _wait_for_status(manager, first.run_id, RunStatus.RUNNING)
+        await manager.create_run(waiting, _scope())
+        await manager.cancel_run(waiting.run_id, _scope(), reason="user_requested")
+        assert waiting.run_id not in manager._admission_waiter_sessions
+
+        await manager.create_run(following, _scope())
+        runtime.release[first.run_id].set()
+        await _wait_for_status(manager, first.run_id, RunStatus.COMPLETED)
+
+        async def wait_for_following():
+            while following.run_id not in runtime.started:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(wait_for_following(), timeout=1.0)
+        runtime.release[following.run_id].set()
+        await _wait_for_status(manager, following.run_id, RunStatus.COMPLETED)
+
+    asyncio.run(run_test())
+
+
 def test_replay_retention_and_slow_subscriber_are_isolated():
     async def run_test():
         repository = InMemoryRunRepository(max_events_per_run=32)
