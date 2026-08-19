@@ -128,6 +128,9 @@ function friendlyRepairOption(option, index) {
 
 function friendlyRepairQuestion(question, payload) {
   if (!isControlledRepair(payload)) return question;
+  // 资源目标和业务决策是两道独立的问题。业务建议只能替换 expert_decision 的选项，
+  // 否则 repair_target 会被同一段决策文本覆盖，提交后被误解析成 kind:key。
+  if (String(question?.id ?? question?.key ?? '') === 'repair_target') return question;
   const generatedOptions = asArray(payload.finding?.expertOptions).map((option) => ({
     label: asText(option?.label),
     description: asText(option?.description),

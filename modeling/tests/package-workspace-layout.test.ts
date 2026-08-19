@@ -405,6 +405,52 @@ test('只有一个明确修复建议时优先展示采用建议选项', () => {
   assert.doesNotMatch(html, /请填写处理决定/);
 });
 
+test('专家业务建议不会覆盖修复目标选项', () => {
+  const html = renderToStaticMarkup(React.createElement(PendingInteraction, {
+    interaction: {
+      id: 'interaction-repair-target',
+      type: 'question_batch',
+      status: 'pending',
+      payload: {
+        purpose: 'controlled_repair_expert',
+        finding: {
+          userSuggestion: '请确认应使用哪个金额字段。',
+          expertOptions: [{
+            label: '改引用 hit_bid_amt',
+            description: '使用招投标明细的中标金额字段',
+            decision: 'step_8_field_fix:replace proj_hit_bid_tx_cap with hit_bid_amt',
+          }],
+        },
+        questions: [
+          {
+            id: 'expert_decision',
+            kind: 'text',
+            q: '请给出业务决策',
+            required: true,
+          },
+          {
+            id: 'repair_target',
+            kind: 'single',
+            q: '请选择本次要修改哪一个资源',
+            required: true,
+            options: [
+              { label: '营销线索事件', value: 'object:营销线索事件' },
+              { label: '招投标线索事件', value: 'object:招投标线索事件' },
+              { label: '金融需求识别与产品推荐', value: 'operation:金融需求识别与产品推荐' },
+            ],
+          },
+        ],
+      },
+    },
+    onSubmit: () => {},
+  }));
+
+  assert.match(html, /处理方式 1/);
+  assert.match(html, /招投标线索事件/);
+  assert.match(html, /金融需求识别与产品推荐/);
+  assert.doesNotMatch(html, /step_8_field_fix:replace/);
+});
+
 test('流程图待确认时中栏展示可编辑草稿且右栏提交已保存修订', () => {
   assert.match(packageWorkspaceSource, /processReview/);
   assert.match(packageWorkspaceSource, /<div className="rv-flowchart">\s*<FlowchartEditor/);

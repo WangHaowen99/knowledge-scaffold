@@ -263,6 +263,9 @@ export function buildAutomaticRepairPlan(
 type RepairTargetKind = 'object' | 'operation' | 'rule' | 'metric' | 'script';
 
 export interface RepairTarget { targetKind: RepairTargetKind; targetKey: string }
+const REPAIR_TARGET_KINDS = new Set<RepairTargetKind>([
+  'object', 'operation', 'rule', 'metric', 'script',
+]);
 
 /**
  * 找出该校验发现可能涉及的知识资源。
@@ -374,11 +377,14 @@ export function parseExpertRepairTarget(response: JsonObject): RepairTarget | un
       && (item as Record<string, unknown>).questionId === 'repair_target'
   )) as Record<string, unknown> | undefined;
   const selected = Array.isArray(picked?.selected) ? picked!.selected.map(String) : [];
-  const [value] = selected.filter(Boolean);
+  const [value] = selected.map((item) => item.trim()).filter(Boolean);
   if (!value) return undefined;
-  const [targetKind, targetKey] = value.split(':');
-  if (!targetKind || !targetKey) return undefined;
-  return { targetKind: targetKind as RepairTarget['targetKind'], targetKey };
+  const separator = value.indexOf(':');
+  if (separator <= 0) return undefined;
+  const targetKind = value.slice(0, separator).trim() as RepairTargetKind;
+  const targetKey = value.slice(separator + 1).trim();
+  if (!REPAIR_TARGET_KINDS.has(targetKind) || !targetKey) return undefined;
+  return { targetKind, targetKey };
 }
 
 export function parseExpertRepairDecision(response: JsonObject): string {
@@ -999,9 +1005,19 @@ export class ControlledRepairRunner {
     if (pending.baseRevision && pending.baseRevision !== current.revision.oid) {
       throw new Error('知识包内容已经变化，请基于最新校验结果重新处理');
     }
-    const plan = buildSemanticRepairPlan(
-      current.spec, finding, decision, parseExpertRepairTarget(response),
-    );
+    const candidates = repairTargetCandidates(current.spec, finding);
+    const targetAnswer = Array.isArray(response.answers)
+      ? response.answers.find((item) => item && typeof item === 'object' && !Array.isArray(item)
+        && (item as Record<string, unknown>).questionId === 'repair_target')
+      : undefined;
+    const explicitTarget = parseExpertRepairTarget(response);
+    if (targetAnswer && (!explicitTarget || !candidates.some((candidate) => (
+      candidate.targetKind === explicitTarget.targetKind
+        && candidate.targetKey === explicitTarget.targetKey
+    )))) {
+      throw new RepairTargetUnresolvedError(finding, candidates);
+    }
+    const plan = buildSemanticRepairPlan(current.spec, finding, decision, explicitTarget);
     const answered = this.adapter.respond(project.id, pending.id, requestId, response);
     const existing = this.state.snapshot(project.id).pendingInteractions.find((item) => (
       item.type === 'change_plan' && item.payload.parentInteractionId === pending.id
