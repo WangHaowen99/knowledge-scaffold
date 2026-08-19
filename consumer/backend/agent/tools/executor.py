@@ -15,6 +15,7 @@ from utils.logging import get_logger
 from utils.streaming import stream_writer_context, try_get_stream_writer
 from agent.tools.base import BaseTool, ToolBatchResult, ToolContext, ToolInvocation, ToolOutcome
 from agent.tools.events import emit_protocol_event, emit_tool_finished, emit_tool_started
+from agent.tools.scheduling import plan_barriered_tool_batches
 
 logger = get_logger("tools.executor")
 
@@ -56,31 +57,32 @@ def execute_tool_batch(
         tasks.append(task)
 
     outputs = list(early_outputs)
-    pending_safe_batch: List[Dict[str, Any]] = []
-
-    def flush_safe_batch() -> bool:
-        nonlocal pending_safe_batch
-        if not pending_safe_batch:
-            return False
-        batch_outputs = _execute_parallel_batch(pending_safe_batch, context, subagent_event_emitter)
+    completed_tasks = 0
+    batches = plan_barriered_tool_batches(
+        tasks,
+        is_concurrency_safe=lambda task: bool(task["spec"].concurrency_safe),
+    )
+    for batch in batches:
+        batch_tasks = list(batch.items)
+        if batch.parallel:
+            batch_outputs = _execute_parallel_batch(
+                batch_tasks,
+                context,
+                subagent_event_emitter,
+            )
+        else:
+            batch_outputs = [
+                _execute_single_task(
+                    batch_tasks[0],
+                    context,
+                    subagent_event_emitter,
+                )
+            ]
         outputs.extend(batch_outputs)
-        pending_safe_batch = []
-        return any(output["outcome"].terminal for output in batch_outputs)
-
-    for position, task in enumerate(tasks):
-        if task["spec"].concurrency_safe:
-            pending_safe_batch.append(task)
-            continue
-        if flush_safe_batch():
-            outputs.extend(_build_skipped_outputs(tasks[position:]))
+        completed_tasks += len(batch_tasks)
+        if any(output["outcome"].terminal for output in batch_outputs):
+            outputs.extend(_build_skipped_outputs(tasks[completed_tasks:]))
             break
-        output = _execute_single_task(task, context, subagent_event_emitter)
-        outputs.append(output)
-        if output["outcome"].terminal:
-            outputs.extend(_build_skipped_outputs(tasks[position + 1:]))
-            break
-    else:
-        flush_safe_batch()
 
     outputs.sort(key=lambda item: item["index"])
     return _aggregate_outputs(outputs)
