@@ -4,6 +4,7 @@ import { getPackage, getPackageCheck, runPackageCheck } from './api.js';
 import { synchronizePackageCheck } from './packageCheckRefresh.js';
 import {
   addFlowchartDiagram,
+  advanceProjectSession,
   getFlowchartDraft,
   getProjectSession,
   getRevisionDiff,
@@ -222,10 +223,11 @@ export default function PackageWorkspace({
     return () => window.removeEventListener('mw-flowchart-add-open', open);
   }, [projectId]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options) => {
     try {
+      const readSession = options?.advance === true ? advanceProjectSession : getProjectSession;
       const [nextSession, nextPackage, nextCheck] = await Promise.all([
-        getProjectSession(projectId),
+        readSession(projectId),
         getPackage(projectId),
         getPackageCheck(projectId),
       ]);
@@ -353,6 +355,12 @@ export default function PackageWorkspace({
       }
       scheduleLoad();
     };
+    // 题卡打开事件就是后端已切到 waiting 的信号。立即回源会话，不等普通事件的
+    // 200ms 防抖，保证 waiting 状态与 pendingInteraction 在同一轮渲染中到达。
+    if (event?.type === 'authoring.interaction.opened' && !replay.historical) {
+      if (workspaceDirtyRef.current) deferredRefreshRef.current = true;
+      else void load({ advance: true });
+    }
     // 消息随事件内联送达，先贴上去让回显立即可见；任务图等其余状态仍按需回源。
     const liveMessage = liveAiConstructionMessage(event);
     if (liveMessage && !replay.historical) {
