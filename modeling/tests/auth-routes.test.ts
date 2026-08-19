@@ -1752,7 +1752,7 @@ test('包修缮运行期间人工草稿只读，所有写接口统一返回 409'
   assert.equal(draftAfterRepair.statusCode, 201, draftAfterRepair.body);
 });
 
-test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全文意图可访问', async () => {
+test('主建模聊天把全部资料清单与当前文本材料分别交给 packageChatPlan', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
   const created = await app.inject({
@@ -1769,6 +1769,10 @@ test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全
   const document = insertDocument({
     projectId, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
     textContent: '第一章 产品准入条件',
+  });
+  const spreadsheet = insertDocument({
+    projectId, filename: 'dataset.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: 'Data', fields: [], rowCount: 2 }],
   });
 
   let receivedOptions: any;
@@ -1796,6 +1800,19 @@ test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全
         document.contentHash, document.semanticHash,
       ].join(':'),
     }]);
+    assert.deepEqual(
+      [...receivedOptions.materials].sort((left, right) => left.filename.localeCompare(right.filename)),
+      [
+        {
+          id: spreadsheet.id, filename: 'dataset.xlsx', kind: 'excel', parseStatus: 'parsed',
+          textLength: 0, tableCount: 1,
+        },
+        {
+          id: document.id, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
+          textLength: '第一章 产品准入条件'.length, tableCount: 0,
+        },
+      ].sort((left, right) => left.filename.localeCompare(right.filename)),
+    );
   } finally {
     packageChatPlanTask = null;
   }
