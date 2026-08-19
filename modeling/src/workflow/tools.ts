@@ -383,16 +383,30 @@ function literalString(values: string[]) {
   return Type.Union(values.map((value) => Type.Literal(value)));
 }
 
-export const specOperationSchema = (competencyQuestionIds: string[] = []) => Type.Object({
+export interface OperationSchemaOptions {
+  /** 初始操作提取阶段不允许模型提前绑定尚未生成的脚本。 */
+  allowScript?: boolean;
+}
+
+export const specOperationSchema = (
+  competencyQuestionIds: string[] = [],
+  options: OperationSchemaOptions = {},
+) => Type.Object({
   key: KeyString(), title: Type.String(), description: Type.String(),
   inputs: Type.Array(Type.Object({ param: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), required: Type.Boolean(), note: Type.Optional(Type.String()) })),
   outputs: Type.Array(Type.Object({ field: Type.String(), cnName: Type.Optional(Type.String()), type: Type.String(), note: Type.Optional(Type.String()) })),
-  flow: Type.Array(Type.String({ description: '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；引用对象写 object:<key>，引用脚本写 script:<key>' })),
+  flow: Type.Array(Type.String({
+    description: options.allowScript === false
+      ? '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；本阶段只允许引用 object:<key>，不得引用脚本'
+      : '按顺序提交步骤正文，不要在正文中添加 1.、2. 等序号；引用对象写 object:<key>，引用脚本写 script:<key>',
+  })),
   relatedObjects: Type.Array(Type.String()),
   usesRules: Type.Optional(Type.Array(Type.String({ description: '引用的规则 key（须在 rules 中声明）' }))),
   usesMetrics: Type.Optional(Type.Array(Type.String({ description: '引用的指标 key（须在 metrics 中声明）' }))),
   notes: Type.Optional(Type.Array(Type.String({ description: '注意事项（兜底、追问、不得推断等）' }))),
-  script: Type.Optional(Type.Object({ key: KeyString(), required: Type.Optional(Type.Boolean()) })),
+  ...(options.allowScript === false ? {} : {
+    script: Type.Optional(Type.Object({ key: KeyString(), required: Type.Optional(Type.Boolean()) })),
+  }),
   competencyQuestionId: competencyQuestionIds.length
     ? literalString(competencyQuestionIds)
     : Type.Optional(Type.String()),
@@ -501,7 +515,7 @@ export function buildOperationGenerateTools(
     label: '提交操作',
     description: '提交当前批次领域问题对应的完整操作规格；每个 operation 必须用 competencyQuestionId 认领一个给定问题，问题原文由服务端回填。',
     parameters: Type.Object({
-      operations: Type.Array(specOperationSchema(questions.map((question) => question.id)), { minItems: 1, maxItems: 4 }),
+      operations: Type.Array(specOperationSchema(questions.map((question) => question.id), { allowScript: false }), { minItems: 1, maxItems: 4 }),
     }),
     async execute(_id: string, params: { operations: unknown[] }) {
       cap.operations = params.operations;

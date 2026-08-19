@@ -271,6 +271,62 @@ test('操作批次引用不存在对象或漏掉确认流程时会自动重交',
   assert.ok(events.some((event) => event.kind === 'repair_completed' && event.phase === 'operation_batch_1'));
 });
 
+test('操作批次引用尚未生成的脚本时自动补交并移除幽灵脚本', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: '脚本引用补齐', domain: '金融营销', background: '客户需求识别与产品推荐' });
+  const process = { id: 'identify_needs', title: '识别客户需求并推荐产品' };
+  const flowchart = confirmedFlowchart([process]);
+  upsertNode({
+    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
+    output: {
+      domainOverview: '金融营销',
+      candidateObjects: [{ name: 'Customer', rationale: '客户信息', sourceTables: ['customer'] }],
+      openQuestions: [], materialAssessments: [], candidateArtifacts: [],
+    },
+  });
+  const object = {
+    candidateId: 'candidate_1', key: 'customer', title: '客户信息', description: '客户信息',
+    sourceTable: 'customer', primaryKey: ['id'],
+    fields: [{ key: 'id', cnName: '客户编号', type: 'string', required: true, sourceColumn: 'id' }],
+  };
+  const operation = {
+    key: 'identify_customer_needs', title: '识别客户需求', description: '识别客户需求并推荐产品',
+    inputs: [], outputs: [{ field: 'recommendation', type: 'array' }],
+    flow: ['读取 object:customer', '输出推荐结果'], relatedObjects: ['customer'],
+    competencyQuestionId: operationTargetId(process.id),
+  };
+  const faux = createFauxCore({ provider: 'generation-operation-script-repair', models: [{ id: 'generation-operation-script-repair' }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
+    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', {
+      operations: [{
+        ...operation,
+        flow: ['读取 object:customer', '执行 script:phantom_customer_recommendation', '输出推荐结果'],
+        script: { key: 'phantom_customer_recommendation', required: true },
+      }],
+    })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })]),
+  ]);
+
+  const result = await generatePackage(project, {
+    tables: [{
+      name: 'customer', rowCount: 1,
+      fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C001'], distinctRatio: 1 }],
+    }], documents: [],
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
+
+  assert.equal(result.spec.operations.length, 1);
+  assert.equal(result.spec.operations[0]?.script, undefined);
+  const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
+  const events = listTraceEvents(node!.id);
+  assert.ok(events.some((event) => (
+    event.kind === 'validation_warning'
+      && event.details?.issues?.some((issue: string) => issue.includes('尚未生成的脚本'))
+  )));
+  assert.ok(events.some((event) => event.kind === 'repair_started' && event.phase === 'operation_batch_1'));
+  assert.ok(events.some((event) => event.kind === 'repair_completed' && event.phase === 'operation_batch_1'));
+});
+
 test('操作通过确认流程 ID 绑定并由服务端回填流程目标文本', async () => {
   const project = await createGenerationProject({ owner: 'tester', name: '流程 ID 绑定', domain: '银行营销', background: '客户产品推荐' });
   const process = { id: 'deposit_recommendation', title: '企业客户存款产品推荐' };
