@@ -191,3 +191,54 @@ def test_mcp_runtime_requires_independent_token_secret(monkeypatch, tmp_path):
 
     with pytest.raises(MCPConfigurationError, match="MCP_TOKEN_SECRET"):
         load_mcp_runtime_config()
+
+
+def test_bound_mcp_token_persists_and_verifies_ontology_claim(monkeypatch, tmp_path):
+    cfg = _config(tmp_path / "tokens.json")
+    monkeypatch.setattr(
+        "integration.mcp.ontology_binding.validate_token_ontology_binding",
+        lambda **_kwargs: None,
+    )
+
+    created = create_mcp_token(
+        username="operator_a",
+        workspace_id="workspace_demo",
+        ontology_id="knowledge_package_demo",
+        scopes=["mcp:search", "mcp:chat"],
+        expires_in=3600,
+        config=cfg,
+    )
+    verified = verify_mcp_token(created["token"], config=cfg)
+
+    assert created["item"]["ontology_id"] == "knowledge_package_demo"
+    assert created["item"]["binding_mode"] == "ontology"
+    assert verified["ontology_id"] == "knowledge_package_demo"
+    stored = MCPTokenStore(cfg.token_store_path).list_tokens(
+        username="operator_a",
+        workspace_id="workspace_demo",
+    )[0]
+    assert stored["ontology_id"] == "knowledge_package_demo"
+
+
+def test_mcp_token_rejects_registry_binding_mismatch(monkeypatch, tmp_path):
+    cfg = _config(tmp_path / "tokens.json")
+    monkeypatch.setattr(
+        "integration.mcp.ontology_binding.validate_token_ontology_binding",
+        lambda **_kwargs: None,
+    )
+    created = create_mcp_token(
+        username="operator_a",
+        workspace_id="workspace_demo",
+        ontology_id="knowledge_package_demo",
+        scopes=["mcp:chat"],
+        expires_in=3600,
+        config=cfg,
+    )
+    document = json.loads(cfg.token_store_path.read_text(encoding="utf-8"))
+    document["tokens"][0]["ontology_id"] = "knowledge_package_other"
+    cfg.token_store_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(MCPTokenAuthError) as exc_info:
+        verify_mcp_token(created["token"], config=cfg)
+
+    assert exc_info.value.code == "MCP_TOKEN_BINDING_MISMATCH"

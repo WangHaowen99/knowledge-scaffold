@@ -18,6 +18,11 @@ from api.protocols.mcp.schemas import error_result
 from api.protocols.mcp.public_trace import MCPPublicTraceCollector
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
+from integration.mcp.ontology_binding import (
+    MCPOntologyBindingError,
+    bind_chat_arguments,
+    validate_runtime_ontology_availability,
+)
 
 
 def execute_mcp_chat_workflow(
@@ -63,6 +68,43 @@ def execute_mcp_chat_workflow(
         dict(data.get("context") or {}),
         supported=False,
     )
+    try:
+        arguments = bind_chat_arguments(
+            arguments=(data.get("arguments") if isinstance(data.get("arguments"), dict) else None),
+            token_ontology_id=scope.ontology_id,
+        )
+        selected_ontology_id = str((arguments or {}).get("selected_ontology_id") or "").strip()
+        if selected_ontology_id:
+            # The orchestrator locks ontology selection from user_context, while
+            # structured arguments are used by direct execution. Keep both
+            # channels aligned so an MCP token binding also constrains the main
+            # agent and every ontology-scoped tool invocation.
+            context = bind_chat_arguments(
+                arguments=context,
+                token_ontology_id=selected_ontology_id,
+            ) or {}
+    except MCPOntologyBindingError as exc:
+        return _bridge_error(
+            exc.code,
+            exc.detail,
+            status_code=exc.status_code,
+            trace=_trace_snapshot(trace_collector),
+            error_type=exc.error_type,
+        )
+    if scope.ontology_id and selected_ontology_id:
+        try:
+            validate_runtime_ontology_availability(
+                workspace_id=scope.workspace_id,
+                ontology_id=selected_ontology_id,
+            )
+        except MCPOntologyBindingError as exc:
+            return _bridge_error(
+                exc.code,
+                exc.detail,
+                status_code=exc.status_code,
+                trace=_trace_snapshot(trace_collector),
+                error_type=exc.error_type,
+            )
     requested_profile = str(context.get("model_profile_id") or "").strip()
     try:
         resolve_effective_llm_profile_config(
@@ -95,7 +137,6 @@ def execute_mcp_chat_workflow(
         orchestrator.run_admission_queue = admission_queue
 
     run_id = "mcp-{}".format(uuid.uuid4().hex)
-    arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else None
     metadata = {
         "source": "mcp_chat",
         "session_id": session_id,
@@ -264,9 +305,10 @@ def _bridge_error(
     session_id: str = "",
     result: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
+    error_type: str = "workflow_error",
 ) -> tuple[dict[str, Any], int]:
     payload = error_result(
-        error_type="workflow_error",
+        error_type=error_type,
         error_code=code,
         detail=detail,
         retriable=retriable,

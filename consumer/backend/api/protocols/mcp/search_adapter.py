@@ -15,6 +15,11 @@ from ontology.ontology_catalog import get_ontology_manifest
 from workspace.workspaces import get_workspace, get_workspace_paths, workspace_scope
 from .schemas import error_result
 from integration.mcp.scope import MCPRequestScope
+from integration.mcp.ontology_binding import (
+    MCPOntologyBindingError,
+    resolve_effective_ontology_id,
+    validate_runtime_ontology_availability,
+)
 from .tool_contracts import SEARCH_TOOL_NAMES, list_search_tools, normalize_search_tool_args, ToolInputIssue
 
 UNSUPPORTED_TOOLS: set[str] = set()
@@ -38,16 +43,20 @@ def execute_search_tool(tool_name: str, args: Mapping[str, Any] | None, *, scope
         )
 
     raw_args = dict(args or {})
-    ontology_id = str(raw_args.pop("ontology_id", "") or "").strip()
+    requested_ontology_id = raw_args.pop("ontology_id", None)
     entity = str(raw_args.pop("entity", "") or "").strip()
     query = str(raw_args.pop("query", "") or "").strip()
-    if not ontology_id:
-        return _tool_input_error(
-            ToolInputIssue(
-                field="ontology_id",
-                detail="ontology_id 不能为空",
-                hint="请在每个 search 工具参数中显式传入 ontology_id。",
-            )
+    try:
+        ontology_id = resolve_effective_ontology_id(
+            token_ontology_id=scope.ontology_id,
+            requested_ontology_id=requested_ontology_id,
+        )
+    except MCPOntologyBindingError as exc:
+        return error_result(
+            error_type=exc.error_type,
+            error_code=exc.code,
+            detail=exc.detail,
+            retriable=False,
         )
     normalized_args, input_issue = normalize_search_tool_args(name, raw_args)
     if input_issue:
@@ -55,11 +64,23 @@ def execute_search_tool(tool_name: str, args: Mapping[str, Any] | None, *, scope
 
     try:
         with workspace_scope(scope.workspace_id):
+            if scope.ontology_id:
+                validate_runtime_ontology_availability(
+                    workspace_id=scope.workspace_id,
+                    ontology_id=ontology_id,
+                )
             runtime = _build_runtime(scope=scope, ontology_id=ontology_id, entity=entity, query=query)
             try:
                 result = _execute_with_runtime(name, normalized_args or {}, runtime)
             finally:
                 runtime.close()
+    except MCPOntologyBindingError as exc:
+        return error_result(
+            error_type=exc.error_type,
+            error_code=exc.code,
+            detail=exc.detail,
+            retriable=False,
+        )
     except (BusinessDataConnectionError, GraphScopeError) as exc:
         return error_result(
             error_type="configuration_error",
@@ -239,6 +260,24 @@ def _execute_with_runtime(tool_name: str, args: dict[str, Any], runtime: _Search
 def _public_tool_payload(execution, *, scope: MCPRequestScope, provider: str, ontology_id: str) -> dict[str, Any]:
     payload = dict(execution.payload or {})
     result = payload.get("result")
+    # Some MCP-facing tools are compatibility aliases implemented by a
+    # different internal graph tool (for example, get_relation_types uses
+    # get_edges_schema to obtain the relationship schema).  Keep the public
+    # response aligned with the tool requested by the client while retaining
+    # the internal execution name for diagnostics.
+    execution_tool_args = getattr(execution, "tool_args", {})
+    tool_args = execution_tool_args if isinstance(execution_tool_args, Mapping) else {}
+    internal_tool_name = str(execution.tool_name or "")
+    alias = str(tool_args.get("mcp_alias") or "").strip()
+    allowed_aliases = {
+        "get_nodes_schema": {"get_object_types"},
+        "get_edges_schema": {"get_relation_types"},
+    }
+    public_tool_name = (
+        alias
+        if alias in allowed_aliases.get(internal_tool_name, set())
+        else internal_tool_name
+    )
     response = {
         "ok": bool(payload.get("success", True)),
         "result": result,
@@ -251,7 +290,7 @@ def _public_tool_payload(execution, *, scope: MCPRequestScope, provider: str, on
             "provider": provider,
             "ontology_id": ontology_id,
         },
-        "tool": execution.tool_name,
+        "tool": public_tool_name,
     }
     if "warnings" in payload:
         response["warnings"] = payload["warnings"]

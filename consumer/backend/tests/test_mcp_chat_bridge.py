@@ -190,6 +190,176 @@ def test_chat_adapter_forwards_original_token_to_backend_bridge(monkeypatch, tmp
     assert captured["json"]["include_trace"] is True
 
 
+def test_chat_adapter_injects_bound_ontology(monkeypatch, tmp_path):
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"ok": True, "result": {"status": "success"}}
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.chat_adapter.requests.post",
+        lambda _url, **kwargs: captured.update(kwargs) or _Response(),
+    )
+    result = execute_chat_tool(
+        {"query": "合成示例问题"},
+        scope=MCPRequestScope(
+            username="operator_a",
+            workspace_id="workspace_demo",
+            scopes=["mcp:chat"],
+            token="<MCP_TOKEN>",
+            ontology_id="knowledge_package_demo",
+        ),
+        config=_config(tmp_path / "tokens.json"),
+    )
+
+    assert result["ok"] is True
+    assert captured["json"]["arguments"]["selected_ontology_id"] == "knowledge_package_demo"
+
+
+def test_chat_adapter_rejects_conflicting_bound_ontology(monkeypatch, tmp_path):
+    called = False
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("api.protocols.mcp.chat_adapter.requests.post", fake_post)
+    result = execute_chat_tool(
+        {
+            "query": "合成示例问题",
+            "arguments": {"selected_ontology_id": "knowledge_package_other"},
+        },
+        scope=MCPRequestScope(
+            username="operator_a",
+            workspace_id="workspace_demo",
+            scopes=["mcp:chat"],
+            token="<MCP_TOKEN>",
+            ontology_id="knowledge_package_demo",
+        ),
+        config=_config(tmp_path / "tokens.json"),
+    )
+
+    assert called is False
+    assert result["error"]["error_code"] == "MCP_ONTOLOGY_SCOPE_MISMATCH"
+
+
+def test_workflow_bridge_rebinds_and_revalidates_token_ontology(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.validate_runtime_ontology_availability",
+        lambda **kwargs: captured.update(kwargs) or "1.0.0",
+    )
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    orchestrator = _FakeOrchestrator()
+    scope = MCPRequestScope(
+        username="operator_a",
+        workspace_id="workspace_demo",
+        scopes=["mcp:chat"],
+        token="<MCP_TOKEN>",
+        ontology_id="knowledge_package_demo",
+    )
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=orchestrator,
+        scope=scope,
+        payload={"request": "合成示例问题", "session_id": "session-demo"},
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert captured["ontology_id"] == "knowledge_package_demo"
+    assert orchestrator.last_run_kwargs["arguments"]["selected_ontology_id"] == "knowledge_package_demo"
+    assert orchestrator.last_run_kwargs["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
+
+
+def test_workflow_bridge_rejects_context_conflicting_with_token_ontology():
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=object(),
+        scope=MCPRequestScope(
+            username="operator_a",
+            workspace_id="workspace_demo",
+            scopes=["mcp:chat"],
+            token="<MCP_TOKEN>",
+            ontology_id="knowledge_package_demo",
+        ),
+        payload={
+            "request": "合成示例问题",
+            "session_id": "session-demo-context-conflict",
+            "context": {"selected_ontology_id": "knowledge_package_other"},
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 403
+    assert body["error"]["error_code"] == "MCP_ONTOLOGY_SCOPE_MISMATCH"
+
+
+def test_workflow_bridge_syncs_legacy_argument_ontology_to_context(monkeypatch):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    orchestrator = _FakeOrchestrator()
+
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=orchestrator,
+        scope=MCPRequestScope(
+            username="operator_a",
+            workspace_id="workspace_demo",
+            scopes=["mcp:chat"],
+            token="<MCP_TOKEN>",
+        ),
+        payload={
+            "request": "合成示例问题",
+            "session_id": "session-demo-legacy",
+            "arguments": {"selected_ontology_id": "knowledge_package_demo"},
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert orchestrator.last_run_kwargs["user_context"]["selected_ontology_id"] == "knowledge_package_demo"
+
+
+def test_workflow_bridge_rejects_conflicting_token_ontology_before_run():
+    body, status_code = execute_mcp_chat_workflow(
+        orchestrator=object(),
+        scope=MCPRequestScope(
+            username="operator_a",
+            workspace_id="workspace_demo",
+            scopes=["mcp:chat"],
+            token="<MCP_TOKEN>",
+            ontology_id="knowledge_package_demo",
+        ),
+        payload={
+            "request": "合成示例问题",
+            "session_id": "session-demo-conflict",
+            "arguments": {"selected_ontology_id": "knowledge_package_other"},
+        },
+        concurrency_limit=1,
+        queue_wait_seconds=1,
+        execution_timeout_seconds=1,
+    )
+
+    assert status_code == 403
+    assert body["error"]["error_code"] == "MCP_ONTOLOGY_SCOPE_MISMATCH"
+
+
 def test_workflow_bridge_times_out_in_queue_without_bypassing_admission(monkeypatch):
     monkeypatch.setattr(
         "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",

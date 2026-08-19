@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 from api.protocols.mcp.paths import MCP_API_PREFIX, MCP_INTERNAL_CHAT_ROUTE
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
 from integration.mcp.service_catalog import list_mcp_service_cards
+from integration.mcp.ontology_binding import MCPOntologyBindingError
 from integration.mcp.token_service import (
     MCPTokenServiceError,
     create_mcp_token,
@@ -98,7 +99,19 @@ def create_token_api():
     user = get_current_user()
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
-    payload = request.get_json(silent=True) or {}
+    raw_payload = request.get_json(silent=True)
+    if raw_payload is not None and not isinstance(raw_payload, dict):
+        return jsonify({"detail": "JSON body 必须是对象"}), 400
+    payload = raw_payload or {}
+    ontology_id = ""
+    if "ontology_id" in payload:
+        raw_ontology_id = payload.get("ontology_id")
+        if not isinstance(raw_ontology_id, str) or not raw_ontology_id.strip():
+            return jsonify({
+                "detail": "ontology_id 必须是非空字符串",
+                "error_code": "MCP_ONTOLOGY_ID_INVALID",
+            }), 400
+        ontology_id = raw_ontology_id.strip()
     cfg = load_mcp_runtime_config()
     expires_in = payload["expires_in"] if "expires_in" in payload else cfg.token_ttl_seconds
     try:
@@ -108,8 +121,11 @@ def create_token_api():
             name=str(payload.get("name") or "").strip(),
             scopes=normalize_scopes(payload.get("scopes")),
             expires_in=expires_in,
+            ontology_id=ontology_id,
             config=cfg,
         )
+    except MCPOntologyBindingError as exc:
+        return jsonify({"detail": exc.detail, "error_code": exc.code}), exc.status_code
     except MCPTokenServiceError as exc:
         return jsonify({"detail": str(exc)}), 400
     with workspace_scope(workspace_id):

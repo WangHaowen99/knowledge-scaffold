@@ -3,7 +3,9 @@ export const MCP_DEFAULT_FORM = Object.freeze({
   name: '',
   expiresIn: '86400',
   scopes: MCP_SCOPES,
+  ontologyId: '',
 });
+const MCP_GRAPH_PROVIDERS = Object.freeze(['neo4j', 'hugegraph']);
 
 function text(value) {
   return String(value ?? '').trim();
@@ -79,6 +81,8 @@ export function normalizeMcpTokens(payload = {}, expectedWorkspaceId = '') {
       token_masked: text(item.token_masked),
       name: text(item.name),
       workspace_id: text(item.workspace_id),
+      ontology_id: text(item.ontology_id),
+      binding_mode: text(item.binding_mode) || (text(item.ontology_id) ? 'ontology' : 'workspace'),
       username: text(item.username),
       scopes: Array.isArray(item.scopes) ? item.scopes.map(text).filter((scope) => MCP_SCOPES.includes(scope)) : [],
       status: text(item.status),
@@ -90,18 +94,65 @@ export function normalizeMcpTokens(payload = {}, expectedWorkspaceId = '') {
     .filter((item) => item.token_id && (!expected || item.workspace_id === expected));
 }
 
+export function normalizeMcpOntologies(payload = {}) {
+  return (Array.isArray(payload.ontologies) ? payload.ontologies : [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const versions = Array.isArray(item.versions) ? item.versions.map(text).filter(Boolean) : [];
+      const businessData = item.business_data && typeof item.business_data === 'object' ? item.business_data : {};
+      return {
+        id: text(item.id),
+        name: text(item.name) || text(item.id),
+        enabled: Boolean(item.enabled),
+        active_version: text(item.active_version),
+        versions,
+        business_data: {
+          configured: Boolean(businessData.configured),
+          ready: Boolean(businessData.ready),
+          provider: text(businessData.provider).toLowerCase(),
+        },
+      };
+    })
+    .filter((item) => item.id);
+}
+
+export function mcpOntologyEligibility(ontology, scopes = MCP_SCOPES) {
+  if (!ontology?.enabled) return { eligible: false, reason: '知识包已禁用' };
+  if (!ontology.active_version || !ontology.versions.includes(ontology.active_version)) {
+    return { eligible: false, reason: '没有可用的激活版本' };
+  }
+  if ((Array.isArray(scopes) ? scopes : []).includes('mcp:search')) {
+    const provider = text(ontology.business_data?.provider).toLowerCase();
+    if (!ontology.business_data?.ready || !MCP_GRAPH_PROVIDERS.includes(provider)) {
+      return { eligible: false, reason: 'Search 需要可用的 Neo4j 或 HugeGraph 数据源' };
+    }
+  }
+  return { eligible: true, reason: '' };
+}
+
+export function resolveMcpOntologySelection({ ontologies = [], scopes = MCP_SCOPES, currentId = '' } = {}) {
+  const eligible = ontologies.filter((ontology) => mcpOntologyEligibility(ontology, scopes).eligible);
+  const normalizedCurrentId = text(currentId);
+  if (eligible.some((ontology) => ontology.id === normalizedCurrentId)) return normalizedCurrentId;
+  return eligible.length === 1 ? eligible[0].id : '';
+}
+
 export function createdMcpToken(payload = {}) {
   return text(payload.token);
 }
 
-export function buildMcpTokenRequest({ name = '', expiresIn = '86400', scopes = MCP_SCOPES } = {}) {
+export function buildMcpTokenRequest({ name = '', expiresIn = '86400', scopes = MCP_SCOPES, ontologyId = '' } = {}) {
   const normalizedScopes = (Array.isArray(scopes) ? scopes : [])
     .map(text)
     .filter((scope, index, values) => MCP_SCOPES.includes(scope) && values.indexOf(scope) === index);
   if (!normalizedScopes.length) throw new Error('至少选择一个 MCP scope');
+  const normalizedOntologyId = text(ontologyId);
+  if (!normalizedOntologyId) throw new Error('请选择 Token 绑定的知识包');
   const expires = expiresIn === 'never' ? null : Number(expiresIn);
   if (expires !== null && (!Number.isInteger(expires) || expires <= 0)) throw new Error('Token 有效期无效');
-  return { name: text(name), expires_in: expires, scopes: normalizedScopes };
+  return {
+    name: text(name), expires_in: expires, scopes: normalizedScopes, ontology_id: normalizedOntologyId,
+  };
 }
 
 function serviceConfigType(service) {
@@ -125,6 +176,8 @@ export function createMcpScopeState(scopeKey) {
   return {
     scopeKey,
     createdToken: '',
+    createdOntologyId: '',
+    createdOntologyVersion: '',
     copiedKey: '',
     selectedServiceId: '',
     revokeTokenId: '',
