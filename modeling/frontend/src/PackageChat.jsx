@@ -36,7 +36,12 @@ import { formatMessageTimestamp } from './messageTimestamp.js';
 import { NAVIGATION_TARGETS, assistantActionKind, isReadOnlyAction } from './assistantActions.js';
 import { completionBlockerMessage, markSurfacedAsBlocker } from './completionBlocker.js';
 import { repairTargetCandidatesFrom } from './repairTargetChoice.js';
-import { isPackageChatRunning } from './packageChatRun.js';
+import {
+  isPackageChatRunning,
+  waitingInteractionRecoveryDelay,
+  waitingInteractionTitle,
+  waitingPackageChatRun,
+} from './packageChatRun.js';
 import { activeRunLabel, activeRunOf } from './activeRun.js';
 import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
 import { stallHint, stalledForMs } from './taskStall.js';
@@ -162,6 +167,13 @@ export default function PackageChat({
   // 助手分析在服务端后台跑，本地 busy 只覆盖提交那一瞬；两者合成对外统一的忙碌态，
   // 这样刷新页面或换标签页也能继续看到“正在分析”。
   const chatRunning = useMemo(() => isPackageChatRunning(authoring), [authoring]);
+  const waitingRun = useMemo(() => waitingPackageChatRun(authoring), [authoring]);
+  const waitingCardMissing = Boolean(waitingRun && !pendingInteraction);
+  const waitingCardRecoveryKey = waitingRun
+    ? `${waitingRun.id ?? ''}:${waitingRun.updatedAt ?? waitingRun.createdAt ?? ''}`
+    : '';
+  const waitingCardRecoveryAttempt = useRef('');
+  const [waitingCardRecoveryBusy, setWaitingCardRecoveryBusy] = useState(false);
   // 服务端还在跑的运行。本地 busy 一刷新就没了，但后端没停——只认本地会让用户
   // 以为提交丢了。本地态优先（文案更贴合刚点的按钮），没有本地态时用服务端的。
   const serverRun = useMemo(() => activeRunOf(authoring), [authoring]);
@@ -182,7 +194,25 @@ export default function PackageChat({
   useEffect(() => {
     setTurns([]); setTaskAdjustment(null); setTaskEditConfig(null); setValidationDeferral(null);
     setCompletionBlocker(null);
+    waitingCardRecoveryAttempt.current = '';
+    setWaitingCardRecoveryBusy(false);
   }, [projectId]);
+
+  // waiting 代表后台已停下等待回答。题卡没有同步到当前快照时，30 秒后只补拉一次，
+  // 既避免假运行计时，也避免网络故障时形成无限轮询。
+  useEffect(() => {
+    if (!waitingCardMissing || !waitingCardRecoveryKey || !onProjectChanged) return undefined;
+    if (waitingCardRecoveryAttempt.current === waitingCardRecoveryKey) return undefined;
+    const delay = waitingInteractionRecoveryDelay(waitingRun);
+    const timer = window.setTimeout(() => {
+      if (waitingCardRecoveryAttempt.current === waitingCardRecoveryKey) return;
+      waitingCardRecoveryAttempt.current = waitingCardRecoveryKey;
+      setWaitingCardRecoveryBusy(true);
+      Promise.resolve(onProjectChanged({ advance: true }))
+        .finally(() => setWaitingCardRecoveryBusy(false));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [onProjectChanged, waitingCardMissing, waitingCardRecoveryKey, waitingRun]);
 
   const latestValidationErrorCount = useMemo(() => {
     for (const message of [...structuredMessages].reverse()) {
@@ -280,8 +310,19 @@ export default function PackageChat({
     }
   };
 
-  const refreshConstruction = async () => {
-    await onProjectChanged?.();
+  const refreshConstruction = async (options) => {
+    await onProjectChanged?.(options);
+  };
+
+  const retryWaitingCard = async () => {
+    if (waitingCardRecoveryBusy || !onProjectChanged) return;
+    waitingCardRecoveryAttempt.current = waitingCardRecoveryKey;
+    setWaitingCardRecoveryBusy(true);
+    try {
+      await onProjectChanged({ advance: true });
+    } finally {
+      setWaitingCardRecoveryBusy(false);
+    }
   };
 
   // 导航类动作只切视图、不写数据，目标在 assistantActions 的注册表里声明
@@ -960,6 +1001,18 @@ export default function PackageChat({
               flowchartDraftState={flowchartDraftState}
               onSubmit={submitPendingInteraction}
             />
+          </div>
+        )}
+        {waitingCardMissing && !busy && (
+          <div className="pchat-msg assistant pchat-waiting-card-recovery" role="alert">
+            <div className="bubble">
+              <strong>{waitingInteractionTitle(waitingRun)}</strong>
+              <p>后台已进入等待回答，但当前页面没有加载到可操作题卡。</p>
+              <button type="button" className="btn btn-p" disabled={waitingCardRecoveryBusy}
+                onClick={() => { void retryWaitingCard(); }}>
+                {waitingCardRecoveryBusy ? '正在重新加载…' : '重新加载访谈题卡'}
+              </button>
+            </div>
           </div>
         )}
         {busy && (
