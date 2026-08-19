@@ -50,6 +50,7 @@ import {
   UserLlmSettingsValidationError,
 } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
+import { buildMaterialInventory } from './workflow/material-inventory.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
 import {
   currentPackageCheckView,
@@ -192,6 +193,7 @@ function parseDraftRevision(value: unknown): number | null {
 
 function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
   tables: DataDictTable[];
+  materials: ReturnType<typeof buildMaterialInventory>;
   documents: Array<{
     id: string;
     filename: string;
@@ -200,6 +202,7 @@ function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
   }>;
 } {
   return {
+    materials: buildMaterialInventory(documents),
     tables: documents.flatMap((document) => (document.tables ?? []).map((table) => ({
       ...table,
       documentId: document.id,
@@ -817,10 +820,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const p = getProject(id);
       if (!p || p.owner !== username) return null;
       const docs = listDocuments(p.id);
-      const { tables, documents: textDocs } = buildMaterialContext(docs);
+      const { tables, documents: textDocs, materials } = buildMaterialContext(docs);
       // stale（资料变更后）也返回旧分析——结果仍可用，由前端提示重跑
       const analyzeNode = latestNodeOf(listNodes(p.id), 'analyze', ['done', 'stale']);
-      return { p, ctx: { tables, documents: textDocs }, analysis: analyzeNode?.output };
+      return { p, ctx: { tables, documents: textDocs, materials }, analysis: analyzeNode?.output };
     };
     const packageForRound = async (projectId: string, round: m3repo.EvalRound) => {
       if (!round.artifactRevision) return null;
@@ -1168,6 +1171,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       void inFlight.run(chatKey, 'package-chat', async () => {
         const result = await runPackageChatPlan(c.p, history, message.trim(), {
           documents: c.ctx.documents,
+          materials: c.ctx.materials,
           analysis: c.analysis as AnalysisResult | undefined,
           documentAccess: 'full-read-only',
         });

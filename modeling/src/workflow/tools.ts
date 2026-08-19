@@ -6,6 +6,10 @@ import {
   DocumentReadSession,
   type ReadableDocument,
 } from './document-read-session.js';
+import {
+  materialInventoryItemSummary,
+  type MaterialInventoryItem,
+} from './material-inventory.js';
 
 // 建模工具集。M1 用到：读数据字典、读文档、发起访谈（terminate 挂起）、产出初步分析。
 // execute 抛错即失败（pi 约定），返回 { content, details, terminate? }。
@@ -15,6 +19,8 @@ const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }], de
 export interface ToolContext {
   tables: DataDictTable[];
   documents: ReadableDocument[];
+  /** 全部上传资料；documents 仅包含可读取正文的资料。 */
+  materials?: MaterialInventoryItem[];
   // 收集节点产物：analyze 工具把结构化结果写这里
   captured: Record<string, unknown>;
   documentReadSession?: DocumentReadSession;
@@ -109,16 +115,36 @@ export function buildTools(ctx: ToolContext) {
   const listDocuments = {
     name: 'list_documents',
     label: '列出文档',
-    description: '列出已上传的文本类文档：文件名、总字符数与章节大纲（长文档先看大纲，再用 search_documents 定位、read_document 分页精读）',
+    description: ctx.materials
+      ? '列出全部已上传资料（包括 Excel/CSV 表格和文本类文档）及解析状态；文本长文档同时返回章节大纲'
+      : '列出已上传的文本类文档：文件名、总字符数与章节大纲（长文档先看大纲，再用 search_documents 定位、read_document 分页精读）',
     parameters: Type.Object({}),
     async execute() {
-      if (!ctx.documents.length) return text('（无文本文档）');
-      const out = ctx.documents.map((d) => {
-        const body = d.textContent ?? '';
+      if (!ctx.materials) {
+        if (!ctx.documents.length) return text('（无文本文档）');
+        const out = ctx.documents.map((document) => {
+          const body = document.textContent ?? '';
+          const heads = body.split('\n').filter(isHeading).slice(0, 40);
+          return `【${document.filename}】共 ${body.length} 字符${heads.length ? `\n大纲：${heads.map((h) => h.trim()).join(' / ')}` : ''}`;
+        }).join('\n\n');
+        return text(out);
+      }
+      const materials = ctx.materials;
+      if (!materials.length) return text('（无已上传资料）');
+      const out = materials.map((material) => {
+        const body = ctx.documents.find((document) => document.filename === material.filename)?.textContent ?? '';
         const heads = body.split('\n').filter(isHeading).slice(0, 40);
-        return `【${d.filename}】共 ${body.length} 字符${heads.length ? `\n大纲：${heads.map((h) => h.trim()).join(' / ')}` : ''}`;
+        return `${materialInventoryItemSummary(material)}${heads.length ? `\n大纲：${heads.map((h) => h.trim()).join(' / ')}` : ''}`;
       }).join('\n\n');
-      return text(out);
+      return {
+        content: [{ type: 'text' as const, text: out }],
+        details: {
+          count: materials.length,
+          parsed: materials.filter((item) => item.parseStatus === 'parsed').length,
+          pending: materials.filter((item) => item.parseStatus === 'pending').length,
+          failed: materials.filter((item) => item.parseStatus === 'failed').length,
+        },
+      };
     },
   };
 
@@ -274,10 +300,12 @@ export function buildTools(ctx: ToolContext) {
 export function buildDocumentReadingTools(
   documents: ToolContext['documents'],
   documentReadSession?: DocumentReadSession,
+  materials?: MaterialInventoryItem[],
 ) {
-  const all = buildTools({ tables: [], documents, captured: {}, documentReadSession });
+  const all = buildTools({ tables: [], documents, materials, captured: {}, documentReadSession });
   return all.filter((tool) => (
-    ['list_documents', 'read_document', 'search_documents'].includes(tool.name)
+    tool.name === 'list_documents'
+      || (documents.length > 0 && ['read_document', 'search_documents'].includes(tool.name))
   ));
 }
 
