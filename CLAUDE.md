@@ -290,6 +290,15 @@ Recommended format:
 - `test: add validation tests`
 - `refactor: simplify service structure`
 
+### 12.1 Branch Naming
+
+- Development branches must use the format `<type>/<short-english-description>`.
+- Allowed types are: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `build`, `ci`, and `chore`.
+- The description must use lowercase kebab-case and contain only lowercase English letters, digits, and hyphens. Do not add personal or tool-name prefixes.
+- The complete branch name must match: `^(feat|fix|docs|refactor|test|perf|build|ci|chore)/[a-z0-9]+(?:-[a-z0-9]+)*$`.
+- Examples: `feat/workspace-switch`, `fix/chat-input-focus`, `docs/local-debug-check-timing`.
+- Apply this rule when creating a development branch and verify it again before committing or pushing.
+
 ## 13. Documentation Rules
 
 Documentation should evolve with the code.

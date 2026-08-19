@@ -151,6 +151,17 @@ Base64、URL 编码、压缩、加密、Hash、拆分文件、改变大小写、
 
 ---
 
+## 开发分支命名规范
+
+- 开发分支必须按 `<类型>/<英文短描述>` 格式命名。
+- 允许的类型仅限：`feat`、`fix`、`docs`、`refactor`、`test`、`perf`、`build`、`ci`、`chore`。
+- 英文短描述必须使用小写 kebab-case，只能包含小写英文字母、数字和连字符，不得添加人员名或工具名前缀。
+- 完整分支名必须匹配：`^(feat|fix|docs|refactor|test|perf|build|ci|chore)/[a-z0-9]+(?:-[a-z0-9]+)*$`。
+- 示例：`feat/workspace-switch`、`fix/chat-input-focus`、`docs/local-debug-check-timing`。
+- 创建开发分支时必须遵循本规范，并在提交或推送前再次确认分支名合规。
+
+---
+
 <!-- CODEGRAPH_START -->
 ## CodeGraph
 
