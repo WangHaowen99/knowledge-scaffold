@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getToken, getRefreshToken, clearSession, me, importPackageWorkspace } from './api.js';
 import LoginPage from './LoginPage.jsx';
 import ProjectList from './ProjectList.jsx';
@@ -38,6 +38,7 @@ export default function App() {
   const [importingPackage, setImportingPackage] = useState(false);
   const [importError, setImportError] = useState('');
   const [importNotice, setImportNotice] = useState('');
+  const [projectAccessNotice, setProjectAccessNotice] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('llm');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -92,10 +93,31 @@ export default function App() {
   const openProject = (project) => {
     const id = typeof project === 'string' ? project : project.id;
     const kind = typeof project === 'string' ? 'modeling' : (project.kind || 'modeling');
+    setProjectAccessNotice('');
     setProjectId(id);
     setProjectKind(kind);
     replaceWorkspaceRoute(id, kind);
   };
+
+  const handleProjectUnavailable = useCallback(() => {
+    setProjectId(null);
+    setProjectKind('modeling');
+    setWorkspaceDirty(false);
+    setProjectAccessNotice('项目已删除或当前账号无权访问，已返回项目列表');
+    replaceWorkspaceRoute(null, 'modeling');
+  }, []);
+
+  const handleAuthenticationRequired = useCallback(() => {
+    if (!getRefreshToken()) clearSession();
+    setStatus('out');
+    setUser(null);
+    setProjectId(null);
+    setProjectKind('modeling');
+    setMenuOpen(false);
+    setWorkspaceDirty(false);
+    setProjectAccessNotice('');
+    replaceWorkspaceRoute(null, 'modeling');
+  }, []);
 
   const importPackage = async (file) => {
     if (!file) return;
@@ -183,9 +205,12 @@ export default function App() {
       </div>
       {importError && <div className="app-global-error">{importError}<button onClick={() => setImportError('')}>✕</button></div>}
       {importNotice && <div className="app-global-notice">{importNotice}<button onClick={() => setImportNotice('')}>✕</button></div>}
+      {projectAccessNotice && <div className="app-global-notice">{projectAccessNotice}<button onClick={() => setProjectAccessNotice('')}>✕</button></div>}
       <div className="main">
         {projectId
-          ? <ProjectWorkbenchRouter projectId={projectId} onUnsavedChange={setWorkspaceDirty} />
+          ? <ProjectWorkbenchRouter projectId={projectId} onUnsavedChange={setWorkspaceDirty}
+              onProjectUnavailable={handleProjectUnavailable}
+              onAuthenticationRequired={handleAuthenticationRequired} />
           : <ProjectList onOpen={openProject} />}
       </div>
       {!projectId && <Tour scene="projects" steps={PROJECT_STEPS} />}

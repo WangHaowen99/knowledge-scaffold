@@ -28,8 +28,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) {
-    reply.code(401).send({ error: '缺少认证令牌' });
-    return;
+    return reply.code(401).send({ error: '缺少认证令牌' });
   }
   const cached = cache.get(token);
   if (cached && cached.exp > Date.now()) {
@@ -40,15 +39,13 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   const user = await getAuthClient().verify(token);
   if (!user) {
     cache.delete(token);
-    reply.code(401).send({ error: '认证失败或令牌已过期' });
-    return;
+    return reply.code(401).send({ error: '认证失败或令牌已过期' });
   }
   const now = Date.now();
   const exp = cacheExpiry(token, now);
   if (exp <= now) {
     cache.delete(token);
-    reply.code(401).send({ error: '认证失败或令牌已过期' });
-    return;
+    return reply.code(401).send({ error: '认证失败或令牌已过期' });
   }
   cache.set(token, { user, exp });
   req.user = user;
