@@ -1156,7 +1156,41 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .cfg-test { border: 1px solid var(--hair); border-radius: 11px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; }
 .mwr .cfg-test.ok { border-color: #b7e2cd; background: #f0faf5; }
 .mwr .cfg-test.bad { border-color: #f2c9c5; background: #fdf3f2; }
+.mwr .llm-scope-tabs, .mwr .admin-llm-purpose { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--hair); border-radius: 9px; background: #f7f8fa; margin-bottom: 14px; }
+.mwr .llm-scope-tabs button, .mwr .admin-llm-purpose button { border: 0; border-radius: 6px; background: transparent; color: var(--muted); padding: 6px 12px; cursor: pointer; font-weight: 650; }
+.mwr .llm-scope-tabs button.on, .mwr .admin-llm-purpose button.on { background: #fff; color: var(--blue-d); box-shadow: 0 1px 3px rgba(25, 39, 65, .12); }
+.mwr .admin-llm-defaults { padding-top: 2px; }
+.mwr .admin-llm-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11.5px; margin: -3px 0 12px; }
+.mwr .admin-llm-policy { margin: -3px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.mwr .admin-llm-warning { margin-bottom: 12px; padding: 9px 11px; border: 1px solid #f0d7a9; border-radius: 8px; background: #fff8e8; color: #7d5b19; font-size: 12px; }
+.mwr .admin-llm-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 0 12px; }
+.mwr .admin-llm-wide { grid-column: 1 / -1; }
+.mwr .admin-llm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 2px; }
+.mwr .admin-llm-actions .btn, .mwr .cfg-key-clear { display: inline-flex; align-items: center; gap: 5px; }
+.mwr .admin-llm-primary-actions { display: grid; grid-template-columns: repeat(2, 112px); gap: 8px; margin-left: auto; }
+.mwr .admin-llm-primary-actions .btn { width: 100%; justify-content: center; }
+.mwr .cfg-llm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.mwr .cfg-sync-default, .mwr .cfg-reset-personal { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.mwr .cfg-sync-default { min-width: 164px; }
+.mwr .cfg-sync-default-group { display: inline-flex; align-items: center; gap: 5px; }
+.mwr .cfg-sync-help { position: relative; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); cursor: help; }
+.mwr .cfg-sync-help:hover, .mwr .cfg-sync-help:focus-visible { color: var(--blue-d); outline: none; }
+.mwr .cfg-sync-help::after {
+  content: attr(data-tooltip); position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 20;
+  width: max-content; padding: 7px 14px;
+  border-radius: 6px; background: #202735; color: #fff; box-shadow: var(--sh-md);
+  font-size: 11.5px; font-weight: 500; line-height: 1.5; white-space: nowrap;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s, visibility .15s;
+}
+.mwr .cfg-sync-help:hover::after, .mwr .cfg-sync-help:focus-visible::after { opacity: 1; visibility: visible; }
 .mwr .cfg-raw { margin: 6px 0 0; background: #171d26; color: #ffb4ab; border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.6; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+
+@media (max-width: 600px) {
+  .mwr .admin-llm-grid { grid-template-columns: minmax(0, 1fr); }
+  .mwr .admin-llm-wide { grid-column: auto; }
+  .mwr .admin-llm-primary-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .mwr .admin-llm-actions .btn { min-width: 0; }
+}
 
 /* ---- 修缮计划卡（两段式确认） ---- */
 .mwr .plan-card { margin-top: 8px; border: 1px solid #d5e4f8; background: #f6fafd; border-radius: 12px; padding: 12px 14px; color: var(--ink); }

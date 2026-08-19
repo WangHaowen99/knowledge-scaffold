@@ -20,6 +20,8 @@ export const config = {
     model: env('MODELING_TASK_LLM_MODEL'),
     apiKey: env('MODELING_TASK_LLM_API_KEY'),
   },
+  // 显式部署密钥；为空时由 codec 在 DATA_DIR 自动生成持久化密钥，不得写入数据库或返回前端。
+  llmConfigEncryptionKey: env('MODELING_LLM_CONFIG_ENCRYPTION_KEY'),
 
   auth: {
     // 独立 auth-server 地址（OAuth2 /token + JWKS + /register）；容器内用服务名如 http://auth-server:5056
