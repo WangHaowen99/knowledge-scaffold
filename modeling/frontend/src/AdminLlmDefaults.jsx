@@ -6,7 +6,9 @@ import {
   testAdminLlmDefault,
 } from './api.js';
 
-const EMPTY_DRAFT = { baseUrl: '', model: '', apiKey: '', apiKeyClear: false, maxTokens: '8192' };
+const EMPTY_DRAFT = {
+  baseUrl: '', model: '', apiKey: '', apiKeyClear: false, maxTokens: '1000000', contextWindow: '1000000',
+};
 
 function draftFrom(value) {
   return value ? {
@@ -15,6 +17,7 @@ function draftFrom(value) {
     apiKey: '',
     apiKeyClear: false,
     maxTokens: String(value.maxTokens),
+    contextWindow: String(value.contextWindow ?? 1000000),
   } : { ...EMPTY_DRAFT };
 }
 
@@ -54,6 +57,7 @@ export default function AdminLlmDefaults({ onChanged }) {
     apiKey: draft.apiKey || undefined,
     apiKeyClear: draft.apiKeyClear,
     maxTokens: draft.maxTokens,
+    contextWindow: draft.contextWindow,
     expectedRevision: saved?.revision ?? 0,
   });
 
@@ -133,6 +137,10 @@ export default function AdminLlmDefaults({ onChanged }) {
         <div className="field">
           <label>单次输出上限</label>
           <input inputMode="numeric" value={draft.maxTokens} onChange={(event) => setField('maxTokens', event.target.value)} />
+        </div>
+        <div className="field">
+          <label>上下文窗口（输入 + 输出总 token）</label>
+          <input inputMode="numeric" value={draft.contextWindow} onChange={(event) => setField('contextWindow', event.target.value)} />
         </div>
         <div className="field admin-llm-wide">
           <label>API Key {saved?.apiKeySet && <span className="tag tag-ok">已加密保存</span>}</label>

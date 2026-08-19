@@ -1,13 +1,20 @@
 import { config } from '../config.js';
 
 export type LlmSettingSource = 'user' | 'default_snapshot' | 'settings' | 'env';
-export interface LlmSettings { baseUrl: string; model: string; apiKey: string; maxTokens: number; }
+export interface LlmSettings {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  maxTokens: number;
+  contextWindow: number;
+}
 
 export interface UserLlmSettingsSnapshot {
   baseUrl: string | null;
   model: string | null;
   apiKey: string | null;
   maxTokens: number | null;
+  contextWindow: number | null;
 }
 
 export interface LegacyLlmSettingsSnapshot {
@@ -15,6 +22,7 @@ export interface LegacyLlmSettingsSnapshot {
   model: string | null;
   apiKey: string | null;
   maxTokens: string | null;
+  contextWindow: string | null;
 }
 
 interface ResolveLlmInput {
@@ -29,22 +37,36 @@ export function hasLlmProviderOverride(personal: UserLlmSettingsSnapshot | undef
     .some((value) => value !== null));
 }
 
-function normalizedMaxTokens(value: number | string | null | undefined, fallback = 8192): number {
+function normalizedMaxTokens(value: number | string | null | undefined, fallback = config.llm.maxTokens): number {
   const parsed = Number(value || fallback);
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1_000_000 ? parsed : fallback;
 }
 
-function fromAssignedDefault(settings: LlmSettings, personalMaxTokens?: number | null): LlmSettings {
+function normalizedContextWindow(
+  value: number | string | null | undefined,
+  fallback = config.llm.contextWindow,
+): number {
+  const parsed = Number(value || fallback);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+function fromAssignedDefault(
+  settings: LlmSettings,
+  personalMaxTokens?: number | null,
+  personalContextWindow?: number | null,
+): LlmSettings {
   return {
     baseUrl: settings.baseUrl.trim(),
     model: settings.model.trim(),
     apiKey: settings.apiKey,
     maxTokens: normalizedMaxTokens(personalMaxTokens, settings.maxTokens),
+    contextWindow: normalizedContextWindow(personalContextWindow, settings.contextWindow),
   };
 }
 
 function deploymentMainSettings(
   personalMaxTokens: number | null | undefined,
+  personalContextWindow: number | null | undefined,
   legacy: LegacyLlmSettingsSnapshot | undefined,
 ): LlmSettings {
   return {
@@ -52,8 +74,12 @@ function deploymentMainSettings(
     model: (legacy?.model || config.llm.model || '').trim(),
     apiKey: (legacy?.apiKey || config.llm.apiKey || '').trim(),
     maxTokens: normalizedMaxTokens(
-      personalMaxTokens ?? legacy?.maxTokens ?? process.env.MODELING_LLM_MAX_TOKENS,
-      8192,
+      personalMaxTokens ?? legacy?.maxTokens ?? config.llm.maxTokens,
+      config.llm.maxTokens,
+    ),
+    contextWindow: normalizedContextWindow(
+      personalContextWindow ?? legacy?.contextWindow ?? config.llm.contextWindow,
+      config.llm.contextWindow,
     ),
   };
 }
@@ -75,15 +101,23 @@ export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
       model: (personal?.model ?? '').trim(),
       apiKey: personal?.apiKey ?? '',
       maxTokens: normalizedMaxTokens(
-        personal?.maxTokens ?? process.env.MODELING_LLM_MAX_TOKENS,
-        8192,
+        personal?.maxTokens ?? config.llm.maxTokens,
+        config.llm.maxTokens,
+      ),
+      contextWindow: normalizedContextWindow(
+        personal?.contextWindow ?? config.llm.contextWindow,
+        config.llm.contextWindow,
       ),
     };
   }
   if (username && assignedDefaults?.main) {
-    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens);
+    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens, personal?.contextWindow);
   }
-  return deploymentMainSettings(personal?.maxTokens, username ? undefined : input.legacy);
+  return deploymentMainSettings(
+    personal?.maxTokens,
+    personal?.contextWindow,
+    username ? undefined : input.legacy,
+  );
 }
 
 /**
@@ -95,10 +129,10 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
   if (username && hasLlmProviderOverride(personal)) return resolveLlmSettings(input);
 
   if (username && assignedDefaults?.task) {
-    return fromAssignedDefault(assignedDefaults.task, personal?.maxTokens);
+    return fromAssignedDefault(assignedDefaults.task, personal?.maxTokens, personal?.contextWindow);
   }
   if (username && assignedDefaults?.main) {
-    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens);
+    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens, personal?.contextWindow);
   }
 
   const deploymentTaskConfigured = Boolean(
@@ -110,10 +144,18 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       model: config.taskLlm.model.trim(),
       apiKey: config.taskLlm.apiKey,
       maxTokens: normalizedMaxTokens(
-        personal?.maxTokens ?? process.env.MODELING_LLM_MAX_TOKENS,
-        8192,
+        personal?.maxTokens ?? config.llm.maxTokens,
+        config.llm.maxTokens,
+      ),
+      contextWindow: normalizedContextWindow(
+        personal?.contextWindow ?? config.llm.contextWindow,
+        config.llm.contextWindow,
       ),
     };
   }
-  return deploymentMainSettings(personal?.maxTokens, username ? undefined : input.legacy);
+  return deploymentMainSettings(
+    personal?.maxTokens,
+    personal?.contextWindow,
+    username ? undefined : input.legacy,
+  );
 }

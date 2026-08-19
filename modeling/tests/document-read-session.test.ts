@@ -4,8 +4,9 @@ import test from 'node:test';
 import {
   DocumentReadIncompleteError,
   DocumentReadOffsetError,
+  DocumentReadStalledError,
   DocumentReadSession,
-  fullReadTurnBudget,
+  runAgentWithDocumentReadGate,
 } from '../src/workflow/document-read-session.js';
 import { verifiedDocumentReadCoverage } from '../src/workflow/document-read-coverage.js';
 
@@ -61,7 +62,7 @@ test('同名文档必须明确拒绝，不能在账本中静默覆盖', () => {
   ], { fullReadMode: true }), /文档文件名重复.*manual\.md/u);
 });
 
-test('预算耗尽时错误明确列出已读和未读范围', () => {
+test('全文未完成时错误明确列出已读和未读范围', () => {
   const session = new DocumentReadSession([
     { filename: '营销产品手册.docx', textContent: 'x'.repeat(199_873) },
   ], { fullReadMode: true, chunkSize: 6_000 });
@@ -74,7 +75,7 @@ test('预算耗尽时错误明确列出已读和未读范围', () => {
   assert.match(error.message, /未读取区间为 12000–199873/);
 });
 
-test('20 万字符文档连续读取 34 页并获得独立的 48 回合预算', () => {
+test('20 万字符文档可以连续读取 34 页并覆盖全部正文', () => {
   const document = { filename: 'manual.md', textContent: 'x'.repeat(200_000) };
   const session = new DocumentReadSession([document], { fullReadMode: true });
   let offset = 0;
@@ -89,11 +90,82 @@ test('20 万字符文档连续读取 34 页并获得独立的 48 回合预算', 
 
   assert.equal(pages, 34);
   assert.equal(session.ledger(document.filename).contiguousEnd, 200_000);
-  assert.equal(fullReadTurnBudget([document]), 48);
+  assert.equal(session.coveredChars, 200_000);
 });
 
-test('超长文档的全文读取预算硬上限为 128 回合', () => {
-  assert.equal(fullReadTurnBudget([{ filename: 'manual.md', textContent: 'x'.repeat(2_000_000) }]), 128);
+test('全文读取续读次数不受旧的 128 回合上限限制', async () => {
+  const document = { filename: 'manual.md', textContent: 'x'.repeat(129 * 6_000) };
+  const session = new DocumentReadSession([document], { fullReadMode: true });
+  let listener: ((event: unknown) => void) | undefined;
+  let calls = 0;
+  const agent = {
+    state: { messages: [] as unknown[] },
+    subscribe: (next: (event: unknown) => void) => {
+      listener = next;
+      return () => { listener = undefined; };
+    },
+    prompt: async () => {
+      calls += 1;
+      const ledger = session.allLedgers().find((item) => !item.complete);
+      if (!ledger) return;
+      const page = session.read(document.filename, ledger.contiguousEnd,
+        ledger.contiguousEnd ? { previousPageSummary: '上一页摘要' } : {});
+      agent.state.messages.push({
+        role: 'toolResult', toolName: 'read_document',
+        details: { filename: page.filename, offset: page.offset, endOffset: page.endOffset },
+      });
+      listener?.({ type: 'turn_end' });
+    },
+    waitForIdle: async () => undefined,
+    abort: () => undefined,
+  };
+
+  await runAgentWithDocumentReadGate({
+    agent,
+    prompt: '读取全部资料',
+    session,
+    captured: () => session.complete,
+  });
+
+  assert.ok(calls > 128);
+  assert.equal(session.complete, true);
+  assert.equal(session.coveredChars, document.textContent.length);
+});
+
+test('连续无进展达到保护阈值时停止全文读取', async () => {
+  let listener: ((event: unknown) => void) | undefined;
+  let calls = 0;
+  let aborts = 0;
+  const session = new DocumentReadSession([
+    { filename: 'manual.md', textContent: 'x'.repeat(12_000) },
+  ], { fullReadMode: true });
+  const agent = {
+    state: { messages: [] as unknown[] },
+    subscribe: (next: (event: unknown) => void) => {
+      listener = next;
+      return () => { listener = undefined; };
+    },
+    prompt: async () => {
+      calls += 1;
+      listener?.({ type: 'turn_end' });
+    },
+    waitForIdle: async () => undefined,
+    abort: () => { aborts += 1; },
+  };
+
+  await assert.rejects(
+    runAgentWithDocumentReadGate({
+      agent,
+      prompt: '读取全部资料',
+      session,
+      noProgressTurnLimit: 3,
+    }),
+    (error: unknown) => error instanceof DocumentReadStalledError
+      && error.noProgressTurns === 3
+      && error.noProgressTurnLimit === 3,
+  );
+  assert.equal(calls, 3);
+  assert.equal(aborts, 1);
 });
 
 test('旧文档页在模型上下文中压缩为摘要和 offset 证据', () => {

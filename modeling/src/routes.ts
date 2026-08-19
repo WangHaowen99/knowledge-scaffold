@@ -408,7 +408,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : 'env',
         authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer（auth-server）由部署配置
         llm: {
-          baseUrl: llm.baseUrl, model: llm.model, maxTokens: llm.maxTokens,
+          baseUrl: llm.baseUrl, model: llm.model,
+          maxTokens: llm.maxTokens, contextWindow: llm.contextWindow,
           apiKeySet: !!llm.apiKey, // key 不回显
           personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
           source: getLlmSource(username),
@@ -433,7 +434,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       const hasUserLlmPatch = [
         'llmBaseUrl', 'llmModel', 'llmApiKey', 'llmApiKeyClear',
-        'llmProviderClear', 'llmMaxTokens',
+        'llmProviderClear', 'llmMaxTokens', 'llmContextWindow',
       ].some((key) => Object.hasOwn(b, key));
       if (hasUserLlmPatch) {
         try {
@@ -444,6 +445,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             apiKeyClear: b.llmApiKeyClear === true,
             providerClear: b.llmProviderClear === true,
             maxTokens: b.llmMaxTokens === undefined ? undefined : String(b.llmMaxTokens),
+            contextWindow: b.llmContextWindow === undefined ? undefined : String(b.llmContextWindow),
           });
         } catch (error) {
           if (error instanceof UserLlmSettingsValidationError) {

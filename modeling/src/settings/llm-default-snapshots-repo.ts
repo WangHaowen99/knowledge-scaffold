@@ -17,6 +17,7 @@ interface UserLlmDefaultSnapshotRow {
   model: string;
   api_key_ciphertext: string | null;
   max_tokens: number;
+  context_window: number;
   default_revision: number;
   assigned_via: LlmDefaultAssignmentReason;
   assigned_at: string;
@@ -28,6 +29,7 @@ export interface UserLlmDefaultSnapshot {
   model: string;
   apiKey: string;
   maxTokens: number;
+  contextWindow: number;
   defaultRevision: number;
   assignedVia: LlmDefaultAssignmentReason;
   assignedAt: string;
@@ -45,7 +47,7 @@ function cipherContext(username: string, purpose: LlmPurpose): string {
 
 function snapshotRow(username: string, purpose: LlmPurpose): UserLlmDefaultSnapshotRow | undefined {
   return getDb().prepare(`SELECT username, purpose, base_url, model, api_key_ciphertext,
-      max_tokens, default_revision, assigned_via, assigned_at
+      max_tokens, context_window, default_revision, assigned_via, assigned_at
     FROM user_llm_default_snapshots WHERE username = ? AND purpose = ?`)
     .get(normalizedUsername(username), purpose) as UserLlmDefaultSnapshotRow | undefined;
 }
@@ -62,6 +64,7 @@ export function getUserLlmDefaultSnapshot(
     model: row.model,
     apiKey: decryptLlmDefaultApiKey(row.api_key_ciphertext, cipherContext(row.username, row.purpose)),
     maxTokens: row.max_tokens,
+    contextWindow: row.context_window,
     defaultRevision: row.default_revision,
     assignedVia: row.assigned_via,
     assignedAt: row.assigned_at,
@@ -70,6 +73,10 @@ export function getUserLlmDefaultSnapshot(
 
 export function getUserLlmDefaultSnapshotMaxTokens(username: string): number | undefined {
   return snapshotRow(username, 'main')?.max_tokens;
+}
+
+export function getUserLlmDefaultSnapshotContextWindow(username: string): number | undefined {
+  return snapshotRow(username, 'main')?.context_window;
 }
 
 export function deleteUserLlmDefaultSnapshots(username: string): void {
@@ -88,6 +95,7 @@ interface PreparedSnapshot {
   model: string;
   apiKeyCiphertext: string | null;
   maxTokens: number;
+  contextWindow: number;
   defaultRevision: number;
 }
 
@@ -102,6 +110,7 @@ function prepareSnapshots(username: string, defaults: UserLlmDefaultSnapshotSet)
         cipherContext(username, settings.purpose),
       ),
       maxTokens: settings.maxTokens,
+      contextWindow: settings.contextWindow,
       defaultRevision: settings.revision,
     }));
 }
@@ -120,9 +129,9 @@ function saveUserLlmDefaultSnapshots(
     db.prepare('DELETE FROM user_llm_settings WHERE username = ?').run(normalized);
     db.prepare('DELETE FROM user_llm_default_snapshots WHERE username = ?').run(normalized);
     const insert = db.prepare(`INSERT INTO user_llm_default_snapshots (
-        username, purpose, base_url, model, api_key_ciphertext, max_tokens,
-        default_revision, assigned_via, assigned_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      username, purpose, base_url, model, api_key_ciphertext, max_tokens,
+        context_window, default_revision, assigned_via, assigned_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const snapshot of prepared) {
       insert.run(
         normalized,
@@ -131,6 +140,7 @@ function saveUserLlmDefaultSnapshots(
         snapshot.model,
         snapshot.apiKeyCiphertext,
         snapshot.maxTokens,
+        snapshot.contextWindow,
         snapshot.defaultRevision,
         assignedVia,
         assignedAt,
