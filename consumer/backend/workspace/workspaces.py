@@ -225,12 +225,12 @@ def generate_mcp_endpoint_id(existing_ids: set[str]) -> str:
 def _slugify_workspace_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", _normalize_workspace_name(name)).strip()
     ascii_name = unicodedata.normalize("NFKD", normalized).encode("ascii", "ignore").decode("ascii")
-    if ascii_name.strip():
-        candidate = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_name).strip("-").lower()
-    else:
-        candidate = re.sub(r"\s+", "-", normalized).strip("-")
+    candidate = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_name).strip("-").lower()
     candidate = re.sub(r"-{2,}", "-", candidate).strip("-")
-    if not candidate:
+    # 首位必须为字母（与 _WORKSPACE_ID_PATTERN 对齐），数字开头时补前缀
+    if candidate and candidate[0].isdigit():
+        candidate = f"ws-{candidate}"
+    if not candidate or not candidate[0].isalpha():
         candidate = f"workspace-{uuid.uuid4().hex[:8]}"
     candidate = candidate[:_WORKSPACE_ID_MAX_LEN]
     return validate_workspace_id(candidate)

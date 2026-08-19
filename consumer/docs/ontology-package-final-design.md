@@ -991,8 +991,6 @@ mappings/object-data-mappings.json
 
 `policy.row_level_security` 用于声明行级可见性边界。首版支持 `mode=mandatory_filter`：`resource_field` 必须是 `fields` 中声明的业务字段 key，`subject_attribute` 指向可信认证上下文中的主体属性；运行时必须把 `resource_field` 约束为该主体属性的值，缺少对应过滤条件时返回 `RLS_FILTER_REQUIRED`，无法解析主体属性时返回 `RLS_SUBJECT_UNRESOLVED`。`mode=session_attribute` 预留给后续 Provider 会话变量注入。
 
-`ontology_context(resource="object"|"metric"|"rule")` 加载详情时，可以附带安全的 `data_mapping_summary`，只暴露 `provider_alias`、`resource`、`primary_key`、`field_keys` 和 `policy`。真实字段 `source`、mapping 文件路径、workspace connection、账号和密钥不会进入模型上下文。
-
 本体包校验会返回 `mapping_coverage`，用于批量治理 object、metric、rule 与 mapping 的一致性。摘要只包含 `enabled`、`status`，以及各资源类型的 `total`、`mapped`、`unmapped`、`stale`、`field_count`、`unmapped_keys`、`stale_keys`；它帮助维护者发现未映射资源和废弃 mapping key，但不把 mapping 原文、真实字段 source、连接配置或密钥暴露给 Agent。
 
 首版 mapping 不包含：

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import ProjectWorkbenchRouter, {
+  projectAccessFailureKind,
   projectWorkbenchMode,
 } from '../frontend/src/ProjectWorkbenchRouter.jsx';
 
@@ -25,6 +26,15 @@ const modelingSession = {
 test('项目工作台只按项目类型选择统一界面', () => {
   assert.equal(projectWorkbenchMode(modelingSession), 'ai_construction');
   assert.equal(projectWorkbenchMode({ project: { kind: 'modeling' } }), 'ai_construction');
+});
+
+test('项目工作台区分登录失效、无权访问和可重试错误', () => {
+  assert.equal(projectAccessFailureKind({ status: 401 }), 'authentication_required');
+  for (const status of [403, 404, 410]) {
+    assert.equal(projectAccessFailureKind({ status }), 'project_unavailable');
+  }
+  assert.equal(projectAccessFailureKind({ status: 500 }), null);
+  assert.equal(projectAccessFailureKind(new TypeError('network error')), null);
 });
 
 test('历史导入知识包继续打开完整知识包工作区', () => {

@@ -26,43 +26,29 @@ function responseMessage(response, payload, fallback) {
   return payload?.error || payload?.detail || (response.ok ? '' : `${fallback}（${response.status}）`);
 }
 
-function WorkspaceDialog({ dialog, draft, setDraft, busy, canSetDefault, onClose, onSubmit }) {
+function WorkspaceDialog({ dialog, draft, setDraft, busy, canSetDefault, error, onClose, onSubmit }) {
   const isCreate = dialog.type === 'create';
   return (
     <Modal
       title={isCreate ? '新建工作空间' : `编辑 ${dialog.workspace?.name || dialog.workspace?.id}`}
-      description={isCreate ? '工作空间 ID 创建后不可修改；普通用户创建后会自动成为 owner。' : '仅更新名称与描述，不改变成员和所有者。'}
+      description={isCreate ? '工作空间是一个隔离知识库、Agent 与配置的独立工作环境' : '仅更新名称与描述，不改变成员和所有者。'}
       onClose={busy ? undefined : onClose}
       actions={<>
         <button className="btn" type="button" disabled={busy} onClick={onClose}>取消</button>
-        <button className="btn btn-p" type="submit" form="workspace-admin-form" disabled={busy || !draft.name.trim() || (isCreate && !draft.id.trim())}>
+        <button className="btn btn-p" type="submit" form="workspace-admin-form" disabled={busy || !draft.name.trim()}>
           {busy ? '保存中…' : '保存'}
         </button>
       </>}
     >
+      {error && <div className="settings-admin-alert is-error" role="alert">{error}</div>}
       <form id="workspace-admin-form" className="settings-admin-form" onSubmit={onSubmit}>
-        {isCreate && (
-          <label>
-            工作空间 ID
-            <input
-              autoFocus
-              required
-              pattern="[a-z0-9](?:[a-z0-9_]|-)*"
-              maxLength={64}
-              placeholder="例如：manufacturing"
-              value={draft.id}
-              disabled={busy}
-              onChange={(event) => setDraft((current) => ({ ...current, id: event.target.value.toLowerCase() }))}
-            />
-            <small>使用小写字母、数字、下划线或连字符。</small>
-          </label>
-        )}
         <label>
           名称
           <input
-            autoFocus={!isCreate}
+            autoFocus
             required
             maxLength={120}
+            placeholder="取一个有意义的空间名称..."
             value={draft.name}
             disabled={busy}
             onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
@@ -73,6 +59,7 @@ function WorkspaceDialog({ dialog, draft, setDraft, busy, canSetDefault, onClose
           <textarea
             rows={4}
             maxLength={500}
+            placeholder="说说这个空间是做什么的..."
             value={draft.description}
             disabled={busy}
             onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
@@ -202,10 +189,9 @@ export default function WorkspaceAdminPanel({
     event.preventDefault();
     if (!dialog || busy) return;
     const isCreate = dialog.type === 'create';
-    const id = isCreate ? draft.id.trim() : dialog.workspace.id;
+    const id = isCreate ? '' : dialog.workspace.id;
     const body = isCreate
       ? {
-          id,
           ...workspaceMutationPayload(draft),
           ...(canManageCollection ? { set_as_default: draft.setAsDefault } : {}),
         }
@@ -219,7 +205,11 @@ export default function WorkspaceAdminPanel({
     if (!result) return;
     setDialog(null);
     setDraft({ ...EMPTY_DRAFT });
-    await loadWorkspaces({ quiet: true });
+    const refreshed = await loadWorkspaces({ quiet: true });
+    if (isCreate) {
+      const newId = result.payload?.id || id;
+      await onWorkspaceChange?.(newId);
+    }
   };
 
   const setDefault = async (workspace) => {
@@ -296,7 +286,9 @@ export default function WorkspaceAdminPanel({
           onChange={(event) => { setQuery(event.target.value); setPage(1); }} />
       </label>
 
-      {error && <div className="settings-admin-alert is-error" role="alert">{error}</div>}
+      {error && !dialog && (
+        <div className="settings-admin-alert is-error" role="alert">{error}</div>
+      )}
       {notice && <div className={`settings-admin-alert is-${notice.tone}`} role="status">{notice.message}</div>}
 
       {loading ? <div className="settings-admin-state" role="status">正在加载工作空间…</div> : (
@@ -319,7 +311,7 @@ export default function WorkspaceAdminPanel({
                         {!isCurrent && <button className="btn btn-sm" type="button" disabled={Boolean(busy)} onClick={() => onWorkspaceChange?.(workspace.id)}>切换</button>}
                         {canEditWorkspace(currentUser, workspace) && <button className="btn btn-sm" type="button" disabled={Boolean(busy)} onClick={() => openEdit(workspace)}>编辑</button>}
                         {canManageCollection && !isDefault && <button className="btn btn-sm" type="button" disabled={Boolean(busy)} onClick={() => setDefault(workspace)}>设为默认</button>}
-                        {canDelete && <button className="btn btn-sm btn-danger" type="button" disabled={Boolean(busy) || (isDefault && canManageCollection)} onClick={() => setDialog({ type: 'delete', workspace })}>删除</button>}
+                        {canDelete && <button className="btn btn-sm btn-danger" type="button" disabled={Boolean(busy) || (isDefault && canManageCollection)} onClick={() => { setDialog({ type: 'delete', workspace }); setError(''); }}>删除</button>}
                       </div>
                     </td>
                   </tr>
@@ -347,6 +339,7 @@ export default function WorkspaceAdminPanel({
           setDraft={setDraft}
           busy={Boolean(busy)}
           canSetDefault={canManageCollection}
+          error={error}
           onClose={closeDialog}
           onSubmit={saveWorkspace}
         />
@@ -361,6 +354,7 @@ export default function WorkspaceAdminPanel({
             <button className="btn btn-danger" type="button" disabled={Boolean(busy)} onClick={deleteWorkspace}>{busy ? '删除中…' : '确认删除'}</button>
           </>}
         >
+          {error && <div className="settings-admin-alert is-error" role="alert">{error}</div>}
           <p className="settings-admin-danger-copy">请输入确认不在本流程中保存；系统只会发送工作空间 ID。</p>
         </Modal>
       )}

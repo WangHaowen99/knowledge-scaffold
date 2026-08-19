@@ -9,6 +9,7 @@ import {
   generateAiConstructionKnowledge,
   getProjectSession,
   getRevisionDiff,
+  isTerminalProjectEventError,
   listRevisions,
   previewAiConstructionTaskAdjustment,
   previewAiConstructionTaskEdit,
@@ -285,4 +286,29 @@ test('主动取消等待中的连接不会报错或重连', async () => {
   assert.equal(signals[0].aborted, true);
   assert.equal(calls, 1);
   assert.deepEqual(errors, []);
+});
+
+test('项目事件流对终止性状态停止重连并保留响应状态', async () => {
+  const errors: Array<Error & { status?: number }> = [];
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return jsonResponse({ error: '项目不存在' }, 404);
+  }) as typeof fetch;
+
+  const unsubscribe = subscribeProjectEvents('project-missing', {
+    onError: (error) => errors.push(error as Error & { status?: number }),
+  });
+  await waitFor(() => errors.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  unsubscribe();
+
+  assert.equal(calls, 1);
+  assert.equal(errors[0].status, 404);
+  assert.match(errors[0].message, /项目不存在/);
+  for (const status of [401, 403, 404, 410]) {
+    assert.equal(isTerminalProjectEventError({ status }), true);
+  }
+  assert.equal(isTerminalProjectEventError({ status: 500 }), false);
+  assert.equal(isTerminalProjectEventError(new TypeError('network error')), false);
 });

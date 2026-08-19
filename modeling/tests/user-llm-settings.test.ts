@@ -73,6 +73,38 @@ test('个人输出上限只接受安全整数范围', () => {
   assert.throws(() => repo.setUserLlmSetting('alice', 'max_tokens', '1000001'), /1 到 1000000/);
 });
 
+test('个人 provider patch 原子校验并可整体恢复默认', () => {
+  assert.throws(() => repo.updateUserLlmSettings('charlie', {
+    baseUrl: 'https://partial.example.com/v1',
+  }), /Base URL 与模型名必须同时设置/);
+  assert.equal(repo.getUserLlmSetting('charlie', 'base_url'), null);
+
+  assert.throws(() => repo.updateUserLlmSettings('charlie', {
+    baseUrl: 'file:///tmp/not-an-llm-endpoint', model: 'invalid-model',
+  }), /http\(s\)/);
+  assert.equal(repo.getUserLlmSetting('charlie', 'base_url'), null);
+
+  repo.updateUserLlmSettings('charlie', {
+    baseUrl: 'https://charlie.example.com/v1',
+    model: 'charlie-model',
+    apiKey: 'synthetic-charlie-key',
+    maxTokens: '2048',
+  });
+  assert.deepEqual(context.runWithLlmUser('charlie', () => repo.getLlmSettings()), {
+    baseUrl: 'https://charlie.example.com/v1',
+    model: 'charlie-model',
+    apiKey: 'synthetic-charlie-key',
+    maxTokens: 2048,
+  });
+
+  repo.updateUserLlmSettings('charlie', { providerClear: true, maxTokens: '' });
+  const inherited = context.runWithLlmUser('charlie', () => repo.getLlmSettings());
+  assert.equal(inherited.baseUrl, 'https://default.example.com/v1');
+  assert.equal(inherited.model, 'default-model');
+  assert.equal(inherited.maxTokens, 8192);
+  assert.equal(repo.getUserLlmSetting('charlie', 'api_key'), null);
+});
+
 test('并发异步任务保持各自的用户上下文', async () => {
   repo.setUserLlmSetting('alice', 'base_url', 'https://alice.example.com/v1');
   repo.setUserLlmSetting('alice', 'model', 'alice-model');

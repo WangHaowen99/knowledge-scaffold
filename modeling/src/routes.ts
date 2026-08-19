@@ -39,7 +39,6 @@ import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import {
   deleteSetting,
-  deleteUserLlmSetting,
   getConsumerApiUrl,
   getEvalBindingDefaults,
   getLlmSettings,
@@ -47,7 +46,8 @@ import {
   getSetting,
   getUserLlmSetting,
   setSetting,
-  setUserLlmSetting,
+  updateUserLlmSettings,
+  UserLlmSettingsValidationError,
 } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
@@ -141,6 +141,14 @@ import {
 } from './evaluation/optimization-candidate.js';
 import { buildLlm } from './llm/provider.js';
 import { runWithLlmRequest } from './llm/user-context.js';
+import { registerAdminLlmRoutes } from './settings/admin-llm-routes.js';
+import { testLlmConnection } from './settings/llm-connection-test.js';
+import {
+  initializeNewUserLlmDefaults,
+  isPlatformLlmDefaultAvailable,
+  LlmDefaultSyncError,
+  syncUserLlmToPlatformDefault,
+} from './settings/llm-default-sync.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
@@ -356,10 +364,31 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   app.post('/auth/register', async (req, reply) => {
     try {
       const { status, body } = await getAuthClient().register(req.body ?? {}, req.ip);
+      if (status >= 200 && status < 300) {
+        const registeredUsername = typeof body === 'object' && body !== null
+          && 'user' in body && typeof body.user === 'object' && body.user !== null
+          && 'username' in body.user
+          ? String(body.user.username).trim()
+          : '';
+        if (registeredUsername) {
+          try {
+            initializeNewUserLlmDefaults(registeredUsername);
+          } catch (error) {
+            // 认证服务已完成建号，不能再把响应伪装成注册失败；记录错误供运维修复后让用户主动同步。
+            req.log.error({ err: error, username: registeredUsername }, '初始化新用户 LLM 默认快照失败');
+          }
+        }
+      }
       return reply.code(status).send(body);
     } catch {
       return reply.code(502).send({ error: '注册服务暂不可用，请稍后再试' });
     }
+  });
+
+  // admin 平台默认配置单独封装认证/角色边界，避免模板作用域与同步路由注册顺序耦合。
+  app.register(async (adminRoutes) => {
+    adminRoutes.addHook('onRequest', (_req, _reply, done) => runWithLlmRequest(done));
+    registerAdminLlmRoutes(adminRoutes, true);
   });
 
   // 以下均需认证
@@ -384,6 +413,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
           source: getLlmSource(username),
           userIsolated: true,
+          platformDefaultAvailable: isPlatformLlmDefaultAvailable(),
         },
         evalBinding: binding,
       };
@@ -397,38 +427,32 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const s = String(v).trim();
         s ? setSetting(key, s) : deleteSetting(key); // 空串 = 清除（回退 env）
       };
-      let normalizedMaxTokens: string | undefined;
-      if (b.llmMaxTokens !== undefined) {
-        normalizedMaxTokens = String(b.llmMaxTokens).trim();
-        if (normalizedMaxTokens) {
-          const maxTokens = Number(normalizedMaxTokens);
-          if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_000_000) {
-            return reply.code(400).send({ error: 'llmMaxTokens 必须是 1 到 1000000 的整数' });
-          }
-        }
-      }
       if (b.consumerApiUrl !== undefined) {
         const v = String(b.consumerApiUrl).trim();
         if (v && !/^https?:\/\//.test(v)) return reply.code(400).send({ error: 'consumerApiUrl 必须是 http(s) 地址' });
-        put('consumer_api_url', v);
       }
-      const putUserLlm = (
-        key: 'base_url' | 'model' | 'max_tokens',
-        value: unknown,
-      ) => {
-        if (value === undefined) return;
-        const setting = String(value).trim();
-        setting
-          ? setUserLlmSetting(username, key, setting)
-          : deleteUserLlmSetting(username, key);
-      };
-      putUserLlm('base_url', b.llmBaseUrl);
-      putUserLlm('model', b.llmModel);
-      if (normalizedMaxTokens !== undefined) putUserLlm('max_tokens', normalizedMaxTokens);
-      if (b.llmApiKey !== undefined && String(b.llmApiKey) !== '') {
-        setUserLlmSetting(username, 'api_key', String(b.llmApiKey));
-      } // key 留空 = 保持当前用户现有 key 不变
-      if (b.llmApiKeyClear === true) deleteUserLlmSetting(username, 'api_key');
+      const hasUserLlmPatch = [
+        'llmBaseUrl', 'llmModel', 'llmApiKey', 'llmApiKeyClear',
+        'llmProviderClear', 'llmMaxTokens',
+      ].some((key) => Object.hasOwn(b, key));
+      if (hasUserLlmPatch) {
+        try {
+          updateUserLlmSettings(username, {
+            baseUrl: b.llmBaseUrl === undefined ? undefined : String(b.llmBaseUrl),
+            model: b.llmModel === undefined ? undefined : String(b.llmModel),
+            apiKey: b.llmApiKey === undefined ? undefined : String(b.llmApiKey),
+            apiKeyClear: b.llmApiKeyClear === true,
+            providerClear: b.llmProviderClear === true,
+            maxTokens: b.llmMaxTokens === undefined ? undefined : String(b.llmMaxTokens),
+          });
+        } catch (error) {
+          if (error instanceof UserLlmSettingsValidationError) {
+            return reply.code(400).send({ error: error.message });
+          }
+          throw error;
+        }
+      }
+      if (b.consumerApiUrl !== undefined) put('consumer_api_url', b.consumerApiUrl);
       put('eval_binding_provider', b.evalBindingProvider);
       put('eval_binding_url', b.evalBindingUrl);
       put('eval_binding_token', b.evalBindingToken);
@@ -436,29 +460,36 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return { ok: true };
     });
 
+    r.post('/api/settings/llm/sync-default', async (req, reply) => {
+      try {
+        syncUserLlmToPlatformDefault(req.user!.username);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof LlmDefaultSyncError) {
+          return reply.code(error.statusCode).send({ error: error.message });
+        }
+        throw error;
+      }
+    });
+
     // LLM 有效性测试：最小 chat/completions 调用；失败时返回原始错误（供排障）
     r.post('/api/settings/llm/test', async (req) => {
       const b = (req.body ?? {}) as Record<string, string>;
-      const saved = getLlmSettings(req.user!.username);
-      const baseUrl = (b.baseUrl || saved.baseUrl).replace(/\/+$/, '');
-      const apiKey = b.apiKey || saved.apiKey;
+      const username = req.user!.username;
+      const saved = getLlmSettings(username);
+      const baseUrl = b.baseUrl || saved.baseUrl;
       const model = b.model || saved.model;
-      if (baseUrl === 'faux') return { ok: true, detail: 'faux 演示模式（不调用真实端点）' };
-      if (!baseUrl || !model) return { ok: false, error: 'base url 与模型名必填' };
-      const t0 = Date.now();
-      try {
-        const res = await fetch(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey ?? ''}` },
-          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
-          signal: AbortSignal.timeout(20_000),
-        });
-        const raw = await res.text();
-        if (!res.ok) return { ok: false, status: res.status, latencyMs: Date.now() - t0, error: raw.slice(0, 1000) };
-        return { ok: true, status: res.status, latencyMs: Date.now() - t0 };
-      } catch (e) {
-        return { ok: false, latencyMs: Date.now() - t0, error: e instanceof Error ? `${e.name}: ${e.message}${e.cause ? `（${e.cause}）` : ''}` : String(e) };
-      }
+      const providerChanged = baseUrl.trim().replace(/\/+$/, '') !== saved.baseUrl.trim().replace(/\/+$/, '')
+        || model.trim() !== saved.model.trim();
+      // 编辑快照/部署 provider 时不得把其 Key 带到新端点；已有个人 Key 则按个人草稿保留语义复用。
+      const apiKey = b.apiKey || (providerChanged
+        ? (getUserLlmSetting(username, 'api_key') ?? '')
+        : saved.apiKey);
+      return testLlmConnection({
+        baseUrl,
+        apiKey,
+        model,
+      });
     });
 
     // 连通性测试：health / auth（token 透传）/ 模型就绪

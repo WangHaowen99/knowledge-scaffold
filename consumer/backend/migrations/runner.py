@@ -19,12 +19,17 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, BinaryIO, Callable, Iterator, Optional
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows development fallback
     fcntl = None  # type: ignore[assignment]
+
+if os.name == "nt":
+    import msvcrt
+else:
+    msvcrt = None
 
 from config.system_config import ONTO_RUNTIME_ROOT
 
@@ -145,13 +150,39 @@ def _migration_lock(runtime_root: Path) -> Iterator[Path]:
                 lock_path.chmod(0o600)
             except OSError:
                 pass
-            if fcntl is not None:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            _lock_process_file(lock_file)
             try:
                 yield lock_path
             finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                _unlock_process_file(lock_file)
+
+
+def _lock_process_file(lock_file: BinaryIO) -> None:
+    if fcntl is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return
+    if msvcrt is None:
+        return
+    # msvcrt.locking locks a byte range at the current position and raises on
+    # an empty file, so materialize one byte first. LK_LOCK retries for up to
+    # 10 seconds before raising, which would surface as a lock failure instead
+    # of silently running migrations unlocked.
+    lock_file.seek(0, os.SEEK_END)
+    if lock_file.tell() == 0:
+        lock_file.write(b"\0")
+        lock_file.flush()
+    lock_file.seek(0)
+    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def _unlock_process_file(lock_file: BinaryIO) -> None:
+    if fcntl is not None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        return
+    if msvcrt is None:
+        return
+    lock_file.seek(0)
+    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _report_error_codes(report: dict[str, Any]) -> list[str]:
