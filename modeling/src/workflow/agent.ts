@@ -1,14 +1,21 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import type { LlmDeps } from '../llm/provider.js';
+import { normalizeModelError } from '../llm/errors.js';
 import type { AgentTool } from './types.js';
 
+export {
+  MODEL_CONTEXT_LENGTH_EXCEEDED_CODE,
+  ModelContextLengthExceededError,
+  ModelContextWindowExceededError,
+  isModelContextLengthExceeded,
+} from '../llm/errors.js';
+
 export type AgentEventObserver = (event: unknown) => void;
-export interface AgentTurnBudget { remaining: number; }
 export interface RunAgentOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
-  maxTurns?: number;
-  turnBudget?: AgentTurnBudget;
+  // null 表示调用方提供了自己的终止条件（如全文读取的无进展保护）。
+  maxTurns?: number | null;
 }
 export interface MakeAgentOptions {
   transformContext?: (messages: unknown[]) => unknown[] | Promise<unknown[]>;
@@ -61,23 +68,24 @@ export async function runAgent(
     throw options.signal.reason instanceof Error ? options.signal.reason : new Error('模型任务已取消');
   }
   let turns = 0;
+  let turnLimitReached = false;
   let timeout: NodeJS.Timeout | undefined;
   let run: Promise<void> | undefined;
   let removeAbortListener: () => void = () => {};
-  const configuredMaxTurns = Number(options.maxTurns ?? MAX_TURNS);
-  const maxTurns = Number.isFinite(configuredMaxTurns) && configuredMaxTurns > 0
-    ? Math.floor(configuredMaxTurns)
-    : 12;
+  const configuredMaxTurns = options.maxTurns === null ? null : Number(options.maxTurns ?? MAX_TURNS);
+  const maxTurns = configuredMaxTurns === null
+    ? null
+    : Number.isFinite(configuredMaxTurns) && configuredMaxTurns > 0
+      ? Math.floor(configuredMaxTurns)
+      : 12;
   const unsub = agent.subscribe((event: any) => {
     observe?.(event);
     if (event?.type !== 'turn_end') return;
     turns += 1;
-    if (options.turnBudget) {
-      options.turnBudget.remaining = Math.max(0, options.turnBudget.remaining - 1);
-      if (options.turnBudget.remaining <= 0) agent.abort();
-      return;
+    if (maxTurns !== null && turns >= maxTurns) {
+      turnLimitReached = true;
+      agent.abort();
     }
-    if (turns >= maxTurns) agent.abort();
   });
   try {
     run = (async () => {
@@ -105,8 +113,20 @@ export async function runAgent(
     const providerFailure: any = [...(agent.state?.messages ?? [])].reverse().find((message: any) => (
       message?.role === 'assistant' && message?.stopReason === 'error'
     ));
-    const providerError = String(providerFailure?.errorMessage ?? '').trim();
-    if (providerError) throw new Error(providerError);
+    const providerErrorValue =
+      providerFailure?.errorMessage
+      ?? (turnLimitReached ? undefined : (agent.state as any)?.errorMessage)
+      ?? undefined;
+    if (providerErrorValue !== undefined && providerErrorValue !== null
+      && String(providerErrorValue).trim()) {
+      const normalized = normalizeModelError(
+        providerErrorValue,
+        (agent.state as any)?.model?.contextWindow,
+      );
+      throw normalized === providerErrorValue
+        ? new Error(providerErrorValue instanceof Error ? providerErrorValue.message : String(providerErrorValue))
+        : normalized;
+    }
   } catch (error) {
     if (error instanceof AgentRunTimeoutError) {
       try { agent.abort(); } catch { /* 超时错误优先 */ }
@@ -119,7 +139,7 @@ export async function runAgent(
         ? options.signal.reason
         : new Error('模型任务已取消');
     }
-    throw error;
+    throw normalizeModelError(error, (agent.state as any)?.model?.contextWindow);
   } finally {
     if (timeout) clearTimeout(timeout);
     removeAbortListener();

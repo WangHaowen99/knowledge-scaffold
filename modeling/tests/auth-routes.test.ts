@@ -568,7 +568,7 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
     method: 'PUT', url: '/api/settings', headers: aliceHeaders,
     payload: {
       llmBaseUrl: 'https://user-a.example.com/v1', llmModel: 'model-a',
-      llmApiKey: 'synthetic-key-a', llmMaxTokens: '4096',
+      llmApiKey: 'synthetic-key-a', llmMaxTokens: '4096', llmContextWindow: '1000000',
     },
   });
   assert.equal(response.statusCode, 200);
@@ -577,7 +577,7 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
     method: 'PUT', url: '/api/settings', headers: bobHeaders,
     payload: {
       llmBaseUrl: 'https://user-b.example.com/v1', llmModel: 'model-b',
-      llmApiKey: 'synthetic-key-b', llmMaxTokens: '6144',
+      llmApiKey: 'synthetic-key-b', llmMaxTokens: '6144', llmContextWindow: '128000',
     },
   });
   assert.equal(response.statusCode, 200);
@@ -587,12 +587,12 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   assert.equal(alice.statusCode, 200);
   assert.equal(bob.statusCode, 200);
   assert.deepEqual(alice.json().llm, {
-    baseUrl: 'https://user-a.example.com/v1', model: 'model-a', maxTokens: 4096,
+    baseUrl: 'https://user-a.example.com/v1', model: 'model-a', maxTokens: 4096, contextWindow: 1000000,
     apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
     platformDefaultAvailable: false,
   });
   assert.deepEqual(bob.json().llm, {
-    baseUrl: 'https://user-b.example.com/v1', model: 'model-b', maxTokens: 6144,
+    baseUrl: 'https://user-b.example.com/v1', model: 'model-b', maxTokens: 6144, contextWindow: 128000,
     apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
     platformDefaultAvailable: false,
   });
@@ -606,6 +606,13 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   assert.equal(response.statusCode, 400);
   const unchanged = await app.inject({ method: 'GET', url: '/api/settings', headers: aliceHeaders });
   assert.equal(unchanged.json().llm.baseUrl, 'https://user-a.example.com/v1');
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers: aliceHeaders,
+    payload: { llmContextWindow: '0' },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /llmContextWindow/);
 
   response = await app.inject({
     method: 'PUT', url: '/api/settings', headers: aliceHeaders,
@@ -679,7 +686,7 @@ test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不
     const userA = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
     const userB = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
     assert.deepEqual(userA.json().llm, {
-      baseUrl: 'faux', model: 'platform-default-model', maxTokens: 7777,
+      baseUrl: 'faux', model: 'platform-default-model', maxTokens: 7777, contextWindow: 1000000,
       apiKeySet: false, personalApiKeySet: false, source: 'default_snapshot', userIsolated: true,
       platformDefaultAvailable: true,
     });
