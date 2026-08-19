@@ -2,12 +2,9 @@
 
 本文档定义用户上传本体 ZIP 包的推荐格式。上传入口为 `POST /agentic/ontologies/import-zip`，只接受 `.zip` 文件。
 
-系统支持两类 ZIP：
+系统只接受**v0.1 本体包**：包含 `kind: ontology-package`、`schema_version: 0.1` 的 `manifest.yaml`，并使用各目录的 `index.md`。
 
-- **源格式包（推荐）**：包含 `object/` 和 `logic/` 目录，系统会自动转换为运行时本体结构。
-- **v0.1 本体包**：包含 `kind: ontology-package`、`schema_version: 0.1` 的 `manifest.yaml`，并使用各目录的 `index.md`。
-
-迁移期上传的旧格式包会在导入边界一次性转换成 v0.1。安装目录和运行时不会保留或读取 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`。
+旧格式包（源格式包，含 `SKILL.md`、`object/`、`logic/`、`action/`、`asset/` 等目录）不再由服务端自动转换。上传前需用离线转换脚本将其转为 v0.1 格式，见《本体包转换脚本使用指南》（`ontology-package-conversion-guide.md`）。安装目录和运行时不会保留或读取 `ONTOLOGY.md`、`objects-list.md`、`operations-list.md`、`scripts-list.md`。
 
 ## 通用限制
 
@@ -16,193 +13,12 @@
 - ZIP 压缩包大小上限为 50 MB。
 - ZIP 解压后总大小上限为 200 MB。
 - ZIP 内路径不能包含绝对路径或 `..` 路径穿越。
-- 本体 ID 只能包含字母、数字、下划线和短横线，并且必须以字母或数字开头。
+- 本体 ID 只能包含字母、数字、下划线、短横线和点号，并且必须以字母或数字开头。
+- 包内必须包含 `index.md`、`objects/index.md`、`operations/index.md`，且均为普通文件（不能是符号链接）。
 
-## 推荐源格式包
+## v0.1 本体包
 
-源格式包适合用户直接整理业务本体材料。系统会从 `SKILL.md` 读取本体元数据，从 `object/` 生成对象定义，从 `logic/` 生成操作定义，从 `action/` 生成脚本注册，从 `asset/` 复制公共文件。`object/`、`logic/`、`action/`、`asset/` 均支持递归扫描；`object/`、`logic/`、`action/` 导入时会平铺处理，`asset/` 会保留目录结构。
-
-```text
-my-ontology.zip
-└── my-ontology/
-    ├── SKILL.md
-    ├── object/
-    │   ├── 实体A.md
-    │   └── 实体B.md
-    ├── logic/
-    │   ├── 操作A.md
-    │   └── 操作B.md
-    ├── action/                 # 可选
-    │   ├── script_a.py
-    │   └── .env                # 可选
-    └── asset/                  # 可选
-        ├── common.conf
-        └── rules/
-            └── threshold.ini
-```
-
-必要文件：
-
-- `SKILL.md`
-- `object/`
-- `logic/`
-
-可选文件：
-
-- `action/`
-- `asset/`
-
-### SKILL.md 模板
-
-```markdown
----
-id: my-ontology
-name: 我的业务本体
-description: 描述该本体覆盖的业务范围、适用场景和关键对象。
----
-```
-
-### object/实体A.md 模板
-
-每个对象一个 Markdown 文件，文件名就是实体名。系统读取 `对象描述`、`对象别名`、`对象属性清单`，并生成 `objects/index.md` 与 `objects/<实体名>.md`。
-
-```markdown
-# 对象描述
-实体A代表业务中的某类核心对象。
-
-# 对象别名
-A对象,业务A
-
-# 英文名称
-EntityA
-
-# 对象属性清单
-| 中文名称 | 英文名称 | 描述 | 主键 | 类型 | 属性别名 | 属性规则 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 实体A编号 | entity_a_code | 实体A的唯一编号。 | 是 | 字符串 | A编号、编码 | 非空 |
-| 状态 | status | 实体A当前业务状态。 | 否 | 字符串 | 业务状态 | 无 |
-
-# 关联对象
-- 当前对象 -> 关系名 -> [[实体B]]
-```
-
-转换规则：
-
-- `objects/index.md` 生成列：`中文名称`、`别名`、`业务定义`、`领域分类`。
-- `objects/<实体名>.md` 生成列：`中文名称`、`英文名称`、`描述`、`属性别名`。
-- `主键`、`类型`、`属性规则` 当前不进入运行时对象文件。
-
-### logic/操作A.md 模板
-
-每个操作一个 Markdown 文件，文件名就是操作名。系统生成 `operations/index.md` 与 `operations/<操作名>.md`。
-
-````markdown
-# 业务描述
-一句话描述该操作能回答什么业务问题，或完成什么业务动作。
-
-# 与logic的关联
-- 被流程使用 > 无
-- 使用流程 > [[子流程A]]
-
-# 与object的关联
-- 输入数据的对象：[[实体A]]
-- 输出数据的对象：[[实体B]]
-- 支撑数据的对象：无
-
-# 输入
-| 参数名称 | 描述 |
-| --- | --- |
-| 实体A编号 | 需要查询或处理的实体A编号。 |
-
-# 输出
-| 参数名称 | 描述 |
-| --- | --- |
-| 处理结果 | 操作执行后的结论或结构化结果。 |
-
-# 逻辑描述
-```
-1. 根据输入参数读取业务数据。
-2. 必要时执行 script_a 脚本。
-3. 输出处理结果。
-```
-````
-
-转换规则：
-
-- 如果文件顶部存在 `#工具流程` 标记，目标 operation 的 `管理标签` 生成为 `工具流程`。
-- 如果没有 `#工具流程` 标记，系统读取 `# 与logic的关联` 中的 `被流程使用`：有具体上游流程时生成 `子流程`，为 `无` 或未填写时生成 `主流程`。
-- `# 业务描述` 进入 `operations/index.md` 的 `业务描述` 列。
-- `# 输入` 转换为 `参数名称`、`描述`、`输入源` 三列；如果源表没有 `输入源`，主流程默认 `用户输入`，子流程和工具流程默认 `父流程传递`。
-- `# 输出` 转换为 `参数名称`、`描述` 两列。
-- `# 逻辑描述` 原样进入 operation 文件。
-- `# 与logic的关联` 和 `# 与object的关联` 当前不写入运行时 operation 文件。
-
-### action/script_a.py 模板
-
-`action/` 是可选目录。导入时系统会复制所有 `action/**/*.py` 以及 `.env` / `*.env` 文件到目标 `scripts/`，并为绑定操作的脚本生成 `scripts/<key>.md` 和 `scripts/index.md`。脚本文件名可以保持英文；如果脚本对应某个 `logic/<操作名>.md`，在脚本顶部用注释声明对应的工具流程。
-
-```python
-# 工具流程: 操作A
-# 参数:
-# - name: 实体编号
-#   flag: --entity-code
-#   description: 实体编号
-#   required: true
-#   type: string
-#查数脚本 （涉及mindsdb查数的脚本会加这个标签）
-print("script output")
-```
-
-生成后的脚本描述使用脚本文件名作为 key，`bound_operation` 来自顶部 `工具流程` 注释，`entrypoint` 指向原脚本文件名：
-
-```markdown
----
-resource: script
-key: script_a
-title: script_a
-bound_operation: 操作A
-runtime: python
-entrypoint: script_a.py
----
-
-| 参数 key | CLI 参数 | 类型 | 必填 | 是否多值 | 说明 | 别名 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 实体编号 | --entity-code | string | 是 | 否 | 实体编号 | entity_code |
-```
-
-没有绑定到 `logic/*.md` 的脚本、下划线开头的 helper 脚本和 `.env` 文件会复制到 `scripts/`，但不会注册为可由 `execute_script` 调用的操作。
-
-脚本参数生成分两层：优先读取脚本顶部 `parameters` / `params` / `参数` 注释，支持 JSON 单行或 YAML 注释块；如果没有声明，则静态解析脚本中的 `argparse.add_argument(...)`，提取 `flag`、`required`、`type`、`multiple` 和别名。不会执行脚本本身。
-
-也可以在 v0.1 本体包的 `scripts/<key>.md` 中直接维护同样的参数表。
-
-### asset/common.conf 模板
-
-`asset/` 是可选目录，用于存放多个 logic 或脚本共享的文本/配置公共文件。导入时会复制到运行时 `assets/`，并保留相对目录结构。`ontology_context(resource="root")` 只返回公共文件目录树；需要正文时再按 key 读取单个文件。
-
-```text
-asset/
-├── common.conf
-└── rules/
-    └── threshold.ini
-```
-
-生成到 root catalog 后，公共文件 key 使用 `assets/` 下的相对路径：
-
-```text
-assets_catalog:
-supported formats: .cfg, .conf, .csv, .env, .ini, .json, .md, .properties, .sql, .toml, .tsv, .txt, .xml, .yaml, .yml
-key format: pass the shown file key to ontology_context(resource="asset", key=...).
-- common.conf
-- rules/
-  - threshold.ini (key: rules/threshold.ini)
-```
-
-支持读取的公共文件格式为 UTF-8 文本类文件：`.conf`、`.cfg`、`.ini`、`.env`、`.properties`、`.yaml`、`.yml`、`.json`、`.toml`、`.txt`、`.md`、`.csv`、`.tsv`、`.sql`、`.xml`。其他格式会保留在 ZIP 预览/目录中，但不会作为 `ontology_context(resource="asset")` 的正文读取对象。
-
-## 已转换本体包
-
-如果你已经准备好运行时本体结构，也可以直接上传已转换包。
+v0.1 本体包目录结构如下：
 
 ```text
 my-ontology.zip
@@ -242,9 +58,29 @@ language: zh-CN
 scope: []
 ```
 
+### index.md 模板
+
+```markdown
+---
+resource: root
+key: root
+title: 我的业务本体
+---
+
+# 我的业务本体
+
+描述该本体覆盖的业务范围、适用场景和关键对象。
+```
+
 ### objects/index.md 模板
 
 ```markdown
+---
+resource: object_index
+key: objects
+title: 实体清单
+---
+
 # 实体清单
 
 | 中文名称 | 别名 | 业务定义 | 领域分类 |
@@ -255,6 +91,12 @@ scope: []
 ### objects/实体A.md 模板
 
 ```markdown
+---
+resource: object
+key: 实体A
+title: 实体A
+---
+
 # 实体属性清单
 
 | 中文名称 | 英文名称 | 描述 | 属性别名 |
@@ -265,6 +107,12 @@ scope: []
 ### operations/index.md 模板
 
 ```markdown
+---
+resource: operation_index
+key: operations
+title: Operations 逻辑清单
+---
+
 # Operations 逻辑清单
 
 | 名称 | 标签 | 业务描述 |
@@ -275,6 +123,14 @@ scope: []
 ### operations/操作A.md 模板
 
 ````markdown
+---
+resource: operation
+key: 操作A
+title: 操作A
+uses:
+  objects: []
+---
+
 # 管理标签
 #主流程
 
@@ -296,11 +152,63 @@ scope: []
 ```
 ````
 
+### scripts/ 说明（可选）
+
+可执行脚本放在 `scripts/` 下，并在 `scripts/index.md` 与 `scripts/<key>.md` 中描述。脚本描述文件使用脚本文件名作为 key，`bound_operation` 来自脚本顶部 `工具流程` 注释，`entrypoint` 指向原脚本文件名：
+
+```markdown
+---
+resource: script
+key: script_a
+title: script_a
+bound_operation: 操作A
+runtime: python
+entrypoint: script_a.py
+---
+
+| 参数 key | CLI 参数 | 类型 | 必填 | 是否多值 | 说明 | 别名 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 实体编号 | --entity-code | string | 是 | 否 | 实体编号 | entity_code |
+```
+
+脚本参数生成分两层：优先读取脚本顶部 `parameters` / `params` / `参数` 注释，支持 JSON 单行或 YAML 注释块；如果没有声明，则静态解析脚本中的 `argparse.add_argument(...)`，提取 `flag`、`required`、`type`、`multiple` 和别名。不会执行脚本本身。也可以在 `scripts/<key>.md` 中直接维护同样的参数表。
+
+### mappings/object-data-mappings.json（可选）
+
+数据映射文件用于声明对象、指标、规则到 Provider 数据资源的字段映射，`fields` 的 key 使用业务字段 key。详见《本体包最终设计》（`ontology-package-final-design.md`）的 `object-data-mappings.json` 章节。
+
+### assets/ 说明（可选）
+
+`assets/` 用于存放多个操作或脚本共享的文本/配置公共文件，导入时保留相对目录结构。`ontology_context(resource="root")` 只返回公共文件目录树；需要正文时再按 key 读取单个文件。
+
+```text
+assets/
+├── common.conf
+└── rules/
+    └── threshold.ini
+```
+
+支持读取的公共文件格式为 UTF-8 文本类文件：`.conf`、`.cfg`、`.ini`、`.env`、`.properties`、`.yaml`、`.yml`、`.json`、`.toml`、`.txt`、`.md`、`.csv`、`.tsv`、`.sql`、`.xml`。其他格式会保留在 ZIP 预览/目录中，但不会作为 `ontology_context(resource="asset")` 的正文读取对象。
+
+## 旧格式包的转换
+
+旧格式包（含 `SKILL.md`、`object/`、`logic/`、`action/`、`asset/` 的源格式包，以及使用 `*-list.md` 清单的迁移期包）需先离线转换为 v0.1 格式：
+
+```bash
+cd consumer/scripts
+python legacy_package_converter.py ontology.zip           # zip 输入，默认生成 <name>_converted.zip
+python legacy_package_converter.py /path/to/ontology_dir  # 目录输入，默认生成 <name>_converted 兄弟目录
+```
+
+脚本会执行「校验 → 探测 → 转换 → 再校验」管线，转换产物写入独立的输出目录或 zip，源包永不修改。转换规则与完整命令见《本体包转换脚本使用指南》（`ontology-package-conversion-guide.md`）。
+
 ## 导入前检查清单
 
-- ZIP 中能看到 `my-ontology/SKILL.md`、`my-ontology/object/`、`my-ontology/logic/`，或能看到 `my-ontology/manifest.yaml`。
-- `SKILL.md` frontmatter 中的 `id` 满足本体 ID 规则。
-- `object/` 下每个实体文件至少包含对象描述和对象属性清单。
-- `logic/` 下每个操作文件至少包含业务描述、与logic的关联、输入、输出和逻辑描述。
-- 如果使用 `action/`，可执行脚本文件应为 `.py`；`.env` / `*.env` 会作为脚本资产复制，但不会注册为工具流程。
-- 如果使用 `asset/`，需要模型读取正文的文件应使用受支持的 UTF-8 文本/配置格式。
+- ZIP 内能看到 `my-ontology/manifest.yaml`，且 `kind: ontology-package`、`schema_version: 0.1`。
+- `manifest.yaml` 中的 `id` 满足本体 ID 规则。
+- 包内包含 `index.md`、`objects/index.md`、`operations/index.md`。
+- `objects/`、`operations/` 下每个明细文件带合法 YAML frontmatter，并声明 `resource`、`key`、`title`；operation 明细还需声明 `uses.objects`（无依赖时为空数组）。
+- `scripts/` 下脚本文件应为 `.py`；`scripts/<key>.md` 与 `scripts/index.md` 描述脚本参数。
+- `mappings/object-data-mappings.json`（如有）为合法 JSON，`fields` 的 key 使用业务字段 key。
+- `assets/`（如有）中需要模型读取正文的文件应使用受支持的 UTF-8 文本/配置格式。
+- 旧格式包请先离线转换为 v0.1 格式后再上传。

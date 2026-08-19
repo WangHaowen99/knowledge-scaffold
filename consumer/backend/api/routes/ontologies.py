@@ -13,9 +13,6 @@ from typing import Optional
 import yaml
 from flask import Blueprint, jsonify, request, send_file
 from werkzeug.datastructures import FileStorage
-
-from skill_parser.pipeline import run as run_skill_ontology_pipeline
-
 from config import LimitsConfig
 from integration.platform.assets import export_ontology_snapshot_safely
 from api.auth.auth import require_auth
@@ -81,7 +78,7 @@ ONTOLOGY_MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_MEMBERS = 10_000
 ONTOLOGY_MAX_ZIP_PATH_DEPTH = 32
 ONTOLOGY_MAX_ZIP_PATH_LENGTH = 4096
-ONTOLOGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+ONTOLOGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ONTOLOGY_IMPORT_PREVIEW_MAX_FILES = 80
 ONTOLOGY_IMPORT_PREVIEW_MAX_BYTES = 24 * 1024
 ONTOLOGY_IMPORT_PREVIEW_TEXT_EXTENSIONS = {
@@ -1183,49 +1180,6 @@ def upload_ontology_file(ontology_id: str):
         }), 201
 
 
-def _find_skill_source_root(extract_root: Path) -> Optional[Path]:
-    """Find source root containing object/logic after unzip.
-
-    选择策略：优先包含 SKILL.md 的候选目录；否则退回最浅层候选。
-    """
-    candidates = []
-    object_paths = []
-    for object_dir in extract_root.rglob("object"):
-        if not object_dir.is_dir():
-            continue
-        parent = object_dir.parent
-        logic_dir = parent / "logic"
-        object_paths.append(str(object_dir))
-        if logic_dir.is_dir():
-            candidates.append(parent)
-
-    if not candidates:
-        logger.warning(
-            "Import zip source root not found: extract_root=%s object_dirs=%s",
-            extract_root,
-            object_paths[:20],
-        )
-        return None
-
-    candidates.sort(key=lambda item: len(item.parts))
-
-    selected = None
-    for candidate in candidates:
-        if _resolve_skill_md_path(candidate) is not None:
-            selected = candidate
-            break
-    if selected is None:
-        selected = candidates[0]
-
-    logger.info(
-        "Import zip source root selected: extract_root=%s selected=%s candidate_count=%s has_skill_md=%s",
-        extract_root,
-        selected,
-        len(candidates),
-        _resolve_skill_md_path(selected) is not None,
-    )
-    return selected
-
 
 def _has_converted_ontology_structure(candidate_root: Path) -> bool:
     return has_importable_package_layout(candidate_root)
@@ -1449,160 +1403,8 @@ def _safe_extract_zip(uploaded_bytes: bytes, extract_root: Path) -> Optional[str
     return None
 
 
-def _resolve_skill_md_path(source_root: Path) -> Optional[Path]:
-    preferred = source_root / "SKILL.md"
-    if preferred.is_file():
-        return preferred
-
-    for child in source_root.iterdir():
-        if child.is_file() and child.name.lower() == "skill.md":
-            return child
-
-    return None
-
-
-def _parse_skill_frontmatter(source_root: Path) -> dict:
-    skill_md_path = _resolve_skill_md_path(source_root)
-    if skill_md_path is None:
-        logger.warning("SKILL.md not found under source_root=%s", source_root)
-        return {}
-
-    try:
-        # utf-8-sig可兼容带BOM的文件，避免首行---判断失败
-        content = skill_md_path.read_text(encoding="utf-8-sig")
-    except Exception:
-        logger.exception("Failed to read SKILL.md: %s", skill_md_path)
-        return {}
-
-    # 允许文件开头存在少量空白/不可见字符，再识别frontmatter
-    normalized_content = content.lstrip("\ufeff\r\n\t ")
-    lines = normalized_content.splitlines()
-    if len(lines) < 3 or lines[0].strip() != "---":
-        logger.warning("SKILL.md frontmatter fence not found: %s", skill_md_path)
-        return {}
-
-    end_index = None
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            end_index = idx
-            break
-
-    if end_index is None:
-        logger.warning("SKILL.md frontmatter closing fence missing: %s", skill_md_path)
-        return {}
-
-    frontmatter_text = "\n".join(lines[1:end_index]).strip()
-    if not frontmatter_text:
-        return {}
-
-    try:
-        raw = yaml.safe_load(frontmatter_text) or {}
-    except Exception:
-        logger.exception("Failed to parse SKILL.md frontmatter: %s", skill_md_path)
-        return {}
-
-    return raw if isinstance(raw, dict) else {}
-
-
-def _extract_ontology_name_from_markdown(source_root: Path) -> str:
-    skill_md_path = _resolve_skill_md_path(source_root)
-    if skill_md_path is not None:
-        try:
-            content = skill_md_path.read_text(encoding="utf-8-sig")
-            for line in content.splitlines():
-                match = re.match(r"^\s*#\s+(.+?)\s*$", line)
-                if match:
-                    return match.group(1).strip()
-        except Exception:
-            logger.exception("Failed to parse SKILL.md heading for ontology name: %s", skill_md_path)
-
-    return source_root.name.strip() or "未命名本体"
-
-
-def _extract_skill_metadata(source_root: Path) -> tuple[str, str, str, str]:
-    frontmatter = _parse_skill_frontmatter(source_root)
-
-    ontology_name = str(frontmatter.get("name") or "").strip() or _extract_ontology_name_from_markdown(source_root)
-    frontmatter_id = str(frontmatter.get("id") or "").strip()
-    ontology_id = frontmatter_id
-    if not ontology_id:
-        # 退避策略：当SKILL.md未提供id时，使用name作为目录名候选
-        ontology_id = ontology_name
-
-    description = str(frontmatter.get("description") or "").strip() or f"由上传压缩包自动导入：{ontology_name}"
-    ontology_version = str(frontmatter.get("version") or "").strip()
-
-    logger.info(
-        "Skill metadata resolved: source_root=%s id=%s id_source=%s name=%s",
-        source_root,
-        ontology_id,
-        "frontmatter.id" if frontmatter_id else "fallback.name_or_heading_or_dir",
-        ontology_name,
-    )
-
-    return ontology_id, ontology_name, description, ontology_version
-
-
 def _is_valid_ontology_id(ontology_id: str) -> bool:
     return bool(ontology_id and ONTOLOGY_ID_PATTERN.match(ontology_id))
-
-
-def _write_default_ontology_meta(
-    ontology_dir: Path,
-    ontology_id: str,
-    ontology_name: str,
-    description: str,
-    version: str,
-) -> None:
-    manifest_path = ontology_dir / "manifest.yaml"
-    index_path = ontology_dir / "index.md"
-
-    if not manifest_path.exists():
-        manifest_path.write_text(
-            yaml.safe_dump(
-                {
-                    "kind": "ontology-package",
-                    "schema_version": 0.1,
-                    "id": ontology_id,
-                    "name": ontology_name,
-                    "description": description,
-                    "version": version,
-                    "language": "zh-CN",
-                    "enabled": True,
-                    "scope": [],
-                },
-                allow_unicode=True,
-                sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
-
-    if not index_path.exists():
-        index_content = "\n".join([
-            "---",
-            "resource: root",
-            "key: root",
-            f"title: {ontology_name}",
-            "---",
-            "",
-            f"# {ontology_name}",
-            "",
-            "## 领域范围",
-            description,
-            "",
-            "## 目录结构",
-            "- 基础元数据：`manifest.yaml`",
-            "- 操作目录：`operations/index.md`",
-            "- 操作文件：`operations/<操作名>.md`",
-            "- 实体目录：`objects/index.md`",
-            "- 实体定义：`objects/<实体名>.md`",
-            "- 脚本目录：`scripts/index.md`",
-            "- 脚本描述：`scripts/<脚本名>.md`",
-            "- 脚本文件：`scripts/<脚本名>.py`",
-            "- 关系图：`graph/nodes.json`、`graph/edges.json`",
-            "",
-        ])
-        index_path.write_text(index_content, encoding="utf-8")
 
 
 def _set_ontology_enabled(ontology_dir: Path, enabled: bool):
@@ -1798,33 +1600,6 @@ def _optional_path_str(path: Path) -> Optional[str]:
     return str(path) if path.exists() else None
 
 
-def _build_source_ontology_package(
-    source_root: Path,
-    target_root: Path,
-    *,
-    ontology_id: str,
-    ontology_name: str,
-    ontology_description: str,
-    ontology_version: str,
-) -> dict[str, object]:
-    target_root.mkdir(parents=True, exist_ok=True)
-
-    _write_default_ontology_meta(
-        ontology_dir=target_root,
-        ontology_id=ontology_id,
-        ontology_name=ontology_name,
-        description=ontology_description,
-        version=ontology_version,
-    )
-
-    result = run_skill_ontology_pipeline(
-        source_root=source_root,
-        target_root=target_root,
-        write_mapping_json=False,
-    )
-    return result
-
-
 @ontologies_bp.route("/ontologies/import-zip", methods=["POST"])
 @require_auth()
 def import_ontology_zip_with_auto_create():
@@ -1861,8 +1636,6 @@ def import_ontology_zip_with_auto_create():
             if extraction_error:
                 return jsonify({"error": extraction_error}), 400
 
-            import_mode = "converted"
-            package_format = "v0.1"
             normalization_warnings: list[str] = []
             warnings = {
                 "objects": [],
@@ -1883,25 +1656,17 @@ def import_ontology_zip_with_auto_create():
                     ontology_name,
                     ontology_description,
                     parsed_version,
-                    package_format,
+                    _,
                 ) = converted_root_info
             else:
-                import_mode = "source"
-                package_format = "skill-source"
-                source_root = _find_skill_source_root(extract_root)
-                if source_root is None:
-                    return jsonify({
-                        "error": (
-                            "Zip中未找到可导入本体：需包含object与logic目录的源格式包，"
-                            "或包含manifest.yaml的已转换ontology目录"
-                        )
-                    }), 400
-
-                ontology_id, ontology_name, ontology_description, parsed_version = _extract_skill_metadata(source_root)
+                return jsonify({
+                    "error": (
+                        "Zip中未找到可导入的v0.1本体包。"
+                        "请将源格式包转换为v0.1后重新上传。"
+                    )
+                }), 400
             if not ontology_id:
-                if import_mode == "converted":
-                    return jsonify({"error": "manifest.yaml缺少合法的ontology id，无法导入"}), 400
-                return jsonify({"error": "SKILL.md frontmatter缺少id和name，无法导入"}), 400
+                return jsonify({"error": "manifest.yaml缺少合法的ontology id，无法导入"}), 400
             if not _is_valid_ontology_id(ontology_id):
                 return jsonify({
                     "error": (
@@ -2020,108 +1785,58 @@ def import_ontology_zip_with_auto_create():
                 }), 409
 
             try:
-                if import_mode == "converted":
-                    with tempfile.TemporaryDirectory(prefix="ontology-normalized-") as normalized_temp:
-                        normalized_root = Path(normalized_temp) / ontology_id
-                        normalization = normalize_imported_package(source_root, normalized_root)
-                        normalization_warnings = list(normalization.warnings)
-                        validation_error = _validate_operations_tree_limits(normalization.root)
-                        if validation_error:
-                            return jsonify({"error": validation_error}), 400
-                        alias_validation = validate_imported_object_aliases(normalization.root)
-                        field_alias_validation = validate_imported_field_aliases(
-                            normalization.root
-                        )
-                        alias_errors = tuple(
-                            sorted(
-                                set(
-                                    (
-                                        *alias_validation.errors,
-                                        *field_alias_validation.errors,
-                                    )
+                # Process v0.1 conformant package
+                with tempfile.TemporaryDirectory(prefix="ontology-normalized-") as normalized_temp:
+                    normalized_root = Path(normalized_temp) / ontology_id
+                    normalization = normalize_imported_package(source_root, normalized_root)
+                    normalization_warnings = list(normalization.warnings)
+                    validation_error = _validate_operations_tree_limits(normalization.root)
+                    if validation_error:
+                        logger.warning("Import rejected by tree limits: ontology_id=%s error=%s", ontology_id, validation_error)
+                        return jsonify({"error": validation_error}), 400
+                    alias_validation = validate_imported_object_aliases(normalization.root)
+                    field_alias_validation = validate_imported_field_aliases(
+                        normalization.root
+                    )
+                    alias_errors = tuple(
+                        sorted(
+                            set(
+                                (
+                                    *alias_validation.errors,
+                                    *field_alias_validation.errors,
                                 )
                             )
                         )
-                        if alias_errors:
-                            return jsonify({"error": "\n".join(alias_errors)}), 400
-                        warnings["object_aliases"] = list(alias_validation.warnings)
-                        warnings["field_aliases"] = list(field_alias_validation.warnings)
-                        preview = _build_import_preview(source_root, normalization.root)
-                        version_dir = _install_ontology_version_package(
-                            source_root=normalization.root,
-                            ontology_dir=ontology_dir,
-                            ontology_id=ontology_id,
-                            ontology_name=ontology_name,
-                            ontology_description=ontology_description,
-                            target_version=target_version,
-                            existed=existed,
-                        )
-                    objects_count = _count_markdown_files(version_dir / "objects")
-                    operations_count = _count_markdown_files(version_dir / "operations")
-                    objects_index_path = _optional_path_str(version_dir / "objects" / "index.md")
-                    operations_index_path = _optional_path_str(version_dir / "operations" / "index.md")
-                else:
-                    with tempfile.TemporaryDirectory(prefix=".ontology-import-", dir=str(ontologies_dir)) as temp_dir:
-                        staged_dir = Path(temp_dir) / ontology_id
-                        result = _build_source_ontology_package(
-                            source_root=source_root,
-                            target_root=staged_dir,
-                            ontology_id=ontology_id,
-                            ontology_name=ontology_name,
-                            ontology_description=ontology_description,
-                            ontology_version=target_version,
-                        )
-                        validation_error = _validate_operations_tree_limits(staged_dir)
-                        if validation_error:
-                            return jsonify({"error": validation_error}), 400
-                        alias_validation = validate_imported_object_aliases(staged_dir)
-                        field_alias_validation = validate_imported_field_aliases(
-                            staged_dir
-                        )
-                        alias_errors = tuple(
-                            sorted(
-                                set(
-                                    (
-                                        *alias_validation.errors,
-                                        *field_alias_validation.errors,
-                                    )
-                                )
-                            )
-                        )
-                        if alias_errors:
-                            return jsonify({"error": "\n".join(alias_errors)}), 400
-                        preview = _build_import_preview(source_root, staged_dir)
-                        version_dir = _install_ontology_version_package(
-                            source_root=staged_dir,
-                            ontology_dir=ontology_dir,
-                            ontology_id=ontology_id,
-                            ontology_name=ontology_name,
-                            ontology_description=ontology_description,
-                            target_version=target_version,
-                            existed=existed,
-                        )
-
-                    objects_count = result.get("objects_trimmed", {}).get("count", 0)
-                    operations_count = result.get("operations_count", 0)
-                    objects_index_path = _optional_path_str(version_dir / "objects" / "index.md")
-                    operations_index_path = _optional_path_str(version_dir / "operations" / "index.md")
-                    warnings = {
-                        "objects": result.get("objects_trimmed", {}).get("warnings", []),
-                        "objects_index": result.get("objects_index", {}).get("warnings", []),
-                        "operations": result.get("operations_trimmed", {}).get("warnings", []),
-                        "object_aliases": list(alias_validation.warnings),
-                        "field_aliases": list(field_alias_validation.warnings),
-                    }
+                    )
+                    if alias_errors:
+                        logger.warning("Import rejected by alias validation: ontology_id=%s errors=%s", ontology_id, alias_errors)
+                        return jsonify({"error": "\n".join(alias_errors)}), 400
+                    warnings["object_aliases"] = list(alias_validation.warnings)
+                    warnings["field_aliases"] = list(field_alias_validation.warnings)
+                    preview = _build_import_preview(source_root, normalization.root)
+                    version_dir = _install_ontology_version_package(
+                        source_root=normalization.root,
+                        ontology_dir=ontology_dir,
+                        ontology_id=ontology_id,
+                        ontology_name=ontology_name,
+                        ontology_description=ontology_description,
+                        target_version=target_version,
+                        existed=existed,
+                    )
+                objects_count = _count_markdown_files(version_dir / "objects")
+                operations_count = _count_markdown_files(version_dir / "operations")
+                objects_index_path = _optional_path_str(version_dir / "objects" / "index.md")
+                operations_index_path = _optional_path_str(version_dir / "operations" / "index.md")
             except PackageNormalizationError as exc:
+                logger.warning("Import rejected by normalization: ontology_id=%s error=%s", ontology_id, exc)
                 return jsonify({"error": str(exc)}), 400
             except Exception:
                 logger.exception(
-                    "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s source_root=%s import_mode=%s",
+                    "Failed to import ontology from uploaded zip: workspace_id=%s filename=%s ontology_id=%s source_root=%s",
                     workspace_id,
                     filename,
                     ontology_id,
                     source_root,
-                    import_mode,
                 )
                 return jsonify({"error": "Failed to parse uploaded zip"}), 500
 
@@ -2132,12 +1847,11 @@ def import_ontology_zip_with_auto_create():
             workspace_id=workspace_id,
         )
         logger.info(
-            "Import zip auto-create success: workspace_id=%s ontology_id=%s created=%s overwritten=%s import_mode=%s objects_count=%s operations_count=%s warnings=%s",
+            "Import zip auto-create success: workspace_id=%s ontology_id=%s created=%s overwritten=%s objects_count=%s operations_count=%s warnings=%s",
             workspace_id,
             ontology_id,
             (not existed),
             overwritten,
-            import_mode,
             objects_count,
             operations_count,
             {key: len(value) for key, value in warnings.items()},
@@ -2147,8 +1861,6 @@ def import_ontology_zip_with_auto_create():
             "success": True,
             "created": not existed,
             "overwritten": overwritten,
-            "import_mode": import_mode,
-            "package_format": package_format,
             "ontology_id": ontology_id,
             "ontology_name": ontology_name,
             "version": target_version,
