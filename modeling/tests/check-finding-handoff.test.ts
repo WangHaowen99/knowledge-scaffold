@@ -46,8 +46,9 @@ test('修改与忽略都交给助手，面板里不再就地填理由', () => {
   assert.ok(!packageCheckSource.includes('deferPackageValidationErrors'));
 });
 
-test('提示类发现不给忽略按钮——后端没有对应的忽略通道', () => {
-  assert.ok(packageCheckSource.includes("f.severity === '错误' || f.severity === '警告'"));
+test('知识包面板只展示和交接错误，不展示警告或提示', () => {
+  assert.ok(packageCheckSource.includes("const blockingFindings = check?.findings.filter((f) => f.severity === '错误')"));
+  assert.ok(packageCheckSource.includes('blockingFindings.map'));
 });
 
 test('自动修复的可用性仍由后端声明，不因为去掉手动检查而失效', () => {

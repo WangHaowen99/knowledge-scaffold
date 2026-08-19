@@ -89,7 +89,6 @@ import { buildReleaseReadiness } from '../workflow/release.js';
 import {
   acceptPackageWarnings,
   getPackageWarningReview,
-  warningFingerprint,
 } from '../workflow/warning-acceptance.js';
 import { assertNoActivePackageDraft, PackageDraftError } from '../workflow/package-draft.js';
 import {
@@ -120,6 +119,9 @@ import {
 import { RepairTargetUnresolvedError } from '../ai-construction/controlled-repair.js';
 import { errorNextActions } from '../error-next-actions.js';
 import { AuthoringState, getAuthoringState, onProjectEventAppended } from './state.js';
+import {
+  archiveNonBlockingFindingInteractions,
+} from './nonblocking-findings.js';
 import { InFlightOperations } from '../in-flight-operations.js';
 import { startBackgroundJob } from './background-job.js';
 import { assertIncrementChangesAllowed, buildIncrementRequirement } from '../ai-construction/increment.js';
@@ -491,6 +493,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     project: NonNullable<ReturnType<typeof ownedProject>>,
     { advance }: { advance: boolean },
   ) => {
+    archiveNonBlockingFindingInteractions(getDb(), project.id, state);
     const documents = listDocuments(project.id);
     const nodes = listNodes(project.id);
     const dataSource = getProjectDataSource(project.id);
@@ -750,14 +753,6 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
                 ],
               });
             }
-          }
-          const warningReview = getPackageWarningReview(project.id, currentPackage.revision.oid);
-          if (!warningReview.readyForValidation) {
-            return reply.code(409).send({
-              error: `还有 ${warningReview.pendingValidation} 条可暂缓的提醒尚未查看影响并接受`,
-              code: 'PACKAGE_WARNINGS_UNREVIEWED',
-              warningReview,
-            });
           }
           const evidenceProblems = findKnowledgeEvidenceProblems(currentPackage.spec);
           if (evidenceProblems.length > 0) {
@@ -1479,6 +1474,12 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       if (loaded.error) {
         return reply.code(409).send({ error: loaded.error.message, code: loaded.error.code });
       }
+      if (loaded.finding!.severity !== '错误') {
+        return reply.code(409).send({
+          error: '警告和提示不需要展示或处理，可以直接继续 AI 辅助建模',
+          code: 'CHECK_FINDING_NON_BLOCKING',
+        });
+      }
       const result = orchestrator.reviewCheckFinding(
         project.id,
         findingCardInput(loaded.finding!, loaded.revision!),
@@ -1505,10 +1506,10 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         return reply.code(409).send({ error: loaded.error.message, code: loaded.error.code });
       }
       const finding = loaded.finding!;
-      if (finding.severity !== '错误' && finding.severity !== '警告') {
+      if (finding.severity !== '错误') {
         return reply.code(409).send({
-          error: '提示类发现不需要忽略，可以直接继续建模',
-          code: 'CHECK_FINDING_NOT_IGNORABLE',
+          error: '警告和提示不需要处理，可以直接继续 AI 辅助建模',
+          code: 'CHECK_FINDING_NON_BLOCKING',
         });
       }
       // 助手栏一次只渲染一条待办。这里不拦的话，新开的忽略表单会被已有待办挡住，
@@ -1535,16 +1536,11 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           code: 'PENDING_INTERACTION_FIRST',
         });
       }
-      const scope = finding.severity === '错误' ? 'errors' as const : 'warning' as const;
+      const scope = 'errors' as const;
       const result = orchestrator.requestCheckFindingIgnore(project.id, {
         ...findingCardInput(finding, loaded.revision!),
         scope,
-        // 必须用 warningFingerprint 算，不能用 finding.fingerprint：后者是跨校验修订稳定的
-        // 问题身份，和警告接受记录用的键不是一回事，混用会指向错误的目标。
-        ...(scope === 'warning' ? { fingerprint: warningFingerprint(finding) } : {}),
-        ...(scope === 'errors'
-          ? { errorCount: loaded.check!.findings.filter((item) => item.severity === '错误').length }
-          : {}),
+        errorCount: loaded.check!.findings.filter((item) => item.severity === '错误').length,
       });
       return {
         aiConstruction: result.aiConstruction,
