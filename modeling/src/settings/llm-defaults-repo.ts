@@ -1,4 +1,5 @@
 import { getDb, nowIso } from '../db/index.js';
+import { config } from '../config.js';
 import { decryptLlmDefaultApiKey, encryptLlmDefaultApiKey } from './llm-secret-codec.js';
 
 export const LLM_PURPOSES = ['main', 'task'] as const;
@@ -10,6 +11,7 @@ interface LlmDefaultRow {
   model: string;
   api_key_ciphertext: string | null;
   max_tokens: number;
+  context_window: number;
   revision: number;
   updated_by: string;
   updated_at: string;
@@ -21,6 +23,7 @@ export interface LlmDefaultSettings {
   model: string;
   apiKey: string;
   maxTokens: number;
+  contextWindow: number;
   revision: number;
   updatedBy: string;
   updatedAt: string;
@@ -35,6 +38,7 @@ export interface SaveLlmDefaultInput {
   baseUrl: string;
   model: string;
   maxTokens: number;
+  contextWindow?: number;
   apiKey?: string;
   apiKeyClear?: boolean;
   expectedRevision?: number;
@@ -56,7 +60,7 @@ export class LlmDefaultRevisionConflictError extends Error {
 
 function rowFor(purpose: LlmPurpose): LlmDefaultRow | undefined {
   return getDb().prepare(`SELECT purpose, base_url, model, api_key_ciphertext,
-      max_tokens, revision, updated_by, updated_at
+      max_tokens, context_window, revision, updated_by, updated_at
     FROM llm_default_settings WHERE purpose = ?`).get(purpose) as LlmDefaultRow | undefined;
 }
 
@@ -66,6 +70,7 @@ function publicRow(row: LlmDefaultRow): PublicLlmDefaultSettings {
     baseUrl: row.base_url,
     model: row.model,
     maxTokens: row.max_tokens,
+    contextWindow: row.context_window,
     apiKeySet: Boolean(row.api_key_ciphertext),
     revision: row.revision,
     updatedBy: row.updated_by,
@@ -77,7 +82,9 @@ export function isLlmPurpose(value: unknown): value is LlmPurpose {
   return value === 'main' || value === 'task';
 }
 
-export function validateLlmDefaultDraft(input: Pick<SaveLlmDefaultInput, 'baseUrl' | 'model' | 'maxTokens'>): void {
+export function validateLlmDefaultDraft(
+  input: Pick<SaveLlmDefaultInput, 'baseUrl' | 'model' | 'maxTokens' | 'contextWindow'>,
+): void {
   const baseUrl = input.baseUrl.trim();
   const model = input.model.trim();
   if (!baseUrl || !model) throw new LlmDefaultValidationError('Base URL 与模型名必填');
@@ -92,6 +99,10 @@ export function validateLlmDefaultDraft(input: Pick<SaveLlmDefaultInput, 'baseUr
   if (!Number.isSafeInteger(input.maxTokens) || input.maxTokens < 1 || input.maxTokens > 1_000_000) {
     throw new LlmDefaultValidationError('maxTokens 必须是 1 到 1000000 的整数');
   }
+  const contextWindow = input.contextWindow ?? config.llm.contextWindow;
+  if (!Number.isSafeInteger(contextWindow) || contextWindow < 1) {
+    throw new LlmDefaultValidationError('contextWindow 必须是大于等于 1 的整数');
+  }
 }
 
 export function getLlmDefaultSettings(purpose: LlmPurpose): LlmDefaultSettings | undefined {
@@ -103,6 +114,7 @@ export function getLlmDefaultSettings(purpose: LlmPurpose): LlmDefaultSettings |
     model: row.model,
     apiKey: decryptLlmDefaultApiKey(row.api_key_ciphertext, purpose),
     maxTokens: row.max_tokens,
+    contextWindow: row.context_window,
     revision: row.revision,
     updatedBy: row.updated_by,
     updatedAt: row.updated_at,
@@ -123,6 +135,7 @@ export function getPublicLlmDefaults(): Record<LlmPurpose, PublicLlmDefaultSetti
 
 export function saveLlmDefaultSettings(input: SaveLlmDefaultInput, updatedBy: string): PublicLlmDefaultSettings {
   validateLlmDefaultDraft(input);
+  const contextWindow = input.contextWindow ?? config.llm.contextWindow;
   const actor = updatedBy.trim();
   if (!actor) throw new LlmDefaultValidationError('修改者不能为空');
   if (input.expectedRevision !== undefined
@@ -147,13 +160,15 @@ export function saveLlmDefaultSettings(input: SaveLlmDefaultInput, updatedBy: st
     }
     const revision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO llm_default_settings (
-        purpose, base_url, model, api_key_ciphertext, max_tokens, revision, updated_by, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        purpose, base_url, model, api_key_ciphertext, max_tokens, context_window,
+        revision, updated_by, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(purpose) DO UPDATE SET
         base_url = excluded.base_url,
         model = excluded.model,
         api_key_ciphertext = excluded.api_key_ciphertext,
         max_tokens = excluded.max_tokens,
+        context_window = excluded.context_window,
         revision = excluded.revision,
         updated_by = excluded.updated_by,
         updated_at = excluded.updated_at`)
@@ -163,6 +178,7 @@ export function saveLlmDefaultSettings(input: SaveLlmDefaultInput, updatedBy: st
         input.model.trim(),
         ciphertext,
         input.maxTokens,
+        contextWindow,
         revision,
         actor,
         nowIso(),

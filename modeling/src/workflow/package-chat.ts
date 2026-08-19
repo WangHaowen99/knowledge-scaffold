@@ -30,7 +30,6 @@ import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { withCurrentContent } from '../ai-construction/change-plan-context.js';
 import {
   DocumentReadSession,
-  fullReadTurnBudget,
   runAgentWithDocumentReadGate,
   type ReadableDocument,
 } from './document-read-session.js';
@@ -909,7 +908,6 @@ export async function packageChatPlan(
       agent,
       prompt: body,
       session: documentReadSession,
-      maxTurns: fullReadTurnBudget(accessibleDocuments),
       captured: () => !!cap.plan || hasAnswerAfterLastRead(),
       submitNudge: '后端已确认全文连续覆盖完成。请现在基于滚动摘要和带 offset 的证据给出最终答复；若专家要求修改，请调用 submit_change_plan。',
       missingSubmissionError: '全文读取完成，但模型未生成最终答复',

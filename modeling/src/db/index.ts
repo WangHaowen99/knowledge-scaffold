@@ -253,6 +253,11 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'projects', 'kind', "TEXT NOT NULL DEFAULT 'modeling'");
   ensureColumn(db, 'projects', 'sensitivity_level', "TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'projects', 'workflow_profile_json', `TEXT NOT NULL DEFAULT '{"enabledSteps":[],"requiredSteps":["scenario","data_source"],"releaseRequested":true,"externalResearch":false}'`);
+  // 旧库的用户 LLM 配置表可能没有上下文窗口列；保留 NULL 以继续回退部署默认值。
+  ensureColumn(db, 'user_llm_settings', 'context_window', 'INTEGER');
+  // 平台默认与用户快照表在旧版本中也可能缺少独立上下文窗口。
+  ensureColumn(db, 'llm_default_settings', 'context_window', 'INTEGER NOT NULL DEFAULT 1000000');
+  ensureColumn(db, 'user_llm_default_snapshots', 'context_window', 'INTEGER NOT NULL DEFAULT 1000000');
   ensureColumn(db, 'package_versions', 'revision_oid', 'TEXT');
   // 旧库已有 inflight_operations 时 CREATE TABLE IF NOT EXISTS 不会补列
   ensureColumn(db, 'inflight_operations', 'cancel_requested', 'INTEGER NOT NULL DEFAULT 0');

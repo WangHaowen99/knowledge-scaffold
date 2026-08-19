@@ -10,7 +10,12 @@ export interface LlmDeps {
 }
 
 // 手构一个最小 openai-completions Model 对象（字段参照内置 provider 的 models）。
-function buildModel(baseUrl: string, modelId: string, maxTokens: number): any {
+function buildModel(
+  baseUrl: string,
+  modelId: string,
+  maxTokens: number,
+  contextWindow: number,
+): any {
   return {
     id: modelId,
     name: modelId,
@@ -20,7 +25,7 @@ function buildModel(baseUrl: string, modelId: string, maxTokens: number): any {
     input: ['text'],
     reasoning: false,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
+    contextWindow,
     // 大规格（几十个对象）的 submit_package_spec 输出可能超 8k token，页面/env 可放宽
     maxTokens,
   };
@@ -30,7 +35,13 @@ function buildConfiguredLlm(llm: LlmSettings, maxTokensCap?: number, task = fals
   const cap = (deps: LlmDeps): LlmDeps => maxTokensCap
     ? { ...deps, model: { ...deps.model, maxTokens: Math.min(deps.model.maxTokens, maxTokensCap) } }
     : deps;
-  if (llm.baseUrl === 'faux') return cap(buildFauxModeler());
+  if (llm.baseUrl === 'faux') {
+    const faux = buildFauxModeler();
+    return cap({
+      ...faux,
+      model: { ...faux.model, maxTokens: llm.maxTokens, contextWindow: llm.contextWindow },
+    });
+  }
   if (!llm.baseUrl || !llm.model) {
     throw new Error(task
       ? '任务 LLM 配置不完整（Base URL 与模型名必须在同一配置作用域内同时设置）'
@@ -38,7 +49,7 @@ function buildConfiguredLlm(llm: LlmSettings, maxTokensCap?: number, task = fals
   }
   const maxTokens = maxTokensCap ? Math.min(llm.maxTokens, maxTokensCap) : llm.maxTokens;
   return {
-    model: buildModel(llm.baseUrl, llm.model, maxTokens),
+    model: buildModel(llm.baseUrl, llm.model, maxTokens, llm.contextWindow),
     streamFn: streamSimple,
     getApiKey: () => llm.apiKey || undefined,
   };
@@ -411,7 +422,7 @@ export function buildFauxModeler(): LlmDeps {
   };
 
   return {
-    model: { id: 'faux-modeler', name: 'faux-modeler', api: 'faux', provider: 'faux', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+    model: { id: 'faux-modeler', name: 'faux-modeler', api: 'faux', provider: 'faux', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 1000000 },
     streamFn,
     getApiKey: () => 'faux',
   };

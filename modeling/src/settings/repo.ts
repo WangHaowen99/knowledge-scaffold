@@ -14,10 +14,15 @@ import {
 import {
   deleteUserLlmDefaultSnapshots,
   getUserLlmDefaultSnapshot,
+  getUserLlmDefaultSnapshotContextWindow,
   getUserLlmDefaultSnapshotMaxTokens,
 } from './llm-default-snapshots-repo.js';
 
 export type { LlmSettingSource, LlmSettings } from './llm-resolver.js';
+
+export const LLM_MAX_TOKENS_MIN = 1;
+export const LLM_MAX_TOKENS_MAX = 1_000_000;
+export const LLM_CONTEXT_WINDOW_MIN = 1;
 
 // 服务设置：页面可配置的键值（存 SQLite），env 只作默认值/兜底。
 export function getSetting(key: string): string | null {
@@ -41,12 +46,13 @@ export function getConsumerApiUrl(): string {
   return (getSetting('consumer_api_url') || config.consumerApiUrl).replace(/\/+$/, '');
 }
 
-type UserLlmSettingKey = 'base_url' | 'model' | 'api_key' | 'max_tokens';
+export type UserLlmSettingKey = 'base_url' | 'model' | 'api_key' | 'max_tokens' | 'context_window';
 const USER_LLM_COLUMNS: Record<UserLlmSettingKey, UserLlmSettingKey> = {
   base_url: 'base_url',
   model: 'model',
   api_key: 'api_key',
   max_tokens: 'max_tokens',
+  context_window: 'context_window',
 };
 
 interface UserLlmSettingsRow {
@@ -54,6 +60,7 @@ interface UserLlmSettingsRow {
   model: string | null;
   api_key: string | null;
   max_tokens: number | null;
+  context_window: number | null;
 }
 
 function normalizedUsername(username: string): string {
@@ -63,7 +70,7 @@ function normalizedUsername(username: string): string {
 }
 
 function userLlmRow(username: string): UserLlmSettingsRow | undefined {
-  return getDb().prepare(`SELECT base_url, model, api_key, max_tokens
+  return getDb().prepare(`SELECT base_url, model, api_key, max_tokens, context_window
     FROM user_llm_settings WHERE username = ?`)
     .get(normalizedUsername(username)) as UserLlmSettingsRow | undefined;
 }
@@ -89,14 +96,22 @@ export function setUserLlmSetting(username: string, key: UserLlmSettingKey, valu
   const column = userLlmColumn(key);
   if (column === 'max_tokens') {
     const maxTokens = Number(setting);
-    if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_000_000) {
+    if (!Number.isSafeInteger(maxTokens) || maxTokens < LLM_MAX_TOKENS_MIN || maxTokens > LLM_MAX_TOKENS_MAX) {
       throw new Error('LLM 单次输出上限必须是 1 到 1000000 的整数');
+    }
+  }
+  if (column === 'context_window') {
+    const contextWindow = Number(setting);
+    if (!Number.isSafeInteger(contextWindow) || contextWindow < LLM_CONTEXT_WINDOW_MIN) {
+      throw new Error('LLM 上下文窗口必须是大于等于 1 的整数');
     }
   }
   const db = getDb();
   db.exec('BEGIN IMMEDIATE');
   try {
-    if (column !== 'max_tokens') deleteUserLlmDefaultSnapshots(normalized);
+    if (column !== 'max_tokens' && column !== 'context_window') {
+      deleteUserLlmDefaultSnapshots(normalized);
+    }
     db.prepare(`INSERT INTO user_llm_settings (username, ${column}, updated_at)
       VALUES (?,?,?)
       ON CONFLICT(username) DO UPDATE SET
@@ -117,7 +132,7 @@ export function deleteUserLlmSetting(username: string, key: UserLlmSettingKey): 
     .run(nowIso(), normalized);
   db.prepare(`DELETE FROM user_llm_settings
     WHERE username = ? AND base_url IS NULL AND model IS NULL
-      AND api_key IS NULL AND max_tokens IS NULL`).run(normalized);
+      AND api_key IS NULL AND max_tokens IS NULL AND context_window IS NULL`).run(normalized);
 }
 
 export interface UpdateUserLlmSettingsInput {
@@ -127,6 +142,7 @@ export interface UpdateUserLlmSettingsInput {
   apiKeyClear?: boolean;
   providerClear?: boolean;
   maxTokens?: string;
+  contextWindow?: string;
 }
 
 export class UserLlmSettingsValidationError extends Error {
@@ -163,6 +179,8 @@ export function updateUserLlmSettings(username: string, input: UpdateUserLlmSett
   let apiKey = current?.api_key ?? null;
   let maxTokens = current?.max_tokens
     ?? (providerChanged ? (getUserLlmDefaultSnapshotMaxTokens(normalized) ?? null) : null);
+  let contextWindow = current?.context_window
+    ?? (providerChanged ? (getUserLlmDefaultSnapshotContextWindow(normalized) ?? null) : null);
 
   if (input.providerClear === true) {
     if (input.baseUrl || input.model || input.apiKey) {
@@ -188,6 +206,17 @@ export function updateUserLlmSettings(username: string, input: UpdateUserLlmSett
       maxTokens = parsed;
     }
   }
+  if (input.contextWindow !== undefined) {
+    const value = input.contextWindow.trim();
+    if (!value) contextWindow = null;
+    else {
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed) || parsed < LLM_CONTEXT_WINDOW_MIN) {
+        throw new UserLlmSettingsValidationError('llmContextWindow 必须是大于等于 1 的整数');
+      }
+      contextWindow = parsed;
+    }
+  }
 
   const providerConfigured = [baseUrl, model, apiKey].some((value) => value !== null);
   if (providerConfigured && (!baseUrl || !model)) {
@@ -199,19 +228,20 @@ export function updateUserLlmSettings(username: string, input: UpdateUserLlmSett
   db.exec('BEGIN IMMEDIATE');
   try {
     if (providerChanged) deleteUserLlmDefaultSnapshots(normalized);
-    if ([baseUrl, model, apiKey, maxTokens].every((value) => value === null)) {
+    if ([baseUrl, model, apiKey, maxTokens, contextWindow].every((value) => value === null)) {
       db.prepare('DELETE FROM user_llm_settings WHERE username = ?').run(normalized);
     } else {
       db.prepare(`INSERT INTO user_llm_settings (
-          username, base_url, model, api_key, max_tokens, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
+          username, base_url, model, api_key, max_tokens, context_window, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(username) DO UPDATE SET
           base_url = excluded.base_url,
           model = excluded.model,
           api_key = excluded.api_key,
           max_tokens = excluded.max_tokens,
+          context_window = excluded.context_window,
           updated_at = excluded.updated_at`)
-        .run(normalized, baseUrl, model, apiKey, maxTokens, nowIso());
+        .run(normalized, baseUrl, model, apiKey, maxTokens, contextWindow, nowIso());
     }
     db.exec('COMMIT');
   } catch (error) {
@@ -227,6 +257,7 @@ function userLlmSnapshot(username: string | undefined): UserLlmSettingsSnapshot 
     model: row.model,
     apiKey: row.api_key,
     maxTokens: row.max_tokens,
+    contextWindow: row.context_window,
   } : undefined;
 }
 
@@ -236,6 +267,7 @@ function legacyLlmSnapshot(): LegacyLlmSettingsSnapshot {
     model: getSetting('llm_model'),
     apiKey: getSetting('llm_api_key'),
     maxTokens: getSetting('llm_max_tokens'),
+    contextWindow: getSetting('llm_context_window'),
   };
 }
 

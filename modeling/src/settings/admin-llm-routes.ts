@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireAuth } from '../auth/middleware.js';
+import { DEFAULT_LLM_CONTEXT_WINDOW, DEFAULT_LLM_MAX_TOKENS } from '../config.js';
 import { testLlmConnection } from './llm-connection-test.js';
 import {
   deleteLlmDefaultSettings,
@@ -59,11 +60,15 @@ export function registerAdminLlmRoutes(app: FastifyInstance, authenticate = fals
       if (body.enabled === false) {
         deleteLlmDefaultSettings(body.purpose, expectedRevision(body.expectedRevision));
       } else {
+        const saved = getLlmDefaultSettings(body.purpose);
         saveLlmDefaultSettings({
           purpose: body.purpose,
           baseUrl: String(body.baseUrl ?? ''),
           model: String(body.model ?? ''),
           maxTokens: Number(body.maxTokens),
+          contextWindow: body.contextWindow === undefined
+            ? (saved?.contextWindow ?? DEFAULT_LLM_CONTEXT_WINDOW)
+            : Number(body.contextWindow),
           apiKey: body.apiKey === undefined ? undefined : String(body.apiKey),
           apiKeyClear: body.apiKeyClear === true,
           expectedRevision: expectedRevision(body.expectedRevision),
@@ -86,7 +91,12 @@ export function registerAdminLlmRoutes(app: FastifyInstance, authenticate = fals
       const draft = {
         baseUrl: body.baseUrl === undefined ? (saved?.baseUrl ?? '') : String(body.baseUrl),
         model: body.model === undefined ? (saved?.model ?? '') : String(body.model),
-        maxTokens: body.maxTokens === undefined ? (saved?.maxTokens ?? 8192) : Number(body.maxTokens),
+        maxTokens: body.maxTokens === undefined
+          ? (saved?.maxTokens ?? DEFAULT_LLM_MAX_TOKENS)
+          : Number(body.maxTokens),
+        contextWindow: body.contextWindow === undefined
+          ? (saved?.contextWindow ?? DEFAULT_LLM_CONTEXT_WINDOW)
+          : Number(body.contextWindow),
       };
       validateLlmDefaultDraft(draft);
       const apiKey = body.apiKeyClear === true
