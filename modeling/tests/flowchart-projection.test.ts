@@ -50,7 +50,7 @@ test('规范文档投影为访谈结果并渲染带条件文字的知识包文�
   assert.match(files['diagrams/index.md'], /\[授信审批\]\(<授信审批\.mmd>\)/);
 });
 
-test('同名或不能安全落盘的流程名称拒绝生成派生文件', () => {
+test('同名流程名称拒绝生成派生文件，特殊字符标题安全落盘', () => {
   const diagram = {
     id: 'one', title: '授信审批', nodes: [], edges: [],
   };
@@ -60,10 +60,9 @@ test('同名或不能安全落盘的流程名称拒绝生成派生文件', () =>
     ] })),
     /流程名称重复/u,
   );
-  assert.throws(
-    () => renderDiagramFiles(normalizeFlowchartDocument({ diagrams: [
-      { ...diagram, title: '申请/审批' },
-    ] })),
-    /不能用于流程图文件名/u,
-  );
+  const files = renderDiagramFiles(normalizeFlowchartDocument({ diagrams: [
+    { ...diagram, title: '申请/审批（企业）' },
+  ] }));
+  assert.ok(files['diagrams/申请_审批_企业.mmd']);
+  assert.match(files['diagrams/index.md'], /申请\/审批（企业）/u);
 });
