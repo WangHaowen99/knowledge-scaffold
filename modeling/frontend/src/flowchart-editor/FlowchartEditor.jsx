@@ -184,10 +184,16 @@ function nextNodePosition(diagram) {
     return { x: 160 + diagram.nodes.length * 24, y: 100 + diagram.nodes.length * 100 };
   }
   const direction = diagram.layout?.direction || 'TB';
-  if (direction === 'LR') {
+  if (direction === 'LR' || direction === 'RL') {
     return {
       x: Math.max(...positions.map((position) => position.x)) + NODE_WIDTH + 80,
       y: positions.reduce((sum, position) => sum + position.y, 0) / positions.length,
+    };
+  }
+  if (direction === 'BT') {
+    return {
+      x: positions.reduce((sum, position) => sum + position.x, 0) / positions.length,
+      y: Math.min(...positions.map((position) => position.y)) - NODE_HEIGHT - 80,
     };
   }
   return {
@@ -346,6 +352,7 @@ export default function FlowchartEditor({
   onSave,
   onStateChange,
   onRecommendDiagram,
+  onImportMermaid,
   onCreateBlankDiagram,
   disabled = false,
 }) {
@@ -354,6 +361,7 @@ export default function FlowchartEditor({
     null,
     () => createFlowchartEditorSession(document, { savedRevision, activeDiagramId: initialDiagramId }),
   );
+  const appliedInitialDiagramIdRef = useRef(initialDiagramId);
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
   const flowInstanceRef = useRef(null);
@@ -387,6 +395,12 @@ export default function FlowchartEditor({
   useEffect(() => {
     dispatch({ type: 'replace-document', document, savedRevision });
   }, [document, savedRevision]);
+
+  useEffect(() => {
+    if (!initialDiagramId || initialDiagramId === appliedInitialDiagramIdRef.current) return;
+    appliedInitialDiagramIdRef.current = initialDiagramId;
+    dispatch({ type: 'select-diagram', diagramId: initialDiagramId });
+  }, [document, initialDiagramId]);
 
   useEffect(() => {
     onStateChangeRef.current?.(stateSummary(session));
@@ -620,7 +634,8 @@ export default function FlowchartEditor({
               : session.saveStatus === 'saving'
                 ? '草稿保存完成后可继续添加'
                 : disabled ? '当前流程图正在处理，请稍后再试' : ''}
-            onRecommend={onRecommendDiagram} onCreateBlank={createBlank} />
+            onRecommend={onRecommendDiagram} onImportMermaid={onImportMermaid}
+            onCreateBlank={createBlank} />
         </div>
       </nav>
 

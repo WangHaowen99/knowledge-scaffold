@@ -412,6 +412,146 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
     WHERE interaction_id = ?`).get(pending.interaction.id)?.status, 'completed');
 });
 
+test('Mermaid 导入先预览不写入，确认后追加新流程并保留来源信息', async (t) => {
+  const project = createProject({ owner: 'operator_a', name: 'Mermaid 导入测试' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认业务流程', baseRevision: 'pkg-mermaid',
+  });
+  assert.equal(run.kind, 'run');
+  if (run.kind !== 'run') throw new Error('未创建流程图任务');
+  const pending = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: run.run.id,
+    type: 'flowchart_review', baseRevision: 'pkg-mermaid',
+    payload: { purpose: 'process_review', taskId: 'task-mermaid', diagrams: [] },
+  });
+  assert.equal(pending.kind, 'interaction');
+  if (pending.kind !== 'interaction') throw new Error('未创建流程图待办');
+
+  let currentRevision = 'pkg-mermaid';
+  let currentFiles: Record<string, string> = {
+    'diagrams/processes.json': JSON.stringify({ diagrams: [] }),
+  };
+  let savedFiles: Record<string, string> | undefined;
+  let processConfirmed = false;
+  let generatedFlowchart: any;
+  let markGenerated: () => void = () => {};
+  const generationStarted = new Promise<void>((resolve) => { markGenerated = resolve; });
+  const app = routeApp(t, 'operator_a', {
+    graph: {
+      snapshot: () => ({
+        confirmations: processConfirmed
+          ? [{ milestoneId: 'process_confirmed', packageRevisionOid: currentRevision }]
+          : [],
+      }),
+      initialize: () => ({ confirmations: [] }),
+    },
+    packages: {
+      async current() {
+        return { revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {}, files: [] };
+      },
+      async readPackageFiles() {
+        return {
+          revision: { oid: currentRevision }, spec: {}, coverage: {}, files: currentFiles,
+        };
+      },
+      async saveFiles(_projectId: string, input: any) {
+        savedFiles = input.files;
+        currentFiles = Object.fromEntries(Object.entries(input.files).map(([path, content]) => [
+          path.replace(/^package\//u, ''), content as string,
+        ]));
+        currentRevision = 'pkg-mermaid-saved';
+        return {
+          revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {},
+          files: Object.keys(input.files),
+        };
+      },
+    },
+    orchestrator: {
+      latestMaterialAnalysis: () => null,
+      latestConfirmedModelingBrief: () => null,
+      completeProcessReview: () => {
+        processConfirmed = true;
+        return { aiConstruction: { revision: 2 }, message: { id: 'message-mermaid' } };
+      },
+      failKnowledgeStructure: () => undefined,
+    },
+    knowledgeRunner: {
+      async run(_project: any, _context: any, flowchart: any) {
+        generatedFlowchart = flowchart;
+        markGenerated();
+        return { revisionId: 'pkg-knowledge', version: '0.1.1' };
+      },
+    },
+  });
+  const base = `/api/projects/${project.id}/interactions/${pending.interaction.id}`;
+  const initial = await app.inject({ method: 'GET', url: `${base}/flowchart-draft` });
+  assert.equal(initial.statusCode, 200, initial.body);
+  assert.equal(initial.json().draftRevision, 1);
+
+  const preview = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/mermaid-import/preview`,
+    payload: {
+      expectedRevision: 1,
+      title: '订单处理流程',
+      filename: 'order-flow.mmd',
+      source: 'flowchart TD\n  start([收到订单]) --> finish([完成处理])',
+    },
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().summary.nodeCount, 2);
+  assert.equal(preview.json().diagram.title, '订单处理流程');
+  assert.equal((await app.inject({ method: 'GET', url: `${base}/flowchart-draft` })).json().draftRevision, 1);
+
+  const imported = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/diagrams`,
+    payload: {
+      expectedRevision: 1,
+      mode: 'mermaid',
+      title: '订单处理流程',
+      filename: 'order-flow.mmd',
+      source: 'flowchart TD\n  start([收到订单]) --> finish([完成处理])',
+    },
+  });
+  assert.equal(imported.statusCode, 200, imported.body);
+  assert.equal(imported.json().draftRevision, 2);
+  assert.equal(imported.json().document.diagrams.length, 1);
+  assert.deepEqual(imported.json().document.diagrams[0].importSource, {
+    kind: 'mermaid', diagramType: 'flowchart', filename: 'order-flow.mmd',
+  });
+
+  const rejected = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/mermaid-import/preview`,
+    payload: { expectedRevision: 2, title: '坏流程', source: 'sequenceDiagram\n  A->>B: hi' },
+  });
+  assert.equal(rejected.statusCode, 400, rejected.body);
+  assert.equal(rejected.json().code, 'MERMAID_DIAGRAM_TYPE_UNSUPPORTED');
+  assert.equal(rejected.json().diagnostic.category, '图表类型不支持');
+  assert.equal(rejected.json().diagnostic.line, 1);
+
+  const confirmed = await app.inject({
+    method: 'POST', url: `${base}/respond`,
+    payload: {
+      requestId: 'confirm-mermaid-flow',
+      response: { action: 'accept', draftRevision: 2, acknowledgeWarnings: true },
+    },
+  });
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.match(savedFiles?.['package/diagrams/processes.json'] || '', /订单处理流程/u);
+  assert.match(savedFiles?.['package/diagrams/订单处理流程.mmd'] || '', /^flowchart TD/mu);
+  assert.match(savedFiles?.['package/diagrams/processes.json'] || '', /"kind": "mermaid"/u);
+
+  const generation = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
+  });
+  assert.equal(generation.statusCode, 202, generation.body);
+  await generationStarted;
+  assert.equal(generatedFlowchart.diagrams[0].title, '订单处理流程');
+  assert.deepEqual(generatedFlowchart.diagrams[0].importSource, {
+    kind: 'mermaid', diagramType: 'flowchart', filename: 'order-flow.mmd',
+  });
+});
+
 test('建模目标待办回答后完成目标任务而不是只关闭待办', async (t) => {
   const project = createProject({ owner: 'alice', name: '建模目标续跑' });
   const state = getAuthoringState();

@@ -67,6 +67,7 @@ import {
 import { FlowchartDraftError, FlowchartDraftStore } from '../flowchart/draft-store.js';
 import { renderDiagramFiles } from '../flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from '../flowchart/file-path.js';
+import { importMermaidFlowchart, MermaidImportError } from '../flowchart/mermaid-import.js';
 import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
 import { getProject } from '../projects/repo.js';
 import { listNodes } from '../workflow/engine.js';
@@ -239,6 +240,13 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       error: error.message,
       code: error.code,
       ...(error.issues.length ? { issues: error.issues } : {}),
+    });
+  }
+  if (error instanceof MermaidImportError) {
+    return reply.code(400).send({
+      error: error.message,
+      code: error.diagnostic.code,
+      diagnostic: error.diagnostic,
     });
   }
   if (error instanceof PackageArtifactStoreError) {
@@ -1621,6 +1629,35 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     }
   });
 
+  app.post('/api/projects/:id/interactions/:interactionId/flowchart-draft/mermaid-import/preview', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      ensureProjectGraph(project);
+      const interactionId = String((req.params as any).interactionId ?? '');
+      const draft = ensureFlowchartDraft(project.id, interactionId, req.user!.username);
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision !== draft.revision) {
+        throw new FlowchartDraftError('conflict', '流程图草稿已被其他修改更新，请重新预览导入内容');
+      }
+      const imported = importMermaidFlowchart(draft.document, {
+        title: body.title,
+        source: body.source,
+        filename: body.filename,
+      });
+      return {
+        expectedRevision: draft.revision,
+        diagram: imported.diagram,
+        warnings: imported.warnings,
+        notices: imported.notices,
+        summary: imported.summary,
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
   app.post('/api/projects/:id/interactions/:interactionId/flowchart-draft/diagrams', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -1640,7 +1677,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           throw new FlowchartDraftError('conflict', '流程图草稿已被其他修改更新');
         }
         const mode = String(body.mode ?? '');
-        if (!['candidate', 'ai', 'blank'].includes(mode)) {
+        if (!['candidate', 'ai', 'blank', 'mermaid'].includes(mode)) {
           return reply.code(400).send({ error: '流程图添加方式不正确', code: 'INVALID_INPUT' });
         }
 
@@ -1650,6 +1687,12 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             id: `diagram-${randomUUID()}`,
             title: String(body.title ?? '').trim() || '未命名流程',
           });
+        } else if (mode === 'mermaid') {
+          document = importMermaidFlowchart(document, {
+            title: body.title,
+            source: body.source,
+            filename: body.filename,
+          }).document;
         } else {
           const modelingBrief = orchestrator.latestConfirmedModelingBrief(project.id);
           if (!modelingBrief) {

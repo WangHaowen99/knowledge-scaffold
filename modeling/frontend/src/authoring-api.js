@@ -173,6 +173,14 @@ export const addFlowchartDiagram = (id, interactionId, input) => api(
   },
 );
 
+export const previewMermaidFlowchartImport = (id, interactionId, input) => api(
+  `${projectPath(id)}/interactions/${encodeURIComponent(interactionId)}/flowchart-draft/mermaid-import/preview`,
+  {
+    method: 'POST',
+    body: JSON.stringify(input),
+  },
+);
+
 export const startScenario = (id) => api(`${projectPath(id)}/workflow/scenario/start`, {
   method: 'POST', body: '{}',
 });

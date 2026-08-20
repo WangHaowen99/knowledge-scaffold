@@ -33,8 +33,14 @@ export interface FlowchartNodePosition {
 }
 
 export interface FlowchartLayout {
-  direction?: 'TB' | 'LR';
+  direction?: 'TB' | 'BT' | 'LR' | 'RL';
   positions: Record<string, FlowchartNodePosition>;
+}
+
+export interface FlowchartImportSource {
+  kind: 'mermaid';
+  diagramType: 'flowchart' | 'graph';
+  filename?: string;
 }
 
 export interface FlowchartDiagram {
@@ -46,6 +52,7 @@ export interface FlowchartDiagram {
   nodes: FlowchartNode[];
   edges: FlowchartEdge[];
   layout?: FlowchartLayout;
+  importSource?: FlowchartImportSource;
 }
 
 export interface FlowchartDocument {
