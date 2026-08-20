@@ -15,6 +15,7 @@
 import { AiConstructionMessageStore, notifyAiConstructionMessageWritten } from './messages.js';
 import { AiConstructionTaskGraph, type AiConstructionTaskKind } from './task-graph.js';
 import { getAuthoringState } from '../authoring/state.js';
+import { getPiAuthoringAdapter } from '../authoring/pi-adapter.js';
 import { getDb } from '../db/index.js';
 
 export interface LongTaskProgressInput {
@@ -29,6 +30,10 @@ export interface LongTaskProgressInput {
   total: number;
   /** 本轮任务已经跑了多久，用于按实测速度推算剩余 */
   elapsedMs: number;
+  /** 若任务已有统一 Job，则同时更新 Job 的阶段、进度、估时和心跳。 */
+  authoringRunId?: string;
+  phase?: string;
+  retryCount?: number;
 }
 
 /**
@@ -88,6 +93,19 @@ export function reportLongTaskProgress(projectId: string, input: LongTaskProgres
         },
       ],
     });
+    if (input.authoringRunId) {
+      try {
+        getPiAuthoringAdapter().heartbeat(projectId, input.authoringRunId, {
+          phase: input.phase ?? input.title,
+          currentStep: input.title,
+          progress: percent,
+          retryCount: input.retryCount ?? 0,
+          eta: eta
+            ? { minMinutes: eta.minMinutes, maxMinutes: eta.maxMinutes, confidence: 'medium' }
+            : { minMinutes: null, maxMinutes: null, confidence: 'low' },
+        });
+      } catch { /* 统一 Job 观测失败不能阻断实际任务 */ }
+    }
   } catch {
     /* 进度展示失败不阻断实际任务 */
   }

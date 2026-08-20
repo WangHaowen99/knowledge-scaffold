@@ -3,7 +3,7 @@ import type {
   DocumentSourceReadCoverage,
   SpecObject,
 } from '../types.js';
-import type { DocumentReadSession, ReadableDocument } from './document-read-session.js';
+import type { ReadableDocument } from './document-read-session.js';
 
 function continuousFromZero(coverage: DocumentReadCoverage): boolean {
   if (!coverage.complete || !coverage.eofSeen) return false;
@@ -37,26 +37,6 @@ function matchesCurrentRevision(
   if (coverage.revisionFingerprint && document.revisionFingerprint
     && coverage.revisionFingerprint !== document.revisionFingerprint) return false;
   return coverage.totalChars === (document.textContent?.length ?? 0);
-}
-
-export function captureDocumentReadCoverage(
-  session: DocumentReadSession,
-  documents: ReadableDocument[],
-): DocumentReadCoverage[] {
-  const byFilename = new Map(documents.map((document) => [document.filename, document]));
-  return session.allLedgers().map((ledger) => {
-    const document = byFilename.get(ledger.filename);
-    return {
-      ...(document?.id ? { documentId: document.id } : {}),
-      filename: ledger.filename,
-      ...(document?.revisionFingerprint ? { revisionFingerprint: document.revisionFingerprint } : {}),
-      totalChars: ledger.totalChars,
-      ranges: ledger.ranges.map((range) => [...range] as [number, number]),
-      contiguousEnd: ledger.contiguousEnd,
-      eofSeen: ledger.eofSeen,
-      complete: ledger.complete,
-    };
-  });
 }
 
 export function verifiedDocumentReadCoverage(

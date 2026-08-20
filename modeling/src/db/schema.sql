@@ -276,6 +276,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_interactions_response
   ON authoring_interactions(project_id, response_id)
   WHERE response_id IS NOT NULL;
 
+-- 知识结构生成批次检查点。只记录生成阶段产物，不保存或改写上游资料分析结果。
+-- 同一生成计划恢复时复用已完成批次，避免额度、网络或服务重启后从对象阶段重跑。
+CREATE TABLE IF NOT EXISTS generation_batch_checkpoints (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL REFERENCES authoring_runs(id) ON DELETE CASCADE,
+  plan_hash     TEXT NOT NULL,
+  phase         TEXT NOT NULL,
+  batch_kind    TEXT NOT NULL CHECK (batch_kind IN ('object', 'knowledge', 'operation')),
+  batch_index   INTEGER NOT NULL CHECK (batch_index > 0),
+  status        TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'skipped')),
+  output_json   TEXT NOT NULL DEFAULT '{}',
+  issues_json   TEXT NOT NULL DEFAULT '[]',
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (run_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_generation_batch_checkpoints_project
+  ON generation_batch_checkpoints(project_id, run_id, batch_index);
+
 -- 可编辑流程草稿。当前修订只保存在头记录中，文档内容按修订不可变保存。
 CREATE TABLE IF NOT EXISTS flowchart_drafts (
   interaction_id    TEXT PRIMARY KEY REFERENCES authoring_interactions(id) ON DELETE CASCADE,
@@ -822,16 +842,79 @@ CREATE TABLE IF NOT EXISTS package_override_migration_archive (
 CREATE INDEX IF NOT EXISTS idx_package_override_archive_project
   ON package_override_migration_archive(project_id, migrated_at);
 
--- 资料分析的批次级缓存。补传资料后只重跑内容变了的批次，其余直接复用，
--- 避免为已经分析过的几十份材料重复付一次 LLM 成本和等待时间。
--- 键是批次材料内容的哈希（含已确认建模目标），不是批次序号——序号会随增删平移。
-CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
-  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  cache_key   TEXT NOT NULL,
-  payload     TEXT NOT NULL,
-  created_at  TEXT NOT NULL,
-  PRIMARY KEY (project_id, cache_key)
+-- 旧“四份材料一批”的缓存已被内容定义分段检查点取代；升级时移除，避免保留
+-- 无生产消费者的第二套缓存状态。该表只存可重算的模型分析缓存，不含用户原始资料。
+DROP TABLE IF EXISTS material_analysis_batch_cache;
+
+-- 全文资料分析 Map-Reduce 事实源。分段计划在一次运行创建时冻结；模型失败、
+-- 进程重启或普通限流后复用 completed 分段，只领取尚未完成的部分。
+CREATE TABLE IF NOT EXISTS material_analysis_runs (
+  id                       TEXT PRIMARY KEY,
+  project_id               TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_set_fingerprint   TEXT NOT NULL,
+  brief_fingerprint        TEXT NOT NULL,
+  model_id                 TEXT NOT NULL,
+  protocol_version         TEXT NOT NULL,
+  plan_json                TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'running'
+                           CHECK (status IN ('running', 'paused', 'failed', 'completed')),
+  stage                    TEXT NOT NULL DEFAULT 'planning',
+  result_json              TEXT,
+  error                    TEXT,
+  created_at               TEXT NOT NULL,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  UNIQUE (
+    project_id, source_set_fingerprint, brief_fingerprint, model_id, protocol_version
+  )
 );
+CREATE INDEX IF NOT EXISTS idx_material_analysis_runs_project
+  ON material_analysis_runs(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS material_analysis_chunks (
+  run_id                   TEXT NOT NULL REFERENCES material_analysis_runs(id) ON DELETE CASCADE,
+  document_key             TEXT NOT NULL,
+  document_id              TEXT,
+  filename                 TEXT NOT NULL,
+  revision_fingerprint     TEXT NOT NULL,
+  chunk_index              INTEGER NOT NULL,
+  start_offset             INTEGER NOT NULL,
+  end_offset               INTEGER NOT NULL,
+  content_hash             TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  attempt_count            INTEGER NOT NULL DEFAULT 0,
+  payload_json             TEXT,
+  error                    TEXT,
+  started_at               TEXT,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  PRIMARY KEY (run_id, document_key, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_chunks_status
+  ON material_analysis_chunks(run_id, status, document_key, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_chunks_reuse
+  ON material_analysis_chunks(
+    document_key, revision_fingerprint, start_offset, end_offset, content_hash, status
+  );
+
+CREATE TABLE IF NOT EXISTS material_analysis_document_summaries (
+  run_id                   TEXT NOT NULL REFERENCES material_analysis_runs(id) ON DELETE CASCADE,
+  document_key             TEXT NOT NULL,
+  document_id              TEXT,
+  filename                 TEXT NOT NULL,
+  revision_fingerprint     TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  attempt_count            INTEGER NOT NULL DEFAULT 0,
+  payload_json             TEXT,
+  error                    TEXT,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  PRIMARY KEY (run_id, document_key)
+);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_document_summaries_status
+  ON material_analysis_document_summaries(run_id, status, document_key);
 
 -- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
 -- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，

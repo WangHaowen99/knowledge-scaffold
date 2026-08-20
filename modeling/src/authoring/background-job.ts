@@ -10,12 +10,15 @@
  * - 租约在作业里取、在作业里还。调用 startBackgroundJob 时 lease.acquire 已经
  *   同步执行完（async 函数体会一直跑到第一个 await），所以请求返回时租约已到手，
  *   不存在「返回了但还没锁住」的窗口。
+ * - 绑定统一运行记录时，作业取得去重执行权后启动心跳，并在任何收尾路径停止。
  * - 失败必须自己兜住：那时候已经没有 HTTP 响应可以承载错误了，
  *   不写状态就会留下一个永远转圈的界面。
  */
 import { runWithProjectLease, type ProjectOperationLease } from './lease.js';
 import { OperationCancelledError, type InFlightOperations } from '../in-flight-operations.js';
 import { currentLlmUser, runWithLlmUser } from '../llm/user-context.js';
+import { startJobHeartbeat } from './job-observability.js';
+import type { PiAuthoringAdapter } from './pi-adapter.js';
 
 export interface BackgroundJobOptions {
   jobs: InFlightOperations;
@@ -26,6 +29,12 @@ export interface BackgroundJobOptions {
   owner: string;
   ttlMs: number;
   projectId: string;
+  /** 绑定统一运行记录后，由后台作业负责启动和停止独立心跳。 */
+  heartbeat?: {
+    adapter: PiAuthoringAdapter;
+    runId: string;
+    intervalMs?: number;
+  };
   run: () => Promise<unknown>;
   /** 失败收尾：把状态写成可重试，并给出用户能点的下一步 */
   onError: (reason: string) => void;
@@ -34,22 +43,36 @@ export interface BackgroundJobOptions {
 export function startBackgroundJob(options: BackgroundJobOptions): void {
   const username = currentLlmUser();
   const task = async () => options.jobs.run(options.key, options.operation, async () => {
-    await runWithProjectLease(options.leases, {
-      projectId: options.projectId,
-      operation: options.operation,
-      owner: options.owner,
-      ttlMs: options.ttlMs,
-    }, async () => {
-      await options.run();
+    const stopHeartbeat = options.heartbeat
+      ? startJobHeartbeat(
+        options.heartbeat.adapter,
+        options.projectId,
+        options.heartbeat.runId,
+        {},
+        options.heartbeat.intervalMs,
+      )
+      : () => undefined;
+    try {
+      await runWithProjectLease(options.leases, {
+        projectId: options.projectId,
+        operation: options.operation,
+        owner: options.owner,
+        ttlMs: options.ttlMs,
+      }, async () => {
+        await options.run();
+      });
+    } finally {
+      stopHeartbeat();
+    }
+  });
+  void (username ? runWithLlmUser(username, task) : task())
+    .catch((error) => {
+      const reason = error instanceof OperationCancelledError
+        // 取消不是失败：用户自己按的，文案要说清楚是按他的要求停的，
+        // 否则界面上会变成一条看不懂的报错，让人以为出了问题
+        ? error.message
+        : (error instanceof Error ? error.message : String(error));
+      // 收尾自身再抛就没人接了，只能吞掉；重启恢复会兜住残留的 running 状态
+      try { options.onError(reason); } catch { /* 收尾失败不再向上抛 */ }
     });
-  });
-  void (username ? runWithLlmUser(username, task) : task()).catch((error) => {
-    const reason = error instanceof OperationCancelledError
-      // 取消不是失败：用户自己按的，文案要说清楚是按他的要求停的，
-      // 否则界面上会变成一条看不懂的报错，让人以为出了问题
-      ? error.message
-      : (error instanceof Error ? error.message : String(error));
-    // 收尾自身再抛就没人接了，只能吞掉；重启恢复会兜住残留的 running 状态
-    try { options.onError(reason); } catch { /* 收尾失败不再向上抛 */ }
-  });
 }

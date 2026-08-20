@@ -47,13 +47,11 @@ export function buildObjectGenerationHints(
   analysis: AnalysisResult | undefined,
   tables: DataDictTable[],
 ): ObjectGenerationHint[] {
-  const hints: ObjectGenerationHint[] = (analysis?.candidateObjects?.length
-    ? analysis.candidateObjects
-    : tables.map((table) => ({
-      name: table.name,
-      rationale: `来自数据表 ${table.name}`,
-      sourceTables: [table.name],
-    }))).map((candidate) => ({ ...candidate, sourceTables: [...candidate.sourceTables] }));
+  // 物理 Sheet 由服务端确定性生成。Agent 只负责没有物理表绑定的逻辑对象，
+  // 避免领域 Reduce 把几十张 Sheet 聚合成一个无法执行的数据对象。
+  const hints: ObjectGenerationHint[] = (analysis?.candidateObjects ?? [])
+    .filter((candidate) => candidate.sourceTables.length === 0)
+    .map((candidate) => ({ ...candidate, sourceTables: [] }));
   const tableNames = new Set(tables.map((table) => table.name));
 
   for (const candidate of analysis?.candidateArtifacts?.filter((item) => item.kind === 'object') ?? []) {
@@ -66,14 +64,34 @@ export function buildObjectGenerationHints(
       hint.materialEvidence = [...(hint.materialEvidence ?? []), materialEvidence(candidate)];
       continue;
     }
+    // 表格对象已经确定性生成；绑定真实 Sheet 的分段候选只用于提供证据。
+    if (candidate.sources.some((source) => tableNames.has(source))) continue;
+    if (candidate.readiness !== 'extractable') continue;
     hints.push({
       name: candidate.name,
       rationale: candidate.rationale,
-      sourceTables: candidate.sources.filter((source) => tableNames.has(source)),
+      sourceTables: [],
       materialEvidence: [materialEvidence(candidate)],
     });
   }
   return hints;
+}
+
+/**
+ * Domain Reduce candidates define the first-version knowledge scope. Document
+ * candidates remain the evidence pool and are used as a fallback for projects
+ * without any structured-table domain candidates.
+ */
+export function buildKnowledgeGenerationCandidates(
+  analysis: AnalysisResult | undefined,
+  tables: DataDictTable[],
+): ArtifactCandidate[] {
+  const candidates = (analysis?.candidateArtifacts ?? [])
+    .filter((item) => item.kind === 'rule' || item.kind === 'metric');
+  const tableNames = new Set(tables.map((table) => table.name));
+  const domainCandidates = candidates.filter((candidate) =>
+    candidate.sources.some((source) => tableNames.has(source)));
+  return domainCandidates.length ? domainCandidates : candidates;
 }
 
 /** 文档来源由分析证据确定，不能因为生成模型漏填 sourceRefs 就丢失。 */

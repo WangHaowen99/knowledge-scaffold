@@ -33,8 +33,8 @@ test('结构化建模消息按状态、说明和下一步动作分别展示', ()
 
   assert.match(html, /AI 辅助构建已就绪/);
   assert.match(html, /当前处于资料就绪/);
-  assert.match(html, /32%/);
-  assert.match(html, /预计 8–18 分钟/);
+  assert.doesNotMatch(html, /32%/);
+  assert.doesNotMatch(html, /预计 8–18 分钟/);
   assert.match(html, /我会先分析资料/);
   assert.match(html, /上传建模资料/);
   assert.match(html, /说明建模目标/);
@@ -42,6 +42,24 @@ test('结构化建模消息按状态、说明和下一步动作分别展示', ()
   assert.match(html, /ac-message-actions/);
   assert.match(html, /data-action="upload_materials"/);
   assert.match(html, /data-action="explain_goal"/);
+});
+
+test('任务完成后进度卡收口为已完成和 100%', () => {
+  const html = renderToStaticMarkup(React.createElement(AiConstructionMessageCard, {
+    message: {
+      id: 'progress-task-demo', key: 'progress.task.task-demo', role: 'assistant',
+      taskId: 'task-demo', blocks: [{
+        type: 'status', title: '正在生成第 2/2 批业务对象', summary: '已产出 6 个对象', progress: 50,
+      }],
+    },
+    task: { id: 'task-demo', title: '生成业务对象', status: 'completed' },
+    stageProgress: { completed: 2, total: 3 },
+  }));
+
+  assert.match(html, /生成第 2\/2 批业务对象已完成/);
+  assert.match(html, /阶段 2\/3/);
+  assert.match(html, /任务 100%/);
+  assert.match(html, /aria-label="当前任务进度 100%"/);
 });
 
 test('结构化对话消息保留用户和建模助手的角色样式类', () => {
@@ -309,4 +327,3 @@ test('动态任务卡不再展示已被当前完成任务替代的历史重做�
   assert.match(html, /已完成/);
   assert.doesNotMatch(html, /需重做|需要重做|已过时/);
 });
-

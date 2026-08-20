@@ -826,6 +826,28 @@ test('候选补丁越过计划边界时把失败原因交给下一次生成', as
   assert.match(feedbacks[1], /计划外.*WeightedRevenue/);
 });
 
+test('伪造来源表标识列被反馈后可在下一次候选中纠正', async () => {
+  const feedbacks: string[] = [];
+  const accepted = await runCandidateQualityLoop({
+    maxAttempts: 3,
+    generate: async (_attempt, feedback) => {
+      feedbacks.push(feedback);
+      if (!feedback) {
+        throw new PackageCandidateValidationError(
+          '对象「线索事件明细」属性「evt_src_table」对应的来源字段「evt_src_table」在来源表「招投标明细」中不存在',
+        );
+      }
+      return '改用真实事件编号作为主键的候选';
+    },
+    validate: async () => ({ accepted: true, feedback: '来源映射有效' }),
+  });
+
+  assert.equal(accepted.status, 'accepted');
+  assert.equal(accepted.attempts, 2);
+  assert.match(feedbacks[1], /evt_src_table.*不存在/u);
+  assert.match(feedbacks[1], /只提交计划内资源/u);
+});
+
 test('候选连续生成失败时保留可反馈给专家的校验原因', async () => {
   await assert.rejects(
     () => runCandidateQualityLoop({

@@ -24,6 +24,7 @@ import { AuthoringState } from '../src/authoring/state.js';
 import type { PackageSpec, Project } from '../src/types.js';
 import { runFormatChecks, type CheckFinding } from '../src/workflow/package-check.js';
 import { renderPackage } from '../src/workflow/package-render.js';
+import { PackageCandidateRejectedError } from '../src/workflow/package-chat.js';
 
 const schema = await readFile(new URL('../src/db/schema.sql', import.meta.url), 'utf8');
 
@@ -723,8 +724,17 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
     adapter,
     runner,
     contextForProject: () => ({ tables: [], documents: [] }),
-    applyPlan: async () => {
+    applyPlan: async (_project, _history, _message, _plan, _tables, options) => {
       applyCalls += 1;
+      assert.equal(options.maxCandidateAttempts, 3);
+      const repairJob = state.snapshot(project.id).activeRuns.find((run) => (
+        run.state.purpose === 'controlled_repair_apply'
+      ));
+      assert.equal(repairJob?.status, 'running');
+      assert.equal(repairJob?.state.phase, '方案应用');
+      assert.equal(repairJob?.state.currentStep, '按确认方案修改知识文件');
+      assert.equal(repairJob?.state.recoveryAction, 'repair_knowledge_structure');
+      assert.ok(repairJob?.state.lastHeartbeatAt);
       const before = await store.current(project.id);
       const saved = await store.savePackageVersion(project.id, {
         expectedRevision: before!.revision.oid,
@@ -758,6 +768,9 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
   assert.equal(graph.snapshot(project.id)!.tasks.find(
     (task) => task.kind === 'package_repair',
   )?.status, 'completed');
+  assert.equal(state.snapshot(project.id).activeRuns.some((run) => (
+    run.state.purpose === 'controlled_repair_apply'
+  )), false);
 
   const replayed = await controller.respond(
     project,
@@ -768,6 +781,64 @@ test('批准受控修复方案只应用一次并支持回答幂等重放', async
   );
   assert.equal(replayed.replayed, true);
   assert.equal(applyCalls, 1);
+});
+
+test('受控修复候选三次映射失败后返回可重试错误且保留原待办', async (t) => {
+  const { project, store, graph, state, attempts, orchestrator, adapter } = await fixture(t);
+  const current = await store.current(project.id);
+  await store.savePackageVersion(project.id, {
+    expectedRevision: current!.revision.oid,
+    spec: {
+      ...current!.spec,
+      operations: [{
+        key: 'Approve', title: '审批', description: '完成审批',
+        inputs: [], outputs: [], flow: ['受理申请'], relatedObjects: [],
+      }],
+    },
+    coverage: current!.coverage,
+    action: {
+      cause: 'test_setup', summary: '准备候选失败', actorKind: 'system', actorName: '测试',
+    },
+  });
+  const semanticFinding = finding({
+    id: 'controller-mapping',
+    category: '映射错误',
+    target: 'Approve',
+    message: '审批操作需要修复来源映射',
+    suggestion: '修复来源映射',
+  });
+  const runner = new ControlledRepairRunner({
+    orchestrator, packages: store, state, adapter, attempts,
+    validator: async () => ({ errors: 1, warnings: 0, hints: 0, findings: [semanticFinding] }),
+    checkReader: () => null,
+  });
+  const planned = await runner.run(project, { tables: [], documents: [] });
+  assert.equal(planned.status, 'waiting_approval');
+  const controller = new ControlledRepairController({
+    state, graph, orchestrator, packages: store, adapter, runner,
+    contextForProject: () => ({ tables: [], documents: [] }),
+    applyPlan: async (_project, _history, _message, _plan, _tables, options) => {
+      assert.equal(options.maxCandidateAttempts, 3);
+      throw new PackageCandidateRejectedError(
+        '候选修订连续 3 次生成失败',
+        'evt_src_table 在来源表中不存在',
+      );
+    },
+  });
+
+  await assert.rejects(
+    () => controller.respond(
+      project,
+      planned.interaction!,
+      'approve-invalid-mapping',
+      { action: 'approve' },
+      'alice',
+    ),
+    (error: unknown) => error instanceof PackageCandidateRejectedError
+      && /evt_src_table/u.test(error.feedback),
+  );
+  assert.equal(state.interaction(project.id, planned.interaction!.id)?.status, 'pending');
+  assert.equal(attempts.get(planned.attempts[0].id).status, 'waiting_user');
 });
 
 // ---- 多资源冲突：让专家指定修改目标 ----

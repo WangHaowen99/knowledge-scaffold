@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   AnalysisResult, ArtifactCandidate, CoverageResult, DataDictTable,
   PackageDataSourceType, PackageSpec, Project, SpecMetric, SpecObject, SpecOperation, SpecRule,
@@ -19,7 +20,8 @@ import {
 } from './data-mapping.js';
 import { renderPackage } from './package-render.js';
 import {
-  bindOperationCompetencyQuestions, coverageFor, validateObjectBatch, validateOperationBatch, validateSpecIntegrity,
+  bindOperationCompetencyQuestions, coverageFor, validateKnowledgeBatch,
+  validateObjectBatch, validateOperationBatch, validateSpecIntegrity,
 } from './spec-validation.js';
 import { appendTraceEvent, traceEventFromAgentEvent } from './trace.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
@@ -35,15 +37,29 @@ import {
   type GenerationNotice,
   type GenerationOptions,
 } from './generation-gate.js';
+import {
+  GenerationCheckpointStore,
+  type GenerationBatchCheckpoint,
+  type GenerationBatchOutput,
+} from './generation-checkpoint.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { throwIfCancelled } from '../cancellation.js';
 import { reportLongTaskProgress } from '../ai-construction/task-progress.js';
+import { startJobHeartbeat } from '../authoring/job-observability.js';
+import { classifyGenerationError, shouldRetryGenerationError } from './generation-error-policy.js';
 import type { ReadableDocument } from './document-read-session.js';
 import { attachVerifiedDocumentReadCoverage } from './document-read-coverage.js';
 import {
   attachObjectMaterialSources,
+  buildKnowledgeGenerationCandidates,
   buildObjectGenerationHints,
 } from './object-generation-hints.js';
+import { buildPhysicalSchemaObjects, detectSchemaManifests } from './schema-manifest.js';
+import {
+  dispositionForObjectAndOperationCandidates,
+  planArtifactCandidates,
+  validateKnowledgeCandidateDispositions,
+} from './candidate-disposition.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -82,6 +98,46 @@ function appendUnique<T extends { key: string }>(target: T[], incoming: T[], kin
 
 function artifactSummary(items: ArtifactCandidate[]): string {
   return items.length ? JSON.stringify(items) : '（分析阶段未列出候选，请直接检查材料，但不得编造）';
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    // 计划指纹只用于判断输入是否变化；键排序必须不改变数组语义，
+    // 由调用方在构建计划时显式传入稳定顺序。
+    return Object.fromEntries(Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableValue(item)]));
+  }
+  return value;
+}
+
+function generationPlanHash(input: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(stableValue(input)))
+    .digest('hex');
+}
+
+function documentFingerprint(document: Ctx['documents'][number]): string {
+  return document.revisionFingerprint
+    ?? createHash('sha256').update(document.textContent ?? '').digest('hex');
+}
+
+function failureTitle(batchKind: GenerationBatchCheckpoint['batchKind'], batchIndex: number): string {
+  if (batchKind === 'object') return `第 ${batchIndex} 批对象连续两次自动补交后仍未通过`;
+  if (batchKind === 'knowledge') return `第 ${batchIndex} 批规则/指标连续两次自动补交后仍未通过`;
+  return `第 ${batchIndex} 批操作连续两次自动补交后仍未通过`;
+}
+
+function checkpointNotice(checkpoint: GenerationBatchCheckpoint): GenerationNotice {
+  return {
+    phase: checkpoint.phase,
+    batchKind: checkpoint.batchKind,
+    batchIndex: checkpoint.batchIndex,
+    title: failureTitle(checkpoint.batchKind, checkpoint.batchIndex),
+    issues: checkpoint.issues,
+    decision: 'expert_skipped',
+  };
 }
 
 function canonicalizeOperationObjectRefs(operation: SpecOperation, objects: SpecObject[]): SpecOperation {
@@ -176,20 +232,43 @@ export async function generatePackage(
   const authoringRun = resumableRun
     ? authoring.progress(project.id, resumableRun.id, {
         nodeId: node.id,
-        step: 'resume_after_generation_gate',
-      }).run
-    : authoring.start(project.id, '生成知识包', baseRevision.oid, { nodeId: node.id }).run;
+      step: 'resume_after_generation_gate',
+      purpose: 'knowledge_generation',
+      phase: '知识结构生成',
+      currentStep: '恢复知识包生成',
+      progress: 0,
+      retryCount: 0,
+    }).run
+    : authoring.start(project.id, '生成知识包', baseRevision.oid, {
+      nodeId: node.id,
+      purpose: 'knowledge_generation',
+      phase: '知识结构生成',
+      currentStep: '准备知识包生成',
+      progress: 0,
+      retryCount: 0,
+    }).run;
+  // 单个模型批次可能超过 90 秒；批次进度只在边界上报，统一 Job 仍需持续心跳。
+  // 进入 waiting/completed/failed 时由下方 finally 停止，且 adapter 会保护 waiting 不被改回 running。
+  const stopJobHeartbeat = startJobHeartbeat(
+    authoring,
+    project.id,
+    authoringRun.id,
+    { phase: '知识结构生成', currentStep: '准备知识包生成', progress: 0, retryCount: 0 },
+  );
+  const physicalSchemaObjects = buildPhysicalSchemaObjects(ctx.tables);
+  const schemaManifests = detectSchemaManifests(ctx.tables);
   const rawObjectHints = buildObjectGenerationHints(analysis, ctx.tables);
   const objectHints = rawObjectHints.map((candidate, index) => ({
     ...candidate,
     id: `candidate_${index + 1}`,
   }));
   const objectBatches = chunk(objectHints, 4);
-  if (!objectBatches.length) objectBatches.push([]);
-  const knowledgeCandidates = (analysis?.candidateArtifacts ?? [])
+  const rawKnowledgeCandidates = buildKnowledgeGenerationCandidates(analysis, ctx.tables);
+  const allKnowledgeCandidates = (analysis?.candidateArtifacts ?? [])
     .filter((item) => item.kind === 'rule' || item.kind === 'metric');
+  const knowledgePlan = planArtifactCandidates(allKnowledgeCandidates, rawKnowledgeCandidates);
+  const knowledgeCandidates = knowledgePlan.selected;
   const knowledgeBatches = chunk(knowledgeCandidates, 5);
-  if (!knowledgeBatches.length) knowledgeBatches.push([]);
   const operationCandidates = (analysis?.candidateArtifacts ?? []).filter((item) => item.kind === 'operation');
   const questionBatches = chunk(operationTargets, 3);
   const totalStepCount = objectBatches.length + knowledgeBatches.length + questionBatches.length + 1;
@@ -202,21 +281,73 @@ export async function generatePackage(
     if (!draft) return;
     trace({ ...draft, projectId: project.id, nodeId: node.id, phase });
   };
-  trace({
-    projectId: project.id, nodeId: node.id, phase: 'prepare', kind: 'phase_started', status: 'running',
-    title: '准备知识包生成', summary: `业务流程 ${selectedQuestions.length} 个`,
-    details: {
-      questionCount: selectedQuestions.length,
-      objectBatchCount: objectBatches.length,
-      knowledgeBatchCount: knowledgeBatches.length,
-      operationBatchCount: questionBatches.length,
-      totalStepCount,
-    },
-  });
-  // 生成要跑十几到几十分钟，用户只看得到一个转圈——按批次实时上报在干什么、产出了多少
-  const generationStartedAt = Date.now();
   try {
-    const objects: SpecObject[] = [];
+    const planHash = generationPlanHash({
+      protocolVersion: 'knowledge-generation-v2',
+      baseRevision: baseRevision.oid,
+      dataSourceType,
+      project: { name: project.name, domain: project.domain, background: project.background },
+      confirmedFlowchart,
+      analysis,
+      physicalSchemaObjects: physicalSchemaObjects.map(({ table, object }) => ({
+        table: table.name, documentId: table.documentId, objectKey: object.key,
+      })),
+      objectHints,
+      knowledgeCandidates,
+      knowledgeCandidateDispositions: knowledgePlan.dispositions,
+      operationTargets,
+      tables: ctx.tables,
+      documents: ctx.documents.map((document) => ({
+        id: document.id,
+        filename: document.filename,
+        fingerprint: documentFingerprint(document),
+      })),
+    });
+    const checkpointStore = new GenerationCheckpointStore();
+    const priorRunId = resumableRun?.state && typeof resumableRun.state.priorRunId === 'string'
+      ? resumableRun.state.priorRunId
+      : undefined;
+    if (priorRunId && priorRunId !== authoringRun.id) {
+      checkpointStore.copyToRun({
+        projectId: project.id,
+        fromRunId: priorRunId,
+        toRunId: authoringRun.id,
+        planHash,
+      });
+    }
+    const checkpoints = new Map(
+      checkpointStore.list(project.id, authoringRun.id, planHash)
+        .map((checkpoint) => [checkpoint.phase, checkpoint]),
+    );
+    for (const checkpoint of checkpoints.values()) {
+      if (checkpoint.status === 'skipped') skipFailedPhases.add(checkpoint.phase);
+    }
+    trace({
+      projectId: project.id, nodeId: node.id, phase: 'prepare', kind: 'phase_started', status: 'running',
+      title: '准备知识包生成', summary: `业务流程 ${selectedQuestions.length} 个`,
+      details: {
+        questionCount: selectedQuestions.length,
+        schemaManifestCount: schemaManifests.length,
+        physicalSchemaObjectCount: physicalSchemaObjects.length,
+        objectBatchCount: objectBatches.length,
+        knowledgeBatchCount: knowledgeBatches.length,
+        operationBatchCount: questionBatches.length,
+        totalStepCount,
+        restoredCheckpointCount: checkpoints.size,
+      },
+    });
+    // 生成要跑十几到几十分钟，按全部阶段与批次实时上报。
+    const generationStartedAt = Date.now();
+    const objects: SpecObject[] = physicalSchemaObjects.map((item) => item.object);
+    trace({
+      projectId: project.id, nodeId: node.id, phase: 'schema_objects', kind: 'phase_completed', status: 'done',
+      title: '物理 Schema 对象已生成',
+      summary: `识别目录 ${schemaManifests.length} 张 · 覆盖物理 Sheet ${physicalSchemaObjects.length} 张`,
+      details: {
+        manifestTables: schemaManifests.map((manifest) => manifest.table.name),
+        objectCount: physicalSchemaObjects.length,
+      },
+    });
     for (const [index, hints] of objectBatches.entries()) {
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
@@ -224,10 +355,44 @@ export async function generatePackage(
         title: `正在生成第 ${index + 1}/${objectBatches.length} 批业务对象`,
         produced: `已产出 ${objects.length} 个对象`,
         done: index,
-        total: objectBatches.length + knowledgeBatches.length,
+        total: totalStepCount,
         elapsedMs: Date.now() - generationStartedAt,
+        authoringRunId: authoringRun.id,
+        phase: '知识结构生成',
       });
       const phase = `object_batch_${index + 1}`;
+      const checkpoint = checkpoints.get(phase);
+      if (checkpoint?.status === 'completed') {
+        const output = checkpoint.output as Extract<GenerationBatchOutput, { objects: SpecObject[] }>;
+        appendUnique(objects, output.objects ?? [], '对象');
+        trace({
+          projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
+          title: `第 ${index + 1}/${objectBatches.length} 批业务对象已从检查点恢复`,
+          summary: `恢复 ${output.objects?.length ?? 0} 个 · 累计 ${objects.length} 个`,
+          details: { batch: index + 1, totalBatches: objectBatches.length, resumed: true },
+        });
+        continue;
+      }
+      if (checkpoint?.status === 'skipped' && skipFailedPhases.has(phase)) {
+        generationNotices.push(checkpointNotice(checkpoint));
+        trace({
+          projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'warning',
+          title: `专家确认跳过第 ${index + 1} 批对象`,
+          summary: `恢复已记录的 ${checkpoint.issues.length} 个未解决问题`,
+          details: { batch: index + 1, issues: checkpoint.issues, resumed: true },
+        });
+        continue;
+      }
+      if (checkpoint?.status === 'failed' && skipFailedPhases.has(phase)) {
+        const skipped = checkpointStore.markSkipped({
+          projectId: project.id, runId: authoringRun.id, planHash, phase,
+          batchKind: 'object', batchIndex: index + 1, issues: checkpoint.issues,
+          attemptCount: checkpoint.attemptCount,
+        });
+        checkpoints.set(phase, skipped);
+        generationNotices.push(checkpointNotice(skipped));
+        continue;
+      }
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
         title: `生成业务对象 ${index + 1}/${objectBatches.length}`,
@@ -235,6 +400,8 @@ export async function generatePackage(
         details: { batch: index + 1, totalBatches: objectBatches.length, candidateCount: hints.length },
       });
       let acceptedObjects: SpecObject[] | undefined;
+      let acceptedAttempt = 0;
+      const priorAttemptCount = checkpoint?.status === 'failed' ? checkpoint.attemptCount : 0;
       let lastIssues: string[] = [];
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         const cap: ObjectSpecCapture = {};
@@ -245,8 +412,8 @@ export async function generatePackage(
           '数据对象还要给出字段中文名、类型、真实 sourceColumn 和主键；不得虚构数据字典中不存在的字段。',
           '补充查询边界、别名和有材料依据的对象关系。对象别名在整个知识包内必须唯一：忽略 ASCII 大小写和首尾空格后，不得与其他对象的别名、key 或 title 重复。',
           '每个对象必须用 candidateId 认领当前批次中的一个候选，候选名称只用于理解，不用于绑定。',
-          `当前批次有 ${hints.length} 个分析候选。候选是建模建议；没有充分证据、不适合当前版本或应由专家补充的候选可以省略。`,
-          '用 submit_objects 一次提交当前批次中有依据的对象，最多 4 个。',
+          `当前批次有 ${hints.length} 个逻辑对象候选。所有候选均已通过服务端筛选，必须逐项生成，不得省略。`,
+          '用 submit_objects 一次提交当前批次全部对象，最多 4 个。',
           `已生成对象 key：${objects.map((item) => item.key).join(', ') || '（无）'}；当前批次不得重复。`,
           `已生成对象及别名：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title, aliases: item.aliases ?? [] })))}`,
           `当前批次候选：${JSON.stringify(hints)}`,
@@ -257,19 +424,22 @@ export async function generatePackage(
         let stageMessages: unknown[];
         try {
           stageMessages = await runAgentCaptured(agent,
-            `请完成第 ${index + 1}/${objectBatches.length} 批有依据的对象并调用 submit_objects。`,
-            () => !!cap.objects, '请立即调用 submit_objects 提交当前有依据的对象；没有可靠结果时提交空数组。', observe(phase));
+            `请完成第 ${index + 1}/${objectBatches.length} 批全部逻辑对象并调用 submit_objects。`,
+            () => !!cap.objects, '请立即调用 submit_objects 提交当前批次全部逻辑对象。', observe(phase));
         } catch (error) {
-          lastIssues = [error instanceof Error ? error.message : String(error)];
+          const policy = classifyGenerationError(error);
+          lastIssues = [policy.message];
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
             title: `第 ${index + 1} 批业务对象未完成结构化提交`,
-            summary: lastIssues[0], details: { attempt, issues: lastIssues },
+            summary: policy.kind === 'quota_exhausted' ? '模型额度耗尽，暂停重试当前批次' : lastIssues[0],
+            details: { attempt, issues: lastIssues, errorClass: policy.kind, retryAfterMs: policy.retryAfterMs },
           });
-          if (attempt < 3) trace({
+          if (attempt < 3 && shouldRetryGenerationError(error)) trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'repair_started', status: 'warning',
             title: '自动补交当前对象批次', details: { attempt: attempt + 1, remainingCount: 1 },
           });
+          if (!shouldRetryGenerationError(error)) break;
           continue;
         }
         messages.push(...stageMessages);
@@ -305,6 +475,7 @@ export async function generatePackage(
           continue;
         }
         acceptedObjects = normalizedObjects;
+        acceptedAttempt = attempt;
         if (attempt > 1) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'repair_completed', status: 'done',
@@ -319,7 +490,18 @@ export async function generatePackage(
           title: `第 ${index + 1} 批对象连续两次自动补交后仍未通过`,
           issues: lastIssues,
         };
+        const failedCheckpoint = checkpointStore.saveFailed({
+          projectId: project.id, runId: authoringRun.id, planHash, failure,
+          attemptCount: priorAttemptCount + 3,
+        });
+        checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
+        const skipped = checkpointStore.markSkipped({
+          projectId: project.id, runId: authoringRun.id, planHash, phase,
+          batchKind: 'object', batchIndex: index + 1, issues: failure.issues,
+          attemptCount: priorAttemptCount + 3,
+        });
+        checkpoints.set(phase, skipped);
         generationNotices.push({ ...failure, decision: 'expert_skipped' });
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'warning',
@@ -330,6 +512,13 @@ export async function generatePackage(
         continue;
       }
       appendUnique(objects, acceptedObjects, '对象');
+      const completedCheckpoint = checkpointStore.saveCompleted({
+        projectId: project.id, runId: authoringRun.id, planHash, phase,
+        batchKind: 'object', batchIndex: index + 1,
+        output: { objects: acceptedObjects },
+        attemptCount: priorAttemptCount + acceptedAttempt,
+      });
+      checkpoints.set(phase, completedCheckpoint);
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
         title: `第 ${index + 1}/${objectBatches.length} 批业务对象已生成`,
@@ -340,6 +529,7 @@ export async function generatePackage(
 
     const rules: SpecRule[] = [];
     const metrics: SpecMetric[] = [];
+    const candidateDispositions = [...knowledgePlan.dispositions];
     for (const [index, candidates] of knowledgeBatches.entries()) {
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
@@ -347,10 +537,40 @@ export async function generatePackage(
         title: `正在生成第 ${index + 1}/${knowledgeBatches.length} 批规则和指标`,
         produced: `已产出 ${objects.length} 个对象、${rules.length} 条规则、${metrics.length} 个指标`,
         done: objectBatches.length + index,
-        total: objectBatches.length + knowledgeBatches.length,
+        total: totalStepCount,
         elapsedMs: Date.now() - generationStartedAt,
+        authoringRunId: authoringRun.id,
+        phase: '知识结构生成',
       });
       const phase = `knowledge_batch_${index + 1}`;
+      const checkpoint = checkpoints.get(phase);
+      if (checkpoint?.status === 'completed') {
+        const output = checkpoint.output as Extract<GenerationBatchOutput, { rules: SpecRule[]; metrics: SpecMetric[] }>;
+        appendUnique(rules, output.rules ?? [], '规则');
+        appendUnique(metrics, output.metrics ?? [], '指标');
+        candidateDispositions.push(...((output as any).dispositions ?? []));
+        trace({
+          projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
+          title: `第 ${index + 1}/${knowledgeBatches.length} 批规则和指标已从检查点恢复`,
+          summary: `恢复规则 ${output.rules?.length ?? 0} 条、指标 ${output.metrics?.length ?? 0} 个`,
+          details: { batch: index + 1, totalBatches: knowledgeBatches.length, resumed: true },
+        });
+        continue;
+      }
+      if (checkpoint?.status === 'skipped' && skipFailedPhases.has(phase)) {
+        generationNotices.push(checkpointNotice(checkpoint));
+        continue;
+      }
+      if (checkpoint?.status === 'failed' && skipFailedPhases.has(phase)) {
+        const skipped = checkpointStore.markSkipped({
+          projectId: project.id, runId: authoringRun.id, planHash, phase,
+          batchKind: 'knowledge', batchIndex: index + 1, issues: checkpoint.issues,
+          attemptCount: checkpoint.attemptCount,
+        });
+        checkpoints.set(phase, skipped);
+        generationNotices.push(checkpointNotice(skipped));
+        continue;
+      }
       const suggestedRules = candidates.filter((item) => item.kind === 'rule' && item.readiness === 'extractable').length;
       const suggestedMetrics = candidates.filter((item) => item.kind === 'metric' && item.readiness === 'extractable').length;
       trace({
@@ -359,8 +579,14 @@ export async function generatePackage(
         summary: `分析建议规则 ${suggestedRules} 条 · 指标 ${suggestedMetrics} 个`,
         details: { batch: index + 1, totalBatches: knowledgeBatches.length, ruleCount: suggestedRules, metricCount: suggestedMetrics },
       });
-      let accepted = false;
+      let acceptedRules: SpecRule[] | undefined;
+      let acceptedMetrics: SpecMetric[] | undefined;
+      let acceptedDispositions: typeof candidateDispositions | undefined;
+      let acceptedAttempt = 0;
+      const priorAttemptCount = checkpoint?.status === 'failed' ? checkpoint.attemptCount : 0;
       let lastCounts = { rules: 0, metrics: 0 };
+      let lastIssues: string[] = [];
+      const requiresDispositions = candidates.length > 0;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         const cap: KnowledgeSpecCapture = {};
         const sys = [
@@ -368,38 +594,44 @@ export async function generatePackage(
           '适用条件、判断门槛、例外和产品匹配条件沉淀为 rule；明确公式、统计粒度和边界的口径沉淀为 metric。',
           '必须能在材料中找到依据；缺少阈值、公式或权威映射时不要猜测，返回空数组并留给访谈澄清。',
           'readiness=needs_clarification 的候选只有在访谈结论已明确补齐条件或口径时才能生成；否则不产出。',
-          `本批有 ${suggestedRules} 条 extractable rule 候选、${suggestedMetrics} 条 extractable metric 候选。它们是分析建议，可根据证据合并、省略或留给专家补充。`,
-          'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交当前批次，单类最多 5 条。',
+          `本批有 ${suggestedRules} 条 rule 候选、${suggestedMetrics} 条 metric 候选。每个候选必须提交处置记录：generated、merged、deferred、needs_clarification 或 excluded，不能静默省略。`,
+          'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交资源和全部 dispositions，单类最多 5 条。',
           `对象：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title })))}`,
           `已生成规则 key：${rules.map((item) => item.key).join(', ') || '（无）'}；已生成指标 key：${metrics.map((item) => item.key).join(', ') || '（无）'}。`,
           `已确认流程摘要：${confirmedProcessSummary.slice(0, 2400)}`,
           `当前批次材料候选：${artifactSummary(candidates)}`,
         ].join('\n');
         const agent = makeAgent(llm, sys, buildKnowledgeGenerateTools(toolCtx(ctx), cap));
-        const retryHint = attempt === 1 ? '' : '上次没有完成结构化提交，请重新调用工具提交有依据的结果。';
+        const retryHint = attempt === 1
+          ? ''
+          : `上次提交存在以下问题：${lastIssues.join('；') || '未完成结构化提交'}。请重新提交当前批次的完整结果。`;
         let stageMessages: unknown[];
         try {
           stageMessages = await runAgentCaptured(agent,
             `请完成第 ${index + 1}/${knowledgeBatches.length} 批规则和指标提取并调用 submit_rules_metrics。${retryHint}`,
-            () => !!cap.rules && !!cap.metrics,
-            '请立即调用 submit_rules_metrics；没有可靠内容时提交空数组。', observe(phase));
+            () => !!cap.rules && !!cap.metrics && (!requiresDispositions || !!cap.dispositions),
+            '请立即调用 submit_rules_metrics，并为当前批次每个候选提交 disposition。', observe(phase));
         } catch (error) {
-          const issue = error instanceof Error ? error.message : String(error);
+          const policy = classifyGenerationError(error);
+          const issue = policy.message;
+          lastIssues = [issue];
           lastCounts = { rules: 0, metrics: 0 };
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
             title: `第 ${index + 1} 批规则/指标未完成结构化提交`,
-            summary: issue, details: { attempt, issues: [issue] },
+            summary: policy.kind === 'quota_exhausted' ? '模型额度耗尽，暂停重试当前批次' : issue,
+            details: { attempt, issues: [issue], errorClass: policy.kind, retryAfterMs: policy.retryAfterMs },
           });
-          if (attempt < 3) trace({
+          if (attempt < 3 && shouldRetryGenerationError(error)) trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'repair_started', status: 'warning',
             title: '自动重试当前规则/指标批次', details: { attempt: attempt + 1 },
           });
+          if (!shouldRetryGenerationError(error)) break;
           continue;
         }
         messages.push(...stageMessages);
         lastCounts = { rules: cap.rules?.length ?? 0, metrics: cap.metrics?.length ?? 0 };
-        if (!cap.rules || !cap.metrics) {
+        if (!cap.rules || !cap.metrics || (requiresDispositions && !cap.dispositions)) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
             title: `第 ${index + 1} 批规则/指标未完成结构化提交`,
@@ -414,24 +646,63 @@ export async function generatePackage(
           }
           continue;
         }
-        appendUnique(rules, cap.rules as SpecRule[], '规则');
-        appendUnique(metrics, cap.metrics as SpecMetric[], '指标');
+        const submittedRules = cap.rules as SpecRule[];
+        const submittedMetrics = cap.metrics as SpecMetric[];
+        const submittedDispositions = (cap.dispositions ?? []) as typeof candidateDispositions;
+        const validated = validateKnowledgeBatch(
+          { rules: submittedRules, metrics: submittedMetrics },
+          { objects, rules, metrics },
+        );
+        lastIssues = [
+          ...validated.issues,
+          ...validateKnowledgeCandidateDispositions(candidates, submittedRules, submittedMetrics, submittedDispositions),
+        ];
+        if (lastIssues.length) {
+          trace({
+            projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
+            title: `第 ${index + 1} 批规则/指标引用校验未通过`,
+            summary: `发现 ${lastIssues.length} 个待修正问题`,
+            details: { attempt, issues: lastIssues, invalidReferenceCount: validated.invalidReferenceCount },
+          });
+          if (attempt < 3) trace({
+            projectId: project.id, nodeId: node.id, phase, kind: 'repair_started', status: 'warning',
+            title: '自动重试当前规则/指标批次', details: { attempt: attempt + 1, remainingCount: lastIssues.length },
+          });
+          continue;
+        }
+        acceptedRules = submittedRules;
+        acceptedMetrics = submittedMetrics;
+        acceptedDispositions = submittedDispositions;
+        candidateDispositions.push(...submittedDispositions);
+        acceptedAttempt = attempt;
         if (attempt > 1) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'repair_completed', status: 'done',
             title: '规则/指标自动重试完成', details: { attempt, remainingCount: 0 },
           });
         }
-        accepted = true;
         break;
       }
-      if (!accepted) {
+      if (!acceptedRules || !acceptedMetrics || !acceptedDispositions) {
         const failure = {
           phase, batchKind: 'knowledge' as const, batchIndex: index + 1,
-          title: `第 ${index + 1} 批规则/指标连续两次自动补交后仍未结构化提交`,
-          issues: [`实际提交规则 ${lastCounts.rules} 条、指标 ${lastCounts.metrics} 条`],
+          title: `第 ${index + 1} 批规则/指标连续两次自动补交后仍未通过`,
+          issues: lastIssues.length
+            ? lastIssues
+            : [`实际提交规则 ${lastCounts.rules} 条、指标 ${lastCounts.metrics} 条`],
         };
+        const failedCheckpoint = checkpointStore.saveFailed({
+          projectId: project.id, runId: authoringRun.id, planHash, failure,
+          attemptCount: priorAttemptCount + 3,
+        });
+        checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
+        const skipped = checkpointStore.markSkipped({
+          projectId: project.id, runId: authoringRun.id, planHash, phase,
+          batchKind: 'knowledge', batchIndex: index + 1, issues: failure.issues,
+          attemptCount: priorAttemptCount + 3,
+        });
+        checkpoints.set(phase, skipped);
         generationNotices.push({ ...failure, decision: 'expert_skipped' });
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'warning',
@@ -440,6 +711,15 @@ export async function generatePackage(
         });
         continue;
       }
+      appendUnique(rules, acceptedRules, '规则');
+      appendUnique(metrics, acceptedMetrics, '指标');
+      const completedCheckpoint = checkpointStore.saveCompleted({
+        projectId: project.id, runId: authoringRun.id, planHash, phase,
+        batchKind: 'knowledge', batchIndex: index + 1,
+        output: { rules: acceptedRules, metrics: acceptedMetrics, dispositions: acceptedDispositions },
+        attemptCount: priorAttemptCount + acceptedAttempt,
+      });
+      checkpoints.set(phase, completedCheckpoint);
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
         title: `第 ${index + 1}/${knowledgeBatches.length} 批规则和指标已生成`,
@@ -450,7 +730,44 @@ export async function generatePackage(
 
     const operations: SpecOperation[] = [];
     for (const [index, questions] of questionBatches.entries()) {
+      throwIfCancelled(project.id, 'knowledgeGenerate');
+      reportLongTaskProgress(project.id, {
+        taskKinds: ['knowledge_extraction', 'operation_extraction'],
+        title: `正在生成第 ${index + 1}/${questionBatches.length} 批业务操作`,
+        produced: `已产出 ${objects.length} 个对象、${rules.length} 条规则、${metrics.length} 个指标、${operations.length} 个操作`,
+        done: objectBatches.length + knowledgeBatches.length + index,
+        total: totalStepCount,
+        elapsedMs: Date.now() - generationStartedAt,
+        authoringRunId: authoringRun.id,
+        phase: '知识结构生成',
+      });
       const phase = `operation_batch_${index + 1}`;
+      const checkpoint = checkpoints.get(phase);
+      if (checkpoint?.status === 'completed') {
+        const output = checkpoint.output as Extract<GenerationBatchOutput, { operations: SpecOperation[] }>;
+        appendUnique(operations, output.operations ?? [], '操作');
+        trace({
+          projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
+          title: `第 ${index + 1}/${questionBatches.length} 批业务操作已从检查点恢复`,
+          summary: `恢复 ${output.operations?.length ?? 0} 个 · 累计 ${operations.length} 个`,
+          details: { batch: index + 1, totalBatches: questionBatches.length, resumed: true },
+        });
+        continue;
+      }
+      if (checkpoint?.status === 'skipped' && skipFailedPhases.has(phase)) {
+        generationNotices.push(checkpointNotice(checkpoint));
+        continue;
+      }
+      if (checkpoint?.status === 'failed' && skipFailedPhases.has(phase)) {
+        const skipped = checkpointStore.markSkipped({
+          projectId: project.id, runId: authoringRun.id, planHash, phase,
+          batchKind: 'operation', batchIndex: index + 1, issues: checkpoint.issues,
+          attemptCount: checkpoint.attemptCount,
+        });
+        checkpoints.set(phase, skipped);
+        generationNotices.push(checkpointNotice(skipped));
+        continue;
+      }
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
         title: `生成业务操作 ${index + 1}/${questionBatches.length}`,
@@ -458,6 +775,8 @@ export async function generatePackage(
         details: { batch: index + 1, totalBatches: questionBatches.length, questionCount: questions.length },
       });
       let acceptedOperations: SpecOperation[] | undefined;
+      let acceptedAttempt = 0;
+      const priorAttemptCount = checkpoint?.status === 'failed' ? checkpoint.attemptCount : 0;
       let lastValidation = validateOperationBatch(questions, [], { objects, rules, metrics });
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         const cap: OperationSpecCapture = {};
@@ -495,17 +814,20 @@ export async function generatePackage(
             `请完成第 ${index + 1}/${questionBatches.length} 批有依据的 operation 并调用 submit_operations。`,
             () => !!cap.operations, '请立即调用 submit_operations 提交当前有依据的操作；没有可靠结果时提交空数组。', observe(phase));
         } catch (error) {
-          const issue = error instanceof Error ? error.message : String(error);
+          const policy = classifyGenerationError(error);
+          const issue = policy.message;
           lastValidation = { issues: [issue], uncoveredQuestions: [], invalidReferenceCount: 0 };
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
             title: `第 ${index + 1} 批业务操作未完成结构化提交`,
-            summary: issue, details: { attempt, issues: [issue] },
+            summary: policy.kind === 'quota_exhausted' ? '模型额度耗尽，暂停重试当前批次' : issue,
+            details: { attempt, issues: [issue], errorClass: policy.kind, retryAfterMs: policy.retryAfterMs },
           });
-          if (attempt < 3) trace({
+          if (attempt < 3 && shouldRetryGenerationError(error)) trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'repair_started', status: 'warning',
             title: '自动补交当前业务操作批次', details: { attempt: attempt + 1, remainingCount: 1 },
           });
+          if (!shouldRetryGenerationError(error)) break;
           continue;
         }
         messages.push(...stageMessages);
@@ -530,6 +852,7 @@ export async function generatePackage(
           continue;
         }
         acceptedOperations = submitted;
+        acceptedAttempt = attempt;
         if (attempt > 1) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'repair_completed', status: 'done',
@@ -544,7 +867,18 @@ export async function generatePackage(
           title: `第 ${index + 1} 批操作连续两次自动补交后仍未通过`,
           issues: lastValidation.issues,
         };
+        const failedCheckpoint = checkpointStore.saveFailed({
+          projectId: project.id, runId: authoringRun.id, planHash, failure,
+          attemptCount: priorAttemptCount + 3,
+        });
+        checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
+        const skipped = checkpointStore.markSkipped({
+          projectId: project.id, runId: authoringRun.id, planHash, phase,
+          batchKind: 'operation', batchIndex: index + 1, issues: failure.issues,
+          attemptCount: priorAttemptCount + 3,
+        });
+        checkpoints.set(phase, skipped);
         generationNotices.push({ ...failure, decision: 'expert_skipped' });
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'warning',
@@ -555,6 +889,13 @@ export async function generatePackage(
         continue;
       }
       appendUnique(operations, acceptedOperations, '操作');
+      const completedCheckpoint = checkpointStore.saveCompleted({
+        projectId: project.id, runId: authoringRun.id, planHash, phase,
+        batchKind: 'operation', batchIndex: index + 1,
+        output: { operations: acceptedOperations },
+        attemptCount: priorAttemptCount + acceptedAttempt,
+      });
+      checkpoints.set(phase, completedCheckpoint);
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
         title: `第 ${index + 1}/${questionBatches.length} 批业务操作已生成`,
@@ -562,6 +903,17 @@ export async function generatePackage(
         details: { batch: index + 1, totalBatches: questionBatches.length, operationCount: acceptedOperations.length },
       });
     }
+
+    reportLongTaskProgress(project.id, {
+      taskKinds: ['knowledge_extraction', 'operation_extraction'],
+      title: '正在校验并保存知识结构',
+      produced: `对象 ${objects.length} · 规则 ${rules.length} · 指标 ${metrics.length} · 操作 ${operations.length}`,
+      done: totalStepCount - 1,
+      total: totalStepCount,
+      elapsedMs: Date.now() - generationStartedAt,
+      authoringRunId: authoringRun.id,
+      phase: '知识结构校验',
+    });
 
     const version = nextValidationCandidateVersion({
       currentVersion: basePackage.packageVersion,
@@ -576,6 +928,12 @@ export async function generatePackage(
       language: 'zh-CN',
       defaultProviderAlias: slug(project.domain || 'data'),
       objects, operations, rules, metrics,
+      candidateDispositions: [
+        ...candidateDispositions,
+        ...dispositionForObjectAndOperationCandidates(
+          analysis?.candidateArtifacts ?? [], objects, operations,
+        ),
+      ],
       dataSourceType,
     }, analysis, confirmedFlowchart.diagrams, {
       documents: ctx.documents
@@ -606,7 +964,12 @@ export async function generatePackage(
       ? {
         ...analysis,
         candidateArtifacts: (analysis.candidateArtifacts ?? [])
-          .filter((candidate) => !skippedKnowledgeCandidates.has(candidate)),
+          .filter((candidate) => !knowledgePlan.selected.some((planned) => (
+            skippedKnowledgeCandidates.has(planned)
+            && planned.kind === candidate.kind
+            && planned.name === candidate.name
+            && planned.sources.join('\u0000') === candidate.sources.join('\u0000')
+          ))),
       }
       : analysis;
     const validationQuestions = operationTargets
@@ -646,6 +1009,10 @@ export async function generatePackage(
     authoring.progress(project.id, authoringRun.id, {
       nodeId: node.id,
       step: 'complete',
+      phase: '结果写入',
+      currentStep: '保存知识包版本',
+      progress: 95,
+      retryCount: 0,
     }, {
       type: 'package.revision.created',
       payload: { revisionId: saved.revision.oid, cause: 'generate', packageVersion: version },
@@ -699,6 +1066,8 @@ export async function generatePackage(
     });
     try { authoring.fail(project.id, authoringRun.id, reason); } catch { /* 保留原始失败原因 */ }
     throw error;
+  } finally {
+    stopJobHeartbeat();
   }
 }
 

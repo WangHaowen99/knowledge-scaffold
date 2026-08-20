@@ -83,9 +83,7 @@ function findDuplicates(keys: string[]): string[] {
 type ObjectCandidate = AnalysisResult['candidateObjects'][number];
 export type ObjectCandidateRef = ObjectCandidate & { id: string };
 
-/**
- * 分析候选是建模建议，不是强制生成清单。这里只拒绝认领当前批次之外的 ID。
- */
+/** 进入对象生成计划的逻辑候选必须逐项认领，不能再被模型静默省略。 */
 export function validateObjectBatch(
   candidates: ObjectCandidateRef[],
   objects: SpecObject[],
@@ -98,6 +96,10 @@ export function validateObjectBatch(
       issues.push(`对象「${object.title || object.key}」认领了当前批次不存在的候选 ID ${object.candidateId}`);
     }
   }
+  const claimed = new Set(objects.map((object) => object.candidateId).filter(Boolean));
+  for (const candidate of candidates) {
+    if (!claimed.has(candidate.id)) issues.push(`对象候选「${candidate.name}」未生成，也没有进入专家处理`);
+  }
   const submittedKeys = new Set(objects.map((object) => object.key));
   for (const conflict of findObjectAliasConflicts([...existingObjects, ...objects])) {
     const involvesSubmittedObject = conflict.kind === 'shared_alias'
@@ -107,6 +109,48 @@ export function validateObjectBatch(
     if (involvesSubmittedObject) issues.push(describeObjectAliasConflict(conflict));
   }
   return issues;
+}
+
+export interface KnowledgeBatchValidation {
+  issues: string[];
+  invalidReferenceCount: number;
+}
+
+/**
+ * 规则和指标在并入整包前即时检查 key 与对象引用。
+ * 这一步只校验知识生成产物，不读取或重新计算上游资料分析结果。
+ */
+export function validateKnowledgeBatch(
+  batch: { rules: SpecRule[]; metrics: SpecMetric[] },
+  available: { objects: SpecObject[]; rules: SpecRule[]; metrics: SpecMetric[] },
+): KnowledgeBatchValidation {
+  const issues: string[] = [];
+  const objectKeys = new Set(available.objects.map((item) => normalizeKey(item.key)));
+  const existingRuleKeys = new Set(available.rules.map((item) => normalizeKey(item.key)));
+  const existingMetricKeys = new Set(available.metrics.map((item) => normalizeKey(item.key)));
+  const ruleKeys = batch.rules.map((item) => normalizeKey(item.key));
+  const metricKeys = batch.metrics.map((item) => normalizeKey(item.key));
+  let invalidReferenceCount = 0;
+
+  for (const key of findDuplicates(ruleKeys)) issues.push(`规则 key 重复：${key}`);
+  for (const key of findDuplicates(metricKeys)) issues.push(`指标 key 重复：${key}`);
+  for (const rule of batch.rules) {
+    if (existingRuleKeys.has(normalizeKey(rule.key))) issues.push(`规则 key 重复：${rule.key}`);
+    for (const objectKey of rule.appliesToObjects ?? []) {
+      if (objectKeys.has(normalizeKey(objectKey))) continue;
+      invalidReferenceCount += 1;
+      issues.push(`规则 ${rule.key} 引用了不存在的对象 ${objectKey}`);
+    }
+  }
+  for (const metric of batch.metrics) {
+    if (existingMetricKeys.has(normalizeKey(metric.key))) issues.push(`指标 key 重复：${metric.key}`);
+    for (const objectKey of metric.usesObjects ?? []) {
+      if (objectKeys.has(normalizeKey(objectKey))) continue;
+      invalidReferenceCount += 1;
+      issues.push(`指标 ${metric.key} 引用了不存在的对象 ${objectKey}`);
+    }
+  }
+  return { issues, invalidReferenceCount };
 }
 
 export interface OperationBatchValidation {

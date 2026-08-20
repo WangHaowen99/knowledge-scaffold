@@ -169,6 +169,8 @@ import { registerArtifactRoutes, sendArtifactError } from './artifacts/routes.js
 import { registerAuthoringRoutes } from './authoring/routes.js';
 import { buildProjectAuditFiles } from './authoring/audit-export.js';
 import { getAuthoringState } from './authoring/state.js';
+import { jobEtaFromProgress, startJobHeartbeat } from './authoring/job-observability.js';
+import { PiAuthoringAdapter } from './authoring/pi-adapter.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
@@ -683,6 +685,18 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const { tables, documents: textDocs } = buildMaterialContext(docs);
       if (!tables.length && !textDocs.length) return reply.code(400).send({ error: '尚无可分析的资料，请先上传文档' });
       const analyzeKey = `${p.id}:analyze`;
+      const existingJob = authoringState.snapshot(p.id).activeRuns.find((run) => (
+        run.state?.purpose === 'material_analysis'
+        && (run.status === 'queued' || run.status === 'running')
+      ));
+      if (existingJob) {
+        return reply.code(202).send({
+          accepted: true,
+          packageRevision: existingJob.baseRevision,
+          aiConstruction: aiConstruction.snapshot(p.id),
+          job: existingJob,
+        });
+      }
       if (inFlight.current(analyzeKey)) {
         return reply.code(409).send({ error: '项目正在处理中', code: 'busy' });
       }
@@ -696,8 +710,22 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         });
       }
       const startedAt = Date.now();
-      // 先把任务标成执行中再返回，界面立刻就能显示「正在分析」
+      // 业务任务图必须先成功进入执行态，避免同步校验失败却留下一个永远 running 的 Job。
       const startedUpdate = aiConstructionOrchestrator.startMaterialAnalysis(p.id);
+      const jobAdapter = new PiAuthoringAdapter(authoringState);
+      const job = jobAdapter.start(p.id, '资料分析', packageAtStart.revision.oid, {
+        purpose: 'material_analysis',
+        phase: '资料解析',
+        currentStep: '准备读取建模资料',
+        progress: 0,
+        retryCount: 0,
+      });
+      const stopHeartbeat = startJobHeartbeat(jobAdapter, p.id, job.run.id, {
+        phase: '资料分析',
+        currentStep: '读取建模资料',
+        progress: 0,
+        retryCount: 0,
+      });
       // 资料分析要跑几分钟到几十分钟，不占请求：进度和结果都走事件流回前端
       void inFlight.run(analyzeKey, 'analyze', async () => {
         {
@@ -707,14 +735,27 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             tables,
             textDocs,
             undefined,
-            (progress) => aiConstructionOrchestrator.reportMaterialAnalysisProgress(p.id, {
-              title: progress.title,
-              summary: progress.summary,
-              percent: progress.percent,
-              elapsedSeconds: Math.max(1, Math.round((Date.now() - startedAt) / 1_000)),
-            }),
+            (progress) => {
+              const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1_000));
+              aiConstructionOrchestrator.reportMaterialAnalysisProgress(p.id, {
+                title: progress.title,
+                summary: progress.summary,
+                percent: progress.percent,
+                elapsedSeconds,
+              });
+              jobAdapter.heartbeat(p.id, job.run.id, {
+                phase: progress.phase,
+                currentStep: progress.title,
+                progress: progress.percent,
+                retryCount: 0,
+                eta: jobEtaFromProgress(progress.percent, elapsedSeconds),
+              });
+            },
             confirmedBrief,
           );
+          jobAdapter.heartbeat(p.id, job.run.id, {
+            phase: '候选整理', currentStep: '整理分析结果', progress: 90, retryCount: 0,
+          });
           const [packageAtCompletion, currentDocuments] = await Promise.all([
             packageArtifacts.current(p.id),
             Promise.resolve(listDocuments(p.id)),
@@ -737,6 +778,9 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           // 重跑早期节点不能让已到达的项目阶段倒退。
           setProjectStage(p.id, 'analyze');
           void completed;
+          jobAdapter.complete(p.id, job.run.id, {
+            phase: '已完成', currentStep: '分析结果已写入', progress: 100, retryCount: 0,
+          });
         }
       }).catch((error) => {
         // 后台失败没有 HTTP 响应可用：failMaterialAnalysis 会写一条带
@@ -747,11 +791,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             error instanceof Error ? error.message : String(error),
           );
         } catch { /* 收尾失败不再向上抛 */ }
+        try {
+          jobAdapter.fail(p.id, job.run.id, error instanceof Error ? error.message : String(error), {
+            phase: '失败', currentStep: '分析未完成', retryCount: 0,
+            errorCode: error instanceof Error ? error.name : 'MATERIAL_ANALYSIS_FAILED',
+            recoveryAction: 'analyze_materials',
+          });
+        } catch { /* 运行记录收尾失败不覆盖原错误 */ }
+      }).finally(() => {
+        stopHeartbeat();
       });
       return reply.code(202).send({
         accepted: true,
         packageRevision: packageAtStart.revision.oid,
         aiConstruction: startedUpdate.aiConstruction,
+        job: job.run,
       });
     });
 
@@ -1140,19 +1194,35 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const { message, requestId } = (req.body ?? {}) as { message?: string; requestId?: string };
       if (!message?.trim()) return reply.code(400).send({ error: '请输入内容' });
       const chatKey = `${c.p.id}:chat`;
+      const turnId = String(requestId || req.id);
+      const existingJob = authoringState.snapshot(c.p.id).activeRuns.find((run) => (
+        run.state?.purpose === 'package_chat' && run.state?.turnId === turnId
+      ));
+      if (existingJob) {
+        return reply.code(202).send({
+          status: 'accepted', requestId: turnId, runId: existingJob.id, job: existingJob,
+        });
+      }
       if (inFlight.current(chatKey)) return reply.code(409).send({ error: '项目正在处理中' });
 
-      const turnId = String(requestId || req.id);
       const history = packageChatConversation.history(c.p.id);
       const userMessage = packageChatConversation.beginTurn(c.p.id, turnId, message.trim());
       const started = authoringState.apply({
         kind: 'start_run',
         projectId: c.p.id,
         intent: '建模助手分析',
-        state: { purpose: 'package_chat', turnId },
+        state: {
+          purpose: 'package_chat', turnId, phase: '模型分析',
+          currentStep: '准备建模助手请求', progress: 0, retryCount: 0,
+        },
       });
       if (started.kind !== 'run') throw new Error('建模助手任务创建失败');
       const runId = started.run.id;
+      const jobAdapter = new PiAuthoringAdapter(authoringState);
+      const stopHeartbeat = startJobHeartbeat(jobAdapter, c.p.id, runId, {
+        phase: '模型分析', currentStep: '等待模型响应', progress: 10, retryCount: 0,
+      });
+      const chatStartedAt = Date.now();
       const finishRun = (status: 'completed' | 'failed', error?: unknown) => {
         try {
           authoringState.apply({
@@ -1163,12 +1233,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             ...(status === 'failed' ? {
               error: (error instanceof Error ? error.message : String(error)).slice(0, 2_000)
                 || '建模助手处理失败',
+              state: {
+                phase: '失败', currentStep: '建模助手未完成',
+                errorCode: error instanceof Error ? error.name : 'PACKAGE_CHAT_FAILED',
+                recoveryAction: 'retry_package_chat', retryCount: 0,
+              },
             } : {}),
           });
         } catch { /* 对话消息已经落库，运行状态收尾失败不覆盖结果 */ }
       };
 
       void inFlight.run(chatKey, 'package-chat', async () => {
+        jobAdapter.heartbeat(c.p.id, runId, {
+          phase: '模型分析', currentStep: '读取资料并生成答复', progress: 40, retryCount: 0,
+          eta: jobEtaFromProgress(40, Math.max(1, Math.round((Date.now() - chatStartedAt) / 1_000))),
+        });
         const result = await runPackageChatPlan(c.p, history, message.trim(), {
           documents: c.ctx.documents,
           materials: c.ctx.materials,
@@ -1176,13 +1255,17 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           documentAccess: 'full-read-only',
         });
         packageChatConversation.finishTurn(c.p.id, turnId, result);
+        jobAdapter.heartbeat(c.p.id, runId, {
+          phase: '结果写入', currentStep: '保存建模助手答复', progress: 95, retryCount: 0,
+          eta: jobEtaFromProgress(95, Math.max(1, Math.round((Date.now() - chatStartedAt) / 1_000))),
+        });
       }).then(
         () => finishRun('completed'),
         (error) => {
           packageChatConversation.failTurn(c.p.id, turnId, '建模助手处理失败', error);
           finishRun('failed', error);
         },
-      );
+      ).finally(stopHeartbeat);
       return reply.code(202).send({
         status: 'accepted',
         requestId: turnId,

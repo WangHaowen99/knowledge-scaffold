@@ -158,6 +158,23 @@ export interface ArtifactCandidate {
   readiness: 'extractable' | 'needs_clarification';
 }
 
+export type CandidateDispositionStatus =
+  | 'generated'
+  | 'merged'
+  | 'deferred'
+  | 'needs_clarification'
+  | 'excluded';
+
+export interface CandidateDisposition {
+  candidateId: string;
+  kind: KnowledgeArtifactKind;
+  name: string;
+  status: CandidateDispositionStatus;
+  resourceKeys?: string[];
+  mergedIntoCandidateId?: string;
+  reason: string;
+}
+
 /** 后端全文读取账本的持久化快照；不能由模型自行声明。 */
 export interface DocumentReadCoverage {
   documentId?: string;
@@ -414,6 +431,8 @@ export interface PackageSpec {
   scripts?: SpecScript[]; // 可选受控 Python 脚本；须绑定包内 operation
   defaultProviderAlias: string;
   dataSourceType?: PackageDataSourceType; // 缺省仅用于兼容历史版本，沿用 object key resource
+  /** 全量分析候选的处理账本；用于证明候选已生成、合并、延期或明确排除。 */
+  candidateDispositions?: CandidateDisposition[];
 }
 
 export interface CoverageResult {

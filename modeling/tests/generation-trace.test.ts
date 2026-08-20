@@ -52,11 +52,6 @@ test('知识包分阶段生成过程持久化', async () => {
     },
   });
 
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'customer', title: '企业客户', description: '对公企业客户', sourceTable: 'customer', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '客户号', type: 'string', required: true, sourceColumn: 'id' }],
-  };
   const operations = processes.map((process) => ({
     key: process.id,
     title: process.title,
@@ -68,8 +63,6 @@ test('知识包分阶段生成过程持久化', async () => {
   }));
   const faux = createFauxCore({ provider: 'generation-trace', models: [{ id: 'generation-trace' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(0, 3) })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: operations.slice(3) })]),
   ]);
@@ -100,12 +93,9 @@ test('知识包分阶段生成过程持久化', async () => {
     knowledgeBatchCount: prepare?.details?.knowledgeBatchCount,
     operationBatchCount: prepare?.details?.operationBatchCount,
     totalStepCount: prepare?.details?.totalStepCount,
-  }, { objectBatchCount: 1, knowledgeBatchCount: 1, operationBatchCount: 2, totalStepCount: 5 });
-  assert.ok(events.some((event) => event.title.includes('生成业务对象')));
-  assert.ok(events.some((event) => event.title.includes('生成规则和指标')));
+  }, { objectBatchCount: 0, knowledgeBatchCount: 0, operationBatchCount: 2, totalStepCount: 3 });
+  assert.ok(events.some((event) => event.title === '物理 Schema 对象已生成'));
   assert.ok(events.some((event) => event.title.includes('生成业务操作')));
-  assert.ok(events.some((event) => event.title === '提交业务对象' && event.details?.objectCount === 1));
-  assert.ok(events.some((event) => event.title === '提交规则和指标' && event.details?.ruleCount === 0));
   assert.ok(events.some((event) => event.title === '提交业务操作' && event.details?.operationCount === 3));
   assert.ok(events.some((event) => event.kind === 'generation_completed'));
 });
@@ -126,11 +116,6 @@ test('AI 辅助构建按人工确认流程生成业务操作', async () => {
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1', key: 'application', title: '申请单', description: '业务申请单',
-    sourceTable: 'application', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '申请编号', type: 'string', required: true, sourceColumn: 'id' }],
-  };
   const operation = {
     key: 'approve_application', title: '审批申请', description: '按照确认流程审批申请',
     inputs: [], outputs: [{ field: 'decision', type: 'string' }],
@@ -139,8 +124,6 @@ test('AI 辅助构建按人工确认流程生成业务操作', async () => {
   };
   const faux = createFauxCore({ provider: 'process-generation', models: [{ id: 'process-generation' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })]),
   ]);
 
@@ -158,7 +141,7 @@ test('AI 辅助构建按人工确认流程生成业务操作', async () => {
   assert.equal(result.coverage.uncovered.length, 0);
 });
 
-test('对象批次只提交部分分析候选时直接接受有依据的对象', async () => {
+test('物理 Sheet 全量生成对象，不由模型挑选或静默遗漏', async () => {
   const project = await createGenerationProject({ owner: 'tester', name: '对象补齐', domain: '供应链运营', background: '订单履约查询' });
   const process = { id: 'warehouse_location_lookup', title: '查询仓储位置数据' };
   const flowchart = confirmedFlowchart([process]);
@@ -176,26 +159,14 @@ test('对象批次只提交部分分析候选时直接接受有依据的对象',
     },
   });
 
-  const objects = candidates.map((candidate, index) => ({
-    candidateId: `candidate_${index + 1}`,
-    key: candidate.name,
-    title: candidate.rationale,
-    description: candidate.rationale,
-    sourceTable: candidate.sourceTables[0],
-    primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '编号', type: 'string', required: true, sourceColumn: 'id' }],
-  }));
   const operation = {
     key: 'query_warehouse_location', title: '查询仓储位置', description: '查询仓储位置数据',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
-    flow: ['查询 object:WarehouseLocation', '返回结果'], relatedObjects: ['WarehouseLocation'],
+    flow: ['查询 object:warehouse_location', '返回结果'], relatedObjects: ['warehouse_location'],
     competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'generation-object-repair', models: [{ id: 'generation-object-repair' }] });
   faux.setResponses([
-    // 分析候选是建议，模型可以只提交当前有依据的对象。
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [objects[0]] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })]),
   ]);
 
@@ -207,7 +178,9 @@ test('对象批次只提交部分分析候选时直接接受有依据的对象',
     documents: [],
   }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
 
-  assert.deepEqual(result.spec.objects.map((item) => item.key), ['WarehouseLocation']);
+  assert.deepEqual(result.spec.objects.map((item) => item.key), [
+    'warehouse_location', 'processing_unit', 'distribution_center', 'product',
+  ]);
   const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
   const events = listTraceEvents(node!.id);
   assert.equal(events.some((event) => event.kind === 'repair_started'), false);
@@ -228,12 +201,7 @@ test('操作批次引用不存在对象或漏掉确认流程时会自动重交',
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'WarehouseLocation', title: '仓储位置', description: '仓储位置', sourceTable: 'warehouse_location', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '编号', type: 'string', required: true, sourceColumn: 'id' }],
-  };
-  const operationFor = (key, processTitle, processTargetId, relatedObjects = ['WarehouseLocation']) => ({
+  const operationFor = (key, processTitle, processTargetId, relatedObjects = ['warehouse_location']) => ({
     key, title: processTitle, description: processTitle,
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
     flow: [`查询 object:${relatedObjects[0]}`, '返回结果'], relatedObjects,
@@ -245,8 +213,6 @@ test('操作批次引用不存在对象或漏掉确认流程时会自动重交',
   ];
   const faux = createFauxCore({ provider: 'generation-operation-repair', models: [{ id: 'generation-operation-repair' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     // 首次提交同时存在悬空对象引用和未精确认领的问题。
     fauxAssistantMessage([fauxToolCall('submit_operations', {
       operations: [
@@ -283,11 +249,6 @@ test('操作批次引用尚未生成的脚本时自动补交并移除幽灵脚�
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1', key: 'customer', title: '客户信息', description: '客户信息',
-    sourceTable: 'customer', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '客户编号', type: 'string', required: true, sourceColumn: 'id' }],
-  };
   const operation = {
     key: 'identify_customer_needs', title: '识别客户需求', description: '识别客户需求并推荐产品',
     inputs: [], outputs: [{ field: 'recommendation', type: 'array' }],
@@ -296,8 +257,6 @@ test('操作批次引用尚未生成的脚本时自动补交并移除幽灵脚�
   };
   const faux = createFauxCore({ provider: 'generation-operation-script-repair', models: [{ id: 'generation-operation-script-repair' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', {
       operations: [{
         ...operation,
@@ -339,11 +298,6 @@ test('操作通过确认流程 ID 绑定并由服务端回填流程目标文本'
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'customer', title: '企业客户', description: '对公企业客户', sourceTable: 'customer', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '客户号', type: 'string', required: true, sourceColumn: 'id' }],
-  };
   const operation = {
     key: 'recommend_deposit_product', title: '推荐存款产品', description: '按客户条件推荐产品',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
@@ -353,8 +307,6 @@ test('操作通过确认流程 ID 绑定并由服务端回填流程目标文本'
   };
   const faux = createFauxCore({ provider: 'generation-question-id', models: [{ id: 'generation-question-id' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })]),
   ]);
 
@@ -382,11 +334,6 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'customer', title: '企业客户', description: '对公企业客户', sourceTable: 'customer', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '客户号', type: 'string', required: true, sourceColumn: 'id' }],
-  };
   const invalidOperation = {
     key: 'invalid_operation', title: '错误操作', description: '引用不存在对象',
     inputs: [], outputs: [], flow: ['读取不存在对象'], relatedObjects: ['missing_object'],
@@ -394,8 +341,6 @@ test('知识包自动补交耗尽后等待专家决定是否跳过', async () =>
   };
   const faux = createFauxCore({ provider: 'generation-trace-fail', models: [{ id: 'generation-trace-fail' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
@@ -431,11 +376,6 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1', key: 'customer', title: '客户', description: '客户业务对象',
-    sourceTable: 'customer', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '客户号', sourceColumn: 'id' }],
-  };
   const invalidOperation = {
     key: 'handle_customer', title: '处理客户', description: '处理客户',
     inputs: [], outputs: [], flow: ['读取不存在的对象'], relatedObjects: ['missing_object'],
@@ -443,8 +383,6 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
   };
   const faux = createFauxCore({ provider: 'generation-expert-skip', models: [{ id: 'generation-expert-skip' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
@@ -472,6 +410,66 @@ test('专家确认后沿用原任务跳过失败批次并生成其余知识草�
   assert.deepEqual(result.coverage.uncovered, [operationTargetQuestion(process.title)]);
   assert.equal(result.generationNotices[0]?.phase, 'operation_batch_1');
   assert.equal(getAuthoringState().snapshot(project.id).activeRuns.length, 0);
+});
+
+test('知识生成恢复时复用成功批次且不重复调用模型', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: '生成批次断点续跑', domain: '银行营销', background: '' });
+  const process = { id: 'handle_customer', title: '处理客户' };
+  const flowchart = confirmedFlowchart([process]);
+  upsertNode({
+    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
+    output: {
+      domainOverview: '银行营销',
+      candidateObjects: [{ name: '客户', rationale: '客户主数据', sourceTables: ['customer'] }],
+      openQuestions: [], materialAssessments: [], candidateArtifacts: [],
+    },
+  });
+  const invalidOperation = {
+    key: 'handle_customer', title: '处理客户', description: '处理客户',
+    inputs: [], outputs: [], flow: ['读取不存在的对象'], relatedObjects: ['missing_object'],
+    competencyQuestionId: operationTargetId(process.id),
+  };
+  const faux = createFauxCore({ provider: 'generation-checkpoint-resume', models: [{ id: 'generation-checkpoint-resume' }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
+    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [invalidOperation] })]),
+  ]);
+  const context = {
+    tables: [{
+      name: 'customer', rowCount: 1,
+      fields: [{ name: 'id', inferredType: 'string', sampleValues: ['C1'], distinctRatio: 1 }],
+    }],
+    documents: [],
+  };
+  const llm = { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' };
+
+  await assert.rejects(generatePackage(project, context, llm, flowchart), /等待专家确认是否跳过/u);
+  const snapshot = getAuthoringState().snapshot(project.id);
+  const interaction = snapshot.pendingInteractions[0];
+  const run = snapshot.activeRuns[0];
+  assert.ok(interaction);
+  assert.ok(run);
+  const adapter = getPiAuthoringAdapter();
+  adapter.respond(project.id, interaction.id, 'checkpoint-skip', { value: 'skip' });
+  adapter.fail(project.id, run.id, '模拟服务重启后的旧运行失败');
+  const resumedRun = adapter.start(project.id, '生成知识包', run.baseRevision, {
+    purpose: 'knowledge_generation_resume', priorRunId: run.id,
+  }).run;
+
+  const result = await generatePackage(project, context, llm, flowchart, {
+    resumeRunId: resumedRun.id,
+    skipFailedPhases: ['operation_batch_1'],
+  });
+
+  assert.equal(result.spec.objects.length, 1);
+  assert.equal(result.spec.operations.length, 0);
+  assert.equal(result.generationNotices[0]?.phase, 'operation_batch_1');
+  const checkpointEvents = listNodes(project.id)
+    .filter((item) => item.type === 'generate')
+    .flatMap((item) => listTraceEvents(item.id));
+  assert.ok(checkpointEvents.some((event) => event.title === '物理 Schema 对象已生成'));
+  assert.equal(checkpointEvents.some((event) => event.title.includes('对象已从检查点恢复')), false);
 });
 
 test('过期生成门禁在创建新 workflow 节点前失败', async () => {
@@ -502,26 +500,14 @@ test('历史分析和对象提交中的表格展示标签在生成时规范化',
       openQuestions: [], materialAssessments: [], candidateArtifacts: [],
     },
   });
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'regulatory_scenario', title: '监管场景', description: '监管场景',
-    sourceTable: '十一个穿透式监管场景（11 行）',
-    sourceRefs: [{
-      kind: 'table', table: '十一个穿透式监管场景（11 行）', columns: ['序号'],
-    }],
-    primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '序号', sourceColumn: '序号', type: 'number', required: true }],
-  };
   const operation = {
     key: 'query_regulatory_scenario', title: '查询监管场景', description: '查询监管场景',
     inputs: [], outputs: [{ field: 'result', type: 'array' }],
-    flow: ['查询 object:regulatory_scenario'], relatedObjects: ['regulatory_scenario'],
+    flow: ['查询 object:十一个穿透式监管场景'], relatedObjects: ['十一个穿透式监管场景'],
     competencyQuestionId: operationTargetId(process.id),
   };
   const faux = createFauxCore({ provider: 'generation-source-catalog', models: [{ id: 'generation-source-catalog' }] });
   faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
     fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })]),
   ]);
 
@@ -536,111 +522,6 @@ test('历史分析和对象提交中的表格展示标签在生成时规范化',
   assert.equal(result.spec.objects[0].sourceTable, '十一个穿透式监管场景');
   assert.equal(result.spec.objects[0].sourceRefs?.[0]?.kind, 'table');
   assert.equal((result.spec.objects[0].sourceRefs?.[0] as any).table, '十一个穿透式监管场景');
-});
-
-test('对象字段映射无效时在当前批次自动重交', async () => {
-  const project = await createGenerationProject({ owner: 'tester', name: '字段映射重交', domain: '监管', background: '' });
-  const process = { id: 'regulatory_scenario_lookup', title: '查询监管场景' };
-  const flowchart = confirmedFlowchart([process]);
-  upsertNode({
-    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
-    output: {
-      domainOverview: '监管',
-      candidateObjects: [{ name: '监管场景', rationale: '监管对象', sourceTables: ['监管场景'] }],
-      openQuestions: [], materialAssessments: [], candidateArtifacts: [],
-    },
-  });
-  const object = (sourceColumn: string) => ({
-    candidateId: 'candidate_1',
-    key: 'regulatory_scenario', title: '监管场景', description: '监管场景',
-    sourceTable: '监管场景', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '序号', sourceColumn, type: 'number', required: true }],
-  });
-  const operation = {
-    key: 'query_regulatory_scenario', title: '查询监管场景', description: '查询监管场景',
-    inputs: [], outputs: [{ field: 'result', type: 'array' }],
-    flow: ['查询 object:regulatory_scenario'], relatedObjects: ['regulatory_scenario'],
-    competencyQuestionId: operationTargetId(process.id),
-  };
-  const core = createFauxCore({ provider: 'generation-mapping-repair', models: [{ id: 'generation-mapping-repair' }] });
-  let objectCalls = 0;
-  const llm = {
-    model: core.getModel(),
-    getApiKey: () => 'faux',
-    streamFn: ((model: unknown, context: any, options: unknown) => {
-      const system = String(context.systemPrompt ?? '');
-      if (system.includes('submit_objects')) {
-        objectCalls += 1;
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_objects', {
-          objects: [object(objectCalls === 1 ? '不存在字段' : '序号')],
-        })])]);
-      } else if (system.includes('submit_rules_metrics')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })])]);
-      } else if (system.includes('submit_operations')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })])]);
-      } else {
-        throw new Error(`未处理的测试 prompt: ${system.slice(0, 80)}`);
-      }
-      return core.streamSimple(model as any, context, options as any);
-    }) as any,
-  };
-
-  const result = await generatePackage(project, {
-    tables: [{
-      name: '监管场景', rowCount: 1,
-      fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
-    }], documents: [],
-  }, llm, flowchart);
-
-  assert.equal(result.spec.objects[0].fields[0].sourceColumn, '序号');
-  assert.equal(objectCalls, 2);
-  const node = [...listNodes(project.id)].reverse().find((item) => item.type === 'generate');
-  assert.ok(listTraceEvents(node!.id).some((event) =>
-    event.phase === 'object_batch_1' && event.kind === 'repair_started'));
-});
-
-test('对象通过候选 ID 认领中英双语候选名称', async () => {
-  const project = await createGenerationProject({ owner: 'tester', name: '候选 ID 绑定', domain: '监管', background: '' });
-  const process = { id: 'risk_event_lookup', title: '查询风险事件' };
-  const flowchart = confirmedFlowchart([process]);
-  upsertNode({
-    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
-    output: {
-      domainOverview: '穿透式监管',
-      candidateObjects: [{
-        name: '风险事件（RiskEvent）', rationale: '监管风险事件', sourceTables: ['监管场景'],
-      }],
-      openQuestions: [], materialAssessments: [], candidateArtifacts: [],
-    },
-  });
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'RiskEvent', title: '风险事件', description: '监管风险事件',
-    sourceRefs: [{ kind: 'table', table: '监管场景', columns: ['序号'] }], primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '序号', sourceColumn: '序号', type: 'number', required: true }],
-  };
-  const operation = {
-    key: 'query_risk_event', title: '查询风险事件', description: '查询风险事件',
-    inputs: [], outputs: [{ field: 'result', type: 'array' }],
-    flow: ['查询 object:RiskEvent'], relatedObjects: ['RiskEvent'],
-    competencyQuestionId: operationTargetId(process.id),
-  };
-  const faux = createFauxCore({ provider: 'generation-candidate-id', models: [{ id: 'generation-candidate-id' }] });
-  faux.setResponses([
-    fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })]),
-    fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })]),
-    fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })]),
-  ]);
-
-  const result = await generatePackage(project, {
-    tables: [{
-      name: '监管场景', rowCount: 1,
-      fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
-    }], documents: [],
-  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
-
-  assert.equal(result.spec.objects[0].candidateId, 'candidate_1');
-  assert.equal(result.spec.objects[0].key, 'RiskEvent');
 });
 
 test('文档对象生成继承材料分析证据和后端全文覆盖记录', async () => {

@@ -24,7 +24,7 @@ import {
 } from './authoring-api.js';
 import { uploadModelingMaterials } from './modeling-material-upload.js';
 import { useElapsed } from './ui.jsx';
-import AiConstructionMessageCard from './AiConstructionMessageCard.jsx';
+import AiConstructionMessageCard, { milestonePosition } from './AiConstructionMessageCard.jsx';
 import PendingInteraction from './PendingInteraction.jsx';
 import PendingInteractionHint from './PendingInteractionHint.jsx';
 import TaskAdjustmentPreviewCard from './TaskAdjustmentPreviewCard.jsx';
@@ -42,9 +42,8 @@ import {
   waitingInteractionTitle,
   waitingPackageChatRun,
 } from './packageChatRun.js';
-import { activeRunLabel, activeRunOf } from './activeRun.js';
+import { activeRunLabel, activeRunObservability, activeRunOf, activeRunStatusLabel } from './activeRun.js';
 import { CANCEL_PENDING_HINT, cancellableOperationOf } from './cancellableOperation.js';
-import { stallHint, stalledForMs } from './taskStall.js';
 import { incrementEntryState } from './incrementEntry.js';
 import { effectiveTaskPlanTasks, summarizeTaskPlan } from './taskPlanStatus.js';
 import {
@@ -88,6 +87,13 @@ export function interactionResponseChangedPackage(result) {
   return Boolean(result?.packageRevision || result?.revision || result?.result?.version);
 }
 
+export function repairRuntimeMessageId(messages = []) {
+  return [...messages].reverse().find((message) => (
+    (message?.blocks ?? []).some((block) => block?.type === 'status'
+      && /知识包.*修复.*(?:方案等待确认|等待专家决策)/u.test(String(block.title ?? '')))
+  ))?.id ?? '';
+}
+
 export function MaterialAnalysisStoppedNotice({ task, busy = false, onRetry }) {
   if (!task || task.status !== 'failed'
     || !['material_analysis', 'package_baseline_review'].includes(task.kind)) return null;
@@ -112,11 +118,20 @@ function hasMaterialAnalysisFailureMessage(messages, taskId) {
       && /分析.*(?:停止|未完成)/u.test(String(block.title ?? ''))));
 }
 
-function etaText(eta) {
-  if (eta?.minMinutes == null || eta?.maxMinutes == null) return '剩余时长正在估算';
-  return eta.minMinutes === eta.maxMinutes
-    ? `预计剩余 ${eta.minMinutes} 分钟`
-    : `预计剩余 ${eta.minMinutes}–${eta.maxMinutes} 分钟`;
+function clampProgress(value) {
+  const progress = Number(value);
+  return Number.isFinite(progress) ? Math.max(0, Math.min(100, Math.round(progress))) : null;
+}
+
+export function taskRuntimeMessageId(messages = [], taskId = '') {
+  const candidates = [...messages].reverse().filter((message) => (
+    (!taskId || message?.taskId === taskId)
+    && (message?.blocks ?? []).some((block) => block?.type === 'status')
+  ));
+  return candidates.find((message) => String(message?.key ?? '').startsWith('progress.task.'))?.id
+    ?? candidates.find((message) => String(message?.key ?? '') === 'analysis.progress.current')?.id
+    ?? candidates[0]?.id
+    ?? '';
 }
 
 export default function PackageChat({
@@ -176,10 +191,16 @@ export default function PackageChat({
   const [waitingCardRecoveryBusy, setWaitingCardRecoveryBusy] = useState(false);
   // 服务端还在跑的运行。本地 busy 一刷新就没了，但后端没停——只认本地会让用户
   // 以为提交丢了。本地态优先（文案更贴合刚点的按钮），没有本地态时用服务端的。
-  const serverRun = useMemo(() => activeRunOf(authoring), [authoring]);
+  const defaultServerRun = useMemo(() => activeRunOf(authoring), [authoring]);
+  const controlledRepairRun = useMemo(() => (authoring?.activeRuns ?? []).find((run) => (
+    ['queued', 'running'].includes(run?.status)
+      && run?.state?.purpose === 'controlled_repair_apply'
+  )) ?? null, [authoring]);
+  const serverRun = controlledRepairRun ?? defaultServerRun;
   const busy = localBusy || (chatRunning ? 'plan' : '') || (serverRun ? 'server_run' : '');
   // 计时也走服务端开始时间，刷新后不会从 0 秒重新数
   const sec = useElapsed(!!busy, localBusy ? undefined : serverRun?.createdAt);
+  const serverJob = useMemo(() => activeRunObservability(serverRun, Date.now()), [serverRun, sec]);
   const bodyRef = useRef(null);
   const pendingInteractionRef = useRef(null);
   const loadingOlderRef = useRef(false);
@@ -287,12 +308,6 @@ export default function PackageChat({
     () => cancellableOperationOf({ busy, serverRun }),
     [busy, serverRun],
   );
-  // 「还在跑」和「已经挂了」原先长得一样。sec 每秒都变，顺带让这个判断持续刷新。
-  const stalledMs = useMemo(() => (busy ? stalledForMs({
-    messages: structuredMessages,
-    taskId: aiConstruction?.progress?.currentTaskId,
-    startedAt: localBusy ? localBusySince.current : serverRun?.createdAt,
-  }) : null), [busy, localBusy, sec, structuredMessages, aiConstruction, serverRun]);
   // 忙碌态结束就把「正在停止」清掉，否则下一轮任务的按钮会一直是禁用的
   useEffect(() => { if (!busy) setCancelling(''); }, [busy]);
 
@@ -709,6 +724,21 @@ export default function PackageChat({
   const currentTask = aiConstruction?.tasks?.find(
     (task) => task.id === aiConstruction?.progress?.currentTaskId,
   );
+  const taskById = useMemo(
+    () => new Map((aiConstruction?.tasks ?? []).map((task) => [task.id, task])),
+    [aiConstruction?.tasks],
+  );
+  const stageProgressByMilestone = useMemo(() => {
+    const groups = new Map();
+    for (const task of effectiveTaskPlanTasks(aiConstruction?.tasks ?? [])) {
+      if (!task?.milestoneId) continue;
+      const progress = groups.get(task.milestoneId) ?? { completed: 0, total: 0 };
+      progress.total += 1;
+      if (['completed', 'skipped'].includes(task.status)) progress.completed += 1;
+      groups.set(task.milestoneId, progress);
+    }
+    return groups;
+  }, [aiConstruction?.tasks]);
   const currentTasks = aiConstruction?.tasks?.filter(
     (task) => task.milestoneId === aiConstruction?.progress?.currentMilestoneId,
   ) ?? [];
@@ -721,6 +751,51 @@ export default function PackageChat({
       && entry.item.taskId === currentTask.id
       && String(entry.item.key ?? '').startsWith('analysis.progress.')))
     : timeline;
+  const repairStatusMessageId = useMemo(
+    () => repairRuntimeMessageId(structuredMessages),
+    [structuredMessages],
+  );
+  const repairRuntimeActive = Boolean(
+    repairStatusMessageId
+      && (localBusy === 'repair_knowledge'
+        || controlledRepairRun
+        || /应用知识包修复方案/u.test(String(activeOperation?.operation ?? ''))),
+  );
+  const defaultRuntimeMessageId = useMemo(() => taskRuntimeMessageId(
+    structuredMessages,
+    String(currentTask?.id ?? serverRun?.state?.taskId ?? ''),
+  ), [currentTask?.id, serverRun?.state?.taskId, structuredMessages]);
+  const repairCardRuntime = repairRuntimeActive ? {
+    title: controlledRepairRun ? activeRunLabel(controlledRepairRun) : '正在应用知识包修复方案',
+    summary: '方案已确认，正在修改并重新校验当前知识包。完成后这里会自动更新，请勿重复提交。',
+    statusLabel: controlledRepairRun ? activeRunStatusLabel(controlledRepairRun) : '提交中',
+    job: controlledRepairRun ? serverJob : null,
+    stalledMessage: '',
+    cancelling: Boolean(cancelling),
+    onRefresh: () => { void onProjectChanged?.(); },
+    ...(cancellableOperation ? {
+      onCancel: () => { void cancelRunningOperation(cancellableOperation); },
+    } : {}),
+  } : null;
+  const taskCardRuntime = !repairCardRuntime && serverRun && serverJob && defaultRuntimeMessageId ? {
+    title: serverJob.currentStep || activeRunLabel(serverRun),
+    statusLabel: activeRunStatusLabel(serverRun),
+    job: serverJob,
+    stalledMessage: '',
+    cancelling: Boolean(cancelling),
+    onRefresh: () => { void onProjectChanged?.(); },
+    ...(cancellableOperation ? {
+      onCancel: () => { void cancelRunningOperation(cancellableOperation); },
+    } : {}),
+  } : null;
+  const activeRuntimeMessageId = repairCardRuntime ? repairStatusMessageId : defaultRuntimeMessageId;
+  const activeCardRuntime = repairCardRuntime ?? taskCardRuntime;
+  const overallProgress = clampProgress(aiConstruction?.progress?.percent);
+  const overallStage = milestonePosition(aiConstruction?.progress?.currentMilestoneId)
+    ?? (overallProgress === 100 ? {
+      index: Number(aiConstruction?.progress?.totalMilestones ?? 6),
+      total: Number(aiConstruction?.progress?.totalMilestones ?? 6),
+    } : null);
   const liveTaskPlanMessage = visibleTasks.length ? {
     id: 'live-task-plan', role: 'assistant', createdAt: aiConstruction?.updatedAt, blocks: [{
       type: 'task_plan', title: '当前动态任务', note: aiConstruction?.progress?.eta?.note,
@@ -886,6 +961,19 @@ export default function PackageChat({
             {incrementEntry.label}
           </button>
         )}
+        {overallProgress != null && (
+          <div className="pchat-overall-progress">
+            <div className="pchat-overall-progress__head">
+              <strong>AI 辅助建模总进度</strong>
+              <span>{overallStage ? `阶段 ${overallStage.index}/${overallStage.total} · ` : ''}{overallProgress}%</span>
+            </div>
+            <div className="pchat-overall-progress__bar" role="progressbar"
+              aria-label="AI 辅助建模总进度" aria-valuemin="0" aria-valuemax="100"
+              aria-valuenow={overallProgress}>
+              <span style={{ width: `${overallProgress}%` }} />
+            </div>
+          </div>
+        )}
         {liveTaskPlanMessage && (
           <div className="pchat-task-status">
             <button type="button" className="pchat-task-status__chip"
@@ -921,6 +1009,9 @@ export default function PackageChat({
         )}
         {visibleTimeline.map((entry) => entry.kind === 'structured' ? (
           <AiConstructionMessageCard key={`structured-${entry.item.id}`} message={entry.item} hideTaskPlan
+            task={taskById.get(entry.item.taskId) ?? null}
+            stageProgress={stageProgressByMilestone.get(taskById.get(entry.item.taskId)?.milestoneId) ?? null}
+            runtime={activeCardRuntime && entry.item.id === activeRuntimeMessageId ? activeCardRuntime : null}
             actionsEnabled={canUseStructuredMessageActions({
               busy: Boolean(busy),
               constructionStatus: aiConstruction?.status,
@@ -992,7 +1083,7 @@ export default function PackageChat({
           onApply={applyTaskEdit}
           onCancel={() => setTaskEditConfig(null)}
         />}
-        {pendingInteraction && (
+        {pendingInteraction && !repairRuntimeActive && (
           <div ref={pendingInteractionRef} className="ac-message-interaction" tabIndex={-1}>
             <PendingInteraction
               interaction={pendingInteraction}
@@ -1015,38 +1106,9 @@ export default function PackageChat({
             </div>
           </div>
         )}
-        {busy && (
-          <div className="pchat-msg assistant">
-            <div className="bubble"><span className="spinner" /> {{
-              plan: '正在分析', apply: '正在修改', upload: '正在上传建模资料',
-              analyze: '正在分析建模资料', confirm: '正在确认当前阶段',
-              interaction: '正在提交建模回答',
-              generate_knowledge: `正在${currentTask?.title ?? '生成知识结构'} · ${etaText(aiConstruction?.progress?.eta)}`,
-              repair_knowledge: `正在${String(currentTask?.title ?? '修复知识包').replaceAll('受控修复', '逐项修复')} · ${etaText(aiConstruction?.progress?.eta)}`,
-              defer_validation: '正在记录暂缓决定并准备进入验证',
-              script_generation: `正在生成脚本变更方案 · ${etaText(aiConstruction?.progress?.eta)}`,
-              script_apply: `正在应用并校验确定性脚本 · ${etaText(aiConstruction?.progress?.eta)}`,
-              task_preview: '正在分析任务调整影响', task_adjustment: '正在应用任务调整',
-              task_edit: '正在应用任务图变更',
-              increment_start: '正在开始增量补充',
-              increment_propose: '正在生成增量修改方案',
-              server_run: activeRunLabel(serverRun),
-            }[busy] ?? '正在处理'} · {sec} 秒</div>
-            {cancellableOperation && (
-              <button type="button" className="pchat-cancel"
-                disabled={Boolean(cancelling)}
-                onClick={() => { void cancelRunningOperation(cancellableOperation); }}>
-                {cancelling ? '正在停止…' : '取消'}
-              </button>
-            )}
-          </div>
-        )}
-        {cancelling && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
-        {!cancelling && stalledMs != null && (
-          <div className="pchat-msg assistant"><div className="bubble muted">{stallHint(stalledMs)}</div></div>
-        )}
+        {cancelling && !repairCardRuntime && <div className="pchat-msg assistant"><div className="bubble muted">{CANCEL_PENDING_HINT}</div></div>}
       </div>
-      {pendingInteraction && (
+      {pendingInteraction && !repairRuntimeActive && (
         <PendingInteractionHint
           scrollRef={bodyRef}
           targetSelector=".ac-message-interaction"

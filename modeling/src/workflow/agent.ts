@@ -17,6 +17,14 @@ export interface RunAgentOptions {
   // null 表示调用方提供了自己的终止条件（如全文读取的无进展保护）。
   maxTurns?: number | null;
 }
+export interface RunAgentCaptureOptions extends RunAgentOptions {
+  /**
+   * Structured-output agents often need a short continuation after the model
+   * writes prose or an invalid tool payload. Keep the continuation in the
+   * same agent conversation so the source text is not sent again.
+   */
+  maxCaptureAttempts?: number;
+}
 export interface MakeAgentOptions {
   transformContext?: (messages: unknown[]) => unknown[] | Promise<unknown[]>;
 }
@@ -163,9 +171,20 @@ export async function runAgentCaptured(
   captured: () => boolean,
   nudge: string,
   observe?: AgentEventObserver,
-  options: RunAgentOptions = {},
+  options: RunAgentCaptureOptions = {},
 ): Promise<unknown[]> {
-  let messages = await runAgent(agent, prompt, observe, options);
-  if (!captured()) messages = await runAgent(agent, nudge, observe, options);
+  const { maxCaptureAttempts = 2, ...runOptions } = options;
+  const attempts = Number.isFinite(maxCaptureAttempts) && maxCaptureAttempts > 0
+    ? Math.floor(maxCaptureAttempts)
+    : 2;
+  let messages = await runAgent(agent, prompt, observe, runOptions);
+  for (let attempt = 1; attempt < attempts && !captured(); attempt += 1) {
+    messages = await runAgent(
+      agent,
+      `${nudge}\n不要重复分析原文；只修正上一次工具参数并立即再次调用提交工具。`,
+      observe,
+      runOptions,
+    );
+  }
   return messages;
 }

@@ -179,6 +179,21 @@ function sendStateError(reply: FastifyReply, error: unknown) {
     return reply.code(error.code === 'revision_conflict' ? 409 : 400)
       .send({ error: error.message, code: error.code });
   }
+  if (error instanceof PackageCandidateRejectedError) {
+    const feedback = error.feedback.trim().slice(0, 180);
+    return reply.code(422).send({
+      error: `修复候选未通过校验，请根据反馈重新确认：${feedback}`,
+      code: error.code,
+      feedback: error.feedback,
+      nextActions: [
+        {
+          id: 'repair_knowledge_structure', label: '重新校验并继续修复', style: 'primary',
+          description: '保留当前知识包，依据这次候选失败原因重新生成修复方案',
+        },
+        { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
+      ],
+    });
+  }
   if (error instanceof ArtifactRepositoryError) {
     const status = error.code === 'revision_conflict' ? 409
       : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;
@@ -313,6 +328,8 @@ export interface AuthoringRouteOptions {
   processDraftGenerator?: typeof generateProcessDraft;
   /** 后台作业登记表。与 registerRoutes 共用同一个实例，跨路由去重才有意义 */
   jobs?: InFlightOperations;
+  /** 仅供测试缩短心跳周期；生产环境使用统一的 15 秒周期。 */
+  jobHeartbeatIntervalMs?: number;
   packageChatApply?: typeof packageChatApply;
   packageChatPlan?: typeof packageChatPlan;
   knowledgeRunner?: Pick<KnowledgeStructureRunner, 'run'>;
@@ -1145,7 +1162,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             intent: '生成增量修改方案',
             interactionTitle: '确认增量修改方案',
             metadata: { incrementRound: true, incrementTaskId: intake.id },
-            // 本轮全部文本资料必须连续读到 EOF 后才能提交增量方案。
+            // 本轮全部文本资料统一进入持久化 Map-Reduce；失败后从分段断点续跑。
             documents: materials.map((item) => ({
               filename: item.filename, textContent: item.content,
             })),
@@ -2211,14 +2228,22 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         const answered = adapter.respond(project.id, interactionId, requestId, response);
         const construction = orchestrator.startScriptGeneration(project.id);
         const runId = answered.run.id;
-
-        void jobs.run(`${project.id}:script-generation`, '生成确定性脚本方案', async () => {
-          await runWithProjectLease(leases, {
-            projectId: project.id,
-            operation: '生成确定性脚本方案',
-            owner: `${req.user!.username}:${req.id}`,
-            ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
-          }, async () => {
+        const running = adapter.progress(project.id, runId, {
+          phase: '脚本方案生成',
+          currentStep: '正在根据已确认契约形成受控变更计划',
+          progress: 0,
+          retryCount: 0,
+        });
+        startBackgroundJob({
+          jobs,
+          leases,
+          key: `${project.id}:script-generation`,
+          operation: '生成确定性脚本方案',
+          owner: `${req.user!.username}:${req.id}`,
+          ttlMs: ASSISTED_WRITE_LEASE_TTL_MS,
+          projectId: project.id,
+          heartbeat: { adapter, runId, intervalMs: options.jobHeartbeatIntervalMs },
+          run: async () => {
             const planned = await planPackageChat(project, [], requirement, {
               purpose: 'script_generation',
               intent: '生成确定性脚本',
@@ -2241,18 +2266,18 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
               requirement,
             });
             orchestrator.waitForScriptApproval(project.id);
-          });
-        }).catch((error) => {
-          const reason = error instanceof Error ? error.message : String(error);
-          // 失败收尾必须自己兜住：这时已经没有 HTTP 响应可以承载错误了
-          try { orchestrator.failScriptGeneration(project.id, reason); } catch { /* 收尾失败不再抛 */ }
-          try { adapter.fail(project.id, runId, reason); } catch { /* 同上 */ }
+          },
+          onError: (reason) => {
+            // 失败收尾必须自己兜住：这时已经没有 HTTP 响应可以承载错误了
+            try { orchestrator.failScriptGeneration(project.id, reason); } catch { /* 收尾失败不再抛 */ }
+            try { adapter.fail(project.id, runId, reason); } catch { /* 同上 */ }
+          },
         });
 
         return reply.code(202).send({
           accepted: true,
           interaction: answered.interaction,
-          run: answered.run,
+          run: running.run,
           replayed: answered.replayed,
           ...construction,
           cursor: state.snapshot(project.id).lastEventSeq,

@@ -26,7 +26,7 @@ function remainingEta(percent: number, elapsedMs: number) {
   const observedTotalSeconds = (Math.max(1, elapsedMs) / 1000) / fraction;
   const estimatedTotalSeconds = percent < 10
     ? 300
-    : Math.max(120, Math.min(480, observedTotalSeconds));
+    : Math.max(120, Math.min(14_400, observedTotalSeconds));
   const remainingSeconds = estimatedTotalSeconds * (1 - fraction);
   return {
     minMinutes: Math.max(1, Math.ceil((remainingSeconds * 0.75) / 60)),
