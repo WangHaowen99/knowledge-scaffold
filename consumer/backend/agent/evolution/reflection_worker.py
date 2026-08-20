@@ -429,8 +429,6 @@ class ReflectionWorker:
                 duration_ms,
             )
             return result
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             duration_ms = int((time.perf_counter() - started) * 1000)
             logger.exception(

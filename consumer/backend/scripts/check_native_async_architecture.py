@@ -53,10 +53,10 @@ REMOVED_FILES = (
 )
 
 REMOVED_ROUTE_PATTERNS = (
-    re.compile("/agentic/runs/" + "stream"),
-    re.compile("/agentic/runs/" + "sync"),
-    re.compile(r"/agentic/runs/(?:\{[^}]+\}|<[^>]+>|[^/\s]+)/" + "interact"),
-    re.compile(r"/agentic/runs/(?:\{[^}]+\}|<[^>]+>|[^/\s]+)/" + "status"),
+    re.compile(r"/agentic/runs/stream"),
+    re.compile(r"/agentic/runs/sync"),
+    re.compile(r"/agentic/runs/(?:\{[^}]+\}|<[^>]+>|[^/\s]+)/interact"),
+    re.compile(r"/agentic/runs/(?:\{[^}]+\}|<[^>]+>|[^/\s]+)/status"),
 )
 
 
@@ -101,15 +101,13 @@ def _route_scan_files() -> list[Path]:
             continue
         if not root.exists():
             continue
-        files.update(
-            path
-            for path in root.rglob("*")
-            if path.is_file()
-            and path.suffix.lower() in suffixes
-            and "node_modules" not in path.parts
-            and "venv" not in path.parts
-            and "__pycache__" not in path.parts
-        )
+        for path in root.rglob("*"):
+            excluded_parts = {"node_modules", "venv", "__pycache__"}
+            if not path.is_file() or path.suffix.lower() not in suffixes:
+                continue
+            if excluded_parts.intersection(path.parts):
+                continue
+            files.add(path)
     return sorted(files)
 
 
@@ -151,9 +149,9 @@ def collect_violations() -> list[str]:
 def main() -> int:
     violations = collect_violations()
     if violations:
-        print("\n".join(violations))
+        sys.stdout.write("\n".join(violations) + "\n")
         return 1
-    print("native async architecture gate: PASS")
+    sys.stdout.write("native async architecture gate: PASS\n")
     return 0
 
 

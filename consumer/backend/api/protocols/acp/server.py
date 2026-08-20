@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterable
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urljoin
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -172,36 +173,37 @@ def _interaction_response_values(
         or metadata.get("selected_option_id")
         or ""
     ).strip() or None
-    options = pending.get("options") if isinstance(pending.get("options"), list) else []
-    selected = next(
-        (
-            option
-            for option in options
-            if isinstance(option, dict)
-            and (
-                option_id
-                and str(option.get("id") or option.get("option_id") or "") == option_id
-            )
-        ),
-        None,
+    options = (
+        pending.get("options")
+        if isinstance(pending.get("options"), list)
+        else []
     )
+    selected = None
+    if option_id:
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            candidate_id = str(option.get("id") or option.get("option_id") or "")
+            if candidate_id == option_id:
+                selected = option
+                break
     if selected is None and not option_id and user_response:
-        selected = next(
-            (
-                option
-                for option in options
-                if isinstance(option, dict)
-                and user_response
-                in {
-                    str(option.get("id") or option.get("option_id") or ""),
-                    str(option.get("value") or ""),
-                    str(option.get("label") or ""),
-                }
-            ),
-            None,
-        )
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            response_values = {
+                str(option.get("id") or option.get("option_id") or ""),
+                str(option.get("value") or ""),
+                str(option.get("label") or ""),
+            }
+            if user_response in response_values:
+                selected = option
+                break
     if selected is not None:
-        option_id = str(selected.get("id") or selected.get("option_id") or "").strip() or None
+        option_id = (
+            str(selected.get("id") or selected.get("option_id") or "").strip()
+            or None
+        )
         value = selected.get("value")
         if value is None:
             value = user_response or option_id
@@ -574,7 +576,8 @@ async def get_agent_detail(
     workspace_id: str = Depends(_acp_workspace_id),
 ):
     config: ACPConfig = get_config()
-    base = str(request.base_url).rstrip("/") + "/acp"
+    request_root = f"{str(request.base_url).rstrip('/')}/"
+    base = urljoin(request_root, "acp")
     return {
         "name": config.agent.name,
         "version": config.agent.version,
@@ -588,7 +591,10 @@ async def get_agent_detail(
             "type": config.acp.authentication.type,
             "scheme": "bearer" if config.acp.authentication.type != "none" else None,
         },
-        "endpoints": {"agent": base + "/agent", "runs": base + "/runs"},
+        "endpoints": {
+            "agent": urljoin(f"{base.rstrip('/')}/", "agent"),
+            "runs": urljoin(f"{base.rstrip('/')}/", "runs"),
+        },
         "metadata": {
             "workspace_id": workspace_id,
             "protocol_version": config.acp.protocol_version,

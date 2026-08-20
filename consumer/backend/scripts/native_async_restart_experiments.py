@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import signal
-import subprocess
 import sys
 import tempfile
 import time
@@ -23,14 +23,14 @@ from uuid import uuid4
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_ROOT))
+    sys.path.append(str(_BACKEND_ROOT))
 
 from persistence.chat_store import ChatStore
 from persistence.execution_store import ExecutionStore
 
 
-_SCRIPT_PATH = Path(__file__).resolve()
 _CHILD_TIMEOUT_SECONDS = 10.0
+_PROCESS_CONTEXT = multiprocessing.get_context("spawn")
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -145,13 +145,16 @@ def _verify_running(round_root: Path, marker: Path, round_index: int) -> dict[st
     if history is None or len(history.get("turns", [])) != 1:
         raise RuntimeError("running history was not recovered exactly once")
     interrupted = history["turns"][0]
-    if (
-        interrupted.get("run_id") != expected.get("run_id")
-        or interrupted.get("status") != "failed"
-        or interrupted.get("error_code") != "SERVICE_RESTARTED"
-        or (interrupted.get("final_output") or {}).get("error_code")
-        != "SERVICE_RESTARTED"
-    ):
+    running_recovery_failed = any(
+        (
+            interrupted.get("run_id") != expected.get("run_id"),
+            interrupted.get("status") != "failed",
+            interrupted.get("error_code") != "SERVICE_RESTARTED",
+            (interrupted.get("final_output") or {}).get("error_code")
+            != "SERVICE_RESTARTED",
+        )
+    )
+    if running_recovery_failed:
         raise RuntimeError("running Turn was not marked SERVICE_RESTARTED")
     if chat_store.get_session(session_id) is None:
         raise RuntimeError("running ChatStore session did not survive")
@@ -275,12 +278,14 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
     session_id = _session_id("awaiting", round_index)
     interaction = expected.get("interaction")
     original = execution_store.get_turn(session_id, int(expected["turn_id"]))
-    if (
-        not isinstance(interaction, dict)
-        or original is None
-        or original.get("status") != "awaiting_input"
-        or original.get("pending_interaction") != interaction
-        or original.get("interaction_consumed_at")
+    if not isinstance(interaction, dict) or original is None:
+        raise RuntimeError("awaiting checkpoint did not survive SIGKILL")
+    if any(
+        (
+            original.get("status") != "awaiting_input",
+            original.get("pending_interaction") != interaction,
+            original.get("interaction_consumed_at"),
+        )
     ):
         raise RuntimeError("awaiting checkpoint did not survive SIGKILL")
     if chat_store.get_session(session_id) is None:
@@ -331,15 +336,18 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
             request_fingerprint=request_fingerprint,
         )
     )
-    if (
-        not created
-        or retry_created
-        or retry_turn["run_id"] != answer_turn["run_id"]
-        or cross_key_created
-        or cross_key_turn["run_id"] != answer_turn["run_id"]
-        or int(answer_turn["turn_id"]) != int(original["turn_id"]) + 1
-        or answer_turn["run_id"] == original["run_id"]
-    ):
+    answer_allocation_failed = any(
+        (
+            not created,
+            retry_created,
+            retry_turn["run_id"] != answer_turn["run_id"],
+            cross_key_created,
+            cross_key_turn["run_id"] != answer_turn["run_id"],
+            int(answer_turn["turn_id"]) != int(original["turn_id"]) + 1,
+            answer_turn["run_id"] == original["run_id"],
+        )
+    )
+    if answer_allocation_failed:
         raise RuntimeError("awaiting answer did not create exactly one new Run/Turn")
     chat_store.upsert_message(
         session_id,
@@ -375,14 +383,17 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
     if persisted is None or len(persisted.get("turns", [])) != 2:
         raise RuntimeError("awaiting answer durable history is incomplete")
     persisted_original, persisted_answer = persisted["turns"]
-    if (
-        persisted_original.get("status") != "awaiting_input"
-        or persisted_original.get("run_id") != original["run_id"]
-        or persisted_original.get("interaction_consumed_by_turn_id")
-        != persisted_answer.get("turn_id")
-        or persisted_original.get("interaction_response") != response
-        or persisted_answer.get("status") != "success"
-    ):
+    persisted_linkage_failed = any(
+        (
+            persisted_original.get("status") != "awaiting_input",
+            persisted_original.get("run_id") != original["run_id"],
+            persisted_original.get("interaction_consumed_by_turn_id")
+            != persisted_answer.get("turn_id"),
+            persisted_original.get("interaction_response") != response,
+            persisted_answer.get("status") != "success",
+        )
+    )
+    if persisted_linkage_failed:
         raise RuntimeError("awaiting answer changed the original Run or lost linkage")
     return {
         "checkpoint_survived": True,
@@ -399,47 +410,50 @@ def _verify_awaiting(round_root: Path, marker: Path, round_index: int) -> dict[s
     }
 
 
-def _child_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    current = environment.get("PYTHONPATH", "")
-    environment["PYTHONPATH"] = str(_BACKEND_ROOT) + (
-        os.pathsep + current if current else ""
-    )
-    return environment
-
-
-def _child_command(
+def _run_seed_child(
     mode: str,
     round_root: Path,
     marker: Path,
     round_index: int,
-) -> list[str]:
-    return [
-        sys.executable,
-        str(_SCRIPT_PATH),
-        "--child-mode",
-        mode,
-        "--round-root",
-        str(round_root),
-        "--marker",
-        str(marker),
-        "--round-index",
-        str(round_index),
-    ]
+) -> None:
+    if mode == "seed-running":
+        _seed_running(round_root, marker, round_index)
+        return
+    if mode == "seed-awaiting":
+        _seed_awaiting(round_root, marker, round_index)
+        return
+    raise ValueError("unsupported seed child mode")
 
 
-def _wait_until_ready(process: subprocess.Popen[str], marker: Path) -> None:
+def _run_verifier_child(
+    mode: str,
+    round_root: Path,
+    marker: Path,
+    round_index: int,
+    sender: Any,
+) -> None:
+    try:
+        if mode == "verify-running":
+            result = _verify_running(round_root, marker, round_index)
+        elif mode == "verify-awaiting":
+            result = _verify_awaiting(round_root, marker, round_index)
+        else:
+            raise ValueError("unsupported verifier child mode")
+        sender.send({"passed": True, **result})
+    finally:
+        sender.close()
+
+
+def _wait_until_ready(process: multiprocessing.Process, marker: Path) -> None:
     deadline = time.monotonic() + _CHILD_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if marker.exists():
             _read_json(marker)
             return
-        if process.poll() is not None:
-            stdout, stderr = process.communicate(timeout=1.0)
+        if process.exitcode is not None:
+            process.join(timeout=1.0)
             raise RuntimeError(
-                "seed child exited before ready: stdout={!r} stderr={!r}".format(
-                    stdout[-1000:], stderr[-1000:]
-                )
+                "seed child exited before ready: code={}".format(process.exitcode)
             )
         time.sleep(0.01)
     raise TimeoutError("seed child did not persist readiness marker")
@@ -449,28 +463,28 @@ def _kill_seed_child(mode: str, round_root: Path, round_index: int) -> Path:
     if os.name != "posix" or not hasattr(signal, "SIGKILL"):
         raise RuntimeError("restart experiment requires POSIX SIGKILL")
     marker = round_root / "ready.json"
-    process = subprocess.Popen(
-        _child_command(mode, round_root, marker, round_index),
-        cwd=str(_BACKEND_ROOT),
-        env=_child_environment(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+    process = _PROCESS_CONTEXT.Process(
+        target=_run_seed_child,
+        args=(mode, round_root, marker, round_index),
     )
+    process.start()
+    ready = False
     try:
         _wait_until_ready(process, marker)
-    except BaseException:
-        if process.poll() is None:
+        ready = True
+    finally:
+        if not ready and process.is_alive():
             process.kill()
-            process.communicate(timeout=5.0)
-        raise
+            process.join(timeout=5.0)
     process.kill()
-    stdout, stderr = process.communicate(timeout=5.0)
+    process.join(timeout=5.0)
+    if process.is_alive():
+        raise TimeoutError("seed child did not stop after SIGKILL")
     expected_code = -int(signal.SIGKILL)
-    if process.returncode != expected_code:
+    if process.exitcode != expected_code:
         raise RuntimeError(
-            "seed child was not killed by SIGKILL: code={} stdout={!r} stderr={!r}".format(
-                process.returncode, stdout[-1000:], stderr[-1000:]
+            "seed child was not killed by SIGKILL: code={}".format(
+                process.exitcode
             )
         )
     return marker
@@ -482,27 +496,32 @@ def _run_verifier(
     marker: Path,
     round_index: int,
 ) -> dict[str, Any]:
-    completed = subprocess.run(
-        _child_command(mode, round_root, marker, round_index),
-        cwd=str(_BACKEND_ROOT),
-        env=_child_environment(),
-        capture_output=True,
-        text=True,
-        timeout=_CHILD_TIMEOUT_SECONDS,
-        check=False,
+    receiver, sender = _PROCESS_CONTEXT.Pipe(duplex=False)
+    process = _PROCESS_CONTEXT.Process(
+        target=_run_verifier_child,
+        args=(mode, round_root, marker, round_index, sender),
     )
-    if completed.returncode != 0:
+    process.start()
+    sender.close()
+    process.join(timeout=_CHILD_TIMEOUT_SECONDS)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=5.0)
+        receiver.close()
+        raise TimeoutError("verifier child timed out")
+    result = None
+    if receiver.poll():
+        try:
+            result = receiver.recv()
+        except EOFError:
+            result = None
+    receiver.close()
+    if process.exitcode != 0:
         raise RuntimeError(
-            "verifier child failed: code={} stdout={!r} stderr={!r}".format(
-                completed.returncode,
-                completed.stdout[-2000:],
-                completed.stderr[-2000:],
-            )
+            "verifier child failed: code={}".format(process.exitcode)
         )
-    lines = [line for line in completed.stdout.splitlines() if line.strip()]
-    if not lines:
+    if result is None:
         raise RuntimeError("verifier child produced no result")
-    result = json.loads(lines[-1])
     if not isinstance(result, dict) or not result.get("passed"):
         raise RuntimeError("verifier child reported failure")
     return result
@@ -624,14 +643,17 @@ def _run_turn_allocations(
             raise RuntimeError("fresh ExecutionStore changed Turn ordering")
 
     temporary_files = list(storage_dir.rglob(".execution.json.*.tmp"))
-    if (
-        len(run_ids) != allocations
-        or duplicate_run_ids
-        or duplicate_turn_ids
-        or regressions
-        or sessions_starting_at_one != session_count
-        or temporary_files
-    ):
+    allocation_invariants_failed = any(
+        (
+            len(run_ids) != allocations,
+            duplicate_run_ids,
+            duplicate_turn_ids,
+            regressions,
+            sessions_starting_at_one != session_count,
+            temporary_files,
+        )
+    )
+    if allocation_invariants_failed:
         raise RuntimeError("Turn allocation invariants failed")
     return {
         "allocations": allocations,
@@ -761,31 +783,8 @@ def _main() -> int:
     parser.add_argument("--turn-allocations", type=_positive_int, default=10_000)
     parser.add_argument("--allocation-sessions", type=_positive_int, default=200)
     parser.add_argument("--storage-root", type=Path)
-    parser.add_argument(
-        "--child-mode",
-        choices=("seed-running", "verify-running", "seed-awaiting", "verify-awaiting"),
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument("--round-root", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--marker", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--round-index", type=int, default=0, help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
-        if args.child_mode:
-            if args.round_root is None or args.marker is None:
-                raise ValueError("child mode requires round root and marker")
-            if args.child_mode == "seed-running":
-                _seed_running(args.round_root, args.marker, args.round_index)
-            elif args.child_mode == "verify-running":
-                result = _verify_running(args.round_root, args.marker, args.round_index)
-                print(json.dumps({"passed": True, **result}, sort_keys=True))
-            elif args.child_mode == "seed-awaiting":
-                _seed_awaiting(args.round_root, args.marker, args.round_index)
-            else:
-                result = _verify_awaiting(args.round_root, args.marker, args.round_index)
-                print(json.dumps({"passed": True, **result}, sort_keys=True))
-            return 0
-
         if args.storage_root is not None:
             result = run_experiments(
                 args.storage_root,
@@ -803,10 +802,12 @@ def _main() -> int:
                     turn_allocations=args.turn_allocations,
                     allocation_sessions=args.allocation_sessions,
                 )
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        sys.stdout.write(
+            json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
+        )
         return 0 if result.get("passed") else 1
     except Exception as exc:
-        print(
+        sys.stdout.write(
             json.dumps(
                 {
                     "passed": False,
@@ -817,6 +818,7 @@ def _main() -> int:
                 ensure_ascii=False,
                 sort_keys=True,
             )
+            + "\n"
         )
         return 1
 

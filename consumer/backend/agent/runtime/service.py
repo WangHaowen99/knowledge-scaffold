@@ -1352,11 +1352,10 @@ class OrchestratorSessionAdapter:
                     project_root=project_root,
                     timeout_seconds=agent_config.execute_script_timeout,
                 )
-            events.extend(
-                event
-                for item in raw_events
-                if (event := _runtime_event_from_legacy(item, context)) is not None
-            )
+            for item in raw_events:
+                event = _runtime_event_from_legacy(item, context)
+                if event is not None:
+                    events.append(event)
             if direct_result.status == "error":
                 events.append(
                     _direct_terminal_event(

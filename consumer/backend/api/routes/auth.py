@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urljoin
+
 import requests
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -40,13 +42,17 @@ def _auth_server_url(request: Request) -> str:
     return str(getattr(config, "auth_server_url", "") or "").strip().rstrip("/")
 
 
+def _auth_server_endpoint(base: str, path: str) -> str:
+    return urljoin(f"{base.rstrip('/')}/", path.lstrip("/"))
+
+
 def _proxy_register(request: Request, path: str, payload: dict):
     base = _auth_server_url(request)
     if not base:
         return JSONResponse({"error": "注册功能未开启"}, status_code=503)
     try:
         upstream = requests.post(
-            base + path,
+            _auth_server_endpoint(base, path),
             json=payload,
             # auth server 按客户端 IP 限流，转发时必须带上真实来源 IP
             headers={
@@ -84,7 +90,10 @@ def _get_capabilities(request: Request):
     if not base:
         return {"registration_enabled": False}
     try:
-        upstream = requests.get(base + "/capabilities", timeout=_REGISTER_PROXY_TIMEOUT)
+        upstream = requests.get(
+            _auth_server_endpoint(base, "/capabilities"),
+            timeout=_REGISTER_PROXY_TIMEOUT,
+        )
         payload = upstream.json() if upstream.status_code == 200 else {}
     except (requests.RequestException, ValueError):
         payload = {}

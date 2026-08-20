@@ -30,6 +30,10 @@ from integration.mcp.ontology_binding import (
 from integration.mcp.scope import MCPRequestScope
 from llm.llm_request_mode import normalize_llm_request_mode
 from utils.identifiers import validate_session_id
+from utils.logging import get_logger
+
+
+logger = get_logger("api.protocols.mcp.workflow_bridge")
 
 
 async def execute_mcp_chat_workflow_async(
@@ -246,7 +250,7 @@ async def execute_mcp_chat_workflow_async(
                 reason="mcp_chat_execution_timeout",
             )
         except Exception:
-            pass
+            logger.exception("failed to cancel timed-out MCP chat run")
         return _workflow_error(
             "MCP_CHAT_EXECUTION_TIMEOUT",
             "MCP chat execution timed out and was cancelled",

@@ -22,6 +22,7 @@ from agent.runtime.contracts import (
     TERMINAL_RUN_STATUSES,
 )
 from agent.runtime.errors import (
+    RunConflictError,
     RunNotFoundError,
     SessionBusyError,
 )
@@ -432,36 +433,39 @@ class AsyncRunManager:
                 await self.event_bus.close(run_id)
                 return
             snapshot = snapshot_for_filter
-            if (
-                snapshot is None
-                or entry.terminal_committed
-                or entry.cancel_requested
-                or snapshot.status in TERMINAL_RUN_STATUSES
-            ):
+            if snapshot is None:
+                return
+            if entry.terminal_committed or entry.cancel_requested:
+                return
+            if snapshot.status in TERMINAL_RUN_STATUSES:
                 return
             normalized = draft.model_copy(
                 update={"run_id": run_id, "session_id": snapshot.session_id},
             )
             pending_interaction = pending_interaction_from_draft(normalized)
+            requests_interaction = normalized.event_type == "interaction.requested"
+            has_existing_interaction = snapshot.pending_interaction is not None
+            has_new_interaction = pending_interaction is not None
             if (
-                normalized.event_type == "interaction.requested"
-                and snapshot.pending_interaction is not None
-                and pending_interaction is not None
-                and str(snapshot.pending_interaction.get("id") or "")
-                != str(pending_interaction.get("id") or "")
+                requests_interaction
+                and has_existing_interaction
+                and has_new_interaction
             ):
-                error = RuntimeErrorInfo(
-                    error_code="MULTIPLE_INTERACTIONS_NOT_ALLOWED",
-                    message="one turn cannot request more than one interaction",
-                    retriable=False,
-                )
-                await self._finish(
-                    snapshot,
-                    status=RunStatus.FAILED,
-                    result=RuntimeResult(status="failed", error=error),
-                    error=error,
-                )
-                return
+                existing_id = str(snapshot.pending_interaction.get("id") or "")
+                new_id = str(pending_interaction.get("id") or "")
+                if existing_id != new_id:
+                    error = RuntimeErrorInfo(
+                        error_code="MULTIPLE_INTERACTIONS_NOT_ALLOWED",
+                        message="one turn cannot request more than one interaction",
+                        retriable=False,
+                    )
+                    await self._finish(
+                        snapshot,
+                        status=RunStatus.FAILED,
+                        result=RuntimeResult(status="failed", error=error),
+                        error=error,
+                    )
+                    return
             await self.event_bus.publish(
                 normalized,
                 snapshot_update=(
@@ -573,14 +577,18 @@ class AsyncRunManager:
                     prepared_context,
                     expected={snapshot.status},
                 )
+            transitioned: RunSnapshot | None
             try:
-                snapshot = await self.repository.transition(
+                transitioned = await self.repository.transition(
                     run_id,
                     expected={RunStatus.QUEUED},
                     status=RunStatus.RUNNING,
                 )
-            except Exception:
+            except RunConflictError:
+                transitioned = None
+            if transitioned is None:
                 return
+            snapshot = transitioned
             await self.event_bus.publish(PublicEventDraft(
                 schema_version="1.0",
                 run_id=run_id,

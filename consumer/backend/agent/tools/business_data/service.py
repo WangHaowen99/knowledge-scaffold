@@ -201,24 +201,18 @@ def _build_graph_provider(
             ).strip()
         except Exception:
             scoped_provider_config["workspace_name"] = ""
-    scoped_provider_config.update(
-        {
-            key: value
-            for key, value in dict(
-                request.provider_runtime_context or {}
-            ).items()
-            if key
-            in {
-                "run_id",
-                "session_id",
-                "turn_id",
-                "parent_span_key",
-                "agent_iteration",
-                "model_profile_id",
-                "_observer",
-            }
-        }
-    )
+    allowed_runtime_context_keys = {
+        "run_id",
+        "session_id",
+        "turn_id",
+        "parent_span_key",
+        "agent_iteration",
+        "model_profile_id",
+        "_observer",
+    }
+    for key, value in dict(request.provider_runtime_context or {}).items():
+        if key in allowed_runtime_context_keys:
+            scoped_provider_config[key] = value
     return spec.factory(
         {
             "ontology_search": {

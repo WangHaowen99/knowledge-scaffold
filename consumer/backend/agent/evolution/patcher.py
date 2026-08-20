@@ -354,12 +354,10 @@ class OperationPatcher:
 
     async def _worker_loop(self) -> None:
         queue = self._queue
-        assert queue is not None
+        if queue is None:
+            raise RuntimeError("patcher worker started without a queue")
         while True:
-            try:
-                key = await queue.get()
-            except asyncio.CancelledError:
-                raise
+            key = await queue.get()
             try:
                 await run_sync_compat(
                     self._scan,
@@ -369,8 +367,6 @@ class OperationPatcher:
                     task_name="operation-patcher-scan",
                     offload_kind="tool",
                 )
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception("patcher scan failed for %s/%s", key[1], key[2])
             finally:
@@ -380,7 +376,8 @@ class OperationPatcher:
 
     async def _sweep_loop(self) -> None:
         wakeup = self._sweep_wakeup
-        assert wakeup is not None
+        if wakeup is None:
+            raise RuntimeError("patcher sweeper started without a wakeup event")
         while True:
             interval = max(60, int(self._current_config().sweep_interval_sec))
             try:
@@ -396,8 +393,6 @@ class OperationPatcher:
                 )
                 for key in keys:
                     self._enqueue(key[0], key[1], key[2])
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception("patcher sweep enumeration failed")
 

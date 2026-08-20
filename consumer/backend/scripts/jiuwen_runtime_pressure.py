@@ -12,7 +12,7 @@ import argparse
 import asyncio
 import gc
 import json
-import logging
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -180,7 +180,6 @@ async def _run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
     if runs < workers or runs % workers:
         raise ValueError("runs must be a positive multiple of workers")
 
-    logging.disable(logging.CRITICAL)
     observer = _Observer()
     barrier = _BatchBarrier(workers)
 
@@ -253,7 +252,11 @@ async def _run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
             )
         return index
 
-    jiuwen_engine._resolve_jiuwen_llm_config = lambda *args, **kwargs: _llm_config()
+    def resolve_offline_llm_config(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return _llm_config()
+
+    jiuwen_engine._resolve_jiuwen_llm_config = resolve_offline_llm_config
     jiuwen_engine.create_default_jiuwen_agent = create_offline_agent
     lifecycle = get_jiuwen_runner_lifecycle()
     started_here = False
@@ -320,15 +323,18 @@ async def _run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
         "peak_matches": peak_matches,
         "loop_clean": loop_clean,
     }
-    if (
-        errors
-        or barrier.generations != runs // workers
-        or barrier.max_active != workers
-        or not clean
-        or not owned_resources_zero
-        or not peak_matches
-        or not loop_clean
-    ):
+    pressure_invariants_failed = any(
+        (
+            errors,
+            barrier.generations != runs // workers,
+            barrier.max_active != workers,
+            not clean,
+            not owned_resources_zero,
+            not peak_matches,
+            not loop_clean,
+        )
+    )
+    if pressure_invariants_failed:
         raise RuntimeError(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -345,7 +351,7 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=20)
     args = parser.parse_args()
     result = run_pressure(runs=args.runs, workers=args.workers)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     return 0
 
 

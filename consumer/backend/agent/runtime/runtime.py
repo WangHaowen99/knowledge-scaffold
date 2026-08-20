@@ -585,8 +585,6 @@ class RuntimeContainer:
                 )
                 return False
             return True
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             self._shutdown_failures.append(
                 f"{resource.name}:{type(exc).__name__}"

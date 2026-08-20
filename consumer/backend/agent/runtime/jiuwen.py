@@ -477,12 +477,13 @@ class JiuwenAsyncAgentRuntime:
     def _history_from_state(
         state: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
-        history = [
-            dict(message)
-            for message in list(state.get("messages") or [])
-            if isinstance(message, Mapping)
-            and str(message.get("role") or "") in {"user", "assistant", "tool"}
-        ]
+        history: list[dict[str, Any]] = []
+        for message in list(state.get("messages") or []):
+            if not isinstance(message, Mapping):
+                continue
+            if str(message.get("role") or "") not in {"user", "assistant", "tool"}:
+                continue
+            history.append(dict(message))
         current_query = str(state.get("user_request") or "").strip()
         if not current_query:
             return history

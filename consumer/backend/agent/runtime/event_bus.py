@@ -430,12 +430,10 @@ class AsyncEventBus:
         self._subscriber_reservations.pop(reservation_id, None)
 
     def _release_run_reservations_locked(self, run_id: str) -> None:
-        stale = [
-            reservation_id
-            for reservation_id, reserved_run_id
-            in self._subscriber_reservations.items()
-            if reserved_run_id == run_id
-        ]
+        stale: list[str] = []
+        for reservation_id, reserved_run_id in self._subscriber_reservations.items():
+            if reserved_run_id == run_id:
+                stale.append(reservation_id)
         for reservation_id in stale:
             self._subscriber_reservations.pop(reservation_id, None)
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -554,7 +555,7 @@ def main() -> int:
             )
         )
     except Exception as exc:
-        print(
+        sys.stdout.write(
             json.dumps(
                 {
                     "passed": False,
@@ -564,9 +565,10 @@ def main() -> int:
                 ensure_ascii=False,
                 sort_keys=True,
             )
+            + "\n"
         )
         return 1
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
     return 0
 
 
