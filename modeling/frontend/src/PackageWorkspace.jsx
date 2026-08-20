@@ -10,6 +10,7 @@ import {
   getRevisionDiff,
   listAiConstructionMessages,
   listRevisions,
+  previewMermaidFlowchartImport,
   respondToScenarioReview,
   restoreRevision,
   saveFlowchartDraft,
@@ -127,9 +128,11 @@ export default function PackageWorkspace({
   const [flowchartDraftLoading, setFlowchartDraftLoading] = useState(false);
   const [flowchartEditorState, setFlowchartEditorState] = useState(null);
   const [flowchartAddOpen, setFlowchartAddOpen] = useState(false);
+  const [flowchartAddMode, setFlowchartAddMode] = useState('assistant');
   const [flowchartAddBusy, setFlowchartAddBusy] = useState(false);
   const [flowchartSubmitBusy, setFlowchartSubmitBusy] = useState(false);
   const [flowchartAddError, setFlowchartAddError] = useState('');
+  const [flowchartAddedDiagramId, setFlowchartAddedDiagramId] = useState('');
   const [scenarioReviewFocusRequested, setScenarioReviewFocusRequested] = useState(false);
   const [packageDraftDirty, setPackageDraftDirty] = useState(false);
   const workspaceDirtyRef = useRef(false);
@@ -217,6 +220,7 @@ export default function PackageWorkspace({
     const open = (event) => {
       if (event.detail?.projectId !== projectId) return;
       setFlowchartAddError('');
+      setFlowchartAddMode('assistant');
       setFlowchartAddOpen(true);
     };
     window.addEventListener('mw-flowchart-add-open', open);
@@ -466,6 +470,7 @@ export default function PackageWorkspace({
       setFlowchartDraftError('');
       setFlowchartEditorState(null);
       setFlowchartAddOpen(false);
+      setFlowchartAddedDiagramId('');
       setFlowchartSubmitBusy(false);
       return () => { active = false; };
     }
@@ -473,6 +478,7 @@ export default function PackageWorkspace({
     setFlowchartDraft(null);
     setFlowchartEditorState(null);
     setFlowchartAddOpen(false);
+    setFlowchartAddedDiagramId('');
     setFlowchartSubmitBusy(false);
     setFlowchartAddError('');
     setFlowchartDraftError('');
@@ -506,9 +512,43 @@ export default function PackageWorkspace({
         expectedRevision: flowchartDraft.draftRevision,
       });
       setFlowchartDraft(saved);
+      setFlowchartAddedDiagramId(saved.document?.diagrams?.at(-1)?.id || '');
       setFlowchartAddOpen(false);
     } catch (cause) {
       setFlowchartAddError(cause instanceof Error ? cause.message : '流程图添加失败');
+    } finally {
+      setFlowchartAddBusy(false);
+    }
+  };
+
+  const previewMermaidImport = async (input) => {
+    if (!processReview || !flowchartDraft) throw new Error('流程图确认已结束');
+    if (flowchartEditorState?.dirty) throw new Error('请先保存当前流程图修改，再导入 Mermaid');
+    setFlowchartAddBusy(true);
+    try {
+      return await previewMermaidFlowchartImport(projectId, processReview.id, {
+        ...input,
+        expectedRevision: flowchartDraft.draftRevision,
+      });
+    } finally {
+      setFlowchartAddBusy(false);
+    }
+  };
+
+  const importMermaid = async (input) => {
+    if (!processReview || !flowchartDraft) throw new Error('流程图确认已结束');
+    if (flowchartEditorState?.dirty) throw new Error('请先保存当前流程图修改，再导入 Mermaid');
+    setFlowchartAddBusy(true);
+    try {
+      const saved = await addFlowchartDiagram(projectId, processReview.id, {
+        mode: 'mermaid',
+        ...input,
+        expectedRevision: flowchartDraft.draftRevision,
+      });
+      setFlowchartDraft(saved);
+      setFlowchartAddedDiagramId(saved.document?.diagrams?.at(-1)?.id || '');
+      setFlowchartAddOpen(false);
+      return saved;
     } finally {
       setFlowchartAddBusy(false);
     }
@@ -638,11 +678,18 @@ export default function PackageWorkspace({
               key={`${projectId}:${processReview.id}`}
               document={flowchartDraft.document}
               savedRevision={flowchartDraft.draftRevision}
+              initialDiagramId={flowchartAddedDiagramId}
               disabled={interactionBusy || flowchartAddBusy || flowchartSubmitBusy}
               onSave={saveCurrentFlowchartDraft}
               onStateChange={setFlowchartEditorState}
               onRecommendDiagram={() => {
                 setFlowchartAddError('');
+                setFlowchartAddMode('assistant');
+                setFlowchartAddOpen(true);
+              }}
+              onImportMermaid={() => {
+                setFlowchartAddError('');
+                setFlowchartAddMode('mermaid');
                 setFlowchartAddOpen(true);
               }}
               onCreateBlankDiagram={() => { void addFlowchart({ mode: 'blank' }); }}
@@ -650,6 +697,7 @@ export default function PackageWorkspace({
           </div>
           <FlowchartAddDialog
             open={flowchartAddOpen}
+            initialMode={flowchartAddMode}
             candidates={flowchartDraft.availableCandidates}
             modelingGoal={flowchartDraft.modelingGoal}
             busy={flowchartAddBusy}
@@ -662,6 +710,8 @@ export default function PackageWorkspace({
                 : { candidateTitle: candidate?.title || '' }),
             }); }}
             onAddAi={(instruction) => { void addFlowchart({ mode: 'ai', instruction }); }}
+            onPreviewMermaid={previewMermaidImport}
+            onImportMermaid={importMermaid}
           />
         </>;
       }

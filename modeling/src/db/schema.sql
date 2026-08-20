@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS ai_construction_confirmations (
                           'project_owner', 'modeler', 'domain_expert', 'validator'
                         )),
   note                  TEXT,
+  invalidated_at        TEXT,
+  invalidated_by_rollback_id TEXT,
   created_at            TEXT NOT NULL,
   FOREIGN KEY (project_id, milestone_id)
     REFERENCES ai_construction_milestones(project_id, milestone_id) ON DELETE CASCADE,
@@ -103,6 +105,32 @@ CREATE TABLE IF NOT EXISTS ai_construction_confirmations (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_construction_confirmations_project
   ON ai_construction_confirmations(project_id, created_at);
+
+-- 阶段回退需要同时恢复 Git 知识包和 SQLite 任务图。先持久化意图，Git 恢复成功后
+-- 再原子收敛任务图；进程若在两步之间退出，同一个 request_id 可以安全续做。
+CREATE TABLE IF NOT EXISTS ai_construction_milestone_rollbacks (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES ai_construction_graphs(project_id) ON DELETE CASCADE,
+  request_id            TEXT NOT NULL,
+  target_milestone_id   TEXT NOT NULL,
+  graph_revision_before INTEGER NOT NULL,
+  graph_revision_after  INTEGER,
+  base_package_revision_oid TEXT NOT NULL,
+  current_package_revision_oid TEXT NOT NULL,
+  restored_package_revision_oid TEXT,
+  actor_username        TEXT NOT NULL,
+  reason                TEXT NOT NULL,
+  impact_json           TEXT NOT NULL,
+  response_json         TEXT,
+  status                TEXT NOT NULL DEFAULT 'prepared'
+                        CHECK (status IN ('prepared', 'package_restored', 'completed', 'failed')),
+  error                 TEXT,
+  created_at            TEXT NOT NULL,
+  completed_at          TEXT,
+  UNIQUE (project_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_construction_milestone_rollbacks_project
+  ON ai_construction_milestone_rollbacks(project_id, created_at);
 
 CREATE TABLE IF NOT EXISTS ai_construction_task_adjustments (
   id                    TEXT PRIMARY KEY,
@@ -285,10 +313,14 @@ CREATE TABLE IF NOT EXISTS generation_batch_checkpoints (
   phase         TEXT NOT NULL,
   batch_kind    TEXT NOT NULL CHECK (batch_kind IN ('object', 'knowledge', 'operation')),
   batch_index   INTEGER NOT NULL CHECK (batch_index > 0),
+  dependency_hash TEXT NOT NULL DEFAULT '',
   status        TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'skipped')),
   output_json   TEXT NOT NULL DEFAULT '{}',
   issues_json   TEXT NOT NULL DEFAULT '[]',
   attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  invalidated_at TEXT,
+  invalidated_reason TEXT,
+  invalidated_by_rollback_id TEXT,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   PRIMARY KEY (run_id, phase)

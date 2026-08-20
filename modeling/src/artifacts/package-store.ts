@@ -908,6 +908,28 @@ export class PackageArtifactStore {
     });
   }
 
+  /** 当前确认版本改变后，仍基于旧版本的未处理方案不再可应用，但保留完整审计内容。 */
+  supersedePendingCandidateRevisions(
+    projectId: string,
+    actorName: string,
+    note = '阶段回退后候选方案的基线已经失效',
+  ): number {
+    const actor = requiredText(actorName, '操作人', 100);
+    const candidates = (this.db.prepare(`SELECT id FROM artifact_candidate_revisions
+      WHERE project_id = ? AND status = 'pending' ORDER BY created_at`)
+      .all(projectId) as Array<{ id: string }>);
+    for (const row of candidates) {
+      const candidate = this.candidateRevisionUnlocked(projectId, row.id);
+      this.decideCandidate(candidate, 'superseded', {
+        cause: 'candidate_superseded',
+        summary: '候选修订因阶段回退失效',
+        actorKind: 'user',
+        actorName: actor,
+      }, candidate.selectedGroupIds, note);
+    }
+    return candidates.length;
+  }
+
   /**
    * 保存不影响当前确认版本的候选修订。变更组在创建后不可变，接受时才会形成 Git 修订。
    */

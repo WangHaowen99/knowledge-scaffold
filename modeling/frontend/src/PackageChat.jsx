@@ -17,10 +17,12 @@ import {
   getAiConstruction,
   repairAiConstructionKnowledge,
   previewAiConstructionTaskAdjustment,
+  previewAiConstructionMilestoneRollback,
   previewAiConstructionTaskEdit,
   respondToInteraction,
   retryAiConstructionScripts,
   reviseAiConstructionModelingBrief,
+  rollbackAiConstructionMilestone,
 } from './authoring-api.js';
 import { uploadModelingMaterials } from './modeling-material-upload.js';
 import { useElapsed } from './ui.jsx';
@@ -28,6 +30,7 @@ import AiConstructionMessageCard, { milestonePosition } from './AiConstructionMe
 import PendingInteraction from './PendingInteraction.jsx';
 import PendingInteractionHint from './PendingInteractionHint.jsx';
 import TaskAdjustmentPreviewCard from './TaskAdjustmentPreviewCard.jsx';
+import MilestoneRollbackDialog from './MilestoneRollbackDialog.jsx';
 import TaskGraphEditDialog from './TaskGraphEditDialog.jsx';
 import ValidationDeferralCard from './ValidationDeferralCard.jsx';
 import MarkdownContent from './MarkdownContent.jsx';
@@ -71,6 +74,13 @@ const MILESTONE_CONFIRM_NOTE = {
   deterministic_confirmed: '确认当前确定性能力',
   construction_completed: '确认完成 AI 辅助构建',
 };
+
+export function rollbackEligibleMilestones(aiConstruction) {
+  return [...(aiConstruction?.milestones ?? [])]
+    .filter((milestone) => milestone?.status === 'confirmed'
+      && milestone?.id !== 'increment_confirmed')
+    .sort((left, right) => Number(left.ordinal ?? 0) - Number(right.ordinal ?? 0));
+}
 
 export function shouldOpenWarningReview(error) {
   return error?.data?.code === 'PACKAGE_WARNINGS_UNREVIEWED';
@@ -172,6 +182,8 @@ export default function PackageChat({
     if (!localBusy) localBusySince.current = '';
   }, [localBusy]);
   const [taskAdjustment, setTaskAdjustment] = useState(null);
+  const [milestoneRollback, setMilestoneRollback] = useState(null);
+  const [rollbackMenuOpen, setRollbackMenuOpen] = useState(false);
   const [taskEditConfig, setTaskEditConfig] = useState(null);
   const [validationDeferral, setValidationDeferral] = useState(null);
   const [completionBlocker, setCompletionBlocker] = useState(null);
@@ -213,7 +225,8 @@ export default function PackageChat({
     [aiConstruction],
   );
   useEffect(() => {
-    setTurns([]); setTaskAdjustment(null); setTaskEditConfig(null); setValidationDeferral(null);
+    setTurns([]); setTaskAdjustment(null); setMilestoneRollback(null); setRollbackMenuOpen(false);
+    setTaskEditConfig(null); setValidationDeferral(null);
     setCompletionBlocker(null);
     waitingCardRecoveryAttempt.current = '';
     setWaitingCardRecoveryBusy(false);
@@ -807,6 +820,50 @@ export default function PackageChat({
       })),
     }],
   } : null;
+  const rollbackMilestones = rollbackEligibleMilestones(aiConstruction);
+
+  const previewMilestoneRollback = async (milestoneId) => {
+    if (busy) return;
+    setLocalBusy('rollback_preview');
+    try {
+      const result = await previewAiConstructionMilestoneRollback(projectId, milestoneId);
+      setMilestoneRollback({
+        ...result.preview,
+        requestId: globalThis.crypto?.randomUUID?.()
+          ?? `rollback-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      });
+      setRollbackMenuOpen(false);
+    } catch (error) {
+      setTurns((items) => items.concat([timedTurn({
+        role: 'assistant', text: `无法预览阶段回退：${error instanceof Error ? error.message : String(error)}`,
+      })]));
+    } finally { setLocalBusy(''); }
+  };
+
+  const confirmMilestoneRollback = async () => {
+    if (!milestoneRollback || busy) return;
+    setLocalBusy('milestone_rollback');
+    try {
+      await rollbackAiConstructionMilestone(
+        projectId,
+        milestoneRollback.targetMilestone.id,
+        {
+          expectedGraphRevision: milestoneRollback.graphRevision,
+          expectedPackageRevision: packageRevision,
+          requestId: milestoneRollback.requestId,
+        },
+      );
+      setMilestoneRollback(null);
+      window.dispatchEvent(new CustomEvent('mw-package-updated'));
+      await onProjectChanged?.();
+      await refreshConstruction();
+    } catch (error) {
+      setTurns((items) => items.concat([timedTurn({
+        role: 'assistant', text: `阶段回退失败：${error instanceof Error ? error.message : String(error)}`,
+      })]));
+      await refreshConstruction().catch(() => undefined);
+    } finally { setLocalBusy(''); }
+  };
 
   const confirmTaskAdjustment = async (reason) => {
     if (!taskAdjustment || busy) return;
@@ -993,6 +1050,26 @@ export default function PackageChat({
             </div>
           </div>
         )}
+        {rollbackMilestones.length > 0 && (
+          <div className="pchat-milestone-rollback">
+            <button type="button" className="pchat-milestone-rollback__trigger"
+              disabled={Boolean(busy)} aria-haspopup="menu" aria-expanded={rollbackMenuOpen}
+              title="回到已确认的阶段重新处理；上游资料和历史版本会保留"
+              onClick={() => setRollbackMenuOpen((open) => !open)}>
+              选择阶段
+            </button>
+            {rollbackMenuOpen && <div className="pchat-milestone-rollback__menu" role="menu">
+              <strong>选择要重新处理的阶段</strong>
+              <p>这是流程回退，不是只切换页面。</p>
+              {rollbackMilestones.map((milestone) => (
+                <button type="button" role="menuitem" key={milestone.id}
+                  onClick={() => { void previewMilestoneRollback(milestone.id); }}>
+                  <span>{milestone.title}</span><small>保留此前阶段，作废此后派生结果</small>
+                </button>
+              ))}
+            </div>}
+          </div>
+        )}
       </header>
       <div className="pchat-body" ref={bodyRef}>
         {(hasOlderMessages || olderMessagesBusy || olderMessagesError) && (
@@ -1069,6 +1146,12 @@ export default function PackageChat({
           busy={busy === 'task_adjustment'}
           onConfirm={(reason) => { void confirmTaskAdjustment(reason); }}
           onCancel={() => setTaskAdjustment(null)}
+        />}
+        {milestoneRollback && <MilestoneRollbackDialog
+          preview={milestoneRollback}
+          busy={busy === 'milestone_rollback'}
+          onConfirm={(reason) => { void confirmMilestoneRollback(reason); }}
+          onCancel={() => setMilestoneRollback(null)}
         />}
         {validationDeferral && <ValidationDeferralCard
           errorCount={validationDeferral.errorCount}

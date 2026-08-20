@@ -67,6 +67,7 @@ import {
 import { FlowchartDraftError, FlowchartDraftStore } from '../flowchart/draft-store.js';
 import { renderDiagramFiles } from '../flowchart/projection.js';
 import { obsoleteDiagramFilePaths } from '../flowchart/file-path.js';
+import { importMermaidFlowchart, MermaidImportError } from '../flowchart/mermaid-import.js';
 import type { FlowchartDiagram, FlowchartDocument } from '../flowchart/types.js';
 import { getProject } from '../projects/repo.js';
 import { listNodes } from '../workflow/engine.js';
@@ -134,6 +135,7 @@ import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
 import { WorkflowStepProgressRepo } from './workflow-progress.js';
 import { buildProjectWorkflow } from './workflow-session.js';
 import { buildFlowchart } from './workflow-extras.js';
+import { MilestoneRollbackCoordinator } from '../ai-construction/milestone-rollback.js';
 
 const EVENT_POLL_FALLBACK_MS = 2_000;
 const HEARTBEAT_MS = 15_000;
@@ -241,6 +243,13 @@ function sendStateError(reply: FastifyReply, error: unknown) {
       ...(error.issues.length ? { issues: error.issues } : {}),
     });
   }
+  if (error instanceof MermaidImportError) {
+    return reply.code(400).send({
+      error: error.message,
+      code: error.diagnostic.code,
+      diagnostic: error.diagnostic,
+    });
+  }
   if (error instanceof PackageArtifactStoreError) {
     const status = error.code === 'project_not_found'
       || error.code === 'package_not_found'
@@ -307,6 +316,26 @@ function commandEvent(command: AiConstructionTaskGraphCommand) {
   };
 }
 
+/**
+ * 恢复知识包会创建内容等价但 oid 不同的新 Git 修订。回退后刚创建的待办即使仍绑定
+ * 历史确认修订，也不能因此被误判为过期；其他知识包变化仍执行正常的修订冲突保护。
+ */
+function isRollbackEquivalentRevision(
+  db: ReturnType<typeof getDb>,
+  projectId: string,
+  interactionRevision: string | undefined,
+  currentRevision: string,
+): boolean {
+  if (!interactionRevision || interactionRevision === currentRevision) return true;
+  const restored = db.prepare(`SELECT 1
+    FROM ai_construction_milestone_rollbacks
+    WHERE project_id = ? AND status = 'completed'
+      AND base_package_revision_oid = ?
+      AND restored_package_revision_oid = ?
+    LIMIT 1`).get(projectId, interactionRevision, currentRevision);
+  return Boolean(restored);
+}
+
 export interface AuthoringRouteOptions {
   state?: AuthoringState;
   graph?: AiConstructionTaskGraph;
@@ -323,7 +352,8 @@ export interface AuthoringRouteOptions {
     | 'failKnowledgeStructure' | 'failKnowledgeRepair' | 'startIncrementRound'>;
   packages?: Pick<PackageArtifactStore,
     'ensureProject' | 'initializeDraftPackage' | 'current' | 'readPackageFiles'
-    | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'>;
+    | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'
+    | 'restore' | 'supersedePendingCandidateRevisions'>;
   flowchartDrafts?: FlowchartDraftStore;
   processDraftGenerator?: typeof generateProcessDraft;
   /** 后台作业登记表。与 registerRoutes 共用同一个实例，跨路由去重才有意义 */
@@ -366,6 +396,11 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   const jobs = options.jobs ?? new InFlightOperations();
   const controlledRepair = new ControlledRepairController({ state, graph });
   const packages = options.packages ?? getPackageArtifactStore();
+  const milestoneRollbacks = new MilestoneRollbackCoordinator({
+    packages: packages as Pick<PackageArtifactStore,
+      'current' | 'restore' | 'supersedePendingCandidateRevisions'>,
+    db: getDb(), graph, state,
+  });
   const flowchartDrafts = options.flowchartDrafts ?? new FlowchartDraftStore();
   const adapter = new PiAuthoringAdapter(state);
   const messages = new AiConstructionMessageStore(
@@ -412,6 +447,33 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     }
     return pending.length;
   };
+  const appendRollbackContinuation = (
+    projectId: string,
+    rollbackId: string,
+    advanced: ReturnType<AiConstructionOrchestrator['advanceAfterMilestoneConfirmation']>,
+  ) => (advanced.message
+    ? messages.ensure(projectId, {
+      key: `milestone.rollback.resume.${rollbackId}`,
+      role: advanced.message.role,
+      ...(advanced.message.taskId ? { taskId: advanced.message.taskId } : {}),
+      blocks: advanced.message.blocks,
+    })
+    : undefined);
+  const reconcileRollbackContinuation = (
+    projectId: string,
+    snapshot: NonNullable<ReturnType<AiConstructionTaskGraph['snapshot']>>,
+    advanced: ReturnType<AiConstructionOrchestrator['advanceAfterMilestoneConfirmation']>,
+  ) => {
+    const rollback = getDb().prepare(`SELECT id, target_milestone_id, graph_revision_after
+      FROM ai_construction_milestone_rollbacks
+      WHERE project_id = ? AND status = 'completed'
+      ORDER BY completed_at DESC LIMIT 1`).get(projectId) as {
+        id: string; target_milestone_id: string; graph_revision_after: number;
+      } | undefined;
+    if (!rollback || rollback.target_milestone_id !== snapshot.progress.currentMilestoneId
+      || Number(rollback.graph_revision_after) > snapshot.revision) return undefined;
+    return appendRollbackContinuation(projectId, rollback.id, advanced);
+  };
   const readConfirmedFlowchart = async (projectId: string) => {
     const currentPackage = await packages.current(projectId);
     if (!currentPackage) throw new Error('当前项目没有知识包草稿');
@@ -420,7 +482,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       (item) => item.id === 'process_confirmed',
     )?.confirmedRevisionOid
       ?? [...(construction?.confirmations ?? [])].reverse().find(
-        (item) => item.milestoneId === 'process_confirmed',
+        (item) => item.milestoneId === 'process_confirmed' && !item.invalidatedAt,
       )?.packageRevisionOid;
     if (!confirmedRevisionOid) {
       throw new AuthoringStateError('INVALID_TRANSITION', '业务流程尚未确认，请先确认流程图');
@@ -555,18 +617,23 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
     ].includes(String(constructionSnapshot.progress.currentMilestoneId ?? ''))) {
       const currentMilestoneId = String(constructionSnapshot.progress.currentMilestoneId ?? '');
-      constructionSnapshot = orchestrator.advanceAfterMilestoneConfirmation(
+      const advanced = orchestrator.advanceAfterMilestoneConfirmation(
         project.id,
         constructionSnapshot,
-        currentMilestoneId === 'deterministic_confirmed' && currentPackage
-          ? {
+        {
+          ...(currentPackage ? { packageRevisionOid: currentPackage.revision.oid } : {}),
+          ...(currentMilestoneId === 'deterministic_confirmed' && currentPackage
+            ? {
             scriptCandidates: identifyScriptCandidates(
               currentPackage.spec.operations,
               currentPackage.spec.metrics ?? [],
             ),
-          }
-          : {},
-      ).aiConstruction;
+            }
+            : {}),
+        },
+      );
+      constructionSnapshot = advanced.aiConstruction;
+      reconcileRollbackContinuation(project.id, constructionSnapshot, advanced);
     }
 
     const authoring = state.snapshot(project.id);
@@ -827,14 +894,17 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           const advanced = orchestrator.advanceAfterMilestoneConfirmation(
             project.id,
             aiConstruction,
-            appliedCommand.milestoneId === 'knowledge_confirmed'
-              ? {
+            {
+              packageRevisionOid: currentPackage.revision.oid,
+              ...(appliedCommand.milestoneId === 'knowledge_confirmed'
+                ? {
                 scriptCandidates: identifyScriptCandidates(
                   currentPackage.spec.operations,
                   currentPackage.spec.metrics ?? [],
                 ),
-              }
-              : {},
+                }
+                : {}),
+            },
           );
           aiConstruction = advanced.aiConstruction;
           aiConstructionMessage = advanced.message;
@@ -886,6 +956,109 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       return {
         preview: graph.previewAdjustment(project.id, String((req.params as any).taskId), action),
       };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/ai-construction/milestones/:milestoneId/rollback-preview', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      return {
+        preview: milestoneRollbacks.preview(
+          project.id,
+          String((req.params as any).milestoneId),
+        ),
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/ai-construction/milestones/:milestoneId/rollback', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const body = (req.body ?? {}) as any;
+    const expectedGraphRevision = Number(body.expectedGraphRevision);
+    const expectedPackageRevision = String(body.expectedPackageRevision ?? '').trim();
+    const requestId = String(body.requestId ?? '').trim();
+    if (!Number.isInteger(expectedGraphRevision) || expectedGraphRevision < 1
+      || !expectedPackageRevision || !requestId) {
+      return reply.code(400).send({ error: '阶段回退参数不正确', code: 'INVALID_INPUT' });
+    }
+    try {
+      return await runWithProjectLease(leases, {
+        projectId: project.id,
+        operation: '回退建模阶段',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+      }, async () => {
+        ensureProjectGraph(project);
+        const result = await milestoneRollbacks.apply({
+          projectId: project.id,
+          targetMilestoneId: String((req.params as any).milestoneId),
+          expectedGraphRevision,
+          expectedPackageRevision,
+          requestId,
+          actor: req.user!.username,
+          reason: typeof body.reason === 'string' ? body.reason : undefined,
+        });
+        const advanced = orchestrator.advanceAfterMilestoneConfirmation(
+          project.id, result.graph,
+          { packageRevisionOid: result.rollback.restoredPackageRevisionOid },
+        );
+        const rollbackMessage = messages.ensure(project.id, {
+          key: `milestone.rollback.${result.rollback.id}`,
+          role: 'assistant',
+          taskId: advanced.aiConstruction.progress.currentTaskId,
+          blocks: [
+            {
+              type: 'status',
+              title: `已回退到${result.rollback.impact.targetMilestone.title}`,
+              summary: '上游资料和历史版本均已保留，当前阶段及后续派生结果需要重新确认',
+              milestoneId: result.rollback.targetMilestoneId,
+              taskId: advanced.aiConstruction.progress.currentTaskId,
+              progress: advanced.aiConstruction.progress.percent,
+              eta: {
+                minMinutes: advanced.aiConstruction.progress.eta.minMinutes,
+                maxMinutes: advanced.aiConstruction.progress.eta.maxMinutes,
+                confidence: advanced.aiConstruction.progress.eta.confidence,
+              },
+            },
+            {
+              type: 'text',
+              text: `回退原因：${result.rollback.reason}\n\n已创建新的恢复修订，回退前的知识包和确认记录仍保留在历史中。`,
+            },
+          ],
+        });
+        // 阶段入口消息使用固定 key，首次建模时已经存在。回退后若只复用那条历史消息，
+        // 前端会把它视为过期动作卡，而最新的回退通知本身没有继续按钮。为本次回退
+        // 复制一张新的阶段入口卡；rollback id 同时保证接口重放不会重复追加消息。
+        const continuationMessage = appendRollbackContinuation(
+          project.id, result.rollback.id, advanced,
+        );
+        if (!result.replayed) {
+          state.apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'ai_construction.milestone.rolled_back',
+            payload: {
+              rollbackId: result.rollback.id,
+              targetMilestoneId: result.rollback.targetMilestoneId,
+              graphRevision: advanced.aiConstruction.revision,
+              restoredPackageRevisionOid: result.rollback.restoredPackageRevisionOid,
+            },
+          });
+        }
+        return {
+          ...result,
+          aiConstruction: advanced.aiConstruction,
+          message: continuationMessage ?? rollbackMessage,
+          ...(advanced.interaction ? { interaction: advanced.interaction } : {}),
+          cursor: state.snapshot(project.id).lastEventSeq,
+        };
+      });
     } catch (error) {
       return sendStateError(reply, error);
     }
@@ -1621,6 +1794,35 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     }
   });
 
+  app.post('/api/projects/:id/interactions/:interactionId/flowchart-draft/mermaid-import/preview', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      ensureProjectGraph(project);
+      const interactionId = String((req.params as any).interactionId ?? '');
+      const draft = ensureFlowchartDraft(project.id, interactionId, req.user!.username);
+      const expectedRevision = Number(body.expectedRevision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision !== draft.revision) {
+        throw new FlowchartDraftError('conflict', '流程图草稿已被其他修改更新，请重新预览导入内容');
+      }
+      const imported = importMermaidFlowchart(draft.document, {
+        title: body.title,
+        source: body.source,
+        filename: body.filename,
+      });
+      return {
+        expectedRevision: draft.revision,
+        diagram: imported.diagram,
+        warnings: imported.warnings,
+        notices: imported.notices,
+        summary: imported.summary,
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
   app.post('/api/projects/:id/interactions/:interactionId/flowchart-draft/diagrams', async (req, reply) => {
     const project = ownedProject(String((req.params as any).id), req.user!.username);
     if (!project) return reply.code(404).send({ error: '项目不存在' });
@@ -1640,7 +1842,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           throw new FlowchartDraftError('conflict', '流程图草稿已被其他修改更新');
         }
         const mode = String(body.mode ?? '');
-        if (!['candidate', 'ai', 'blank'].includes(mode)) {
+        if (!['candidate', 'ai', 'blank', 'mermaid'].includes(mode)) {
           return reply.code(400).send({ error: '流程图添加方式不正确', code: 'INVALID_INPUT' });
         }
 
@@ -1650,6 +1852,12 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             id: `diagram-${randomUUID()}`,
             title: String(body.title ?? '').trim() || '未命名流程',
           });
+        } else if (mode === 'mermaid') {
+          document = importMermaidFlowchart(document, {
+            title: body.title,
+            source: body.source,
+            filename: body.filename,
+          }).document;
         } else {
           const modelingBrief = orchestrator.latestConfirmedModelingBrief(project.id);
           if (!modelingBrief) {
@@ -1773,7 +1981,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           if (!currentPackage) {
             return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
           }
-          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+          if (!isRollbackEquivalentRevision(
+            getDb(), project.id, interaction.baseRevision, currentPackage.revision.oid,
+          )) {
             return reply.code(409).send({
               error: '知识包内容已经变化，请重新填写建模目标',
               code: 'REVISION_CONFLICT',
@@ -1948,7 +2158,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           if (!currentPackage) {
             return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
           }
-          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+          if (!isRollbackEquivalentRevision(
+            getDb(), project.id, interaction.baseRevision, currentPackage.revision.oid,
+          )) {
             return reply.code(409).send({
               error: '知识包内容已经变化，请重新确认候选业务流程',
               code: 'REVISION_CONFLICT',

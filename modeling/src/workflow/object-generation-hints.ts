@@ -47,6 +47,11 @@ export function buildObjectGenerationHints(
   analysis: AnalysisResult | undefined,
   tables: DataDictTable[],
 ): ObjectGenerationHint[] {
+  // Excel/CSV 已经给出可执行的物理 Schema 时，对象集合以 Sheet 为准。
+  // 文档候选只能为这些对象补证据，不能再扩张对象目录；否则几十张 Sheet
+  // 会叠加出几百个语义对象，既拖慢生成，也使后续数据绑定不可执行。
+  const hasUploadedStructuredSheet = tables.some((table) => Boolean(table.documentId));
+  if (hasUploadedStructuredSheet) return [];
   // 物理 Sheet 由服务端确定性生成。Agent 只负责没有物理表绑定的逻辑对象，
   // 避免领域 Reduce 把几十张 Sheet 聚合成一个无法执行的数据对象。
   const hints: ObjectGenerationHint[] = (analysis?.candidateObjects ?? [])
@@ -78,20 +83,18 @@ export function buildObjectGenerationHints(
 }
 
 /**
- * Domain Reduce candidates define the first-version knowledge scope. Document
- * candidates remain the evidence pool and are used as a fallback for projects
- * without any structured-table domain candidates.
+ * Excel/CSV 只决定物理对象边界，不应把文档规则和指标排除在知识生成之外。
+ * 规则与指标可以引用 Sheet 字段，也可以引用产品手册中的业务口径；两者
+ * 在生成前由候选处置计划和批次质量门禁分别约束。只有需要补充业务口径的
+ * 候选留给专家，不把可提取候选静默延期到“增量建模”。
  */
 export function buildKnowledgeGenerationCandidates(
   analysis: AnalysisResult | undefined,
   tables: DataDictTable[],
 ): ArtifactCandidate[] {
-  const candidates = (analysis?.candidateArtifacts ?? [])
+  void tables;
+  return (analysis?.candidateArtifacts ?? [])
     .filter((item) => item.kind === 'rule' || item.kind === 'metric');
-  const tableNames = new Set(tables.map((table) => table.name));
-  const domainCandidates = candidates.filter((candidate) =>
-    candidate.sources.some((source) => tableNames.has(source)));
-  return domainCandidates.length ? domainCandidates : candidates;
 }
 
 /** 文档来源由分析证据确定，不能因为生成模型漏填 sourceRefs 就丢失。 */

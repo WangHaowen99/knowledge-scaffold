@@ -715,10 +715,73 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
   assert.deepEqual((knowledge.message?.blocks[2] as any).actions.map((item: any) => item.id), [
     'generate_knowledge_structure', 'review_process_files',
   ]);
+  assert.match(String(knowledge.message?.key), new RegExp(
+    `^knowledge_confirmed\\.started\\.${knowledge.aiConstruction.tasks.find(
+      (item) => item.kind === 'operation_extraction',
+    )!.id}$`,
+  ));
+
+  // 模拟后续真实回退：历史入口卡仍保留，流程任务重新确认后形成的新知识任务
+  // 必须收到新的可操作入口卡。
+  const oldOperationTask = knowledge.aiConstruction.tasks.find(
+    (item) => item.kind === 'operation_extraction',
+  )!;
+  const rollbackPreview = graph.previewMilestoneRollback(project.id, 'process_confirmed');
+  const rollbackId = 'rollback_orchestrator_process';
+  getDb().prepare(`INSERT INTO ai_construction_milestone_rollbacks (
+    id, project_id, request_id, target_milestone_id, graph_revision_before,
+    base_package_revision_oid, current_package_revision_oid, restored_package_revision_oid,
+    actor_username, reason, impact_json, status, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'package_restored',?)`).run(
+    rollbackId, project.id, 'rollback-orchestrator-process', 'process_confirmed',
+    knowledge.aiConstruction.revision, rollbackPreview.restoreRevisionOid,
+    'draft-revision-3', 'draft-revision-restored', 'alice',
+    '重新确认流程', JSON.stringify(rollbackPreview), new Date().toISOString(),
+  );
+  let rollbackRound = graph.rollbackMilestone(project.id, {
+    rollbackId,
+    requestId: 'rollback-orchestrator-process',
+    expectedRevision: knowledge.aiConstruction.revision,
+    targetMilestoneId: 'process_confirmed',
+    basePackageRevisionOid: rollbackPreview.restoreRevisionOid!,
+    restoredPackageRevisionOid: 'draft-revision-restored',
+    actor: 'alice',
+    reason: '重新确认流程',
+    impact: rollbackPreview,
+  }).graph;
+  for (const task of rollbackRound.tasks.filter((item) => (
+    item.milestoneId === 'process_confirmed' && item.status === 'pending'
+  ))) {
+    rollbackRound = graph.apply(project.id, {
+      type: 'complete_task', expectedRevision: rollbackRound.revision,
+      taskId: task.id, outputRevisionOid: 'draft-revision-process-rerun',
+    });
+  }
+  rollbackRound = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: rollbackRound.revision,
+    milestoneId: 'process_confirmed', packageRevisionOid: 'draft-revision-process-rerun',
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  const rerun = orchestrator.advanceAfterMilestoneConfirmation(
+    project.id, rollbackRound, { packageRevisionOid: 'draft-revision-process-rerun' },
+  );
+  const newOperationTask = rerun.aiConstruction.tasks.find((item) => (
+    item.kind === 'operation_extraction' && item.status !== 'stale'
+  ))!;
+  assert.notEqual(newOperationTask.id, oldOperationTask.id);
+  assert.equal(
+    rerun.message?.key,
+    `knowledge_confirmed.started.${newOperationTask.id}`,
+  );
+  assert.notEqual(rerun.message?.id, knowledge.message?.id);
+  assert.deepEqual((rerun.message?.blocks[2] as any).actions.map((item: any) => item.id), [
+    'generate_knowledge_structure', 'review_process_files',
+  ]);
 
   const started = orchestrator.startKnowledgeStructure(project.id);
   assert.deepEqual(started.aiConstruction.tasks
-    .filter((item) => item.milestoneId === 'knowledge_confirmed')
+    .filter((item) => item.milestoneId === 'knowledge_confirmed'
+      && !['cancelled', 'stale'].includes(item.status))
     .map((item) => [item.kind, item.status]), [
     ['operation_extraction', 'running'],
     ['knowledge_extraction', 'pending'],
@@ -726,14 +789,16 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
   ]);
   const failed = orchestrator.failKnowledgeStructure(project.id, '模型响应中断');
   assert.equal(failed.aiConstruction.tasks.find(
-    (item) => item.kind === 'operation_extraction',
+    (item) => item.kind === 'operation_extraction'
+      && !['cancelled', 'stale'].includes(item.status),
   )?.status, 'failed');
   assert.deepEqual((failed.message.blocks[2] as any).actions.map((item: any) => item.id), [
     'generate_knowledge_structure', 'review_process_files',
   ]);
   const retried = orchestrator.startKnowledgeStructure(project.id);
   assert.equal(retried.aiConstruction.tasks.find(
-    (item) => item.kind === 'operation_extraction',
+    (item) => item.kind === 'operation_extraction'
+      && !['cancelled', 'stale'].includes(item.status),
   )?.status, 'running');
 
   const waiting = orchestrator.waitForKnowledgeStructureDecision(project.id, {
@@ -744,12 +809,14 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     },
   });
   assert.equal(waiting.aiConstruction.tasks.find(
-    (item) => item.kind === 'operation_extraction',
+    (item) => item.kind === 'operation_extraction'
+      && !['cancelled', 'stale'].includes(item.status),
   )?.status, 'waiting_user');
   assert.match((waiting.message.blocks[1] as any).text, /专家选择重新生成或跳过该批/);
   const resumed = orchestrator.startKnowledgeStructure(project.id);
   assert.equal(resumed.aiConstruction.tasks.find(
-    (item) => item.kind === 'operation_extraction',
+    (item) => item.kind === 'operation_extraction'
+      && !['cancelled', 'stale'].includes(item.status),
   )?.status, 'running');
 
   const validating = orchestrator.startKnowledgeStructureValidation(project.id, {
@@ -758,7 +825,8 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     messageKey: 'knowledge.validating.v1.0.0',
   });
   assert.deepEqual(validating.aiConstruction.tasks
-    .filter((item) => item.milestoneId === 'knowledge_confirmed')
+    .filter((item) => item.milestoneId === 'knowledge_confirmed'
+      && !['cancelled', 'stale'].includes(item.status))
     .map((item) => [item.kind, item.status, item.outputRevisionOid]), [
     ['operation_extraction', 'completed', 'generated-revision-1'],
     ['knowledge_extraction', 'completed', 'generated-revision-1'],
@@ -774,7 +842,8 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     validation: { errors: 1, warnings: 1, hints: 2 },
   });
   assert.equal(rejected.aiConstruction.tasks.find(
-    (item) => item.kind === 'package_validation',
+    (item) => item.kind === 'package_validation'
+      && !['cancelled', 'stale'].includes(item.status),
   )?.status, 'failed');
   // 修复能力一直都在，早先这里只给「重新生成」，让人误以为出错就只能推倒重来
   assert.deepEqual((rejected.message.blocks[3] as any).actions.map((item: any) => item.id), [
@@ -787,7 +856,8 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
   assert.match(String(rejectedActions[2].description), /不修改内容/);
   const validationRetried = orchestrator.startKnowledgeStructure(project.id);
   assert.equal(validationRetried.aiConstruction.tasks.find(
-    (item) => item.kind === 'package_validation',
+    (item) => item.kind === 'package_validation'
+      && !['cancelled', 'stale'].includes(item.status),
   )?.status, 'running');
 
   const generated = orchestrator.completeKnowledgeStructure(project.id, {
@@ -798,7 +868,8 @@ test('流程访谈完成后生成 Mermaid 候选并等待人工确认', () => {
     validation: { errors: 0, warnings: 1, hints: 2 },
   });
   assert.deepEqual(generated.aiConstruction.tasks
-    .filter((item) => item.milestoneId === 'knowledge_confirmed')
+    .filter((item) => item.milestoneId === 'knowledge_confirmed'
+      && !['cancelled', 'stale'].includes(item.status))
     .map((item) => [item.kind, item.status, item.outputRevisionOid]), [
     ['operation_extraction', 'completed', 'generated-revision-1'],
     ['knowledge_extraction', 'completed', 'generated-revision-1'],

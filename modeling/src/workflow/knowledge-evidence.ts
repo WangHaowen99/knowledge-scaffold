@@ -8,6 +8,7 @@ import type {
   SpecRule,
 } from '../types.js';
 import { sourceRefsFor } from './source-references.js';
+import { candidateId } from './candidate-disposition.js';
 
 export interface MaterialEvidenceCatalog {
   documents?: Array<{ id: string; filename: string }>;
@@ -63,11 +64,24 @@ function candidateEvidence(
 function attachCandidateEvidence<T extends SpecRule | SpecMetric>(
   resources: T[],
   candidates: ArtifactCandidate[],
+  allKnowledgeCandidates: ArtifactCandidate[],
+  dispositions: PackageSpec['candidateDispositions'],
   catalog?: MaterialEvidenceCatalog,
 ): T[] {
+  const candidateById = new Map(allKnowledgeCandidates
+    .map((candidate, index) => [candidateId(candidate, index), candidate] as const));
+  const candidateByResourceKey = new Map<string, ArtifactCandidate>();
+  for (const disposition of dispositions ?? []) {
+    if (disposition.status !== 'generated') continue;
+    const candidate = candidateById.get(disposition.candidateId);
+    if (!candidate) continue;
+    for (const key of disposition.resourceKeys ?? []) candidateByResourceKey.set(key, candidate);
+  }
   const unused = new Set(candidates.map((_, index) => index));
   return resources.map((resource, resourceIndex) => {
     if (resource.evidence?.length) return resource;
+    const disposedCandidate = candidateByResourceKey.get(resource.key);
+    if (disposedCandidate) return { ...resource, evidence: candidateEvidence(disposedCandidate, catalog) };
     const key = identity(resource.title || resource.key);
     let candidateIndex = candidates.findIndex((candidate, index) => (
       unused.has(index) && identity(candidate.name) === key
@@ -107,8 +121,10 @@ function attachOperationEvidence(
   ]));
   return operations.map((operation) => {
     if (operation.evidence?.length) return operation;
-    const diagram = operation.competencyQuestionId
-      ? diagramsByQuestionId.get(operation.competencyQuestionId)
+    const directId = operation.competencyQuestionId;
+    const diagram = directId
+      ? diagramsByQuestionId.get(directId)
+        ?? diagrams.find((item) => directId.startsWith(`process_${item.id}:node_`))
       : undefined;
     if (!diagram) {
       const confirmedTarget = operation.competencyQuestionId || operation.competencyQuestion;
@@ -116,12 +132,16 @@ function attachOperationEvidence(
         ? { ...operation, evidence: [`confirmed-process:${operation.competencyQuestionId || 'interview'}`] }
         : operation;
     }
+    const focusedNodeId = directId?.startsWith(`process_${diagram.id}:node_`)
+      ? directId.slice(`process_${diagram.id}:node_`.length)
+      : undefined;
     return {
       ...operation,
       evidence: unique([
         `diagram:${diagram.id}`,
         ...diagram.nodes
           .filter((node) => node.kind === 'action' || node.kind === 'decision')
+          .filter((node) => !focusedNodeId || node.id === focusedNodeId)
           .map((node) => `flow-node:${node.id}`),
       ]),
     };
@@ -135,8 +155,9 @@ export function attachGeneratedKnowledgeEvidence(
   materialCatalog?: MaterialEvidenceCatalog,
 ): PackageSpec {
   const candidates = analysis?.candidateArtifacts ?? [];
-  const ruleCandidates = candidates.filter((candidate) => candidate.kind === 'rule');
-  const metricCandidates = candidates.filter((candidate) => candidate.kind === 'metric');
+  const knowledgeCandidates = candidates.filter((candidate) => candidate.kind === 'rule' || candidate.kind === 'metric');
+  const ruleCandidates = knowledgeCandidates.filter((candidate) => candidate.kind === 'rule');
+  const metricCandidates = knowledgeCandidates.filter((candidate) => candidate.kind === 'metric');
   const objects = spec.objects.map((rawObject) => {
     const object = attachObjectDocumentRevisions(rawObject, materialCatalog);
     const evidence = objectEvidence(object);
@@ -157,8 +178,8 @@ export function attachGeneratedKnowledgeEvidence(
     ...spec,
     objects,
     operations,
-    rules: attachCandidateEvidence(spec.rules ?? [], ruleCandidates, materialCatalog),
-    metrics: attachCandidateEvidence(spec.metrics ?? [], metricCandidates, materialCatalog),
+    rules: attachCandidateEvidence(spec.rules ?? [], ruleCandidates, knowledgeCandidates, spec.candidateDispositions, materialCatalog),
+    metrics: attachCandidateEvidence(spec.metrics ?? [], metricCandidates, knowledgeCandidates, spec.candidateDispositions, materialCatalog),
     ...(scripts ? { scripts } : {}),
   };
 }

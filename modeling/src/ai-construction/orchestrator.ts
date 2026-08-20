@@ -42,7 +42,7 @@ function latestConfirmedPackageRevision(
     .map((milestone) => milestone.id));
   let latest: AiConstructionTaskGraphSnapshot['confirmations'][number] | undefined;
   for (const confirmation of snapshot.confirmations) {
-    if (!activeMilestones.has(confirmation.milestoneId)) continue;
+    if (!activeMilestones.has(confirmation.milestoneId) || confirmation.invalidatedAt) continue;
     if (!latest || confirmation.graphRevision > latest.graphRevision) latest = confirmation;
   }
   return latest?.packageRevisionOid;
@@ -56,7 +56,7 @@ function confirmedMilestonePackageRevision(
     milestone.id === milestoneId
   ))?.confirmedRevisionOid
     ?? [...(snapshot.confirmations ?? [])].reverse().find(
-      (confirmation) => confirmation.milestoneId === milestoneId,
+      (confirmation) => confirmation.milestoneId === milestoneId && !confirmation.invalidatedAt,
     )?.packageRevisionOid;
 }
 
@@ -223,6 +223,11 @@ export interface CheckFindingIgnoreInput extends CheckFindingCardInput {
 
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
+  /**
+   * 回退或恢复操作完成后实际生效的知识包修订。恢复会创建内容等价的新提交，
+   * 新待办必须绑定该提交，不能继续绑定历史确认修订。
+   */
+  packageRevisionOid?: string;
 }
 
 export interface CompleteScriptDecisionInput {
@@ -326,7 +331,7 @@ export class AiConstructionOrchestrator {
 
   latestMaterialAnalysis(projectId: string): AnalysisResult | null {
     const rows = this.db.prepare(`SELECT output_json FROM wf_nodes
-      WHERE project_id = ? AND type = 'analyze' AND output_json IS NOT NULL
+      WHERE project_id = ? AND type = 'analyze' AND status = 'done' AND output_json IS NOT NULL
       ORDER BY ordinal DESC, rowid DESC LIMIT 20`).all(projectId) as Array<{ output_json: string }>;
     for (const row of rows) {
       try {
@@ -1967,11 +1972,15 @@ export class AiConstructionOrchestrator {
       case 'knowledge_confirmed':
         return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
       case 'process_confirmed':
-        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
+        return this.prepareProcessInterview(
+          projectId, current, confirmedSnapshot, context.packageRevisionOid,
+        );
       case 'materials_ready':
         return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
       case 'goal_confirmed':
-        return this.prepareModelingBrief(projectId, current, confirmedSnapshot);
+        return this.prepareModelingBrief(
+          projectId, current, confirmedSnapshot, context.packageRevisionOid,
+        );
       default:
         return null;
     }
@@ -1981,6 +1990,7 @@ export class AiConstructionOrchestrator {
     projectId: string,
     snapshot: AiConstructionTaskGraphSnapshot,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    packageRevisionOid?: string,
   ): AiConstructionAdvanceResult {
     let current = snapshot;
     let task = current.tasks.find((item) => item.kind === 'modeling_brief'
@@ -2020,7 +2030,7 @@ export class AiConstructionOrchestrator {
         if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
         task = refreshedTask;
       }
-      const packageRevision = confirmedMilestonePackageRevision(
+      const packageRevision = packageRevisionOid ?? confirmedMilestonePackageRevision(
         confirmedSnapshot, 'materials_ready',
       );
       const started = this.state.apply({
@@ -2784,7 +2794,8 @@ export class AiConstructionOrchestrator {
         },
       });
       operationTask = current.tasks.find((item) => item.kind === 'operation_extraction'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!operationTask) throw new Error('业务操作提取任务创建失败');
 
@@ -2804,7 +2815,8 @@ export class AiConstructionOrchestrator {
         },
       });
       knowledgeTask = current.tasks.find((item) => item.kind === 'knowledge_extraction'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!knowledgeTask) throw new Error('知识提取任务创建失败');
 
@@ -2824,12 +2836,16 @@ export class AiConstructionOrchestrator {
         },
       });
       validationTask = current.tasks.find((item) => item.kind === 'package_validation'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!validationTask) throw new Error('知识包校验任务创建失败');
 
+    // 回退会创建新一轮知识生成任务。固定消息 key 会返回历史入口卡，让本轮任务没有
+    // 可操作的“生成知识结构”卡；任务 ID 在单轮重试中稳定、在不同回退轮次间唯一。
     const message = this.messages.ensure(projectId, {
-      key: 'knowledge_confirmed.started', role: 'assistant', taskId: operationTask.id,
+      key: `knowledge_confirmed.started.${operationTask.id}`,
+      role: 'assistant', taskId: operationTask.id,
       blocks: [
         {
           type: 'status', title: '进入知识结构构建',
@@ -2862,6 +2878,7 @@ export class AiConstructionOrchestrator {
     projectId: string,
     initial: AiConstructionTaskGraphSnapshot,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    packageRevisionOid?: string,
   ): AiConstructionAdvanceResult {
     let current = initial;
     const goalTask = current.tasks.find((item) => item.kind === 'modeling_brief');
@@ -2933,7 +2950,7 @@ export class AiConstructionOrchestrator {
           type: 'wait_for_user', expectedRevision: current.revision, taskId,
         });
       }
-      const packageRevision = latestConfirmedPackageRevision(confirmedSnapshot);
+      const packageRevision = packageRevisionOid ?? latestConfirmedPackageRevision(confirmedSnapshot);
       const started = this.state.apply({
         kind: 'start_run', projectId, intent: '业务流程访谈', baseRevision: packageRevision,
         state: { purpose: 'process_interview', stage: 'core', taskId },

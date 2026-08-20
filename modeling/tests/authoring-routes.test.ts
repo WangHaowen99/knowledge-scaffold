@@ -14,12 +14,14 @@ const [
   { createProject },
   { getDb },
   { PackageCandidateRejectedError },
+  { getPackageArtifactStore },
 ] = await Promise.all([
   import('../src/authoring/routes.js'),
   import('../src/authoring/state.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
   import('../src/workflow/package-chat.js'),
+  import('../src/artifacts/index.js'),
 ]);
 
 function routeApp(t: test.TestContext, username = 'alice', options: Record<string, unknown> = {}) {
@@ -61,6 +63,269 @@ test('会话快照、任务图命令和事件回放保持同一游标', async (t
     [1, 'ai_construction.graph.updated'],
   ]);
   assert.equal(replay.json().events[0].payload.command, 'start_task');
+});
+
+test('阶段回退接口先预览影响并恢复知识包后重开目标阶段', async (t) => {
+  const project = createProject({ owner: 'alice', kind: 'package', name: '阶段回退接口' });
+  const packages = getPackageArtifactStore();
+  const initialized = await packages.initializeDraftPackage(project.id, {
+    id: 'package-rollback-api', name: '阶段回退接口', description: '回退接口测试',
+  });
+  const graphModule = await import('../src/ai-construction/task-graph.js');
+  const graph = new graphModule.AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const materialsTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: materialsTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'materials_ready', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'modeling_brief', milestoneId: 'goal_confirmed', title: '确认建模目标',
+      goal: '确认目标', required: true, inputRevisionOid: initialized.revision.oid,
+      dependsOn: [materialsTask.id],
+    },
+  });
+  const goalTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'process_interview', milestoneId: 'process_confirmed', title: '业务流程访谈',
+      goal: '确认核心流程', required: true, inputRevisionOid: initialized.revision.oid,
+      dependsOn: [goalTask.id],
+    },
+  });
+  const processTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: processTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'process_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  await packages.saveFiles(project.id, {
+    expectedRevision: initialized.revision.oid,
+    files: { 'package/notes/after-process.md': '# 后续阶段产物\n' },
+    action: {
+      cause: 'test_downstream_output', summary: '生成后续阶段产物',
+      actorKind: 'agent', actorName: 'test-agent',
+    },
+  });
+
+  const app = routeApp(t);
+  const previewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback-preview`,
+  });
+  assert.equal(previewResponse.statusCode, 200, previewResponse.body);
+  const preview = previewResponse.json().preview;
+  assert.equal(preview.allowed, true);
+  assert.match(preview.preservedOutputs.join('、'), /资料分析结论/);
+
+  const beforePackage = await packages.current(project.id);
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: beforePackage!.revision.oid,
+      requestId: 'rollback-process-api',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().aiConstruction.progress.currentMilestoneId, 'process_confirmed');
+  assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
+    task.id === processTask.id
+  )).status, 'waiting_user');
+  assert.equal(response.json().rollback.reason, '用户选择重新处理该阶段');
+  assert.notEqual(response.json().rollback.restoredPackageRevisionOid, beforePackage!.revision.oid);
+  const continuation = getDb().prepare(`SELECT message_key, seq, blocks_json
+    FROM ai_construction_messages WHERE project_id = ?
+      AND message_key = ?`).get(
+    project.id,
+    `milestone.rollback.resume.${response.json().rollback.id}`,
+  ) as { message_key: string; seq: number; blocks_json: string } | undefined;
+  assert.ok(continuation, '回退后必须追加当前阶段的可见继续卡');
+  assert.equal(response.json().message.key, continuation.message_key);
+  assert.equal(response.json().interaction?.type, 'question_batch');
+  assert.equal(
+    response.json().interaction?.baseRevision,
+    response.json().rollback.restoredPackageRevisionOid,
+    '回退后新待办必须绑定恢复修订，不能继续绑定历史确认修订',
+  );
+  const latestMessage = getDb().prepare(`SELECT message_key FROM ai_construction_messages
+    WHERE project_id = ? ORDER BY seq DESC LIMIT 1`).get(project.id) as { message_key: string };
+  assert.equal(latestMessage.message_key, continuation.message_key);
+
+  // 兼容修复部署前已经生成的待办：它仍绑定历史确认修订，但该修订与当前恢复修订
+  // 属于同一条已完成回退记录，选择候选时不能被当作真正的知识包并发修改拦截。
+  getDb().prepare(`UPDATE authoring_interactions SET base_revision = ? WHERE id = ?`).run(
+    initialized.revision.oid,
+    response.json().interaction.id,
+  );
+  const legacySelection = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${response.json().interaction.id}/respond`,
+    payload: {
+      requestId: 'rollback-process-legacy-selection',
+      response: { answers: [
+        { questionId: 'process_title', other: '授信审批' },
+        { questionId: 'trigger', other: '客户提交申请' },
+        { questionId: 'actors', other: '客户经理；审批人' },
+        { questionId: 'outputs', other: '审批结论' },
+      ] },
+    },
+  });
+  assert.equal(legacySelection.statusCode, 200, legacySelection.body);
+  assert.equal(legacySelection.json().nextInteraction?.payload?.stage, 'details');
+
+  // 模拟项目在旧版本完成回退：只有回退记录和任务图，没有本次回退的继续卡。
+  // 重新进入工作台时必须幂等补卡，线上存量项目才能在部署后直接恢复。
+  getDb().prepare(`DELETE FROM ai_construction_messages
+    WHERE project_id = ? AND message_key = ?`).run(project.id, continuation.message_key);
+  const reconciled = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/session/advance`,
+  });
+  assert.equal(reconciled.statusCode, 200, reconciled.body);
+  assert.ok(reconciled.json().aiConstructionMessages.some((message: any) => (
+    message.key === continuation.message_key
+  )), '进入工作台时应补出当前阶段继续卡');
+  assert.ok(reconciled.json().authoring.pendingInteractions.some((interaction: any) => (
+    interaction.type === 'question_batch'
+      && interaction.payload?.purpose === 'process_interview'
+  )), '流程阶段应同时恢复可操作的访谈待办卡');
+
+  const replay = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: beforePackage!.revision.oid,
+      requestId: 'rollback-process-api',
+    },
+  });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().rollback.id, response.json().rollback.id);
+  const continuationCount = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_messages WHERE project_id = ? AND message_key = ?`).get(
+    project.id,
+    continuation.message_key,
+  ) as { count: number };
+  assert.equal(continuationCount.count, 1, '相同回退请求重放不能重复创建继续卡');
+
+  const goalPreviewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback-preview`,
+  });
+  assert.equal(goalPreviewResponse.statusCode, 200, goalPreviewResponse.body);
+  const goalPreview = goalPreviewResponse.json().preview;
+  assert.equal(goalPreview.allowed, true);
+  assert.equal(goalPreview.restoreRevisionOid, initialized.revision.oid,
+    '首个建模目标阶段必须恢复其确认修订，不能退到没有知识包的项目创建提交');
+
+  const currentAfterFirstRollback = await packages.current(project.id);
+  const goalRollback = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: replay.json().aiConstruction.revision,
+      expectedPackageRevision: currentAfterFirstRollback!.revision.oid,
+      requestId: 'rollback-goal-after-process',
+      reason: '重新确认建模目标',
+    },
+  });
+  assert.equal(goalRollback.statusCode, 200, goalRollback.body);
+  assert.equal(goalRollback.json().aiConstruction.progress.currentMilestoneId, 'goal_confirmed');
+  assert.equal(goalRollback.json().aiConstruction.tasks.find((task: any) => (
+    task.id === goalTask.id
+  )).status, 'waiting_user');
+});
+
+test('新项目首阶段回退使用目标确认修订并可修复旧预览留下的 prepared 请求', async (t) => {
+  const project = createProject({ owner: 'alice', name: '首阶段连续回退' });
+  const packages = getPackageArtifactStore();
+  const initialized = await packages.initializeDraftPackage(project.id, {
+    id: 'package-first-milestone', name: '首阶段回退', description: '首阶段回退测试',
+  });
+  const graphModule = await import('../src/ai-construction/task-graph.js');
+  const graph = new graphModule.AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const goalTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'material_analysis', milestoneId: 'materials_ready', title: '围绕目标分析资料',
+      goal: '分析资料', required: true, dependsOn: [goalTask.id],
+    },
+  });
+
+  const app = routeApp(t);
+  const previewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback-preview`,
+  });
+  assert.equal(previewResponse.statusCode, 200, previewResponse.body);
+  const preview = previewResponse.json().preview;
+  assert.equal(preview.restoreRevisionOid, initialized.revision.oid);
+
+  const projectCreated = getDb().prepare(`SELECT oid FROM artifact_revisions
+    WHERE project_id = ? ORDER BY sequence LIMIT 1`).get(project.id) as { oid: string };
+  const stalePreview = { ...preview, restoreRevisionOid: projectCreated.oid };
+  getDb().prepare(`INSERT INTO ai_construction_milestone_rollbacks (
+    id, project_id, request_id, target_milestone_id, graph_revision_before,
+    base_package_revision_oid, current_package_revision_oid, actor_username,
+    reason, impact_json, status, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,'prepared',?)`).run(
+    'rollback_stale_preview', project.id, 'rollback-goal-stale-preview', 'goal_confirmed',
+    snapshot.revision, projectCreated.oid, initialized.revision.oid, 'alice',
+    '重新确认建模目标', JSON.stringify(stalePreview), new Date().toISOString(),
+  );
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: initialized.revision.oid,
+      requestId: 'rollback-goal-stale-preview',
+      reason: '重新确认建模目标',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().aiConstruction.progress.currentMilestoneId, 'goal_confirmed');
+  assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
+    task.id === goalTask.id
+  )).status, 'waiting_user');
+  const audit = getDb().prepare(`SELECT base_package_revision_oid, status
+    FROM ai_construction_milestone_rollbacks WHERE id = 'rollback_stale_preview'`).get() as any;
+  assert.equal(audit.base_package_revision_oid, initialized.revision.oid);
+  assert.equal(audit.status, 'completed');
 });
 
 test('通用待办接口不能绕过场景审核专用闭环', async (t) => {
@@ -410,6 +675,146 @@ test('可编辑流程图从草稿保存到原子提交形成单一事实源', as
   assert.equal(retry.json().replayed, true);
   assert.equal(getDb().prepare(`SELECT status FROM flowchart_review_finalizations
     WHERE interaction_id = ?`).get(pending.interaction.id)?.status, 'completed');
+});
+
+test('Mermaid 导入先预览不写入，确认后追加新流程并保留来源信息', async (t) => {
+  const project = createProject({ owner: 'operator_a', name: 'Mermaid 导入测试' });
+  const state = getAuthoringState();
+  const run = state.apply({
+    kind: 'start_run', projectId: project.id, intent: '确认业务流程', baseRevision: 'pkg-mermaid',
+  });
+  assert.equal(run.kind, 'run');
+  if (run.kind !== 'run') throw new Error('未创建流程图任务');
+  const pending = state.apply({
+    kind: 'open_interaction', projectId: project.id, runId: run.run.id,
+    type: 'flowchart_review', baseRevision: 'pkg-mermaid',
+    payload: { purpose: 'process_review', taskId: 'task-mermaid', diagrams: [] },
+  });
+  assert.equal(pending.kind, 'interaction');
+  if (pending.kind !== 'interaction') throw new Error('未创建流程图待办');
+
+  let currentRevision = 'pkg-mermaid';
+  let currentFiles: Record<string, string> = {
+    'diagrams/processes.json': JSON.stringify({ diagrams: [] }),
+  };
+  let savedFiles: Record<string, string> | undefined;
+  let processConfirmed = false;
+  let generatedFlowchart: any;
+  let markGenerated: () => void = () => {};
+  const generationStarted = new Promise<void>((resolve) => { markGenerated = resolve; });
+  const app = routeApp(t, 'operator_a', {
+    graph: {
+      snapshot: () => ({
+        confirmations: processConfirmed
+          ? [{ milestoneId: 'process_confirmed', packageRevisionOid: currentRevision }]
+          : [],
+      }),
+      initialize: () => ({ confirmations: [] }),
+    },
+    packages: {
+      async current() {
+        return { revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {}, files: [] };
+      },
+      async readPackageFiles() {
+        return {
+          revision: { oid: currentRevision }, spec: {}, coverage: {}, files: currentFiles,
+        };
+      },
+      async saveFiles(_projectId: string, input: any) {
+        savedFiles = input.files;
+        currentFiles = Object.fromEntries(Object.entries(input.files).map(([path, content]) => [
+          path.replace(/^package\//u, ''), content as string,
+        ]));
+        currentRevision = 'pkg-mermaid-saved';
+        return {
+          revision: { oid: currentRevision }, packageVersion: '0.1.0', spec: {},
+          files: Object.keys(input.files),
+        };
+      },
+    },
+    orchestrator: {
+      latestMaterialAnalysis: () => null,
+      latestConfirmedModelingBrief: () => null,
+      completeProcessReview: () => {
+        processConfirmed = true;
+        return { aiConstruction: { revision: 2 }, message: { id: 'message-mermaid' } };
+      },
+      failKnowledgeStructure: () => undefined,
+    },
+    knowledgeRunner: {
+      async run(_project: any, _context: any, flowchart: any) {
+        generatedFlowchart = flowchart;
+        markGenerated();
+        return { revisionId: 'pkg-knowledge', version: '0.1.1' };
+      },
+    },
+  });
+  const base = `/api/projects/${project.id}/interactions/${pending.interaction.id}`;
+  const initial = await app.inject({ method: 'GET', url: `${base}/flowchart-draft` });
+  assert.equal(initial.statusCode, 200, initial.body);
+  assert.equal(initial.json().draftRevision, 1);
+
+  const preview = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/mermaid-import/preview`,
+    payload: {
+      expectedRevision: 1,
+      title: '订单处理流程',
+      filename: 'order-flow.mmd',
+      source: 'flowchart TD\n  start([收到订单]) --> finish([完成处理])',
+    },
+  });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().summary.nodeCount, 2);
+  assert.equal(preview.json().diagram.title, '订单处理流程');
+  assert.equal((await app.inject({ method: 'GET', url: `${base}/flowchart-draft` })).json().draftRevision, 1);
+
+  const imported = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/diagrams`,
+    payload: {
+      expectedRevision: 1,
+      mode: 'mermaid',
+      title: '订单处理流程',
+      filename: 'order-flow.mmd',
+      source: 'flowchart TD\n  start([收到订单]) --> finish([完成处理])',
+    },
+  });
+  assert.equal(imported.statusCode, 200, imported.body);
+  assert.equal(imported.json().draftRevision, 2);
+  assert.equal(imported.json().document.diagrams.length, 1);
+  assert.deepEqual(imported.json().document.diagrams[0].importSource, {
+    kind: 'mermaid', diagramType: 'flowchart', filename: 'order-flow.mmd',
+  });
+
+  const rejected = await app.inject({
+    method: 'POST', url: `${base}/flowchart-draft/mermaid-import/preview`,
+    payload: { expectedRevision: 2, title: '坏流程', source: 'sequenceDiagram\n  A->>B: hi' },
+  });
+  assert.equal(rejected.statusCode, 400, rejected.body);
+  assert.equal(rejected.json().code, 'MERMAID_DIAGRAM_TYPE_UNSUPPORTED');
+  assert.equal(rejected.json().diagnostic.category, '图表类型不支持');
+  assert.equal(rejected.json().diagnostic.line, 1);
+
+  const confirmed = await app.inject({
+    method: 'POST', url: `${base}/respond`,
+    payload: {
+      requestId: 'confirm-mermaid-flow',
+      response: { action: 'accept', draftRevision: 2, acknowledgeWarnings: true },
+    },
+  });
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  assert.match(savedFiles?.['package/diagrams/processes.json'] || '', /订单处理流程/u);
+  assert.match(savedFiles?.['package/diagrams/订单处理流程.mmd'] || '', /^flowchart TD/mu);
+  assert.match(savedFiles?.['package/diagrams/processes.json'] || '', /"kind": "mermaid"/u);
+
+  const generation = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/ai-construction/knowledge/generate`, payload: {},
+  });
+  assert.equal(generation.statusCode, 202, generation.body);
+  await generationStarted;
+  assert.equal(generatedFlowchart.diagrams[0].title, '订单处理流程');
+  assert.deepEqual(generatedFlowchart.diagrams[0].importSource, {
+    kind: 'mermaid', diagramType: 'flowchart', filename: 'order-flow.mmd',
+  });
 });
 
 test('建模目标待办回答后完成目标任务而不是只关闭待办', async (t) => {

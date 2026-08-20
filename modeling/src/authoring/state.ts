@@ -254,6 +254,37 @@ export class AuthoringState {
     });
   }
 
+  /**
+   * 阶段回退只允许在没有真实执行任务时发生。等待专家输入的运行可以安全结束，
+   * 其待办由 updateRun 一并取消；历史回答和运行记录继续保留用于审计。
+   */
+  cancelWaitingRunsForRollback(
+    projectId: string,
+    rollbackId: string,
+    targetMilestoneId: string,
+  ): number {
+    const snapshot = this.snapshot(projectId);
+    const executing = snapshot.activeRuns.find((run) => run.status === 'queued' || run.status === 'running');
+    if (executing) {
+      throw new AuthoringStateError('INVALID_TRANSITION', `当前任务“${executing.intent}”仍在执行，请先停止后再回退`);
+    }
+    let cancelled = 0;
+    for (const run of snapshot.activeRuns) {
+      if (run.status !== 'waiting') continue;
+      this.apply({
+        kind: 'update_run',
+        projectId,
+        runId: run.id,
+        status: 'cancelled',
+        result: {
+          purpose: 'milestone_rollback', rollbackId, targetMilestoneId,
+        },
+      });
+      cancelled += 1;
+    }
+    return cancelled;
+  }
+
   replay(projectId: string, afterSeq = 0, limit = 200): ProjectEventPage {
     if (!Number.isInteger(afterSeq) || afterSeq < 0) {
       throw new AuthoringStateError('INVALID_INPUT', '事件位置不正确');
