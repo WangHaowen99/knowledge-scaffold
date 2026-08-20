@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import agent.direct_execution.router as direct_router_module
 import agent.direct_execution.runner as direct_runner_module
+from agent.tools.business_data.resolver import BusinessDataConnectionError
 from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_business_placeholder_keys,
@@ -684,3 +685,124 @@ def test_direct_runner_redacts_unexpected_exception_from_result_and_events(
     assert "direct-runner-secret" not in serialized_events
     assert "direct-runner-secret" not in result.output
     assert "direct-runner-secret" not in str(result.error)
+
+
+def test_direct_runner_fails_before_required_business_data_script(
+    monkeypatch,
+    tmp_path,
+):
+    project_root = tmp_path / "runtime"
+    ontology_dir = project_root / "ontologies" / "knowledge_package_demo"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    script = scripts_dir / "operation.py"
+    script.write_text("print('unused')\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        direct_runner_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(
+                id="knowledge_package_demo",
+                ontology_dir=str(ontology_dir),
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        direct_runner_module,
+        "_build_script_env_overrides",
+        lambda **kwargs: (_ for _ in ()).throw(
+            BusinessDataConnectionError("synthetic unavailable")
+        ),
+    )
+    executed = []
+    monkeypatch.setattr(
+        direct_runner_module,
+        "handle_execute_script_path",
+        lambda **kwargs: executed.append(kwargs) or "unexpected",
+    )
+    decision = RouteDecision(
+        route="direct_script",
+        reason="test",
+        confidence=1.0,
+        ontology_id="knowledge_package_demo",
+        operation_key="run",
+        script_entry={
+            "_script_path": "scripts/operation.py",
+            "arguments": [],
+            "parameters": [],
+            "data_access": "workspace_provider",
+        },
+    )
+
+    _events, result = direct_runner_module.run_direct_script(
+        decision,
+        RuntimeContext(
+            session_id="session_demo",
+            run_id="run_demo",
+            turn_id=1,
+            workspace_id="workspace_demo",
+            selected_ontology_id="knowledge_package_demo",
+        ),
+        project_root=str(project_root),
+    )
+
+    assert result.status == "error"
+    assert result.error == "BUSINESS_DATA_CONNECTION_UNAVAILABLE"
+    assert result.output == (
+        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
+        "Required business data connection is unavailable."
+    )
+    assert executed == []
+
+
+def test_direct_runner_discards_success_stderr_from_model_output(monkeypatch, tmp_path):
+    project_root = tmp_path / "runtime"
+    ontology_dir = project_root / "ontologies" / "knowledge_package_demo"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "operation.py").write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        direct_runner_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="knowledge_package_demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(direct_runner_module, "_build_script_env_overrides", lambda **kwargs: {})
+    captured = {}
+    monkeypatch.setattr(
+        direct_runner_module,
+        "handle_execute_script_path",
+        lambda **kwargs: captured.update(kwargs) or "ok",
+    )
+    decision = RouteDecision(
+        route="direct_script",
+        reason="test",
+        confidence=1.0,
+        ontology_id="knowledge_package_demo",
+        operation_key="run",
+        script_entry={
+            "_script_path": "scripts/operation.py",
+            "arguments": [],
+            "parameters": [],
+            "data_access": "none",
+        },
+    )
+
+    _events, result = direct_runner_module.run_direct_script(
+        decision,
+        RuntimeContext(
+            session_id="session_demo",
+            run_id="run_demo",
+            turn_id=1,
+            workspace_id="workspace_demo",
+            selected_ontology_id="knowledge_package_demo",
+        ),
+        project_root=str(project_root),
+    )
+
+    assert result.status == "success"
+    assert captured["include_stderr_on_success"] is False

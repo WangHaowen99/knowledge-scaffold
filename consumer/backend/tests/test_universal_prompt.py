@@ -83,7 +83,9 @@ def test_universal_prompt_keeps_tool_usage_rules_general():
     assert "batch them in the same response" in prompt
     assert "dependency phases" not in prompt
     assert "If a required input for the chosen tool or execution path is missing" in prompt
-    assert "call `memory` with the content to preserve" in prompt
+    assert "Call `memory` only when the current user explicitly asks" in prompt
+    assert "Never include tables, computed conclusions, numbered answer sections" in prompt
+    assert "include each requested heading or numbered section exactly once" in prompt
     assert "entity keys" not in prompt
     assert "### ontology_context" not in prompt
     assert "### business_data_search" not in prompt
@@ -190,6 +192,47 @@ def test_main_and_subagent_prompts_follow_v01_ontology_loading_flow():
     assert 'ontology_context(resource="rule")' in subagent_source
     assert 'ontology_context(resource="metric")' in subagent_source
     assert "root `script_catalog`" in subagent_source
+
+
+def test_manual_operation_executes_all_referenced_script_backed_stages():
+    for include_orchestration in (True, False):
+        prompt = build_universal_system_prompt(
+            include_orchestration=include_orchestration,
+        )
+
+        assert "every referenced operation or sub-process" in prompt
+        assert "an operation key, or an operation title" in prompt
+        assert "Complete all documented stages in order" in prompt
+        assert "user explicitly requested only one stage" in prompt
+
+
+def test_operation_selection_prefers_complete_output_contract_over_sibling_scripts():
+    prompt = build_universal_system_prompt(include_orchestration=False)
+
+    assert "requested final-output contract" in prompt
+    assert "mandatory comparison against **every row**" in prompt
+    assert "Do not stop at the first plausible match" in prompt
+    assert "Lexical overlap with an input, scenario, or intermediate calculation is not enough" in prompt
+    assert "Prefer one top-level/coordinating operation" in prompt
+    assert "A row marked `execution_role=coordinator` must be loaded" in prompt
+    assert "Never split the request across sibling scripts" in prompt
+    assert "If the selected operation is absent from `script_catalog`" in prompt
+    assert "Do not replace it with sibling scripts" in prompt
+    assert "organize the answer around the selected operation's documented final-output contract" in prompt
+    assert "call only the coordinator and never batch or separately execute its child/sibling operations" in prompt
+    assert "derive the requested projection only from that coordinator result" in prompt
+    assert "rows from the primary result collection" in prompt
+    assert "do not expand nested product outputs" in prompt
+    assert "preserve one output row per element, in the original order" in prompt
+    assert "explicitly asks for every/all member" in prompt
+    assert 'collective statement such as "all normal"' in prompt
+
+
+def test_memory_requires_an_explicit_current_user_request():
+    prompt = build_universal_system_prompt(include_orchestration=False)
+
+    assert "Call `memory` only when the current user explicitly asks" in prompt
+    assert "Never call it merely because a result, identifier, preference" in prompt
 
 
 def test_universal_prompt_appends_memory_context_without_memory_tool_rules():

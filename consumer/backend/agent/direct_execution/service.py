@@ -12,8 +12,10 @@ import tempfile
 import threading
 import time
 import unicodedata
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
+from urllib.parse import urlparse
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry
@@ -50,6 +52,8 @@ from integration.sandbox.registry import (
     register_run_sandbox_companion,
     release_run_sandbox,
 )
+from integration.sandbox.config import load_sandbox_config
+from integration.sandbox.data_proxy import sandbox_reachable_url
 from ontology.ontology_catalog import (
     find_markdown_file,
     get_ontology_manifest,
@@ -118,8 +122,30 @@ _NON_EXECUTION_MARKER = re.compile(
 )
 _OPEN_QUOTES = frozenset("\"'`“‘「『《〈")
 _CLOSE_QUOTES = frozenset("\"'`”’」』》〉")
+_TLS_ENDPOINT_SCHEMES = frozenset(
+    {
+        "https",
+        "wss",
+        "bolt+s",
+        "bolt+ssc",
+        "neo4j+s",
+        "neo4j+ssc",
+    }
+)
 
 ArtifactWriter = Callable[[str, str, str], Optional[Mapping[str, Any]]]
+
+
+def _sandbox_provider_connection_endpoint(
+    original_endpoint: str,
+    reachable_endpoint: str,
+) -> str:
+    """Preserve the TLS server name while separately pinning sandbox egress."""
+    original = str(original_endpoint or "").strip()
+    scheme = urlparse(original).scheme.strip().casefold()
+    if scheme in _TLS_ENDPOINT_SCHEMES:
+        return original
+    return str(reachable_endpoint or "").strip() or original
 
 
 def _runtime_owned_argument_names(
@@ -296,6 +322,18 @@ class DeterministicExecutionService:
             return Failed(exc.code, str(exc), internal_detail=str(exc))
         if not specs:
             return NotApplicable("no_deterministic_operations")
+
+        try:
+            # Routing metadata is itself executable control data. Verify every
+            # deterministic operation descriptor before using it to decide
+            # that a request does not belong to the deterministic branch.
+            verify_deterministic_package_lock(
+                ontology_dir,
+                critical_paths={spec.operation_path for spec in specs},
+                cancel_event=cancel_event,
+            )
+        except DeterministicPackageError as exc:
+            return Failed(exc.code, str(exc), internal_detail=str(exc))
 
         selected = self._select_operation(request, specs, ontology_dir)
         if isinstance(selected, (NotApplicable, Failed, AwaitingInput, Completed)):
@@ -616,18 +654,35 @@ class DeterministicExecutionService:
                 "Deterministic provider credentials do not meet the minimum length.",
                 operation_key=spec.operation_key,
             )
-        provider_network_endpoint = (
-            provider_binding.network_endpoint if provider_binding is not None else None
-        )
+        provider_network_endpoint = None
+        sandbox_provider_connection = None
+        if provider_binding is not None:
+            provider_network_endpoint = provider_binding.network_endpoint
+            sandbox_provider_connection = provider_binding.effective_connection
+            if load_sandbox_config().enabled:
+                # Resolve once on the trusted host for the run-scoped egress
+                # policy. Clear-text protocols may connect to that pinned IP;
+                # TLS protocols keep the original hostname for SNI and
+                # certificate verification.
+                provider_network_endpoint = sandbox_reachable_url(
+                    provider_binding.network_endpoint
+                )
+                sandbox_provider_connection = replace(
+                    provider_binding.effective_connection,
+                    endpoint=_sandbox_provider_connection_endpoint(
+                        provider_binding.effective_connection.endpoint,
+                        provider_network_endpoint,
+                    ),
+                )
         env_overrides = self._fixed_environment(
             ontology_id=ontology.id,
             ontology_version=ontology.version,
             package_revision=spec.package_revision,
         )
-        if provider_binding is not None:
+        if sandbox_provider_connection is not None:
             env_overrides[SCRIPT_BUSINESS_DATA_CONNECTION_ENV] = (
                 serialize_script_business_data_connection(
-                    connection=provider_binding.effective_connection,
+                    connection=sandbox_provider_connection,
                 )
             )
 
@@ -989,6 +1044,17 @@ class DeterministicExecutionService:
             return True
         if not specs:
             return False
+        try:
+            # A negative routing decision is trusted only after every
+            # descriptor that contributed to it has been checked against the
+            # installed lock. Otherwise tampering could erase the matching
+            # route and silently send the request to the legacy Agent path.
+            verify_deterministic_package_lock(
+                ontology_dir,
+                critical_paths={spec.operation_path for spec in specs},
+            )
+        except DeterministicPackageError:
+            return True
         selected = self._select_operation(request, specs, ontology_dir)
         return not isinstance(selected, NotApplicable)
 
@@ -1047,13 +1113,43 @@ class DeterministicExecutionService:
         matches = [
             spec
             for spec in specs
-            if token and self._request_matches_spec(request.user_request, spec)
+            if token
+            and (
+                self._request_matches_spec(request.user_request, spec)
+                or self._request_matches_declared_routing(request.user_request, spec)
+            )
         ]
         if not matches:
             return NotApplicable("no_deterministic_match")
         if len(matches) > 1:
             return Failed("operation_ambiguous", "Multiple deterministic operations matched.")
         return matches[0]
+
+    @staticmethod
+    def _request_matches_declared_routing(
+        user_request: str,
+        spec: DeterministicOperationSpec,
+    ) -> bool:
+        """Match a package-declared all-terms/any-terms routing policy."""
+        if not spec.routing_all_terms and not spec.routing_any_terms:
+            return False
+        normalized_request = normalize_operation_token(user_request)
+        if not normalized_request or _NON_EXECUTION_MARKER.search(normalized_request):
+            return False
+        all_terms = tuple(
+            normalize_operation_token(term)
+            for term in spec.routing_all_terms
+            if normalize_operation_token(term)
+        )
+        any_terms = tuple(
+            normalize_operation_token(term)
+            for term in spec.routing_any_terms
+            if normalize_operation_token(term)
+        )
+        return (
+            all(term in normalized_request for term in all_terms)
+            and (not any_terms or any(term in normalized_request for term in any_terms))
+        )
 
     @staticmethod
     def _request_matches_spec(

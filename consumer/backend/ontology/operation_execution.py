@@ -129,6 +129,8 @@ class DeterministicOperationSpec:
     output_schema_path: str
     handler: DeterministicHandlerSpec
     package_revision: str = ""
+    routing_all_terms: tuple[str, ...] = ()
+    routing_any_terms: tuple[str, ...] = ()
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -400,6 +402,8 @@ def load_deterministic_operation_specs(
             output_schema_path=spec.output_schema_path,
             handler=spec.handler,
             package_revision=package_revision,
+            routing_all_terms=spec.routing_all_terms,
+            routing_any_terms=spec.routing_any_terms,
         )
         for spec in specs
     )
@@ -466,6 +470,8 @@ def validate_and_lock_deterministic_operations(
             output_schema_path=spec.output_schema_path,
             handler=spec.handler,
             package_revision=package_revision,
+            routing_all_terms=spec.routing_all_terms,
+            routing_any_terms=spec.routing_any_terms,
         )
         for spec in specs
     )
@@ -766,6 +772,9 @@ def _validate_deterministic_operations(
                 "Deterministic operation key is required.",
             )
         aliases = _aliases(frontmatter.get("aliases"), strict=True)
+        routing_all_terms, routing_any_terms = _deterministic_routing_terms(
+            frontmatter.get("execution_policy")
+        )
         for token in (operation_key, *aliases):
             collisions = {
                 candidate
@@ -872,6 +881,8 @@ def _validate_deterministic_operations(
                 input_schema_path=_relative_path(root, input_schema_path),
                 output_schema_path=_relative_path(root, output_schema_path),
                 handler=handler,
+                routing_all_terms=routing_all_terms,
+                routing_any_terms=routing_any_terms,
             )
         )
     return tuple(sorted(specs, key=lambda item: item.operation_key.encode("utf-8")))
@@ -1339,6 +1350,52 @@ def _aliases(value: Any, *, strict: bool) -> tuple[str, ...]:
             "Deterministic operation aliases must not be empty.",
         )
     return tuple(item for item in aliases if item)
+
+
+def _deterministic_routing_terms(
+    execution_policy: Any,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Load the optional deterministic natural-language routing declaration."""
+    if execution_policy in (None, ""):
+        return (), ()
+    if not isinstance(execution_policy, Mapping):
+        raise DeterministicPackageError(
+            "execution_declaration_invalid",
+            "Deterministic operation execution_policy must be a mapping.",
+        )
+    routing = execution_policy.get("routing")
+    if routing in (None, ""):
+        return (), ()
+    if not isinstance(routing, Mapping):
+        raise DeterministicPackageError(
+            "execution_declaration_invalid",
+            "Deterministic operation execution_policy.routing must be a mapping.",
+        )
+
+    def read_terms(field: str) -> tuple[str, ...]:
+        raw_terms = routing.get(field)
+        if raw_terms in (None, ""):
+            return ()
+        if not isinstance(raw_terms, list):
+            raise DeterministicPackageError(
+                "execution_declaration_invalid",
+                "Deterministic routing.{} must be a list.".format(field),
+            )
+        terms = tuple(str(item or "").strip() for item in raw_terms)
+        if any(not item for item in terms):
+            raise DeterministicPackageError(
+                "execution_declaration_invalid",
+                "Deterministic routing.{} must not contain empty terms.".format(field),
+            )
+        normalized = tuple(normalize_operation_token(item) for item in terms)
+        if len(normalized) != len(set(normalized)):
+            raise DeterministicPackageError(
+                "execution_declaration_invalid",
+                "Deterministic routing.{} must not contain duplicate terms.".format(field),
+            )
+        return terms
+
+    return read_terms("all_terms"), read_terms("any_terms")
 
 
 def _optional_execution_path(root: Path, value: Any, field: str) -> Optional[Path]:

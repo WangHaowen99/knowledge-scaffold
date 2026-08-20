@@ -48,6 +48,7 @@ _OBJECT_KEY_HEADERS = ("object key", "object_key", "key", "中文名称")
 _OBJECT_TITLE_HEADERS = ("标题", "title")
 _OBJECT_ALIAS_HEADERS = ("别名", "aliases", "alias")
 _OBJECT_ALIAS_SPLIT_RE = re.compile(r"[,，、;/；]")
+_EXPLICIT_OPERATION_REFERENCE_RE = re.compile(r"\[\[\s*([^\[\]\r\n]+?)\s*\]\]")
 _FIELD_KEY_HEADERS = ("字段 key", "field key", "field_key", "key", "英文名称")
 _FIELD_TITLE_HEADERS = (
     "中文名",
@@ -2172,6 +2173,10 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
     script_catalog = load_script_catalog(ontology_dir)
     deterministic_keys = protected_operation_keys(ontology_dir)
     operations_catalog = parse_markdown_table(operations_text) or operations_text
+    operations_catalog = _annotate_coordinating_operations(
+        operations_catalog,
+        ontology_dir=ontology_dir,
+    )
 
     payload = {
         "ontology": {
@@ -2194,6 +2199,84 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
             key=lambda item: item.encode("utf-8"),
         )
     return payload
+
+
+def _annotate_coordinating_operations(
+    catalog: Any,
+    *,
+    ontology_dir: Path,
+) -> Any:
+    """Expose package-declared parent/child operation structure to the Agent.
+
+    Operation indexes describe inputs and outputs but older packages do not
+    carry an explicit coordinator flag.  A model can consequently stop at two
+    plausible sibling scripts even when a documented parent operation covers
+    their combined output contract.  Derive the missing routing metadata from
+    exact operation-key references in the package's own operation documents;
+    the package itself remains unchanged.
+
+    Only rows that reference at least two other catalog operations are
+    annotated.  This keeps ordinary leaf catalogs byte-for-byte compatible and
+    avoids assigning hierarchy from a single incidental mention.
+    """
+
+    if not isinstance(catalog, list):
+        return catalog
+    rows = [row for row in catalog if isinstance(row, dict)]
+    if not rows:
+        return catalog
+
+    key_candidates = (
+        "operation_key",
+        "operation key",
+        "操作 key",
+        "流程 key",
+        "名称",
+        "name",
+        "key",
+    )
+    row_keys = {
+        _object_row_value(row, key_candidates)
+        for row in rows
+        if _object_row_value(row, key_candidates)
+    }
+    if len(row_keys) < 3:
+        return catalog
+
+    annotated: list[Any] = []
+    operations_dir = Path(ontology_dir) / "operations"
+    for original in catalog:
+        if not isinstance(original, dict):
+            annotated.append(original)
+            continue
+        operation_key = _object_row_value(original, key_candidates)
+        if not operation_key:
+            annotated.append(original)
+            continue
+        path, error = find_markdown_file(operations_dir, operation_key, "operation")
+        if error or path is None:
+            annotated.append(original)
+            continue
+        content = read_optional_text(path)
+        explicit_references = {
+            normalize_object_identifier(raw_reference.split("|", 1)[0])
+            for raw_reference in _EXPLICIT_OPERATION_REFERENCE_RE.findall(content)
+            if raw_reference.split("|", 1)[0].strip()
+        }
+        referenced_count = sum(
+            1
+            for candidate in row_keys
+            if candidate != operation_key
+            and normalize_object_identifier(candidate) in explicit_references
+        )
+        if referenced_count < 2:
+            annotated.append(original)
+            continue
+        row = dict(original)
+        row["execution_role"] = "coordinator; load before referenced stages"
+        row["referenced_operation_count"] = referenced_count
+        annotated.append(row)
+    return annotated
 
 
 def _public_operations_catalog(

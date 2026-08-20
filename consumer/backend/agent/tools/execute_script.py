@@ -97,7 +97,41 @@ _SCRIPT_EXECUTION_INTERNAL_ERROR = (
 )
 _PUBLIC_SCRIPT_ERROR_PREFIX = "ONTO_PUBLIC_ERROR:"
 _PUBLIC_SCRIPT_ERROR_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_PUBLIC_SCRIPT_STDOUT_ERROR_CODE_PATTERN = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]{0,63}$"
+)
+_PUBLIC_SCRIPT_STDOUT_ERROR_KEYS = frozenset(
+    {"error_code", "message", "details"}
+)
 _PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH = 240
+_PUBLIC_PYTHON_EXCEPTION_TYPES = frozenset(
+    {
+        "AssertionError",
+        "AttributeError",
+        "ConnectionError",
+        "FileNotFoundError",
+        "ImportError",
+        "KeyError",
+        "LookupError",
+        "MemoryError",
+        "ModuleNotFoundError",
+        "OSError",
+        "PermissionError",
+        "RecursionError",
+        "RuntimeError",
+        "TimeoutError",
+        "TypeError",
+        "ValueError",
+        "ZeroDivisionError",
+    }
+)
+_WORKSPACE_PROVIDER_DATA_ACCESS = "workspace_provider"
+_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE = (
+    "BUSINESS_DATA_CONNECTION_UNAVAILABLE"
+)
+_BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR = (
+    "Error: [{}] Required business data connection is unavailable."
+).format(_BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE)
 
 SCRIPT_LIVE_LOG_ENABLED = (
     os.getenv("SCRIPT_LIVE_LOG_ENABLED", "false").strip().lower()
@@ -123,6 +157,8 @@ EXECUTE_SCRIPT_TOOL_SCHEMA: Dict[str, Any] = {
             "Use this only when the operation appears in the ontology root `script_catalog`. "
             "A successful result is authoritative: reuse it instead of rerunning the same "
             "operation to change rounding, display precision, or informational fields. "
+            "A runtime failure is terminal for the requested deterministic calculation: "
+            "do not retry with guessed values or provide a calculated conclusion. "
             "If required script arguments are unknown, stop and report the missing "
             "parameters instead of reading object definitions or manually replaying a "
             "script-backed operation."
@@ -388,6 +424,15 @@ def _parse_tool_call_arguments(raw: Any) -> Optional[Dict[str, Any]]:
 def _is_successful_script_output(content: Any) -> bool:
     text = str(content or "").strip()
     if not text or text.lower().startswith("error:"):
+        return False
+    normalized = " ".join(text.casefold().split())
+    non_execution_markers = (
+        "operation selection blocked:",
+        "the script did not run",
+        "this deterministic operation already succeeded",
+        "this deterministic operation has already returned successful results",
+    )
+    if any(marker in normalized for marker in non_execution_markers):
         return False
     try:
         payload = json.loads(text)
@@ -885,33 +930,48 @@ def _build_script_env_overrides(
     *,
     workspace_id: Optional[str],
     ontology_id: str,
+    required: bool = False,
 ) -> Dict[str, str]:
     if not workspace_id:
+        if required:
+            raise BusinessDataConnectionError(
+                "Required business data connection is unavailable."
+            )
         return {}
     try:
         connection = resolve_business_data_source(
             workspace_id=workspace_id,
             ontology_id=ontology_id,
         )
-    except BusinessDataConnectionError:
-        return {}
-    connection_config = dict(connection.config)
-    connection_config["workspace_id"] = str(workspace_id or "").strip()
-    connection_config["ontology_id"] = str(ontology_id or "").strip()
-    effective_connection = build_effective_connection(connection)
-    effective_connection = replace(
-        effective_connection,
-        options={
-            **effective_connection.options,
-            "workspace_id": connection_config["workspace_id"],
-            "ontology_id": connection_config["ontology_id"],
-        },
-    )
-    return {
-        SCRIPT_BUSINESS_DATA_CONNECTION_ENV: serialize_script_business_data_connection(
-            connection=effective_connection,
+        connection_config = dict(connection.config)
+        connection_config["workspace_id"] = str(workspace_id or "").strip()
+        connection_config["ontology_id"] = str(ontology_id or "").strip()
+        effective_connection = build_effective_connection(connection)
+        effective_connection = replace(
+            effective_connection,
+            options={
+                **effective_connection.options,
+                "workspace_id": connection_config["workspace_id"],
+                "ontology_id": connection_config["ontology_id"],
+            },
         )
-    }
+        return {
+            SCRIPT_BUSINESS_DATA_CONNECTION_ENV: serialize_script_business_data_connection(
+                connection=effective_connection,
+            )
+        }
+    except Exception as exc:
+        if not required and isinstance(exc, BusinessDataConnectionError):
+            return {}
+        if required:
+            logger.warning(
+                "Required script business data connection is unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            raise BusinessDataConnectionError(
+                "Required business data connection is unavailable."
+            ) from None
+        raise
 
 
 def handle_execute_script_path(
@@ -1114,6 +1174,10 @@ def handle_execute_script_path(
         child_env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
         child_env.setdefault("PYTHONIOENCODING", "utf-8")
         child_env.setdefault("PYTHONUTF8", "1")
+        # Ontology packages are runtime inputs, not Python cache directories.
+        # A generic/legacy script may later coexist with a locked deterministic
+        # operation, so never let imports mutate the installed package tree.
+        child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         if env_overrides:
             child_env.update({str(key): str(value) for key, value in env_overrides.items()})
 
@@ -1378,6 +1442,10 @@ def handle_execute_script_path(
             )
             error = "Error: Script exited with code {}.".format(completed.returncode)
             public_error = _extract_public_script_error(stderr)
+            if public_error is None:
+                public_error = _extract_public_script_stdout_error(stdout)
+            if public_error is None:
+                public_error = _extract_public_python_exception_type(stderr)
             return "{} {}".format(error, public_error) if public_error else error
 
         if stderr and not include_stderr_on_success:
@@ -1445,6 +1513,30 @@ def _combine_process_output(*, stdout: str, stderr: str) -> str:
 
 _REQUEST_ITEM_SPLIT_PATTERN = re.compile(r"[\r\n;；]+")
 _EVIDENCE_NOISE_PATTERN = re.compile(r"[\W_]+", re.UNICODE)
+_IDENTITY_FIELD_SUFFIXES = ("_id", "_no", "_code", "_name")
+_IDENTITY_FIELD_NAMES = frozenset(
+    {
+        "code",
+        "crude_name",
+        "device",
+        "device_name",
+        "equipment",
+        "equipment_name",
+        "id",
+        "identifier",
+        "unit",
+        "unit_name",
+        "unit_no",
+    }
+)
+_IDENTITY_FIELD_EXCLUSIONS = frozenset(
+    {
+        "batch_id",
+        "batch_no",
+        "record_id",
+        "row_id",
+    }
+)
 
 
 def _normalize_argument_evidence(value: Any) -> str:
@@ -1487,6 +1579,53 @@ def _flatten_item_field_evidence(
     return list(dict.fromkeys(fields))
 
 
+def _parse_embedded_json_container(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    serialized = value.lstrip()
+    if not serialized.startswith(("{", "[")):
+        return value
+    try:
+        parsed = json.loads(serialized)
+    except (json.JSONDecodeError, TypeError):
+        return value
+    return parsed if isinstance(parsed, (Mapping, list)) else value
+
+
+def _is_identity_field(field_name: str) -> bool:
+    normalized = str(field_name or "").strip().casefold()
+    if not normalized or normalized in _IDENTITY_FIELD_EXCLUSIONS:
+        return False
+    return (
+        normalized in _IDENTITY_FIELD_NAMES
+        or normalized.endswith(_IDENTITY_FIELD_SUFFIXES)
+        or any(marker in normalized for marker in ("编号", "名称", "设备号", "装置号"))
+    )
+
+
+def _identity_field_evidence(
+    value: Any,
+    path: str = "arguments",
+) -> List[tuple[str, str]]:
+    parsed = _parse_embedded_json_container(value)
+    fields: List[tuple[str, str]] = []
+    if isinstance(parsed, Mapping):
+        for key, nested in parsed.items():
+            child_path = "{}.{}".format(path, key)
+            nested_parsed = _parse_embedded_json_container(nested)
+            if _is_identity_field(str(key)) and not isinstance(
+                nested_parsed, (Mapping, list, tuple)
+            ):
+                normalized = _normalize_argument_evidence(nested_parsed)
+                if normalized:
+                    fields.append((child_path, normalized))
+            fields.extend(_identity_field_evidence(nested_parsed, child_path))
+    elif isinstance(parsed, (list, tuple)):
+        for index, nested in enumerate(parsed):
+            fields.extend(_identity_field_evidence(nested, "{}[{}]".format(path, index)))
+    return list(dict.fromkeys(fields))
+
+
 def _structured_collections(
     value: Any,
     path: str = "arguments",
@@ -1495,12 +1634,7 @@ def _structured_collections(
     if isinstance(value, Mapping):
         for key, nested in value.items():
             child_path = "{}.{}".format(path, key)
-            parsed = nested
-            if isinstance(nested, str) and nested.lstrip().startswith("["):
-                try:
-                    parsed = json.loads(nested)
-                except (json.JSONDecodeError, TypeError):
-                    parsed = nested
+            parsed = _parse_embedded_json_container(nested)
             if (
                 isinstance(parsed, list)
                 and len(parsed) >= 2
@@ -1527,6 +1661,18 @@ def _validate_structured_arguments_against_request(
     full_request = _normalize_argument_evidence(request_text)
     if not full_request:
         return []
+    normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
+    errors: List[str] = []
+    for path, value in _identity_field_evidence(arguments):
+        if value in full_request:
+            continue
+        if normalized_tool_evidence and value in normalized_tool_evidence:
+            continue
+        errors.append(
+            "{} identity value is not grounded in the current request or current tool evidence".format(
+                path
+            )
+        )
     raw_segments = [
         part.strip()
         for part in _REQUEST_ITEM_SPLIT_PATTERN.split(request_text)
@@ -1534,10 +1680,7 @@ def _validate_structured_arguments_against_request(
     ]
     segments = [_normalize_argument_evidence(part) for part in raw_segments]
     if len(segments) < 2:
-        return []
-
-    normalized_tool_evidence = _normalize_argument_evidence(trusted_tool_evidence)
-    errors: List[str] = []
+        return errors
     for path, items in _structured_collections(arguments):
         if normalized_tool_evidence and all(
             _item_is_grounded_in_tool_evidence(item, normalized_tool_evidence)
@@ -1791,6 +1934,68 @@ def _extract_public_script_error(stderr: str) -> Optional[str]:
     return None
 
 
+def _extract_public_script_stdout_error(stdout: str) -> Optional[str]:
+    """Read the deterministic runtime's strict JSON error envelope.
+
+    Arbitrary failed-process stdout remains private.  The compatibility path
+    accepts only one complete document with the generated runtime's bounded
+    JSON shape and deliberately ignores ``details`` so exception diagnostics
+    cannot become public output.
+    """
+    serialized = str(stdout or "").strip()
+    if not serialized:
+        return None
+    try:
+        payload = json.loads(serialized)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if not {"error_code", "message"}.issubset(payload):
+        return None
+    if not set(payload).issubset(_PUBLIC_SCRIPT_STDOUT_ERROR_KEYS):
+        return None
+    raw_code = payload.get("error_code")
+    message = payload.get("message")
+    if not isinstance(raw_code, str) or not isinstance(message, str):
+        return None
+    code = raw_code.strip()
+    if not _PUBLIC_SCRIPT_STDOUT_ERROR_CODE_PATTERN.fullmatch(code):
+        return None
+    normalized_code = code.upper()
+    if not _PUBLIC_SCRIPT_ERROR_CODE_PATTERN.fullmatch(normalized_code):
+        return None
+    normalized_message = " ".join(message.split())[
+        :_PUBLIC_SCRIPT_ERROR_MESSAGE_MAX_LENGTH
+    ].strip()
+    return "[{}]{}".format(
+        normalized_code,
+        " {}".format(normalized_message) if normalized_message else "",
+    )
+
+
+def _extract_public_python_exception_type(stderr: str) -> Optional[str]:
+    """Expose only a safe exception class from a standard Python traceback.
+
+    Exception messages can contain business values, paths, or credentials, so the
+    failed process' final message remains private.  A bounded allow-list still gives
+    the agent an actionable failure category without disclosing those details.
+    """
+    lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    if not lines or not any(line.startswith("Traceback (") for line in lines):
+        return None
+    match = re.match(
+        r"^(?:[A-Za-z_][A-Za-z0-9_]*\.)*(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::|$)",
+        lines[-1],
+    )
+    if match is None:
+        return None
+    exception_name = match.group("name")
+    if exception_name not in _PUBLIC_PYTHON_EXCEPTION_TYPES:
+        return None
+    return "[SCRIPT_RUNTIME_ERROR] Python {}.".format(exception_name)
+
+
 def handle_execute_script(
     *,
     ontology_id: str,
@@ -1871,6 +2076,18 @@ def handle_execute_script(
             operation_key,
             ", ".join(missing_args),
         )
+    requires_business_data = (
+        str(script_entry.get("data_access") or "none").strip().casefold()
+        == _WORKSPACE_PROVIDER_DATA_ACCESS
+    )
+    try:
+        env_overrides = _build_script_env_overrides(
+            workspace_id=workspace_id,
+            ontology_id=ontology_id,
+            required=requires_business_data,
+        )
+    except BusinessDataConnectionError:
+        return _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR
     return handle_execute_script_path(
         script_path=script_path,
         args=cli_args,
@@ -1882,13 +2099,11 @@ def handle_execute_script(
         session_id=session_id,
         turn_id=turn_id,
         extra_pythonpath_dirs=[ontology_dir],
-        env_overrides=_build_script_env_overrides(
-            workspace_id=workspace_id,
-            ontology_id=ontology_id,
-        ),
+        env_overrides=env_overrides,
         workspace_id=workspace_id,
         ontology_id=ontology_id,
         ontology_dir=ontology_dir,
+        include_stderr_on_success=False,
     )
 
 
@@ -2406,4 +2621,35 @@ class ExecuteScriptTool:
             call_args.get("ontology_version") or "n/a",
             call_args.get("operation_key"),
         )
-        return ToolOutcome(content=handle_execute_script(**call_args))
+        content = handle_execute_script(**call_args)
+        terminal_error = _terminal_execute_script_error(content)
+        return ToolOutcome(
+            content=content,
+            state_updates={"terminal_error": terminal_error} if terminal_error else {},
+            terminal=terminal_error is not None,
+        )
+
+
+def _terminal_execute_script_error(content: str) -> Optional[Dict[str, str]]:
+    normalized = " ".join(str(content or "").split())
+    if not normalized.lower().startswith("error:"):
+        return None
+    terminal_prefixes = (
+        _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
+        "Error: deterministic_operation_protected",
+        "Error: deterministic_operation_protection_unavailable",
+        "Error: Sandbox ",
+        "Error: Script execution ",
+        "Error: Script stdout ",
+        "Error: Script stderr ",
+        "Error: Script exited with code ",
+    )
+    if not normalized.startswith(terminal_prefixes):
+        return None
+    return {
+        "error_code": "EXECUTE_SCRIPT_FAILED",
+        "message": (
+            "The deterministic operation failed, so no calculated conclusion was produced."
+        ),
+        "tool_name": "execute_script",
+    }

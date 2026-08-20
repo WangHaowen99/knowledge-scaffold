@@ -2560,12 +2560,36 @@ def test_jiuwen_loop_engine_uses_main_tool_schema_for_acp_caller(monkeypatch):
         schema["function"]["name"]
         for schema in get_tools_schema(
             "main",
+            include_memory=False,
             include_orchestration=False,
             include_web_search=False,
         )
     ]
 
     assert jiuwen_names == expected_names
+
+
+def test_jiuwen_loop_engine_exposes_memory_only_for_explicit_memory_request(monkeypatch):
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    engine = JiuwenReactLoopEngine(agent_config=_agent_config())
+
+    ordinary_names = {
+        schema["function"]["name"]
+        for schema in engine._tools_schema_for_state(
+            {"user_request": "summarize this plan", "messages": []},
+            caller="main",
+        )
+    }
+    memory_names = {
+        schema["function"]["name"]
+        for schema in engine._tools_schema_for_state(
+            {"user_request": "remember that I prefer tables", "messages": []},
+            caller="main",
+        )
+    }
+
+    assert "memory" not in ordinary_names
+    assert "memory" in memory_names
 
 
 def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):

@@ -166,6 +166,63 @@ def test_structured_collection_rejects_values_paired_from_different_request_item
     assert "Record 2: sample-b, quantity 7.25, category blue" in errors[0]
 
 
+def test_serialized_json_object_enters_collection_consistency_validation():
+    request = (
+        "Record 1: sample-a, quantity 12.5, category red;\n"
+        "Record 2: sample-b, quantity 7.25, category blue."
+    )
+    arguments = {
+        "payload_json": json.dumps(
+            {
+                "batches": [
+                    {"name": "sample-a", "quantity": 12.5, "category": "red"},
+                    {"name": "sample-b", "quantity": 7.25, "category": "red"},
+                ]
+            }
+        )
+    }
+
+    errors = _validate_structured_arguments_against_request(arguments, request)
+
+    assert len(errors) == 1
+    assert "arguments.payload_json.batches" in errors[0]
+    assert "item 2" in errors[0]
+
+
+def test_structured_identity_value_must_be_grounded_in_current_request():
+    arguments = {
+        "payload_json": json.dumps(
+            {
+                "unit_no": "unit-02",
+                "batches": [{"batch_no": "generated-1", "quantity": 12.5}],
+            }
+        )
+    }
+
+    errors = _validate_structured_arguments_against_request(
+        arguments,
+        "Run the plan with unit-01 and quantity 12.5.",
+    )
+
+    assert errors == [
+        "arguments.payload_json.unit_no identity value is not grounded in the current request or current tool evidence"
+    ]
+
+
+def test_structured_identity_value_can_come_from_current_business_tool_evidence():
+    arguments = {
+        "payload_json": json.dumps(
+            {"unit_id": "derived-unit-02", "batches": [{"batch_no": "generated-1"}]}
+        )
+    }
+
+    assert _validate_structured_arguments_against_request(
+        arguments,
+        "Run the selected plan.",
+        trusted_tool_evidence='{"unit_id":"derived-unit-02"}',
+    ) == []
+
+
 def test_structured_collection_rejects_when_most_items_use_the_wrong_field_value():
     request = (
         "Record 1: sample-a, quantity 12.5, category red;\n"

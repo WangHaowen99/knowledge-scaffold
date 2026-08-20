@@ -163,7 +163,7 @@ class DataConnectionSecretManager:
 
         route_prefix = _route_prefix(run_id, connection.id)
         route_name = _route_name_for_path_prefix(route_prefix)
-        proxy_url = _sandbox_reachable_url(
+        proxy_url = sandbox_reachable_url(
             urljoin(
                 self._config.data_proxy_base_url.rstrip("/") + "/",
                 route_prefix.lstrip("/"),
@@ -244,7 +244,7 @@ def _route_name_for_path_prefix(path_prefix: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "-", name)
 
 
-def _sandbox_reachable_url(url: str) -> str:
+def sandbox_reachable_url(url: str) -> str:
     """Resolve docker service hostnames to IPs for isolated sandbox egress."""
     normalized = str(url or "").strip()
     if not normalized:

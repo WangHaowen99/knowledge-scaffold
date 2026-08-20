@@ -532,6 +532,115 @@ def test_handle_execute_script_rejects_script_outside_ontology_scripts(monkeypat
     assert executed == []
 
 
+def test_handle_execute_script_fails_before_required_business_data_script(
+    monkeypatch,
+    tmp_path,
+):
+    ontology_dir = tmp_path / "ontology"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "operation.py").write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        execute_script_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="knowledge_package_demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_script_catalog",
+        lambda _ontology_dir: [
+            {
+                "operation_key": "run",
+                "script_key": "run",
+                "_is_bound_operation": True,
+                "_script_path": "scripts/operation.py",
+                "arguments": [],
+                "parameters": [],
+                "data_access": "workspace_provider",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "resolve_business_data_source",
+        lambda **kwargs: (_ for _ in ()).throw(
+            execute_script_module.BusinessDataConnectionError(
+                "synthetic unavailable"
+            )
+        ),
+    )
+    executed = []
+    monkeypatch.setattr(
+        execute_script_module,
+        "handle_execute_script_path",
+        lambda **kwargs: executed.append(kwargs) or "unexpected",
+    )
+
+    result = handle_execute_script(
+        ontology_id="knowledge_package_demo",
+        operation_key="run",
+        arguments={},
+        base_path=tmp_path,
+        workspace_id="workspace_demo",
+    )
+
+    assert result == (
+        "Error: [BUSINESS_DATA_CONNECTION_UNAVAILABLE] "
+        "Required business data connection is unavailable."
+    )
+    assert executed == []
+
+
+def test_handle_execute_script_discards_success_stderr(monkeypatch, tmp_path):
+    ontology_dir = tmp_path / "ontology"
+    scripts_dir = ontology_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "operation.py").write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        execute_script_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="knowledge_package_demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        execute_script_module,
+        "load_script_catalog",
+        lambda _ontology_dir: [
+            {
+                "operation_key": "run",
+                "script_key": "run",
+                "_is_bound_operation": True,
+                "_script_path": "scripts/operation.py",
+                "arguments": [],
+                "parameters": [],
+                "data_access": "none",
+            }
+        ],
+    )
+    captured = {}
+    monkeypatch.setattr(
+        execute_script_module,
+        "handle_execute_script_path",
+        lambda **kwargs: captured.update(kwargs) or "ok",
+    )
+
+    result = handle_execute_script(
+        ontology_id="knowledge_package_demo",
+        operation_key="run",
+        arguments={},
+        base_path=tmp_path,
+        workspace_id="workspace_demo",
+    )
+
+    assert result == "ok"
+    assert captured["include_stderr_on_success"] is False
+
+
 @pytest.mark.parametrize(
     "entrypoint",
     [

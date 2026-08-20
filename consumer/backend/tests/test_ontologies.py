@@ -317,6 +317,136 @@ def test_build_selected_ontology_preload_context_formats_catalogs_compactly(tmp_
     assert '"operation_key": "demo-op"' not in context
 
 
+def test_root_catalog_derives_coordinator_metadata_without_mutating_package(tmp_path):
+    from ontology.ontology_catalog import _annotate_coordinating_operations
+
+    ontology_dir = tmp_path / "demo-ontology"
+    operations_dir = ontology_dir / "operations"
+    operations_dir.mkdir(parents=True)
+    catalog = [
+        {"operation key": "summary", "输出": "combined result"},
+        {"operation key": "stage-a", "输出": "first result"},
+        {"operation key": "stage-b", "输出": "second result"},
+    ]
+    coordinator_source = (
+        "---\nresource: operation\nkey: summary\n---\n\n"
+        "Run [[stage-a]] and then [[stage-b]].\n"
+    )
+    (operations_dir / "summary.md").write_text(coordinator_source, encoding="utf-8")
+    (operations_dir / "stage-a.md").write_text(
+        "---\nresource: operation\nkey: stage-a\n---\n",
+        encoding="utf-8",
+    )
+    (operations_dir / "stage-b.md").write_text(
+        "---\nresource: operation\nkey: stage-b\n---\n",
+        encoding="utf-8",
+    )
+
+    annotated = _annotate_coordinating_operations(catalog, ontology_dir=ontology_dir)
+
+    assert annotated[0]["execution_role"] == "coordinator; load before referenced stages"
+    assert annotated[0]["referenced_operation_count"] == 2
+    assert annotated[1] == catalog[1]
+    assert annotated[2] == catalog[2]
+    assert (operations_dir / "summary.md").read_text(encoding="utf-8") == coordinator_source
+
+
+def test_root_catalog_does_not_infer_coordinator_from_plain_text_mentions(tmp_path):
+    from ontology.ontology_catalog import _annotate_coordinating_operations
+
+    ontology_dir = tmp_path / "demo-ontology"
+    operations_dir = ontology_dir / "operations"
+    operations_dir.mkdir(parents=True)
+    catalog = [
+        {"operation key": "summary", "输出": "combined result"},
+        {"operation key": "stage-a", "输出": "first result"},
+        {"operation key": "stage-b", "输出": "second result"},
+    ]
+    (operations_dir / "summary.md").write_text(
+        "---\nresource: operation\nkey: summary\n---\n\n"
+        "This leaf compares the words stage-a and stage-b, but invokes neither.\n",
+        encoding="utf-8",
+    )
+    for key in ("stage-a", "stage-b"):
+        (operations_dir / "{}.md".format(key)).write_text(
+            "---\nresource: operation\nkey: {}\n---\n".format(key),
+            encoding="utf-8",
+        )
+
+    annotated = _annotate_coordinating_operations(catalog, ontology_dir=ontology_dir)
+
+    assert annotated == catalog
+
+
+def test_script_catalog_keeps_unbound_coordinator_helper_private(tmp_path):
+    from ontology.ontology_catalog import load_script_catalog, public_script_catalog
+
+    ontology_dir = tmp_path / "demo-ontology"
+    operations_dir = ontology_dir / "operations"
+    scripts_dir = ontology_dir / "scripts"
+    operations_dir.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+    (operations_dir / "index.md").write_text(
+        "| operation key | output |\n"
+        "| --- | --- |\n"
+        "| summary | combined |\n"
+        "| stage-a | first |\n"
+        "| stage-b | second |\n",
+        encoding="utf-8",
+    )
+    coordinator_source = (
+        "---\nresource: operation\nkey: summary\n---\n\n"
+        "# 输出\n\n"
+        "| output key | description |\n"
+        "| --- | --- |\n"
+        "| combined_result | combined rows |\n"
+        "| recommended_plan | final recommendation |\n\n"
+        "# 流程\n\n"
+        "Run [[stage-a]] and [[stage-b]]; monthly.py is an intermediate helper.\n"
+    )
+    (operations_dir / "summary.md").write_text(coordinator_source, encoding="utf-8")
+    (operations_dir / "stage-a.md").write_text(
+        "---\nresource: operation\nkey: stage-a\n---\n",
+        encoding="utf-8",
+    )
+    (operations_dir / "stage-b.md").write_text(
+        "---\nresource: operation\nkey: stage-b\n---\n",
+        encoding="utf-8",
+    )
+    descriptor_source = (
+        "---\nresource: script\nkey: summary-helper\n"
+        "title: Summary helper\nentrypoint: summary.py\n---\n\n"
+        "| 参数 key | CLI 参数 | 类型 | 必填 | 说明 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| records | --records | object | 是 | current records |\n"
+    )
+    (scripts_dir / "summary-helper.md").write_text(descriptor_source, encoding="utf-8")
+    (scripts_dir / "summary.py").write_text(
+        "print({'combined_result': [], 'recommended_plan': None})\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "monthly-helper.md").write_text(
+        "---\nresource: script\nkey: monthly-helper\n"
+        "title: Monthly helper\nentrypoint: monthly.py\n---\n",
+        encoding="utf-8",
+    )
+    (scripts_dir / "monthly.py").write_text(
+        "print({'combined_result': []})\n",
+        encoding="utf-8",
+    )
+
+    catalog = load_script_catalog(ontology_dir)
+    original = next(entry for entry in catalog if entry["script_key"] == "summary-helper")
+    public = public_script_catalog(catalog)
+
+    assert original["_is_bound_operation"] is False
+    assert original.get("_is_derived_coordinator_binding") is None
+    assert all(entry.get("operation_key") != "summary" for entry in catalog)
+    assert public == []
+    assert (operations_dir / "summary.md").read_text(encoding="utf-8") == coordinator_source
+    assert (scripts_dir / "summary-helper.md").read_text(encoding="utf-8") == descriptor_source
+
+
 def test_registry_preload_uses_active_ontology_version(tmp_path, monkeypatch):
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import build_selected_ontology_preload_context, get_ontology_registry

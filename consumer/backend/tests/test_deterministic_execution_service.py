@@ -175,6 +175,25 @@ def _add_aliased_runtime_session_parameter(ontology_dir: Path) -> None:
     validate_and_lock_deterministic_operations(ontology_dir)
 
 
+def _add_natural_language_routing(ontology_dir: Path) -> None:
+    operation_path = ontology_dir / "operations" / "query.md"
+    descriptor = operation_path.read_text(encoding="utf-8")
+    descriptor = descriptor.replace(
+        "execution:\n",
+        "execution_policy:\n"
+        "  routing:\n"
+        "    all_terms:\n"
+        "      - monthly plan\n"
+        "      - refinery\n"
+        "    any_terms:\n"
+        "      - unit load\n"
+        "      - tank capacity\n"
+        "execution:\n",
+    )
+    operation_path.write_text(descriptor, encoding="utf-8")
+    validate_and_lock_deterministic_operations(ontology_dir)
+
+
 def _request(
     *,
     key="query",
@@ -257,7 +276,133 @@ def test_no_match_and_explicit_legacy_leave_new_service(tmp_path, monkeypatch):
     assert no_match.reason == "no_deterministic_match"
 
 
-def test_legacy_and_unmatched_requests_skip_complete_package_hash(
+def test_declared_all_and_any_terms_route_natural_language_request(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_package(tmp_path)
+    _add_natural_language_routing(ontology_dir)
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **_kwargs: json.dumps({"value": "ok"}),
+    )
+
+    request = _request(
+        key=None,
+        arguments={"code": "CODE-42"},
+        user_request="Check the refinery monthly plan unit load for every batch.",
+    )
+    service = DeterministicExecutionService()
+
+    assert service.is_potentially_applicable(request) is True
+    assert isinstance(
+        service.execute(
+            request,
+            enabled=True,
+            project_root=str(tmp_path),
+            timeout_seconds=30,
+        ),
+        Completed,
+    )
+
+
+@pytest.mark.parametrize(
+    "user_request",
+    (
+        "Check the refinery monthly plan.",
+        "Check the refinery unit load.",
+        "Do not execute the refinery monthly plan unit load check.",
+    ),
+)
+def test_declared_routing_requires_all_terms_any_term_and_execution_intent(
+    tmp_path,
+    monkeypatch,
+    user_request,
+):
+    ontology_dir = _write_package(tmp_path)
+    _add_natural_language_routing(ontology_dir)
+    _patch_manifest(monkeypatch, ontology_dir)
+
+    outcome = DeterministicExecutionService().execute(
+        _request(
+            key=None,
+            arguments={"code": "CODE-42"},
+            user_request=user_request,
+        ),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, NotApplicable)
+    assert outcome.reason == "no_deterministic_match"
+
+
+def test_tampered_declared_routing_fails_closed(tmp_path, monkeypatch):
+    ontology_dir = _write_package(tmp_path)
+    _add_natural_language_routing(ontology_dir)
+    _patch_manifest(monkeypatch, ontology_dir)
+    operation_path = ontology_dir / "operations" / "query.md"
+    operation_path.write_text(
+        operation_path.read_text(encoding="utf-8").replace(
+            "monthly plan",
+            "unrelated request",
+        ),
+        encoding="utf-8",
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(
+            key=None,
+            arguments={"code": "CODE-42"},
+            user_request="unrelated request refinery unit load",
+        ),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "package_integrity_mismatch"
+
+
+def test_tampered_declared_routing_cannot_remove_an_existing_match(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = _write_package(tmp_path)
+    _add_natural_language_routing(ontology_dir)
+    _patch_manifest(monkeypatch, ontology_dir)
+    operation_path = ontology_dir / "operations" / "query.md"
+    operation_path.write_text(
+        operation_path.read_text(encoding="utf-8").replace(
+            "monthly plan",
+            "unrelated request",
+        ),
+        encoding="utf-8",
+    )
+    request = _request(
+        key=None,
+        arguments={"code": "CODE-42"},
+        user_request="monthly plan refinery unit load",
+    )
+    service = DeterministicExecutionService()
+
+    assert service.is_potentially_applicable(request) is True
+    outcome = service.execute(
+        request,
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "package_integrity_mismatch"
+
+
+def test_legacy_and_unmatched_requests_skip_complete_package_hash_but_verify_routing(
     tmp_path,
     monkeypatch,
 ):
@@ -267,7 +412,7 @@ def test_legacy_and_unmatched_requests_skip_complete_package_hash(
     monkeypatch.setattr(
         service_module,
         "verify_deterministic_package_lock",
-        lambda *_args, **_kwargs: hash_calls.append("unexpected"),
+        lambda *_args, **kwargs: hash_calls.append(kwargs.get("critical_paths")),
     )
     service = DeterministicExecutionService()
 
@@ -286,7 +431,10 @@ def test_legacy_and_unmatched_requests_skip_complete_package_hash(
 
     assert isinstance(legacy, NotApplicable)
     assert isinstance(no_match, NotApplicable)
-    assert hash_calls == []
+    assert hash_calls == [
+        {"operations/query.md"},
+        {"operations/query.md"},
+    ]
 
 
 def test_tampered_alias_fails_closed_before_agent_fallback(tmp_path, monkeypatch):
@@ -1347,6 +1495,93 @@ def test_workspace_provider_binding_is_forwarded_to_sandbox_without_reresolution
     )
     assert connection_payload["endpoint"] == effective_connection.endpoint
     assert outcome.envelope["execution"]["dependencies"][0]["revision"] == "rev-1"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "pinned_endpoint", "expected_connection_endpoint"),
+    (
+        (
+            "bolt://snapshot.example.com:7687",
+            "bolt://192.0.2.24:7687",
+            "bolt://192.0.2.24:7687",
+        ),
+        (
+            "neo4j+s://snapshot.example.com:7687",
+            "neo4j+s://192.0.2.24:7687",
+            "neo4j+s://snapshot.example.com:7687",
+        ),
+        (
+            "https://snapshot.example.com/query",
+            "https://192.0.2.24/query",
+            "https://snapshot.example.com/query",
+        ),
+    ),
+)
+def test_workspace_provider_uses_pinned_egress_without_losing_tls_server_name(
+    tmp_path,
+    monkeypatch,
+    endpoint,
+    pinned_endpoint,
+    expected_connection_endpoint,
+):
+    ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    effective_connection = EffectiveConnection(
+        version=1,
+        provider="neo4j",
+        endpoint=endpoint,
+        auth=AuthSpec(
+            type="mindsdb_password",
+            username="reader",
+            password="provider-secret",
+        ),
+        options={"database": "snapshot", "data_revision": "rev-1"},
+    )
+    monkeypatch.setattr(
+        service_module,
+        "resolve_deterministic_provider_binding",
+        lambda **_kwargs: SimpleNamespace(
+            effective_connection=effective_connection,
+            source_ref="business_data",
+            data_revision="rev-1",
+            scope_digest="sha256:scope",
+            network_endpoint=effective_connection.endpoint,
+        ),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "load_sandbox_config",
+        lambda: SimpleNamespace(enabled=True),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "sandbox_reachable_url",
+        lambda _endpoint: pinned_endpoint,
+    )
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "ok"}),
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Completed)
+    handler_call = calls[0]
+    assert handler_call["sandbox_network_endpoint"] == pinned_endpoint
+    connection_payload = json.loads(
+        handler_call["env_overrides"]["ONTO_SCRIPT_BUSINESS_DATA_CONNECTION_JSON"]
+    )
+    assert connection_payload["endpoint"] == expected_connection_endpoint
+    assert outcome.envelope["execution"]["dependencies"][0]["scope_digest"] == (
+        "sha256:scope"
+    )
 
 
 def test_injected_short_provider_credential_fails_before_handler(tmp_path, monkeypatch):

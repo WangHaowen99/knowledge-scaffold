@@ -6,7 +6,15 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.tools.execute_script import BACKEND_DIR, _build_script_env_overrides, handle_execute_script_path
+from agent.tools.business_data.resolver import BusinessDataConnectionError
+from agent.tools.execute_script import (
+    BACKEND_DIR,
+    _BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE,
+    _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
+    _WORKSPACE_PROVIDER_DATA_ACCESS,
+    _build_script_env_overrides,
+    handle_execute_script_path,
+)
 from utils.logging import get_logger
 from ontology.ontology_catalog import get_ontology_manifest, resolve_ontology_script_path
 from utils.streaming import build_agent_event
@@ -151,10 +159,21 @@ def run_direct_script(
         ontology_pythonpath = [ontology_dir]
 
         # --- Build env overrides from the ontology-scoped business data source ---
-        env_overrides = _build_script_env_overrides(
-            workspace_id=runtime_context.workspace_id,
-            ontology_id=ontology_id,
+        requires_business_data = (
+            str(script_entry.get("data_access") or "none").strip().casefold()
+            == _WORKSPACE_PROVIDER_DATA_ACCESS
         )
+        try:
+            env_overrides = _build_script_env_overrides(
+                workspace_id=runtime_context.workspace_id,
+                ontology_id=ontology_id,
+                required=requires_business_data,
+            )
+        except BusinessDataConnectionError:
+            return fail_preflight(
+                _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
+                _BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE,
+            )
 
         started_at = time.monotonic()
         with tracer.script_scope(
@@ -180,6 +199,7 @@ def run_direct_script(
                     ontology_dir=ontology_dir,
                     extra_pythonpath_dirs=ontology_pythonpath or None,
                     env_overrides=env_overrides or None,
+                    include_stderr_on_success=False,
                 )
                 elapsed_ms = int((time.monotonic() - started_at) * 1000)
                 is_error = script_output.startswith("Error:")

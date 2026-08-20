@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from types import SimpleNamespace
@@ -940,6 +941,168 @@ def test_nonzero_exit_returns_explicit_public_business_error(
     assert "stderr-secret" not in result
     assert "stdout-secret" not in caplog.text
     assert "stderr-secret" not in caplog.text
+
+
+def test_nonzero_exit_returns_strict_deterministic_stdout_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=4,
+            stdout=(
+                "{\n"
+                '  "error_code": "runtime_error",\n'
+                '  "message": "Synthetic operation failed.",\n'
+                '  "details": "synthetic internal diagnostic"\n'
+                "}\n"
+            ),
+            stderr="",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == (
+        "Error: Script exited with code 4. "
+        "[RUNTIME_ERROR] Synthetic operation failed."
+    )
+    assert "synthetic internal diagnostic" not in result
+    assert "synthetic internal diagnostic" not in caplog.text
+
+
+def test_nonzero_exit_returns_only_safe_python_exception_type(
+    tmp_path,
+    monkeypatch,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Traceback (most recent call last):\n"
+                '  File "operation.py", line 1, in <module>\n'
+                "KeyError: 'synthetic-private-value'\n"
+            ),
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == (
+        "Error: Script exited with code 1. "
+        "[SCRIPT_RUNTIME_ERROR] Python KeyError."
+    )
+    assert "synthetic-private-value" not in result
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"diagnostic": "synthetic internal diagnostic"},
+        ["synthetic internal diagnostic"],
+    ],
+)
+def test_nonzero_exit_ignores_structured_deterministic_error_details(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    details,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=4,
+            stdout=json.dumps(
+                {
+                    "error_code": "runtime_error",
+                    "message": "Synthetic operation failed.",
+                    "details": details,
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = execute_script_module.handle_execute_script_path(
+            script.name,
+            base_path=tmp_path,
+        )
+
+    assert result == (
+        "Error: Script exited with code 4. "
+        "[RUNTIME_ERROR] Synthetic operation failed."
+    )
+    assert "synthetic internal diagnostic" not in result
+    assert "synthetic internal diagnostic" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        (
+            '{"error_code":"runtime_error",'
+            '"message":"Synthetic operation failed."}\n'
+            "additional diagnostic"
+        ),
+        (
+            '{"error_code":"runtime_error",'
+            '"message":"Synthetic operation failed.",'
+            '"unexpected":"synthetic extra field"}'
+        ),
+        (
+            '{"error_code":"runtime-error",'
+            '"message":"Synthetic operation failed."}'
+        ),
+    ],
+)
+def test_nonzero_exit_rejects_ambiguous_deterministic_stdout_error(
+    tmp_path,
+    monkeypatch,
+    stdout,
+):
+    script = _write_script(tmp_path)
+    _set_sandbox_config(monkeypatch, fallback_local=False, enabled=False)
+    monkeypatch.setattr(
+        execute_script_module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=["python"],
+            returncode=4,
+            stdout=stdout,
+            stderr="",
+        ),
+    )
+
+    result = execute_script_module.handle_execute_script_path(
+        script.name,
+        base_path=tmp_path,
+    )
+
+    assert result == "Error: Script exited with code 4."
 
 
 @pytest.mark.parametrize(
