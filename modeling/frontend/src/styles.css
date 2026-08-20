@@ -1080,6 +1080,33 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .task-adjustment-reason textarea { width: 100%; resize: vertical; border: 1px solid #cfd9e7; border-radius: 8px; padding: 8px 9px; background: #fff; color: #24364b; font: inherit; }
 .mwr .task-adjustment-preview > footer { display: flex; justify-content: flex-end; gap: 7px; padding: 9px 13px 12px; border-top: 1px solid #e1ebf7; }
 .mwr .task-adjustment-blocked { margin: 11px 13px 0; border-radius: 8px; padding: 8px 9px; background: #fff3f2; color: #a43a32; font-size: 11px; }
+.mwr .pchat-milestone-rollback { position: relative; margin-left: auto; }
+.mwr .pchat-milestone-rollback__trigger { border: 1px solid #c5d5e7; border-radius: 8px; padding: 6px 10px; background: #fff; color: #355a82; font-size: 11px; cursor: pointer; }
+.mwr .pchat-milestone-rollback__trigger:hover:not(:disabled) { border-color: #7ea7d1; background: #f5f9fd; }
+.mwr .pchat-milestone-rollback__menu { position: absolute; z-index: 30; top: calc(100% + 7px); right: 0; display: grid; width: 270px; padding: 10px; border: 1px solid #cddbea; border-radius: 11px; background: #fff; box-shadow: 0 10px 30px rgba(32, 62, 94, .18); }
+.mwr .pchat-milestone-rollback__menu > strong { color: #253f5c; font-size: 12px; }
+.mwr .pchat-milestone-rollback__menu > p { margin: 3px 0 8px; color: #7b899a; font-size: 10px; }
+.mwr .pchat-milestone-rollback__menu > button { display: grid; gap: 2px; width: 100%; border: 0; border-top: 1px solid #edf1f6; padding: 8px 5px; background: transparent; text-align: left; cursor: pointer; }
+.mwr .pchat-milestone-rollback__menu > button:hover { background: #f4f8fc; }
+.mwr .pchat-milestone-rollback__menu span { color: #294f76; font-size: 11px; font-weight: 700; }
+.mwr .pchat-milestone-rollback__menu small { color: #76879a; font-size: 9.5px; }
+.mwr .milestone-rollback-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(16, 31, 48, .35); }
+.mwr .milestone-rollback-dialog { width: min(680px, 100%); max-height: min(760px, calc(100vh - 48px)); overflow: auto; border: 1px solid #b8cde4; border-radius: 14px; background: #fff; box-shadow: 0 22px 70px rgba(23, 49, 77, .28); }
+.mwr .milestone-rollback-dialog > header { display: flex; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid #dde8f3; background: #eef6fd; }
+.mwr .milestone-rollback-dialog > header div { display: grid; gap: 4px; }
+.mwr .milestone-rollback-dialog > header span { color: #6f8093; font-size: 11px; }
+.mwr .milestone-rollback-dialog > header strong { color: #183f69; font-size: 15px; }
+.mwr .milestone-rollback-dialog > header em { color: #386b9d; font-size: 11px; font-style: normal; }
+.mwr .milestone-rollback-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 16px 18px 8px; }
+.mwr .milestone-rollback-columns > div { border: 1px solid #e0e8f1; border-radius: 10px; padding: 11px 12px; background: #fafcff; }
+.mwr .milestone-rollback-columns strong { color: #324f6e; font-size: 12px; }
+.mwr .milestone-rollback-columns ul { margin: 7px 0 0; padding-left: 18px; color: #56697e; font-size: 11px; line-height: 1.65; }
+.mwr .milestone-rollback-revision { margin: 4px 18px 13px; border-radius: 8px; padding: 8px 10px; background: #f6f8fb; color: #647488; font-size: 10.5px; }
+.mwr .milestone-rollback-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid #e6edf5; }
+@media (max-width: 720px) {
+  .mwr .milestone-rollback-columns { grid-template-columns: 1fr; }
+  .mwr .pchat-milestone-rollback__menu { right: auto; left: 0; width: min(270px, calc(100vw - 32px)); }
+}
 .mwr .validation-deferral-card { margin: 10px 14px; overflow: hidden; border: 1px solid #efc57d; border-radius: 12px; background: #fffdf7; box-shadow: 0 7px 20px rgba(132, 91, 22, .1); }
 .mwr .validation-deferral-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 13px; border-bottom: 1px solid #f2dfba; background: linear-gradient(135deg, #fff6df, #fffaf0); }
 .mwr .validation-deferral-card > header div { display: grid; gap: 3px; }

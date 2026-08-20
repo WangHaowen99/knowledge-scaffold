@@ -135,6 +135,7 @@ import { registerWorkflowExtraRoutes } from './workflow-extra-routes.js';
 import { WorkflowStepProgressRepo } from './workflow-progress.js';
 import { buildProjectWorkflow } from './workflow-session.js';
 import { buildFlowchart } from './workflow-extras.js';
+import { MilestoneRollbackCoordinator } from '../ai-construction/milestone-rollback.js';
 
 const EVENT_POLL_FALLBACK_MS = 2_000;
 const HEARTBEAT_MS = 15_000;
@@ -331,7 +332,8 @@ export interface AuthoringRouteOptions {
     | 'failKnowledgeStructure' | 'failKnowledgeRepair' | 'startIncrementRound'>;
   packages?: Pick<PackageArtifactStore,
     'ensureProject' | 'initializeDraftPackage' | 'current' | 'readPackageFiles'
-    | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'>;
+    | 'saveFiles' | 'saveCurrentAsPackageVersion' | 'countPendingCandidateRevisions'
+    | 'restore' | 'supersedePendingCandidateRevisions'>;
   flowchartDrafts?: FlowchartDraftStore;
   processDraftGenerator?: typeof generateProcessDraft;
   /** 后台作业登记表。与 registerRoutes 共用同一个实例，跨路由去重才有意义 */
@@ -374,6 +376,11 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
   const jobs = options.jobs ?? new InFlightOperations();
   const controlledRepair = new ControlledRepairController({ state, graph });
   const packages = options.packages ?? getPackageArtifactStore();
+  const milestoneRollbacks = new MilestoneRollbackCoordinator({
+    packages: packages as Pick<PackageArtifactStore,
+      'current' | 'restore' | 'supersedePendingCandidateRevisions'>,
+    db: getDb(), graph, state,
+  });
   const flowchartDrafts = options.flowchartDrafts ?? new FlowchartDraftStore();
   const adapter = new PiAuthoringAdapter(state);
   const messages = new AiConstructionMessageStore(
@@ -428,7 +435,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       (item) => item.id === 'process_confirmed',
     )?.confirmedRevisionOid
       ?? [...(construction?.confirmations ?? [])].reverse().find(
-        (item) => item.milestoneId === 'process_confirmed',
+        (item) => item.milestoneId === 'process_confirmed' && !item.invalidatedAt,
       )?.packageRevisionOid;
     if (!confirmedRevisionOid) {
       throw new AuthoringStateError('INVALID_TRANSITION', '业务流程尚未确认，请先确认流程图');
@@ -894,6 +901,101 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       return {
         preview: graph.previewAdjustment(project.id, String((req.params as any).taskId), action),
       };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.get('/api/projects/:id/ai-construction/milestones/:milestoneId/rollback-preview', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    try {
+      return {
+        preview: milestoneRollbacks.preview(
+          project.id,
+          String((req.params as any).milestoneId),
+        ),
+      };
+    } catch (error) {
+      return sendStateError(reply, error);
+    }
+  });
+
+  app.post('/api/projects/:id/ai-construction/milestones/:milestoneId/rollback', async (req, reply) => {
+    const project = ownedProject(String((req.params as any).id), req.user!.username);
+    if (!project) return reply.code(404).send({ error: '项目不存在' });
+    const body = (req.body ?? {}) as any;
+    const expectedGraphRevision = Number(body.expectedGraphRevision);
+    const expectedPackageRevision = String(body.expectedPackageRevision ?? '').trim();
+    const requestId = String(body.requestId ?? '').trim();
+    if (!Number.isInteger(expectedGraphRevision) || expectedGraphRevision < 1
+      || !expectedPackageRevision || !requestId) {
+      return reply.code(400).send({ error: '阶段回退参数不正确', code: 'INVALID_INPUT' });
+    }
+    try {
+      return await runWithProjectLease(leases, {
+        projectId: project.id,
+        operation: '回退建模阶段',
+        owner: `${req.user!.username}:${req.id}`,
+        ttlMs: SHORT_WRITE_LEASE_TTL_MS,
+      }, async () => {
+        ensureProjectGraph(project);
+        const result = await milestoneRollbacks.apply({
+          projectId: project.id,
+          targetMilestoneId: String((req.params as any).milestoneId),
+          expectedGraphRevision,
+          expectedPackageRevision,
+          requestId,
+          actor: req.user!.username,
+          reason: String(body.reason ?? ''),
+        });
+        const advanced = orchestrator.advanceAfterMilestoneConfirmation(
+          project.id, result.graph,
+        );
+        const rollbackMessage = messages.ensure(project.id, {
+          key: `milestone.rollback.${result.rollback.id}`,
+          role: 'assistant',
+          taskId: advanced.aiConstruction.progress.currentTaskId,
+          blocks: [
+            {
+              type: 'status',
+              title: `已回退到${result.rollback.impact.targetMilestone.title}`,
+              summary: '上游资料和历史版本均已保留，当前阶段及后续派生结果需要重新确认',
+              milestoneId: result.rollback.targetMilestoneId,
+              taskId: advanced.aiConstruction.progress.currentTaskId,
+              progress: advanced.aiConstruction.progress.percent,
+              eta: {
+                minMinutes: advanced.aiConstruction.progress.eta.minMinutes,
+                maxMinutes: advanced.aiConstruction.progress.eta.maxMinutes,
+                confidence: advanced.aiConstruction.progress.eta.confidence,
+              },
+            },
+            {
+              type: 'text',
+              text: `回退原因：${result.rollback.reason}\n\n已创建新的恢复修订，回退前的知识包和确认记录仍保留在历史中。`,
+            },
+          ],
+        });
+        if (!result.replayed) {
+          state.apply({
+            kind: 'publish_event',
+            projectId: project.id,
+            type: 'ai_construction.milestone.rolled_back',
+            payload: {
+              rollbackId: result.rollback.id,
+              targetMilestoneId: result.rollback.targetMilestoneId,
+              graphRevision: advanced.aiConstruction.revision,
+              restoredPackageRevisionOid: result.rollback.restoredPackageRevisionOid,
+            },
+          });
+        }
+        return {
+          ...result,
+          aiConstruction: advanced.aiConstruction,
+          message: advanced.message ?? rollbackMessage,
+          cursor: state.snapshot(project.id).lastEventSeq,
+        };
+      });
     } catch (error) {
       return sendStateError(reply, error);
     }

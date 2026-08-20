@@ -40,6 +40,7 @@ interface CheckpointRow {
   output_json: string;
   issues_json: string;
   attempt_count: number;
+  invalidated_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -107,7 +108,7 @@ export class GenerationCheckpointStore {
         AND EXISTS (
           SELECT 1 FROM generation_batch_checkpoints c
           WHERE c.project_id = r.project_id AND c.run_id = r.id
-            AND c.status = 'completed'
+            AND c.status = 'completed' AND c.invalidated_at IS NULL
         )
       ORDER BY COALESCE(r.finished_at, r.updated_at) DESC, r.rowid DESC
       LIMIT 1`).get(projectId, baseRevision) as { id?: string } | undefined;
@@ -122,12 +123,12 @@ export class GenerationCheckpointStore {
     dependencyHashes?: Map<string, string>;
   }): void {
     const rows = this.db.prepare(`SELECT * FROM generation_batch_checkpoints
-      WHERE project_id = ? AND run_id = ? ORDER BY
+      WHERE project_id = ? AND run_id = ? AND invalidated_at IS NULL ORDER BY
         CASE batch_kind WHEN 'object' THEN 1 WHEN 'knowledge' THEN 2 ELSE 3 END,
         batch_index`)
       .all(input.projectId, input.fromRunId) as unknown as CheckpointRow[];
     const targetRows = this.db.prepare(`SELECT phase, plan_hash FROM generation_batch_checkpoints
-      WHERE project_id = ? AND run_id = ?`)
+      WHERE project_id = ? AND run_id = ? AND invalidated_at IS NULL`)
       .all(input.projectId, input.toRunId) as unknown as Array<{ phase: string; plan_hash: string }>;
     const targetByPhase = new Map(targetRows.map((row) => [row.phase, row.plan_hash]));
     for (const row of rows) {
@@ -158,7 +159,7 @@ export class GenerationCheckpointStore {
     dependencyHashes?: Map<string, string>,
   ): GenerationBatchCheckpoint[] {
     const rows = this.db.prepare(`SELECT * FROM generation_batch_checkpoints
-      WHERE project_id = ? AND run_id = ? ORDER BY
+      WHERE project_id = ? AND run_id = ? AND invalidated_at IS NULL ORDER BY
         CASE batch_kind WHEN 'object' THEN 1 WHEN 'knowledge' THEN 2 ELSE 3 END,
         batch_index`)
       .all(projectId, runId) as unknown as CheckpointRow[];

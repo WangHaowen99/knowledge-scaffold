@@ -264,6 +264,12 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
   ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'generation_batch_checkpoints', 'invalidated_at', 'TEXT');
+  ensureColumn(db, 'generation_batch_checkpoints', 'invalidated_reason', 'TEXT');
+  ensureColumn(db, 'generation_batch_checkpoints', 'invalidated_by_rollback_id', 'TEXT');
+  ensureColumn(db, 'ai_construction_confirmations', 'invalidated_at', 'TEXT');
+  ensureColumn(db, 'ai_construction_confirmations', 'invalidated_by_rollback_id', 'TEXT');
+  ensureColumn(db, 'ai_construction_milestone_rollbacks', 'current_package_revision_oid', 'TEXT NOT NULL DEFAULT \'\'');
   ensureColumn(db, 'graph_import_uploads', 'package_revision_oid', 'TEXT');
   ensureColumn(db, 'graph_import_runs', 'package_revision_oid', 'TEXT');
   ensureColumn(db, 'eval_rounds', 'artifact_revision_oid', 'TEXT');

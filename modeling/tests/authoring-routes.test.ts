@@ -14,12 +14,14 @@ const [
   { createProject },
   { getDb },
   { PackageCandidateRejectedError },
+  { getPackageArtifactStore },
 ] = await Promise.all([
   import('../src/authoring/routes.js'),
   import('../src/authoring/state.js'),
   import('../src/projects/repo.js'),
   import('../src/db/index.js'),
   import('../src/workflow/package-chat.js'),
+  import('../src/artifacts/index.js'),
 ]);
 
 function routeApp(t: test.TestContext, username = 'alice', options: Record<string, unknown> = {}) {
@@ -61,6 +63,112 @@ test('会话快照、任务图命令和事件回放保持同一游标', async (t
     [1, 'ai_construction.graph.updated'],
   ]);
   assert.equal(replay.json().events[0].payload.command, 'start_task');
+});
+
+test('阶段回退接口先预览影响并恢复知识包后重开目标阶段', async (t) => {
+  const project = createProject({ owner: 'alice', kind: 'package', name: '阶段回退接口' });
+  const packages = getPackageArtifactStore();
+  const initialized = await packages.initializeDraftPackage(project.id, {
+    id: 'package-rollback-api', name: '阶段回退接口', description: '回退接口测试',
+  });
+  const graphModule = await import('../src/ai-construction/task-graph.js');
+  const graph = new graphModule.AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const materialsTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: materialsTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'materials_ready', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'modeling_brief', milestoneId: 'goal_confirmed', title: '确认建模目标',
+      goal: '确认目标', required: true, inputRevisionOid: initialized.revision.oid,
+      dependsOn: [materialsTask.id],
+    },
+  });
+  const goalTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'process_interview', milestoneId: 'process_confirmed', title: '业务流程访谈',
+      goal: '确认核心流程', required: true, inputRevisionOid: initialized.revision.oid,
+      dependsOn: [goalTask.id],
+    },
+  });
+  const processTask = snapshot.tasks.at(-1)!;
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: processTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'process_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  await packages.saveFiles(project.id, {
+    expectedRevision: initialized.revision.oid,
+    files: { 'package/notes/after-process.md': '# 后续阶段产物\n' },
+    action: {
+      cause: 'test_downstream_output', summary: '生成后续阶段产物',
+      actorKind: 'agent', actorName: 'test-agent',
+    },
+  });
+
+  const app = routeApp(t);
+  const previewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback-preview`,
+  });
+  assert.equal(previewResponse.statusCode, 200, previewResponse.body);
+  const preview = previewResponse.json().preview;
+  assert.equal(preview.allowed, true);
+  assert.match(preview.preservedOutputs.join('、'), /资料分析结论/);
+
+  const beforePackage = await packages.current(project.id);
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: beforePackage!.revision.oid,
+      requestId: 'rollback-process-api',
+      reason: '核心流程边界需要重新确认',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().aiConstruction.progress.currentMilestoneId, 'process_confirmed');
+  assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
+    task.id === processTask.id
+  )).status, 'waiting_user');
+  assert.notEqual(response.json().rollback.restoredPackageRevisionOid, beforePackage!.revision.oid);
+
+  const replay = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/process_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: beforePackage!.revision.oid,
+      requestId: 'rollback-process-api',
+      reason: '核心流程边界需要重新确认',
+    },
+  });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().rollback.id, response.json().rollback.id);
 });
 
 test('通用待办接口不能绕过场景审核专用闭环', async (t) => {

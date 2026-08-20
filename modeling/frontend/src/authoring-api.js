@@ -139,6 +139,15 @@ export const adjustAiConstructionTask = (id, taskId, input) => api(
   { method: 'POST', body: JSON.stringify(input) },
 );
 
+export const previewAiConstructionMilestoneRollback = (id, milestoneId) => api(
+  `${projectPath(id)}/ai-construction/milestones/${encodeURIComponent(milestoneId)}/rollback-preview`,
+);
+
+export const rollbackAiConstructionMilestone = (id, milestoneId, input) => api(
+  `${projectPath(id)}/ai-construction/milestones/${encodeURIComponent(milestoneId)}/rollback`,
+  { method: 'POST', body: JSON.stringify(input) },
+);
+
 export const previewAiConstructionTaskEdit = (id, edit) => api(
   `${projectPath(id)}/ai-construction/task-edit-preview`,
   { method: 'POST', body: JSON.stringify({ edit }) },

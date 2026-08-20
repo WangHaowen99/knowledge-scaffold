@@ -42,7 +42,7 @@ function latestConfirmedPackageRevision(
     .map((milestone) => milestone.id));
   let latest: AiConstructionTaskGraphSnapshot['confirmations'][number] | undefined;
   for (const confirmation of snapshot.confirmations) {
-    if (!activeMilestones.has(confirmation.milestoneId)) continue;
+    if (!activeMilestones.has(confirmation.milestoneId) || confirmation.invalidatedAt) continue;
     if (!latest || confirmation.graphRevision > latest.graphRevision) latest = confirmation;
   }
   return latest?.packageRevisionOid;
@@ -56,7 +56,7 @@ function confirmedMilestonePackageRevision(
     milestone.id === milestoneId
   ))?.confirmedRevisionOid
     ?? [...(snapshot.confirmations ?? [])].reverse().find(
-      (confirmation) => confirmation.milestoneId === milestoneId,
+      (confirmation) => confirmation.milestoneId === milestoneId && !confirmation.invalidatedAt,
     )?.packageRevisionOid;
 }
 
@@ -326,7 +326,7 @@ export class AiConstructionOrchestrator {
 
   latestMaterialAnalysis(projectId: string): AnalysisResult | null {
     const rows = this.db.prepare(`SELECT output_json FROM wf_nodes
-      WHERE project_id = ? AND type = 'analyze' AND output_json IS NOT NULL
+      WHERE project_id = ? AND type = 'analyze' AND status = 'done' AND output_json IS NOT NULL
       ORDER BY ordinal DESC, rowid DESC LIMIT 20`).all(projectId) as Array<{ output_json: string }>;
     for (const row of rows) {
       try {
