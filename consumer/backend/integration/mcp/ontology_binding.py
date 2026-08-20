@@ -167,13 +167,14 @@ def validate_runtime_ontology_availability(
         if ontology is not None and active_version
         else None
     )
-    if (
-        ontology is None
-        or not bool(getattr(ontology, "enabled", False))
-        or not active_version
-        or active_version not in versions
-        or runtime_manifest is None
-    ):
+    availability_checks = (
+        ontology is not None,
+        bool(getattr(ontology, "enabled", False)),
+        bool(active_version),
+        active_version in versions,
+        runtime_manifest is not None,
+    )
+    if not all(availability_checks):
         raise MCPOntologyBindingError(
             "MCP_ONTOLOGY_UNAVAILABLE",
             "Token 或请求指定的知识包当前不可用",
