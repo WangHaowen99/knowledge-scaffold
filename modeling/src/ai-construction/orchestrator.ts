@@ -223,6 +223,11 @@ export interface CheckFindingIgnoreInput extends CheckFindingCardInput {
 
 export interface AiConstructionAdvanceContext {
   scriptCandidates?: ScriptCandidate[];
+  /**
+   * 回退或恢复操作完成后实际生效的知识包修订。恢复会创建内容等价的新提交，
+   * 新待办必须绑定该提交，不能继续绑定历史确认修订。
+   */
+  packageRevisionOid?: string;
 }
 
 export interface CompleteScriptDecisionInput {
@@ -1967,11 +1972,15 @@ export class AiConstructionOrchestrator {
       case 'knowledge_confirmed':
         return this.prepareKnowledgeStructure(projectId, current, confirmedSnapshot);
       case 'process_confirmed':
-        return this.prepareProcessInterview(projectId, current, confirmedSnapshot);
+        return this.prepareProcessInterview(
+          projectId, current, confirmedSnapshot, context.packageRevisionOid,
+        );
       case 'materials_ready':
         return this.prepareGoalDirectedMaterialAnalysis(projectId, current);
       case 'goal_confirmed':
-        return this.prepareModelingBrief(projectId, current, confirmedSnapshot);
+        return this.prepareModelingBrief(
+          projectId, current, confirmedSnapshot, context.packageRevisionOid,
+        );
       default:
         return null;
     }
@@ -1981,6 +1990,7 @@ export class AiConstructionOrchestrator {
     projectId: string,
     snapshot: AiConstructionTaskGraphSnapshot,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    packageRevisionOid?: string,
   ): AiConstructionAdvanceResult {
     let current = snapshot;
     let task = current.tasks.find((item) => item.kind === 'modeling_brief'
@@ -2020,7 +2030,7 @@ export class AiConstructionOrchestrator {
         if (!refreshedTask) throw new Error('建模目标任务状态刷新失败');
         task = refreshedTask;
       }
-      const packageRevision = confirmedMilestonePackageRevision(
+      const packageRevision = packageRevisionOid ?? confirmedMilestonePackageRevision(
         confirmedSnapshot, 'materials_ready',
       );
       const started = this.state.apply({
@@ -2862,6 +2872,7 @@ export class AiConstructionOrchestrator {
     projectId: string,
     initial: AiConstructionTaskGraphSnapshot,
     confirmedSnapshot: AiConstructionTaskGraphSnapshot,
+    packageRevisionOid?: string,
   ): AiConstructionAdvanceResult {
     let current = initial;
     const goalTask = current.tasks.find((item) => item.kind === 'modeling_brief');
@@ -2933,7 +2944,7 @@ export class AiConstructionOrchestrator {
           type: 'wait_for_user', expectedRevision: current.revision, taskId,
         });
       }
-      const packageRevision = latestConfirmedPackageRevision(confirmedSnapshot);
+      const packageRevision = packageRevisionOid ?? latestConfirmedPackageRevision(confirmedSnapshot);
       const started = this.state.apply({
         kind: 'start_run', projectId, intent: '业务流程访谈', baseRevision: packageRevision,
         state: { purpose: 'process_interview', stage: 'core', taskId },

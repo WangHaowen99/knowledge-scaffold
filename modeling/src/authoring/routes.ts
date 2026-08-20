@@ -316,6 +316,26 @@ function commandEvent(command: AiConstructionTaskGraphCommand) {
   };
 }
 
+/**
+ * 恢复知识包会创建内容等价但 oid 不同的新 Git 修订。回退后刚创建的待办即使仍绑定
+ * 历史确认修订，也不能因此被误判为过期；其他知识包变化仍执行正常的修订冲突保护。
+ */
+function isRollbackEquivalentRevision(
+  db: ReturnType<typeof getDb>,
+  projectId: string,
+  interactionRevision: string | undefined,
+  currentRevision: string,
+): boolean {
+  if (!interactionRevision || interactionRevision === currentRevision) return true;
+  const restored = db.prepare(`SELECT 1
+    FROM ai_construction_milestone_rollbacks
+    WHERE project_id = ? AND status = 'completed'
+      AND base_package_revision_oid = ?
+      AND restored_package_revision_oid = ?
+    LIMIT 1`).get(projectId, interactionRevision, currentRevision);
+  return Boolean(restored);
+}
+
 export interface AuthoringRouteOptions {
   state?: AuthoringState;
   graph?: AiConstructionTaskGraph;
@@ -600,14 +620,17 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       const advanced = orchestrator.advanceAfterMilestoneConfirmation(
         project.id,
         constructionSnapshot,
-        currentMilestoneId === 'deterministic_confirmed' && currentPackage
-          ? {
+        {
+          ...(currentPackage ? { packageRevisionOid: currentPackage.revision.oid } : {}),
+          ...(currentMilestoneId === 'deterministic_confirmed' && currentPackage
+            ? {
             scriptCandidates: identifyScriptCandidates(
               currentPackage.spec.operations,
               currentPackage.spec.metrics ?? [],
             ),
-          }
-          : {},
+            }
+            : {}),
+        },
       );
       constructionSnapshot = advanced.aiConstruction;
       reconcileRollbackContinuation(project.id, constructionSnapshot, advanced);
@@ -871,14 +894,17 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           const advanced = orchestrator.advanceAfterMilestoneConfirmation(
             project.id,
             aiConstruction,
-            appliedCommand.milestoneId === 'knowledge_confirmed'
-              ? {
+            {
+              packageRevisionOid: currentPackage.revision.oid,
+              ...(appliedCommand.milestoneId === 'knowledge_confirmed'
+                ? {
                 scriptCandidates: identifyScriptCandidates(
                   currentPackage.spec.operations,
                   currentPackage.spec.metrics ?? [],
                 ),
-              }
-              : {},
+                }
+                : {}),
+            },
           );
           aiConstruction = advanced.aiConstruction;
           aiConstructionMessage = advanced.message;
@@ -980,6 +1006,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         });
         const advanced = orchestrator.advanceAfterMilestoneConfirmation(
           project.id, result.graph,
+          { packageRevisionOid: result.rollback.restoredPackageRevisionOid },
         );
         const rollbackMessage = messages.ensure(project.id, {
           key: `milestone.rollback.${result.rollback.id}`,
@@ -1954,7 +1981,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           if (!currentPackage) {
             return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
           }
-          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+          if (!isRollbackEquivalentRevision(
+            getDb(), project.id, interaction.baseRevision, currentPackage.revision.oid,
+          )) {
             return reply.code(409).send({
               error: '知识包内容已经变化，请重新填写建模目标',
               code: 'REVISION_CONFLICT',
@@ -2129,7 +2158,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           if (!currentPackage) {
             return reply.code(409).send({ error: '当前项目没有知识包草稿', code: 'PACKAGE_NOT_FOUND' });
           }
-          if (interaction.baseRevision && interaction.baseRevision !== currentPackage.revision.oid) {
+          if (!isRollbackEquivalentRevision(
+            getDb(), project.id, interaction.baseRevision, currentPackage.revision.oid,
+          )) {
             return reply.code(409).send({
               error: '知识包内容已经变化，请重新确认候选业务流程',
               code: 'REVISION_CONFLICT',

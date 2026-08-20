@@ -165,9 +165,36 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
   assert.ok(continuation, '回退后必须追加当前阶段的可见继续卡');
   assert.equal(response.json().message.key, continuation.message_key);
   assert.equal(response.json().interaction?.type, 'question_batch');
+  assert.equal(
+    response.json().interaction?.baseRevision,
+    response.json().rollback.restoredPackageRevisionOid,
+    '回退后新待办必须绑定恢复修订，不能继续绑定历史确认修订',
+  );
   const latestMessage = getDb().prepare(`SELECT message_key FROM ai_construction_messages
     WHERE project_id = ? ORDER BY seq DESC LIMIT 1`).get(project.id) as { message_key: string };
   assert.equal(latestMessage.message_key, continuation.message_key);
+
+  // 兼容修复部署前已经生成的待办：它仍绑定历史确认修订，但该修订与当前恢复修订
+  // 属于同一条已完成回退记录，选择候选时不能被当作真正的知识包并发修改拦截。
+  getDb().prepare(`UPDATE authoring_interactions SET base_revision = ? WHERE id = ?`).run(
+    initialized.revision.oid,
+    response.json().interaction.id,
+  );
+  const legacySelection = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/interactions/${response.json().interaction.id}/respond`,
+    payload: {
+      requestId: 'rollback-process-legacy-selection',
+      response: { answers: [
+        { questionId: 'process_title', other: '授信审批' },
+        { questionId: 'trigger', other: '客户提交申请' },
+        { questionId: 'actors', other: '客户经理；审批人' },
+        { questionId: 'outputs', other: '审批结论' },
+      ] },
+    },
+  });
+  assert.equal(legacySelection.statusCode, 200, legacySelection.body);
+  assert.equal(legacySelection.json().nextInteraction?.payload?.stage, 'details');
 
   // 模拟项目在旧版本完成回退：只有回退记录和任务图，没有本次回退的继续卡。
   // 重新进入工作台时必须幂等补卡，线上存量项目才能在部署后直接恢复。
