@@ -28,10 +28,10 @@ test('settings modal: 个人 LLM 可主动同步平台默认并按可用状态�
     readFileSync(new URL('../frontend/src/SettingsModal.jsx', import.meta.url), 'utf8')
   ));
 
-  assert.match(source, /platformDefaultAvailable=\{s\.llm\.platformDefaultAvailable\}/);
-  assert.match(source, /syncDefaultLlm\(\)/);
+  assert.match(source, /config=\{llmPurpose === 'main' \? s\.llm : s\.taskLlm\}/);
+  assert.match(source, /syncDefaultLlm\(purpose\)/);
   assert.match(source, /同步默认 LLM 配置/);
-  assert.match(source, /disabled=\{!platformDefaultAvailable \|\| syncing \|\| testing\}/);
+  assert.match(source, /disabled=\{!config\.platformDefaultAvailable \|\| syncing \|\| testing\}/);
   assert.match(source, /CircleHelp/);
   assert.match(source, /只有 admin 账号设置了默认 LLM 配置后，才可使用。/);
   assert.match(source, /className="cfg-sync-help" tabIndex=\{0\}/);
@@ -41,6 +41,35 @@ test('settings modal: 个人 LLM 可主动同步平台默认并按可用状态�
   assert.match(styles, /\.cfg-sync-help::after \{[^}]*white-space: nowrap;/s);
   assert.match(styles, /\.cfg-sync-help::after \{[^}]*padding: 7px 14px;/s);
   assert.doesNotMatch(styles, /\.cfg-sync-help::after \{[^}]*max-width:/s);
+});
+
+test('settings modal: 主模型与后台任务模型可切换且仅后台任务模型显示用途 Tag', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { default: LlmPurposeTabs, LLM_PURPOSE_HELP } = await import('../frontend/src/LlmPurposeTabs.jsx');
+  const settings = readFileSync(new URL('../frontend/src/SettingsModal.jsx', import.meta.url), 'utf8');
+  const purposeTabs = readFileSync(new URL('../frontend/src/LlmPurposeTabs.jsx', import.meta.url), 'utf8');
+  const adminDefaults = readFileSync(new URL('../frontend/src/AdminLlmDefaults.jsx', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../frontend/src/styles.css', import.meta.url), 'utf8');
+
+  assert.match(settings, /taskLlmBaseUrl: d\.taskLlm\.baseUrl/);
+  assert.match(settings, /llmPurpose: purpose/);
+  assert.match(settings, /<LlmPurposeTabs purpose=\{purpose\}/);
+  assert.match(adminDefaults, /<LlmPurposeTabs/);
+  assert.match(purposeTabs, />主模型</);
+  assert.match(purposeTabs, />后台任务模型</);
+  assert.match(purposeTabs, /主模型用于核心建模、资料理解和知识生成/);
+  assert.match(purposeTabs, /后台任务模型用于流程草稿、评测判分、诊断优化等辅助任务/);
+  assert.match(purposeTabs, /后台任务模型未配置时自动使用主模型配置/);
+  assert.match(purposeTabs, /purpose === 'task'/);
+  assert.match(purposeTabs, /className="tag tag-lang cfg-purpose-tag" role="note"/);
+  assert.doesNotMatch(purposeTabs, /CircleHelp|cfg-purpose-help|data-tooltip/);
+  assert.match(styles, /\.cfg-purpose-tag \{[^}]*white-space: normal;/s);
+  assert.doesNotMatch(styles, /\.cfg-purpose-help/);
+
+  const mainView = LlmPurposeTabs({ purpose: 'main', onChange() {} });
+  const taskView = LlmPurposeTabs({ purpose: 'task', onChange() {} });
+  assert.equal(mainView.props.children[1], false);
+  assert.equal(taskView.props.children[1].props.children, LLM_PURPOSE_HELP);
 });
 
 test('admin LLM 默认配置的测试与保存按钮等宽并右对齐', async () => {

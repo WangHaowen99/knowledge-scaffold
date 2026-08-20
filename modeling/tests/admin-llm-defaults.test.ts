@@ -132,9 +132,9 @@ test('admin 保存模板不干扰老用户，新用户初始化后固化加密�
   assert.equal(runWithLlmUser('snapshot-editor', () => settingsRepo.getLlmSource()), 'user');
 });
 
-test('任务模型只读取用户初始化/同步时固化的 task/main 快照', async () => {
+test('任务模型读取用户固化的 task 快照，未配置时使用该用户主模型', async () => {
   const mainFallback = runWithLlmUser('task-user', () => buildTaskLlm());
-  assert.equal(mainFallback.model.id, 'deployment-task-model');
+  assert.equal(mainFallback.model.id, 'deployment-model');
 
   assert.equal(initializeNewUserLlmDefaults('task-user'), true);
   const initializedBeforeTaskDefault = runWithLlmUser('task-user', () => buildTaskLlm());
@@ -218,6 +218,6 @@ test('admin 清除模板不影响快照，没有快照的用户继续使用部�
   const main = runWithLlmUser('fallback-user', () => settingsRepo.getLlmSettings());
   const task = runWithLlmUser('fallback-user', () => settingsRepo.getTaskLlmSettings());
   assert.equal(main.model, 'deployment-model');
-  assert.equal(task.model, 'deployment-task-model');
+  assert.equal(task.model, 'deployment-model');
   assert.equal(runWithLlmUser('new-user', () => settingsRepo.getLlmSettings()).model, 'platform-model-v2');
 });

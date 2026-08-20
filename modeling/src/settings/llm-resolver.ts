@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 
-export type LlmSettingSource = 'user' | 'default_snapshot' | 'settings' | 'env';
+export type LlmSettingSource = 'user' | 'default_snapshot' | 'main' | 'settings' | 'env';
 export interface LlmSettings {
   baseUrl: string;
   model: string;
@@ -28,6 +28,7 @@ export interface LegacyLlmSettingsSnapshot {
 interface ResolveLlmInput {
   username?: string;
   personal?: UserLlmSettingsSnapshot;
+  personalTask?: UserLlmSettingsSnapshot;
   assignedDefaults?: { main?: LlmSettings; task?: LlmSettings };
   legacy?: LegacyLlmSettingsSnapshot;
 }
@@ -92,6 +93,17 @@ export function resolveLlmSource(input: ResolveLlmInput): LlmSettingSource {
   return input.legacy?.baseUrl !== null && input.legacy?.baseUrl !== undefined ? 'settings' : 'env';
 }
 
+export function resolveTaskLlmSource(input: ResolveLlmInput): LlmSettingSource {
+  if (input.username) {
+    if (input.personalTask && Object.values(input.personalTask).some((value) => value !== null)) return 'user';
+    return input.assignedDefaults?.task ? 'default_snapshot' : 'main';
+  }
+  const deploymentTaskConfigured = Boolean(
+    config.taskLlm.baseUrl || config.taskLlm.model || config.taskLlm.apiKey,
+  );
+  return deploymentTaskConfigured ? 'env' : resolveLlmSource(input);
+}
+
 // 平台模板只在注册/主动同步时复制为用户快照；运行时不得读取当前平台默认兜底。
 export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
   const { username, personal, assignedDefaults } = input;
@@ -121,19 +133,33 @@ export function resolveLlmSettings(input: ResolveLlmInput): LlmSettings {
 }
 
 /**
- * 任务模型沿用个人 provider 覆盖；否则读取同步时固化的 task/main 快照，
- * 最后才读取部署 task/main。当前平台模板不参与运行时解析。
+ * 认证用户优先读取个人任务模型与同步时固化的 task 快照；两者均为空时使用其主模型。
+ * 未绑定用户的后台流程保留部署 task/main 回退。当前平台模板不参与运行时解析。
  */
 export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
-  const { username, personal, assignedDefaults } = input;
-  if (username && hasLlmProviderOverride(personal)) return resolveLlmSettings(input);
+  const { username, personalTask, assignedDefaults } = input;
+  const main = resolveLlmSettings(input);
+
+  if (username && hasLlmProviderOverride(personalTask)) {
+    const fallback = assignedDefaults?.task ?? main;
+    return {
+      baseUrl: (personalTask?.baseUrl ?? '').trim(),
+      model: (personalTask?.model ?? '').trim(),
+      apiKey: personalTask?.apiKey ?? '',
+      maxTokens: normalizedMaxTokens(personalTask?.maxTokens, fallback.maxTokens),
+      contextWindow: normalizedContextWindow(personalTask?.contextWindow, fallback.contextWindow),
+    };
+  }
 
   if (username && assignedDefaults?.task) {
-    return fromAssignedDefault(assignedDefaults.task, personal?.maxTokens, personal?.contextWindow);
+    return fromAssignedDefault(
+      assignedDefaults.task,
+      personalTask?.maxTokens,
+      personalTask?.contextWindow,
+    );
   }
-  if (username && assignedDefaults?.main) {
-    return fromAssignedDefault(assignedDefaults.main, personal?.maxTokens, personal?.contextWindow);
-  }
+
+  if (username) return fromAssignedDefault(main, personalTask?.maxTokens, personalTask?.contextWindow);
 
   const deploymentTaskConfigured = Boolean(
     config.taskLlm.baseUrl || config.taskLlm.model || config.taskLlm.apiKey,
@@ -143,19 +169,13 @@ export function resolveTaskLlmSettings(input: ResolveLlmInput): LlmSettings {
       baseUrl: config.taskLlm.baseUrl.trim(),
       model: config.taskLlm.model.trim(),
       apiKey: config.taskLlm.apiKey,
-      maxTokens: normalizedMaxTokens(
-        personal?.maxTokens ?? config.llm.maxTokens,
-        config.llm.maxTokens,
-      ),
-      contextWindow: normalizedContextWindow(
-        personal?.contextWindow ?? config.llm.contextWindow,
-        config.llm.contextWindow,
-      ),
+      maxTokens: config.llm.maxTokens,
+      contextWindow: config.llm.contextWindow,
     };
   }
   return deploymentMainSettings(
-    personal?.maxTokens,
-    personal?.contextWindow,
+    undefined,
+    undefined,
     username ? undefined : input.legacy,
   );
 }

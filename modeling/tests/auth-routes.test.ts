@@ -632,6 +632,139 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   assert.equal(bobConcurrent.json().llm.baseUrl, 'https://user-b.example.com/v1');
 });
 
+test('后台任务模型可按用户独立保存并在清空后使用主模型', async () => {
+  const userToken = await signToken({}, 'task_settings_user');
+  const headers = { authorization: `Bearer ${userToken}` };
+
+  let response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers,
+    payload: {
+      llmBaseUrl: 'https://main-user.example.com/v1', llmModel: 'main-user-model',
+      llmApiKey: 'synthetic-main-user-key', llmMaxTokens: '4096', llmContextWindow: '128000',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers,
+    payload: {
+      llmPurpose: 'task',
+      llmBaseUrl: 'https://task-user.example.com/v1', llmModel: 'task-user-model',
+      llmApiKey: 'synthetic-task-user-key', llmMaxTokens: '2048', llmContextWindow: '64000',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+
+  let settings = await app.inject({ method: 'GET', url: '/api/settings', headers });
+  assert.deepEqual(settings.json().taskLlm, {
+    baseUrl: 'https://task-user.example.com/v1', model: 'task-user-model',
+    maxTokens: 2048, contextWindow: 64000,
+    apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
+    platformDefaultAvailable: false,
+  });
+  assert.equal(settings.json().llm.model, 'main-user-model');
+  assert.doesNotMatch(settings.body, /synthetic-(main|task)-user-key/);
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers,
+    payload: {
+      llmPurpose: 'task', llmProviderClear: true,
+      llmMaxTokens: '', llmContextWindow: '',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  settings = await app.inject({ method: 'GET', url: '/api/settings', headers });
+  assert.equal(settings.json().taskLlm.source, 'main');
+  assert.equal(settings.json().taskLlm.model, 'main-user-model');
+  assert.equal(settings.json().taskLlm.baseUrl, 'https://main-user.example.com/v1');
+  assert.equal(settings.json().taskLlm.personalApiKeySet, false);
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers,
+    payload: { llmPurpose: 'invalid', llmModel: 'must-not-save' },
+  });
+  assert.equal(response.statusCode, 400);
+
+  response = await app.inject({
+    method: 'POST', url: '/api/settings/llm/sync-default', headers,
+    payload: { purpose: 'invalid' },
+  });
+  assert.equal(response.statusCode, 400);
+
+  response = await app.inject({
+    method: 'POST', url: '/api/settings/llm/test', headers,
+    payload: { purpose: 'invalid' },
+  });
+  assert.equal(response.statusCode, 400);
+});
+
+test('主模型与后台任务模型可分别同步平台默认，任务默认缺省时跟随主默认', async () => {
+  const adminToken = await signToken({ role: 'admin' }, 'purpose-sync-admin');
+  const userToken = await signToken({}, 'purpose_sync_user');
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
+  const userHeaders = { authorization: `Bearer ${userToken}` };
+
+  const mainDefault = await app.inject({
+    method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+    payload: {
+      purpose: 'main', baseUrl: 'faux', model: 'purpose-main-default',
+      maxTokens: 7000, expectedRevision: 0,
+    },
+  });
+  assert.equal(mainDefault.statusCode, 200, mainDefault.body);
+  let mainRevision = mainDefault.json().defaults.main.revision;
+  let taskRevision = 0;
+
+  try {
+    let response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/sync-default', headers: userHeaders,
+      payload: { purpose: 'task' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    let settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
+    assert.equal(settings.json().llm.source, 'env');
+    assert.equal(settings.json().taskLlm.source, 'default_snapshot');
+    assert.equal(settings.json().taskLlm.model, 'purpose-main-default');
+
+    const taskDefault = await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: {
+        purpose: 'task', baseUrl: 'faux', model: 'purpose-task-default',
+        maxTokens: 3000, expectedRevision: 0,
+      },
+    });
+    assert.equal(taskDefault.statusCode, 200, taskDefault.body);
+    taskRevision = taskDefault.json().defaults.task.revision;
+
+    response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/sync-default', headers: userHeaders,
+      payload: { purpose: 'main' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
+    assert.equal(settings.json().llm.model, 'purpose-main-default');
+    assert.equal(settings.json().taskLlm.model, 'purpose-main-default');
+
+    response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/sync-default', headers: userHeaders,
+      payload: { purpose: 'task' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    settings = await app.inject({ method: 'GET', url: '/api/settings', headers: userHeaders });
+    assert.equal(settings.json().llm.model, 'purpose-main-default');
+    assert.equal(settings.json().taskLlm.model, 'purpose-task-default');
+    assert.equal(settings.json().taskLlm.maxTokens, 3000);
+  } finally {
+    if (taskRevision) await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: { purpose: 'task', enabled: false, expectedRevision: taskRevision },
+    });
+    await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: { purpose: 'main', enabled: false, expectedRevision: mainRevision },
+    });
+  }
+});
+
 test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不会自动追写', async () => {
   const adminToken = await signToken({ role: 'admin' }, 'sync-platform-admin');
   const userAToken = await signToken({}, 'sync_user_a');
