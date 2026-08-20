@@ -47,6 +47,11 @@ export function buildObjectGenerationHints(
   analysis: AnalysisResult | undefined,
   tables: DataDictTable[],
 ): ObjectGenerationHint[] {
+  // Excel/CSV 已经给出可执行的物理 Schema 时，对象集合以 Sheet 为准。
+  // 文档候选只能为这些对象补证据，不能再扩张对象目录；否则几十张 Sheet
+  // 会叠加出几百个语义对象，既拖慢生成，也使后续数据绑定不可执行。
+  const hasUploadedStructuredSheet = tables.some((table) => Boolean(table.documentId));
+  if (hasUploadedStructuredSheet) return [];
   // 物理 Sheet 由服务端确定性生成。Agent 只负责没有物理表绑定的逻辑对象，
   // 避免领域 Reduce 把几十张 Sheet 聚合成一个无法执行的数据对象。
   const hints: ObjectGenerationHint[] = (analysis?.candidateObjects ?? [])

@@ -153,6 +153,27 @@ export function validateKnowledgeBatch(
   return { issues, invalidReferenceCount };
 }
 
+/** 并发批次完成后的全局冲突检查；仅冲突单元需要重试或交给专家。 */
+export function validateKnowledgeOutputs(
+  batches: Array<{ rules: SpecRule[]; metrics: SpecMetric[] }>,
+  objects: SpecObject[],
+): string[] {
+  const rules: SpecRule[] = [];
+  const metrics: SpecMetric[] = [];
+  const issues: string[] = [];
+  for (const batch of batches) {
+    issues.push(...validateKnowledgeBatch(batch, { objects, rules, metrics }).issues);
+    rules.push(...batch.rules);
+    metrics.push(...batch.metrics);
+  }
+  return issues;
+}
+
+export function validateOperationOutputs(operations: SpecOperation[]): string[] {
+  return findDuplicates(operations.map((operation) => normalizeKey(operation.key)))
+    .map((key) => `操作 key 重复：${key}`);
+}
+
 export interface OperationBatchValidation {
   issues: string[];
   uncoveredQuestions: string[];

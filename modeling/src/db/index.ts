@@ -263,6 +263,7 @@ export function getDb(): DatabaseSync {
   ensureColumn(db, 'inflight_operations', 'cancel_requested', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'package_drafts', 'base_revision_oid', 'TEXT');
   ensureColumn(db, 'package_checks', 'artifact_revision_oid', 'TEXT');
+  ensureColumn(db, 'generation_batch_checkpoints', 'dependency_hash', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'graph_import_uploads', 'package_revision_oid', 'TEXT');
   ensureColumn(db, 'graph_import_runs', 'package_revision_oid', 'TEXT');
   ensureColumn(db, 'eval_rounds', 'artifact_revision_oid', 'TEXT');

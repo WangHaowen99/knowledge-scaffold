@@ -377,7 +377,7 @@ export function buildObjectGenerateTools(
     label: '提交业务对象',
     description: '提交当前批次的完整业务对象规格；每个对象必须用 candidateId 认领一个给定候选，只提交对象，不提交规则或操作。',
     parameters: Type.Object({
-      objects: Type.Array(specObjectSchema(candidates.map((candidate) => candidate.id)), { minItems: 1, maxItems: 4 }),
+      objects: Type.Array(specObjectSchema(candidates.map((candidate) => candidate.id)), { minItems: 1, maxItems: 12 }),
     }),
     async execute(_id: string, params: { objects: unknown[] }) {
       cap.objects = params.objects;
@@ -395,8 +395,8 @@ export function buildKnowledgeGenerateTools(ctx: ToolContext, cap: KnowledgeSpec
     label: '提交规则和指标',
     description: '提交当前批次从材料中提取的规则和指标。没有可靠依据时返回空数组，不得编造阈值或公式。',
     parameters: Type.Object({
-      rules: Type.Array(specRuleSchema(), { maxItems: 5 }),
-      metrics: Type.Array(specMetricSchema(), { maxItems: 5 }),
+      rules: Type.Array(specRuleSchema(), { maxItems: 12 }),
+      metrics: Type.Array(specMetricSchema(), { maxItems: 12 }),
       dispositions: Type.Optional(Type.Array(Type.Object({
         candidateId: Type.String(), kind: Type.Union([
           Type.Literal('object'), Type.Literal('rule'), Type.Literal('operation'), Type.Literal('metric'),
@@ -439,7 +439,7 @@ export function buildOperationGenerateTools(
     label: '提交操作',
     description: '提交当前批次领域问题对应的完整操作规格；每个 operation 必须用 competencyQuestionId 认领一个给定问题，问题原文由服务端回填。',
     parameters: Type.Object({
-      operations: Type.Array(specOperationSchema(questions.map((question) => question.id), { allowScript: false }), { minItems: 1, maxItems: 4 }),
+      operations: Type.Array(specOperationSchema(questions.map((question) => question.id), { allowScript: false }), { minItems: 1, maxItems: 3 }),
     }),
     async execute(_id: string, params: { operations: unknown[] }) {
       cap.operations = params.operations;

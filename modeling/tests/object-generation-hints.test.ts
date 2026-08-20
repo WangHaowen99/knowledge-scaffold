@@ -7,7 +7,7 @@ import {
 } from '../src/workflow/object-generation-hints.js';
 import { validateObjectBatch } from '../src/workflow/spec-validation.js';
 
-test('物理表对象由服务端生成，Agent 只接收无表绑定的逻辑对象', () => {
+test('存在 Excel Sheet 时对象只采用确定性物理对象，不再追加文档或逻辑对象', () => {
   const analysis: AnalysisResult = {
     domainOverview: '炼化排产',
     candidateObjects: [
@@ -21,8 +21,8 @@ test('物理表对象由服务端生成，Agent 只接收无表绑定的逻辑�
       kind: 'object', name: '段落中偶然出现的侧线别名', rationale: '分段线索', sources: ['manual.md'], readiness: 'needs_clarification',
     }],
   };
-  const hints = buildObjectGenerationHints(analysis, [{ name: 'unit', rowCount: 0, fields: [] }]);
-  assert.deepEqual(hints.map((item) => item.name), ['装置网络']);
+  const hints = buildObjectGenerationHints(analysis, [{ name: 'unit', documentId: 'doc-excel', rowCount: 0, fields: [] }]);
+  assert.deepEqual(hints, []);
 });
 
 test('纯文档的可提取对象候选仍可形成逻辑对象提示', () => {
@@ -42,7 +42,7 @@ test('绑定表格的材料对象候选不会与确定性物理对象重复生�
       kind: 'object', name: '装置', rationale: '表格对象', sources: ['unit'], readiness: 'extractable',
     }],
   };
-  assert.deepEqual(buildObjectGenerationHints(analysis, [{ name: 'unit', rowCount: 1, fields: [] }]), []);
+  assert.deepEqual(buildObjectGenerationHints(analysis, [{ name: 'unit', documentId: 'doc-excel', rowCount: 1, fields: [] }]), []);
 });
 
 test('表格领域候选存在时首版规则指标不扩张到全部文档线索', () => {

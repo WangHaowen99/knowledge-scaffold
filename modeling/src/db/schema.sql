@@ -285,6 +285,7 @@ CREATE TABLE IF NOT EXISTS generation_batch_checkpoints (
   phase         TEXT NOT NULL,
   batch_kind    TEXT NOT NULL CHECK (batch_kind IN ('object', 'knowledge', 'operation')),
   batch_index   INTEGER NOT NULL CHECK (batch_index > 0),
+  dependency_hash TEXT NOT NULL DEFAULT '',
   status        TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'skipped')),
   output_json   TEXT NOT NULL DEFAULT '{}',
   issues_json   TEXT NOT NULL DEFAULT '[]',

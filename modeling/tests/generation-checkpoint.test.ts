@@ -10,7 +10,7 @@ const { createProject } = await import('../src/projects/repo.js');
 const { getPiAuthoringAdapter } = await import('../src/authoring/pi-adapter.js');
 const { GenerationCheckpointStore } = await import('../src/workflow/generation-checkpoint.js');
 
-test('知识生成检查点保存批次产物并拒绝错误计划复用', () => {
+test('知识生成检查点保存批次产物并忽略不匹配的计划单元', () => {
   const project = createProject({
     owner: 'tester', name: '知识生成断点', domain: '银行营销', background: '产品推荐',
   });
@@ -37,9 +37,30 @@ test('知识生成检查点保存批次产物并拒绝错误计划复用', () =>
     rules: [{ key: 'customer_active', title: '活跃客户', content: '状态为活跃' }],
     metrics: [],
   });
-  assert.throws(
-    () => store.list(project.id, run.id, 'plan-b'),
-    /知识生成输入或批次计划已变化/u,
+  assert.deepEqual(store.list(project.id, run.id, 'plan-b'), []);
+});
+
+test('计划整体变化时只恢复依赖指纹未变化的单元', () => {
+  const project = createProject({ owner: 'tester', name: '局部恢复', domain: '测试', background: '' });
+  const adapter = getPiAuthoringAdapter();
+  const first = adapter.start(project.id, '生成知识包', 'base-1', {}).run;
+  const second = adapter.start(project.id, '生成知识包', 'base-1', {}).run;
+  const store = new GenerationCheckpointStore();
+  for (const [phase, dependencyHash] of [['knowledge_batch_1', 'same'], ['knowledge_batch_2', 'changed']] as const) {
+    store.saveCompleted({
+      projectId: project.id, runId: first.id, planHash: 'plan-old', phase,
+      batchKind: 'knowledge', batchIndex: Number(phase.at(-1)), dependencyHash,
+      output: { rules: [], metrics: [] }, attemptCount: 1,
+    });
+  }
+  const expected = new Map([['knowledge_batch_1', 'same'], ['knowledge_batch_2', 'new']]);
+  store.copyToRun({
+    projectId: project.id, fromRunId: first.id, toRunId: second.id,
+    planHash: 'plan-new', dependencyHashes: expected,
+  });
+  assert.deepEqual(
+    store.list(project.id, second.id, 'plan-new', expected).map((item) => item.phase),
+    ['knowledge_batch_1'],
   );
 });
 

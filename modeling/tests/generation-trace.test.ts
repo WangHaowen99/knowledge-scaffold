@@ -186,6 +186,35 @@ test('物理 Sheet 全量生成对象，不由模型挑选或静默遗漏', asyn
   assert.equal(events.some((event) => event.kind === 'repair_started'), false);
 });
 
+test('存在 Excel Schema 时忽略文档逻辑对象候选且不调用对象模型', async () => {
+  const project = await createGenerationProject({ owner: 'tester', name: 'Excel 对象优先', domain: '供应链', background: '按表建模' });
+  const flowchart = confirmedFlowchart([{ id: 'lookup', title: '查询业务表' }]);
+  upsertNode({
+    projectId: project.id, type: 'analyze', status: 'done', ordinal: 0,
+    output: {
+      domainOverview: '供应链',
+      candidateObjects: [{ name: '文档推导场景', rationale: '文档概念', sourceTables: [] }],
+      openQuestions: [], materialAssessments: [], candidateArtifacts: [{
+        kind: 'object', name: '文档推导产品', rationale: '正文概念', sources: ['manual.md'], readiness: 'extractable',
+      }],
+    },
+  });
+  const operation = {
+    key: 'lookup_sheet', title: '查询业务表', description: '查询物理对象',
+    inputs: [], outputs: [{ field: 'result', type: 'array' }],
+    flow: ['查询 object:business_sheet'], relatedObjects: ['business_sheet'],
+    competencyQuestionId: operationTargetId('lookup'),
+  };
+  const faux = createFauxCore({ provider: 'excel-object-priority', models: [{ id: 'excel-object-priority' }] });
+  faux.setResponses([fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })])]);
+  const result = await generatePackage(project, {
+    tables: [{ name: 'business_sheet', documentId: 'doc-excel', rowCount: 1, fields: [{ name: 'id', inferredType: 'string', sampleValues: ['1'], distinctRatio: 1 }] }],
+    documents: [{ id: 'doc-manual', filename: 'manual.md', textContent: '产品和场景说明' }],
+  }, { model: faux.getModel(), streamFn: faux.streamSimple, getApiKey: () => 'faux' }, flowchart);
+  assert.deepEqual(result.spec.objects.map((object) => object.key), ['business_sheet']);
+});
+
+
 test('操作批次引用不存在对象或漏掉确认流程时会自动重交', async () => {
   const project = await createGenerationProject({ owner: 'tester', name: '操作补齐', domain: '供应链运营', background: '仓储位置查询' });
   const processes = [

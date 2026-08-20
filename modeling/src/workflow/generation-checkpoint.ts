@@ -19,6 +19,7 @@ export interface GenerationBatchCheckpoint {
   phase: string;
   batchKind: GenerationBatchKind;
   batchIndex: number;
+  dependencyHash: string;
   status: GenerationBatchCheckpointStatus;
   output: GenerationBatchOutput;
   issues: string[];
@@ -34,6 +35,7 @@ interface CheckpointRow {
   phase: string;
   batch_kind: GenerationBatchKind;
   batch_index: number;
+  dependency_hash: string;
   status: GenerationBatchCheckpointStatus;
   output_json: string;
   issues_json: string;
@@ -82,6 +84,7 @@ function fromRow(row: CheckpointRow): GenerationBatchCheckpoint {
     phase: row.phase,
     batchKind: row.batch_kind,
     batchIndex: row.batch_index,
+    dependencyHash: row.dependency_hash ?? '',
     status: row.status,
     output,
     issues: decodeIssues(row.issues_json),
@@ -116,6 +119,7 @@ export class GenerationCheckpointStore {
     fromRunId: string;
     toRunId: string;
     planHash: string;
+    dependencyHashes?: Map<string, string>;
   }): void {
     const rows = this.db.prepare(`SELECT * FROM generation_batch_checkpoints
       WHERE project_id = ? AND run_id = ? ORDER BY
@@ -126,13 +130,10 @@ export class GenerationCheckpointStore {
       WHERE project_id = ? AND run_id = ?`)
       .all(input.projectId, input.toRunId) as unknown as Array<{ phase: string; plan_hash: string }>;
     const targetByPhase = new Map(targetRows.map((row) => [row.phase, row.plan_hash]));
-    if (targetRows.some((row) => row.plan_hash !== input.planHash)) {
-      throw new Error('知识生成输入或批次计划已变化，不能沿用此前检查点，请重新发起生成');
-    }
     for (const row of rows) {
-      if (row.plan_hash !== input.planHash) {
-        throw new Error('知识生成输入或批次计划已变化，不能沿用此前检查点，请重新发起生成');
-      }
+      const expectedDependencyHash = input.dependencyHashes?.get(row.phase);
+      if (expectedDependencyHash !== undefined && expectedDependencyHash !== (row.dependency_hash ?? '')) continue;
+      if (expectedDependencyHash === undefined && row.plan_hash !== input.planHash) continue;
       if (targetByPhase.has(row.phase)) continue;
       this.upsert({
         projectId: input.projectId,
@@ -141,6 +142,7 @@ export class GenerationCheckpointStore {
         phase: row.phase,
         batchKind: row.batch_kind,
         batchIndex: row.batch_index,
+        dependencyHash: row.dependency_hash ?? '',
         status: row.status,
         output: decodeObject(row.output_json),
         issues: decodeIssues(row.issues_json),
@@ -149,17 +151,23 @@ export class GenerationCheckpointStore {
     }
   }
 
-  list(projectId: string, runId: string, planHash: string): GenerationBatchCheckpoint[] {
+  list(
+    projectId: string,
+    runId: string,
+    planHash: string,
+    dependencyHashes?: Map<string, string>,
+  ): GenerationBatchCheckpoint[] {
     const rows = this.db.prepare(`SELECT * FROM generation_batch_checkpoints
       WHERE project_id = ? AND run_id = ? ORDER BY
         CASE batch_kind WHEN 'object' THEN 1 WHEN 'knowledge' THEN 2 ELSE 3 END,
         batch_index`)
       .all(projectId, runId) as unknown as CheckpointRow[];
-    const mismatched = rows.find((row) => row.plan_hash !== planHash);
-    if (mismatched) {
-      throw new Error('知识生成输入或批次计划已变化，不能沿用此前检查点，请重新发起生成');
-    }
-    return rows.map(fromRow);
+    return rows
+      .filter((row) => {
+        const expected = dependencyHashes?.get(row.phase);
+        return expected !== undefined ? expected === (row.dependency_hash ?? '') : row.plan_hash === planHash;
+      })
+      .map(fromRow);
   }
 
   saveCompleted(input: {
@@ -169,6 +177,7 @@ export class GenerationCheckpointStore {
     phase: string;
     batchKind: GenerationBatchKind;
     batchIndex: number;
+    dependencyHash?: string;
     output: GenerationBatchOutput;
     attemptCount: number;
   }): GenerationBatchCheckpoint {
@@ -180,6 +189,7 @@ export class GenerationCheckpointStore {
     runId: string;
     planHash: string;
     failure: GenerationGateFailure;
+    dependencyHash?: string;
     attemptCount: number;
   }): GenerationBatchCheckpoint {
     return this.upsert({
@@ -189,6 +199,7 @@ export class GenerationCheckpointStore {
       phase: input.failure.phase,
       batchKind: input.failure.batchKind,
       batchIndex: input.failure.batchIndex,
+      dependencyHash: input.dependencyHash ?? '',
       status: 'failed',
       output: {},
       issues: input.failure.issues,
@@ -203,6 +214,7 @@ export class GenerationCheckpointStore {
     phase: string;
     batchKind: GenerationBatchKind;
     batchIndex: number;
+    dependencyHash?: string;
     issues?: string[];
     attemptCount?: number;
   }): GenerationBatchCheckpoint {
@@ -222,24 +234,28 @@ export class GenerationCheckpointStore {
     phase: string;
     batchKind: GenerationBatchKind;
     batchIndex: number;
+    dependencyHash?: string;
     status: GenerationBatchCheckpointStatus;
     output: GenerationBatchOutput;
     issues: string[];
     attemptCount: number;
   }): GenerationBatchCheckpoint {
-    const existing = this.db.prepare(`SELECT plan_hash FROM generation_batch_checkpoints
+    const dependencyHash = input.dependencyHash ?? '';
+    const existing = this.db.prepare(`SELECT plan_hash, dependency_hash FROM generation_batch_checkpoints
       WHERE project_id = ? AND run_id = ? AND phase = ?`)
-      .get(input.projectId, input.runId, input.phase) as { plan_hash?: string } | undefined;
-    if (existing?.plan_hash && existing.plan_hash !== input.planHash) {
+      .get(input.projectId, input.runId, input.phase) as { plan_hash?: string; dependency_hash?: string } | undefined;
+    if (existing?.dependency_hash && existing.dependency_hash !== dependencyHash) {
       throw new Error('知识生成输入或批次计划已变化，不能覆盖此前检查点，请重新发起生成');
     }
     const at = nowIso();
     this.db.prepare(`INSERT INTO generation_batch_checkpoints (
         project_id, run_id, plan_hash, phase, batch_kind, batch_index,
-        status, output_json, issues_json, attempt_count, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        dependency_hash, status, output_json, issues_json, attempt_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, phase) DO UPDATE SET
         status = excluded.status,
+        plan_hash = excluded.plan_hash,
+        dependency_hash = excluded.dependency_hash,
         output_json = excluded.output_json,
         issues_json = excluded.issues_json,
         attempt_count = excluded.attempt_count,
@@ -251,6 +267,7 @@ export class GenerationCheckpointStore {
         input.phase,
         input.batchKind,
         input.batchIndex,
+        dependencyHash,
         input.status,
         JSON.stringify(input.output),
         JSON.stringify(input.issues),

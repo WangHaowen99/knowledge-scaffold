@@ -21,7 +21,8 @@ import {
 import { renderPackage } from './package-render.js';
 import {
   bindOperationCompetencyQuestions, coverageFor, validateKnowledgeBatch,
-  validateObjectBatch, validateOperationBatch, validateSpecIntegrity,
+  validateKnowledgeOutputs, validateObjectBatch, validateOperationBatch,
+  validateOperationOutputs, validateSpecIntegrity,
 } from './spec-validation.js';
 import { appendTraceEvent, traceEventFromAgentEvent } from './trace.js';
 import { getPackageArtifactStore } from '../artifacts/runtime.js';
@@ -60,6 +61,13 @@ import {
   planArtifactCandidates,
   validateKnowledgeCandidateDispositions,
 } from './candidate-disposition.js';
+import {
+  AdaptiveGenerationGate,
+  configuredGenerationConcurrency,
+  mapWithConcurrency,
+  planGenerationUnits,
+  waitBeforeGenerationRetry,
+} from './generation-planner.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -75,12 +83,6 @@ type Ctx = {
 function toolCtx(ctx: Ctx, captured: Record<string, unknown> = {}): ToolContext {
   return { tables: ctx.tables, documents: ctx.documents, captured };
 }
-
-const chunk = <T>(items: T[], size: number): T[][] => {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-};
 
 function latestAnalysis(projectId: string): AnalysisResult | undefined {
   return [...listNodes(projectId)].reverse()
@@ -262,17 +264,25 @@ export async function generatePackage(
     ...candidate,
     id: `candidate_${index + 1}`,
   }));
-  const objectBatches = chunk(objectHints, 4);
+  const contextWindow = Number(llm.model?.contextWindow ?? 1_000_000);
+  const objectUnits = planGenerationUnits('object', objectHints, contextWindow);
   const rawKnowledgeCandidates = buildKnowledgeGenerationCandidates(analysis, ctx.tables);
   const allKnowledgeCandidates = (analysis?.candidateArtifacts ?? [])
     .filter((item) => item.kind === 'rule' || item.kind === 'metric');
   const knowledgePlan = planArtifactCandidates(allKnowledgeCandidates, rawKnowledgeCandidates);
   const knowledgeCandidates = knowledgePlan.selected;
-  const knowledgeBatches = chunk(knowledgeCandidates, 5);
+  const knowledgeUnits = planGenerationUnits('knowledge', knowledgeCandidates, contextWindow);
   const operationCandidates = (analysis?.candidateArtifacts ?? []).filter((item) => item.kind === 'operation');
-  const questionBatches = chunk(operationTargets, 3);
-  const totalStepCount = objectBatches.length + knowledgeBatches.length + questionBatches.length + 1;
+  const operationUnits = planGenerationUnits('operation', operationTargets, contextWindow);
+  const allUnits = [...objectUnits, ...knowledgeUnits, ...operationUnits];
+  const dependencyHashes = new Map(allUnits.map((unit) => [unit.phase, unit.dependencyHash]));
+  const totalStepCount = allUnits.length + 1;
   const messages: unknown[] = [];
+  const generationGate = new AdaptiveGenerationGate(Math.max(
+    configuredGenerationConcurrency('object'),
+    configuredGenerationConcurrency('knowledge'),
+    configuredGenerationConcurrency('operation'),
+  ));
   const generationNotices: GenerationNotice[] = [];
   const skipFailedPhases = new Set(options.skipFailedPhases ?? []);
   const trace = (input: Parameters<typeof appendTraceEvent>[0]) => appendTraceEvent(input);
@@ -283,7 +293,7 @@ export async function generatePackage(
   };
   try {
     const planHash = generationPlanHash({
-      protocolVersion: 'knowledge-generation-v2',
+      protocolVersion: 'knowledge-generation-v3-parallel-units',
       baseRevision: baseRevision.oid,
       dataSourceType,
       project: { name: project.name, domain: project.domain, background: project.background },
@@ -295,6 +305,9 @@ export async function generatePackage(
       objectHints,
       knowledgeCandidates,
       knowledgeCandidateDispositions: knowledgePlan.dispositions,
+      generationUnits: allUnits.map((unit) => ({
+        phase: unit.phase, dependencyHash: unit.dependencyHash, itemCount: unit.items.length,
+      })),
       operationTargets,
       tables: ctx.tables,
       documents: ctx.documents.map((document) => ({
@@ -315,10 +328,11 @@ export async function generatePackage(
         fromRunId: priorRunId,
         toRunId: authoringRun.id,
         planHash,
+        dependencyHashes,
       });
     }
     const checkpoints = new Map(
-      checkpointStore.list(project.id, authoringRun.id, planHash)
+      checkpointStore.list(project.id, authoringRun.id, planHash, dependencyHashes)
         .map((checkpoint) => [checkpoint.phase, checkpoint]),
     );
     for (const checkpoint of checkpoints.values()) {
@@ -331,9 +345,12 @@ export async function generatePackage(
         questionCount: selectedQuestions.length,
         schemaManifestCount: schemaManifests.length,
         physicalSchemaObjectCount: physicalSchemaObjects.length,
-        objectBatchCount: objectBatches.length,
-        knowledgeBatchCount: knowledgeBatches.length,
-        operationBatchCount: questionBatches.length,
+        objectBatchCount: objectUnits.length,
+        knowledgeBatchCount: knowledgeUnits.length,
+        operationBatchCount: operationUnits.length,
+        objectConcurrency: configuredGenerationConcurrency('object'),
+        knowledgeConcurrency: configuredGenerationConcurrency('knowledge'),
+        operationConcurrency: configuredGenerationConcurrency('operation'),
         totalStepCount,
         restoredCheckpointCount: checkpoints.size,
       },
@@ -350,30 +367,34 @@ export async function generatePackage(
         objectCount: physicalSchemaObjects.length,
       },
     });
-    for (const [index, hints] of objectBatches.entries()) {
+    const objectUnitOutputs = await mapWithConcurrency(
+      objectUnits,
+      configuredGenerationConcurrency('object'),
+      async (unit) => {
+      const index = unit.index - 1;
+      const hints = unit.items;
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
         taskKinds: ['knowledge_extraction', 'operation_extraction'],
-        title: `正在生成第 ${index + 1}/${objectBatches.length} 批业务对象`,
-        produced: `已产出 ${objects.length} 个对象`,
+        title: `正在并发生成第 ${index + 1}/${objectUnits.length} 批业务对象`,
+        produced: `已确定生成 ${objects.length} 个 Sheet 对象`,
         done: index,
         total: totalStepCount,
         elapsedMs: Date.now() - generationStartedAt,
         authoringRunId: authoringRun.id,
         phase: '知识结构生成',
       });
-      const phase = `object_batch_${index + 1}`;
+      const phase = unit.phase;
       const checkpoint = checkpoints.get(phase);
       if (checkpoint?.status === 'completed') {
         const output = checkpoint.output as Extract<GenerationBatchOutput, { objects: SpecObject[] }>;
-        appendUnique(objects, output.objects ?? [], '对象');
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-          title: `第 ${index + 1}/${objectBatches.length} 批业务对象已从检查点恢复`,
-          summary: `恢复 ${output.objects?.length ?? 0} 个 · 累计 ${objects.length} 个`,
-          details: { batch: index + 1, totalBatches: objectBatches.length, resumed: true },
+          title: `第 ${index + 1}/${objectUnits.length} 批业务对象已从检查点恢复`,
+          summary: `恢复 ${output.objects?.length ?? 0} 个`,
+          details: { batch: index + 1, totalBatches: objectUnits.length, resumed: true },
         });
-        continue;
+        return output.objects ?? [];
       }
       if (checkpoint?.status === 'skipped' && skipFailedPhases.has(phase)) {
         generationNotices.push(checkpointNotice(checkpoint));
@@ -383,23 +404,23 @@ export async function generatePackage(
           summary: `恢复已记录的 ${checkpoint.issues.length} 个未解决问题`,
           details: { batch: index + 1, issues: checkpoint.issues, resumed: true },
         });
-        continue;
+        return [];
       }
       if (checkpoint?.status === 'failed' && skipFailedPhases.has(phase)) {
         const skipped = checkpointStore.markSkipped({
           projectId: project.id, runId: authoringRun.id, planHash, phase,
-          batchKind: 'object', batchIndex: index + 1, issues: checkpoint.issues,
+          batchKind: 'object', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: checkpoint.issues,
           attemptCount: checkpoint.attemptCount,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push(checkpointNotice(skipped));
-        continue;
+        return [];
       }
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
-        title: `生成业务对象 ${index + 1}/${objectBatches.length}`,
+        title: `生成业务对象 ${index + 1}/${objectUnits.length}`,
         summary: `当前批次候选 ${hints.length} 个`,
-        details: { batch: index + 1, totalBatches: objectBatches.length, candidateCount: hints.length },
+        details: { batch: index + 1, totalBatches: objectUnits.length, candidateCount: hints.length },
       });
       let acceptedObjects: SpecObject[] | undefined;
       let acceptedAttempt = 0;
@@ -415,9 +436,9 @@ export async function generatePackage(
           '补充查询边界、别名和有材料依据的对象关系。对象别名在整个知识包内必须唯一：忽略 ASCII 大小写和首尾空格后，不得与其他对象的别名、key 或 title 重复。',
           '每个对象必须用 candidateId 认领当前批次中的一个候选，候选名称只用于理解，不用于绑定。',
           `当前批次有 ${hints.length} 个逻辑对象候选。所有候选均已通过服务端筛选，必须逐项生成，不得省略。`,
-          '用 submit_objects 一次提交当前批次全部对象，最多 4 个。',
-          `已生成对象 key：${objects.map((item) => item.key).join(', ') || '（无）'}；当前批次不得重复。`,
-          `已生成对象及别名：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title, aliases: item.aliases ?? [] })))}`,
+          '用 submit_objects 一次提交当前批次全部对象，最多 12 个。',
+          `已确定对象 key：${objects.map((item) => item.key).join(', ') || '（无）'}；当前批次不得重复。`,
+          `已确定对象及别名：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title, aliases: item.aliases ?? [] })))}`,
           `当前批次候选：${JSON.stringify(hints)}`,
           `项目背景：${project.background || project.domain || project.name}`,
           ...(attempt > 1 ? [`上次提交不完整：${lastIssues.join('；')}。这次请重新提交整批完整结果，不是只提交缺失项。`] : []),
@@ -425,11 +446,12 @@ export async function generatePackage(
         const agent = makeAgent(llm, sys, buildObjectGenerateTools(toolCtx(ctx), cap, hints));
         let stageMessages: unknown[];
         try {
-          stageMessages = await runAgentCaptured(agent,
-            `请完成第 ${index + 1}/${objectBatches.length} 批全部逻辑对象并调用 submit_objects。`,
-            () => !!cap.objects, '请立即调用 submit_objects 提交当前批次全部逻辑对象。', observe(phase));
+          stageMessages = await generationGate.run(() => runAgentCaptured(agent,
+            `请完成第 ${index + 1}/${objectUnits.length} 批全部逻辑对象并调用 submit_objects。`,
+            () => !!cap.objects, '请立即调用 submit_objects 提交当前批次全部逻辑对象。', observe(phase)));
         } catch (error) {
           const policy = classifyGenerationError(error);
+          if (policy.kind === 'rate_limited') generationGate.rateLimited(policy.retryAfterMs);
           lastIssues = [policy.message];
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
@@ -442,6 +464,7 @@ export async function generatePackage(
             title: '自动补交当前对象批次', details: { attempt: attempt + 1, remainingCount: 1 },
           });
           if (!shouldRetryGenerationError(error)) break;
+          await waitBeforeGenerationRetry(error, attempt);
           continue;
         }
         messages.push(...stageMessages);
@@ -493,14 +516,14 @@ export async function generatePackage(
           issues: lastIssues,
         };
         const failedCheckpoint = checkpointStore.saveFailed({
-          projectId: project.id, runId: authoringRun.id, planHash, failure,
+          projectId: project.id, runId: authoringRun.id, planHash, failure, dependencyHash: unit.dependencyHash,
           attemptCount: priorAttemptCount + 3,
         });
         checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
         const skipped = checkpointStore.markSkipped({
           projectId: project.id, runId: authoringRun.id, planHash, phase,
-          batchKind: 'object', batchIndex: index + 1, issues: failure.issues,
+          batchKind: 'object', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: failure.issues,
           attemptCount: priorAttemptCount + 3,
         });
         checkpoints.set(phase, skipped);
@@ -511,75 +534,79 @@ export async function generatePackage(
           summary: `跳过 ${lastIssues.length} 个未解决问题，继续生成其余知识`,
           details: { batch: index + 1, issues: lastIssues },
         });
-        continue;
+        return [];
       }
-      appendUnique(objects, acceptedObjects, '对象');
       const completedCheckpoint = checkpointStore.saveCompleted({
         projectId: project.id, runId: authoringRun.id, planHash, phase,
-        batchKind: 'object', batchIndex: index + 1,
+        batchKind: 'object', batchIndex: index + 1, dependencyHash: unit.dependencyHash,
         output: { objects: acceptedObjects },
         attemptCount: priorAttemptCount + acceptedAttempt,
       });
       checkpoints.set(phase, completedCheckpoint);
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-        title: `第 ${index + 1}/${objectBatches.length} 批业务对象已生成`,
-        summary: `本批 ${acceptedObjects.length} 个 · 累计 ${objects.length} 个`,
-        details: { batch: index + 1, totalBatches: objectBatches.length, objectCount: acceptedObjects.length },
+        title: `第 ${index + 1}/${objectUnits.length} 批业务对象已生成`,
+        summary: `本批 ${acceptedObjects.length} 个`,
+        details: { batch: index + 1, totalBatches: objectUnits.length, objectCount: acceptedObjects.length },
       });
-    }
+      return acceptedObjects;
+    });
+    for (const output of objectUnitOutputs) appendUnique(objects, output, '对象');
 
     const rules: SpecRule[] = [];
     const metrics: SpecMetric[] = [];
     const candidateDispositions = [...knowledgePlan.dispositions];
-    for (const [index, candidates] of knowledgeBatches.entries()) {
+    type KnowledgeUnitOutput = { rules: SpecRule[]; metrics: SpecMetric[]; dispositions: typeof candidateDispositions };
+    const knowledgeUnitOutputs = await mapWithConcurrency(
+      knowledgeUnits,
+      configuredGenerationConcurrency('knowledge'),
+      async (unit): Promise<KnowledgeUnitOutput> => {
+      const index = unit.index - 1;
+      const candidates = unit.items;
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
         taskKinds: ['knowledge_extraction', 'operation_extraction'],
-        title: `正在生成第 ${index + 1}/${knowledgeBatches.length} 批规则和指标`,
+        title: `正在并发生成第 ${index + 1}/${knowledgeUnits.length} 批规则和指标`,
         produced: `已产出 ${objects.length} 个对象、${rules.length} 条规则、${metrics.length} 个指标`,
-        done: objectBatches.length + index,
+        done: objectUnits.length + index,
         total: totalStepCount,
         elapsedMs: Date.now() - generationStartedAt,
         authoringRunId: authoringRun.id,
         phase: '知识结构生成',
       });
-      const phase = `knowledge_batch_${index + 1}`;
+      const phase = unit.phase;
       const checkpoint = checkpoints.get(phase);
       if (checkpoint?.status === 'completed') {
         const output = checkpoint.output as Extract<GenerationBatchOutput, { rules: SpecRule[]; metrics: SpecMetric[] }>;
-        appendUnique(rules, output.rules ?? [], '规则');
-        appendUnique(metrics, output.metrics ?? [], '指标');
-        candidateDispositions.push(...((output as any).dispositions ?? []));
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-          title: `第 ${index + 1}/${knowledgeBatches.length} 批规则和指标已从检查点恢复`,
+          title: `第 ${index + 1}/${knowledgeUnits.length} 批规则和指标已从检查点恢复`,
           summary: `恢复规则 ${output.rules?.length ?? 0} 条、指标 ${output.metrics?.length ?? 0} 个`,
-          details: { batch: index + 1, totalBatches: knowledgeBatches.length, resumed: true },
+          details: { batch: index + 1, totalBatches: knowledgeUnits.length, resumed: true },
         });
-        continue;
+        return { rules: output.rules ?? [], metrics: output.metrics ?? [], dispositions: (output.dispositions ?? []) };
       }
       if (checkpoint?.status === 'skipped' && skipFailedPhases.has(phase)) {
         generationNotices.push(checkpointNotice(checkpoint));
-        continue;
+        return { rules: [], metrics: [], dispositions: [] };
       }
       if (checkpoint?.status === 'failed' && skipFailedPhases.has(phase)) {
         const skipped = checkpointStore.markSkipped({
           projectId: project.id, runId: authoringRun.id, planHash, phase,
-          batchKind: 'knowledge', batchIndex: index + 1, issues: checkpoint.issues,
+          batchKind: 'knowledge', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: checkpoint.issues,
           attemptCount: checkpoint.attemptCount,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push(checkpointNotice(skipped));
-        continue;
+        return { rules: [], metrics: [], dispositions: [] };
       }
       const suggestedRules = candidates.filter((item) => item.kind === 'rule' && item.readiness === 'extractable').length;
       const suggestedMetrics = candidates.filter((item) => item.kind === 'metric' && item.readiness === 'extractable').length;
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
-        title: `生成规则和指标 ${index + 1}/${knowledgeBatches.length}`,
+        title: `生成规则和指标 ${index + 1}/${knowledgeUnits.length}`,
         summary: `分析建议规则 ${suggestedRules} 条 · 指标 ${suggestedMetrics} 个`,
-        details: { batch: index + 1, totalBatches: knowledgeBatches.length, ruleCount: suggestedRules, metricCount: suggestedMetrics },
+        details: { batch: index + 1, totalBatches: knowledgeUnits.length, ruleCount: suggestedRules, metricCount: suggestedMetrics },
       });
       let acceptedRules: SpecRule[] | undefined;
       let acceptedMetrics: SpecMetric[] | undefined;
@@ -597,9 +624,9 @@ export async function generatePackage(
           '必须能在材料中找到依据；缺少阈值、公式或权威映射时不要猜测，返回空数组并留给访谈澄清。',
           'readiness=needs_clarification 的候选只有在访谈结论已明确补齐条件或口径时才能生成；否则不产出。',
           `本批有 ${suggestedRules} 条 rule 候选、${suggestedMetrics} 条 metric 候选。每个候选必须提交处置记录：generated、merged、deferred、needs_clarification 或 excluded，不能静默省略。`,
-          'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交资源和全部 dispositions，单类最多 5 条。',
+          'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交资源和全部 dispositions，单类最多 12 条。',
           `对象：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title })))}`,
-          `已生成规则 key：${rules.map((item) => item.key).join(', ') || '（无）'}；已生成指标 key：${metrics.map((item) => item.key).join(', ') || '（无）'}。`,
+          '各批次会在完成后执行全局 key 冲突校验；当前批次内部 key 必须唯一。',
           `已确认流程摘要：${confirmedProcessSummary.slice(0, 2400)}`,
           `当前批次材料候选：${artifactSummary(candidates)}`,
         ].join('\n');
@@ -609,12 +636,13 @@ export async function generatePackage(
           : `上次提交存在以下问题：${lastIssues.join('；') || '未完成结构化提交'}。请重新提交当前批次的完整结果。`;
         let stageMessages: unknown[];
         try {
-          stageMessages = await runAgentCaptured(agent,
-            `请完成第 ${index + 1}/${knowledgeBatches.length} 批规则和指标提取并调用 submit_rules_metrics。${retryHint}`,
+          stageMessages = await generationGate.run(() => runAgentCaptured(agent,
+            `请完成第 ${index + 1}/${knowledgeUnits.length} 批规则和指标提取并调用 submit_rules_metrics。${retryHint}`,
             () => !!cap.rules && !!cap.metrics && (!requiresDispositions || !!cap.dispositions),
-            '请立即调用 submit_rules_metrics，并为当前批次每个候选提交 disposition。', observe(phase));
+            '请立即调用 submit_rules_metrics，并为当前批次每个候选提交 disposition。', observe(phase)));
         } catch (error) {
           const policy = classifyGenerationError(error);
+          if (policy.kind === 'rate_limited') generationGate.rateLimited(policy.retryAfterMs);
           const issue = policy.message;
           lastIssues = [issue];
           lastCounts = { rules: 0, metrics: 0 };
@@ -629,6 +657,7 @@ export async function generatePackage(
             title: '自动重试当前规则/指标批次', details: { attempt: attempt + 1 },
           });
           if (!shouldRetryGenerationError(error)) break;
+          await waitBeforeGenerationRetry(error, attempt);
           continue;
         }
         messages.push(...stageMessages);
@@ -653,7 +682,7 @@ export async function generatePackage(
         const submittedDispositions = (cap.dispositions ?? []) as typeof candidateDispositions;
         const validated = validateKnowledgeBatch(
           { rules: submittedRules, metrics: submittedMetrics },
-          { objects, rules, metrics },
+          { objects, rules: [], metrics: [] },
         );
         lastIssues = [
           ...validated.issues,
@@ -675,7 +704,6 @@ export async function generatePackage(
         acceptedRules = submittedRules;
         acceptedMetrics = submittedMetrics;
         acceptedDispositions = submittedDispositions;
-        candidateDispositions.push(...submittedDispositions);
         acceptedAttempt = attempt;
         if (attempt > 1) {
           trace({
@@ -694,14 +722,14 @@ export async function generatePackage(
             : [`实际提交规则 ${lastCounts.rules} 条、指标 ${lastCounts.metrics} 条`],
         };
         const failedCheckpoint = checkpointStore.saveFailed({
-          projectId: project.id, runId: authoringRun.id, planHash, failure,
+          projectId: project.id, runId: authoringRun.id, planHash, failure, dependencyHash: unit.dependencyHash,
           attemptCount: priorAttemptCount + 3,
         });
         checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
         const skipped = checkpointStore.markSkipped({
           projectId: project.id, runId: authoringRun.id, planHash, phase,
-          batchKind: 'knowledge', batchIndex: index + 1, issues: failure.issues,
+          batchKind: 'knowledge', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: failure.issues,
           attemptCount: priorAttemptCount + 3,
         });
         checkpoints.set(phase, skipped);
@@ -711,70 +739,80 @@ export async function generatePackage(
           title: `专家确认跳过第 ${index + 1} 批规则/指标`,
           summary: '继续生成其余知识', details: { batch: index + 1, issues: failure.issues },
         });
-        continue;
+        return { rules: [], metrics: [], dispositions: [] };
       }
-      appendUnique(rules, acceptedRules, '规则');
-      appendUnique(metrics, acceptedMetrics, '指标');
       const completedCheckpoint = checkpointStore.saveCompleted({
         projectId: project.id, runId: authoringRun.id, planHash, phase,
-        batchKind: 'knowledge', batchIndex: index + 1,
+        batchKind: 'knowledge', batchIndex: index + 1, dependencyHash: unit.dependencyHash,
         output: { rules: acceptedRules, metrics: acceptedMetrics, dispositions: acceptedDispositions },
         attemptCount: priorAttemptCount + acceptedAttempt,
       });
       checkpoints.set(phase, completedCheckpoint);
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-        title: `第 ${index + 1}/${knowledgeBatches.length} 批规则和指标已生成`,
-        summary: `累计规则 ${rules.length} 条 · 指标 ${metrics.length} 个`,
-        details: { batch: index + 1, totalBatches: knowledgeBatches.length, ruleCount: rules.length, metricCount: metrics.length },
+        title: `第 ${index + 1}/${knowledgeUnits.length} 批规则和指标已生成`,
+        summary: `本批规则 ${acceptedRules.length} 条 · 指标 ${acceptedMetrics.length} 个`,
+        details: { batch: index + 1, totalBatches: knowledgeUnits.length, ruleCount: acceptedRules.length, metricCount: acceptedMetrics.length },
       });
+      return { rules: acceptedRules, metrics: acceptedMetrics, dispositions: acceptedDispositions };
+    });
+    const knowledgeOutputIssues = validateKnowledgeOutputs(knowledgeUnitOutputs, objects);
+    if (knowledgeOutputIssues.length) throw new Error(`规则/指标并发归并冲突：${knowledgeOutputIssues.join('；')}`);
+    for (const output of knowledgeUnitOutputs) {
+      appendUnique(rules, output.rules, '规则');
+      appendUnique(metrics, output.metrics, '指标');
+      candidateDispositions.push(...output.dispositions);
     }
 
     const operations: SpecOperation[] = [];
-    for (const [index, questions] of questionBatches.entries()) {
+    const operationUnitOutputs = await mapWithConcurrency(
+      operationUnits,
+      configuredGenerationConcurrency('operation'),
+      async (unit): Promise<SpecOperation[]> => {
+      const index = unit.index - 1;
+      const questions = unit.items;
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
         taskKinds: ['knowledge_extraction', 'operation_extraction'],
-        title: `正在生成第 ${index + 1}/${questionBatches.length} 批业务操作`,
+        title: `正在并发生成第 ${index + 1}/${operationUnits.length} 批业务操作`,
         produced: `已产出 ${objects.length} 个对象、${rules.length} 条规则、${metrics.length} 个指标、${operations.length} 个操作`,
-        done: objectBatches.length + knowledgeBatches.length + index,
+        done: objectUnits.length + knowledgeUnits.length + index,
         total: totalStepCount,
         elapsedMs: Date.now() - generationStartedAt,
         authoringRunId: authoringRun.id,
         phase: '知识结构生成',
       });
-      const phase = `operation_batch_${index + 1}`;
+      const phase = unit.phase;
       const checkpoint = checkpoints.get(phase);
       if (checkpoint?.status === 'completed') {
         const output = checkpoint.output as Extract<GenerationBatchOutput, { operations: SpecOperation[] }>;
-        appendUnique(operations, output.operations ?? [], '操作');
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-          title: `第 ${index + 1}/${questionBatches.length} 批业务操作已从检查点恢复`,
-          summary: `恢复 ${output.operations?.length ?? 0} 个 · 累计 ${operations.length} 个`,
-          details: { batch: index + 1, totalBatches: questionBatches.length, resumed: true },
+          title: `第 ${index + 1}/${operationUnits.length} 批业务操作已从检查点恢复`,
+          summary: `恢复 ${output.operations?.length ?? 0} 个`,
+          details: { batch: index + 1, totalBatches: operationUnits.length, resumed: true },
         });
-        continue;
+        return output.operations ?? [];
       }
       if (checkpoint?.status === 'skipped' && skipFailedPhases.has(phase)) {
         generationNotices.push(checkpointNotice(checkpoint));
-        continue;
+        return [];
       }
       if (checkpoint?.status === 'failed' && skipFailedPhases.has(phase)) {
         const skipped = checkpointStore.markSkipped({
           projectId: project.id, runId: authoringRun.id, planHash, phase,
-          batchKind: 'operation', batchIndex: index + 1, issues: checkpoint.issues,
+          batchKind: 'operation', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: checkpoint.issues,
           attemptCount: checkpoint.attemptCount,
         });
         checkpoints.set(phase, skipped);
         generationNotices.push(checkpointNotice(skipped));
-        continue;
+        return [];
       }
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_started', status: 'running',
-        title: `生成业务操作 ${index + 1}/${questionBatches.length}`,
+        title: `生成业务操作 ${index + 1}/${operationUnits.length}`,
         summary: `覆盖本批 ${questions.length} 个业务流程`,
-        details: { batch: index + 1, totalBatches: questionBatches.length, questionCount: questions.length },
+        details: { batch: index + 1, totalBatches: operationUnits.length, questionCount: questions.length },
       });
       let acceptedOperations: SpecOperation[] | undefined;
       let acceptedAttempt = 0;
@@ -789,8 +827,8 @@ export async function generatePackage(
           '本阶段不得声明 script，也不得在 flow 中引用 script:<key>；确定性脚本会在知识结构确认后单独识别、确认和生成。',
           '需要判断条件或口径时优先引用已有 rule/metric，所有 relatedObjects、usesRules 和 usesMetrics 只能使用下方明确列出的 key。',
           '不得引用未声明的 key，也不得把缺少材料依据的阈值写进流程。',
-          '用 submit_operations 一次提交当前批次全部结果，最多 4 个 operation。',
-          `已生成 operation key：${operations.map((item) => item.key).join(', ') || '（无）'}；当前批次不得重复。`,
+          '用 submit_operations 一次提交当前批次全部结果，最多 3 个 operation。',
+          '各批次会在完成后执行全局 operation key 冲突校验；当前批次内部 key 必须唯一。',
           `对象摘要：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title, sourceRefs: item.sourceRefs, sourceTable: item.sourceTable, fields: item.fields.map((field) => field.key) })))}`,
           `可用规则：${JSON.stringify(rules.map((item) => ({ key: item.key, title: item.title })))}`,
           `可用指标：${JSON.stringify(metrics.map((item) => ({ key: item.key, title: item.title })))}`,
@@ -812,11 +850,12 @@ export async function generatePackage(
         const agent = makeAgent(llm, sys, buildOperationGenerateTools(toolCtx(ctx), cap, questions));
         let stageMessages: unknown[];
         try {
-          stageMessages = await runAgentCaptured(agent,
-            `请完成第 ${index + 1}/${questionBatches.length} 批有依据的 operation 并调用 submit_operations。`,
-            () => !!cap.operations, '请立即调用 submit_operations 提交当前有依据的操作；没有可靠结果时提交空数组。', observe(phase));
+          stageMessages = await generationGate.run(() => runAgentCaptured(agent,
+            `请完成第 ${index + 1}/${operationUnits.length} 批有依据的 operation 并调用 submit_operations。`,
+            () => !!cap.operations, '请立即调用 submit_operations 提交当前有依据的操作；没有可靠结果时提交空数组。', observe(phase)));
         } catch (error) {
           const policy = classifyGenerationError(error);
+          if (policy.kind === 'rate_limited') generationGate.rateLimited(policy.retryAfterMs);
           const issue = policy.message;
           lastValidation = { issues: [issue], uncoveredQuestions: [], invalidReferenceCount: 0 };
           trace({
@@ -830,6 +869,7 @@ export async function generatePackage(
             title: '自动补交当前业务操作批次', details: { attempt: attempt + 1, remainingCount: 1 },
           });
           if (!shouldRetryGenerationError(error)) break;
+          await waitBeforeGenerationRetry(error, attempt);
           continue;
         }
         messages.push(...stageMessages);
@@ -870,14 +910,14 @@ export async function generatePackage(
           issues: lastValidation.issues,
         };
         const failedCheckpoint = checkpointStore.saveFailed({
-          projectId: project.id, runId: authoringRun.id, planHash, failure,
+          projectId: project.id, runId: authoringRun.id, planHash, failure, dependencyHash: unit.dependencyHash,
           attemptCount: priorAttemptCount + 3,
         });
         checkpoints.set(phase, failedCheckpoint);
         if (!skipFailedPhases.has(phase)) throw new GenerationGateDecisionRequired(failure);
         const skipped = checkpointStore.markSkipped({
           projectId: project.id, runId: authoringRun.id, planHash, phase,
-          batchKind: 'operation', batchIndex: index + 1, issues: failure.issues,
+          batchKind: 'operation', batchIndex: index + 1, dependencyHash: unit.dependencyHash, issues: failure.issues,
           attemptCount: priorAttemptCount + 3,
         });
         checkpoints.set(phase, skipped);
@@ -888,23 +928,26 @@ export async function generatePackage(
           summary: `跳过 ${lastValidation.issues.length} 个未解决问题，继续生成其余知识`,
           details: { batch: index + 1, issues: lastValidation.issues },
         });
-        continue;
+        return [];
       }
-      appendUnique(operations, acceptedOperations, '操作');
       const completedCheckpoint = checkpointStore.saveCompleted({
         projectId: project.id, runId: authoringRun.id, planHash, phase,
-        batchKind: 'operation', batchIndex: index + 1,
+        batchKind: 'operation', batchIndex: index + 1, dependencyHash: unit.dependencyHash,
         output: { operations: acceptedOperations },
         attemptCount: priorAttemptCount + acceptedAttempt,
       });
       checkpoints.set(phase, completedCheckpoint);
       trace({
         projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
-        title: `第 ${index + 1}/${questionBatches.length} 批业务操作已生成`,
-        summary: `本批 ${acceptedOperations.length} 个 · 累计 ${operations.length} 个`,
-        details: { batch: index + 1, totalBatches: questionBatches.length, operationCount: acceptedOperations.length },
+        title: `第 ${index + 1}/${operationUnits.length} 批业务操作已生成`,
+        summary: `本批 ${acceptedOperations.length} 个`,
+        details: { batch: index + 1, totalBatches: operationUnits.length, operationCount: acceptedOperations.length },
       });
-    }
+      return acceptedOperations;
+    });
+    const operationOutputIssues = validateOperationOutputs(operationUnitOutputs.flat());
+    if (operationOutputIssues.length) throw new Error(`业务操作并发归并冲突：${operationOutputIssues.join('；')}`);
+    for (const output of operationUnitOutputs) appendUnique(operations, output, '操作');
 
     reportLongTaskProgress(project.id, {
       taskKinds: ['knowledge_extraction', 'operation_extraction'],
@@ -954,12 +997,12 @@ export async function generatePackage(
     const skippedKnowledgeCandidates = new Set(
       generationNotices
         .filter((notice) => notice.batchKind === 'knowledge')
-        .flatMap((notice) => knowledgeBatches[notice.batchIndex - 1] ?? []),
+        .flatMap((notice) => knowledgeUnits[notice.batchIndex - 1]?.items ?? []),
     );
     const skippedQuestionIds = new Set(
       generationNotices
         .filter((notice) => notice.batchKind === 'operation')
-        .flatMap((notice) => questionBatches[notice.batchIndex - 1] ?? [])
+        .flatMap((notice) => operationUnits[notice.batchIndex - 1]?.items ?? [])
         .map((question) => question.id),
     );
     const validationAnalysis: AnalysisResult | undefined = analysis && skippedKnowledgeCandidates.size
