@@ -276,6 +276,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_authoring_interactions_response
   ON authoring_interactions(project_id, response_id)
   WHERE response_id IS NOT NULL;
 
+-- 知识结构生成批次检查点。只记录生成阶段产物，不保存或改写上游资料分析结果。
+-- 同一生成计划恢复时复用已完成批次，避免额度、网络或服务重启后从对象阶段重跑。
+CREATE TABLE IF NOT EXISTS generation_batch_checkpoints (
+  project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id        TEXT NOT NULL REFERENCES authoring_runs(id) ON DELETE CASCADE,
+  plan_hash     TEXT NOT NULL,
+  phase         TEXT NOT NULL,
+  batch_kind    TEXT NOT NULL CHECK (batch_kind IN ('object', 'knowledge', 'operation')),
+  batch_index   INTEGER NOT NULL CHECK (batch_index > 0),
+  status        TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'skipped')),
+  output_json   TEXT NOT NULL DEFAULT '{}',
+  issues_json   TEXT NOT NULL DEFAULT '[]',
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  PRIMARY KEY (run_id, phase)
+);
+CREATE INDEX IF NOT EXISTS idx_generation_batch_checkpoints_project
+  ON generation_batch_checkpoints(project_id, run_id, batch_index);
+
 -- 可编辑流程草稿。当前修订只保存在头记录中，文档内容按修订不可变保存。
 CREATE TABLE IF NOT EXISTS flowchart_drafts (
   interaction_id    TEXT PRIMARY KEY REFERENCES authoring_interactions(id) ON DELETE CASCADE,

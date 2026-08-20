@@ -109,6 +109,48 @@ export function validateObjectBatch(
   return issues;
 }
 
+export interface KnowledgeBatchValidation {
+  issues: string[];
+  invalidReferenceCount: number;
+}
+
+/**
+ * 规则和指标在并入整包前即时检查 key 与对象引用。
+ * 这一步只校验知识生成产物，不读取或重新计算上游资料分析结果。
+ */
+export function validateKnowledgeBatch(
+  batch: { rules: SpecRule[]; metrics: SpecMetric[] },
+  available: { objects: SpecObject[]; rules: SpecRule[]; metrics: SpecMetric[] },
+): KnowledgeBatchValidation {
+  const issues: string[] = [];
+  const objectKeys = new Set(available.objects.map((item) => normalizeKey(item.key)));
+  const existingRuleKeys = new Set(available.rules.map((item) => normalizeKey(item.key)));
+  const existingMetricKeys = new Set(available.metrics.map((item) => normalizeKey(item.key)));
+  const ruleKeys = batch.rules.map((item) => normalizeKey(item.key));
+  const metricKeys = batch.metrics.map((item) => normalizeKey(item.key));
+  let invalidReferenceCount = 0;
+
+  for (const key of findDuplicates(ruleKeys)) issues.push(`规则 key 重复：${key}`);
+  for (const key of findDuplicates(metricKeys)) issues.push(`指标 key 重复：${key}`);
+  for (const rule of batch.rules) {
+    if (existingRuleKeys.has(normalizeKey(rule.key))) issues.push(`规则 key 重复：${rule.key}`);
+    for (const objectKey of rule.appliesToObjects ?? []) {
+      if (objectKeys.has(normalizeKey(objectKey))) continue;
+      invalidReferenceCount += 1;
+      issues.push(`规则 ${rule.key} 引用了不存在的对象 ${objectKey}`);
+    }
+  }
+  for (const metric of batch.metrics) {
+    if (existingMetricKeys.has(normalizeKey(metric.key))) issues.push(`指标 key 重复：${metric.key}`);
+    for (const objectKey of metric.usesObjects ?? []) {
+      if (objectKeys.has(normalizeKey(objectKey))) continue;
+      invalidReferenceCount += 1;
+      issues.push(`指标 ${metric.key} 引用了不存在的对象 ${objectKey}`);
+    }
+  }
+  return { issues, invalidReferenceCount };
+}
+
 export interface OperationBatchValidation {
   issues: string[];
   uncoveredQuestions: string[];

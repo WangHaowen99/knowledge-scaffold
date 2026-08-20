@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { validateObjectBatch, validateSpecIntegrity } from '../src/workflow/spec-validation.js';
+import {
+  validateKnowledgeBatch,
+  validateObjectBatch,
+  validateSpecIntegrity,
+} from '../src/workflow/spec-validation.js';
 import { listNodes, runAnalyze, upsertNode } from '../src/workflow/engine.js';
 import { generatePackage } from '../src/workflow/m2.js';
 import { renderPackage } from '../src/workflow/package-render.js';
@@ -52,6 +56,48 @@ const baseSpec = (): PackageSpec => ({
     key: 'wallet_share', title: '钱包份额', caliber: '本行资产/全部金融资产',
     boundaries: ['统计期内'], usesObjects: ['customer'], evidence: ['material:指标口径.md'],
   }],
+});
+
+test('规则指标批次在整包保存前拒绝重复 key 和无效对象引用', () => {
+  const spec = baseSpec();
+  const result = validateKnowledgeBatch({
+    rules: [{
+      key: 'product_match', title: '重复规则', content: '重复内容',
+      appliesToObjects: ['missing_customer'],
+    }],
+    metrics: [{
+      key: 'wallet_share', title: '重复指标', caliber: '金额之比', boundaries: ['统计期'],
+      usesObjects: ['missing_customer'],
+    }],
+  }, {
+    objects: spec.objects,
+    rules: spec.rules ?? [],
+    metrics: spec.metrics ?? [],
+  });
+
+  assert.deepEqual(result.issues, [
+    '规则 key 重复：product_match',
+    '规则 product_match 引用了不存在的对象 missing_customer',
+    '指标 key 重复：wallet_share',
+    '指标 wallet_share 引用了不存在的对象 missing_customer',
+  ]);
+  assert.equal(result.invalidReferenceCount, 2);
+});
+
+test('规则指标批次允许引用已经生成的对象', () => {
+  const spec = baseSpec();
+  const result = validateKnowledgeBatch({
+    rules: [{
+      key: 'customer_active', title: '活跃客户判断', content: '客户状态为活跃',
+      appliesToObjects: ['customer'],
+    }],
+    metrics: [{
+      key: 'customer_count', title: '客户数', caliber: '客户去重计数', boundaries: ['统计期'],
+      usesObjects: ['customer'],
+    }],
+  }, { objects: spec.objects, rules: [], metrics: [] });
+
+  assert.deepEqual(result, { issues: [], invalidReferenceCount: 0 });
 });
 
 test('知识包渲染统一生成 operation 流程序号且不重复展示模型自带编号', () => {
