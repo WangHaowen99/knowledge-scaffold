@@ -7,6 +7,7 @@ from persistence.execution_store import (
     INTERACTION_CANCELLED_NOTICE,
     ExecutionStore,
     InteractionCheckpointError,
+    TurnOwnershipError,
 )
 
 
@@ -406,3 +407,72 @@ def test_turn_feedback_is_durable_and_queryable_without_evolution_store(tmp_path
 
     assert reloaded.set_turn_feedback("sess-feedback", 2, "none") is True
     assert "feedback" not in reloaded.get_turn("sess-feedback", 2)
+
+
+def test_start_next_turn_allocates_unique_ids_atomically(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+
+    def start(index):
+        turn, response = store.start_next_turn(
+            session_id="sess-concurrent",
+            run_id="run-{}".format(index),
+            user_request="synthetic request {}".format(index),
+        )
+        assert response is None
+        return turn
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        turns = list(executor.map(start, range(16)))
+
+    assert sorted(turn["turn_id"] for turn in turns) == list(range(1, 17))
+    assert len({turn["run_id"] for turn in turns}) == 16
+
+
+@pytest.mark.parametrize(
+    "finish",
+    [
+        lambda store: store.complete_turn(
+            "sess-owner",
+            1,
+            {"answer": "unexpected"},
+            None,
+            run_id="run-other",
+        ),
+        lambda store: store.fail_turn(
+            "sess-owner",
+            1,
+            "unexpected",
+            run_id="run-other",
+        ),
+        lambda store: store.cancel_turn(
+            "sess-owner",
+            1,
+            "unexpected",
+            run_id="run-other",
+        ),
+        lambda store: store.await_turn(
+            "sess-owner",
+            1,
+            run_id="run-other",
+        ),
+    ],
+)
+def test_turn_finalization_rejects_another_run(tmp_path, finish):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    store.start_turn("sess-owner", 1, "run-owner", "synthetic request")
+
+    with pytest.raises(TurnOwnershipError, match="does not belong"):
+        finish(store)
+
+    turn = store.get_turn("sess-owner", 1)
+    assert turn["run_id"] == "run-owner"
+    assert turn["status"] == "running"
+
+
+def test_run_scoped_turn_lookup_distinguishes_missing_from_wrong_owner(tmp_path):
+    store = ExecutionStore(str(tmp_path / "executions"))
+    store.start_turn("sess-owner", 1, "run-owner", "synthetic request")
+
+    assert store.get_turn("sess-owner", 2, run_id="run-owner") is None
+    with pytest.raises(TurnOwnershipError, match="does not belong"):
+        store.get_turn("sess-owner", 1, run_id="run-other")
