@@ -61,6 +61,7 @@ def create_mcp_token(
     name: str = "",
     scopes: Any = None,
     expires_in: Any = None,
+    ontology_id: str = "",
     config: MCPRuntimeConfig | None = None,
     store: MCPTokenStore | None = None,
 ) -> dict[str, Any]:
@@ -73,6 +74,15 @@ def create_mcp_token(
     if not normalized_workspace_id:
         raise MCPTokenServiceError("workspace_id 不能为空")
     resolved_scopes = normalize_scopes(scopes)
+    normalized_ontology_id = str(ontology_id or "").strip()
+    if normalized_ontology_id:
+        from .ontology_binding import validate_token_ontology_binding
+
+        validate_token_ontology_binding(
+            workspace_id=normalized_workspace_id,
+            ontology_id=normalized_ontology_id,
+            scopes=resolved_scopes,
+        )
     ttl = _normalize_expires_in(expires_in, cfg)
     now_ts = int(time.time())
     jti = uuid.uuid4().hex
@@ -85,6 +95,8 @@ def create_mcp_token(
         "jti": jti,
         "iat": now_ts,
     }
+    if normalized_ontology_id:
+        payload["ontology_id"] = normalized_ontology_id
     expires_at = None
     if ttl is not None:
         payload["exp"] = now_ts + ttl
@@ -98,6 +110,7 @@ def create_mcp_token(
         "token_masked": mask_token(token),
         "username": payload["sub"],
         "workspace_id": payload["workspace_id"],
+        "ontology_id": normalized_ontology_id,
         "scopes": resolved_scopes,
         "status": "active",
         "created_at": utc_now_iso(),
@@ -152,6 +165,7 @@ def verify_mcp_token(token: str, *, required_scope: str | None = None, config: M
         raise MCPTokenAuthError("INVALID_MCP_TOKEN", "Token 缺少 workspace_id")
     if not jti:
         raise MCPTokenAuthError("INVALID_MCP_TOKEN", "Token 缺少 jti")
+    ontology_id = str(payload.get("ontology_id") or "").strip()
     scopes = normalize_scopes(payload.get("scope"))
     if required_scope and required_scope not in scopes:
         raise MCPTokenAuthError("MCP_SCOPE_FORBIDDEN", "Token 缺少 scope: {}".format(required_scope))
@@ -162,9 +176,16 @@ def verify_mcp_token(token: str, *, required_scope: str | None = None, config: M
     )
     if not ok:
         raise MCPTokenAuthError("INVALID_MCP_TOKEN", _reason_detail(reason))
+    registered_ontology_id = str((item or {}).get("ontology_id") or "").strip()
+    if ontology_id != registered_ontology_id:
+        raise MCPTokenAuthError(
+            "MCP_TOKEN_BINDING_MISMATCH",
+            "Token claim 与注册记录的知识包绑定不一致",
+        )
     return {
         "username": username,
         "workspace_id": workspace_id,
+        "ontology_id": ontology_id,
         "scopes": scopes,
         "jti": jti,
         "token_item": item,

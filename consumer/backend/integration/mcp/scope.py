@@ -32,6 +32,7 @@ class MCPRequestScope:
     source: str = "bearer_header"
     token: str = field(default="", repr=False, compare=False)
     traceparent: str = ""
+    ontology_id: str = ""
 
 
 @contextmanager
@@ -112,6 +113,7 @@ def resolve_mcp_scope_from_token(
         source=source,
         token=str(token or "").strip(),
         traceparent=normalized_traceparent,
+        ontology_id=str(payload.get("ontology_id") or "").strip(),
     )
 
 

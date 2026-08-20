@@ -38,6 +38,10 @@ StringListInput = list[str] | str | None
 DictInput = dict[str, Any] | str | None
 DictListInput = list[dict[str, Any]] | str
 PathPatternInput = list[Any] | str
+OntologyIdInput = Annotated[
+    str,
+    Field(description="可选本体 ID。Token 已绑定知识包时可省略；显式值必须与 Token 绑定一致。旧未绑定 Token 仍必须传入。"),
+]
 _MCP_ENDPOINT_STATE_KEY = "meta_wise_mcp_endpoint_id"
 _MCP_SESSION_ID_HEADER = b"mcp-session-id"
 _MCP_SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60
@@ -428,21 +432,21 @@ def create_mcp_server(config: MCPRuntimeConfig | None = None, *, toolset: str = 
 def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable[[MCPRequestScope], dict[str, Any]]], dict[str, Any]]) -> None:
     @mcp.tool()
     def get_object_types(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
+        ontology_id: OntologyIdInput = "",
     ) -> dict[str, Any]:
         """获取当前本体绑定图数据中的全部实体/节点类型列表。"""
         return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_object_types", {"ontology_id": ontology_id}, scope=scope))
 
     @mcp.tool()
     def get_relation_types(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
+        ontology_id: OntologyIdInput = "",
     ) -> dict[str, Any]:
         """获取当前本体绑定图数据中的全部语义关系类型列表。"""
         return call_with_scope("mcp:search", lambda scope: execute_search_tool("get_relation_types", {"ontology_id": ontology_id}, scope=scope))
 
     @mcp.tool()
     def get_nodes_schema(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
+        ontology_id: OntologyIdInput = "",
         element_types: Annotated[StringListInput, Field(description='可选节点类型数组，示例 ["Company", "Person"]；也兼容合法 JSON 字符串。')] = None,
     ) -> dict[str, Any]:
         """获取节点类型及其属性字段 schema；只返回结构，不返回实例数据。"""
@@ -450,7 +454,7 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def get_edges_schema(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
+        ontology_id: OntologyIdInput = "",
         relation_types: Annotated[StringListInput, Field(description='可选关系类型数组，示例 ["包含", "影响"]；也兼容合法 JSON 字符串。')] = None,
     ) -> dict[str, Any]:
         """获取关系 schema 和 relation_triples；路径查询前应优先查看关系三元组。"""
@@ -458,8 +462,8 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def property_filter(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         queries: Annotated[DictListInput, Field(description="属性过滤子查询数组；也兼容合法 JSON 字符串。")],
+        ontology_id: OntologyIdInput = "",
         max_total_rows: Annotated[int, Field(ge=1, le=5000, description="最大返回行数。")] = 500,
         entity: Annotated[str, Field(description="可选本体对象名，用于解析映射。")] = "",
     ) -> dict[str, Any]:
@@ -468,8 +472,8 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def pattern_search(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         path_pattern: Annotated[PathPatternInput, Field(description="节点-关系-节点路径模板；必须是一条路径的数组，也兼容合法 JSON 字符串。")],
+        ontology_id: OntologyIdInput = "",
         return_vars: Annotated[StringListInput, Field(description='返回变量列表，例如 ["a", "r1", "b"]；也兼容合法 JSON 字符串。')] = None,
         return_properties: Annotated[Any | None, Field(description="返回属性投影。")] = None,
         limit: Annotated[int, Field(ge=1, le=2000, description="返回条数上限。")] = 100,
@@ -496,19 +500,19 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def count_search(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         queries: Annotated[DictListInput, Field(description="计数子查询数组；也兼容合法 JSON 字符串。")],
+        ontology_id: OntologyIdInput = "",
     ) -> dict[str, Any]:
         """统计满足条件的节点或关系数量，支持批量子查询。"""
         return call_with_scope("mcp:search", lambda scope: execute_search_tool("count_search", {"ontology_id": ontology_id, "queries": queries}, scope=scope))
 
     @mcp.tool()
     def aggregate_search(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         element_class: str,
         element_type: str,
         target_property: str,
         agg: str,
+        ontology_id: OntologyIdInput = "",
         filter_dict: DictInput = None,
     ) -> dict[str, Any]:
         """对节点或关系字段做 SUM/AVG/MIN/MAX/COUNT 聚合，字段名应来自 schema。"""
@@ -516,9 +520,9 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def sorted_search(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         element_class: str,
         element_type: str,
+        ontology_id: OntologyIdInput = "",
         filter_dict: DictInput = None,
         return_properties: StringListInput = None,
         sort_by: StringListInput = None,
@@ -531,8 +535,8 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def get_element_info(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         element_instance_id: str,
+        ontology_id: OntologyIdInput = "",
         element_class: str = "",
         element_type: str = "",
     ) -> dict[str, Any]:
@@ -541,8 +545,8 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def hop_search(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         entity_instance_id: str,
+        ontology_id: OntologyIdInput = "",
         hop_num: int = 1,
         accurate_flag: bool = False,
     ) -> dict[str, Any]:
@@ -551,10 +555,10 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def shortest_path(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         start_label: str,
         start_props: DictInput,
         end_label: str,
+        ontology_id: OntologyIdInput = "",
         end_props: DictInput = None,
         max_depth: int = 15,
         directed: bool = False,
@@ -564,7 +568,7 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def list_logic_titles(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
+        ontology_id: OntologyIdInput = "",
         entity_type: Annotated[str, Field(description="可选业务实体类型过滤。")] = "",
     ) -> dict[str, Any]:
         """列出当前本体绑定图数据中的业务逻辑标题目录。"""
@@ -572,8 +576,8 @@ def _register_search_tools(mcp: Any, *, call_with_scope: Callable[[str, Callable
 
     @mcp.tool()
     def get_logic_content(
-        ontology_id: Annotated[str, Field(description="本体 ID，必填。")],
         entity_instance_ids: Annotated[list[str] | str, Field(description="业务实体实例 ID 数组；也兼容合法 JSON 字符串。")],
+        ontology_id: OntologyIdInput = "",
         logic_titles: Annotated[StringListInput, Field(description="可选业务逻辑标题数组；也兼容合法 JSON 字符串。")] = None,
     ) -> dict[str, Any]:
         """按实体实例 ID 和可选标题读取业务逻辑内容。"""
