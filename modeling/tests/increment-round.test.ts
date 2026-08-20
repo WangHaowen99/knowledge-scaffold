@@ -149,7 +149,7 @@ test('需求文本必须带上资料正文——只给文件名模型会直接�
   assert.match(requirement, /资产门槛由 100 万上调至 500 万/);
 });
 
-test('长文档不塞正文，改为给大纲并要求模型自己检索', () => {
+test('长文档不塞正文，改为给大纲并消费后端全文事实', () => {
   // 真实事故：20 万字手册前 5290 字符全是目录，截取开头喂给模型，
   // 它读不到任何产品条款，得出「资料只提供了目录、没有具体正文」的错误结论。
   const body = [
@@ -164,8 +164,8 @@ test('长文档不塞正文，改为给大纲并要求模型自己检索', () =>
 
   assert.match(requirement, /共 \d+ 字符（正文未附/);
   assert.match(requirement, /章节：/, '要给大纲，让模型知道去哪找');
-  assert.match(requirement, /search_documents/);
-  assert.match(requirement, /read_document/);
+  assert.match(requirement, /动态分段 Map-Reduce/);
+  assert.match(requirement, /不得重新串行通读全文/);
   // 关键：不能把正文整段塞进去，也不能让提示词随文档长度膨胀
   assert.ok(requirement.length < 4_000, `提示词过长：${requirement.length}`);
   assert.ok(!requirement.includes('x'.repeat(2_000)), '不应把正文大段塞进提示词');

@@ -2,7 +2,7 @@ import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
 import { getLlmSettings, getTaskLlmSettings, type LlmSettings } from '../settings/repo.js';
 
 // pi agent 的 LLM 依赖：一个 model 对象 + streamFn + getApiKey。
-// 真实端点走 openai-completions；冒烟/测试可注入 faux（见 scripts/smoke-nodes.ts）。
+// 真实端点走 openai-completions；冒烟/测试可注入并发安全的 faux。
 export interface LlmDeps {
   model: any;
   streamFn: any;
@@ -98,33 +98,6 @@ function parseNumberedList(prompt: string): string[] {
   return prompt.split('\n').map((l) => l.match(/^\d+\.\s*(.+)$/)?.[1]?.trim()).filter(Boolean) as string[];
 }
 
-export function nextRequiredDocumentRead(messages: any[], fauxToolCall: (name: string, params: unknown) => unknown) {
-  const listResult = [...messages].reverse().find((message: any) => (
-    message?.role === 'toolResult' && message?.toolName === 'list_documents'
-  ));
-  if (!listResult) return fauxToolCall('list_documents', {});
-  const listText = (listResult.content ?? []).map((part: any) => part?.text ?? '').join('\n');
-  const filenames = [...listText.matchAll(/【(.+?)】共\s*\d+\s*字符/gu)].map((match) => match[1]);
-  if (!filenames.length) return null;
-
-  const reads = messages.filter((message: any) => (
-    message?.role === 'toolResult' && message?.toolName === 'read_document'
-  ));
-  const previousPageSummary = reads.length ? '（演示模式）已记录上一页的章节要点和重要证据。' : undefined;
-  for (const filename of filenames) {
-    const latest = [...reads].reverse().find((message: any) => message?.details?.filename === filename);
-    if (!latest) return fauxToolCall('read_document', { filename, offset: 0, previousPageSummary });
-    if (!latest.details?.eof) {
-      return fauxToolCall('read_document', {
-        filename,
-        offset: latest.details?.nextOffset ?? latest.details?.endOffset ?? 0,
-        previousPageSummary,
-      });
-    }
-  }
-  return null;
-}
-
 function latestUserJson(messages: any[]): any {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -140,17 +113,12 @@ function latestUserJson(messages: any[]): any {
 }
 
 export function buildFauxModeler(): LlmDeps {
-  // 动态 import 是 ESM 顶层限制的折衷：faux 只在演示模式加载
-  let handle: any = null;
+  // 动态 import 是 ESM 顶层限制的折衷：faux 只在演示模式加载。
+  // 每次请求使用独立 core，避免并发文档 Map 争抢同一个响应队列。
   const factory = (fx: any) => async (context: any, _opts: any, _state: { callCount: number }) => {
     const sys: string = context.systemPrompt ?? '';
     const { fauxAssistantMessage, fauxToolCall } = fx;
     const hasToolResult = (name: string) => (context.messages ?? []).some((m: any) => m?.role === 'toolResult' && m.toolName === name);
-
-    if (sys.includes('所有文本材料必须') || sys.includes('专家明确要求全文阅读')) {
-      const nextRead = nextRequiredDocumentRead(context.messages ?? [], fauxToolCall);
-      if (nextRead) return fauxAssistantMessage([nextRead]);
-    }
 
     if (sys.includes('submit_modeling_goal_brief')) {
       const goal = String(latestUserJson(context.messages ?? [])?.modelingGoal ?? '').trim();
@@ -160,6 +128,62 @@ export function buildFauxModeler(): LlmDeps {
         targetUsers: '业务经办人员、审核人员',
         scenarios: '根据申请资料、业务规则和异常条件形成可执行处理方案',
         successCriteria: '生成可执行、可追溯且约束明确的业务处理方案',
+      })]);
+    }
+
+    if (sys.includes('submit_document_chunk_analysis')) {
+      const range = sys.match(/原文区间：\[(\d+),\s*(\d+)\)/u);
+      const offset = Number(range?.[1] ?? 0);
+      return fauxAssistantMessage([fauxToolCall('submit_document_chunk_analysis', {
+        summary: '（演示）当前分段包含可沉淀的业务事实和处理约束。',
+        evidence: [{ offset, kind: 'rule', note: '分段起始处的业务规则证据' }],
+        candidates: [{
+          kind: 'rule', name: '分段业务规则', rationale: '原文包含条件或约束',
+          evidenceOffsets: [offset], readiness: 'extractable',
+        }],
+        openQuestions: [],
+      })]);
+    }
+
+    if (sys.includes('submit_document_analysis')) {
+      const filename = (sys.match(/文档：([^\n]+)/u) ?? [])[1]?.trim() || '文档';
+      return fauxAssistantMessage([fauxToolCall('submit_document_analysis', {
+        summary: `（演示）${filename} 全文摘要`,
+        suitableFor: ['rule'],
+        rationale: '全文分段中包含业务条件和约束',
+        candidates: [{
+          kind: 'rule', name: `${filename} 业务规则`, rationale: '来自全文证据',
+          evidenceOffsets: [], readiness: 'extractable',
+        }],
+        openQuestions: [],
+      })]);
+    }
+
+    if (sys.includes('submit_material_analysis_result')) {
+      const userText = [...(context.messages ?? [])].reverse()
+        .find((message: any) => message?.role === 'user')?.content ?? '';
+      const raw = typeof userText === 'string'
+        ? userText
+        : (userText ?? []).map((part: any) => part?.text ?? '').join('');
+      let tables: Array<{ name: string; fields?: unknown[] }> = [];
+      try {
+        tables = JSON.parse((raw.match(/【数据表结构】\n([^\n]*)/u) ?? [])[1] ?? '[]');
+      } catch { /* 测试兜底为空表 */ }
+      return fauxAssistantMessage([fauxToolCall('submit_material_analysis_result', {
+        domainOverview: `（演示）已完成 ${tables.length} 张数据表和全文文档的领域汇总。`,
+        candidateObjects: tables.map((table) => ({
+          name: table.name, rationale: `来自数据表 ${table.name}`, sourceTables: [table.name],
+        })),
+        candidateGoals: [],
+        candidateProcesses: [],
+        openQuestions: [],
+        tableMaterialAssessments: tables.map((table) => ({
+          source: table.name, sourceType: 'table', suitableFor: ['object'], rationale: '表结构可形成业务对象',
+        })),
+        tableCandidateArtifacts: tables.map((table) => ({
+          kind: 'object', name: table.name, rationale: '来自数据表结构', sources: [table.name],
+          readiness: 'extractable',
+        })),
       })]);
     }
 
@@ -186,15 +210,6 @@ export function buildFauxModeler(): LlmDeps {
       })]);
     }
 
-    if (sys.includes('submit_analysis')) {
-      if (!hasToolResult('list_tables')) return fauxAssistantMessage([fauxToolCall('list_tables', {})]);
-      const tables = parseTablesFromToolResult(context.messages);
-      return fauxAssistantMessage([fauxToolCall('submit_analysis', {
-        domainOverview: `（演示模式）基于 ${tables.length} 张数据表的领域：${tables.map((t) => t.name).join('、')}。`,
-        candidateObjects: tables.map((t) => ({ name: t.name, rationale: `来自数据表 ${t.name}（${t.fields.slice(0, 3).join('/')}…）`, sourceTables: [t.name] })),
-        openQuestions: tables.slice(0, 2).map((t) => ({ topic: `${t.name} 关键字段语义`, why: `${t.fields[Math.min(1, t.fields.length - 1)] ?? t.fields[0]} 的业务口径需专家确认` })),
-      })]);
-    }
     if (sys.includes('submit_package_spec')) {
       if (!hasToolResult('list_tables')) return fauxAssistantMessage([fauxToolCall('list_tables', {})]);
       const tables = parseTablesFromToolResult(context.messages);
@@ -409,16 +424,12 @@ export function buildFauxModeler(): LlmDeps {
   };
 
   const streamFn = async (model: any, context: any, options: any) => {
-    if (!handle) {
-      const fx = await loadFaux();
-      const core = fx.createFauxCore({ provider: 'faux', models: [{ id: 'faux-modeler' }] });
-      // 关键：设置“无限工厂”——每次调用都按当前上下文动态生成响应
-      const fn = factory(fx);
-      const push = () => core.appendResponses([async (ctx: any, o: any, st: any, m: any) => { push(); return fn(ctx, o, st); }]);
-      push();
-      handle = core;
-    }
-    return handle.streamSimple(handle.getModel(), context, options);
+    const fx = await loadFaux();
+    const core = fx.createFauxCore({ provider: 'faux', models: [{ id: 'faux-modeler' }] });
+    core.setResponses([async (ctx: any, callOptions: any, state: any) => (
+      factory(fx)(ctx, callOptions, state)
+    )]);
+    return core.streamSimple(core.getModel(), context, options);
   };
 
   return {

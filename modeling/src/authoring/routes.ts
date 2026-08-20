@@ -1160,7 +1160,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             intent: '生成增量修改方案',
             interactionTitle: '确认增量修改方案',
             metadata: { incrementRound: true, incrementTaskId: intake.id },
-            // 本轮全部文本资料必须连续读到 EOF 后才能提交增量方案。
+            // 本轮全部文本资料统一进入持久化 Map-Reduce；失败后从分段断点续跑。
             documents: materials.map((item) => ({
               filename: item.filename, textContent: item.content,
             })),

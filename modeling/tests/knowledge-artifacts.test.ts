@@ -1,21 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { buildArtifactAnalysisTools } from '../src/workflow/tools.js';
 import { validateObjectBatch, validateSpecIntegrity } from '../src/workflow/spec-validation.js';
 import { listNodes, runAnalyze, upsertNode } from '../src/workflow/engine.js';
 import { generatePackage } from '../src/workflow/m2.js';
 import { renderPackage } from '../src/workflow/package-render.js';
 import { applyOptimizations, OptimizationExpertReviewRequiredError } from '../src/evaluation/optimizer.js';
 import { createProject } from '../src/projects/repo.js';
-import { listTraceEvents } from '../src/workflow/trace.js';
 import { getPackageArtifactStore } from '../src/artifacts/runtime.js';
 import {
   confirmedFlowchart,
   operationTargetId,
   operationTargetQuestion,
 } from './fixtures/confirmed-flowchart.js';
-import { nextRequiredDocumentRead, type LlmDeps } from '../src/llm/provider.js';
+import { buildFauxModeler, type LlmDeps } from '../src/llm/provider.js';
 import type { AnalysisResult, PackageSpec, Project } from '../src/types.js';
 import type { OptSuggestion } from '../src/workflow/m4-repo.js';
 import type { EvalResult } from '../src/workflow/m3-repo.js';
@@ -32,15 +30,6 @@ function faux(toolName: string, params: unknown): LlmDeps {
   const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-1' }] });
   core.setResponses([fauxAssistantMessage([fauxToolCall(toolName, params)])]);
   return { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
-}
-
-function queueRequiredDocumentRead(core: ReturnType<typeof createFauxCore>, context: any): boolean {
-  const system = String(context.systemPrompt ?? '');
-  if (!system.includes('所有文本材料必须')) return false;
-  const nextRead = nextRequiredDocumentRead(context.messages ?? [], fauxToolCall);
-  if (!nextRead) return false;
-  core.setResponses([fauxAssistantMessage([nextRead as any])]);
-  return true;
 }
 
 const baseSpec = (): PackageSpec => ({
@@ -129,73 +118,8 @@ test('知识包拒绝包含子进程、动态执行或网络访问的生成脚�
   assert.throws(() => renderPackage(spec), /脚本安全检查失败.*网络访问/);
 });
 
-test('分析工具要求按材料标注适合生成的知识类型', () => {
-  const tools = buildArtifactAnalysisTools({ tables: [], documents: [], captured: {} });
-  const submit = tools.find((tool) => tool.name === 'submit_artifact_analysis') as any;
-  const properties = submit.parameters?.properties ?? {};
-
-  assert.ok(properties.materialAssessments, 'submit_analysis 缺少 materialAssessments');
-  assert.ok(properties.candidateArtifacts, 'submit_analysis 缺少 candidateArtifacts');
-});
-
-test('领域分析在保存前将表格展示标签规范化为真实 Sheet 名', async () => {
-  const project = createProject({ owner: 'tester', name: '来源规范化', domain: '监管', background: '' });
-  const core = createFauxCore({ provider: 'analysis-source-catalog', models: [{ id: 'analysis-source-catalog' }] });
-  const llm: LlmDeps = {
-    model: core.getModel(),
-    getApiKey: () => 'faux',
-    streamFn: ((model: unknown, context: any, options: unknown) => {
-      if (queueRequiredDocumentRead(core, context)) {
-        return core.streamSimple(model as any, context, options as any);
-      }
-      const system = String(context.systemPrompt ?? '');
-      if (system.includes('submit_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
-          domainOverview: '国企穿透式监管',
-          candidateObjects: [{
-            name: '监管场景', rationale: '监管核心对象',
-            sourceTables: ['十一个穿透式监管场景（11 行）'],
-          }],
-          openQuestions: [],
-        })])]);
-      } else if (system.includes('submit_artifact_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-          materialAssessments: [{
-            source: '十一个穿透式监管场景', sourceType: 'table',
-            suitableFor: ['object'], rationale: '表格提供监管场景字段',
-          }],
-          candidateArtifacts: [{
-            kind: 'object', name: '监管场景', rationale: '表格实体',
-            sources: ['十一个穿透式监管场景'], readiness: 'extractable',
-          }],
-        })])]);
-      } else {
-        throw new Error(`未处理的测试 prompt: ${system.slice(0, 80)}`);
-      }
-      return core.streamSimple(model as any, context, options as any);
-    }) as LlmDeps['streamFn'],
-  };
-
-  const progress: Array<{ phase: string; percent: number }> = [];
-  const result = await runAnalyze(project.id, [{
-    name: '十一个穿透式监管场景', rowCount: 11,
-    fields: [{ name: '序号', inferredType: 'number', sampleValues: ['1'], distinctRatio: 1 }],
-  }], [], llm, (update) => progress.push(update));
-
-  assert.deepEqual(result.analysis.candidateObjects[0].sourceTables, ['十一个穿透式监管场景']);
-  assert.equal(progress[0].phase, 'prepare');
-  assert.ok(progress.some((item) => item.phase === 'domain_analysis' && item.percent >= 28));
-  assert.ok(progress.some((item) => item.phase === 'artifact_batch_1'));
-  assert.deepEqual(progress.at(-1), {
-    phase: 'complete', title: '建模资料分析完成', percent: 100,
-    summary: '候选目标 1 个 · 候选流程 1 个',
-  });
-  const node = listNodes(project.id).find((item) => item.type === 'analyze');
-  assert.deepEqual((node?.output as AnalysisResult).candidateObjects[0].sourceTables, ['十一个穿透式监管场景']);
-});
-
-test('资料分析的每个模型提示和最终输出都带已确认建模目标', async () => {
-  const project = createProject({ owner: 'tester', name: '目标定向分析', domain: '生产', background: '' });
+test('资料分段事实保持通用，领域汇总和最终输出受已确认建模目标约束', async () => {
+  const project = createProject({ owner: 'tester', name: '合成目标定向分析', domain: '生产', background: '' });
   const brief = {
     problem: '生成减一线分流生产方案',
     targetUsers: '生产计划人员',
@@ -203,37 +127,13 @@ test('资料分析的每个模型提示和最终输出都带已确认建模目�
     successCriteria: '方案可执行且可追溯',
   };
   const prompts: string[] = [];
-  const core = createFauxCore({ provider: 'goal-directed-analysis', models: [{ id: 'goal-directed-analysis' }] });
+  const base = buildFauxModeler();
   const llm: LlmDeps = {
-    model: core.getModel(), getApiKey: () => 'faux',
+    ...base,
     streamFn: ((model: unknown, context: any, options: unknown) => {
-      if (queueRequiredDocumentRead(core, context)) {
-        return core.streamSimple(model as any, context, options as any);
-      }
       const system = String(context.systemPrompt ?? '');
       prompts.push(system);
-      if (system.includes('submit_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
-          domainOverview: '原油和装置资料', candidateObjects: [], openQuestions: [],
-          candidateProcesses: [{
-            title: '减一线分流方案编制', trigger: '收到日度计划',
-            actors: ['生产计划人员'], inputs: ['原油性质'], steps: ['核验装置能力'],
-            exceptions: [], outputs: ['分流方案'], handoffs: [], rationale: '与已确认目标直接相关',
-          }],
-        })])]);
-      } else if (system.includes('submit_artifact_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-          materialAssessments: [{
-            source: '生产手册.md', sourceType: 'document', suitableFor: ['operation'],
-            rationale: '包含方案编制步骤',
-          }],
-          candidateArtifacts: [{
-            kind: 'operation', name: '编制分流方案', rationale: '文档给出处理步骤',
-            sources: ['生产手册.md'], readiness: 'extractable',
-          }],
-        })])]);
-      } else throw new Error(`未处理的测试 prompt: ${system.slice(0, 80)}`);
-      return core.streamSimple(model as any, context, options as any);
+      return base.streamFn(model, context, options);
     }) as LlmDeps['streamFn'],
   };
 
@@ -246,13 +146,15 @@ test('资料分析的每个模型提示和最终输出都带已确认建模目�
     brief,
   );
 
-  assert.ok(prompts.length >= 2);
-  assert.ok(prompts.every((prompt) => prompt.includes(brief.problem)));
-  assert.ok(prompts.every((prompt) => prompt.includes(brief.successCriteria)));
+  assert.ok(prompts.some((prompt) => prompt.includes('submit_document_chunk_analysis')));
+  const domainPrompt = prompts.find((prompt) => prompt.includes('submit_material_analysis_result')) ?? '';
+  assert.match(domainPrompt, new RegExp(brief.problem));
+  assert.match(domainPrompt, new RegExp(brief.successCriteria));
   assert.deepEqual(result.analysis.modelingBrief, brief);
-  assert.equal(result.analysis.candidateProcesses?.[0].title, '减一线分流方案编制');
+  assert.equal(result.analysis.candidateProcesses?.[0].title, brief.scenarios);
   assert.deepEqual(result.analysis.documentReadCoverage, [{
     filename: '生产手册.md',
+    revisionFingerprint: `sha256:${'c00259f87b8033da9c41de0140f6cb039cb201811ae961280a18cda51e0a305e'}`,
     totalChars: 13,
     ranges: [[0, 13]],
     contiguousEnd: 13,
@@ -314,141 +216,6 @@ test('分析候选是建议清单，允许模型只提交有依据的部分对�
   }];
 
   assert.deepEqual(validateObjectBatch(candidates, submitted), []);
-});
-
-test('材料类型分析未提交时分析节点记录失败原因并可重试', async () => {
-  const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-analysis' }] });
-  core.setResponses([
-    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
-    fauxAssistantMessage([fauxToolCall('read_document', { filename: 'manual.md', offset: 0 })]),
-    fauxAssistantMessage([fauxToolCall('submit_analysis', {
-      domainOverview: '银行营销', candidateObjects: [], openQuestions: [],
-    })]),
-    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
-    fauxAssistantMessage([fauxToolCall('read_document', { filename: 'manual.md', offset: 0 })]),
-    fauxAssistantMessage('只返回正文，不调用材料分类工具。'),
-    fauxAssistantMessage('仍然不调用工具。'),
-  ]);
-  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
-  const project = createProject({ owner: 'tester', name: '分类失败回归', domain: '金融', background: '' });
-
-  await assert.rejects(runAnalyze(project.id, [], [{ filename: 'manual.md', textContent: '产品规则' }], llm), /材料知识类型分析未按协议提交/);
-  const node = listNodes(project.id).find((item) => item.type === 'analyze');
-  assert.equal(node?.status, 'failed');
-  assert.match(node?.reason ?? '', /材料知识类型分析未按协议提交/);
-});
-
-test('材料类型分析不能用空结果跳过文档判断', async () => {
-  const core = createFauxCore({ provider: 'faux', models: [{ id: 'faux-empty-analysis' }] });
-  core.setResponses([
-    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
-    fauxAssistantMessage([fauxToolCall('read_document', { filename: '产品手册.docx', offset: 0 })]),
-    fauxAssistantMessage([fauxToolCall('submit_analysis', {
-      domainOverview: '银行营销', candidateObjects: [], openQuestions: [],
-    })]),
-    fauxAssistantMessage([fauxToolCall('list_documents', {})]),
-    fauxAssistantMessage([fauxToolCall('read_document', { filename: '产品手册.docx', offset: 0 })]),
-    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-      materialAssessments: [], candidateArtifacts: [],
-    })]),
-    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-      materialAssessments: [], candidateArtifacts: [],
-    })]),
-    fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-      materialAssessments: [], candidateArtifacts: [],
-    })]),
-  ]);
-  const llm: LlmDeps = { model: core.getModel(), streamFn: core.streamSimple, getApiKey: () => 'faux' };
-  const project = createProject({ owner: 'tester', name: '空分类回归', domain: '金融', background: '' });
-
-  await assert.rejects(
-    runAnalyze(project.id, [], [{ filename: '产品手册.docx', textContent: '产品准入条件' }], llm),
-    /自动补交 2 次后仍不完整/,
-  );
-});
-
-test('材料分类按四个来源分批并自动补交漏项', async () => {
-  const project = createProject({ owner: 'tester', name: '分类补交', domain: '供应链', background: '' });
-  const documents = Array.from({ length: 5 }, (_, index) => ({
-    filename: `manual-${index + 1}.md`,
-    textContent: `规则 ${index + 1}`,
-  }));
-  const core = createFauxCore({ provider: 'analysis-repair', models: [{ id: 'analysis-repair' }] });
-  let artifactCalls = 0;
-  const llm: LlmDeps = {
-    model: core.getModel(),
-    getApiKey: () => 'faux',
-    streamFn: ((model: unknown, context: any, options: unknown) => {
-      if (queueRequiredDocumentRead(core, context)) {
-        return core.streamSimple(model as any, context, options as any);
-      }
-      const system = String(context.systemPrompt ?? '');
-      if (system.includes('submit_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
-          domainOverview: '供应链', candidateObjects: [], openQuestions: [],
-        })])]);
-      } else if (system.includes('submit_artifact_analysis')) {
-        artifactCalls += 1;
-        const raw = system.match(/当前批次来源：(.*?)(?:\n|$)/)?.[1] ?? '[]';
-        const sources = JSON.parse(raw) as { source: string; sourceType: 'document' }[];
-        const included = artifactCalls === 1 ? sources.slice(1) : sources;
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-          materialAssessments: sources.map(({ source, sourceType }) => ({
-            source, sourceType, suitableFor: ['rule'], rationale: '包含规则',
-          })),
-          candidateArtifacts: included.map(({ source }) => ({
-            kind: 'rule', name: `${source} 规则`, rationale: '规则', sources: [source], readiness: 'extractable',
-          })),
-        })])]);
-      } else {
-        throw new Error(`未处理的测试 prompt: ${system.slice(0, 80)}`);
-      }
-      return core.streamSimple(model as any, context, options as any);
-    }) as LlmDeps['streamFn'],
-  };
-
-  const result = await runAnalyze(project.id, [], documents, llm);
-
-  assert.equal(result.analysis.materialAssessments?.length, 5);
-  assert.equal(result.analysis.candidateArtifacts?.length, 5);
-  assert.equal(artifactCalls, 3);
-});
-
-test('材料分类自动补交耗尽后保留失败状态和轨迹', async () => {
-  const project = createProject({ owner: 'tester', name: '分类补交失败', domain: '供应链', background: '' });
-  const documents = [{ filename: 'manual-1.md', textContent: '规则 1' }];
-  const core = createFauxCore({ provider: 'analysis-repair-fail', models: [{ id: 'analysis-repair-fail' }] });
-  const llm: LlmDeps = {
-    model: core.getModel(),
-    getApiKey: () => 'faux',
-    streamFn: ((model: unknown, context: any, options: unknown) => {
-      if (queueRequiredDocumentRead(core, context)) {
-        return core.streamSimple(model as any, context, options as any);
-      }
-      const system = String(context.systemPrompt ?? '');
-      if (system.includes('submit_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_analysis', {
-          domainOverview: '供应链', candidateObjects: [], openQuestions: [],
-        })])]);
-      } else if (system.includes('submit_artifact_analysis')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_artifact_analysis', {
-          materialAssessments: [{
-            source: 'manual-1.md', sourceType: 'document', suitableFor: ['rule'], rationale: '包含规则',
-          }],
-          candidateArtifacts: [],
-        })])]);
-      } else {
-        throw new Error(`未处理的测试 prompt: ${system.slice(0, 80)}`);
-      }
-      return core.streamSimple(model as any, context, options as any);
-    }) as LlmDeps['streamFn'],
-  };
-
-  await assert.rejects(runAnalyze(project.id, [], documents, llm), /自动补交 2 次后仍不完整/);
-  const node = listNodes(project.id).find((item) => item.type === 'analyze');
-  assert.equal(node?.status, 'failed');
-  assert.match(node?.reason ?? '', /manual-1\.md/);
-  assert.ok(listTraceEvents(node!.id).some((event) => event.kind === 'analysis_failed'));
 });
 
 test('规则指标批次允许只生成部分可提取候选', async () => {

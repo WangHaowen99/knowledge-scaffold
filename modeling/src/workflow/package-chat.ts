@@ -28,11 +28,8 @@ import { DATA_PROVIDER_SCRIPT_CONTRACT } from './script-safety.js';
 import { MAX_CHANGE_PLAN_DESCRIPTION_LENGTH } from '../ai-construction/messages.js';
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { withCurrentContent } from '../ai-construction/change-plan-context.js';
-import {
-  DocumentReadSession,
-  runAgentWithDocumentReadGate,
-  type ReadableDocument,
-} from './document-read-session.js';
+import type { ReadableDocument } from './document-read-session.js';
+import { ensureFullDocumentSummaries } from './material-analysis-map-reduce.js';
 import {
   documentReadCoveragePrompt,
   preserveDocumentReadCoverage,
@@ -227,6 +224,42 @@ function requestedFullReadDocuments<T extends { filename: string }>(message: str
     return message.includes(document.filename) || (stem.length >= 2 && message.includes(stem));
   });
   return named.length ? named : documents;
+}
+
+function compactFullDocumentFacts(
+  facts: Awaited<ReturnType<typeof ensureFullDocumentSummaries>>,
+  llm: LlmDeps,
+): string {
+  const contextWindow = Math.max(8_192, Number(llm.model?.contextWindow) || 128_000);
+  const totalBudget = Math.max(4_000, Math.min(120_000, Math.floor(contextWindow * 0.35)));
+  const perDocument = Math.max(500, Math.floor(totalBudget / Math.max(1, facts.summaries.length)));
+  return JSON.stringify({
+    coverage: facts.coverage.map((item) => ({
+      filename: item.filename,
+      totalChars: item.totalChars,
+      contiguousEnd: item.contiguousEnd,
+      complete: item.complete,
+    })),
+    documents: facts.summaries.map((item) => {
+      const candidates = item.payload.candidates.map((candidate) => ({
+        kind: candidate.kind,
+        name: candidate.name,
+        rationale: candidate.rationale.slice(0, Math.max(80, Math.floor(perDocument / 10))),
+        evidenceOffsets: candidate.evidenceOffsets,
+        readiness: candidate.readiness,
+      }));
+      const questions = item.payload.openQuestions.map((question) => ({
+        topic: question.topic.slice(0, 160), why: question.why.slice(0, 400),
+      }));
+      const fixed = JSON.stringify({ filename: item.filename, candidates, openQuestions: questions });
+      return {
+        filename: item.filename,
+        summary: item.payload.summary.slice(0, Math.max(160, perDocument - fixed.length)),
+        candidates,
+        openQuestions: questions,
+      };
+    }),
+  });
 }
 
 function candidateValidationError(error: unknown): PackageCandidateValidationError {
@@ -815,8 +848,14 @@ export async function packageChatPlan(
   if (documentAccess === 'full' && !accessibleDocuments.length) {
     return { reply: '当前项目没有可供全文读取的文本材料，无法确认“已完整读取”。请先上传并成功解析文档。' };
   }
-  const documentReadSession = documentAccess === 'full'
-    ? new DocumentReadSession(accessibleDocuments, { fullReadMode: true })
+  const chatLlm = options.llmOverride ?? buildLlm();
+  const fullDocumentFacts = documentAccess === 'full'
+    ? await ensureFullDocumentSummaries({
+      projectId: project.id,
+      documents: accessibleDocuments,
+      llm: chatLlm,
+      observe: options.observe ? () => options.observe! : undefined,
+    })
     : undefined;
 
   const cap: { plan?: ChangePlan } = {};
@@ -838,12 +877,6 @@ export async function packageChatPlan(
       risks: Type.Optional(Type.Array(Type.String())),
     }),
     async execute(_id: string, params: any) {
-      if (documentReadSession && !documentReadSession.complete) {
-        return {
-          content: [{ type: 'text' as const, text: documentReadSession.continuationPrompt() }],
-          details: {},
-        };
-      }
       cap.plan = resolveChangePlanTargets(latest.spec, params as ChangePlan);
       return { content: [{ type: 'text' as const, text: '计划已提交，等待专家确认。' }], details: {}, terminate: true };
     },
@@ -870,16 +903,17 @@ export async function packageChatPlan(
     ...(documentAccess === 'on-demand' ? [
       '当前是按需文档查询：优先用 search_documents 定位，再用 read_document 读取相关正文，不要为了局部问题从头通读整份文档。',
     ] : []),
-    ...(documentReadSession ? [
-      '当前调用要求全文阅读。所有文本材料必须从 offset=0 开始，严格使用 nextOffset 连续读到 eof=true；',
-      '翻页时用 previousPageSummary / previousPageEvidence 保留滚动摘要和带 offset 的重要证据。',
-      '后端账本确认全部文档连续覆盖前，不得提交计划，也不得声称“已完整读取”或作出最终答复。',
+    ...(fullDocumentFacts ? [
+      '当前调用要求全文阅读，后端已通过动态分段 Map-Reduce 和连续覆盖账本完成全文事实提取。',
+      '下方【全文事实】覆盖所选文档从 0 到文末的全部分段；回答必须基于这些摘要和 offset 证据。',
+      '如需核对具体措辞，可再使用 search_documents/read_document 定位原文，但不得重新串行通读全文。',
     ] : []),
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
 
   const body = [
     '【当前规格】', specBody(latest.spec),
+    fullDocumentFacts ? `【全文事实】\n${compactFullDocumentFacts(fullDocumentFacts, chatLlm)}` : '',
     historyText(history) ? `【此前对话】\n${historyText(history)}` : '',
     `【专家消息】\n${message}`,
   ].filter(Boolean).join('\n');
@@ -889,13 +923,9 @@ export async function packageChatPlan(
   const documentTools = documents.length || options.materials?.length
     ? buildDocumentReadingTools(accessibleDocuments.map((item) => ({
       id: item.id ?? item.filename, filename: item.filename, textContent: item.textContent ?? '',
-    })), documentReadSession, options.materials)
+    })), options.materials)
     : [];
-  const agent = makeAgent(options.llmOverride ?? buildLlm(), sys, [submitPlan, ...documentTools] as any, [], {
-    ...(documentReadSession ? {
-      transformContext: (agentMessages) => documentReadSession.compactMessages(agentMessages),
-    } : {}),
-  });
+  const agent = makeAgent(chatLlm, sys, [submitPlan, ...documentTools] as any);
   const hasAnswerAfterLastRead = () => {
     const agentMessages = agent.state.messages as any[];
     let lastRead = -1;
@@ -913,17 +943,7 @@ export async function packageChatPlan(
         : (item.content ?? []).some((part: any) => String(part?.text ?? '').trim().length > 0))
     ));
   };
-  const messages = documentReadSession
-    ? await runAgentWithDocumentReadGate({
-      agent,
-      prompt: body,
-      session: documentReadSession,
-      captured: () => !!cap.plan || hasAnswerAfterLastRead(),
-      submitNudge: '后端已确认全文连续覆盖完成。请现在基于滚动摘要和带 offset 的证据给出最终答复；若专家要求修改，请调用 submit_change_plan。',
-      missingSubmissionError: '全文读取完成，但模型未生成最终答复',
-      observe: options.observe,
-    })
-    : documentAccess === 'on-demand' && documents.length
+  const messages = documentAccess === 'on-demand' && documents.length
       ? await (async () => {
         const result = await runAgentCaptured(
           agent,

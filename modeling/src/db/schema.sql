@@ -822,16 +822,79 @@ CREATE TABLE IF NOT EXISTS package_override_migration_archive (
 CREATE INDEX IF NOT EXISTS idx_package_override_archive_project
   ON package_override_migration_archive(project_id, migrated_at);
 
--- 资料分析的批次级缓存。补传资料后只重跑内容变了的批次，其余直接复用，
--- 避免为已经分析过的几十份材料重复付一次 LLM 成本和等待时间。
--- 键是批次材料内容的哈希（含已确认建模目标），不是批次序号——序号会随增删平移。
-CREATE TABLE IF NOT EXISTS material_analysis_batch_cache (
-  project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  cache_key   TEXT NOT NULL,
-  payload     TEXT NOT NULL,
-  created_at  TEXT NOT NULL,
-  PRIMARY KEY (project_id, cache_key)
+-- 旧“四份材料一批”的缓存已被内容定义分段检查点取代；升级时移除，避免保留
+-- 无生产消费者的第二套缓存状态。该表只存可重算的模型分析缓存，不含用户原始资料。
+DROP TABLE IF EXISTS material_analysis_batch_cache;
+
+-- 全文资料分析 Map-Reduce 事实源。分段计划在一次运行创建时冻结；模型失败、
+-- 进程重启或普通限流后复用 completed 分段，只领取尚未完成的部分。
+CREATE TABLE IF NOT EXISTS material_analysis_runs (
+  id                       TEXT PRIMARY KEY,
+  project_id               TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_set_fingerprint   TEXT NOT NULL,
+  brief_fingerprint        TEXT NOT NULL,
+  model_id                 TEXT NOT NULL,
+  protocol_version         TEXT NOT NULL,
+  plan_json                TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'running'
+                           CHECK (status IN ('running', 'paused', 'failed', 'completed')),
+  stage                    TEXT NOT NULL DEFAULT 'planning',
+  result_json              TEXT,
+  error                    TEXT,
+  created_at               TEXT NOT NULL,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  UNIQUE (
+    project_id, source_set_fingerprint, brief_fingerprint, model_id, protocol_version
+  )
 );
+CREATE INDEX IF NOT EXISTS idx_material_analysis_runs_project
+  ON material_analysis_runs(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS material_analysis_chunks (
+  run_id                   TEXT NOT NULL REFERENCES material_analysis_runs(id) ON DELETE CASCADE,
+  document_key             TEXT NOT NULL,
+  document_id              TEXT,
+  filename                 TEXT NOT NULL,
+  revision_fingerprint     TEXT NOT NULL,
+  chunk_index              INTEGER NOT NULL,
+  start_offset             INTEGER NOT NULL,
+  end_offset               INTEGER NOT NULL,
+  content_hash             TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  attempt_count            INTEGER NOT NULL DEFAULT 0,
+  payload_json             TEXT,
+  error                    TEXT,
+  started_at               TEXT,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  PRIMARY KEY (run_id, document_key, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_chunks_status
+  ON material_analysis_chunks(run_id, status, document_key, chunk_index);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_chunks_reuse
+  ON material_analysis_chunks(
+    document_key, revision_fingerprint, start_offset, end_offset, content_hash, status
+  );
+
+CREATE TABLE IF NOT EXISTS material_analysis_document_summaries (
+  run_id                   TEXT NOT NULL REFERENCES material_analysis_runs(id) ON DELETE CASCADE,
+  document_key             TEXT NOT NULL,
+  document_id              TEXT,
+  filename                 TEXT NOT NULL,
+  revision_fingerprint     TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+  attempt_count            INTEGER NOT NULL DEFAULT 0,
+  payload_json             TEXT,
+  error                    TEXT,
+  updated_at               TEXT NOT NULL,
+  completed_at             TEXT,
+  PRIMARY KEY (run_id, document_key)
+);
+CREATE INDEX IF NOT EXISTS idx_material_analysis_document_summaries_status
+  ON material_analysis_document_summaries(run_id, status, document_key);
 
 -- 长任务登记表：同项目同操作只能跑一份。原先是进程内 Map，起两个实例后去重会失效，
 -- 界面也读不到跑在另一个实例上的任务。带 TTL 并在运行期间续期；启动时统一清空，
