@@ -188,6 +188,62 @@ test('package mapping：已声明的数据映射必须匹配真实 Sheet、字�
   );
 });
 
+test('package mapping：多来源汇总对象不能伪装成可直接绑定的单个物理对象', () => {
+  const spec = packageSpec();
+  spec.objects[0] = {
+    ...spec.objects[0],
+    sourceTable: undefined,
+    sourceRefs: [
+      { kind: 'table', table: 'TenderEvents' },
+      { kind: 'table', table: 'ParkEvents' },
+    ],
+    primaryKey: ['event_uid'],
+    fields: [
+      { key: 'event_uid', cnName: '事件标识', sourceColumn: 'event_id', type: 'string', required: true },
+      { key: 'customer_name', cnName: '企业名称', sourceColumn: 'company_name', type: 'string' },
+    ],
+  };
+
+  const problems = findObjectDataMappingProblems(spec, [
+    dataTable('TenderEvents', ['event_id', 'company_name']),
+    dataTable('ParkEvents', ['event_id', 'company_name']),
+    dataTable('DataSheet', ['ID', 'NAME', 'CODE']),
+  ]).filter((problem) => problem.objectKey === 'DataObject');
+
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].message, /同时绑定了 2 张来源表/);
+  assert.match(problems[0].message, /当前数据绑定一次只能执行一张物理表/);
+  assert.match(problems[0].message, /逐来源明细对象/);
+});
+
+test('package mapping：无物理表映射的派生业务对象可汇总逐来源明细对象', () => {
+  const spec = packageSpec();
+  spec.objects.push({
+    key: 'AggregatedEvent',
+    title: '汇总线索事件',
+    description: '通过关系和操作汇总各来源明细对象，不直接执行物理表绑定',
+    primaryKey: ['event_uid'],
+    fields: [
+      { key: 'event_uid', cnName: '业务事件标识', type: 'string', required: true },
+      { key: 'customer_name', cnName: '企业名称', type: 'string' },
+    ],
+    relations: [
+      { relation: 'aggregates', target: 'DataObject' },
+      { relation: 'aggregates', target: 'ConceptObject' },
+    ],
+  });
+
+  assert.deepEqual(
+    findObjectDataMappingProblems(spec, [dataTable('DataSheet', ['ID', 'NAME', 'CODE'])]),
+    [],
+  );
+  const files = renderPackage(spec);
+  const mappings = JSON.parse(files['mappings/object-data-mappings.json']);
+  assert.equal(mappings.objects.AggregatedEvent, undefined);
+  assert.match(files['objects/index.md'], /\| AggregatedEvent \| 汇总线索事件 \| .* \| — \|/);
+  assert.deepEqual(runFormatChecks(spec, files), []);
+});
+
 test('package mapping：字段名仅大小写不同时规范化为 Excel 真实列名', () => {
   const source = packageSpec();
   source.objects[0].fields[0].sourceColumn = 'id';

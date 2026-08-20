@@ -165,7 +165,7 @@ function objectsIndex(objects: SpecObject[]): string {
     '# 对象目录', '',
     '| object key | 标题 | 说明 | 来源Sheet |', '| --- | --- | --- | --- |',
     ...objects.map((o) => {
-      const source = tableSourceFor(o)?.table ?? sourceLabelsFor(o).join('；');
+      const source = tableSourceFor(o)?.table ?? (sourceLabelsFor(o).join('；') || '—');
       return `| ${cell(o.key)} | ${cell(o.title)} | ${cell(o.description)} | ${cell(source)} |`;
     }), '',
   ].join('\n');
