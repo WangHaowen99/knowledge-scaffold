@@ -83,9 +83,7 @@ function findDuplicates(keys: string[]): string[] {
 type ObjectCandidate = AnalysisResult['candidateObjects'][number];
 export type ObjectCandidateRef = ObjectCandidate & { id: string };
 
-/**
- * 分析候选是建模建议，不是强制生成清单。这里只拒绝认领当前批次之外的 ID。
- */
+/** 进入对象生成计划的逻辑候选必须逐项认领，不能再被模型静默省略。 */
 export function validateObjectBatch(
   candidates: ObjectCandidateRef[],
   objects: SpecObject[],
@@ -97,6 +95,10 @@ export function validateObjectBatch(
     if (object.candidateId && !candidateIds.has(object.candidateId)) {
       issues.push(`对象「${object.title || object.key}」认领了当前批次不存在的候选 ID ${object.candidateId}`);
     }
+  }
+  const claimed = new Set(objects.map((object) => object.candidateId).filter(Boolean));
+  for (const candidate of candidates) {
+    if (!claimed.has(candidate.id)) issues.push(`对象候选「${candidate.name}」未生成，也没有进入专家处理`);
   }
   const submittedKeys = new Set(objects.map((object) => object.key));
   for (const conflict of findObjectAliasConflicts([...existingObjects, ...objects])) {

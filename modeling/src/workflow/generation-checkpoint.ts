@@ -1,12 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 import { getDb, nowIso } from '../db/index.js';
-import type { SpecMetric, SpecObject, SpecOperation, SpecRule } from '../types.js';
+import type { CandidateDisposition, SpecMetric, SpecObject, SpecOperation, SpecRule } from '../types.js';
 import type { GenerationBatchKind, GenerationGateFailure } from './generation-gate.js';
 
 export type GenerationBatchOutput =
   | { objects: SpecObject[] }
-  | { rules: SpecRule[]; metrics: SpecMetric[] }
+  | { rules: SpecRule[]; metrics: SpecMetric[]; dispositions?: CandidateDisposition[] }
   | { operations: SpecOperation[] }
   | Record<string, never>;
 
@@ -71,6 +71,7 @@ function fromRow(row: CheckpointRow): GenerationBatchCheckpoint {
       : row.batch_kind === 'knowledge'
         ? Array.isArray((output as { rules?: unknown }).rules)
           && Array.isArray((output as { metrics?: unknown }).metrics)
+          && (!('dispositions' in output) || Array.isArray((output as { dispositions?: unknown }).dispositions))
         : Array.isArray((output as { operations?: unknown }).operations);
     if (!valid) throw new Error('知识生成检查点产物损坏，请重新发起生成');
   }

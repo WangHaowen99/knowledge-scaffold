@@ -1,5 +1,5 @@
 import { Type } from '@earendil-works/pi-ai';
-import type { DataDictTable } from '../types.js';
+import type { DataDictTable, KnowledgeArtifactKind } from '../types.js';
 import { KEY_SCHEMA_PATTERN, KEY_SCHEMA_DESCRIPTION } from './keys.js';
 import { createSourceCatalog } from './source-catalog.js';
 import {
@@ -387,7 +387,7 @@ export function buildObjectGenerateTools(
   return [...base, submit];
 }
 
-export interface KnowledgeSpecCapture { rules?: unknown[]; metrics?: unknown[]; }
+export interface KnowledgeSpecCapture { rules?: unknown[]; metrics?: unknown[]; dispositions?: unknown[]; }
 export function buildKnowledgeGenerateTools(ctx: ToolContext, cap: KnowledgeSpecCapture) {
   const base = buildTools(ctx);
   const submit = {
@@ -397,10 +397,27 @@ export function buildKnowledgeGenerateTools(ctx: ToolContext, cap: KnowledgeSpec
     parameters: Type.Object({
       rules: Type.Array(specRuleSchema(), { maxItems: 5 }),
       metrics: Type.Array(specMetricSchema(), { maxItems: 5 }),
+      dispositions: Type.Optional(Type.Array(Type.Object({
+        candidateId: Type.String(), kind: Type.Union([
+          Type.Literal('object'), Type.Literal('rule'), Type.Literal('operation'), Type.Literal('metric'),
+        ]), name: Type.String(),
+        status: Type.Union([
+          Type.Literal('generated'), Type.Literal('merged'), Type.Literal('deferred'),
+          Type.Literal('needs_clarification'), Type.Literal('excluded'),
+        ]),
+        resourceKeys: Type.Optional(Type.Array(Type.String())),
+        mergedIntoCandidateId: Type.Optional(Type.String()),
+        reason: Type.String(),
+      }))),
     }),
-    async execute(_id: string, params: { rules: unknown[]; metrics: unknown[] }) {
+    async execute(_id: string, params: {
+      rules: unknown[];
+      metrics: unknown[];
+      dispositions?: Array<{ candidateId: string; kind: KnowledgeArtifactKind; name: string }>;
+    }) {
       cap.rules = params.rules;
       cap.metrics = params.metrics;
+      cap.dispositions = params.dispositions;
       return {
         content: [{ type: 'text' as const, text: `已提交 ${params.rules.length} 条规则和 ${params.metrics.length} 个指标。` }],
         details: {}, terminate: true,

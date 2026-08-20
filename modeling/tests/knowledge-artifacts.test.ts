@@ -18,6 +18,7 @@ import {
   operationTargetQuestion,
 } from './fixtures/confirmed-flowchart.js';
 import { buildFauxModeler, type LlmDeps } from '../src/llm/provider.js';
+import { candidateId } from '../src/workflow/candidate-disposition.js';
 import type { AnalysisResult, PackageSpec, Project } from '../src/types.js';
 import type { OptSuggestion } from '../src/workflow/m4-repo.js';
 import type { EvalResult } from '../src/workflow/m3-repo.js';
@@ -251,7 +252,7 @@ test('规格硬校验保留引用完整性，但未覆盖问题和分析候选�
   assert.doesNotThrow(() => validateSpecIntegrity(baseSpec(), ['应该推荐什么产品？'], analysis));
 });
 
-test('分析候选是建议清单，允许模型只提交有依据的部分对象', () => {
+test('逻辑对象候选不得静默遗漏', () => {
   const candidates = [
     { id: 'candidate_1', name: '客户', rationale: '客户主数据', sourceTables: ['customer'] },
     { id: 'candidate_2', name: '外部环境', rationale: '运行时输入', sourceTables: [] },
@@ -261,10 +262,12 @@ test('分析候选是建议清单，允许模型只提交有依据的部分对�
     sourceTable: 'customer', fields: [{ key: 'id', cnName: '客户号', sourceColumn: 'id' }],
   }];
 
-  assert.deepEqual(validateObjectBatch(candidates, submitted), []);
+  assert.deepEqual(validateObjectBatch(candidates, submitted), [
+    '对象候选「外部环境」未生成，也没有进入专家处理',
+  ]);
 });
 
-test('规则指标批次允许只生成部分可提取候选', async () => {
+test('规则指标候选可以逐项生成或延期，但不得静默遗漏', async () => {
   const project = createProject({ owner: 'tester', name: '指标补全回归', domain: '金融', background: '' });
   await initializeGenerationDraft(project);
   const process = { id: 'customer_metrics_lookup', title: '查询客户核心指标' };
@@ -284,17 +287,12 @@ test('规则指标批次允许只生成部分可提取候选', async () => {
   };
   upsertNode({ projectId: project.id, type: 'analyze', status: 'done', ordinal: 0, output: analysis });
 
-  const object = {
-    candidateId: 'candidate_1',
-    key: 'customer', title: '客户', description: '对公客户', sourceTable: 'customer_table', primaryKey: ['id'],
-    fields: [{ key: 'id', cnName: '客户号', type: 'string', required: true, sourceColumn: 'customer_id' }],
-  };
   const metric1 = {
-    key: 'asset_scale', title: '客户资产规模', caliber: '各类资产余额合计', boundaries: ['统计期末'], usesObjects: ['customer'],
+    key: 'asset_scale', title: '客户资产规模', caliber: '各类资产余额合计', boundaries: ['统计期末'], usesObjects: ['customer_table'],
   };
   const operation = {
     key: 'query_customer_metrics', title: '查询客户核心指标', description: '返回两个核心指标',
-    inputs: [], outputs: [], flow: ['查询 object:customer'], relatedObjects: ['customer'],
+    inputs: [], outputs: [], flow: ['查询 object:customer_table'], relatedObjects: ['customer_table'],
     usesMetrics: ['asset_scale'],
     competencyQuestionId: operationTargetId(process.id),
   };
@@ -306,12 +304,22 @@ test('规则指标批次允许只生成部分可提取候选', async () => {
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
       const systemPrompt = String(context?.systemPrompt ?? '');
-      if (systemPrompt.includes('submit_objects')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [object] })])]);
-      } else if (systemPrompt.includes('submit_rules_metrics')) {
+      if (systemPrompt.includes('submit_rules_metrics')) {
         knowledgeCalls += 1;
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_rules_metrics', {
           rules: [], metrics: [metric1],
+          dispositions: [
+            {
+              candidateId: candidateId(analysis.candidateArtifacts![0], 0),
+              kind: 'metric', name: '客户资产规模', status: 'generated', resourceKeys: ['asset_scale'],
+              reason: '首版查询流程直接使用该指标。',
+            },
+            {
+              candidateId: candidateId(analysis.candidateArtifacts![1], 1),
+              kind: 'metric', name: '客户产品覆盖率', status: 'deferred',
+              reason: '当前确认流程未使用该指标，保留到后续增量建模。',
+            },
+          ],
         })])]);
       } else if (systemPrompt.includes('submit_operations')) {
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [operation] })])]);
@@ -354,15 +362,7 @@ test('operation 用来源表名引用对象时转换为对象 key', async () => 
     getApiKey: () => 'faux',
     streamFn: ((model: unknown, context: any, options: unknown) => {
       const systemPrompt = String(context?.systemPrompt ?? '');
-      if (systemPrompt.includes('submit_objects')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_objects', { objects: [{
-          candidateId: 'candidate_1',
-          key: 'customer', title: '客户', description: '对公客户', sourceTable: 'customer_table', primaryKey: ['id'],
-          fields: [{ key: 'id', cnName: '客户号', type: 'string', required: true, sourceColumn: 'customer_id' }],
-        }] })])]);
-      } else if (systemPrompt.includes('submit_rules_metrics')) {
-        core.setResponses([fauxAssistantMessage([fauxToolCall('submit_rules_metrics', { rules: [], metrics: [] })])]);
-      } else if (systemPrompt.includes('submit_operations')) {
+      if (systemPrompt.includes('submit_operations')) {
         core.setResponses([fauxAssistantMessage([fauxToolCall('submit_operations', { operations: [{
           key: 'query_customer', title: '查询客户', description: '查询客户信息', inputs: [], outputs: [],
           flow: ['查询 object:customer'], relatedObjects: ['customer_table'],
@@ -383,7 +383,7 @@ test('operation 用来源表名引用对象时转换为对象 key', async () => 
     documents: [],
   }, llm, flowchart);
 
-  assert.deepEqual(result.spec.operations[0].relatedObjects, ['customer']);
+  assert.deepEqual(result.spec.operations[0].relatedObjects, ['customer_table']);
   assert.equal(result.spec.operations[0].competencyQuestion, operationTargetQuestion(process.title));
 });
 

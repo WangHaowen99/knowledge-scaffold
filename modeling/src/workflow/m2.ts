@@ -54,6 +54,12 @@ import {
   buildKnowledgeGenerationCandidates,
   buildObjectGenerationHints,
 } from './object-generation-hints.js';
+import { buildPhysicalSchemaObjects, detectSchemaManifests } from './schema-manifest.js';
+import {
+  dispositionForObjectAndOperationCandidates,
+  planArtifactCandidates,
+  validateKnowledgeCandidateDispositions,
+} from './candidate-disposition.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
 
@@ -249,16 +255,20 @@ export async function generatePackage(
     authoringRun.id,
     { phase: '知识结构生成', currentStep: '准备知识包生成', progress: 0, retryCount: 0 },
   );
+  const physicalSchemaObjects = buildPhysicalSchemaObjects(ctx.tables);
+  const schemaManifests = detectSchemaManifests(ctx.tables);
   const rawObjectHints = buildObjectGenerationHints(analysis, ctx.tables);
   const objectHints = rawObjectHints.map((candidate, index) => ({
     ...candidate,
     id: `candidate_${index + 1}`,
   }));
   const objectBatches = chunk(objectHints, 4);
-  if (!objectBatches.length) objectBatches.push([]);
-  const knowledgeCandidates = buildKnowledgeGenerationCandidates(analysis, ctx.tables);
+  const rawKnowledgeCandidates = buildKnowledgeGenerationCandidates(analysis, ctx.tables);
+  const allKnowledgeCandidates = (analysis?.candidateArtifacts ?? [])
+    .filter((item) => item.kind === 'rule' || item.kind === 'metric');
+  const knowledgePlan = planArtifactCandidates(allKnowledgeCandidates, rawKnowledgeCandidates);
+  const knowledgeCandidates = knowledgePlan.selected;
   const knowledgeBatches = chunk(knowledgeCandidates, 5);
-  if (!knowledgeBatches.length) knowledgeBatches.push([]);
   const operationCandidates = (analysis?.candidateArtifacts ?? []).filter((item) => item.kind === 'operation');
   const questionBatches = chunk(operationTargets, 3);
   const totalStepCount = objectBatches.length + knowledgeBatches.length + questionBatches.length + 1;
@@ -279,8 +289,12 @@ export async function generatePackage(
       project: { name: project.name, domain: project.domain, background: project.background },
       confirmedFlowchart,
       analysis,
+      physicalSchemaObjects: physicalSchemaObjects.map(({ table, object }) => ({
+        table: table.name, documentId: table.documentId, objectKey: object.key,
+      })),
       objectHints,
       knowledgeCandidates,
+      knowledgeCandidateDispositions: knowledgePlan.dispositions,
       operationTargets,
       tables: ctx.tables,
       documents: ctx.documents.map((document) => ({
@@ -313,6 +327,8 @@ export async function generatePackage(
       title: '准备知识包生成', summary: `业务流程 ${selectedQuestions.length} 个`,
       details: {
         questionCount: selectedQuestions.length,
+        schemaManifestCount: schemaManifests.length,
+        physicalSchemaObjectCount: physicalSchemaObjects.length,
         objectBatchCount: objectBatches.length,
         knowledgeBatchCount: knowledgeBatches.length,
         operationBatchCount: questionBatches.length,
@@ -322,7 +338,16 @@ export async function generatePackage(
     });
     // 生成要跑十几到几十分钟，按全部阶段与批次实时上报。
     const generationStartedAt = Date.now();
-    const objects: SpecObject[] = [];
+    const objects: SpecObject[] = physicalSchemaObjects.map((item) => item.object);
+    trace({
+      projectId: project.id, nodeId: node.id, phase: 'schema_objects', kind: 'phase_completed', status: 'done',
+      title: '物理 Schema 对象已生成',
+      summary: `识别目录 ${schemaManifests.length} 张 · 覆盖物理 Sheet ${physicalSchemaObjects.length} 张`,
+      details: {
+        manifestTables: schemaManifests.map((manifest) => manifest.table.name),
+        objectCount: physicalSchemaObjects.length,
+      },
+    });
     for (const [index, hints] of objectBatches.entries()) {
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
@@ -387,8 +412,8 @@ export async function generatePackage(
           '数据对象还要给出字段中文名、类型、真实 sourceColumn 和主键；不得虚构数据字典中不存在的字段。',
           '补充查询边界、别名和有材料依据的对象关系。对象别名在整个知识包内必须唯一：忽略 ASCII 大小写和首尾空格后，不得与其他对象的别名、key 或 title 重复。',
           '每个对象必须用 candidateId 认领当前批次中的一个候选，候选名称只用于理解，不用于绑定。',
-          `当前批次有 ${hints.length} 个分析候选。候选是建模建议；没有充分证据、不适合当前版本或应由专家补充的候选可以省略。`,
-          '用 submit_objects 一次提交当前批次中有依据的对象，最多 4 个。',
+          `当前批次有 ${hints.length} 个逻辑对象候选。所有候选均已通过服务端筛选，必须逐项生成，不得省略。`,
+          '用 submit_objects 一次提交当前批次全部对象，最多 4 个。',
           `已生成对象 key：${objects.map((item) => item.key).join(', ') || '（无）'}；当前批次不得重复。`,
           `已生成对象及别名：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title, aliases: item.aliases ?? [] })))}`,
           `当前批次候选：${JSON.stringify(hints)}`,
@@ -399,8 +424,8 @@ export async function generatePackage(
         let stageMessages: unknown[];
         try {
           stageMessages = await runAgentCaptured(agent,
-            `请完成第 ${index + 1}/${objectBatches.length} 批有依据的对象并调用 submit_objects。`,
-            () => !!cap.objects, '请立即调用 submit_objects 提交当前有依据的对象；没有可靠结果时提交空数组。', observe(phase));
+            `请完成第 ${index + 1}/${objectBatches.length} 批全部逻辑对象并调用 submit_objects。`,
+            () => !!cap.objects, '请立即调用 submit_objects 提交当前批次全部逻辑对象。', observe(phase));
         } catch (error) {
           const policy = classifyGenerationError(error);
           lastIssues = [policy.message];
@@ -504,6 +529,7 @@ export async function generatePackage(
 
     const rules: SpecRule[] = [];
     const metrics: SpecMetric[] = [];
+    const candidateDispositions = [...knowledgePlan.dispositions];
     for (const [index, candidates] of knowledgeBatches.entries()) {
       throwIfCancelled(project.id, 'knowledgeGenerate');
       reportLongTaskProgress(project.id, {
@@ -522,6 +548,7 @@ export async function generatePackage(
         const output = checkpoint.output as Extract<GenerationBatchOutput, { rules: SpecRule[]; metrics: SpecMetric[] }>;
         appendUnique(rules, output.rules ?? [], '规则');
         appendUnique(metrics, output.metrics ?? [], '指标');
+        candidateDispositions.push(...((output as any).dispositions ?? []));
         trace({
           projectId: project.id, nodeId: node.id, phase, kind: 'phase_completed', status: 'done',
           title: `第 ${index + 1}/${knowledgeBatches.length} 批规则和指标已从检查点恢复`,
@@ -554,10 +581,12 @@ export async function generatePackage(
       });
       let acceptedRules: SpecRule[] | undefined;
       let acceptedMetrics: SpecMetric[] | undefined;
+      let acceptedDispositions: typeof candidateDispositions | undefined;
       let acceptedAttempt = 0;
       const priorAttemptCount = checkpoint?.status === 'failed' ? checkpoint.attemptCount : 0;
       let lastCounts = { rules: 0, metrics: 0 };
       let lastIssues: string[] = [];
+      const requiresDispositions = candidates.length > 0;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         const cap: KnowledgeSpecCapture = {};
         const sys = [
@@ -565,8 +594,8 @@ export async function generatePackage(
           '适用条件、判断门槛、例外和产品匹配条件沉淀为 rule；明确公式、统计粒度和边界的口径沉淀为 metric。',
           '必须能在材料中找到依据；缺少阈值、公式或权威映射时不要猜测，返回空数组并留给访谈澄清。',
           'readiness=needs_clarification 的候选只有在访谈结论已明确补齐条件或口径时才能生成；否则不产出。',
-          `本批有 ${suggestedRules} 条 extractable rule 候选、${suggestedMetrics} 条 extractable metric 候选。它们是分析建议，可根据证据合并、省略或留给专家补充。`,
-          'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交当前批次，单类最多 5 条。',
+          `本批有 ${suggestedRules} 条 rule 候选、${suggestedMetrics} 条 metric 候选。每个候选必须提交处置记录：generated、merged、deferred、needs_clarification 或 excluded，不能静默省略。`,
+          'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交资源和全部 dispositions，单类最多 5 条。',
           `对象：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title })))}`,
           `已生成规则 key：${rules.map((item) => item.key).join(', ') || '（无）'}；已生成指标 key：${metrics.map((item) => item.key).join(', ') || '（无）'}。`,
           `已确认流程摘要：${confirmedProcessSummary.slice(0, 2400)}`,
@@ -580,8 +609,8 @@ export async function generatePackage(
         try {
           stageMessages = await runAgentCaptured(agent,
             `请完成第 ${index + 1}/${knowledgeBatches.length} 批规则和指标提取并调用 submit_rules_metrics。${retryHint}`,
-            () => !!cap.rules && !!cap.metrics,
-            '请立即调用 submit_rules_metrics；没有可靠内容时提交空数组。', observe(phase));
+            () => !!cap.rules && !!cap.metrics && (!requiresDispositions || !!cap.dispositions),
+            '请立即调用 submit_rules_metrics，并为当前批次每个候选提交 disposition。', observe(phase));
         } catch (error) {
           const policy = classifyGenerationError(error);
           const issue = policy.message;
@@ -602,7 +631,7 @@ export async function generatePackage(
         }
         messages.push(...stageMessages);
         lastCounts = { rules: cap.rules?.length ?? 0, metrics: cap.metrics?.length ?? 0 };
-        if (!cap.rules || !cap.metrics) {
+        if (!cap.rules || !cap.metrics || (requiresDispositions && !cap.dispositions)) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
             title: `第 ${index + 1} 批规则/指标未完成结构化提交`,
@@ -619,11 +648,15 @@ export async function generatePackage(
         }
         const submittedRules = cap.rules as SpecRule[];
         const submittedMetrics = cap.metrics as SpecMetric[];
+        const submittedDispositions = (cap.dispositions ?? []) as typeof candidateDispositions;
         const validated = validateKnowledgeBatch(
           { rules: submittedRules, metrics: submittedMetrics },
           { objects, rules, metrics },
         );
-        lastIssues = validated.issues;
+        lastIssues = [
+          ...validated.issues,
+          ...validateKnowledgeCandidateDispositions(candidates, submittedRules, submittedMetrics, submittedDispositions),
+        ];
         if (lastIssues.length) {
           trace({
             projectId: project.id, nodeId: node.id, phase, kind: 'validation_warning', status: 'warning',
@@ -639,6 +672,8 @@ export async function generatePackage(
         }
         acceptedRules = submittedRules;
         acceptedMetrics = submittedMetrics;
+        acceptedDispositions = submittedDispositions;
+        candidateDispositions.push(...submittedDispositions);
         acceptedAttempt = attempt;
         if (attempt > 1) {
           trace({
@@ -648,7 +683,7 @@ export async function generatePackage(
         }
         break;
       }
-      if (!acceptedRules || !acceptedMetrics) {
+      if (!acceptedRules || !acceptedMetrics || !acceptedDispositions) {
         const failure = {
           phase, batchKind: 'knowledge' as const, batchIndex: index + 1,
           title: `第 ${index + 1} 批规则/指标连续两次自动补交后仍未通过`,
@@ -681,7 +716,7 @@ export async function generatePackage(
       const completedCheckpoint = checkpointStore.saveCompleted({
         projectId: project.id, runId: authoringRun.id, planHash, phase,
         batchKind: 'knowledge', batchIndex: index + 1,
-        output: { rules: acceptedRules, metrics: acceptedMetrics },
+        output: { rules: acceptedRules, metrics: acceptedMetrics, dispositions: acceptedDispositions },
         attemptCount: priorAttemptCount + acceptedAttempt,
       });
       checkpoints.set(phase, completedCheckpoint);
@@ -893,6 +928,12 @@ export async function generatePackage(
       language: 'zh-CN',
       defaultProviderAlias: slug(project.domain || 'data'),
       objects, operations, rules, metrics,
+      candidateDispositions: [
+        ...candidateDispositions,
+        ...dispositionForObjectAndOperationCandidates(
+          analysis?.candidateArtifacts ?? [], objects, operations,
+        ),
+      ],
       dataSourceType,
     }, analysis, confirmedFlowchart.diagrams, {
       documents: ctx.documents
@@ -923,7 +964,12 @@ export async function generatePackage(
       ? {
         ...analysis,
         candidateArtifacts: (analysis.candidateArtifacts ?? [])
-          .filter((candidate) => !skippedKnowledgeCandidates.has(candidate)),
+          .filter((candidate) => !knowledgePlan.selected.some((planned) => (
+            skippedKnowledgeCandidates.has(planned)
+            && planned.kind === candidate.kind
+            && planned.name === candidate.name
+            && planned.sources.join('\u0000') === candidate.sources.join('\u0000')
+          ))),
       }
       : analysis;
     const validationQuestions = operationTargets
