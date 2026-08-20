@@ -484,6 +484,24 @@ def get_runtime_ontology_manifest(
     return OntologyLoader.load_ontology(ontology_dir, version=version)
 
 
+def get_sole_enabled_ontology_id(
+    workspace_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the ontology id when the workspace has exactly one enabled ontology.
+
+    Used to auto-attach the sole ontology's preload context when the session
+    has no explicit selection. Returns None for zero or multiple candidates.
+    """
+    try:
+        enabled_ids = get_ontology_registry(workspace_id=workspace_id).list_enabled_ontologies()
+    except Exception:
+        logger.warning("Failed to resolve sole enabled ontology", exc_info=True)
+        return None
+    if len(enabled_ids) == 1:
+        return enabled_ids[0]
+    return None
+
+
 def build_ontologies_section(
     selected_ontology_id: Optional[str] = None,
     *,

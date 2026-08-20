@@ -414,6 +414,32 @@ class MCPPublicTraceCollector:
                 executed_steps = self._public_executed_steps(candidate.get("executed_steps"))
                 if executed_steps:
                     state["executed_steps"] = executed_steps
+                # Value-domain (lookup_values) projection fields — preserve
+                # them so the trace surfaces the action, binding keys, and
+                # provider request counts end-to-end.
+                action = self._text(candidate.get("action"), limit=60)
+                if action and not state.get("action"):
+                    state["action"] = action
+                value_result_count = _non_negative_int(
+                    candidate.get("value_result_count")
+                )
+                if value_result_count is not None:
+                    state["value_result_count"] = value_result_count
+                binding_keys = _bounded_str_list(
+                    candidate.get("binding_keys"), limit=120, max_items=8
+                )
+                if binding_keys:
+                    state["binding_keys"] = binding_keys
+                error_codes = _bounded_str_list(
+                    candidate.get("error_codes"), limit=160, max_items=8
+                )
+                if error_codes:
+                    state["error_codes"] = error_codes
+                provider_request_count = _non_negative_int(
+                    candidate.get("provider_request_count")
+                )
+                if provider_request_count is not None:
+                    state["provider_request_count"] = provider_request_count
 
         evidence = result.get("evidence")
         query_digest = ""
@@ -591,6 +617,11 @@ class MCPPublicTraceCollector:
             "retry_count",
             "warning_count",
             "_query_summary_truncated",
+            "action",
+            "value_result_count",
+            "binding_keys",
+            "error_codes",
+            "provider_request_count",
         )
         item = {key: copy.deepcopy(state[key]) for key in allowed if state.get(key) is not None}
         warnings = state.get("_warnings")
@@ -915,3 +946,15 @@ def _dedupe_text_list(values: list[Any], limit: int) -> list[str]:
         if len(result) >= limit:
             break
     return result
+
+
+def _bounded_str_list(
+    values: Any, *, limit: int, max_items: int
+) -> list[str]:
+    """Return a bounded list of stripped, deduplicated strings from *values*."""
+    if not isinstance(values, (list, tuple)):
+        return []
+    return _dedupe_text_list(
+        [str(v or "").strip()[:limit] for v in values[:max_items]],
+        limit=max_items,
+    )

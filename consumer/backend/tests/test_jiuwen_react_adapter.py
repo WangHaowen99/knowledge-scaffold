@@ -1668,12 +1668,96 @@ def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkey
 
     query = fake_agent.inputs["query"]
     assert query.startswith("CHANGE_ORDER-001变更涉及哪些物料变更？")
-    assert 'The user explicitly selected ontology_id "example-domain-knowledge-agent".' in query
+    assert 'Ontology "example-domain-knowledge-agent" is the active ontology for this session.' in query
     assert 'Always use ontology_id "example-domain-knowledge-agent"' in query
     assert "<Selected-Ontology>" in query
     assert "id: example-domain-knowledge-agent" in query
     assert [message["role"] for message in state["messages"]] == ["system", "user", "assistant"]
     assert "Selected-Ontology" not in state["messages"][1]["content"]
+
+
+def test_jiuwen_loop_engine_falls_back_to_sole_enabled_ontology(monkeypatch):
+    """No explicit selection + exactly one enabled ontology → attach its
+    preload context (including the value-domain hint) with the same
+    constraint wording, without writing the selection back into state."""
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
+        lambda workspace_id=None: "sole-ontology",
+    )
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.build_selected_ontology_preload_context",
+        lambda selected_ontology_id=None, **_kwargs: (
+            "<Selected-Ontology>\n"
+            "id: {}\n"
+            "value_domain_hint: demo\n"
+            "</Selected-Ontology>"
+        ).format(selected_ontology_id),
+        raising=False,
+    )
+
+    fake_agent = _FakeJiuwenAgent({"output": "sole ontology answer", "result_type": "answer"})
+    engine = JiuwenReactLoopEngine(
+        agent_config=_agent_config(),
+        agent_factory=lambda: fake_agent,
+    )
+    state = {
+        "run_id": "run-jiuwen-sole-ontology",
+        "session_id": "sess-jiuwen-sole-ontology",
+        "current_turn_id": 1,
+        "workspace_id": "ws-sole",
+        "user_request": "KUL是什么意思",
+        "user_context": {},
+        "messages": [],
+        "results": {},
+    }
+
+    engine.run(state, caller="main")
+
+    query = fake_agent.inputs["query"]
+    assert query.startswith("KUL是什么意思")
+    assert "<Ontology-Selection-Constraint>" in query
+    assert 'Ontology "sole-ontology" is the active ontology for this session.' in query
+    assert 'Always use ontology_id "sole-ontology"' in query
+    assert "<Selected-Ontology>" in query
+    assert "value_domain_hint: demo" in query
+    # The fallback must not claim an explicit user selection...
+    assert "The user explicitly selected" not in query
+    # ...and must not mutate the session-level selection state.
+    assert "selected_ontology_id" not in state["user_context"]
+
+
+def test_jiuwen_loop_engine_no_fallback_with_multiple_ontologies(monkeypatch):
+    """No explicit selection + multiple (or zero) enabled ontologies → the
+    query is returned unchanged."""
+    monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
+    monkeypatch.setattr(
+        "agent.core.shared.ontology_context.get_sole_enabled_ontology_id",
+        lambda workspace_id=None: None,
+    )
+
+    fake_agent = _FakeJiuwenAgent({"output": "direct answer", "result_type": "answer"})
+    engine = JiuwenReactLoopEngine(
+        agent_config=_agent_config(),
+        agent_factory=lambda: fake_agent,
+    )
+    state = {
+        "run_id": "run-jiuwen-multi-ontology",
+        "session_id": "sess-jiuwen-multi-ontology",
+        "current_turn_id": 1,
+        "workspace_id": "ws-multi",
+        "user_request": "KUL是什么意思",
+        "user_context": {},
+        "messages": [],
+        "results": {},
+    }
+
+    engine.run(state, caller="main")
+
+    query = fake_agent.inputs["query"]
+    assert query.startswith("KUL是什么意思")
+    assert "<Ontology-Selection-Constraint>" not in query
+    assert "<Selected-Ontology>" not in query
 
 
 def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypatch):

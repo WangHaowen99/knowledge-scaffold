@@ -15,6 +15,7 @@ from ontology.ontology_catalog import (
     validate_field_aliases,
     validate_object_aliases,
     validate_object_data_mappings,
+    validate_value_bindings,
 )
 
 
@@ -48,14 +49,26 @@ class PackageNormalizationResult:
 
 
 def validate_imported_object_aliases(root: Path) -> ObjectAliasValidationResult:
-    """Validate object aliases and mapping readability before installation."""
+    """Validate object aliases, mapping readability and value bindings before installation."""
     validation = validate_object_aliases(Path(root))
     mapping_error = validate_object_data_mappings(Path(root))
-    if not mapping_error:
+    binding_validation = validate_value_bindings(Path(root))
+    raw_errors = (
+        *validation.errors,
+        mapping_error,
+        *binding_validation.errors,
+    )
+    error_set: set[str] = set()
+    for error in raw_errors:
+        if error:
+            error_set.add(error)
+    errors = sorted(error_set)
+    warnings = sorted(set((*validation.warnings, *binding_validation.warnings)))
+    if not errors and not warnings:
         return validation
     return ObjectAliasValidationResult(
-        errors=tuple(sorted(set((*validation.errors, mapping_error)))),
-        warnings=validation.warnings,
+        errors=tuple(errors),
+        warnings=tuple(warnings),
     )
 
 

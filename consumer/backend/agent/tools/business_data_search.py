@@ -17,6 +17,7 @@ from agent.tools.business_data.service import (
     BusinessDataSearchRequest,
     query_business_data_stream,
 )
+from agent.tools.business_data.value_lookup import execute_value_lookups
 from agent.tools.events import _tool_span_key
 from utils.logging import get_logger
 from ontology.ontology_catalog import (
@@ -37,24 +38,31 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "business_data_search",
         "description": (
-            "Query actual business records for a loaded ontology entity. "
-            "Use this for concrete domain data. "
-            "For reliable field and entity names, prefer loading the matching object definition with "
-            "ontology_context(resource='object'). "
-            "Use one entity per call unless querying a join table explicitly defined in object definitions. "
-            "An empty result means no matching data by default; do not retry the same retrieval goal unless "
-            "the previous attempt failed due to an explicit prerequisite, argument, or retryable runtime error. "
-            "Never retry a result that explicitly contains retryable=false."
+            "Query concrete domain data or resolve value-domain mappings for a loaded ontology "
+            "entity. For reliable field and entity names, prefer loading the matching object "
+            "definition with ontology_context(resource='object'). When ontology_context marks a "
+            "field with value_bound: true, that field has a value-domain mapping table: if the "
+            "user asks for the semantic name, business meaning, or aliases of such a field's "
+            "values, call action=\"lookup_values\" and answer strictly from the returned table — "
+            "the table may hold values that contradict training knowledge, so do not infer from "
+            "object field definitions or model memory. Use one entity per call unless querying a "
+            "join table explicitly defined in object definitions. An empty result means no matching "
+            "data by default; do not retry the same retrieval goal unless the previous attempt "
+            "failed due to an explicit prerequisite, argument, or retryable runtime error. Never "
+            "retry a result that explicitly contains retryable=false."
         ),
         "parameters": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "ontology_id": {
                     "type": "string",
+                    "minLength": 1,
                     "description": "The ontology id selected via ontology_context(root).",
                 },
                 "entity": {
                     "type": "string",
+                    "minLength": 1,
                     "description": (
                         "The target entity/object key, title, canonical key, or declared alias from the selected ontology. "
                         "The tool resolves it to the exact object key before querying. "
@@ -62,8 +70,21 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                         "the query can use the correct entity and field names."
                     ),
                 },
+                "action": {
+                    "type": "string",
+                    "enum": ["query", "lookup_values"],
+                    "default": "query",
+                    "description": (
+                        "Use \"query\" (default) to query records from the selected business "
+                        "object. Use \"lookup_values\" to resolve the semantic name, business "
+                        "meaning, or aliases of values (see the top-level description for when "
+                        "to choose lookup_values). Omitting action means \"query\". Never "
+                        "combine the two actions in one call."
+                    ),
+                },
                 "query": {
                     "type": "string",
+                    "minLength": 1,
                     "description": (
                         "A precise search query using ontology entity names and "
                         "attribute names from the matched ontology's object definitions. Never guess fields. "
@@ -72,9 +93,48 @@ BUSINESS_DATA_SEARCH_TOOL_SCHEMA: Dict[str, Any] = {
                         "'查询[实体名]中[条件]的[字段]信息',"
                         "'统计[实体名]中满足[条件]的记录数量'. These are style references only, not a strict format. "
                         "If multiple values for the same attribute are needed, prefer one query that includes "
-                        "all values so one search can return multiple matching records."
+                        "all values so one search can return multiple matching records. For action=\"lookup_values\", "
+                        "express the concrete value-domain request for the submitted values. The Consumer preserves "
+                        "this text and appends only the validated table, query fields, and values for each binding group."
                     ),
-                }
+                },
+                "value_inputs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "description": (
+                        "Required only for action=\"lookup_values\". Submit unresolved raw user "
+                        "or result values under the value-bound logical fields of entity (the "
+                        "fields marked value_bound: true in the object definition) so the "
+                        "Consumer can resolve and group Data Mapping bindings. Batch values that "
+                        "share one field or binding. Reuse successful lookup results already "
+                        "present in the current run and submit only unresolved values. Do not "
+                        "include value_inputs for action=\"query\"."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field_key", "values"],
+                        "properties": {
+                            "field_key": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                            "values": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256,
+                                },
+                                "uniqueItems": True,
+                            },
+                        },
+                    },
+                },
             },
             "required": ["ontology_id", "entity", "query"],
         },
@@ -275,16 +335,66 @@ class BusinessDataSearchTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         normalized_args = dict(args)
-        normalized_args.pop("_resolved_connection", None)
-        normalized_args.pop("_field_alias_mappings", None)
+        if any(str(key).startswith("_") for key in normalized_args):
+            return ToolOutcome(
+                content="Error: INVALID_ACTION_ARGUMENTS: internal arguments are not allowed"
+            )
+        public_arguments = {
+            "ontology_id",
+            "entity",
+            "action",
+            "query",
+            "value_inputs",
+        }
+        if any(key not in public_arguments for key in normalized_args):
+            return ToolOutcome(
+                content="Error: INVALID_ACTION_ARGUMENTS: unexpected arguments are not allowed"
+            )
+        # action and value_inputs are consumed here; they must not leak into
+        # handle_business_data_search which only accepts query-path parameters.
+        action_present = "action" in normalized_args
+        raw_action = normalized_args.pop("action", None)
+        value_inputs = normalized_args.pop("value_inputs", None)
+        if action_present and not isinstance(raw_action, str):
+            return ToolOutcome(
+                content="Error: INVALID_ACTION_ARGUMENTS: action must be 'query' or 'lookup_values'"
+            )
+        action = str(raw_action if action_present else "query").strip().lower()
+        # Only a genuine non-empty list counts as "value_inputs provided".  Some
+        # providers inject null / [] defaults for optional parameters; those are
+        # treated as omitted so they do not trip the combination check below.
+        has_value_inputs = isinstance(value_inputs, list) and len(value_inputs) > 0
+
         normalized_entity = str(normalized_args.get("entity") or "").strip()
         normalized_query = str(normalized_args.get("query") or "").strip()
         if not normalized_entity:
             return ToolOutcome(content="Error: entity cannot be empty")
         if not normalized_query:
-            return ToolOutcome(content="Error: Search query cannot be empty")
+            return ToolOutcome(
+                content="Error: INVALID_ACTION_ARGUMENTS: query is required"
+            )
         normalized_args["entity"] = normalized_entity
         normalized_args["query"] = normalized_query
+
+        # action / parameter-combination validation (before any Provider call)
+        if action not in ("query", "lookup_values"):
+            return ToolOutcome(
+                content="Error: INVALID_ACTION_ARGUMENTS: action must be 'query' or 'lookup_values'"
+            )
+        if has_value_inputs and action != "lookup_values":
+            return ToolOutcome(
+                content=(
+                    "Error: INVALID_ACTION_ARGUMENTS: value_inputs requires "
+                    "action='lookup_values'. Set action='lookup_values' to "
+                    "resolve canonical values, business meanings, or aliases "
+                    "of unresolved values, or remove value_inputs to perform a "
+                    "business data query."
+                )
+            )
+        if action == "lookup_values" and not has_value_inputs:
+            return ToolOutcome(
+                content="Error: INVALID_ACTION_ARGUMENTS: value_inputs is required with action='lookup_values'"
+            )
 
         context_selected_ontology_id = str(getattr(context, "selected_ontology_id", None) or "").strip()
         context_selected_ontology_version = str(getattr(context, "selected_ontology_version", None) or "").strip()
@@ -301,20 +411,26 @@ class BusinessDataSearchTool:
         if ontology_error:
             return ToolOutcome(content=ontology_error)
         assert ontology is not None
+        ontology_dir = Path(ontology.ontology_dir).resolve()
         graph_fallback_connection: Optional[ResolvedBusinessDataSource] = None
         reference_result = resolve_object_reference_result(
-            Path(ontology.ontology_dir).resolve(),
+            ontology_dir,
             normalized_entity,
         )
         resolution = reference_result.resolution
         resolution_error = reference_result.error
         if reference_result.status != ObjectReferenceStatus.RESOLVED:
+            # lookup_values requires a real Object definition as the field
+            # boundary; a Data Mapping alone is not sufficient.  Reject before
+            # the data-mapping fallback so value-domain lookups cannot proceed
+            # against resources that have no Object definition.
+            if action == "lookup_values":
+                return ToolOutcome(content=resolution_error)
             if reference_result.status not in {
                 ObjectReferenceStatus.NOT_FOUND,
                 ObjectReferenceStatus.MISSING_DIRECTORY,
             }:
                 return ToolOutcome(content=resolution_error)
-            ontology_dir = Path(ontology.ontology_dir).resolve()
             mapping_result = find_exact_object_data_mapping_result(
                 ontology_dir,
                 normalized_entity,
@@ -335,6 +451,39 @@ class BusinessDataSearchTool:
             resolution.object_key if resolution is not None else normalized_entity
         )
         normalized_args["entity"] = resolved_entity
+
+        # -- lookup_values path ------------------------------------------------
+        if action == "lookup_values":
+            try:
+                connection = resolve_business_data_source(
+                    workspace_id=context.workspace_id,
+                    ontology_id=str(normalized_args.get("ontology_id") or ""),
+                )
+            except BusinessDataConnectionError as exc:
+                return ToolOutcome(content="Error: {}".format(str(exc)))
+            response = execute_value_lookups(
+                ontology_dir=ontology_dir,
+                object_key=resolved_entity,
+                model_query=normalized_query,
+                value_inputs=value_inputs,
+                connection=connection,
+                workspace_id=str(context.workspace_id or ""),
+                ontology_id=str(normalized_args.get("ontology_id") or ""),
+                ontology_version=(
+                    context_selected_ontology_version
+                    if str(normalized_args.get("ontology_id") or "").strip() == context_selected_ontology_id
+                    else ""
+                ),
+                event_emitter=event_emitter,
+                tool_call_id=tool_call_id,
+                provider_runtime_context=_build_provider_runtime_context(
+                    context=context,
+                    tool_call_id=tool_call_id,
+                ),
+            )
+            return ToolOutcome(content=response.to_json())
+
+        # -- query path (unchanged) -------------------------------------------
         field_alias_mappings: Tuple[Tuple[str, str], ...] = ()
         resolution_path = getattr(resolution, "path", None)
         if resolution_path is not None:
@@ -363,7 +512,7 @@ class BusinessDataSearchTool:
         )
         state_updates: Dict[str, Any] = {}
         entity_name = resolved_entity if graph_fallback_connection is None else ""
-        if entity_name:
+        if entity_name and _business_query_succeeded(content):
             state_updates["object_context_usage"] = [
                 {
                     "entity_name": entity_name,
@@ -378,6 +527,40 @@ class BusinessDataSearchTool:
             state_updates=state_updates,
             terminal=terminal_error is not None,
         )
+
+
+_SUCCESS_FLAG_KEYS = ("ok", "_success", "success")
+_ERROR_FLAG_KEYS = ("error", "_error")
+
+
+def _has_explicit_failure_signal(parsed: Mapping) -> bool:
+    """Return True when a parsed JSON payload carries an explicit failure marker.
+
+    ``ok``/``_success``/``success`` are success flags, so they use identity
+    comparison against ``False`` (a missing key or ``0`` is not a failure).
+    ``error``/``_error`` are error flags, so any truthy value is a failure.
+    """
+    if any(parsed.get(key) for key in _ERROR_FLAG_KEYS):
+        return True
+    return any(parsed.get(key) is False for key in _SUCCESS_FLAG_KEYS)
+
+
+def _business_query_succeeded(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text or text.lower().startswith("error:"):
+        return False
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return True
+    if not isinstance(parsed, Mapping):
+        return True
+    if _has_explicit_failure_signal(parsed):
+        return False
+    return str(parsed.get("status") or "").strip().lower() not in {
+        "error",
+        "failed",
+    }
 
 
 def _resolve_graph_schema_fallback_connection(

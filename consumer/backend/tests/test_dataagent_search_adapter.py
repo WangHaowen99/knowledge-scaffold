@@ -121,3 +121,35 @@ def test_dataagent_agent_output_preserves_baseline_literal_failure_presentation(
         "has_sql": True,
         "message": "查询成功，无数据返回",
     }
+
+
+def test_dataagent_non_structured_response_preserves_full_provider_text():
+    """When DataAgent returns non-structured text, the full text is preserved
+    (no 500-char truncation) in the final JSON payload's message field."""
+    adapter = DataAgentSearchAdapter(_connection())
+    provider_text = "值域结果\n" + ("合成映射行\n" * 120)
+    adapter._client._session.post = lambda *args, **kwargs: _Response(provider_text)
+
+    events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
+
+    assert [event["type"] for event in events] == ["start", "final", "done"]
+    output = json.loads(events[1]["content"])
+    assert output["success"] is True
+    assert output["message"] == provider_text
+
+
+def test_dataagent_non_structured_response_truncates_oversized_text():
+    """Free-text answers exceeding the budget are truncated, not passed
+    through unbounded."""
+    adapter = DataAgentSearchAdapter(_connection())
+    oversized = "x" * 20000
+    adapter._client._session.post = lambda *args, **kwargs: _Response(oversized)
+
+    events = list(adapter.search_stream(query="查询", entity="flight"))
+    output = json.loads(events[1]["content"])
+
+    assert output["success"] is True
+    message = output["message"]
+    assert len(message) < len(oversized)
+    assert message.endswith("...")
+    assert len(message) <= 8100

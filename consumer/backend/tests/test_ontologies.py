@@ -157,6 +157,40 @@ def test_disabled_ontology_is_not_exposed_to_model_context(tmp_path, monkeypatch
     assert build_selected_ontology_preload_context("disabled-ontology") is None
 
 
+def test_get_sole_enabled_ontology_id_variants(tmp_path, monkeypatch):
+    import ontology.ontologies as ontologies_module
+    from ontology.ontologies import get_sole_enabled_ontology_id
+
+    def _write_ontology(ontologies_dir, ontology_id, *, enabled=True):
+        ontology_dir = ontologies_dir / ontology_id
+        ontology_dir.mkdir(parents=True, exist_ok=True)
+        (ontology_dir / "manifest.yaml").write_text(
+            (
+                "kind: ontology-package\n"
+                "schema_version: 0.1\n"
+                "id: {id}\n"
+                "name: {id}\n"
+                "description: {id}\n"
+                "version: 1.0.0\n"
+                "language: zh-CN\n"
+                "enabled: {enabled}\n"
+            ).format(id=ontology_id, enabled="true" if enabled else "false"),
+            encoding="utf-8",
+        )
+
+    # Sole enabled ontology (a disabled sibling does not count) → its id.
+    workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
+    _write_ontology(workspace_paths.ontologies_dir, "only-enabled", enabled=True)
+    _write_ontology(workspace_paths.ontologies_dir, "extra-disabled", enabled=False)
+    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    assert get_sole_enabled_ontology_id() == "only-enabled"
+
+    # A second enabled ontology → None (no unambiguous choice).
+    _write_ontology(workspace_paths.ontologies_dir, "second-enabled", enabled=True)
+    monkeypatch.setattr(ontologies_module, "_global_registry", None)
+    assert get_sole_enabled_ontology_id() is None
+
+
 def test_build_ontologies_section_keeps_empty_block_for_empty_workspace(tmp_path, monkeypatch):
     import ontology.ontologies as ontologies_module
     from ontology.ontologies import build_ontologies_section, get_ontology_registry
