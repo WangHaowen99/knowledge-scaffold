@@ -1522,6 +1522,121 @@ def test_native_runtime_hitl_persists_checkpoint_before_public_resume(tmp_path):
     asyncio.run(run_test())
 
 
+def test_prepare_failure_compensates_allocated_turn(tmp_path):
+    async def run_test():
+        class _SyntheticOrchestrator:
+            def __init__(self):
+                self.chat_store = ChatStore(str(tmp_path / "chat"))
+                self.execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+            def _get_stores(self, username, workspace_id):
+                assert username == "operator_a"
+                assert workspace_id == "workspace_demo"
+                return self.chat_store, self.execution_store
+
+        orchestrator = _SyntheticOrchestrator()
+
+        def fail_message_write(**_kwargs):
+            raise RuntimeError("synthetic message projection failure")
+
+        orchestrator.chat_store.add_message = fail_message_write
+        service = AsyncExecutionService(
+            SimpleNamespace(),
+            session_adapter=OrchestratorSessionAdapter(lambda: orchestrator),
+        )
+        manager = AsyncRunManager(service)
+        await manager.create_run(_context("run_prepare_compensation"), _scope())
+
+        failed = await _wait_for_status(
+            manager,
+            "run_prepare_compensation",
+            RunStatus.FAILED,
+        )
+        turn = orchestrator.execution_store.get_turn(
+            "session_demo",
+            1,
+            run_id="run_prepare_compensation",
+        )
+
+        assert failed.error.error_code == "SESSION_PREPARE_FAILED"
+        assert turn["status"] == "failed"
+        assert orchestrator.chat_store.get_active_run("session_demo") is None
+        assert service.session_adapter._pending_prepare_turns == {}
+        assert service.session_adapter._run_contexts == {}
+
+    asyncio.run(run_test())
+
+
+def test_terminal_projection_failure_preserves_completed_public_state(tmp_path):
+    async def run_test():
+        class _SyntheticOrchestrator:
+            def __init__(self):
+                self.chat_store = ChatStore(str(tmp_path / "chat"))
+                self.execution_store = ExecutionStore(str(tmp_path / "executions"))
+
+            def _get_stores(self, username, workspace_id):
+                assert username == "operator_a"
+                assert workspace_id == "workspace_demo"
+                return self.chat_store, self.execution_store
+
+        class _TerminalRuntime:
+            async def astream(self, context):
+                yield RuntimeEvent(
+                    event_type="turn.finished",
+                    status="completed",
+                    run_id=context.run_id,
+                    session_id=context.session_id,
+                    turn_id=context.turn_id,
+                    payload={
+                        "status": "completed",
+                        "content": "synthetic answer",
+                    },
+                )
+
+            async def cancel(self, run_id, reason):
+                del run_id, reason
+                return True
+
+        orchestrator = _SyntheticOrchestrator()
+
+        def fail_history_projection(_session_id, _messages):
+            raise RuntimeError("synthetic history projection failure")
+
+        orchestrator.execution_store.set_llm_context = fail_history_projection
+        service = AsyncExecutionService(
+            _TerminalRuntime(),
+            session_adapter=OrchestratorSessionAdapter(lambda: orchestrator),
+        )
+        manager = AsyncRunManager(service)
+        await manager.create_run(_context("run_terminal_projection"), _scope())
+
+        completed = await _wait_for_status(
+            manager,
+            "run_terminal_projection",
+            RunStatus.COMPLETED,
+        )
+        turn = orchestrator.execution_store.get_turn(
+            "session_demo",
+            1,
+            run_id="run_terminal_projection",
+        )
+        terminal_events = [
+            event
+            for event in await manager.repository.list_after(
+                "run_terminal_projection",
+                0,
+            )
+            if event.event_type == "turn.finished"
+        ]
+
+        assert completed.result.content == "synthetic answer"
+        assert turn["status"] == "success"
+        assert [event.status for event in terminal_events] == ["completed"]
+        assert orchestrator.chat_store.get_active_run("session_demo") is None
+
+    asyncio.run(run_test())
+
+
 def test_terminal_projection_failure_still_releases_session_context():
     async def run_test():
         adapter = OrchestratorSessionAdapter(lambda: SimpleNamespace())

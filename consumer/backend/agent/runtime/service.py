@@ -485,6 +485,12 @@ class OrchestratorSessionAdapter:
         self._finalize_lock = threading.Lock()
         self._context_lock = threading.Lock()
         self._run_contexts: dict[str, RuntimeInvocationContext] = {}
+        # A turn is allocated before the remaining session projections are
+        # written. Keep that allocation visible to the prepare wrapper so a
+        # later prepare failure can compensate it by run_id.
+        self._pending_prepare_turns: dict[
+            str, tuple[RuntimeInvocationContext, int]
+        ] = {}
 
     def memory_manager(self, context: RuntimeInvocationContext) -> Any:
         orchestrator = self._orchestrator_provider()
@@ -523,16 +529,100 @@ class OrchestratorSessionAdapter:
         from config.system_config import resolve_effective_llm_profile_config
 
         _resolve_workspace_scope()
-        return await run_sync_compat(
-            self._prepare_sync,
-            context,
-            resumed,
-            VALID_AGENT_MODES,
-            model_profile_ref_to_dict,
-            resolve_effective_llm_profile_config,
-            run_id=context.run_id,
-            task_name="consumer-session-prepare",
-        )
+        try:
+            prepared = await run_sync_compat(
+                self._prepare_sync,
+                context,
+                resumed,
+                VALID_AGENT_MODES,
+                model_profile_ref_to_dict,
+                resolve_effective_llm_profile_config,
+                run_id=context.run_id,
+                task_name="consumer-session-prepare",
+            )
+        except BaseException:
+            self._abort_pending_prepare(context.run_id)
+            raise
+        with self._context_lock:
+            self._pending_prepare_turns.pop(context.run_id, None)
+        return prepared
+
+    def _prepare_sync(
+        self,
+        context: RuntimeInvocationContext,
+        resumed: bool,
+        valid_agent_modes: set[str] | frozenset[str],
+        model_profile_ref_to_dict: Callable[[Any], Any],
+        resolve_effective_llm_profile_config: Callable[..., Any],
+    ) -> RuntimeInvocationContext:
+        try:
+            return self._prepare_sync_impl(
+                context,
+                resumed,
+                valid_agent_modes,
+                model_profile_ref_to_dict,
+                resolve_effective_llm_profile_config,
+            )
+        except Exception:
+            self._abort_pending_prepare(context.run_id)
+            raise
+
+    def _abort_pending_prepare(self, run_id: str) -> None:
+        with self._context_lock:
+            pending = self._pending_prepare_turns.pop(run_id, None)
+            self._run_contexts.pop(run_id, None)
+        if pending is None:
+            return
+        context, turn_id = pending
+        chat_store = None
+        execution_store = None
+        try:
+            chat_store, execution_store = self._stores(context)
+            with _workspace_context(context.workspace_id):
+                execution_store.fail_turn(
+                    context.session_id,
+                    turn_id,
+                    error="会话运行状态准备失败",
+                    run_id=context.run_id,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to mark prepared turn as failed run_id=%s",
+                run_id,
+                exc_info=True,
+            )
+        try:
+            with _workspace_context(context.workspace_id):
+                run_store = getattr(
+                    self._orchestrator_provider(),
+                    "run_store",
+                    None,
+                )
+                if run_store is not None:
+                    run_store.fail_run(context.run_id, "会话运行状态准备失败")
+        except Exception:
+            logger.warning(
+                "Failed to compensate prepared run projection run_id=%s",
+                run_id,
+                exc_info=True,
+            )
+        try:
+            if chat_store is None:
+                chat_store, _execution_store = self._stores(context)
+            with _workspace_context(context.workspace_id):
+                get_active_run = getattr(chat_store, "get_active_run", None)
+                clear_active_run = getattr(chat_store, "clear_active_run", None)
+                if callable(clear_active_run) and (
+                    not callable(get_active_run)
+                    or get_active_run(context.session_id) in {None, "", context.run_id}
+                ):
+                    clear_active_run(context.session_id)
+        except Exception:
+            logger.warning(
+                "Failed to clear prepared active run run_id=%s",
+                run_id,
+                exc_info=True,
+            )
 
     async def finalize(
         self,
@@ -608,7 +698,7 @@ class OrchestratorSessionAdapter:
         orchestrator = self._orchestrator_provider()
         return orchestrator._get_stores(context.username, context.workspace_id)
 
-    def _prepare_sync(
+    def _prepare_sync_impl(
         self,
         context: RuntimeInvocationContext,
         resumed: bool,
@@ -822,6 +912,12 @@ class OrchestratorSessionAdapter:
                 ),
             )
             turn_id = int(started_turn["turn_id"])
+            allocated_context = context.model_copy(update={"turn_id": turn_id})
+            with self._context_lock:
+                self._pending_prepare_turns[context.run_id] = (
+                    allocated_context,
+                    turn_id,
+                )
             interaction_cancellation = (
                 started_turn.get("prior_interaction_cancellation")
                 if isinstance(started_turn, Mapping)
@@ -944,7 +1040,27 @@ class OrchestratorSessionAdapter:
                 return
             if current_status == "awaiting_input" and result.status == "awaiting_input":
                 return
-            self._finalize_phase_sync(context, result, parse_execution_summary)
+            try:
+                self._finalize_phase_sync(context, result, parse_execution_summary)
+            except Exception:
+                # The durable turn transition is the authoritative terminal
+                # commit. Auxiliary history/run projections are best effort;
+                # once the turn is terminal, a projection error must not make
+                # the public run appear to have failed after succeeding.
+                refreshed = execution_store.get_turn(
+                    context.session_id,
+                    context.turn_id,
+                    run_id=context.run_id,
+                )
+                terminal_statuses = {"success", "failed", "cancelled"}
+                if refreshed is not None and str(refreshed.get("status")) in terminal_statuses:
+                    logger.warning(
+                        "Terminal projection failed after durable commit run_id=%s",
+                        context.run_id,
+                        exc_info=True,
+                    )
+                    return
+                raise
 
     def _finalize_phase_sync(
         self,
@@ -968,9 +1084,17 @@ class OrchestratorSessionAdapter:
                 and content
                 and parse_execution_summary is not None
             ):
-                parsed_summary = parse_execution_summary(content)
-                if parsed_summary:
-                    summary = json.dumps(parsed_summary, ensure_ascii=False)
+                try:
+                    parsed_summary = parse_execution_summary(content)
+                    if parsed_summary:
+                        summary = json.dumps(parsed_summary, ensure_ascii=False)
+                except Exception:
+                    # Summary extraction is an auxiliary projection and must
+                    # not prevent the durable turn terminal transition.
+                    self._log_terminal_projection_failure(
+                        context.run_id,
+                        "execution_summary",
+                    )
 
             if result.status == "awaiting_input":
                 execution_store.await_turn(
@@ -1008,88 +1132,124 @@ class OrchestratorSessionAdapter:
                     run_id=context.run_id,
                 )
 
-            history_source = result.history_messages or context.history_messages
-            history = [
-                message.model_dump(mode="python", exclude_none=True)
-                for message in history_source
-            ]
-            if not result.history_messages:
-                history.append({"role": "user", "content": context.query})
-                if content:
-                    history.append({"role": "assistant", "content": content})
-            execution_store.set_llm_context(context.session_id, history)
+            try:
+                history_source = result.history_messages or context.history_messages
+                history = [
+                    message.model_dump(mode="python", exclude_none=True)
+                    for message in history_source
+                ]
+                if not result.history_messages:
+                    history.append({"role": "user", "content": context.query})
+                    if content:
+                        history.append({"role": "assistant", "content": content})
+                execution_store.set_llm_context(context.session_id, history)
+            except Exception:
+                self._log_terminal_projection_failure(context.run_id, "llm_context")
 
-            read_documents = result.read_documents or context.read_documents
-            if isinstance(read_documents, Mapping):
-                execution_store.set_read_documents_context(
-                    context.session_id,
-                    dict(read_documents),
-                )
-                infer_version = getattr(
-                    orchestrator,
-                    "_infer_toolbased_ontology_version",
-                    None,
-                )
-                if callable(infer_version):
-                    ontology_version = infer_version(
-                        context.workspace_id,
+            try:
+                read_documents = result.read_documents or context.read_documents
+                if isinstance(read_documents, Mapping):
+                    execution_store.set_read_documents_context(
+                        context.session_id,
                         dict(read_documents),
                     )
-                    if ontology_version:
-                        execution_store.stamp_turn_ontology_version(
-                            context.session_id,
-                            context.turn_id,
-                            ontology_version,
+                    infer_version = getattr(
+                        orchestrator,
+                        "_infer_toolbased_ontology_version",
+                        None,
+                    )
+                    if callable(infer_version):
+                        ontology_version = infer_version(
+                            context.workspace_id,
+                            dict(read_documents),
                         )
-
-            if result.evolution_recall_records:
-                record_outcomes = getattr(
-                    orchestrator,
-                    "_record_evolution_recall_outcomes",
-                    None,
-                )
-                if callable(record_outcomes) and result.status == "completed":
-                    record_outcomes(
-                        {"evolution_recall_records": result.evolution_recall_records}
-                    )
-
-            run_store = getattr(orchestrator, "run_store", None)
-            if run_store is not None:
-                if result.evolution_recall_records:
-                    run_store.update_metadata(
-                        context.run_id,
-                        {
-                            "evolution_recall_records": list(
-                                result.evolution_recall_records
+                        if ontology_version:
+                            execution_store.stamp_turn_ontology_version(
+                                context.session_id,
+                                context.turn_id,
+                                ontology_version,
                             )
-                        },
-                    )
-                if result.status == "awaiting_input":
-                    run_store.await_run(
-                        context.run_id,
-                        result.to_dict(),
-                        metadata={"pending_user_interaction": final_output.get("interaction")},
-                    )
-                elif result.status == "completed":
-                    run_store.complete_run(context.run_id, result.to_dict())
-                elif result.status == "cancelled":
-                    run_store.cancel_run(
-                        context.run_id,
-                        metadata={"cancel_reason": "runtime_cancelled"},
-                    )
-                else:
-                    run_store.fail_run(
-                        context.run_id,
-                        result.error.message if result.error is not None else "运行失败",
-                    )
+            except Exception:
+                self._log_terminal_projection_failure(context.run_id, "read_documents")
 
-            get_active_run = getattr(chat_store, "get_active_run", None)
-            clear_active_run = getattr(chat_store, "clear_active_run", None)
-            if callable(clear_active_run) and (
-                not callable(get_active_run)
-                or get_active_run(context.session_id) in {None, "", context.run_id}
-            ):
-                clear_active_run(context.session_id)
+            try:
+                if result.evolution_recall_records:
+                    record_outcomes = getattr(
+                        orchestrator,
+                        "_record_evolution_recall_outcomes",
+                        None,
+                    )
+                    if callable(record_outcomes) and result.status == "completed":
+                        record_outcomes(
+                            {
+                                "evolution_recall_records": (
+                                    result.evolution_recall_records
+                                )
+                            }
+                        )
+            except Exception:
+                self._log_terminal_projection_failure(context.run_id, "evolution")
+
+            try:
+                run_store = getattr(orchestrator, "run_store", None)
+                if run_store is not None:
+                    if result.evolution_recall_records:
+                        run_store.update_metadata(
+                            context.run_id,
+                            {
+                                "evolution_recall_records": list(
+                                    result.evolution_recall_records
+                                )
+                            },
+                        )
+                    if result.status == "awaiting_input":
+                        run_store.await_run(
+                            context.run_id,
+                            result.to_dict(),
+                            metadata={
+                                "pending_user_interaction": final_output.get(
+                                    "interaction"
+                                )
+                            },
+                        )
+                    elif result.status == "completed":
+                        run_store.complete_run(context.run_id, result.to_dict())
+                    elif result.status == "cancelled":
+                        run_store.cancel_run(
+                            context.run_id,
+                            metadata={"cancel_reason": "runtime_cancelled"},
+                        )
+                    else:
+                        run_store.fail_run(
+                            context.run_id,
+                            (
+                                result.error.message
+                                if result.error is not None
+                                else "运行失败"
+                            ),
+                        )
+            except Exception:
+                self._log_terminal_projection_failure(context.run_id, "run_store")
+
+            try:
+                get_active_run = getattr(chat_store, "get_active_run", None)
+                clear_active_run = getattr(chat_store, "clear_active_run", None)
+                if callable(clear_active_run) and (
+                    not callable(get_active_run)
+                    or get_active_run(context.session_id) in {None, "", context.run_id}
+                ):
+                    clear_active_run(context.session_id)
+            except Exception:
+                self._log_terminal_projection_failure(context.run_id, "active_run")
+
+    @staticmethod
+    def _log_terminal_projection_failure(run_id: str, projection: str) -> None:
+        logger.warning(
+            "Terminal projection failed run_id=%s projection=%s",
+            run_id,
+            projection,
+            exc_info=True,
+        )
 
     def _try_direct_execute_sync(
         self,
