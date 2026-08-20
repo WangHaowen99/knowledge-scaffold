@@ -17,11 +17,13 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.core.jiuwen.common import JiuwenBackendUnavailable
+from agent.core.jiuwen.concurrency import install_jiuwen_concurrency_ability_manager
 from agent.core.jiuwen_engine import (
     _JiuwenTerminalForceFinishBridge,
     _dispose_owned_jiuwen_runtime,
     _jiuwen_agent_callback_event_class,
     _resolve_jiuwen_llm_config,
+    _remember_jiuwen_terminal_tool_batch,
     _run_awaitable,
     create_default_jiuwen_agent,
     register_current_runtime_tools,
@@ -231,7 +233,7 @@ class JiuwenGraphQueryAgent:
         llm_config: Any | None = None
 
         def remember_terminal_tool_batch(batch_result: Any) -> None:
-            terminal_result["batch_result"] = batch_result
+            _remember_jiuwen_terminal_tool_batch(terminal_result, batch_result)
 
         try:
             if owns_runtime:
@@ -253,6 +255,11 @@ class JiuwenGraphQueryAgent:
                 )
             else:
                 agent = self._agent_factory()
+
+            install_jiuwen_concurrency_ability_manager(
+                agent,
+                max_parallel_workers=10,
+            )
 
             registered_cards = list(self._tool_registrar(
                 agent,
