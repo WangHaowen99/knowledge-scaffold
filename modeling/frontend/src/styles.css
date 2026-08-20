@@ -1156,7 +1156,41 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .cfg-test { border: 1px solid var(--hair); border-radius: 11px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; }
 .mwr .cfg-test.ok { border-color: #b7e2cd; background: #f0faf5; }
 .mwr .cfg-test.bad { border-color: #f2c9c5; background: #fdf3f2; }
+.mwr .llm-scope-tabs, .mwr .admin-llm-purpose { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--hair); border-radius: 9px; background: #f7f8fa; margin-bottom: 14px; }
+.mwr .llm-scope-tabs button, .mwr .admin-llm-purpose button { border: 0; border-radius: 6px; background: transparent; color: var(--muted); padding: 6px 12px; cursor: pointer; font-weight: 650; }
+.mwr .llm-scope-tabs button.on, .mwr .admin-llm-purpose button.on { background: #fff; color: var(--blue-d); box-shadow: 0 1px 3px rgba(25, 39, 65, .12); }
+.mwr .admin-llm-defaults { padding-top: 2px; }
+.mwr .admin-llm-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11.5px; margin: -3px 0 12px; }
+.mwr .admin-llm-policy { margin: -3px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.mwr .admin-llm-warning { margin-bottom: 12px; padding: 9px 11px; border: 1px solid #f0d7a9; border-radius: 8px; background: #fff8e8; color: #7d5b19; font-size: 12px; }
+.mwr .admin-llm-grid { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 0 12px; }
+.mwr .admin-llm-wide { grid-column: 1 / -1; }
+.mwr .admin-llm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 2px; }
+.mwr .admin-llm-actions .btn, .mwr .cfg-key-clear { display: inline-flex; align-items: center; gap: 5px; }
+.mwr .admin-llm-primary-actions { display: grid; grid-template-columns: repeat(2, 112px); gap: 8px; margin-left: auto; }
+.mwr .admin-llm-primary-actions .btn { width: 100%; justify-content: center; }
+.mwr .cfg-llm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.mwr .cfg-sync-default, .mwr .cfg-reset-personal { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.mwr .cfg-sync-default { min-width: 164px; }
+.mwr .cfg-sync-default-group { display: inline-flex; align-items: center; gap: 5px; }
+.mwr .cfg-sync-help { position: relative; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); cursor: help; }
+.mwr .cfg-sync-help:hover, .mwr .cfg-sync-help:focus-visible { color: var(--blue-d); outline: none; }
+.mwr .cfg-sync-help::after {
+  content: attr(data-tooltip); position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 20;
+  width: max-content; padding: 7px 14px;
+  border-radius: 6px; background: #202735; color: #fff; box-shadow: var(--sh-md);
+  font-size: 11.5px; font-weight: 500; line-height: 1.5; white-space: nowrap;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s, visibility .15s;
+}
+.mwr .cfg-sync-help:hover::after, .mwr .cfg-sync-help:focus-visible::after { opacity: 1; visibility: visible; }
 .mwr .cfg-raw { margin: 6px 0 0; background: #171d26; color: #ffb4ab; border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.6; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+
+@media (max-width: 600px) {
+  .mwr .admin-llm-grid { grid-template-columns: minmax(0, 1fr); }
+  .mwr .admin-llm-wide { grid-column: auto; }
+  .mwr .admin-llm-primary-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .mwr .admin-llm-actions .btn { min-width: 0; }
+}
 
 /* ---- 修缮计划卡（两段式确认） ---- */
 .mwr .plan-card { margin-top: 8px; border: 1px solid #d5e4f8; background: #f6fafd; border-radius: 12px; padding: 12px 14px; color: var(--ink); }
@@ -1549,3 +1583,19 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 .mwr .pchat-increment-entry { flex: none; margin-left: 8px; border: 1px solid #9dc2ed; border-radius: 8px; padding: 3px 10px; background: #eef6ff; color: #185da7; font-size: 11.5px; white-space: nowrap; cursor: pointer; }
 .mwr .pchat-increment-entry:hover:not(:disabled) { background: #e3efff; }
 .mwr .pchat-increment-entry:disabled { opacity: .55; cursor: default; }
+
+/* 术语绑定批量确认：Excel 初次分析后把 binding 与字段引用作为同一组候选给专家确认 */
+.mwr .semantic-binding-panel { margin-bottom: 12px; border: 1px solid #d0d5dd; border-radius: 8px; background: #fff; overflow: hidden; }
+.mwr .semantic-binding-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #eaecf0; background: #f9fafb; }
+.mwr .semantic-binding-head h3 { margin: 0; color: #101828; font-size: 14px; line-height: 1.35; }
+.mwr .semantic-binding-head p { margin: 3px 0 0; color: #667085; font-size: 12px; }
+.mwr .semantic-binding-list { max-height: 360px; overflow: auto; }
+.mwr .semantic-binding-item { padding: 12px 14px; border-bottom: 1px solid #eaecf0; }
+.mwr .semantic-binding-item:last-child { border-bottom: 0; }
+.mwr .semantic-binding-main, .mwr .semantic-binding-refs label { display: flex; align-items: flex-start; gap: 8px; min-width: 0; color: #344054; font-size: 12.5px; line-height: 1.45; }
+.mwr .semantic-binding-main strong { display: block; color: #101828; overflow-wrap: anywhere; }
+.mwr .semantic-binding-main em, .mwr .semantic-binding-refs em { display: block; margin-top: 2px; color: #667085; font-style: normal; overflow-wrap: anywhere; }
+.mwr .semantic-binding-meta { margin: 7px 0 0 24px; color: #667085; font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.mwr .semantic-binding-refs { display: grid; gap: 7px; margin: 10px 0 0 24px; }
+.mwr .semantic-binding-refs span { display: block; color: #344054; font-weight: 650; overflow-wrap: anywhere; }
+.mwr .semantic-binding-error { margin: 0 14px 12px; padding: 8px 10px; border-radius: 6px; background: #fef3f2; color: #b42318; font-size: 12px; }

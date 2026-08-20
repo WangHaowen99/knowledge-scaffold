@@ -22,6 +22,11 @@ from config.system_config import (
     resolve_effective_llm_profile_config,
 )
 from integration.mcp.config import MCPRuntimeConfig
+from integration.mcp.ontology_binding import (
+    MCPOntologyBindingError,
+    bind_chat_arguments,
+    validate_runtime_ontology_availability,
+)
 from integration.mcp.scope import MCPRequestScope
 from llm.llm_request_mode import normalize_llm_request_mode
 from utils.identifiers import validate_session_id
@@ -84,13 +89,39 @@ async def execute_mcp_chat_workflow_async(
             trace=_trace_snapshot(collector),
         )
     context_values = dict(context_values or {})
-    arguments = data.get("arguments")
-    if arguments is not None and not isinstance(arguments, dict):
+    raw_arguments = data.get("arguments")
+    if raw_arguments is not None and not isinstance(raw_arguments, dict):
         return _workflow_error(
             "INVALID_TOOL_ARGUMENTS",
             "arguments must be an object or null",
             status_code=400,
             trace=_trace_snapshot(collector),
+        )
+    try:
+        arguments = bind_chat_arguments(
+            arguments=raw_arguments,
+            token_ontology_id=scope.ontology_id,
+        )
+        selected_ontology_id = str(
+            (arguments or {}).get("selected_ontology_id") or ""
+        ).strip()
+        if selected_ontology_id:
+            context_values = bind_chat_arguments(
+                arguments=context_values,
+                token_ontology_id=selected_ontology_id,
+            ) or {}
+        if scope.ontology_id and selected_ontology_id:
+            validate_runtime_ontology_availability(
+                workspace_id=scope.workspace_id,
+                ontology_id=selected_ontology_id,
+            )
+    except MCPOntologyBindingError as exc:
+        return _workflow_error(
+            exc.code,
+            exc.detail,
+            status_code=exc.status_code,
+            trace=_trace_snapshot(collector),
+            error_type=exc.error_type,
         )
     model_profile_id = str(
         data.get("model_profile_id")
@@ -334,9 +365,10 @@ def _workflow_error(
     session_id: str = "",
     result: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
+    error_type: str = "workflow_error",
 ) -> tuple[dict[str, Any], int]:
     body = error_result(
-        error_type="workflow_error",
+        error_type=error_type,
         error_code=code,
         detail=detail,
         retriable=retriable,

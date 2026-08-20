@@ -9,6 +9,7 @@ process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'modeling-user-llm-'));
 process.env.MODELING_LLM_BASE_URL = 'https://default.example.com/v1';
 process.env.MODELING_LLM_MODEL = 'default-model';
 process.env.MODELING_LLM_MAX_TOKENS = '8192';
+process.env.MODELING_LLM_CONTEXT_WINDOW = '128000';
 process.env.MODELING_TASK_LLM_BASE_URL = 'https://task.example.com/v1';
 process.env.MODELING_TASK_LLM_MODEL = 'task-default-model';
 process.env.MODELING_TASK_LLM_API_KEY = '';
@@ -21,9 +22,11 @@ before(() => {
   repo.deleteUserLlmSetting('alice', 'base_url');
   repo.deleteUserLlmSetting('alice', 'model');
   repo.deleteUserLlmSetting('alice', 'max_tokens');
+  repo.deleteUserLlmSetting('alice', 'context_window');
   repo.deleteUserLlmSetting('bob', 'base_url');
   repo.deleteUserLlmSetting('bob', 'model');
   repo.deleteUserLlmSetting('bob', 'max_tokens');
+  repo.deleteUserLlmSetting('bob', 'context_window');
 });
 
 test('每个用户读取和保存独立的 LLM 配置', () => {
@@ -31,15 +34,18 @@ test('每个用户读取和保存独立的 LLM 配置', () => {
     repo.setUserLlmSetting('alice', 'base_url', 'https://alice.example.com/v1');
     repo.setUserLlmSetting('alice', 'model', 'alice-model');
     repo.setUserLlmSetting('alice', 'max_tokens', '4096');
+    repo.setUserLlmSetting('alice', 'context_window', '1000000');
   });
 
   const alice = context.runWithLlmUser('alice', () => repo.getLlmSettings());
   const bob = context.runWithLlmUser('bob', () => repo.getLlmSettings());
   assert.deepEqual(alice, {
-    baseUrl: 'https://alice.example.com/v1', model: 'alice-model', apiKey: '', maxTokens: 4096,
+    baseUrl: 'https://alice.example.com/v1', model: 'alice-model', apiKey: '',
+    maxTokens: 4096, contextWindow: 1000000,
   });
   assert.deepEqual(bob, {
-    baseUrl: 'https://default.example.com/v1', model: 'default-model', apiKey: '', maxTokens: 8192,
+    baseUrl: 'https://default.example.com/v1', model: 'default-model', apiKey: '',
+    maxTokens: 8192, contextWindow: 128000,
   });
   assert.equal(context.runWithLlmUser('alice', () => repo.getLlmSource()), 'user');
   assert.equal(context.runWithLlmUser('bob', () => repo.getLlmSource()), 'env');
@@ -51,8 +57,10 @@ test('LLM provider 和任务 provider 均使用当前用户配置', () => {
   assert.equal(alice.model.id, 'alice-model');
   assert.equal(alice.model.baseUrl, 'https://alice.example.com/v1');
   assert.equal(alice.model.maxTokens, 4096);
+  assert.equal(alice.model.contextWindow, 1000000);
   assert.equal(bob.model.id, 'task-default-model');
   assert.equal(bob.model.baseUrl, 'https://task.example.com/v1');
+  assert.equal(bob.model.contextWindow, 128000);
 });
 
 test('清除用户字段后只回退环境默认值，不会读取其他用户配置', () => {
@@ -60,17 +68,62 @@ test('清除用户字段后只回退环境默认值，不会读取其他用户�
     repo.deleteUserLlmSetting('alice', 'base_url');
     repo.deleteUserLlmSetting('alice', 'model');
     repo.deleteUserLlmSetting('alice', 'max_tokens');
+    repo.deleteUserLlmSetting('alice', 'context_window');
   });
   const alice = context.runWithLlmUser('alice', () => repo.getLlmSettings());
   assert.equal(alice.baseUrl, 'https://default.example.com/v1');
   assert.equal(alice.model, 'default-model');
   assert.equal(alice.maxTokens, 8192);
+  assert.equal(alice.contextWindow, 128000);
 });
 
 test('个人输出上限只接受安全整数范围', () => {
   assert.throws(() => repo.setUserLlmSetting('alice', 'max_tokens', '0'), /1 到 1000000/);
   assert.throws(() => repo.setUserLlmSetting('alice', 'max_tokens', '1.5'), /1 到 1000000/);
   assert.throws(() => repo.setUserLlmSetting('alice', 'max_tokens', '1000001'), /1 到 1000000/);
+});
+
+test('个人 provider patch 原子校验并可整体恢复默认', () => {
+  assert.throws(() => repo.updateUserLlmSettings('charlie', {
+    baseUrl: 'https://partial.example.com/v1',
+  }), /Base URL 与模型名必须同时设置/);
+  assert.equal(repo.getUserLlmSetting('charlie', 'base_url'), null);
+
+  assert.throws(() => repo.updateUserLlmSettings('charlie', {
+    baseUrl: 'file:///tmp/not-an-llm-endpoint', model: 'invalid-model',
+  }), /http\(s\)/);
+  assert.equal(repo.getUserLlmSetting('charlie', 'base_url'), null);
+
+  repo.updateUserLlmSettings('charlie', {
+    baseUrl: 'https://charlie.example.com/v1',
+    model: 'charlie-model',
+    apiKey: 'synthetic-charlie-key',
+    maxTokens: '2048',
+    contextWindow: '262144',
+  });
+  assert.deepEqual(context.runWithLlmUser('charlie', () => repo.getLlmSettings()), {
+    baseUrl: 'https://charlie.example.com/v1',
+    model: 'charlie-model',
+    apiKey: 'synthetic-charlie-key',
+    maxTokens: 2048,
+    contextWindow: 262144,
+  });
+
+  repo.updateUserLlmSettings('charlie', { providerClear: true, maxTokens: '', contextWindow: '' });
+  const inherited = context.runWithLlmUser('charlie', () => repo.getLlmSettings());
+  assert.equal(inherited.baseUrl, 'https://default.example.com/v1');
+  assert.equal(inherited.model, 'default-model');
+  assert.equal(inherited.maxTokens, 8192);
+  assert.equal(inherited.contextWindow, 128000);
+  assert.equal(repo.getUserLlmSetting('charlie', 'api_key'), null);
+});
+
+test('个人上下文窗口接受 API 支持的安全整数', () => {
+  repo.setUserLlmSetting('alice', 'context_window', '1000000');
+  assert.equal(repo.getLlmSettings('alice').contextWindow, 1000000);
+  assert.throws(() => repo.setUserLlmSetting('alice', 'context_window', '0'), /大于等于 1/);
+  assert.throws(() => repo.setUserLlmSetting('alice', 'context_window', '1.5'), /大于等于 1/);
+  repo.deleteUserLlmSetting('alice', 'context_window');
 });
 
 test('并发异步任务保持各自的用户上下文', async () => {

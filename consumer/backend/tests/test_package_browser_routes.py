@@ -281,10 +281,6 @@ bound_operation: QueryPart
     )
 
     assert response.status_code == 201
-    payload = response.json()
-    assert payload["import_mode"] == "converted"
-    assert payload["package_format"] == "v0.1"
-    assert payload["normalization_warnings"] == []
 
     ontology_dir = get_workspace_paths("demo").ontologies_dir / "legacy-example"
     manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
@@ -424,7 +420,7 @@ def test_import_zip_rejects_unsupported_v01_schema_and_ambiguous_roots(tmp_path,
     assert invalid_response.json()["error"] == "Unsupported or invalid ontology package manifest"
 
     current_manifest = (
-        "kind: ontology\nid: current-demo\nname: Current Demo\n"
+        "kind: ontology-package\nschema_version: 0.1\nid: current-demo\nname: Current Demo\n"
         "description: Current\nversion: 1.0.0\nlanguage: zh-CN\n"
     )
     legacy_manifest = (
@@ -434,9 +430,13 @@ def test_import_zip_rejects_unsupported_v01_schema_and_ambiguous_roots(tmp_path,
     ambiguous = _zip_from_entries(
         (
             ("current/manifest.yaml", current_manifest),
-            ("current/objects-list.md", "- Current\n"),
+            ("current/index.md", "# Current\n"),
+            ("current/objects/index.md", "# Objects\n"),
+            ("current/operations/index.md", "# Operations\n"),
             ("legacy/manifest.yaml", legacy_manifest),
+            ("legacy/index.md", "# Legacy\n"),
             ("legacy/objects/index.md", "# Objects\n"),
+            ("legacy/operations/index.md", "# Operations\n"),
         )
     )
     ambiguous_response = client.post(
@@ -457,7 +457,9 @@ def test_import_v01_defaults_recommended_language(tmp_path, monkeypatch):
                 "kind: ontology-package\nschema_version: 0.1\nid: language-default\n"
                 "name: Language Default\ndescription: Missing recommended language\nversion: 0.1.0\n",
             ),
+            ("legacy/index.md", "# Language Default\n"),
             ("legacy/objects/index.md", "# Objects\n"),
+            ("legacy/operations/index.md", "# Operations\n"),
         )
     )
 

@@ -52,6 +52,19 @@ export interface CheckFinding {
   releaseBlocking?: boolean;
 }
 
+function mappingIdentifier(value: unknown): string {
+  return String(value ?? '').trim().normalize('NFC');
+}
+
+function normalizedMappingIdentifier(value: unknown): string {
+  const text = mappingIdentifier(value);
+  return /^[\x00-\x7F]*$/.test(text) ? text.toLowerCase() : text;
+}
+
+function hasUnsafeMappingText(value: string): boolean {
+  return /[\r\n\u2028\u2029\p{Cc}]/u.test(value);
+}
+
 export function semanticCheckFailureFinding(error: unknown): CheckFinding {
   return {
     id: `semantic_check_failed_${Date.now()}`,
@@ -502,6 +515,104 @@ export function runFormatChecks(spec: PackageSpec, files: PackageFiles): CheckFi
               if (!expectedFields.has(fieldName)) {
                 add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `对象 ${object.key} 的 mapping 包含对象规格未声明的字段 key ${fieldName}`);
               }
+            }
+          }
+        }
+
+        const valueBindings = j.value_bindings;
+        const bindingKeys = new Set<string>();
+        if (valueBindings !== undefined) {
+          if (!valueBindings || typeof valueBindings !== 'object' || Array.isArray(valueBindings)) {
+            add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'value_bindings 必须是对象');
+          } else {
+            const objectIdentifiers = new Set<string>();
+            for (const object of spec.objects ?? []) {
+              for (const value of [
+                object.key,
+                object.title,
+                ...(object.aliases ?? []),
+                `${object.key}.md`,
+              ]) objectIdentifiers.add(normalizedMappingIdentifier(value));
+            }
+            for (const objectKey of Object.keys(j.objects)) objectIdentifiers.add(normalizedMappingIdentifier(objectKey));
+
+            for (const [bindingKey, binding] of Object.entries<any>(valueBindings)) {
+              const key = mappingIdentifier(bindingKey);
+              const normalizedKey = normalizedMappingIdentifier(key);
+              if (!key) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', 'value_bindings 包含空 binding key');
+              if (key.length > 128 || hasUnsafeMappingText(key)) {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey} 的 key 含非法字符或超过 128 字符`);
+              }
+              if (bindingKeys.has(normalizedKey)) {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey} 与其他 binding key 归一化后重复`);
+              }
+              bindingKeys.add(normalizedKey);
+              if (objectIdentifiers.has(normalizedKey)) {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey} 与 Object 或 mapping key 冲突`);
+              }
+              if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
+                add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey} 必须是对象`);
+                continue;
+              }
+              for (const [name, max] of [
+                ['resource', 256],
+                ['value_field', 128],
+                ['semantic_field', 128],
+              ] as const) {
+                const value = mappingIdentifier(binding[name]);
+                if (!value) add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey}.${name} 不能为空`);
+                if (value.length > max || hasUnsafeMappingText(value)) {
+                  add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey}.${name} 含非法字符或超过 ${max} 字符`);
+                }
+              }
+              if (binding.provider_alias !== undefined) {
+                const providerAlias = mappingIdentifier(binding.provider_alias);
+                if (!providerAlias || providerAlias.length > 128 || hasUnsafeMappingText(providerAlias)) {
+                  add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey}.provider_alias 不能为空且不能超过 128 字符`);
+                }
+              }
+              if (binding.alias_fields !== undefined) {
+                if (!Array.isArray(binding.alias_fields)) {
+                  add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey}.alias_fields 必须是字符串数组`);
+                } else {
+                  const aliases = new Set<string>();
+                  binding.alias_fields.forEach((item: unknown, index: number) => {
+                    const value = mappingIdentifier(item);
+                    const normalized = normalizedMappingIdentifier(value);
+                    if (!value || value.length > 128 || hasUnsafeMappingText(value)) {
+                      add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey}.alias_fields[${index}] 不能为空且不能超过 128 字符`);
+                    }
+                    if (aliases.has(normalized)) {
+                      add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `value_bindings.${bindingKey}.alias_fields[${index}] 与其他别名字段重复`);
+                    }
+                    aliases.add(normalized);
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        const rawBindingKeys = new Set(Object.keys(valueBindings ?? {}));
+        for (const [objectKey, v] of Object.entries<any>(j.objects)) {
+          if (!v?.fields || typeof v.fields !== 'object' || Array.isArray(v.fields)) continue;
+          const objectProvider = mappingIdentifier(v.provider_alias ?? j.default_provider_alias);
+          for (const [fieldName, fieldMapping] of Object.entries<any>(v.fields)) {
+            const ref = fieldMapping?.value_binding_ref;
+            if (ref === undefined) continue;
+            const bindingRef = mappingIdentifier(ref);
+            if (!bindingRef || bindingRef.length > 128 || hasUnsafeMappingText(bindingRef)) {
+              add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `objects.${objectKey}.fields.${fieldName}.value_binding_ref 不能为空且不能超过 128 字符`);
+              continue;
+            }
+            if (!rawBindingKeys.has(bindingRef)) {
+              add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `objects.${objectKey}.fields.${fieldName}.value_binding_ref 引用不存在的 binding ${bindingRef}`);
+              continue;
+            }
+            const binding = valueBindings?.[bindingRef];
+            const bindingProvider = mappingIdentifier(binding?.provider_alias ?? j.default_provider_alias);
+            if (!objectProvider || !bindingProvider || objectProvider !== bindingProvider) {
+              add('错误', 'mapping 非法', 'mappings/object-data-mappings.json', `objects.${objectKey}.fields.${fieldName}.value_binding_ref 的 provider_alias 与 binding ${bindingRef} 不一致`);
             }
           }
         }

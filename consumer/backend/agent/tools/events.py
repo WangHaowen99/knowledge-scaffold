@@ -131,6 +131,12 @@ def _build_business_data_search_projection(raw_output: str) -> Optional[Dict[str
     if not isinstance(parsed, dict):
         return None
 
+    # lookup_values action produces a structured response distinct from the
+    # plain query action.  Project it separately so the trace shows the right
+    # summary fields.
+    if parsed.get("action") == "lookup_values":
+        return _build_lookup_values_projection(parsed)
+
     projection: Dict[str, Any] = {
         "success": parsed.get("success") is True,
         "provider": _bounded_text(parsed.get("provider"), 100),
@@ -186,6 +192,46 @@ def _build_business_data_search_projection(raw_output: str) -> Optional[Dict[str
         projected_warnings = [warning for warning in projected_warnings if warning]
         if projected_warnings:
             projection["warnings"] = projected_warnings
+    return {key: value for key, value in projection.items() if value not in ("", None)}
+
+
+def _build_lookup_values_projection(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Project a ``lookup_values`` response for trace/observability."""
+    projection: Dict[str, Any] = {
+        "action": "lookup_values",
+        "entity": _bounded_text(parsed.get("entity"), 240),
+        "status": _bounded_text(parsed.get("status"), 60) or "unknown",
+    }
+    value_results = parsed.get("value_results")
+    if isinstance(value_results, list):
+        projection["value_result_count"] = len(value_results)
+        binding_keys = [
+            _bounded_text(item.get("binding_key"), 120)
+            for item in value_results
+            if isinstance(item, dict) and item.get("binding_key")
+        ]
+        binding_keys = [key for key in binding_keys if key]
+        if binding_keys:
+            projection["binding_keys"] = binding_keys[:8]
+    errors = parsed.get("errors")
+    provider_error_count = 0
+    if isinstance(errors, list) and errors:
+        projection["error_count"] = len(errors)
+        error_codes = [
+            _bounded_text(item.get("code"), 160)
+            for item in errors
+            if isinstance(item, dict) and item.get("code")
+        ]
+        error_codes = [code for code in error_codes if code]
+        provider_error_count = 0
+        for item in errors:
+            if isinstance(item, dict) and item.get("code") == "VALUE_PROVIDER_FAILED":
+                provider_error_count += 1
+        if error_codes:
+            projection["error_codes"] = error_codes[:8]
+    projection["provider_request_count"] = (
+        int(projection.get("value_result_count") or 0) + provider_error_count
+    )
     return {key: value for key, value in projection.items() if value not in ("", None)}
 
 

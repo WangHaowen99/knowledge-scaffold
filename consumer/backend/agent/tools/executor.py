@@ -22,6 +22,7 @@ from utils.logging import get_logger
 from utils.streaming import try_get_stream_writer
 from agent.tools.base import BaseTool, ToolBatchResult, ToolContext, ToolInvocation, ToolOutcome
 from agent.tools.events import emit_protocol_event, emit_tool_finished, emit_tool_started
+from agent.tools.scheduling import plan_barriered_tool_batches
 
 logger = get_logger("tools.executor")
 
@@ -91,35 +92,32 @@ async def aexecute_tool_batch(
         tasks.append(task)
 
     outputs = list(early_outputs)
-    pending_safe_batch: List[Dict[str, Any]] = []
-
-    async def flush_safe_batch() -> bool:
-        nonlocal pending_safe_batch
-        if not pending_safe_batch:
-            return False
-        batch_outputs = await _aexecute_parallel_batch(
-            pending_safe_batch,
-            context,
-            subagent_event_emitter,
-        )
+    completed_tasks = 0
+    batches = plan_barriered_tool_batches(
+        tasks,
+        is_concurrency_safe=lambda task: bool(task["spec"].concurrency_safe),
+    )
+    for batch in batches:
+        batch_tasks = list(batch.items)
+        if batch.parallel:
+            batch_outputs = await _aexecute_parallel_batch(
+                batch_tasks,
+                context,
+                subagent_event_emitter,
+            )
+        else:
+            batch_outputs = [
+                await _aexecute_single_task(
+                    batch_tasks[0],
+                    context,
+                    subagent_event_emitter,
+                )
+            ]
         outputs.extend(batch_outputs)
-        pending_safe_batch = []
-        return any(output["outcome"].terminal for output in batch_outputs)
-
-    for position, task in enumerate(tasks):
-        if task["spec"].concurrency_safe:
-            pending_safe_batch.append(task)
-            continue
-        if await flush_safe_batch():
-            outputs.extend(_build_skipped_outputs(tasks[position:]))
+        completed_tasks += len(batch_tasks)
+        if any(output["outcome"].terminal for output in batch_outputs):
+            outputs.extend(_build_skipped_outputs(tasks[completed_tasks:]))
             break
-        output = await _aexecute_single_task(task, context, subagent_event_emitter)
-        outputs.append(output)
-        if output["outcome"].terminal:
-            outputs.extend(_build_skipped_outputs(tasks[position + 1:]))
-            break
-    else:
-        await flush_safe_batch()
 
     outputs.sort(key=lambda item: item["index"])
     return _aggregate_outputs(outputs)
@@ -369,6 +367,7 @@ async def _aexecute_single_task(
                     tool_call_id=tool_call_id,
                     entity=str(args.get("entity") or "").strip(),
                     query=str(args.get("query") or "").strip(),
+                    action=str(args.get("action") or "query").strip().lower(),
                 )
             elif name == "web_search":
                 event_emitter = _build_web_search_event_emitter(
@@ -609,7 +608,7 @@ def _resolve_outcome_status(outcome: ToolOutcome) -> str:
             or parsed.get("success") is False
         ):
             return "error"
-        if str(parsed.get("status") or "").strip().lower() == "error":
+        if str(parsed.get("status") or "").strip().lower() in {"error", "failed"}:
             return "error"
         if parsed.get("error") or parsed.get("_error"):
             return "error"
@@ -660,6 +659,7 @@ def _build_business_data_search_event_emitter(
     tool_call_id: Optional[str],
     entity: str = "",
     query: str = "",
+    action: str = "query",
 ) -> Callable[[Dict[str, Any]], None]:
     def emit_business_data_search_event(event: Dict[str, Any]) -> None:
         if not stream_event_emitter:
@@ -669,34 +669,61 @@ def _build_business_data_search_event_emitter(
         content = str(event.get("content") or "")
         ontology_id = str(event.get("ontology_id") or "").strip()
         provider = str(event.get("provider") or "").strip()
+        stage = str(event.get("stage") or "").strip()
+        # Normal queries don't carry a stage from the provider; derive one
+        # from the action so the trace can distinguish query vs lookup_values.
+        if not stage:
+            stage = "value_lookup" if action == "lookup_values" else "business_query"
+        binding_key = str(event.get("binding_key") or "").strip()
+        internal_request_id = str(event.get("internal_request_id") or "").strip()
         message_preview, truncated = _truncate_text(content, limit=100)
-        message = "业务数据查询"
+        message = "字段值域查询" if action == "lookup_values" else "业务数据查询"
         if message_preview:
             message = "{}: {}".format(message, message_preview)
             if truncated:
                 message = "{}...".format(message)
+
+        provider_event: Dict[str, Any] = {
+            "type": event_type,
+            "content": content,
+        }
+        for key, value in {
+            "stage": stage,
+            "binding_key": binding_key,
+            "internal_request_id": internal_request_id,
+        }.items():
+            if value:
+                provider_event[key] = value
+        for key in ("value_input_field_count", "value_input_value_count"):
+            value = event.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                provider_event[key] = value
+
+        event_input: Dict[str, Any] = {}
+        for key, value in (
+            ("entity", entity),
+            ("action", action),
+            ("query", query),
+        ):
+            if value:
+                event_input[key] = value
 
         stream_event_emitter(
             "tool.progress",
             {
                 "tool_call_id": tool_call_id,
                 "tool_name": "business_data_search",
-                "input": {
-                    key: value
-                    for key, value in {"entity": entity, "query": query}.items()
-                    if value
-                },
+                "input": event_input,
                 "entity": entity,
                 "query": query,
                 "ontology_id": ontology_id,
                 "database_provider": provider,
+                "stage": stage,
+                "internal_request_id": internal_request_id,
                 "status": "running",
                 "message": message,
                 "progress": {
-                    "business_data_search_event": {
-                        "type": event_type,
-                        "content": content,
-                    },
+                    "business_data_search_event": provider_event,
                 },
             },
         )

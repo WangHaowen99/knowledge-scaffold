@@ -420,11 +420,28 @@ const extractBusinessDataSearchProgressEvent = (payload = {}, envelope = {}) => 
   const rawTs = Number(envelope?.ts);
   const rawSeq = Number(envelope?.seq);
 
+  const stage = typeof rawEvent?.stage === 'string' ? rawEvent.stage.trim() : '';
+  const bindingKey = typeof rawEvent?.binding_key === 'string' ? rawEvent.binding_key.trim() : '';
+  const internalRequestId = typeof rawEvent?.internal_request_id === 'string'
+    ? rawEvent.internal_request_id.trim()
+    : '';
+  const valueInputFieldCount = Number.isFinite(Number(rawEvent?.value_input_field_count))
+    ? Number(rawEvent.value_input_field_count)
+    : null;
+  const valueInputValueCount = Number.isFinite(Number(rawEvent?.value_input_value_count))
+    ? Number(rawEvent.value_input_value_count)
+    : null;
+
   return {
     type: eventType,
     content,
     ts: Number.isFinite(rawTs) ? rawTs : Date.now(),
     seq: Number.isFinite(rawSeq) ? rawSeq : null,
+    ...(stage ? { stage } : {}),
+    ...(bindingKey ? { binding_key: bindingKey } : {}),
+    ...(internalRequestId ? { internal_request_id: internalRequestId } : {}),
+    ...(valueInputFieldCount != null ? { value_input_field_count: valueInputFieldCount } : {}),
+    ...(valueInputValueCount != null ? { value_input_value_count: valueInputValueCount } : {}),
   };
 };
 

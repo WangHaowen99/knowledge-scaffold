@@ -23,10 +23,14 @@ services:
       - MODELING_LLM_BASE_URL=${MODELING_LLM_BASE_URL:-faux}
       - MODELING_LLM_MODEL=${MODELING_LLM_MODEL:-faux}
       - MODELING_LLM_API_KEY=${MODELING_LLM_API_KEY:-}
-      # 预留：轻量任务模型（当前版本代码未消费，设置无运行时效果）
+      - MODELING_LLM_MAX_TOKENS=${MODELING_LLM_MAX_TOKENS:-1000000}
+      - MODELING_LLM_CONTEXT_WINDOW=${MODELING_LLM_CONTEXT_WINDOW:-1000000}
+      # 可选任务模型；未设置平台 task 默认时用于部署兜底
       - MODELING_TASK_LLM_BASE_URL=${MODELING_TASK_LLM_BASE_URL:-}
       - MODELING_TASK_LLM_MODEL=${MODELING_TASK_LLM_MODEL:-}
       - MODELING_TASK_LLM_API_KEY=${MODELING_TASK_LLM_API_KEY:-}
+      # 可选显式主密钥；为空时在 DATA_DIR 自动生成，生产仍建议由 secret manager 注入
+      - MODELING_LLM_CONFIG_ENCRYPTION_KEY=${MODELING_LLM_CONFIG_ENCRYPTION_KEY:-}
       # 登录/评测都走 consumer；backend 是 consumer compose 里的服务名
       - AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://auth-server:5056}
       - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-http://auth-server:5056}

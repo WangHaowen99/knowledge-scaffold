@@ -13,6 +13,12 @@ from ..connection import EffectiveConnection
 from ..contracts import ProviderCapabilities, ProviderResult
 from ..transport.http import create_retry_session, extract_error_detail, sanitize_public_text
 
+# Upper bound for the free-text answer carried in ProviderResult.message.
+# Without this cap, arbitrary-length remote text flows directly into the tool
+# output.  8000 chars is large enough for value-domain mapping tables while
+# still bounding the response.
+_MAX_TEXT_ANSWER_CHARS = 8000
+
 
 class DataAgentProvider:
     capabilities = ProviderCapabilities(query=True, query_sql=False, native_streaming=False, probe=True)
@@ -24,7 +30,10 @@ class DataAgentProvider:
         )
         self._owns_session = session is None
 
-    def query(self, question: str) -> ProviderResult:
+    def query(
+        self,
+        question: str,
+    ) -> ProviderResult:
         body = {
             "message": {
                 "role": "ROLE_USER",
@@ -136,7 +145,12 @@ def _parse_response(body: dict) -> ProviderResult:
         return ProviderResult(success=False, error=str(reason))
     fields = _extract_fields(text)
     if not fields:
-        return ProviderResult(success=True, message="查询成功：{}".format(text[:500]), metadata={"row_count": 0})
+        bounded_text = _bounded_text(text)
+        return ProviderResult(
+            success=True,
+            message=bounded_text or "查询成功",
+            metadata={"row_count": 0},
+        )
     sql = fields.get("sql")
     columns = fields.get("columns") or []
     rows = _normalize_rows(fields.get("rows_preview") or fields.get("rows") or [])
@@ -175,6 +189,15 @@ def _extract_text(message: dict) -> str:
         if isinstance(part, str):
             return part
     return ""
+
+
+def _bounded_text(text: str) -> str:
+    """Truncate free-text answers to the configured character budget."""
+    if not text:
+        return ""
+    if len(text) <= _MAX_TEXT_ANSWER_CHARS:
+        return text
+    return "{}...".format(text[:_MAX_TEXT_ANSWER_CHARS])
 
 
 def _extract_fields(text: str) -> dict:

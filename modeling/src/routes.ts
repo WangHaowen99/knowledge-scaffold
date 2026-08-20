@@ -39,7 +39,6 @@ import { obsoleteDiagramFilePaths } from './flowchart/file-path.js';
 import { advanceStage as setProjectStage } from './projects/repo.js';
 import {
   deleteSetting,
-  deleteUserLlmSetting,
   getConsumerApiUrl,
   getEvalBindingDefaults,
   getLlmSettings,
@@ -47,9 +46,11 @@ import {
   getSetting,
   getUserLlmSetting,
   setSetting,
-  setUserLlmSetting,
+  updateUserLlmSettings,
+  UserLlmSettingsValidationError,
 } from './settings/repo.js';
 import { packageChatPlan, packageChatApply } from './workflow/package-chat.js';
+import { buildMaterialInventory } from './workflow/material-inventory.js';
 import { migrateLegacyPackageOverrides } from './workflow/package-override-migration.js';
 import {
   currentPackageCheckView,
@@ -141,6 +142,14 @@ import {
 } from './evaluation/optimization-candidate.js';
 import { buildLlm } from './llm/provider.js';
 import { runWithLlmRequest } from './llm/user-context.js';
+import { registerAdminLlmRoutes } from './settings/admin-llm-routes.js';
+import { testLlmConnection } from './settings/llm-connection-test.js';
+import {
+  initializeNewUserLlmDefaults,
+  isPlatformLlmDefaultAvailable,
+  LlmDefaultSyncError,
+  syncUserLlmToPlatformDefault,
+} from './settings/llm-default-sync.js';
 import { testConsumerConnectivity } from './consumer/client.js';
 import { config } from './config.js';
 import type { AnalysisResult, DataDictTable } from './types.js';
@@ -163,6 +172,33 @@ import { getAuthoringState } from './authoring/state.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
+import {
+  applySemanticBindingSelection,
+  previewSemanticBindingCandidates,
+} from './workflow/semantic-binding-service.js';
+
+const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
+  `semantic_binding_ignored:${projectId}:${revision}`;
+
+function isSemanticBindingIgnored(projectId: string, revision: string): boolean {
+  return Boolean(getSetting(semanticBindingIgnoreKey(projectId, revision)));
+}
+
+function ignoreSemanticBinding(projectId: string, revision: string): void {
+  setSetting(semanticBindingIgnoreKey(projectId, revision), new Date().toISOString());
+}
+
+function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {
+  const preview = previewSemanticBindingCandidates(spec, tables);
+  if (!isSemanticBindingIgnored(projectId, revision)) return preview;
+  return {
+    ...preview,
+    suggestions: [],
+    fieldSuggestions: [],
+    bindingCount: 0,
+    fieldRefCount: 0,
+  };
+}
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -184,6 +220,7 @@ function parseDraftRevision(value: unknown): number | null {
 
 function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
   tables: DataDictTable[];
+  materials: ReturnType<typeof buildMaterialInventory>;
   documents: Array<{
     id: string;
     filename: string;
@@ -192,6 +229,7 @@ function buildMaterialContext(documents: ReturnType<typeof listDocuments>): {
   }>;
 } {
   return {
+    materials: buildMaterialInventory(documents),
     tables: documents.flatMap((document) => (document.tables ?? []).map((table) => ({
       ...table,
       documentId: document.id,
@@ -356,10 +394,31 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
   app.post('/auth/register', async (req, reply) => {
     try {
       const { status, body } = await getAuthClient().register(req.body ?? {}, req.ip);
+      if (status >= 200 && status < 300) {
+        const registeredUsername = typeof body === 'object' && body !== null
+          && 'user' in body && typeof body.user === 'object' && body.user !== null
+          && 'username' in body.user
+          ? String(body.user.username).trim()
+          : '';
+        if (registeredUsername) {
+          try {
+            initializeNewUserLlmDefaults(registeredUsername);
+          } catch (error) {
+            // 认证服务已完成建号，不能再把响应伪装成注册失败；记录错误供运维修复后让用户主动同步。
+            req.log.error({ err: error, username: registeredUsername }, '初始化新用户 LLM 默认快照失败');
+          }
+        }
+      }
       return reply.code(status).send(body);
     } catch {
       return reply.code(502).send({ error: '注册服务暂不可用，请稍后再试' });
     }
+  });
+
+  // admin 平台默认配置单独封装认证/角色边界，避免模板作用域与同步路由注册顺序耦合。
+  app.register(async (adminRoutes) => {
+    adminRoutes.addHook('onRequest', (_req, _reply, done) => runWithLlmRequest(done));
+    registerAdminLlmRoutes(adminRoutes, true);
   });
 
   // 以下均需认证
@@ -379,11 +438,13 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : 'env',
         authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer（auth-server）由部署配置
         llm: {
-          baseUrl: llm.baseUrl, model: llm.model, maxTokens: llm.maxTokens,
+          baseUrl: llm.baseUrl, model: llm.model,
+          maxTokens: llm.maxTokens, contextWindow: llm.contextWindow,
           apiKeySet: !!llm.apiKey, // key 不回显
           personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
           source: getLlmSource(username),
           userIsolated: true,
+          platformDefaultAvailable: isPlatformLlmDefaultAvailable(),
         },
         evalBinding: binding,
       };
@@ -397,38 +458,33 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const s = String(v).trim();
         s ? setSetting(key, s) : deleteSetting(key); // 空串 = 清除（回退 env）
       };
-      let normalizedMaxTokens: string | undefined;
-      if (b.llmMaxTokens !== undefined) {
-        normalizedMaxTokens = String(b.llmMaxTokens).trim();
-        if (normalizedMaxTokens) {
-          const maxTokens = Number(normalizedMaxTokens);
-          if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 1_000_000) {
-            return reply.code(400).send({ error: 'llmMaxTokens 必须是 1 到 1000000 的整数' });
-          }
-        }
-      }
       if (b.consumerApiUrl !== undefined) {
         const v = String(b.consumerApiUrl).trim();
         if (v && !/^https?:\/\//.test(v)) return reply.code(400).send({ error: 'consumerApiUrl 必须是 http(s) 地址' });
-        put('consumer_api_url', v);
       }
-      const putUserLlm = (
-        key: 'base_url' | 'model' | 'max_tokens',
-        value: unknown,
-      ) => {
-        if (value === undefined) return;
-        const setting = String(value).trim();
-        setting
-          ? setUserLlmSetting(username, key, setting)
-          : deleteUserLlmSetting(username, key);
-      };
-      putUserLlm('base_url', b.llmBaseUrl);
-      putUserLlm('model', b.llmModel);
-      if (normalizedMaxTokens !== undefined) putUserLlm('max_tokens', normalizedMaxTokens);
-      if (b.llmApiKey !== undefined && String(b.llmApiKey) !== '') {
-        setUserLlmSetting(username, 'api_key', String(b.llmApiKey));
-      } // key 留空 = 保持当前用户现有 key 不变
-      if (b.llmApiKeyClear === true) deleteUserLlmSetting(username, 'api_key');
+      const hasUserLlmPatch = [
+        'llmBaseUrl', 'llmModel', 'llmApiKey', 'llmApiKeyClear',
+        'llmProviderClear', 'llmMaxTokens', 'llmContextWindow',
+      ].some((key) => Object.hasOwn(b, key));
+      if (hasUserLlmPatch) {
+        try {
+          updateUserLlmSettings(username, {
+            baseUrl: b.llmBaseUrl === undefined ? undefined : String(b.llmBaseUrl),
+            model: b.llmModel === undefined ? undefined : String(b.llmModel),
+            apiKey: b.llmApiKey === undefined ? undefined : String(b.llmApiKey),
+            apiKeyClear: b.llmApiKeyClear === true,
+            providerClear: b.llmProviderClear === true,
+            maxTokens: b.llmMaxTokens === undefined ? undefined : String(b.llmMaxTokens),
+            contextWindow: b.llmContextWindow === undefined ? undefined : String(b.llmContextWindow),
+          });
+        } catch (error) {
+          if (error instanceof UserLlmSettingsValidationError) {
+            return reply.code(400).send({ error: error.message });
+          }
+          throw error;
+        }
+      }
+      if (b.consumerApiUrl !== undefined) put('consumer_api_url', b.consumerApiUrl);
       put('eval_binding_provider', b.evalBindingProvider);
       put('eval_binding_url', b.evalBindingUrl);
       put('eval_binding_token', b.evalBindingToken);
@@ -436,29 +492,36 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       return { ok: true };
     });
 
+    r.post('/api/settings/llm/sync-default', async (req, reply) => {
+      try {
+        syncUserLlmToPlatformDefault(req.user!.username);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof LlmDefaultSyncError) {
+          return reply.code(error.statusCode).send({ error: error.message });
+        }
+        throw error;
+      }
+    });
+
     // LLM 有效性测试：最小 chat/completions 调用；失败时返回原始错误（供排障）
     r.post('/api/settings/llm/test', async (req) => {
       const b = (req.body ?? {}) as Record<string, string>;
-      const saved = getLlmSettings(req.user!.username);
-      const baseUrl = (b.baseUrl || saved.baseUrl).replace(/\/+$/, '');
-      const apiKey = b.apiKey || saved.apiKey;
+      const username = req.user!.username;
+      const saved = getLlmSettings(username);
+      const baseUrl = b.baseUrl || saved.baseUrl;
       const model = b.model || saved.model;
-      if (baseUrl === 'faux') return { ok: true, detail: 'faux 演示模式（不调用真实端点）' };
-      if (!baseUrl || !model) return { ok: false, error: 'base url 与模型名必填' };
-      const t0 = Date.now();
-      try {
-        const res = await fetch(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey ?? ''}` },
-          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
-          signal: AbortSignal.timeout(20_000),
-        });
-        const raw = await res.text();
-        if (!res.ok) return { ok: false, status: res.status, latencyMs: Date.now() - t0, error: raw.slice(0, 1000) };
-        return { ok: true, status: res.status, latencyMs: Date.now() - t0 };
-      } catch (e) {
-        return { ok: false, latencyMs: Date.now() - t0, error: e instanceof Error ? `${e.name}: ${e.message}${e.cause ? `（${e.cause}）` : ''}` : String(e) };
-      }
+      const providerChanged = baseUrl.trim().replace(/\/+$/, '') !== saved.baseUrl.trim().replace(/\/+$/, '')
+        || model.trim() !== saved.model.trim();
+      // 编辑快照/部署 provider 时不得把其 Key 带到新端点；已有个人 Key 则按个人草稿保留语义复用。
+      const apiKey = b.apiKey || (providerChanged
+        ? (getUserLlmSetting(username, 'api_key') ?? '')
+        : saved.apiKey);
+      return testLlmConnection({
+        baseUrl,
+        apiKey,
+        model,
+      });
     });
 
     // 连通性测试：health / auth（token 透传）/ 模型就绪
@@ -784,10 +847,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       const p = getProject(id);
       if (!p || p.owner !== username) return null;
       const docs = listDocuments(p.id);
-      const { tables, documents: textDocs } = buildMaterialContext(docs);
+      const { tables, documents: textDocs, materials } = buildMaterialContext(docs);
       // stale（资料变更后）也返回旧分析——结果仍可用，由前端提示重跑
       const analyzeNode = latestNodeOf(listNodes(p.id), 'analyze', ['done', 'stale']);
-      return { p, ctx: { tables, documents: textDocs }, analysis: analyzeNode?.output };
+      return { p, ctx: { tables, documents: textDocs, materials }, analysis: analyzeNode?.output };
     };
     const packageForRound = async (projectId: string, round: m3repo.EvalRound) => {
       if (!round.artifactRevision) return null;
@@ -869,6 +932,100 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       } catch (error) {
         return sendArtifactError(reply, error);
       }
+    });
+
+    r.get('/api/projects/:id/package/semantic-bindings/suggestions', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      try {
+        const current = await packageArtifacts.current(c.p.id);
+        if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+        return {
+          revision: current.revision.oid,
+          ...semanticBindingPreview(c.p.id, current.revision.oid, current.spec, c.ctx.tables),
+        };
+      } catch (error) {
+        return sendArtifactError(reply, error);
+      }
+    });
+
+    r.post('/api/projects/:id/package/semantic-bindings/ignore', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = String(body.expectedRevision ?? '').trim();
+      if (!expectedRevision) return reply.code(400).send({ error: 'expectedRevision 必填' });
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+      if (current.revision.oid !== expectedRevision) {
+        return reply.code(409).send({
+          code: 'REVISION_CONFLICT',
+          error: '知识包已更新，请刷新后重试',
+          currentRevision: current.revision.oid,
+        });
+      }
+      ignoreSemanticBinding(c.p.id, current.revision.oid);
+      return {
+        revision: current.revision.oid,
+        ...semanticBindingPreview(c.p.id, current.revision.oid, current.spec, c.ctx.tables),
+      };
+    });
+
+    r.post('/api/projects/:id/package/semantic-bindings/apply', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = String(body.expectedRevision ?? '').trim();
+      const bindingKeys = Array.isArray(body.bindingKeys) ? body.bindingKeys.map(String) : [];
+      const fieldRefs = Array.isArray(body.fieldRefs)
+        ? body.fieldRefs.map((item: any) => ({
+          objectKey: String(item?.objectKey ?? '').trim(),
+          fieldKey: String(item?.fieldKey ?? '').trim(),
+          bindingKey: String(item?.bindingKey ?? '').trim(),
+        }))
+        : [];
+      if (!expectedRevision) return reply.code(400).send({ error: 'expectedRevision 必填' });
+      if (!bindingKeys.length && !fieldRefs.length) return reply.code(400).send({ error: '请至少选择一个术语绑定或字段关联' });
+      return withLock(`${c.p.id}:semantic-binding`, reply, async () => {
+        try {
+          const current = await packageArtifacts.current(c.p.id);
+          if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+          if (current.revision.oid !== expectedRevision) {
+            return reply.code(409).send({
+              code: 'REVISION_CONFLICT',
+              error: '知识包已更新，请刷新后重试',
+              currentRevision: current.revision.oid,
+            });
+          }
+          const applied = applySemanticBindingSelection(current.spec, c.ctx.tables, { bindingKeys, fieldRefs });
+          const saved = await packageArtifacts.savePackageVersion(c.p.id, {
+            expectedRevision,
+            spec: applied.spec,
+            coverage: current.coverage,
+            action: {
+              cause: 'semantic_binding_confirmed',
+              summary: '确认术语绑定和字段关联',
+              actorKind: 'user',
+              actorName: req.user!.username,
+            },
+          });
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: c.p.id,
+            type: 'package.revision.created',
+            payload: { revisionId: saved.revision.oid, cause: 'semantic_binding_confirmed' },
+          });
+          return {
+            revision: saved.revision.oid,
+            appliedBindings: applied.appliedBindings,
+            appliedFieldRefs: applied.appliedFieldRefs,
+          };
+        } catch (error) {
+          return sendArtifactError(reply, error);
+        }
+      }, 'semantic-binding');
     });
 
     // 人工编辑草稿后端。草稿发布后固化为一个正式版本；活动草稿期间消费与修缮入口统一门禁。
@@ -1135,6 +1292,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       void inFlight.run(chatKey, 'package-chat', async () => {
         const result = await runPackageChatPlan(c.p, history, message.trim(), {
           documents: c.ctx.documents,
+          materials: c.ctx.materials,
           analysis: c.analysis as AnalysisResult | undefined,
           documentAccess: 'full-read-only',
         });
@@ -1177,7 +1335,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const formatFindings = runFormatChecks(latest.spec, snapshot.files);
         const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, packageIntentQuestions(latest.spec));
         const semanticFindings = await runSemanticCheck(c.p, latest.spec);
-        const findings = [...formatFindings, ...ruleFindings, ...semanticFindings]
+        const findings = [
+          ...formatFindings,
+          ...ruleFindings,
+          ...semanticFindings,
+        ]
           .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
         saveCheck(c.p.id, latest.packageVersion, findings, latest.revision.oid);
         return {

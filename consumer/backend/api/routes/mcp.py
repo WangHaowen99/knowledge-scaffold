@@ -25,6 +25,7 @@ from integration.mcp.scope import (
     resolve_mcp_scope_from_token,
 )
 from integration.mcp.service_catalog import list_mcp_service_cards
+from integration.mcp.ontology_binding import MCPOntologyBindingError
 from integration.mcp.token_service import (
     MCPTokenAuthError,
     MCPTokenServiceError,
@@ -136,6 +137,15 @@ def _create_token(
     workspace_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    ontology_id = ""
+    if "ontology_id" in payload:
+        raw_ontology_id = payload.get("ontology_id")
+        if not isinstance(raw_ontology_id, str) or not raw_ontology_id.strip():
+            raise MCPOntologyBindingError(
+                "MCP_ONTOLOGY_ID_INVALID",
+                "ontology_id 必须是非空字符串",
+            )
+        ontology_id = raw_ontology_id.strip()
     cfg = load_mcp_runtime_config()
     expires_in = payload["expires_in"] if "expires_in" in payload else cfg.token_ttl_seconds
     with workspace_scope(workspace_id):
@@ -145,6 +155,7 @@ def _create_token(
             name=str(payload.get("name") or "").strip(),
             scopes=normalize_scopes(payload.get("scopes")),
             expires_in=expires_in,
+            ontology_id=ontology_id,
             config=cfg,
         )
 
@@ -163,6 +174,11 @@ async def create_token_api(
             username=user.username,
             workspace_id=workspace_id,
             payload=payload,
+        )
+    except MCPOntologyBindingError as exc:
+        return JSONResponse(
+            {"detail": exc.detail, "error_code": exc.code},
+            status_code=exc.status_code,
         )
     except MCPTokenServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

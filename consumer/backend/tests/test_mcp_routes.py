@@ -11,6 +11,7 @@ import api.routes.mcp as mcp_routes
 from api.auth.auth import AuthUser
 from api.protocols.mcp.paths import MCP_INTERNAL_CHAT_PATH
 from api.testing import TestApplication
+from integration.mcp.ontology_binding import MCPOntologyBindingError
 from integration.mcp.scope import MCPRequestScope
 
 
@@ -197,3 +198,85 @@ def test_management_auth_rejects_before_consuming_body():
 
     assert response.status_code == 401
     assert body_chunks_requested == []
+
+
+def test_create_token_api_forwards_validated_ontology_binding(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    monkeypatch.setattr(
+        mcp_routes,
+        "resolve_workspace_id",
+        lambda _request: "workspace_demo",
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "load_mcp_runtime_config",
+        lambda: SimpleNamespace(token_ttl_seconds=3600),
+    )
+    captured = {}
+
+    def create_token(**kwargs):
+        captured.update(kwargs)
+        return {
+            "token": "one-time-placeholder",
+            "item": {
+                "token_id": "token_demo",
+                "ontology_id": kwargs["ontology_id"],
+                "binding_mode": "ontology",
+            },
+        }
+
+    monkeypatch.setattr(mcp_routes, "create_mcp_token", create_token)
+    response = TestClient(app).post(
+        "/agentic/mcp/tokens",
+        headers={"Authorization": "Bearer valid"},
+        json={
+            "ontology_id": "knowledge_package_demo",
+            "scopes": ["mcp:search", "mcp:chat"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert captured["username"] == "operator_a"
+    assert captured["workspace_id"] == "workspace_demo"
+    assert captured["ontology_id"] == "knowledge_package_demo"
+
+
+def test_create_token_api_returns_stable_ontology_errors(monkeypatch):
+    app = _app()
+    app.state.services["AUTH_MANAGER"] = _AuthBackend()
+    monkeypatch.setattr(
+        mcp_routes,
+        "resolve_workspace_id",
+        lambda _request: "workspace_demo",
+    )
+    monkeypatch.setattr(
+        mcp_routes,
+        "load_mcp_runtime_config",
+        lambda: SimpleNamespace(token_ttl_seconds=3600),
+    )
+
+    def reject_disabled_ontology(**_kwargs):
+        raise MCPOntologyBindingError(
+            "MCP_ONTOLOGY_DISABLED",
+            "指定知识包当前已禁用",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(mcp_routes, "create_mcp_token", reject_disabled_ontology)
+
+    invalid = TestClient(app).post(
+        "/agentic/mcp/tokens",
+        headers={"Authorization": "Bearer valid"},
+        json={"ontology_id": ""},
+    )
+    disabled = TestClient(app).post(
+        "/agentic/mcp/tokens",
+        headers={"Authorization": "Bearer valid"},
+        json={"ontology_id": "knowledge_package_demo"},
+    )
+
+    assert invalid.status_code == 400
+    assert invalid.json()["error_code"] == "MCP_ONTOLOGY_ID_INVALID"
+    assert disabled.status_code == 409
+    assert disabled.json()["error_code"] == "MCP_ONTOLOGY_DISABLED"

@@ -26,10 +26,12 @@ const KID = 'route-test-key';
 let privateKey: CryptoKey;
 let upstream: Server;
 let app: FastifyInstance;
+let upstreamBaseUrl: string;
 
 // status: -1 表示直接掐断连接（模拟网络错）
 const routes = new Map<string, { status: number; body?: string; contentType?: string }>();
 const consumerRequests: string[] = [];
+const llmConnectionRequests: Array<{ path: string; authorization: string }> = [];
 const testedDataSources: unknown[] = [];
 const syncedDataSources: any[] = [];
 const graphImportTasks: Array<() => Promise<void>> = [];
@@ -54,6 +56,12 @@ before(async () => {
 
   upstream = createServer((req, res) => {
     if (req.url?.startsWith('/agentic/')) consumerRequests.push(`${req.method} ${req.url}`);
+    if (req.url?.endsWith('/chat/completions')) {
+      llmConnectionRequests.push({
+        path: req.url,
+        authorization: String(req.headers.authorization ?? ''),
+      });
+    }
     req.on('data', () => {});
     req.on('end', () => {
       const route = routes.get(`${req.method} ${req.url}`);
@@ -69,11 +77,12 @@ before(async () => {
   });
   await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r));
   const addr = upstream.address() as { port: number };
+  upstreamBaseUrl = `http://127.0.0.1:${addr.port}`;
 
-  process.env.AUTH_ISSUER_URL = `http://127.0.0.1:${addr.port}`;
+  process.env.AUTH_ISSUER_URL = upstreamBaseUrl;
   process.env.AUTH_JWT_ISSUER = ISS;
   process.env.AUTH_JWT_AUDIENCE = AUD;
-  process.env.CONSUMER_API_URL = `http://127.0.0.1:${addr.port}`;
+  process.env.CONSUMER_API_URL = upstreamBaseUrl;
   process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'mtool-route-test-'));
   process.env.EVAL_DB_URL = 'mysql://root:eval-secret@mysql.local:3306';
 
@@ -367,6 +376,188 @@ test('/api/me：合法 token → 200；typ=refresh 的 token → 401；无 token
   assert.equal(res.statusCode, 401);
 });
 
+test('过期 token 访问不存在项目只返回一次 401，后续请求仍可处理', async () => {
+  const now = Math.floor(Date.now() / 1_000);
+  const expired = await new SignJWT({ typ: 'access', role: 'user', ver: 1, pwd_cr: false })
+    .setProtectedHeader({ alg: 'RS256', kid: KID })
+    .setIssuedAt(now - 120)
+    .setIssuer(ISS)
+    .setAudience(AUD)
+    .setSubject('expired-user')
+    .setExpirationTime(now - 60)
+    .sign(privateKey);
+
+  const response = await app.inject({
+    method: 'GET',
+    url: '/api/projects/project_missing',
+    headers: { authorization: `Bearer ${expired}` },
+  });
+
+  assert.equal(response.statusCode, 401, response.body);
+  assert.deepEqual(response.json(), { error: '认证失败或令牌已过期' });
+
+  const health = await app.inject({ method: 'GET', url: '/health' });
+  assert.equal(health.statusCode, 200);
+  assert.deepEqual(health.json(), { status: 'ok' });
+});
+
+test('平台 LLM 默认配置 API 同时要求登录和 admin 角色', async () => {
+  let response = await app.inject({ method: 'GET', url: '/api/admin/llm-defaults' });
+  assert.equal(response.statusCode, 401);
+
+  const userToken = await signToken({}, 'regular-user');
+  response = await app.inject({
+    method: 'GET', url: '/api/admin/llm-defaults',
+    headers: { authorization: `Bearer ${userToken}` },
+  });
+  assert.equal(response.statusCode, 403);
+
+  const adminToken = await signToken({ role: 'admin' }, 'platform-admin');
+  response = await app.inject({
+    method: 'GET', url: '/api/admin/llm-defaults',
+    headers: { authorization: `Bearer ${adminToken}` },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().defaults, { main: null, task: null });
+});
+
+test('新注册用户初始化当时的默认快照，老用户与既有快照不受 admin 后续修改影响', async () => {
+  const adminToken = await signToken({ role: 'admin' }, 'registration-platform-admin');
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
+  const configured = await app.inject({
+    method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+    payload: {
+      purpose: 'main', baseUrl: 'faux', model: 'registration-default-v1',
+      maxTokens: 5000, expectedRevision: 0,
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  let revision = configured.json().defaults.main.revision;
+
+  try {
+    routes.set('POST /register', {
+      status: 200,
+      body: JSON.stringify({
+        success: true,
+        user: { username: 'registered_default_user_a', role: 'user', password_change_required: false },
+      }),
+    });
+    let response = await app.inject({
+      method: 'POST', url: '/auth/register',
+      payload: { username: 'registered_default_user_a', email: 'new-a@example.com', password: 'synthetic-password' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+
+    const firstUserToken = await signToken({}, 'registered_default_user_a');
+    const firstUserHeaders = { authorization: `Bearer ${firstUserToken}` };
+    const firstSnapshot = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
+    assert.equal(firstSnapshot.json().llm.model, 'registration-default-v1');
+    assert.equal(firstSnapshot.json().llm.maxTokens, 5000);
+    assert.equal(firstSnapshot.json().llm.source, 'default_snapshot');
+
+    const existingToken = await signToken({}, 'existing_without_default_snapshot');
+    const existing = await app.inject({
+      method: 'GET', url: '/api/settings',
+      headers: { authorization: `Bearer ${existingToken}` },
+    });
+    assert.equal(existing.json().llm.source, 'env');
+    assert.notEqual(existing.json().llm.model, 'registration-default-v1');
+
+    const updated = await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: {
+        purpose: 'main', baseUrl: 'faux', model: 'registration-default-v2',
+        maxTokens: 6000, expectedRevision: revision,
+      },
+    });
+    assert.equal(updated.statusCode, 200, updated.body);
+    revision = updated.json().defaults.main.revision;
+
+    const firstStillV1 = await app.inject({ method: 'GET', url: '/api/settings', headers: firstUserHeaders });
+    assert.equal(firstStillV1.json().llm.model, 'registration-default-v1');
+    assert.equal(firstStillV1.json().llm.maxTokens, 5000);
+
+    routes.set('POST /register', {
+      status: 200,
+      body: JSON.stringify({
+        success: true,
+        user: { username: 'registered_default_user_b', role: 'user', password_change_required: false },
+      }),
+    });
+    response = await app.inject({
+      method: 'POST', url: '/auth/register',
+      payload: { username: 'registered_default_user_b', email: 'new-b@example.com', password: 'synthetic-password' },
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const secondUserToken = await signToken({}, 'registered_default_user_b');
+    const secondSnapshot = await app.inject({
+      method: 'GET', url: '/api/settings',
+      headers: { authorization: `Bearer ${secondUserToken}` },
+    });
+    assert.equal(secondSnapshot.json().llm.model, 'registration-default-v2');
+    assert.equal(secondSnapshot.json().llm.maxTokens, 6000);
+  } finally {
+    await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: { purpose: 'main', enabled: false, expectedRevision: revision },
+    });
+  }
+});
+
+test('注册成功会清理同名旧账号的 Modeling LLM 配置，注册失败不触碰旧配置', async () => {
+  const { getDb } = await import('../src/db/index.js');
+  const username = 'reused_registration_username';
+  getDb().prepare(`INSERT INTO user_llm_settings (
+      username, base_url, model, api_key, max_tokens, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(username, 'https://former-owner.example.com/v1', 'former-owner-model', 'former-owner-key', 2048, new Date().toISOString());
+
+  routes.set('POST /register', { status: 400, body: JSON.stringify({ error: '用户名已存在' }) });
+  let response = await app.inject({
+    method: 'POST', url: '/auth/register',
+    payload: { username, email: 'failed@example.com', password: 'synthetic-password' },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.equal((getDb().prepare('SELECT model FROM user_llm_settings WHERE username = ?')
+    .get(username) as { model: string }).model, 'former-owner-model');
+
+  routes.set('POST /register', {
+    status: 200,
+    body: JSON.stringify({ success: true, user: { username, role: 'user' } }),
+  });
+  response = await app.inject({
+    method: 'POST', url: '/auth/register',
+    payload: { username, email: 'created@example.com', password: 'synthetic-password' },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(getDb().prepare('SELECT model FROM user_llm_settings WHERE username = ?').get(username), undefined);
+  assert.equal(getDb().prepare('SELECT model FROM user_llm_default_snapshots WHERE username = ?').get(username), undefined);
+
+  const adminToken = await signToken({ role: 'admin' }, 'post-registration-admin');
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
+  const configured = await app.inject({
+    method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+    payload: {
+      purpose: 'main', baseUrl: 'faux', model: 'future-default-must-not-fallback',
+      maxTokens: 4096, expectedRevision: 0,
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  try {
+    const userToken = await signToken({}, username);
+    const settings = await app.inject({
+      method: 'GET', url: '/api/settings', headers: { authorization: `Bearer ${userToken}` },
+    });
+    assert.equal(settings.json().llm.source, 'env');
+    assert.notEqual(settings.json().llm.model, 'future-default-must-not-fallback');
+  } finally {
+    await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: { purpose: 'main', enabled: false, expectedRevision: configured.json().defaults.main.revision },
+    });
+  }
+});
+
 test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   const aliceToken = await signToken({}, 'settings_user_a');
   const bobToken = await signToken({}, 'settings_user_b');
@@ -377,7 +568,7 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
     method: 'PUT', url: '/api/settings', headers: aliceHeaders,
     payload: {
       llmBaseUrl: 'https://user-a.example.com/v1', llmModel: 'model-a',
-      llmApiKey: 'synthetic-key-a', llmMaxTokens: '4096',
+      llmApiKey: 'synthetic-key-a', llmMaxTokens: '4096', llmContextWindow: '1000000',
     },
   });
   assert.equal(response.statusCode, 200);
@@ -386,7 +577,7 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
     method: 'PUT', url: '/api/settings', headers: bobHeaders,
     payload: {
       llmBaseUrl: 'https://user-b.example.com/v1', llmModel: 'model-b',
-      llmApiKey: 'synthetic-key-b', llmMaxTokens: '6144',
+      llmApiKey: 'synthetic-key-b', llmMaxTokens: '6144', llmContextWindow: '128000',
     },
   });
   assert.equal(response.statusCode, 200);
@@ -396,12 +587,14 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   assert.equal(alice.statusCode, 200);
   assert.equal(bob.statusCode, 200);
   assert.deepEqual(alice.json().llm, {
-    baseUrl: 'https://user-a.example.com/v1', model: 'model-a', maxTokens: 4096,
+    baseUrl: 'https://user-a.example.com/v1', model: 'model-a', maxTokens: 4096, contextWindow: 1000000,
     apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
+    platformDefaultAvailable: false,
   });
   assert.deepEqual(bob.json().llm, {
-    baseUrl: 'https://user-b.example.com/v1', model: 'model-b', maxTokens: 6144,
+    baseUrl: 'https://user-b.example.com/v1', model: 'model-b', maxTokens: 6144, contextWindow: 128000,
     apiKeySet: true, personalApiKeySet: true, source: 'user', userIsolated: true,
+    platformDefaultAvailable: false,
   });
   assert.doesNotMatch(alice.body, /synthetic-key/);
   assert.doesNotMatch(bob.body, /synthetic-key/);
@@ -413,6 +606,13 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   assert.equal(response.statusCode, 400);
   const unchanged = await app.inject({ method: 'GET', url: '/api/settings', headers: aliceHeaders });
   assert.equal(unchanged.json().llm.baseUrl, 'https://user-a.example.com/v1');
+
+  response = await app.inject({
+    method: 'PUT', url: '/api/settings', headers: aliceHeaders,
+    payload: { llmContextWindow: '0' },
+  });
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /llmContextWindow/);
 
   response = await app.inject({
     method: 'PUT', url: '/api/settings', headers: aliceHeaders,
@@ -430,6 +630,145 @@ test('LLM 配置按认证用户隔离，API Key 不回显', async () => {
   ]);
   assert.equal(aliceConcurrent.json().llm.baseUrl, 'https://user-a.example.com/v1');
   assert.equal(bobConcurrent.json().llm.baseUrl, 'https://user-b.example.com/v1');
+});
+
+test('同步平台默认 LLM 只替换当前用户快照，admin 后续修改不会自动追写', async () => {
+  const adminToken = await signToken({ role: 'admin' }, 'sync-platform-admin');
+  const userAToken = await signToken({}, 'sync_user_a');
+  const userBToken = await signToken({}, 'sync_user_b');
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
+  const userAHeaders = { authorization: `Bearer ${userAToken}` };
+  const userBHeaders = { authorization: `Bearer ${userBToken}` };
+
+  let response = await app.inject({ method: 'POST', url: '/api/settings/llm/sync-default' });
+  assert.equal(response.statusCode, 401);
+
+  for (const [headers, suffix] of [[userAHeaders, 'a'], [userBHeaders, 'b']] as const) {
+    response = await app.inject({
+      method: 'PUT', url: '/api/settings', headers,
+      payload: {
+        llmBaseUrl: `https://sync-user-${suffix}.example.com/v1`,
+        llmModel: `personal-model-${suffix}`,
+        llmApiKey: `synthetic-sync-key-${suffix}`,
+        llmMaxTokens: suffix === 'a' ? '4096' : '6144',
+      },
+    });
+    assert.equal(response.statusCode, 200);
+  }
+
+  response = await app.inject({
+    method: 'POST', url: '/api/settings/llm/sync-default', headers: userAHeaders,
+  });
+  assert.equal(response.statusCode, 409);
+  assert.match(response.json().error, /尚未配置平台默认 LLM/);
+  const userABeforeDefault = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+  assert.equal(userABeforeDefault.json().llm.model, 'personal-model-a');
+
+  const configured = await app.inject({
+    method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+    payload: {
+      purpose: 'main', baseUrl: 'faux', model: 'platform-default-model',
+      maxTokens: 7777, expectedRevision: 0,
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  let revision = configured.json().defaults.main.revision;
+
+  try {
+    const available = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+    assert.equal(available.json().llm.platformDefaultAvailable, true);
+
+    response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/sync-default', headers: userAHeaders,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+
+    const userA = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+    const userB = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
+    assert.deepEqual(userA.json().llm, {
+      baseUrl: 'faux', model: 'platform-default-model', maxTokens: 7777, contextWindow: 1000000,
+      apiKeySet: false, personalApiKeySet: false, source: 'default_snapshot', userIsolated: true,
+      platformDefaultAvailable: true,
+    });
+    assert.equal(userB.json().llm.model, 'personal-model-b');
+    assert.equal(userB.json().llm.maxTokens, 6144);
+    assert.equal(userB.json().llm.personalApiKeySet, true);
+    assert.equal(userB.json().llm.source, 'user');
+
+    const updated = await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: {
+        purpose: 'main', baseUrl: 'faux', model: 'platform-default-model-v2',
+        maxTokens: 8888, expectedRevision: revision,
+      },
+    });
+    assert.equal(updated.statusCode, 200, updated.body);
+    revision = updated.json().defaults.main.revision;
+
+    const userAStillV1 = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+    assert.equal(userAStillV1.json().llm.model, 'platform-default-model');
+    assert.equal(userAStillV1.json().llm.maxTokens, 7777);
+    const userBAfterAdminUpdate = await app.inject({ method: 'GET', url: '/api/settings', headers: userBHeaders });
+    assert.equal(userBAfterAdminUpdate.json().llm.model, 'personal-model-b');
+
+    response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/sync-default', headers: userAHeaders,
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    const userAAfterResync = await app.inject({ method: 'GET', url: '/api/settings', headers: userAHeaders });
+    assert.equal(userAAfterResync.json().llm.model, 'platform-default-model-v2');
+    assert.equal(userAAfterResync.json().llm.maxTokens, 8888);
+  } finally {
+    await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: { purpose: 'main', enabled: false, expectedRevision: revision },
+    });
+  }
+});
+
+test('编辑默认快照的端点/模型做连接测试时不会把快照 Key 发到新端点', async () => {
+  const adminToken = await signToken({ role: 'admin' }, 'connection-test-admin');
+  const userToken = await signToken({}, 'connection_test_snapshot_user');
+  const adminHeaders = { authorization: `Bearer ${adminToken}` };
+  const userHeaders = { authorization: `Bearer ${userToken}` };
+  routes.set('POST /chat/completions', { status: 200, body: '{}' });
+  routes.set('POST /changed/chat/completions', { status: 200, body: '{}' });
+
+  const configured = await app.inject({
+    method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+    payload: {
+      purpose: 'main', baseUrl: upstreamBaseUrl, model: 'snapshot-test-model',
+      apiKey: 'snapshot-secret-must-not-cross-scope', maxTokens: 4096, expectedRevision: 0,
+    },
+  });
+  assert.equal(configured.statusCode, 200, configured.body);
+  let revision = configured.json().defaults.main.revision;
+
+  try {
+    const synced = await app.inject({ method: 'POST', url: '/api/settings/llm/sync-default', headers: userHeaders });
+    assert.equal(synced.statusCode, 200, synced.body);
+
+    llmConnectionRequests.length = 0;
+    let response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/test', headers: userHeaders,
+      payload: { baseUrl: upstreamBaseUrl, model: 'snapshot-test-model' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(llmConnectionRequests.at(-1)?.authorization, 'Bearer snapshot-secret-must-not-cross-scope');
+
+    response = await app.inject({
+      method: 'POST', url: '/api/settings/llm/test', headers: userHeaders,
+      payload: { baseUrl: `${upstreamBaseUrl}/changed`, model: 'edited-model' },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(llmConnectionRequests.at(-1)?.path, '/changed/chat/completions');
+    assert.equal(llmConnectionRequests.at(-1)?.authorization, '');
+  } finally {
+    await app.inject({
+      method: 'PUT', url: '/api/admin/llm-defaults', headers: adminHeaders,
+      payload: { purpose: 'main', enabled: false, expectedRevision: revision },
+    });
+  }
 });
 
 test('知识包工作区：导入 ZIP 后建立仅编辑项目、版本索引和原始文件快照', async () => {
@@ -1420,7 +1759,7 @@ test('包修缮运行期间人工草稿只读，所有写接口统一返回 409'
   assert.equal(draftAfterRepair.statusCode, 201, draftAfterRepair.body);
 });
 
-test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全文意图可访问', async () => {
+test('主建模聊天把全部资料清单与当前文本材料分别交给 packageChatPlan', async () => {
   const token = await signToken();
   const headers = { authorization: `Bearer ${token}` };
   const created = await app.inject({
@@ -1437,6 +1776,10 @@ test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全
   const document = insertDocument({
     projectId, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
     textContent: '第一章 产品准入条件',
+  });
+  const spreadsheet = insertDocument({
+    projectId, filename: 'dataset.xlsx', kind: 'excel', parseStatus: 'parsed',
+    tables: [{ name: 'Data', fields: [], rowCount: 2 }],
   });
 
   let receivedOptions: any;
@@ -1464,6 +1807,19 @@ test('主建模聊天把当前文本材料交给 packageChatPlan 且默认仅全
         document.contentHash, document.semanticHash,
       ].join(':'),
     }]);
+    assert.deepEqual(
+      [...receivedOptions.materials].sort((left, right) => left.filename.localeCompare(right.filename)),
+      [
+        {
+          id: spreadsheet.id, filename: 'dataset.xlsx', kind: 'excel', parseStatus: 'parsed',
+          textLength: 0, tableCount: 1,
+        },
+        {
+          id: document.id, filename: '营销产品手册.docx', kind: 'word', parseStatus: 'parsed',
+          textLength: '第一章 产品准入条件'.length, tableCount: 0,
+        },
+      ].sort((left, right) => left.filename.localeCompare(right.filename)),
+    );
   } finally {
     packageChatPlanTask = null;
   }

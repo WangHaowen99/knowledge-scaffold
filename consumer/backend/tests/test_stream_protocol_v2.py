@@ -394,6 +394,49 @@ def test_business_data_search_finished_exposes_bounded_execution_projection():
     assert "evidence" not in projection
 
 
+def test_lookup_values_projection_counts_real_provider_requests():
+    raw_output = json.dumps({
+        "action": "lookup_values",
+        "entity": "object_demo",
+        "status": "partial",
+        "value_results": [
+            {
+                "binding_key": "binding_a",
+                "field_keys": ["field_a"],
+                "input_values": ["value_a"],
+                "content": "result_a",
+            }
+        ],
+        "errors": [
+            {
+                "code": "VALUE_PROVIDER_FAILED",
+                "message": "request failed",
+                "binding_key": "binding_b",
+            },
+            {
+                "code": "VALUE_INPUT_INVALID",
+                "message": "invalid input",
+                "binding_key": "",
+            },
+        ],
+    })
+
+    payload = build_tool_finished_payload(
+        tool_name="business_data_search",
+        tool_call_id="call-value-lookup",
+        status="completed",
+        raw_output=raw_output,
+        error=None,
+        elapsed_ms=100,
+    )
+
+    projection = payload["output_projection"]
+    assert projection["action"] == "lookup_values"
+    assert projection["status"] == "partial"
+    assert projection["provider_request_count"] == 2
+    assert projection["error_count"] == 2
+
+
 def test_execute_tool_batch_emits_v2_regular_tool_events():
     captured = []
 

@@ -1,7 +1,5 @@
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions';
-import { config } from '../config.js';
-import { getLlmSettings, hasUserLlmProviderOverride } from '../settings/repo.js';
-import { currentLlmUser } from './user-context.js';
+import { getLlmSettings, getTaskLlmSettings, type LlmSettings } from '../settings/repo.js';
 
 // pi agent 的 LLM 依赖：一个 model 对象 + streamFn + getApiKey。
 // 真实端点走 openai-completions；冒烟/测试可注入 faux（见 scripts/smoke-nodes.ts）。
@@ -12,7 +10,12 @@ export interface LlmDeps {
 }
 
 // 手构一个最小 openai-completions Model 对象（字段参照内置 provider 的 models）。
-function buildModel(baseUrl: string, modelId: string, maxTokens: number): any {
+function buildModel(
+  baseUrl: string,
+  modelId: string,
+  maxTokens: number,
+  contextWindow: number,
+): any {
   return {
     id: modelId,
     name: modelId,
@@ -22,24 +25,39 @@ function buildModel(baseUrl: string, modelId: string, maxTokens: number): any {
     input: ['text'],
     reasoning: false,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
+    contextWindow,
     // 大规格（几十个对象）的 submit_package_spec 输出可能超 8k token，页面/env 可放宽
     maxTokens,
   };
 }
 
-// LLM 配置来源：认证用户配置优先，部署 env 兜底——每次构建即时读取，页面改完即生效。
-export function buildLlm(): LlmDeps {
-  const llm = getLlmSettings();
-  if (llm.baseUrl === 'faux') return buildFauxModeler();
-  if (!llm.baseUrl || !llm.model) {
-    throw new Error('未配置 LLM（请在配置中心填写 base url 与模型名，或设置 MODELING_LLM_BASE_URL / MODELING_LLM_MODEL）');
+function buildConfiguredLlm(llm: LlmSettings, maxTokensCap?: number, task = false): LlmDeps {
+  const cap = (deps: LlmDeps): LlmDeps => maxTokensCap
+    ? { ...deps, model: { ...deps.model, maxTokens: Math.min(deps.model.maxTokens, maxTokensCap) } }
+    : deps;
+  if (llm.baseUrl === 'faux') {
+    const faux = buildFauxModeler();
+    return cap({
+      ...faux,
+      model: { ...faux.model, maxTokens: llm.maxTokens, contextWindow: llm.contextWindow },
+    });
   }
+  if (!llm.baseUrl || !llm.model) {
+    throw new Error(task
+      ? '任务 LLM 配置不完整（Base URL 与模型名必须在同一配置作用域内同时设置）'
+      : '未配置 LLM（请在配置中心填写 Base URL 与模型名，或设置 MODELING_LLM_BASE_URL / MODELING_LLM_MODEL）');
+  }
+  const maxTokens = maxTokensCap ? Math.min(llm.maxTokens, maxTokensCap) : llm.maxTokens;
   return {
-    model: buildModel(llm.baseUrl, llm.model, llm.maxTokens),
+    model: buildModel(llm.baseUrl, llm.model, maxTokens, llm.contextWindow),
     streamFn: streamSimple,
     getApiKey: () => llm.apiKey || undefined,
   };
+}
+
+// 每次构建解析个人配置或已固化的用户快照；当前平台模板不参与运行时兜底。
+export function buildLlm(): LlmDeps {
+  return buildConfiguredLlm(getLlmSettings());
 }
 
 export interface TaskLlmOptions {
@@ -52,32 +70,7 @@ export interface TaskLlmOptions {
  * 部分配置直接报错，避免后台任务静默跑到错误端点。
  */
 export function buildTaskLlm(options: TaskLlmOptions = {}): LlmDeps {
-  const task = config.taskLlm;
-  const configured = Boolean(task.baseUrl || task.model || task.apiKey);
-  const user = currentLlmUser();
-  const userLlm = getLlmSettings(user);
-  // 一旦用户在页面配置过 LLM，所有建模任务都使用该配置；部署侧 task LLM
-  // 只作为没有用户覆盖时的可选默认值，避免后台任务绕过用户隔离。
-  const userConfigured = Boolean(user && hasUserLlmProviderOverride(user));
-  if (!configured || userConfigured) {
-    const llm = buildLlm();
-    return options.maxTokensCap
-      ? { ...llm, model: { ...llm.model, maxTokens: Math.min(llm.model.maxTokens, options.maxTokensCap) } }
-      : llm;
-  }
-  if (!task.baseUrl || !task.model) {
-    throw new Error('任务 LLM 配置不完整（MODELING_TASK_LLM_BASE_URL 和 MODELING_TASK_LLM_MODEL 必须同时设置）');
-  }
-  if (task.baseUrl === 'faux') return buildFauxModeler();
-  const configuredMaxTokens = userLlm.maxTokens;
-  const maxTokens = options.maxTokensCap
-    ? Math.min(configuredMaxTokens, options.maxTokensCap)
-    : configuredMaxTokens;
-  return {
-    model: buildModel(task.baseUrl, task.model, maxTokens),
-    streamFn: streamSimple,
-    getApiKey: () => task.apiKey || undefined,
-  };
+  return buildConfiguredLlm(getTaskLlmSettings(), options.maxTokensCap, true);
 }
 
 // ---- faux 演示模式：脚本化"假建模者"，无需真实 key 即可端到端走完建模流程 ----
@@ -429,7 +422,7 @@ export function buildFauxModeler(): LlmDeps {
   };
 
   return {
-    model: { id: 'faux-modeler', name: 'faux-modeler', api: 'faux', provider: 'faux', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 },
+    model: { id: 'faux-modeler', name: 'faux-modeler', api: 'faux', provider: 'faux', input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 1000000 },
     streamFn,
     getApiKey: () => 'faux',
   };

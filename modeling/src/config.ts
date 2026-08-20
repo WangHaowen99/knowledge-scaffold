@@ -6,6 +6,14 @@ function env(key: string, fallback = ''): string {
   return process.env[key] ?? fallback;
 }
 
+export const DEFAULT_LLM_MAX_TOKENS = 1_000_000;
+export const DEFAULT_LLM_CONTEXT_WINDOW = 1_000_000;
+
+function positiveIntegerEnv(key: string, fallback: number): number {
+  const value = Number(env(key, String(fallback)));
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 export const config = {
   port: Number(env('PORT', '5100')),
   dataDir: resolve(env('DATA_DIR', './data')),
@@ -14,12 +22,17 @@ export const config = {
     baseUrl: env('MODELING_LLM_BASE_URL'),
     model: env('MODELING_LLM_MODEL'),
     apiKey: env('MODELING_LLM_API_KEY'),
+    // maxTokens 是输出上限；contextWindow 是输入+输出总上下文窗口，二者独立配置。
+    maxTokens: positiveIntegerEnv('MODELING_LLM_MAX_TOKENS', DEFAULT_LLM_MAX_TOKENS),
+    contextWindow: positiveIntegerEnv('MODELING_LLM_CONTEXT_WINDOW', DEFAULT_LLM_CONTEXT_WINDOW),
   },
   taskLlm: {
     baseUrl: env('MODELING_TASK_LLM_BASE_URL'),
     model: env('MODELING_TASK_LLM_MODEL'),
     apiKey: env('MODELING_TASK_LLM_API_KEY'),
   },
+  // 显式部署密钥；为空时由 codec 在 DATA_DIR 自动生成持久化密钥，不得写入数据库或返回前端。
+  llmConfigEncryptionKey: env('MODELING_LLM_CONFIG_ENCRYPTION_KEY'),
 
   auth: {
     // 独立 auth-server 地址（OAuth2 /token + JWKS + /register）；容器内用服务名如 http://auth-server:5056

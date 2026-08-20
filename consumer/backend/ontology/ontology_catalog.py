@@ -169,6 +169,12 @@ class _ObjectDataMappingsLoadResult:
 
 
 @dataclass(frozen=True)
+class ValueBindingValidationResult:
+    errors: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class _ObjectCatalogEntry:
     key: str
     title: str
@@ -395,6 +401,175 @@ def validate_object_data_mappings(ontology_dir: Path) -> Optional[str]:
         return None
     return str(result.error or "Error: Invalid object data mapping.").removeprefix(
         "Error: "
+    )
+
+
+def validate_value_bindings(ontology_dir: Path) -> ValueBindingValidationResult:
+    """Validate ``value_binding_ref`` references against top-level ``value_bindings``.
+
+    - Each ``objects.<object>.fields.<field>.value_binding_ref`` must match a key in
+      the top-level ``value_bindings`` map. Unknown references are blocking errors.
+    - ``value_bindings`` entries not referenced by any object field produce warnings.
+    - A missing mapping file returns an empty result. An absent ``value_bindings``
+      field is treated as an empty binding map so dangling references still fail.
+    """
+    load_result = _load_object_data_mappings(ontology_dir)
+    if load_result.status == ObjectDataMappingStatus.INVALID:
+        mapping_error = str(
+            load_result.error or "Error: Invalid object data mapping."
+        ).removeprefix("Error: ")
+        return ValueBindingValidationResult(errors=(mapping_error,))
+    if load_result.status != ObjectDataMappingStatus.FOUND:
+        return ValueBindingValidationResult()
+
+    payload = load_result.payload or {}
+    raw_value_bindings = payload.get("value_bindings")
+    if "value_bindings" not in payload:
+        value_bindings: Dict[str, Any] = {}
+    elif not isinstance(raw_value_bindings, dict):
+        return ValueBindingValidationResult(
+            errors=("value_bindings must be a JSON object",),
+        )
+    else:
+        value_bindings = raw_value_bindings
+    binding_keys = {str(key) for key in value_bindings}
+
+    errors: list[str] = []
+    referenced: set[str] = set()
+
+    objects = payload.get("objects")
+    object_iter: list[tuple[str, Any]]
+    if isinstance(objects, dict):
+        object_iter = [(str(key), value) for key, value in objects.items()]
+    elif isinstance(objects, list):
+        object_iter = [
+            (
+                str(
+                    item.get("object_key")
+                    or item.get("key")
+                    or f"[index {index}]"
+                ),
+                item,
+            )
+            for index, item in enumerate(objects)
+            if isinstance(item, dict)
+        ]
+    else:
+        # Legacy top-level single-object format: the payload root itself is
+        # the object mapping.  Match the key resolution used by
+        # find_exact_object_data_mapping_result so these fields are validated.
+        payload_key = str(
+            payload.get("object_key") or payload.get("key") or ""
+        ).strip()
+        if payload_key and isinstance(payload.get("fields"), dict):
+            object_iter = [(payload_key, payload)]
+        else:
+            object_iter = []
+
+    for object_key, mapping in object_iter:
+        if not isinstance(mapping, dict):
+            continue
+        fields = mapping.get("fields")
+        if not isinstance(fields, dict):
+            continue
+        for field_key, field_def in fields.items():
+            if not isinstance(field_def, dict):
+                continue
+            ref = str(field_def.get("value_binding_ref") or "").strip()
+            if not ref:
+                continue
+            if ref not in binding_keys:
+                errors.append(
+                    "objects.{}.fields.{}.value_binding_ref references an "
+                    "unknown binding '{}'".format(object_key, field_key, ref)
+                )
+            else:
+                referenced.add(ref)
+
+    warnings = sorted(
+        "value_bindings.{} is not referenced by any object field".format(key)
+        for key in binding_keys
+        if key not in referenced
+    )
+
+    return ValueBindingValidationResult(
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+    )
+
+
+def load_value_bindings(ontology_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """Return the top-level ``value_bindings`` map from the object data mappings."""
+    load_result = _load_object_data_mappings(ontology_dir)
+    if load_result.status != ObjectDataMappingStatus.FOUND:
+        return {}
+    payload = load_result.payload or {}
+    value_bindings = payload.get("value_bindings")
+    if not isinstance(value_bindings, dict):
+        return {}
+    return {
+        str(key): dict(value)
+        for key, value in value_bindings.items()
+        if isinstance(value, dict)
+    }
+
+
+def get_object_field_bindings(
+    ontology_dir: Path,
+    object_key: str,
+) -> Dict[str, str]:
+    """Return ``{field_key: binding_key}`` for fields with a ``value_binding_ref``."""
+    mapping_result = find_exact_object_data_mapping_result(ontology_dir, object_key)
+    if mapping_result.status != ObjectDataMappingStatus.FOUND:
+        return {}
+    mapping = mapping_result.mapping or {}
+    fields = mapping.get("fields")
+    if not isinstance(fields, dict):
+        return {}
+    result: Dict[str, str] = {}
+    for field_key, field_def in fields.items():
+        if not isinstance(field_def, dict):
+            continue
+        ref = str(field_def.get("value_binding_ref") or "").strip()
+        if ref:
+            result[str(field_key)] = ref
+    return result
+
+
+def get_object_mapping_field_keys(
+    ontology_dir: Path,
+    object_key: str,
+) -> Tuple[str, ...]:
+    """Return all logical field keys declared in the object's data mapping."""
+    mapping_result = find_exact_object_data_mapping_result(ontology_dir, object_key)
+    if mapping_result.status != ObjectDataMappingStatus.FOUND:
+        return ()
+    mapping = mapping_result.mapping or {}
+    fields = mapping.get("fields")
+    if not isinstance(fields, dict):
+        return ()
+    return tuple(str(key) for key in fields)
+
+
+def get_object_value_bound_fields(
+    ontology_dir: Path,
+    object_key: str,
+) -> Tuple[str, ...]:
+    """Return field keys with a *valid* ``value_binding_ref`` for the given object.
+
+    A reference is valid when the binding key exists in the top-level
+    ``value_bindings`` map. Fields with dangling references are excluded.
+    """
+    field_bindings = get_object_field_bindings(ontology_dir, object_key)
+    if not field_bindings:
+        return ()
+    value_bindings = load_value_bindings(ontology_dir)
+    if not value_bindings:
+        return ()
+    return tuple(
+        field_key
+        for field_key, binding_key in field_bindings.items()
+        if binding_key in value_bindings
     )
 
 
@@ -2135,12 +2310,24 @@ def build_root_payload(*, ontology: OntologyManifest, ontology_dir: Path) -> Dic
         "rules_catalog": parse_markdown_table(rules_text) or rules_text,
         "metrics_catalog": parse_markdown_table(metrics_text) or metrics_text,
         "script_catalog": public_script_catalog(script_catalog),
+        "value_domain_present": bool(load_value_bindings(ontology_dir)),
     }
 
 
 def _compact_markdown_body(markdown: str) -> str:
     _frontmatter, body = split_markdown_frontmatter(markdown)
     return body.strip()
+
+
+_ROOT_VALUE_DOMAIN_HINT = (
+    "value_domain_hint: 本知识包的部分字段存在值域映射（value-bound）。"
+    "无论当前任务是查询数据还是执行脚本或操作，只要回答中需要给出任何业务代码、代号或"
+    "缩写的名称、含义或中文表述，就必须先通过 business_data_search("
+    "action='lookup_values') 查询值域后作答——值域映射表可能与固有记忆矛盾，"
+    "即使该代码看似常识也不得凭固有记忆直接给出。如需确认哪些字段已绑定值域，"
+    "先加载对应 Object 定义（ontology_context resource='object'）查看 "
+    "value_bound: true 标记。"
+)
 
 
 def format_root_payload_compact(
@@ -2152,11 +2339,15 @@ def format_root_payload_compact(
     ontology_name = _compact_inline_text(_get_dict_value(ontology, "name"))
     ontology_description = _compact_inline_text(_get_dict_value(ontology, "description"))
 
-    return [
+    lines = [
         "id: {}".format(ontology_id),
         "ontology: {}".format(
             " - ".join(part for part in [ontology_name, ontology_description] if part) or "(unnamed)"
         ),
+    ]
+    if root_payload.get("value_domain_present"):
+        lines.extend(["", _ROOT_VALUE_DOMAIN_HINT])
+    lines.extend([
         *_format_optional_block("root_index", root_payload.get("root_index")),
         "",
         "operations_catalog:",
@@ -2173,7 +2364,8 @@ def format_root_payload_compact(
         "",
         "script_catalog:",
         *_format_script_catalog(root_payload.get("script_catalog")),
-    ]
+    ])
+    return lines
 
 
 def _format_optional_block(label: str, value: Any) -> List[str]:

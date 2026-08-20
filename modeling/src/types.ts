@@ -285,6 +285,15 @@ export interface SpecField {
   note?: string;
   alias?: string;
   sourceColumn?: string; // Excel 图导入使用的真实列名；缺省回落字段 key
+  valueBindingRef?: string; // Data Mapping value_bindings key；经用户确认后写入
+}
+export interface SpecValueBinding {
+  key: string;
+  resource: string;
+  valueField: string;
+  semanticField: string;
+  providerAlias?: string;
+  aliasFields?: string[];
 }
 export interface SpecRelation {
   relation: string; // 关系名（如 belongs_to / references）
@@ -414,6 +423,7 @@ export interface PackageSpec {
   scripts?: SpecScript[]; // 可选受控 Python 脚本；须绑定包内 operation
   defaultProviderAlias: string;
   dataSourceType?: PackageDataSourceType; // 缺省仅用于兼容历史版本，沿用 object key resource
+  valueBindings?: SpecValueBinding[]; // Data Mapping 顶层 value_bindings，可由批量确认生成
 }
 
 export interface CoverageResult {

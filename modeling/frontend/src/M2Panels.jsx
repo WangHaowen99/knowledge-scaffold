@@ -32,6 +32,7 @@ const PACKAGE_REPAIR_EDIT_BLOCKED_MESSAGE = '知识包修缮正在进行中，�
 export function ReviewPanel({
   projectId,
   stageContent = null,
+  reviewBanner = null,
   wideStage = false,
   onFileSelected,
   onDirtyChange,
@@ -628,6 +629,7 @@ export function ReviewPanel({
         {stageContent ? (
           <div className="rv-stage">{stageContent}</div>
         ) : <>
+        {reviewBanner}
         {err && (
           <div className="lerr" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
             <span style={{ flex: 1 }}>文件加载失败：{err}</span>

@@ -22,6 +22,7 @@ class BusinessDataSearchRequest:
     provider_runtime_context: Mapping[str, Any] = field(default_factory=dict)
     ontology_version: str = ""
     field_alias_mappings: Tuple[Tuple[str, str], ...] = ()
+    stage: str = "business_query"
 
 
 def query_business_data_stream(
@@ -59,7 +60,10 @@ def query_business_data_stream(
             else request.query
         )
         try:
-            yield from provider.search_stream(query=provider_query, entity=request.entity)
+            yield from provider.search_stream(
+                query=provider_query,
+                entity=request.entity,
+            )
         finally:
             close = getattr(provider, "close", None)
             if callable(close):

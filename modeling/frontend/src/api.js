@@ -136,6 +136,13 @@ export const discardPackageDraft = (id, revision, draftId) => api(`${P(id)}/pack
 export const publishPackageDraft = (id, revision, summary, draftId) => api(`${P(id)}/package/draft/publish`, {
   method: 'POST', body: JSON.stringify({ confirmed: true, revision, summary, draftId }),
 });
+export const getSemanticBindingSuggestions = (id) => api(`${P(id)}/package/semantic-bindings/suggestions`);
+export const applySemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/apply`, {
+  method: 'POST', body: JSON.stringify(input),
+});
+export const ignoreSemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/ignore`, {
+  method: 'POST', body: JSON.stringify(input),
+});
 
 // ---- M3 评测 ----
 export const getDataSource = (id) => api(`${P(id)}/data-source`);
@@ -270,5 +277,13 @@ export const releaseProject = (id) => api(`${P(id)}/release`, { method: 'POST', 
 // ---- 配置中心 ----
 export const getSettings = () => api('/api/settings');
 export const saveSettings = (patch) => api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+export const syncDefaultLlm = () => api('/api/settings/llm/sync-default', { method: 'POST', body: '{}' });
 export const testLlm = (cfg) => api('/api/settings/llm/test', { method: 'POST', body: JSON.stringify(cfg || {}) });
+export const getAdminLlmDefaults = () => api('/api/admin/llm-defaults');
+export const saveAdminLlmDefault = (draft) => api('/api/admin/llm-defaults', {
+  method: 'PUT', body: JSON.stringify(draft),
+});
+export const testAdminLlmDefault = (draft) => api('/api/admin/llm-defaults/test', {
+  method: 'POST', body: JSON.stringify(draft),
+});
 export const testConsumer = (url) => api('/api/settings/consumer/test', { method: 'POST', body: JSON.stringify({ url }) });

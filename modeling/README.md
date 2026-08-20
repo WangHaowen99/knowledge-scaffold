@@ -60,10 +60,24 @@ npx tsx --env-file=.env src/server.ts
 NODE_OPTIONS=--experimental-sqlite npx tsx --env-file=.env src/server.ts
 ```
 
-`MODELING_LLM_*` 是所有账号的部署默认值。登录后在配置中心保存的 LLM 端点、模型、
-API Key 和输出上限按用户名独立存储，只用于该用户发起的建模、校验、评测和优化任务；
-配置接口不会回显 API Key。`MODELING_TASK_LLM_*` 在用户没有覆盖个人端点、模型或 Key
-时作为部署侧任务模型默认值。
+`MODELING_LLM_*` 和 `MODELING_TASK_LLM_*` 是部署配置。admin 可以在配置中心维护独立的
+Modeling 平台主模型与任务模型默认模板；模板不会在运行时覆盖或兜底任何已有用户。通过
+Modeling 注册入口成功创建账号时，服务会把当时的模板复制到该用户名下的独立快照；注册时
+没有主模型模板则不写快照。admin 后续保存、修改或清除模板都不会追写既有快照，也不会修改
+任一用户的个人配置。
+
+用户可在配置中心点击“同步默认 LLM 配置”，用点击时的平台模板原子替换自己的个人配置与
+旧快照。该操作只影响当前认证用户。运行时固定按“个人 provider → 用户默认快照 → 部署配置”
+解析，不直接读取当前平台模板；因此老用户只有主动同步才会采用 admin 的新默认值。配置接口
+不会回显 API Key。
+
+平台模板及用户快照中的 API Key 加密后存入 `modeling.db`。显式设置 `MODELING_LLM_CONFIG_ENCRYPTION_KEY`
+时要求至少 32 字节；该变量为空时，Modeling 会在 `DATA_DIR/.llm-config-encryption-key`
+首次生成并复用持久化随机密钥。生产环境建议通过 secret manager 注入显式密钥；自动密钥文件
+必须与数据库一同持久化和备份/恢复。平台任务模型未设置时，新建或同步的任务快照跟随当时的
+平台主模型；没有用户快照时才使用部署任务/主模型配置。平台默认和个人配置都将
+`maxTokens`（单次输出上限）与 `contextWindow`（输入+输出总上下文窗口）分开保存；
+上下文窗口应按所选模型 API 的实际上限填写。
 
 服务默认 `http://localhost:5100`。
 

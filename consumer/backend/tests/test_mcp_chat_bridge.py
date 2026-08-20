@@ -14,6 +14,7 @@ from agent.runtime.contracts import (
     RuntimeErrorInfo,
     RuntimeResult,
 )
+from api.protocols.mcp.chat_adapter import execute_chat_tool
 from api.protocols.mcp.workflow_bridge import execute_mcp_chat_workflow_async
 from integration.mcp.config import MCPRuntimeConfig
 from integration.mcp.scope import MCPRequestScope
@@ -159,13 +160,14 @@ class _Runtime:
         )
 
 
-def _scope():
+def _scope(*, ontology_id=""):
     return MCPRequestScope(
         "operator_a",
         "workspace_demo",
         ["mcp:chat"],
         token="token-placeholder",
         traceparent="00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+        ontology_id=ontology_id,
     )
 
 
@@ -187,7 +189,15 @@ def _config(path: Path) -> MCPRuntimeConfig:
     )
 
 
-def _execute(tmp_path, manager, *, payload=None, trace=False, never_finish=False):
+def _execute(
+    tmp_path,
+    manager,
+    *,
+    payload=None,
+    trace=False,
+    never_finish=False,
+    scope=None,
+):
     import api.protocols.mcp.workflow_bridge as module
 
     original = module.resolve_effective_llm_profile_config
@@ -201,7 +211,7 @@ def _execute(tmp_path, manager, *, payload=None, trace=False, never_finish=False
                     never_finish=never_finish,
                 ),
                 execution_store=ExecutionStore(str(tmp_path / "executions")),
-                scope=_scope(),
+                scope=scope or _scope(),
                 payload=payload
                 or {"request": "synthetic question", "session_id": "session_demo"},
                 concurrency_limit=1,
@@ -254,6 +264,139 @@ def test_mcp_trace_is_collected_from_public_events(tmp_path):
 
     assert status_code == 200
     assert body["trace"]["totals"]["tool_calls"] == 1
+
+
+def test_chat_adapter_injects_bound_ontology(monkeypatch, tmp_path):
+    captured = {}
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"ok": True, "result": {"status": "success"}}
+
+    monkeypatch.setattr(
+        "api.protocols.mcp.chat_adapter.requests.post",
+        lambda _url, **kwargs: captured.update(kwargs) or _Response(),
+    )
+    result = execute_chat_tool(
+        {"query": "合成示例问题"},
+        scope=_scope(ontology_id="knowledge_package_demo"),
+        config=_config(tmp_path / "tokens.json"),
+    )
+
+    assert result["ok"] is True
+    assert (
+        captured["json"]["arguments"]["selected_ontology_id"]
+        == "knowledge_package_demo"
+    )
+
+
+def test_chat_adapter_rejects_conflicting_bound_ontology(monkeypatch, tmp_path):
+    called = False
+
+    def fake_post(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("api.protocols.mcp.chat_adapter.requests.post", fake_post)
+    result = execute_chat_tool(
+        {
+            "query": "合成示例问题",
+            "arguments": {"selected_ontology_id": "knowledge_package_other"},
+        },
+        scope=_scope(ontology_id="knowledge_package_demo"),
+        config=_config(tmp_path / "tokens.json"),
+    )
+
+    assert called is False
+    assert result["error"]["error_code"] == "MCP_ONTOLOGY_SCOPE_MISMATCH"
+
+
+def test_workflow_bridge_rebinds_and_revalidates_token_ontology(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.validate_runtime_ontology_availability",
+        lambda **kwargs: captured.update(kwargs) or "1.0.0",
+    )
+    manager = _Manager()
+
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        scope=_scope(ontology_id="knowledge_package_demo"),
+        payload={"request": "合成示例问题", "session_id": "session_demo_bound"},
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert captured["ontology_id"] == "knowledge_package_demo"
+    assert (
+        manager.context.arguments["selected_ontology_id"]
+        == "knowledge_package_demo"
+    )
+
+
+def test_workflow_bridge_rejects_context_conflicting_with_token_ontology(tmp_path):
+    manager = _Manager()
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        scope=_scope(ontology_id="knowledge_package_demo"),
+        payload={
+            "request": "合成示例问题",
+            "session_id": "session_demo_context_conflict",
+            "context": {"selected_ontology_id": "knowledge_package_other"},
+        },
+    )
+
+    assert status_code == 403
+    assert body["error"]["type"] == "auth_error"
+    assert body["error"]["error_code"] == "MCP_ONTOLOGY_SCOPE_MISMATCH"
+    assert manager.context is None
+
+
+def test_workflow_bridge_preserves_unbound_argument_ontology(tmp_path):
+    manager = _Manager()
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        payload={
+            "request": "合成示例问题",
+            "session_id": "session_demo_unbound",
+            "arguments": {"selected_ontology_id": "knowledge_package_demo"},
+        },
+    )
+
+    assert status_code == 200
+    assert body["ok"] is True
+    assert (
+        manager.context.arguments["selected_ontology_id"]
+        == "knowledge_package_demo"
+    )
+
+
+def test_workflow_bridge_rejects_conflicting_token_ontology_before_run(tmp_path):
+    manager = _Manager()
+    body, status_code = _execute(
+        tmp_path,
+        manager,
+        scope=_scope(ontology_id="knowledge_package_demo"),
+        payload={
+            "request": "合成示例问题",
+            "session_id": "session_demo_argument_conflict",
+            "arguments": {"selected_ontology_id": "knowledge_package_other"},
+        },
+    )
+
+    assert status_code == 403
+    assert body["error"]["type"] == "auth_error"
+    assert body["error"]["error_code"] == "MCP_ONTOLOGY_SCOPE_MISMATCH"
+    assert manager.context is None
 
 
 def test_mcp_timeout_cancels_the_same_canonical_run(tmp_path):

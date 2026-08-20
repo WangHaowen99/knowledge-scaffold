@@ -14,7 +14,6 @@ import { ensureMaterialHypotheses } from '../ai-construction/material-hypotheses
 import { summarizeModelingBrief, type ModelingBrief } from '../ai-construction/modeling-brief.js';
 import {
   DocumentReadSession,
-  fullReadTurnBudget,
   runAgentWithDocumentReadGate,
   type ReadableDocument,
 } from './document-read-session.js';
@@ -246,7 +245,6 @@ export async function runAnalyze(
   const llm = llmOverride ?? buildTaskLlm();
   const captured: Record<string, unknown> = {};
   const documentReadSession = new DocumentReadSession(documents, { fullReadMode: true });
-  const fullReadMaxTurns = Math.max(24, fullReadTurnBudget(documents));
   const ctx: ToolContext = { tables, documents, captured, documentReadSession };
   const tools = buildTools(ctx);
   const goalContext = confirmedBrief
@@ -298,7 +296,6 @@ export async function runAnalyze(
         ? `请围绕以下已确认建模目标分析已上传资料，完成后调用 submit_analysis：\n${summarizeModelingBrief(confirmedBrief)}`
         : '请对已上传的资料做初步分析，完成后调用 submit_analysis。',
       session: documentReadSession,
-      maxTurns: fullReadMaxTurns,
       captured: () => !!captured.analysis,
       submitNudge: '全文覆盖已由后端确认完成，请立即调用 submit_analysis 提交完整结构化分析。',
       missingSubmissionError: '领域分析完成全文读取后仍未按协议提交，请重试',
@@ -363,7 +360,6 @@ export async function runAnalyze(
       });
       const artifactCaptured: Record<string, unknown> = {};
       const batchReadSession = new DocumentReadSession(batch.documents, { fullReadMode: true });
-      const batchFullReadMaxTurns = Math.max(24, fullReadTurnBudget(batch.documents));
       const artifactTools = buildArtifactAnalysisTools({
         tables: batch.tables,
         documents: batch.documents,
@@ -391,7 +387,6 @@ export async function runAnalyze(
         agent: artifactAgent,
         prompt: '请探查当前批次材料并调用 submit_artifact_analysis 提交材料适用类型和知识候选。',
         session: batchReadSession,
-        maxTurns: batchFullReadMaxTurns,
         captured: () => !!artifactCaptured.artifactAnalysis,
         submitNudge: '请立即调用 submit_artifact_analysis 提交当前批次完整结构化结果，不要只写正文。',
         missingSubmissionError: '材料知识类型分析未按协议提交，请重试',

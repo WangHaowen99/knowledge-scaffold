@@ -15,6 +15,7 @@ from ontology.ontology_catalog import (
     format_markdown_payload_compact,
     format_root_payload_compact,
     get_ontology_manifest,
+    get_object_value_bound_fields,
     load_script_catalog,
     read_required_text,
     resolve_object_reference,
@@ -133,14 +134,27 @@ def _handle_ontology_context_result(
         )
         if read_error:
             return _OntologyContextResult(content=read_error)
+        rendered = format_markdown_payload_compact(
+            key_field="object_key",
+            key=resolution.object_key,
+            content=content or "",
+            requested_key=resolution.requested_key,
+            matched_by=resolution.matched_by,
+        )
+        bound_fields = get_object_value_bound_fields(
+            ontology_dir,
+            resolution.object_key,
+        )
+        if bound_fields:
+            rendered = "{}\n\nruntime_field_context:\n{}".format(
+                rendered.rstrip(),
+                "\n".join(
+                    "- field_key: {}; value_bound: true".format(field_key)
+                    for field_key in bound_fields
+                ),
+            )
         return _OntologyContextResult(
-            content=format_markdown_payload_compact(
-                key_field="object_key",
-                key=resolution.object_key,
-                content=content or "",
-                requested_key=resolution.requested_key,
-                matched_by=resolution.matched_by,
-            ),
+            content=rendered,
             resolved_path=resolution.path,
             resolved_key=resolution.object_key,
         )

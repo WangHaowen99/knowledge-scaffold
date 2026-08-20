@@ -229,14 +229,16 @@ def test_two_migrations_apply_with_independent_backups_markers_and_contexts(
     )
     assert model_backup.read_bytes() == original_bytes
     assert secret_backup.read_bytes() == model_document_bytes
-    assert stat.S_IMODE(model_backup.stat().st_mode) == 0o600
-    assert stat.S_IMODE(secret_backup.stat().st_mode) == 0o600
+    if os.name == "posix":  # POSIX permission bits are meaningless on Windows
+        assert stat.S_IMODE(model_backup.stat().st_mode) == 0o600
+        assert stat.S_IMODE(secret_backup.stat().st_mode) == 0o600
     assert model_report["backup_paths"] == [str(model_backup)]
     assert secret_report["backup_paths"] == [str(secret_backup)]
     for migration_id in (MODEL_ID, SECRET_ID):
         marker = runtime_root / "config" / "migrations" / f"{migration_id}.json"
         assert json.loads(marker.read_text(encoding="utf-8"))["status"] == "completed"
-        assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+        if os.name == "posix":
+            assert stat.S_IMODE(marker.stat().st_mode) == 0o600
 
 
 def test_two_migrations_apply_without_posix_only_file_operations(
