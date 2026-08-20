@@ -249,7 +249,8 @@ def sandbox_reachable_url(url: str) -> str:
     normalized = str(url or "").strip()
     if not normalized:
         return normalized
-    parsed = urlparse(normalized if "://" in normalized else f"http://{normalized}")
+    has_explicit_scheme = "://" in normalized
+    parsed = urlparse(normalized if has_explicit_scheme else f"//{normalized}")
     host = (parsed.hostname or "").strip()
     if not host:
         return normalized
@@ -264,7 +265,8 @@ def sandbox_reachable_url(url: str) -> str:
         return normalized
     port = parsed.port
     netloc = f"{resolved}:{port}" if port else resolved
-    return parsed._replace(netloc=netloc).geturl()
+    resolved_url = parsed._replace(netloc=netloc).geturl()
+    return resolved_url if has_explicit_scheme else resolved_url.removeprefix("//")
 
 
 def _normalize_endpoint(url: Any) -> str:

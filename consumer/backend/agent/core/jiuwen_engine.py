@@ -2561,11 +2561,13 @@ def _memory_tool_requested_in_state(state: Mapping[str, Any]) -> bool:
         if isinstance(message, Mapping)
     ]
     current_request = str(state.get("user_request") or "").strip()
-    if current_request and (
-        not messages
-        or messages[-1].get("role") != "user"
-        or str(messages[-1].get("content") or "").strip() != current_request
-    ):
+    should_append_request = bool(current_request)
+    if should_append_request and messages:
+        last_message = messages[-1]
+        if last_message.get("role") == "user":
+            last_content = str(last_message.get("content") or "").strip()
+            should_append_request = last_content != current_request
+    if should_append_request:
         messages.append({"role": "user", "content": current_request})
     return has_explicit_memory_request(messages)
 

@@ -1110,15 +1110,14 @@ class DeterministicExecutionService:
             )
 
         token = normalize_operation_token(request.user_request)
-        matches = [
-            spec
-            for spec in specs
-            if token
-            and (
-                self._request_matches_spec(request.user_request, spec)
-                or self._request_matches_declared_routing(request.user_request, spec)
-            )
-        ]
+        matches: list[DeterministicOperationSpec] = []
+        if token:
+            for spec in specs:
+                if self._request_matches_spec(request.user_request, spec):
+                    matches.append(spec)
+                    continue
+                if self._request_matches_declared_routing(request.user_request, spec):
+                    matches.append(spec)
         if not matches:
             return NotApplicable("no_deterministic_match")
         if len(matches) > 1:

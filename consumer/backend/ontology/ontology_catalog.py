@@ -2439,12 +2439,12 @@ def _annotate_coordinating_operations(
             for raw_reference in _EXPLICIT_OPERATION_REFERENCE_RE.findall(content)
             if raw_reference.split("|", 1)[0].strip()
         }
-        referenced_count = sum(
-            1
-            for candidate in row_keys
-            if candidate != operation_key
-            and normalize_object_identifier(candidate) in explicit_references
-        )
+        referenced_count = 0
+        for candidate in row_keys:
+            if candidate == operation_key:
+                continue
+            if normalize_object_identifier(candidate) in explicit_references:
+                referenced_count += 1
         if referenced_count < 2:
             annotated.append(original)
             continue

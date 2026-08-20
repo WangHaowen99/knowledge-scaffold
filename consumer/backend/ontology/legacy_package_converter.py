@@ -215,11 +215,11 @@ def _convert_legacy_object_details(root: Path, catalog_markdown: str) -> list[st
         return converted
 
     rows = parse_markdown_table(catalog_markdown)
-    rows_by_key = {
-        object_key: row
-        for row in rows
-        if (object_key := _first_row_value(row, _OBJECT_KEY_HEADERS))
-    }
+    rows_by_key: dict[str, dict[str, str]] = {}
+    for row in rows:
+        object_key = _first_row_value(row, _OBJECT_KEY_HEADERS)
+        if object_key:
+            rows_by_key[object_key] = row
     for path in sorted(objects_dir.glob("*.md"), key=lambda item: item.name.lower()):
         if path.name.lower() == "index.md":
             continue
@@ -449,16 +449,17 @@ def _find_first_legacy_table(
             continue
         header_cells = _split_markdown_table_row(lines[index])
         separator_cells = _split_markdown_table_row(lines[index + 1])
-        if (
-            header_cells is None
-            or separator_cells is None
-            or len(header_cells) != len(separator_cells)
-            or not _is_markdown_separator_row(separator_cells)
-            or not any(
-                header.strip().casefold() in normalized_required
-                for header in header_cells
-            )
-        ):
+        if header_cells is None or separator_cells is None:
+            continue
+        if len(header_cells) != len(separator_cells):
+            continue
+        if not _is_markdown_separator_row(separator_cells):
+            continue
+        has_required_header = any(
+            header.strip().casefold() in normalized_required
+            for header in header_cells
+        )
+        if not has_required_header:
             continue
 
         end = index + 2

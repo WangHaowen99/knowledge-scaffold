@@ -21,7 +21,10 @@ from agent.tools.business_data.resolver import ResolvedBusinessDataSource
 from agent.tools.business_data.script_env import SCRIPT_BUSINESS_DATA_CONNECTION_ENV
 from integration.sandbox.config import SandboxConfig, load_sandbox_config
 from integration.sandbox.client import JiuwenboxClient
-from integration.sandbox.data_proxy import DataConnectionSecretManager
+from integration.sandbox.data_proxy import (
+    DataConnectionSecretManager,
+    sandbox_reachable_url,
+)
 from integration.sandbox.env_allowlist import build_script_env
 from integration.sandbox.errors import (
     SandboxCreateError,
@@ -59,6 +62,30 @@ def test_sandbox_id_for_run_is_stable_and_valid_length():
     assert first.startswith("onto-")
     assert 4 <= len(first) <= 16
     assert all(ch in "0123456789abcdefghijklmnopqrstuvwxyz_-" for ch in first)
+
+
+def test_sandbox_reachable_url_resolves_scheme_less_host_without_adding_protocol(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "integration.sandbox.data_proxy.socket.gethostbyname",
+        lambda host: "192.0.2.25" if host == "service.example.net" else host,
+    )
+
+    resolved = sandbox_reachable_url("service.example.net:7443/path")
+
+    assert resolved == "192.0.2.25:7443/path"
+
+
+def test_sandbox_reachable_url_preserves_explicit_secure_protocol(monkeypatch):
+    monkeypatch.setattr(
+        "integration.sandbox.data_proxy.socket.gethostbyname",
+        lambda host: "192.0.2.25" if host == "service.example.net" else host,
+    )
+
+    resolved = sandbox_reachable_url("https://service.example.net:7443/path")
+
+    assert resolved == "https://192.0.2.25:7443/path"
 
 
 def test_create_sandbox_treats_409_as_conflict():
