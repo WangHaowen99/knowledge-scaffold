@@ -241,19 +241,25 @@ function required(value: string): boolean {
   return ['是', 'true', 'yes', 'required'].includes(value.trim().toLowerCase());
 }
 
+function optionalString(value: unknown): string | undefined {
+  const text = String(value ?? '').trim();
+  return text || undefined;
+}
+
 function parseObject(path: string, markdown: string, mapping: any): SpecObject {
   const { data, body } = frontmatter(markdown, path);
   const key = String(data.key ?? path.split('/').at(-1)?.replace(/\.md$/, '') ?? '').trim();
+  const objectMapping = mapping?.objects?.[key];
   const fields: SpecField[] = tableRows(section(body, '字段')).map((row) => ({
     key: row[0] ?? '', cnName: row[1] || undefined, type: row[2] || undefined,
     required: required(row[3] ?? ''), note: row[4] || undefined, alias: row[5] || undefined,
+    valueBindingRef: optionalString(objectMapping?.fields?.[row[0] ?? '']?.value_binding_ref),
   })).filter((field) => field.key && field.key !== '—');
   const relations = tableRows(section(body, '关系')).map((row) => ({
     relation: row[0] ?? '', target: row[1] ?? '', note: row[2] || undefined,
     ...(row[3] ? { evidence: row[3].split('；').map((item) => item.trim()).filter(Boolean) } : {}),
   })).filter((item) => item.relation && item.target);
   const sourceRefs = strings(data.sources).map(parseSource).filter((item): item is SourceRef => Boolean(item));
-  const objectMapping = mapping?.objects?.[key];
   return {
     key,
     title: String(data.title ?? key),
@@ -265,6 +271,23 @@ function parseObject(path: string, markdown: string, mapping: any): SpecObject {
     ...(sourceRefs.length ? { sourceRefs } : {}),
     ...(Array.isArray(objectMapping?.primary_key) ? { primaryKey: strings(objectMapping.primary_key) } : {}),
   };
+}
+
+function parseValueBindings(mapping: any): PackageSpec['valueBindings'] {
+  if (!mapping?.value_bindings || typeof mapping.value_bindings !== 'object' || Array.isArray(mapping.value_bindings)) {
+    return undefined;
+  }
+  const bindings = Object.entries<any>(mapping.value_bindings).map(([key, value]) => ({
+    key,
+    resource: String(value?.resource ?? ''),
+    valueField: String(value?.value_field ?? ''),
+    semanticField: String(value?.semantic_field ?? ''),
+    ...(value?.provider_alias ? { providerAlias: String(value.provider_alias) } : {}),
+    ...(Array.isArray(value?.alias_fields)
+      ? { aliasFields: value.alias_fields.map((item: unknown) => String(item ?? '')).filter(Boolean) }
+      : {}),
+  })).filter((binding) => binding.key && binding.resource && binding.valueField && binding.semanticField);
+  return bindings.length ? bindings : undefined;
 }
 
 function parseOperation(path: string, markdown: string): SpecOperation {
@@ -393,6 +416,7 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
   const rules = detailPaths('rules').map((path) => parseRule(path, files[path]));
   const metrics = detailPaths('metrics').map((path) => parseMetric(path, files[path]));
   const scripts = detailPaths('scripts').map((path) => parseScript(path, files[path], files));
+  const valueBindings = parseValueBindings(mapping);
   return {
     id: String(manifest.id ?? '').trim(),
     name: String(manifest.name ?? manifest.id ?? '').trim(),
@@ -408,6 +432,7 @@ function parseRenderedSpec(files: Record<string, string>): PackageSpec {
     ...(rules.length ? { rules } : {}),
     ...(metrics.length ? { metrics } : {}),
     ...(scripts.length ? { scripts } : {}),
+    ...(valueBindings ? { valueBindings } : {}),
   };
 }
 

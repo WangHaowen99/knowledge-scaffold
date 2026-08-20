@@ -5,6 +5,7 @@ import type {
   SpecRule,
   SpecMetric,
   SpecScript,
+  SpecValueBinding,
 } from '../types.js';
 import { validateSpecKeys } from './keys.js';
 import {
@@ -77,6 +78,7 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
       type: f.type || 'string',
       required: !!f.required,
       readable: true,
+      ...(f.valueBindingRef ? { value_binding_ref: f.valueBindingRef } : {}),
     };
   }
   return {
@@ -87,6 +89,16 @@ function objectMapping(spec: PackageSpec, o: SpecObject) {
     // policy（规范 §18 4.6）。规范未给默认值，取保守默认：只读、上限 1000 行；
     // require_user_filter 规范类型为字符串数组，「无必须过滤条件」用空数组表达。
     policy: { read_only: true, max_rows: 1000, require_user_filter: [] as string[] },
+  };
+}
+
+function valueBindingJson(binding: SpecValueBinding): Record<string, unknown> {
+  return {
+    ...(binding.providerAlias ? { provider_alias: binding.providerAlias } : {}),
+    resource: binding.resource,
+    value_field: binding.valueField,
+    semantic_field: binding.semanticField,
+    ...(binding.aliasFields?.length ? { alias_fields: binding.aliasFields } : {}),
   };
 }
 
@@ -344,10 +356,15 @@ function mappingsJson(spec: PackageSpec): string {
   for (const o of spec.objects) {
     if (tableSourceFor(o)) objects[mappingObjectName(o)] = objectMapping(spec, o);
   }
+  const valueBindings = Object.fromEntries((spec.valueBindings ?? []).map((binding) => [
+    binding.key,
+    valueBindingJson(binding),
+  ]));
   return JSON.stringify({
     schema_version: '0.1',
     default_provider_alias: spec.defaultProviderAlias,
     objects,
+    ...(Object.keys(valueBindings).length ? { value_bindings: valueBindings } : {}),
   }, null, 2);
 }
 

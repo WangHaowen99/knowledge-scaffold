@@ -339,6 +339,7 @@ function parseObject(path: string, content: string, base: SpecObject, baseConten
       note: optionalCell(row[4]),
       alias: optionalCell(row[5]),
       sourceColumn: original?.sourceColumn,
+      valueBindingRef: original?.valueBindingRef,
     };
   });
   if (new Set(fields.map((field) => field.key)).size !== fields.length) fail(path, '字段 key 不能重复');
