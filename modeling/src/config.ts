@@ -6,7 +6,7 @@ function env(key: string, fallback = ''): string {
   return process.env[key] ?? fallback;
 }
 
-export const DEFAULT_LLM_MAX_TOKENS = 1_000_000;
+export const DEFAULT_LLM_MAX_TOKENS = 128_000;
 export const DEFAULT_LLM_CONTEXT_WINDOW = 1_000_000;
 
 function positiveIntegerEnv(key: string, fallback: number): number {

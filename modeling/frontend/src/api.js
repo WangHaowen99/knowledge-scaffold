@@ -270,7 +270,9 @@ export const releaseProject = (id) => api(`${P(id)}/release`, { method: 'POST', 
 // ---- 配置中心 ----
 export const getSettings = () => api('/api/settings');
 export const saveSettings = (patch) => api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
-export const syncDefaultLlm = () => api('/api/settings/llm/sync-default', { method: 'POST', body: '{}' });
+export const syncDefaultLlm = (purpose) => api('/api/settings/llm/sync-default', {
+  method: 'POST', body: JSON.stringify(purpose ? { purpose } : {}),
+});
 export const testLlm = (cfg) => api('/api/settings/llm/test', { method: 'POST', body: JSON.stringify(cfg || {}) });
 export const getAdminLlmDefaults = () => api('/api/admin/llm-defaults');
 export const saveAdminLlmDefault = (draft) => api('/api/admin/llm-defaults', {

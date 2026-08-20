@@ -513,6 +513,17 @@ CREATE TABLE IF NOT EXISTS user_llm_settings (
   updated_at    TEXT NOT NULL
 );
 
+-- 已认证用户的后台任务 LLM 页面配置；为空时使用该用户当前主模型配置。
+CREATE TABLE IF NOT EXISTS user_task_llm_settings (
+  username       TEXT PRIMARY KEY,
+  base_url       TEXT,
+  model          TEXT,
+  api_key        TEXT,
+  max_tokens     INTEGER CHECK (max_tokens IS NULL OR max_tokens BETWEEN 1 AND 1000000),
+  context_window INTEGER CHECK (context_window IS NULL OR context_window >= 1),
+  updated_at     TEXT NOT NULL
+);
+
 -- Modeling 平台级 LLM 默认值。admin 只负责维护，配置不归属于 admin 个人账号。
 -- API Key 使用部署密钥加密后保存；接口和日志均不得返回密文或明文。
 CREATE TABLE IF NOT EXISTS llm_default_settings (

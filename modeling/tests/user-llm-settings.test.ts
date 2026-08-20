@@ -51,16 +51,52 @@ test('每个用户读取和保存独立的 LLM 配置', () => {
   assert.equal(context.runWithLlmUser('bob', () => repo.getLlmSource()), 'env');
 });
 
-test('LLM provider 和任务 provider 均使用当前用户配置', () => {
+test('后台任务模型未配置时使用当前用户的主模型配置', () => {
   const alice = context.runWithLlmUser('alice', () => provider.buildTaskLlm());
   const bob = context.runWithLlmUser('bob', () => provider.buildTaskLlm());
   assert.equal(alice.model.id, 'alice-model');
   assert.equal(alice.model.baseUrl, 'https://alice.example.com/v1');
   assert.equal(alice.model.maxTokens, 4096);
   assert.equal(alice.model.contextWindow, 1000000);
-  assert.equal(bob.model.id, 'task-default-model');
-  assert.equal(bob.model.baseUrl, 'https://task.example.com/v1');
+  assert.equal(bob.model.id, 'default-model');
+  assert.equal(bob.model.baseUrl, 'https://default.example.com/v1');
   assert.equal(bob.model.contextWindow, 128000);
+});
+
+test('每个用户可独立配置后台任务模型，清空后重新使用主模型', () => {
+  repo.updateUserLlmSettings('task-owner', {
+    baseUrl: 'https://main-model.example.com/v1',
+    model: 'main-model',
+    apiKey: 'synthetic-main-key',
+    maxTokens: '4096',
+    contextWindow: '128000',
+  });
+  repo.updateUserLlmSettings('task-owner', {
+    baseUrl: 'https://background-model.example.com/v1',
+    model: 'background-model',
+    apiKey: 'synthetic-background-key',
+    maxTokens: '2048',
+    contextWindow: '64000',
+  }, 'task');
+
+  assert.deepEqual(repo.getLlmSettings('task-owner'), {
+    baseUrl: 'https://main-model.example.com/v1', model: 'main-model',
+    apiKey: 'synthetic-main-key', maxTokens: 4096, contextWindow: 128000,
+  });
+  assert.deepEqual(repo.getTaskLlmSettings('task-owner'), {
+    baseUrl: 'https://background-model.example.com/v1', model: 'background-model',
+    apiKey: 'synthetic-background-key', maxTokens: 2048, contextWindow: 64000,
+  });
+  assert.equal(repo.getTaskLlmSource('task-owner'), 'user');
+
+  repo.updateUserLlmSettings('task-owner', {
+    providerClear: true,
+    maxTokens: '',
+    contextWindow: '',
+  }, 'task');
+  assert.deepEqual(repo.getTaskLlmSettings('task-owner'), repo.getLlmSettings('task-owner'));
+  assert.equal(repo.getTaskLlmSource('task-owner'), 'main');
+  assert.equal(repo.getUserLlmSetting('task-owner', 'api_key', 'task'), null);
 });
 
 test('清除用户字段后只回退环境默认值，不会读取其他用户配置', () => {
