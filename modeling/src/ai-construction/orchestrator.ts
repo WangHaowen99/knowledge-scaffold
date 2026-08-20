@@ -2794,7 +2794,8 @@ export class AiConstructionOrchestrator {
         },
       });
       operationTask = current.tasks.find((item) => item.kind === 'operation_extraction'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!operationTask) throw new Error('业务操作提取任务创建失败');
 
@@ -2814,7 +2815,8 @@ export class AiConstructionOrchestrator {
         },
       });
       knowledgeTask = current.tasks.find((item) => item.kind === 'knowledge_extraction'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!knowledgeTask) throw new Error('知识提取任务创建失败');
 
@@ -2834,12 +2836,16 @@ export class AiConstructionOrchestrator {
         },
       });
       validationTask = current.tasks.find((item) => item.kind === 'package_validation'
-        && item.milestoneId === 'knowledge_confirmed');
+        && item.milestoneId === 'knowledge_confirmed'
+        && !['cancelled', 'stale'].includes(item.status));
     }
     if (!validationTask) throw new Error('知识包校验任务创建失败');
 
+    // 回退会创建新一轮知识生成任务。固定消息 key 会返回历史入口卡，让本轮任务没有
+    // 可操作的“生成知识结构”卡；任务 ID 在单轮重试中稳定、在不同回退轮次间唯一。
     const message = this.messages.ensure(projectId, {
-      key: 'knowledge_confirmed.started', role: 'assistant', taskId: operationTask.id,
+      key: `knowledge_confirmed.started.${operationTask.id}`,
+      role: 'assistant', taskId: operationTask.id,
       blocks: [
         {
           type: 'status', title: '进入知识结构构建',
