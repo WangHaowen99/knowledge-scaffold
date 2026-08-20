@@ -70,19 +70,20 @@ export class MilestoneRollbackCoordinator {
     const inflight = this.db.prepare(`SELECT operation FROM inflight_operations
       WHERE key LIKE ? ESCAPE '\\' AND expires_at > ? ORDER BY started_at LIMIT 1`)
       .get(`${escaped}%`, nowIso()) as { operation?: string } | undefined;
-    const targetTaskInput = this.graph.snapshot(projectId)?.tasks.find((task) => (
+    const snapshot = this.graph.snapshot(projectId);
+    const targetTaskInput = snapshot?.tasks.find((task) => (
       task.milestoneId === milestoneId && task.inputRevisionOid
     ))?.inputRevisionOid;
-    let restoreRevisionOid = graphPreview.restoreRevisionOid;
-    const target = this.graph.snapshot(projectId)?.milestones.find((item) => item.id === milestoneId);
-    const hasPreviousConfirmed = this.graph.snapshot(projectId)?.milestones.some((item) => (
+    const target = snapshot?.milestones.find((item) => item.id === milestoneId);
+    // 新建项目的首个目标任务没有 inputRevisionOid。这里不能因此退到 project_created：
+    // 那个 Git 提交只有项目元数据，不含 model/package-spec.json，普通包恢复必然失败。
+    // 回退目标阶段应该复用该阶段确认时绑定的知识包修订；后续阶段仍优先使用上游确认修订。
+    const hasPreviousConfirmed = snapshot?.milestones.some((item) => (
       item.ordinal < Number(target?.ordinal ?? 0) && item.status === 'confirmed' && item.confirmedRevisionOid
     ));
-    if (!hasPreviousConfirmed && !targetTaskInput) {
-      const first = this.db.prepare(`SELECT oid FROM artifact_revisions
-        WHERE project_id = ? ORDER BY sequence LIMIT 1`).get(projectId) as { oid?: string } | undefined;
-      restoreRevisionOid = first?.oid ?? restoreRevisionOid;
-    }
+    const restoreRevisionOid = hasPreviousConfirmed
+      ? graphPreview.restoreRevisionOid
+      : targetTaskInput ?? target?.confirmedRevisionOid ?? graphPreview.restoreRevisionOid;
     const leaseBlocker = activeLease?.operation && activeLease.operation !== ignoreLeaseOperation
       ? activeLease.operation : undefined;
     const blocker = activeRun?.intent ?? leaseBlocker ?? inflight?.operation;
@@ -151,6 +152,32 @@ export class MilestoneRollbackCoordinator {
       || intent.current_package_revision_oid !== input.expectedPackageRevision
       || intent.actor_username !== actor || intent.reason !== reason) {
       throw new AiConstructionTaskGraphError('REVISION_CONFLICT', '相同请求编号对应的回退内容不一致');
+    }
+
+    // 预览算法升级前可能已经留下 prepared 意图，但知识包尚未发生任何恢复。
+    // 这时允许基于同一任务图和当前包重新校正恢复基线，使原弹窗可以幂等重试；
+    // package_restored/completed 一旦落盘则不可再改，继续遵循原审计内容。
+    if (intent.status === 'prepared') {
+      const refreshedPreview = this.preview(
+        input.projectId, intent.target_milestone_id, '回退建模阶段',
+      );
+      if (!refreshedPreview.allowed || !refreshedPreview.restoreRevisionOid) {
+        throw new AiConstructionTaskGraphError(
+          'INVALID_TRANSITION', refreshedPreview.reason ?? '当前不能继续阶段回退',
+        );
+      }
+      if (refreshedPreview.graphRevision !== intent.graph_revision_before) {
+        throw new AiConstructionTaskGraphError('REVISION_CONFLICT', '任务图已经变化，请刷新后重新预览');
+      }
+      if (refreshedPreview.restoreRevisionOid !== intent.base_package_revision_oid) {
+        this.db.prepare(`UPDATE ai_construction_milestone_rollbacks
+          SET base_package_revision_oid = ?, impact_json = ?
+          WHERE id = ? AND project_id = ? AND status = 'prepared'`).run(
+          refreshedPreview.restoreRevisionOid, JSON.stringify(refreshedPreview),
+          intent.id, input.projectId,
+        );
+        intent = this.intent(input.projectId, requestId)!;
+      }
     }
 
     let restoredRevision = intent.restored_package_revision_oid;

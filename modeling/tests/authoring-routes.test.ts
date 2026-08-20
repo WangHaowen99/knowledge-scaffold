@@ -203,6 +203,103 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
     continuation.message_key,
   ) as { count: number };
   assert.equal(continuationCount.count, 1, '相同回退请求重放不能重复创建继续卡');
+
+  const goalPreviewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback-preview`,
+  });
+  assert.equal(goalPreviewResponse.statusCode, 200, goalPreviewResponse.body);
+  const goalPreview = goalPreviewResponse.json().preview;
+  assert.equal(goalPreview.allowed, true);
+  assert.equal(goalPreview.restoreRevisionOid, initialized.revision.oid,
+    '首个建模目标阶段必须恢复其确认修订，不能退到没有知识包的项目创建提交');
+
+  const currentAfterFirstRollback = await packages.current(project.id);
+  const goalRollback = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: replay.json().aiConstruction.revision,
+      expectedPackageRevision: currentAfterFirstRollback!.revision.oid,
+      requestId: 'rollback-goal-after-process',
+      reason: '重新确认建模目标',
+    },
+  });
+  assert.equal(goalRollback.statusCode, 200, goalRollback.body);
+  assert.equal(goalRollback.json().aiConstruction.progress.currentMilestoneId, 'goal_confirmed');
+  assert.equal(goalRollback.json().aiConstruction.tasks.find((task: any) => (
+    task.id === goalTask.id
+  )).status, 'waiting_user');
+});
+
+test('新项目首阶段回退使用目标确认修订并可修复旧预览留下的 prepared 请求', async (t) => {
+  const project = createProject({ owner: 'alice', name: '首阶段连续回退' });
+  const packages = getPackageArtifactStore();
+  const initialized = await packages.initializeDraftPackage(project.id, {
+    id: 'package-first-milestone', name: '首阶段回退', description: '首阶段回退测试',
+  });
+  const graphModule = await import('../src/ai-construction/task-graph.js');
+  const graph = new graphModule.AiConstructionTaskGraph(getDb());
+  let snapshot = graph.snapshot(project.id)!;
+  const goalTask = snapshot.tasks[0];
+  snapshot = graph.apply(project.id, {
+    type: 'complete_task', expectedRevision: snapshot.revision,
+    taskId: goalTask.id, outputRevisionOid: initialized.revision.oid,
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'confirm_milestone', expectedRevision: snapshot.revision,
+    milestoneId: 'goal_confirmed', packageRevisionOid: initialized.revision.oid,
+    actor: { username: 'alice', role: 'project_owner' },
+  });
+  snapshot = graph.apply(project.id, {
+    type: 'plan_task', expectedRevision: snapshot.revision,
+    task: {
+      kind: 'material_analysis', milestoneId: 'materials_ready', title: '围绕目标分析资料',
+      goal: '分析资料', required: true, dependsOn: [goalTask.id],
+    },
+  });
+
+  const app = routeApp(t);
+  const previewResponse = await app.inject({
+    method: 'GET',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback-preview`,
+  });
+  assert.equal(previewResponse.statusCode, 200, previewResponse.body);
+  const preview = previewResponse.json().preview;
+  assert.equal(preview.restoreRevisionOid, initialized.revision.oid);
+
+  const projectCreated = getDb().prepare(`SELECT oid FROM artifact_revisions
+    WHERE project_id = ? ORDER BY sequence LIMIT 1`).get(project.id) as { oid: string };
+  const stalePreview = { ...preview, restoreRevisionOid: projectCreated.oid };
+  getDb().prepare(`INSERT INTO ai_construction_milestone_rollbacks (
+    id, project_id, request_id, target_milestone_id, graph_revision_before,
+    base_package_revision_oid, current_package_revision_oid, actor_username,
+    reason, impact_json, status, created_at
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,'prepared',?)`).run(
+    'rollback_stale_preview', project.id, 'rollback-goal-stale-preview', 'goal_confirmed',
+    snapshot.revision, projectCreated.oid, initialized.revision.oid, 'alice',
+    '重新确认建模目标', JSON.stringify(stalePreview), new Date().toISOString(),
+  );
+
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/projects/${project.id}/ai-construction/milestones/goal_confirmed/rollback`,
+    payload: {
+      expectedGraphRevision: snapshot.revision,
+      expectedPackageRevision: initialized.revision.oid,
+      requestId: 'rollback-goal-stale-preview',
+      reason: '重新确认建模目标',
+    },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().aiConstruction.progress.currentMilestoneId, 'goal_confirmed');
+  assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
+    task.id === goalTask.id
+  )).status, 'waiting_user');
+  const audit = getDb().prepare(`SELECT base_package_revision_oid, status
+    FROM ai_construction_milestone_rollbacks WHERE id = 'rollback_stale_preview'`).get() as any;
+  assert.equal(audit.base_package_revision_oid, initialized.revision.oid);
+  assert.equal(audit.status, 'completed');
 });
 
 test('通用待办接口不能绕过场景审核专用闭环', async (t) => {
