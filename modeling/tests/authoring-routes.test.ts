@@ -156,6 +156,34 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
     task.id === processTask.id
   )).status, 'waiting_user');
   assert.notEqual(response.json().rollback.restoredPackageRevisionOid, beforePackage!.revision.oid);
+  const continuation = getDb().prepare(`SELECT message_key, seq, blocks_json
+    FROM ai_construction_messages WHERE project_id = ?
+      AND message_key = ?`).get(
+    project.id,
+    `milestone.rollback.resume.${response.json().rollback.id}`,
+  ) as { message_key: string; seq: number; blocks_json: string } | undefined;
+  assert.ok(continuation, '回退后必须追加当前阶段的可见继续卡');
+  assert.equal(response.json().message.key, continuation.message_key);
+  assert.equal(response.json().interaction?.type, 'question_batch');
+  const latestMessage = getDb().prepare(`SELECT message_key FROM ai_construction_messages
+    WHERE project_id = ? ORDER BY seq DESC LIMIT 1`).get(project.id) as { message_key: string };
+  assert.equal(latestMessage.message_key, continuation.message_key);
+
+  // 模拟项目在旧版本完成回退：只有回退记录和任务图，没有本次回退的继续卡。
+  // 重新进入工作台时必须幂等补卡，线上存量项目才能在部署后直接恢复。
+  getDb().prepare(`DELETE FROM ai_construction_messages
+    WHERE project_id = ? AND message_key = ?`).run(project.id, continuation.message_key);
+  const reconciled = await app.inject({
+    method: 'POST', url: `/api/projects/${project.id}/session/advance`,
+  });
+  assert.equal(reconciled.statusCode, 200, reconciled.body);
+  assert.ok(reconciled.json().aiConstructionMessages.some((message: any) => (
+    message.key === continuation.message_key
+  )), '进入工作台时应补出当前阶段继续卡');
+  assert.ok(reconciled.json().authoring.pendingInteractions.some((interaction: any) => (
+    interaction.type === 'question_batch'
+      && interaction.payload?.purpose === 'process_interview'
+  )), '流程阶段应同时恢复可操作的访谈待办卡');
 
   const replay = await app.inject({
     method: 'POST',
@@ -169,6 +197,12 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
   });
   assert.equal(replay.statusCode, 200, replay.body);
   assert.equal(replay.json().rollback.id, response.json().rollback.id);
+  const continuationCount = getDb().prepare(`SELECT COUNT(*) AS count
+    FROM ai_construction_messages WHERE project_id = ? AND message_key = ?`).get(
+    project.id,
+    continuation.message_key,
+  ) as { count: number };
+  assert.equal(continuationCount.count, 1, '相同回退请求重放不能重复创建继续卡');
 });
 
 test('通用待办接口不能绕过场景审核专用闭环', async (t) => {

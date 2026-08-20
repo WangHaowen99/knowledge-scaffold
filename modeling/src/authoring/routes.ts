@@ -427,6 +427,33 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
     }
     return pending.length;
   };
+  const appendRollbackContinuation = (
+    projectId: string,
+    rollbackId: string,
+    advanced: ReturnType<AiConstructionOrchestrator['advanceAfterMilestoneConfirmation']>,
+  ) => (advanced.message
+    ? messages.ensure(projectId, {
+      key: `milestone.rollback.resume.${rollbackId}`,
+      role: advanced.message.role,
+      ...(advanced.message.taskId ? { taskId: advanced.message.taskId } : {}),
+      blocks: advanced.message.blocks,
+    })
+    : undefined);
+  const reconcileRollbackContinuation = (
+    projectId: string,
+    snapshot: NonNullable<ReturnType<AiConstructionTaskGraph['snapshot']>>,
+    advanced: ReturnType<AiConstructionOrchestrator['advanceAfterMilestoneConfirmation']>,
+  ) => {
+    const rollback = getDb().prepare(`SELECT id, target_milestone_id, graph_revision_after
+      FROM ai_construction_milestone_rollbacks
+      WHERE project_id = ? AND status = 'completed'
+      ORDER BY completed_at DESC LIMIT 1`).get(projectId) as {
+        id: string; target_milestone_id: string; graph_revision_after: number;
+      } | undefined;
+    if (!rollback || rollback.target_milestone_id !== snapshot.progress.currentMilestoneId
+      || Number(rollback.graph_revision_after) > snapshot.revision) return undefined;
+    return appendRollbackContinuation(projectId, rollback.id, advanced);
+  };
   const readConfirmedFlowchart = async (projectId: string) => {
     const currentPackage = await packages.current(projectId);
     if (!currentPackage) throw new Error('当前项目没有知识包草稿');
@@ -570,7 +597,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
       'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
     ].includes(String(constructionSnapshot.progress.currentMilestoneId ?? ''))) {
       const currentMilestoneId = String(constructionSnapshot.progress.currentMilestoneId ?? '');
-      constructionSnapshot = orchestrator.advanceAfterMilestoneConfirmation(
+      const advanced = orchestrator.advanceAfterMilestoneConfirmation(
         project.id,
         constructionSnapshot,
         currentMilestoneId === 'deterministic_confirmed' && currentPackage
@@ -581,7 +608,9 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             ),
           }
           : {},
-      ).aiConstruction;
+      );
+      constructionSnapshot = advanced.aiConstruction;
+      reconcileRollbackContinuation(project.id, constructionSnapshot, advanced);
     }
 
     const authoring = state.snapshot(project.id);
@@ -976,6 +1005,12 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
             },
           ],
         });
+        // 阶段入口消息使用固定 key，首次建模时已经存在。回退后若只复用那条历史消息，
+        // 前端会把它视为过期动作卡，而最新的回退通知本身没有继续按钮。为本次回退
+        // 复制一张新的阶段入口卡；rollback id 同时保证接口重放不会重复追加消息。
+        const continuationMessage = appendRollbackContinuation(
+          project.id, result.rollback.id, advanced,
+        );
         if (!result.replayed) {
           state.apply({
             kind: 'publish_event',
@@ -992,7 +1027,8 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
         return {
           ...result,
           aiConstruction: advanced.aiConstruction,
-          message: advanced.message ?? rollbackMessage,
+          message: continuationMessage ?? rollbackMessage,
+          ...(advanced.interaction ? { interaction: advanced.interaction } : {}),
           cursor: state.snapshot(project.id).lastEventSeq,
         };
       });
