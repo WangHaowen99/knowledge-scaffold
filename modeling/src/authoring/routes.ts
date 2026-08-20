@@ -976,7 +976,7 @@ export function registerAuthoringRoutes(app: FastifyInstance, options: Authoring
           expectedPackageRevision,
           requestId,
           actor: req.user!.username,
-          reason: String(body.reason ?? ''),
+          reason: typeof body.reason === 'string' ? body.reason : undefined,
         });
         const advanced = orchestrator.advanceAfterMilestoneConfirmation(
           project.id, result.graph,

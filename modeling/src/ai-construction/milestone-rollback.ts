@@ -106,7 +106,7 @@ export class MilestoneRollbackCoordinator {
     expectedPackageRevision: string;
     requestId: string;
     actor: string;
-    reason: string;
+    reason?: string;
   }): Promise<{
     graph: AiConstructionTaskGraphSnapshot;
     rollback: AiConstructionMilestoneRollbackSnapshot;
@@ -115,8 +115,13 @@ export class MilestoneRollbackCoordinator {
   }> {
     const requestId = requiredText(input.requestId, '请求编号', 200);
     const actor = requiredText(input.actor, '操作人', 100);
-    const reason = requiredText(input.reason, '回退原因', 500);
     let intent = this.intent(input.projectId, requestId);
+    const reason = String(input.reason ?? '').trim()
+      || intent?.reason
+      || '用户选择重新处理该阶段';
+    if (reason.length > 500) {
+      throw new AiConstructionTaskGraphError('INVALID_TASK_PLAN', '回退原因过长');
+    }
     if (intent?.status === 'completed') return this.completedResult(intent);
 
     if (!intent) {

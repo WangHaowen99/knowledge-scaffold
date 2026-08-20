@@ -1080,7 +1080,7 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .task-adjustment-reason textarea { width: 100%; resize: vertical; border: 1px solid #cfd9e7; border-radius: 8px; padding: 8px 9px; background: #fff; color: #24364b; font: inherit; }
 .mwr .task-adjustment-preview > footer { display: flex; justify-content: flex-end; gap: 7px; padding: 9px 13px 12px; border-top: 1px solid #e1ebf7; }
 .mwr .task-adjustment-blocked { margin: 11px 13px 0; border-radius: 8px; padding: 8px 9px; background: #fff3f2; color: #a43a32; font-size: 11px; }
-.mwr .pchat-milestone-rollback { position: relative; margin-left: auto; }
+.mwr .pchat-milestone-rollback { position: relative; }
 .mwr .pchat-milestone-rollback__trigger { border: 1px solid #c5d5e7; border-radius: 8px; padding: 6px 10px; background: #fff; color: #355a82; font-size: 11px; cursor: pointer; }
 .mwr .pchat-milestone-rollback__trigger:hover:not(:disabled) { border-color: #7ea7d1; background: #f5f9fd; }
 .mwr .pchat-milestone-rollback__menu { position: absolute; z-index: 30; top: calc(100% + 7px); right: 0; display: grid; width: 270px; padding: 10px; border: 1px solid #cddbea; border-radius: 11px; background: #fff; box-shadow: 0 10px 30px rgba(32, 62, 94, .18); }

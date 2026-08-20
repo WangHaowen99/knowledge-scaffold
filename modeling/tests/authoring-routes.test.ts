@@ -147,7 +147,6 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
       expectedGraphRevision: snapshot.revision,
       expectedPackageRevision: beforePackage!.revision.oid,
       requestId: 'rollback-process-api',
-      reason: '核心流程边界需要重新确认',
     },
   });
   assert.equal(response.statusCode, 200, response.body);
@@ -155,6 +154,7 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
   assert.equal(response.json().aiConstruction.tasks.find((task: any) => (
     task.id === processTask.id
   )).status, 'waiting_user');
+  assert.equal(response.json().rollback.reason, '用户选择重新处理该阶段');
   assert.notEqual(response.json().rollback.restoredPackageRevisionOid, beforePackage!.revision.oid);
   const continuation = getDb().prepare(`SELECT message_key, seq, blocks_json
     FROM ai_construction_messages WHERE project_id = ?
@@ -192,7 +192,6 @@ test('阶段回退接口先预览影响并恢复知识包后重开目标阶段',
       expectedGraphRevision: snapshot.revision,
       expectedPackageRevision: beforePackage!.revision.oid,
       requestId: 'rollback-process-api',
-      reason: '核心流程边界需要重新确认',
     },
   });
   assert.equal(replay.statusCode, 200, replay.body);

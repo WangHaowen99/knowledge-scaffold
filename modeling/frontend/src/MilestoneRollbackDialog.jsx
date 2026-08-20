@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 function etaText(eta) {
   const low = Number(eta?.minMinutes ?? 0);
@@ -8,7 +8,6 @@ function etaText(eta) {
 }
 
 export default function MilestoneRollbackDialog({ preview, busy = false, onConfirm, onCancel }) {
-  const [reason, setReason] = useState('');
   if (!preview) return null;
   return (
     <div className="milestone-rollback-backdrop" role="presentation">
@@ -34,16 +33,10 @@ export default function MilestoneRollbackDialog({ preview, busy = false, onConfi
         {preview.restoreRevisionOid && <p className="milestone-rollback-revision">
           系统会创建新的恢复修订；当前版本和之后的历史版本不会被删除。
         </p>}
-        {preview.allowed && <label className="task-adjustment-reason">
-          <span>回退原因（必填）</span>
-          <textarea rows={3} maxLength={500} value={reason}
-            placeholder="说明为什么要回退，便于团队审计和后续复盘"
-            onChange={(event) => setReason(event.target.value)} />
-        </label>}
         <footer>
           <button type="button" className="btn" disabled={busy} onClick={onCancel}>取消</button>
           {preview.allowed && <button type="button" className="btn btn-p"
-            disabled={busy || !reason.trim()} onClick={() => onConfirm?.(reason.trim())}>
+            disabled={busy} onClick={() => onConfirm?.()}>
             {busy ? '正在回退…' : '确认回退并重新处理'}
           </button>}
         </footer>

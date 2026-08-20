@@ -840,7 +840,7 @@ export default function PackageChat({
     } finally { setLocalBusy(''); }
   };
 
-  const confirmMilestoneRollback = async (reason) => {
+  const confirmMilestoneRollback = async () => {
     if (!milestoneRollback || busy) return;
     setLocalBusy('milestone_rollback');
     try {
@@ -851,7 +851,6 @@ export default function PackageChat({
           expectedGraphRevision: milestoneRollback.graphRevision,
           expectedPackageRevision: packageRevision,
           requestId: milestoneRollback.requestId,
-          reason,
         },
       );
       setMilestoneRollback(null);
@@ -1057,7 +1056,7 @@ export default function PackageChat({
               disabled={Boolean(busy)} aria-haspopup="menu" aria-expanded={rollbackMenuOpen}
               title="回到已确认的阶段重新处理；上游资料和历史版本会保留"
               onClick={() => setRollbackMenuOpen((open) => !open)}>
-              回退阶段
+              选择阶段
             </button>
             {rollbackMenuOpen && <div className="pchat-milestone-rollback__menu" role="menu">
               <strong>选择要重新处理的阶段</strong>
