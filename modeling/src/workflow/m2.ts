@@ -58,6 +58,7 @@ import {
 import { buildPhysicalSchemaObjects, detectSchemaManifests } from './schema-manifest.js';
 import {
   dispositionForObjectAndOperationCandidates,
+  validateGeneratedKnowledgeResources,
   planArtifactCandidates,
   validateKnowledgeCandidateDispositions,
 } from './candidate-disposition.js';
@@ -71,6 +72,48 @@ import {
 } from './generation-planner.js';
 
 type ConfirmedDiagram = FlowchartOutput['diagrams'][number];
+
+export interface OperationTarget {
+  id: string;
+  question: string;
+  diagram: ConfirmedDiagram;
+  focusNodeId?: string;
+  focusNodeLabel?: string;
+  requiresRule?: boolean;
+  requiresMetric?: boolean;
+}
+
+const RULE_STEP = /(?:判断|校验|准入|匹配|分类|识别|审核|审批|筛选|例外|异常)/u;
+const METRIC_STEP = /(?:计算|测算|评估|评分|排序|聚合|汇总|占比|比例|金额|强度|指标)/u;
+
+/**
+ * 一张确认流程图同时产生一个总编排 operation 和可独立测试的步骤 operation。
+ * 单步骤流程保持原来的一图一操作，避免制造没有复用价值的重复资源。
+ */
+export function buildOperationTargets(diagrams: ConfirmedDiagram[]): OperationTarget[] {
+  return diagrams.flatMap((diagram, index) => {
+    const processId = `process_${diagram.id || index + 1}`;
+    const orchestrator: OperationTarget = {
+      id: processId,
+      question: `按照已确认的「${diagram.title}」流程完成业务处理并返回明确结果`,
+      diagram,
+    };
+    const executable = diagram.nodes.filter((node) => node.kind === 'action' || node.kind === 'decision');
+    if (executable.length <= 1) return [orchestrator];
+    return [orchestrator, ...executable.map((node): OperationTarget => {
+      const semantic = `${node.label}\n${node.detail ?? ''}`;
+      return {
+        id: `${processId}:node_${node.id}`,
+        question: `按照已确认的「${diagram.title}」流程，独立完成步骤「${node.label}」并返回明确结果`,
+        diagram,
+        focusNodeId: node.id,
+        focusNodeLabel: node.label,
+        requiresRule: node.kind === 'decision' || RULE_STEP.test(semantic),
+        requiresMetric: METRIC_STEP.test(semantic),
+      };
+    })];
+  });
+}
 
 export interface PackageGenerationOptions extends GenerationOptions {
   dataSourceType?: PackageDataSourceType;
@@ -185,16 +228,7 @@ export async function generatePackage(
   if (!confirmedFlowchart || !Array.isArray(confirmedFlowchart.diagrams)) {
     throw new Error('知识包生成必须提供已确认的业务流程');
   }
-  type OperationTarget = {
-    id: string;
-    question: string;
-    diagram: ConfirmedDiagram;
-  };
-  const operationTargets: OperationTarget[] = confirmedFlowchart.diagrams.map((diagram, index) => ({
-    id: `process_${diagram.id || index + 1}`,
-    question: `按照已确认的「${diagram.title}」流程完成业务处理并返回明确结果`,
-    diagram,
-  }));
+  const operationTargets = buildOperationTargets(confirmedFlowchart.diagrams);
   const selectedQuestions = operationTargets.map((target) => target.question);
   if (!operationTargets.length) throw new Error('缺少人工确认的业务流程，无法生成业务操作');
   const confirmedProcessSummary = JSON.stringify(confirmedFlowchart.diagrams.map((diagram) => ({
@@ -657,7 +691,9 @@ export async function generatePackage(
           '适用条件、判断门槛、例外和产品匹配条件沉淀为 rule；明确公式、统计粒度和边界的口径沉淀为 metric。',
           '必须能在材料中找到依据；缺少阈值、公式或权威映射时不要猜测，返回空数组并留给访谈澄清。',
           'readiness=needs_clarification 的候选只有在访谈结论已明确补齐条件或口径时才能生成；否则不产出。',
-          `本批有 ${suggestedRules} 条 rule 候选、${suggestedMetrics} 条 metric 候选。每个候选必须提交处置记录：generated、merged、deferred、needs_clarification 或 excluded，不能静默省略。`,
+          `本批有 ${suggestedRules} 条 rule 候选、${suggestedMetrics} 条 metric 候选。与当前确认流程及 Excel 对象直接相关的 extractable 候选必须生成或合并；确实不相关的候选才可 deferred/excluded，并要指出它与哪个流程能力或对象边界不匹配，不能使用“留待后续”等泛化理由。needs_clarification 候选不得创建空资源。每个候选必须提交处置记录，不能静默省略。`,
+          '只能提交当前批次候选能够证明的资源；不得凭流程描述另造规则或指标。一个候选允许拆成多个互补指标，但每个资源都必须被 generated 处置记录认领。',
+          '生成 rule 时必须填写 appliesToObjects、完整 content 和至少一条 conditions；生成 metric 时必须填写 usesObjects、unit、grain、含公式的 caliber、boundaries 和 nullPolicy。无法绑定当前对象或缺少口径时应具体说明并延期，不得生成空壳。',
           'rule/metric 引用的对象只能使用下列对象 key。用 submit_rules_metrics 提交资源和全部 dispositions，单类最多 12 条。',
           `对象：${JSON.stringify(objects.map((item) => ({ key: item.key, title: item.title })))}`,
           '各批次会在完成后执行全局 key 冲突校验；当前批次内部 key 必须唯一。',
@@ -721,6 +757,7 @@ export async function generatePackage(
         lastIssues = [
           ...validated.issues,
           ...validateKnowledgeCandidateDispositions(candidates, submittedRules, submittedMetrics, submittedDispositions),
+          ...validateGeneratedKnowledgeResources(submittedRules, submittedMetrics, submittedDispositions),
         ];
         if (lastIssues.length) {
           trace({
@@ -867,11 +904,20 @@ export async function generatePackage(
           `可用规则：${JSON.stringify(rules.map((item) => ({ key: item.key, title: item.title })))}`,
           `可用指标：${JSON.stringify(metrics.map((item) => ({ key: item.key, title: item.title })))}`,
           `操作候选参考：${artifactSummary(operationCandidates)}`,
+          ...(questions.length === 1 && questions[0].focusNodeLabel
+            ? [`当前 operation 只负责流程步骤「${questions[0].focusNodeLabel}」，不要把整张流程图重复塞进一个 operation。`]
+            : []),
           `已确认流程摘要：${confirmedProcessSummary.slice(0, 2400)}`,
           `本批已确认流程：\n${questions.map((target, i) => [
             `${i + 1}. [${target.id}] ${target.question}`,
             JSON.stringify({
               title: target.diagram.title,
+              targetRole: target.focusNodeId ? 'reusable_step' : 'process_orchestrator',
+              focusNode: target.focusNodeId
+                ? { id: target.focusNodeId, label: target.focusNodeLabel }
+                : undefined,
+              requiresRule: target.requiresRule,
+              requiresMetric: target.requiresMetric,
               ...diagramProcessMeta(target.diagram),
               nodes: target.diagram.nodes.map((item) => ({
                 id: item.id, label: item.label, kind: item.kind, detail: item.detail,

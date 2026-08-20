@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import {
   validateKnowledgeBatch,
+  validateOperationBatch,
   validateObjectBatch,
   validateSpecIntegrity,
 } from '../src/workflow/spec-validation.js';
@@ -99,6 +100,23 @@ test('规则指标批次允许引用已经生成的对象', () => {
   }, { objects: spec.objects, rules: [], metrics: [] });
 
   assert.deepEqual(result, { issues: [], invalidReferenceCount: 0 });
+});
+
+test('规则指标和 operation 批次在保存前拒绝空壳资源', () => {
+  const ruleMetric = validateKnowledgeBatch({
+    rules: [{ key: 'empty_rule', title: '待访谈规则', content: '' }],
+    metrics: [{ key: 'empty_metric', title: '待访谈指标', caliber: '', boundaries: [] }],
+  }, { objects: [], rules: [], metrics: [] });
+  assert.ok(ruleMetric.issues.some((item) => item.includes('empty_rule') && item.includes('完整规则内容')));
+  assert.ok(ruleMetric.issues.some((item) => item.includes('empty_metric') && item.includes('业务口径')));
+  assert.ok(ruleMetric.issues.some((item) => item.includes('empty_metric') && item.includes('计算边界')));
+
+  const operation = validateOperationBatch([{ id: 'process_step', question: '完成流程步骤' }], [{
+    key: 'empty_operation', title: '空操作', description: '', inputs: [], outputs: [], flow: [], relatedObjects: [],
+    competencyQuestionId: 'process_step', competencyQuestion: '完成流程步骤',
+  }], { objects: [], rules: [], metrics: [] });
+  assert.ok(operation.issues.some((item) => item.includes('empty_operation') && item.includes('业务描述')));
+  assert.ok(operation.issues.some((item) => item.includes('empty_operation') && item.includes('可执行流程步骤')));
 });
 
 test('知识包渲染统一生成 operation 流程序号且不重复展示模型自带编号', () => {
@@ -317,7 +335,7 @@ test('规则指标候选可以逐项生成或延期，但不得静默遗漏', as
             {
               candidateId: candidateId(analysis.candidateArtifacts![1], 1),
               kind: 'metric', name: '客户产品覆盖率', status: 'deferred',
-              reason: '当前确认流程未使用该指标，保留到后续增量建模。',
+              reason: '当前确认流程只输出客户资产规模，不包含产品持有对象或覆盖率计算步骤，无法绑定现有流程输出。',
             },
           ],
         })])]);

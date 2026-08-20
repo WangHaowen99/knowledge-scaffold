@@ -83,20 +83,18 @@ export function buildObjectGenerationHints(
 }
 
 /**
- * Domain Reduce candidates define the first-version knowledge scope. Document
- * candidates remain the evidence pool and are used as a fallback for projects
- * without any structured-table domain candidates.
+ * Excel/CSV 只决定物理对象边界，不应把文档规则和指标排除在知识生成之外。
+ * 规则与指标可以引用 Sheet 字段，也可以引用产品手册中的业务口径；两者
+ * 在生成前由候选处置计划和批次质量门禁分别约束。只有需要补充业务口径的
+ * 候选留给专家，不把可提取候选静默延期到“增量建模”。
  */
 export function buildKnowledgeGenerationCandidates(
   analysis: AnalysisResult | undefined,
   tables: DataDictTable[],
 ): ArtifactCandidate[] {
-  const candidates = (analysis?.candidateArtifacts ?? [])
+  void tables;
+  return (analysis?.candidateArtifacts ?? [])
     .filter((item) => item.kind === 'rule' || item.kind === 'metric');
-  const tableNames = new Set(tables.map((table) => table.name));
-  const domainCandidates = candidates.filter((candidate) =>
-    candidate.sources.some((source) => tableNames.has(source)));
-  return domainCandidates.length ? domainCandidates : candidates;
 }
 
 /** 文档来源由分析证据确定，不能因为生成模型漏填 sourceRefs 就丢失。 */

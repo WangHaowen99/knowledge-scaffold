@@ -8,6 +8,8 @@ import {
   mapWithConcurrency,
   planGenerationUnits,
 } from '../src/workflow/generation-planner.js';
+import { buildOperationTargets } from '../src/workflow/m2.js';
+import { confirmedFlowchart } from './fixtures/confirmed-flowchart.js';
 
 test('动态批次在大上下文中扩大对象批次且保持输出上限', () => {
   const items = Array.from({ length: 25 }, (_, index) => ({ id: index, name: `对象${index}` }));
@@ -61,4 +63,16 @@ test('模型限流后自适应门闩把后续并发减半', async () => {
     active -= 1;
   })));
   assert.equal(peak, 2);
+});
+
+test('多步骤流程生成总编排和步骤 operation，并标记规则指标覆盖要求', () => {
+  const flowchart = confirmedFlowchart([{
+    id: 'marketing', title: '营销流程',
+    steps: ['归集客户数据', '识别业务场景', '评估需求强度', '输出营销建议'],
+  }]);
+  const targets = buildOperationTargets(flowchart.diagrams);
+  assert.equal(targets.length, 5);
+  assert.equal(targets[0].id, 'process_marketing');
+  assert.equal(targets[2].requiresRule, true);
+  assert.equal(targets[3].requiresMetric, true);
 });

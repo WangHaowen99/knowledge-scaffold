@@ -117,6 +117,15 @@ export function validateKnowledgeCandidateDispositions(
         issues.push(`候选「${candidate.name}」标记为已生成，但没有引用本批实际生成的资源 key`);
       }
     }
+    if (candidate.readiness === 'extractable'
+      && (disposition.status === 'deferred' || disposition.status === 'excluded')) {
+      const generic = /(?:留待|后续|增量建模|首版|当前(?:确认)?流程(?:未使用|无直接)|暂不处理)/u;
+      const hasConcreteBoundary = /(?:对象|字段|流程步骤|业务步骤|目标|输入|输出|场景|角色|证据|口径)/u
+        .test(disposition.reason);
+      if (disposition.reason.trim().length < 20 || generic.test(disposition.reason) || !hasConcreteBoundary) {
+        issues.push(`候选「${candidate.name}」的延期/排除理由过于笼统，必须说明与当前对象、流程步骤或建模目标不匹配的具体原因`);
+      }
+    }
     if (disposition.status === 'merged' && (
       !disposition.mergedIntoCandidateId
       || disposition.mergedIntoCandidateId === candidate.id
@@ -127,6 +136,27 @@ export function validateKnowledgeCandidateDispositions(
     if (!disposition.reason.trim()) issues.push(`候选「${candidate.name}」的处置原因不能为空`);
   }
   return issues;
+}
+
+/**
+ * 防止模型在当前批次之外凭空新增规则/指标。资源可以把一个候选拆成
+ * 多个更精确的资源（例如一个候选拆成“数量”和“金额”两个指标），但
+ * 每个提交资源都必须被某条 generated 处置记录明确认领。
+ */
+export function validateGeneratedKnowledgeResources(
+  rules: Array<{ key: string; title: string }>,
+  metrics: Array<{ key: string; title: string }>,
+  dispositions: CandidateDisposition[],
+): string[] {
+  const generatedKeys = new Set(dispositions
+    .filter((item) => item.status === 'generated')
+    .flatMap((item) => item.resourceKeys ?? []));
+  return [
+    ...rules.filter((item) => !generatedKeys.has(item.key))
+      .map((item) => `规则 ${item.key} 未被任何候选处置记录认领，不能作为无来源新规则提交`),
+    ...metrics.filter((item) => !generatedKeys.has(item.key))
+      .map((item) => `指标 ${item.key} 未被任何候选处置记录认领，不能作为无来源新指标提交`),
+  ];
 }
 
 function matchingResourceKeys(

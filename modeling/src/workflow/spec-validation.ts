@@ -21,6 +21,8 @@ export const questionsMatch = (operationQuestion: string | undefined, question: 
 export interface CompetencyQuestionRef {
   id: string;
   question: string;
+  requiresRule?: boolean;
+  requiresMetric?: boolean;
 }
 
 export interface BoundOperationBatch {
@@ -135,6 +137,8 @@ export function validateKnowledgeBatch(
   for (const key of findDuplicates(ruleKeys)) issues.push(`规则 key 重复：${key}`);
   for (const key of findDuplicates(metricKeys)) issues.push(`指标 key 重复：${key}`);
   for (const rule of batch.rules) {
+    if (!rule.title.trim()) issues.push('规则缺少标题');
+    if (!rule.content.trim()) issues.push(`规则 ${rule.key} 缺少完整规则内容`);
     if (existingRuleKeys.has(normalizeKey(rule.key))) issues.push(`规则 key 重复：${rule.key}`);
     for (const objectKey of rule.appliesToObjects ?? []) {
       if (objectKeys.has(normalizeKey(objectKey))) continue;
@@ -143,6 +147,9 @@ export function validateKnowledgeBatch(
     }
   }
   for (const metric of batch.metrics) {
+    if (!metric.title.trim()) issues.push('指标缺少标题');
+    if (!metric.caliber.trim()) issues.push(`指标 ${metric.key} 缺少业务口径或公式`);
+    if (!metric.boundaries?.length) issues.push(`指标 ${metric.key} 缺少计算边界`);
     if (existingMetricKeys.has(normalizeKey(metric.key))) issues.push(`指标 key 重复：${metric.key}`);
     for (const objectKey of metric.usesObjects ?? []) {
       if (objectKeys.has(normalizeKey(objectKey))) continue;
@@ -192,6 +199,18 @@ export function validateOperationBatch(
     .map((question) => question.question);
   const expectedQuestionIds = new Set(questions.map((question) => question.id));
   for (const operation of operations) {
+    if (!operation.title.trim()) issues.push('操作缺少标题');
+    if (!operation.description.trim()) issues.push(`操作 ${operation.key} 缺少业务描述`);
+    if (!operation.flow?.some((step) => step.trim())) issues.push(`操作 ${operation.key} 缺少可执行流程步骤`);
+    const claimedQuestion = operation.competencyQuestionId
+      ? questions.find((question) => question.id === operation.competencyQuestionId)
+      : undefined;
+    if (claimedQuestion?.requiresRule && !(operation.usesRules ?? []).length) {
+      issues.push(`操作 ${operation.key} 对应判断/匹配步骤，但没有引用任何规则`);
+    }
+    if (claimedQuestion?.requiresMetric && !(operation.usesMetrics ?? []).length) {
+      issues.push(`操作 ${operation.key} 对应计算/评估步骤，但没有引用任何指标`);
+    }
     if (!operation.competencyQuestionId || !expectedQuestionIds.has(operation.competencyQuestionId)) {
       issues.push(`操作 ${operation.key} 未按 ID 认领当前批次的领域问题`);
     }

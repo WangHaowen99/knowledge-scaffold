@@ -45,7 +45,7 @@ test('绑定表格的材料对象候选不会与确定性物理对象重复生�
   assert.deepEqual(buildObjectGenerationHints(analysis, [{ name: 'unit', documentId: 'doc-excel', rowCount: 1, fields: [] }]), []);
 });
 
-test('表格领域候选存在时首版规则指标不扩张到全部文档线索', () => {
+test('Excel 只约束对象范围，首版规则指标仍保留全文候选供流程相关性处置', () => {
   const analysis: AnalysisResult = {
     domainOverview: '炼化排产', candidateObjects: [], openQuestions: [],
     candidateArtifacts: [{
@@ -57,7 +57,7 @@ test('表格领域候选存在时首版规则指标不扩张到全部文档线�
   assert.deepEqual(
     buildKnowledgeGenerationCandidates(analysis, [{ name: 'unit', rowCount: 0, fields: [] }])
       .map((item) => item.name),
-    ['装置负荷上限'],
+    ['装置负荷上限', '局部温度指标'],
   );
 });
 
