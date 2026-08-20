@@ -123,4 +123,6 @@ test('流程图编辑器允许鼠标选择节点和连线后编辑属性', async
   assert.match(source, /onNodeClick=\{onNodeClick\} onEdgeClick=\{onEdgeClick\}/);
   assert.match(source, /selection: \{ type: 'node', diagramId: activeDiagram\.id, id: node\.id \}/);
   assert.match(source, /selection: \{ type: 'edge', diagramId: activeDiagram\.id, id: edge\.id \}/);
+  assert.match(source, /onClick=\{\(event\) => \{/);
+  assert.match(source, /data\.onSelect\?\.\(id\)/);
 });

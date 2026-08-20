@@ -106,6 +106,10 @@ function FlowNode({ id, data, selected }) {
 
   return (
     <div className={`fc-node is-${data.kind || 'action'}${selected ? ' is-selected' : ''}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        data.onSelect?.(id);
+      }}
       onDoubleClick={(event) => {
         event.stopPropagation();
         if (!data.disabled) setDraft(data.label);
@@ -154,6 +158,7 @@ function graphElements(diagram, selection, handlers) {
         detail: node.detail || '',
         disabled: handlers.disabled,
         onRename: handlers.onRename,
+        onSelect: handlers.onSelect,
       },
     })),
     edges: diagram.edges
@@ -366,9 +371,17 @@ export default function FlowchartEditor({
     });
   }, [activeDiagram?.id]);
 
+  const selectNode = useCallback((nodeId) => {
+    if (!activeDiagram || !nodeId) return;
+    dispatch({
+      type: 'select-element',
+      selection: { type: 'node', diagramId: activeDiagram.id, id: nodeId },
+    });
+  }, [activeDiagram?.id]);
+
   const graph = useMemo(
-    () => graphElements(activeDiagram, session.selection, { disabled, onRename: renameNode }),
-    [activeDiagram, session.selection, disabled, renameNode],
+    () => graphElements(activeDiagram, session.selection, { disabled, onRename: renameNode, onSelect: selectNode }),
+    [activeDiagram, session.selection, disabled, renameNode, selectNode],
   );
 
   useEffect(() => {
