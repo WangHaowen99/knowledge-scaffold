@@ -39,6 +39,10 @@ import {
   stripUnverifiedDocumentReadCoverage,
   verifiedDocumentReadCoverage,
 } from './document-read-coverage.js';
+import {
+  answerMaterialInventoryQuestion,
+  type MaterialInventoryItem,
+} from './material-inventory.js';
 
 // 知识包工作区的建模 agent —— 咨询直接回答，修改走两段式确认：
 // ① plan：只分析影响面（改哪些对象/操作、怎么改、风险），返回结构化计划等专家确认；咨询类直接文字回答；
@@ -74,6 +78,8 @@ export interface PackageChatPlanOptions {
    * 让它自己按需读，而不是由调用方截一段塞进提示词——长文档截头部只会读到目录。
    */
   documents?: ReadableDocument[];
+  /** 全部已上传资料，用于准确回答资料数量、文件名和解析状态；可包含无文本正文的表格。 */
+  materials?: MaterialInventoryItem[];
   /** 最近一次材料分析的后端输出，仅使用与当前文档修订匹配的全文覆盖记录。 */
   analysis?: Pick<AnalysisResult, 'documentReadCoverage'>;
   /** 普通聊天默认不读原始资料；on-demand 按需检索；full 强制连续覆盖全部传入文本资料。 */
@@ -790,6 +796,10 @@ export async function packageChatPlan(
   message: string,
   options: PackageChatPlanOptions = {},
 ): Promise<ChatPlanResult> {
+  // 资料数量/上传状态是仓库事实，不依赖知识包是否已经生成，也不交给模型猜测。
+  const materialInventoryReply = answerMaterialInventoryQuestion(message, options.materials);
+  if (materialInventoryReply) return { reply: materialInventoryReply };
+
   const latest = await getPackageArtifactStore().current(project.id);
   if (!latest) throw new Error('尚未生成知识包');
 
@@ -853,9 +863,9 @@ export async function packageChatPlan(
     '列出级联风险：改口径会影响哪些操作、是否与典型问题路由冲突、remove 是否破坏领域问题覆盖。',
     'sourceRefs.anchors 只是知识对象保留的证据引用点，不是全文阅读账本或正文收录清单；不得仅因锚点较少就声称其他章节未阅读、未收录或不存在。',
     `后端已验证的历史全文阅读覆盖：${documentReadCoveragePrompt(historicalReadCoverage)}。`,
-    ...(documents.length ? [
-      '当前调用可使用 list_documents、search_documents、read_document 文档工具。',
-      '只咨询当前知识包规格时不必调用文档工具；如果专家明确询问原始文档、章节、条款、原文或要求重新核对资料，必须先使用文档工具获取本轮证据。',
+    ...(documents.length || options.materials?.length ? [
+      '当前调用可使用 list_documents 查看全部已上传资料（包括表格文件）；search_documents、read_document 仅用于有正文的文本资料。',
+      '只咨询当前知识包规格时不必调用资料工具；如果专家明确询问原始文档、章节、条款、原文或要求重新核对资料，必须先使用文档工具获取本轮证据。',
     ] : []),
     ...(documentAccess === 'on-demand' ? [
       '当前是按需文档查询：优先用 search_documents 定位，再用 read_document 读取相关正文，不要为了局部问题从头通读整份文档。',
@@ -876,10 +886,10 @@ export async function packageChatPlan(
 
   // 有文本资料时始终注入只读文档工具；documentAccess 只决定按需读取还是全文门禁，
   // 不再决定普通聊天是否看得见工具。这样局部章节查询不会退化成只有 submit_change_plan。
-  const documentTools = documents.length
+  const documentTools = documents.length || options.materials?.length
     ? buildDocumentReadingTools(accessibleDocuments.map((item) => ({
       id: item.id ?? item.filename, filename: item.filename, textContent: item.textContent ?? '',
-    })), documentReadSession)
+    })), documentReadSession, options.materials)
     : [];
   const agent = makeAgent(options.llmOverride ?? buildLlm(), sys, [submitPlan, ...documentTools] as any, [], {
     ...(documentReadSession ? {

@@ -222,12 +222,15 @@ class MCPTokenStore:
             status = "revoked"
         elif expires_at and _is_expired(expires_at):
             status = "expired"
+        ontology_id = str(item.get("ontology_id") or "").strip()
         return {
             "token_id": str(item.get("token_id") or ""),
             "name": str(item.get("name") or ""),
             "token_masked": str(item.get("token_masked") or ""),
             "username": str(item.get("username") or ""),
             "workspace_id": str(item.get("workspace_id") or ""),
+            "ontology_id": ontology_id,
+            "binding_mode": "ontology" if ontology_id else "workspace",
             "scopes": list(item.get("scopes") or []),
             "status": status,
             "created_at": item.get("created_at"),

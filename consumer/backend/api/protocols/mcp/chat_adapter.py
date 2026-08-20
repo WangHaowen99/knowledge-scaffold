@@ -8,6 +8,10 @@ import requests
 
 from integration.mcp.config import MCPRuntimeConfig, load_mcp_runtime_config
 from integration.mcp.scope import MCPRequestScope
+from integration.mcp.ontology_binding import (
+    MCPOntologyBindingError,
+    bind_chat_arguments,
+)
 
 from .paths import MCP_INTERNAL_CHAT_PATH
 from .schemas import error_result
@@ -38,11 +42,24 @@ def execute_chat_tool(
         )
 
     cfg = config or load_mcp_runtime_config()
+    try:
+        bound_arguments = bind_chat_arguments(
+            arguments=(payload.get("arguments") if isinstance(payload.get("arguments"), dict) else None),
+            token_ontology_id=scope.ontology_id,
+        )
+    except MCPOntologyBindingError as exc:
+        return error_result(
+            error_type=exc.error_type,
+            error_code=exc.code,
+            detail=exc.detail,
+            retriable=False,
+        )
+
     request_payload = {
         "request": query,
         "session_id": str(payload.get("session_id") or "").strip(),
         "context": dict(payload.get("context") or {}),
-        "arguments": payload.get("arguments") if isinstance(payload.get("arguments"), dict) else None,
+        "arguments": bound_arguments,
         "requested_operation_key": str(
             payload.get("requested_operation_key") or ""
         ).strip(),

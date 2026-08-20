@@ -38,6 +38,25 @@ def _config(tmp_path: Path, transport: str) -> MCPRuntimeConfig:
     )
 
 
+def test_search_tool_schemas_make_ontology_id_optional(tmp_path):
+    async def load_schemas():
+        server = mcp_server.create_mcp_server(
+            _config(tmp_path, "streamable-http"),
+            toolset="search",
+        )
+        return {
+            name: tool.parameters
+            for name, tool in (await server.get_tools()).items()
+        }
+
+    schemas = asyncio.run(load_schemas())
+
+    assert len(schemas) == 14
+    for schema in schemas.values():
+        assert "ontology_id" in schema["properties"]
+        assert "ontology_id" not in schema.get("required", [])
+
+
 def test_mcp_http_root_app_mounts_only_streamable_http_when_transport_is_http(monkeypatch, tmp_path):
     captured_transports: list[str] = []
 
