@@ -8,7 +8,7 @@
 
 - admin 保存、修改或删除模板时，不写任何用户配置，也不追写任何用户快照；
 - 通过 Modeling `/auth/register` 成功创建的新账号，复制注册成功时的模板作为独立快照；
-- 老用户只有主动点击“同步默认 LLM 配置”时，才用点击时的模板替换自己的 LLM 配置；
+- 老用户只有主动点击“同步默认 LLM 配置”时，才用点击时对应用途的模板替换自己的配置；
 - 主模型与任务模型的运行时解析不直接读取当前平台模板。
 
 这保证 admin 的配置变更不会静默影响正在使用 Modeling 的其他账号。
@@ -69,12 +69,14 @@ Modeling 无法观察绕过 `/auth/register`、直接由 Consumer 或 auth-serve
 `POST /api/settings/llm/sync-default`：
 
 - 必须使用当前登录用户身份，不接受目标用户名；
-- 平台 main 模板不存在时返回 409，保留当前用户配置；
-- 模板存在时，在单个事务中删除发起用户的个人 LLM 配置和旧快照，再写入当前模板快照；
+- 前端按当前用途提交 `purpose = main | task`；不带 `purpose` 的旧调用继续按整组同步处理；
+- 同步主模型要求平台 main 模板；同步任务模型优先使用平台 task 模板，未设置时使用平台 main 模板；
+- 模板不存在时返回 409，保留当前用户配置；
+- 模板存在时，在单个事务中只删除发起用户对应用途的个人配置和旧快照，再写入该用途的当前模板快照；
 - 不扫描、不修改其他用户；
 - 同步完成后的快照仍不跟随 admin 后续修改。
 
-前端按钮是否启用由 `platformDefaultAvailable` 决定。问号提示固定说明：
+前端按钮是否启用由 `platformDefaultAvailable` 决定。同步按钮旁的问号提示固定说明：
 “只有 admin 账号设置了默认 LLM 配置后，才可使用。”
 
 ## 运行时解析
@@ -84,17 +86,15 @@ Modeling 无法观察绕过 `/auth/register`、直接由 Consumer 或 auth-serve
 ```text
 主模型：完整个人 provider → 用户 main 快照 → MODELING_LLM_* 部署配置
 
-任务模型：完整个人 provider
+任务模型：完整个人 task provider
        → 用户 task 快照
-       → 用户 main 快照
-       → MODELING_TASK_LLM_* 部署配置
-       → MODELING_LLM_* 部署配置
+       → 当前用户解析后的主模型
 ```
 
 这里的部署配置是既有系统启动配置，不是 admin 平台模板。当前 `llm_default_settings` 绝不参与
 运行时解析，因此不会出现“没有个人配置就自动继承 admin 最新值”的隐式兜底。
 
-`base_url`、`model` 和 `api_key` 必须从同一作用域整体选取，不能逐字段混用。例如用户修改
+`base_url`、`model` 和 `api_key` 必须从同一用途、同一作用域整体选取，不能逐字段混用。例如用户修改
 快照中的 Base URL/模型后会脱离快照，未填写个人 Key 时使用空 Key，绝不能把平台或部署 Key
 发送到用户指定的第三方端点。`max_tokens` 可以独立覆盖。
 
@@ -128,8 +128,8 @@ auth-server 建号与 Modeling SQLite 不在同一事务中。建号成功后若
 - admin 保存、修改、删除模板不改变老用户、已有注册快照或已有同步快照；
 - Modeling 注册成功的新用户得到注册时 revision，后续 admin 修改不追写；
 - 没有模板时注册不创建快照，也不读取未来新增的模板；
-- 主动同步只替换发起用户，其他用户保持不变；
-- 同步按钮在没有 main 模板时禁用，服务端同时以 409 防护；
+- 主动同步只替换发起用户的当前用途，其他用途和其他用户保持不变；
+- 主模型同步按钮在没有 main 模板时禁用；任务模型同步按钮在 main/task 模板均不存在时禁用，服务端同时以 409 防护；
 - 个人 provider 不混用快照或部署 API Key；
 - 平台和快照 API Key 均加密落盘，响应、日志与测试错误不泄露 Key；
 - `MODELING_LLM_CONFIG_ENCRYPTION_KEY` 为空时可使用持久化自动密钥；
