@@ -135,6 +135,16 @@ export class DocumentReadSession {
     return this.ledgers.size;
   }
 
+  /**
+   * 当前账本已经覆盖的去重字符数。
+   * 只统计合并后的区间，重复读取同一页不会被当成进展。
+   */
+  get coveredChars(): number {
+    return [...this.ledgers.values()].reduce((total, ledger) => (
+      total + ledger.ranges.reduce((covered, [from, to]) => covered + to - from, 0)
+    ), 0);
+  }
+
   ledger(filename: string): DocumentReadLedger {
     const ledger = this.ledgers.get(filename);
     if (!ledger) throw new Error(`未找到文档：${filename}`);
@@ -276,32 +286,87 @@ export class DocumentReadIncompleteError extends Error {
   }
 }
 
-export function fullReadTurnBudget(documents: ReadableDocument[]): number {
-  const pages = documents.reduce((total, document) => (
-    total + Math.ceil((document.textContent?.length ?? 0) / DOCUMENT_READ_CHUNK_SIZE)
-  ), 0);
-  return Math.min(128, Math.max(16, pages + 14));
+export const DEFAULT_DOCUMENT_READ_NO_PROGRESS_TURNS = 30;
+
+export class DocumentReadStalledError extends DocumentReadIncompleteError {
+  readonly code = 'DOCUMENT_READ_STALLED';
+
+  constructor(
+    session: DocumentReadSession,
+    readonly noProgressTurns: number,
+    readonly noProgressTurnLimit: number,
+  ) {
+    super(session);
+    this.name = 'DocumentReadStalledError';
+    this.message = [
+      `全文读取连续 ${noProgressTurns} 个模型回合没有新增正文覆盖，已停止重复调用（保护阈值 ${noProgressTurnLimit}）。`,
+      session.incompleteReport(),
+    ].join('\n');
+  }
 }
 
 export async function runAgentWithDocumentReadGate(input: {
   agent: any;
   prompt: string;
   session: DocumentReadSession;
-  maxTurns: number;
   observe?: (event: unknown) => void;
   captured?: () => boolean;
   submitNudge?: string;
   missingSubmissionError?: string;
+  noProgressTurnLimit?: number;
 }): Promise<unknown[]> {
   const { runAgent } = await import('./agent.js');
-  const turnBudget = { remaining: Math.max(1, Math.floor(input.maxTurns)) };
+  const configuredNoProgressLimit = Number(input.noProgressTurnLimit ?? DEFAULT_DOCUMENT_READ_NO_PROGRESS_TURNS);
+  const noProgressTurnLimit = Number.isFinite(configuredNoProgressLimit) && configuredNoProgressLimit > 0
+    ? Math.floor(configuredNoProgressLimit)
+    : DEFAULT_DOCUMENT_READ_NO_PROGRESS_TURNS;
   let messages: unknown[] = [];
   let prompt = input.prompt;
-  let attempts = 0;
   let submissionNudges = 0;
-  while (turnBudget.remaining > 0 && attempts < input.maxTurns) {
-    attempts += 1;
-    messages = await runAgent(input.agent, prompt, input.observe, { turnBudget });
+  let noProgressTurns = 0;
+  let coveredChars = input.session.coveredChars;
+  let stalled = false;
+
+  const observe = (event: unknown) => {
+    input.observe?.(event);
+    if ((event as any)?.type !== 'turn_end' || stalled || input.session.complete) return;
+    const nextCoveredChars = input.session.coveredChars;
+    if (nextCoveredChars > coveredChars) {
+      noProgressTurns = 0;
+    } else {
+      noProgressTurns += 1;
+    }
+    coveredChars = nextCoveredChars;
+    if (noProgressTurns >= noProgressTurnLimit) {
+      stalled = true;
+      try { input.agent.abort(); } catch { /* 让当前 run 自然收尾 */ }
+    }
+  };
+
+  while (true) {
+    const turnsBeforeRun = noProgressTurns;
+    let turnsObserved = 0;
+    const runObserve = (event: unknown) => {
+      if ((event as any)?.type === 'turn_end') turnsObserved += 1;
+      observe(event);
+    };
+    try {
+      // 全文任务只由账本完成度和无进展保护终止，不继承通用 Agent 的回合上限。
+      messages = await runAgent(input.agent, prompt, runObserve, { maxTurns: null });
+    } catch (error) {
+      if (stalled) throw new DocumentReadStalledError(input.session, noProgressTurns, noProgressTurnLimit);
+      throw error;
+    }
+    if (stalled) throw new DocumentReadStalledError(input.session, noProgressTurns, noProgressTurnLimit);
+    // 某些 provider/测试 double 不发 turn_end，但仍然返回；把这次调用算作一个无进展回合，
+    // 否则 while (true) 会在没有任何可观察事件时永不终止。
+    if (turnsObserved === 0 && !input.session.complete) {
+      noProgressTurns = input.session.coveredChars > coveredChars ? 0 : turnsBeforeRun + 1;
+      if (noProgressTurns >= noProgressTurnLimit) {
+        throw new DocumentReadStalledError(input.session, noProgressTurns, noProgressTurnLimit);
+      }
+    }
+    coveredChars = input.session.coveredChars;
     if (input.session.complete && (!input.captured || input.captured())) {
       return input.session.compactMessages(messages);
     }
@@ -315,9 +380,4 @@ export async function runAgentWithDocumentReadGate(input: {
       prompt = input.session.continuationPrompt();
     }
   }
-  if (!input.session.complete) throw new DocumentReadIncompleteError(input.session);
-  if (input.captured && !input.captured()) {
-    throw new Error(input.missingSubmissionError ?? '全文读取完成，但模型未按协议提交结构化结果');
-  }
-  return input.session.compactMessages(messages);
 }

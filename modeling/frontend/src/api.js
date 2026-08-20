@@ -136,6 +136,13 @@ export const discardPackageDraft = (id, revision, draftId) => api(`${P(id)}/pack
 export const publishPackageDraft = (id, revision, summary, draftId) => api(`${P(id)}/package/draft/publish`, {
   method: 'POST', body: JSON.stringify({ confirmed: true, revision, summary, draftId }),
 });
+export const getSemanticBindingSuggestions = (id) => api(`${P(id)}/package/semantic-bindings/suggestions`);
+export const applySemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/apply`, {
+  method: 'POST', body: JSON.stringify(input),
+});
+export const ignoreSemanticBindings = (id, input) => api(`${P(id)}/package/semantic-bindings/ignore`, {
+  method: 'POST', body: JSON.stringify(input),
+});
 
 // ---- M3 评测 ----
 export const getDataSource = (id) => api(`${P(id)}/data-source`);

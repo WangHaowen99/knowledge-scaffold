@@ -337,6 +337,10 @@ def _format_output(result: dict, show_sql: bool = False) -> dict:
         row_count = result.get("row_count", 0)
         if row_count > 0:
             output["message"] = "查询成功，返回 {} 行数据".format(row_count)
+        elif result.get("message"):
+            # Value-domain lookups return a text answer with no rows; preserve
+            # the provider's original message instead of discarding it.
+            output["message"] = result["message"]
         else:
             output["message"] = "查询成功，无数据返回"
     else:

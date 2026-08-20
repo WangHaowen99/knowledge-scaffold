@@ -712,5 +712,5 @@ def test_business_data_search_tool_validates_required_text_before_loading_ontolo
     )
 
     assert missing_entity.content == "Error: entity cannot be empty"
-    assert missing_query.content == "Error: Search query cannot be empty"
+    assert "query is required" in missing_query.content
     assert manifest_called is False

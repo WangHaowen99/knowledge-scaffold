@@ -177,9 +177,16 @@ export function ToolCallBlock({ block, sessionId = '', runId = '' }) {
 
 export function BusinessDataResult({ block, sessionId = '', runId = '' }) {
   const query = block.input?.query || block.input?.question || '';
+  const action = typeof block.input?.action === 'string'
+    ? block.input.action.trim().toLowerCase()
+    : '';
+  const isLookup = action === 'lookup_values';
+  const label = query
+    ? `${isLookup ? '字段值域' : '业务数据'}：${query}`
+    : (isLookup ? '查询字段值域' : '查询业务数据');
   return (
     <details className={`conversation-process business-data-process status-${block.status}`} open={block.status !== 'finished'} data-block-key={block.key}>
-      <summary><Database size={14} /><span>{query ? `业务数据：${query}` : '业务数据查询'}</span><BlockMeta status={block.status} durationMs={block.durationMs} /></summary>
+      <summary><Database size={14} /><span>{label}</span><BlockMeta status={block.status} durationMs={block.durationMs} /></summary>
       <div className="conversation-process-body">
         {block.progress?.length > 0 && (
           <ol className="tool-progress-list">

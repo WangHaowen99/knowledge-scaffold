@@ -22,6 +22,7 @@ import { EvaluatePanel, TestcasesPanel } from './M3Panels.jsx';
 import { FailureDiagnosisPanel, OptimizationPanel } from './M4Panel.jsx';
 import PackageChat from './PackageChat.jsx';
 import PendingInteraction from './PendingInteraction.jsx';
+import SemanticBindingPanel from './SemanticBindingPanel.jsx';
 import PaneResizeHandle from './PaneResizeHandle.jsx';
 import { assistantPaneBounds, assistantPaneRatio, assistantPaneWidth, ASSISTANT_PANE_RATIO } from './paneLayout.js';
 import { packageWorkspaceFocus } from './packageWorkspaceFocus.js';
@@ -781,6 +782,14 @@ export default function PackageWorkspace({
               : <ReviewPanel
                   projectId={projectId}
                   stageContent={stageContent}
+                  reviewBanner={!stageContent && (
+                    <SemanticBindingPanel
+                      projectId={projectId}
+                      packageRevision={pkg?.revision ?? ''}
+                      disabled={Boolean(pkg.draft)}
+                      onApplied={async () => { await load(); }}
+                    />
+                  )}
                   packageDraft={pkg.draft ?? null}
                   packageRepairBusy={isPackageChatRunning(session.authoring) ? 'plan' : ''}
                   onDraftChange={(draft) => setPkg((current) => current ? { ...current, draft } : current)}

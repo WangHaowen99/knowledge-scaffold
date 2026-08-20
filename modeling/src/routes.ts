@@ -171,6 +171,33 @@ import { getAuthoringState } from './authoring/state.js';
 import { getPackageArtifactStore } from './artifacts/runtime.js';
 import { ArtifactRepositoryError } from './artifacts/repository.js';
 import { packageIntentQuestions, validateSpecIntegrity } from './workflow/spec-validation.js';
+import {
+  applySemanticBindingSelection,
+  previewSemanticBindingCandidates,
+} from './workflow/semantic-binding-service.js';
+
+const semanticBindingIgnoreKey = (projectId: string, revision: string) =>
+  `semantic_binding_ignored:${projectId}:${revision}`;
+
+function isSemanticBindingIgnored(projectId: string, revision: string): boolean {
+  return Boolean(getSetting(semanticBindingIgnoreKey(projectId, revision)));
+}
+
+function ignoreSemanticBinding(projectId: string, revision: string): void {
+  setSetting(semanticBindingIgnoreKey(projectId, revision), new Date().toISOString());
+}
+
+function semanticBindingPreview(projectId: string, revision: string, spec: any, tables: any[]) {
+  const preview = previewSemanticBindingCandidates(spec, tables);
+  if (!isSemanticBindingIgnored(projectId, revision)) return preview;
+  return {
+    ...preview,
+    suggestions: [],
+    fieldSuggestions: [],
+    bindingCount: 0,
+    fieldRefCount: 0,
+  };
+}
 
 export interface RegisterRoutesOptions {
   dataSourceConnectionTester?: DataSourceConnectionTester;
@@ -408,7 +435,8 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         consumerApiUrlSource: getSetting('consumer_api_url') ? 'settings' : 'env',
         authIssuerUrl: config.auth.issuerUrl, // 只读展示：登录 issuer（auth-server）由部署配置
         llm: {
-          baseUrl: llm.baseUrl, model: llm.model, maxTokens: llm.maxTokens,
+          baseUrl: llm.baseUrl, model: llm.model,
+          maxTokens: llm.maxTokens, contextWindow: llm.contextWindow,
           apiKeySet: !!llm.apiKey, // key 不回显
           personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
           source: getLlmSource(username),
@@ -433,7 +461,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
       const hasUserLlmPatch = [
         'llmBaseUrl', 'llmModel', 'llmApiKey', 'llmApiKeyClear',
-        'llmProviderClear', 'llmMaxTokens',
+        'llmProviderClear', 'llmMaxTokens', 'llmContextWindow',
       ].some((key) => Object.hasOwn(b, key));
       if (hasUserLlmPatch) {
         try {
@@ -444,6 +472,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             apiKeyClear: b.llmApiKeyClear === true,
             providerClear: b.llmProviderClear === true,
             maxTokens: b.llmMaxTokens === undefined ? undefined : String(b.llmMaxTokens),
+            contextWindow: b.llmContextWindow === undefined ? undefined : String(b.llmContextWindow),
           });
         } catch (error) {
           if (error instanceof UserLlmSettingsValidationError) {
@@ -902,6 +931,100 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
       }
     });
 
+    r.get('/api/projects/:id/package/semantic-bindings/suggestions', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      try {
+        const current = await packageArtifacts.current(c.p.id);
+        if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+        return {
+          revision: current.revision.oid,
+          ...semanticBindingPreview(c.p.id, current.revision.oid, current.spec, c.ctx.tables),
+        };
+      } catch (error) {
+        return sendArtifactError(reply, error);
+      }
+    });
+
+    r.post('/api/projects/:id/package/semantic-bindings/ignore', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = String(body.expectedRevision ?? '').trim();
+      if (!expectedRevision) return reply.code(400).send({ error: 'expectedRevision 必填' });
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+      if (current.revision.oid !== expectedRevision) {
+        return reply.code(409).send({
+          code: 'REVISION_CONFLICT',
+          error: '知识包已更新，请刷新后重试',
+          currentRevision: current.revision.oid,
+        });
+      }
+      ignoreSemanticBinding(c.p.id, current.revision.oid);
+      return {
+        revision: current.revision.oid,
+        ...semanticBindingPreview(c.p.id, current.revision.oid, current.spec, c.ctx.tables),
+      };
+    });
+
+    r.post('/api/projects/:id/package/semantic-bindings/apply', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const blocked = blockForActivePackageRepair(reply, c.p.id);
+      if (blocked) return blocked;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const expectedRevision = String(body.expectedRevision ?? '').trim();
+      const bindingKeys = Array.isArray(body.bindingKeys) ? body.bindingKeys.map(String) : [];
+      const fieldRefs = Array.isArray(body.fieldRefs)
+        ? body.fieldRefs.map((item: any) => ({
+          objectKey: String(item?.objectKey ?? '').trim(),
+          fieldKey: String(item?.fieldKey ?? '').trim(),
+          bindingKey: String(item?.bindingKey ?? '').trim(),
+        }))
+        : [];
+      if (!expectedRevision) return reply.code(400).send({ error: 'expectedRevision 必填' });
+      if (!bindingKeys.length && !fieldRefs.length) return reply.code(400).send({ error: '请至少选择一个术语绑定或字段关联' });
+      return withLock(`${c.p.id}:semantic-binding`, reply, async () => {
+        try {
+          const current = await packageArtifacts.current(c.p.id);
+          if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+          if (current.revision.oid !== expectedRevision) {
+            return reply.code(409).send({
+              code: 'REVISION_CONFLICT',
+              error: '知识包已更新，请刷新后重试',
+              currentRevision: current.revision.oid,
+            });
+          }
+          const applied = applySemanticBindingSelection(current.spec, c.ctx.tables, { bindingKeys, fieldRefs });
+          const saved = await packageArtifacts.savePackageVersion(c.p.id, {
+            expectedRevision,
+            spec: applied.spec,
+            coverage: current.coverage,
+            action: {
+              cause: 'semantic_binding_confirmed',
+              summary: '确认术语绑定和字段关联',
+              actorKind: 'user',
+              actorName: req.user!.username,
+            },
+          });
+          getAuthoringState().apply({
+            kind: 'publish_event',
+            projectId: c.p.id,
+            type: 'package.revision.created',
+            payload: { revisionId: saved.revision.oid, cause: 'semantic_binding_confirmed' },
+          });
+          return {
+            revision: saved.revision.oid,
+            appliedBindings: applied.appliedBindings,
+            appliedFieldRefs: applied.appliedFieldRefs,
+          };
+        } catch (error) {
+          return sendArtifactError(reply, error);
+        }
+      }, 'semantic-binding');
+    });
+
     // 人工编辑草稿后端。草稿发布后固化为一个正式版本；活动草稿期间消费与修缮入口统一门禁。
     r.get('/api/projects/:id/package/draft', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
@@ -1208,7 +1331,11 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         const formatFindings = runFormatChecks(latest.spec, snapshot.files);
         const ruleFindings = runRuleChecks(latest.spec, c.ctx.tables, packageIntentQuestions(latest.spec));
         const semanticFindings = await runSemanticCheck(c.p, latest.spec);
-        const findings = [...formatFindings, ...ruleFindings, ...semanticFindings]
+        const findings = [
+          ...formatFindings,
+          ...ruleFindings,
+          ...semanticFindings,
+        ]
           .sort((a, b) => ['错误', '警告', '提示'].indexOf(a.severity) - ['错误', '警告', '提示'].indexOf(b.severity));
         saveCheck(c.p.id, latest.packageVersion, findings, latest.revision.oid);
         return {

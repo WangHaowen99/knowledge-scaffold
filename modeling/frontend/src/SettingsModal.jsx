@@ -28,7 +28,8 @@ export default function SettingsModal({ onClose, user, tab: tabProp = 'llm' }) {
     setLoadErr('');
     setS(d);
     setForm({
-      llmBaseUrl: d.llm.baseUrl, llmModel: d.llm.model, llmMaxTokens: String(d.llm.maxTokens), llmApiKey: '',
+      llmBaseUrl: d.llm.baseUrl, llmModel: d.llm.model, llmMaxTokens: String(d.llm.maxTokens),
+      llmContextWindow: String(d.llm.contextWindow ?? ''), llmApiKey: '',
       llmApiKeyClear: false, llmProviderClear: false,
       consumerApiUrl: d.consumerApiUrl,
       evalDbUrl: d.evalDbUrl,
@@ -195,7 +196,11 @@ function LlmTab({
       </div>
       <div className="field">
         <label>单次输出上限</label>
-        <input value={form.llmMaxTokens ?? ''} onChange={set('llmMaxTokens')} placeholder="8192（大规格建议 16384+）" style={{ width: 220 }} />
+        <input value={form.llmMaxTokens ?? ''} onChange={set('llmMaxTokens')} placeholder="1000000" style={{ width: 220 }} />
+      </div>
+      <div className="field">
+        <label>上下文窗口（输入 + 输出总 token）</label>
+        <input inputMode="numeric" value={form.llmContextWindow ?? ''} onChange={set('llmContextWindow')} placeholder="按模型 API 实际上限填写，例如 1000000" style={{ width: 300 }} />
       </div>
       <div className="cfg-llm-actions">
         <button className="btn" disabled={testing || syncing} onClick={test}>{testing ? '测试中…' : '测试有效性'}</button>
@@ -218,6 +223,7 @@ function LlmTab({
               setValue('llmApiKey', '');
               setValue('llmApiKeyClear', true);
               setValue('llmMaxTokens', '');
+              setValue('llmContextWindow', '');
             }}>
             <RotateCcw size={14} aria-hidden="true" />
             {form.llmProviderClear ? '保存后清除个人覆盖' : '清除个人覆盖'}

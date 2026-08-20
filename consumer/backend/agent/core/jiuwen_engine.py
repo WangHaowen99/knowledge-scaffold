@@ -40,6 +40,10 @@ from .jiuwen.common import (
     read_field as _read_field,
     to_mapping as _to_mapping,
 )
+from .jiuwen.concurrency import (
+    current_jiuwen_tool_call_identity as _current_jiuwen_tool_call_identity,
+    install_jiuwen_concurrency_ability_manager as _install_jiuwen_concurrency_ability_manager,
+)
 from .jiuwen.patches import patch_jiuwen_openai_reasoning_alias as _patch_jiuwen_openai_reasoning_alias
 from .jiuwen.tools import (
     clear_jiuwen_pending_assistant_context as _clear_jiuwen_pending_assistant_context,
@@ -67,7 +71,7 @@ from .shared.modes import resolve_agent_mode as _resolve_agent_mode
 from .shared.ontology_context import (
     get_selected_ontology_context,
     hydrate_selected_ontology_read_documents,
-    selected_ontology_id_from_state as _selected_ontology_id_from_state,
+    active_ontology_id_from_state as _active_ontology_id_from_state,
     selected_ontology_version_from_state as _selected_ontology_version_from_state,
 )
 from .shared.prompting import build_main_system_prompt
@@ -192,12 +196,23 @@ class _JiuwenTerminalForceFinishBridge:
         batch_result = self.terminal_result.get("batch_result")
         if batch_result is None or _read_field(ctx, "exception") is not None:
             return
-        # The registered adapter creates an internal ToolInvocation id, while
-        # openJiuwen's callback exposes the model-generated tool-call id. They
-        # identify the same execution but are intentionally different values.
-        # Once any tool reports a terminal batch, forcing the enclosing batch
-        # to finish is correct regardless of which parallel AFTER_TOOL_CALL
-        # callback observes the shared terminal result first.
+        expected_token = self.terminal_result.get("correlation_token")
+        if expected_token is not None:
+            current_identity = _current_jiuwen_tool_call_identity()
+            if (
+                current_identity is None
+                or current_identity.correlation_token is not expected_token
+            ):
+                return
+        elif "model_tool_call_id" in self.terminal_result:
+            inputs = _read_field(ctx, "inputs")
+            tool_call = _read_field(inputs, "tool_call")
+            actual_tool_call_id = str(_read_field(tool_call, "id") or "")
+            expected_tool_call_id = str(
+                self.terminal_result.get("model_tool_call_id") or ""
+            )
+            if actual_tool_call_id != expected_tool_call_id:
+                return
         await self._request_force_finish(
             ctx,
             {
@@ -654,7 +669,7 @@ class JiuwenReactLoopEngine:
         terminal_stop_event = threading.Event()
 
         def remember_terminal_tool_batch(batch_result: Any) -> None:
-            terminal_result["batch_result"] = batch_result
+            _remember_jiuwen_terminal_tool_batch(terminal_result, batch_result)
             terminal_stop_event.set()
 
         registered_tool_cards: list[Any] = []
@@ -880,7 +895,16 @@ class JiuwenReactLoopEngine:
         if self._agent_factory is not None:
             # _run validates the factory capability contract once, before any
             # factory-backed agent can reach this creation point.
-            return self._agent_factory()
+            agent = self._agent_factory()
+            _install_jiuwen_concurrency_ability_manager(
+                agent,
+                max_parallel_workers=getattr(
+                    self.agent_config,
+                    "parallel_default_max_workers",
+                    10,
+                ),
+            )
+            return agent
 
         effective_rounds = context_max_rounds
         if effective_rounds is None:
@@ -902,6 +926,11 @@ class JiuwenReactLoopEngine:
             context_max_rounds=effective_rounds,
             enable_reasoning=enable_reasoning,
             stream_enabled=stream_enabled,
+            parallel_default_max_workers=getattr(
+                self.agent_config,
+                "parallel_default_max_workers",
+                10,
+            ),
         )
 
     def _seed_initial_messages(self, state: Dict[str, Any], *, system_prompt: Optional[str]) -> None:
@@ -1342,7 +1371,7 @@ class JiuwenReactLoopEngine:
         }
 
     def _append_selected_ontology_context_to_query(self, state: Mapping[str, Any], query: str) -> str:
-        selected_ontology_id = _selected_ontology_id_from_state(state)
+        selected_ontology_id = _active_ontology_id_from_state(state)
         selected_ontology_version = _selected_ontology_version_from_state(state)
         if not selected_ontology_id:
             return query
@@ -1351,7 +1380,7 @@ class JiuwenReactLoopEngine:
             query,
             "",
             "<Ontology-Selection-Constraint>",
-            'The user explicitly selected ontology_id "{}".'.format(selected_ontology_id),
+            'Ontology "{}" is the active ontology for this session.'.format(selected_ontology_id),
             (
                 'The selected ontology version is "{}".'.format(selected_ontology_version)
                 if selected_ontology_version
@@ -1420,7 +1449,7 @@ class JiuwenReactLoopEngine:
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
-            selected_ontology_id=_selected_ontology_id_from_state(state),
+            selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
@@ -1434,7 +1463,7 @@ class JiuwenReactLoopEngine:
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
-            selected_ontology_id=_selected_ontology_id_from_state(state),
+            selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
@@ -1534,6 +1563,7 @@ def create_default_jiuwen_agent(
     context_max_rounds: Optional[int] = None,
     enable_reasoning: bool = False,
     stream_enabled: bool = True,
+    parallel_default_max_workers: int = 10,
 ) -> Any:
     _configure_jiuwen_log_path()
     try:
@@ -1612,7 +1642,13 @@ def create_default_jiuwen_agent(
     )
     configure = getattr(agent, "configure", None)
     if callable(configure):
-        return configure(react_config)
+        configured_agent = configure(react_config)
+        if configured_agent is not None:
+            agent = configured_agent
+    _install_jiuwen_concurrency_ability_manager(
+        agent,
+        max_parallel_workers=parallel_default_max_workers,
+    )
     return agent
 
 
@@ -1643,6 +1679,11 @@ def warm_up_jiuwen_runtime(*, agent_config: Any = None) -> dict[str, Any]:
         agent_id="onto_agent_jiuwen_react.warmup",
         enable_reasoning=False,
         stream_enabled=True,
+        parallel_default_max_workers=getattr(
+            agent_config,
+            "parallel_default_max_workers",
+            10,
+        ),
     )
 
     get_jiuwen_tool_infos("main")
@@ -2445,6 +2486,23 @@ def _terminal_tool_call_id(batch_result: Any) -> str:
         if tool_call_id:
             return tool_call_id
     return ""
+
+
+def _remember_jiuwen_terminal_tool_batch(
+    terminal_result: Dict[str, Any],
+    batch_result: Any,
+) -> None:
+    """Correlate a Consumer terminal result with the active model call."""
+
+    terminal_result["batch_result"] = batch_result
+    terminal_result["tool_call_id"] = _terminal_tool_call_id(batch_result)
+    identity = _current_jiuwen_tool_call_identity()
+    if identity is None:
+        terminal_result.pop("model_tool_call_id", None)
+        terminal_result.pop("correlation_token", None)
+        return
+    terminal_result["model_tool_call_id"] = identity.model_tool_call_id
+    terminal_result["correlation_token"] = identity.correlation_token
 
 
 def _terminal_force_finish_output(batch_result: Any) -> str:

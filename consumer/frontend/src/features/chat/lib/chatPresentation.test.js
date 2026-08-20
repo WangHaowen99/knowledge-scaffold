@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  businessDataTraceLabel,
   formatDurationMs,
   formatTime,
   groupSessions,
@@ -32,4 +33,45 @@ test('chat presentation formatters normalize empty and compact values', () => {
   assert.equal(formatDurationMs(999), '999 ms');
   assert.equal(formatDurationMs(1500), '1.50 s');
   assert.equal(formatDurationMs(-1), '');
+});
+
+test('business data trace labels follow action instead of the tool name', () => {
+  assert.equal(
+    businessDataTraceLabel({
+      toolName: 'business_data_search',
+      input: { action: 'lookup_values' },
+    }),
+    '查询字段值域',
+  );
+  assert.equal(
+    businessDataTraceLabel({
+      toolName: 'business_data_search',
+      input: { action: 'query' },
+    }),
+    '查询业务数据',
+  );
+  assert.equal(
+    businessDataTraceLabel({ toolName: 'business_data_search', input: {} }),
+    '查询业务数据',
+  );
+  // Finished nodes may carry the action only in parsedOutput/outputProjection
+  assert.equal(
+    businessDataTraceLabel({
+      toolName: 'business_data_search',
+      parsedOutput: { action: 'lookup_values' },
+    }),
+    '查询字段值域',
+  );
+  assert.equal(
+    businessDataTraceLabel({
+      toolName: 'business_data_search',
+      outputProjection: { action: 'query' },
+    }),
+    '查询业务数据',
+  );
+  // Progress nodes have no input/parsedOutput at all
+  assert.equal(
+    businessDataTraceLabel({ toolName: 'business_data_search' }),
+    '查询业务数据',
+  );
 });

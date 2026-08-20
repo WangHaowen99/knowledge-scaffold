@@ -48,11 +48,14 @@ def _format_output(result) -> dict:
     }
     if result.success:
         row_count = result.metadata.get("row_count", 0)
-        output["message"] = (
-            "查询成功，返回 {} 行数据".format(row_count)
-            if row_count > 0
-            else "查询成功，无数据返回"
-        )
+        if row_count > 0:
+            output["message"] = "查询成功，返回 {} 行数据".format(row_count)
+        elif result.message:
+            # Value-domain lookups return a text answer with no rows; preserve
+            # the provider's original message instead of discarding it.
+            output["message"] = result.message
+        else:
+            output["message"] = "查询成功，无数据返回"
     else:
         output["message"] = "查询失败: {}".format(result.error or "未知错误")
     return output

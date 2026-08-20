@@ -489,6 +489,7 @@ CREATE TABLE IF NOT EXISTS user_llm_settings (
   model         TEXT,
   api_key       TEXT,
   max_tokens    INTEGER CHECK (max_tokens IS NULL OR max_tokens BETWEEN 1 AND 1000000),
+  context_window INTEGER CHECK (context_window IS NULL OR context_window >= 1),
   updated_at    TEXT NOT NULL
 );
 
@@ -500,6 +501,7 @@ CREATE TABLE IF NOT EXISTS llm_default_settings (
   model               TEXT NOT NULL,
   api_key_ciphertext  TEXT,
   max_tokens          INTEGER NOT NULL CHECK (max_tokens BETWEEN 1 AND 1000000),
+  context_window      INTEGER NOT NULL DEFAULT 1000000 CHECK (context_window >= 1),
   revision            INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
   updated_by          TEXT NOT NULL,
   updated_at          TEXT NOT NULL
@@ -514,6 +516,7 @@ CREATE TABLE IF NOT EXISTS user_llm_default_snapshots (
   model               TEXT NOT NULL,
   api_key_ciphertext  TEXT,
   max_tokens          INTEGER NOT NULL CHECK (max_tokens BETWEEN 1 AND 1000000),
+  context_window      INTEGER NOT NULL DEFAULT 1000000 CHECK (context_window >= 1),
   default_revision    INTEGER NOT NULL CHECK (default_revision >= 1),
   assigned_via        TEXT NOT NULL CHECK (assigned_via IN ('registration', 'sync')),
   assigned_at         TEXT NOT NULL,

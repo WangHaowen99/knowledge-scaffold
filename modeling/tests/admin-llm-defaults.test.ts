@@ -89,6 +89,7 @@ test('admin 保存的平台 Key 仅以密文落库且接口不回显', async () 
     baseUrl: 'https://platform.example.com/v1',
     model: 'platform-model',
     maxTokens: 12000,
+    contextWindow: 1000000,
     apiKeySet: true,
     revision: 1,
     updatedBy: 'platform-admin',
@@ -110,6 +111,7 @@ test('admin 保存模板不干扰老用户，新用户初始化后固化加密�
     model: 'platform-model',
     apiKey: 'synthetic-platform-key',
     maxTokens: 12000,
+    contextWindow: 1000000,
   });
   assert.equal(runWithLlmUser('new-user', () => settingsRepo.getLlmSource()), 'default_snapshot');
   assert.equal(runWithLlmUser('new-user', () => buildLlm().model.id), 'platform-model');
