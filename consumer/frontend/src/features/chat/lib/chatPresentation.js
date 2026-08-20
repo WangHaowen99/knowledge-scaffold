@@ -46,3 +46,13 @@ export const formatDurationMs = (value) => {
   const minutes = Math.floor(milliseconds / 60_000);
   return `${minutes}m ${Math.round((milliseconds % 60_000) / 1000)}s`;
 };
+
+export const businessDataTraceLabel = (node) => {
+  const action = (
+    node?.input?.action ||
+    node?.parsedOutput?.action ||
+    node?.outputProjection?.action ||
+    ''
+  ).toString().trim().toLowerCase();
+  return action === 'lookup_values' ? '查询字段值域' : '查询业务数据';
+};

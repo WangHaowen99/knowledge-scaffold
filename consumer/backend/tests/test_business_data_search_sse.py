@@ -29,10 +29,13 @@ def test_business_data_search_schema_requires_ontology_entity_and_query():
     entity_description = function_schema["parameters"]["properties"]["entity"]["description"]
     query_description = function_schema["parameters"]["properties"]["query"]["description"]
 
-    assert "查询[实体名]中[条件]的[字段]信息" in query_description
+    assert "near-natural-language sentence" in query_description
     assert "object key" in entity_description
-    assert "统计[实体名]中满足[条件]的记录数量" in query_description
+    assert "filter conditions" in query_description
     assert function_schema["parameters"]["required"] == ["ontology_id", "entity", "query"]
+    assert function_schema["parameters"]["additionalProperties"] is False
+    assert "action" in function_schema["parameters"]["properties"]
+    assert "value_inputs" in function_schema["parameters"]["properties"]
 
 
 def test_parse_mindsdb_chunk_to_events_handles_actions_and_final_output():

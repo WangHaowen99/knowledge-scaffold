@@ -1,6 +1,10 @@
 import { Activity, AlertCircle, BrainCircuit, Check, Circle, Clock3, Database, GitBranch, Globe2, Wrench } from 'lucide-react';
 
-import { formatDurationMs, formatTime } from '../lib/chatPresentation';
+import {
+  businessDataTraceLabel,
+  formatDurationMs,
+  formatTime,
+} from '../lib/chatPresentation';
 import ToolOutput from './ToolOutput';
 
 const TRACE_NODE_ICONS = {
@@ -15,7 +19,7 @@ const TRACE_NODE_ICONS = {
 
 const labelForNode = (node) => {
   if (node.type === 'reasoning') return node.text || '模型思考';
-  if (node.type === 'business_data') return node.toolName || node.text || '业务数据查询';
+  if (node.type === 'business_data') return businessDataTraceLabel(node);
   if (node.type === 'web_search') return node.toolName || '联网搜索';
   if (node.type === 'tool') return node.toolName || '工具调用';
   if (node.type === 'subagent') return node.text || '子任务';

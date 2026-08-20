@@ -2896,7 +2896,12 @@ def test_tool_specific_usage_rules_live_in_tool_schemas():
     assert "one entity per call" in business_description
     assert "empty result" in business_description
     assert "same retrieval goal" in business_description
-    assert "Generic template examples" not in business_description
+    assert "value_bound: true" in business_description
+    assert "do not infer from object field definitions or model memory" in business_description
+    assert "lookup_values" in business_properties["action"]["description"]
+    assert "value-bound fields are exactly the ones marked value_bound: true" not in business_properties["value_inputs"]["description"]
+    assert "value_bound: true" in business_properties["value_inputs"]["description"]
+    assert "Generic template examples" in business_properties["query"]["description"]
     assert "objects_catalog, operation content, and root docs alone are not sufficient" not in business_description
     assert "Prefer reading the object via ontology_context(resource='object')" in business_properties["entity"]["description"]
     assert "validation" not in business_properties["entity"]["description"]

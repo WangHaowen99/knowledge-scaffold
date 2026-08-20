@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 
+from agent.tools.events import build_tool_finished_payload
 from api.protocols.mcp.public_trace import MCPPublicTraceCollector
 from integration.mcp.config import load_mcp_runtime_config
 
@@ -157,6 +158,69 @@ def test_public_trace_extracts_safe_tool_evidence_and_timings():
     assert "events_observed" not in trace["totals"]
     assert "iteration_elapsed_ms" not in trace["totals"]
     assert trace["warnings"][0]["message"] == "retry client_secret=[REDACTED]"
+
+
+def test_public_trace_preserves_lookup_values_projection_fields():
+    """lookup_values projection fields must survive the public trace filter."""
+    collector = MCPPublicTraceCollector(max_events=20, max_bytes=32768, max_text_chars=200)
+    collector.consume(_event(
+        "tool.started",
+        {
+            "iteration": 1,
+            "tool_call_id": "call-lv",
+            "tool_name": "business_data_search",
+            "input": {
+                "ontology_id": "demo",
+                "entity": "flight",
+                "query": "查询 KUL 的中文名",
+                "action": "lookup_values",
+            },
+        },
+        seq=1,
+    ))
+    collector.consume(_event(
+        "tool.finished",
+        build_tool_finished_payload(
+            tool_name="business_data_search",
+            tool_call_id="call-lv",
+            status="completed",
+            raw_output=json.dumps({
+                "action": "lookup_values",
+                "entity": "flight",
+                "status": "completed",
+                "value_results": [
+                    {
+                        "binding_key": "airport-code",
+                        "field_keys": ["LATEST_DEP_ARP_CD"],
+                        "input_values": ["KUL"],
+                        "content": "KUL 对应吉隆坡",
+                    },
+                ],
+                "errors": [],
+            }),
+            error=None,
+            elapsed_ms=50,
+        ),
+        seq=2,
+    ))
+    collector.consume(_event(
+        "iteration.completed",
+        {
+            "iteration": 1,
+            "status": "completed",
+            "total_elapsed_ms": 100,
+        },
+        seq=3,
+    ))
+
+    trace = collector.snapshot()
+    tool = trace["iterations"][0]["tools"]["calls"][0]
+    assert tool["name"] == "business_data_search"
+    assert tool["action"] == "lookup_values"
+    assert tool["value_result_count"] == 1
+    assert tool["binding_keys"] == ["airport-code"]
+    assert tool["provider_request_count"] == 1
+    assert "error_codes" not in tool
 
 
 def test_public_trace_redacts_json_string_and_prefixed_secret_formats():

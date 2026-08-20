@@ -67,7 +67,7 @@ from .shared.modes import resolve_agent_mode as _resolve_agent_mode
 from .shared.ontology_context import (
     get_selected_ontology_context,
     hydrate_selected_ontology_read_documents,
-    selected_ontology_id_from_state as _selected_ontology_id_from_state,
+    active_ontology_id_from_state as _active_ontology_id_from_state,
     selected_ontology_version_from_state as _selected_ontology_version_from_state,
 )
 from .shared.prompting import build_main_system_prompt
@@ -1342,7 +1342,7 @@ class JiuwenReactLoopEngine:
         }
 
     def _append_selected_ontology_context_to_query(self, state: Mapping[str, Any], query: str) -> str:
-        selected_ontology_id = _selected_ontology_id_from_state(state)
+        selected_ontology_id = _active_ontology_id_from_state(state)
         selected_ontology_version = _selected_ontology_version_from_state(state)
         if not selected_ontology_id:
             return query
@@ -1351,7 +1351,7 @@ class JiuwenReactLoopEngine:
             query,
             "",
             "<Ontology-Selection-Constraint>",
-            'The user explicitly selected ontology_id "{}".'.format(selected_ontology_id),
+            'Ontology "{}" is the active ontology for this session.'.format(selected_ontology_id),
             (
                 'The selected ontology version is "{}".'.format(selected_ontology_version)
                 if selected_ontology_version
@@ -1418,7 +1418,7 @@ class JiuwenReactLoopEngine:
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
-            selected_ontology_id=_selected_ontology_id_from_state(state),
+            selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )
@@ -1430,7 +1430,7 @@ class JiuwenReactLoopEngine:
             include_orchestration=include_orchestration,
             include_web_search=include_web_search,
             include_interaction=include_interaction,
-            selected_ontology_id=_selected_ontology_id_from_state(state),
+            selected_ontology_id=_active_ontology_id_from_state(state),
             selected_ontology_version=_selected_ontology_version_from_state(state),
             workspace_id=str(state.get("workspace_id") or "").strip() or None,
         )

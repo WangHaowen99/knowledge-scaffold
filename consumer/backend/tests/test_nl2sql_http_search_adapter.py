@@ -34,6 +34,29 @@ class _Response:
         }
 
 
+class _TextAnswerResponse:
+    """Provider returns a text answer with no rows (value-domain lookup)."""
+
+    status_code = 200
+    text = ""
+
+    def json(self):
+        return {
+            "success": True,
+            "data": None,
+            "row_count": 0,
+            "message": "KUL 对应合成机场名",
+        }
+
+
+class _FailureResponse:
+    status_code = 503
+    text = "service unavailable"
+
+    def json(self):
+        return {"error": "service unavailable"}
+
+
 def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
     adapter = NL2SQLHttpSearchAdapter(_connection())
     adapter._session.post = lambda *args, **kwargs: _Response()
@@ -51,3 +74,42 @@ def test_agent_nl2sql_ignores_provider_success_message_like_baseline():
         "message": "查询成功，返回 1 行数据",
     }
     assert events[3] == {"type": "done", "content": "查询流程结束"}
+
+
+def test_nl2sql_value_lookup_returns_structured_content():
+    adapter = NL2SQLHttpSearchAdapter(_connection())
+    adapter._session.post = lambda *args, **kwargs: _Response()
+
+    events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
+
+    assert [event["type"] for event in events] == ["start", "intermediate", "final", "done"]
+    assert json.loads(events[2]["content"]) == {
+        "success": True,
+        "data": [{"id": 1}],
+        "message": "查询成功，返回 1 行数据",
+    }
+
+
+def test_nl2sql_value_lookup_preserves_text_answer_when_no_rows():
+    """A text answer with row_count=0 must keep the provider message."""
+    adapter = NL2SQLHttpSearchAdapter(_connection())
+    adapter._session.post = lambda *args, **kwargs: _TextAnswerResponse()
+
+    events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
+
+    final_event = next(e for e in events if e["type"] == "final")
+    output = json.loads(final_event["content"])
+    assert output["success"] is True
+    assert output["message"] == "KUL 对应合成机场名"
+
+
+def test_nl2sql_value_lookup_emits_provider_failure_in_final():
+    adapter = NL2SQLHttpSearchAdapter(_connection())
+    adapter._session.post = lambda *args, **kwargs: _FailureResponse()
+
+    events = list(adapter.search_stream(query="查询合成值域", entity="flight"))
+
+    assert [event["type"] for event in events] == ["start", "final", "done"]
+    output = json.loads(events[1]["content"])
+    assert output["success"] is False
+    assert "503" in output["message"]
