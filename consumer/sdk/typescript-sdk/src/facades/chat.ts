@@ -3,7 +3,7 @@ import { AgenticSessionsApi } from '../protocols/agentic/sessions.js';
 import type { AbortableAsyncIterable } from '../streams/sse.js';
 import type {
   AgentMode,
-  AgenticRunContext,
+  AgenticInteractionResponse,
   CreateSessionRequest,
   SessionDetail,
   SessionMessage,
@@ -14,24 +14,23 @@ import type { NormalizedStreamEvent } from '../types/events.js';
 export interface ChatSendRequest {
   sessionId: string;
   message: string;
-  runId?: string;
-  context?: AgenticRunContext;
   agentMode?: AgentMode;
+  llmRequestMode?: 'stream' | 'sync';
+  modelProfileId?: string;
+  arguments?: Record<string, unknown>;
+  includeTrace?: boolean;
   selectedOntologyId?: string;
+  interactionResponse?: AgenticInteractionResponse;
+  idempotencyKey?: string;
   signal?: AbortSignal;
 }
 
-const buildRunContext = (request: ChatSendRequest): AgenticRunContext => {
-  const context: AgenticRunContext = { ...(request.context || {}) };
-
-  if (request.agentMode) {
-    context.agent_mode = request.agentMode;
-  }
+const buildRunArguments = (request: ChatSendRequest): Record<string, unknown> | undefined => {
+  const args = { ...(request.arguments || {}) };
   if (request.selectedOntologyId) {
-    context.selected_ontology_id = request.selectedOntologyId;
+    args.selected_ontology_id = request.selectedOntologyId;
   }
-
-  return context;
+  return Object.keys(args).length ? args : undefined;
 };
 
 export class ChatFacade {
@@ -40,16 +39,27 @@ export class ChatFacade {
     private readonly sessions: AgenticSessionsApi,
   ) {}
 
-  send(request: ChatSendRequest): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
-    return this.runs.stream(
+  async send(request: ChatSendRequest): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
+    const admission = await this.runs.create(
       {
         session_id: request.sessionId,
         request: request.message,
-        run_id: request.runId,
-        context: buildRunContext(request),
+        agent_mode: request.agentMode,
+        llm_request_mode: request.llmRequestMode,
+        model_profile_id: request.modelProfileId,
+        arguments: buildRunArguments(request),
+        include_trace: request.includeTrace,
+        interaction_response: request.interactionResponse,
       },
-      { signal: request.signal },
+      {
+        signal: request.signal,
+        idempotencyKey: request.idempotencyKey,
+      },
     );
+    return this.runs.eventsFromLink(admission.links.events, {
+      afterSeq: 0,
+      signal: request.signal,
+    });
   }
 
   listSessions(options: { signal?: AbortSignal } = {}): Promise<SessionSummary[]> {

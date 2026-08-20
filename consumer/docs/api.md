@@ -395,135 +395,107 @@ X-Accel-Buffering: no
 
 ## 3. Runs
 
-### 3.1 `POST /agentic/runs/stream`
+### 3.1 `POST /agentic/runs`
 
-启动一次 agent 执行，并返回 `agent.v2` SSE 流。
+创建并启动一个 Run。该接口只返回 JSON admission；客户端随后使用响应中的 `links.events` 读取 SSE。请求必须携带唯一的 `Idempotency-Key`，`run_id` 和 `turn_id` 始终由服务端分配。
 
-请求体：
+```http
+POST /agentic/runs
+Idempotency-Key: request-demo-0001
+Content-Type: application/json
+```
 
 ```json
 {
-  "session_id": "session-123",
-  "request": "请分析这个问题",
-  "run_id": "optional-run-id",
-  "context": {
-    "agent_mode": "quick",
-    "llm_request_mode": "stream"
+  "session_id": "session_demo",
+  "request": "分析一条合成输入",
+  "agent_mode": "quick",
+  "llm_request_mode": "stream",
+  "model_profile_id": "",
+  "arguments": null,
+  "include_trace": false
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `session_id` | string | 是 | 会话 ID；同一 session 同时只允许一个非终态 Run |
+| `request` | string | 是 | 当前 Turn 的用户输入 |
+| `agent_mode` | string | 否 | `quick`、`thinking` 或 `multi_agent`，默认 `quick` |
+| `llm_request_mode` | string | 否 | `stream` 或 `sync`；仅影响上游模型调用方式，不改变 HTTP create-then-stream 契约 |
+| `model_profile_id` | string | 否 | 模型配置 ID；空值使用工作空间默认配置 |
+| `arguments` | object/null | 否 | 本次运行的结构化参数 |
+| `include_trace` | boolean | 否 | 是否在允许的终态事件中返回脱敏 trace |
+| `interaction_response` | object/null | 否 | 回答上一 Turn 的 HITL checkpoint，见 3.4 |
+
+首次创建响应 `202`：
+
+```json
+{
+  "created": true,
+  "run_id": "agentic-run-demo",
+  "session_id": "session_demo",
+  "turn_id": 1,
+  "status": "queued",
+  "last_seq": 0,
+  "links": {
+    "self": "/agentic/runs/agentic-run-demo",
+    "events": "/agentic/runs/agentic-run-demo/events",
+    "cancel": "/agentic/runs/agentic-run-demo/cancel"
   }
 }
 ```
 
-字段说明：
+相同 key 和相同请求的精确重试返回 `200`、`created=false`，且不会启动第二个执行任务。相同 key 搭配不同请求返回 `409 IDEMPOTENCY_CONFLICT`；同 session 已有活跃 Run 时返回 `409 SESSION_BUSY`。容量耗尽返回 `429 RUNTIME_CAPACITY_EXCEEDED`，服务停止准入时返回 `503 RUNTIME_DRAINING`。
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `session_id` | string | 是 | 会话 ID；若会话不存在，运行时可自动创建 |
-| `request` | string | 是 | 用户输入 |
-| `run_id` | string | 否 | 希望使用的 run ID |
-| `context` | object | 否 | 运行期上下文参数 |
+### 3.2 `GET /agentic/runs/{run_id}`
 
-常见 `context` 字段：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `selected_ontology_id` | string | 指定当前轮锁定的 ontology |
-| `agent_mode` | string | Agent 执行模式；支持 `quick`、`thinking`、`multi_agent` |
-| `llm_request_mode` | string | 上游 LLM 请求模式，支持 `stream` 或 `sync` |
-
-`agent_mode` 取值：
-
-| 值 | 行为 |
-| --- | --- |
-| `quick` | 默认值。关闭 LLM reasoning；不向本轮主 Agent 暴露 `spawn_sub_agent` 编排工具 |
-| `thinking` | 启用 LLM reasoning；不向本轮主 Agent 暴露 `spawn_sub_agent` 编排工具 |
-| `multi_agent` | 启用 LLM reasoning；向本轮主 Agent 暴露 `spawn_sub_agent` 并注入子 Agent 编排提示 |
-
-SSE 格式：
-
-```text
-event: agent.v2
-data: { ...agent-stream.v2 envelope... }
-```
-
-关键行为：
-
-- 普通用户最多 **1** 个活跃 run
-- 管理员最多 **100** 个活跃 run
-- 启动前必须已有可用模型配置；如果选定 ontology 需要查询业务数据，还必须先配置该 ontology 的私有数据源
-- 如果提供的 `run_id` 已存在，系统**不会报错**，而是自动回退为一个新的 UUID
-- 未传 `agent_mode`、传空值或传未知值时，默认为 `quick`
-- 默认模式下 `llm_request_mode = stream`
-- 若并发槽已满，返回 `202 application/json`，包含 `run_id`、排队位置和 `status/events/cancel` 链接；客户端先轮询 status，再连接 events。
-
-响应 `400`：
-
-- 缺少 `request`
-- 缺少 `session_id`
-- 模型配置不存在或未启用
-- 已选 ontology 未配置业务数据源时，运行中的 `business_data_search` 会返回工具错误
-
-响应 `429`：
-
-```json
-{
-  "error": "请求过于频繁，请稍后重试",
-  "limit": 50
-}
-```
-
-响应 `503`：
-
-```json
-{
-  "error": "排队超时，请稍后重试",
-  "limit": 1
-}
-```
-
-### 3.2 `GET /agentic/runs/{run_id}/events`
-
-连接或重连一个已进入执行态的 run。游标可通过任一形式传入；同时存在时优先使用 `Last-Event-ID`：
+读取 live snapshot 或已持久化的 Turn 状态。状态为 `queued`、`running`、`awaiting_input`、`completed`、`failed` 或 `cancelled`。
 
 ```http
-GET /agentic/runs/run-123/events?after_seq=42
-Last-Event-ID: 42
+GET /agentic/runs/agentic-run-demo
 ```
 
-响应为 `agent.v2` SSE，只回放 `seq > 42` 的事件，并继续推送后续事件。客户端必须在消费成功后保存 envelope 的 `seq`。
+响应包含 `run_id`、`session_id`、`turn_id`、`status`、`last_seq`、时间戳、`result`、`error`、`pending_interaction` 和 links。Run 不存在或不属于当前用户/工作空间时返回 `404 RUN_NOT_FOUND`。
 
-- run 仍在队列中：`409`，响应包含 queue 和 links。
-- run 不属于当前用户/workspace：`404`。
-- 运行时内存回放窗口已释放：`410`；最终消息仍可从 session 读取。
+### 3.3 `GET /agentic/runs/{run_id}/events`
 
-### 3.3 `GET /agentic/runs/{run_id}/status`
+连接或重连一个 Run 的 SSE。首次读取使用：
 
-查询 run 状态。
+```http
+GET /agentic/runs/agentic-run-demo/events?after_seq=0
+```
 
-响应 `200`：
+后续重连可以递增 `after_seq`，也可以发送 `Last-Event-ID`；两者同时存在时必须相等。服务只回放 `seq` 大于游标的事件，并推送到唯一的 `turn.finished` 终态事件。事件格式：
+
+```text
+id: 1
+event: turn.started
+data: {"schema_version":"1.0","event_id":"...","run_id":"agentic-run-demo","seq":1,"event_type":"turn.started","status":"running","payload":{}}
+```
+
+回放窗口在服务重启后不可用时返回 `410 EVENT_REPLAY_UNAVAILABLE`；最终 Turn 仍可通过 3.2 和 session 历史读取。订阅容量耗尽返回 `429 RUNTIME_CAPACITY_EXCEEDED`。
+
+### 3.4 HITL 回答创建新 Run/Turn
+
+当事件流包含 `interaction.requested`，且 `turn.finished.status=awaiting_input` 时，客户端必须再次调用 `POST /agentic/runs`。回答沿用同一 `session_id`，使用新的 `Idempotency-Key`，并携带 checkpoint 的 `interaction_id`：
 
 ```json
 {
-  "run_id": "run-123",
-  "status": "running",
-  "created_at": "2026-04-08T08:00:00Z",
-  "updated_at": "2026-04-08T08:00:03Z",
-  "completed_at": null,
-  "result": null,
-  "error": null
+  "session_id": "session_demo",
+  "request": "选择合成选项 A",
+  "interaction_response": {
+    "interaction_id": "interaction_demo",
+    "type": "single_choice",
+    "option_id": "option_a",
+    "value": "value_a"
+  }
 }
 ```
 
-响应 `404`：
+服务端消费旧 checkpoint，并为回答创建新的 `run_id` 和递增的 `turn_id`。精确重试复用已创建的回答 Run；不同回答竞争同一 checkpoint 时返回 `409 INTERACTION_ALREADY_CONSUMED`。普通消息不能绕过未消费的 checkpoint。
 
-```json
-{ "error": "Run not found" }
-```
-
-说明：
-
-- 仅 run 所属用户本人可查询
-
-### 3.4 `POST /agentic/runs/{run_id}/cancel`
+### 3.5 `POST /agentic/runs/{run_id}/cancel`
 
 取消一个运行中的 run。
 
@@ -540,117 +512,7 @@ Last-Event-ID: 42
 - `reason` 可选
 - 空字符串或非法值会被规范化为 `"unspecified"`
 
-响应 `200`：
-
-```json
-{
-  "success": true,
-  "cancelled": true
-}
-```
-
-响应 `404`：
-
-```json
-{ "error": "Run not found" }
-```
-
-### 3.5 `POST /agentic/runs/sync`
-
-同步（非流式）执行 agent 工作流，等待全部迭代完成后返回最终结果。
-
-请求体：
-
-```json
-{
-  "request": "请分析这个问题",
-  "session_id": "optional-session-id",
-  "context": {
-    "agent_mode": "quick"
-  }
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `request` | string | 是 | 用户输入 |
-| `session_id` | string | 否 | 会话 ID；未传时自动生成 `sync_{uuid}` |
-| `context` | object | 否 | 运行期上下文参数，同 `/runs/stream` 的 `context` |
-
-并发限制：
-
-- 普通用户最多 **1** 个活跃 run
-- 管理员最多 **100** 个活跃 run（含流式 + 同步）
-
-响应 `200`：
-
-```json
-{
-  "status": "success",
-  "final_answer": "分析结果文本",
-  "session_id": "sync_a1b2c3d4",
-  "run_id": "4c132188-ecdd-46db-b94f-c24e3bd3e0b0"
-}
-```
-
-字段说明：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `status` | string | `success` / `error` / `cancelled` |
-| `final_answer` | string | Agent 最终输出；类型取决于 `final_output`（可能为对象） |
-| `session_id` | string | 实际使用的会话 ID |
-| `run_id` | string | 运行 ID |
-
-错误响应 `400`：
-
-```json
-{ "error": "Request is required" }
-```
-
-其他 `400` 场景：
-
-- 模型配置不存在或未启用
-- 已选 ontology 未配置业务数据源时，运行中的 `business_data_search` 会返回工具错误
-
-TPS 超限 `429`：
-
-```json
-{
-  "error": "请求过于频繁，请稍后重试",
-  "limit": 50
-}
-```
-
-排队超时 `503`：
-
-```json
-{
-  "error": "排队超时，请稍后重试",
-  "limit": 1
-}
-```
-
-服务端异常 `500`：
-
-```json
-{
-  "status": "error",
-  "error": "错误描述",
-  "final_answer": "",
-  "session_id": "sync_a1b2c3d4",
-  "run_id": null
-}
-```
-
-说明：
-
-- 该接口**没有请求级别的总超时**，实际耗时取决于 Agent Loop 迭代次数和 LLM 调用耗时
-- 每次底层 LLM HTTP 调用的超时默认为 600 秒（可通过系统配置调整）
-- 不支持 `run_id` 参数，每次调用都会创建新的 run
-- 适用于不需要实时流式输出的批处理 / API 集成场景
+响应 `200` 返回取消后的 Run snapshot。Run 不存在时返回 `404 RUN_NOT_FOUND`。终态竞争由服务端统一仲裁；取消成功后事件流仍以唯一的 `turn.finished` 收口。
 
 ---
 
@@ -2356,7 +2218,7 @@ A2A 响应中的 `task` 一般形如：
 | `message` | string | 条件必填 | 用户消息；若未提供，可用 `input.parts[0].text` |
 | `session_id` | string | 否 | 不传时自动生成 |
 | `task_id` | string | 否 | 指定 task ID；若已存在则返回 400 |
-| `context` | object | 否 | 透传给内部 orchestrator；支持与 `/agentic/runs/stream` 相同的 `agent_mode`、`selected_ontology_id`、`llm_request_mode` 等字段 |
+| `context` | object | 否 | A2A 上下文；运行语义与 `POST /agentic/runs` 的 `agent_mode`、`llm_request_mode` 和 `arguments` 对齐 |
 
 响应 `202`：
 
@@ -2518,7 +2380,7 @@ data: { ... }
 
 - `session_id` 必填
 - `task_id` 可选
-- `context` 会透传给内部 `orchestrator.run(...)`，字段含义与 `/agentic/runs/stream` 相同
+- `context` 会映射为原生异步 Runtime 上下文，字段含义与 `POST /agentic/runs` 的对应字段对齐
 - 输出会把每个 `agent.v2` 事件即时映射为 `task.update`
 
 SSE 格式：
@@ -2930,7 +2792,7 @@ A2A 流式接口与事件回放接口都会把内部 `agent.v2` 事件映射为�
 
 ## 13. 实践建议
 
-- 新前端/客户端若直接消费主协议，优先使用 `POST /agentic/runs/stream`
+- 新前端/客户端若直接消费主协议，先 `POST /agentic/runs`，再使用响应中的 events link 从 `after_seq=0` 读取 SSE
 - 如果你需要更标准的 task 视图或 background task 管理，优先使用 `/a2a/*`
 - 如果你接入的是 ACP client 或需要 ACP 事件形状，使用 `/acp/*`
 - 使用多工作空间时，建议所有 `/agentic/*`、`/a2a/*` 与 `/acp/*` 请求都显式带上 `X-Workspace-Id`

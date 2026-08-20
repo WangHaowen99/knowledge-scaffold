@@ -1,10 +1,11 @@
-"""Process-scoped, non-blocking OpenJiuwen runtime warm-up."""
+"""Lifespan-owned, non-model OpenJiuwen runtime warm-up."""
 
 from __future__ import annotations
 
-import threading
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import threading
 from typing import Any, Optional
 
 from utils.logging import get_logger
@@ -17,13 +18,14 @@ _WARMUP_IDLE = "idle"
 _WARMUP_RUNNING = "running"
 _WARMUP_SUCCESS = "success"
 _WARMUP_FAILED = "failed"
-_TERMINAL_STATES = frozenset({_WARMUP_SUCCESS, _WARMUP_FAILED})
+_WARMUP_CANCELLED = "cancelled"
+_TERMINAL_STATES = frozenset(
+    {_WARMUP_SUCCESS, _WARMUP_FAILED, _WARMUP_CANCELLED}
+)
 
 
 @dataclass
 class RuntimeWarmupStatus:
-    """Snapshot of the process-wide warm-up lifecycle."""
-
     enabled: bool
     state: str
     started_at: Optional[str] = None
@@ -36,6 +38,8 @@ class RuntimeWarmupStatus:
 
 _status = RuntimeWarmupStatus(enabled=False, state=_WARMUP_IDLE)
 _lock = threading.Lock()
+_task: Optional[asyncio.Task[Any]] = None
+_cancel_event: threading.Event = threading.Event()
 
 
 def _now_iso() -> str:
@@ -43,28 +47,22 @@ def _now_iso() -> str:
 
 
 def _copy_status_unlocked() -> RuntimeWarmupStatus:
-    return RuntimeWarmupStatus(
-        enabled=_status.enabled,
-        state=_status.state,
-        started_at=_status.started_at,
-        finished_at=_status.finished_at,
-        duration_ms=_status.duration_ms,
-        mode=_status.mode,
-        error_type=_status.error_type,
-        error_message=_status.error_message,
-    )
+    return RuntimeWarmupStatus(**_status.__dict__)
 
 
 def get_runtime_warmup_status() -> RuntimeWarmupStatus:
-    """Return a detached copy of the current warm-up status."""
     with _lock:
         return _copy_status_unlocked()
 
 
-def start_runtime_warmup(*, agent_config: Any = None) -> RuntimeWarmupStatus:
-    """Start warm-up once in a daemon thread without delaying app startup."""
+def start_runtime_warmup(
+    *,
+    agent_config: Any = None,
+    runtime: Any = None,
+) -> RuntimeWarmupStatus:
+    """Register optional warm-up with the lifespan task supervisor."""
+    global _cancel_event, _task
     enabled = bool(getattr(agent_config, "runtime_warmup_enabled", True))
-
     with _lock:
         if not enabled:
             _status.enabled = False
@@ -75,9 +73,11 @@ def start_runtime_warmup(*, agent_config: Any = None) -> RuntimeWarmupStatus:
             _status.mode = None
             _status.error_type = None
             _status.error_message = None
-            logger.info("Runtime warm-up disabled by system config")
             return _copy_status_unlocked()
-
+        if runtime is None:
+            raise RuntimeError(
+                "runtime warm-up requires a lifespan-owned RuntimeContainer"
+            )
         if _status.state in (_WARMUP_RUNNING, *_TERMINAL_STATES):
             return _copy_status_unlocked()
 
@@ -89,35 +89,87 @@ def start_runtime_warmup(*, agent_config: Any = None) -> RuntimeWarmupStatus:
         _status.mode = None
         _status.error_type = None
         _status.error_message = None
-
-    thread = threading.Thread(
-        target=_run_warmup,
-        args=(agent_config,),
-        name="runtime-warmup",
-        daemon=True,
-    )
-    thread.start()
+        _cancel_event = threading.Event()
+        _task = runtime.supervisor.start_derived(
+            _run_warmup(agent_config, _cancel_event, runtime=runtime),
+            name="runtime-warmup",
+        )
     logger.info("Runtime warm-up started mode=jiuwen-runtime")
     return get_runtime_warmup_status()
 
 
-def _run_warmup(agent_config: Any) -> None:
+async def stop_runtime_warmup(*, deadline: float) -> bool:
+    """Cancel warm-up without exceeding the app's absolute shutdown deadline."""
+    global _task
+    with _lock:
+        task = _task
+        if task is None:
+            return True
+        _cancel_event.set()
+        task.cancel()
+
+    remaining = max(0.0, float(deadline) - asyncio.get_running_loop().time())
     try:
-        from agent.core.jiuwen_engine import warm_up_jiuwen_runtime
+        await asyncio.wait_for(task, timeout=remaining)
+    except asyncio.CancelledError:
+        pass
+    except asyncio.TimeoutError:
+        logger.warning("Runtime warm-up did not finish before shutdown deadline")
+        return False
+    finally:
+        with _lock:
+            if _task is task and task.done():
+                _task = None
+    return task.done()
 
-        result = warm_up_jiuwen_runtime(agent_config=agent_config)
 
+def _mark_warmup_cancelled() -> None:
+    with _lock:
+        _status.state = _WARMUP_CANCELLED
+        _status.finished_at = _now_iso()
+        _status.error_type = None
+        _status.error_message = None
+    logger.info("Runtime warm-up finished state=cancelled")
+
+
+def _load_runtime_warmup():
+    from agent.core.jiuwen_engine import warm_up_jiuwen_runtime
+
+    return warm_up_jiuwen_runtime
+
+
+async def _run_warmup(
+    agent_config: Any,
+    cancel_event: threading.Event,
+    *,
+    runtime: Any,
+) -> None:
+    try:
+        if cancel_event.is_set():
+            raise asyncio.CancelledError
+        result = await runtime.short_io.run(
+            _load_runtime_warmup(),
+            agent_config=agent_config,
+            cancel_event=cancel_event,
+        )
+        if cancel_event.is_set():
+            raise asyncio.CancelledError
         with _lock:
             _status.state = _WARMUP_SUCCESS
             _status.finished_at = _now_iso()
             _status.duration_ms = result.get("duration_ms")
             _status.mode = result.get("mode")
-
         logger.info(
             "Runtime warm-up finished state=success duration_ms=%s",
             result.get("duration_ms"),
         )
+    except asyncio.CancelledError:
+        _mark_warmup_cancelled()
+        raise
     except Exception:
+        if cancel_event.is_set():
+            _mark_warmup_cancelled()
+            return
         with _lock:
             _status.state = _WARMUP_FAILED
             _status.finished_at = _now_iso()

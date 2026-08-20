@@ -42,7 +42,7 @@ class InMemoryRunRepository:
         self._events: dict[str, list[PublicEvent]] = {}
         self._first_retained_seq: dict[str, int] = {}
         self._request_fingerprints: dict[str, str] = {}
-        self._idempotency: dict[tuple[str, str, str], tuple[str, str]] = {}
+        self._idempotency: dict[tuple[str, str, str, str], tuple[str, str]] = {}
         self._consumed_interactions: dict[str, set[str]] = {}
 
     async def create(
@@ -57,6 +57,7 @@ class InMemoryRunRepository:
                 identity = (
                     snapshot.scope.username,
                     snapshot.scope.workspace_id,
+                    snapshot.session_id,
                     idempotency_key,
                 )
                 existing = self._idempotency.get(identity)
@@ -89,11 +90,38 @@ class InMemoryRunRepository:
                     (
                         snapshot.scope.username,
                         snapshot.scope.workspace_id,
+                        snapshot.session_id,
                         idempotency_key,
                     )
                 ] = (snapshot.run_id, request_fingerprint)
             self._evict_completed_locked()
             return snapshot, True
+
+    async def lookup_idempotency(
+        self,
+        *,
+        scope: Any,
+        session_id: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> Optional[RunSnapshot]:
+        async with self._lock:
+            existing = self._idempotency.get(
+                (
+                    scope.username,
+                    scope.workspace_id,
+                    session_id,
+                    idempotency_key,
+                )
+            )
+            if existing is None:
+                return None
+            run_id, fingerprint = existing
+            if fingerprint != request_fingerprint:
+                raise IdempotencyConflictError(
+                    "同一个 Idempotency-Key 不能用于不同请求"
+                )
+            return self._snapshots.get(run_id)
 
     async def get(self, run_id: str) -> Optional[RunSnapshot]:
         async with self._lock:

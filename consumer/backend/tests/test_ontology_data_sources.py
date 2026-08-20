@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+
 import json
 import stat
+from types import SimpleNamespace
 
 import pytest
-from flask import Flask
 
 from api.auth.auth import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace, workspace_scope
@@ -62,8 +66,8 @@ def _build_test_client(
     workspace_owner=None,
     workspace_members=None,
 ):
-    from api.routes.business_data import business_data_bp
-    from api.routes.ontologies import ontologies_bp
+    from api.routes.business_data import business_data_router
+    from api.routes.ontologies import ontologies_router
 
     _create_workspace_with_ontology(
         tmp_path,
@@ -71,8 +75,17 @@ def _build_test_client(
         owner=workspace_owner,
         members=workspace_members,
     )
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
+
+    class _DirectIO:
+        async def run(self, function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+    app.state.agent_execution_runtime = SimpleNamespace(
+        short_io=_DirectIO(),
+        http_client=object(),
+    )
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     if username == "admin":
         user = auth_manager.authenticate("admin", "TestBootstrap#2026")
@@ -82,10 +95,10 @@ def _build_test_client(
         temporary_password = "UserStrong123!"
         auth_manager.create_user(username, temporary_password, role=role)
         user = auth_manager.change_password(username, temporary_password, "ChangedStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(business_data_bp)
-    app.register_blueprint(ontologies_bp)
-    return app.test_client(), {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(business_data_router)
+    app.include_router(ontologies_router)
+    return TestClient(app), {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
 
 
 def _legacy_connection(connection_id: str, *, token: str = "legacy-token") -> dict:
@@ -767,7 +780,7 @@ def test_ontology_data_source_routes_manage_private_source(tmp_path, monkeypatch
     )
     get_empty = client.get("/agentic/ontologies/demo-ontology/data-source", headers=headers)
     assert get_empty.status_code == 200
-    assert get_empty.get_json() == {"ontology_id": "demo-ontology", "configured": False, "source": None}
+    assert get_empty.json() == {"ontology_id": "demo-ontology", "configured": False, "source": None}
 
     put_response = client.put(
         "/agentic/ontologies/demo-ontology/data-source",
@@ -783,7 +796,7 @@ def test_ontology_data_source_routes_manage_private_source(tmp_path, monkeypatch
         },
     )
     assert put_response.status_code == 200
-    payload = put_response.get_json()
+    payload = put_response.json()
     assert payload["configured"] is True
     assert payload["source"]["provider"] == "dataagent"
     assert payload["source"]["config"]["has_token"] is True
@@ -791,29 +804,7 @@ def test_ontology_data_source_routes_manage_private_source(tmp_path, monkeypatch
 
     delete_response = client.delete("/agentic/ontologies/demo-ontology/data-source", headers=headers)
     assert delete_response.status_code == 200
-    assert delete_response.get_json()["configured"] is False
-
-
-@pytest.mark.parametrize(
-    ("method", "path"),
-    [
-        ("get", "/agentic/data-connections"),
-        ("post", "/agentic/data-connections"),
-        ("patch", "/agentic/data-connections/legacy"),
-        ("delete", "/agentic/data-connections/legacy"),
-        ("post", "/agentic/data-connections/legacy/default"),
-        ("post", "/agentic/data-connections/legacy/test"),
-        ("get", "/agentic/ontologies/demo-ontology/data-binding"),
-        ("put", "/agentic/ontologies/demo-ontology/data-binding"),
-        ("delete", "/agentic/ontologies/demo-ontology/data-binding"),
-    ],
-)
-def test_legacy_connection_routes_return_retirement_guidance(tmp_path, monkeypatch, method, path):
-    client, headers = _build_test_client(tmp_path, monkeypatch)
-    response = getattr(client, method)(path, headers=headers)
-    assert response.status_code == 410
-    assert response.get_json()["deprecated"] is True
-    assert "/data-source" in response.get_json()["replacement"]
+    assert delete_response.json()["configured"] is False
 
 
 @pytest.mark.parametrize(
@@ -843,9 +834,16 @@ def test_ontology_data_source_test_route_accepts_unsaved_candidate(
 
     def fake_test_business_data_connection(connection):
         captured["connection"] = connection
-        return {"success": True, "message": "候选配置可用", "tested_at": "2026-06-29T10:10:00+00:00"}
+        return {
+            "success": True,
+            "message": "候选配置可用",
+            "tested_at": "2026-06-29T10:10:00+00:00",
+        }
 
-    monkeypatch.setattr("api.routes.business_data.test_business_data_connection", fake_test_business_data_connection)
+    monkeypatch.setattr(
+        "api.routes.business_data.test_business_data_connection",
+        fake_test_business_data_connection,
+    )
     response = client.post(
         "/agentic/ontologies/demo-ontology/data-source/test",
         headers=headers,
@@ -856,7 +854,7 @@ def test_ontology_data_source_test_route_accepts_unsaved_candidate(
         },
     )
     assert response.status_code == 200
-    assert response.get_json()["message"] == "候选配置可用"
+    assert response.json()["message"] == "候选配置可用"
     assert isinstance(captured["connection"], ResolvedBusinessDataSource)
     assert captured["connection"].ontology_id == "demo-ontology"
     assert captured["connection"].provider == "dataagent"
@@ -904,7 +902,7 @@ def test_ontology_data_source_write_routes_reject_workspace_member(tmp_path, mon
     ]
     for response in responses:
         assert response.status_code == 403
-        assert response.get_json() == {
+        assert response.json() == {
             "error": "Forbidden",
             "code": "WORKSPACE_ACCESS_DENIED",
         }

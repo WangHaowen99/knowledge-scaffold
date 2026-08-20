@@ -1,6 +1,9 @@
-from flask import Flask
 
-from api.routes.workspaces import workspaces_bp
+
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+from api.routes.workspaces import workspaces_router
 from api.auth.auth import AuthManager
 from workspace.workspaces import create_workspace
 
@@ -14,8 +17,8 @@ def _build_client(tmp_path, monkeypatch, *, role="admin"):
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     if role == "admin":
         user = auth_manager.authenticate("admin", "TestBootstrap#2026")
@@ -24,10 +27,10 @@ def _build_client(tmp_path, monkeypatch, *, role="admin"):
     else:
         user = auth_manager.create_user("viewer", "AccountStrong123!", role=role)
         user = auth_manager.change_password("viewer", "AccountStrong123!", "ChangedStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(workspaces_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(workspaces_router)
     token = auth_manager.issue_token(user)
-    return app.test_client(), {"Authorization": f"Bearer {token}"}
+    return TestClient(app), {"Authorization": f"Bearer {token}"}
 
 
 def test_get_workspace_observability_config_masks_secret(tmp_path, monkeypatch):
@@ -36,7 +39,7 @@ def test_get_workspace_observability_config_masks_secret(tmp_path, monkeypatch):
     response = client.get("/agentic/workspaces/demo/observability-config", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["enabled"] is False
     assert payload["mode"] == "local"
     assert payload["local"] == {"retention_days": 30}
@@ -57,7 +60,7 @@ def test_get_workspace_observability_config_reports_migration_required_without_w
     response = client.get("/agentic/workspaces/demo/observability-config", headers=headers)
 
     assert response.status_code == 409
-    assert response.get_json() == {
+    assert response.json() == {
         "code": "WORKSPACE_OBSERVABILITY_MIGRATION_REQUIRED",
         "detail": "工作空间 'demo' 的观测配置不是规范格式，需要先完成迁移或人工修复",
         "workspace_id": "demo",
@@ -91,7 +94,7 @@ def test_patch_workspace_observability_config_updates_and_resets_observer(tmp_pa
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["enabled"] is True
     assert payload["mode"] == "langfuse"
     assert payload["local"]["retention_days"] == 14
@@ -155,7 +158,7 @@ def test_workspace_observability_connection_test_reuses_saved_secret(tmp_path, m
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["success"] is True
     assert "Langfuse 连接成功" in payload["message"]
     assert calls == [

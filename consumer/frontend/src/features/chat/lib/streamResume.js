@@ -38,9 +38,13 @@ export const classifyEnvelope = (envelope, cursor = 0, seenEventIds = new Set())
 export const buildRunEventsUrl = (runId, afterSequence = 0) => {
   const encodedRunId = encodeURIComponent(String(runId || '').trim());
   const cursor = normalizeSequence(afterSequence);
-  return `/agentic/runs/${encodedRunId}/events${cursor ? `?after_seq=${cursor}` : ''}`;
+  return `/agentic/runs/${encodedRunId}/events?after_seq=${cursor}`;
 };
 
-export const buildRunStatusUrl = (runId) => (
-  `/agentic/runs/${encodeURIComponent(String(runId || '').trim())}/status`
+export const buildRunUrl = (runId) => (
+  `/agentic/runs/${encodeURIComponent(String(runId || '').trim())}`
+);
+
+export const buildRunCancelUrl = (runId) => (
+  `${buildRunUrl(runId)}/cancel`
 );

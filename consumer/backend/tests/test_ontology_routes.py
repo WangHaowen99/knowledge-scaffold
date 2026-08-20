@@ -6,12 +6,12 @@ import zipfile
 from pathlib import Path
 
 import yaml
-from flask import Flask
+from fastapi.testclient import TestClient
 
+from api.testing import TestApplication
 from api.routes import ontologies as ontologies_module
-from api.routes.ontologies import ontologies_bp
-from api.auth.auth import AuthManager
-from persistence.chat_store import ChatStore
+from api.routes.ontologies import ontologies_router
+from auth_test_backend import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths, update_workspace
 
 
@@ -24,8 +24,8 @@ def _build_test_client(
     password: str = "TestBootstrap#2026",
     role: str = "admin",
 ):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     if username != "admin":
@@ -38,13 +38,40 @@ def _build_test_client(
         if user.password_change_required:
             user = auth_manager.change_password(username, password, "RootStrong123!")
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(ontologies_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(ontologies_router)
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     headers = {"Authorization": "Bearer {}".format(token)}
     return client, headers
+
+
+def _post(client: TestClient, path: str, *, data=None, **kwargs):
+    """Send ordinary or multipart POST requests with HTTPX semantics."""
+    if not isinstance(data, dict):
+        return client.post(path, data=data, **kwargs)
+
+    fields = {}
+    files = {}
+    for key, value in data.items():
+        if (
+            isinstance(value, tuple)
+            and len(value) == 2
+            and hasattr(value[0], "read")
+        ):
+            stream, filename = value
+            files[key] = (filename, stream)
+        else:
+            fields[key] = value
+    if files:
+        return client.post(
+            path,
+            data=fields or None,
+            files=files,
+            **kwargs,
+        )
+    return client.post(path, data=data, **kwargs)
 
 
 def _create_demo_workspace(tmp_path, monkeypatch, workspace_id: str = "demo", *, owner=None):
@@ -98,7 +125,7 @@ def test_zip_upload_read_is_bounded_to_configured_limit(monkeypatch):
             return super().read(size)
 
     stream = RecordingStream(b"12345")
-    uploaded_file = type("UploadedFile", (), {"stream": stream})()
+    uploaded_file = type("UploadedFile", (), {"file": stream})()
     monkeypatch.setattr(ontologies_module, "ONTOLOGY_MAX_ZIP_BYTES", 4)
 
     uploaded_bytes, error = ontologies_module._read_limited_zip_upload(uploaded_file)
@@ -199,7 +226,7 @@ def test_list_ontologies_returns_example_manifest(tmp_path, monkeypatch):
     response = client.get("/agentic/ontologies", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     example_manifest = next(item for item in payload["ontologies"] if item["id"] == EXAMPLE_ONTOLOGY_ID)
     assert example_manifest["manifest_path"].endswith("manifest.yaml")
@@ -230,7 +257,7 @@ def test_list_ontologies_uses_project_root_from_env(tmp_path, monkeypatch):
     response = client.get("/agentic/ontologies", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["ontologies"] == [
         {
@@ -280,14 +307,14 @@ def test_update_ontology_status_persists_enabled_flag(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload == {"success": True, "ontology_id": "demo-ontology", "enabled": False}
 
     manifest = (ontology_dir / "manifest.yaml").read_text(encoding="utf-8")
     assert "enabled: false" in manifest
 
     list_response = client.get("/agentic/ontologies", headers=headers)
-    list_payload = list_response.get_json()
+    list_payload = list_response.json()
     assert list_payload["ontologies"][0]["enabled"] is False
 
 
@@ -338,7 +365,7 @@ def test_workspace_owner_can_manage_ontology_package(tmp_path, monkeypatch):
     assert edit_response.status_code == 200
     assert (version1 / "objects" / "实体A.md").read_text(encoding="utf-8") == "所有者编辑\n"
 
-    upload_response = client.post(
+    upload_response = _post(client,
         "/agentic/ontologies/demo-ontology/upload",
         headers=headers,
         data={
@@ -346,7 +373,6 @@ def test_workspace_owner_can_manage_ontology_package(tmp_path, monkeypatch):
             "version": "1.0.0",
             "file": (io.BytesIO("新增内容\n".encode("utf-8")), "新增实体.md"),
         },
-        content_type="multipart/form-data",
     )
     assert upload_response.status_code == 201
     assert (version1 / "objects" / "新增实体.md").read_text(encoding="utf-8") == "新增内容\n"
@@ -387,7 +413,7 @@ def test_workspace_member_cannot_manage_ontology_package(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, username="modeler", role="user")
 
     responses = [
-        client.post("/agentic/ontologies/import-zip", headers=headers),
+        _post(client, "/agentic/ontologies/import-zip", headers=headers),
         client.put(
             "/agentic/ontologies/demo-ontology/active-version",
             headers=headers,
@@ -403,11 +429,10 @@ def test_workspace_member_cannot_manage_ontology_package(tmp_path, monkeypatch):
             headers=headers,
             json={"folder": "objects", "name": "实体A.md", "content": "越权编辑\n"},
         ),
-        client.post(
+        _post(client,
             "/agentic/ontologies/demo-ontology/upload",
             headers=headers,
             data={"folder": "objects", "file": (io.BytesIO(b"unauthorized\n"), "new.md")},
-            content_type="multipart/form-data",
         ),
         client.delete(
             "/agentic/ontologies/demo-ontology/versions/1.0.0",
@@ -417,7 +442,7 @@ def test_workspace_member_cannot_manage_ontology_package(tmp_path, monkeypatch):
     ]
     for response in responses:
         assert response.status_code == 403
-        assert response.get_json() == {
+        assert response.json() == {
             "error": "Forbidden",
             "code": "WORKSPACE_ACCESS_DENIED",
         }
@@ -429,12 +454,12 @@ def test_get_ontology_file_reads_object_markdown(tmp_path, monkeypatch):
 
     response = client.get(
         f"/agentic/ontologies/{EXAMPLE_ONTOLOGY_ID}/file",
-        query_string={"folder": "objects", "name": "TargetItem.md"},
+        params={"folder": "objects", "name": "TargetItem.md"},
         headers=headers,
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["folder"] == "objects"
     assert "# 实体属性清单" in payload["content"]
@@ -466,22 +491,22 @@ def test_ontology_file_routes_list_and_read_assets_folder(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path)
     list_response = client.get(
         "/agentic/ontologies/demo-ontology/files",
-        query_string={"folder": "assets"},
+        params={"folder": "assets"},
         headers=headers,
     )
 
     assert list_response.status_code == 200
-    assert [item["name"] for item in list_response.get_json()["files"]] == [
+    assert [item["name"] for item in list_response.json()["files"]] == [
         "rules/limits.ini"
     ]
 
     read_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "assets", "name": "rules/limits.ini"},
+        params={"folder": "assets", "name": "rules/limits.ini"},
         headers=headers,
     )
     assert read_response.status_code == 200
-    assert read_response.get_json()["content"] == "[limits]\nmax=10"
+    assert read_response.json()["content"] == "[limits]\nmax=10"
 
 
 def test_get_ontology_file_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
@@ -505,12 +530,12 @@ def test_get_ontology_file_uses_onto_runtime_root_from_env(tmp_path, monkeypatch
     client, headers = _build_test_client(tmp_path)
     response = client.get(
         "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "objects", "name": "实体A.md"},
+        params={"folder": "objects", "name": "实体A.md"},
         headers=headers,
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["content"] == "#### 对象描述\n实体A来自workspace目录"
 
@@ -583,7 +608,7 @@ def test_update_operation_file_rejects_content_over_char_limit(tmp_path, monkeyp
     )
 
     assert response.status_code == 400
-    assert "字符" in response.get_json()["error"]
+    assert "字符" in response.json()["error"]
 
 
 def test_update_object_file_rejects_attribute_count_over_limit(tmp_path, monkeypatch):
@@ -627,7 +652,7 @@ def test_update_object_file_rejects_attribute_count_over_limit(tmp_path, monkeyp
     )
 
     assert response.status_code == 400
-    assert "单实体属性数量超过上限" in response.get_json()["error"]
+    assert "单实体属性数量超过上限" in response.json()["error"]
     assert (
         ontology_dir / "versions" / "1.0.0" / "objects" / "实体A.md"
     ).read_text(encoding="utf-8") == "#### 对象描述\n旧内容\n"
@@ -654,18 +679,17 @@ def test_upload_object_file_rejects_new_file_when_object_count_reaches_limit(tmp
     (object_dir / "实体A.md").write_text("#### 对象描述\n实体A\n", encoding="utf-8")
 
     client, headers = _build_test_client(tmp_path)
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/demo-ontology/upload",
         headers=headers,
         data={
             "folder": "objects",
             "file": (io.BytesIO("#### 对象描述\n实体B\n".encode("utf-8")), "实体B.md"),
         },
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "单本体实体数量已达上限" in response.get_json()["error"]
+    assert "单本体实体数量已达上限" in response.json()["error"]
     assert not (ontology_dir / "versions" / "1.0.0" / "objects" / "实体B.md").exists()
 
 
@@ -690,18 +714,17 @@ def test_upload_operation_file_rejects_new_file_when_operation_count_reaches_lim
     (operation_dir / "流程A.md").write_text("#### 操作描述\n流程A\n", encoding="utf-8")
 
     client, headers = _build_test_client(tmp_path)
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/demo-ontology/upload",
         headers=headers,
         data={
             "folder": "operations",
             "file": (io.BytesIO("#### 操作描述\n流程B\n".encode("utf-8")), "流程B.md"),
         },
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "单本体流程数量已达上限" in response.get_json()["error"]
+    assert "单本体流程数量已达上限" in response.json()["error"]
     assert not (ontology_dir / "versions" / "1.0.0" / "operations" / "流程B.md").exists()
 
 
@@ -756,10 +779,10 @@ def test_download_ontology_zip_returns_full_package_for_regular_user(tmp_path, m
     )
 
     assert response.status_code == 200
-    assert response.mimetype == "application/zip"
+    assert response.headers["content-type"] == "application/zip"
     assert "demo-ontology-1.0.0.zip" in response.headers["Content-Disposition"]
 
-    zip_buffer = io.BytesIO(response.data)
+    zip_buffer = io.BytesIO(response.content)
     with zipfile.ZipFile(zip_buffer, "r") as zf:
         assert sorted(zf.namelist()) == [
             "demo-ontology/index.md",
@@ -802,15 +825,14 @@ def test_import_ontology_zip_converts_legacy_package_once(tmp_path, monkeypatch)
         "converted-demo/scripts/demo.py": "print('demo')\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["success"] is True
     assert payload["created"] is True
@@ -878,15 +900,14 @@ def test_import_converted_ontology_zip_reports_invalid_frontmatter_as_bad_reques
         "invalid-frontmatter/operations-list.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "invalid-frontmatter.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {
+    assert response.json() == {
         "error": "Invalid frontmatter in objects/Part.md: invalid YAML."
     }
     assert not (workspace_paths.ontologies_dir / "invalid-frontmatter").exists()
@@ -918,15 +939,14 @@ def test_import_ontology_zip_rejects_object_alias_mismatch(tmp_path, monkeypatch
         "alias-warning/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "alias-warning.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["error"] == (
         "对象 key='ObjectA'、title='Display Object A' 别名不一致："
@@ -966,15 +986,14 @@ def test_import_ontology_zip_rejects_field_alias_conflict(tmp_path, monkeypatch)
         "field-alias-error/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "field-alias-error.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {
+    assert response.json() == {
         "error": "对象“对象甲”的字段名称“编号”同时指向 [FieldA, FieldB]"
     }
     assert not (workspace_paths.ontologies_dir / "field-alias-error").exists()
@@ -1009,15 +1028,14 @@ def test_import_ontology_zip_returns_field_alias_warnings(tmp_path, monkeypatch)
         "field-alias-warning/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "field-alias-warning.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["warnings"]["field_aliases"] == [
         "对象“对象甲”的字段“FieldA”存在重复别名“编号”"
@@ -1062,15 +1080,14 @@ def test_import_converted_zip_supports_outerless_catalog_and_short_field_row(
         "outerless-demo/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "outerless-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["import_mode"] == "converted"
     version_dir = (
@@ -1131,15 +1148,14 @@ def test_import_converted_ontology_zip_handles_unreadable_object_catalog(
         "invalid-catalog/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "invalid-catalog.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {
+    assert response.json() == {
         "error": "Failed to read objects/index.md."
     }
     assert not (workspace_paths.ontologies_dir / "invalid-catalog").exists()
@@ -1174,15 +1190,14 @@ def test_import_converted_ontology_zip_rejects_invalid_utf8_object_mapping(
         "invalid-mapping/mappings/object-data-mappings.json": b"\xff\xfe",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "invalid-mapping.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {
+    assert response.json() == {
         "error": (
             "Failed to decode mappings/object-data-mappings.json as UTF-8."
         )
@@ -1219,15 +1234,14 @@ def test_import_converted_ontology_zip_accepts_aligned_object_alias_table_and_re
         "alias-warning/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "alias-warning.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["import_mode"] == "converted"
     assert payload["warnings"]["object_aliases"] == [
@@ -1266,15 +1280,14 @@ def test_import_ontology_zip_aggregates_object_alias_errors(tmp_path, monkeypatc
         "alias-error/operations/index.md": "# Operations\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "alias-error.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert "Object catalog key 'Missing' has no matching detail." in payload["error"]
     assert "Object alias 'shared' points to multiple objects: ObjectA, ObjectB." in payload["error"]
@@ -1290,7 +1303,7 @@ def test_regular_user_ontology_writes_still_enforce_workspace_access(tmp_path, m
     headers = {**base_headers, "X-Workspace-Id": "private"}
 
     responses = [
-        client.post("/agentic/ontologies/import-zip", headers=headers),
+        _post(client, "/agentic/ontologies/import-zip", headers=headers),
         client.put(
             "/agentic/ontologies/demo-ontology/active-version",
             headers=headers,
@@ -1299,26 +1312,26 @@ def test_regular_user_ontology_writes_still_enforce_workspace_access(tmp_path, m
     ]
     for response in responses:
         assert response.status_code == 403
-        assert response.get_json() == {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
+        assert response.json() == {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}
 
 
 def test_shadow_workspace_owner_can_import_evaluation_package(tmp_path, monkeypatch):
-    from api.routes.workspaces import workspaces_bp
+    from api.routes.workspaces import workspaces_router
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     auth_manager.create_user("alice", "UserStrong123!", role="user")
     alice = auth_manager.change_password("alice", "UserStrong123!", "ChangedStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(workspaces_bp)
-    app.register_blueprint(ontologies_bp)
-    client = app.test_client()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(workspaces_router)
+    app.include_router(ontologies_router)
+    client = TestClient(app)
 
-    provisioned = client.post(
+    provisioned = _post(client,
         "/agentic/internal/modeling/shadow-workspaces/ensure",
         json={"project_id": "pj_demo-123", "owner": "alice"},
         headers={"Authorization": "Bearer {}".format("s" * 32)},
@@ -1341,18 +1354,17 @@ def test_shadow_workspace_owner_can_import_evaluation_package(tmp_path, monkeypa
         "evaluation-demo/objects/实体A.md": "#### 对象描述\n实体A说明\n",
         "evaluation-demo/operations/流程A.md": "流程说明\n",
     })
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers={
             "Authorization": "Bearer {}".format(auth_manager.issue_token(alice)),
             "X-Workspace-Id": "mw-shadow-pj-demo-123",
         },
         data={"file": (zip_buffer, "evaluation-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    assert response.get_json()["ontology_id"] == "evaluation-demo"
+    assert response.json()["ontology_id"] == "evaluation-demo"
 
     activated = client.put(
         "/agentic/ontologies/evaluation-demo/active-version",
@@ -1363,7 +1375,7 @@ def test_shadow_workspace_owner_can_import_evaluation_package(tmp_path, monkeypa
         json={"version": "1.0.0"},
     )
     assert activated.status_code == 200
-    assert activated.get_json()["active_version"] == "1.0.0"
+    assert activated.json()["active_version"] == "1.0.0"
 
 
 def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_path, monkeypatch):
@@ -1386,15 +1398,14 @@ def test_import_converted_ontology_zip_rejects_operation_over_char_limit(tmp_pat
         "converted-demo/operations/流程A.md": "x" * 15001,
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "字符" in response.get_json()["error"]
+    assert "字符" in response.json()["error"]
 
 
 def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit(tmp_path, monkeypatch):
@@ -1432,15 +1443,14 @@ def test_import_new_ontology_rejects_when_workspace_ontology_count_reaches_limit
         "converted-demo/operations/流程A.md": "#### 操作描述\n流程A说明\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "本体数量已达上限" in response.get_json()["error"]
+    assert "本体数量已达上限" in response.json()["error"]
     assert not (workspace_paths.ontologies_dir / "converted-demo").exists()
 
 
@@ -1466,15 +1476,14 @@ def test_import_converted_ontology_zip_rejects_object_count_over_limit(tmp_path,
         "converted-demo/operations/流程A.md": "#### 操作描述\n流程A说明\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "单本体实体数量已达上限" in response.get_json()["error"]
+    assert "单本体实体数量已达上限" in response.json()["error"]
 
 
 def test_import_converted_ontology_zip_rejects_operation_count_over_limit(tmp_path, monkeypatch):
@@ -1499,15 +1508,14 @@ def test_import_converted_ontology_zip_rejects_operation_count_over_limit(tmp_pa
         "converted-demo/operations/流程B.md": "#### 操作描述\n流程B说明\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "单本体流程数量已达上限" in response.get_json()["error"]
+    assert "单本体流程数量已达上限" in response.json()["error"]
 
 
 def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit(tmp_path, monkeypatch):
@@ -1541,15 +1549,14 @@ def test_import_converted_ontology_zip_rejects_entity_attribute_count_over_limit
         "converted-demo/operations/流程A.md": "#### 操作描述\n流程A说明\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "单实体属性数量超过上限" in response.get_json()["error"]
+    assert "单实体属性数量超过上限" in response.json()["error"]
 
 
 def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tmp_path, monkeypatch):
@@ -1614,15 +1621,14 @@ def test_import_source_ontology_zip_rejects_generated_object_count_over_limit(tm
         ]),
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "source-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 400
-    assert "单本体实体数量已达上限" in response.get_json()["error"]
+    assert "单本体实体数量已达上限" in response.json()["error"]
 
 
 def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path, monkeypatch):
@@ -1656,15 +1662,14 @@ def test_import_ontology_zip_does_not_inherit_default_legacy_connection(tmp_path
         "bound-demo/operations/index.md": "- 流程A\n",
     })
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (zip_buffer, "bound-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload["business_data_configured"] is False
     assert "business_data_binding" not in payload
     assert get_ontology_data_source("bound-demo", workspace_id="demo") is None
@@ -1707,31 +1712,29 @@ def test_import_ontology_zip_overwrite_replaces_existing_converted_package(tmp_p
         "converted-demo/operations/新流程.md": "新流程内容\n",
     }
 
-    conflict_response = client.post(
+    conflict_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (_build_zip_file(zip_entries), "converted-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert conflict_response.status_code == 409
-    conflict_payload = conflict_response.get_json()
+    conflict_payload = conflict_response.json()
     assert conflict_payload is not None
     assert conflict_payload["requires_confirmation"] is True
     assert conflict_payload["ontology_id"] == "converted-demo"
 
-    overwrite_response = client.post(
+    overwrite_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
             "file": (_build_zip_file(zip_entries), "converted-demo.zip"),
             "overwrite": "true",
         },
-        content_type="multipart/form-data",
     )
 
     assert overwrite_response.status_code == 201
-    overwrite_payload = overwrite_response.get_json()
+    overwrite_payload = overwrite_response.json()
     assert overwrite_payload is not None
     assert overwrite_payload["created"] is False
     assert overwrite_payload["overwritten"] is True
@@ -1747,15 +1750,14 @@ def test_import_source_ontology_zip_preserves_optional_scripts(tmp_path, monkeyp
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (_build_source_ontology_zip(include_scripts=True), "source-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["import_mode"] == "source"
     assert payload["ontology_id"] == "source-demo"
@@ -1793,15 +1795,14 @@ def test_import_source_ontology_zip_allows_missing_optional_scripts(tmp_path, mo
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (_build_source_ontology_zip(include_scripts=False), "source-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["import_mode"] == "source"
 
@@ -1816,7 +1817,7 @@ def test_import_source_ontology_zip_splits_slash_aliases_and_reports_empty_warni
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
@@ -1828,11 +1829,10 @@ def test_import_source_ontology_zip_splits_slash_aliases_and_reports_empty_warni
                 "source-demo.zip",
             )
         },
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["import_mode"] == "source"
     assert payload["warnings"]["object_aliases"] == [
@@ -1878,18 +1878,17 @@ def test_import_source_ontology_zip_overwrite_removes_stale_files(tmp_path, monk
 
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
-    response = client.post(
+    response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
             "file": (_build_source_ontology_zip(include_scripts=False), "source-demo.zip"),
             "overwrite": "true",
         },
-        content_type="multipart/form-data",
     )
 
     assert response.status_code == 201
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["import_mode"] == "source"
     assert payload["overwritten"] is True
@@ -1925,19 +1924,18 @@ def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_p
     (ontology_dir / "objects" / "旧实体.md").write_text("旧实体\n", encoding="utf-8")
 
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
-    conflict_response = client.post(
+    conflict_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (_build_source_ontology_zip(include_scripts=False), "source-demo.zip")},
-        content_type="multipart/form-data",
     )
 
     assert conflict_response.status_code == 409
-    conflict_payload = conflict_response.get_json()
+    conflict_payload = conflict_response.json()
     assert conflict_payload["conflict_type"] == "missing_version_existing"
     assert conflict_payload["active_version"] == "1.0.0"
 
-    create_response = client.post(
+    create_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
@@ -1945,11 +1943,10 @@ def test_import_source_zip_missing_version_conflict_can_create_new_version(tmp_p
             "action": "create_version",
             "new_version": "2.0.0",
         },
-        content_type="multipart/form-data",
     )
 
     assert create_response.status_code == 201
-    payload = create_response.get_json()
+    payload = create_response.json()
     assert payload["version"] == "2.0.0"
     assert payload["active_version"] == "2.0.0"
     manifest = yaml.safe_load((ontology_dir / "manifest.yaml").read_text(encoding="utf-8"))
@@ -1963,24 +1960,22 @@ def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(t
     workspace_paths = _create_demo_workspace(tmp_path, monkeypatch)
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
 
-    first_response = client.post(
+    first_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (_build_source_ontology_zip(include_scripts=False, version="1.0.0"), "source-demo.zip")},
-        content_type="multipart/form-data",
     )
     assert first_response.status_code == 201
 
-    conflict_response = client.post(
+    conflict_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={"file": (_build_source_ontology_zip(include_scripts=False, version="1.0.0"), "source-demo.zip")},
-        content_type="multipart/form-data",
     )
     assert conflict_response.status_code == 409
-    assert conflict_response.get_json()["conflict_type"] == "version_exists"
+    assert conflict_response.json()["conflict_type"] == "version_exists"
 
-    create_response = client.post(
+    create_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
@@ -1988,22 +1983,20 @@ def test_import_duplicate_version_conflict_can_overwrite_or_create_new_version(t
             "action": "create_version",
             "new_version": "1.0.1",
         },
-        content_type="multipart/form-data",
     )
     assert create_response.status_code == 201
-    assert create_response.get_json()["version"] == "1.0.1"
+    assert create_response.json()["version"] == "1.0.1"
 
-    overwrite_response = client.post(
+    overwrite_response = _post(client,
         "/agentic/ontologies/import-zip",
         headers=headers,
         data={
             "file": (_build_source_ontology_zip(include_scripts=False, version="1.0.1"), "source-demo.zip"),
             "action": "overwrite_matching",
         },
-        content_type="multipart/form-data",
     )
     assert overwrite_response.status_code == 201
-    assert overwrite_response.get_json()["overwritten"] is True
+    assert overwrite_response.json()["overwritten"] is True
     manifest = yaml.safe_load((workspace_paths.ontologies_dir / "source-demo" / "manifest.yaml").read_text(encoding="utf-8"))
     assert manifest["active_version"] == "1.0.1"
     assert manifest["versions"] == ["1.0.0", "1.0.1"]
@@ -2038,11 +2031,11 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
     client, headers = _build_test_client(tmp_path, username="admin", password="TestBootstrap#2026")
     read_response = client.get(
         "/agentic/ontologies/demo-ontology/file",
-        query_string={"folder": "objects", "name": "实体A.md", "version": "2.0.0"},
+        params={"folder": "objects", "name": "实体A.md", "version": "2.0.0"},
         headers=headers,
     )
     assert read_response.status_code == 200
-    assert read_response.get_json()["content"] == "v2\n"
+    assert read_response.json()["content"] == "v2\n"
 
     save_response = client.put(
         "/agentic/ontologies/demo-ontology/file",
@@ -2055,11 +2048,11 @@ def test_file_routes_and_download_operate_on_selected_version(tmp_path, monkeypa
 
     download_response = client.get(
         "/agentic/ontologies/demo-ontology/download",
-        query_string={"version": "2.0.0"},
+        params={"version": "2.0.0"},
         headers=headers,
     )
     assert download_response.status_code == 200
-    with zipfile.ZipFile(io.BytesIO(download_response.data), "r") as zf:
+    with zipfile.ZipFile(io.BytesIO(download_response.content), "r") as zf:
         manifest = yaml.safe_load(zf.read("demo-ontology/manifest.yaml").decode("utf-8"))
         assert manifest["version"] == "2.0.0"
         assert manifest["active_version"] == "2.0.0"
@@ -2103,7 +2096,7 @@ def test_set_active_version_changes_runtime_version(tmp_path, monkeypatch):
         json={"version": "2.0.0"},
     )
     assert response.status_code == 200
-    assert response.get_json()["active_version"] == "2.0.0"
+    assert response.json()["active_version"] == "2.0.0"
 
     monkeypatch.setattr(ontology_registry_module, "_global_registry", None)
     ontology = get_ontology_registry().get_ontology("demo-ontology")
@@ -2144,7 +2137,7 @@ def test_delete_ontology_version_removes_only_target_version(tmp_path, monkeypat
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["success"] is True
     assert payload["ontology_id"] == "demo-ontology"
     assert payload["deleted_version"] == "2.0.0"
@@ -2191,7 +2184,7 @@ def test_delete_active_ontology_version_returns_409(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 409
-    payload = response.get_json()
+    payload = response.json()
     assert payload["conflict_type"] == "active_version"
     assert payload["ontology_id"] == "demo-ontology"
     assert payload["version"] == "1.0.0"

@@ -29,6 +29,10 @@ from utils.logging import get_logger
 logger = get_logger("runtime.service")
 
 
+class _MultipleInteractionsRequested(RuntimeError):
+    pass
+
+
 _WORKSPACE_SCOPE: Any = None
 _WORKSPACE_SCOPE_RESOLVED = False
 
@@ -177,8 +181,8 @@ def _resolve_workspace_scope() -> Any:
 def _workspace_context(workspace_id: str):
     """Use the real Workspace ContextVar when the web app is installed.
 
-    Runtime unit tests and small protocol tools can run without Flask; in that
-    environment there is no request-scoped workspace module to bind.
+    Runtime unit tests and small protocol tools can run without the ASGI app;
+    in that environment there is no request-scoped workspace module to bind.
     """
     workspace_scope = _resolve_workspace_scope()
     if workspace_scope is None:
@@ -285,6 +289,8 @@ class _PublicRuntimeEventSink(RuntimeEventSink):
         if draft is None:
             return
         if event.event_type == "interaction.requested":
+            if self.interaction_drafts:
+                raise _MultipleInteractionsRequested
             self.interaction_drafts.append(draft)
             return
         if event.event_type == "turn.finished":
@@ -316,12 +322,10 @@ class AsyncExecutionService:
     async def prepare_context(
         self,
         context: RuntimeInvocationContext,
-        *,
-        resumed: bool = False,
     ) -> RuntimeInvocationContext:
         if self.session_adapter is None:
             return context
-        return await self.session_adapter.prepare(context, resumed=resumed)
+        return await self.session_adapter.prepare(context)
 
     async def execute(
         self,
@@ -357,16 +361,21 @@ class AsyncExecutionService:
         if context.llm_request_mode == "stream":
             terminal: RuntimeEvent | None = None
             interaction_drafts: list[PublicEventDraft] = []
-            async for event in self.runtime.astream(context):
-                draft = adapter.adapt(event)
-                if draft is not None and event.event_type == "interaction.requested":
-                    interaction_drafts.append(draft)
-                elif draft is not None and event.event_type != "turn.finished":
-                    await sink.emit(draft)
-                if event.event_type == "turn.finished":
-                    if terminal is not None:
-                        raise RuntimeError("Agent Runtime 产生了多个终态事件")
-                    terminal = event
+            try:
+                async for event in self.runtime.astream(context):
+                    draft = adapter.adapt(event)
+                    if draft is not None and event.event_type == "interaction.requested":
+                        if interaction_drafts:
+                            raise _MultipleInteractionsRequested
+                        interaction_drafts.append(draft)
+                    elif draft is not None and event.event_type != "turn.finished":
+                        await sink.emit(draft)
+                    if event.event_type == "turn.finished":
+                        if terminal is not None:
+                            raise RuntimeError("Agent Runtime 产生了多个终态事件")
+                        terminal = event
+            except _MultipleInteractionsRequested:
+                return await self._finish_multiple_interactions(context, sink)
             if terminal is None:
                 result = RuntimeResult(
                     status="failed",
@@ -390,12 +399,44 @@ class AsyncExecutionService:
             return result
 
         runtime_sink = _PublicRuntimeEventSink(adapter, sink)
-        result = await self.runtime.arun(
-            context,
-            runtime_sink,
-        )
+        try:
+            result = await self.runtime.arun(
+                context,
+                runtime_sink,
+            )
+        except _MultipleInteractionsRequested:
+            return await self._finish_multiple_interactions(context, sink)
         await self._finalize(context, result)
         await runtime_sink.emit_deferred(status=result.status)
+        return result
+
+    async def _finish_multiple_interactions(
+        self,
+        context: RuntimeInvocationContext,
+        sink: PublicEventSink,
+    ) -> RuntimeResult:
+        error = RuntimeErrorInfo(
+            error_code="MULTIPLE_INTERACTIONS_NOT_ALLOWED",
+            message="one turn cannot request more than one interaction",
+            retriable=False,
+            source="runtime",
+        )
+        result = RuntimeResult(status="failed", error=error)
+        await self._finalize(context, result)
+        await sink.emit(
+            PublicEventDraft(
+                run_id=context.run_id,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                event_type="turn.finished",
+                status="failed",
+                source={"node": "consumer", "component": "execution_service"},
+                payload={
+                    "status": "failed",
+                    "error": error.to_dict(),
+                },
+            )
+        )
         return result
 
     async def _consume_events(
@@ -437,22 +478,6 @@ class AsyncExecutionService:
     async def cancel(self, run_id: str, reason: str) -> bool:
         return await self.runtime.cancel(run_id, reason)
 
-    async def interact(
-        self,
-        context: RuntimeInvocationContext,
-        sink: PublicEventSink,
-        interaction_response: dict[str, Any],
-    ) -> RuntimeResult:
-        resumed = context.with_interaction(
-            query=str(
-                interaction_response.get("display_text")
-                or interaction_response.get("value")
-                or ""
-            ),
-            interaction_response=interaction_response,
-        )
-        return await self.execute(resumed, sink)
-
     async def _finalize(
         self,
         context: RuntimeInvocationContext,
@@ -460,6 +485,7 @@ class AsyncExecutionService:
     ) -> None:
         if self.session_adapter is not None:
             await self.session_adapter.finalize(context, result)
+            await self.session_adapter.submit_reflection(context, result)
 
     async def finalize_aborted(
         self,
@@ -515,8 +541,6 @@ class OrchestratorSessionAdapter:
     async def prepare(
         self,
         context: RuntimeInvocationContext,
-        *,
-        resumed: bool = False,
     ) -> RuntimeInvocationContext:
         from agent.core.shared.modes import VALID_AGENT_MODES
         from config.model_profile_refs import model_profile_ref_to_dict
@@ -526,7 +550,6 @@ class OrchestratorSessionAdapter:
         return await run_sync_compat(
             self._prepare_sync,
             context,
-            resumed,
             VALID_AGENT_MODES,
             model_profile_ref_to_dict,
             resolve_effective_llm_profile_config,
@@ -553,6 +576,48 @@ class OrchestratorSessionAdapter:
             parse_execution_summary,
             run_id=context.run_id,
             task_name="consumer-session-finalize",
+        )
+
+    async def submit_reflection(
+        self,
+        context: RuntimeInvocationContext,
+        result: RuntimeResult,
+    ) -> None:
+        if result.status != "completed":
+            return
+        orchestrator = self._orchestrator_provider()
+        submit = getattr(orchestrator, "_submit_reflection", None)
+        if not callable(submit):
+            return
+        arguments = dict(context.arguments or {})
+        ontology_id = str(
+            arguments.get("selected_ontology_id") or ""
+        ).strip()
+        if not ontology_id:
+            return
+        history_source = result.history_messages or context.history_messages
+        messages = [
+            message.model_dump(mode="python", exclude_none=True)
+            for message in history_source
+        ]
+        if not result.history_messages:
+            messages.append({"role": "user", "content": context.query})
+            if result.content:
+                messages.append(
+                    {"role": "assistant", "content": result.content}
+                )
+        await submit(
+            run_id=context.run_id,
+            session_id=context.session_id,
+            turn_id=context.turn_id,
+            user_id=context.username,
+            workspace_id=context.workspace_id,
+            ontology_id=ontology_id,
+            status=result.status,
+            user_request=context.query,
+            final_output=result.content,
+            messages=messages,
+            duration_ms=0,
         )
 
     async def try_direct_execute(
@@ -588,10 +653,7 @@ class OrchestratorSessionAdapter:
         )
 
     async def persist_event(self, event: PublicEvent) -> None:
-        terminal = (
-            event.event_type == "turn.finished"
-            and event.status != "awaiting_input"
-        )
+        terminal = event.event_type == "turn.finished"
         try:
             await run_sync_compat(
                 self._persist_event_sync,
@@ -611,7 +673,6 @@ class OrchestratorSessionAdapter:
     def _prepare_sync(
         self,
         context: RuntimeInvocationContext,
-        resumed: bool,
         valid_agent_modes: set[str] | frozenset[str],
         model_profile_ref_to_dict: Callable[[Any], Any],
         resolve_effective_llm_profile_config: Callable[..., Any],
@@ -622,10 +683,15 @@ class OrchestratorSessionAdapter:
             session = chat_store.get_session(context.session_id)
             session_metadata = dict(getattr(session, "metadata", {}) or {})
             turn_count = execution_store.get_turn_count(context.session_id)
-            if resumed and not context.interaction_response:
-                raise ValueError("恢复运行缺少交互响应")
-            if not resumed and context.interaction_response:
-                raise ValueError("首次运行不能携带交互响应")
+            existing_turn = execution_store.get_turn(
+                context.session_id,
+                context.turn_id,
+            )
+            if existing_turn is not None and str(
+                existing_turn.get("run_id") or ""
+            ) != context.run_id:
+                raise ValueError("turn_id is already bound to another run")
+            prior_turn_count = turn_count - (1 if existing_turn is not None else 0)
 
             locked_agent_mode = str(session_metadata.get("agent_mode") or "").strip().lower()
             if locked_agent_mode not in valid_agent_modes:
@@ -664,7 +730,7 @@ class OrchestratorSessionAdapter:
                         locked_ontology_id
                     )
                 )
-            if requested_ontology_id and turn_count > 0 and not locked_ontology_id:
+            if requested_ontology_id and prior_turn_count > 0 and not locked_ontology_id:
                 raise ValueError(
                     "selected_ontology_id can only be set before the first user turn"
                 )
@@ -810,60 +876,37 @@ class OrchestratorSessionAdapter:
                 else ""
             )
 
-            interaction_response = None
-            if context.interaction_response:
-                interaction_response = execution_store.validate_interaction_response(
-                    context.session_id,
-                    dict(context.interaction_response),
-                )
-            turn_id = turn_count + 1
-            started_turn = execution_store.start_turn(
-                session_id=context.session_id,
-                turn_id=turn_id,
-                run_id=context.run_id,
-                user_request=context.query,
-                ontology_version=selected_ontology_version or None,
-                interaction_response=interaction_response,
-            )
-            interaction_cancellation = (
-                started_turn.get("prior_interaction_cancellation")
-                if isinstance(started_turn, Mapping)
+            interaction_response = (
+                dict(context.interaction_response)
+                if context.interaction_response
                 else None
             )
-
-            run_store = getattr(orchestrator, "run_store", None)
-            if run_store is not None:
-                run_metadata = {
-                    "source": "async_runtime",
-                    "session_id": context.session_id,
-                    "turn_id": turn_id,
-                    "user_id": context.username,
-                    "workspace_id": context.workspace_id,
-                    "agent_mode": effective_agent_mode,
-                }
-                if effective_profile_id:
-                    run_metadata["model_profile_id"] = effective_profile_id
-                if effective_profile_ref:
-                    run_metadata["model_profile_ref"] = effective_profile_ref
-                if model_provider:
-                    run_metadata["model_provider"] = model_provider
-                if selected_ontology_id:
-                    run_metadata["selected_ontology_id"] = selected_ontology_id
-                if selected_ontology_version:
-                    run_metadata["selected_ontology_version"] = selected_ontology_version
-                if context.traceparent:
-                    run_metadata["traceparent"] = context.traceparent
-                run_store.create_run(
-                    context.run_id,
-                    context.query,
-                    metadata=run_metadata,
+            if existing_turn is None:
+                turn_id = turn_count + 1
+                if interaction_response:
+                    interaction_response = execution_store.validate_interaction_response(
+                        context.session_id,
+                        interaction_response,
+                    )
+                started_turn = execution_store.start_turn(
+                    session_id=context.session_id,
+                    turn_id=turn_id,
+                    run_id=context.run_id,
+                    user_request=context.query,
+                    ontology_version=selected_ontology_version or None,
+                    interaction_response=interaction_response,
                 )
+            else:
+                turn_id = int(existing_turn["turn_id"])
+                started_turn = existing_turn
+            interaction_cancellation = None
 
             set_active_run = getattr(chat_store, "set_active_run", None)
             if callable(set_active_run):
                 set_active_run(context.session_id, context.run_id)
             message_metadata = {
                 "run_id": context.run_id,
+                "turn_id": turn_id,
                 **(
                     {"model_profile_id": effective_profile_id}
                     if effective_profile_id
@@ -893,12 +936,22 @@ class OrchestratorSessionAdapter:
                         "selected_ontology_version": selected_ontology_version or None,
                     }
                 )
-            chat_store.add_message(
-                session_id=context.session_id,
-                role="user",
-                content=context.query,
-                metadata=message_metadata,
-            )
+            upsert_message = getattr(chat_store, "upsert_message", None)
+            if callable(upsert_message):
+                upsert_message(
+                    session_id=context.session_id,
+                    role="user",
+                    content=context.query,
+                    turn_id=turn_id,
+                    metadata=message_metadata,
+                )
+            else:
+                chat_store.add_message(
+                    session_id=context.session_id,
+                    role="user",
+                    content=context.query,
+                    metadata=message_metadata,
+                )
             prepared = context.model_copy(
                 update={
                     "turn_id": turn_id,
@@ -1038,6 +1091,11 @@ class OrchestratorSessionAdapter:
                         )
 
             if result.evolution_recall_records:
+                execution_store.set_turn_evolution_records(
+                    context.session_id,
+                    context.turn_id,
+                    result.evolution_recall_records,
+                )
                 record_outcomes = getattr(
                     orchestrator,
                     "_record_evolution_recall_outcomes",
@@ -1046,36 +1104,6 @@ class OrchestratorSessionAdapter:
                 if callable(record_outcomes) and result.status == "completed":
                     record_outcomes(
                         {"evolution_recall_records": result.evolution_recall_records}
-                    )
-
-            run_store = getattr(orchestrator, "run_store", None)
-            if run_store is not None:
-                if result.evolution_recall_records:
-                    run_store.update_metadata(
-                        context.run_id,
-                        {
-                            "evolution_recall_records": list(
-                                result.evolution_recall_records
-                            )
-                        },
-                    )
-                if result.status == "awaiting_input":
-                    run_store.await_run(
-                        context.run_id,
-                        result.to_dict(),
-                        metadata={"pending_user_interaction": final_output.get("interaction")},
-                    )
-                elif result.status == "completed":
-                    run_store.complete_run(context.run_id, result.to_dict())
-                elif result.status == "cancelled":
-                    run_store.cancel_run(
-                        context.run_id,
-                        metadata={"cancel_reason": "runtime_cancelled"},
-                    )
-                else:
-                    run_store.fail_run(
-                        context.run_id,
-                        result.error.message if result.error is not None else "运行失败",
                     )
 
             get_active_run = getattr(chat_store, "get_active_run", None)

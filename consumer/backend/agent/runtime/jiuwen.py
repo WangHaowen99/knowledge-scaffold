@@ -8,7 +8,11 @@ import threading
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Collection, Mapping, Optional
 
-from agent.exceptions import ModelInvocationError, WorkflowCancelledError
+from agent.exceptions import (
+    AgentLoopStalledError,
+    ModelInvocationError,
+    WorkflowCancelledError,
+)
 from utils.security.redaction import redact_sensitive_text
 
 from .adapter import PublicEventAdapter
@@ -60,10 +64,8 @@ class JiuwenAsyncAgentRuntime:
         self._allowed_lifecycle_modes = frozenset(
             str(mode or "").strip() for mode in allowed_lifecycle_modes
         )
-        if not self._allowed_lifecycle_modes or not self._allowed_lifecycle_modes.issubset(
-            {"async", "legacy"}
-        ):
-            raise ValueError("allowed_lifecycle_modes must contain async and/or legacy")
+        if self._allowed_lifecycle_modes != {"async"}:
+            raise ValueError("allowed_lifecycle_modes must contain only async")
         self.max_event_buffer_size = max(1, int(max_event_buffer_size))
         self._runs: dict[str, _ActiveJiuwenRun] = {}
         self._runs_lock = threading.Lock()
@@ -517,6 +519,14 @@ class JiuwenAsyncAgentRuntime:
 
     @staticmethod
     def _runtime_error(exc: Exception) -> RuntimeErrorInfo:
+        if isinstance(exc, AgentLoopStalledError):
+            return RuntimeErrorInfo(
+                error_code="AGENT_LOOP_STALLED",
+                message=redact_sensitive_text(exc.public_message).strip()[:1000],
+                retriable=False,
+                source="tool",
+                details={},
+            )
         if isinstance(exc, ModelInvocationError):
             category, status_code = JiuwenAsyncAgentRuntime._classify_runtime_error(
                 exc.cause
@@ -546,6 +556,22 @@ class JiuwenAsyncAgentRuntime:
                 retriable=retriable,
                 source="model",
                 details=details,
+            )
+
+        safe_public_message = str(
+            getattr(exc, "public_message", None) or ""
+        ).strip()
+        if safe_public_message:
+            explicit_code = str(
+                getattr(exc, "error_code", None)
+                or type(exc).__name__
+            ).strip()
+            return RuntimeErrorInfo(
+                error_code=explicit_code[:160],
+                message=redact_sensitive_text(safe_public_message).strip()[:1000],
+                retriable=bool(getattr(exc, "retriable", False)),
+                source="tool",
+                details={},
             )
 
         explicit_code = str(getattr(exc, "error_code", None) or "").strip()

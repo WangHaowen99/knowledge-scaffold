@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import inspect
 import logging
@@ -17,18 +18,26 @@ from config import AgentConfig
 from agent.exceptions import WorkflowCancelledError
 from agent.evolution import ProposalBuffer
 from agent.memory.filesystem_manager import FileSystemMemoryManager
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+)
+from agent.runtime.offload import BoundedOffloadPool
 from llm import configure_llm_router, reset_llm_router_for_tests
 from agent.tools.base import ToolCaller, ToolContext, ToolInvocation, ToolOutcome
-from agent.tools.memory import wait_for_memory_tasks
 from agent.tools.registry import (
     TOOL_SPECS,
     _ARGUMENT_PARSE_ERROR_KEY,
-    execute_tool_batch,
+    aexecute_tool_batch,
     get_regular_tools_schema,
     get_tools_schema,
     is_tool_available,
 )
-from agent.tools.executor import _aggregate_outputs, _execute_single_task
+from agent.tools.executor import _aggregate_outputs
+from tool_execution_test_adapter import (
+    execute_single_task as _execute_single_task,
+    execute_tool_batch,
+)
 import utils.logging as logging_utils
 from utils.read_docs import build_read_document_record, merge_read_documents_registry
 from utils.streaming import stream_writer_context
@@ -82,9 +91,11 @@ class _BlockingRouterLLM:
         self.started = threading.Event()
         self.release = threading.Event()
         self.calls = []
+        self.thread_names = []
 
     def call(self, messages, **kwargs):
         self.calls.append({"messages": messages, "kwargs": kwargs})
+        self.thread_names.append(threading.current_thread().name)
         self.started.set()
         self.release.wait(timeout=5)
         if len(self.calls) == 1:
@@ -2333,9 +2344,8 @@ def test_memory_tool_routes_user_memory_to_memory_manager():
     )
 
     payload = json.loads(result.messages[0]["content"])
-    assert payload["queued"] is True
-    assert payload["status"] == "queued"
-    wait_for_memory_tasks(timeout=5)
+    assert payload["stored"] is True
+    assert payload["destination"] == "ordinary_memory"
     assert memory_manager.stored[0]["memory_type"] == "preference"
     assert memory_manager.stored[0]["scope"] == "user"
     assert "tags" not in memory_manager.stored[0]
@@ -2394,13 +2404,11 @@ def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):
         [_build_tool_call("memory", {"content": "以后使用英文回答计算处理成本的问题。"})],
         _make_context(llm=llm, memory_manager=memory_manager),
     )
-    wait_for_memory_tasks(timeout=5)
 
     execute_tool_batch(
         [_build_tool_call("memory", {"content": "以后改为使用中文回答计算处理成本的问题。"})],
         _make_context(llm=llm, memory_manager=memory_manager),
     )
-    wait_for_memory_tasks(timeout=5)
 
     context = memory_manager.build_memory_context(query="计算处理成本")
     assert "以后使用中文回答计算处理成本的问题" in context
@@ -2428,26 +2436,89 @@ def test_memory_tool_replaces_conflicting_ordinary_preference(tmp_path):
     ]
 
 
-def test_memory_tool_returns_before_router_completes():
+def test_memory_tool_awaits_bounded_tool_offload_without_blocking_event_loop():
     llm = _BlockingRouterLLM()
-    started_at = time.perf_counter()
+    memory_manager = _FakeMemoryManager()
 
-    result = execute_tool_batch(
-        [_build_tool_call("memory", {"content": "记住：后台分类不要阻塞主流程。"})],
-        _make_context(llm=llm),
-    )
+    async def scenario():
+        pools = [
+            BoundedOffloadPool(
+                name=name,
+                max_workers=1,
+                max_pending=1,
+                capacity_wait_seconds=0.1,
+                operation_timeout_seconds=5,
+            )
+            for name in ("memory-short", "memory-external", "memory-tool")
+        ]
+        configure_bounded_offload_pools(
+            short_io=pools[0],
+            external_io=pools[1],
+            tool_io=pools[2],
+        )
+        try:
+            invocation = asyncio.create_task(
+                aexecute_tool_batch(
+                    [_build_tool_call("memory", {"content": "记住：后台分类不要阻塞主流程。"})],
+                    _make_context(llm=llm, memory_manager=memory_manager),
+                )
+            )
+            while not llm.started.is_set():
+                await asyncio.sleep(0.001)
 
-    elapsed = time.perf_counter() - started_at
-    payload = json.loads(result.messages[0]["content"])
-    assert payload["queued"] is True
-    assert elapsed < 1.0
-    assert llm.started.wait(timeout=1)
-    llm.release.set()
-    wait_for_memory_tasks(timeout=5)
+            event_loop_probe = asyncio.create_task(asyncio.sleep(0.005))
+            await event_loop_probe
+            assert invocation.done() is False
+
+            llm.release.set()
+            result = await asyncio.wait_for(invocation, timeout=5)
+            payload = json.loads(result.messages[0]["content"])
+            assert payload["stored"] is True
+            assert payload["destination"] == "ordinary_memory"
+            assert llm.thread_names
+            assert all(name.startswith("agentic-memory-tool") for name in llm.thread_names)
+        finally:
+            llm.release.set()
+            clear_bounded_offload_pools()
+            deadline = asyncio.get_running_loop().time() + 1
+            for pool in pools:
+                await pool.close(deadline=deadline)
+
+    asyncio.run(scenario())
+
     assert [call["kwargs"]["request_label"] for call in llm.calls] == [
         "memory_route",
         "memory_extract_ordinary",
     ]
+
+
+def test_memory_tool_has_native_async_entrypoint_only():
+    memory_tool = TOOL_SPECS["memory"]
+
+    assert inspect.iscoroutinefunction(memory_tool.aexecute)
+    assert not hasattr(memory_tool, "execute")
+
+
+def test_memory_tool_redacts_sync_worker_failure(monkeypatch):
+    def fail_memory_processing(*_args, **_kwargs):
+        raise RuntimeError("token=your-api-key-here")
+
+    monkeypatch.setattr(
+        "agent.tools.memory._process_memory_task",
+        fail_memory_processing,
+    )
+
+    result = execute_tool_batch(
+        [_build_tool_call("memory", {"content": "记住这条合成偏好。"})],
+        _make_context(),
+    )
+
+    payload = json.loads(result.messages[0]["content"])
+    assert payload == {
+        "stored": False,
+        "status": "error",
+        "error": "token=[REDACTED]",
+    }
 
 
 def test_memory_schema_keeps_model_visible_arguments_minimal():
@@ -2527,8 +2598,8 @@ def test_process_memory_request_uses_operation_evolution_buffer(monkeypatch, tmp
 
     content = result.messages[0]["content"]
     payload = json.loads(content)
-    assert payload["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert payload["stored"] is True
+    assert payload["destination"] == "operation_evolution"
     op_dir = buffer.op_dir("demo", "流程A", workspace_id="ws-1")
     assert (op_dir / "proposals.jsonl").exists()
     proposal = json.loads((op_dir / "proposals.jsonl").read_text(encoding="utf-8").strip())
@@ -2599,8 +2670,7 @@ def test_operation_memory_extractor_skips_compact_key_lines(monkeypatch, tmp_pat
         ),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     extractor_input = llm.calls[1]["messages"][1]["content"]
     assert "名称：流程A；描述：校验物料编号。" in extractor_input
     assert "名称：TargetItem；描述：物料" in extractor_input
@@ -2650,8 +2720,7 @@ def test_operation_evolution_relation_merges_procedure_duplicate(monkeypatch, tm
         _make_context(llm=llm, workspace_id="ws-1", selected_ontology_id="demo"),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     aggregates = buffer.list_aggregates("demo", "流程A", workspace_id="ws-1", statuses=("pending",))
     assert len(aggregates) == 1
     assert aggregates[0].fingerprint == existing.fingerprint
@@ -2706,8 +2775,7 @@ def test_operation_evolution_relation_replaces_same_scope_schema(monkeypatch, tm
         _make_context(llm=llm, workspace_id="ws-1", selected_ontology_id="demo"),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     all_schema = buffer.list_aggregates("demo", None, workspace_id="ws-1")
     old = next(agg for agg in all_schema if agg.fingerprint == existing.fingerprint)
     active = buffer.recall(
@@ -2763,8 +2831,7 @@ def test_operation_evolution_does_not_compare_schema_across_operations(monkeypat
         _make_context(llm=llm, workspace_id="ws-1", selected_ontology_id="demo"),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     assert buffer.list_aggregates("demo", "流程A", workspace_id="ws-1", statuses=("pending",))
     assert [call["kwargs"]["request_label"] for call in llm.calls] == [
         "memory_route",
@@ -2802,8 +2869,8 @@ def test_process_memory_request_stores_object_level_schema_without_operation(mon
     )
 
     payload = json.loads(result.messages[0]["content"])
-    assert payload["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert payload["stored"] is True
+    assert payload["destination"] == "operation_evolution"
     object_schema_dir = buffer.op_dir("demo", None, workspace_id="ws-1")
     proposal = json.loads((object_schema_dir / "proposals.jsonl").read_text(encoding="utf-8").strip())
     assert proposal["operation_key"] is None
@@ -2842,8 +2909,7 @@ def test_operation_memory_without_operation_key_stays_in_evolution(monkeypatch, 
         ),
     )
 
-    assert json.loads(result.messages[0]["content"])["queued"] is True
-    wait_for_memory_tasks(timeout=5)
+    assert json.loads(result.messages[0]["content"])["stored"] is True
     assert memory_manager.stored == []
     ontology_dir = buffer.op_dir("demo", None, workspace_id="ws-1")
     proposal = json.loads((ontology_dir / "proposals.jsonl").read_text(encoding="utf-8").strip())

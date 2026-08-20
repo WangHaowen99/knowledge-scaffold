@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Mapping
+from typing import Any, AsyncIterator, Mapping
 
 from agent.tools.business_data.providers.base import OntologySearchEvent
 from .backends.base import GraphBackend
@@ -30,14 +30,18 @@ class GraphSearchProvider:
             graph_agent=graph_agent,
         )
 
-    def search_stream(
+    async def asearch_stream(
         self,
         *,
         query: str,
         entity: str,
-    ) -> Iterator[OntologySearchEvent]:
+    ) -> AsyncIterator[OntologySearchEvent]:
         yield {"type": "start", "content": "开始图谱业务数据查询"}
-        yield from self._runtime.search_stream(query=query, entity=entity)
+        async for event in self._runtime.asearch_stream(
+            query=query,
+            entity=entity,
+        ):
+            yield event
         yield {"type": "done", "content": "图谱业务数据查询结束"}
 
     def close(self) -> None:

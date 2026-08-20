@@ -1,4 +1,4 @@
-"""Entry point for running the Flask server."""
+"""Development entry point for the single-worker FastAPI server."""
 
 # Load .env FIRST, before any module reads os.getenv(...).
 # Lookup order: backend/.env → <consumer>/.env
@@ -16,7 +16,7 @@ try:
 except ImportError:
     pass
 
-from app import create_app
+import uvicorn
 
 # Import server configuration
 try:
@@ -24,7 +24,10 @@ try:
         SERVER_HOST,
         SERVER_PORT,
         SERVER_DEBUG,
-        SERVER_AUTO_RELOAD
+        SERVER_AUTO_RELOAD,
+        SERVER_GRACEFUL_SHUTDOWN_SECONDS,
+        SERVER_WORKERS,
+        validate_server_settings,
     )
 except ImportError:
     # Fallback to defaults if config not found
@@ -32,16 +35,28 @@ except ImportError:
     SERVER_PORT = 5055
     SERVER_DEBUG = True
     SERVER_AUTO_RELOAD = False
+    SERVER_WORKERS = 1
+    SERVER_GRACEFUL_SHUTDOWN_SECONDS = 45
+
+    def validate_server_settings(*, workers: int, graceful_shutdown_seconds: int) -> None:
+        if workers != 1:
+            raise RuntimeError("Consumer backend requires exactly one Uvicorn worker")
+        if graceful_shutdown_seconds < 45:
+            raise RuntimeError("Uvicorn graceful shutdown must be at least 45 seconds")
 
 
 if __name__ == "__main__":
-    app = create_app()
-    # use_reloader=False prevents semaphore leak on Ctrl+C
-    # You still get debug error pages; just no auto-reload on file changes
-    app.run(
+    validate_server_settings(
+        workers=SERVER_WORKERS,
+        graceful_shutdown_seconds=SERVER_GRACEFUL_SHUTDOWN_SECONDS,
+    )
+    uvicorn.run(
+        "app:create_app",
+        factory=True,
         host=SERVER_HOST,
         port=SERVER_PORT,
-        debug=SERVER_DEBUG,
-        use_reloader=SERVER_AUTO_RELOAD,
-        threaded=True,
+        reload=bool(SERVER_AUTO_RELOAD),
+        log_level="debug" if SERVER_DEBUG else "info",
+        workers=SERVER_WORKERS,
+        timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_SECONDS,
     )

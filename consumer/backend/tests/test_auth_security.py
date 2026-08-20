@@ -1,13 +1,26 @@
 import json
-from types import SimpleNamespace
+
+from fastapi import APIRouter, Depends
+
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
 
 import pytest
-from flask import Flask, jsonify
 
-from api.auth.auth import AuthManager, require_auth
+from auth_test_backend import AuthManager
+from api.auth.auth import AuthUser, require_authenticated_user
+from api.routes.auth import auth_router
 
 
 STRONG_PASSWORD = "Abc123!@"
+
+
+def _build_auth_app(auth_manager):
+    app = TestApplication()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(auth_router)
+    return app
 
 
 def test_bootstrap_requires_explicit_strong_password(tmp_path, monkeypatch):
@@ -93,27 +106,31 @@ def test_require_auth_blocks_regular_routes_until_password_is_changed(tmp_path):
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     token = auth_manager.issue_token(user)
 
-    app = Flask(__name__)
-    app.config["AUTH_MANAGER"] = auth_manager
+    app = TestApplication()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    probe_router = APIRouter()
 
-    @app.route("/protected")
-    @require_auth()
-    def protected():
-        return jsonify({"success": True})
+    @probe_router.get("/protected")
+    def protected(
+        _user: AuthUser = Depends(require_authenticated_user),
+    ):
+        return {"success": True}
 
-    @app.route("/auth/change-password", methods=["PUT"])
-    @require_auth()
-    def allowed_change_password():
-        return jsonify({"success": True})
+    @probe_router.put("/auth/change-password")
+    def allowed_change_password(
+        _user: AuthUser = Depends(require_authenticated_user),
+    ):
+        return {"success": True}
 
-    client = app.test_client()
+    app.include_router(probe_router)
+    client = TestClient(app)
     headers = {"Authorization": "Bearer {}".format(token)}
 
     protected_response = client.get("/protected", headers=headers)
     allowed_response = client.put("/auth/change-password", headers=headers)
 
     assert protected_response.status_code == 403
-    assert protected_response.get_json() == {
+    assert protected_response.json() == {
         "error": "Password change required",
         "code": "PASSWORD_CHANGE_REQUIRED",
     }
@@ -121,36 +138,21 @@ def test_require_auth_blocks_regular_routes_until_password_is_changed(tmp_path):
 
 
 def test_change_password_route_requires_relogin_after_success(tmp_path):
-    import app as app_module
-
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     token = auth_manager.issue_token(user)
 
-    monkeypatch_runtime = {
-        "config": SimpleNamespace(),
-        "agent_config": SimpleNamespace(),
-        "llm_router": None,
-        "auth_manager": auth_manager,
-        "user_store_manager": SimpleNamespace(),
-    }
+    app = _build_auth_app(auth_manager)
+    probe_router = APIRouter()
 
-    original_build_runtime = app_module.build_runtime_services
-    original_register_routes = app_module.register_routes
-    try:
-        app_module.build_runtime_services = lambda previous_llm_router=None: monkeypatch_runtime
-        app_module.register_routes = lambda *args, **kwargs: None
-        app = app_module.create_app()
-    finally:
-        app_module.build_runtime_services = original_build_runtime
-        app_module.register_routes = original_register_routes
+    @probe_router.get("/protected")
+    def protected_after_change(
+        _user: AuthUser = Depends(require_authenticated_user),
+    ):
+        return {"success": True}
 
-    @app.route("/protected")
-    @require_auth()
-    def protected_after_change():
-        return jsonify({"success": True})
-
-    client = app.test_client()
+    app.include_router(probe_router)
+    client = TestClient(app)
     headers = {"Authorization": "Bearer {}".format(token)}
 
     response = client.put(
@@ -161,38 +163,20 @@ def test_change_password_route_requires_relogin_after_success(tmp_path):
     protected_response = client.get("/protected", headers=headers)
 
     assert response.status_code == 200
-    assert response.get_json() == {"success": True, "requires_relogin": True}
+    assert response.json() == {"success": True, "requires_relogin": True}
     assert protected_response.status_code == 401
     assert auth_manager.verify_token(token) is None
 
 
 def test_admin_self_password_reset_route_is_rejected(tmp_path):
-    import app as app_module
-
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     auth_manager.change_password("admin", "TestBootstrap#2026", "InitialStrongPass123!")
     user = auth_manager.authenticate("admin", "InitialStrongPass123!")
     token = auth_manager.issue_token(user)
 
-    monkeypatch_runtime = {
-        "config": SimpleNamespace(),
-        "agent_config": SimpleNamespace(),
-        "llm_router": None,
-        "auth_manager": auth_manager,
-        "user_store_manager": SimpleNamespace(),
-    }
+    app = _build_auth_app(auth_manager)
 
-    original_build_runtime = app_module.build_runtime_services
-    original_register_routes = app_module.register_routes
-    try:
-        app_module.build_runtime_services = lambda previous_llm_router=None: monkeypatch_runtime
-        app_module.register_routes = lambda *args, **kwargs: None
-        app = app_module.create_app()
-    finally:
-        app_module.build_runtime_services = original_build_runtime
-        app_module.register_routes = original_register_routes
-
-    client = app.test_client()
+    client = TestClient(app)
     headers = {"Authorization": "Bearer {}".format(token)}
 
     response = client.put(
@@ -202,7 +186,7 @@ def test_admin_self_password_reset_route_is_rejected(tmp_path):
     )
 
     assert response.status_code == 400
-    assert "不能通过用户管理重置当前登录用户密码" in response.get_json()["error"]
+    assert "不能通过用户管理重置当前登录用户密码" in response.json()["error"]
     assert auth_manager.verify_token(token) is not None
     assert auth_manager.authenticate("admin", "ResetStrongPass123!") is None
     assert auth_manager.authenticate("admin", "InitialStrongPass123!") is not None

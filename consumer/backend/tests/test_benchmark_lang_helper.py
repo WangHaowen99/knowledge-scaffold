@@ -22,10 +22,16 @@ def test_benchmark_lang_loads_local_dotenv_into_environment(tmp_path, monkeypatc
     monkeypatch.syspath_prepend(str(helper_dir))
     sys.modules.pop("lang", None)
 
-    helper = importlib.import_module("lang")
+    try:
+        helper = importlib.import_module("lang")
 
-    assert helper.get_env("LLM_API_KEY") == "from-dotenv"
-    assert os.environ["LLM_API_KEY"] == "from-dotenv"
-    assert os.environ["LLM_BASE_URL"] == "https://dotenv.example/v1"
-    assert os.environ["LLM_MODEL_NAME"] == "dotenv-model"
-    assert os.environ["LLM_MODEL"] == "dotenv-model"
+        assert helper.get_env("LLM_API_KEY") == "from-dotenv"
+        assert os.environ["LLM_API_KEY"] == "from-dotenv"
+        assert os.environ["LLM_BASE_URL"] == "https://dotenv.example/v1"
+        assert os.environ["LLM_MODEL_NAME"] == "dotenv-model"
+        assert os.environ["LLM_MODEL"] == "dotenv-model"
+    finally:
+        # Import-time dotenv projection must not contaminate later config tests.
+        for key in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL_NAME", "LLM_MODEL"):
+            os.environ.pop(key, None)
+        sys.modules.pop("lang", None)

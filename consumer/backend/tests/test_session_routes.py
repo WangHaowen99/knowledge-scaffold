@@ -1,14 +1,15 @@
 """HTTP route tests for chat session management."""
 
 import json
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
+from api.testing import TestApplication
 from config.workspace_llm_profiles import update_workspace_llm_profiles
-from api.routes.sessions import sessions_bp
-from api.auth.auth import AuthManager
+from api.routes.sessions import sessions_router
+from auth_test_backend import AuthManager
 from persistence.chat_store import ChatStore
 from persistence.execution_store import (
     INTERACTION_CANCELLED_MESSAGE,
@@ -79,10 +80,43 @@ class _FakeExecutionStore:
             rows = [row for row in rows if row.get("status") == status]
         return rows
 
+    def get_session_history(self, session_id):
+        del session_id
+        return {"turns": list(self.turns)}
 
-def _build_test_client(tmp_path):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+
+class _InlinePool:
+    async def run(self, function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+
+class _AvailableManager:
+    async def list_runs(self, _scope):
+        return []
+
+    @asynccontextmanager
+    async def session_guard(self, _scope, _session_id):
+        yield
+
+    async def assert_session_available(self, _scope, _session_id):
+        return None
+
+
+def _build_test_client(
+    tmp_path,
+    monkeypatch,
+    *,
+    create_default_workspace=True,
+):
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
+    if create_default_workspace:
+        create_workspace(
+            "Session Test Workspace",
+            workspace_id="session-test",
+            set_as_default=True,
+        )
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
@@ -90,16 +124,23 @@ def _build_test_client(tmp_path):
     user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
     assert user is not None
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(sessions_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(sessions_router)
+    runtime = SimpleNamespace(
+        short_io=_InlinePool(),
+        external_io=_InlinePool(),
+        manager=_AvailableManager(),
+    )
+    app.state.runtime_container = runtime
+    app.state.agent_execution_runtime = runtime
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}
 
 
 def test_update_session_pinned_state(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore(_FakeSession("sess-1"))
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
@@ -113,12 +154,12 @@ def test_update_session_pinned_state(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["metadata"]["pinned"] is True
+    assert response.json()["metadata"]["pinned"] is True
     assert chat_store.pinned_updates == [("sess-1", True)]
 
 
 def test_update_session_pinned_state_requires_boolean(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore(_FakeSession("sess-1"))
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
@@ -132,12 +173,12 @@ def test_update_session_pinned_state_requires_boolean(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 400
-    assert response.get_json()["error"] == "pinned must be a boolean"
+    assert response.json()["error"] == "pinned must be a boolean"
     assert chat_store.pinned_updates == []
 
 
 def test_update_session_pinned_state_returns_404_for_missing_session(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (_FakeChatStore(), object()),
@@ -150,11 +191,11 @@ def test_update_session_pinned_state_returns_404_for_missing_session(tmp_path, m
     )
 
     assert response.status_code == 404
-    assert response.get_json()["error"] == "Session not found"
+    assert response.json()["error"] == "Session not found"
 
 
 def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "chats"))
     execution_store = ExecutionStore(str(tmp_path / "executions"))
     chat_store.create_session(session_id="sess-cancel", title="Cancel")
@@ -177,22 +218,26 @@ def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypa
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, execution_store),
     )
+    cancel_headers = {**headers, "Idempotency-Key": "cancel-interaction-1"}
 
     stale = client.post(
         "/agentic/sessions/sess-cancel/interactions/stale/cancel",
-        headers=headers,
+        headers=cancel_headers,
     )
-    assert stale.status_code == 409
+    assert stale.status_code == 404
 
     url = "/agentic/sessions/sess-cancel/interactions/interaction-cancel-1/cancel"
-    response = client.post(url, headers=headers)
-    retry = client.post(url, headers=headers)
+    response = client.post(url, headers=cancel_headers)
+    retry = client.post(url, headers=cancel_headers)
 
     assert response.status_code == 200
     assert retry.status_code == 200
-    assert response.get_json()["message"] == INTERACTION_CANCELLED_MESSAGE
-    assert response.get_json()["display_message"] == INTERACTION_CANCELLED_NOTICE
-    assert execution_store.get_turn("sess-cancel", 1)["status"] == "cancelled"
+    assert response.json()["message"] == INTERACTION_CANCELLED_MESSAGE
+    assert response.json()["display_message"] == INTERACTION_CANCELLED_NOTICE
+    source_turn = execution_store.get_turn("sess-cancel", 1)
+    assert source_turn["status"] == "awaiting_input"
+    assert source_turn["interaction_consumed_at"]
+    assert "interaction_consumed_by_turn_id" not in source_turn
     assert execution_store.get_llm_context("sess-cancel") == [
         {"role": "assistant", "content": "请补充信息"},
     ]
@@ -211,17 +256,14 @@ def test_cancel_pending_interaction_is_durable_and_idempotent(tmp_path, monkeypa
     assert cancellation_events[0]["data"]["role"] == "system"
     assert cancellation_events[0]["data"]["content"] == INTERACTION_CANCELLED_NOTICE
 
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "test-workspace",
-    )
     refreshed = client.get("/agentic/sessions/sess-cancel", headers=headers)
     assert refreshed.status_code == 200
-    assert refreshed.get_json()["active_run_status"] == "cancelled"
+    assert refreshed.json()["active_run_status"] == "awaiting_input"
+    assert "pending_interaction" not in refreshed.json()
 
 
 def test_list_session_turns_filters_status_and_feedback(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore(_FakeSession("sess-1"))
     execution_store = _FakeExecutionStore([
         {"turn_id": 1, "status": "success"},
@@ -239,7 +281,7 @@ def test_list_session_turns_filters_status_and_feedback(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json() == {
+    assert response.json() == {
         "turns": [{"turn_id": 2, "status": "failed", "feedback": {"vote": "down"}}],
         "count": 1,
     }
@@ -286,7 +328,7 @@ def _write_system_profiles(tmp_path, monkeypatch):
 
 
 def test_create_session_accepts_workspace_private_model_profile(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     _write_system_profiles(tmp_path, monkeypatch)
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
     update_workspace_llm_profiles(
@@ -307,59 +349,50 @@ def test_create_session_accepts_workspace_private_model_profile(tmp_path, monkey
     )
     chat_store = _FakeChatStore()
     execution_store = _FakeExecutionStore()
-    monkeypatch.setattr("api.routes.sessions._get_request_workspace_id", lambda: "alpha")
     monkeypatch.setattr("api.routes.sessions._get_user_stores", lambda: (chat_store, execution_store))
 
     response = client.post(
         "/agentic/sessions",
         json={"model_profile_id": "workspace:private"},
-        headers=headers,
+        headers={**headers, "X-Workspace-Id": "alpha"},
     )
 
     assert response.status_code == 201
-    metadata = response.get_json()["metadata"]
+    metadata = response.json()["metadata"]
     assert metadata["model_profile_id"] == "workspace:private"
     assert metadata["model_profile_ref"] == {"scope": "workspace", "id": "private"}
 
 
 def test_create_session_rejects_unknown_prefixed_profile_as_bad_request(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     _write_system_profiles(tmp_path, monkeypatch)
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
-    monkeypatch.setattr("api.routes.sessions._get_request_workspace_id", lambda: "alpha")
-
     response = client.post(
         "/agentic/sessions",
         json={"model_profile_id": "team:main"},
-        headers=headers,
+        headers={**headers, "X-Workspace-Id": "alpha"},
     )
 
     assert response.status_code == 400
-    assert "模型配置不存在" in response.get_json()["detail"]
+    assert "模型配置不存在" in response.json()["detail"]
 
 
 def test_create_session_rejects_empty_scoped_profile_as_bad_request(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     _write_system_profiles(tmp_path, monkeypatch)
     create_workspace("Alpha", workspace_id="alpha", set_as_default=True)
-    monkeypatch.setattr("api.routes.sessions._get_request_workspace_id", lambda: "alpha")
-
     response = client.post(
         "/agentic/sessions",
         json={"model_profile_id": "global:"},
-        headers=headers,
+        headers={**headers, "X-Workspace-Id": "alpha"},
     )
 
     assert response.status_code == 400
-    assert "不能为空" in response.get_json()["detail"]
+    assert "不能为空" in response.json()["detail"]
 
 
-def _stub_session_create_dependencies(monkeypatch, chat_store, *, workspace_id="alpha"):
+def _stub_session_create_dependencies(monkeypatch, chat_store):
     execution_store = _FakeExecutionStore()
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: workspace_id,
-    )
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, execution_store),
@@ -374,9 +407,9 @@ def _stub_session_create_dependencies(monkeypatch, chat_store, *, workspace_id="
 
 
 def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore()
-    _stub_session_create_dependencies(monkeypatch, chat_store, workspace_id="alpha")
+    _stub_session_create_dependencies(monkeypatch, chat_store)
     active_workspaces = []
     scope_events = []
 
@@ -395,7 +428,7 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
             raise AssertionError("session creation must use the maintained registry cache")
 
         def get_ontology(self, ontology_id):
-            assert active_workspaces == ["alpha"]
+            assert active_workspaces == ["session-test"]
             if ontology_id == "demo-ontology":
                 return SimpleNamespace(
                     id="demo-ontology",
@@ -417,17 +450,20 @@ def test_create_session_locks_enabled_selected_ontology_in_request_workspace(tmp
     )
 
     assert response.status_code == 201
-    assert response.get_json()["metadata"]["selected_ontology_id"] == "demo-ontology"
-    assert response.get_json()["metadata"]["selected_ontology_version"] == "2.1.0"
-    assert response.get_json()["metadata"]["selected_ontology_name"] == "Demo Ontology"
+    assert response.json()["metadata"]["selected_ontology_id"] == "demo-ontology"
+    assert response.json()["metadata"]["selected_ontology_version"] == "2.1.0"
+    assert response.json()["metadata"]["selected_ontology_name"] == "Demo Ontology"
     assert chat_store.created_sessions[0]["metadata"]["selected_ontology_id"] == "demo-ontology"
     assert chat_store.created_sessions[0]["metadata"]["selected_ontology_version"] == "2.1.0"
     assert chat_store.created_sessions[0]["metadata"]["selected_ontology_name"] == "Demo Ontology"
-    assert scope_events == [("enter", "alpha"), ("exit", "alpha")]
+    assert scope_events == [
+        ("enter", "session-test"),
+        ("exit", "session-test"),
+    ]
 
 
 def test_create_session_omits_empty_selected_ontology_metadata(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore()
     _stub_session_create_dependencies(monkeypatch, chat_store)
     monkeypatch.setattr(
@@ -442,7 +478,7 @@ def test_create_session_omits_empty_selected_ontology_metadata(tmp_path, monkeyp
             headers=headers,
         )
         assert response.status_code == 201
-        assert "selected_ontology_id" not in response.get_json()["metadata"]
+        assert "selected_ontology_id" not in response.json()["metadata"]
 
     assert all(
         "selected_ontology_id" not in item["metadata"]
@@ -451,9 +487,9 @@ def test_create_session_omits_empty_selected_ontology_metadata(tmp_path, monkeyp
 
 
 def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore()
-    _stub_session_create_dependencies(monkeypatch, chat_store, workspace_id="alpha")
+    _stub_session_create_dependencies(monkeypatch, chat_store)
 
     class EmptyRegistry:
         def refresh(self):
@@ -472,12 +508,12 @@ def test_create_session_rejects_selected_ontology_missing_from_workspace(tmp_pat
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {"detail": "知识包不存在: beta-only"}
+    assert response.json() == {"detail": "知识包不存在: beta-only"}
     assert chat_store.created_sessions == []
 
 
 def test_create_session_rejects_disabled_selected_ontology(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = _FakeChatStore()
     _stub_session_create_dependencies(monkeypatch, chat_store)
 
@@ -497,12 +533,12 @@ def test_create_session_rejects_disabled_selected_ontology(tmp_path, monkeypatch
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {"detail": "知识包已禁用: disabled-ontology"}
+    assert response.json() == {"detail": "知识包已禁用: disabled-ontology"}
     assert chat_store.created_sessions == []
 
 
 def test_get_session_no_longer_exposes_delta_polling(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "chats"))
     chat_store.create_session(session_id="sess-live", title="Live")
     chat_store.set_active_run("sess-live", "run-live")
@@ -560,23 +596,18 @@ def test_get_session_no_longer_exposes_delta_polling(tmp_path, monkeypatch):
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, object()),
     )
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "test-workspace",
-    )
-
     response = client.get(
         "/agentic/sessions/sess-live?since=1",
         headers=headers,
     )
 
     assert response.status_code == 410
-    payload = response.get_json()
+    payload = response.json()
     assert "delta polling has been removed" in payload["error"]
 
 
 def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "owner-chats"))
     chat_store.create_session(session_id="sess-output", title="Trace")
     complete_output = "完整工具输出🙂" * 900
@@ -591,11 +622,6 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
         "api.routes.sessions._get_user_stores",
         lambda: (chat_store, _FakeExecutionStore()),
     )
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "test-workspace",
-    )
-
     response = client.get(
         "/agentic/sessions/sess-output/runs/run-output/tool-outputs/{}".format(
             artifact["output_ref"]
@@ -605,8 +631,8 @@ def test_get_tool_output_returns_complete_content_with_no_store_cache(tmp_path, 
 
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
-    assert response.mimetype == "text/plain"
-    assert response.get_data(as_text=True) == complete_output
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == complete_output
     assert response.headers["X-Tool-Output-Size"] == str(
         len(complete_output.encode("utf-8"))
     )
@@ -621,7 +647,7 @@ def test_get_tool_output_rejects_invalid_workspace_before_store_lookup(
     runtime_root = tmp_path / ".onto-runtime"
     monkeypatch.setenv("PROJECT_ROOT", str(runtime_root))
     create_workspace("Demo", workspace_id="demo", set_as_default=True)
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
 
     def unexpected_store_lookup():
         raise AssertionError("invalid workspace must be rejected before store lookup")
@@ -638,13 +664,13 @@ def test_get_tool_output_rejects_invalid_workspace_before_store_lookup(
     )
 
     assert response.status_code == 400
-    assert response.get_json() == {
+    assert response.json() == {
         "detail": "工作空间 ID 格式非法：必须以英文小写字母开头，只能包含英文、数字、下划线(_)或中划线(-)",
     }
 
 
 def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     owner_store = ChatStore(str(tmp_path / "workspace-alpha"))
     owner_store.create_session(session_id="shared-session")
     artifact = owner_store.store_tool_output(
@@ -660,10 +686,6 @@ def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monk
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
         lambda: (foreign_workspace_store, _FakeExecutionStore()),
-    )
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "test-workspace",
     )
     foreign_response = client.get(
         "/agentic/sessions/shared-session/runs/owner-run/tool-outputs/{}".format(
@@ -694,55 +716,66 @@ def test_get_tool_output_enforces_workspace_session_and_run_scope(tmp_path, monk
     assert wrong_session_response.status_code == 404
 
 
-def test_get_session_exposes_active_run_status_for_resume(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+def test_get_session_exposes_interrupted_status_after_restart(tmp_path, monkeypatch):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "chats"))
     chat_store.create_session(session_id="sess-live", title="Live")
     chat_store.set_active_run("sess-live", "run-live")
     monkeypatch.setattr(
         "api.routes.sessions._get_user_stores",
-        lambda: (chat_store, object()),
-    )
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "test-workspace",
+        lambda: (
+            chat_store,
+            _FakeExecutionStore(
+                [
+                    {
+                        "run_id": "run-live",
+                        "status": "failed",
+                        "error_code": "SERVICE_RESTARTED",
+                    }
+                ]
+            ),
+        ),
     )
 
     response = client.get("/agentic/sessions/sess-live", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["active_run_id"] == "run-live"
+    payload = response.json()
+    assert payload["active_run_id"] is None
     assert payload["active_run_status"] == "interrupted"
 
 
 def test_list_sessions_enriches_with_async_run_snapshot_in_one_pass(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "chats"))
     chat_store.create_session(session_id="sess-a", title="A")
     chat_store.create_session(session_id="sess-b", title="B")
     chat_store.set_active_run("sess-a", "run-a")
-    monkeypatch.setattr("api.routes.sessions._get_user_stores", lambda: (chat_store, object()))
     monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "test-workspace",
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
     )
     live_run = SimpleNamespace(
         session_id="sess-a",
         run_id="run-a",
         status=SimpleNamespace(value="running"),
+        turn_id=1,
         last_seq=7,
         updated_at="2026-01-01T00:00:00Z",
     )
-    monkeypatch.setattr(
-        "api.routes.sessions._async_runs_by_session",
-        lambda **_kwargs: {"sess-a": live_run},
+    client.app.state.runtime_container.manager = SimpleNamespace(
+        list_runs=lambda _scope: None,
     )
+
+    async def list_runs(_scope):
+        return [live_run]
+
+    client.app.state.runtime_container.manager.list_runs = list_runs
 
     response = client.get("/agentic/sessions", headers=headers)
 
     assert response.status_code == 200
-    by_id = {s["id"]: s for s in response.get_json()["sessions"]}
+    by_id = {s["id"]: s for s in response.json()["sessions"]}
     # The manager snapshot is loaded once for the whole session listing.
     assert by_id["sess-a"]["active_run_status"] == "running"
     assert by_id["sess-a"]["active_run_id"] == "run-a"
@@ -752,75 +785,57 @@ def test_list_sessions_enriches_with_async_run_snapshot_in_one_pass(tmp_path, mo
 
 
 def test_list_sessions_reports_missing_workspace_as_bad_request(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
-
-    def raise_missing_workspace():
-        raise ValueError("当前不存在任何工作空间")
-
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        raise_missing_workspace,
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        create_default_workspace=False,
     )
 
     response = client.get("/agentic/sessions", headers=headers)
 
     assert response.status_code == 400
-    assert response.get_json() == {"detail": "当前不存在任何工作空间"}
+    assert response.json() == {"detail": "当前不存在任何工作空间"}
 
 
 def test_create_session_reports_missing_workspace_as_bad_request(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
-
-    def raise_missing_workspace():
-        raise ValueError("当前不存在任何工作空间")
-
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        raise_missing_workspace,
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        create_default_workspace=False,
     )
 
     response = client.post("/agentic/sessions", json={}, headers=headers)
 
     assert response.status_code == 400
-    assert response.get_json() == {"detail": "当前不存在任何工作空间"}
+    assert response.json() == {"detail": "当前不存在任何工作空间"}
 
 
 def test_get_session_reports_missing_workspace_as_bad_request(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
-
-    def raise_missing_workspace():
-        raise ValueError("当前不存在任何工作空间")
-
-    monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        raise_missing_workspace,
+    client, headers = _build_test_client(
+        tmp_path,
+        monkeypatch,
+        create_default_workspace=False,
     )
 
     response = client.get("/agentic/sessions/session-1", headers=headers)
 
     assert response.status_code == 400
-    assert response.get_json() == {"detail": "当前不存在任何工作空间"}
+    assert response.json() == {"detail": "当前不存在任何工作空间"}
 
 
 def test_list_sessions_does_not_attach_run_outside_async_scope(tmp_path, monkeypatch):
-    client, headers = _build_test_client(tmp_path)
+    client, headers = _build_test_client(tmp_path, monkeypatch)
     chat_store = ChatStore(str(tmp_path / "chats"))
     chat_store.create_session(session_id="shared-session", title="Mine")
-    monkeypatch.setattr("api.routes.sessions._get_user_stores", lambda: (chat_store, object()))
     monkeypatch.setattr(
-        "api.routes.sessions._get_request_workspace_id",
-        lambda: "my-workspace",
-    )
-
-    monkeypatch.setattr(
-        "api.routes.sessions._async_runs_by_session",
-        lambda **_kwargs: {},
+        "api.routes.sessions._get_user_stores",
+        lambda: (chat_store, _FakeExecutionStore()),
     )
 
     response = client.get("/agentic/sessions", headers=headers)
 
     assert response.status_code == 200
-    session = response.get_json()["sessions"][0]
+    session = response.json()["sessions"][0]
     assert session["active_run_id"] is None
     assert session["active_run_status"] == "idle"
     assert session["last_seq"] == 0

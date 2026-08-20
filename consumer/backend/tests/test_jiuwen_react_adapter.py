@@ -19,7 +19,7 @@ from agent.core.jiuwen_engine import (
     JiuwenBackendUnavailable,
     JiuwenReactLoopEngine,
     _JiuwenModelTraceBridge,
-    _run_awaitable,
+    _raise_if_jiuwen_cancelled,
     create_default_jiuwen_agent,
     register_current_runtime_tools,
     _patch_jiuwen_openai_reasoning_alias,
@@ -31,9 +31,48 @@ from agent.tools.registry import get_tool_schema, get_tool_spec
 from config.settings import AgentConfig, LimitsConfig, WebSearchConfig
 from llm import LLMPurpose
 import utils.logging as logging_utils
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+)
+from agent.runtime.offload import BoundedOffloadPool
 
 
 _REAL_IMPORT_MODULE = importlib.import_module
+
+
+def _run_engine(engine, state, **kwargs):
+    return asyncio.run(engine.arun(state, **kwargs))
+
+
+@pytest.fixture(autouse=True)
+def _lifespan_owned_offload_pools():
+    def new_pool(name):
+        return BoundedOffloadPool(
+            name=name,
+            max_workers=4,
+            max_pending=16,
+            capacity_wait_seconds=1.0,
+            operation_timeout_seconds=5.0,
+        )
+
+    pools = tuple(new_pool(name) for name in ("short-test", "external-test", "tool-test"))
+    configure_bounded_offload_pools(
+        short_io=pools[0],
+        external_io=pools[1],
+        tool_io=pools[2],
+    )
+    try:
+        yield
+    finally:
+        async def close_pools():
+            deadline = asyncio.get_running_loop().time() + 2.0
+            await asyncio.gather(
+                *(pool.close(deadline=deadline) for pool in pools)
+            )
+
+        asyncio.run(close_pools())
+        clear_bounded_offload_pools()
 
 
 class _FakeContextEngineConfig:
@@ -188,7 +227,7 @@ def test_jiuwen_loop_engine_accepts_agent_factory(monkeypatch):
         "messages": [],
         "results": {},
     }
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert isinstance(engine, JiuwenReactLoopEngine)
     assert state["final_output"] == "factory answer"
@@ -213,7 +252,7 @@ def test_jiuwen_loop_engine_invokes_agent_and_updates_current_state(monkeypatch)
     events = []
     snapshots = []
 
-    result = engine.run(
+    result = _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -261,7 +300,7 @@ def test_jiuwen_loop_engine_emits_runtime_trace_events(monkeypatch):
         agent_factory=lambda: fake_agent,
     )
 
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-jiuwen-trace",
             "session_id": "sess-jiuwen-trace",
@@ -312,7 +351,7 @@ def test_jiuwen_loop_engine_finishes_trace_when_setup_fails(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="selected context failed"):
-        engine.run(
+        _run_engine(engine,
             {
                 "run_id": "run-jiuwen-setup-fails",
                 "session_id": "sess-jiuwen-setup-fails",
@@ -361,7 +400,7 @@ def test_jiuwen_loop_engine_marks_loop_error_when_post_processing_fails(monkeypa
         raise RuntimeError("snapshot failed")
 
     with pytest.raises(RuntimeError, match="snapshot failed"):
-        engine.run(
+        _run_engine(engine,
             {
                 "run_id": "run-jiuwen-post-processing-error",
                 "session_id": "sess-jiuwen-post-processing-error",
@@ -495,7 +534,7 @@ def test_jiuwen_loop_engine_traces_each_internal_model_call(monkeypatch):
     }
 
     protocol_events = []
-    engine.run(
+    _run_engine(engine,
         engine_state,
         caller="main",
         observer=observer,
@@ -923,7 +962,7 @@ def test_jiuwen_loop_engine_raises_when_agent_returns_error_result_type(monkeypa
     }
 
     with pytest.raises(RuntimeError, match="Max iterations reached without completion"):
-        engine.run(state, caller="main", observer=observer)
+        _run_engine(engine, state, caller="main", observer=observer)
 
     assert "final_output" not in state
     assert state["messages"][0]["role"] == "system"
@@ -964,7 +1003,7 @@ def test_jiuwen_loop_engine_marks_loop_error_when_agent_raises(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="jiuwen exploded"):
-        engine.run(
+        _run_engine(engine,
             {
                 "run_id": "run-jiuwen-agent-error",
                 "session_id": "sess-jiuwen-agent-error",
@@ -1082,7 +1121,7 @@ def test_jiuwen_loop_engine_prepares_each_pseudo_iteration(monkeypatch):
 
     observer = RecordingObserver()
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-jiuwen-pseudo-iterations",
             "session_id": "sess-jiuwen-pseudo-iterations",
@@ -1150,7 +1189,7 @@ def test_jiuwen_loop_engine_streams_llm_output_as_token_delta(monkeypatch):
     events = []
     snapshots = []
 
-    engine.run(
+    _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -1205,7 +1244,7 @@ def test_jiuwen_loop_engine_streams_acp_output_as_token_delta(monkeypatch):
     )
     events = []
 
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-jiuwen-acp-stream",
             "session_id": "sess-jiuwen-acp-stream",
@@ -1263,7 +1302,7 @@ def test_jiuwen_loop_engine_does_not_duplicate_streamed_answer_chunk(monkeypatch
     events = []
     snapshots = []
 
-    engine.run(
+    _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -1304,7 +1343,7 @@ def test_jiuwen_loop_engine_streams_answer_chunk_as_content_delta(monkeypatch):
     }
     events = []
 
-    engine.run(state, caller="main", event_writer=events.append)
+    _run_engine(engine, state, caller="main", event_writer=events.append)
 
     token_events = [
         event["data"]
@@ -1340,7 +1379,7 @@ def test_jiuwen_loop_engine_uses_last_user_message_when_user_request_missing(mon
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert fake_agent.inputs["query"].startswith("history question\n\n<system-reminder>")
     assert "Today's date is 2026/06/08." in fake_agent.inputs["query"]
@@ -1462,7 +1501,7 @@ def test_jiuwen_loop_engine_seeds_persisted_history_into_new_context(monkeypatch
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert fake_agent.session is not None
     owned_session_id = fake_agent.session.get_session_id()
@@ -1589,7 +1628,7 @@ def test_jiuwen_loop_engine_finalizes_seeded_session_after_stream(monkeypatch):
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert fake_agent.session is not None
     assert fake_agent.context_engine.created_sessions == [fake_agent.session]
@@ -1624,7 +1663,7 @@ def test_jiuwen_loop_engine_appends_current_date_after_selected_ontology_context
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     query = fake_agent.inputs["query"]
     assert query.startswith("CHANGE_ORDER-001变更涉及哪些物料变更？")
@@ -1664,7 +1703,7 @@ def test_jiuwen_loop_engine_injects_selected_ontology_context_into_inputs(monkey
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     query = fake_agent.inputs["query"]
     assert query.startswith("CHANGE_ORDER-001变更涉及哪些物料变更？")
@@ -1776,7 +1815,7 @@ def test_jiuwen_loop_engine_registers_selected_ontology_preload_records(monkeypa
         "results": {},
     }
 
-    final_state = engine.run(state, caller="main")
+    final_state = _run_engine(engine, state, caller="main")
 
     assert final_state["read_documents"]["by_path"]["ontologies/demo/objects/index.md"]["source"] == "preload"
     assert final_state["read_documents"]["recent_paths"] == ["ontologies/demo/objects/index.md"]
@@ -1853,7 +1892,7 @@ def test_jiuwen_loop_engine_registers_current_tools_for_default_agent(monkeypatc
         },
     }
 
-    engine.run(
+    _run_engine(engine,
         state,
         caller="main",
         iteration_limit=50,
@@ -1947,7 +1986,7 @@ def test_jiuwen_loop_engine_uses_selected_model_profile_for_default_agent(monkey
     monkeypatch.setattr("agent.core.jiuwen_engine.register_current_runtime_tools", fake_register)
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-selected-profile",
             "session_id": "sess-selected-profile",
@@ -2001,7 +2040,7 @@ def test_jiuwen_loop_engine_clamps_profile_max_tokens_to_platform_output_limit(m
             limits=LimitsConfig(model_output_token_limit=128),
         )
     )
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-output-limit",
             "session_id": "sess-output-limit",
@@ -2040,7 +2079,7 @@ def test_jiuwen_loop_engine_enables_reasoning_for_thinking_modes(monkeypatch):
 
     engine = JiuwenReactLoopEngine(agent_config=_agent_config())
     for mode in ("quick", "thinking", "multi_agent"):
-        engine.run(
+        _run_engine(engine,
             {
                 "run_id": "run-reasoning-{}".format(mode),
                 "session_id": "sess-reasoning-{}".format(mode),
@@ -2115,7 +2154,7 @@ def test_jiuwen_loop_engine_uses_subagent_purpose_for_subagent_caller(monkeypatc
             sub_agent_max_iterations=3,
         )
     )
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-subagent-selected-profile",
             "session_id": "sess-subagent-selected-profile",
@@ -2165,7 +2204,7 @@ def test_jiuwen_loop_engine_routes_stream_tokens_to_token_callback(monkeypatch):
     events = []
     callbacks = []
 
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-token-callback",
             "session_id": "sess-token-callback",
@@ -2227,7 +2266,7 @@ def test_jiuwen_loop_engine_preserves_streamed_reasoning_content_on_assistant_me
         "user_context": {"agent_mode": "thinking"},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert state["messages"][-1] == {
         "role": "assistant",
@@ -2277,7 +2316,7 @@ def test_jiuwen_loop_engine_emits_reasoning_summary_for_streamed_reasoning(monke
     )
     events = []
 
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-reasoning-summary",
             "session_id": "sess-reasoning-summary",
@@ -2343,7 +2382,7 @@ def test_jiuwen_loop_engine_emits_acp_reasoning_summary(monkeypatch):
     )
     events = []
 
-    engine.run(
+    _run_engine(engine,
         {
             "run_id": "run-acp-reasoning-summary",
             "session_id": "sess-acp-reasoning-summary",
@@ -2400,7 +2439,7 @@ def test_jiuwen_loop_engine_uses_invoke_when_request_mode_is_sync(monkeypatch):
         "user_context": {"llm_request_mode": "sync"},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert fake_agent.invoked is True
     assert state["final_output"] == "sync answer"
@@ -2469,7 +2508,7 @@ def test_jiuwen_loop_engine_passes_full_history_to_context_engine(monkeypatch):
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert sliding_window_calls == []
     assert create_calls and create_calls[-1]["context_max_rounds"] == 1
@@ -2528,7 +2567,7 @@ def test_jiuwen_loop_engine_exposes_web_search_only_when_enabled(monkeypatch):
                 web_search=WebSearchConfig(enabled=enabled),
             )
         )
-        engine.run(
+        _run_engine(engine,
             {
                 "run_id": "run-register-web-search-{}".format(enabled),
                 "session_id": "sess-register-web-search-{}".format(enabled),
@@ -2630,7 +2669,7 @@ def test_jiuwen_loop_engine_stops_stream_when_run_is_cancelled(monkeypatch):
     }
 
     with pytest.raises(WorkflowCancelledError):
-        engine.run(
+        _run_engine(engine,
             state,
             caller="main",
             event_writer=events.append,
@@ -2718,7 +2757,7 @@ def test_jiuwen_loop_engine_resolves_current_workspace(monkeypatch):
         "results": {},
     }
 
-    engine.run(state, caller="main")
+    _run_engine(engine, state, caller="main")
 
     assert state["workspace_id"] == "ws-current"
     assert calls["state_workspace_id"] == "ws-current"
@@ -3365,7 +3404,7 @@ def test_jiuwen_loop_default_path_invokes_registered_tool_and_reports_tool_metri
     events = []
     snapshots = []
 
-    engine.run(
+    _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -3526,7 +3565,7 @@ def test_jiuwen_loop_keeps_multiple_tools_from_one_llm_turn_in_same_iteration(mo
     events = []
     observer = RecordingObserver()
 
-    engine.run(
+    _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -3762,7 +3801,7 @@ def test_jiuwen_loop_returns_when_tool_batch_is_terminal(monkeypatch):
     events = []
     observer = RecordingObserver()
 
-    final_state = engine.run(
+    final_state = _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -3887,7 +3926,7 @@ def test_jiuwen_loop_binds_subagent_log_context_for_agent_and_tools(monkeypatch)
         "results": {},
     }
 
-    final_state = engine.run(
+    final_state = _run_engine(engine,
         state,
         caller="subagent",
         system_prompt="subagent system prompt",
@@ -4005,7 +4044,7 @@ def test_jiuwen_loop_marks_started_tool_batch_failed_when_agent_errors(monkeypat
     }
 
     with pytest.raises(RuntimeError, match="agent failed after tool"):
-        engine.run(state, caller="main", observer=observer)
+        _run_engine(engine, state, caller="main", observer=observer)
 
     event_types = [event.type for event in observer.events]
     assert RuntimeEventType.TOOL_BATCH_STARTED in event_types
@@ -4107,7 +4146,7 @@ def test_jiuwen_loop_marks_started_tool_batch_cancelled_when_agent_cancelled(mon
     }
 
     with pytest.raises(WorkflowCancelledError):
-        engine.run(state, caller="main", observer=observer)
+        _run_engine(engine, state, caller="main", observer=observer)
 
     event_types = [event.type for event in observer.events]
     assert RuntimeEventType.TOOL_BATCH_STARTED in event_types
@@ -4212,7 +4251,7 @@ def test_jiuwen_loop_reports_parallel_tool_window_in_iteration_metrics(monkeypat
     }
     events = []
 
-    engine.run(
+    _run_engine(engine,
         state,
         caller="main",
         event_writer=events.append,
@@ -4894,10 +4933,6 @@ def test_warm_up_jiuwen_runtime_constructs_agent_without_invoking(monkeypatch):
 
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
     monkeypatch.setattr(
-        "agent.core.jiuwen_engine._JIUWEN_LOOP_RUNNER.get_loop",
-        lambda: None,
-    )
-    monkeypatch.setattr(
         "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
         lambda state, *, caller, agent_config=None: SimpleNamespace(
             provider="openai_compatible",
@@ -4938,10 +4973,6 @@ def test_warm_up_jiuwen_runtime_does_not_register_tools(monkeypatch):
         return []
 
     monkeypatch.setattr("agent.core.jiuwen_engine.is_openjiuwen_available", lambda: True)
-    monkeypatch.setattr(
-        "agent.core.jiuwen_engine._JIUWEN_LOOP_RUNNER.get_loop",
-        lambda: None,
-    )
     monkeypatch.setattr(
         "agent.core.jiuwen_engine._resolve_jiuwen_llm_config",
         lambda state, *, caller, agent_config=None: SimpleNamespace(),
@@ -5012,30 +5043,24 @@ async def _acquire_shared_cross_call_lock_with_waiter() -> str:
     return "ok"
 
 
-def test_jiuwen_run_awaitable_reuses_loop_for_shared_asyncio_lock_waiters():
-    result_a = _run_awaitable(_acquire_shared_cross_call_lock_with_waiter())
-    assert result_a == "ok"
-    result_b = _run_awaitable(_acquire_shared_cross_call_lock_with_waiter())
-    assert result_b == "ok"
+def test_native_async_calls_share_the_caller_loop_for_lock_waiters():
+    async def exercise():
+        result_a = await _acquire_shared_cross_call_lock_with_waiter()
+        result_b = await _acquire_shared_cross_call_lock_with_waiter()
+        return result_a, result_b
+
+    assert asyncio.run(exercise()) == ("ok", "ok")
 
 
-def test_jiuwen_run_awaitable_does_not_submit_when_already_cancelled():
-    started = {"value": False}
+def test_native_async_preflight_rejects_an_already_cancelled_run():
     cancel_event = threading.Event()
     cancel_event.set()
 
-    async def awaitable():
-        started["value"] = True
-        return "unexpected"
-
     with pytest.raises(WorkflowCancelledError):
-        _run_awaitable(
-            awaitable(),
-            cancel_event=cancel_event,
-            state={"run_id": "run-pre-cancelled"},
+        _raise_if_jiuwen_cancelled(
+            cancel_event,
+            {"run_id": "run-pre-cancelled"},
         )
-
-    assert started["value"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildRunCancelUrl,
   buildRunEventsUrl,
+  buildRunUrl,
   classifyEnvelope,
   getEnvelopeIdentity,
   getEnvelopeSequence,
@@ -29,5 +31,7 @@ test('rejects replayed envelopes by cursor or stable event id', () => {
 
 test('builds an encoded resumable event stream URL', () => {
   assert.equal(buildRunEventsUrl('run/with space', 9), '/agentic/runs/run%2Fwith%20space/events?after_seq=9');
-  assert.equal(buildRunEventsUrl('run-a'), '/agentic/runs/run-a/events');
+  assert.equal(buildRunEventsUrl('run-a'), '/agentic/runs/run-a/events?after_seq=0');
+  assert.equal(buildRunUrl('run/with space'), '/agentic/runs/run%2Fwith%20space');
+  assert.equal(buildRunCancelUrl('run/with space'), '/agentic/runs/run%2Fwith%20space/cancel');
 });

@@ -11,7 +11,12 @@ from unittest.mock import patch
 
 from agent.core.jiuwen.tools import CurrentRuntimeToolAdapter
 from agent.exceptions import AgentLoopStalledError
-from agent.runtime.async_utils import run_sync_compat
+from agent.runtime.async_utils import (
+    clear_bounded_offload_pools,
+    configure_bounded_offload_pools,
+    run_sync_compat,
+)
+from agent.runtime.offload import BoundedOffloadPool
 from agent.sub_agents.base import SubAgent
 from agent.sub_agents.manager import SubAgentManager, SubAgentTaskSpec
 from agent.tools.base import (
@@ -20,7 +25,8 @@ from agent.tools.base import (
     ToolInvocation,
     ToolOutcome,
 )
-from agent.tools.executor import aexecute_tool_batch, execute_tool_batch
+import agent.tools.executor as tool_executor_module
+from agent.tools.executor import aexecute_tool_batch
 from agent.tools.registry import TOOL_SPECS
 
 
@@ -65,6 +71,29 @@ class _ToolBase:
 
 
 class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.offload_pools = [
+            BoundedOffloadPool(
+                name=name,
+                max_workers=8,
+                max_pending=32,
+                capacity_wait_seconds=1,
+                operation_timeout_seconds=3,
+            )
+            for name in ("test-short", "test-external", "test-tool")
+        ]
+        configure_bounded_offload_pools(
+            short_io=self.offload_pools[0],
+            external_io=self.offload_pools[1],
+            tool_io=self.offload_pools[2],
+        )
+
+    async def asyncTearDown(self):
+        clear_bounded_offload_pools()
+        deadline = asyncio.get_running_loop().time() + 3
+        for pool in self.offload_pools:
+            await pool.close(deadline=deadline)
+
     async def test_native_async_tool_runs_directly_on_the_caller_loop(self):
         observed = {}
 
@@ -202,29 +231,22 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(run_sync_compat(started.wait, 1), timeout=2)
             task.cancel()
             await asyncio.sleep(0.02)
-            self.assertFalse(task.done())
+            self.assertTrue(task.done())
+            self.assertEqual(
+                self.offload_pools[2].metrics()["unfinished"],
+                1,
+            )
             release.set()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+            async with asyncio.timeout(1):
+                while self.offload_pools[2].metrics()["unfinished"]:
+                    await asyncio.sleep(0.005)
 
         self.assertTrue(finished.is_set())
 
-    async def test_sync_wrapper_uses_the_same_async_core(self):
-        class SyncTool(_ToolBase):
-            name = "phase3_sync_wrapper"
-
-            def execute(self, **kwargs):
-                del kwargs
-                return ToolOutcome(content="wrapped")
-
-        with patch.dict(TOOL_SPECS, {SyncTool.name: SyncTool()}):
-            result = await run_sync_compat(
-                execute_tool_batch,
-                [_invocation(SyncTool.name, "call-wrapper")],
-                _context(),
-            )
-
-        self.assertEqual(result.messages[0]["content"], "wrapped")
+    async def test_production_executor_has_no_sync_batch_wrapper(self):
+        self.assertFalse(hasattr(tool_executor_module, "execute_tool_batch"))
 
     async def test_jiuwen_adapter_awaits_async_batch_and_allocates_unique_ids(self):
         started = 0
@@ -472,7 +494,7 @@ class AsyncToolExecutionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
-    async def test_subagent_sync_and_async_entries_share_one_preparation_core(self):
+    async def test_subagent_native_async_entry_uses_the_caller_loop(self):
         calls = []
         caller_loop = asyncio.get_running_loop()
         agent_config = SimpleNamespace(sub_agent_max_iterations=3)
@@ -500,15 +522,12 @@ class StructuredSubAgentTests(unittest.IsolatedAsyncioTestCase):
             patch("agent.sub_agents.base.build_skills_section", return_value=""),
         )
         with common_patches[0], common_patches[1], common_patches[2], common_patches[3]:
-            sync_result = await run_sync_compat(SubAgent().execute, "sync task")
             async_result = await SubAgent().aexecute("async task")
 
-        self.assertEqual(sync_result["output"], "sync-result")
         self.assertEqual(async_result["output"], "async-result")
-        self.assertEqual([call[0] for call in calls], ["sync", "async"])
-        self.assertIs(calls[1][1], caller_loop)
+        self.assertEqual([call[0] for call in calls], ["async"])
+        self.assertIs(calls[0][1], caller_loop)
         self.assertEqual(calls[0][2]["caller"], "subagent")
-        self.assertEqual(calls[1][2]["caller"], "subagent")
 
     async def test_subagents_run_in_task_group_and_preserve_input_order(self):
         started = 0

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib.util
 import asyncio
-import concurrent.futures
 import json
 import threading
 import time
@@ -77,9 +76,6 @@ from .shared.timing import (
     tool_window_elapsed_ms as _tool_window_elapsed_ms,
 )
 from .shared.tool_context import build_tool_context
-from ..runtime.lifecycle import get_legacy_jiuwen_loop_runner
-
-
 logger = get_logger("jiuwen_engine")
 
 
@@ -390,33 +386,6 @@ class JiuwenReactLoopEngine:
         self.agent_config = agent_config
         self._agent_factory = agent_factory
 
-    def run(
-        self,
-        state: Dict[str, Any],
-        *,
-        caller: str,
-        event_writer: Optional[Any] = None,
-        snapshot_callback: Optional[Any] = None,
-        iteration_limit: Optional[int] = None,
-        system_prompt: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """Run the async core on the legacy loop for Flask/WSGI callers."""
-        cancel_event = _get_jiuwen_cancel_event(state)
-        return _run_awaitable(
-            self.arun(
-                state,
-                caller=caller,
-                event_writer=event_writer,
-                snapshot_callback=snapshot_callback,
-                iteration_limit=iteration_limit,
-                system_prompt=system_prompt,
-                **kwargs,
-            ),
-            cancel_event=cancel_event,
-            state=state,
-        )
-
     async def arun(
         self,
         state: Dict[str, Any],
@@ -430,9 +399,8 @@ class JiuwenReactLoopEngine:
     ) -> Dict[str, Any]:
         """Execute the single native-async ReAct implementation.
 
-        The application owns Runner startup and shutdown through
-        ``jiuwen_runtime_lifespan``. The legacy ``run`` wrapper gets the same
-        guarantee from ``LegacyJiuwenLoopRunner``.
+        The application owns Runner startup and shutdown through its ASGI
+        lifespan, and every invocation executes on that same event loop.
         """
         with bind_log_context(
             _build_jiuwen_log_context(
@@ -1853,25 +1821,32 @@ def create_default_jiuwen_agent(
     return agent
 
 
-def warm_up_jiuwen_runtime(*, agent_config: Any = None) -> dict[str, Any]:
+def warm_up_jiuwen_runtime(
+    *,
+    agent_config: Any = None,
+    cancel_event: Any = None,
+) -> dict[str, Any]:
     """Preload Jiuwen runtime modules and global resources without invoking the LLM.
 
     This creates a throwaway warm-up agent to trigger module imports, class
-    loading, global registry initialization and the background event loop, then
-    discards the agent. Real user requests create their own agent instances and
-    reuse the already-loaded runtime environment.
+    loading and global registry initialization, then discards the agent. Runner
+    ownership remains with the already-started ASGI lifespan.
     """
     started = time.perf_counter()
 
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError
     require_openjiuwen()
     _configure_jiuwen_log_path()
-    _JIUWEN_LOOP_RUNNER.get_loop()
 
     llm_config = _resolve_jiuwen_llm_config(
         {},
         caller="main",
         agent_config=agent_config,
     )
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError
 
     agent = create_default_jiuwen_agent(
         llm_config=llm_config,
@@ -2494,9 +2469,6 @@ async def _dispose_owned_jiuwen_runtime(
                     await result
 
 
-_JIUWEN_LOOP_RUNNER = get_legacy_jiuwen_loop_runner()
-
-
 async def _with_observability_context(
     awaitable: Any,
     *,
@@ -2506,14 +2478,7 @@ async def _with_observability_context(
     turn_id: Optional[int],
     parent_key: Optional[str],
 ) -> Any:
-    """Bind the observability context on the Jiuwen loop thread.
-
-    run_coroutine_threadsafe runs the coroutine in the loop's own context, not
-    the caller's, so ContextVars set on the main thread do not propagate here.
-    Binding inside the coroutine makes the real observer/run_id available to
-    downstream synchronous reads (e.g. reasoning-summary scheduling in the LLM
-    service), preventing them from silently falling back to NOOP_OBSERVER.
-    """
+    """Bind observability context for the native async Jiuwen invocation."""
     with profile_current_thread(run_id):
         with bind_observability_context(
             observer=observer,
@@ -2523,54 +2488,6 @@ async def _with_observability_context(
             parent_key=parent_key,
         ):
             return await awaitable
-
-
-def _run_awaitable(
-    awaitable: Any,
-    *,
-    cancel_event: Optional[threading.Event] = None,
-    state: Optional[Mapping[str, Any]] = None,
-) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise JiuwenBackendUnavailable(
-            "Jiuwen ReAct runtime returned an async invoke result, but JiuwenReactLoopEngine.run is synchronous."
-        )
-
-    if cancel_event is not None and cancel_event.is_set():
-        if asyncio.iscoroutine(awaitable):
-            awaitable.close()
-        _raise_if_jiuwen_cancelled(cancel_event, state)
-
-    completion = threading.Event()
-
-    async def await_and_signal() -> Any:
-        try:
-            return await awaitable
-        finally:
-            completion.set()
-
-    future = _JIUWEN_LOOP_RUNNER.submit(await_and_signal())
-    if cancel_event is None:
-        return future.result()
-
-    while True:
-        try:
-            result = future.result(timeout=0.05)
-        except concurrent.futures.TimeoutError:
-            if cancel_event.is_set():
-                future.cancel()
-                while not completion.wait(timeout=0.05):
-                    continue
-                _raise_if_jiuwen_cancelled(cancel_event, state)
-        else:
-            _raise_if_jiuwen_cancelled(cancel_event, state)
-            return result
-
-
 def _raise_if_jiuwen_cancelled(
     cancel_event: Optional[threading.Event],
     state: Optional[Mapping[str, Any]],

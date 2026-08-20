@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
+from agent.runtime.async_utils import run_sync_compat
 from agent.tools.base import ToolCaller, ToolContext, ToolOutcome
 from agent.evolution import append_operation_proposal_with_relations, get_proposal_buffer
 from agent.memory.models import MEMORY_TYPE_TO_DIR
@@ -16,6 +15,7 @@ from llm import LLMPurpose, get_llm_router
 from utils.json_utils import _loads_json_object_loose
 from utils.logging import get_logger
 from utils.read_docs import normalize_read_documents_registry
+from utils.security.redaction import redact_sensitive_text
 
 if TYPE_CHECKING:
     from agent.memory.protocol import MemoryManager
@@ -24,9 +24,6 @@ logger = get_logger("tools.memory")
 
 _MEMORY_TYPES = set(MEMORY_TYPE_TO_DIR)
 _EVOLUTION_KINDS = {"procedure", "pitfall", "schema"}
-_MEMORY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-classifier")
-_MEMORY_FUTURES: Set[Future] = set()
-_MEMORY_FUTURES_LOCK = Lock()
 
 MEMORY_TOOL_SCHEMA: Dict[str, Any] = {
     "type": "function",
@@ -677,34 +674,7 @@ def store_user_memory(
     )
 
 
-def _on_memory_task_done(future: Future) -> None:
-    with _MEMORY_FUTURES_LOCK:
-        _MEMORY_FUTURES.discard(future)
-    try:
-        result = future.result()
-    except Exception:
-        logger.exception("async memory task failed")
-        return
-    logger.info("async memory task completed: %s", result)
-
-
-def _submit_memory_task(content: str, context: _MemoryTaskContext) -> Future:
-    future = _MEMORY_EXECUTOR.submit(_process_memory_task, content, context)
-    with _MEMORY_FUTURES_LOCK:
-        _MEMORY_FUTURES.add(future)
-    future.add_done_callback(_on_memory_task_done)
-    return future
-
-
-def wait_for_memory_tasks(timeout: Optional[float] = None) -> None:
-    """Wait for currently queued memory tasks. Test seam."""
-    with _MEMORY_FUTURES_LOCK:
-        futures = list(_MEMORY_FUTURES)
-    for future in futures:
-        future.result(timeout=timeout)
-
-
-def handle_memory(
+async def handle_memory(
     content: str,
     *,
     context: ToolContext,
@@ -725,22 +695,25 @@ def handle_memory(
             selected_ontology_id=context.selected_ontology_id,
             read_documents=dict(context.read_documents or {}),
         )
-        _submit_memory_task(content, task_context)
+        result = await run_sync_compat(
+            _process_memory_task,
+            content,
+            task_context,
+            run_id=context.run_id,
+            task_name="memory-tool-capture",
+            offload_kind="tool",
+        )
         return json.dumps(
-            {
-                "queued": True,
-                "status": "queued",
-                "content_preview": content[:120],
-            },
+            result,
             ensure_ascii=False,
         )
     except Exception as exc:
-        logger.exception("memory tool failed")
+        logger.error("memory tool failed: %s", type(exc).__name__)
         return json.dumps(
             {
                 "stored": False,
                 "status": "error",
-                "error": str(exc),
+                "error": redact_sensitive_text(exc),
             },
             ensure_ascii=False,
         )
@@ -759,7 +732,7 @@ class MemoryTool:
         object.__setattr__(self, "schema", MEMORY_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main"})
 
-    def execute(
+    async def aexecute(
         self,
         *,
         args: Dict[str, Any],
@@ -768,4 +741,4 @@ class MemoryTool:
         event_emitter: Optional[Callable[..., Any]] = None,
     ) -> ToolOutcome:
         del tool_call_id, event_emitter
-        return ToolOutcome(content=handle_memory(**args, context=context))
+        return ToolOutcome(content=await handle_memory(**args, context=context))

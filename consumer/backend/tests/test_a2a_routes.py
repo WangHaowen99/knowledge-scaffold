@@ -1,182 +1,164 @@
-"""Minimal route tests for A2A adapter endpoints."""
+"""FastAPI route tests for the A2A canonical Run projection."""
 
-import asyncio
-import queue
+from __future__ import annotations
 
-from flask import Flask
+from types import SimpleNamespace
 
-from agent.runtime.contracts import (
-    PublicEvent,
-    RunScope,
-    RunSnapshot,
-    RunStatus,
-    RuntimeInvocationContext,
-)
-from agent.runtime.event_bus import BlockingSubscription
+from fastapi.testclient import TestClient
+
+from agent.runtime.contracts import PublicEvent
+from api.auth.auth import AuthUser, require_authenticated_user
+from api.dependencies import require_workspace_id
 from api.protocols.a2a.models import A2ATaskSnapshot, A2ATaskState
-from api.routes.a2a import a2a_bp
-from api.auth.auth import AuthManager
-from workspace.workspaces import create_workspace
+from api.routes import a2a as a2a_routes
+from api.testing import TestApplication
 
 
-def _call(coroutine):
-    return asyncio.run(coroutine)
-
-
-class _FakeAsyncManager:
-    def __init__(self, snapshot=None, events=None):
-        self.snapshot = snapshot
-        self.events = list(events or [])
-        self.unsubscribed = []
-
-    async def get_run(self, task_id, scope):
-        if (
-            self.snapshot is None
-            or self.snapshot.run_id != task_id
-            or not scope.owns(self.snapshot)
-        ):
-            return None
-        return self.snapshot
-
-    async def subscribe(self, task_id, scope, after_seq=0):
-        snapshot = await self.get_run(task_id, scope)
-        if snapshot is None:
-            raise KeyError(task_id)
-        return BlockingSubscription(
-            run_id=task_id,
-            subscriber_id="subscriber_demo",
-            queue=queue.Queue(),
-            replay=[event for event in self.events if event.seq > after_seq],
-            closed=True,
-        )
-
-    async def unsubscribe(self, subscription):
-        self.unsubscribed.append(subscription.subscriber_id)
-
-
-class _FakeTaskService:
-    def __init__(self, snapshot=None, events=None):
-        self.snapshot = snapshot or A2ATaskSnapshot(
-            id="task-not-exists",
+class _Service:
+    def __init__(self, *, view=None, snapshot=None):
+        self.view = view or A2ATaskSnapshot(
+            id="missing_task",
             session_id=None,
             state=A2ATaskState.NOT_FOUND,
             error="Task not found",
         )
-        self.user_id = "admin"
-        self.workspace_id = "a2a-test"
-        runtime_snapshot = None
-        if self.snapshot.state != A2ATaskState.NOT_FOUND:
-            scope = RunScope(
-                username=self.user_id,
-                workspace_id=self.workspace_id,
-                scopes=("agent:read",),
-            )
-            context = RuntimeInvocationContext(
-                run_id=self.snapshot.id,
-                session_id=self.snapshot.session_id,
-                turn_id=1,
-                workspace_id=self.workspace_id,
-                username=self.user_id,
-                query="synthetic question",
-            )
-            runtime_snapshot = RunSnapshot(
-                run_id=self.snapshot.id,
-                session_id=self.snapshot.session_id,
-                turn_id=1,
-                status=RunStatus.COMPLETED,
-                created_at="2026-01-01T00:00:00Z",
-                updated_at="2026-01-01T00:00:01Z",
-                last_seq=max((event.seq for event in events or []), default=0),
-                scope=scope,
-                context=context,
-            )
-        self.async_manager = _FakeAsyncManager(runtime_snapshot, events=events)
-        self.async_call = _call
+        self.snapshot = snapshot
+        self.created_request = None
 
-    def get_task(self, task_id, session_id=None):
-        del task_id, session_id
-        return self.snapshot
+    async def create_task(self, request):
+        self.created_request = request
+        return self.view, self.snapshot
+
+    async def get_task(self, _task_id, *, session_id=None):
+        del session_id
+        return self.view, self.snapshot
+
+    async def canonical_run_id(self, _task_id):
+        return self.view.metadata.get("canonical_run_id")
+
+    async def cancel_task(self, _task_id):
+        return self.view
 
 
-def _build_test_client(tmp_path, monkeypatch):
-    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
-    create_workspace(
-        "A2A Test Workspace",
-        workspace_id="a2a-test",
-        owner=None,
-        set_as_default=True,
+class _Repository:
+    async def list_after(self, _run_id, _after_seq):
+        return []
+
+
+class _EventHub:
+    def __init__(self, events):
+        self.events = events
+
+    async def reserve_subscriber(self, _run_id):
+        return "reservation_demo"
+
+    async def release_subscriber_reservation(self, _reservation_id):
+        return None
+
+    def stream(self, _run_id, *, after_seq=0, reservation_id=None):
+        del reservation_id
+
+        async def generate():
+            for event in self.events:
+                if event.seq > after_seq:
+                    yield event
+
+        return generate()
+
+
+def _app(events=()):
+    app = TestApplication()
+    app.include_router(a2a_routes.a2a_router)
+    app.dependency_overrides[require_authenticated_user] = lambda: AuthUser(
+        username="operator_a", role="user"
+    )
+    app.dependency_overrides[require_workspace_id] = lambda: "workspace_demo"
+    app.state.runtime_container = SimpleNamespace(
+        manager=SimpleNamespace(repository=_Repository()),
+        event_hub=_EventHub(list(events)),
+    )
+    return app
+
+
+def test_agent_card_declares_no_user_interaction_support():
+    response = TestClient(_app()).get("/.well-known/a2a/agent-card.json")
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"]["supports_user_interaction"] is False
+
+
+def test_get_task_returns_protocol_not_found(monkeypatch):
+    service = _Service()
+
+    async def resolve_service(*_args):
+        return service
+
+    monkeypatch.setattr(a2a_routes, "_service", resolve_service)
+
+    response = TestClient(_app()).get("/a2a/tasks/missing_task")
+
+    assert response.status_code == 404
+    assert response.json()["task"]["state"] == "not_found"
+
+
+def test_create_task_returns_external_id_and_canonical_metadata(monkeypatch):
+    view = A2ATaskSnapshot(
+        id="external_task_demo",
+        session_id="session_demo",
+        state=A2ATaskState.PENDING,
+        metadata={"canonical_run_id": "agentic-canonical-demo"},
+    )
+    snapshot = SimpleNamespace(run_id="agentic-canonical-demo")
+    service = _Service(view=view, snapshot=snapshot)
+
+    async def resolve_service(*_args):
+        return service
+
+    monkeypatch.setattr(a2a_routes, "_service", resolve_service)
+
+    response = TestClient(_app()).post(
+        "/a2a/tasks",
+        json={
+            "message": "synthetic question",
+            "session_id": "session_demo",
+            "task_id": "external_task_demo",
+        },
     )
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
-
-    auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
-    user = auth_manager.authenticate("admin", "TestBootstrap#2026")
-    assert user is not None
-    user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
-
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(a2a_bp)
-
-    client = app.test_client()
-    token = auth_manager.issue_token(user)
-    headers = {"Authorization": "Bearer {}".format(token)}
-    return client, headers
+    assert response.status_code == 202
+    assert response.json()["task"]["id"] == "external_task_demo"
+    assert response.json()["task"]["metadata"]["canonical_run_id"] == "agentic-canonical-demo"
 
 
-def test_agent_card_is_public(tmp_path, monkeypatch):
-    client, _headers = _build_test_client(tmp_path, monkeypatch)
-
-    resp = client.get("/.well-known/a2a/agent-card.json")
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["name"] == "onto-agent"
-    assert payload["capabilities"]["streaming"] is True
-    assert "input_required" not in payload["capabilities"]
-    assert "send_message" not in payload["endpoints"]
-
-
-def test_get_task_returns_404_for_not_found(monkeypatch, tmp_path):
-    client, headers = _build_test_client(tmp_path, monkeypatch)
-
-    monkeypatch.setattr("api.routes.a2a._build_task_service", lambda: _FakeTaskService())
-
-    resp = client.get("/a2a/tasks/task-not-exists", headers=headers)
-    assert resp.status_code == 404
-    payload = resp.get_json()
-    assert payload["task"]["state"] == "not_found"
-
-
-def test_replay_events_can_resolve_session_id_from_task_metadata(monkeypatch, tmp_path):
-    client, headers = _build_test_client(tmp_path, monkeypatch)
-
+def test_event_stream_projects_external_and_canonical_ids(monkeypatch):
     event = PublicEvent(
-        schema_version="1.0",
-        event_id="task-1:1",
+        event_id="event_demo",
         seq=1,
-        run_id="task-1",
-        session_id="session-1",
+        run_id="agentic-canonical-demo",
+        session_id="session_demo",
         turn_id=1,
         event_type="turn.finished",
         status="completed",
-        source={"node": "runtime"},
+        source={"component": "synthetic"},
         payload={"status": "completed", "content": "synthetic answer"},
         created_at="2026-01-01T00:00:01Z",
     )
-    snapshot = A2ATaskSnapshot(
-        id="task-1",
-        session_id="session-1",
+    view = A2ATaskSnapshot(
+        id="external_task_demo",
+        session_id="session_demo",
         state=A2ATaskState.COMPLETED,
+        metadata={"canonical_run_id": "agentic-canonical-demo"},
+    )
+    snapshot = SimpleNamespace(run_id="agentic-canonical-demo")
+    async def resolve_service(*_args):
+        return _Service(view=view, snapshot=snapshot)
+
+    monkeypatch.setattr(a2a_routes, "_service", resolve_service)
+
+    response = TestClient(_app([event])).get(
+        "/a2a/tasks/external_task_demo/events"
     )
 
-    monkeypatch.setattr(
-        "api.routes.a2a._build_task_service",
-        lambda: _FakeTaskService(snapshot=snapshot, events=[event]),
-    )
-
-    resp = client.get("/a2a/tasks/task-1/events", headers=headers)
-    assert resp.status_code == 200
-    body = resp.get_data(as_text=True)
-    assert "event: task.update" in body
-    assert '"task_id": "task-1"' in body
-    assert '"session_id": "session-1"' in body
+    assert response.status_code == 200
+    assert '"task_id": "external_task_demo"' in response.text
+    assert '"canonical_run_id": "agentic-canonical-demo"' in response.text

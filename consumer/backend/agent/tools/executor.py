@@ -60,28 +60,6 @@ _ONTOLOGY_SCOPED_TOOLS = frozenset({
 })
 
 
-def execute_tool_batch(
-    tool_calls: Sequence[ToolInvocation],
-    context: ToolContext,
-) -> ToolBatchResult:
-    """Run the native-async tool core for legacy synchronous callers.
-
-    Async runtime code must call :func:`aexecute_tool_batch` directly. Keeping
-    this wrapper preserves the existing registry API without maintaining a
-    second scheduling implementation.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise RuntimeError(
-            "execute_tool_batch() cannot run inside an event loop; "
-            "await aexecute_tool_batch() instead"
-        )
-    return asyncio.run(aexecute_tool_batch(tool_calls, context))
-
-
 async def aexecute_tool_batch(
     tool_calls: Sequence[ToolInvocation],
     context: ToolContext,
@@ -91,7 +69,7 @@ async def aexecute_tool_batch(
     Provider-specific payloads, including OpenAI ``tool_calls`` dictionaries,
     must be converted by the owning adapter before reaching this boundary.
     Native async tools are awaited directly; synchronous tools are isolated by
-    :func:`asyncio.to_thread` in :func:`_ainvoke_tool`.
+    the lifespan-owned bounded tool pool in :func:`_ainvoke_tool`.
     """
     if not tool_calls:
         return ToolBatchResult()
@@ -338,26 +316,6 @@ async def _aexecute_parallel_batch(
         raise
 
     return [outputs_by_index[task["index"]] for task in batch]
-
-
-def _execute_single_task(
-    task: Dict[str, Any],
-    context: ToolContext,
-    subagent_event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
-) -> Dict[str, Any]:
-    """Compatibility wrapper for tests and legacy synchronous integrations."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        pass
-    else:
-        raise RuntimeError(
-            "_execute_single_task() cannot run inside an event loop; "
-            "await _aexecute_single_task() instead"
-        )
-    return asyncio.run(
-        _aexecute_single_task(task, context, subagent_event_emitter)
-    )
 
 
 async def _aexecute_single_task(

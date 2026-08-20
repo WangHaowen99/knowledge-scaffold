@@ -112,20 +112,6 @@ class RuntimeInvocationContext(BaseModel):
             return None
         return str(value).strip() or None
 
-    def with_interaction(
-        self,
-        *,
-        query: str,
-        interaction_response: dict[str, Any],
-    ) -> "RuntimeInvocationContext":
-        return self.model_copy(
-            update={
-                "query": str(query or "").strip(),
-                "interaction_response": dict(interaction_response),
-            }
-        )
-
-
 class RuntimeErrorInfo(BaseModel):
     """Sanitized runtime error independent from HTTP and protocol errors."""
 
@@ -213,6 +199,7 @@ class RunStatus(str, Enum):
 
 
 TERMINAL_RUN_STATUSES = {
+    RunStatus.AWAITING_INPUT,
     RunStatus.COMPLETED,
     RunStatus.FAILED,
     RunStatus.CANCELLED,
@@ -257,6 +244,7 @@ class RunSnapshot:
         return RunView(
             run_id=self.run_id,
             session_id=self.session_id,
+            turn_id=self.turn_id,
             status=self.status.value,
             last_seq=self.last_seq,
             created_at=self.created_at,
@@ -275,6 +263,7 @@ class RunSnapshot:
 class RunView:
     run_id: str
     session_id: str
+    turn_id: int
     status: str
     last_seq: int
     created_at: str
@@ -287,6 +276,7 @@ class RunView:
         return {
             "run_id": self.run_id,
             "session_id": self.session_id,
+            "turn_id": self.turn_id,
             "status": self.status,
             "last_seq": self.last_seq,
             "created_at": self.created_at,

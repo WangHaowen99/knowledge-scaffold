@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+
 import json
 import sys
 from types import SimpleNamespace
 
 import pytest
 import requests
-from flask import Flask
 
-from api.auth.auth import AuthManager
+from auth_test_backend import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
@@ -43,20 +46,36 @@ def _create_workspace_with_ontology(tmp_path, monkeypatch):
 
 
 def _build_test_client(tmp_path, monkeypatch):
-    from api.routes.business_data import business_data_bp
-    from api.routes.ontologies import ontologies_bp
+    from api.routes.business_data import business_data_router
+    from api.routes.ontologies import ontologies_router
 
     _create_workspace_with_ontology(tmp_path, monkeypatch)
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
+
+    class _DirectIO:
+        async def run(self, function, *args, **kwargs):
+            return function(*args, **kwargs)
+
+    class _RequestsAsyncClient:
+        async def get(self, url, **kwargs):
+            return requests.Session().get(url, **kwargs)
+
+        async def post(self, url, **kwargs):
+            return requests.Session().post(url, **kwargs)
+
+    app.state.agent_execution_runtime = SimpleNamespace(
+        short_io=_DirectIO(),
+        http_client=_RequestsAsyncClient(),
+    )
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
     user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(business_data_bp)
-    app.register_blueprint(ontologies_bp)
-    return app.test_client(), {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(business_data_router)
+    app.include_router(ontologies_router)
+    return TestClient(app), {"Authorization": "Bearer {}".format(auth_manager.issue_token(user))}
 
 
 def _test_candidate(client, headers, provider: str, config: dict):
@@ -65,6 +84,97 @@ def _test_candidate(client, headers, provider: str, config: dict):
         headers=headers,
         json={"mode": "direct_provider", "provider": provider, "config": config},
     )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "replacement"),
+    [
+        (
+            "GET",
+            "/agentic/data-connections",
+            "/agentic/ontologies/{ontology_id}/data-source",
+        ),
+        (
+            "POST",
+            "/agentic/data-connections",
+            "/agentic/ontologies/{ontology_id}/data-source",
+        ),
+        (
+            "PATCH",
+            "/agentic/data-connections/legacy",
+            "/agentic/ontologies/{ontology_id}/data-source",
+        ),
+        (
+            "DELETE",
+            "/agentic/data-connections/legacy",
+            "/agentic/ontologies/{ontology_id}/data-source",
+        ),
+        (
+            "POST",
+            "/agentic/data-connections/legacy/default",
+            "/agentic/ontologies/{ontology_id}/data-source/test",
+        ),
+        (
+            "POST",
+            "/agentic/data-connections/legacy/test",
+            "/agentic/ontologies/{ontology_id}/data-source/test",
+        ),
+        (
+            "GET",
+            "/agentic/ontologies/demo-ontology/data-binding",
+            "/agentic/ontologies/demo-ontology/data-source",
+        ),
+        (
+            "PUT",
+            "/agentic/ontologies/demo-ontology/data-binding",
+            "/agentic/ontologies/demo-ontology/data-source",
+        ),
+        (
+            "DELETE",
+            "/agentic/ontologies/demo-ontology/data-binding",
+            "/agentic/ontologies/demo-ontology/data-source",
+        ),
+    ],
+)
+def test_deprecated_business_data_routes_return_retirement_contract(
+    tmp_path,
+    monkeypatch,
+    method,
+    path,
+    replacement,
+):
+    client, headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.request(method, path, headers=headers)
+
+    assert response.status_code == 410
+    assert response.json() == {
+        "detail": "数据连接与绑定接口已停用，请改用本体数据源接口",
+        "deprecated": True,
+        "replacement": replacement,
+    }
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/agentic/data-connections"),
+        ("POST", "/agentic/data-connections"),
+        ("GET", "/agentic/ontologies/demo-ontology/data-binding"),
+        ("PUT", "/agentic/ontologies/demo-ontology/data-binding"),
+    ],
+)
+def test_deprecated_business_data_routes_still_require_authentication(
+    tmp_path,
+    monkeypatch,
+    method,
+    path,
+):
+    client, _headers = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.request(method, path)
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -96,15 +206,18 @@ def test_business_data_routes_enforce_workspace_authz_before_access(
     path,
     resolver_name,
 ):
-    from flask import abort
+    from fastapi import HTTPException
+
+    def deny_access(_request):
+        raise HTTPException(status_code=403)
 
     client, headers = _build_test_client(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        "api.routes.business_data.{}".format(resolver_name),
-        lambda _request: abort(403),
+        "api.dependencies.{}".format(resolver_name),
+        deny_access,
     )
-    with client.open(path, method=method, headers=headers, json={}) as response:
-        assert response.status_code == 403
+    response = client.request(method, path, headers=headers, json={})
+    assert response.status_code == 403
 
 
 def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
@@ -138,22 +251,22 @@ def test_resolver_requires_explicit_ontology_data_source(tmp_path, monkeypatch):
 
 
 def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkeypatch):
-    from api.routes.business_data import business_data_bp
-    from api.routes.workspaces import workspaces_bp
+    from api.routes.business_data import business_data_router
+    from api.routes.workspaces import workspaces_router
 
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / ".onto-runtime"))
     monkeypatch.setenv("MODELING_SERVICE_TOKEN", "s" * 32)
     monkeypatch.setenv("SECRET_ENCRYPTION_KEY", SECRET_TEST_KEY)
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     auth_manager.create_user("alice", "UserStrong123!", role="user")
     alice = auth_manager.change_password("alice", "UserStrong123!", "ChangedStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(workspaces_bp)
-    app.register_blueprint(business_data_bp)
-    client = app.test_client()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(workspaces_router)
+    app.include_router(business_data_router)
+    client = TestClient(app)
 
     provisioned = client.post(
         "/agentic/internal/modeling/shadow-workspaces/ensure",
@@ -198,14 +311,14 @@ def test_shadow_workspace_owner_can_manage_ontology_data_source(tmp_path, monkey
     )
 
     assert response.status_code == 200
-    assert response.get_json()["source"]["provider"] == "nl2sql_http"
+    assert response.json()["source"]["provider"] == "nl2sql_http"
 
 
 def test_graph_provider_schemas_and_secrets_are_publicized(tmp_path, monkeypatch):
     client, headers = _build_test_client(tmp_path, monkeypatch)
     response = client.get("/agentic/business-data/provider-schemas", headers=headers)
     assert response.status_code == 200
-    schemas = {item["name"]: item for item in response.get_json()["providers"]}
+    schemas = {item["name"]: item for item in response.json()["providers"]}
     assert {"neo4j", "hugegraph"}.issubset(schemas)
     neo4j_fields = {field["name"]: field for field in schemas["neo4j"]["fields"]}
     hugegraph_fields = {field["name"]: field for field in schemas["hugegraph"]["fields"]}
@@ -348,7 +461,7 @@ def test_data_source_test_route_probes_nl2sql_http_service(tmp_path, monkeypatch
         },
     )
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert calls == [{
         "url": "https://nl2sql.example.com/api/v1/query",
         "headers": {"Content-Type": "application/json", "Authorization": "Bearer secret-token"},
@@ -378,7 +491,10 @@ def test_nl2sql_template_allows_empty_token_for_schema_save_and_probe(tmp_path, 
         return FakeResponse()
 
     monkeypatch.setattr(requests.Session, "post", fake_post)
-    provider_schemas = client.get("/agentic/business-data/provider-schemas", headers=headers).get_json()
+    provider_schemas = client.get(
+        "/agentic/business-data/provider-schemas",
+        headers=headers,
+    ).json()
     template_schema = next(
         item for item in provider_schemas["providers"] if item["name"] == "nl2sql_template"
     )
@@ -397,11 +513,11 @@ def test_nl2sql_template_allows_empty_token_for_schema_save_and_probe(tmp_path, 
         json={"mode": "direct_provider", "provider": "nl2sql_template", "config": config},
     )
     assert saved.status_code == 200
-    assert saved.get_json()["source"]["config"]["has_token"] is False
+    assert saved.json()["source"]["config"]["has_token"] is False
 
     tested = _test_candidate(client, headers, "nl2sql_template", config)
     assert tested.status_code == 200
-    assert tested.get_json()["success"] is True
+    assert tested.json()["success"] is True
     assert calls == [{
         "url": "https://nl2sql.example.com/api/v1/query",
         "headers": {"Content-Type": "application/json"},
@@ -441,7 +557,7 @@ def test_data_source_test_route_probes_mindsdb_anonymous_service(tmp_path, monke
         },
     )
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert calls[0]["url"] == "https://mindsdb.example.com/api/projects/mindsdb/agents"
     assert calls[0]["headers"] == {"Content-Type": "application/json"}
     assert calls[0]["timeout"] == 15
@@ -494,7 +610,7 @@ def test_data_source_test_route_probes_mindsdb_auth_and_query(tmp_path, monkeypa
         },
     )
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert [call["url"] for call in post_calls] == ["https://mindsdb.example.com/api/login"]
     assert [call["url"] for call in get_calls] == [
         "https://mindsdb.example.com/api/projects/mindsdb/agents",
@@ -529,7 +645,7 @@ def test_data_source_test_route_rejects_missing_mindsdb_agent(tmp_path, monkeypa
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["success"] is False
     assert "missing_agent" in payload["message"]
     assert "mindsdb" in payload["message"]
@@ -562,7 +678,7 @@ def test_data_source_test_route_rejects_missing_mindsdb_project(tmp_path, monkey
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["success"] is False
     assert "missing_project" in payload["message"]
 
@@ -599,7 +715,7 @@ def test_data_source_test_route_probes_dataagent_and_legacy_agent_card(tmp_path,
         {"url": "https://dataagent.example.com/", "token": "secret-token", "timeout_seconds": 120},
     )
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert [call["url"] for call in calls] == [
         "https://dataagent.example.com/.well-known/agent-card.json",
         "https://dataagent.example.com/.well-known/agent.json",
@@ -643,7 +759,11 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
             calls.append(("driver", uri, auth, connection_timeout))
             return FakeDriver()
 
-    monkeypatch.setitem(sys.modules, "neo4j", SimpleNamespace(GraphDatabase=FakeGraphDatabase))
+    monkeypatch.setitem(
+        sys.modules,
+        "neo4j",
+        SimpleNamespace(GraphDatabase=FakeGraphDatabase),
+    )
     response = _test_candidate(
         client,
         headers,
@@ -658,7 +778,7 @@ def test_data_source_test_route_probes_neo4j_service(tmp_path, monkeypatch):
         },
     )
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert calls == [
         ("driver", "bolt://neo4j.example.com:7687", ("neo4j", "secret-password"), 10),
         ("verify", None),
@@ -686,7 +806,7 @@ def test_data_source_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
         calls.append({"url": url, "headers": headers or {}, "auth": auth, "timeout": timeout})
         return FakeResponse()
 
-    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     response = _test_candidate(
         client,
         headers,
@@ -702,7 +822,7 @@ def test_data_source_test_route_probes_hugegraph_service(tmp_path, monkeypatch):
         },
     )
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert calls == [{
         "url": "https://hugegraph.example.com/graphs/demo/schema",
         "headers": {"Authorization": "Bearer secret-token"},

@@ -138,7 +138,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
         self.assertEqual(history[3]["tool_call_id"], "call-01")
         self.assertNotEqual(history[-1].get("role"), "user")
 
-    def test_arun_executes_on_the_callers_loop_without_legacy_submit(self):
+    def test_arun_executes_on_the_callers_loop(self):
         observed = {}
         disposed = []
 
@@ -164,12 +164,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
                 result = await engine.arun(state, caller="main", system_prompt="offline")
                 return caller_loop, result
 
-            with patch.object(
-                jiuwen_engine._JIUWEN_LOOP_RUNNER,
-                "submit",
-                side_effect=AssertionError("arun must not use the legacy loop"),
-            ):
-                caller_loop, result = asyncio.run(exercise())
+            caller_loop, result = asyncio.run(exercise())
 
         self.assertIs(result, state)
         self.assertEqual(state["final_output"], "async answer")
@@ -177,7 +172,7 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
         self.assertEqual(observed["thread"], threading.current_thread().name)
         self.assertEqual(len(disposed), 1)
 
-    def test_sync_run_and_arun_are_equivalent(self):
+    def test_repeated_arun_modes_are_equivalent(self):
         created = []
         create_options = []
 
@@ -204,25 +199,33 @@ class JiuwenAsyncEngineTests(unittest.TestCase):
         with _patched_engine(create_agent, dispose):
             engine = JiuwenReactLoopEngine(agent_config=_agent_config())
             for mode in ("quick", "thinking", "multi_agent"):
-                sync_result = engine.run(
-                    _state("run-sync-{}".format(mode), agent_mode=mode),
-                    caller="main",
-                    system_prompt="offline",
-                )
-                async_result = asyncio.run(
-                    engine.arun(
-                        _state("run-async-{}".format(mode), agent_mode=mode),
+                async def exercise():
+                    first = await engine.arun(
+                        _state("run-first-{}".format(mode), agent_mode=mode),
                         caller="main",
                         system_prompt="offline",
                     )
-                )
+                    second = await engine.arun(
+                        _state("run-second-{}".format(mode), agent_mode=mode),
+                        caller="main",
+                        system_prompt="offline",
+                    )
+                    return first, second
+
+                first_result, second_result = asyncio.run(exercise())
                 with self.subTest(agent_mode=mode):
                     self.assertEqual(
-                        sync_result["final_output"],
-                        async_result["final_output"],
+                        first_result["final_output"],
+                        second_result["final_output"],
                     )
-                    self.assertEqual(sync_result["messages"], async_result["messages"])
-                    self.assertEqual(sync_result["results"], async_result["results"])
+                    self.assertEqual(
+                        first_result["messages"],
+                        second_result["messages"],
+                    )
+                    self.assertEqual(
+                        first_result["results"],
+                        second_result["results"],
+                    )
 
         reasoning_flags = [options["enable_reasoning"] for options in create_options]
         self.assertEqual(reasoning_flags, [False, False, True, True, True, True])

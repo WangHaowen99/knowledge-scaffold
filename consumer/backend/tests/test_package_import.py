@@ -14,6 +14,7 @@ from ontology.ontology_catalog import (
     find_exact_object_data_mapping_result,
     find_script_entry,
     load_script_catalog,
+    read_markdown_frontmatter,
     resolve_field_reference,
     resolve_object_reference,
 )
@@ -289,7 +290,7 @@ def test_normalize_legacy_package_projects_aliases_and_removes_empty_field_alias
 
     object_path = target / "objects" / "Warehouse.md"
     converted = object_path.read_text(encoding="utf-8")
-    frontmatter = yaml.safe_load(converted.split("---", 2)[1])
+    frontmatter = read_markdown_frontmatter(object_path)
     assert frontmatter["resource"] == "object"
     assert frontmatter["key"] == "Warehouse"
     assert frontmatter["title"] == "Warehouse"
@@ -427,7 +428,7 @@ def test_normalize_legacy_package_limits_field_alias_cleanup_to_markdown_tables(
     normalize_imported_package(source, target)
 
     converted = (target / "objects" / "Part.md").read_text(encoding="utf-8")
-    frontmatter = yaml.safe_load(converted.split("---", 2)[1])
+    frontmatter = read_markdown_frontmatter(target / "objects" / "Part.md")
     assert "frontmatter_example | 不应修改 | 无" in frontmatter["custom_example"]
     assert "| 代码示例 | code_example | 不应修改 | 无 |" in converted
     assert "| 注释示例 | comment_example | 不应修改 | 无 |" in converted

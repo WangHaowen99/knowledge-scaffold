@@ -1,10 +1,11 @@
 """Tests for user memory management routes."""
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
 from agent.memory.filesystem_manager import FileSystemMemoryManager
+from api.testing import TestApplication
 from api.routes import memories as memories_module
-from api.routes.memories import memories_bp
+from api.routes.memories import memories_router
 from api.auth.auth import AuthManager
 from workspace.workspaces import create_workspace
 
@@ -18,16 +19,16 @@ def _build_test_client(tmp_path, monkeypatch):
         set_as_default=True,
     )
 
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
     if user.password_change_required:
         user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(memories_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(memories_router)
 
     manager = FileSystemMemoryManager(
         user_id="admin",
@@ -41,7 +42,7 @@ def _build_test_client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(memories_module, "_get_orchestrator", lambda: _FakeOrchestrator())
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}, manager
 
@@ -57,7 +58,7 @@ def test_list_memories_returns_current_user_memory(tmp_path, monkeypatch):
     response = client.get("/agentic/memories", headers=headers)
 
     assert response.status_code == 200
-    body = response.get_json()
+    body = response.json()
     assert body["memory_enabled"] is True
     assert body["count"] == 1
     assert body["memories"][0]["id"]
@@ -82,7 +83,7 @@ def test_list_memories_filters_by_memory_type(tmp_path, monkeypatch):
     response = client.get("/agentic/memories?memory_type=profile", headers=headers)
 
     assert response.status_code == 200
-    body = response.get_json()
+    body = response.json()
     assert body["count"] == 1
     assert body["memories"][0]["memory_type"] == "profile"
     assert "质量工程师" in body["memories"][0]["content"]
@@ -118,7 +119,7 @@ def test_create_memory_uses_user_memory_store(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 201
-    assert response.get_json()["memory"]["stored"] is True
+    assert response.json()["memory"]["stored"] is True
     hits = manager.list_memories(limit=10)
     assert len(hits) == 1
     assert "先给结论" in hits[0].content
@@ -131,7 +132,7 @@ def test_update_memory_replaces_active_content(tmp_path, monkeypatch):
         memory_type="preference",
         scope="user",
     )
-    memory_id = client.get("/agentic/memories", headers=headers).get_json()["memories"][0]["id"]
+    memory_id = client.get("/agentic/memories", headers=headers).json()["memories"][0]["id"]
 
     response = client.put(
         f"/agentic/memories/{memory_id}",
@@ -140,7 +141,7 @@ def test_update_memory_replaces_active_content(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["memory"]["id"]
+    assert response.json()["memory"]["id"]
     active_hits = manager.list_memories(limit=10)
     archived_hits = manager.list_memories(include_archived=True, limit=10)
     assert len(active_hits) == 1
@@ -155,12 +156,12 @@ def test_delete_memory_archives_active_item(tmp_path, monkeypatch):
         memory_type="preference",
         scope="user",
     )
-    memory_id = client.get("/agentic/memories", headers=headers).get_json()["memories"][0]["id"]
+    memory_id = client.get("/agentic/memories", headers=headers).json()["memories"][0]["id"]
 
     response = client.delete(f"/agentic/memories/{memory_id}", headers=headers)
 
     assert response.status_code == 200
-    assert response.get_json() == {"success": True, "id": memory_id}
+    assert response.json() == {"success": True, "id": memory_id}
     assert manager.list_memories(limit=10) == []
     archived_hits = manager.list_memories(include_archived=True, limit=10)
     assert len(archived_hits) == 1

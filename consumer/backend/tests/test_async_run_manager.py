@@ -1,5 +1,4 @@
 import asyncio
-import queue
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +13,9 @@ from agent.runtime.contracts import (
     RuntimeResult,
 )
 from agent.runtime.errors import (
-    DuplicateInteractionError,
     RunConflictError,
     RunNotFoundError,
+    SessionBusyError,
 )
 from agent.runtime.manager import AsyncRunManager
 from agent.runtime.manager import request_fingerprint
@@ -25,13 +24,7 @@ from agent.runtime.service import AsyncExecutionService
 from agent.runtime.service import OrchestratorSessionAdapter
 from agent.runtime.adapter import PublicEventAdapter
 from agent.runtime.events import RuntimeEvent
-from agent.runtime.bridge import legacy_public_event_envelope, wait_for_run
-from agent.runtime.event_bus import (
-    AsyncEventBus,
-    BlockingSubscription,
-    STREAM_CLOSED,
-    STREAM_RECONNECT,
-)
+from agent.runtime.event_bus import AsyncEventBus
 from agent.runtime.store import InMemoryRunRepository
 from agent.runtime.store import utc_now_iso
 from persistence.chat_store import ChatStore
@@ -129,7 +122,7 @@ def test_run_started_uses_turn_allocated_during_context_preparation():
     asyncio.run(run_test())
 
 
-def test_public_terminal_event_preserves_legacy_stream_shape():
+def test_public_terminal_event_uses_canonical_runtime_shape():
     event = PublicEvent(
         schema_version="1.0",
         event_id="event_legacy_demo",
@@ -147,11 +140,15 @@ def test_public_terminal_event_preserves_legacy_stream_shape():
         created_at=utc_now_iso(),
     )
 
-    envelope = legacy_public_event_envelope(event)
+    envelope = event.to_dict()
 
-    assert envelope["protocol"] == "agent-stream.v2"
-    assert envelope["payload"]["status"] == "success"
-    assert envelope["payload"]["final_output"] == "synthetic answer"
+    assert envelope["event_type"] == "turn.finished"
+    assert envelope["status"] == "completed"
+    assert envelope["payload"] == {
+        "status": "completed",
+        "content": "synthetic answer",
+    }
+    assert "protocol" not in envelope
 
 
 def _draft(context, event_type, *, status="running", payload=None):
@@ -270,18 +267,17 @@ def test_run_persists_events_before_replay_and_finishes_once():
         assert snapshot.status == RunStatus.QUEUED
 
         completed = await _wait_for_status(manager, "run_demo", RunStatus.COMPLETED)
-        subscription = await manager.subscribe("run_demo", _scope(), after_seq=0)
-        try:
-            assert [event.event_type for event in subscription.replay] == [
-                "run.started",
-                "turn.started",
-                "turn.finished",
-            ]
-            assert [event.seq for event in subscription.replay] == [1, 2, 3]
-            assert completed.last_seq == 3
-            assert subscription.closed is True
-        finally:
-            await manager.unsubscribe(subscription)
+        replay = [
+            event
+            async for event in manager.event_bus.stream("run_demo", after_seq=0)
+        ]
+        assert [event.event_type for event in replay] == [
+            "run.started",
+            "turn.started",
+            "turn.finished",
+        ]
+        assert [event.seq for event in replay] == [1, 2, 3]
+        assert completed.last_seq == 3
     asyncio.run(run_test())
 
 
@@ -308,7 +304,13 @@ def test_concurrent_publish_persists_and_broadcasts_in_sequence_order():
             persisted.append(event.seq)
 
         event_bus = AsyncEventBus(repository, event_persistor=persist)
-        subscription = await event_bus.subscribe(context.run_id)
+        stream = event_bus.stream(context.run_id)
+        first_live = asyncio.create_task(anext(stream))
+        for _ in range(100):
+            if event_bus.active_subscriber_count == 1:
+                break
+            await asyncio.sleep(0)
+        assert event_bus.active_subscriber_count == 1
         try:
             first = _draft(context, "turn.started")
             second = _draft(
@@ -321,13 +323,13 @@ def test_concurrent_publish_persists_and_broadcasts_in_sequence_order():
                 event_bus.publish(second),
             )
             broadcast = [
-                subscription.queue.get_nowait().seq,
-                subscription.queue.get_nowait().seq,
+                (await asyncio.wait_for(first_live, timeout=1)).seq,
+                (await asyncio.wait_for(anext(stream), timeout=1)).seq,
             ]
             assert persisted == [1, 2]
             assert broadcast == [1, 2]
         finally:
-            await event_bus.unsubscribe(subscription)
+            await stream.aclose()
 
     asyncio.run(run_test())
 
@@ -365,20 +367,30 @@ def test_terminal_close_preserves_already_queued_live_events():
         manager = AsyncRunManager(runtime)
         await manager.create_run(_context("run_live_queue"), _scope())
         await runtime.started.wait()
-        subscription = await manager.subscribe("run_live_queue", _scope())
+        running = await manager.get_run("run_live_queue", _scope())
+        assert running is not None
+        stream = manager.event_bus.stream(
+            "run_live_queue",
+            after_seq=running.last_seq,
+        )
+
+        async def collect_live_events():
+            return [event async for event in stream]
+
+        collector = asyncio.create_task(collect_live_events())
+        for _ in range(100):
+            if manager.event_bus.active_subscriber_count == 1:
+                break
+            await asyncio.sleep(0)
+        assert manager.event_bus.active_subscriber_count == 1
         runtime.release.set()
         await _wait_for_status(manager, "run_live_queue", RunStatus.COMPLETED)
 
-        event_types = []
-        while True:
-            item = subscription.queue.get_nowait()
-            if item is STREAM_CLOSED:
-                break
-            event_types.append(item.event_type)
-            if item.event_type == "turn.finished":
-                break
+        event_types = [
+            event.event_type
+            for event in await asyncio.wait_for(collector, timeout=1)
+        ]
         assert event_types == ["turn.started", "token.delta", "turn.finished"]
-        await manager.unsubscribe(subscription)
 
     asyncio.run(run_test())
 
@@ -399,7 +411,17 @@ def test_terminal_close_does_not_require_evicted_event_history():
             context=context,
         ))
         event_bus = AsyncEventBus(repository, subscriber_queue_size=64)
-        subscription = await event_bus.subscribe(context.run_id)
+        stream = event_bus.stream(context.run_id)
+
+        async def collect_live_events():
+            return [event async for event in stream]
+
+        collector = asyncio.create_task(collect_live_events())
+        for _ in range(100):
+            if event_bus.active_subscriber_count == 1:
+                break
+            await asyncio.sleep(0)
+        assert event_bus.active_subscriber_count == 1
         try:
             for index in range(32):
                 await event_bus.publish(_draft(
@@ -414,45 +436,37 @@ def test_terminal_close_does_not_require_evicted_event_history():
                 payload={"status": "completed", "content": "synthetic"},
             ))
 
-            await event_bus.close(context.run_id)
-            queued = []
-            while not subscription.queue.empty():
-                queued.append(subscription.queue.get_nowait())
-            assert queued[-1] is STREAM_CLOSED
-            assert queued[-2].event_type == "turn.finished"
+            live_events = await asyncio.wait_for(collector, timeout=1)
+            assert [event.seq for event in live_events] == list(range(1, 34))
+            assert live_events[-1].event_type == "turn.finished"
         finally:
-            await event_bus.unsubscribe(subscription)
+            await stream.aclose()
 
     asyncio.run(run_test())
 
 
-def test_finished_run_releases_manager_lock_registry():
+def test_finished_run_releases_manager_entry_registry():
     async def run_test():
         manager = AsyncRunManager(_SuccessRuntime())
         await manager.create_run(_context("run_cleanup"), _scope())
         await _wait_for_status(manager, "run_cleanup", RunStatus.COMPLETED)
         for _ in range(20):
-            if "run_cleanup" not in manager._run_locks:
+            if "run_cleanup" not in manager._entries:
                 break
             await asyncio.sleep(0)
-        assert "run_cleanup" not in manager._run_locks
+        assert "run_cleanup" not in manager._entries
+        assert manager.supervisor.get_run_task("run_cleanup") is None
 
     asyncio.run(run_test())
 
 
-def test_unknown_run_operations_do_not_allocate_lock_entries():
+def test_unknown_run_cancel_does_not_allocate_entries_and_interact_is_removed():
     async def run_test():
         manager = AsyncRunManager(_SuccessRuntime())
         with pytest.raises(RunNotFoundError):
             await manager.cancel_run("run_missing", _scope())
-        with pytest.raises(RunNotFoundError):
-            await manager.interact(
-                "run_missing",
-                _scope(),
-                interaction_id="interaction_missing",
-                value="synthetic value",
-            )
-        assert manager._run_locks == {}
+        assert not hasattr(manager, "interact")
+        assert manager._entries == {}
 
     asyncio.run(run_test())
 
@@ -480,130 +494,116 @@ def test_cancel_is_idempotent_and_uses_runtime_boundary():
     asyncio.run(run_test())
 
 
-def test_blocking_wait_resubscribes_after_slow_consumer_reconnect():
-    context = _context("run_wait_reconnect")
-    scope = _scope()
-    started = PublicEvent(
-        schema_version="1.0",
-        event_id="run_wait_reconnect:1",
-        run_id=context.run_id,
-        session_id=context.session_id,
-        turn_id=1,
-        seq=1,
-        event_type="turn.started",
-        status="running",
-        source={"node": "synthetic", "component": "test"},
-        payload={},
-        created_at=utc_now_iso(),
-    )
-    terminal = PublicEvent(
-        schema_version="1.0",
-        event_id="run_wait_reconnect:2",
-        run_id=context.run_id,
-        session_id=context.session_id,
-        turn_id=1,
-        seq=2,
-        event_type="turn.finished",
-        status="completed",
-        source={"node": "synthetic", "component": "test"},
-        payload={"status": "completed", "content": "synthetic answer"},
-        created_at=utc_now_iso(),
-    )
-    completed = RunSnapshot(
-        run_id=context.run_id,
-        session_id=context.session_id,
-        turn_id=1,
-        status=RunStatus.COMPLETED,
-        created_at=utc_now_iso(),
-        updated_at=utc_now_iso(),
-        last_seq=2,
-        scope=scope,
-        context=context,
-        result=RuntimeResult(status="completed", content="synthetic answer"),
-    )
-
-    class _ReconnectManager:
-        def __init__(self):
-            self.subscribe_cursors = []
-            self.unsubscribed = []
-
-        async def subscribe(self, run_id, requested_scope, *, after_seq=0):
-            assert run_id == context.run_id
-            assert requested_scope == scope
-            self.subscribe_cursors.append(after_seq)
-            if len(self.subscribe_cursors) == 1:
-                live_queue = queue.Queue()
-                live_queue.put_nowait(started)
-                live_queue.put_nowait(STREAM_RECONNECT)
-                return BlockingSubscription(
-                    run_id=run_id,
-                    subscriber_id="first",
-                    queue=live_queue,
-                    replay=[],
-                    closed=False,
-                )
-            return BlockingSubscription(
-                run_id=run_id,
-                subscriber_id="second",
-                queue=queue.Queue(),
-                replay=[terminal],
-                closed=True,
-            )
-
-        async def get_run(self, run_id, requested_scope):
-            assert run_id == context.run_id
-            assert requested_scope == scope
-            return completed
-
-        async def unsubscribe(self, subscription):
-            self.unsubscribed.append(subscription.subscriber_id)
-
-    manager = _ReconnectManager()
-    observed = []
-    result = wait_for_run(
-        manager,
-        asyncio.run,
-        context.run_id,
-        scope,
-        timeout_seconds=1,
-        on_event=lambda event: observed.append(event.seq),
-    )
-
-    assert result is completed
-    assert manager.subscribe_cursors == [0, 1]
-    assert manager.unsubscribed == ["first", "second"]
-    assert observed == [1, 2]
-
-
-def test_hitl_resumes_same_public_run_and_rejects_duplicate_submission():
+def test_terminal_run_replays_from_native_async_cursor():
     async def run_test():
-        manager = AsyncRunManager(_InteractionRuntime())
-        await manager.create_run(_context(), _scope())
-        waiting = await _wait_for_status(manager, "run_demo", RunStatus.AWAITING_INPUT)
-        assert waiting.pending_interaction["id"] == "interaction_demo"
-
-        resumed = await manager.interact(
-            "run_demo",
-            _scope(),
-            interaction_id="interaction_demo",
-            option_id="option_a",
-            value="value_a",
+        manager = AsyncRunManager(_SuccessRuntime())
+        await manager.create_run(_context("run_cursor_replay"), _scope())
+        await _wait_for_status(
+            manager,
+            "run_cursor_replay",
+            RunStatus.COMPLETED,
         )
-        assert resumed.run_id == "run_demo"
-        await _wait_for_status(manager, "run_demo", RunStatus.COMPLETED)
 
-        with pytest.raises(DuplicateInteractionError):
-            await manager.interact(
-                "run_demo",
-                _scope(),
-                interaction_id="interaction_demo",
-                option_id="option_a",
-                value="value_a",
+        replay = [
+            event
+            async for event in manager.event_bus.stream(
+                "run_cursor_replay",
+                after_seq=1,
             )
+        ]
+        assert [event.seq for event in replay] == [2, 3]
+        assert replay[-1].event_type == "turn.finished"
+
     asyncio.run(run_test())
 
 
-def test_shutdown_cancels_awaiting_input_without_an_active_task():
+def test_hitl_answer_uses_new_run_and_turn_and_each_run_executes_once():
+    class _OneRunPerTurnRuntime(_InteractionRuntime):
+        def __init__(self):
+            self.executions = []
+
+        async def execute(self, context, sink):
+            self.executions.append(
+                (context.run_id, context.turn_id, context.interaction_response)
+            )
+            if context.interaction_response is None:
+                return await super().execute(context, sink)
+
+            assert context.interaction_response == {
+                "interaction_id": "interaction_demo",
+                "type": "single_choice",
+                "option_id": "option_a",
+                "value": "value_a",
+            }
+            await sink.emit(_draft(
+                context,
+                "turn.finished",
+                status="completed",
+                payload={"status": "completed", "final_output": "synthetic answer"},
+            ))
+            return RuntimeResult(status="completed", content="synthetic answer")
+
+    async def run_test():
+        runtime = _OneRunPerTurnRuntime()
+        manager = AsyncRunManager(runtime)
+        await manager.create_run(
+            _context("run_hitl_original"),
+            _scope(),
+            idempotency_key="initial-request-key",
+        )
+        waiting = await _wait_for_status(
+            manager,
+            "run_hitl_original",
+            RunStatus.AWAITING_INPUT,
+        )
+        assert waiting.pending_interaction["id"] == "interaction_demo"
+
+        response = {
+            "interaction_id": "interaction_demo",
+            "type": "single_choice",
+            "option_id": "option_a",
+            "value": "value_a",
+        }
+        answer_context = RuntimeInvocationContext(
+            run_id="run_hitl_answer",
+            session_id="session_demo",
+            turn_id=2,
+            workspace_id="workspace_demo",
+            username="operator_a",
+            query="Choose option A",
+            interaction_response=response,
+        )
+        answer, answer_created = await manager.create_run(
+            answer_context,
+            _scope(),
+            idempotency_key="answer-request-key",
+        )
+        assert answer_created is True
+        assert answer.run_id != waiting.run_id
+        assert answer.turn_id == waiting.turn_id + 1
+        await _wait_for_status(manager, answer.run_id, RunStatus.COMPLETED)
+
+        retry, retry_created = await manager.create_run(
+            answer_context.model_copy(update={"run_id": "run_hitl_retry"}),
+            _scope(),
+            idempotency_key="answer-request-key",
+        )
+        assert retry_created is False
+        assert retry.run_id == answer.run_id
+
+        original = await manager.get_run(waiting.run_id, _scope())
+        assert original is not None
+        assert original.status == RunStatus.AWAITING_INPUT
+        assert original.pending_interaction == waiting.pending_interaction
+        assert runtime.executions == [
+            ("run_hitl_original", 1, None),
+            ("run_hitl_answer", 2, response),
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_shutdown_preserves_terminal_awaiting_input_without_an_active_task():
     async def run_test():
         manager = AsyncRunManager(_InteractionRuntime())
         await manager.create_run(_context("run_shutdown_hitl"), _scope())
@@ -616,9 +616,10 @@ def test_shutdown_cancels_awaiting_input_without_an_active_task():
 
         await manager.shutdown()
 
-        cancelled = await manager.get_run("run_shutdown_hitl", _scope())
-        assert cancelled is not None
-        assert cancelled.status == RunStatus.CANCELLED
+        after_shutdown = await manager.get_run("run_shutdown_hitl", _scope())
+        assert after_shutdown is not None
+        assert after_shutdown.status == RunStatus.AWAITING_INPUT
+        assert after_shutdown.pending_interaction == waiting.pending_interaction
         terminal_events = [
             event
             for event in await manager.repository.list_after(
@@ -627,10 +628,7 @@ def test_shutdown_cancels_awaiting_input_without_an_active_task():
             )
             if event.event_type == "turn.finished"
         ]
-        assert [event.status for event in terminal_events] == [
-            "awaiting_input",
-            "cancelled",
-        ]
+        assert [event.status for event in terminal_events] == ["awaiting_input"]
 
     asyncio.run(run_test())
 
@@ -683,7 +681,7 @@ def test_idempotency_key_returns_existing_run_and_rejects_changed_request():
     asyncio.run(run_test())
 
 
-def test_admission_timeout_finishes_queued_run_without_calling_runtime_cancel():
+def test_same_session_second_run_is_rejected_without_queueing():
     async def run_test():
         class _AdmissionRuntime(_BlockingRuntime):
             pass
@@ -703,15 +701,11 @@ def test_admission_timeout_finishes_queued_run_without_calling_runtime_cancel():
         )
         await manager.create_run(first_context, _scope())
         await asyncio.wait_for(runtime.started.wait(), timeout=1.0)
-        await manager.create_run(second_context, _scope())
+        with pytest.raises(SessionBusyError) as exc_info:
+            await manager.create_run(second_context, _scope())
 
-        failed = await _wait_for_status(
-            manager,
-            "run_admission_second",
-            RunStatus.FAILED,
-        )
-        assert failed.error is not None
-        assert failed.error.error_code == "RUN_ADMISSION_TIMEOUT"
+        assert exc_info.value.run_id == "run_admission_first"
+        assert await manager.repository.get("run_admission_second") is None
         assert runtime.cancelled == []
 
         await manager.cancel_run("run_admission_first", _scope(), reason="test_cleanup")
@@ -725,7 +719,9 @@ def test_queued_cancel_preserves_caller_reason_without_runtime_cancel():
         await manager.create_run(_context("run_cancel_active"), _scope())
         await asyncio.wait_for(runtime.started.wait(), timeout=1.0)
         await manager.create_run(
-            _context("run_cancel_queued"),
+            _context("run_cancel_queued").model_copy(
+                update={"session_id": "session_queue_demo"}
+            ),
             _scope(),
         )
 
@@ -942,6 +938,7 @@ def test_mixed_admission_limits_do_not_bypass_stricter_active_run():
             **{
                 **_context("run_relaxed").__dict__,
                 "query": "second synthetic question",
+                "session_id": "session_relaxed",
                 "concurrency_limit": 100,
             }
         )
@@ -973,7 +970,9 @@ def test_replay_retention_and_slow_subscriber_are_isolated():
         )
         await manager.create_run(_context("run_backpressure"), _scope())
         await _wait_for_status(manager, "run_backpressure", RunStatus.RUNNING)
-        slow = await manager.subscribe("run_backpressure", _scope())
+        slow = manager.event_bus.stream("run_backpressure")
+        first = asyncio.create_task(anext(slow))
+        assert (await asyncio.wait_for(first, timeout=1)).seq == 1
         context = _context("run_backpressure")
         await manager.accept_runtime_event(
             "run_backpressure",
@@ -983,14 +982,18 @@ def test_replay_retention_and_slow_subscriber_are_isolated():
             "run_backpressure",
             _draft(context, "token.delta", payload={"channel": "content", "text": "b"}),
         )
-        assert slow.queue.get_nowait() is STREAM_RECONNECT
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(anext(slow), timeout=1)
 
-        replay = await manager.subscribe("run_backpressure", _scope(), after_seq=1)
+        replay = manager.event_bus.stream("run_backpressure", after_seq=1)
         try:
-            assert [event.seq for event in replay.replay] == [2, 3]
+            assert [
+                (await asyncio.wait_for(anext(replay), timeout=1)).seq,
+                (await asyncio.wait_for(anext(replay), timeout=1)).seq,
+            ] == [2, 3]
         finally:
-            await manager.unsubscribe(replay)
-            await manager.unsubscribe(slow)
+            await replay.aclose()
+            await slow.aclose()
         await manager.cancel_run("run_backpressure", _scope(), reason="test_cleanup")
 
     asyncio.run(run_test())
@@ -1185,7 +1188,7 @@ def test_native_jiuwen_runtime_executes_through_b_run_manager():
     asyncio.run(run_test())
 
 
-def test_native_runtime_hitl_persists_checkpoint_before_public_resume(tmp_path):
+def test_native_runtime_hitl_persists_checkpoint_before_new_run(tmp_path):
     async def run_test():
         class _SyntheticOrchestrator:
             def __init__(self):
@@ -1326,30 +1329,71 @@ def test_native_runtime_hitl_persists_checkpoint_before_public_resume(tmp_path):
         assert first_turn["final_output"]["interaction"]["id"] == "interaction_native_demo"
         assert waiting.pending_interaction["id"] == "interaction_native_demo"
 
-        resumed = await manager.interact(
-            "run_native_hitl",
-            _scope(),
-            interaction_id="interaction_native_demo",
-            option_id="option_a",
-            value="value_a",
+        first_response = {
+            "interaction_id": "interaction_native_demo",
+            "type": "single_choice",
+            "option_id": "option_a",
+            "value": "value_a",
+        }
+        second_turn, second_created = (
+            orchestrator.execution_store.consume_interaction_and_create_turn(
+                session_id="session_demo",
+                interaction_id="interaction_native_demo",
+                user_request="Choose option A",
+                interaction_response=first_response,
+                idempotency_key_hash="native-answer-one-key",
+                request_fingerprint="native-answer-one-fingerprint",
+            )
         )
-        assert resumed.run_id == "run_native_hitl"
+        assert second_created is True
+        second_context = RuntimeInvocationContext(
+            run_id=second_turn["run_id"],
+            session_id="session_demo",
+            turn_id=second_turn["turn_id"],
+            workspace_id="workspace_demo",
+            username="operator_a",
+            query="Choose option A",
+            interaction_response=first_response,
+        )
+        await manager.create_run(second_context, _scope())
         waiting_again = await _wait_for_status(
             manager,
-            "run_native_hitl",
+            second_turn["run_id"],
             RunStatus.AWAITING_INPUT,
         )
         assert waiting_again.pending_interaction["id"] == "interaction_native_followup"
+        original_after_answer = await manager.get_run("run_native_hitl", _scope())
+        assert original_after_answer.status == RunStatus.AWAITING_INPUT
 
-        await manager.interact(
-            "run_native_hitl",
-            _scope(),
-            interaction_id="interaction_native_followup",
-            value="synthetic follow-up",
+        second_response = {
+            "interaction_id": "interaction_native_followup",
+            "type": "input",
+            "value": "synthetic follow-up",
+        }
+        third_turn, third_created = (
+            orchestrator.execution_store.consume_interaction_and_create_turn(
+                session_id="session_demo",
+                interaction_id="interaction_native_followup",
+                user_request="synthetic follow-up",
+                interaction_response=second_response,
+                idempotency_key_hash="native-answer-two-key",
+                request_fingerprint="native-answer-two-fingerprint",
+            )
         )
+        assert third_created is True
+        third_context = RuntimeInvocationContext(
+            run_id=third_turn["run_id"],
+            session_id="session_demo",
+            turn_id=third_turn["turn_id"],
+            workspace_id="workspace_demo",
+            username="operator_a",
+            query="synthetic follow-up",
+            interaction_response=second_response,
+        )
+        await manager.create_run(third_context, _scope())
         completed = await _wait_for_status(
             manager,
-            "run_native_hitl",
+            third_turn["run_id"],
             RunStatus.COMPLETED,
         )
         assert completed.result is not None
@@ -1359,8 +1403,8 @@ def test_native_runtime_hitl_persists_checkpoint_before_public_resume(tmp_path):
         history = orchestrator.execution_store.get_session_history("session_demo")
         assert [turn["run_id"] for turn in history["turns"]] == [
             "run_native_hitl",
-            "run_native_hitl",
-            "run_native_hitl",
+            second_turn["run_id"],
+            third_turn["run_id"],
         ]
         assert [turn["status"] for turn in history["turns"]] == [
             "awaiting_input",
@@ -1373,25 +1417,32 @@ def test_native_runtime_hitl_persists_checkpoint_before_public_resume(tmp_path):
             == "synthetic follow-up"
         )
 
-        durable = await manager.repository.list_after("run_native_hitl", 0)
         persisted_session = orchestrator.chat_store.get_session("session_demo")
-        projected = [
-            event["data"]
-            for event in persisted_session.events
-            if event.get("event") == "agent.v2"
-            and (event.get("data") or {}).get("run_id") == "run_native_hitl"
-        ]
-        assert [
-            (event["event_id"], event["seq"], event["type"])
-            for event in projected
-        ] == [
-            (event.event_id, event.seq, event.event_type)
-            for event in durable
-        ]
-        assert sum(event["type"] == "interaction.resumed" for event in projected) == 2
-        interaction_events = [
-            event for event in durable if event.event_type == "interaction.requested"
-        ]
+        interaction_events = []
+        for current_run_id in (
+            "run_native_hitl",
+            second_turn["run_id"],
+            third_turn["run_id"],
+        ):
+            durable = await manager.repository.list_after(current_run_id, 0)
+            projected = [
+                event["data"]
+                for event in persisted_session.events
+                if event.get("event") == "agent.v2"
+                and (event.get("data") or {}).get("run_id") == current_run_id
+            ]
+            assert [
+                (event["event_id"], event["seq"], event["type"])
+                for event in projected
+            ] == [
+                (event.event_id, event.seq, event.event_type)
+                for event in durable
+            ]
+            interaction_events.extend(
+                event
+                for event in durable
+                if event.event_type == "interaction.requested"
+            )
         assert [event.turn_id for event in interaction_events] == [1, 2]
         assert interaction_events[1].payload["prompt"] == "Provide a second synthetic value"
         for _ in range(20):

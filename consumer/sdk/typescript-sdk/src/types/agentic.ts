@@ -4,39 +4,67 @@ export interface AgenticRunContext {
   selected_ontology_id?: string;
   agent_mode?: AgentMode;
   llm_request_mode?: 'stream' | 'sync';
-  interaction_response?: {
-    interaction_id: string;
-    type?: string;
-    value: unknown;
-    option_id?: string;
-  };
   [key: string]: unknown;
+}
+
+export interface AgenticInteractionResponse {
+  interaction_id: string;
+  type?: string;
+  value?: unknown;
+  option_id?: string;
+}
+
+export interface AgenticRunLinks {
+  self: string;
+  events: string;
+  cancel: string;
+}
+
+export interface AgenticRunError {
+  error_code: string;
+  message: string;
+  retriable: boolean;
+  source?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface StartAgenticRunRequest {
   session_id: string;
   request: string;
-  run_id?: string;
-  context?: AgenticRunContext;
+  agent_mode?: AgentMode;
+  llm_request_mode?: 'stream' | 'sync';
+  model_profile_id?: string;
+  arguments?: Record<string, unknown>;
+  include_trace?: boolean;
+  interaction_response?: AgenticInteractionResponse;
+}
+
+export interface StartAgenticRunResponse {
+  run_id: string;
+  session_id: string;
+  turn_id: number;
+  status: string;
+  created: boolean;
+  links: AgenticRunLinks;
 }
 
 export interface AgenticRunStatus {
   run_id: string;
+  session_id: string;
+  turn_id: number;
   status: string;
+  links: AgenticRunLinks;
+  created?: boolean;
+  last_seq?: number;
   created_at?: string | null;
   updated_at?: string | null;
-  completed_at?: string | null;
   result?: unknown;
-  error?: string | null;
+  error?: AgenticRunError | null;
+  pending_interaction?: Record<string, unknown> | null;
 }
 
 export interface CancelRunRequest {
   reason?: string;
-}
-
-export interface CancelRunResponse {
-  success: boolean;
-  cancelled: boolean;
 }
 
 export interface SessionSummary {

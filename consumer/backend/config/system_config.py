@@ -128,6 +128,23 @@ _SECTION_FIELDS: dict[str, dict[str, Any]] = {
         "sub_agent_max_depth": {"env": "AGENT_SUB_AGENT_MAX_DEPTH", "type": "int", "default":10},
         "parallel_default_max_workers": {"env": "AGENT_PARALLEL_DEFAULT_MAX_WORKERS", "type": "int", "default": 10},
         "tool_timeout_seconds": {"env": "AGENT_TOOL_TIMEOUT_SECONDS", "type": "int", "default": 600},
+        "shutdown_total_deadline_seconds": {"env": "AGENTIC_SHUTDOWN_TOTAL_DEADLINE_SECONDS", "type": "float", "default": 30.0},
+        "sse_subscriber_queue_size": {"env": "AGENTIC_SSE_SUBSCRIBER_QUEUE_SIZE", "type": "int", "default": 512},
+        "sse_max_subscribers_per_run": {"env": "AGENTIC_SSE_MAX_SUBSCRIBERS_PER_RUN", "type": "int", "default": 3},
+        "sse_max_subscribers_total": {"env": "AGENTIC_SSE_MAX_SUBSCRIBERS_TOTAL", "type": "int", "default": 100},
+        "completed_replay_ttl_seconds": {"env": "AGENTIC_RUN_COMPLETED_REPLAY_TTL_SECONDS", "type": "float", "default": 120.0},
+        "short_io_workers": {"env": "AGENTIC_SHORT_IO_WORKERS", "type": "int", "default": 8},
+        "short_io_max_pending": {"env": "AGENTIC_SHORT_IO_MAX_PENDING", "type": "int", "default": 64},
+        "short_io_capacity_wait_seconds": {"env": "AGENTIC_SHORT_IO_CAPACITY_WAIT_SECONDS", "type": "float", "default": 1.0},
+        "short_io_operation_timeout_seconds": {"env": "AGENTIC_SHORT_IO_OPERATION_TIMEOUT_SECONDS", "type": "float", "default": 30.0},
+        "external_io_workers": {"env": "AGENTIC_EXTERNAL_IO_WORKERS", "type": "int", "default": 16},
+        "external_io_max_pending": {"env": "AGENTIC_EXTERNAL_IO_MAX_PENDING", "type": "int", "default": 16},
+        "external_io_capacity_wait_seconds": {"env": "AGENTIC_EXTERNAL_IO_CAPACITY_WAIT_SECONDS", "type": "float", "default": 0.1},
+        "external_io_operation_timeout_seconds": {"env": "AGENTIC_EXTERNAL_IO_OPERATION_TIMEOUT_SECONDS", "type": "float", "default": 300.0},
+        "tool_io_workers": {"env": "AGENTIC_TOOL_IO_WORKERS", "type": "int", "default": 8},
+        "tool_io_max_pending": {"env": "AGENTIC_TOOL_IO_MAX_PENDING", "type": "int", "default": 16},
+        "tool_io_capacity_wait_seconds": {"env": "AGENTIC_TOOL_IO_CAPACITY_WAIT_SECONDS", "type": "float", "default": 0.1},
+        "tool_io_operation_timeout_seconds": {"env": "AGENTIC_TOOL_IO_OPERATION_TIMEOUT_SECONDS", "type": "float", "default": 600.0},
         "context_max_rounds": {"env": "AGENT_CONTEXT_MAX_ROUNDS", "type": "int", "default": 10},
         "runtime_warmup_enabled": {"env": "AGENT_RUNTIME_WARMUP_ENABLED", "type": "bool", "default": True},
         # Operation evolution thresholds
@@ -474,7 +491,7 @@ def _validate_persisted_document(document: dict[str, Any]) -> None:
         else:
             _validate_persisted_fields(_SECTION_FIELDS[section], section_value)
         try:
-            if section in {"web_search", "skill_evolution"}:
+            if section in {"agent", "web_search", "skill_evolution"}:
                 # Cross-field rules must use the same persisted > env > default
                 # precedence as runtime; secrets are validated separately below.
                 semantic_specs = {
@@ -488,7 +505,9 @@ def _validate_persisted_document(document: dict[str, Any]) -> None:
                     section_value,
                     [section],
                 )
-                if section == "web_search":
+                if section == "agent":
+                    _normalize_agent_effective(effective_section)
+                elif section == "web_search":
                     _normalize_web_search_effective(effective_section)
                 else:
                     _normalize_skill_evolution_effective(effective_section)
@@ -947,6 +966,41 @@ def _normalize_web_search_effective(section: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_agent_effective(section: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(section or {})
+    positive_fields = (
+        "shutdown_total_deadline_seconds",
+        "sse_subscriber_queue_size",
+        "sse_max_subscribers_per_run",
+        "sse_max_subscribers_total",
+        "completed_replay_ttl_seconds",
+        "short_io_workers",
+        "short_io_max_pending",
+        "short_io_capacity_wait_seconds",
+        "short_io_operation_timeout_seconds",
+        "external_io_workers",
+        "external_io_max_pending",
+        "external_io_capacity_wait_seconds",
+        "external_io_operation_timeout_seconds",
+        "tool_io_workers",
+        "tool_io_max_pending",
+        "tool_io_capacity_wait_seconds",
+        "tool_io_operation_timeout_seconds",
+    )
+    for field_name in positive_fields:
+        if float(normalized.get(field_name) or 0) <= 0:
+            raise SystemConfigValidationError(
+                f"agent.{field_name} 必须大于 0"
+            )
+    if int(normalized["sse_max_subscribers_total"]) < int(
+        normalized["sse_max_subscribers_per_run"]
+    ):
+        raise SystemConfigValidationError(
+            "sse_max_subscribers_total 不能小于 sse_max_subscribers_per_run"
+        )
+    return normalized
+
+
 def _normalize_skill_evolution_effective(section: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(section or {})
     base_url = _coerce_string(normalized.get("base_url")).rstrip("/")
@@ -994,6 +1048,8 @@ def _load_system_config_unlocked() -> dict[str, dict[str, Any]]:
                 raw_section,
                 [section],
             )
+            if section == "agent":
+                effective[section] = _normalize_agent_effective(effective[section])
             if section == "web_search":
                 effective[section] = _normalize_web_search_effective(effective[section])
             if section == "skill_evolution":
@@ -1110,6 +1166,15 @@ def _merge_section_update(
         if clear_name in data and _coerce_bool(data[clear_name], field_name=clear_name):
             merged[target_field] = ""
 
+    if section == "agent":
+        _normalize_agent_effective(
+            _process_fields_recursive(
+                "agent",
+                _SECTION_FIELDS["agent"],
+                merged,
+                ["agent"],
+            )
+        )
     if section == "web_search":
         merged = _normalize_web_search_effective(merged)
     if section == "skill_evolution":
@@ -1244,6 +1309,8 @@ def build_effective_section_config(section: str, data: dict[str, Any] | None = N
             merged_raw[field_name],
             path=[normalized_section, field_name],
         )
+    if normalized_section == "agent":
+        next_effective = _normalize_agent_effective(next_effective)
     if normalized_section == "web_search":
         next_effective = _normalize_web_search_effective(next_effective)
     if normalized_section == "skill_evolution":

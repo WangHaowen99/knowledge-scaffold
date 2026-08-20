@@ -2,53 +2,70 @@ import { mapAbortableStream, type AbortableAsyncIterable } from '../../streams/s
 import { HttpClient } from '../../transport/http.js';
 import { normalizeAgenticSseMessage, type NormalizedStreamEvent } from '../../types/events.js';
 import type {
-  AgenticRunContext,
   AgenticRunStatus,
   CancelRunRequest,
-  CancelRunResponse,
   StartAgenticRunRequest,
+  StartAgenticRunResponse,
 } from '../../types/agentic.js';
 
-export interface AgenticRunStreamOptions {
+export interface AgenticRunCreateOptions {
   signal?: AbortSignal;
+  idempotencyKey?: string;
 }
 
-export interface AgenticRunEventsOptions extends AgenticRunStreamOptions {
+export interface AgenticRunEventsOptions {
+  signal?: AbortSignal;
   afterSeq?: number;
 }
 
 export class AgenticRunsApi {
   constructor(private readonly http: HttpClient) {}
 
-  async stream(
+  create(
     request: StartAgenticRunRequest,
-    options: AgenticRunStreamOptions = {},
-  ): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
+    options: AgenticRunCreateOptions = {},
+  ): Promise<StartAgenticRunResponse> {
     const payload: StartAgenticRunRequest = {
       ...request,
-      context: { ...(request.context || {}) },
+      arguments: request.arguments ? { ...request.arguments } : undefined,
     };
-    const source = await this.http.stream('POST', '/agentic/runs/stream', {
-      json: payload,
-      signal: options.signal,
-    });
-    return mapAbortableStream(source, normalizeAgenticSseMessage);
+    return this.http.post<StartAgenticRunResponse, StartAgenticRunRequest>(
+      '/agentic/runs',
+      {
+        json: payload,
+        headers: {
+          'Idempotency-Key': options.idempotencyKey || crypto.randomUUID(),
+        },
+        signal: options.signal,
+      },
+    );
   }
 
-  status(runId: string, options: { signal?: AbortSignal } = {}): Promise<AgenticRunStatus> {
-    return this.http.get<AgenticRunStatus>(`/agentic/runs/${encodeURIComponent(runId)}/status`, {
+  get(runId: string, options: { signal?: AbortSignal } = {}): Promise<AgenticRunStatus> {
+    return this.http.get<AgenticRunStatus>(`/agentic/runs/${encodeURIComponent(runId)}`, {
       signal: options.signal,
     });
   }
 
-  async events(
+  events(
     runId: string,
     options: AgenticRunEventsOptions = {},
   ): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
+    return this.eventsFromLink(
+      `/agentic/runs/${encodeURIComponent(runId)}/events`,
+      options,
+    );
+  }
+
+  async eventsFromLink(
+    eventsLink: string,
+    options: AgenticRunEventsOptions = {},
+  ): Promise<AbortableAsyncIterable<NormalizedStreamEvent>> {
+    const path = relativeApiPath(eventsLink, 'eventsLink');
     const cursor = Math.max(0, Math.trunc(options.afterSeq || 0));
     const source = await this.http.stream(
       'GET',
-      `/agentic/runs/${encodeURIComponent(runId)}/events`,
+      path,
       {
         query: { after_seq: cursor },
         headers: cursor ? { 'Last-Event-ID': String(cursor) } : undefined,
@@ -69,8 +86,8 @@ export class AgenticRunsApi {
     runId: string,
     request: CancelRunRequest = {},
     options: { signal?: AbortSignal } = {},
-  ): Promise<CancelRunResponse> {
-    return this.http.post<CancelRunResponse, CancelRunRequest>(
+  ): Promise<AgenticRunStatus> {
+    return this.http.post<AgenticRunStatus, CancelRunRequest>(
       `/agentic/runs/${encodeURIComponent(runId)}/cancel`,
       {
         json: request,
@@ -79,3 +96,11 @@ export class AgenticRunsApi {
     );
   }
 }
+
+const relativeApiPath = (value: string, field: string): string => {
+  const path = value.trim();
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    throw new Error(`${field} must be a relative API path`);
+  }
+  return path;
+};

@@ -1,9 +1,12 @@
 import json
 
-from flask import Flask
+from fastapi.testclient import TestClient
+
+from api.testing import TestApplication
+
 import pytest
 
-from api.routes.workspaces import workspaces_bp
+from api.routes.workspaces import workspaces_router
 from api.auth.auth import AuthManager
 from system_config_migration_helpers import apply_test_system_config_migrations
 
@@ -12,15 +15,15 @@ SECRET_TEST_KEY = "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA="
 
 
 def _build_workspace_routes_client(tmp_path):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
     assert user is not None
     user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(workspaces_bp)
-    client = app.test_client()
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(workspaces_router)
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}
 
@@ -339,7 +342,7 @@ def test_workspace_llm_profiles_routes_manage_private_profiles(tmp_path, monkeyp
 
     empty_response = client.get("/agentic/workspaces/alpha/llm-profiles", headers=headers)
     assert empty_response.status_code == 200
-    assert empty_response.get_json() == {"profiles": []}
+    assert empty_response.json() == {"profiles": []}
 
     response = client.patch(
         "/agentic/workspaces/alpha/llm-profiles",
@@ -360,7 +363,7 @@ def test_workspace_llm_profiles_routes_manage_private_profiles(tmp_path, monkeyp
     )
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload["profiles"][0]["id"] == "private"
     assert payload["profiles"][0]["has_api_key"] is True
     assert "api_key" not in payload["profiles"][0]
@@ -410,7 +413,7 @@ def test_workspace_llm_profiles_test_route_uses_workspace_private_payload(tmp_pa
     )
 
     assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.json()["success"] is True
     assert calls == [
         {
             "url": "https://private.example/v1/chat/completions",

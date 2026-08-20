@@ -1,6 +1,3 @@
-from types import SimpleNamespace
-
-from flask import Flask
 import pytest
 
 import workspace.workspaces as workspaces_module
@@ -16,18 +13,11 @@ def _create_workspace(tmp_path, monkeypatch):
     create_workspace("Demo Workspace", workspace_id="demo", set_as_default=True)
 
 
-def test_runtime_root_reuses_app_config_without_reloading(tmp_path, monkeypatch):
+def test_runtime_root_uses_explicit_project_root(tmp_path, monkeypatch):
     expected_root = tmp_path / ".onto-runtime"
-    app = Flask(__name__)
-    app.config["APP_CONFIG"] = SimpleNamespace(project_root=str(expected_root))
+    monkeypatch.setenv("PROJECT_ROOT", str(expected_root))
 
-    def _unexpected_reload(*_args, **_kwargs):
-        raise AssertionError("AppConfig.from_env should not run inside an initialized app")
-
-    monkeypatch.setattr(workspaces_module.AppConfig, "from_env", _unexpected_reload)
-
-    with app.app_context():
-        assert workspaces_module.get_runtime_root() == expected_root.resolve()
+    assert workspaces_module.get_runtime_root() == expected_root.resolve()
 
 
 def test_runtime_config_rejects_unknown_top_level_key(tmp_path, monkeypatch):
@@ -60,7 +50,10 @@ def test_runtime_config_merges_valid_partial_update(tmp_path, monkeypatch):
     assert get_workspace_runtime_config("demo") == updated
 
 
-def test_runtime_config_read_ignores_unknown_saved_keys(tmp_path, monkeypatch):
+def test_runtime_config_read_ignores_unknown_saved_keys_without_rewriting(
+    tmp_path,
+    monkeypatch,
+):
     _create_workspace(tmp_path, monkeypatch)
     update_workspace_runtime_config("demo", {"lang": {"enabled": True}})
 
@@ -80,7 +73,13 @@ def test_runtime_config_read_ignores_unknown_saved_keys(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    assert get_workspace_runtime_config("demo")["lang"] == {"enabled": True, "default": "en"}
+    original = runtime_path.read_bytes()
+
+    loaded = get_workspace_runtime_config("demo")
+
+    assert loaded["lang"] == {"enabled": True, "default": "en"}
+    assert "future_key" not in loaded
+    assert runtime_path.read_bytes() == original
 
 
 def test_create_workspace_rejects_new_workspace_after_limit(tmp_path, monkeypatch):

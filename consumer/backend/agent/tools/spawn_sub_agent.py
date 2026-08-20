@@ -1,4 +1,4 @@
-"""Tool for synchronous and native-async sub-agent task-group orchestration."""
+"""Tool for native-async sub-agent task-group orchestration."""
 
 import json
 import uuid
@@ -10,6 +10,7 @@ from config import AgentConfig
 from agent.exceptions import WorkflowCancelledError
 from agent.sub_agents.manager import SubAgentTaskSpec, get_subagent_manager
 from utils.logging import get_logger
+from utils.security.redaction import redact_sensitive_text
 
 logger = get_logger("tools.spawn_sub_agent")
 
@@ -124,58 +125,6 @@ def normalize_spawn_sub_agent_args(
     return normalized, None
 
 
-def handle_spawn_sub_agent(
-    *,
-    args: Dict[str, Any],
-    agent_config: Optional[AgentConfig],
-    run_id: Optional[str],
-    session_id: Optional[str],
-    event_emitter: Optional[Callable[[str, Dict[str, Any]], None]],
-    parent_tool_call_id: Optional[str],
-    lineage: Optional[Dict[str, Any]] = None,
-    manager: Any = None,
-    parent_agent_mode: Optional[str] = None,
-    parent_model_profile_id: Optional[str] = None,
-    parent_workspace_id: Optional[str] = None,
-    observer: Any = None,
-    parent_selected_ontology_id: Optional[str] = None,
-    parent_selected_ontology_version: Optional[str] = None,
-) -> str:
-    tasks, validation_error = normalize_spawn_sub_agent_args(args)
-    if validation_error:
-        return json.dumps(_build_error_payload(validation_error), ensure_ascii=False)
-
-    runtime_manager = manager or get_subagent_manager(
-        run_id,
-        agent_config or AgentConfig.from_env(),
-    )
-
-    try:
-        result = runtime_manager.execute_group(
-            run_id=run_id,
-            session_id=session_id,
-            parent_tool_call_id=parent_tool_call_id,
-            parent_agent_mode=parent_agent_mode,
-            parent_model_profile_id=parent_model_profile_id,
-            parent_workspace_id=parent_workspace_id,
-            event_emitter=event_emitter,
-            lineage=lineage,
-            tasks=tasks or [],
-            observer=observer,
-            parent_selected_ontology_id=parent_selected_ontology_id,
-            parent_selected_ontology_version=parent_selected_ontology_version,
-        )
-        return json.dumps(result, ensure_ascii=False)
-    except WorkflowCancelledError:
-        raise
-    except Exception as exc:
-        logger.exception("Failed to execute spawn_sub_agent group: %s", exc)
-        return json.dumps(
-            _build_error_payload("spawn_sub_agent failed: {}".format(str(exc))),
-            ensure_ascii=False,
-        )
-
-
 async def handle_spawn_sub_agent_async(
     *,
     args: Dict[str, Any],
@@ -220,9 +169,11 @@ async def handle_spawn_sub_agent_async(
     except WorkflowCancelledError:
         raise
     except Exception as exc:
-        logger.exception("Failed to execute async spawn_sub_agent group: %s", exc)
+        logger.exception("Failed to execute async spawn_sub_agent group")
         return json.dumps(
-            _build_error_payload("spawn_sub_agent failed: {}".format(str(exc))),
+            _build_error_payload(
+                "spawn_sub_agent failed: {}".format(redact_sensitive_text(exc))
+            ),
             ensure_ascii=False,
         )
 
@@ -239,33 +190,6 @@ class SpawnSubAgentTool:
     def __post_init__(self) -> None:
         object.__setattr__(self, "schema", SPAWN_SUB_AGENT_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
-
-    def execute(
-        self,
-        *,
-        args: Dict[str, Any],
-        context: ToolContext,
-        tool_call_id: Optional[str] = None,
-        event_emitter: Optional[Callable[..., Any]] = None,
-    ) -> ToolOutcome:
-        return ToolOutcome(
-            content=handle_spawn_sub_agent(
-                args=args,
-                agent_config=context.agent_config,
-                run_id=context.run_id,
-                session_id=context.session_id,
-                event_emitter=event_emitter or context.event_emitter,
-                parent_tool_call_id=tool_call_id,
-                lineage=context.subagent_lineage,
-                manager=context.subagent_manager,
-                parent_agent_mode=context.agent_mode,
-                parent_model_profile_id=context.model_profile_id,
-                parent_workspace_id=context.workspace_id,
-                observer=context.observer,
-                parent_selected_ontology_id=context.selected_ontology_id,
-                parent_selected_ontology_version=context.selected_ontology_version,
-            ),
-        )
 
     async def aexecute(
         self,

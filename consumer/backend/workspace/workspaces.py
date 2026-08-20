@@ -17,19 +17,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Protocol
 from urllib.parse import unquote
-
-from flask import (
-    Request,
-    abort,
-    current_app,
-    g,
-    has_app_context,
-    has_request_context,
-    jsonify,
-    make_response,
-)
 
 from config import AppConfig, LimitsConfig
 from config.model_profile_refs import model_profile_ref_to_dict, parse_model_profile_ref
@@ -123,16 +112,15 @@ class WorkspaceSubjectAccessDecision:
     reason: str
 
 
+class WorkspaceRequest(Protocol):
+    headers: Mapping[str, str]
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def get_runtime_root() -> Path:
-    if has_app_context():
-        app_config = current_app.config.get("APP_CONFIG")
-        project_root = getattr(app_config, "project_root", None)
-        if project_root:
-            return Path(project_root).resolve()
     return Path(AppConfig.from_env().project_root).resolve()
 
 
@@ -1130,12 +1118,16 @@ def _validate_workspace_acl_metadata(
     if not isinstance(actual_workspace_id, str) or actual_workspace_id != expected_workspace_id:
         raise ValueError("workspace metadata id mismatch")
 
-    owner = metadata.get("owner")
+    if "owner" not in metadata:
+        raise ValueError("workspace owner is required")
+    owner = metadata["owner"]
     if owner is not None:
         if not isinstance(owner, str) or not owner.strip() or owner != owner.strip():
             raise ValueError("workspace owner is invalid")
 
-    raw_members = metadata.get("members", [])
+    if "members" not in metadata:
+        raise ValueError("workspace members are required")
+    raw_members = metadata["members"]
     if not isinstance(raw_members, list):
         raise ValueError("workspace members must be an array")
     members: List[str] = []
@@ -1170,27 +1162,31 @@ def _read_default_workspace_id_for_acl() -> Optional[str]:
 
 
 def _current_request_user() -> Any:
-    if not has_request_context():
-        return None
-    return g.get("current_user")
+    from api.auth.auth import get_current_user
+
+    return get_current_user()
 
 
 def _abort_workspace_access_denied() -> None:
-    abort(make_response(
-        jsonify({"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"}),
+    from api.exceptions import APIError
+
+    raise APIError(
         403,
-    ))
+        {"error": "Forbidden", "code": "WORKSPACE_ACCESS_DENIED"},
+    )
 
 
 def _abort_workspace_metadata_invalid(workspace_id: str) -> None:
-    abort(make_response(
-        jsonify({
+    from api.exceptions import APIError
+
+    raise APIError(
+        500,
+        {
             "error": "Workspace metadata is invalid",
             "code": "WORKSPACE_METADATA_INVALID",
             "workspace_id": workspace_id,
-        }),
-        500,
-    ))
+        },
+    )
 
 
 def _enforce_workspace_access(
@@ -1240,7 +1236,7 @@ def enforce_workspace_owner_or_admin(workspace_id: str) -> str:
     return resolved_id
 
 
-def resolve_workspace_id(request: Request) -> str:
+def resolve_workspace_id(request: WorkspaceRequest) -> str:
     _ensure_workspace_state()
     default_workspace_id = get_default_workspace_id()
     header_value = request.headers.get(WORKSPACE_HEADER)
@@ -1270,7 +1266,7 @@ def resolve_workspace_id(request: Request) -> str:
     raise ValueError("X-Workspace-Id 不能为空；当前存在多个工作空间")
 
 
-def resolve_workspace_owner_or_admin_id(request: Request) -> str:
+def resolve_workspace_owner_or_admin_id(request: WorkspaceRequest) -> str:
     """Resolve request workspace and require global admin or workspace ownership."""
     return enforce_workspace_owner_or_admin(resolve_workspace_id(request))
 

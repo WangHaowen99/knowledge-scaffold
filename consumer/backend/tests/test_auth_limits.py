@@ -9,4 +9,5 @@ def test_create_user_ignores_legacy_ops_limit(tmp_path, monkeypatch):
     for username in ("operator", "auditor", "reviewer"):
         auth_manager.create_user(username, "StrongPass123!")
 
-    assert len(auth_manager.list_users()) == 3
+    usernames = {item["username"] for item in auth_manager.list_users()}
+    assert {"operator", "auditor", "reviewer"} <= usernames

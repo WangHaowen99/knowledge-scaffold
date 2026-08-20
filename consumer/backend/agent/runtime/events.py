@@ -55,7 +55,6 @@ PublicEventType = Literal[
     "subagent_group.started",
     "subagent_group.finished",
     "interaction.requested",
-    "interaction.resumed",
     "turn.finished",
 ]
 

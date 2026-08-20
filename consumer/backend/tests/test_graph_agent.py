@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from agent.tools.business_data.providers.graph.agent import (
 from agent.tools.business_data.providers.graph.backends.base import GraphBackendTimeoutError
 from agent.tools.business_data.providers.graph.jiuwen_agent import (
     GraphJiuwenToolAdapter,
-    JiuwenGraphQueryAgent,
+    JiuwenGraphQueryAgent as NativeJiuwenGraphQueryAgent,
     _resolve_graph_jiuwen_llm_config,
     register_graph_runtime_tools,
 )
@@ -35,6 +36,15 @@ from agent.tools.business_data.providers.graph.models import (
 from agent.tools.business_data.providers.graph.tools.executor import GraphToolExecutor
 from agent.tools.base import ToolInvocation
 from agent.tools.registry import get_tool_spec
+
+
+class JiuwenGraphQueryAgent(NativeJiuwenGraphQueryAgent):
+    """Test harness that drives the production native-async entry."""
+
+    def run(self, **kwargs):
+        import asyncio
+
+        return asyncio.run(self.arun(**kwargs))
 
 
 class _Backend:
@@ -365,7 +375,7 @@ def test_jiuwen_graph_query_agent_retries_pattern_search_for_path_intent():
         ontology_id="demo-ontology",
         workspace_root="/missing",
         entity="SourceItem与TargetItem工艺关系",
-        query="查询 SourceItem 101000-001 对应的 TargetItem",
+        query="查询 SourceItem 101000-001 对应的 TargetItem 对象",
         timeout_seconds=60,
         max_result_rows=100,
         scope=GraphScope(
@@ -723,9 +733,9 @@ def test_jiuwen_graph_query_agent_deduplicates_overlapping_data_tool_results():
 
 
 def test_jiuwen_graph_query_agent_timeout_raises_structured_error():
-    def slow_invoker(payload):
+    async def slow_invoker(payload):
         del payload
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
         return ""
 
     context = _context()
@@ -999,20 +1009,22 @@ def test_graph_private_registration_passes_explicit_tools_to_current_jiuwen_boun
     assert private_context.caller == "graph"
     assert private_context.observer is None
 
-    result = captured["tool_batch_executor"](
-        [
-            ToolInvocation(
-                id="graph-call-1",
-                name="property_filter",
-                arguments={
-                    "element_class": "TargetItem",
-                    "element_type": "NODE",
-                    "filter_dict": {"TargetItemCode": "A001"},
-                    "return_properties": ["TargetItemCode"],
-                },
-            )
-        ],
-        private_context,
+    result = asyncio.run(
+        captured["tool_batch_executor"](
+            [
+                ToolInvocation(
+                    id="graph-call-1",
+                    name="property_filter",
+                    arguments={
+                        "element_class": "TargetItem",
+                        "element_type": "NODE",
+                        "filter_dict": {"TargetItemCode": "A001"},
+                        "return_properties": ["TargetItemCode"],
+                    },
+                )
+            ],
+            private_context,
+        )
     )
     assert len(result.messages) == 1
     assert '"success": true' in result.messages[0]["content"]
@@ -1044,30 +1056,32 @@ def test_graph_private_registration_marks_non_retryable_backend_error_terminal(m
         adapter=adapter,
         context=context,
     )
-    result = captured["tool_batch_executor"](
-        [
-            ToolInvocation(
-                id="graph-timeout-call",
-                name="property_filter",
-                arguments={
-                    "queries": [
-                        {
-                            "element_class": "TargetItem",
-                            "element_type": "NODE",
-                            "filter_dict": {},
-                            "return_properties": ["TargetItemCode"],
-                            "limit": 20,
-                        }
-                    ]
-                },
-            ),
-            ToolInvocation(
-                id="must-not-run",
-                name="get_nodes_schema",
-                arguments={},
-            ),
-        ],
-        captured["context_factory"](),
+    result = asyncio.run(
+        captured["tool_batch_executor"](
+            [
+                ToolInvocation(
+                    id="graph-timeout-call",
+                    name="property_filter",
+                    arguments={
+                        "queries": [
+                            {
+                                "element_class": "TargetItem",
+                                "element_type": "NODE",
+                                "filter_dict": {},
+                                "return_properties": ["TargetItemCode"],
+                                "limit": 20,
+                            }
+                        ]
+                    },
+                ),
+                ToolInvocation(
+                    id="must-not-run",
+                    name="get_nodes_schema",
+                    arguments={},
+                ),
+            ],
+            captured["context_factory"](),
+        )
     )
 
     assert result.terminal is True
@@ -1085,6 +1099,6 @@ def test_graph_agent_trace_bridge_sliding_window_applied_is_false():
     source = inspect.getsource(JiuwenModelTraceBridge.__init__)
     assert 'sliding_window_applied' in source
 
-    # Verify the graph agent _invoke_once passes sliding_window_applied=False
-    agent_source = inspect.getsource(JiuwenGraphQueryAgent._invoke_once)
+    # Verify the graph agent native async invocation disables sliding windows.
+    agent_source = inspect.getsource(JiuwenGraphQueryAgent._ainvoke_once)
     assert 'sliding_window_applied=False' in agent_source

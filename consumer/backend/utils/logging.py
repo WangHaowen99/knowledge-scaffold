@@ -14,8 +14,7 @@ import re
 import shutil
 import threading
 import time
-from functools import wraps
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Optional
 
 LOG_DIR = "logs"
 LOG_FILE = "agent.log"
@@ -24,8 +23,6 @@ DEFAULT_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 LOG_LEVEL_ENV = "LOG_LEVEL"
 LOG_STRUCTURED_ENV = "LOG_STRUCTURED"
 LOG_CONSOLE_ENV = "LOG_CONSOLE"
-LOG_REQUEST_BODY_ENV = "LOG_REQUEST_BODY"
-LOG_RESPONSE_BODY_ENV = "LOG_RESPONSE_BODY"
 LOG_MAX_BYTES_ENV = "LOG_MAX_BYTES"
 LOG_BACKUP_COUNT_ENV = "LOG_BACKUP_COUNT"
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5MB
@@ -39,7 +36,6 @@ _CURRENT_RUNTIME_LOG_LEVEL: Optional[int] = None
 _OPS_CONFIG_SIGNATURE: Optional[tuple[str, bool, int, int, int]] = None
 _LOG_LEVEL_FROM_OPS_CONFIG: Optional[int] = None
 _LOG_LEVEL_LOCK = threading.RLock()
-_T = TypeVar("_T", bound=Callable[..., Any])
 _LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("agentic_log_context", default={})
 _LOG_CONTEXT_FIELDS = (
     "agent_type",
@@ -564,104 +560,3 @@ def get_logger(name: str) -> logging.Logger:
     if not _LOGGING_CONFIGURED:
         configure_logging()
     return logging.getLogger(name)
-
-
-def _safe_body_text(value: str, max_length: int) -> str:
-    if len(value) <= max_length:
-        return value
-    return value[:max_length] + "...(truncated)"
-
-
-def log_request_response(
-    logger: logging.Logger,
-    *,
-    log_request_body: Optional[bool] = None,
-    log_response_body: Optional[bool] = None,
-    max_body_length: int = 2000,
-) -> Callable[[_T], _T]:
-    """Decorator to log request and response details for Flask routes."""
-
-    resolved_log_request = (
-        log_request_body
-        if log_request_body is not None
-        else _parse_bool(os.getenv(LOG_REQUEST_BODY_ENV), False)
-    )
-    resolved_log_response = (
-        log_response_body
-        if log_response_body is not None
-        else _parse_bool(os.getenv(LOG_RESPONSE_BODY_ENV), False)
-    )
-
-    def decorator(func: _T) -> _T:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any):
-            from flask import make_response, request
-
-            start = time.perf_counter()
-            request_info: dict[str, Any] = {
-                "method": request.method,
-                "path": request.path,
-                "query": request.query_string.decode("utf-8", "ignore"),
-                "remote_addr": request.headers.get("X-Forwarded-For", request.remote_addr),
-                "request_id": request.headers.get("X-Request-Id") or request.headers.get("X-Request-ID"),
-                "content_type": request.content_type,
-                "content_length": request.content_length,
-            }
-
-            if resolved_log_request:
-                if request.is_json:
-                    request_info["body"] = request.get_json(silent=True)
-                else:
-                    raw_body = request.get_data(cache=True, as_text=True) or ""
-                    if raw_body:
-                        request_info["body"] = _safe_body_text(raw_body, max_body_length)
-
-            logger.info("request.start %s %s", request_info.get("method"), request_info.get("path"), extra={"event": "request_start", "request": request_info})
-
-            try:
-                result = func(*args, **kwargs)
-            except Exception:
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                logger.exception(
-                    "request.error",
-                    extra={
-                        "event": "request_error",
-                        "request": request_info,
-                        "duration_ms": duration_ms,
-                    },
-                )
-                raise
-
-            response = make_response(result)
-            duration_ms = int((time.perf_counter() - start) * 1000)
-
-            response_info: dict[str, Any] = {
-                "status_code": response.status_code,
-                "content_type": response.content_type,
-                "content_length": response.content_length,
-            }
-
-            if resolved_log_response and not response.is_streamed:
-                if response.is_json:
-                    response_info["body"] = response.get_json(silent=True)
-                else:
-                    data_text = response.get_data(as_text=True) or ""
-                    if data_text:
-                        response_info["body"] = _safe_body_text(data_text, max_body_length)
-
-            logger.info(
-                "request.complete: %s %s",
-                request_info.get("path"),
-                response_info.get("status_code"),
-                extra={
-                    "event": "request_complete",
-                    "request": request_info,
-                    "response": response_info,
-                    "duration_ms": duration_ms,
-                },
-            )
-            return response
-
-        return wrapper  # type: ignore[return-value]
-
-    return decorator

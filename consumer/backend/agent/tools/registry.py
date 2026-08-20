@@ -18,8 +18,8 @@ from agent.tools.spawn_sub_agent import SpawnSubAgentTool
 from agent.tools.web_search_tool import WebSearchTool
 from utils.skills import get_skill_registry
 
-# Re-export both entry points from the registry boundary.
-from agent.tools.executor import aexecute_tool_batch, execute_tool_batch  # noqa: F401
+# Re-export the native-async entry point from the registry boundary.
+from agent.tools.executor import aexecute_tool_batch  # noqa: F401
 
 logger = get_logger("tools.registry")
 

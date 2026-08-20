@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 
 import pytest
 
@@ -11,7 +10,6 @@ import agent.runtime.lifecycle as lifecycle_module
 from agent.runtime.lifecycle import (
     JiuwenRunnerLifecycle,
     JiuwenRuntimeLifecycleError,
-    LegacyJiuwenLoopRunner,
 )
 
 
@@ -69,23 +67,10 @@ def test_runner_lifecycle_start_stop_and_release_are_idempotent():
     assert lifecycle.snapshot().owner_loop_id is None
 
 
-def test_runner_lifecycle_rejects_mode_mixing_on_one_loop():
-    runner = _FakeRunner()
-    lifecycle = JiuwenRunnerLifecycle(runner_loader=lambda: runner)
-
-    async def exercise():
-        await lifecycle.start(mode="legacy")
-        with pytest.raises(JiuwenRuntimeLifecycleError, match="separate process"):
-            await lifecycle.start(mode="async")
-        await lifecycle.stop()
-
-    asyncio.run(exercise())
-
-
 def test_runner_lifecycle_rejects_unknown_mode():
     lifecycle = JiuwenRunnerLifecycle(runner_loader=lambda: _FakeRunner())
 
-    with pytest.raises(ValueError, match="legacy.*async"):
+    with pytest.raises(ValueError, match="async"):
         asyncio.run(lifecycle.start(mode="worker"))  # type: ignore[arg-type]
 
 
@@ -161,45 +146,3 @@ def test_async_lifespan_starts_and_stops_the_same_owner(monkeypatch):
     asyncio.run(exercise())
     assert runner.start_calls == 1
     assert runner.stop_calls == 1
-
-
-def test_legacy_loop_starts_runner_before_accepting_work_and_stops_in_order():
-    runner = _FakeRunner()
-    lifecycle = JiuwenRunnerLifecycle(runner_loader=lambda: runner)
-    legacy = LegacyJiuwenLoopRunner(lifecycle=lifecycle)
-
-    loop = legacy.get_loop()
-    assert lifecycle.snapshot().state == "started"
-    assert lifecycle.snapshot().mode == "legacy"
-    assert lifecycle.snapshot().owner_loop_id == id(loop)
-
-    async def identify_loop_and_thread():
-        return id(asyncio.get_running_loop()), threading.current_thread().name
-
-    worker_loop_id, worker_name = legacy.submit(identify_loop_and_thread()).result(timeout=2)
-    assert worker_loop_id == id(loop)
-    assert worker_name == "jiuwen-loop"
-
-    assert legacy.shutdown() is True
-    assert legacy.shutdown() is False
-    assert runner.start_calls == 1
-    assert runner.stop_calls == 1
-    assert runner.start_loop_ids == runner.stop_loop_ids == [id(loop)]
-    assert lifecycle.snapshot().state == "stopped"
-
-
-def test_legacy_loop_does_not_accept_work_when_runner_start_fails():
-    class FailingRunner(_FakeRunner):
-        async def start(self) -> bool:
-            await super().start()
-            raise RuntimeError("runner unavailable")
-
-    runner = FailingRunner()
-    lifecycle = JiuwenRunnerLifecycle(runner_loader=lambda: runner)
-    legacy = LegacyJiuwenLoopRunner(lifecycle=lifecycle)
-
-    with pytest.raises(JiuwenRuntimeLifecycleError, match="failed to start"):
-        legacy.get_loop()
-
-    assert lifecycle.snapshot().state == "stopped"
-    assert lifecycle.snapshot().owner_loop_id is None

@@ -15,8 +15,10 @@ from agent.tools.business_data.resolver import (
 )
 from agent.tools.business_data.service import (
     BusinessDataSearchRequest,
+    query_business_data_async,
     query_business_data_stream,
 )
+from agent.runtime.async_utils import run_sync_compat
 from agent.tools.events import _tool_span_key
 from utils.logging import get_logger
 from ontology.ontology_catalog import (
@@ -208,6 +210,103 @@ def handle_business_data_search(
     return final_content
 
 
+async def handle_business_data_search_async(
+    ontology_id: str,
+    query: str,
+    entity: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    event_emitter: Optional[BusinessDataSearchEventEmitter] = None,
+    tool_call_id: Optional[str] = None,
+    provider_runtime_context: Optional[Mapping[str, Any]] = None,
+    _resolved_connection: Optional[ResolvedBusinessDataSource] = None,
+    _field_alias_mappings: Optional[Tuple[Tuple[str, str], ...]] = None,
+    *,
+    ontology_version: Optional[str] = None,
+) -> str:
+    """Native-async provider entry; nested graph Agents stay on the ASGI loop."""
+
+    normalized_ontology_id = str(ontology_id or "").strip()
+    normalized_query = str(query or "").strip()
+    normalized_entity = str(entity or "").strip()
+    if not normalized_ontology_id:
+        return "Error: ontology_id cannot be empty"
+    if not normalized_query:
+        return "Error: Search query cannot be empty"
+
+    run_id = str((provider_runtime_context or {}).get("run_id") or "").strip() or None
+    connection = _resolved_connection
+    if connection is None:
+        try:
+            connection = await run_sync_compat(
+                resolve_business_data_source,
+                workspace_id=workspace_id,
+                ontology_id=normalized_ontology_id,
+                run_id=run_id,
+                task_name="business-data-resolve",
+                offload_kind="tool",
+            )
+        except BusinessDataConnectionError as exc:
+            return "Error: {}".format(str(exc))
+
+    if connection.provider not in {"neo4j", "hugegraph"}:
+        return await run_sync_compat(
+            handle_business_data_search,
+            ontology_id=normalized_ontology_id,
+            query=normalized_query,
+            entity=normalized_entity,
+            workspace_id=workspace_id,
+            event_emitter=event_emitter,
+            tool_call_id=tool_call_id,
+            provider_runtime_context=provider_runtime_context,
+            _resolved_connection=connection,
+            _field_alias_mappings=_field_alias_mappings,
+            ontology_version=ontology_version,
+            run_id=run_id,
+            task_name="business-data-search",
+            offload_kind="tool",
+        )
+
+    final_content = ""
+    error_content = ""
+    saw_final_event = False
+    request = BusinessDataSearchRequest(
+        workspace_id=str(workspace_id or ""),
+        ontology_id=normalized_ontology_id,
+        entity=normalized_entity,
+        query=normalized_query,
+        field_alias_mappings=tuple(_field_alias_mappings or ()),
+        ontology_version=str(ontology_version or "").strip(),
+        provider_runtime_context=dict(provider_runtime_context or {}),
+    )
+    try:
+        async for event in query_business_data_async(
+            request,
+            connection=connection,
+        ):
+            _emit_business_data_search_event(
+                event_emitter=event_emitter,
+                event=event,
+                tool_call_id=tool_call_id,
+                ontology_id=connection.ontology_id,
+                provider=connection.provider,
+            )
+            event_type = str(event.get("type") or "").strip().lower()
+            event_content = str(event.get("content") or "").strip()
+            if event_type == "final":
+                saw_final_event = True
+                final_content = event_content
+            elif event_type == "error":
+                error_content = event_content or "数据源查询失败"
+    except Exception:
+        logger.exception("Unexpected error during async database search")
+        return "Error: Unexpected error during database search."
+    if error_content:
+        return "Error: 业务数据查询失败：{}".format(error_content)
+    if not saw_final_event:
+        return "Error: 业务数据查询失败：数据源未返回查询结果"
+    return final_content
+
+
 def _emit_business_data_search_event(
     *,
     event_emitter: Optional[BusinessDataSearchEventEmitter],
@@ -266,7 +365,7 @@ class BusinessDataSearchTool:
         object.__setattr__(self, "schema", BUSINESS_DATA_SEARCH_TOOL_SCHEMA)
         object.__setattr__(self, "allowed_callers", {"main", "subagent", "acp"})
 
-    def execute(
+    async def aexecute(
         self,
         *,
         args: Dict[str, Any],
@@ -346,7 +445,7 @@ class BusinessDataSearchTool:
         if graph_fallback_connection is not None:
             normalized_args["_resolved_connection"] = graph_fallback_connection
 
-        content = handle_business_data_search(
+        content = await handle_business_data_search_async(
             **normalized_args,
             ontology_version=(
                 context_selected_ontology_version

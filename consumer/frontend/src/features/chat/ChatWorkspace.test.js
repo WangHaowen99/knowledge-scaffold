@@ -13,6 +13,7 @@ const chatCssSource = readFileSync(join(currentDir, 'chat.css'), 'utf8');
 const appShellSource = readFileSync(join(currentDir, '../../app/AppShell.jsx'), 'utf8');
 const agenticStreamSource = readFileSync(join(currentDir, 'hooks/useAgenticStream.js'), 'utf8');
 const streamManagerSource = readFileSync(join(currentDir, 'hooks/useStreamManager.js'), 'utf8');
+const runAdmissionSource = readFileSync(join(currentDir, 'lib/runAdmission.js'), 'utf8');
 const chatSessionsSource = readFileSync(join(currentDir, 'hooks/useChatSessions.js'), 'utf8');
 
 test('automatic ontology selection does not claim that business data is ready', () => {
@@ -142,27 +143,24 @@ test('new chat navigation is active only for a blank chat session', () => {
 });
 
 test('awaiting interaction can be cancelled by button or Escape', () => {
-  assert.match(chatSource, /interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.match(chatSource, /sessions\/\$\{encodeURIComponent\(targetSessionId\)\}\/interactions\/\$\{encodeURIComponent\(interactionId\)\}\/cancel/);
+  assert.equal(chatSource.includes("headers: { 'Idempotency-Key': createIdempotencyKey() }"), true);
   assert.equal(chatSource.includes("event.key !== 'Escape'"), true);
   assert.equal(chatSource.includes('取消（Esc）'), true);
   assert.equal(chatSource.includes('applyInteractionCancellation'), true);
 });
 
-test('awaiting interaction resumes the same run after its terminal SSE closes', () => {
+test('awaiting interaction creates a new server-assigned run from cursor zero', () => {
+  assert.equal(runAdmissionSource.includes('interaction_response: options.interactionResponse'), true);
+  assert.equal(agenticStreamSource.includes('streamManager.startRunForSession('), true);
+  assert.equal(agenticStreamSource.includes('runLifecycle.activeRunId = admission.runId;'), true);
+  assert.equal(streamManagerSource.includes('cursor: 0'), true);
+});
+
+test('pending interaction replaces and guards the ordinary composer', () => {
+  assert.equal(chatSource.includes('{pendingInteraction ? ('), true);
   assert.equal(
-    streamManagerSource.includes('runId: activeMeta.runId,\n      cursor: activeMeta.lastSeq,'),
-    true,
-  );
-  assert.equal(
-    agenticStreamSource.includes('options?.interactionRunId || currentState?.runId || \'\''),
-    true,
-  );
-  assert.equal(
-    agenticStreamSource.includes('currentState?.cursor || 0,'),
-    true,
-  );
-  assert.equal(
-    agenticStreamSource.includes('`/agentic/runs/${encodeURIComponent(interactionRunId)}/interact`'),
+    chatSource.includes('if (!workspaceDataReady || !text || streamState.isLoading || pendingInteraction) return;'),
     true,
   );
 });

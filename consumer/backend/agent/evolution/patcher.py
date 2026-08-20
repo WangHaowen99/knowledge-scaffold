@@ -1,8 +1,9 @@
 """Operation patcher worker — turns buffered proposals into staged `.md` patches.
 
 Lifecycle:
-- Owned by `AgenticOrchestrator`. Two daemon threads: an event-driven worker
-  consuming a queue, plus a periodic sweeper that re-checks every op directory.
+- Owned by the ASGI lifespan. Two supervised asyncio tasks provide an
+  event-driven worker and a periodic sweep; blocking scans use the bounded
+  runtime tool pool.
 - Subscribes to `ProposalBuffer.change_listener` for the event-driven path.
 - Manual `request_rescan()` is exposed for the admin "立刻重新评估此 op" button.
 
@@ -18,9 +19,9 @@ Only ③'s final branch (LLM merge) costs money.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import queue
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -35,6 +36,8 @@ from ontology.ontologies import get_ontology_version_dir
 from workspace.workspaces import get_workspace_paths, get_workspaces_root
 from agent.evolution.buffer import ProposalBuffer
 from agent.evolution.models import Aggregate
+from agent.runtime.async_utils import run_sync_compat
+from agent.runtime.supervisor import RunTaskSupervisor
 
 logger = get_logger("evolution.patcher")
 
@@ -167,7 +170,7 @@ _TRIGGERING_EVENTS = {"append", "outcome", "vote", "endorse", "edit", "applied"}
 
 
 class OperationPatcher:
-    """Background worker that scans the proposal buffer and emits staged patches."""
+    """Supervised worker that scans the proposal buffer and emits staged patches."""
 
     def __init__(
         self,
@@ -178,45 +181,101 @@ class OperationPatcher:
         self._buffer = buffer
         self._cfg = replace(config)
         self._cfg_lock = threading.Lock()
-        self._queue: "queue.Queue[Tuple[Optional[str], str, str]]" = queue.Queue()
-        self._enqueued: set = set()
+        self._queue: asyncio.Queue[Tuple[Optional[str], str, str]] | None = None
+        self._enqueued: set[Tuple[Optional[str], str, str]] = set()
+        self._pending_before_start: set[
+            Tuple[Optional[str], str, str]
+        ] = set()
         self._enqueued_lock = threading.Lock()
-        self._stop = threading.Event()
-        self._sweep_wakeup = threading.Event()
-        self._worker_thread: Optional[threading.Thread] = None
-        self._sweep_thread: Optional[threading.Thread] = None
+        self._sweep_wakeup: asyncio.Event | None = None
+        self._supervisor: RunTaskSupervisor | None = None
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
+        self._tasks: set[asyncio.Task[Any]] = set()
         self._started = False
+        self._closed = False
 
     # -------------------------------------------------------------- lifecycle
-    def start(self) -> None:
+    def bind_supervisor(self, supervisor: RunTaskSupervisor) -> None:
         if self._started:
-            return
-        self._started = True
-        self._worker_thread = threading.Thread(
-            target=self._worker_loop,
-            name="op-patcher-worker",
-            daemon=True,
-        )
-        self._sweep_thread = threading.Thread(
-            target=self._sweep_loop,
-            name="op-patcher-sweep",
-            daemon=True,
-        )
-        self._worker_thread.start()
-        self._sweep_thread.start()
-        # Bootstrap: scan once on startup so existing buffer state can converge.
-        self._enqueue_all()
-        logger.info("OperationPatcher started (sweep=%ss)", self._current_config().sweep_interval_sec)
+            raise RuntimeError("cannot rebind a started operation patcher")
+        self._supervisor = supervisor
 
-    def shutdown(self, wait: bool = False) -> None:
+    async def start(self) -> bool:
+        if self._started:
+            return False
+        if self._closed:
+            raise RuntimeError("operation patcher is closed")
+        if self._supervisor is None:
+            raise RuntimeError("operation patcher requires a runtime supervisor")
+        self._owner_loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue()
+        self._sweep_wakeup = asyncio.Event()
+        self._started = True
+        self._tasks = {
+            self._supervisor.start_derived(
+                self._worker_loop(),
+                name="operation-patcher-worker",
+            ),
+            self._supervisor.start_derived(
+                self._sweep_loop(),
+                name="operation-patcher-sweep",
+            ),
+        }
+        initial_keys = await run_sync_compat(
+            lambda: list(self._buffer.iter_op_dirs()),
+            task_name="operation-patcher-bootstrap",
+            offload_kind="tool",
+        )
+        with self._enqueued_lock:
+            initial_keys.extend(self._pending_before_start)
+            self._pending_before_start.clear()
+        for key in initial_keys:
+            self._enqueue_on_loop(tuple(key))
+        logger.info(
+            "OperationPatcher started (sweep=%ss)",
+            self._current_config().sweep_interval_sec,
+        )
+        return True
+
+    async def close(self, *, deadline: float) -> bool:
+        self._closed = True
         if not self._started:
+            return True
+        current = asyncio.current_task()
+        tasks = [
+            task
+            for task in self._tasks
+            if not task.done() and task is not current
+        ]
+        for task in tasks:
+            task.cancel()
+        # Cancelling before waking is intentional.  Waking the Event first can
+        # race asyncio.wait_for's completed waiter with Task.cancel(), leaving
+        # the sweep task stuck in "cancelling" until a second cancellation.
+        wakeup = self._sweep_wakeup
+        if wakeup is not None:
+            wakeup.set()
+        if not tasks:
+            self._started = False
+            return True
+        timeout = max(0.0, deadline - asyncio.get_running_loop().time())
+        _done, pending = await asyncio.wait(tasks, timeout=timeout)
+        self._started = False
+        return not pending
+
+    def cancel_nowait(self) -> None:
+        """Best-effort test cleanup; application shutdown uses ``close``."""
+
+        loop = self._owner_loop
+        if loop is None or loop.is_closed():
             return
-        self._stop.set()
-        self._sweep_wakeup.set()
-        if wait:
-            for t in (self._worker_thread, self._sweep_thread):
-                if t and t.is_alive():
-                    t.join(timeout=2.0)
+
+        def cancel_tasks() -> None:
+            for task in tuple(self._tasks):
+                if not task.done():
+                    task.cancel()
+
+        loop.call_soon_threadsafe(cancel_tasks)
 
     def update_config(self, config: PatcherConfig) -> None:
         """Swap runtime thresholds without rebuilding the worker threads."""
@@ -224,7 +283,7 @@ class OperationPatcher:
             return
         with self._cfg_lock:
             self._cfg = replace(config)
-        self._sweep_wakeup.set()
+        self._wake_sweeper()
         logger.info(
             "OperationPatcher config updated min_occurrences=%s min_applied=%s max_rejection=%s cooldown=%ss sweep=%ss auto_apply=%s",
             config.min_occurrences,
@@ -271,40 +330,83 @@ class OperationPatcher:
             return
         key = (workspace_id, ontology_id, operation_key)
         with self._enqueued_lock:
+            if not self._started or self._owner_loop is None:
+                self._pending_before_start.add(key)
+                return
             if key in self._enqueued:
                 return  # Gate ② — queue dedup
             self._enqueued.add(key)
-        self._queue.put(key)
+        self._owner_loop.call_soon_threadsafe(self._enqueue_on_loop, key)
 
-    def _enqueue_all(self) -> None:
-        for ws, onto, op in self._buffer.iter_op_dirs():
-            self._enqueue(ws, onto, op)
+    def _enqueue_on_loop(
+        self,
+        key: Tuple[Optional[str], str, str],
+    ) -> None:
+        queue = self._queue
+        if queue is None or self._closed:
+            with self._enqueued_lock:
+                self._enqueued.discard(key)
+            return
+        with self._enqueued_lock:
+            if key not in self._enqueued:
+                self._enqueued.add(key)
+        queue.put_nowait(key)
 
-    def _worker_loop(self) -> None:
-        while not self._stop.is_set():
+    async def _worker_loop(self) -> None:
+        queue = self._queue
+        assert queue is not None
+        while True:
             try:
-                key = self._queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
+                key = await queue.get()
+            except asyncio.CancelledError:
+                raise
             try:
-                self._scan(key[1], key[2], workspace_id=key[0])
+                await run_sync_compat(
+                    self._scan,
+                    key[1],
+                    key[2],
+                    workspace_id=key[0],
+                    task_name="operation-patcher-scan",
+                    offload_kind="tool",
+                )
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("patcher scan failed for %s/%s", key[1], key[2])
             finally:
                 with self._enqueued_lock:
                     self._enqueued.discard(key)
+                queue.task_done()
 
-    def _sweep_loop(self) -> None:
-        while not self._stop.is_set():
+    async def _sweep_loop(self) -> None:
+        wakeup = self._sweep_wakeup
+        assert wakeup is not None
+        while True:
             interval = max(60, int(self._current_config().sweep_interval_sec))
-            self._sweep_wakeup.wait(interval)
-            if self._stop.is_set():
-                break
-            self._sweep_wakeup.clear()
             try:
-                self._enqueue_all()
+                await asyncio.wait_for(wakeup.wait(), timeout=interval)
+            except TimeoutError:
+                pass
+            wakeup.clear()
+            try:
+                keys = await run_sync_compat(
+                    lambda: list(self._buffer.iter_op_dirs()),
+                    task_name="operation-patcher-sweep",
+                    offload_kind="tool",
+                )
+                for key in keys:
+                    self._enqueue(key[0], key[1], key[2])
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("patcher sweep enumeration failed")
+
+    def _wake_sweeper(self) -> None:
+        loop = self._owner_loop
+        wakeup = self._sweep_wakeup
+        if loop is None or wakeup is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(wakeup.set)
 
     def _current_config(self) -> PatcherConfig:
         with self._cfg_lock:

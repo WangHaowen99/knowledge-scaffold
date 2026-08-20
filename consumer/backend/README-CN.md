@@ -1,6 +1,6 @@
 # Agentic Backend 中文说明
 
-这是 Onto Agent 的 Flask 后端，负责认证接口、Agent 运行流式接口、聊天/执行状态持久化、本体与技能资源管理，以及带工具调用能力的通用 Agent Loop。后端通过 `agent.v2` SSE 协议向前端持续输出模型 token、工具状态、子 Agent 事件和轮次终态。
+这是 Onto Agent 的 FastAPI 后端，负责认证接口、Agent 运行流式接口、聊天/执行状态持久化、本体与技能资源管理，以及带工具调用能力的通用 Agent Loop。后端通过强类型 SSE 公共事件向前端持续输出模型 token、工具状态、子 Agent 事件和轮次终态。
 
 运行时本体、技能和工作区资源默认放在 `consumer/` 应用目录的 `.onto-runtime/` 下：
 
@@ -40,61 +40,25 @@
 ## 项目结构
 
 ```text
-agentic/
-├── app.py                    # Flask app factory、auth/login 路由、health
-├── orchestrator.py           # 运行生命周期、持久化、取消
-├── loop/
-│   ├── jiuwen_adapter.py     # Jiuwen 主链路适配层
-│   ├── jiuwen/               # Jiuwen 支撑模块
-│   └── shared/               # Jiuwen 运行时复用的 loop helper
-├── a2a/                      # A2A 协议适配、模型与 service
-├── acp/                      # ACP 协议适配与配置
-├── business_data/            # 本体私有数据源与 provider 适配器
-├── direct_execution/         # 脚本直连执行保护与作用域
-├── evolution/                # operation evolution 提案与审核
-├── observability/            # RuntimeEvent 总线与 exporter
-├── perf_analysis/            # 本地性能 JSONL 分析
-├── routes/
-│   ├── workflows.py          # /agentic/runs/*
-│   ├── sessions.py           # /agentic/sessions/*
-│   ├── ontologies.py         # /agentic/ontologies/*
-│   ├── skills.py             # /agentic/skills/*
-│   ├── workspaces.py         # /agentic/workspaces/*
-│   ├── business_data.py      # 本体 data-source API 与旧接口退役提示
-│   ├── operations.py         # /agentic/operations/*
-│   ├── performance.py        # /agentic/*/performance 与 /api/local-observability/*
-│   ├── system_config.py      # /api/system-config*
-│   └── a2a.py                # /.well-known/a2a/* 与 /a2a/*
-├── tools/
-│   ├── registry.py           # 工具注册表与 schema 查询
-│   ├── executor.py           # 工具批处理执行
-│   ├── business_data_search.py
-│   ├── ontology_context.py
-│   ├── skill.py
-│   ├── memory.py
-│   ├── spawn_sub_agent.py
-│   └── execute_script.py
-├── sub_agents/
-│   ├── base.py               # 子 Agent 执行逻辑
-│   └── manager.py            # 子 Agent fan-out/fan-in、并发与深度控制
-├── memory/                   # 记忆后端、模型和上下文构造
-├── stores/                   # Chat、execution、run 等持久化
-├── services/
-│   ├── auth.py               # JWT 认证与权限检查
-│   ├── llm/                  # OpenAI-compatible LLM 客户端与路由
-│   ├── data_provider_client.py
-│   ├── mindsdb.py
-│   └── nl2sql.py
-├── prompts/
-│   └── universal.py          # 主 Agent 系统提示词
-├── config/
-│   ├── settings.py           # 应用、模型、Agent 配置对象
-│   └── system_config.py      # UI 可编辑系统配置层
-└── utils/
-    ├── logging.py
-    ├── streaming.py
-    ├── skills.py
-    └── ontologies.py
+backend/
+├── app.py                    # FastAPI factory 与 ASGI lifespan
+├── run.py                    # 单 worker Uvicorn 开发入口
+├── agent/
+│   ├── core/                 # Jiuwen ReAct 引擎与编排逻辑
+│   ├── runtime/              # RuntimeContainer、Manager、EventHub、Supervisor
+│   ├── tools/                # 工具注册、执行与业务数据 adapter
+│   ├── sub_agents/           # 子 Agent fan-out/fan-in
+│   └── memory/               # 记忆后端与上下文构造
+├── api/
+│   ├── routes/               # FastAPI 业务路由
+│   ├── protocols/            # A2A、MCP、ACP adapter
+│   └── auth/                 # 认证与授权
+├── persistence/              # Chat 与 Turn checkpoint 持久化
+├── integration/              # 观测、平台与 sandbox 集成
+├── workspace/                # 工作空间解析与 ACL
+├── config/                   # 应用、Agent 与系统配置
+├── migrations/               # forward-only 启动/部署迁移
+└── tests/                    # pytest 回归测试
 ```
 
 ## 本地运行
@@ -124,7 +88,7 @@ MCP 服务作为独立 FastMCP 进程运行。安装依赖后在 `consumer/backe
 PYTHONPATH=. python -m api.protocols.mcp.server --transport both --host 0.0.0.0 --port 7488
 ```
 
-Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。Flask 主服务提供 `/agentic/mcp/*` 管理 API。每个工作空间持久化一个随机 `mcp_endpoint_id`，独立进程暴露 `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/search/sse` 和 `/{mcp_endpoint_id}/chat/sse`。完整 URL 通过 `GET /agentic/mcp/runtime/status` 获取；旧固定路由不再提供。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会重新校验 MCP Token、工作空间 ACL 和当前请求 URL Endpoint 绑定，再进入统一 Jiuwen workflow 和 admission queue。MCP transport session 同时绑定到首次使用的 Endpoint，不能跨工作空间 URL 复用；Streamable HTTP Session 默认空闲 30 分钟后失效，SSE 断开时释放绑定，每个服务 transport 固定最多保留 10000 个活动 Session。服务重启后客户端需要重新 initialize。
+Docker Compose 会启动独立 `mcp` 容器，复用后端镜像和 `.onto-runtime` 挂载。FastAPI 主服务提供 `/agentic/mcp/*` 管理 API。每个工作空间持久化一个随机 `mcp_endpoint_id`，独立进程暴露 `/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`、`/{mcp_endpoint_id}/search/sse` 和 `/{mcp_endpoint_id}/chat/sse`。完整 URL 通过 `GET /agentic/mcp/runtime/status` 获取；旧固定路由不再提供。Search 工具必须显式传入 `ontology_id`，只执行图检索原子工具；Chat 会重新校验 MCP Token、工作空间 ACL 和当前请求 URL Endpoint 绑定，再进入统一 Jiuwen workflow 和 admission queue。MCP transport session 同时绑定到首次使用的 Endpoint，不能跨工作空间 URL 复用；Streamable HTTP Session 默认空闲 30 分钟后失效，SSE 断开时释放绑定，每个服务 transport 固定最多保留 10000 个活动 Session。服务重启后客户端需要重新 initialize。
 
 说明：
 
@@ -211,7 +175,7 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 | `AUTH_USERS_FILE` | 用户凭据文件 | `<consumer>/.onto-runtime/users.json` |
 | `AUTH_SECRET` | JWT 签名密钥 | 未设置时使用开发默认值 |
 | `AUTH_TOKEN_TTL` | JWT 有效期，单位秒 | `43200` |
-| `MCP_SERVER_HOST` | 独立 MCP Server 监听地址；Docker Compose 中 Flask 容器会覆盖为 `mcp` 用于内部探测，MCP 容器会覆盖为 `0.0.0.0` 用于监听 | `0.0.0.0` |
+| `MCP_SERVER_HOST` | 独立 MCP Server 监听地址；Docker Compose 中 Consumer 后端容器会覆盖为 `mcp` 用于内部探测，MCP 容器会覆盖为 `0.0.0.0` 用于监听 | `0.0.0.0` |
 | `MCP_SERVER_PORT` | 独立 MCP Server 端口；Docker Compose 默认将宿主机 `${MCP_SERVER_PORT:-7488}` 映射到容器 `7488` | `7488` |
 | `MCP_PUBLIC_BASE_URL` | 外部可访问的协议、域名、端口和可选网关前缀；工作空间 Endpoint ID 和服务路径由系统自动拼接 | 根据 host/port 推导 |
 | `MCP_TRANSPORT` | `both` 同时暴露 Streamable HTTP 和 SSE，也可显式选择单一 transport | `both` |
@@ -271,8 +235,9 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 - `POST /auth/login`
 - `GET /auth/me`
 - `GET /health`
-- `POST /agentic/runs/stream`
-- `GET /agentic/runs/<run_id>/status`
+- `POST /agentic/runs`
+- `GET /agentic/runs/<run_id>`
+- `GET /agentic/runs/<run_id>/events`
 - `POST /agentic/runs/<run_id>/cancel`
 - `GET/POST/DELETE /agentic/sessions...`
 - `GET /agentic/sessions/<session_id>/performance`
@@ -298,24 +263,26 @@ PYTHONPATH=backend backend/venv/bin/python -m pytest backend/tests
 
 ## 流式协议
 
-Agent 工作流使用 SSE：
+每条 SSE 直接使用强类型公共事件名，并以 Run 内序号作为 `id`：
 
 ```text
-event: agent.v2
-data: { ... }
+id: 1
+event: token.delta
+data: {"schema_version":"1.0","seq":1,"event_type":"token.delta",...}
 ```
 
-JSON envelope 使用：
+`data` 是持久化后的 `PublicEvent`，不再嵌套兼容 envelope：
 
 ```json
 {
-  "protocol": "agent-stream.v2",
+  "schema_version": "1.0",
   "event_id": "<run_id>:<seq>",
   "seq": 1,
   "run_id": "...",
   "session_id": "...",
   "turn_id": 1,
-  "type": "<event_type>",
+  "event_type": "<event_type>",
+  "status": "running",
   "payload": {}
 }
 ```

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Optional
 from urllib.parse import quote
+from uuid import uuid4
 
 from ..streaming import EventStream
 from ..transport import HttpClient
@@ -14,42 +15,70 @@ def _path(value: str) -> str:
     return quote(value, safe="")
 
 
+def _relative_api_path(value: str, *, field: str) -> str:
+    path = str(value or "").strip()
+    if not path.startswith("/") or path.startswith("//"):
+        raise ValueError("{} must be a relative API path".format(field))
+    return path
+
+
 class AgenticRunsApi:
     def __init__(self, http: HttpClient) -> None:
         self._http = http
 
-    def stream(
+    def create(
         self,
         *,
         session_id: str,
         request: str,
-        run_id: Optional[str] = None,
-        context: Optional[JsonDict] = None,
         agent_mode: Optional[AgentMode] = None,
-    ) -> EventStream:
-        run_context: JsonDict = dict(context or {})
+        llm_request_mode: Optional[str] = None,
+        model_profile_id: Optional[str] = None,
+        arguments: Optional[JsonDict] = None,
+        include_trace: Optional[bool] = None,
+        interaction_response: Optional[JsonDict] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> JsonDict:
+        payload: JsonDict = {
+            "session_id": session_id,
+            "request": request,
+        }
         if agent_mode is not None:
-            run_context["agent_mode"] = agent_mode
-        response = self._http.post(
-            "/agentic/runs/stream",
-            json={
-                "session_id": session_id,
-                "request": request,
-                "run_id": run_id,
-                "context": run_context,
+            payload["agent_mode"] = agent_mode
+        if llm_request_mode is not None:
+            payload["llm_request_mode"] = llm_request_mode
+        if model_profile_id is not None:
+            payload["model_profile_id"] = model_profile_id
+        if arguments is not None:
+            payload["arguments"] = dict(arguments)
+        if include_trace is not None:
+            payload["include_trace"] = include_trace
+        if interaction_response is not None:
+            payload["interaction_response"] = interaction_response
+        return self._http.post(
+            "/agentic/runs",
+            json=payload,
+            headers={
+                "Idempotency-Key": idempotency_key or uuid4().hex,
             },
-            stream=True,
         )
-        return EventStream(response, normalize_agentic_sse_event)
 
-    def status(self, run_id: str) -> JsonDict:
-        return self._http.get("/agentic/runs/{}/status".format(_path(run_id)))
+    def get(self, run_id: str) -> JsonDict:
+        return self._http.get("/agentic/runs/{}".format(_path(run_id)))
 
     def events(self, run_id: str, *, after_seq: int = 0) -> EventStream:
         """Attach or reattach to an admitted run after the last consumed sequence."""
+        return self.events_from_link(
+            "/agentic/runs/{}/events".format(_path(run_id)),
+            after_seq=after_seq,
+        )
+
+    def events_from_link(self, events_link: str, *, after_seq: int = 0) -> EventStream:
+        """Attach using the canonical events link returned by run admission."""
+        path = _relative_api_path(events_link, field="events_link")
         cursor = max(0, int(after_seq or 0))
         response = self._http.get(
-            "/agentic/runs/{}/events".format(_path(run_id)),
+            path,
             params={"after_seq": cursor},
             headers={"Last-Event-ID": str(cursor)} if cursor else None,
             stream=True,

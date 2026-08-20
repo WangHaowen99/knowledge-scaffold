@@ -15,7 +15,6 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +23,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 
 import agent.core.jiuwen_engine as jiuwen_engine
+from agent.runtime.lifecycle import get_jiuwen_runner_lifecycle
 
 
 class _Observer:
@@ -148,8 +148,12 @@ async def _loop_probe() -> dict[str, int]:
             task is not current and not task.done()
             for task in asyncio.all_tasks()
         ),
-        "ready_handles": len(loop._ready),
-        "scheduled_handles": len(loop._scheduled),
+        "ready_handles": sum(
+            not handle.cancelled() for handle in loop._ready
+        ),
+        "scheduled_handles": sum(
+            not handle.cancelled() for handle in loop._scheduled
+        ),
     }
 
 
@@ -172,7 +176,7 @@ def _cleanup_fields(snapshot: dict[str, int]) -> dict[str, int]:
     return {field: snapshot[field] for field in fields}
 
 
-def run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
+async def _run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
     if runs < workers or runs % workers:
         raise ValueError("runs must be a positive multiple of workers")
 
@@ -216,7 +220,9 @@ def run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
     errors: list[str] = []
     started_at = time.perf_counter()
 
-    def run_one(index: int) -> int:
+    semaphore = asyncio.Semaphore(workers)
+
+    async def run_one(index: int) -> int:
         state = {
             "run_id": "pressure-real-{}".format(index),
             "session_id": "pressure-shared-business-session",
@@ -229,14 +235,15 @@ def run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
                 "llm_request_mode": "sync",
             },
         }
-        result = jiuwen_engine.JiuwenReactLoopEngine(
-            agent_config=_agent_config()
-        ).run(
-            state,
-            caller="main",
-            system_prompt="offline pressure prompt",
-            observer=observer,
-        )
+        async with semaphore:
+            result = await jiuwen_engine.JiuwenReactLoopEngine(
+                agent_config=_agent_config()
+            ).arun(
+                state,
+                caller="main",
+                system_prompt="offline pressure prompt",
+                observer=observer,
+            )
         if result.get("final_output") != "ok-offline":
             raise AssertionError(
                 "unexpected result for {}: {!r}".format(
@@ -248,25 +255,29 @@ def run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
 
     jiuwen_engine._resolve_jiuwen_llm_config = lambda *args, **kwargs: _llm_config()
     jiuwen_engine.create_default_jiuwen_agent = create_offline_agent
+    lifecycle = get_jiuwen_runner_lifecycle()
+    started_here = False
     try:
-        with ThreadPoolExecutor(
-            max_workers=workers,
-            thread_name_prefix="jiuwen-pressure",
-        ) as pool:
-            futures = [pool.submit(run_one, index) for index in range(runs)]
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception as exc:
-                    errors.append("{}: {}".format(type(exc).__name__, exc))
+        started_here = await lifecycle.start(mode="async")
+        results = await asyncio.gather(
+            *(run_one(index) for index in range(runs)),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                errors.append(
+                    "{}: {}".format(type(result).__name__, result)
+                )
     finally:
         jiuwen_engine.create_default_jiuwen_agent = original_create
         jiuwen_engine._resolve_jiuwen_llm_config = original_resolve
+        if started_here:
+            await lifecycle.stop()
 
     elapsed_seconds = time.perf_counter() - started_at
     gc.collect()
     after = _snapshot()
-    loop_probe = jiuwen_engine._run_awaitable(_loop_probe())
+    loop_probe = await _loop_probe()
     threads_after = [
         (thread.ident, thread.is_alive())
         for thread in threading.enumerate()
@@ -320,6 +331,12 @@ def run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
     ):
         raise RuntimeError(json.dumps(result, ensure_ascii=False, indent=2))
     return result
+
+
+def run_pressure(*, runs: int, workers: int) -> dict[str, Any]:
+    """Run the pressure experiment on one owned native event loop."""
+
+    return asyncio.run(_run_pressure(runs=runs, workers=workers))
 
 
 def main() -> int:

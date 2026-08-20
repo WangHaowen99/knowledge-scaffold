@@ -4,13 +4,13 @@
 
 import { useRef, useCallback, useLayoutEffect } from 'react';
 import createLogger from '../../../shared/lib/logger';
-import { authFetch } from '../../../shared/api/auth';
 import {
   AGENT_STREAM_EVENT,
   applyAgentV2Event,
   closeOpenSegment,
   isAgentV2Envelope,
 } from '../lib/streamHelpers';
+import { buildRunRequestPayload, createIdempotencyKey } from '../lib/runAdmission';
 import { messageStatusForTerminalRun } from '../lib/streamLifecycle';
 import { isMessageUpdateScopeCurrent } from '../lib/streamUpdateScope';
 
@@ -55,19 +55,6 @@ const applyMessageUpdaters = (messages, updaters = []) => {
   return updaters.reduce((current, updater) => {
     return typeof updater === 'function' ? updater(current) : updater;
   }, messages);
-};
-
-const AGENTIC_CONFIG = {
-  endpoint: '/agentic/runs',
-  buildPayload: (message, sessionId, options = {}) => ({
-    request: message,
-    session_id: sessionId,
-    agent_mode: options.agentMode || 'quick',
-    llm_request_mode: options.llmRequestMode || 'stream',
-    model_profile_id: options.modelProfileId || '',
-    arguments: options.arguments || null,
-    include_trace: options.includeTrace === true,
-  }),
 };
 
 const useAgenticStream = ({
@@ -432,6 +419,7 @@ const useAgenticStream = ({
     onComplete: (terminalStatus = 'success') => {
       if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
       const trackedRunId = runLifecycle.activeRunId || runId;
+      if (!trackedRunId) return;
       const trackedTurnId = runLifecycle.activeTurnId || null;
       upsertTurnBubble(trackedRunId, trackedTurnId, (current) => ({
         ...current,
@@ -448,6 +436,10 @@ const useAgenticStream = ({
     onError: (error, isAbort) => {
       if (!isMessageUpdateScopeCurrent(runLifecycle.scopeEpoch, scopeEpochRef.current)) return;
       const trackedRunId = runLifecycle.activeRunId || runId;
+      if (!trackedRunId) {
+        onSessionUpdated?.();
+        return;
+      }
       if (isAbort) {
         finalizeCancelledRun(
           trackedRunId,
@@ -481,9 +473,7 @@ const useAgenticStream = ({
     if (!message.trim()) return;
 
     const activeSessionId = existingSessionId || sessionId;
-    const runId = `agentic-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const runLifecycle = { activeRunId: runId, scopeEpoch: scopeEpochRef.current };
-    currentRunIdRef.current = runId;
+    const runLifecycle = { activeRunId: '', scopeEpoch: scopeEpochRef.current };
     const agentMode = typeof options?.agentMode === 'string'
       ? options.agentMode.trim()
       : 'quick';
@@ -500,6 +490,11 @@ const useAgenticStream = ({
       ? options.onSessionUpdated
       : null;
 
+    if (!streamManager?.startRunForSession || !activeSessionId) {
+      logger.error('StreamManager unavailable or missing sessionId');
+      return;
+    }
+
     queueMessageUpdate((prev) => {
       const next = prev.slice();
       next.push({
@@ -509,98 +504,52 @@ const useAgenticStream = ({
       return next;
     }, activeSessionId, { immediate: true });
 
-    logger.info('Starting agentic workflow', { runId, sessionId: activeSessionId });
+    logger.info('Starting agentic workflow', { sessionId: activeSessionId });
 
-    const streamUrl = AGENTIC_CONFIG.endpoint;
-    const streamPayload = AGENTIC_CONFIG.buildPayload(
+    const streamPayload = buildRunRequestPayload(
       message.trim(),
       activeSessionId,
       {
         agentMode,
-        llmRequestMode: 'stream',
         modelProfileId,
         arguments: selectedOntologyId ? { selected_ontology_id: selectedOntologyId } : null,
         includeTrace: true,
+        interactionResponse,
       },
     );
 
-    if (!streamManager || !activeSessionId) {
-      logger.error('StreamManager unavailable or missing sessionId');
-      return;
-    }
-
-    // HITL resumes the existing run and subscribes from its last cursor.
-    if (interactionResponse) {
-      const currentState = streamManager.getStreamState(activeSessionId);
-      const interactionRunId = String(
-        options?.interactionRunId || currentState?.runId || ''
-      ).trim();
-      if (!interactionRunId) {
-        finalizeErroredRun(runId, 'Missing run id for interaction resume', activeSessionId);
-        return;
-      }
-      try {
-        const interactionResult = await authFetch(
-          `/agentic/runs/${encodeURIComponent(interactionRunId)}/interact`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(interactionResponse),
-          },
-        );
-        const interactionPayload = await interactionResult.json().catch(() => ({}));
-        if (!interactionResult.ok) {
-          const detail = interactionPayload?.error?.detail
-            || interactionPayload?.error
-            || 'Interaction resume failed';
-          throw new Error(detail);
-        }
-        const interactionLifecycle = {
-          activeRunId: interactionRunId,
-          scopeEpoch: scopeEpochRef.current,
-        };
-        await streamManager.resumeRunForSession(
-          activeSessionId,
-          interactionRunId,
-          currentState?.cursor || 0,
-          {
-            ...createStreamCallbacks(
-              interactionRunId,
-              activeSessionId,
-              interactionLifecycle,
-              onSessionUpdated,
-            ),
-            status: interactionPayload.status || 'running',
-          },
-        );
-      } catch (error) {
-        finalizeErroredRun(
-          interactionRunId,
-          error?.message || 'Interaction resume failed',
-          activeSessionId,
-        );
-      }
-      return;
-    }
-
-    upsertTurnBubble(runId, null, { status: 'running', isLoading: true }, activeSessionId, { immediate: true });
-
     const streamCallbacks = createStreamCallbacks(
-      runId,
+      '',
       activeSessionId,
       runLifecycle,
       onSessionUpdated,
     );
 
-    await streamManager.startStreamForSession(
+    await streamManager.startRunForSession(
       activeSessionId,
-      streamUrl,
       streamPayload,
-      streamCallbacks
+      {
+        ...streamCallbacks,
+        idempotencyKey: String(options?.idempotencyKey || '').trim() || createIdempotencyKey(),
+        onAdmission: (admission) => {
+          runLifecycle.activeRunId = admission.runId;
+          runLifecycle.activeTurnId = admission.turnId;
+          currentRunIdRef.current = admission.runId;
+          upsertTurnBubble(
+            admission.runId,
+            admission.turnId,
+            {
+              status: admission.status === 'queued' ? 'queued' : 'running',
+              isLoading: true,
+            },
+            activeSessionId,
+            { immediate: true, scopeEpoch: runLifecycle.scopeEpoch },
+          );
+        },
+      },
     );
   }, [
     createStreamCallbacks,
-    finalizeErroredRun,
     queueMessageUpdate,
     sessionId,
     streamManager,

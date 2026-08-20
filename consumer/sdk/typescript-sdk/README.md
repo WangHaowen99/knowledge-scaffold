@@ -86,7 +86,7 @@ for await (const event of resumed) {
 }
 ```
 
-排队中的 run 会返回 `409`，应先轮询 `runs.status()`；内存回放窗口已经释放时返回 `410`，此时改读 session 历史。`resume()` 同时发送 `after_seq` 和 `Last-Event-ID`，服务端只回放游标之后的事件。
+可通过 `runs.get(runId)` 查询 Run；内存回放窗口已经释放时返回 `410`，此时改读 session 历史。`resume()` 同时发送 `after_seq` 和 `Last-Event-ID`，服务端只回放游标之后的事件。
 
 ## MCP 与 Graph
 
@@ -96,7 +96,7 @@ Graph 连接按 workspace 配置并显式绑定 ontology。Neo4j 配置 `uri/dat
 
 ## 运行模式
 
-后端运行模式通过 `context.agent_mode` 传入：
+后端运行模式通过 `POST /agentic/runs` 的顶层 `agent_mode` 传入：
 
 ```ts
 const stream = await client.chat.send({
@@ -112,4 +112,4 @@ const stream = await client.chat.send({
 - `thinking`：启用 reasoning，不暴露子 Agent 编排工具
 - `multi_agent`：启用 reasoning，并允许 `spawn_sub_agent` 编排
 
-也可以通过 `context: { agent_mode: 'multi_agent' }` 透传给底层接口。
+底层接口可通过 `client.agentic.runs.create({ ..., agent_mode: 'multi_agent' })` 使用同一字段。

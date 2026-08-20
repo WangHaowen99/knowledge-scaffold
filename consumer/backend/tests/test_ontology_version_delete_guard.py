@@ -2,18 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
 import yaml
-from flask import Flask
 
 from api.auth.auth import AuthManager
-from api.routes.ontologies import ontologies_bp
+from api.routes.ontologies import ontologies_router
+from api.testing import TestApplication
 from persistence.chat_store import ChatStore
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
 def _build_test_client(tmp_path):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate("admin", "TestBootstrap#2026")
@@ -21,10 +22,10 @@ def _build_test_client(tmp_path):
     if user.password_change_required:
         user = auth_manager.change_password("admin", "TestBootstrap#2026", "RootStrong123!")
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(ontologies_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(ontologies_router)
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     return client, {"Authorization": "Bearer {}".format(token)}
 
@@ -79,7 +80,7 @@ def test_delete_referenced_ontology_version_returns_409(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 409
-    payload = response.get_json()
+    payload = response.json()
     assert payload["conflict_type"] == "session_reference"
     assert payload["ontology_id"] == "demo-ontology"
     assert payload["version"] == "1.0.0"

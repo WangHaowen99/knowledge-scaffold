@@ -1,15 +1,22 @@
 """Tests for skill routes against the onto-runtime layout."""
 
-from flask import Flask
+from fastapi.testclient import TestClient
 
-from api.routes.skills import skills_bp
-from api.auth.auth import AuthManager
+from api.testing import TestApplication
+
+
+from api.routes.skills import skills_router
+from auth_test_backend import AuthManager
 from workspace.workspaces import create_workspace, get_workspace_paths
 
 
-def _build_test_client(tmp_path, username: str = "admin", password: str = "TestBootstrap#2026"):
-    app = Flask(__name__)
-    app.config["TESTING"] = True
+def _build_test_client(
+    tmp_path,
+    username: str = "admin",
+    password: str = "TestBootstrap#2026",
+):
+    app = TestApplication()
+    app.state.services["TESTING"] = True
 
     auth_manager = AuthManager(str(tmp_path / "users.json"), "test-secret")
     user = auth_manager.authenticate(username, password)
@@ -17,10 +24,10 @@ def _build_test_client(tmp_path, username: str = "admin", password: str = "TestB
     if user.password_change_required:
         user = auth_manager.change_password(username, password, "RootStrong123!")
 
-    app.config["AUTH_MANAGER"] = auth_manager
-    app.register_blueprint(skills_bp)
+    app.state.services["AUTH_MANAGER"] = auth_manager
+    app.include_router(skills_router)
 
-    client = app.test_client()
+    client = TestClient(app)
     token = auth_manager.issue_token(user)
     headers = {"Authorization": "Bearer {}".format(token)}
     return client, headers
@@ -56,7 +63,7 @@ def test_list_skills_uses_onto_runtime_root_from_env(tmp_path, monkeypatch):
     response = client.get("/agentic/skills", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["skills"] == [
         {
@@ -92,7 +99,7 @@ def test_get_skill_reads_from_onto_runtime_root_env(tmp_path, monkeypatch):
     response = client.get("/agentic/skills/demo-skill", headers=headers)
 
     assert response.status_code == 200
-    payload = response.get_json()
+    payload = response.json()
     assert payload is not None
     assert payload["name"] == "demo-skill"
     assert payload["file_path"] == str(skill_dir / "SKILL.md")

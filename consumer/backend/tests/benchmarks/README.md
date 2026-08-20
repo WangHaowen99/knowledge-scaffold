@@ -71,7 +71,7 @@ cp .env.example .env      # Linux/Mac
 #   BASE_URL=http://localhost:5055   ← 后端服务地址
 #   AUTH_USERNAME=<测试账号>         ← 必填，不提供默认值
 #   AUTH_PASSWORD=<测试账号密码>     ← 必填，不提供默认值
-#   LLM_API_KEY=your-key            ← 翻译功能需要 (可选)
+#   LLM_API_KEY=your-api-key-here   ← 翻译功能需要 (可选)
 ```
 
 ### 3. 运行
@@ -94,7 +94,8 @@ python run_benchmark_multilang.py --replay
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `BASE_URL` | `http://localhost:5055` | 后端服务地址 |
-| `STREAM_PATH` | `/agentic/runs/stream` | Agent 流式执行接口（agentic 模式），发送消息并接收 SSE 事件流（含推理过程、工具调用、最终输出） |
+| `RUNS_PATH` | `/agentic/runs` | Agentic Run 创建接口。脚本用唯一 `Idempotency-Key` 创建 Run，并使用服务端返回的 ID |
+| `RUN_EVENTS_PATH` | `/agentic/runs/{run_id}/events` | Agentic SSE 事件接口模板；脚本通过 `GET` 和 `after_seq=0` 消费当前 Run |
 | `SESSIONS_PATH` | `/agentic/sessions` | 会话管理接口，每次测试先创建 session 再通过流式接口执行 |
 | `ACP_EXECUTE_STREAM_PATH` | `/acp/runs/execute_stream` | ACP 模式快捷流式执行接口（`API_MODE=acp` 且 `ACP_SUBMODE=execute_stream` 时使用） |
 | `ACP_INTERACT_STREAM_PATH` | `/acp/runs/{run_id}/interact_stream` | ACP 模式交互接口，处理 `run.awaiting` |
@@ -104,6 +105,7 @@ python run_benchmark_multilang.py --replay
 | `AUTH_PASSWORD` | _(空，必填)_ | 隔离测试账号的认证密码 |
 | `API_MODE` | `agentic` | 执行模式: `agentic`（默认）/ `acp` |
 | `ACP_LANG` | _(空)_ | ACP 模式下的语言参数，告知 Agent 以指定语言输出，仅在 `runtime_config.lang.enabled=true` 时生效。不设置则使用 `TEST_LANGUAGE` 的值 |
+| `AGENTIC_AUTO_REPLY` | `继续` | Agentic HITL 输入的默认合成回答；选择题优先选择第一个选项，并通过新 `POST /agentic/runs` 创建下一 Turn |
 | `ACP_SUPPRESS_SCRIPT_PATTERNS` | _(空)_ | ACP 输出过滤脚本模式，逗号分隔 (如 `mindsdb,work_order_sync`)。设置后会在测试前通过 API 写入工作区的 `acp_suppress_script_patterns` 配置，后端会过滤匹配脚本的 `tool.progress (output/stream)` 事件，并在报告中展示过滤验证结果 |
 | `RUNS_PER_QUESTION` | `1` | 每个问题重复次数，增大可观察稳定性 |
 | `RUNS_EXECUTION_MODE` | `serial` | 执行模式: `serial` (串行) / `parallel` (并行)，仅当 `RUNS_PER_QUESTION > 1` 时生效 |
@@ -119,6 +121,15 @@ python run_benchmark_multilang.py --replay
 
 > **优先级**: 环境变量 > `.env` 文件 > 默认值
 > **注意**: `run_benchmark_multilang.py` 会自动设置 `BENCHMARK_LANG` 环境变量覆盖 `TEST_LANGUAGE`。
+
+### Agentic Run 调用顺序
+
+Agentic 模式使用分离的创建和事件接口：
+
+1. `POST /agentic/runs`，请求头携带唯一 `Idempotency-Key`。
+2. 从 `202` 响应读取服务端生成的 `run_id`、`turn_id` 和 `links.events`。
+3. `GET /agentic/runs/{run_id}/events?after_seq=0`，持续读取到 `turn.finished`。
+4. 若终态为 `awaiting_input`，脚本读取 `interaction.requested`，再用新的 `Idempotency-Key` 调用 `POST /agentic/runs`；请求体携带同一 `session_id` 和 `interaction_response`。服务端为回答创建新的 Run 和 Turn。
 
 ### 认证说明
 

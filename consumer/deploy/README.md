@@ -202,7 +202,7 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 - 未知 owner/member、重复成员或未完成用户删除 reconciliation 会阻止启动，避免同名账号继承旧权限。
 - `connection_ref` 与旧 `ontology-bindings.json` 会展开为每个 ontology 独立的 `direct_provider` 配置。apply 前会先校验全部 workspace，校验失败不修改原数据；apply 仍按 forward-only 执行，但在首次写入前会为实际存在的 `ontology-data-sources.json`、`data-connections.json`、`ontology-bindings.json` 生成同目录 `*.pre-direct-v2.bak` 原始字节副本。副本权限固定为 `0600`，重试不会覆盖首次副本，路径同时记录在迁移报告和完成标记中。每个 workspace 的新格式写入并回读校验成功后才删除旧 `data-connections.json` 与 `ontology-bindings.json`；清理失败会阻止启动，并可在修复文件权限后继续重试。
 - `*.pre-direct-v2.bak` 可能包含明文凭据，只作为人工排查和恢复材料；应用运行时与迁移 runner 不会自动读取这些文件，`rollback.sh` 也不会把它们作为单文件恢复输入。人工恢复前必须先停止写入并核对同一 workspace 下各副本的一致性。部署级回滚仍使用 `backup.sh` 生成的整包备份，不受本迁移副本影响。
-- 本体数据源迁移是后端镜像中的独立一次性模块，只在 `backend/migrations/runner.py` 的通用注册表中登记。部署流程和 Flask 启动共用该 runner；运行时 store 不包含兼容逻辑。兼容窗口结束后只需删除注册项、独立迁移模块及对应测试说明，`app.py`、`deploy.sh` 和 `migrate.sh` 无需修改。
+- 本体数据源迁移是后端镜像中的独立一次性模块，只在 `backend/migrations/runner.py` 的通用注册表中登记。部署流程和 ASGI 启动共用该 runner；运行时 store 不包含兼容逻辑。兼容窗口结束后只需删除注册项、独立迁移模块及对应测试说明，`app.py`、`deploy.sh` 和 `migrate.sh` 无需修改。
 
 可在停机前读取检查：
 
@@ -253,7 +253,7 @@ auth-server 数据挂载在安装目录的 `./.onto-auth/`（含 `users.json`、
 
 发布包首次部署时，`backend/.env` 中缺失或为空的 `MCP_TOKEN_SECRET` 会由部署脚本自动生成独立随机值（至少 32 个字符）并以受限文件权限保存；直接使用其他启动方式时仍需自行配置。已填写的值必须至少 32 个字符，部署脚本不会覆盖。Token 明文仅在创建响应中返回一次，运行目录中只保存哈希；请妥善保管。
 
-- Flask 管理接口：`/agentic/mcp/*`
+- FastAPI 管理接口：`/agentic/mcp/*`
 - MCP endpoint 按 `MCP_TRANSPORT` 暴露相应协议；默认 `both` 同时提供：
   - `streamable-http`：`http://<host>:${MCP_SERVER_PORT:-7488}/{mcp_endpoint_id}/search/mcp`、`/{mcp_endpoint_id}/chat/mcp`
   - `sse`：`http://<host>:${MCP_SERVER_PORT:-7488}/{mcp_endpoint_id}/search/sse`、`/{mcp_endpoint_id}/chat/sse`

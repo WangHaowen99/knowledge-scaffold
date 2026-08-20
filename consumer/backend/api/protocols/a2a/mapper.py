@@ -4,14 +4,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from persistence.run_store import RunStatus
+from agent.runtime.contracts import RunStatus
 from api.protocols.a2a.models import A2ATaskState
 
 
-def map_public_event_to_a2a_update(event: Any) -> Dict[str, Any]:
+def map_public_event_to_a2a_update(
+    event: Any,
+    *,
+    external_task_id: str,
+) -> Dict[str, Any]:
     """Project the B public event without exposing consumer-only fields."""
     return {
-        "task_id": event.run_id,
+        "task_id": external_task_id,
+        "canonical_run_id": event.run_id,
         "session_id": event.session_id,
         "event_type": event.event_type,
         "timestamp": event.created_at,
@@ -28,13 +33,15 @@ def map_run_status_to_a2a(
     if run_status is None:
         return A2ATaskState.NOT_FOUND
 
-    if run_status in {RunStatus.RUNNING, RunStatus.AWAITING}:
+    if run_status == RunStatus.RUNNING:
         return A2ATaskState.IN_PROGRESS
+    if run_status == RunStatus.AWAITING_INPUT:
+        return A2ATaskState.FAILED
     if run_status == RunStatus.FAILED:
         return A2ATaskState.FAILED
     if run_status == RunStatus.CANCELLED:
         return A2ATaskState.CANCELED
-    if run_status in {RunStatus.PENDING, RunStatus.QUEUED}:
+    if run_status == RunStatus.QUEUED:
         return A2ATaskState.PENDING
 
     return A2ATaskState.COMPLETED

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from dataclasses import replace
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from agent.runtime.contracts import (
@@ -20,13 +22,13 @@ from agent.runtime.contracts import (
     TERMINAL_RUN_STATUSES,
 )
 from agent.runtime.errors import (
-    DuplicateInteractionError,
-    InteractionConflictError,
     RunNotFoundError,
+    SessionBusyError,
 )
-from agent.runtime.event_bus import AsyncEventBus, BlockingSubscription
+from agent.runtime.event_bus import AsyncEventBus
 from agent.runtime.service import AsyncExecutionService, pending_interaction_from_draft
 from agent.runtime.store import InMemoryRunRepository, utc_now_iso
+from agent.runtime.supervisor import RunTaskSupervisor
 from utils.security.redaction import redact_sensitive_value
 
 
@@ -34,7 +36,6 @@ def request_fingerprint(context: RuntimeInvocationContext) -> str:
     canonical = json.dumps(
         {
             "session_id": context.session_id,
-            "turn_id": context.turn_id,
             "workspace_id": context.workspace_id,
             "username": context.username,
             "query": context.query,
@@ -44,6 +45,7 @@ def request_fingerprint(context: RuntimeInvocationContext) -> str:
             "arguments": context.arguments,
             "include_trace": context.include_trace,
             "supports_user_interaction": context.supports_user_interaction,
+            "interaction_response": context.interaction_response,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -62,12 +64,27 @@ class _ManagerEventSink(PublicEventSink):
         await self.manager.accept_runtime_event(self.run_id, draft)
 
 
+@dataclass
+class _RunEntry:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    cancel_requested: bool = False
+    cancel_reason: str = ""
+    terminal_committed: bool = False
+
+
+@dataclass
+class _SessionLockState:
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    leases: int = 0
+
+
 class AsyncRunManager:
     def __init__(
         self,
         execution_service: AsyncExecutionService,
         repository: Optional[InMemoryRunRepository] = None,
         event_bus: Optional[AsyncEventBus] = None,
+        supervisor: Optional[RunTaskSupervisor] = None,
     ) -> None:
         self.execution_service = execution_service
         self.repository = repository or InMemoryRunRepository()
@@ -80,13 +97,16 @@ class AsyncRunManager:
             persist_event
         ):
             event_bus.event_persistor = persist_event
-        self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self.supervisor = supervisor or RunTaskSupervisor()
         self._admission_condition = asyncio.Condition()
         self._admission_waiters: dict[tuple[str, str], list[str]] = {}
         self._admitted_runs: dict[tuple[str, str], dict[str, int]] = {}
-        self._run_locks: dict[str, asyncio.Lock] = {}
+        self._entries: dict[str, _RunEntry] = {}
         self._cancel_futures: dict[str, asyncio.Future[RunSnapshot]] = {}
-        self._cancel_reasons: dict[str, str] = {}
+        self._creation_lock = asyncio.Lock()
+        self._active_by_session: dict[tuple[str, str, str], str] = {}
+        self._session_locks_guard = asyncio.Lock()
+        self._session_locks: dict[tuple[str, str, str], _SessionLockState] = {}
 
     async def create_run(
         self,
@@ -94,7 +114,19 @@ class AsyncRunManager:
         scope: RunScope,
         *,
         idempotency_key: Optional[str] = None,
+        session_guarded: bool = False,
     ) -> tuple[RunSnapshot, bool]:
+        if not session_guarded:
+            async with self.session_guard(
+                scope,
+                context.session_id,
+            ):
+                return await self.create_run(
+                    context,
+                    scope,
+                    idempotency_key=idempotency_key,
+                    session_guarded=True,
+                )
         if not scope.allows("agent:run"):
             raise PermissionError("缺少 agent:run 权限")
         if (
@@ -114,25 +146,90 @@ class AsyncRunManager:
             scope=scope,
             context=context,
         )
-        stored, created = await self.repository.create(
-            snapshot,
-            idempotency_key=idempotency_key,
-            request_fingerprint=request_fingerprint(context),
-        )
-        if created:
-            self._run_locks[context.run_id] = asyncio.Lock()
-            task = asyncio.create_task(
-                self._execute(context.run_id, resumed=False),
-                name="consumer-run-{}".format(context.run_id),
-            )
-            self._tasks[context.run_id] = task
-            task.add_done_callback(
-                lambda completed, run_id=context.run_id: self._task_finished(
-                    run_id,
-                    completed,
+        fingerprint = request_fingerprint(context)
+        async with self._creation_lock:
+            if idempotency_key:
+                existing = await self.repository.lookup_idempotency(
+                    scope=scope,
+                    session_id=context.session_id,
+                    idempotency_key=idempotency_key,
+                    request_fingerprint=fingerprint,
                 )
+                if existing is not None:
+                    return existing, False
+            session_key = (
+                scope.username,
+                scope.workspace_id,
+                context.session_id,
             )
+            active_run_id = self._active_by_session.get(session_key)
+            if active_run_id:
+                active = await self.repository.get(active_run_id)
+                if active is not None and active.status not in TERMINAL_RUN_STATUSES:
+                    raise SessionBusyError(active_run_id)
+                self._active_by_session.pop(session_key, None)
+            stored, created = await self.repository.create(
+                snapshot,
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+            )
+            if created:
+                self._entries[context.run_id] = _RunEntry()
+                self._active_by_session[session_key] = context.run_id
+                try:
+                    task = self.supervisor.start_run(
+                        context.run_id,
+                        self._execute(context.run_id),
+                    )
+                except BaseException:
+                    self._active_by_session.pop(session_key, None)
+                    raise
+                task.add_done_callback(
+                    lambda completed, run_id=context.run_id: self._task_finished(
+                        run_id,
+                        completed,
+                    )
+                )
         return stored, created
+
+    @asynccontextmanager
+    async def session_guard(
+        self,
+        scope: RunScope,
+        session_id: str,
+    ) -> AsyncIterator[None]:
+        key = (scope.username, scope.workspace_id, str(session_id))
+        async with self._session_locks_guard:
+            state = self._session_locks.get(key)
+            if state is None:
+                state = _SessionLockState()
+                self._session_locks[key] = state
+            state.leases += 1
+        try:
+            async with state.lock:
+                yield
+        finally:
+            async with self._session_locks_guard:
+                current = self._session_locks.get(key)
+                if current is state:
+                    state.leases = max(0, state.leases - 1)
+                    if not state.leases and not state.lock.locked():
+                        self._session_locks.pop(key, None)
+
+    async def assert_session_available(
+        self,
+        scope: RunScope,
+        session_id: str,
+    ) -> None:
+        key = (scope.username, scope.workspace_id, str(session_id))
+        async with self._creation_lock:
+            active_run_id = self._active_by_session.get(key)
+            if not active_run_id:
+                return
+            active = await self.repository.get(active_run_id)
+            if active is not None and active.status not in TERMINAL_RUN_STATUSES:
+                raise SessionBusyError(active_run_id)
+            self._active_by_session.pop(key, None)
 
     async def get_run(
         self,
@@ -152,23 +249,6 @@ class AsyncRunManager:
         snapshots = await self.repository.list_snapshots()
         return [snapshot for snapshot in snapshots if scope.owns(snapshot)]
 
-    async def subscribe(
-        self,
-        run_id: str,
-        scope: RunScope,
-        *,
-        after_seq: int = 0,
-    ) -> BlockingSubscription:
-        if not scope.allows("agent:read"):
-            raise RunNotFoundError(run_id)
-        snapshot = await self.get_run(run_id, scope)
-        if snapshot is None:
-            raise RunNotFoundError(run_id)
-        return await self.event_bus.subscribe(run_id, after_seq=after_seq)
-
-    async def unsubscribe(self, subscription: BlockingSubscription) -> None:
-        await self.event_bus.unsubscribe(subscription)
-
     async def cancel_run(
         self,
         run_id: str,
@@ -180,8 +260,8 @@ class AsyncRunManager:
         visible = await self.repository.get(run_id)
         if visible is None or not scope.owns(visible):
             raise RunNotFoundError(run_id)
-        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
-        async with lock:
+        entry = self._entries.setdefault(run_id, _RunEntry())
+        async with entry.lock:
             snapshot = await self.repository.get(run_id)
             if snapshot is None or not scope.owns(snapshot):
                 raise RunNotFoundError(run_id)
@@ -192,14 +272,15 @@ class AsyncRunManager:
             if cancel_future is None:
                 cancel_future = asyncio.get_running_loop().create_future()
                 self._cancel_futures[run_id] = cancel_future
-                self._cancel_reasons[run_id] = reason
+                entry.cancel_requested = True
+                entry.cancel_reason = reason
 
         if not is_leader:
             return await asyncio.shield(cancel_future)
 
         try:
-            effective_reason = self._cancel_reasons.get(run_id, reason)
-            task = self._tasks.get(run_id)
+            effective_reason = entry.cancel_reason or reason
+            task = self.supervisor.get_run_task(run_id)
             if snapshot.status != RunStatus.QUEUED:
                 await self._cancel_runtime_safely(run_id, effective_reason)
             if task is not None and task is not asyncio.current_task():
@@ -214,7 +295,7 @@ class AsyncRunManager:
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)
 
-            async with lock:
+            async with entry.lock:
                 current = await self.repository.get(run_id)
                 if current is None or not scope.owns(current):
                     raise RunNotFoundError(run_id)
@@ -231,7 +312,7 @@ class AsyncRunManager:
                         status=RunStatus.CANCELLED,
                         result=cancelled_result,
                         error=None,
-                        cancel_reason=reason,
+                        cancel_reason=effective_reason,
                     )
                 if not cancel_future.done():
                     cancel_future.set_result(updated)
@@ -243,79 +324,6 @@ class AsyncRunManager:
             raise
         finally:
             self._cancel_futures.pop(run_id, None)
-            self._cancel_reasons.pop(run_id, None)
-
-    async def interact(
-        self,
-        run_id: str,
-        scope: RunScope,
-        *,
-        interaction_id: str,
-        value: Any,
-        option_id: Optional[str] = None,
-    ) -> RunSnapshot:
-        if not scope.allows("agent:interact"):
-            raise RunNotFoundError(run_id)
-        visible = await self.repository.get(run_id)
-        if visible is None or not scope.owns(visible):
-            raise RunNotFoundError(run_id)
-        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
-        async with lock:
-            snapshot = await self.repository.get(run_id)
-            if snapshot is None or not scope.owns(snapshot):
-                raise RunNotFoundError(run_id)
-            if await self.repository.interaction_consumed(run_id, interaction_id):
-                raise DuplicateInteractionError("交互结果已经提交")
-            if snapshot.status != RunStatus.AWAITING_INPUT:
-                raise InteractionConflictError("当前运行不在等待交互状态")
-            response = self._validate_interaction(
-                snapshot.pending_interaction,
-                interaction_id=interaction_id,
-                value=value,
-                option_id=option_id,
-            )
-            if not await self.repository.consume_interaction(run_id, interaction_id):
-                raise DuplicateInteractionError("交互结果已经提交")
-            await self.event_bus.reopen(run_id)
-            resumed = await self.repository.transition(
-                run_id,
-                expected={RunStatus.AWAITING_INPUT},
-                status=RunStatus.RUNNING,
-                result=None,
-                error=None,
-                pending_interaction=None,
-            )
-            context = resumed.context.with_interaction(
-                query=str(response.get("display_text") or response.get("value") or ""),
-                interaction_response=response,
-            )
-            await self._replace_context(run_id, context)
-            await self.event_bus.publish(PublicEventDraft(
-                schema_version="1.0",
-                run_id=run_id,
-                session_id=resumed.session_id,
-                # prepare_context will allocate the durable next turn before
-                # Runtime events are emitted. Keep this control event attached
-                # to the checkpoint turn instead of guessing the next turn id.
-                turn_id=resumed.turn_id,
-                event_type="interaction.resumed",
-                status="running",
-                source={"node": "consumer", "component": "run_manager"},
-                payload={"interaction_id": interaction_id},
-                created_at=utc_now_iso(),
-            ))
-            task = asyncio.create_task(
-                self._execute(run_id, resumed=True, interaction_response=response),
-                name="consumer-run-resume-{}".format(run_id),
-            )
-            self._tasks[run_id] = task
-            task.add_done_callback(
-                lambda completed, current_run_id=run_id: self._task_finished(
-                    current_run_id,
-                    completed,
-                )
-            )
-            return await self.repository.get(run_id) or resumed
 
     async def accept_runtime_event(
         self,
@@ -324,22 +332,18 @@ class AsyncRunManager:
     ) -> None:
         if await self.repository.get(run_id) is None:
             return
-        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
-        async with lock:
+        entry = self._entries.setdefault(run_id, _RunEntry())
+        async with entry.lock:
             snapshot_for_filter = await self.repository.get(run_id)
             if snapshot_for_filter is None:
                 return
             if draft.event_type == "turn.finished":
                 snapshot = snapshot_for_filter
-                if snapshot is None or snapshot.status in TERMINAL_RUN_STATUSES:
-                    return
                 if (
-                    snapshot.status == RunStatus.AWAITING_INPUT
-                    and await self.repository.latest_event_type(run_id) == "turn.finished"
+                    snapshot is None
+                    or entry.terminal_committed
+                    or snapshot.status in TERMINAL_RUN_STATUSES
                 ):
-                    # A Runtime that returns both an awaiting result and a
-                    # synthetic terminal event must not create a second
-                    # awaiting terminal for the same execution phase.
                     return
                 status = _normalize_runtime_status(draft.status)
                 normalized = draft.model_copy(
@@ -370,6 +374,17 @@ class AsyncRunManager:
                             },
                             },
                         },
+                    )
+                if entry.cancel_requested:
+                    status = RunStatus.CANCELLED
+                    normalized = normalized.model_copy(
+                        update={
+                            "status": RunStatus.CANCELLED.value,
+                            "payload": {
+                                "status": RunStatus.CANCELLED.value,
+                                "cancel_reason": entry.cancel_reason,
+                            },
+                        }
                     )
                 result = self._result_from_terminal(normalized)
                 pending_interaction = pending_interaction_from_draft(normalized)
@@ -413,16 +428,40 @@ class AsyncRunManager:
                     normalized,
                     snapshot_update=update,
                 )
-                if updated.status in TERMINAL_RUN_STATUSES or updated.status == RunStatus.AWAITING_INPUT:
-                    await self.event_bus.close(run_id)
+                entry.terminal_committed = True
+                await self.event_bus.close(run_id)
                 return
             snapshot = snapshot_for_filter
-            if snapshot is None or snapshot.status in TERMINAL_RUN_STATUSES:
+            if (
+                snapshot is None
+                or entry.terminal_committed
+                or entry.cancel_requested
+                or snapshot.status in TERMINAL_RUN_STATUSES
+            ):
                 return
             normalized = draft.model_copy(
                 update={"run_id": run_id, "session_id": snapshot.session_id},
             )
             pending_interaction = pending_interaction_from_draft(normalized)
+            if (
+                normalized.event_type == "interaction.requested"
+                and snapshot.pending_interaction is not None
+                and pending_interaction is not None
+                and str(snapshot.pending_interaction.get("id") or "")
+                != str(pending_interaction.get("id") or "")
+            ):
+                error = RuntimeErrorInfo(
+                    error_code="MULTIPLE_INTERACTIONS_NOT_ALLOWED",
+                    message="one turn cannot request more than one interaction",
+                    retriable=False,
+                )
+                await self._finish(
+                    snapshot,
+                    status=RunStatus.FAILED,
+                    result=RuntimeResult(status="failed", error=error),
+                    error=error,
+                )
+                return
             await self.event_bus.publish(
                 normalized,
                 snapshot_update=(
@@ -434,7 +473,13 @@ class AsyncRunManager:
                 ),
             )
 
-    async def shutdown(self) -> None:
+    async def shutdown(self, *, deadline: Optional[float] = None) -> bool:
+        loop = asyncio.get_running_loop()
+        effective_deadline = (
+            float(deadline)
+            if deadline is not None
+            else loop.time() + 30.0
+        )
         snapshots = [
             snapshot
             for snapshot in await self.repository.list_snapshots()
@@ -456,18 +501,11 @@ class AsyncRunManager:
                 ),
                 return_exceptions=True,
             )
-        remaining = [task for task in self._tasks.values() if not task.done()]
-        for task in remaining:
-            task.cancel()
-        if remaining:
-            await asyncio.gather(*remaining, return_exceptions=True)
+        return await self.supervisor.close(deadline=effective_deadline)
 
     async def _execute(
         self,
         run_id: str,
-        *,
-        resumed: bool,
-        interaction_response: Optional[dict[str, Any]] = None,
     ) -> None:
         snapshot = await self.repository.get(run_id)
         if snapshot is None:
@@ -477,9 +515,11 @@ class AsyncRunManager:
         try:
             admitted = await self._acquire_admission(snapshot)
         except asyncio.CancelledError:
-            cancel_reason = self._cancel_reasons.get(
-                run_id,
-                "task_cancelled_before_admission",
+            entry = self._entries.get(run_id)
+            cancel_reason = (
+                entry.cancel_reason
+                if entry is not None and entry.cancel_reason
+                else "task_cancelled_before_admission"
             )
             await self._finish_if_active(
                 run_id,
@@ -510,7 +550,7 @@ class AsyncRunManager:
             prepare_context = getattr(self.execution_service, "prepare_context", None)
             try:
                 prepared_context = (
-                    await prepare_context(snapshot.context, resumed=resumed)
+                    await prepare_context(snapshot.context)
                     if callable(prepare_context)
                     else snapshot.context
                 )
@@ -533,37 +573,29 @@ class AsyncRunManager:
                     prepared_context,
                     expected={snapshot.status},
                 )
-            if not resumed:
-                try:
-                    snapshot = await self.repository.transition(
-                        run_id,
-                        expected={RunStatus.QUEUED},
-                        status=RunStatus.RUNNING,
-                    )
-                except Exception:
-                    return
-                await self.event_bus.publish(PublicEventDraft(
-                    schema_version="1.0",
-                    run_id=run_id,
-                    session_id=snapshot.session_id,
-                    turn_id=snapshot.turn_id,
-                    event_type="run.started",
-                    status="running",
-                    source={"node": "consumer", "component": "run_manager"},
-                    payload={"status": "running"},
-                    created_at=utc_now_iso(),
-                ))
+            try:
+                snapshot = await self.repository.transition(
+                    run_id,
+                    expected={RunStatus.QUEUED},
+                    status=RunStatus.RUNNING,
+                )
+            except Exception:
+                return
+            await self.event_bus.publish(PublicEventDraft(
+                schema_version="1.0",
+                run_id=run_id,
+                session_id=snapshot.session_id,
+                turn_id=snapshot.turn_id,
+                event_type="run.started",
+                status="running",
+                source={"node": "consumer", "component": "run_manager"},
+                payload={"status": "running"},
+                created_at=utc_now_iso(),
+            ))
             sink = _ManagerEventSink(self, run_id)
             phase_start_seq = snapshot.last_seq
             try:
-                if resumed and interaction_response is not None:
-                    operation = self.execution_service.interact(
-                        snapshot.context,
-                        sink,
-                        interaction_response,
-                    )
-                else:
-                    operation = self.execution_service.execute(snapshot.context, sink)
+                operation = self.execution_service.execute(snapshot.context, sink)
                 runtime_result = await asyncio.wait_for(
                     operation,
                     timeout=max(0.01, float(snapshot.context.timeout_seconds)),
@@ -635,7 +667,12 @@ class AsyncRunManager:
                 )
             except asyncio.CancelledError:
                 current = await self.repository.get(run_id)
-                cancel_reason = self._cancel_reasons.get(run_id, "task_cancelled")
+                entry = self._entries.get(run_id)
+                cancel_reason = (
+                    entry.cancel_reason
+                    if entry is not None and entry.cancel_reason
+                    else "task_cancelled"
+                )
                 if (
                     (current is None or current.status not in TERMINAL_RUN_STATUSES)
                     and run_id not in self._cancel_futures
@@ -668,6 +705,14 @@ class AsyncRunManager:
         finally:
             if admitted:
                 await self._release_admission(admission_snapshot)
+            session_key = (
+                admission_snapshot.scope.username,
+                admission_snapshot.scope.workspace_id,
+                admission_snapshot.session_id,
+            )
+            async with self._creation_lock:
+                if self._active_by_session.get(session_key) == run_id:
+                    self._active_by_session.pop(session_key, None)
 
     async def _acquire_admission(self, snapshot: RunSnapshot) -> bool:
         key = (snapshot.scope.username, snapshot.scope.workspace_id)
@@ -744,30 +789,35 @@ class AsyncRunManager:
             return False
 
     def _task_finished(self, run_id: str, completed: asyncio.Task[Any]) -> None:
-        if self._tasks.get(run_id) is completed:
-            self._tasks.pop(run_id, None)
-        asyncio.create_task(
-            self._cleanup_finished_run(run_id),
-            name="consumer-run-cleanup-{}".format(run_id),
-        )
+        del completed
+        cleanup = self._cleanup_finished_run(run_id)
+        try:
+            self.supervisor.start_derived(
+                cleanup,
+                name="consumer-run-cleanup-{}".format(run_id),
+            )
+        except RuntimeError:
+            cleanup.close()
 
     async def _cleanup_finished_run(self, run_id: str) -> None:
         # Yield once so cancel/interact continuations already waiting on the
         # current lock can complete before its registry entry is discarded.
         await asyncio.sleep(0)
-        if run_id in self._tasks:
+        if self.supervisor.get_run_task(run_id) is not None:
             return
-        lock = self._run_locks.get(run_id)
-        if lock is None:
+        entry = self._entries.get(run_id)
+        if entry is None:
             return
-        async with lock:
-            if run_id in self._tasks or self._run_locks.get(run_id) is not lock:
+        async with entry.lock:
+            if (
+                self.supervisor.get_run_task(run_id) is not None
+                or self._entries.get(run_id) is not entry
+            ):
                 return
             snapshot = await self.repository.get(run_id)
             if snapshot is None or snapshot.status in TERMINAL_RUN_STATUSES:
-                self._run_locks.pop(run_id, None)
+                self._entries.pop(run_id, None)
                 self._cancel_futures.pop(run_id, None)
-                self._cancel_reasons.pop(run_id, None)
 
     async def _finish_awaiting_input(
         self,
@@ -808,10 +858,14 @@ class AsyncRunManager:
     ) -> Optional[RunSnapshot]:
         if await self.repository.get(run_id) is None:
             return None
-        lock = self._run_locks.setdefault(run_id, asyncio.Lock())
-        async with lock:
+        entry = self._entries.setdefault(run_id, _RunEntry())
+        async with entry.lock:
             snapshot = await self.repository.get(run_id)
-            if snapshot is None or snapshot.status in TERMINAL_RUN_STATUSES:
+            if (
+                snapshot is None
+                or entry.terminal_committed
+                or snapshot.status in TERMINAL_RUN_STATUSES
+            ):
                 return snapshot
             return await self._finish(
                 snapshot,
@@ -830,6 +884,14 @@ class AsyncRunManager:
         error: Optional[RuntimeErrorInfo],
         cancel_reason: Optional[str] = None,
     ) -> RunSnapshot:
+        entry = self._entries.setdefault(snapshot.run_id, _RunEntry())
+        if entry.terminal_committed:
+            return await self.repository.get(snapshot.run_id) or snapshot
+        if entry.cancel_requested and status != RunStatus.CANCELLED:
+            status = RunStatus.CANCELLED
+            result = RuntimeResult(status="cancelled")
+            error = None
+            cancel_reason = entry.cancel_reason or cancel_reason or "cancelled"
         payload: dict[str, Any] = {"status": status.value}
         if result.content is not None:
             payload["final_output"] = result.content
@@ -875,6 +937,7 @@ class AsyncRunManager:
             ),
             snapshot_update=update,
         )
+        entry.terminal_committed = True
         await self.event_bus.close(snapshot.run_id)
         return updated
 
@@ -947,50 +1010,6 @@ class AsyncRunManager:
             ),
             error=error,
         )
-
-    @staticmethod
-    def _validate_interaction(
-        pending: Optional[dict[str, Any]],
-        *,
-        interaction_id: str,
-        value: Any,
-        option_id: Optional[str],
-    ) -> dict[str, Any]:
-        if not pending or str(pending.get("id") or "") != interaction_id:
-            raise InteractionConflictError("interaction_id 与待处理交互不匹配")
-        interaction_type = str(pending.get("type") or "input")
-        response: dict[str, Any] = {
-            "interaction_id": interaction_id,
-            "type": interaction_type,
-        }
-        if interaction_type == "input":
-            if not isinstance(value, str) or not value.strip():
-                raise InteractionConflictError("输入内容不能为空")
-            response["value"] = value
-            response["display_text"] = value
-            return response
-        options = pending.get("options")
-        if not isinstance(options, list):
-            raise InteractionConflictError("待处理交互没有可选项")
-        selected = next(
-            (
-                item
-                for item in options
-                if isinstance(item, dict)
-                and (
-                    (option_id and str(item.get("id") or "") == option_id)
-                    or (not option_id and item.get("value") == value)
-                )
-            ),
-            None,
-        )
-        if selected is None or (option_id and "value" in selected and selected.get("value") != value):
-            raise InteractionConflictError("提交的选项不属于待处理交互")
-        response["option_id"] = str(selected.get("id") or "")
-        response["value"] = selected.get("value")
-        response["display_text"] = str(selected.get("label") or selected.get("value") or "")
-        return response
-
 
 def _normalize_runtime_status(value: Any) -> RunStatus:
     normalized = str(getattr(value, "value", value) or "").strip().lower()
