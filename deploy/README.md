@@ -172,6 +172,8 @@ curl -fsS http://127.0.0.1:5100/health            # 预期 HTTP 200
 | 变量 | compose 默认 | 说明 |
 | --- | --- | --- |
 | `MODELING_LLM_BASE_URL` / `MODELING_LLM_MODEL` / `MODELING_LLM_API_KEY` | `faux` / `faux` / 空 | 建模 agent 的 LLM；`faux` 为无 Key 演示模式；页面配置中心优先于环境变量 |
+| `MODELING_LLM_MAX_TOKENS` | `8192` | 单次模型输出 token 上限；与上下文窗口独立 |
+| `MODELING_LLM_CONTEXT_WINDOW` | `128000` | 输入+输出总上下文 token 窗口；按所选模型 API 实际上限填写 |
 | `MODELING_TASK_LLM_*` | 空 | 预留项，当前版本未生效（判分/摘要与建模均使用主模型） |
 | `AUTH_ISSUER_URL` | `http://backend:5055` | 登录转发目标（= consumer），部署期固定、页面不可改 |
 | `CONSUMER_API_URL` | `http://backend:5055` | 评测用 consumer 地址默认值（页面可覆盖） |
