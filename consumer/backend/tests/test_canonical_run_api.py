@@ -311,6 +311,22 @@ def test_post_run_allocates_server_ids_and_exact_retry_starts_one_task(
     asyncio.run(scenario())
 
 
+def test_post_run_has_no_whole_run_timeout(monkeypatch, tmp_path):
+    async def scenario() -> None:
+        app, harness = _install_harness(monkeypatch, tmp_path)
+        async with await _client_for(app) as client:
+            response = await client.post(
+                "/agentic/runs",
+                json=_ordinary_payload(session_id="session_no_total_timeout"),
+                headers=_headers("no-total-timeout-key"),
+            )
+
+        assert response.status_code == 202, response.text
+        assert harness.manager.started_contexts[0].timeout_seconds is None
+
+    asyncio.run(scenario())
+
+
 def test_post_run_rejects_idempotency_conflict_and_same_session_busy(
     monkeypatch,
     tmp_path,

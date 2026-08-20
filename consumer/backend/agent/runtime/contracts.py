@@ -96,7 +96,7 @@ class RuntimeInvocationContext(BaseModel):
     interaction_response: dict[str, Any] | None = None
     concurrency_limit: int = Field(default=1, ge=1)
     admission_timeout_seconds: float | None = Field(default=None, gt=0)
-    timeout_seconds: float = Field(default=600.0, gt=0)
+    timeout_seconds: float | None = Field(default=None, gt=0)
 
     _validate_run_id = field_validator("run_id")(_require_non_empty)
     _validate_session_id = field_validator("session_id")(_require_non_empty)

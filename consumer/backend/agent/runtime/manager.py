@@ -604,10 +604,13 @@ class AsyncRunManager:
             phase_start_seq = snapshot.last_seq
             try:
                 operation = self.execution_service.execute(snapshot.context, sink)
-                runtime_result = await asyncio.wait_for(
-                    operation,
-                    timeout=max(0.01, float(snapshot.context.timeout_seconds)),
-                )
+                if snapshot.context.timeout_seconds is None:
+                    runtime_result = await operation
+                else:
+                    runtime_result = await asyncio.wait_for(
+                        operation,
+                        timeout=max(0.01, float(snapshot.context.timeout_seconds)),
+                    )
                 current = await self.repository.get(run_id)
                 if current is not None and current.status == RunStatus.AWAITING_INPUT:
                     terminal_emitted = await self.repository.has_event_after(

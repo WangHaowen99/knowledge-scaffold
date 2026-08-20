@@ -38,6 +38,7 @@ def test_invocation_context_is_strict_immutable_and_normalized():
     context = _context()
 
     assert context.model_profile_id is None
+    assert context.timeout_seconds is None
     with pytest.raises(ValidationError):
         RuntimeInvocationContext.model_validate({**context.model_dump(), "unexpected": True})
     with pytest.raises(ValidationError):
