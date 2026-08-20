@@ -64,6 +64,7 @@ import {
 import {
   AdaptiveGenerationGate,
   configuredGenerationConcurrency,
+  dependencyHash as generationDependencyHash,
   mapWithConcurrency,
   planGenerationUnits,
   waitBeforeGenerationRetry,
@@ -265,15 +266,48 @@ export async function generatePackage(
     id: `candidate_${index + 1}`,
   }));
   const contextWindow = Number(llm.model?.contextWindow ?? 1_000_000);
-  const objectUnits = planGenerationUnits('object', objectHints, contextWindow);
+  const documentDependencies = ctx.documents.map((document) => ({
+    id: document.id, filename: document.filename, fingerprint: documentFingerprint(document),
+  }));
+  const physicalObjectDependencies = physicalSchemaObjects.map(({ table, object }) => ({
+    table: table.name, documentId: table.documentId, objectKey: object.key,
+    fields: object.fields.map((field) => ({ key: field.key, type: field.type, sourceColumn: field.sourceColumn })),
+  }));
+  const objectUnits = planGenerationUnits('object', objectHints, contextWindow).map((unit) => ({
+    ...unit,
+    dependencyHash: generationDependencyHash({
+      unit: unit.dependencyHash,
+      project: { domain: project.domain, background: project.background },
+      physicalObjects: physicalObjectDependencies,
+      documents: documentDependencies,
+    }),
+  }));
   const rawKnowledgeCandidates = buildKnowledgeGenerationCandidates(analysis, ctx.tables);
   const allKnowledgeCandidates = (analysis?.candidateArtifacts ?? [])
     .filter((item) => item.kind === 'rule' || item.kind === 'metric');
   const knowledgePlan = planArtifactCandidates(allKnowledgeCandidates, rawKnowledgeCandidates);
   const knowledgeCandidates = knowledgePlan.selected;
-  const knowledgeUnits = planGenerationUnits('knowledge', knowledgeCandidates, contextWindow);
+  const knowledgeUnits = planGenerationUnits('knowledge', knowledgeCandidates, contextWindow).map((unit) => ({
+    ...unit,
+    dependencyHash: generationDependencyHash({
+      unit: unit.dependencyHash,
+      objectPlan: objectUnits.map((item) => item.dependencyHash),
+      physicalObjects: physicalObjectDependencies,
+      confirmedProcessSummary,
+      documents: documentDependencies,
+    }),
+  }));
   const operationCandidates = (analysis?.candidateArtifacts ?? []).filter((item) => item.kind === 'operation');
-  const operationUnits = planGenerationUnits('operation', operationTargets, contextWindow);
+  const operationUnits = planGenerationUnits('operation', operationTargets, contextWindow).map((unit) => ({
+    ...unit,
+    dependencyHash: generationDependencyHash({
+      unit: unit.dependencyHash,
+      objectPlan: objectUnits.map((item) => item.dependencyHash),
+      knowledgePlan: knowledgeUnits.map((item) => item.dependencyHash),
+      physicalObjects: physicalObjectDependencies,
+      confirmedProcessSummary,
+    }),
+  }));
   const allUnits = [...objectUnits, ...knowledgeUnits, ...operationUnits];
   const dependencyHashes = new Map(allUnits.map((unit) => [unit.phase, unit.dependencyHash]));
   const totalStepCount = allUnits.length + 1;

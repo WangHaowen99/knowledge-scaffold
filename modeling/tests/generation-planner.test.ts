@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   AdaptiveGenerationGate,
+  dependencyHash,
   dynamicBatchSize,
   mapWithConcurrency,
   planGenerationUnits,
@@ -19,6 +20,13 @@ test('生成单元依赖指纹只随本单元输入变化', () => {
   const second = planGenerationUnits('knowledge', Array.from({ length: 16 }, (_, index) => ({ id: index === 15 ? 99 : index })), 1_000_000);
   assert.equal(first[0].dependencyHash, second[0].dependencyHash);
   assert.notEqual(first[1].dependencyHash, second[1].dependencyHash);
+});
+
+test('下游单元指纹包含上游计划，避免对象变化后复用旧规则操作', () => {
+  const unit = planGenerationUnits('knowledge', [{ id: 1 }], 1_000_000)[0];
+  const before = dependencyHash({ unit: unit.dependencyHash, objectPlan: ['objects-v1'] });
+  const after = dependencyHash({ unit: unit.dependencyHash, objectPlan: ['objects-v2'] });
+  assert.notEqual(before, after);
 });
 
 test('受控并发保持输入顺序并限制同时执行数', async () => {
