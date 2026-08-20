@@ -6,17 +6,19 @@ import {
   resolveLlmSettings,
   resolveLlmSource,
   resolveTaskLlmSettings,
+  resolveTaskLlmSource,
   type LegacyLlmSettingsSnapshot,
   type LlmSettingSource,
   type LlmSettings,
   type UserLlmSettingsSnapshot,
 } from './llm-resolver.js';
 import {
-  deleteUserLlmDefaultSnapshots,
+  deleteUserLlmDefaultSnapshot,
   getUserLlmDefaultSnapshot,
   getUserLlmDefaultSnapshotContextWindow,
   getUserLlmDefaultSnapshotMaxTokens,
 } from './llm-default-snapshots-repo.js';
+import type { LlmPurpose } from './llm-defaults-repo.js';
 
 export type { LlmSettingSource, LlmSettings } from './llm-resolver.js';
 
@@ -69,9 +71,13 @@ function normalizedUsername(username: string): string {
   return normalized;
 }
 
-function userLlmRow(username: string): UserLlmSettingsRow | undefined {
+function userLlmTable(purpose: LlmPurpose): 'user_llm_settings' | 'user_task_llm_settings' {
+  return purpose === 'main' ? 'user_llm_settings' : 'user_task_llm_settings';
+}
+
+function userLlmRow(username: string, purpose: LlmPurpose = 'main'): UserLlmSettingsRow | undefined {
   return getDb().prepare(`SELECT base_url, model, api_key, max_tokens, context_window
-    FROM user_llm_settings WHERE username = ?`)
+    FROM ${userLlmTable(purpose)} WHERE username = ?`)
     .get(normalizedUsername(username)) as UserLlmSettingsRow | undefined;
 }
 
@@ -81,16 +87,25 @@ function userLlmColumn(key: UserLlmSettingKey): UserLlmSettingKey {
   return column;
 }
 
-export function getUserLlmSetting(username: string, key: UserLlmSettingKey): string | null {
-  const value = userLlmRow(username)?.[userLlmColumn(key)];
+export function getUserLlmSetting(
+  username: string,
+  key: UserLlmSettingKey,
+  purpose: LlmPurpose = 'main',
+): string | null {
+  const value = userLlmRow(username, purpose)?.[userLlmColumn(key)];
   return value === null || value === undefined ? null : String(value);
 }
 
-export function setUserLlmSetting(username: string, key: UserLlmSettingKey, value: string): void {
+export function setUserLlmSetting(
+  username: string,
+  key: UserLlmSettingKey,
+  value: string,
+  purpose: LlmPurpose = 'main',
+): void {
   const normalized = normalizedUsername(username);
   const setting = value.trim();
   if (!setting) {
-    deleteUserLlmSetting(normalized, key);
+    deleteUserLlmSetting(normalized, key, purpose);
     return;
   }
   const column = userLlmColumn(key);
@@ -110,9 +125,10 @@ export function setUserLlmSetting(username: string, key: UserLlmSettingKey, valu
   db.exec('BEGIN IMMEDIATE');
   try {
     if (column !== 'max_tokens' && column !== 'context_window') {
-      deleteUserLlmDefaultSnapshots(normalized);
+      deleteUserLlmDefaultSnapshot(normalized, purpose);
     }
-    db.prepare(`INSERT INTO user_llm_settings (username, ${column}, updated_at)
+    const table = userLlmTable(purpose);
+    db.prepare(`INSERT INTO ${table} (username, ${column}, updated_at)
       VALUES (?,?,?)
       ON CONFLICT(username) DO UPDATE SET
         ${column} = excluded.${column}, updated_at = excluded.updated_at`)
@@ -124,13 +140,18 @@ export function setUserLlmSetting(username: string, key: UserLlmSettingKey, valu
   }
 }
 
-export function deleteUserLlmSetting(username: string, key: UserLlmSettingKey): void {
+export function deleteUserLlmSetting(
+  username: string,
+  key: UserLlmSettingKey,
+  purpose: LlmPurpose = 'main',
+): void {
   const normalized = normalizedUsername(username);
   const column = userLlmColumn(key);
+  const table = userLlmTable(purpose);
   const db = getDb();
-  db.prepare(`UPDATE user_llm_settings SET ${column} = NULL, updated_at = ? WHERE username = ?`)
+  db.prepare(`UPDATE ${table} SET ${column} = NULL, updated_at = ? WHERE username = ?`)
     .run(nowIso(), normalized);
-  db.prepare(`DELETE FROM user_llm_settings
+  db.prepare(`DELETE FROM ${table}
     WHERE username = ? AND base_url IS NULL AND model IS NULL
       AND api_key IS NULL AND max_tokens IS NULL AND context_window IS NULL`).run(normalized);
 }
@@ -164,11 +185,15 @@ function validateUserLlmBaseUrl(baseUrl: string): void {
 
 /**
  * 页面/API 的个人 LLM patch 先合并成完整草稿，再在单个事务中提交。
- * Key 留空表示保留；修改 provider 会脱离已同步快照，providerClear 回退部署配置。
+ * Key 留空表示保留；修改 provider 会脱离同用途快照，providerClear 回退到该用途的下一解析层。
  */
-export function updateUserLlmSettings(username: string, input: UpdateUserLlmSettingsInput): void {
+export function updateUserLlmSettings(
+  username: string,
+  input: UpdateUserLlmSettingsInput,
+  purpose: LlmPurpose = 'main',
+): void {
   const normalized = normalizedUsername(username);
-  const current = userLlmRow(normalized);
+  const current = userLlmRow(normalized, purpose);
   const providerChanged = input.providerClear === true
     || input.baseUrl !== undefined
     || input.model !== undefined
@@ -178,9 +203,9 @@ export function updateUserLlmSettings(username: string, input: UpdateUserLlmSett
   let model = current?.model ?? null;
   let apiKey = current?.api_key ?? null;
   let maxTokens = current?.max_tokens
-    ?? (providerChanged ? (getUserLlmDefaultSnapshotMaxTokens(normalized) ?? null) : null);
+    ?? (providerChanged ? (getUserLlmDefaultSnapshotMaxTokens(normalized, purpose) ?? null) : null);
   let contextWindow = current?.context_window
-    ?? (providerChanged ? (getUserLlmDefaultSnapshotContextWindow(normalized) ?? null) : null);
+    ?? (providerChanged ? (getUserLlmDefaultSnapshotContextWindow(normalized, purpose) ?? null) : null);
 
   if (input.providerClear === true) {
     if (input.baseUrl || input.model || input.apiKey) {
@@ -227,11 +252,12 @@ export function updateUserLlmSettings(username: string, input: UpdateUserLlmSett
   const db = getDb();
   db.exec('BEGIN IMMEDIATE');
   try {
-    if (providerChanged) deleteUserLlmDefaultSnapshots(normalized);
+    if (providerChanged) deleteUserLlmDefaultSnapshot(normalized, purpose);
+    const table = userLlmTable(purpose);
     if ([baseUrl, model, apiKey, maxTokens, contextWindow].every((value) => value === null)) {
-      db.prepare('DELETE FROM user_llm_settings WHERE username = ?').run(normalized);
+      db.prepare(`DELETE FROM ${table} WHERE username = ?`).run(normalized);
     } else {
-      db.prepare(`INSERT INTO user_llm_settings (
+      db.prepare(`INSERT INTO ${table} (
           username, base_url, model, api_key, max_tokens, context_window, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(username) DO UPDATE SET
@@ -250,8 +276,11 @@ export function updateUserLlmSettings(username: string, input: UpdateUserLlmSett
   }
 }
 
-function userLlmSnapshot(username: string | undefined): UserLlmSettingsSnapshot | undefined {
-  const row = username ? userLlmRow(username) : undefined;
+function userLlmSnapshot(
+  username: string | undefined,
+  purpose: LlmPurpose = 'main',
+): UserLlmSettingsSnapshot | undefined {
+  const row = username ? userLlmRow(username, purpose) : undefined;
   return row ? {
     baseUrl: row.base_url,
     model: row.model,
@@ -275,6 +304,7 @@ function resolverInput(username: string | undefined) {
   return {
     username,
     personal: userLlmSnapshot(username),
+    personalTask: userLlmSnapshot(username, 'task'),
     assignedDefaults: username ? {
       main: getUserLlmDefaultSnapshot(username, 'main'),
       task: getUserLlmDefaultSnapshot(username, 'task'),
@@ -287,8 +317,12 @@ export function getLlmSource(username: string | undefined = currentLlmUser()): L
   return resolveLlmSource(resolverInput(username));
 }
 
-export function hasUserLlmProviderOverride(username: string): boolean {
-  return hasLlmProviderOverride(userLlmSnapshot(username));
+export function getTaskLlmSource(username: string | undefined = currentLlmUser()): LlmSettingSource {
+  return resolveTaskLlmSource(resolverInput(username));
+}
+
+export function hasUserLlmProviderOverride(username: string, purpose: LlmPurpose = 'main'): boolean {
+  return hasLlmProviderOverride(userLlmSnapshot(username, purpose));
 }
 
 export function getLlmSettings(username: string | undefined = currentLlmUser()): LlmSettings {

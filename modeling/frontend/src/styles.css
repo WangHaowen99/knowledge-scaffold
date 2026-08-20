@@ -1173,9 +1173,12 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .cfg-test { border: 1px solid var(--hair); border-radius: 11px; padding: 10px 14px; font-size: 12.5px; margin-bottom: 12px; }
 .mwr .cfg-test.ok { border-color: #b7e2cd; background: #f0faf5; }
 .mwr .cfg-test.bad { border-color: #f2c9c5; background: #fdf3f2; }
-.mwr .llm-scope-tabs, .mwr .admin-llm-purpose { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--hair); border-radius: 9px; background: #f7f8fa; margin-bottom: 14px; }
-.mwr .llm-scope-tabs button, .mwr .admin-llm-purpose button { border: 0; border-radius: 6px; background: transparent; color: var(--muted); padding: 6px 12px; cursor: pointer; font-weight: 650; }
-.mwr .llm-scope-tabs button.on, .mwr .admin-llm-purpose button.on { background: #fff; color: var(--blue-d); box-shadow: 0 1px 3px rgba(25, 39, 65, .12); }
+.mwr .llm-scope-tabs, .mwr .admin-llm-purpose, .mwr .personal-llm-purpose { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--hair); border-radius: 9px; background: #f7f8fa; margin-bottom: 14px; }
+.mwr .llm-scope-tabs button, .mwr .admin-llm-purpose button, .mwr .personal-llm-purpose button { border: 0; border-radius: 6px; background: transparent; color: var(--muted); padding: 6px 12px; cursor: pointer; font-weight: 650; }
+.mwr .llm-scope-tabs button.on, .mwr .admin-llm-purpose button.on, .mwr .personal-llm-purpose button.on { background: #fff; color: var(--blue-d); box-shadow: 0 1px 3px rgba(25, 39, 65, .12); }
+.mwr .llm-purpose-row { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 14px; }
+.mwr .llm-purpose-row .admin-llm-purpose, .mwr .llm-purpose-row .personal-llm-purpose { margin-bottom: 0; }
+.mwr .cfg-purpose-tag { max-width: 100%; border-radius: 7px; padding: 5px 10px; font-weight: 500; line-height: 1.6; white-space: normal; }
 .mwr .admin-llm-defaults { padding-top: 2px; }
 .mwr .admin-llm-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11.5px; margin: -3px 0 12px; }
 .mwr .admin-llm-policy { margin: -3px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }

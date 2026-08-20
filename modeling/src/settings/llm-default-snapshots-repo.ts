@@ -71,17 +71,28 @@ export function getUserLlmDefaultSnapshot(
   };
 }
 
-export function getUserLlmDefaultSnapshotMaxTokens(username: string): number | undefined {
-  return snapshotRow(username, 'main')?.max_tokens;
+export function getUserLlmDefaultSnapshotMaxTokens(
+  username: string,
+  purpose: LlmPurpose = 'main',
+): number | undefined {
+  return snapshotRow(username, purpose)?.max_tokens;
 }
 
-export function getUserLlmDefaultSnapshotContextWindow(username: string): number | undefined {
-  return snapshotRow(username, 'main')?.context_window;
+export function getUserLlmDefaultSnapshotContextWindow(
+  username: string,
+  purpose: LlmPurpose = 'main',
+): number | undefined {
+  return snapshotRow(username, purpose)?.context_window;
 }
 
 export function deleteUserLlmDefaultSnapshots(username: string): void {
   getDb().prepare('DELETE FROM user_llm_default_snapshots WHERE username = ?')
     .run(normalizedUsername(username));
+}
+
+export function deleteUserLlmDefaultSnapshot(username: string, purpose: LlmPurpose): void {
+  getDb().prepare('DELETE FROM user_llm_default_snapshots WHERE username = ? AND purpose = ?')
+    .run(normalizedUsername(username), purpose);
 }
 
 interface UserLlmDefaultSnapshotSet {
@@ -99,20 +110,47 @@ interface PreparedSnapshot {
   defaultRevision: number;
 }
 
+function prepareSnapshot(
+  username: string,
+  purpose: LlmPurpose,
+  settings: LlmDefaultSettings,
+): PreparedSnapshot {
+  return {
+    purpose,
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    apiKeyCiphertext: encryptLlmDefaultApiKey(settings.apiKey, cipherContext(username, purpose)),
+    maxTokens: settings.maxTokens,
+    contextWindow: settings.contextWindow,
+    defaultRevision: settings.revision,
+  };
+}
+
 function prepareSnapshots(username: string, defaults: UserLlmDefaultSnapshotSet): PreparedSnapshot[] {
-  return [defaults.main, defaults.task].filter((value): value is LlmDefaultSettings => Boolean(value))
-    .map((settings) => ({
-      purpose: settings.purpose,
-      baseUrl: settings.baseUrl,
-      model: settings.model,
-      apiKeyCiphertext: encryptLlmDefaultApiKey(
-        settings.apiKey,
-        cipherContext(username, settings.purpose),
-      ),
-      maxTokens: settings.maxTokens,
-      contextWindow: settings.contextWindow,
-      defaultRevision: settings.revision,
-    }));
+  return [defaults.main, defaults.task]
+    .filter((value): value is LlmDefaultSettings => Boolean(value))
+    .map((settings) => prepareSnapshot(username, settings.purpose, settings));
+}
+
+function insertPreparedSnapshot(
+  insert: ReturnType<ReturnType<typeof getDb>['prepare']>,
+  username: string,
+  snapshot: PreparedSnapshot,
+  assignedVia: LlmDefaultAssignmentReason,
+  assignedAt: string,
+): void {
+  insert.run(
+    username,
+    snapshot.purpose,
+    snapshot.baseUrl,
+    snapshot.model,
+    snapshot.apiKeyCiphertext,
+    snapshot.maxTokens,
+    snapshot.contextWindow,
+    snapshot.defaultRevision,
+    assignedVia,
+    assignedAt,
+  );
 }
 
 function saveUserLlmDefaultSnapshots(
@@ -127,24 +165,14 @@ function saveUserLlmDefaultSnapshots(
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare('DELETE FROM user_llm_settings WHERE username = ?').run(normalized);
+    db.prepare('DELETE FROM user_task_llm_settings WHERE username = ?').run(normalized);
     db.prepare('DELETE FROM user_llm_default_snapshots WHERE username = ?').run(normalized);
     const insert = db.prepare(`INSERT INTO user_llm_default_snapshots (
       username, purpose, base_url, model, api_key_ciphertext, max_tokens,
         context_window, default_revision, assigned_via, assigned_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const snapshot of prepared) {
-      insert.run(
-        normalized,
-        snapshot.purpose,
-        snapshot.baseUrl,
-        snapshot.model,
-        snapshot.apiKeyCiphertext,
-        snapshot.maxTokens,
-        snapshot.contextWindow,
-        snapshot.defaultRevision,
-        assignedVia,
-        assignedAt,
-      );
+      insertPreparedSnapshot(insert, normalized, snapshot, assignedVia, assignedAt);
     }
     db.exec('COMMIT');
     return true;
@@ -161,6 +189,7 @@ export function clearNewUserLlmConfiguration(username: string): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare('DELETE FROM user_llm_settings WHERE username = ?').run(normalized);
+    db.prepare('DELETE FROM user_task_llm_settings WHERE username = ?').run(normalized);
     db.prepare('DELETE FROM user_llm_default_snapshots WHERE username = ?').run(normalized);
     db.exec('COMMIT');
   } catch (error) {
@@ -181,4 +210,31 @@ export function replaceUserLlmWithDefaultSnapshots(
   defaults: UserLlmDefaultSnapshotSet,
 ): void {
   saveUserLlmDefaultSnapshots(username, defaults, 'sync');
+}
+
+export function replaceUserLlmPurposeWithDefaultSnapshot(
+  username: string,
+  purpose: LlmPurpose,
+  settings: LlmDefaultSettings,
+): void {
+  const normalized = normalizedUsername(username);
+  const snapshot = prepareSnapshot(normalized, purpose, settings);
+  const assignedAt = nowIso();
+  const table = purpose === 'main' ? 'user_llm_settings' : 'user_task_llm_settings';
+  const db = getDb();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare(`DELETE FROM ${table} WHERE username = ?`).run(normalized);
+    db.prepare('DELETE FROM user_llm_default_snapshots WHERE username = ? AND purpose = ?')
+      .run(normalized, purpose);
+    const insert = db.prepare(`INSERT INTO user_llm_default_snapshots (
+      username, purpose, base_url, model, api_key_ciphertext, max_tokens,
+        context_window, default_revision, assigned_via, assigned_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    insertPreparedSnapshot(insert, normalized, snapshot, 'sync', assignedAt);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction 已结束时忽略 */ }
+    throw error;
+  }
 }
