@@ -109,6 +109,36 @@ function rowToRun(row: any): AuthoringRun {
   };
 }
 
+function normalizeRunState(state: JsonObject, status: AuthoringRunStatus, now: string): JsonObject {
+  const rawProgress = Number(state.progress);
+  const progress = Number.isFinite(rawProgress)
+    ? Math.max(0, Math.min(100, Math.round(rawProgress)))
+    : undefined;
+  const rawRetryCount = Number(state.retryCount);
+  const retryCount = Number.isFinite(rawRetryCount) && rawRetryCount >= 0
+    ? Math.floor(rawRetryCount)
+    : 0;
+  return {
+    ...state,
+    ...(['completed', 'failed', 'cancelled'].includes(status)
+      ? (state.phase ? {} : { phase: status })
+      : state.phase ? {} : { phase: status === 'queued' ? 'queued' : 'running' }),
+    ...(progress === undefined ? {} : { progress }),
+    retryCount,
+    lastHeartbeatAt: now,
+  };
+}
+
+function runObservabilityPayload(state: JsonObject): JsonObject {
+  const keys = [
+    'phase', 'currentStep', 'progress', 'lastHeartbeatAt', 'retryCount', 'eta',
+    'queuePosition', 'errorCode', 'recoveryAction',
+  ];
+  return Object.fromEntries(keys
+    .filter((key) => state[key] !== undefined)
+    .map((key) => [key, state[key]])) as JsonObject;
+}
+
 function rowToInteraction(row: any): AuthoringInteraction {
   return {
     id: row.id,
@@ -264,6 +294,7 @@ export class AuthoringState {
         createdAt: now,
         updatedAt: now,
       };
+      run.state = normalizeRunState({ ...run.state, jobId: run.id }, status, now);
       this.db.prepare(`INSERT INTO authoring_runs
         (id, project_id, intent, status, base_revision, state_json, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?)`)
@@ -277,6 +308,7 @@ export class AuthoringState {
           runId: run.id,
           intent: run.intent,
           status: run.status,
+          ...runObservabilityPayload(run.state),
           ...(run.baseRevision ? { baseRevision: run.baseRevision } : {}),
         },
       });
@@ -295,9 +327,10 @@ export class AuthoringState {
       if (current.status !== command.status && !ALLOWED_RUN_TRANSITIONS[current.status].has(command.status)) {
         throw new AuthoringStateError('INVALID_TRANSITION', '任务状态不能这样更改');
       }
-      const stateJson = command.state === undefined
-        ? encodeObject(current.state, '任务进度')
-        : encodeObject(command.state, '任务进度');
+      const nextState = command.state === undefined
+        ? current.state
+        : { ...current.state, ...command.state };
+      const stateJson = encodeObject(normalizeRunState(nextState, command.status, nowIso()), '任务进度');
       const resultJson = command.result === undefined
         ? (current.result ? encodeObject(current.result, '任务结果') : null)
         : encodeObject(command.result, '任务结果');
@@ -327,10 +360,11 @@ export class AuthoringState {
         projectId: run.projectId,
         type: 'authoring.run.updated',
         runId: run.id,
-        payload: {
-          runId: run.id,
-          status: run.status,
-          ...(run.error ? { error: run.error } : {}),
+          payload: {
+            runId: run.id,
+            status: run.status,
+            ...runObservabilityPayload(run.state),
+            ...(run.error ? { error: run.error } : {}),
         },
       })];
 
@@ -388,14 +422,25 @@ export class AuthoringState {
       const events: ProjectEvent[] = [];
       let nextRun = run;
       if (run.status === 'running') {
-        this.db.prepare(`UPDATE authoring_runs SET status = 'waiting', updated_at = ?
-          WHERE id = ? AND project_id = ?`).run(now, run.id, run.projectId);
+        const waitingState = normalizeRunState({
+          ...run.state,
+          phase: run.state.phase ?? '等待用户回答',
+          currentStep: run.state.currentStep ?? '等待用户回答',
+        }, 'waiting', now);
+        this.db.prepare(`UPDATE authoring_runs SET status = 'waiting', state_json = ?, updated_at = ?
+          WHERE id = ? AND project_id = ?`).run(
+          encodeObject(waitingState, '任务进度'), now, run.id, run.projectId,
+        );
         nextRun = this.getRun(run.projectId, run.id)!;
         events.push(this.appendEvent({
           projectId: run.projectId,
           type: 'authoring.run.updated',
           runId: run.id,
-          payload: { runId: run.id, status: 'waiting' },
+          payload: {
+            runId: run.id,
+            status: 'waiting',
+            ...runObservabilityPayload(nextRun.state),
+          },
         }));
       }
       events.push(this.appendEvent({
@@ -464,14 +509,21 @@ export class AuthoringState {
         WHERE project_id = ? AND run_id = ? AND status = 'pending'`)
         .get(command.projectId, interaction.runId) as { count: number };
       if (Number(pending.count) === 0 && run.status === 'waiting') {
-        this.db.prepare(`UPDATE authoring_runs SET status = 'running', updated_at = ?
-          WHERE id = ? AND project_id = ?`).run(now, run.id, run.projectId);
+        const resumedState = normalizeRunState(run.state, 'running', now);
+        this.db.prepare(`UPDATE authoring_runs SET status = 'running', state_json = ?, updated_at = ?
+          WHERE id = ? AND project_id = ?`).run(
+          encodeObject(resumedState, '任务进度'), now, run.id, run.projectId,
+        );
         run = this.getRun(run.projectId, run.id)!;
         events.push(this.appendEvent({
           projectId: run.projectId,
           type: 'authoring.run.updated',
           runId: run.id,
-          payload: { runId: run.id, status: 'running' },
+          payload: {
+            runId: run.id,
+            status: 'running',
+            ...runObservabilityPayload(run.state),
+          },
         }));
       }
       return { kind: 'interaction', interaction, run, replayed: false, events };

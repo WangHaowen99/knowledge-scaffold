@@ -11,6 +11,7 @@ import {
   type ChatApplyResult,
 } from '../workflow/package-chat.js';
 import { PiAuthoringAdapter } from './pi-adapter.js';
+import { startJobHeartbeat } from './job-observability.js';
 import { AuthoringState, getAuthoringState } from './state.js';
 import type { AuthoringInteraction, JsonObject } from './types.js';
 
@@ -233,6 +234,23 @@ export class ControlledRepairController {
       inputRevisionOid: inputRevision,
       messageKey: `repair.apply.${interaction.id}`,
     });
+    const observableJob = this.adapter.start(project.id, '应用知识包修复方案', inputRevision, {
+      purpose: 'controlled_repair_apply',
+      repairAttemptId: attemptId,
+      interactionId: interaction.id,
+      phase: '方案应用',
+      currentStep: '按确认方案修改知识文件',
+      progress: 10,
+      retryCount: 0,
+      eta: { minMinutes: 5, maxMinutes: 30, confidence: 'low' },
+      recoveryAction: 'repair_knowledge_structure',
+    }).run;
+    const stopHeartbeat = startJobHeartbeat(
+      this.adapter,
+      project.id,
+      observableJob.id,
+      { phase: '方案应用', currentStep: '按确认方案修改知识文件', progress: 10 },
+    );
     let applied: ChatApplyResult;
     try {
       applied = await this.applyPlan(
@@ -241,13 +259,30 @@ export class ControlledRepairController {
         String(interaction.payload.message ?? ''),
         plan,
         context.tables,
+        {
+          // 受控修复候选仍须通过严格的结构与来源映射校验；首次候选把摄取
+          // 元数据误当成物理列时，把精确缺列反馈交回模型修正，而不是直接 500。
+          maxCandidateAttempts: 3,
+        },
       );
+      this.adapter.progress(project.id, observableJob.id, {
+        phase: '修复后校验',
+        currentStep: '重新执行知识包规则检查和语义检查',
+        progress: 75,
+        retryCount: 0,
+        eta: { minMinutes: 1, maxMinutes: 8, confidence: 'medium' },
+        recoveryAction: 'repair_knowledge_structure',
+      });
       const completed = await this.runner.completeApprovedPlan(project, context, attemptId);
       const answered = this.adapter.respond(project.id, interaction.id, requestId, response);
       const run = this.adapter.complete(project.id, answered.run.id, {
         ...(applied.version ? { version: applied.version } : {}),
         revision: completed.current.revision.oid,
       }).run;
+      this.adapter.complete(project.id, observableJob.id, {
+        revision: completed.current.revision.oid,
+        validationErrors: completed.validation.errors,
+      });
       return {
         interaction: answered.interaction,
         run,
@@ -261,6 +296,14 @@ export class ControlledRepairController {
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      try {
+        this.adapter.fail(project.id, observableJob.id, reason, {
+          phase: '方案应用失败',
+          currentStep: '知识包修复方案未完成',
+          errorCode: 'CONTROLLED_REPAIR_APPLY_FAILED',
+          recoveryAction: 'repair_knowledge_structure',
+        });
+      } catch { /* 保留原始修复错误 */ }
       const latest = await this.packages.current(project.id).catch(() => null);
       if (latest && latest.revision.oid !== inputRevision) {
         try { this.adapter.respond(project.id, interaction.id, requestId, response); } catch { /* 已收敛 */ }
@@ -270,6 +313,8 @@ export class ControlledRepairController {
         this.runner.failPlan(project.id, attemptId, reason);
       }
       throw error;
+    } finally {
+      stopHeartbeat();
     }
   }
 }

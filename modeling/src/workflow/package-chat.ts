@@ -1025,6 +1025,8 @@ export async function packageChatApply(
     DATA_PROVIDER_SCRIPT_CONTRACT,
     '脚本与 operation 必须双向绑定：script.boundOperation 指向 operation，operation.script.key 指回 script，并在 flow 中明确调用。',
     '每个对象都必须保留资料来源：数据对象的 sourceRefs 引用真实 Sheet，字段通过 sourceColumn 对应真实列；产品、场景等语义对象引用原始文档及证据位置。',
+    '不得把来源表名、文件名或摄取来源标识伪装成每张来源表都存在的业务字段（例如 evt_src_table/source_table）。',
+    '多来源对象需要稳定主键时，优先组合各来源真实存在的事件编号、公告编号等字段；若资料没有共同物理列，不得虚构 sourceColumn，必须在字段说明中明确这是摄取元数据并避免把它纳入源字段映射或主键。',
     '对象 primaryKey 只能填写 fields[].key，不得填写 sourceColumn、alias 或原始列名。',
     `项目背景：${project.background || project.domain || project.name}`,
   ].join('\n');
@@ -1033,7 +1035,8 @@ export async function packageChatApply(
   const spec = latest.spec;
   const version = nextPackageChatVersion(latest.spec);
   const timeoutMs = resolvePackageApplyTimeoutMs(process.env.MODELING_PACKAGE_APPLY_TIMEOUT_MS);
-  const maxCandidateAttempts = options.validateCandidate ? (options.maxCandidateAttempts ?? 3) : 1;
+  const maxCandidateAttempts = options.maxCandidateAttempts
+    ?? (options.validateCandidate ? 3 : 1);
   const quality = await runCandidateQualityLoop<PackageApplyCandidate>({
     maxAttempts: maxCandidateAttempts,
     onProgress: async (event) => {

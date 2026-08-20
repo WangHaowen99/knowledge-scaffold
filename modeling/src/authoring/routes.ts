@@ -179,6 +179,21 @@ function sendStateError(reply: FastifyReply, error: unknown) {
     return reply.code(error.code === 'revision_conflict' ? 409 : 400)
       .send({ error: error.message, code: error.code });
   }
+  if (error instanceof PackageCandidateRejectedError) {
+    const feedback = error.feedback.trim().slice(0, 180);
+    return reply.code(422).send({
+      error: `修复候选未通过校验，请根据反馈重新确认：${feedback}`,
+      code: error.code,
+      feedback: error.feedback,
+      nextActions: [
+        {
+          id: 'repair_knowledge_structure', label: '重新校验并继续修复', style: 'primary',
+          description: '保留当前知识包，依据这次候选失败原因重新生成修复方案',
+        },
+        { id: 'view_validation', label: '查看校验结果', style: 'secondary' },
+      ],
+    });
+  }
   if (error instanceof ArtifactRepositoryError) {
     const status = error.code === 'revision_conflict' ? 409
       : error.code === 'revision_not_found' || error.code === 'not_initialized' ? 404 : 400;

@@ -2,6 +2,7 @@ import React from 'react';
 import MarkdownContent from './MarkdownContent.jsx';
 import { formatMessageTimestamp } from './messageTimestamp.js';
 import { effectiveTaskPlanTasks } from './taskPlanStatus.js';
+import RunObservabilityPanel from './RunObservabilityPanel.jsx';
 
 /**
  * 术语已经在后端统一成「逐项修复 / 知识包修复助手」，这里只兜历史消息——
@@ -46,33 +47,54 @@ const MILESTONE_ORDER = [
   'goal_confirmed', 'materials_ready', 'process_confirmed',
   'knowledge_confirmed', 'deterministic_confirmed', 'construction_completed',
 ];
-const PROGRESS_HINT = '按已确认阶段计算。当前阶段的任务全部完成后仍需你确认，确认后才计满这一阶段。';
-
 export function milestonePosition(milestoneId) {
   const index = MILESTONE_ORDER.indexOf(String(milestoneId ?? ''));
   return index < 0 ? null : { index: index + 1, total: MILESTONE_ORDER.length };
 }
 
-function StatusBlock({ block, hideNonBlocking = false }) {
-  const stage = milestonePosition(block.milestoneId);
-  const progress = Number.isFinite(Number(block.progress))
+function completedTitle(title, taskTitle) {
+  const normalized = friendlyRepairText(title).replace(/^正在/u, '').trim();
+  if (normalized && normalized !== friendlyRepairText(title)) return `${normalized}已完成`;
+  return `${friendlyRepairText(taskTitle || title || '当前任务')}已完成`;
+}
+
+function StatusBlock({
+  block, hideNonBlocking = false, runtime = null, task = null, tracksTask = false,
+  stageProgress = null, taskProgressMessage = false,
+}) {
+  const taskCompleted = tracksTask && ['completed', 'skipped'].includes(task?.status);
+  const runtimeProgress = Number.isFinite(Number(runtime?.job?.progress))
+    ? Math.max(0, Math.min(100, Math.round(Number(runtime.job.progress))))
+    : null;
+  const reportedTaskProgress = taskProgressMessage && Number.isFinite(Number(block.progress))
     ? Math.max(0, Math.min(100, Math.round(Number(block.progress))))
     : null;
+  const progress = taskCompleted ? 100 : (runtime ? runtimeProgress : reportedTaskProgress);
+  const title = taskCompleted
+    ? completedTitle(block.title, task?.title)
+    : (runtime?.title ?? friendlyRepairText(block.title));
+  const statusLabel = taskCompleted ? '已完成' : runtime?.statusLabel;
   return (
-    <section className="ac-message-status">
+    <section className={`ac-message-status${runtime ? ' has-runtime' : ''}`}>
       <div className="ac-message-status-head">
-        <strong>{friendlyRepairText(block.title)}</strong>
-        {stage && <span className="ac-message-stage">阶段 {stage.index}/{stage.total}</span>}
-        {progress != null && <span title={PROGRESS_HINT}>{progress}%</span>}
+        <strong>{title}</strong>
+        {tracksTask && stageProgress?.total > 0 && (
+          <span className="ac-message-stage-progress">阶段 {stageProgress.completed}/{stageProgress.total}</span>
+        )}
+        {statusLabel && <span className="ac-message-runtime-status">{statusLabel}</span>}
+        {progress != null && <span className="ac-message-task-progress-label">任务 {progress}%</span>}
       </div>
-      {block.summary && <p>{friendlyRepairText(block.summary, hideNonBlocking)}</p>}
+      {(runtime?.summary || block.summary) && (
+        <p>{runtime?.summary ?? friendlyRepairText(block.summary, hideNonBlocking)}</p>
+      )}
       {progress != null && (
-        <div className="ac-message-progress" title={PROGRESS_HINT}
-          aria-label={`建模进度 ${progress}%。${PROGRESS_HINT}`}>
+        <div className="ac-message-progress" title="当前任务进度"
+          aria-label={`当前任务进度 ${progress}%`}>
           <span style={{ width: `${progress}%` }} />
         </div>
       )}
-      <div className="ac-message-eta">{etaLabel(block.eta)}</div>
+      {!runtime && tracksTask && !taskCompleted && <div className="ac-message-eta">{etaLabel(block.eta)}</div>}
+      {runtime && <RunObservabilityPanel {...runtime} integrated />}
     </section>
   );
 }
@@ -183,8 +205,16 @@ function ChangePlanBlock({ block }) {
   </section>;
 }
 
-function MessageBlock({ block, onAction, actionsEnabled, disabledActionIds, hiddenActionIds, hideTaskPlan, hideNonBlocking }) {
-  if (block?.type === 'status') return <StatusBlock block={block} hideNonBlocking={hideNonBlocking} />;
+function MessageBlock({
+  block, onAction, actionsEnabled, disabledActionIds, hiddenActionIds,
+  hideTaskPlan, hideNonBlocking, runtime, task, taskProgressMessage, stageProgress,
+}) {
+  if (block?.type === 'status') {
+    const tracksTask = Boolean(taskProgressMessage || runtime);
+    return <StatusBlock block={block} hideNonBlocking={hideNonBlocking} runtime={runtime}
+      task={task} tracksTask={tracksTask} stageProgress={stageProgress}
+      taskProgressMessage={taskProgressMessage} />;
+  }
   if (block?.type === 'text') return <div className="ac-message-text"><MarkdownContent>{friendlyRepairText(block.text, hideNonBlocking)}</MarkdownContent></div>;
   if (block?.type === 'evidence') return <EvidenceBlock block={block} onAction={onAction} />;
   if (block?.type === 'validation') return <ValidationBlock block={block} onAction={onAction} />;
@@ -216,7 +246,7 @@ function displayBlocks(message) {
 
 export default function AiConstructionMessageCard({
   message, onAction, actionsEnabled = true, disabledActionIds = [], hiddenActionIds = [],
-  hideTaskPlan = false,
+  hideTaskPlan = false, runtime = null, task = null, stageProgress = null,
 }) {
   const findingStatus = (message?.blocks ?? []).find((block) => (
     block?.type === 'status' && String(block.title ?? '').startsWith('处理校验发现：')
@@ -232,12 +262,16 @@ export default function AiConstructionMessageCard({
   const handleAction = onAction
     ? (action) => onAction(resolveLegacyFindingAction(message, action))
     : undefined;
+  const taskProgressMessage = String(message?.key ?? '').startsWith('progress.task.')
+    || String(message?.key ?? '') === 'analysis.progress.current';
   return (
-    <article className={`ac-message-card ${message?.role ?? 'assistant'}`}>
+    <article className={`ac-message-card ${message?.role ?? 'assistant'}${runtime ? ' has-job-runtime' : ''}`}>
       {blocks.map((block, index) => (
         <MessageBlock key={`${message?.id ?? 'message'}-${index}`} block={block} onAction={handleAction}
           actionsEnabled={actionsEnabled} disabledActionIds={disabledActionIds}
-          hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan} hideNonBlocking={hideNonBlocking} />
+          hiddenActionIds={hiddenActionIds} hideTaskPlan={hideTaskPlan}
+          hideNonBlocking={hideNonBlocking} runtime={runtime} task={task}
+          taskProgressMessage={taskProgressMessage} stageProgress={stageProgress} />
       ))}
       {timestamp && <time className="ac-message-time" dateTime={message.createdAt}>{timestamp}</time>}
     </article>

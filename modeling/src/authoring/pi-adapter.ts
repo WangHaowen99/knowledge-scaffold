@@ -100,6 +100,25 @@ export class PiAuthoringAdapter {
     return { kind: 'run', run: updated.run, events };
   }
 
+  /** 更新统一 Job 的阶段心跳；不会改变业务结果，只记录当前可观测状态。 */
+  heartbeat(projectId: string, runId: string, state: JsonObject): PiRunResult {
+    const current = this.authoringState.snapshot(projectId).activeRuns.find((run) => run.id === runId);
+    if (!current) throw new Error('任务不存在或已结束');
+    // 待办打开后任务会进入 waiting。后台定时器不能把它误恢复为 running，
+    // 否则前端会丢掉“等待用户操作”的真实状态。
+    if (current.status === 'waiting') return { kind: 'run', run: current, events: [] };
+    return runResult(this.authoringState.apply({
+      kind: 'update_run',
+      projectId,
+      runId,
+      status: 'running',
+      state: {
+        ...state,
+        lastHeartbeatAt: new Date().toISOString(),
+      },
+    }));
+  }
+
   request(
     projectId: string,
     runId: string,
@@ -154,7 +173,13 @@ export class PiAuthoringAdapter {
       runId,
       status: 'failed',
       error,
-      ...(state === undefined ? {} : { state }),
+      state: {
+        phase: '失败',
+        currentStep: '任务未完成',
+        errorCode: 'AUTHORING_RUN_FAILED',
+        recoveryAction: 'retry_last_step',
+        ...(state ?? {}),
+      },
     }));
   }
 }

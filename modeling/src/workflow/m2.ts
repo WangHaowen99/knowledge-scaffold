@@ -38,6 +38,7 @@ import {
 import { nextValidationCandidateVersion } from './package-version-lifecycle.js';
 import { throwIfCancelled } from '../cancellation.js';
 import { reportLongTaskProgress } from '../ai-construction/task-progress.js';
+import { startJobHeartbeat } from '../authoring/job-observability.js';
 import type { ReadableDocument } from './document-read-session.js';
 import { attachVerifiedDocumentReadCoverage } from './document-read-coverage.js';
 import {
@@ -176,9 +177,29 @@ export async function generatePackage(
   const authoringRun = resumableRun
     ? authoring.progress(project.id, resumableRun.id, {
         nodeId: node.id,
-        step: 'resume_after_generation_gate',
-      }).run
-    : authoring.start(project.id, '生成知识包', baseRevision.oid, { nodeId: node.id }).run;
+      step: 'resume_after_generation_gate',
+      purpose: 'knowledge_generation',
+      phase: '知识结构生成',
+      currentStep: '恢复知识包生成',
+      progress: 0,
+      retryCount: 0,
+    }).run
+    : authoring.start(project.id, '生成知识包', baseRevision.oid, {
+      nodeId: node.id,
+      purpose: 'knowledge_generation',
+      phase: '知识结构生成',
+      currentStep: '准备知识包生成',
+      progress: 0,
+      retryCount: 0,
+    }).run;
+  // 单个模型批次可能超过 90 秒；批次进度只在边界上报，统一 Job 仍需持续心跳。
+  // 进入 waiting/completed/failed 时由下方 finally 停止，且 adapter 会保护 waiting 不被改回 running。
+  const stopJobHeartbeat = startJobHeartbeat(
+    authoring,
+    project.id,
+    authoringRun.id,
+    { phase: '知识结构生成', currentStep: '准备知识包生成', progress: 0, retryCount: 0 },
+  );
   const rawObjectHints = buildObjectGenerationHints(analysis, ctx.tables);
   const objectHints = rawObjectHints.map((candidate, index) => ({
     ...candidate,
@@ -226,6 +247,8 @@ export async function generatePackage(
         done: index,
         total: objectBatches.length + knowledgeBatches.length,
         elapsedMs: Date.now() - generationStartedAt,
+        authoringRunId: authoringRun.id,
+        phase: '知识结构生成',
       });
       const phase = `object_batch_${index + 1}`;
       trace({
@@ -349,6 +372,8 @@ export async function generatePackage(
         done: objectBatches.length + index,
         total: objectBatches.length + knowledgeBatches.length,
         elapsedMs: Date.now() - generationStartedAt,
+        authoringRunId: authoringRun.id,
+        phase: '知识结构生成',
       });
       const phase = `knowledge_batch_${index + 1}`;
       const suggestedRules = candidates.filter((item) => item.kind === 'rule' && item.readiness === 'extractable').length;
@@ -646,6 +671,10 @@ export async function generatePackage(
     authoring.progress(project.id, authoringRun.id, {
       nodeId: node.id,
       step: 'complete',
+      phase: '结果写入',
+      currentStep: '保存知识包版本',
+      progress: 95,
+      retryCount: 0,
     }, {
       type: 'package.revision.created',
       payload: { revisionId: saved.revision.oid, cause: 'generate', packageVersion: version },
@@ -699,6 +728,8 @@ export async function generatePackage(
     });
     try { authoring.fail(project.id, authoringRun.id, reason); } catch { /* 保留原始失败原因 */ }
     throw error;
+  } finally {
+    stopJobHeartbeat();
   }
 }
 

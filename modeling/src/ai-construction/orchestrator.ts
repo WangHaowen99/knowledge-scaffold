@@ -1232,9 +1232,9 @@ export class AiConstructionOrchestrator {
           milestoneId: 'knowledge_confirmed', taskId: activeTask.id,
           progress: current.progress.percent,
           eta: {
-            minMinutes: current.progress.eta.minMinutes,
-            maxMinutes: current.progress.eta.maxMinutes,
-            confidence: current.progress.eta.confidence,
+            minMinutes: 5,
+            maxMinutes: 30,
+            confidence: 'low' as const,
           },
         },
         {

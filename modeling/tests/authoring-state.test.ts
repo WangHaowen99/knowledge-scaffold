@@ -67,7 +67,11 @@ test('任务和八类待办可在重新读取后继续', () => {
   const restored = new AuthoringState(getDb()).snapshot(project);
   assert.equal(restored.activeRuns.length, 1);
   assert.equal(restored.activeRuns[0]?.status, 'waiting');
-  assert.deepEqual(restored.activeRuns[0]?.state, { step: 1 });
+  assert.equal(restored.activeRuns[0]?.state.step, 1);
+  assert.equal(restored.activeRuns[0]?.state.jobId, runId);
+  assert.equal(restored.activeRuns[0]?.state.retryCount, 0);
+  assert.equal(restored.activeRuns[0]?.state.phase, 'running');
+  assert.ok(Date.parse(String(restored.activeRuns[0]?.state.lastHeartbeatAt)) > 0);
   assert.deepEqual(restored.pendingInteractions.map((item) => item.type), AUTHORING_INTERACTION_TYPES);
   assert.equal(restored.lastEventSeq, 10);
 
@@ -78,6 +82,32 @@ test('任务和八类待办可在重新读取后继续', () => {
     type: 'other' as any,
     payload: {},
   }), (error) => error instanceof AuthoringStateError && error.code === 'INVALID_INPUT');
+});
+
+test('进度更新合并原状态并发布统一 Job 心跳字段', () => {
+  const state = new AuthoringState(getDb());
+  const project = projectId();
+  const runId = startRun(state, project);
+  const updated = state.apply({
+    kind: 'update_run', projectId: project, runId, status: 'running',
+    state: { phase: '规则抽取', currentStep: '生成第 2/5 批', progress: 40, retryCount: 1 },
+  });
+  assert.equal(updated.kind, 'run');
+  if (updated.kind !== 'run') throw new Error('未更新任务');
+  assert.equal(updated.run.state.step, 1, '局部心跳不能覆盖既有状态');
+  assert.equal(updated.run.state.phase, '规则抽取');
+  assert.equal(updated.run.state.progress, 40);
+  assert.equal(updated.run.state.retryCount, 1);
+  assert.ok(Date.parse(String(updated.run.state.lastHeartbeatAt)) > 0);
+  assert.deepEqual(updated.events[0]?.payload, {
+    runId,
+    status: 'running',
+    phase: '规则抽取',
+    currentStep: '生成第 2/5 批',
+    progress: 40,
+    lastHeartbeatAt: updated.run.state.lastHeartbeatAt,
+    retryCount: 1,
+  });
 });
 
 test('重复回答只处理一次', () => {

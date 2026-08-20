@@ -32,7 +32,8 @@ test('Pi 任务可以启动、更新进度并完成', () => {
   assert.equal(started.kind, 'run');
   assert.equal(started.run.status, 'running');
   assert.equal(started.run.baseRevision, 'R3');
-  assert.deepEqual(started.run.state, { step: '准备' });
+  assert.equal(started.run.state.step, '准备');
+  assert.equal(started.run.state.jobId, started.run.id);
   assert.deepEqual(started.events.map((event) => event.type), ['authoring.run.started']);
 
   const progressed = adapter.progress(
@@ -42,7 +43,9 @@ test('Pi 任务可以启动、更新进度并完成', () => {
     { type: 'run.progress', payload: { message: '已处理 2 批' } },
   );
   assert.equal(progressed.run.status, 'running');
-  assert.deepEqual(progressed.run.state, { step: '提取对象', current: 2, total: 5 });
+  assert.equal(progressed.run.state.step, '提取对象');
+  assert.equal(progressed.run.state.current, 2);
+  assert.equal(progressed.run.state.total, 5);
   assert.deepEqual(progressed.events.map((event) => event.type), [
     'authoring.run.updated',
     'run.progress',
@@ -117,6 +120,18 @@ test('待办会暂停任务，全部回答后恢复', () => {
   assert.deepEqual(replayed.events, []);
 });
 
+test('waiting 任务的后台心跳不会误恢复成 running', () => {
+  const { projectId, state, adapter } = setup();
+  const run = adapter.start(projectId, '等待专家确认').run;
+  const pending = adapter.request(projectId, run.id, 'decision', { title: '请确认' });
+  const heartbeat = adapter.heartbeat(projectId, run.id, {});
+
+  assert.equal(pending.run.status, 'waiting');
+  assert.equal(heartbeat.run.status, 'waiting');
+  assert.deepEqual(heartbeat.events, []);
+  assert.equal(state.snapshot(projectId).activeRuns[0]?.status, 'waiting');
+});
+
 test('progress 会先恢复 waiting 任务，再写入新进度', () => {
   const { projectId, state, adapter } = setup();
   const run = adapter.start(projectId, '生成知识包', undefined, { step: '待确认' }).run;
@@ -130,7 +145,7 @@ test('progress 会先恢复 waiting 任务，再写入新进度', () => {
   const progressed = adapter.progress(projectId, run.id, { step: '生成文件' });
 
   assert.equal(progressed.run.status, 'running');
-  assert.deepEqual(progressed.run.state, { step: '生成文件' });
+  assert.equal(progressed.run.state.step, '生成文件');
   assert.deepEqual(progressed.events.map((event) => event.type), [
     'authoring.run.updated',
     'authoring.run.updated',
@@ -152,7 +167,8 @@ test('Pi 任务可以保留进度后失败', () => {
 
   assert.equal(failed.run.status, 'failed');
   assert.equal(failed.run.error, '产品来源缺失');
-  assert.deepEqual(failed.run.state, { step: '语义检查', checked: 8 });
+  assert.equal(failed.run.state.step, '语义检查');
+  assert.equal(failed.run.state.checked, 8);
   assert.ok(failed.run.finishedAt);
   assert.deepEqual(state.snapshot(projectId).activeRuns, []);
 });

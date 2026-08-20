@@ -831,6 +831,17 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .pchat-head strong { overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .mwr .pchat-head > div > span { overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 建模总进度只在助手头部展示；消息卡下方的进度全部归属当前任务。 */
+.mwr .pchat-head > .pchat-overall-progress {
+  flex: 1 1 100%; min-width: 0; display: grid; gap: 5px;
+  border: 1px solid #d8e6f6; border-radius: 10px; padding: 7px 9px; background: #f5f9ff;
+}
+.mwr .pchat-overall-progress__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mwr .pchat-overall-progress__head strong { color: #31517e; font-size: 11px; }
+.mwr .pchat-overall-progress__head span { flex: none; color: #2467ad; font-size: 10.5px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.mwr .pchat-overall-progress__bar { height: 5px; overflow: hidden; border-radius: 999px; background: #dfeaf7; }
+.mwr .pchat-overall-progress__bar span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #4b93e7, #2974ca); transition: width .25s ease; }
+
 /* 头部右上角：当前动态任务状态，悬停展开详情 */
 .mwr .pchat-head .pchat-task-status { position: relative; flex: 1 1 100%; display: block; min-width: 0; max-width: 100%; }
 .mwr .pchat-head .pchat-task-status__chip { max-width: 100%; min-height: 30px; padding: 4px 10px; display: flex; flex-direction: row; align-items: center; gap: 6px; color: #31517e; background: #f2f7fe; border: 1px solid #d6e5f8; border-radius: 999px; font-size: 11px; font-weight: 600; cursor: default; transition: border-color .15s, background .15s; }
@@ -899,10 +910,16 @@ body { background: #f2f4f8; overflow: hidden; }
 .mwr .ac-message-status-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #174b87; }
 .mwr .ac-message-status-head strong { font-size: 13px; font-weight: 760; }
 .mwr .ac-message-status-head span { flex: none; border: 1px solid #bfd5f2; border-radius: 999px; padding: 1px 7px; background: #fff; color: #2467ad; font-size: 10.5px; font-weight: 700; }
+.mwr .ac-message-task-progress-label { margin-left: auto; font-variant-numeric: tabular-nums; }
+.mwr .ac-message-stage-progress { color: #526a87 !important; background: #f8fbff !important; }
 .mwr .ac-message-status p { margin: 5px 0 8px; color: #52657c; font-size: 11.5px; line-height: 1.55; }
 .mwr .ac-message-progress { height: 6px; overflow: hidden; border-radius: 999px; background: #dfeaf7; }
 .mwr .ac-message-progress span { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: linear-gradient(90deg, #4b93e7, #2974ca); transition: width .25s ease; }
 .mwr .ac-message-eta { margin-top: 7px; color: #708196; font-size: 10.5px; }
+.mwr .ac-message-status.has-runtime { padding-bottom: 12px; }
+.mwr .ac-message-status.has-runtime .ac-message-status-head { flex-wrap: wrap; justify-content: flex-start; }
+.mwr .ac-message-status.has-runtime .ac-message-status-head strong { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.mwr .ac-message-runtime-status { border-color: #acd8c6 !important; background: #effaf5 !important; color: #137451 !important; }
 .mwr .ac-message-text { padding: 11px 13px; color: var(--ink2); font-size: 12px; line-height: 1.75; white-space: normal; word-break: break-word; }
 .mwr .ac-message-text > :first-child, .mwr .pchat-msg.assistant .bubble > :first-child { margin-top: 0; }
 .mwr .ac-message-text > :last-child, .mwr .pchat-msg.assistant .bubble > :last-child { margin-bottom: 0; }
@@ -1363,6 +1380,43 @@ body { background: #f2f4f8; overflow: hidden; }
   /* 助手栏可以被拖窄到 280px，按自身宽度而不是视口宽度做降级 */
   container-type: inline-size; container-name: assistant;
 }
+.mwr .pchat-job-observability {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px 8px;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d9e5f2;
+  border-radius: 9px;
+  background: #f8fbff;
+  color: #52657c;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.mwr .pchat-job-observability > span,
+.mwr .pchat-job-observability > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.mwr .pchat-job-observability > strong { color: #9d312b; }
+.mwr .pchat-job-observability.is-integrated {
+  margin-top: 10px;
+  border-color: #c9dcef;
+  background: rgba(255, 255, 255, .72);
+  color: #425b77;
+}
+.mwr .pchat-job-observability__hint { color: #715c34; }
+.mwr .pchat-job-observability__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 3px; }
+.mwr .pchat-job-observability .pchat-refresh-job {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .mwr .pkw-assistant .pchat { flex: 1; height: auto; min-height: 0; }
 .mwr .review-panel { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .mwr .review-panel > .pcheck { flex: none; margin-bottom: 10px; padding-right: 14px; }
@@ -1563,6 +1617,7 @@ html.pkw-resizing, html.pkw-resizing * { cursor: col-resize !important; user-sel
 /* 忙碌气泡上的取消按钮。取消是「当前这批跑完就停」，不是秒停，所以按下后
    立刻禁用并在下方说明，避免用户连点几次以为没生效。 */
 .mwr .pchat-cancel { margin-left: 8px; border: 1px solid #dde1e9; border-radius: 8px; padding: 3px 10px; background: #fff; color: var(--ink2); font-size: 11.5px; cursor: pointer; }
+.mwr .pchat-job-observability .pchat-cancel { min-height: 30px; margin-left: 0; padding: 5px 12px; }
 .mwr .pchat-cancel:hover:not(:disabled) { border-color: #efc0bc; color: #a6352f; }
 .mwr .pchat-cancel:disabled { opacity: .6; cursor: default; }
 .mwr .pchat-msg .bubble.muted { color: var(--muted); font-size: 11.5px; }

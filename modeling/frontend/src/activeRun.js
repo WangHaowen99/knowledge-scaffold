@@ -8,6 +8,7 @@
  * 所有活动运行：待办提交、里程碑确认、脚本生成都会留下 run 记录。
  */
 const RUNNING_STATUSES = new Set(['queued', 'running']);
+export const JOB_HEARTBEAT_STALE_MS = 90_000;
 
 /** 当前最该展示的活动运行：取最早开始的那个，用户最关心已经等了多久 */
 export function activeRunOf(authoring) {
@@ -26,6 +27,42 @@ export function activeRunOf(authoring) {
 export function activeRunLabel(run) {
   const intent = String(run?.intent ?? '').trim();
   return intent ? `正在${intent}` : '正在处理';
+}
+
+export function activeRunStatusLabel(run) {
+  return {
+    queued: '排队中',
+    running: '运行中',
+    waiting: '等待用户操作',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+  }[run?.status] ?? '未知状态';
+}
+
+export function activeRunObservability(run, now = Date.now()) {
+  if (!run) return null;
+  const state = run.state && typeof run.state === 'object' ? run.state : {};
+  const created = Date.parse(String(run.createdAt ?? ''));
+  const heartbeat = Date.parse(String(state.lastHeartbeatAt ?? run.updatedAt ?? ''));
+  const elapsedSeconds = Number.isFinite(created) ? Math.max(0, Math.floor((now - created) / 1000)) : null;
+  const heartbeatAgeSeconds = Number.isFinite(heartbeat)
+    ? Math.max(0, Math.floor((now - heartbeat) / 1000))
+    : null;
+  return {
+    jobId: String(state.jobId ?? run.id),
+    phase: String(state.phase ?? '').trim(),
+    currentStep: String(state.currentStep ?? '').trim(),
+    progress: Number.isFinite(Number(state.progress)) ? Number(state.progress) : null,
+    lastHeartbeatAt: Number.isFinite(heartbeat) ? new Date(heartbeat).toISOString() : '',
+    elapsedSeconds,
+    heartbeatAgeSeconds,
+    stale: heartbeatAgeSeconds == null || heartbeatAgeSeconds * 1000 > JOB_HEARTBEAT_STALE_MS,
+    retryCount: Number.isFinite(Number(state.retryCount)) ? Number(state.retryCount) : 0,
+    eta: state.eta && typeof state.eta === 'object' ? state.eta : null,
+    errorCode: String(state.errorCode ?? '').trim(),
+    recoveryAction: String(state.recoveryAction ?? '').trim(),
+  };
 }
 
 /**
