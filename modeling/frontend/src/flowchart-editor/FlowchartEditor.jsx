@@ -507,6 +507,24 @@ export default function FlowchartEditor({
     }
   }, [activeDiagram?.id, disabled]);
 
+  // React Flow 在拖动画布、节点手柄和可选元素重叠时，单纯依赖 change 通道
+  // 不能稳定覆盖鼠标单击。显式处理点击，保证用户无需键盘也能打开属性面板。
+  const onNodeClick = useCallback((_, node) => {
+    if (!activeDiagram || !node?.id) return;
+    dispatch({
+      type: 'select-element',
+      selection: { type: 'node', diagramId: activeDiagram.id, id: node.id },
+    });
+  }, [activeDiagram?.id]);
+
+  const onEdgeClick = useCallback((_, edge) => {
+    if (!activeDiagram || !edge?.id) return;
+    dispatch({
+      type: 'select-element',
+      selection: { type: 'edge', diagramId: activeDiagram.id, id: edge.id },
+    });
+  }, [activeDiagram?.id]);
+
   // 禁止自连和重复边；ConnectionMode.Loose 下任意手柄都可以作为起点或终点。
   const isValidConnection = useCallback((connection) => {
     if (!activeDiagram) return false;
@@ -629,6 +647,7 @@ export default function FlowchartEditor({
                 isValidConnection={isValidConnection}
                 onConnect={onConnect} onConnectEnd={onConnectEnd} onReconnect={onReconnect}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+                onNodeClick={onNodeClick} onEdgeClick={onEdgeClick}
                 onNodeDragStop={(_, node) => dispatch({
                   type: 'move-node', diagramId: activeDiagram.id, id: node.id, position: node.position,
                 })}

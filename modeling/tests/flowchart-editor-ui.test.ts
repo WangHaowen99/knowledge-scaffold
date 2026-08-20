@@ -113,3 +113,14 @@ test('提交流程图期间锁定列表、工具栏和属性输入', () => {
   assert.match(html, /aria-label="新增业务步骤" disabled=""/);
   assert.match(html, /flowchart-editor-rail__item[^>]*disabled=""/);
 });
+
+test('流程图编辑器允许鼠标选择节点和连线后编辑属性', async () => {
+  const source = await import('node:fs/promises').then(({ readFile }) => (
+    readFile(new URL('../frontend/src/flowchart-editor/FlowchartEditor.jsx', import.meta.url), 'utf8')
+  ));
+  assert.match(source, /const onNodeClick = useCallback/);
+  assert.match(source, /const onEdgeClick = useCallback/);
+  assert.match(source, /onNodeClick=\{onNodeClick\} onEdgeClick=\{onEdgeClick\}/);
+  assert.match(source, /selection: \{ type: 'node', diagramId: activeDiagram\.id, id: node\.id \}/);
+  assert.match(source, /selection: \{ type: 'edge', diagramId: activeDiagram\.id, id: edge\.id \}/);
+});
