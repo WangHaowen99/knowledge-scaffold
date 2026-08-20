@@ -76,3 +76,21 @@ test('生成门禁恢复时可把已完成批次复制到新运行', () => {
     [{ phase: 'object_batch_1', status: 'completed', output: { objects: [] } }],
   );
 });
+
+test('只恢复同一基线下因服务重启中断且已有完成批次的最近运行', () => {
+  const project = createProject({ owner: 'tester', name: '重启断点恢复', domain: '测试', background: '' });
+  const adapter = getPiAuthoringAdapter();
+  const run = adapter.start(project.id, '生成知识包', 'base-1', {}).run;
+  const store = new GenerationCheckpointStore();
+  store.saveCompleted({
+    projectId: project.id, runId: run.id, planHash: 'plan-1', phase: 'object_batch_1',
+    batchKind: 'object', batchIndex: 1, output: { objects: [] }, attemptCount: 1,
+  });
+  adapter.fail(project.id, run.id, '服务重启，任务已中断，请重新执行当前步骤');
+  assert.equal(store.latestInterruptedRun(project.id, 'base-1'), run.id);
+  assert.equal(store.latestInterruptedRun(project.id, 'base-2'), undefined);
+
+  const other = adapter.start(project.id, '生成知识包', 'base-1', {}).run;
+  adapter.fail(project.id, other.id, '模型调用失败');
+  assert.equal(store.latestInterruptedRun(project.id, 'base-1'), run.id);
+});

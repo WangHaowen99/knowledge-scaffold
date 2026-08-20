@@ -94,6 +94,23 @@ function fromRow(row: CheckpointRow): GenerationBatchCheckpoint {
 export class GenerationCheckpointStore {
   constructor(private readonly db: DatabaseSync = getDb()) {}
 
+  latestInterruptedRun(projectId: string, baseRevision: string): string | undefined {
+    const row = this.db.prepare(`SELECT r.id
+      FROM authoring_runs r
+      WHERE r.project_id = ? AND r.intent = '生成知识包'
+        AND r.status IN ('failed', 'cancelled')
+        AND r.base_revision = ?
+        AND r.error LIKE '服务重启，任务已中断%'
+        AND EXISTS (
+          SELECT 1 FROM generation_batch_checkpoints c
+          WHERE c.project_id = r.project_id AND c.run_id = r.id
+            AND c.status = 'completed'
+        )
+      ORDER BY COALESCE(r.finished_at, r.updated_at) DESC, r.rowid DESC
+      LIMIT 1`).get(projectId, baseRevision) as { id?: string } | undefined;
+    return row?.id;
+  }
+
   copyToRun(input: {
     projectId: string;
     fromRunId: string;

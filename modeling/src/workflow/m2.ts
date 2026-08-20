@@ -304,9 +304,11 @@ export async function generatePackage(
       })),
     });
     const checkpointStore = new GenerationCheckpointStore();
-    const priorRunId = resumableRun?.state && typeof resumableRun.state.priorRunId === 'string'
+    const explicitPriorRunId = resumableRun?.state && typeof resumableRun.state.priorRunId === 'string'
       ? resumableRun.state.priorRunId
       : undefined;
+    const priorRunId = explicitPriorRunId
+      ?? checkpointStore.latestInterruptedRun(project.id, baseRevision.oid);
     if (priorRunId && priorRunId !== authoringRun.id) {
       checkpointStore.copyToRun({
         projectId: project.id,
