@@ -159,6 +159,28 @@ test('重复回答只处理一次', () => {
   }), (error) => error instanceof AuthoringStateError && error.code === 'INTERACTION_CLOSED');
 });
 
+test('回答最后一个待办后清除等待用户回答的占位步骤', () => {
+  const state = new AuthoringState(getDb());
+  const project = projectId();
+  const runId = startRun(state, project);
+  const interactionId = openInteraction(state, project, runId, 'question_batch');
+  assert.equal(state.snapshot(project).activeRuns[0]?.state.currentStep, '等待用户回答');
+
+  const answered = state.apply({
+    kind: 'respond_interaction',
+    projectId: project,
+    interactionId,
+    responseId: 'resume-after-answer',
+    response: { answers: ['已确认'] },
+  });
+
+  assert.equal(answered.kind, 'interaction');
+  if (answered.kind !== 'interaction') throw new Error('未保存回答');
+  assert.equal(answered.run.status, 'running');
+  assert.equal(answered.run.state.currentStep, undefined);
+  assert.equal(answered.events.at(-1)?.payload.currentStep, undefined);
+});
+
 test('全部待办答完后任务才继续', () => {
   const state = new AuthoringState(getDb());
   const project = projectId();

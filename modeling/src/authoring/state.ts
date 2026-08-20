@@ -509,7 +509,13 @@ export class AuthoringState {
         WHERE project_id = ? AND run_id = ? AND status = 'pending'`)
         .get(command.projectId, interaction.runId) as { count: number };
       if (Number(pending.count) === 0 && run.status === 'waiting') {
-        const resumedState = normalizeRunState(run.state, 'running', now);
+        const resumedStateInput = { ...run.state };
+        // 这是打开待办时补上的展示占位，不是后台恢复后的真实执行步骤。若继续保留，
+        // 运行中的任务卡会优先显示“等待用户回答”，直到业务代码再次上报进度。
+        if (resumedStateInput.currentStep === '等待用户回答') {
+          delete resumedStateInput.currentStep;
+        }
+        const resumedState = normalizeRunState(resumedStateInput, 'running', now);
         this.db.prepare(`UPDATE authoring_runs SET status = 'running', state_json = ?, updated_at = ?
           WHERE id = ? AND project_id = ?`).run(
           encodeObject(resumedState, '任务进度'), now, run.id, run.projectId,

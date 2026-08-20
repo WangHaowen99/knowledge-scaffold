@@ -1249,6 +1249,7 @@ test('脚本生成受理后待办立即变已回答，刷新不会再冒出来',
       await planStalled;
       return { interaction: { id: 'plan-async', runId: 'r', baseRevision: 'pkg-async' } };
     },
+    jobHeartbeatIntervalMs: 5,
   });
 
   const accepted = await app.inject({
@@ -1268,6 +1269,13 @@ test('脚本生成受理后待办立即变已回答，刷新不会再冒出来',
   const stillPending = state.snapshot(project.id).pendingInteractions
     .some((item) => item.id === opened.interaction.id);
   assert.equal(stillPending, false, '受理后不该还挂在待办列表里');
+  const running = state.snapshot(project.id).activeRuns.find((item) => item.id === run.run.id);
+  assert.equal(running?.state.currentStep, '正在根据已确认契约形成受控变更计划');
+  const heartbeatAt = String(running?.state.lastHeartbeatAt ?? '');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const heartbeatAfter = String(state.snapshot(project.id).activeRuns
+    .find((item) => item.id === run.run.id)?.state.lastHeartbeatAt ?? '');
+  assert.ok(Date.parse(heartbeatAfter) > Date.parse(heartbeatAt), '脚本生成期间应持续刷新运行心跳');
 
   releasePlan();
 });
