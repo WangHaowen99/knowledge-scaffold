@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -545,30 +543,14 @@ def main() -> int:
     parser.add_argument("--late-event-attempts", type=_positive_int, default=10000)
     parser.add_argument("--sse-iterations", type=_positive_int, default=1000)
     args = parser.parse_args()
-    try:
-        result = asyncio.run(
-            run_experiments(
-                cancel_iterations=args.cancel_iterations,
-                shutdown_iterations=args.shutdown_iterations,
-                late_event_attempts=args.late_event_attempts,
-                sse_iterations=args.sse_iterations,
-            )
+    asyncio.run(
+        run_experiments(
+            cancel_iterations=args.cancel_iterations,
+            shutdown_iterations=args.shutdown_iterations,
+            late_event_attempts=args.late_event_attempts,
+            sse_iterations=args.sse_iterations,
         )
-    except Exception as exc:
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "passed": False,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            + "\n"
-        )
-        return 1
-    sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n")
+    )
     return 0
 
 

@@ -784,43 +784,24 @@ def _main() -> int:
     parser.add_argument("--allocation-sessions", type=_positive_int, default=200)
     parser.add_argument("--storage-root", type=Path)
     args = parser.parse_args()
-    try:
-        if args.storage_root is not None:
+    if args.storage_root is not None:
+        result = run_experiments(
+            args.storage_root,
+            running_rounds=args.running_rounds,
+            awaiting_rounds=args.awaiting_rounds,
+            turn_allocations=args.turn_allocations,
+            allocation_sessions=args.allocation_sessions,
+        )
+    else:
+        with tempfile.TemporaryDirectory(prefix="native-async-restart-") as temporary:
             result = run_experiments(
-                args.storage_root,
+                Path(temporary),
                 running_rounds=args.running_rounds,
                 awaiting_rounds=args.awaiting_rounds,
                 turn_allocations=args.turn_allocations,
                 allocation_sessions=args.allocation_sessions,
             )
-        else:
-            with tempfile.TemporaryDirectory(prefix="native-async-restart-") as temporary:
-                result = run_experiments(
-                    Path(temporary),
-                    running_rounds=args.running_rounds,
-                    awaiting_rounds=args.awaiting_rounds,
-                    turn_allocations=args.turn_allocations,
-                    allocation_sessions=args.allocation_sessions,
-                )
-        sys.stdout.write(
-            json.dumps(result, ensure_ascii=False, sort_keys=True) + "\n"
-        )
-        return 0 if result.get("passed") else 1
-    except Exception as exc:
-        sys.stdout.write(
-            json.dumps(
-                {
-                    "passed": False,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "http_layer_exercised": False,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            + "\n"
-        )
-        return 1
+    return 0 if result.get("passed") else 1
 
 
 if __name__ == "__main__":
