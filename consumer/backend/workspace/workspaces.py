@@ -1118,16 +1118,12 @@ def _validate_workspace_acl_metadata(
     if not isinstance(actual_workspace_id, str) or actual_workspace_id != expected_workspace_id:
         raise ValueError("workspace metadata id mismatch")
 
-    if "owner" not in metadata:
-        raise ValueError("workspace owner is required")
-    owner = metadata["owner"]
+    owner = metadata.get("owner")
     if owner is not None:
         if not isinstance(owner, str) or not owner.strip() or owner != owner.strip():
             raise ValueError("workspace owner is invalid")
 
-    if "members" not in metadata:
-        raise ValueError("workspace members are required")
-    raw_members = metadata["members"]
+    raw_members = metadata.get("members", [])
     if not isinstance(raw_members, list):
         raise ValueError("workspace members must be an array")
     members: List[str] = []
