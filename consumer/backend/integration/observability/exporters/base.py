@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Protocol
+from typing import Protocol
 
 from integration.observability.events import RuntimeEvent
 
@@ -26,6 +26,3 @@ class RuntimeExporter(Protocol):
 
     def close(self) -> None:
         """Release provider resources."""
-
-
-ExporterFactory = Callable[[Mapping[str, Any]], RuntimeExporter]

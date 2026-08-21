@@ -155,7 +155,7 @@ def _envelope(
         "user_id": _first_text(event_payload, run_context, "user_id"),
         "session_id": event.session_id,
         "run_id": event.run_id,
-        "trace_id": _first_text(event_payload, run_context, "trace_id"),
+        "trace_id": event.trace_id or _first_text(event_payload, run_context, "trace_id"),
         "payload": payload,
     }
 

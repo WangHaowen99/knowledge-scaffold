@@ -14,6 +14,7 @@ from agent.events import (
     AgentEventType,
     AgentStreamEvent,
 )
+from integration.observability.identity import resolve_runtime_identity
 
 StreamWriter = Callable[[AgentStreamEvent], None]
 
@@ -79,8 +80,23 @@ def build_agent_event(
     source: Optional[AgentEventSource] = None,
     span_key: Optional[str] = None,
     parent_key: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    span_id: Optional[str] = None,
+    parent_span_id: Optional[str] = None,
 ) -> AgentStreamEvent:
     seq = _next_seq(run_id)
+    identity_span_key = span_key
+    if not identity_span_key and event_type in {"turn.started", "turn.finished"}:
+        identity_span_key = "run:{}".format(run_id)
+    resolved_trace_id, resolved_span_id, resolved_parent_span_id = resolve_runtime_identity(
+        run_id,
+        span_key=identity_span_key,
+        parent_key=parent_key,
+        trace_id=trace_id,
+        parent_span_id=parent_span_id,
+        event_type=event_type,
+        materialize_span=False,
+    )
     envelope: Dict[str, Any] = {
         "protocol": PROTOCOL,
         "event_id": "{}:{}".format(run_id, seq),
@@ -97,6 +113,10 @@ def build_agent_event(
         envelope["span_key"] = span_key
     if parent_key:
         envelope["parent_key"] = parent_key
+    envelope["trace_id"] = resolved_trace_id
+    envelope["span_id"] = span_id or resolved_span_id
+    if parent_span_id or resolved_parent_span_id:
+        envelope["parent_span_id"] = parent_span_id or resolved_parent_span_id
     return {
         "event": SSE_EVENT,
         "data": envelope,
@@ -128,6 +148,9 @@ def emit_agent_event(
     writer: Optional[StreamWriter] = None,
     span_key: Optional[str] = None,
     parent_key: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    span_id: Optional[str] = None,
+    parent_span_id: Optional[str] = None,
 ) -> None:
     writer_fn = writer or try_get_stream_writer()
     if not writer_fn:
@@ -142,5 +165,8 @@ def emit_agent_event(
             source=source,
             span_key=span_key,
             parent_key=parent_key,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
         )
     )

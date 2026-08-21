@@ -31,8 +31,10 @@ class RunRuntimeTrace:
         self.run_id = str(run_id or "")
         self.session_id = session_id
         self.turn_id = turn_id
+        self.workspace_id = ""
         self.root_span_key = "run:{}".format(self.run_id)
         self._terminal = False
+        self._released = False
 
     @property
     def enabled(self) -> bool:
@@ -50,6 +52,7 @@ class RunRuntimeTrace:
     ) -> None:
         if not self.enabled:
             return
+        self.workspace_id = str(workspace_id or "").strip()
         self._emit(
             RuntimeEventType.RUN_STARTED,
             span_key=self.root_span_key,
@@ -213,6 +216,15 @@ class RunRuntimeTrace:
             return
         self._terminal = True
 
+    def release(self) -> None:
+        """Release the run from a retired observer after all late events finish."""
+        if self._released:
+            return
+        self._released = True
+        release_run = getattr(self.observer, "release_run", None)
+        if callable(release_run):
+            release_run(self.run_id)
+
     def _emit_phase(
         self,
         event_type: str,
@@ -252,6 +264,9 @@ class RunRuntimeTrace:
     ) -> None:
         if not self.run_id or not self.enabled:
             return
+        event_payload = dict(payload or {})
+        if self.workspace_id:
+            event_payload.setdefault("workspace_id", self.workspace_id)
         self.observer.emit(
             RuntimeEvent(
                 type=event_type,
@@ -260,7 +275,7 @@ class RunRuntimeTrace:
                 turn_id=self.turn_id,
                 span_key=span_key,
                 parent_key=parent_key,
-                payload=payload,
+                payload=event_payload,
             )
         )
 

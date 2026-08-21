@@ -82,6 +82,7 @@ class _Span:
     purpose: str = ""
     agent_mode: str = ""
     call_index: Optional[int] = None
+    parent_span_id: Optional[str] = None
     parent_id: Optional[str] = None
 
 
@@ -307,7 +308,9 @@ class SpeedscopeExporter:
 
         sequence = int(run.raw_key_counts.get(raw_key) or 0) + 1
         run.raw_key_counts[raw_key] = sequence
-        span_id = "{}#{}".format(raw_key, sequence)
+        span_id = event.span_id or "{}#{}".format(raw_key, sequence)
+        if span_id in run.spans:
+            span_id = "{}#{}".format(span_id, sequence)
         run.spans[span_id] = _span_from_event(
             event,
             span_id=span_id,
@@ -327,7 +330,9 @@ class SpeedscopeExporter:
             duration_ms = _event_duration_ms(event)
             sequence = int(run.raw_key_counts.get(raw_key) or 0) + 1
             run.raw_key_counts[raw_key] = sequence
-            span_id = "{}#{}".format(raw_key, sequence)
+            span_id = event.span_id or "{}#{}".format(raw_key, sequence)
+            if span_id in run.spans:
+                span_id = "{}#{}".format(span_id, sequence)
             span = _span_from_event(
                 event,
                 span_id=span_id,
@@ -461,6 +466,7 @@ def _span_from_event(
         purpose=_bounded_label(payload.get("purpose")),
         agent_mode=_bounded_label(payload.get("agent_mode")),
         call_index=_optional_int(payload.get("call_index")),
+        parent_span_id=str(event.parent_span_id or "").strip() or None,
     )
 
 
@@ -482,6 +488,7 @@ def _merge_safe_span_fields(span: _Span, event: RuntimeEvent) -> None:
     span.purpose = span.purpose or _bounded_label(payload.get("purpose"))
     span.agent_mode = span.agent_mode or _bounded_label(payload.get("agent_mode"))
     span.call_index = span.call_index if span.call_index is not None else _optional_int(payload.get("call_index"))
+    span.parent_span_id = span.parent_span_id or str(event.parent_span_id or "").strip() or None
 
 
 def _span_name_from_span(span: _Span) -> str:
@@ -686,6 +693,11 @@ def _find_run_root(spans: Mapping[str, _Span]) -> Optional[_Span]:
 
 
 def _resolve_parent_id(span: _Span, spans: Mapping[str, _Span], root: _Span) -> str:
+    if span.parent_span_id:
+        parent = spans.get(span.parent_span_id)
+        if parent is not None and parent.id != span.id:
+            return parent.id
+
     if span.kind == "agent_loop" and span.root_tool_call_id:
         parent = _containing_tool_by_call_id(span, spans, span.root_tool_call_id)
         if parent is not None:

@@ -8,12 +8,13 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from integration.observability.local_storage import read_or_rebuild_index
 from integration.observability.workspace_config import get_workspace_observability_log_dir
 from workspace.workspaces import list_workspaces
 
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 2
 MAX_SCAN_DAYS = 7
-_PERF_FILE_STEM = "agent_perf"
+_PERF_FILE_STEM = "otel_trace"
 
 
 @dataclass
@@ -40,6 +41,9 @@ class LocalPerfLogReader:
         end_ms: int,
         run_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        status: Optional[str] = None,
         kinds: Optional[Iterable[str]] = None,
     ) -> PerfReadResult:
         return self._read_matching_records(
@@ -47,6 +51,9 @@ class LocalPerfLogReader:
             end_ms=end_ms,
             run_id=run_id,
             session_id=session_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            status=status,
             kinds=kinds,
             stop_after_first=False,
         )
@@ -58,6 +65,9 @@ class LocalPerfLogReader:
         end_ms: int,
         run_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        status: Optional[str] = None,
         kinds: Optional[Iterable[str]] = None,
     ) -> PerfReadResult:
         return self._read_matching_records(
@@ -65,6 +75,9 @@ class LocalPerfLogReader:
             end_ms=end_ms,
             run_id=run_id,
             session_id=session_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            status=status,
             kinds=kinds,
             stop_after_first=True,
         )
@@ -76,6 +89,9 @@ class LocalPerfLogReader:
         end_ms: int,
         run_id: Optional[str],
         session_id: Optional[str],
+        trace_id: Optional[str],
+        span_id: Optional[str],
+        status: Optional[str],
         kinds: Optional[Iterable[str]],
         stop_after_first: bool,
     ) -> PerfReadResult:
@@ -95,9 +111,28 @@ class LocalPerfLogReader:
             diagnostics["scanned_files"] += 1
             diagnostics["scanned_file_names"].append(path.name)
             try:
-                with path.open("r", encoding="utf-8") as lines:
-                    for line in lines:
-                        raw = line.strip()
+                entries = read_or_rebuild_index(path)
+                with path.open("rb") as stream:
+                    for entry in entries:
+                        if not _index_entry_may_match(
+                            entry,
+                            start_ms=normalized_start,
+                            end_ms=normalized_end,
+                            run_id=run_id,
+                            session_id=session_id,
+                            trace_id=trace_id,
+                            span_id=span_id,
+                            status=status,
+                            kinds=kinds_filter,
+                        ):
+                            continue
+                        stream.seek(int(entry.get("offset") or 0))
+                        raw_bytes = stream.read(int(entry.get("length") or 0))
+                        try:
+                            raw = raw_bytes.decode("utf-8").strip()
+                        except UnicodeDecodeError:
+                            diagnostics["parse_error_count"] += 1
+                            continue
                         if not raw:
                             continue
                         try:
@@ -108,7 +143,10 @@ class LocalPerfLogReader:
                         if not isinstance(record, dict):
                             diagnostics["skipped_record_count"] += 1
                             continue
-                        if record.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+                        if (
+                            record.get("schema_version") != SUPPORTED_SCHEMA_VERSION
+                            or record.get("record_type") != "opentelemetry"
+                        ):
                             diagnostics["unknown_schema_count"] += 1
                             continue
                         timestamp_ms = _read_int(record.get("ts_ms"))
@@ -118,6 +156,12 @@ class LocalPerfLogReader:
                         if run_id and str(record.get("run_id") or "") != run_id:
                             continue
                         if session_id and str(record.get("session_id") or "") != session_id:
+                            continue
+                        if trace_id and str(record.get("trace_id") or "") != trace_id:
+                            continue
+                        if span_id and str(record.get("span_id") or "") != span_id:
+                            continue
+                        if status and str(record.get("status") or "").lower() != str(status).lower():
                             continue
                         if kinds_filter and str(record.get("kind") or "") not in kinds_filter:
                             continue
@@ -187,3 +231,35 @@ def _is_log_partition(name: str, base_name: str) -> bool:
         return True
     suffix = name[len(base_name):]
     return suffix.startswith(".") and suffix[1:].isdigit()
+
+
+def _index_entry_may_match(
+    entry: dict[str, Any],
+    *,
+    start_ms: int,
+    end_ms: int,
+    run_id: Optional[str],
+    session_id: Optional[str],
+    trace_id: Optional[str],
+    span_id: Optional[str],
+    status: Optional[str],
+    kinds: set[str],
+) -> bool:
+    if not entry.get("valid") or not entry.get("supported"):
+        return True
+    timestamp_ms = _read_int(entry.get("ts_ms"))
+    if timestamp_ms is None or timestamp_ms < start_ms or timestamp_ms > end_ms:
+        return False
+    for expected, name in (
+        (run_id, "run_id"),
+        (session_id, "session_id"),
+        (trace_id, "trace_id"),
+        (span_id, "span_id"),
+    ):
+        if expected and str(entry.get(name) or "") != expected:
+            return False
+    if status and str(entry.get("status") or "").lower() != str(status).lower():
+        return False
+    if kinds and str(entry.get("kind") or "") not in kinds:
+        return False
+    return True

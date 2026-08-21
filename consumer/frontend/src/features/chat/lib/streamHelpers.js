@@ -39,6 +39,10 @@ const normalizeToolName = (value) => (
   typeof value === 'string' ? value.trim() : ''
 );
 
+const normalizeSpanId = (value) => (
+  typeof value === 'string' ? value.trim() : ''
+);
+
 const extractToolQuery = (meta = {}) => String(
   meta?.input?.query
   ?? meta?.tool_input?.query
@@ -48,11 +52,13 @@ const extractToolQuery = (meta = {}) => String(
 ).trim();
 
 const resolveToolLocator = (payload = {}) => {
+  const spanId = normalizeSpanId(payload?.span_id);
   const toolCallId = normalizeToolCallId(payload?.tool_call_id);
   const toolName = normalizeToolName(payload?.tool_name);
   const query = extractToolQuery(payload);
 
   return {
+    spanId,
     toolCallId,
     toolName,
     query,
@@ -61,6 +67,7 @@ const resolveToolLocator = (payload = {}) => {
 };
 
 const hasToolLocator = (locator = {}) => {
+  if (locator?.spanId) return true;
   if (locator?.toolCallId) return true;
   if (locator?.isOntology) return Boolean(locator?.query);
   return Boolean(locator?.toolName);
@@ -70,6 +77,11 @@ const segmentMatchesToolLocator = (segment, locator = {}) => {
   if (!segment || segment.type !== 'tool') return false;
 
   const segmentMeta = segment?.meta || {};
+  const segmentSpanId = normalizeSpanId(segment?.spanId || segmentMeta?.span_id);
+  if (locator.spanId) {
+    return segmentSpanId === locator.spanId;
+  }
+
   const segmentToolCallId = normalizeToolCallId(segmentMeta?.tool_call_id);
   if (locator.toolCallId) {
     return segmentToolCallId === locator.toolCallId;
@@ -234,6 +246,9 @@ const appendInlineTextSegment = (segments, {
   meta,
   mergeKey = null,
   ts,
+  traceId = '',
+  spanId = '',
+  parentSpanId = '',
   spanKey = '',
   parentKey = '',
 }) => {
@@ -241,14 +256,21 @@ const appendInlineTextSegment = (segments, {
 
   const next = Array.isArray(segments) ? segments.slice() : [];
   const last = next[next.length - 1];
+  const usesSpanIdentity = Boolean(spanId || last?.spanId);
   const canMerge = Boolean(
     last
     && !last.finished
     && last.type === type
     && last.state === state
     && (last.node || '') === (node || '')
-    && (last.spanKey || '') === spanKey
-    && (last.parentKey || '') === parentKey
+    && (
+      usesSpanIdentity
+        ? Boolean(spanId && last?.spanId === spanId)
+        : (
+          (last.spanKey || '') === spanKey
+          && (last.parentKey || '') === parentKey
+        )
+    )
     && (
       !mergeKey
       || (
@@ -268,6 +290,9 @@ const appendInlineTextSegment = (segments, {
       ...last,
       text: `${last.text || ''}${text}`,
       meta: meta || last.meta,
+      traceId: traceId || last.traceId,
+      spanId: spanId || last.spanId,
+      parentSpanId: parentSpanId || last.parentSpanId,
       endTs: ts || Date.now(),
     };
     return next;
@@ -281,6 +306,9 @@ const appendInlineTextSegment = (segments, {
       text,
       node,
       meta,
+      traceId: traceId || undefined,
+      spanId: spanId || undefined,
+      parentSpanId: parentSpanId || undefined,
       spanKey: spanKey || undefined,
       parentKey: parentKey || undefined,
       finished: false,
@@ -471,6 +499,9 @@ const upsertIterationMetric = (metrics = [], payload = {}, ts = Date.now()) => {
     totalElapsedMs: normalizeNonNegativeNumber(payload?.total_elapsed_ms),
     toolCallsCount: normalizeNonNegativeNumber(payload?.tool_calls_count),
     toolNames: Array.isArray(payload?.tool_names) ? payload.tool_names.map((item) => String(item)) : [],
+    traceId: normalizeSpanId(payload?.trace_id),
+    spanId: normalizeSpanId(payload?.span_id),
+    parentSpanId: normalizeSpanId(payload?.parent_span_id),
     ts: normalizeNonNegativeNumber(ts) ?? Date.now(),
   };
 
@@ -681,7 +712,17 @@ const appendChildEvent = (child, event) => {
     const groupInterruptedToken = Number.isFinite(latestGroupSourceOrder) && lastSourceOrder != null
       ? latestGroupSourceOrder > lastSourceOrder
       : Number.isFinite(lastStartedAt) && latestGroupStartedAt > lastStartedAt;
-    if (last && last.kind === 'token' && last.channel === event.channel && !groupInterruptedToken) {
+    const usesSpanIdentity = Boolean(event.spanId || last?.spanId);
+    const sameSpan = usesSpanIdentity
+      ? Boolean(event.spanId && last?.spanId === event.spanId)
+      : true;
+    if (
+      last
+      && last.kind === 'token'
+      && last.channel === event.channel
+      && sameSpan
+      && !groupInterruptedToken
+    ) {
       next.events[next.events.length - 1] = {
         ...last,
         text: `${last.text || ''}${event.text || ''}`,
@@ -702,9 +743,17 @@ const appendChildEvent = (child, event) => {
   }
 
   if (event.kind === 'tool') {
+    const spanId = event.spanId || '';
     const tcid = event.toolCallId || '';
     let idx = -1;
-    if (tcid) {
+    if (spanId) {
+      for (let i = next.events.length - 1; i >= 0; i -= 1) {
+        if (next.events[i]?.kind === 'tool' && next.events[i]?.spanId === spanId) {
+          idx = i;
+          break;
+        }
+      }
+    } else if (tcid) {
       for (let i = next.events.length - 1; i >= 0; i -= 1) {
         if (next.events[i]?.kind === 'tool' && next.events[i]?.toolCallId === tcid) {
           idx = i;
@@ -728,6 +777,9 @@ const appendChildEvent = (child, event) => {
         outputProjection: event.outputProjection || null,
         elapsedMs: event.elapsedMs ?? null,
         error: event.error || '',
+        traceId: event.traceId || '',
+        spanId: event.spanId || '',
+        parentSpanId: event.parentSpanId || '',
         sourceOrder: event.sourceOrder ?? null,
         endSourceOrder: event.sourceOrder ?? null,
         startTs: event.ts,
@@ -751,6 +803,9 @@ const appendChildEvent = (child, event) => {
         outputProjection: event.outputProjection || prev.outputProjection,
         elapsedMs: event.elapsedMs ?? prev.elapsedMs,
         error: event.error || prev.error,
+        traceId: event.traceId || prev.traceId,
+        spanId: event.spanId || prev.spanId,
+        parentSpanId: event.parentSpanId || prev.parentSpanId,
         endSourceOrder: event.sourceOrder ?? prev.endSourceOrder ?? prev.sourceOrder,
         endTs: event.finishedStatus ? event.ts : prev.endTs,
       };
@@ -770,6 +825,9 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       kind: 'tool',
       toolCallId,
       toolName,
+      traceId: payload?.trace_id || '',
+      spanId: payload?.span_id || '',
+      parentSpanId: payload?.parent_span_id || '',
       input: payload?.input || null,
       sourceOrder,
       ts,
@@ -785,6 +843,9 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       kind: 'tool',
       toolCallId,
       toolName,
+      traceId: payload?.trace_id || '',
+      spanId: payload?.span_id || '',
+      parentSpanId: payload?.parent_span_id || '',
       progressEntry: {
         text,
         ontology: ontologyEvent,
@@ -800,6 +861,9 @@ const buildToolEventFromPayload = (type, payload, ts, sourceOrder = null) => {
       kind: 'tool',
       toolCallId,
       toolName,
+      traceId: payload?.trace_id || '',
+      spanId: payload?.span_id || '',
+      parentSpanId: payload?.parent_span_id || '',
       finishedStatus: normalizeToolStatus(payload?.status) || 'completed',
       output: payload?.output_preview || '',
       outputRef: payload?.output_ref || '',
@@ -835,7 +899,12 @@ export const applyAgentV2Event = (current, envelope) => {
   };
 
   const type = envelope.type;
-  const payload = envelope.payload || {};
+  const payload = {
+    ...(envelope.payload || {}),
+    ...(envelope.trace_id ? { trace_id: envelope.trace_id } : {}),
+    ...(envelope.span_id ? { span_id: envelope.span_id } : {}),
+    ...(envelope.parent_span_id ? { parent_span_id: envelope.parent_span_id } : {}),
+  };
   const sourceNode = envelope?.source?.node || 'agent';
   // Optional trace-tree linkage (backend 2.1/2.2). Absent on plain events;
   // segments without spanKey fall back to a flat list in TracePanel.
@@ -877,6 +946,9 @@ export const applyAgentV2Event = (current, envelope) => {
       kind: 'token',
       channel: payload.channel === 'reasoning' ? 'reasoning' : 'content',
       text: payload.text == null ? '' : String(payload.text),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       sourceOrder: envelopeSourceOrder,
       ts: envelope.ts || Date.now(),
     };
@@ -930,6 +1002,9 @@ export const applyAgentV2Event = (current, envelope) => {
       finished: false,
       sourceOrder: envelopeSourceOrder,
       startTs: envelope.ts || Date.now(),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       meta: payload,
     };
     if (parentSubagentId) {
@@ -1007,6 +1082,9 @@ export const applyAgentV2Event = (current, envelope) => {
           task: taskText || child?.task || '',
           status: payload.status || 'running',
           startTs: child?.startTs || envelope.ts || Date.now(),
+          traceId: payload.trace_id || child?.traceId || '',
+          spanId: payload.span_id || child?.spanId || '',
+          parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
         };
         return nextGroup;
       },
@@ -1026,6 +1104,9 @@ export const applyAgentV2Event = (current, envelope) => {
       eventType: type,
       channel: payload.channel || 'content',
       text: payload.text == null ? '' : String(payload.text),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       meta: payload,
       sourceOrder: envelopeSourceOrder,
       ts: envelope.ts || Date.now(),
@@ -1065,6 +1146,9 @@ export const applyAgentV2Event = (current, envelope) => {
       (child) => ({
         ...cloneChild(child),
         status: payload.status || child.status,
+        traceId: payload.trace_id || child?.traceId || '',
+        spanId: payload.span_id || child?.spanId || '',
+        parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
       }),
     );
     if (updatedSegments) {
@@ -1092,6 +1176,9 @@ export const applyAgentV2Event = (current, envelope) => {
         events: closeSubagentEventsForTerminal(child?.events, finalStatus, envelope.ts || Date.now()),
         result: payload.result || null,
         error: payload.error || null,
+        traceId: payload.trace_id || child?.traceId || '',
+        spanId: payload.span_id || child?.spanId || '',
+        parentSpanId: payload.parent_span_id || child?.parentSpanId || '',
       }),
     );
     if (updatedSegments) {
@@ -1128,6 +1215,9 @@ export const applyAgentV2Event = (current, envelope) => {
       node: sourceNode,
       meta: payload,
       ts: envelope.ts || Date.now(),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
       spanKey: envelopeSpanKey,
       parentKey: envelopeParentKey || iterationParentKeyFromPayload(payload),
     });
@@ -1228,6 +1318,9 @@ export const applyAgentV2Event = (current, envelope) => {
         text: payload.message || target.text || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
         node: sourceNode || target.node,
         meta: mergeToolMeta(target.meta, payload),
+        traceId: payload.trace_id || target.traceId,
+        spanId: payload.span_id || target.spanId,
+        parentSpanId: payload.parent_span_id || target.parentSpanId,
         finished: false,
         startTs: target.startTs || envelope.ts || Date.now(),
         endTs: null,
@@ -1242,6 +1335,9 @@ export const applyAgentV2Event = (current, envelope) => {
         text: payload.message || `调用工具: ${payload.tool_name || 'unknown_tool'}`,
         node: sourceNode,
         meta: payload,
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         finished: false,
         toolStatus: null,
         startTs: envelope.ts || Date.now(),
@@ -1289,6 +1385,9 @@ export const applyAgentV2Event = (current, envelope) => {
           appendBusinessDataSearchEventToMeta(mergedMeta, dbSearchEvent),
           webSearchEvent,
         ),
+        traceId: payload.trace_id || target.traceId,
+        spanId: payload.span_id || target.spanId,
+        parentSpanId: payload.parent_span_id || target.parentSpanId,
         finished: targetOpenIdx !== -1 ? false : Boolean(target.finished),
         startTs: target.startTs || envelope.ts || Date.now(),
         spanKey: target.spanKey || envelopeSpanKey || undefined,
@@ -1308,6 +1407,9 @@ export const applyAgentV2Event = (current, envelope) => {
           appendBusinessDataSearchEventToMeta(mergeToolMeta({}, payload), dbSearchEvent),
           webSearchEvent,
         ),
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         finished: false,
         toolStatus: null,
         startTs: envelope.ts || Date.now(),
@@ -1324,6 +1426,9 @@ export const applyAgentV2Event = (current, envelope) => {
         meta: payload,
         mergeKey: 'tool_call_id',
         ts: envelope.ts || Date.now(),
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         spanKey: envelopeSpanKey || undefined,
         parentKey: envelopeParentKey || undefined,
       });
@@ -1352,6 +1457,9 @@ export const applyAgentV2Event = (current, envelope) => {
       next.streamSegments[targetIdx] = {
         ...target,
         meta: mergeToolMeta(target.meta, payload),
+        traceId: payload.trace_id || target.traceId,
+        spanId: payload.span_id || target.spanId,
+        parentSpanId: payload.parent_span_id || target.parentSpanId,
         state: toolStatus || 'completed',
         text: target.text || payload.output_preview || '',
         finished: true,
@@ -1372,6 +1480,9 @@ export const applyAgentV2Event = (current, envelope) => {
         text: payload.output_preview || payload.error || `工具完成: ${payload.tool_name || 'unknown_tool'}`,
         node: sourceNode,
         meta: payload,
+        traceId: payload.trace_id || '',
+        spanId: payload.span_id || '',
+        parentSpanId: payload.parent_span_id || '',
         finished: true,
         toolStatus,
         startTs: Number.isFinite(Number(payload.elapsed_ms))
@@ -1400,6 +1511,9 @@ export const applyAgentV2Event = (current, envelope) => {
       meta: payload,
       mergeKey: 'subagent_id',
       ts: envelope.ts || Date.now(),
+      traceId: payload.trace_id || '',
+      spanId: payload.span_id || '',
+      parentSpanId: payload.parent_span_id || '',
     });
     next.status = 'running';
     next.isLoading = true;

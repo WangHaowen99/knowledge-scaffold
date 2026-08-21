@@ -22,6 +22,9 @@ from config.system_config import (
 from persistence.run_queue import QueuedRunAdmission, RunAdmissionQueue
 from persistence.run_store import RunStatus
 from integration.observability.trace_context import (
+    bind_otel_context,
+    bind_otel_traceparent,
+    capture_otel_context,
     TraceParentValidationError,
     W3CTraceParent,
     parse_traceparent,
@@ -225,6 +228,7 @@ class AgenticRunHandle:
         slot_limit_user_id: str,
         traceparent: str = "",
         event_observer: Optional[Callable[[Dict[str, Any]], None]] = None,
+        runtime_event_observer: Optional[Callable[[Any], None]] = None,
     ) -> None:
         self.run_id = run_id
         self.active_run_id = run_id
@@ -238,7 +242,9 @@ class AgenticRunHandle:
         self.slot_manager = slot_manager
         self.slot_limit_user_id = slot_limit_user_id
         self.traceparent = str(traceparent or "")
+        self.otel_context = capture_otel_context()
         self.event_observer = event_observer
+        self.runtime_event_observer = runtime_event_observer
         self.done = threading.Event()
         self._lock = threading.RLock()
         self._subscribers: Dict[str, "queue.Queue[Any]"] = {}
@@ -252,11 +258,26 @@ class AgenticRunHandle:
 
     def start(self) -> None:
         self._thread = threading.Thread(
-            target=self._run,
+            target=self._run_with_context,
             name="agentic-run-{}".format(self.run_id),
             daemon=True,
         )
         self._thread.start()
+
+    def _run_with_context(self) -> None:
+        if self.runtime_event_observer is not None:
+            from integration.observability.workspace_router import (
+                register_run_runtime_event_consumer,
+                unregister_run_runtime_event_consumer,
+            )
+
+            register_run_runtime_event_consumer(self.run_id, self.runtime_event_observer)
+        try:
+            with bind_otel_context(self.otel_context):
+                self._run()
+        finally:
+            if self.runtime_event_observer is not None:
+                unregister_run_runtime_event_consumer(self.run_id, self.runtime_event_observer)
 
     def _emit(self, envelope: Dict[str, Any]) -> None:
         event_run_id = str(envelope.get("run_id") or "").strip()
@@ -330,19 +351,20 @@ class AgenticRunHandle:
                 workspace_id=self.workspace_id,
             )
             with workspace_scope(self.workspace_id):
-                for event in self.orchestrator.run(
-                    user_request=self.user_request,
-                    user_context=self.user_context,
-                    arguments=self.arguments,
-                    session_id=self.session_id,
-                    user_id=self.user_id,
-                    workspace_id=self.workspace_id,
-                    requested_run_id=self.run_id,
-                    traceparent=self.traceparent,
-                ):
-                    envelope = _extract_agent_envelope(event)
-                    if envelope:
-                        self._emit(envelope)
+                with bind_otel_traceparent(self.traceparent):
+                    for event in self.orchestrator.run(
+                        user_request=self.user_request,
+                        user_context=self.user_context,
+                        arguments=self.arguments,
+                        session_id=self.session_id,
+                        user_id=self.user_id,
+                        workspace_id=self.workspace_id,
+                        requested_run_id=self.run_id,
+                        traceparent=self.traceparent,
+                    ):
+                        envelope = _extract_agent_envelope(event)
+                        if envelope:
+                            self._emit(envelope)
         except Exception as exc:
             logger.exception("Error in workflow run handle")
             try:
@@ -1027,7 +1049,9 @@ def start_workflow_sync():
     tool_failures = []
 
     try:
-        with workspace_scope(workspace_id):
+        with workspace_scope(workspace_id), bind_otel_traceparent(
+            trace_context.value if trace_context is not None else ""
+        ):
             for event in orchestrator.run(
                 user_request=user_request,
                 user_context=user_context,

@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlsplit
 
 from integration.observability.events import RuntimeEvent, RuntimeEventType
+from integration.observability.identity import resolve_runtime_identity
 from utils.streaming import emit_agent_event
 from utils.logging import get_logger
 from utils.security.redaction import redact_sensitive_text, redact_sensitive_value
@@ -301,16 +302,29 @@ def emit_protocol_event(
     )
 
     if context.caller == "subagent" and context.event_emitter and writer is None:
-        context.event_emitter(event_type, scoped_payload)
-        if context.protocol_event_observer:
-            context.protocol_event_observer(event_type, scoped_payload)
         _emit_tool_observability_event(
             context=context,
             event_type=event_type,
             payload=scoped_observability_payload,
         )
+        context.event_emitter(event_type, scoped_payload)
+        if context.protocol_event_observer:
+            context.protocol_event_observer(event_type, scoped_payload)
         return
 
+    _emit_tool_observability_event(
+        context=context,
+        event_type=event_type,
+        payload=scoped_observability_payload,
+    )
+    tool_span_key = _tool_span_key(context, scoped_payload)
+    tool_parent_span_key = _tool_batch_span_key(context)
+    _, _, tool_parent_span_id = resolve_runtime_identity(
+        context.run_id,
+        span_key=tool_span_key,
+        parent_key=tool_parent_span_key,
+        materialize_span=False,
+    )
     emit_agent_event(
         run_id=context.run_id,
         session_id=context.session_id,
@@ -319,16 +333,12 @@ def emit_protocol_event(
         source=source,
         payload=scoped_payload,
         writer=writer,
-        span_key=_tool_span_key(context, scoped_payload),
+        span_key=tool_span_key,
         parent_key=_tool_sse_parent_key(context),
+        parent_span_id=tool_parent_span_id,
     )
     if context.protocol_event_observer:
         context.protocol_event_observer(event_type, scoped_payload)
-    _emit_tool_observability_event(
-        context=context,
-        event_type=event_type,
-        payload=scoped_observability_payload,
-    )
 
 
 def emit_tool_started(
