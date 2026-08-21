@@ -17,7 +17,6 @@ from agent.tools.business_data.ontology_sources_store import (
 from agent.tools.business_data.provider_registry import list_provider_schemas
 from agent.tools.business_data.resolver import ResolvedBusinessDataSource, resolve_business_data_source
 from api.dependencies import (
-    require_admin_workspace_id,
     require_workspace_id,
     require_workspace_owner_or_admin_id,
     run_in_runtime_pool,
@@ -33,86 +32,6 @@ def list_business_data_provider_schemas_api(
     _workspace_id: str = Depends(require_workspace_id),
 ):
     return {"providers": list_provider_schemas()}
-
-
-def _deprecated_data_source_response(replacement: str) -> JSONResponse:
-    return JSONResponse(
-        {
-            "detail": "数据连接与绑定接口已停用，请改用本体数据源接口",
-            "deprecated": True,
-            "replacement": replacement,
-        },
-        status_code=410,
-    )
-
-
-# One-release retirement routes. They preserve the phase-0 public HTTP contract
-# without reading or writing the removed shared connection/binding model.
-@business_data_router.get("/data-connections")
-def deprecated_list_data_connections_api(
-    _workspace_id: str = Depends(require_workspace_id),
-):
-    return _deprecated_data_source_response(
-        "/agentic/ontologies/{ontology_id}/data-source"
-    )
-
-
-@business_data_router.post("/data-connections")
-def deprecated_create_data_connection_api(
-    _workspace_id: str = Depends(require_admin_workspace_id),
-):
-    return _deprecated_data_source_response(
-        "/agentic/ontologies/{ontology_id}/data-source"
-    )
-
-
-@business_data_router.api_route(
-    "/data-connections/{connection_id}",
-    methods=["PATCH", "DELETE"],
-)
-def deprecated_mutate_data_connection_api(
-    connection_id: str,
-    _workspace_id: str = Depends(require_admin_workspace_id),
-):
-    del connection_id
-    return _deprecated_data_source_response(
-        "/agentic/ontologies/{ontology_id}/data-source"
-    )
-
-
-@business_data_router.post("/data-connections/{connection_id}/default")
-@business_data_router.post("/data-connections/{connection_id}/test")
-def deprecated_data_connection_action_api(
-    connection_id: str,
-    _workspace_id: str = Depends(require_admin_workspace_id),
-):
-    del connection_id
-    return _deprecated_data_source_response(
-        "/agentic/ontologies/{ontology_id}/data-source/test"
-    )
-
-
-@business_data_router.get("/ontologies/{ontology_id}/data-binding")
-def deprecated_get_ontology_data_binding_api(
-    ontology_id: str,
-    _workspace_id: str = Depends(require_workspace_id),
-):
-    return _deprecated_data_source_response(
-        f"/agentic/ontologies/{ontology_id}/data-source"
-    )
-
-
-@business_data_router.api_route(
-    "/ontologies/{ontology_id}/data-binding",
-    methods=["PUT", "DELETE"],
-)
-def deprecated_mutate_ontology_data_binding_api(
-    ontology_id: str,
-    _workspace_id: str = Depends(require_admin_workspace_id),
-):
-    return _deprecated_data_source_response(
-        f"/agentic/ontologies/{ontology_id}/data-source"
-    )
 
 
 def _data_source_response(ontology_id: str, source):

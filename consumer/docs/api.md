@@ -1706,8 +1706,6 @@ Graph provider 配置：
 }
 ```
 
-旧 `/agentic/data-connections*` 与 `/agentic/ontologies/{ontology_id}/data-binding` 路由在一个兼容版本内保留，但统一返回 `410 Gone` 和新接口地址，不再写入共享连接或绑定。
-
 ### 7.10 工作区观测配置
 
 本地性能日志和 Langfuse 连接按 workspace 隔离，配置保存在：

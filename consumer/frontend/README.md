@@ -90,7 +90,7 @@ GitCode workflow [consumer-frontend-ci.yml](../../.gitcode/workflows/consumer-fr
 
 `features/knowledge` 负责知识包浏览、导入、版本、数据源和本体图；`features/evolution` 通过公开入口向知识工作台提供进化能力。大型页面保持按需加载。
 
-业务数据源按知识包隔离，前端使用 `GET/PUT/DELETE /agentic/ontologies/:id/data-source`、`POST /agentic/ontologies/:id/data-source/test` 和 `GET /agentic/business-data/provider-schemas`。配置中心不再提供 Workspace 级共享连接或知识包绑定入口。
+业务数据源按知识包隔离，前端使用 `GET/PUT/DELETE /agentic/ontologies/:id/data-source`、`POST /agentic/ontologies/:id/data-source/test` 和 `GET /agentic/business-data/provider-schemas`，配置入口位于知识包的数据源页签。
 
 ### 配置与观测
 

@@ -135,7 +135,7 @@ consumer/frontend/src/
 | 三层配置作用域 | `ConfigCenter` | 保留全局、Workspace、个人三级结构 |
 | capability 权限控制 | `AuthContext`、`permissions.js` | 保留只读和可编辑边界 |
 | 知识包文件与版本管理 | `KnowledgeWorkbench`、`useKbBrowser` | 保留查看、编辑、上传、下载、启停和版本操作 |
-| 数据源共享连接与知识包直连 | `KnowledgeDataSources` | 保留两种模式和密钥不回显语义 |
+| 知识包私有数据源 | `KnowledgeDataSources` | 保留 provider 配置、密钥不回显和作用域隔离语义 |
 | 用户长期记忆 CRUD | `ConfigCenter` 的个人记忆面板 | 保留列表、新增、编辑和删除 |
 | Workspace 级模型、运行和观测配置 | `ConfigCenter` | 保留作用域和权限语义 |
 | 主题、响应式应用壳和操作向导 | `redesign/**` | 迁入正式 `app/shared` 结构 |
@@ -162,7 +162,7 @@ consumer/frontend/src/
 - 全局、Workspace、个人三级配置中心。
 - capability 驱动的权限和只读展示。
 - 知识包文件、版本、数据源、图谱和进化的一体化工作台。
-- 共享数据连接与知识包直连两种数据源模式。
+- 知识包私有数据源配置及其密钥保护语义。
 - 操作向导、主题和当前品牌视觉。
 
 Onto Agent 的页面布局和样式不能覆盖这些能力。
@@ -191,7 +191,6 @@ Onto Agent 的页面布局和样式不能覆盖这些能力。
 | Workspace | `WorkspaceManagement.jsx`、`WorkspaceRuntimeConfig.jsx` | `migrate`，提取搜索分页和缺失交互 |
 | 用户 | `UserManagement.jsx` | 对照权限与用户管理能力后 `covered/delete` |
 | 观测 | `LocalObservabilityDashboard.jsx` | `migrate` |
-| 数据连接 | `DataConnectionManagement.jsx` | 对照当前两层数据源能力后 `covered/delete` |
 | 导航 | `TopBar.jsx`、历史 `LoginPage.jsx` | 当前应用壳覆盖后删除 |
 | 当前复用组件 | `ForceChangePasswordPage.jsx`、`McpManagement.jsx` | `shared-active`，迁入正式 feature 后删除原位置 |
 | 当前复用 hooks | `useAuth.js`、`useChatSessions.js`、`useStreamManager.js`、`useAgenticStream.js` | `shared-active`，迁入正式目录并补测试 |
@@ -354,7 +353,7 @@ Onto Agent 的页面布局和样式不能覆盖这些能力。
 4. 用户管理保留创建、重置密码、删除和当前账号保护，并遵循 capability 权限。
 5. MCP 管理和强制改密迁入正式 feature，统一视觉和错误反馈。
 6. 统一所有配置页面的 loading、empty、read-only、error、success 状态。
-7. 删除历史配置、用户、Workspace、数据连接和观测组件。
+7. 删除历史配置、用户、Workspace 和观测组件。
 
 退出条件：
 

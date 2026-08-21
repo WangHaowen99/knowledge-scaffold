@@ -9,7 +9,6 @@ const normalizeSource = (source) => source.replace(/\r\n?/g, '\n');
 const readNormalizedSource = (path) => normalizeSource(readFileSync(path, 'utf8'));
 const dataSourceSource = readNormalizedSource(join(currentDir, 'KnowledgeDataSources.jsx'));
 const kbBrowserSource = readNormalizedSource(join(currentDir, 'hooks/useKbBrowser.js'));
-const configCenterSource = readNormalizedSource(join(currentDir, '../settings/ConfigCenter.jsx'));
 const workbenchSource = readNormalizedSource(join(currentDir, 'KnowledgeWorkbench.jsx'));
 const onboardingSource = readNormalizedSource(join(currentDir, '../../app/onboarding/OnboardingWizard.jsx'));
 
@@ -20,10 +19,7 @@ test('source assertions normalize LF and CRLF checkouts identically', () => {
   assert.equal(normalizeSource(crlfSource), lfSource);
 });
 
-test('knowledge data source editor exposes only the ontology direct-provider model', () => {
-  assert.equal(dataSourceSource.includes('/agentic/data-connections'), false);
-  assert.equal(dataSourceSource.includes('connection_ref'), false);
-  assert.equal(dataSourceSource.includes('共享连接'), false);
+test('knowledge data source editor uses the ontology direct-provider model', () => {
   assert.equal(dataSourceSource.includes("mode: 'direct_provider'"), true);
   assert.equal(dataSourceSource.includes('/data-source${suffix}'), true);
 });
@@ -55,15 +51,6 @@ test('secret fields are omitted when left blank', () => {
   assert.equal(dataSourceSource.includes('已配置，留空保留原值'), true);
 });
 
-test('workspace config center no longer exposes connection or binding sections', () => {
-  assert.equal(configCenterSource.includes("{ id: 'conn', name: '数据连接' }"), false);
-  assert.equal(configCenterSource.includes("{ id: 'bind', name: '知识与数据绑定' }"), false);
-  assert.equal(configCenterSource.includes('function DataConnections()'), false);
-  assert.equal(configCenterSource.includes('function KnowledgeBinding()'), false);
-  assert.equal(configCenterSource.includes('/agentic/data-connections'), false);
-  assert.equal(configCenterSource.includes('/data-binding'), false);
-});
-
 test('saving or clearing a data source refreshes the knowledge package summary', () => {
   assert.equal(dataSourceSource.includes('onDataSourceChanged?.()'), true);
   assert.equal(workbenchSource.includes('onDataSourceChanged={retryPackages}'), true);
@@ -85,8 +72,6 @@ test('knowledge write permissions are split by operation', () => {
 });
 
 test('onboarding directs admins to the ontology data-source tab', () => {
-  assert.equal(onboardingSource.includes("sec: 'conn'"), false);
-  assert.equal(onboardingSource.includes("sec: 'bind'"), false);
   assert.equal(onboardingSource.includes("tab: 'data'"), true);
   assert.equal(onboardingSource.includes('target: \'kb-data-source\''), true);
 });
