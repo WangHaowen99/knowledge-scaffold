@@ -178,6 +178,7 @@ Main route groups:
 - `GET /auth/me`
 - `GET /health`
 - `POST /agentic/runs`
+- `POST /agentic/runs/sync`
 - `GET /agentic/runs/<run_id>`
 - `GET /agentic/runs/<run_id>/events`
 - `POST /agentic/runs/<run_id>/cancel`

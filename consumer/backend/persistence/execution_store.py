@@ -549,6 +549,7 @@ class ExecutionStore:
         *,
         session_id: str,
         user_request: str,
+        run_id: Optional[str] = None,
         idempotency_key_hash: Optional[str] = None,
         request_fingerprint: Optional[str] = None,
         ontology_version: Optional[str] = None,
@@ -576,12 +577,19 @@ class ExecutionStore:
                 )
 
             turn_id = _next_turn_id(history)
-            run_id = "agentic-{}".format(uuid4().hex)
+            allocated_run_id = str(run_id or "").strip() or "agentic-{}".format(
+                uuid4().hex
+            )
+            if any(
+                str(item.get("run_id") or "") == allocated_run_id
+                for item in history.get("turns", [])
+            ):
+                raise ValueError("run_id is already allocated")
             started_at = datetime.now().isoformat()
             turn: TurnExecutionRecord = {
                 "turn_id": turn_id,
                 "session_id": session_id,
-                "run_id": run_id,
+                "run_id": allocated_run_id,
                 "user_request": str(user_request or ""),
                 "start_time": started_at,
                 "end_time": None,
@@ -600,7 +608,7 @@ class ExecutionStore:
                 {
                     "role": "user",
                     "content": str(user_request or ""),
-                    "run_id": run_id,
+                    "run_id": allocated_run_id,
                     "turn_id": turn_id,
                 }
             )

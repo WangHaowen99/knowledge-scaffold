@@ -256,6 +256,7 @@ EventHub 持久化后发布 → GET /agentic/runs/{run_id}/events
 | `GET` | `/auth/me` | 获取当前用户 |
 | `GET` | `/health` | 健康检查 |
 | `POST` | `/agentic/runs` | 提交普通消息或 HITL 回答，返回 Run 准入结果 |
+| `POST` | `/agentic/runs/sync` | 等待 Run 终态并返回同步兼容 JSON |
 | `GET` | `/agentic/runs/<run_id>` | 查询运行状态 |
 | `GET` | `/agentic/runs/<run_id>/events` | 按事件序号回放并继续消费 SSE |
 | `POST` | `/agentic/runs/<run_id>/cancel` | 取消运行 |

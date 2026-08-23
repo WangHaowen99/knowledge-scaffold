@@ -56,6 +56,32 @@ def request_fingerprint(context: RuntimeInvocationContext) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _failed_terminal_payload(
+    payload: dict[str, Any],
+    *,
+    error_code: str,
+    message: str,
+) -> dict[str, Any]:
+    normalized = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"content", "result", "structured_content"}
+    }
+    normalized.update(
+        {
+            "status": RunStatus.FAILED.value,
+            "error": {
+                "error_code": error_code,
+                "message": message,
+                "retriable": False,
+                "source": "runtime",
+                "details": {},
+            },
+        }
+    )
+    return normalized
+
+
 class _ManagerEventSink(PublicEventSink):
     def __init__(self, manager: "AsyncRunManager", run_id: str) -> None:
         self.manager = manager
@@ -363,17 +389,11 @@ class AsyncRunManager:
                     normalized = normalized.model_copy(
                         update={
                             "status": RunStatus.FAILED.value,
-                            "payload": {
-                            **dict(normalized.payload),
-                            "status": RunStatus.FAILED.value,
-                            "error": {
-                                "error_code": "INVALID_INTERACTION_STATE",
-                                "message": "运行请求交互但未提供有效交互状态",
-                                "retriable": False,
-                                "source": "runtime",
-                                "details": {},
-                            },
-                            },
+                            "payload": _failed_terminal_payload(
+                                dict(normalized.payload),
+                                error_code="INVALID_INTERACTION_STATE",
+                                message="运行请求交互但未提供有效交互状态",
+                            ),
                         },
                     )
                 if entry.cancel_requested:
@@ -399,17 +419,11 @@ class AsyncRunManager:
                     normalized = normalized.model_copy(
                         update={
                             "status": RunStatus.FAILED.value,
-                            "payload": {
-                            **dict(normalized.payload),
-                            "status": RunStatus.FAILED.value,
-                            "error": {
-                                "error_code": "INTERACTION_NOT_SUPPORTED",
-                                "message": "当前协议不支持用户交互",
-                                "retriable": False,
-                                "source": "runtime",
-                                "details": {},
-                            },
-                            },
+                            "payload": _failed_terminal_payload(
+                                dict(normalized.payload),
+                                error_code="INTERACTION_NOT_SUPPORTED",
+                                message="当前协议不支持用户交互",
+                            ),
                         },
                     )
                     result = self._result_from_terminal(normalized)

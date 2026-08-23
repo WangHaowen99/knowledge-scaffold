@@ -514,6 +514,43 @@ data: {"schema_version":"1.0","event_id":"...","run_id":"agentic-run-demo","seq"
 
 响应 `200` 返回取消后的 Run snapshot。Run 不存在时返回 `404 RUN_NOT_FOUND`。终态竞争由服务端统一仲裁；取消成功后事件流仍以唯一的 `turn.finished` 收口。
 
+### 3.6 `POST /agentic/runs/sync`
+
+同步兼容入口。服务端通过 canonical Run 平台创建并执行 Run，等待终态后一次性返回 JSON；该接口不要求 `Idempotency-Key`，也不支持 HITL。需要断点续传、客户端重连或交互式运行时，使用 3.1 至 3.3 的 create-then-stream 契约。
+
+请求示例：
+
+```json
+{
+  "session_id": "session_demo",
+  "request": "分析一条合成输入",
+  "context": {
+    "agent_mode": "thinking",
+    "llm_request_mode": "stream"
+  },
+  "arguments": null,
+  "include_trace": true
+}
+```
+
+`session_id` 可省略，服务端会生成 `sync_<随机值>`。`context` 兼容读取 `agent_mode`、`llm_request_mode` 和 `model_profile_id`；这三个字段也可以放在请求顶层。同步入口不设置服务端整段 Run 超时，会持续等待终态；请求任务被客户端取消时，服务端会取消仍在运行的 Run。
+
+成功终态响应 `200`：
+
+```json
+{
+  "status": "success",
+  "final_answer": "合成回答",
+  "session_id": "session_demo",
+  "run_id": "agentic-run-demo",
+  "execution_trace": {
+    "tool_calls": ["synthetic_tool"]
+  }
+}
+```
+
+`status` 可能为 `success`、`error` 或 `cancelled`。同步入口关闭 HITL；Runtime 发起用户交互时会按不支持交互处理为 `error`。Runtime 业务失败仍返回 HTTP `200`，并通过顶层字符串 `error` 表达公开错误；参数错误、容量限制和服务停止准入使用对应的 `4xx/5xx`。`include_trace=true` 时，`execution_trace` 只汇总已经过公共事件适配器脱敏的工具名称与失败信息。
+
 ---
 
 ## 4. Sessions

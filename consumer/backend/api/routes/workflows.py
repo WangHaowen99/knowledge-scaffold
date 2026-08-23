@@ -8,23 +8,34 @@ import json
 import math
 import os
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from agent.core.shared.modes import resolve_agent_mode
-from agent.runtime.contracts import RunScope, RunSnapshot, RuntimeInvocationContext
+from agent.runtime.contracts import (
+    RunScope,
+    RunSnapshot,
+    RunStatus,
+    RuntimeInvocationContext,
+    TERMINAL_RUN_STATUSES,
+)
 from agent.runtime.errors import (
     EventReplayUnavailableError,
     RunNotFoundError,
     SessionBusyError,
 )
-from agent.runtime.event_bus import EventSubscriberLimitExceeded
+from agent.runtime.event_bus import (
+    EventSubscriberLimitExceeded,
+    EventSubscriberReservationError,
+)
 from agent.runtime.offload import OffloadPoolClosed, OffloadPoolSaturated
 from agent.runtime.runtime import RuntimeState
 from api.auth.auth import AuthUser, require_authenticated_user
 from api.dependencies import require_workspace_id
+from api.final_output import coerce_final_output_to_text
 from api.request_parsing import read_json_object, read_optional_json_object
 from config.system_config import (
     SystemConfigValidationError,
@@ -42,13 +53,18 @@ from persistence.execution_store import (
     InteractionCheckpointError,
 )
 from utils.identifiers import validate_session_id
+from utils.logging import get_logger
 
 
 workflows_router = APIRouter(prefix="/agentic")
+logger = get_logger("api.routes.workflows")
 _SSE_HEARTBEAT_SECONDS = max(
     1.0,
     float(os.getenv("AGENTIC_SSE_HEARTBEAT_SECONDS", "15")),
 )
+_SYNC_CLEANUP_TIMEOUT_SECONDS = 10.0
+_SYNC_TRACE_MAX_TOOL_CALLS = 2048
+_SYNC_TRACE_MAX_TOOL_FAILURES = 512
 
 
 def _get_orchestrator():
@@ -328,6 +344,347 @@ async def _check_rate_limit(runtime: Any) -> bool:
     if not callable(try_acquire):
         return True
     return bool(await runtime.short_io.run(try_acquire))
+
+
+def _run_tps_limit(orchestrator: Any) -> int:
+    agent_config = getattr(orchestrator, "agent_config", None)
+    limits = getattr(agent_config, "limits", None)
+    try:
+        return max(1, int(getattr(limits, "run_tps", 50)))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _sync_error(
+    detail: str,
+    status_code: int,
+    *,
+    session_id: str = "",
+    run_id: str = "",
+    error_code: str = "",
+    limit: int | None = None,
+) -> JSONResponse:
+    body: dict[str, Any] = {
+        "status": "error",
+        "error": detail,
+        "final_answer": "",
+    }
+    if session_id:
+        body["session_id"] = session_id
+    if run_id:
+        body["run_id"] = run_id
+    if error_code:
+        body["error_code"] = error_code
+    if limit is not None:
+        body["limit"] = limit
+    return JSONResponse(body, status_code=status_code)
+
+
+def _sync_status(status: RunStatus) -> str:
+    return {
+        RunStatus.COMPLETED: "success",
+        RunStatus.FAILED: "error",
+        RunStatus.CANCELLED: "cancelled",
+        RunStatus.AWAITING_INPUT: "awaiting_input",
+    }.get(status, status.value)
+
+
+def _log_sync_cleanup_completion(
+    task: asyncio.Task[Any],
+    *,
+    action: str,
+    run_id: str,
+) -> None:
+    if task.cancelled():
+        logger.warning(
+            "sync cleanup task cancelled action=%s run_id=%s",
+            action,
+            run_id,
+        )
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning(
+            "sync cleanup task failed action=%s run_id=%s error_type=%s",
+            action,
+            run_id,
+            type(error).__name__,
+        )
+
+
+async def _run_sync_cleanup(
+    operation: Any,
+    *,
+    action: str,
+    run_id: str,
+) -> Any:
+    cleanup = asyncio.create_task(operation)
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(cleanup),
+            timeout=_SYNC_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        cleanup.add_done_callback(
+            lambda task: _log_sync_cleanup_completion(
+                task,
+                action=action,
+                run_id=run_id,
+            )
+        )
+        raise
+    except TimeoutError:
+        cleanup.add_done_callback(
+            lambda task: _log_sync_cleanup_completion(
+                task,
+                action=action,
+                run_id=run_id,
+            )
+        )
+        logger.warning(
+            "sync cleanup timed out action=%s run_id=%s",
+            action,
+            run_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "sync cleanup failed action=%s run_id=%s error_type=%s",
+            action,
+            run_id,
+            type(exc).__name__,
+        )
+    return None
+
+
+async def _cancel_sync_run(
+    *,
+    manager: Any,
+    run_id: str,
+    scope: RunScope,
+    reason: str,
+) -> RunSnapshot | None:
+    return await _run_sync_cleanup(
+        manager.cancel_run(run_id, scope, reason=reason),
+        action="cancel_run",
+        run_id=run_id,
+    )
+
+
+async def _release_sync_reservation(
+    *,
+    event_hub: Any,
+    reservation_id: str,
+    run_id: str,
+) -> None:
+    await _run_sync_cleanup(
+        event_hub.release_subscriber_reservation(reservation_id),
+        action="release_reservation",
+        run_id=run_id,
+    )
+
+
+async def _mark_sync_turn_start_failed(
+    *,
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    turn_id: int,
+    run_id: str,
+) -> None:
+    await _run_sync_cleanup(
+        runtime.short_io.run(
+            execution_store.mark_turn_task_start_failed,
+            session_id,
+            turn_id,
+        ),
+        action="mark_turn_task_start_failed",
+        run_id=run_id,
+    )
+
+
+async def _allocate_sync_turn(
+    *,
+    runtime: Any,
+    execution_store: Any,
+    session_id: str,
+    user_request: str,
+    run_id: str,
+) -> tuple[dict[str, Any], bool]:
+    abandoned = asyncio.Event()
+
+    async def allocate() -> tuple[dict[str, Any], bool]:
+        turn, created = await runtime.short_io.run(
+            execution_store.create_turn_for_run,
+            session_id=session_id,
+            user_request=user_request,
+            run_id=run_id,
+            protocol_metadata={"protocol": "agentic_sync"},
+        )
+        if abandoned.is_set() and created:
+            await _mark_sync_turn_start_failed(
+                runtime=runtime,
+                execution_store=execution_store,
+                session_id=session_id,
+                turn_id=int(turn["turn_id"]),
+                run_id=str(turn["run_id"]),
+            )
+        return turn, created
+
+    allocation = asyncio.create_task(allocate())
+    try:
+        return await asyncio.shield(allocation)
+    except asyncio.CancelledError:
+        abandoned.set()
+        if allocation.done() and not allocation.cancelled():
+            error = allocation.exception()
+            if error is None:
+                turn, created = allocation.result()
+                if created:
+                    await _mark_sync_turn_start_failed(
+                        runtime=runtime,
+                        execution_store=execution_store,
+                        session_id=session_id,
+                        turn_id=int(turn["turn_id"]),
+                        run_id=str(turn["run_id"]),
+                    )
+        else:
+            allocation.add_done_callback(
+                lambda task: _log_sync_cleanup_completion(
+                    task,
+                    action="allocate_turn",
+                    run_id=run_id,
+                )
+            )
+        raise
+
+
+def _collect_sync_trace_event(
+    event: Any,
+    *,
+    tool_calls: list[str],
+    tool_failures: list[dict[str, str]],
+) -> None:
+    payload = event.payload if isinstance(event.payload, dict) else {}
+    if event.event_type == "tool.started":
+        tool_name = str(
+            payload.get("name") or payload.get("tool_name") or ""
+        ).strip()[:256]
+        if tool_name and len(tool_calls) < _SYNC_TRACE_MAX_TOOL_CALLS:
+            tool_calls.append(tool_name)
+        return
+    if event.event_type != "tool.finished" or str(
+        payload.get("status") or ""
+    ).strip().lower() not in {"error", "failed"}:
+        return
+    tool_name = str(
+        payload.get("name") or payload.get("tool_name") or ""
+    ).strip()[:256]
+    raw_error = payload.get("error")
+    error = (
+        str(raw_error.get("message") or "")
+        if isinstance(raw_error, dict)
+        else str(raw_error or "")
+    ).strip()[:1024]
+    if (
+        tool_name
+        and error
+        and len(tool_failures) < _SYNC_TRACE_MAX_TOOL_FAILURES
+    ):
+        tool_failures.append({"tool_name": tool_name, "error": error})
+
+
+async def _wait_for_sync_terminal(
+    *,
+    manager: Any,
+    event_hub: Any,
+    run_id: str,
+    scope: RunScope,
+    reservation_id: str,
+    include_trace: bool,
+) -> tuple[RunSnapshot, dict[str, Any] | None]:
+    cursor = 0
+    pending_reservation_id: str | None = reservation_id
+    trace_complete = include_trace
+    tool_calls: list[str] = []
+    tool_failures: list[dict[str, str]] = []
+
+    while True:
+        stream = event_hub.stream(
+            run_id,
+            after_seq=cursor,
+            reservation_id=pending_reservation_id,
+        )
+        pending_reservation_id = None
+        try:
+            async for event in stream:
+                cursor = max(cursor, int(event.seq))
+                if include_trace and trace_complete:
+                    _collect_sync_trace_event(
+                        event,
+                        tool_calls=tool_calls,
+                        tool_failures=tool_failures,
+                    )
+        except EventSubscriberReservationError:
+            # A very fast terminal Run releases outstanding reservations before
+            # this request activates its stream. Re-open without the consumed
+            # reservation; terminal replay does not consume subscriber capacity.
+            continue
+        except EventReplayUnavailableError:
+            snapshot = await manager.get_run(run_id, scope)
+            if snapshot is None:
+                raise RuntimeError("canonical run disappeared")
+            trace_complete = False
+            if snapshot.status in TERMINAL_RUN_STATUSES:
+                return snapshot, None
+            cursor = snapshot.last_seq
+            continue
+        finally:
+            await stream.aclose()
+
+        snapshot = await manager.get_run(run_id, scope)
+        if snapshot is None:
+            raise RuntimeError("canonical run disappeared")
+        if snapshot.status in TERMINAL_RUN_STATUSES:
+            if not include_trace or not trace_complete:
+                return snapshot, None
+            trace: dict[str, Any] = {"tool_calls": tool_calls}
+            if tool_failures:
+                trace["tool_failures"] = tool_failures
+            return snapshot, trace
+        # A slow-consumer detach closes the stream without completing the Run.
+        # Reattach after the last observed sequence instead of projecting an
+        # active snapshot as a terminal response.
+        await asyncio.sleep(0)
+
+
+def _sync_terminal_response(
+    snapshot: RunSnapshot,
+    *,
+    execution_trace: dict[str, Any] | None,
+) -> JSONResponse:
+    runtime_result = snapshot.result
+    final_output = (
+        runtime_result.content
+        if runtime_result is not None and runtime_result.content is not None
+        else (
+            runtime_result.structured_content
+            if runtime_result is not None
+            else None
+        )
+    )
+    body: dict[str, Any] = {
+        "status": _sync_status(snapshot.status),
+        "final_answer": coerce_final_output_to_text(final_output),
+        "session_id": snapshot.session_id,
+        "run_id": snapshot.run_id,
+    }
+    if snapshot.error is not None and snapshot.error.message:
+        body["error"] = snapshot.error.message
+    if snapshot.pending_interaction is not None:
+        body["pending_user_interaction"] = dict(snapshot.pending_interaction)
+    if execution_trace is not None:
+        body["execution_trace"] = execution_trace
+    return JSONResponse(body)
 
 
 @workflows_router.get("/model-profiles")
@@ -616,6 +973,297 @@ async def create_run(
         )
     except ExecutionStoreCorruptionError as exc:
         return _error("EXECUTION_STORE_CORRUPT", str(exc), 503)
+
+
+@workflows_router.post("/runs/sync")
+async def create_sync_run(
+    request: Request,
+    current_user: AuthUser = Depends(require_authenticated_user),
+    workspace_id: str = Depends(require_workspace_id),
+):
+    """Run the canonical async workflow and project its terminal legacy JSON."""
+
+    data = await read_json_object(request)
+    user_request = str(data.get("request") or "").strip()
+    if not user_request:
+        return _sync_error("Request is required", 400)
+
+    raw_context = data.get("context")
+    if raw_context is not None and not isinstance(raw_context, dict):
+        return _sync_error("context must be an object or null", 400)
+    context_values = dict(raw_context or {})
+    arguments = data.get("arguments")
+    if arguments is not None and not isinstance(arguments, dict):
+        return _sync_error("arguments must be an object or null", 400)
+    if "include_trace" in data and not isinstance(data.get("include_trace"), bool):
+        return _sync_error("include_trace must be a boolean", 400)
+    include_trace = data.get("include_trace") is True
+
+    raw_session_id = data.get("session_id")
+    generated_session_id = "sync_{}".format(uuid.uuid4().hex[:8])
+    try:
+        session_id = validate_session_id(
+            raw_session_id
+            if raw_session_id not in (None, "")
+            else generated_session_id
+        )
+    except ValueError as exc:
+        return _sync_error(str(exc), 400)
+    try:
+        trace_context = parse_traceparent(request.headers.get("traceparent"))
+    except TraceParentValidationError as exc:
+        return _sync_error(
+            str(exc),
+            400,
+            session_id=session_id,
+            error_code="INVALID_TRACEPARENT",
+        )
+
+    runtime = _get_runtime()
+    manager = getattr(runtime, "manager", None)
+    event_hub = getattr(runtime, "event_hub", None) or getattr(
+        manager,
+        "event_bus",
+        None,
+    )
+    if manager is None or runtime.short_io is None or event_hub is None:
+        return _sync_error("runtime is unavailable", 503, session_id=session_id)
+    if runtime.state is not RuntimeState.ACCEPTING:
+        return _sync_error(
+            "runtime is not accepting new runs",
+            503,
+            session_id=session_id,
+        )
+
+    model_profile_id = str(
+        data.get("model_profile_id")
+        or context_values.get("model_profile_id")
+        or ""
+    ).strip()
+    try:
+        if not await _check_rate_limit(runtime):
+            return _sync_error(
+                "请求过于频繁，请稍后重试",
+                429,
+                session_id=session_id,
+                limit=_run_tps_limit(_get_orchestrator()),
+            )
+        await _validate_model_profile(
+            runtime,
+            model_profile_id=model_profile_id,
+            workspace_id=workspace_id,
+        )
+    except SystemConfigValidationError as exc:
+        return _sync_error(str(exc), 400, session_id=session_id)
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+        )
+
+    scope = RunScope(
+        username=current_user.username,
+        workspace_id=workspace_id,
+        scopes=("agent:run", "agent:read", "agent:cancel"),
+    )
+    _chat_store, execution_store = _get_stores()
+    run_id = "agentic-{}".format(uuid.uuid4().hex)
+    turn_id = 0
+    turn_allocated = False
+    reservation_id: str | None = None
+    run_started = False
+    admission_complete = False
+    admission_cancel_reason = "sync_admission_failed"
+    try:
+        async with manager.session_guard(scope, session_id):
+            await manager.assert_session_available(scope, session_id)
+            try:
+                reservation_id = await event_hub.reserve_subscriber(run_id)
+                turn, created = await _allocate_sync_turn(
+                    runtime=runtime,
+                    execution_store=execution_store,
+                    session_id=session_id,
+                    user_request=user_request,
+                    run_id=run_id,
+                )
+                turn_id = int(turn["turn_id"])
+                if not created or str(turn["run_id"]) != run_id:
+                    raise RuntimeError("sync run admission was not unique")
+                turn_allocated = True
+                agent_mode = data.get("agent_mode")
+                if agent_mode in (None, ""):
+                    agent_mode = context_values.get("agent_mode")
+                llm_request_mode = data.get("llm_request_mode")
+                if llm_request_mode in (None, ""):
+                    llm_request_mode = context_values.get("llm_request_mode")
+                invocation = RuntimeInvocationContext(
+                    run_id=run_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    workspace_id=workspace_id,
+                    username=current_user.username,
+                    query=user_request,
+                    agent_mode=resolve_agent_mode({"agent_mode": agent_mode}),
+                    llm_request_mode=normalize_llm_request_mode(llm_request_mode),
+                    model_profile_id=model_profile_id or None,
+                    arguments=dict(arguments) if arguments is not None else None,
+                    include_trace=include_trace,
+                    supports_user_interaction=False,
+                    traceparent=(
+                        trace_context.value if trace_context is not None else ""
+                    ),
+                    concurrency_limit=(
+                        100 if current_user.role == "admin" else 1
+                    ),
+                    admission_timeout_seconds=300.0,
+                )
+                _snapshot, manager_created = await manager.create_run(
+                    invocation,
+                    scope,
+                    session_guarded=True,
+                )
+                if not manager_created:
+                    raise RuntimeError("sync run task was not uniquely registered")
+                run_started = True
+            except BaseException:
+                try:
+                    if turn_allocated:
+                        await _mark_sync_turn_start_failed(
+                            runtime=runtime,
+                            execution_store=execution_store,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            run_id=run_id,
+                        )
+                finally:
+                    if reservation_id is not None:
+                        await _release_sync_reservation(
+                            event_hub=event_hub,
+                            reservation_id=reservation_id,
+                            run_id=run_id,
+                        )
+                        reservation_id = None
+                raise
+        admission_complete = True
+    except EventSubscriberLimitExceeded:
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    except SessionBusyError as exc:
+        return _sync_error(
+            str(exc),
+            409,
+            session_id=session_id,
+            run_id=exc.run_id,
+        )
+    except InteractionCheckpointError as exc:
+        return _sync_error(
+            str(exc),
+            409,
+            session_id=session_id,
+            run_id=getattr(exc, "existing_run_id", None) or "",
+        )
+    except (OffloadPoolClosed, OffloadPoolSaturated, TimeoutError):
+        return _sync_error(
+            "runtime capacity is exhausted",
+            429,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    except ExecutionStoreCorruptionError:
+        return _sync_error(
+            "execution store is unavailable",
+            503,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    except asyncio.CancelledError:
+        admission_cancel_reason = "sync_request_cancelled"
+        raise
+    except Exception as exc:
+        logger.warning(
+            "sync run admission failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        return _sync_error(
+            "运行失败",
+            500,
+            session_id=session_id,
+            run_id=run_id if turn_allocated else "",
+        )
+    finally:
+        if not admission_complete:
+            try:
+                if run_started:
+                    await _cancel_sync_run(
+                        manager=manager,
+                        run_id=run_id,
+                        scope=scope,
+                        reason=admission_cancel_reason,
+                    )
+            finally:
+                if reservation_id is not None:
+                    await _release_sync_reservation(
+                        event_hub=event_hub,
+                        reservation_id=reservation_id,
+                        run_id=run_id,
+                    )
+                    reservation_id = None
+
+    try:
+        terminal, execution_trace = await _wait_for_sync_terminal(
+            manager=manager,
+            event_hub=event_hub,
+            run_id=run_id,
+            scope=scope,
+            reservation_id=reservation_id,
+            include_trace=include_trace,
+        )
+        return _sync_terminal_response(
+            terminal,
+            execution_trace=execution_trace,
+        )
+    except asyncio.CancelledError:
+        await _cancel_sync_run(
+            manager=manager,
+            run_id=run_id,
+            scope=scope,
+            reason="sync_request_cancelled",
+        )
+        raise
+    except Exception as exc:
+        current = await manager.get_run(run_id, scope)
+        if current is not None and current.status in TERMINAL_RUN_STATUSES:
+            return _sync_terminal_response(current, execution_trace=None)
+        await _cancel_sync_run(
+            manager=manager,
+            run_id=run_id,
+            scope=scope,
+            reason="sync_wait_failed",
+        )
+        logger.warning(
+            "sync run wait failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        return _sync_error(
+            "运行失败",
+            500,
+            session_id=session_id,
+            run_id=run_id,
+        )
+    finally:
+        if reservation_id is not None:
+            await _release_sync_reservation(
+                event_hub=event_hub,
+                reservation_id=reservation_id,
+                run_id=run_id,
+            )
 
 
 @workflows_router.get("/runs/{run_id}")

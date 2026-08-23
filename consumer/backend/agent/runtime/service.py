@@ -388,7 +388,7 @@ class AsyncExecutionService:
                 )
             else:
                 result = _result_from_terminal(terminal, adapter)
-            await self._finalize(context, result)
+            result = await self._finalize(context, result)
             if result.status == "awaiting_input":
                 for interaction_draft in interaction_drafts:
                     await sink.emit(interaction_draft)
@@ -406,7 +406,7 @@ class AsyncExecutionService:
             )
         except _MultipleInteractionsRequested:
             return await self._finish_multiple_interactions(context, sink)
-        await self._finalize(context, result)
+        result = await self._finalize(context, result)
         await runtime_sink.emit_deferred(status=result.status)
         return result
 
@@ -422,7 +422,7 @@ class AsyncExecutionService:
             source="runtime",
         )
         result = RuntimeResult(status="failed", error=error)
-        await self._finalize(context, result)
+        result = await self._finalize(context, result)
         await sink.emit(
             PublicEventDraft(
                 run_id=context.run_id,
@@ -468,7 +468,7 @@ class AsyncExecutionService:
             )
         else:
             result = _result_from_terminal(terminal, adapter)
-        await self._finalize(context, result)
+        result = await self._finalize(context, result)
         if terminal is not None:
             terminal_draft = adapter.adapt(terminal)
             if terminal_draft is not None:
@@ -482,10 +482,29 @@ class AsyncExecutionService:
         self,
         context: RuntimeInvocationContext,
         result: RuntimeResult,
-    ) -> None:
+    ) -> RuntimeResult:
+        if (
+            result.status == "awaiting_input"
+            and not context.supports_user_interaction
+        ):
+            result = result.model_copy(
+                update={
+                    "status": "failed",
+                    "content": None,
+                    "structured_content": None,
+                    "history_messages": [],
+                    "error": RuntimeErrorInfo(
+                        error_code="INTERACTION_NOT_SUPPORTED",
+                        message="当前协议不支持用户交互",
+                        retriable=False,
+                        source="runtime",
+                    ),
+                }
+            )
         if self.session_adapter is not None:
             await self.session_adapter.finalize(context, result)
             await self.session_adapter.submit_reflection(context, result)
+        return result
 
     async def finalize_aborted(
         self,

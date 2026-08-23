@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import importlib.util
 from pathlib import Path
 import sys
@@ -21,6 +21,9 @@ from fastapi import FastAPI
 from starlette.requests import Request
 
 from agent.runtime.contracts import (
+    PublicEventDraft,
+    RuntimeErrorInfo,
+    RuntimeResult,
     RunScope,
     RunSnapshot,
     RunStatus,
@@ -75,6 +78,10 @@ class _CountingManager:
         self.repository = InMemoryRunRepository()
         self.event_bus = AsyncEventBus(self.repository)
         self.started_contexts: list[RuntimeInvocationContext] = []
+        self.completion_result: RuntimeResult | None = None
+        self.completion_events: list[tuple[str, str, dict[str, Any]]] = []
+        self.completion_pending_interaction: dict[str, Any] | None = None
+        self.cancel_reasons: list[str] = []
         self._active_by_session: dict[tuple[str, str, str], str] = {}
         self._session_lock = asyncio.Lock()
 
@@ -128,6 +135,24 @@ class _CountingManager:
             self._active_by_session[
                 (scope.username, scope.workspace_id, context.session_id)
             ] = context.run_id
+            if self.completion_result is not None:
+                for event_type, status, payload in self.completion_events:
+                    await self.event_bus.publish(
+                        PublicEventDraft(
+                            run_id=context.run_id,
+                            session_id=context.session_id,
+                            turn_id=context.turn_id,
+                            event_type=event_type,
+                            status=status,
+                            source={"node": "synthetic", "component": "test"},
+                            payload=payload,
+                        )
+                    )
+                await self._finish(
+                    stored,
+                    result=self.completion_result,
+                    pending_interaction=self.completion_pending_interaction,
+                )
         return stored, created
 
     async def get_run(
@@ -139,6 +164,73 @@ class _CountingManager:
         if snapshot is None or not scope.owns(snapshot):
             return None
         return snapshot
+
+    async def cancel_run(
+        self,
+        run_id: str,
+        scope: RunScope,
+        reason: str = "user_requested",
+    ) -> RunSnapshot:
+        snapshot = await self.get_run(run_id, scope)
+        assert snapshot is not None
+        if snapshot.status in TERMINAL_RUN_STATUSES:
+            return snapshot
+        self.cancel_reasons.append(reason)
+        return await self._finish(
+            snapshot,
+            result=RuntimeResult(status="cancelled"),
+            cancel_reason=reason,
+        )
+
+    async def _finish(
+        self,
+        snapshot: RunSnapshot,
+        *,
+        result: RuntimeResult,
+        pending_interaction: dict[str, Any] | None = None,
+        cancel_reason: str | None = None,
+    ) -> RunSnapshot:
+        status = RunStatus(result.status)
+        payload: dict[str, Any] = {"status": status.value}
+        if result.content is not None:
+            payload["final_output"] = result.content
+        elif result.structured_content is not None:
+            payload["final_output"] = result.structured_content
+        if result.error is not None:
+            payload["error"] = result.error.message
+            payload["error_code"] = result.error.error_code
+        if cancel_reason:
+            payload["cancel_reason"] = cancel_reason
+
+        def update(current: RunSnapshot) -> RunSnapshot:
+            return replace(
+                current,
+                status=status,
+                result=result,
+                error=result.error,
+                pending_interaction=(
+                    dict(pending_interaction)
+                    if pending_interaction is not None
+                    else None
+                ),
+                cancel_reason=cancel_reason,
+                updated_at=utc_now_iso(),
+            )
+
+        _event, updated = await self.event_bus.publish(
+            PublicEventDraft(
+                run_id=snapshot.run_id,
+                session_id=snapshot.session_id,
+                turn_id=snapshot.turn_id,
+                event_type="turn.finished",
+                status=status.value,
+                source={"node": "synthetic", "component": "test"},
+                payload=payload,
+            ),
+            snapshot_update=update,
+        )
+        await self.event_bus.close(snapshot.run_id)
+        return updated
 
     async def add_live_run(
         self,
@@ -323,6 +415,162 @@ def test_post_run_has_no_whole_run_timeout(monkeypatch, tmp_path):
 
         assert response.status_code == 202, response.text
         assert harness.manager.started_contexts[0].timeout_seconds is None
+
+    asyncio.run(scenario())
+
+
+def test_sync_run_waits_for_terminal_and_returns_legacy_trace(monkeypatch, tmp_path):
+    async def scenario() -> None:
+        app, harness = _install_harness(monkeypatch, tmp_path)
+        harness.manager.completion_events = [
+            (
+                "tool.started",
+                "running",
+                {"name": "synthetic_tool", "tool_call_id": "call_demo"},
+            ),
+            (
+                "tool.finished",
+                "failed",
+                {
+                    "name": "synthetic_tool",
+                    "tool_call_id": "call_demo",
+                    "status": "failed",
+                    "error": {"message": "Synthetic tool failure"},
+                },
+            ),
+        ]
+        harness.manager.completion_result = RuntimeResult(
+            status="completed",
+            structured_content={"text": "Synthetic structured answer"},
+        )
+
+        async with await _client_for(app) as client:
+            response = await client.post(
+                "/agentic/runs/sync",
+                json={
+                    "request": "Analyze synthetic input",
+                    "session_id": "session_sync_contract",
+                    "context": {
+                        "agent_mode": "thinking",
+                        "llm_request_mode": "sync",
+                    },
+                    "include_trace": True,
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body == {
+            "status": "success",
+            "final_answer": "Synthetic structured answer",
+            "session_id": "session_sync_contract",
+            "run_id": body["run_id"],
+            "execution_trace": {
+                "tool_calls": ["synthetic_tool"],
+                "tool_failures": [
+                    {
+                        "tool_name": "synthetic_tool",
+                        "error": "Synthetic tool failure",
+                    }
+                ],
+            },
+        }
+        context = harness.manager.started_contexts[0]
+        assert context.supports_user_interaction is False
+        assert context.agent_mode == "thinking"
+        assert context.llm_request_mode == "sync"
+        assert context.timeout_seconds is None
+        history = harness.execution_store.get_session_history(
+            "session_sync_contract"
+        )
+        assert len(history["turns"]) == 1
+        assert history["turns"][0]["protocol_metadata"] == {
+            "protocol": "agentic_sync"
+        }
+        assert harness.manager.event_bus.active_subscriber_count == 0
+        assert harness.manager.event_bus.reserved_subscriber_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_sync_run_projects_public_terminal_failure(monkeypatch, tmp_path):
+    async def scenario() -> None:
+        app, harness = _install_harness(monkeypatch, tmp_path)
+        error = RuntimeErrorInfo(
+            error_code="MODEL_PROVIDER_ERROR",
+            message="Synthetic provider failure",
+            source="model",
+        )
+        harness.manager.completion_result = RuntimeResult(
+            status="failed",
+            error=error,
+        )
+
+        async with await _client_for(app) as client:
+            response = await client.post(
+                "/agentic/runs/sync",
+                json={
+                    "request": "Analyze synthetic input",
+                    "session_id": "session_sync_failure",
+                },
+            )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "error"
+        assert body["final_answer"] == ""
+        assert body["error"] == "Synthetic provider failure"
+        assert body["session_id"] == "session_sync_failure"
+        assert body["run_id"].startswith("agentic-")
+        assert "execution_trace" not in body
+
+    asyncio.run(scenario())
+
+
+def test_sync_run_rate_limit_and_input_validation_do_not_start_runs(
+    monkeypatch,
+    tmp_path,
+):
+    async def scenario() -> None:
+        app, harness = _install_harness(monkeypatch, tmp_path)
+
+        class _RejectingLimiter:
+            @staticmethod
+            def try_acquire() -> bool:
+                return False
+
+        monkeypatch.setattr(
+            workflows,
+            "_get_orchestrator",
+            lambda: type(
+                "SyntheticLimitedOrchestrator",
+                (),
+                {"run_rate_limiter": _RejectingLimiter()},
+            )(),
+        )
+        async with await _client_for(app) as client:
+            invalid = await client.post(
+                "/agentic/runs/sync",
+                json={
+                    "request": "Analyze synthetic input",
+                    "session_id": "session_sync_invalid",
+                    "arguments": [],
+                },
+            )
+            limited = await client.post(
+                "/agentic/runs/sync",
+                json={
+                    "request": "Analyze synthetic input",
+                    "session_id": "session_sync_limited",
+                },
+            )
+
+        assert invalid.status_code == 400
+        assert invalid.json()["error"] == "arguments must be an object or null"
+        assert limited.status_code == 429
+        assert limited.json()["error"] == "请求过于频繁，请稍后重试"
+        assert limited.json()["limit"] == 50
+        assert harness.manager.task_start_count == 0
 
     asyncio.run(scenario())
 
@@ -534,11 +782,6 @@ def test_retired_stream_is_gone_and_other_removed_routes_are_hard_404(
                     json={"interaction_response": {}},
                     headers=_headers("removed-interact-key"),
                 ),
-                await client.post(
-                    "/agentic/runs/" + "sync",
-                    json=_ordinary_payload(),
-                    headers=_headers("removed-sync-key"),
-                ),
                 await client.get("/agentic/runs/run_demo/" + "status"),
             ]
         retired_stream = responses[0]
@@ -566,7 +809,6 @@ def test_retired_stream_is_gone_and_other_removed_routes_are_hard_404(
         }
         assert [response.status_code for response in responses] == [
             410,
-            404,
             404,
             404,
         ]
