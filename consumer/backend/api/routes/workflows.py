@@ -848,6 +848,36 @@ async def submit_run_feedback(
     }
 
 
+@workflows_router.post("/runs/stream", include_in_schema=False)
+async def retired_run_stream():
+    """Explain the permanent replacement for the retired single-call stream API."""
+
+    return JSONResponse(
+        {
+            "error": {
+                "type": "async_run_error",
+                "error_code": "ENDPOINT_RETIRED",
+                "detail": (
+                    "POST /agentic/runs/stream has been retired; create a Run "
+                    "with POST /agentic/runs and follow links.events"
+                ),
+                "retriable": False,
+            },
+            "replacement": {
+                "create": {
+                    "method": "POST",
+                    "path": "/agentic/runs",
+                },
+                "events": {
+                    "method": "GET",
+                    "path": "/agentic/runs/{run_id}/events",
+                },
+            },
+        },
+        status_code=410,
+    )
+
+
 @workflows_router.api_route(
     "/runs/{unsupported_path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],

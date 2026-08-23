@@ -516,7 +516,10 @@ def test_hitl_answer_creates_new_run_and_exact_repeat_reuses_it(
     asyncio.run(scenario())
 
 
-def test_removed_run_routes_are_hard_404(monkeypatch, tmp_path):
+def test_retired_stream_is_gone_and_other_removed_routes_are_hard_404(
+    monkeypatch,
+    tmp_path,
+):
     async def scenario() -> None:
         app, _harness = _install_harness(monkeypatch, tmp_path)
         async with await _client_for(app) as client:
@@ -538,8 +541,31 @@ def test_removed_run_routes_are_hard_404(monkeypatch, tmp_path):
                 ),
                 await client.get("/agentic/runs/run_demo/" + "status"),
             ]
+        retired_stream = responses[0]
+        assert retired_stream.status_code == 410
+        assert retired_stream.json() == {
+            "error": {
+                "type": "async_run_error",
+                "error_code": "ENDPOINT_RETIRED",
+                "detail": (
+                    "POST /agentic/runs/stream has been retired; create a Run "
+                    "with POST /agentic/runs and follow links.events"
+                ),
+                "retriable": False,
+            },
+            "replacement": {
+                "create": {
+                    "method": "POST",
+                    "path": "/agentic/runs",
+                },
+                "events": {
+                    "method": "GET",
+                    "path": "/agentic/runs/{run_id}/events",
+                },
+            },
+        }
         assert [response.status_code for response in responses] == [
-            404,
+            410,
             404,
             404,
             404,
