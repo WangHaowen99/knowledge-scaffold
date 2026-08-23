@@ -6,6 +6,7 @@ from flask_cors import CORS
 from config import AgentConfig, AppConfig
 from agent.core.warmup import start_runtime_warmup
 from integration.observability import reset_observer
+from integration.observability.otel import initialize_open_telemetry
 from integration.platform.manager import reset_platform_observer, start_platform_observer_if_enabled
 from migrations.runner import run_startup_migrations
 from api.routes import register_routes, update_runtime_dependencies
@@ -76,9 +77,14 @@ def create_app() -> Flask:
     run_startup_migrations()
 
     app = Flask(__name__)
+    initialize_open_telemetry(app)
     app.json.ensure_ascii = False
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
-    CORS(app, supports_credentials=True, allow_headers=["Content-Type", "Authorization", "X-Workspace-Id"])
+    CORS(
+        app,
+        supports_credentials=True,
+        allow_headers=["Content-Type", "Authorization", "X-Workspace-Id", "traceparent"],
+    )
     app.config["REFRESH_RUNTIME_SERVICES"] = refresh_runtime_services
     app.config["REFRESH_PLATFORM_CONNECTOR"] = refresh_platform_connector
 

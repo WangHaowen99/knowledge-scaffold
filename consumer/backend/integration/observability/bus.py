@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import queue
 import threading
-from typing import Deque, Optional
+from typing import Callable, Deque, Iterable, Optional
 
 from utils.logging import get_logger
 from integration.observability.events import RuntimeEvent, RuntimeEventType
@@ -18,6 +19,12 @@ _RUN_TERMINAL_EVENTS = {
     RuntimeEventType.RUN_FAILED,
     RuntimeEventType.RUN_CANCELLED,
 }
+
+
+@dataclass(frozen=True)
+class _QueuedBatch:
+    event_factory: Callable[[], Iterable[RuntimeEvent]]
+    on_complete: Optional[Callable[[], None]] = None
 
 
 class ObservabilityBus:
@@ -35,11 +42,18 @@ class ObservabilityBus:
         exporter: RuntimeExporter,
         *,
         queue_size: int = 1000,
+        batch_queue_size: int = 10000,
         drop_buffer_size: int = 10000,
         flush_interval_seconds: float = 5.0,
     ) -> None:
         self._exporter = exporter
-        self._queue: "queue.Queue[object]" = queue.Queue(maxsize=max(1, int(queue_size)))
+        self._queue_size = max(1, int(queue_size))
+        self._batch_queue_size = max(1, int(batch_queue_size))
+        self._queue: "queue.Queue[object]" = queue.Queue(
+            maxsize=self._queue_size + self._batch_queue_size
+        )
+        self._queued_event_count = 0
+        self._queued_batch_count = 0
         self._dropped_events: Deque[RuntimeEvent] = deque()
         self._drop_buffer_size = max(1, int(drop_buffer_size))
         self._drop_lock = threading.Lock()
@@ -49,6 +63,7 @@ class ObservabilityBus:
         self._lock = threading.Lock()
         self._exporter_closed = False
         self._exporter_close_lock = threading.Lock()
+        self._export_lock = threading.RLock()
         self._flush_interval_seconds = max(0.1, float(flush_interval_seconds))
         self._worker = threading.Thread(
             target=self._run,
@@ -65,17 +80,34 @@ class ObservabilityBus:
         with self._lock:
             if self._closed:
                 return False
-            try:
+            if self._queued_event_count < self._queue_size:
+                self._queued_event_count += 1
                 self._queue.put_nowait(event)
                 return True
-            except queue.Full:
-                pass
         logger.warning(
             "Dropping observability event because queue is full: type=%s run_id=%s",
             event.type,
             event.run_id,
         )
         self._enqueue_drop_notice(event)
+        return False
+
+    def emit_batch(
+        self,
+        event_factory: Callable[[], Iterable[RuntimeEvent]],
+        *,
+        on_complete: Optional[Callable[[], None]] = None,
+    ) -> bool:
+        """Queue one run unit bounded by the router's pending-span limits."""
+        batch = _QueuedBatch(event_factory=event_factory, on_complete=on_complete)
+        with self._lock:
+            if self._closed:
+                return False
+            if self._queued_batch_count < self._batch_queue_size:
+                self._queued_batch_count += 1
+                self._queue.put_nowait(batch)
+                return True
+        logger.warning("Dropping observability run batch because the batch queue is full")
         return False
 
     def close(self, timeout: Optional[float] = 5.0) -> None:
@@ -88,9 +120,20 @@ class ObservabilityBus:
             except queue.Full:
                 pass
         self._worker.join(timeout=timeout)
-        # Exporters own their final flush. Close is idempotent, so invoke it
-        # even when a daemon worker did not finish draining before shutdown.
-        self._close_exporter()
+        if not self._worker.is_alive():
+            self._close_exporter()
+
+    def emit_metric(self, event: RuntimeEvent) -> bool:
+        """Persist an OTel metric outside the trace-detail queue."""
+        with self._lock:
+            if self._closed:
+                return False
+        try:
+            self._export_item(event)
+            return True
+        except Exception:
+            logger.warning("Observability exporter failed to export metric", exc_info=True)
+            return False
 
     def _run(self) -> None:
         try:
@@ -103,11 +146,12 @@ class ObservabilityBus:
                         break
                     continue
 
+                self._mark_dequeued(item)
                 if item is self._stop:
                     break
 
                 try:
-                    self._exporter.export(item)
+                    self._export_item(item)
                 except Exception:
                     logger.warning("Observability exporter failed to export event", exc_info=True)
                 self._drain_drop_notices()
@@ -130,10 +174,11 @@ class ObservabilityBus:
                 item = self._queue.get_nowait()
             except queue.Empty:
                 return
+            self._mark_dequeued(item)
             if item is self._stop:
                 continue
             try:
-                self._exporter.export(item)
+                self._export_item(item)
             except Exception:
                 logger.warning("Observability exporter failed during drain", exc_info=True)
             self._drain_drop_notices()
@@ -143,7 +188,8 @@ class ObservabilityBus:
         if not callable(flush):
             return
         try:
-            flush()
+            with self._export_lock:
+                flush()
         except Exception:
             logger.warning("Observability exporter flush failed", exc_info=True)
 
@@ -152,7 +198,8 @@ class ObservabilityBus:
         if not callable(record_drop):
             return
         try:
-            record_drop(event)
+            with self._export_lock:
+                record_drop(event)
         except Exception:
             logger.warning("Observability exporter failed to record dropped event", exc_info=True)
 
@@ -200,6 +247,41 @@ class ObservabilityBus:
         if not callable(close):
             return
         try:
-            close()
+            with self._export_lock:
+                close()
         except Exception:
             logger.warning("Observability exporter close failed", exc_info=True)
+
+    def _mark_dequeued(self, item: object) -> None:
+        with self._lock:
+            if isinstance(item, RuntimeEvent):
+                self._queued_event_count = max(0, self._queued_event_count - 1)
+            elif isinstance(item, _QueuedBatch):
+                self._queued_batch_count = max(0, self._queued_batch_count - 1)
+
+    def _export_item(self, event: object) -> None:
+        if isinstance(event, _QueuedBatch):
+            self._export_batch(event)
+            return
+        with self._export_lock:
+            self._exporter.export(event)
+
+    def _export_batch(self, batch: _QueuedBatch) -> None:
+        try:
+            for event in batch.event_factory():
+                try:
+                    with self._export_lock:
+                        self._exporter.export(event)
+                except Exception:
+                    logger.warning(
+                        "Observability exporter failed to export batched event",
+                        exc_info=True,
+                    )
+        except Exception:
+            logger.warning("Observability event batch generation failed", exc_info=True)
+        finally:
+            if batch.on_complete is not None:
+                try:
+                    batch.on_complete()
+                except Exception:
+                    logger.warning("Observability event batch completion failed", exc_info=True)

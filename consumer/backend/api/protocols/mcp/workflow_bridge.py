@@ -208,6 +208,11 @@ def execute_mcp_chat_workflow(
         traceparent=scope.traceparent,
         event_observer=trace_collector.consume if trace_collector is not None else None,
         deterministic_preflight_result=defer_llm_validation,
+        runtime_event_observer=(
+            trace_collector.consume_runtime_event
+            if trace_collector is not None
+            else None
+        ),
     )
     registry = get_run_registry()
     admitted = threading.Event()

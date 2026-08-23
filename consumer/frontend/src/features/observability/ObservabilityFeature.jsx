@@ -12,6 +12,7 @@ export default function ObservabilityFeature({
   user = null,
   canViewGlobal,
   can,
+  workspaceId = '',
   workspaces = [],
   onBack,
   request = authFetch,
@@ -46,7 +47,12 @@ export default function ObservabilityFeature({
   return (
     <div className="obs-feature">
       {access.view === OBSERVABILITY_VIEWS.GLOBAL ? (
-        <GlobalObservabilityView workspaces={workspaces} onBack={onBack} request={request} />
+        <GlobalObservabilityView
+          workspaceId={workspaceId}
+          workspaces={workspaces}
+          onBack={onBack}
+          request={request}
+        />
       ) : (
         <SessionPerformanceView key={sessionId} sessionId={sessionId} onBack={onBack} request={request} />
       )}

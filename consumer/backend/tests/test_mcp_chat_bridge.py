@@ -1,4 +1,5 @@
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -137,6 +138,30 @@ class _TraceOrchestrator(_FakeOrchestrator):
             "seq": 4,
             "payload": {"status": "success", "final_output": "完成"},
         }
+
+
+class _TimeoutTraceOrchestrator(_FakeOrchestrator):
+    def __init__(self):
+        super().__init__()
+        self.release_run = threading.Event()
+
+    def run(self, **kwargs):
+        self.last_run_kwargs = dict(kwargs)
+        yield {
+            "protocol": "agent-stream.v2",
+            "type": "token.delta",
+            "run_id": kwargs["requested_run_id"],
+            "session_id": kwargs["session_id"],
+            "turn_id": 1,
+            "seq": 1,
+            "span_id": "4" * 16,
+            "payload": {
+                "iteration": 1,
+                "channel": "content",
+                "text": "已完成部分分析",
+            },
+        }
+        self.release_run.wait(timeout=2)
 
 class _StructuredSuccessOrchestrator(_FakeOrchestrator):
     def run(self, **kwargs):
@@ -690,7 +715,6 @@ def test_workflow_bridge_adds_trace_without_changing_result(monkeypatch, tmp_pat
     )
     scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
     config = _config(tmp_path / "tokens.json")
-
     body, status_code = execute_mcp_chat_workflow(
         orchestrator=_TraceOrchestrator(),
         scope=scope,
@@ -768,7 +792,6 @@ def test_workflow_bridge_adds_trace_to_awaiting_input_and_failure(monkeypatch, t
     )
     scope = MCPRequestScope("alice", "workspace-a", ["mcp:chat"], token="mcp_token")
     config = _config(tmp_path / "tokens.json")
-
     awaiting_body, awaiting_status = execute_mcp_chat_workflow(
         orchestrator=_FakeOrchestrator(terminal_status="awaiting_input"),
         scope=scope,
@@ -810,5 +833,42 @@ def test_workflow_bridge_adds_trace_to_awaiting_input_and_failure(monkeypatch, t
     assert failed_body["trace"]["iterations"][0]["agent_output"] == {
         "summary": "完成",
         "source": "final_output",
+        "truncated": False,
+    }
+
+
+def test_workflow_bridge_timeout_keeps_live_public_trace(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "api.protocols.mcp.workflow_bridge.resolve_effective_llm_profile_config",
+        lambda *_args, **_kwargs: {},
+    )
+    orchestrator = _TimeoutTraceOrchestrator()
+    try:
+        body, status_code = execute_mcp_chat_workflow(
+            orchestrator=orchestrator,
+            scope=MCPRequestScope(
+                "alice",
+                "workspace-a",
+                ["mcp:chat"],
+                token="mcp_token",
+            ),
+            payload={
+                "request": "查询",
+                "session_id": "session-trace-timeout",
+                "include_trace": True,
+            },
+            concurrency_limit=1,
+            queue_wait_seconds=1,
+            execution_timeout_seconds=0.02,
+            trace_config=_config(tmp_path / "tokens.json"),
+        )
+    finally:
+        orchestrator.release_run.set()
+
+    assert status_code == 504
+    assert body["error"]["error_code"] == "MCP_CHAT_EXECUTION_TIMEOUT"
+    assert body["trace"]["iterations"][0]["agent_output"] == {
+        "summary": "已完成部分分析",
+        "source": "agent_content",
         "truncated": False,
     }

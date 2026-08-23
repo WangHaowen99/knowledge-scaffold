@@ -5,9 +5,10 @@ import {
   saveAdminLlmDefault,
   testAdminLlmDefault,
 } from './api.js';
+import LlmPurposeTabs from './LlmPurposeTabs.jsx';
 
 const EMPTY_DRAFT = {
-  baseUrl: '', model: '', apiKey: '', apiKeyClear: false, maxTokens: '1000000', contextWindow: '1000000',
+  baseUrl: '', model: '', apiKey: '', apiKeyClear: false, maxTokens: '128000', contextWindow: '1000000',
 };
 
 function draftFrom(value) {
@@ -86,7 +87,7 @@ export default function AdminLlmDefaults({ onChanged }) {
   };
 
   const reset = async () => {
-    if (!saved || !window.confirm(`确认清除平台${purpose === 'main' ? '主模型默认' : '任务模型默认'}？`)) return;
+    if (!saved || !window.confirm(`确认清除平台${purpose === 'main' ? '主模型默认' : '后台任务模型默认'}？`)) return;
     setBusy('reset'); setMessage('');
     try {
       await saveAdminLlmDefault({
@@ -106,10 +107,12 @@ export default function AdminLlmDefaults({ onChanged }) {
 
   return (
     <div className="admin-llm-defaults">
-      <div className="admin-llm-purpose" role="tablist" aria-label="平台 LLM 用途">
-        <button type="button" className={purpose === 'main' ? 'on' : ''} onClick={() => setPurpose('main')}>主模型</button>
-        <button type="button" className={purpose === 'task' ? 'on' : ''} onClick={() => setPurpose('task')}>任务模型</button>
-      </div>
+      <LlmPurposeTabs
+        purpose={purpose}
+        onChange={setPurpose}
+        ariaLabel="平台 LLM 用途"
+        className="admin-llm-purpose"
+      />
 
       <div className="admin-llm-status">
         <span className={`tag ${saved ? 'tag-ok' : 'tag-draft'}`}>{saved ? `已启用 · r${saved.revision}` : '未设置'}</span>

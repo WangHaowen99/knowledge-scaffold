@@ -96,6 +96,7 @@ class LangfuseExporter:
             user_id=payload.get("user_id"),
             session_id=event.session_id,
             metadata={
+                "trace_id": event.trace_id,
                 "session_id": event.session_id,
                 "turn_id": event.turn_id,
                 "workspace_id": workspace_id,
@@ -173,7 +174,7 @@ class LangfuseExporter:
         span_id = self._trace.create_span(
             trace_id=trace_id,
             name="agent_loop:{}".format(caller),
-            metadata={**payload, "started_at_ms": event.timestamp_ms},
+            metadata={**_event_identity_metadata(event), **payload, "started_at_ms": event.timestamp_ms},
             tags=["agent_loop", caller],
         )
         self._store_span(event, span_id)
@@ -200,7 +201,10 @@ class LangfuseExporter:
         span_id = self._trace.create_llm_span(
             trace_id=trace_id,
             name=name,
-            metadata=_metadata_without_payload(payload, {"input"}),
+            metadata={
+                **_event_identity_metadata(event),
+                **_metadata_without_payload(payload, {"input"}),
+            },
             tags=tags,
             parent_observation_id=self._span_id(event.run_id, event.parent_key),
             input=payload.get("input"),
@@ -242,7 +246,7 @@ class LangfuseExporter:
         span_id = self._trace.create_span(
             trace_id=trace_id,
             name="tools:{}_iteration_{}".format(caller, iteration),
-            metadata={**payload, "started_at_ms": event.timestamp_ms},
+            metadata={**_event_identity_metadata(event), **payload, "started_at_ms": event.timestamp_ms},
             tags=["tools", caller] + (["iteration_{}".format(iteration)] if iteration is not None else []),
             parent_observation_id=self._span_id(event.run_id, event.parent_key),
         )
@@ -262,6 +266,7 @@ class LangfuseExporter:
             trace_id=trace_id,
             name=span_display_name,
             metadata={
+                **_event_identity_metadata(event),
                 **_metadata_without_payload(payload, {"input"}),
                 "started_at_ms": event.timestamp_ms,
             },
@@ -452,6 +457,14 @@ def _status_from_event_type(event_type: str) -> str:
 def _stable_trace_id(event) -> str:
     """Join a validated caller trace, otherwise derive a stable local id."""
 
+    event_trace_id = str(getattr(event, "trace_id", "") or "").strip().lower()
+    if (
+        len(event_trace_id) == 32
+        and event_trace_id != "0" * 32
+        and all(char in "0123456789abcdef" for char in event_trace_id)
+    ):
+        return event_trace_id
+
     payload = getattr(event, "payload", None)
     if isinstance(payload, dict):
         external_trace_id = str(payload.get("external_trace_id") or "").strip().lower()
@@ -469,3 +482,16 @@ def _stable_trace_id(event) -> str:
 
 def _metadata_without_payload(payload: Dict[str, Any], omitted_keys: set[str]) -> Dict[str, Any]:
     return {key: value for key, value in payload.items() if key not in omitted_keys}
+
+
+def _event_identity_metadata(event) -> Dict[str, Any]:
+    values = {
+        "trace_id": getattr(event, "trace_id", None),
+        "span_id": getattr(event, "span_id", None),
+        "parent_span_id": getattr(event, "parent_span_id", None),
+    }
+    metadata = {}
+    for key, value in values.items():
+        if value:
+            metadata[key] = value
+    return metadata

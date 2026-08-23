@@ -71,6 +71,10 @@ def run_direct_script(
             elapsed_ms=0,
             error=error_code,
         )
+        span_key = tracer.record_preflight_failure(
+            message=message,
+            error_code=error_code,
+        )
         events.append(_build_event(
             run_id,
             session_id,
@@ -84,8 +88,9 @@ def run_direct_script(
                 error=message,
                 elapsed_ms=0,
             ),
+            span_key=span_key,
+            parent_key=tracer.loop_span_key,
         ))
-        tracer.mark_failed()
         return events, result
 
     with tracer.direct_execution_scope(ontology_id=ontology_id, operation_key=operation_key):
@@ -145,37 +150,6 @@ def run_direct_script(
 
         script_name = Path(script_rel).name if script_rel else operation_key
 
-        events.append(_build_event(run_id, session_id, turn_id, "tool.started", {
-            "tool_call_id": "direct",
-            "tool_name": "execute_script",
-            "input": {
-                "ontology_id": ontology_id,
-                "operation_key": operation_key,
-                "arguments": decision.business_arguments,
-            },
-            "message": "直接执行流程：{}".format(operation_key),
-        }))
-
-        ontology_pythonpath = [ontology_dir]
-
-        # --- Build env overrides from the ontology-scoped business data source ---
-        requires_business_data = (
-            str(script_entry.get("data_access") or "none").strip().casefold()
-            == _WORKSPACE_PROVIDER_DATA_ACCESS
-        )
-        try:
-            env_overrides = _build_script_env_overrides(
-                workspace_id=runtime_context.workspace_id,
-                ontology_id=ontology_id,
-                required=requires_business_data,
-            )
-        except BusinessDataConnectionError:
-            return fail_preflight(
-                _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
-                _BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE,
-            )
-
-        started_at = time.monotonic()
         with tracer.script_scope(
             script_name=script_name,
             script_path=script_rel,
@@ -183,7 +157,37 @@ def run_direct_script(
             operation_key=operation_key,
             arguments=decision.business_arguments,
         ) as script_trace:
+            events.append(_build_event(run_id, session_id, turn_id, "tool.started", {
+                "tool_call_id": "direct",
+                "tool_name": "execute_script",
+                "input": {
+                    "ontology_id": ontology_id,
+                    "operation_key": operation_key,
+                    "arguments": decision.business_arguments,
+                },
+                "message": "直接执行流程：{}".format(operation_key),
+            }, span_key=script_trace.span_key, parent_key=tracer.tool_batch_span_key))
+            started_at: Optional[float] = None
             try:
+                ontology_pythonpath = [ontology_dir]
+
+                # Keep the existing SSE order: tool.started precedes env construction.
+                requires_business_data = (
+                    str(script_entry.get("data_access") or "none").strip().casefold()
+                    == _WORKSPACE_PROVIDER_DATA_ACCESS
+                )
+                try:
+                    env_overrides = _build_script_env_overrides(
+                        workspace_id=runtime_context.workspace_id,
+                        ontology_id=ontology_id,
+                        required=requires_business_data,
+                    )
+                except BusinessDataConnectionError:
+                    return fail_preflight(
+                        _BUSINESS_DATA_CONNECTION_UNAVAILABLE_ERROR,
+                        _BUSINESS_DATA_CONNECTION_UNAVAILABLE_CODE,
+                    )
+                started_at = time.monotonic()
                 script_output = handle_execute_script_path(
                     script_path=script_rel,
                     args=cli_args,
@@ -224,6 +228,8 @@ def run_direct_script(
                         error=script_output if is_error else None,
                         elapsed_ms=elapsed_ms,
                     ),
+                    span_key=script_trace.span_key,
+                    parent_key=tracer.tool_batch_span_key,
                 ))
                 script_trace.record_result(
                     output=script_output,
@@ -233,7 +239,11 @@ def run_direct_script(
                 return events, result
 
             except Exception:
-                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                elapsed_ms = (
+                    int((time.monotonic() - started_at) * 1000)
+                    if started_at is not None
+                    else 0
+                )
                 error_msg = "Error: Direct script execution failed."
                 error_code = "direct_script_execution_failed"
                 logger.error(
@@ -261,6 +271,8 @@ def run_direct_script(
                         error=error_msg,
                         elapsed_ms=elapsed_ms,
                     ),
+                    span_key=script_trace.span_key,
+                    parent_key=tracer.tool_batch_span_key,
                 ))
                 script_trace.record_result(
                     output=error_msg,
@@ -276,6 +288,9 @@ def _build_event(
     turn_id: int,
     event_type: str,
     payload: Dict[str, Any],
+    *,
+    span_key: Optional[str] = None,
+    parent_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     return build_agent_event(
         run_id=run_id,
@@ -284,4 +299,6 @@ def _build_event(
         event_type=event_type,
         source={"node": "direct_execution", "component": "service"},
         payload=payload,
+        span_key=span_key,
+        parent_key=parent_key,
     )

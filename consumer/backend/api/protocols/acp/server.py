@@ -31,6 +31,11 @@ from workspace.workspaces import (
     user_can_access_workspace,
     workspace_scope,
 )
+from integration.observability.trace_context import (
+    bind_otel_context,
+    bind_otel_traceparent,
+    capture_otel_context,
+)
 
 from api.protocols.acp.config import get_config, ACPConfig
 from api.protocols.acp.models import MessagePartType, MessageRole, RunResponse, RunStatus
@@ -760,7 +765,10 @@ def execute_run(run_id: str):
         _persist_to_runstore(run_id, entry)
 
         try:
-            with workspace_scope(workspace_id):
+            with workspace_scope(workspace_id), bind_otel_traceparent(
+                str(request.headers.get("traceparent") or "").strip(),
+                strict=False,
+            ):
                 orch = _get_orchestrator()
                 final_answer = ""
                 final_status = RunStatus.COMPLETED
@@ -873,6 +881,7 @@ def _stream_orchestrator_events(
     workspace_id: str,
     session_id: str,
     user_id: str,
+    traceparent: str = "",
 ) -> Generator[str, None, None]:
     """核心流式生成器：调用 Orchestrator.run() 并将事件映射为 ACP SSE。"""
     suppress_keywords = _suppress_keywords_from_runtime_config(workspace_id)
@@ -887,7 +896,10 @@ def _stream_orchestrator_events(
 
     try:
         try:
-            with workspace_scope(workspace_id):
+            with workspace_scope(workspace_id), bind_otel_traceparent(
+                traceparent,
+                strict=False,
+            ):
                 orch = _get_orchestrator()
                 for orch_event in orch.run(
                     user_request=user_query,
@@ -970,6 +982,14 @@ def _stream_orchestrator_events(
         _persist_to_runstore(run_id, entry)
 
 
+def _stream_with_otel_context(
+    events: Generator[str, None, None],
+    otel_context: Any,
+) -> Generator[str, None, None]:
+    with bind_otel_context(otel_context):
+        yield from events
+
+
 @acp_bp.route("/runs/<run_id>/stream", methods=["POST"])
 @require_acp_auth()
 def stream_run(run_id: str):
@@ -1001,14 +1021,18 @@ def stream_run(run_id: str):
         _persist_to_runstore(run_id, entry)
 
         return Response(
-            _stream_orchestrator_events(
-                run_id=run_id,
-                entry=entry,
-                user_query=user_query,
-                user_context=user_context,
-                workspace_id=workspace_id,
-                session_id=session_id,
-                user_id=current_user.username if current_user else "anonymous",
+            _stream_with_otel_context(
+                _stream_orchestrator_events(
+                    run_id=run_id,
+                    entry=entry,
+                    user_query=user_query,
+                    user_context=user_context,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    user_id=current_user.username if current_user else "anonymous",
+                    traceparent=str(request.headers.get("traceparent") or "").strip(),
+                ),
+                capture_otel_context(),
             ),
             mimetype="text/event-stream",
             headers={
@@ -1083,14 +1107,18 @@ def execute_stream():
         _persist_to_runstore(run_id, entry)
 
         return Response(
-            _stream_orchestrator_events(
-                run_id=run_id,
-                entry=entry,
-                user_query=user_query,
-                user_context=user_context,
-                workspace_id=workspace_id,
-                session_id=session_id,
-                user_id=current_user.username if current_user else "anonymous",
+            _stream_with_otel_context(
+                _stream_orchestrator_events(
+                    run_id=run_id,
+                    entry=entry,
+                    user_query=user_query,
+                    user_context=user_context,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    user_id=current_user.username if current_user else "anonymous",
+                    traceparent=str(request.headers.get("traceparent") or "").strip(),
+                ),
+                capture_otel_context(),
             ),
             mimetype="text/event-stream",
             headers={
@@ -1147,7 +1175,10 @@ def respond_to_await(run_id: str):
         _persist_to_runstore(run_id, entry)
 
         try:
-            with workspace_scope(workspace_id):
+            with workspace_scope(workspace_id), bind_otel_traceparent(
+                str(request.headers.get("traceparent") or "").strip(),
+                strict=False,
+            ):
                 orch = _get_orchestrator()
                 final_answer = ""
                 final_status = RunStatus.COMPLETED
@@ -1297,14 +1328,18 @@ def interact_stream(run_id: str):
         _persist_to_runstore(run_id, entry)
 
         return Response(
-            _stream_orchestrator_events(
-                run_id=run_id,
-                entry=entry,
-                user_query=user_response,
-                user_context=user_context,
-                workspace_id=workspace_id,
-                session_id=session_id,
-                user_id=current_user.username if current_user else "anonymous",
+            _stream_with_otel_context(
+                _stream_orchestrator_events(
+                    run_id=run_id,
+                    entry=entry,
+                    user_query=user_response,
+                    user_context=user_context,
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    user_id=current_user.username if current_user else "anonymous",
+                    traceparent=str(request.headers.get("traceparent") or "").strip(),
+                ),
+                capture_otel_context(),
             ),
             mimetype="text/event-stream",
             headers={

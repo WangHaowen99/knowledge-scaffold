@@ -378,7 +378,7 @@ export default function AppShell() {
             {surface === 'observability' && !workspaceSurfaceBlocked && (
               <Suspense fallback={<div className="surface-loading"><SkeletonState rows={7} label="正在加载可观测性" /></div>}>
                 <ObservabilityFeature view={observabilityView} sessionId={chat.currentChatId} user={user}
-                  can={can} workspaces={workspaces} onBack={() => setSurface('chat')} />
+                  can={can} workspaceId={workspaceId} workspaces={workspaces} onBack={() => setSurface('chat')} />
               </Suspense>
             )}
           </div>

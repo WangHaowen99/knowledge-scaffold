@@ -16,6 +16,11 @@ from api.auth.auth import get_current_user, require_auth
 from utils.identifiers import validate_session_id
 from utils.logging import get_logger
 from workspace.workspaces import enforce_workspace_access, workspace_scope
+from integration.observability.trace_context import (
+    bind_otel_context,
+    bind_otel_traceparent,
+    capture_otel_context,
+)
 
 
 logger = get_logger("routes.a2a")
@@ -54,6 +59,7 @@ def _build_task_service() -> A2ATaskService:
         user_id=(current_user.username if current_user else None),
         workspace_id=workspace_id,
         flask_app=current_app._get_current_object(),
+        traceparent=str(request.headers.get("traceparent") or "").strip(),
     )
 
 
@@ -306,21 +312,27 @@ def create_task_and_stream():
     workspace_id = _get_request_workspace_id()
     if task_id and orchestrator.run_store.get_run(task_id) is not None:
         return jsonify({"error": "task_id already exists"}), 400
+    request_traceparent = str(request.headers.get("traceparent") or "").strip()
+    request_otel_context = capture_otel_context()
 
     def generate():
         try:
-            with workspace_scope(workspace_id):
-                for event in orchestrator.run(
-                    user_request=message,
-                    user_context=context,
-                    session_id=session_id,
-                    user_id=(current_user.username if current_user else None),
-                    workspace_id=workspace_id,
-                    requested_run_id=task_id,
+            with bind_otel_context(request_otel_context):
+                with workspace_scope(workspace_id), bind_otel_traceparent(
+                    request_traceparent,
+                    strict=False,
                 ):
-                    update = map_agent_v2_event_to_a2a_update(event)
-                    yield "event: task.update\n"
-                    yield "data: {}\n\n".format(json.dumps(update, ensure_ascii=False))
+                    for event in orchestrator.run(
+                        user_request=message,
+                        user_context=context,
+                        session_id=session_id,
+                        user_id=(current_user.username if current_user else None),
+                        workspace_id=workspace_id,
+                        requested_run_id=task_id,
+                    ):
+                        update = map_agent_v2_event_to_a2a_update(event)
+                        yield "event: task.update\n"
+                        yield "data: {}\n\n".format(json.dumps(update, ensure_ascii=False))
         except Exception as exc:
             logger.exception("A2A stream failed")
             now_ms = int(time.time() * 1000)

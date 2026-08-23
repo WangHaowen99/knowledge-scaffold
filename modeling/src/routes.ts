@@ -44,6 +44,8 @@ import {
   getLlmSettings,
   getLlmSource,
   getSetting,
+  getTaskLlmSettings,
+  getTaskLlmSource,
   getUserLlmSetting,
   setSetting,
   updateUserLlmSettings,
@@ -432,6 +434,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.get('/api/settings', async (req) => {
       const username = req.user!.username;
       const llm = getLlmSettings(username);
+      const taskLlm = getTaskLlmSettings(username);
       const binding = getEvalBindingDefaults();
       return {
         consumerApiUrl: getConsumerApiUrl(),
@@ -444,7 +447,16 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
           personalApiKeySet: getUserLlmSetting(username, 'api_key') !== null,
           source: getLlmSource(username),
           userIsolated: true,
-          platformDefaultAvailable: isPlatformLlmDefaultAvailable(),
+          platformDefaultAvailable: isPlatformLlmDefaultAvailable('main'),
+        },
+        taskLlm: {
+          baseUrl: taskLlm.baseUrl, model: taskLlm.model,
+          maxTokens: taskLlm.maxTokens, contextWindow: taskLlm.contextWindow,
+          apiKeySet: !!taskLlm.apiKey,
+          personalApiKeySet: getUserLlmSetting(username, 'api_key', 'task') !== null,
+          source: getTaskLlmSource(username),
+          userIsolated: true,
+          platformDefaultAvailable: isPlatformLlmDefaultAvailable('task'),
         },
         evalBinding: binding,
       };
@@ -453,6 +465,10 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     r.put('/api/settings', async (req, reply) => {
       const b = (req.body ?? {}) as Record<string, unknown>;
       const username = req.user!.username;
+      if (b.llmPurpose !== undefined && b.llmPurpose !== 'main' && b.llmPurpose !== 'task') {
+        return reply.code(400).send({ error: 'llmPurpose 必须是 main 或 task' });
+      }
+      const llmPurpose = b.llmPurpose === 'task' ? 'task' : 'main';
       const put = (key: string, v: unknown) => {
         if (v === undefined) return; // 未提交 = 不修改
         const s = String(v).trim();
@@ -476,7 +492,7 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
             providerClear: b.llmProviderClear === true,
             maxTokens: b.llmMaxTokens === undefined ? undefined : String(b.llmMaxTokens),
             contextWindow: b.llmContextWindow === undefined ? undefined : String(b.llmContextWindow),
-          });
+          }, llmPurpose);
         } catch (error) {
           if (error instanceof UserLlmSettingsValidationError) {
             return reply.code(400).send({ error: error.message });
@@ -493,8 +509,15 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     });
 
     r.post('/api/settings/llm/sync-default', async (req, reply) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (body.purpose !== undefined && body.purpose !== 'main' && body.purpose !== 'task') {
+        return reply.code(400).send({ error: 'purpose 必须是 main 或 task' });
+      }
       try {
-        syncUserLlmToPlatformDefault(req.user!.username);
+        syncUserLlmToPlatformDefault(
+          req.user!.username,
+          body.purpose === 'main' || body.purpose === 'task' ? body.purpose : undefined,
+        );
         return { ok: true };
       } catch (error) {
         if (error instanceof LlmDefaultSyncError) {
@@ -505,17 +528,21 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
     });
 
     // LLM 有效性测试：最小 chat/completions 调用；失败时返回原始错误（供排障）
-    r.post('/api/settings/llm/test', async (req) => {
+    r.post('/api/settings/llm/test', async (req, reply) => {
       const b = (req.body ?? {}) as Record<string, string>;
       const username = req.user!.username;
-      const saved = getLlmSettings(username);
+      if (b.purpose !== undefined && b.purpose !== 'main' && b.purpose !== 'task') {
+        return reply.code(400).send({ error: 'purpose 必须是 main 或 task' });
+      }
+      const purpose = b.purpose === 'task' ? 'task' : 'main';
+      const saved = purpose === 'task' ? getTaskLlmSettings(username) : getLlmSettings(username);
       const baseUrl = b.baseUrl || saved.baseUrl;
       const model = b.model || saved.model;
       const providerChanged = baseUrl.trim().replace(/\/+$/, '') !== saved.baseUrl.trim().replace(/\/+$/, '')
         || model.trim() !== saved.model.trim();
       // 编辑快照/部署 provider 时不得把其 Key 带到新端点；已有个人 Key 则按个人草稿保留语义复用。
       const apiKey = b.apiKey || (providerChanged
-        ? (getUserLlmSetting(username, 'api_key') ?? '')
+        ? (getUserLlmSetting(username, 'api_key', purpose) ?? '')
         : saved.apiKey);
       return testLlmConnection({
         baseUrl,

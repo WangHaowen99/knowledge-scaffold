@@ -31,6 +31,10 @@ class _DirectScriptTrace:
         self._script_path = script_path
         self._finished = False
 
+    @property
+    def span_key(self) -> str:
+        return str(self._runtime_trace.tool_span_key or "")
+
     def record_result(self, *, output: str, is_error: bool, elapsed_ms: int) -> None:
         self._finished = True
         self._runtime_trace.finish_tool(
@@ -169,6 +173,32 @@ class DirectExecutionRuntimeTrace:
 
     def mark_failed(self) -> None:
         self._failed = True
+
+    @property
+    def tool_span_key(self) -> Optional[str]:
+        return self._tool_span_key
+
+    def record_preflight_failure(self, *, message: str, error_code: str) -> str:
+        """End one failed tool span for the existing preflight failure event."""
+        self._tool_span_key = "tool:direct:preflight"
+        self._emit(
+            RuntimeEventType.TOOL_FINISHED,
+            span_key=self._tool_span_key,
+            parent_key=self.loop_span_key,
+            payload={
+                "tool_name": "execute_script",
+                "display_name": "execute_script:preflight",
+                "tool_call_id": "direct",
+                "status": RuntimeStatus.ERROR,
+                "caller": "direct",
+                "iteration": 0,
+                "elapsed_ms": 0,
+                "error_type": error_code,
+                "error_message": message,
+            },
+        )
+        self.mark_failed()
+        return self._tool_span_key
 
     def start_loop(self, *, ontology_id: str, operation_key: str) -> None:
         """Emit AGENT_LOOP_STARTED event."""

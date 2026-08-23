@@ -43,6 +43,28 @@ class RuntimeEventDispatcher:
                 logger.warning("Runtime event sink failed to emit event", exc_info=True)
         return accepted
 
+    def release_run(self, run_id: str) -> None:
+        for sink in self._sinks:
+            release_run = getattr(sink.observer, "release_run", None)
+            if not callable(release_run):
+                continue
+            try:
+                release_run(run_id)
+            except Exception:
+                logger.warning("Runtime event sink failed to release run", exc_info=True)
+
+    def reserve_run(self, run_id: str, workspace_id: str) -> bool:
+        reserved = False
+        for sink in self._sinks:
+            reserve_run = getattr(sink.observer, "reserve_run", None)
+            if not callable(reserve_run):
+                continue
+            try:
+                reserved = bool(reserve_run(run_id, workspace_id)) or reserved
+            except Exception:
+                logger.warning("Runtime event sink failed to reserve run", exc_info=True)
+        return reserved
+
     def close(self, timeout: float = 1.0) -> None:
         for sink in self._sinks:
             if not sink.close_on_close:

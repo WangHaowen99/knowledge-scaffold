@@ -610,21 +610,26 @@ def test_direct_runner_rejects_script_outside_current_ontology_scripts(
         },
     )
 
-    _events, result = direct_runner_module.run_direct_script(
+    observer = _DirectTraceObserver("direct-preflight-router")
+    events, result = _run_direct_trace(
         decision,
-        RuntimeContext(
-            session_id="session-1",
-            run_id="run-1",
-            turn_id=1,
-            workspace_id="workspace-a",
-            selected_ontology_id="demo",
-        ),
-        project_root=str(project_root),
+        run_id="run-outside-script",
+        observer=observer,
+        project_root=project_root,
     )
 
     assert result.status == "error"
     assert "outside ontology scripts" in result.output.lower()
     assert executed == []
+    assert [event["data"]["type"] for event in events] == ["tool.finished"]
+    runtime_tools = [
+        event
+        for event in observer.events
+        if event.type in {"tool_batch.started", "tool.started", "tool.finished"}
+    ]
+    assert [event.type for event in runtime_tools] == ["tool.finished"]
+    assert runtime_tools[0].payload["status"] == "error"
+    assert events[0]["data"]["span_id"] == runtime_tools[0].span_id
 
 
 def test_direct_runner_redacts_unexpected_exception_from_result_and_events(
@@ -687,6 +692,49 @@ def test_direct_runner_redacts_unexpected_exception_from_result_and_events(
     assert "direct-runner-secret" not in str(result.error)
 
 
+class _DirectTraceObserver:
+    enabled = True
+
+    def __init__(self, router_id):
+        self.router_id = router_id
+        self.events = []
+
+    def emit(self, event):
+        from integration.observability.identity import record_runtime_event
+
+        trace_id, span_id, parent_span_id = record_runtime_event(
+            event,
+            router_id=self.router_id,
+            workspace_id="workspace-a",
+        )
+        object.__setattr__(event, "trace_id", trace_id)
+        object.__setattr__(event, "span_id", span_id)
+        object.__setattr__(event, "parent_span_id", parent_span_id)
+        self.events.append(event)
+
+
+def _run_direct_trace(decision, *, run_id, observer, project_root=None):
+    from integration.observability.identity import clear_runtime_trace_identity
+
+    try:
+        kwargs = {"observer": observer}
+        if project_root is not None:
+            kwargs["project_root"] = str(project_root)
+        return direct_runner_module.run_direct_script(
+            decision,
+            RuntimeContext(
+                session_id="session-1",
+                run_id=run_id,
+                turn_id=1,
+                workspace_id="workspace-a",
+                selected_ontology_id="demo",
+            ),
+            **kwargs,
+        )
+    finally:
+        clear_runtime_trace_identity(run_id)
+
+
 def test_direct_runner_fails_before_required_business_data_script(
     monkeypatch,
     tmp_path,
@@ -697,7 +745,6 @@ def test_direct_runner_fails_before_required_business_data_script(
     scripts_dir.mkdir(parents=True)
     script = scripts_dir / "operation.py"
     script.write_text("print('unused')\n", encoding="utf-8")
-
     monkeypatch.setattr(
         direct_runner_module,
         "get_ontology_manifest",
@@ -806,3 +853,73 @@ def test_direct_runner_discards_success_stderr_from_model_output(monkeypatch, tm
 
     assert result.status == "success"
     assert captured["include_stderr_on_success"] is False
+
+
+def test_direct_runner_env_failure_preserves_tool_started_and_span_identity(
+    monkeypatch,
+    tmp_path,
+):
+    from integration.observability import RuntimeEventType
+
+    project_root = tmp_path / "runtime"
+    ontology_dir = project_root / "ontologies" / "demo"
+    script = ontology_dir / "scripts" / "operation.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        direct_runner_module,
+        "get_ontology_manifest",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id="demo", ontology_dir=str(ontology_dir)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        direct_runner_module,
+        "_build_script_env_overrides",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("env build failed")),
+    )
+    executed = []
+    monkeypatch.setattr(
+        direct_runner_module,
+        "handle_execute_script_path",
+        lambda **kwargs: executed.append(kwargs) or "done",
+    )
+    observer = _DirectTraceObserver("direct-env-failure-router")
+    events, result = _run_direct_trace(
+        RouteDecision(
+            route="direct_script",
+            reason="test",
+            confidence=1.0,
+            ontology_id="demo",
+            operation_key="run",
+            script_entry={
+                "_script_path": "scripts/operation.py",
+                "arguments": [],
+                "parameters": [],
+            },
+        ),
+        run_id="run-direct-env-failure",
+        observer=observer,
+        project_root=project_root,
+    )
+
+    sse_tools = [
+        event["data"]
+        for event in events
+        if event["data"]["type"] in {"tool.started", "tool.finished"}
+    ]
+    runtime_tools = [
+        event
+        for event in observer.events
+        if event.type in {RuntimeEventType.TOOL_STARTED, RuntimeEventType.TOOL_FINISHED}
+    ]
+    assert result.status == "error"
+    assert executed == []
+    assert [event["type"] for event in sse_tools] == ["tool.started", "tool.finished"]
+    assert [event.type for event in runtime_tools] == [
+        RuntimeEventType.TOOL_STARTED,
+        RuntimeEventType.TOOL_FINISHED,
+    ]
+    assert sse_tools[0]["span_id"] == sse_tools[1]["span_id"]
+    assert runtime_tools[0].span_id == runtime_tools[1].span_id == sse_tools[0]["span_id"]

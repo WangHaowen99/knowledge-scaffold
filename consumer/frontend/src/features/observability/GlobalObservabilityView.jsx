@@ -52,7 +52,7 @@ const WINDOW_PRESETS = [
 ];
 const PAGE_SIZE = 50;
 
-export default function GlobalObservabilityView({ workspaces = [], onBack, request }) {
+export default function GlobalObservabilityView({ workspaceId = '', workspaces = [], onBack, request }) {
   const [windowId, setWindowId] = useState('24h');
   const [windowEndMs, setWindowEndMs] = useState(() => Date.now());
   const [draftFilters, setDraftFilters] = useState({ ...EMPTY_OBSERVABILITY_FILTERS });
@@ -109,14 +109,20 @@ export default function GlobalObservabilityView({ workspaces = [], onBack, reque
   useEffect(() => {
     const controller = new AbortController();
     const loadRuntime = async () => {
+      if (!workspaceId) {
+        setRuntime(getUnknownLocalObservabilityRuntime());
+        return;
+      }
       try {
         const payload = await requestObservabilityJson(
           request,
-          '/api/system-config',
+          `/agentic/workspaces/${encodeURIComponent(workspaceId)}/observability-config`,
           { signal: controller.signal },
           '读取观测配置失败',
         );
-        if (!controller.signal.aborted) setRuntime(getLocalObservabilityRuntime(payload));
+        if (!controller.signal.aborted) {
+          setRuntime(getLocalObservabilityRuntime({ observability: payload }));
+        }
       } catch (nextError) {
         if (nextError?.name !== 'AbortError' && !controller.signal.aborted) {
           setRuntime(getFailedLocalObservabilityRuntime(nextError.message));
@@ -125,7 +131,7 @@ export default function GlobalObservabilityView({ workspaces = [], onBack, reque
     };
     loadRuntime();
     return () => controller.abort();
-  }, [request, runtimeRefreshKey]);
+  }, [request, runtimeRefreshKey, workspaceId]);
 
   const selectedRun = findRunById(selectedRunId, overview?.slow_runs, runs?.runs);
   const selectedWorkspaceId = selectedRun?.workspace_id || filters.workspace_id || '';

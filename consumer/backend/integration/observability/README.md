@@ -1,6 +1,6 @@
 # 可观测性运行时说明
 
-本文说明 `backend/agentic/observability` 的职责边界。核心原则是：业务执行代码只表达“发生了什么”，不直接理解本地文件、Langfuse、trace id 或 SDK 生命周期。
+本文说明 `backend/integration/observability` 的职责边界。核心原则是：业务执行代码只表达“发生了什么”，不直接理解本地文件、Langfuse、trace id 或 SDK 生命周期。
 
 ## 事件流
 
@@ -18,9 +18,11 @@ RuntimeEventDispatcher
         |
         +--> WorkspaceObservabilityRouter
         |       |
-        |       +--> ObservabilityBus(LocalPerfExporter) -> workspace 本地 JSONL perf record
-        |       |
-        |       +--> ObservabilityBus(LangfuseExporter) -> LangfuseTraceAdapter -> Langfuse SDK client
+        |       +--> ObservabilityBus(_WorkspaceExporterFanout)
+        |               |
+        |               +--> mode=local -> LocalPerfExporter -> workspace 本地 OpenTelemetry JSONL record
+        |               +--> mode=langfuse -> LangfuseExporter -> LangfuseTraceAdapter -> Langfuse SDK client
+        |               +--> 两种 mode -> SpeedscopeExporter -> 会话级 .speedscope.json
         |
         +--> Platform manager observer
                 |
@@ -33,10 +35,11 @@ RuntimeEventDispatcher
 .onto-runtime/workspaces/<workspace_id>/observability_config.json
 ```
 
-每个 workspace 独立选择输出目标：
+每个 workspace 继续选择一个观测数据输出目标：
 
-- `local`：异步写该 workspace 下的本地性能 JSONL。
-- `langfuse`：使用该 workspace 的 Langfuse key/base URL 写入对应 Langfuse project。
+- `mode=local`：异步写该 workspace 下的本地 OpenTelemetry JSONL。
+- `mode=langfuse`：使用该 workspace 的 Langfuse 地址和密钥发送到对应 Langfuse project，不同时写本地记录。
+- 两种模式都生成 Speedscope 会话文件。
 - `enabled=false`：该 workspace 不输出 local/Langfuse 观测数据。
 
 `enabled=false` 只影响 workspace 观测，不影响 onto-platform connector。PlatformExporter 的配置和生命周期由 `backend/agentic/platform/manager.py` 独立管理，继续读取 `.onto-runtime/config/platform_config.json`。
@@ -44,20 +47,20 @@ RuntimeEventDispatcher
 本地文件模式通过 workspace 配置中的 `local.retention_days` 按日期分区老化日志，默认保留最近 30 天。新 perf 文件只写入：
 
 ```text
-.onto-runtime/workspaces/<workspace_id>/runtime/observability/agent_perf-YYYY-MM-DD.log
+.onto-runtime/workspaces/<workspace_id>/runtime/observability/otel_trace-YYYY-MM-DD.log
 ```
 
 旧 `logs/agent_perf-*` 不迁移、不读取。
 
 ## 本地性能分析
 
-`mode=local` 写出的新 schema JSONL 可在系统内分析：
+`mode=local` 写出的本地 OpenTelemetry JSONL 可在系统内分析：
 
 - 聊天区“性能分析”只读取当前会话关联到的本地 perf 记录。
 - 管理员用户菜单“本地观测分析”读取 workspace perf 目录内的保留窗口记录，可按工作空间、状态、模型供应商和 Agent 模式过滤；不指定 workspace 时聚合所有 workspace。
 - 会话页和管理员页共用 run 下钻，展示耗时拆分、iteration、LLM、工具、runtime phase 和事件时间线。
 
-分析读路径位于 `backend/agentic/perf_analysis/`，与 exporter 写路径分离。它只接受新的 `schema_version=1` local perf envelope，按时间窗口扫描 workspace 日期分片，不读取 Langfuse 数据，也不兼容旧 direct perf logger 或旧 `logs/agent_perf-*` 历史记录。
+分析读路径位于 `backend/utils/perf_analysis/`，与 exporter 写路径分离。它只接受新的 `schema_version=2` OpenTelemetry envelope，按时间窗口扫描 workspace 日期分片，不读取 Langfuse 数据，也不兼容旧 direct perf logger 或旧 `logs/agent_perf-*` 历史记录。
 
 ## 分层职责
 
@@ -262,4 +265,4 @@ RuntimeEventDispatcher
 - 只有需要理解 SDK 调用、数据清洗或 flush/close 行为时，再看 `LangfuseTraceAdapter`。
 ## Speedscope session traces
 
-Workspace observability is the only Speedscope control plane. `enabled=false` writes no local perf, Langfuse, or Speedscope data. With `enabled=true`, both `mode=local` and `mode=langfuse` emit the workspace session's evented `.speedscope.json` trace. The trace is stored below `runtime/observability/speedscope/<user>/` and uses `speedscope.retention_days` for retention. The session download endpoint is `GET /agentic/sessions/<session_id>/performance/speedscope`; regular users are limited to their own sessions and workspace admins may download any session in the workspace.
+Workspace observability is the only Speedscope control plane. `enabled=false` writes no local OpenTelemetry, Langfuse, or Speedscope data. With `enabled=true`, both `mode=local` and `mode=langfuse` generate the workspace session's evented `.speedscope.json` trace from unified spans and events. The trace is stored below `runtime/observability/speedscope/<user>/` and uses `speedscope.retention_days` for retention. The session download endpoint is `GET /agentic/sessions/<session_id>/performance/speedscope`; regular users are limited to their own sessions and workspace admins may download any session in the workspace.

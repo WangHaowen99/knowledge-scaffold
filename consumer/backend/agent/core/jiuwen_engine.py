@@ -729,6 +729,7 @@ class JiuwenReactLoopEngine:
                         caller=caller,
                         event_writer=event_writer,
                         iteration_provider=start_llm_iteration,
+                        llm_call_index_provider=model_trace_bridge.current_call_index,
                         cancel_event=cancel_event,
                         token_callback=kwargs.get("token_callback"),
                         reasoning_summary_callback=kwargs.get("reasoning_summary_callback"),
@@ -957,6 +958,7 @@ class JiuwenReactLoopEngine:
         caller: str = "main",
         event_writer: Optional[Any] = None,
         iteration_provider: Optional[Any] = None,
+        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event] = None,
         token_callback: Optional[Any] = None,
         reasoning_summary_callback: Optional[Any] = None,
@@ -996,6 +998,7 @@ class JiuwenReactLoopEngine:
                         caller=caller,
                         event_writer=event_writer,
                         iteration_provider=iteration_provider,
+                        llm_call_index_provider=llm_call_index_provider,
                         cancel_event=cancel_event,
                         token_callback=token_callback,
                         reasoning_summary_callback=reasoning_summary_callback,
@@ -1025,6 +1028,7 @@ class JiuwenReactLoopEngine:
                         caller=caller,
                         event_writer=event_writer,
                         iteration_provider=iteration_provider,
+                        llm_call_index_provider=llm_call_index_provider,
                         cancel_event=cancel_event,
                         token_callback=token_callback,
                         reasoning_summary_callback=reasoning_summary_callback,
@@ -1071,6 +1075,7 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
+        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event],
         token_callback: Optional[Any],
         reasoning_summary_callback: Optional[Any],
@@ -1090,6 +1095,7 @@ class JiuwenReactLoopEngine:
                 caller=caller,
                 event_writer=event_writer,
                 iteration_provider=iteration_provider,
+                llm_call_index_provider=llm_call_index_provider,
                 cancel_event=cancel_event,
                 token_callback=token_callback,
                 reasoning_summary_callback=reasoning_summary_callback,
@@ -1120,6 +1126,7 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
+        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event],
         token_callback: Optional[Any],
         reasoning_summary_callback: Optional[Any],
@@ -1145,6 +1152,7 @@ class JiuwenReactLoopEngine:
                 caller=caller,
                 event_writer=event_writer,
                 iteration_provider=iteration_provider,
+                llm_call_index_provider=llm_call_index_provider,
                 cancel_event=cancel_event,
                 token_callback=token_callback,
                 reasoning_summary_callback=reasoning_summary_callback,
@@ -1175,6 +1183,7 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
+        llm_call_index_provider: Optional[Any] = None,
         cancel_event: Optional[threading.Event],
         token_callback: Optional[Any],
         reasoning_summary_callback: Optional[Any],
@@ -1196,6 +1205,7 @@ class JiuwenReactLoopEngine:
                 caller=caller,
                 event_writer=event_writer,
                 iteration_provider=iteration_provider,
+                llm_call_index_provider=llm_call_index_provider,
                 stream_state=stream_state,
                 token_callback=token_callback,
                 event_source_node=event_source_node,
@@ -1209,11 +1219,17 @@ class JiuwenReactLoopEngine:
         if stream_state.get("reasoning_block_id") and not final_result.get("reasoning_block_id"):
             final_result["reasoning_block_id"] = stream_state["reasoning_block_id"]
         if stream_state.get("reasoning") and stream_state.get("reasoning_block_id"):
+            summary_iteration = int(iteration_provider()) if callable(iteration_provider) else 1
             self._dispatch_reasoning_summary(
                 state or {},
                 caller=caller,
                 event_writer=event_writer,
-                iteration=(int(iteration_provider()) if callable(iteration_provider) else 1),
+                iteration=summary_iteration,
+                call_index=(
+                    int(llm_call_index_provider(summary_iteration))
+                    if callable(llm_call_index_provider)
+                    else 1
+                ),
                 reasoning_text=stream_state["reasoning"],
                 reasoning_block_id=stream_state["reasoning_block_id"],
                 reasoning_summary_callback=reasoning_summary_callback,
@@ -1229,6 +1245,7 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration_provider: Optional[Any],
+        llm_call_index_provider: Optional[Any] = None,
         stream_state: Optional[Dict[str, str]] = None,
         token_callback: Optional[Any] = None,
         event_source_node: Optional[str] = None,
@@ -1239,22 +1256,22 @@ class JiuwenReactLoopEngine:
             content = str(payload.get("content") or "")
             if content:
                 channel = "reasoning" if chunk_type == "llm_reasoning" else "content"
-                meta = None
+                iteration = int(iteration_provider()) if callable(iteration_provider) else 1
+                call_index = (
+                    int(llm_call_index_provider(iteration))
+                    if callable(llm_call_index_provider)
+                    else 1
+                )
+                meta = {"call_index": max(1, call_index)}
                 if channel == "reasoning":
-                    meta = {
-                        "reasoning_block_id": _ensure_reasoning_block_id(stream_state),
-                    }
+                    meta["reasoning_block_id"] = _ensure_reasoning_block_id(stream_state)
                 self._emit_token_delta(
                     state or {},
                     caller=caller,
                     event_writer=event_writer,
                     channel=channel,
                     text=content,
-                    iteration=(
-                        int(iteration_provider())
-                        if callable(iteration_provider)
-                        else 1
-                    ),
+                    iteration=iteration,
                     token_callback=token_callback,
                     meta=meta,
                     event_source_node=event_source_node,
@@ -1267,18 +1284,21 @@ class JiuwenReactLoopEngine:
             result_type = str(payload.get("result_type") or "answer")
             reasoning_content = str(payload.get("reasoning_content") or payload.get("reasoning") or "")
             if result_type.strip().lower() != "error" and _should_emit_answer_delta(stream_state, output):
+                iteration = int(iteration_provider()) if callable(iteration_provider) else 1
+                call_index = (
+                    int(llm_call_index_provider(iteration))
+                    if callable(llm_call_index_provider)
+                    else 1
+                )
                 self._emit_token_delta(
                     state or {},
                     caller=caller,
                     event_writer=event_writer,
                     channel="content",
                     text=output,
-                    iteration=(
-                        int(iteration_provider())
-                        if callable(iteration_provider)
-                        else 1
-                    ),
+                    iteration=iteration,
                     token_callback=token_callback,
+                    meta={"call_index": max(1, call_index)},
                     event_source_node=event_source_node,
                 )
                 _record_streamed_text(stream_state, "content", output)
@@ -1321,6 +1341,7 @@ class JiuwenReactLoopEngine:
         caller: str,
         event_writer: Optional[Any],
         iteration: int,
+        call_index: int,
         reasoning_text: str,
         reasoning_block_id: str,
         reasoning_summary_callback: Optional[Any] = None,
@@ -1339,6 +1360,7 @@ class JiuwenReactLoopEngine:
                 summary=summary,
                 reasoning_summary_callback=reasoning_summary_callback,
                 source_node=event_source_node,
+                call_index=call_index,
             )
 
         try:
