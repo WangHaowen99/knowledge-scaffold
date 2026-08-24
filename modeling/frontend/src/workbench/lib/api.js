@@ -40,6 +40,9 @@ export const listEvaluationTestcases = (id) => api(`${P(id)}/testcases`);
 export const addEvaluationTestcase = (id, question, groundTruth) => api(`${P(id)}/testcases?workflow=agent`, {
   method: 'POST', body: JSON.stringify({ question, groundTruth }),
 });
+export const addEvaluationTestcases = (id, cases) => api(`${P(id)}/testcases/batch?workflow=agent`, {
+  method: 'POST', body: JSON.stringify({ cases }),
+});
 export const updateEvaluationTestcase = (id, testcaseId, patch) => api(
   `${P(id)}/testcases/${encodeURIComponent(testcaseId)}?workflow=agent`,
   { method: 'PATCH', body: JSON.stringify(patch) },
@@ -52,6 +55,37 @@ export const listEvaluationRounds = (id) => api(`${P(id)}/rounds`);
 export const getEvaluationRound = (id, roundId) => api(
   `${P(id)}/rounds/${encodeURIComponent(roundId)}`,
 );
+export const diagnoseEvaluation = (id, roundId) => api(`${P(id)}/optimize/diagnose`, {
+  method: 'POST', body: JSON.stringify({ roundId }),
+});
+export const listEvaluationDiagnoses = (id, roundId) => api(
+  `${P(id)}/optimize/diagnoses?roundId=${encodeURIComponent(roundId)}`,
+);
+export const confirmEvaluationDiagnoses = (id, roundId, diagnosisIds) => api(
+  `${P(id)}/optimize/diagnoses/plan-repair`,
+  { method: 'POST', body: JSON.stringify({ roundId, diagnosisIds }) },
+);
+export const proposeEvaluationOptimizations = (id, roundId) => api(`${P(id)}/optimize/propose`, {
+  method: 'POST', body: JSON.stringify({ roundId }),
+});
+export const listEvaluationSuggestions = (id, roundId) => api(
+  `${P(id)}/optimize/suggestions?roundId=${encodeURIComponent(roundId)}`,
+);
+export const updateEvaluationSuggestion = (id, suggestionId, input) => api(
+  `${P(id)}/optimize/suggestions/${encodeURIComponent(suggestionId)}`,
+  { method: 'PATCH', body: JSON.stringify(input) },
+);
+export const addManualEvaluationSuggestion = (id, input) => api(
+  `${P(id)}/optimize/suggestions/manual`,
+  { method: 'POST', body: JSON.stringify(input) },
+);
+export const applyEvaluationSuggestions = (id, suggestionIds) => api(`${P(id)}/optimize/apply`, {
+  method: 'POST', body: JSON.stringify({ suggestionIds }),
+});
+export const getEvaluationOptimizationStatus = (id) => api(`${P(id)}/optimize/apply-status`);
+export const reviewEvaluationOptimization = (id, taskId, action, note) => api(`${P(id)}/optimize/apply-review`, {
+  method: 'POST', body: JSON.stringify({ taskId, action, note }),
+});
 export const updateConfirmPolicy = (id, tier, mode) => api(`${P(id)}/agent/confirm-policy`, {
   method: 'PUT', body: JSON.stringify({ tier, mode }),
 });

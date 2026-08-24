@@ -2946,3 +2946,60 @@ test('评测发现的知识包缺陷可以回流成建模修缮任务', async ()
     ['open_optimization', 'review_knowledge_files'],
   );
 });
+
+test('专家只能基于已确认根因新增和编辑待处理优化建议', async () => {
+  const token = await signToken();
+  const headers = { authorization: `Bearer ${token}` };
+  const created = await app.inject({
+    method: 'POST', url: '/api/projects', headers, payload: { name: '专家编辑优化建议' },
+  });
+  const projectId = created.json().project.id;
+  await app.inject({ method: 'GET', url: `/api/projects/${projectId}/session`, headers });
+  const [{ getPackageArtifactStore }, m3repo, diagnosisRepo] = await Promise.all([
+    import('../src/artifacts/runtime.js'),
+    import('../src/workflow/m3-repo.js'),
+    import('../src/evaluation/failure-diagnosis-repo.js'),
+  ]);
+  const artifactStore = getPackageArtifactStore();
+  const initial = await artifactStore.ensureProject(projectId);
+  const current = await artifactStore.savePackageVersion(projectId, {
+    expectedRevision: initial.oid,
+    spec: {
+      id: 'editable-optimization', name: '专家编辑优化建议', description: '测试优化建议编辑',
+      version: '0.1.0', status: 'review', language: 'zh-CN', defaultProviderAlias: 'data',
+      objects: [], operations: [],
+    },
+    coverage: { covered: [], uncovered: [] },
+    action: { cause: 'test', summary: '建立优化测试知识包', actorKind: 'user', actorName: 'alice' },
+  });
+  const round = m3repo.createRound(projectId, '0.1.0', 1, current.revision.oid);
+  m3repo.finishRound(round.id, 'done');
+  const [diagnosis] = diagnosisRepo.replaceFailureDiagnoses(projectId, round.id, '0.1.0', current.revision.oid, [{
+    category: 'knowledge_gap', title: '缺少退款边界', summary: '规则没有覆盖退款场景',
+    evidence: ['失败用例：退款后额度如何计算'], confidence: 'high', blocking: false,
+    repairScope: 'package', packageOptimizable: true, resultIds: [],
+    relatedQuestions: ['退款后额度如何计算'], suggestedAction: '补充退款后的额度回补规则',
+  }] as any);
+
+  const unconfirmed = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/suggestions/manual`, headers,
+    payload: { roundId: round.id, title: '补充退款规则', detail: '覆盖退款后的额度回补', kind: 'modify_rule', diagnosisIds: [diagnosis.id] },
+  });
+  assert.equal(unconfirmed.statusCode, 409, unconfirmed.body);
+
+  diagnosisRepo.markFailureDiagnosesForRepair({ projectId, diagnosisIds: [diagnosis.id], actor: 'alice' });
+  const added = await app.inject({
+    method: 'POST', url: `/api/projects/${projectId}/optimize/suggestions/manual`, headers,
+    payload: { roundId: round.id, title: '补充退款规则', detail: '覆盖退款后的额度回补', kind: 'modify_rule', diagnosisIds: [diagnosis.id] },
+  });
+  assert.equal(added.statusCode, 200, added.body);
+  assert.equal(added.json().suggestion.title, '补充退款规则');
+
+  const updated = await app.inject({
+    method: 'PATCH', url: `/api/projects/${projectId}/optimize/suggestions/${added.json().suggestion.id}`, headers,
+    payload: { title: '完善退款与撤销规则', detail: '覆盖退款、撤销及重复回调', kind: 'modify_rule', diagnosisIds: [diagnosis.id], validationPlan: '重跑退款回归用例' },
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.equal(updated.json().suggestion.title, '完善退款与撤销规则');
+  assert.equal(updated.json().suggestion.validationPlan, '重跑退款回归用例');
+});

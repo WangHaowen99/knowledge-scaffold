@@ -2487,6 +2487,76 @@ export async function registerRoutes(app: FastifyInstance, options: RegisterRout
         runningTask: inFlight.status(`${c.p.id}:optimize`),
       };
     });
+    const editableSuggestionInput = (body: any) => {
+      const title = String(body?.title ?? '').trim();
+      const detail = String(body?.detail ?? '').trim();
+      const kind = String(body?.kind ?? '') as m4repo.SuggestionKind;
+      const diagnosisIds: string[] = Array.isArray(body?.diagnosisIds)
+        ? [...new Set<string>(body.diagnosisIds.map((id: unknown) => String(id)).filter(Boolean))]
+        : [];
+      if (!title || !detail) throw new Error('建议标题和修改要求不能为空');
+      if (!m4repo.SUGGESTION_KINDS.includes(kind)) throw new Error('建议类型不正确');
+      if (!diagnosisIds.length) throw new Error('建议必须关联至少一项已确认的失败根因');
+      return {
+        title, detail, kind, diagnosisIds,
+        target: String(body?.target ?? '').trim() || undefined,
+        relatedQuestion: String(body?.relatedQuestion ?? '').trim() || undefined,
+        evidence: Array.isArray(body?.evidence)
+          ? body.evidence.map((item: unknown) => String(item).trim()).filter(Boolean).slice(0, 20)
+          : [],
+        generalizationPlan: String(body?.generalizationPlan ?? '').trim(),
+        validationPlan: String(body?.validationPlan ?? '').trim(),
+      };
+    };
+    const validateSuggestionDiagnoses = async (projectId: string, roundId: string, basedRevisionOid: string, ids: string[]) => {
+      const current = await packageArtifacts.current(projectId);
+      if (!current || current.revision.oid !== basedRevisionOid) {
+        throw new Error('知识包已变化，请重新评测并分析失败原因');
+      }
+      const diagnoses = diagnosisRepo.listFailureDiagnoses(projectId, roundId);
+      const byId = new Map(diagnoses.map((item) => [item.id, item]));
+      if (ids.some((id) => {
+        const diagnosis = byId.get(id);
+        return !diagnosis || diagnosis.basedRevisionOid !== basedRevisionOid
+          || diagnosis.resolutionStatus !== 'confirmed' || !diagnosis.packageOptimizable || diagnosis.blocking;
+      })) throw new Error('建议只能关联当前版本中已确认且可由知识包修复的失败根因');
+    };
+    r.patch('/api/projects/:id/optimize/suggestions/:suggestionId', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const existing = m4repo.getSuggestions([String((req.params as any).suggestionId)])
+        .find((item) => item.projectId === c.p.id);
+      if (!existing) return reply.code(404).send({ error: '优化建议不存在' });
+      if (existing.status !== 'pending') return reply.code(409).send({ error: '该建议已进入候选或已关闭，不能再编辑' });
+      try {
+        const input = editableSuggestionInput(req.body);
+        await validateSuggestionDiagnoses(c.p.id, existing.roundId, existing.basedRevisionOid, input.diagnosisIds);
+        return { suggestion: m4repo.updatePendingSuggestion({
+          projectId: c.p.id, suggestionId: existing.id, ...input,
+        }) };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
+    r.post('/api/projects/:id/optimize/suggestions/manual', async (req, reply) => {
+      const c = loadCtx((req.params as any).id, req.user!.username);
+      if (!c) return reply.code(404).send({ error: '项目不存在' });
+      const roundId = String((req.body as any)?.roundId ?? '');
+      const round = m3repo.getRound(roundId);
+      if (!round || round.projectId !== c.p.id) return reply.code(404).send({ error: '评测轮次不存在' });
+      const current = await packageArtifacts.current(c.p.id);
+      if (!current) return reply.code(404).send({ error: '尚未生成知识包' });
+      try {
+        const input = editableSuggestionInput(req.body);
+        await validateSuggestionDiagnoses(c.p.id, round.id, current.revision.oid, input.diagnosisIds);
+        const suggestions = m4repo.insertSuggestions(
+          c.p.id, round.id, round.packageVersion, current.revision.oid, [input],
+        );
+        return { suggestion: suggestions.at(-1), suggestions };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      }
+    });
     r.get('/api/projects/:id/optimize/apply-status', async (req, reply) => {
       const c = loadCtx((req.params as any).id, req.user!.username);
       if (!c) return reply.code(404).send({ error: '项目不存在' });
