@@ -975,15 +975,12 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
                             imported_module or "relative",
                         ),
                     )
-                forbidden_export = next(
-                    (
-                        item.name
-                        for item in node.names
-                        if item.name.split(".", 1)[0]
-                        in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS
-                    ),
-                    "",
-                )
+                forbidden_export = ""
+                for item in node.names:
+                    export_root = item.name.split(".", 1)[0]
+                    if export_root in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS:
+                        forbidden_export = item.name
+                        break
                 if node.level == 0 and forbidden_export:
                     raise DeterministicPackageError(
                         "determinism_contract_violation",

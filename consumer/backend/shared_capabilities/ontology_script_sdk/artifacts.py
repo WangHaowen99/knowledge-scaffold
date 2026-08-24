@@ -10,13 +10,11 @@ from pathlib import Path
 def write_artifact(name: str, content: str) -> str:
     """Write one UTF-8 artifact inside the run-owned output directory."""
     normalized_name = unicodedata.normalize("NFKC", str(name or "")).strip()
-    if (
-        not normalized_name
-        or normalized_name in {".", ".."}
-        or Path(normalized_name).name != normalized_name
-        or "/" in normalized_name
-        or "\\" in normalized_name
-    ):
+    if not normalized_name or normalized_name in {".", ".."}:
+        raise ValueError("artifact name must be a plain file name")
+    if Path(normalized_name).name != normalized_name:
+        raise ValueError("artifact name must be a plain file name")
+    if "/" in normalized_name or "\\" in normalized_name:
         raise ValueError("artifact name must be a plain file name")
     if not isinstance(content, str):
         raise TypeError("artifact content must be text")

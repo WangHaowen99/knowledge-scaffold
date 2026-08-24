@@ -2213,17 +2213,15 @@ class DeterministicExecutionService:
             variants.add(encoded)
             variants.add(encoded.rstrip("="))
         variants.add(base64.encodebytes(payload).decode("ascii").strip())
-        for algorithm in (
-            hashlib.md5,
-            hashlib.sha1,
-            hashlib.sha224,
-            hashlib.sha256,
-            hashlib.sha384,
-            hashlib.sha512,
-            hashlib.blake2b,
-            hashlib.blake2s,
-        ):
-            variants.add(algorithm(payload).hexdigest())
+        # These digests are recognized only as credential-equivalent output;
+        # they are never used to make a security decision. Cover every
+        # guaranteed fixed-length algorithm so a handler cannot disclose a
+        # protected value merely by changing its representation.
+        for algorithm in sorted(hashlib.algorithms_guaranteed):
+            if algorithm.startswith("shake_"):
+                continue
+            digest = hashlib.new(algorithm, payload, usedforsecurity=False)
+            variants.add(digest.hexdigest())
         return {item for item in variants if item}
 
     @classmethod

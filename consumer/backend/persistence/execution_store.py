@@ -102,23 +102,20 @@ def _latest_recoverable_interaction_claim(
     )
     if source_turn is None:
         interaction_id = str(claimed_response.get("interaction_id") or "").strip()
-        source_turn = next(
-            (
-                turn
-                for turn in reversed(turns[:-1])
-                if str((_turn_interaction(turn) or {}).get("id") or "").strip()
-                == interaction_id
-            ),
-            None,
-        )
+        for turn in reversed(turns[:-1]):
+            candidate_interaction = _turn_interaction(turn) or {}
+            candidate_id = str(candidate_interaction.get("id") or "").strip()
+            if candidate_id == interaction_id:
+                source_turn = turn
+                break
     interaction = _turn_interaction(source_turn) if source_turn is not None else None
-    if (
-        source_turn is None
-        or interaction is None
-        or source_turn.get("status") != "awaiting_input"
-        or source_turn.get("interaction_response") != claimed_response
-        or not source_turn.get("interaction_consumed_at")
-    ):
+    if source_turn is None or interaction is None:
+        return None, None, None, None
+    if source_turn.get("status") != "awaiting_input":
+        return None, None, None, None
+    if source_turn.get("interaction_response") != claimed_response:
+        return None, None, None, None
+    if not source_turn.get("interaction_consumed_at"):
         return None, None, None, None
     return claimed_turn, source_turn, interaction, claimed_response
 
