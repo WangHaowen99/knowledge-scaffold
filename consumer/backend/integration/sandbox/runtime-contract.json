@@ -19,6 +19,38 @@
     "requests",
     "urllib3"
   ],
+  "allowed_standard_library_imports": [
+    "__future__",
+    "argparse",
+    "base64",
+    "binascii",
+    "bisect",
+    "collections",
+    "collections.abc",
+    "csv",
+    "dataclasses",
+    "decimal",
+    "enum",
+    "fractions",
+    "functools",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "html.entities",
+    "html.parser",
+    "itertools",
+    "json",
+    "math",
+    "operator",
+    "re",
+    "statistics",
+    "string",
+    "textwrap",
+    "typing",
+    "unicodedata",
+    "urllib.parse"
+  ],
   "allowed_runtime_imports": {
     "shared_capabilities.ontology_script_sdk": [
       "BusinessDataProviderError",
@@ -29,7 +61,8 @@
       "ProviderTransportError",
       "UnsupportedCapabilityError",
       "UnsupportedProviderError",
-      "load_effective_connection"
+      "load_effective_connection",
+      "write_artifact"
     ]
   }
 }

@@ -122,8 +122,8 @@ def build_egress_target_rules(data_proxy_url: str | None) -> tuple[list[str], li
         return [], []
     try:
         address = ipaddress.ip_address(host)
-    except ValueError:
-        return [host], []
+    except ValueError as exc:
+        raise ValueError("sandbox egress target must be pinned to an IP address") from exc
     return [], ["{}/{}".format(address.compressed, address.max_prefixlen)]
 
 
@@ -204,7 +204,6 @@ class OntoSandboxPolicyBuilder:
                 "bind_mounts": bind_mounts,
                 "device": [
                     {"host_path": "/dev/null", "sandbox_path": "/dev/null"},
-                    {"host_path": "/dev/urandom", "sandbox_path": "/dev/urandom"},
                 ],
             },
             "process": {

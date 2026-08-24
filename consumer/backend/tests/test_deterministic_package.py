@@ -243,6 +243,12 @@ def test_v1_lock_hashes_operation_declarations_before_routing(tmp_path):
         "import json, subprocess\n"
         "subprocess.Popen(['true'])\nprint(json.dumps({'value': 'ok'}))\n",
         "import json, os\nos.system('true')\nprint(json.dumps({'value': 'ok'}))\n",
+        "import json, os\nprint(json.dumps({'value': os.getpid()}))\n",
+        "import json, platform\nprint(json.dumps({'value': platform.node()}))\n",
+        "import json, socket\nprint(json.dumps({'value': socket.gethostname()}))\n",
+        "import json\nprint(json.dumps({'value': open('/proc/self/stat').read()}))\n",
+        "import json\nloader = __builtins__['__import__']\n"
+        "module = loader('os')\nprint(json.dumps({'value': module.getpid()}))\n",
     ),
 )
 def test_deterministic_package_rejects_obvious_nondeterministic_apis(
@@ -256,6 +262,21 @@ def test_deterministic_package_rejects_obvious_nondeterministic_apis(
         validate_and_lock_deterministic_operations(tmp_path)
 
     assert exc_info.value.code == "determinism_contract_violation"
+
+
+def test_deterministic_package_accepts_narrow_artifact_capability(tmp_path):
+    _write_package(tmp_path)
+    (tmp_path / "scripts" / "query.py").write_text(
+        "import json\n"
+        "from shared_capabilities.ontology_script_sdk import write_artifact\n"
+        "write_artifact('result.txt', 'synthetic result')\n"
+        "print(json.dumps({'value': 'ok'}))\n",
+        encoding="utf-8",
+    )
+
+    specs = validate_and_lock_deterministic_operations(tmp_path)
+
+    assert specs[0].handler.entrypoint == "scripts/query.py"
 
 
 def test_deterministic_package_qualifies_imported_local_dependencies(tmp_path):

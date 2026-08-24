@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -68,24 +69,54 @@ def test_sandbox_reachable_url_resolves_scheme_less_host_without_adding_protocol
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "integration.sandbox.data_proxy.socket.gethostbyname",
-        lambda host: "192.0.2.25" if host == "service.example.net" else host,
+        "integration.sandbox.data_proxy.socket.getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.44", port))
+        ],
     )
 
     resolved = sandbox_reachable_url("service.example.net:7443/path")
 
-    assert resolved == "192.0.2.25:7443/path"
+    assert resolved == "192.0.2.44:7443/path"
 
 
 def test_sandbox_reachable_url_preserves_explicit_secure_protocol(monkeypatch):
     monkeypatch.setattr(
-        "integration.sandbox.data_proxy.socket.gethostbyname",
-        lambda host: "192.0.2.25" if host == "service.example.net" else host,
+        "integration.sandbox.data_proxy.socket.getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.44", port))
+        ],
     )
 
     resolved = sandbox_reachable_url("https://service.example.net:7443/path")
 
-    assert resolved == "https://192.0.2.25:7443/path"
+    assert resolved == "https://192.0.2.44:7443/path"
+
+
+def test_sandbox_reachable_url_fails_closed_when_dns_resolution_fails(monkeypatch):
+    def fail_resolution(*_args, **_kwargs):
+        raise socket.gaierror("synthetic resolution failure")
+
+    monkeypatch.setattr(
+        "integration.sandbox.data_proxy.socket.getaddrinfo",
+        fail_resolution,
+    )
+
+    with pytest.raises(SandboxUnavailableError, match="could not be resolved"):
+        sandbox_reachable_url("https://service.example.net/path")
+
+
+def test_sandbox_reachable_url_pins_ipv6_only_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        "integration.sandbox.data_proxy.socket.getaddrinfo",
+        lambda host, port, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::44", port, 0, 0))
+        ],
+    )
+
+    resolved = sandbox_reachable_url("https://service.example.net:7443/path")
+
+    assert resolved == "https://[2001:db8::44]:7443/path"
 
 
 def test_create_sandbox_treats_409_as_conflict():
@@ -356,7 +387,7 @@ def test_policy_builder_mounts_workspace_and_runtime_same_path(tmp_path):
         ontology_id="demo",
         workspace_root=workspace_root,
         sandbox_runtime_python_dir=runtime_python,
-        data_proxy_url="http://jiuwenbox:8322/onto-data/run/conn",
+        data_proxy_url="http://192.0.2.44:8322/onto-data/run/conn",
         memory_max="256M",
         cpu_max=0.5,
         pids_max=32,
@@ -371,8 +402,8 @@ def test_policy_builder_mounts_workspace_and_runtime_same_path(tmp_path):
     assert bind_by_sandbox_path["/app/sandbox-runtime/python"]["host_path"] == "/app/sandbox-runtime/python"
     assert all(item["sandbox_path"] not in {"/backend", "/workspace", "/ontology"} for item in bind_mounts)
     assert policy["network"]["egress"]["default"] == "deny"
-    assert policy["network"]["egress"]["allowed_domains"] == ["jiuwenbox"]
-    assert policy["network"]["egress"]["allowed_ips"] == []
+    assert policy["network"]["egress"]["allowed_domains"] == []
+    assert policy["network"]["egress"]["allowed_ips"] == ["192.0.2.44/32"]
     assert policy["network"]["egress"]["allowed_ports"] == [8322]
     assert policy["network"]["egress"]["blocked_ips"] == ["169.254.169.254/32"]
     assert policy["network"]["egress"]["blocked_ports"] == [53]
@@ -608,9 +639,13 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
         "--file-size-limit-bytes",
         "0",
     ]
-    assert captured["command"][-3:] == [
+    bounded_separator = captured["command"].index("--")
+    assert captured["command"][bounded_separator + 1 :] == [
         "/usr/bin/python3",
         "-u",
+        "-m",
+        "onto_sandbox_runtime.deterministic_runner",
+        "--",
         str(script.resolve()).replace("\\", "/"),
     ]
     assert len(attestations) == 1
@@ -705,6 +740,76 @@ def test_bounded_sandbox_runner_rejects_non_python_executable():
             stdout_limit_bytes=32,
             stderr_limit_bytes=32,
         )
+
+
+def test_deterministic_runtime_runner_allows_contract_capabilities(tmp_path):
+    (tmp_path / "helper.py").write_text(
+        "def normalize(value):\n    return value.strip()\n",
+        encoding="utf-8",
+    )
+    script = tmp_path / "handler.py"
+    script.write_text(
+        "import argparse\n"
+        "import json\n"
+        "from helper import normalize\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--code', required=True)\n"
+        "args = parser.parse_args()\n"
+        "print(json.dumps({'value': normalize(args.code)}))\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "onto_sandbox_runtime.deterministic_runner",
+            "--",
+            str(script),
+            "--code",
+            "synthetic",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout) == {"value": "synthetic"}
+
+
+def test_deterministic_runtime_runner_blocks_dynamic_import_bypass(tmp_path):
+    script = tmp_path / "handler.py"
+    script.write_text(
+        "loader = __builtins__['__import__']\n"
+        "module = loader('os')\n"
+        "print(module.getpid())\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "onto_sandbox_runtime.deterministic_runner",
+            "--",
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "outside the deterministic runtime capability contract" in completed.stderr
 
 
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires POSIX resource limits")
@@ -1376,7 +1481,7 @@ def _sandbox_config(**overrides):
         "client_timeout_seconds": 30.0,
         "python_bin": "/usr/bin/python3",
         "sandbox_runtime_root": "/app/sandbox-runtime",
-        "data_proxy_base_url": "http://jiuwenbox:8322",
+        "data_proxy_base_url": "http://192.0.2.44:8322",
         "secret_allow_plain_http": True,
     }
     values.update(overrides)

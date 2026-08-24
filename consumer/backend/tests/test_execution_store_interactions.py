@@ -99,8 +99,74 @@ def test_interaction_response_survives_backend_process_reload_and_is_consumed(tm
     assert history["turns"][0]["interaction_consumed_at"]
     assert history["turns"][1]["status"] == "running"
 
+    # A crash after start_turn leaves a durable running claim. A fresh process
+    # may retry only the same response from the original checkpoint.
+    recovered_store = ExecutionStore(str(storage_dir))
+    assert recovered_store.validate_interaction_response("sess-choice", response) == response
+    recovered_store.start_turn(
+        session_id="sess-choice",
+        turn_id=3,
+        run_id="run-3",
+        user_request="方案 A",
+        interaction_response=response,
+    )
+    history = recovered_store.get_session_history("sess-choice")
+    assert history["turns"][1]["status"] == "failed"
+    assert history["turns"][1]["final_output"]["error"]["code"] == (
+        "interaction_resume_interrupted"
+    )
+    assert history["turns"][2]["prior_interaction_response"] == response
+    recovered_store.complete_turn("sess-choice", 3, {"answer": "done"}, None)
+
     with pytest.raises(InteractionCheckpointError, match="no pending interaction"):
-        reloaded_store.validate_interaction_response("sess-choice", response)
+        recovered_store.validate_interaction_response("sess-choice", response)
+
+
+def test_deterministic_interaction_retry_reuses_original_checkpoint(tmp_path):
+    storage_dir = tmp_path / "executions"
+    store = ExecutionStore(str(storage_dir))
+    interaction = {
+        "id": "interaction_deterministic_input",
+        "type": "input",
+        "prompt": "请输入合成值",
+    }
+    checkpoint = {
+        "source": "deterministic_execution",
+        "operation_key": "query",
+        "arguments": {"code": "synthetic"},
+    }
+    store.start_turn("sess-recovery", 1, "run-1", "start")
+    store.await_turn(
+        "sess-recovery",
+        1,
+        final_output={"type": "user_interaction", "interaction": interaction},
+        deterministic_checkpoint=checkpoint,
+    )
+    response = {
+        "interaction_id": interaction["id"],
+        "type": "input",
+        "value": "confirmed",
+    }
+    store.start_turn(
+        "sess-recovery",
+        2,
+        "run-2",
+        "confirmed",
+        interaction_response=response,
+    )
+
+    recovered = ExecutionStore(str(storage_dir))
+    assert recovered.validate_interaction_response("sess-recovery", response) == response
+    resumed = recovered.start_turn(
+        "sess-recovery",
+        3,
+        "run-3",
+        "confirmed",
+        interaction_response=response,
+    )
+
+    assert resumed["prior_deterministic_checkpoint"] == checkpoint
+    assert resumed["prior_interaction_response"] == response
 
 
 def test_deterministic_terminal_journal_restores_cache_when_atomic_save_fails(

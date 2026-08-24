@@ -208,6 +208,19 @@ class SandboxScriptExecutor:
         sandbox_script = posix_path_string(sandbox_script_path)
         command = [self._config.python_bin, "-u", sandbox_script, *cli_args]
         if (
+            str((env_overrides or {}).get("DETERMINISTIC_EXECUTION") or "").strip()
+            == "1"
+        ):
+            command = [
+                self._config.python_bin,
+                "-u",
+                "-m",
+                "onto_sandbox_runtime.deterministic_runner",
+                "--",
+                sandbox_script,
+                *cli_args,
+            ]
+        if (
             stdout_limit_bytes is not None
             or stderr_limit_bytes is not None
             or file_size_limit_bytes is not None

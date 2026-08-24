@@ -95,7 +95,7 @@ ONTOLOGY_MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 ONTOLOGY_MAX_ZIP_MEMBERS = 10_000
 ONTOLOGY_MAX_ZIP_PATH_DEPTH = 32
 ONTOLOGY_MAX_ZIP_PATH_LENGTH = 4096
-ONTOLOGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+ONTOLOGY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 ONTOLOGY_IMPORT_PREVIEW_MAX_FILES = 80
 ONTOLOGY_IMPORT_PREVIEW_MAX_BYTES = 24 * 1024
 ONTOLOGY_IMPORT_PREVIEW_TEXT_EXTENSIONS = {
@@ -1847,13 +1847,49 @@ def _replace_ontology_dir(*, staged_dir: Path, ontology_dir: Path) -> None:
 
     ontology_dir.parent.mkdir(parents=True, exist_ok=True)
     if ontology_dir.exists() or ontology_dir.is_symlink():
-        _atomic_exchange_paths(staged_dir, ontology_dir)
+        try:
+            _atomic_exchange_paths(staged_dir, ontology_dir)
+        except OSError as exc:
+            unsupported_errors = {
+                errno.ENOSYS,
+                errno.ENOTSUP,
+                getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+                errno.EINVAL,
+            }
+            if exc.errno not in unsupported_errors:
+                raise
+            _replace_ontology_dir_with_backup(
+                staged_dir=staged_dir,
+                ontology_dir=ontology_dir,
+            )
+            return
         # After the exchange the canonical path is already the new tree. The
         # former tree now occupies ``staged_dir`` and can be removed safely; a
         # crash before cleanup leaves only an orphan, never a missing ontology.
         _remove_path_if_exists(staged_dir)
     else:
         staged_dir.replace(ontology_dir)
+
+
+def _replace_ontology_dir_with_backup(*, staged_dir: Path, ontology_dir: Path) -> None:
+    """Portable replace with rollback when atomic directory exchange is absent."""
+    backup_root = Path(
+        tempfile.mkdtemp(
+            prefix=".{}.replace-backup-".format(ontology_dir.name),
+            dir=str(ontology_dir.parent),
+        )
+    )
+    backup_dir = backup_root / "previous"
+    ontology_dir.replace(backup_dir)
+    try:
+        staged_dir.replace(ontology_dir)
+    except BaseException:
+        # The old package remains recoverable at backup_dir until restoration
+        # succeeds.  Never clean it up on the exceptional path.
+        backup_dir.replace(ontology_dir)
+        _remove_path_if_exists(backup_root)
+        raise
+    _remove_path_if_exists(backup_root)
 
 
 def _prepare_shared_manifest(
@@ -2121,7 +2157,7 @@ def import_ontology_zip_with_auto_create():
             if not _is_valid_ontology_id(ontology_id):
                 return jsonify({
                     "error": (
-                        "ontology id不合法，仅支持字母数字下划线短横线，"
+                        "ontology id不合法，仅支持字母、数字、点、下划线和短横线，"
                         "且需字母或数字开头"
                     ),
                     "ontology_id": ontology_id,

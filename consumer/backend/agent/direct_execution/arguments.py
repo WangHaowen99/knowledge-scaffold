@@ -21,6 +21,7 @@ from agent.direct_execution.models import RuntimeContext
 from agent.tools.script_parameters import (
     append_script_parameter_cli_argument,
     is_runtime_parameter,
+    runtime_reserved_parameter_field,
     runtime_parameter_field,
     script_parameter_argument_keys,
 )
@@ -168,6 +169,46 @@ def extract_runtime_argument_keys(
             flag = str(args_list[index - 1]).strip()
         keys.update(_runtime_placeholder_argument_keys(placeholder, flag=flag))
     return keys
+
+
+def protect_deterministic_runtime_parameters(
+    script_parameters: Sequence[Mapping[str, Any]],
+) -> List[Mapping[str, Any]]:
+    """Force identity-bearing catalog aliases to use trusted runtime values."""
+    protected_parameters: List[Mapping[str, Any]] = []
+    for parameter in script_parameters:
+        reserved_field = runtime_reserved_parameter_field(parameter)
+        if reserved_field is None:
+            protected_parameters.append(parameter)
+            continue
+        protected = dict(parameter)
+        protected["runtime"] = reserved_field
+        protected["source"] = "runtime"
+        protected_parameters.append(protected)
+    return protected_parameters
+
+
+def protect_deterministic_script_args(script_args: Sequence[str]) -> List[str]:
+    """Convert reserved legacy flags/placeholders to runtime placeholders."""
+    protected: List[str] = []
+    args = [str(item) for item in script_args]
+    index = 0
+    while index < len(args):
+        item = args[index]
+        flag_field = runtime_reserved_parameter_field({"flag": item})
+        if item.startswith("--") and flag_field is not None:
+            protected.extend([item, "<runtime.{}>".format(flag_field)])
+            index += 1
+            if index < len(args) and not args[index].startswith("--"):
+                index += 1
+            continue
+        placeholder_field = runtime_reserved_parameter_field({"placeholder": item})
+        if placeholder_field is not None:
+            protected.append("<runtime.{}>".format(placeholder_field))
+        else:
+            protected.append(item)
+        index += 1
+    return protected
 
 
 def _runtime_key_from_flag(flag: str) -> Optional[str]:

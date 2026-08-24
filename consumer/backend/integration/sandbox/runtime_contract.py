@@ -50,6 +50,7 @@ def load_sandbox_runtime_contract() -> Mapping[str, Any]:
     upstream = payload.get("upstream")
     python_contract = payload.get("python")
     allowed_roots = payload.get("allowed_external_import_roots")
+    allowed_standard_library = payload.get("allowed_standard_library_imports")
     runtime_import_map = payload.get("allowed_runtime_imports")
     revision_file = str(payload.get("revision_file") or "").strip()
     shared_revision_file = str(payload.get("shared_revision_file") or "").strip()
@@ -67,6 +68,10 @@ def load_sandbox_runtime_contract() -> Mapping[str, Any]:
         raise RuntimeError("sandbox runtime contract is incomplete")
     if not all(str(item or "").strip() for item in allowed_roots):
         raise RuntimeError("sandbox runtime contract is incomplete")
+    if not isinstance(allowed_standard_library, list) or not allowed_standard_library:
+        raise RuntimeError("sandbox runtime contract is incomplete")
+    if not all(str(item or "").strip() for item in allowed_standard_library):
+        raise RuntimeError("sandbox runtime contract is incomplete")
     if not _valid_runtime_import_map(runtime_import_map):
         raise RuntimeError("sandbox runtime contract is incomplete")
     if not revision_file.startswith("/app/sandbox-runtime/python/"):
@@ -83,6 +88,15 @@ def allowed_external_import_roots() -> frozenset[str]:
     return frozenset(
         str(item).strip().split(".", 1)[0]
         for item in contract["allowed_external_import_roots"]
+    )
+
+
+def allowed_standard_library_imports() -> frozenset[str]:
+    """Return the exact standard-library modules exposed to package code."""
+    contract = load_sandbox_runtime_contract()
+    return frozenset(
+        str(item).strip()
+        for item in contract["allowed_standard_library_imports"]
     )
 
 

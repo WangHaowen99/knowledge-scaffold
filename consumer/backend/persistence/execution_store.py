@@ -68,6 +68,61 @@ def _latest_pending_interaction(
     return latest, interaction
 
 
+def _turn_interaction(turn: TurnExecutionRecord) -> Optional[Dict[str, Any]]:
+    final_output = turn.get("final_output")
+    interaction = final_output.get("interaction") if isinstance(final_output, dict) else None
+    return interaction if isinstance(interaction, dict) else None
+
+
+def _latest_recoverable_interaction_claim(
+    history: SessionExecutionHistory,
+) -> tuple[
+    Optional[TurnExecutionRecord],
+    Optional[TurnExecutionRecord],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+]:
+    """Return a running response claim that can be retried after a crash."""
+    turns = list(history.get("turns") or [])
+    if not turns:
+        return None, None, None, None
+    claimed_turn = turns[-1]
+    claimed_response = claimed_turn.get("prior_interaction_response")
+    if claimed_turn.get("status") != "running" or not isinstance(claimed_response, dict):
+        return None, None, None, None
+
+    source_turn_id = claimed_turn.get("prior_interaction_turn_id")
+    source_turn = next(
+        (
+            turn
+            for turn in reversed(turns[:-1])
+            if source_turn_id is not None and turn.get("turn_id") == source_turn_id
+        ),
+        None,
+    )
+    if source_turn is None:
+        interaction_id = str(claimed_response.get("interaction_id") or "").strip()
+        source_turn = next(
+            (
+                turn
+                for turn in reversed(turns[:-1])
+                if str((_turn_interaction(turn) or {}).get("id") or "").strip()
+                == interaction_id
+            ),
+            None,
+        )
+    interaction = _turn_interaction(source_turn) if source_turn is not None else None
+    if (
+        source_turn is None
+        or interaction is None
+        or source_turn.get("status") != "awaiting_input"
+        or source_turn.get("interaction_response") != claimed_response
+        or not source_turn.get("interaction_consumed_at")
+    ):
+        return None, None, None, None
+    return claimed_turn, source_turn, interaction, claimed_response
+
+
 def _latest_unconsumed_interaction_cancellation(
     history: SessionExecutionHistory,
 ) -> tuple[Optional[TurnExecutionRecord], Optional[Dict[str, Any]]]:
@@ -105,10 +160,15 @@ def _validated_interaction_response(
     response: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
     _pending_turn, interaction = _latest_pending_interaction(history)
+    claimed_response: Optional[Dict[str, Any]] = None
     if interaction is None:
-        if response is not None:
-            raise InteractionCheckpointError("session has no pending interaction")
-        return None
+        _claimed_turn, _source_turn, interaction, claimed_response = (
+            _latest_recoverable_interaction_claim(history)
+        )
+        if interaction is None:
+            if response is not None:
+                raise InteractionCheckpointError("session has no pending interaction")
+            return None
     if response is None:
         raise InteractionCheckpointError("session is awaiting an interaction response")
 
@@ -139,6 +199,10 @@ def _validated_interaction_response(
         if isinstance(value, str) and not value.strip():
             raise InteractionCheckpointError("input interaction value must not be empty")
         canonical["value"] = deepcopy(value)
+        if claimed_response is not None and canonical != claimed_response:
+            raise InteractionCheckpointError(
+                "interaction response does not match the in-progress recovery claim"
+            )
         return canonical
 
     options = interaction.get("options")
@@ -171,6 +235,10 @@ def _validated_interaction_response(
 
     canonical["option_id"] = str(selected.get("id") or "").strip()
     canonical["value"] = selected.get("value")
+    if claimed_response is not None and canonical != claimed_response:
+        raise InteractionCheckpointError(
+            "interaction response does not match the in-progress recovery claim"
+        )
     return canonical
 
 
@@ -322,9 +390,31 @@ class ExecutionStore:
             canonical_response = _validated_interaction_response(history, interaction_response)
             started_at = datetime.now().isoformat()
             if canonical_response is not None:
-                pending_turn = history["turns"][-1]
-                pending_turn["interaction_response"] = canonical_response
-                pending_turn["interaction_consumed_at"] = started_at
+                pending_turn, _interaction = _latest_pending_interaction(history)
+                if pending_turn is None:
+                    claimed_turn, pending_turn, _interaction, claimed_response = (
+                        _latest_recoverable_interaction_claim(history)
+                    )
+                    if (
+                        claimed_turn is None
+                        or pending_turn is None
+                        or claimed_response != canonical_response
+                    ):
+                        raise InteractionCheckpointError(
+                            "interaction recovery claim is unavailable"
+                        )
+                    claimed_turn["end_time"] = started_at
+                    claimed_turn["status"] = "failed"
+                    claimed_turn["final_output"] = {
+                        "error": {
+                            "code": "interaction_resume_interrupted",
+                            "message": "The prior interaction resume was interrupted and retried.",
+                        }
+                    }
+                else:
+                    pending_turn["interaction_response"] = canonical_response
+                    pending_turn["interaction_consumed_at"] = started_at
+                pending_turn["interaction_consumed_by_turn_id"] = turn_id
                 deterministic_checkpoint = pending_turn.get("deterministic_checkpoint")
             else:
                 deterministic_checkpoint = None
@@ -354,6 +444,7 @@ class ExecutionStore:
                 turn["prior_interaction_cancellation"] = prior_interaction_cancellation
             if canonical_response is not None:
                 turn["prior_interaction_response"] = dict(canonical_response)
+                turn["prior_interaction_turn_id"] = pending_turn.get("turn_id")
             if isinstance(deterministic_checkpoint, dict):
                 turn["prior_deterministic_checkpoint"] = dict(deterministic_checkpoint)
 

@@ -23,6 +23,34 @@ _EXPLICIT_RUNTIME_PARAMETER_FIELDS = _RUNTIME_PARAMETER_FIELDS | {
     "selected_ontology_version",
 }
 
+# Runtime identity and package-selection fields are reserved by the execution
+# layer.  Catalog metadata is untrusted configuration and cannot downgrade one
+# of these names to a user/business parameter.
+RUNTIME_RESERVED_PARAMETER_FIELDS = frozenset(_EXPLICIT_RUNTIME_PARAMETER_FIELDS)
+
+
+def runtime_reserved_parameter_field(parameter: Mapping[str, Any]) -> Optional[str]:
+    candidates = [
+        parameter.get("name"),
+        parameter.get("flag"),
+        parameter.get("placeholder"),
+    ]
+    aliases = parameter.get("aliases")
+    if isinstance(aliases, list):
+        candidates.extend(aliases)
+    for candidate in candidates:
+        normalized = (
+            str(candidate or "")
+            .strip()
+            .strip("<>")
+            .removeprefix("runtime.")
+            .lstrip("-")
+            .replace("-", "_")
+        )
+        if normalized in RUNTIME_RESERVED_PARAMETER_FIELDS:
+            return normalized
+    return None
+
 
 def _explicit_runtime_requested(parameter: Mapping[str, Any]) -> bool:
     explicit = parameter.get("runtime")

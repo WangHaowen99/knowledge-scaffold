@@ -536,7 +536,10 @@ class _AppendOnlyChatStore:
     def _sync_event_log_unlocked(self, session_id: str) -> None:
         """Force an already appended terminal batch and its path to storage."""
         path = Path(self._event_log_path(session_id))
-        with path.open("rb") as stream:
+        # Windows rejects fsync on a descriptor opened read-only.  Reopen the
+        # existing log without truncation through a writable descriptor.
+        with path.open("r+b") as stream:
+            stream.flush()
             os.fsync(stream.fileno())
         _fsync_directory(path.parent)
 

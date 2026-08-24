@@ -19,6 +19,11 @@ from agent.direct_execution.contracts import (
     NotApplicable,
 )
 from agent.direct_execution.audit import canonical_sha256
+from agent.direct_execution.arguments import (
+    extract_runtime_argument_keys,
+    protect_deterministic_script_args,
+    protect_deterministic_runtime_parameters,
+)
 from agent.direct_execution.models import RuntimeContext
 from agent.direct_execution.service import DeterministicExecutionService
 from ontology.operation_execution import validate_and_lock_deterministic_operations
@@ -240,6 +245,45 @@ def _patch_manifest(monkeypatch, ontology_dir):
         ),
     )
     return service_module
+
+
+@pytest.mark.parametrize(
+    "catalog_override",
+    (
+        {"runtime": False},
+        {"runtime": "false"},
+        {"source": "user"},
+        {"source": "business"},
+    ),
+)
+def test_runtime_identity_name_cannot_be_downgraded_by_catalog_metadata(
+    catalog_override,
+):
+    parameter = {
+        "name": "session_id",
+        "flag": "--session-id",
+        "type": "string",
+        "required": True,
+        **catalog_override,
+    }
+
+    protected = protect_deterministic_runtime_parameters([parameter])
+    keys = extract_runtime_argument_keys(script_parameters=protected)
+
+    assert {"session_id", "session-id", "--session-id"}.issubset(keys)
+
+
+def test_legacy_runtime_identity_flag_is_forced_to_runtime_placeholder():
+    protected = protect_deterministic_script_args(
+        ["--session-id", "<session_id>", "--code", "<code>"]
+    )
+
+    assert protected == [
+        "--session-id",
+        "<runtime.session_id>",
+        "--code",
+        "<code>",
+    ]
 
 
 def _allow_local_test_runner(monkeypatch, service_module):
@@ -1584,6 +1628,56 @@ def test_workspace_provider_uses_pinned_egress_without_losing_tls_server_name(
     )
 
 
+def test_workspace_provider_dns_failure_stops_before_handler(tmp_path, monkeypatch):
+    ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    effective_connection = EffectiveConnection(
+        version=1,
+        provider="nl2sql_http",
+        endpoint="https://service.example.net/query",
+        auth=AuthSpec(type="bearer", token="synthetic-provider-token"),
+        options={"data_revision": "rev-synthetic"},
+    )
+    monkeypatch.setattr(
+        service_module,
+        "resolve_deterministic_provider_binding",
+        lambda **_kwargs: SimpleNamespace(
+            effective_connection=effective_connection,
+            source_ref="business_data",
+            data_revision="rev-synthetic",
+            scope_digest="sha256:synthetic-scope",
+            network_endpoint=effective_connection.endpoint,
+        ),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "load_sandbox_config",
+        lambda: SimpleNamespace(enabled=True),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "sandbox_reachable_url",
+        lambda _endpoint: (_ for _ in ()).throw(OSError("synthetic DNS failure")),
+    )
+    calls = []
+    monkeypatch.setattr(
+        service_module,
+        "handle_execute_script_path",
+        lambda **kwargs: calls.append(kwargs) or json.dumps({"value": "unexpected"}),
+    )
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == "provider_endpoint_unresolved"
+    assert calls == []
+
+
 def test_injected_short_provider_credential_fails_before_handler(tmp_path, monkeypatch):
     ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
     service_module = _patch_manifest(monkeypatch, ontology_dir)
@@ -2047,6 +2141,28 @@ def test_artifact_staging_cleans_only_stale_owned_directories(tmp_path, monkeypa
     assert leased.is_dir()
     assert recent.is_dir()
     assert unrelated.is_dir()
+
+
+def test_artifact_staging_lease_uses_windows_compatible_utime_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    staging_dir = tmp_path / "deterministic-artifact-staging-synthetic"
+    staging_dir.mkdir()
+    original_utime = os.utime
+    calls = []
+
+    def windows_compatible_utime(path, *args, **kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("follow_symlinks") is False:
+            raise NotImplementedError("synthetic Windows behavior")
+        return original_utime(path, *args, **kwargs)
+
+    monkeypatch.setattr(service_module.os, "utime", windows_compatible_utime)
+
+    DeterministicExecutionService._refresh_artifact_staging_lease(staging_dir)
+
+    assert calls == [{"follow_symlinks": False}, {}]
 
 
 def test_artifact_staging_rejects_relative_configured_root(tmp_path, monkeypatch):

@@ -24,6 +24,8 @@ from referencing.exceptions import NoSuchResource
 from agent.direct_execution.arguments import (
     build_direct_cli_args,
     extract_runtime_argument_keys,
+    protect_deterministic_script_args,
+    protect_deterministic_runtime_parameters,
 )
 from agent.direct_execution.audit import build_result_envelope, runtime_revision
 from agent.direct_execution.contracts import (
@@ -270,7 +272,15 @@ class DeterministicExecutionService:
         """Refresh an active staging directory so peer processes preserve it."""
         if path.is_symlink() or not path.is_dir():
             raise OSError("deterministic artifact staging lease is invalid")
-        os.utime(path, follow_symlinks=False)
+        try:
+            os.utime(path, follow_symlinks=False)
+        except NotImplementedError:
+            # Windows does not implement the follow_symlinks keyword for
+            # os.utime.  This directory has an unguessable, process-owned name;
+            # re-check it immediately before using the portable call.
+            if path.is_symlink() or not path.is_dir():
+                raise OSError("deterministic artifact staging lease is invalid")
+            os.utime(path)
 
     def execute(
         self,
@@ -388,10 +398,16 @@ class DeterministicExecutionService:
                 "The deterministic handler descriptor is unavailable.",
                 operation_key=spec.operation_key,
             )
+        script_parameters = protect_deterministic_runtime_parameters(
+            list(script_entry.get("parameters") or [])
+        )
+        script_args = protect_deterministic_script_args(
+            list(script_entry.get("arguments") or [])
+        )
         runtime_argument_keys = frozenset(
             extract_runtime_argument_keys(
-                script_args=list(script_entry.get("arguments") or []),
-                script_parameters=list(script_entry.get("parameters") or []),
+                script_args=script_args,
+                script_parameters=script_parameters,
             )
         )
         request_runtime_fields = _runtime_owned_argument_names(
@@ -622,8 +638,8 @@ class DeterministicExecutionService:
             )
 
         cli_args, missing_cli, cli_error = build_direct_cli_args(
-            script_args=list(script_entry.get("arguments") or []),
-            script_parameters=list(script_entry.get("parameters") or []),
+            script_args=script_args,
+            script_parameters=script_parameters,
             business_arguments=arguments,
             runtime_context=request.runtime_context,
             canonicalize_structured=True,
@@ -664,9 +680,17 @@ class DeterministicExecutionService:
                 # policy. Clear-text protocols may connect to that pinned IP;
                 # TLS protocols keep the original hostname for SNI and
                 # certificate verification.
-                provider_network_endpoint = sandbox_reachable_url(
-                    provider_binding.network_endpoint
-                )
+                try:
+                    provider_network_endpoint = sandbox_reachable_url(
+                        provider_binding.network_endpoint
+                    )
+                except Exception as exc:
+                    return Failed(
+                        "provider_endpoint_unresolved",
+                        "Deterministic provider endpoint could not be pinned to an IP address.",
+                        operation_key=spec.operation_key,
+                        internal_detail=type(exc).__name__,
+                    )
                 sandbox_provider_connection = replace(
                     provider_binding.effective_connection,
                     endpoint=_sandbox_provider_connection_endpoint(
@@ -745,7 +769,7 @@ class DeterministicExecutionService:
                             self._refresh_artifact_staging_lease(
                                 Path(artifact_staging_dir)
                             )
-                        except OSError as exc:
+                        except (OSError, NotImplementedError) as exc:
                             artifact_monitor_failures.append(
                                 Failed(
                                     "deterministic_isolation_unavailable",

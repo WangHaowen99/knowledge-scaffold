@@ -12,6 +12,7 @@ from shared_capabilities.business_data import (
 from shared_capabilities.ontology_script_sdk import (
     DataProviderClient,
     load_effective_connection,
+    write_artifact,
 )
 from shared_capabilities.ontology_script_sdk.connection_env import (
     SCRIPT_BUSINESS_DATA_CONNECTION_ENV,
@@ -31,6 +32,31 @@ def _envelope(provider="nl2sql_http"):
 def test_script_client_is_parameterless():
     with pytest.raises(TypeError):
         DataProviderClient(config={})
+
+
+def test_write_artifact_uses_only_run_owned_directory(tmp_path, monkeypatch):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    monkeypatch.setenv("RUN_ARTIFACT_DIR", str(artifact_root))
+    monkeypatch.setenv("RUN_ARTIFACT_MAX_FILE_BYTES", "128")
+
+    name = write_artifact("result.txt", "synthetic result")
+
+    assert name == "result.txt"
+    assert (artifact_root / name).read_text(encoding="utf-8") == "synthetic result"
+
+
+def test_write_artifact_rejects_path_and_overwrite(tmp_path, monkeypatch):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    monkeypatch.setenv("RUN_ARTIFACT_DIR", str(artifact_root))
+    monkeypatch.setenv("RUN_ARTIFACT_MAX_FILE_BYTES", "128")
+
+    with pytest.raises(ValueError, match="plain file name"):
+        write_artifact("../result.txt", "synthetic result")
+    write_artifact("result.txt", "first")
+    with pytest.raises(FileExistsError):
+        write_artifact("result.txt", "second")
 
 
 def test_script_client_requires_version_one_envelope(monkeypatch):

@@ -21,6 +21,7 @@ class TurnExecutionRecord(TypedDict):
     ontology_version: Optional[str]  # active_version when the turn ran (skill-evolution version gate)
     interaction_response: NotRequired[Dict[str, Any]]
     interaction_consumed_at: NotRequired[str]
+    interaction_consumed_by_turn_id: NotRequired[int]
     interaction_cancelled_at: NotRequired[str]
     interaction_context_consumed_at: NotRequired[str]
     interaction_context_consumed_by_turn_id: NotRequired[int]
@@ -28,6 +29,7 @@ class TurnExecutionRecord(TypedDict):
     deterministic_checkpoint: NotRequired[Dict[str, Any]]
     prior_deterministic_checkpoint: NotRequired[Dict[str, Any]]
     prior_interaction_response: NotRequired[Dict[str, Any]]
+    prior_interaction_turn_id: NotRequired[int]
 
 
 class SessionExecutionHistory(TypedDict):

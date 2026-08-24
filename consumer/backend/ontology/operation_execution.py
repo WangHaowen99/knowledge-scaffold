@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import re
-import sys
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,7 @@ from jsonschema.exceptions import SchemaError
 from integration.sandbox.runtime_contract import (
     allowed_external_import_roots,
     allowed_runtime_imports,
+    allowed_standard_library_imports,
 )
 
 
@@ -44,11 +44,15 @@ _NONDETERMINISTIC_CALL_PREFIXES = (
 _NONDETERMINISTIC_CALLS = frozenset(
     {
         "__import__",
+        "argparse.FileType",
         "datetime.date.today",
         "datetime.datetime.now",
         "datetime.datetime.today",
         "datetime.datetime.utcnow",
         "importlib.import_module",
+        "io.FileIO",
+        "io.open",
+        "io.open_code",
         "os.getrandom",
         "os.urandom",
         "os.execl",
@@ -87,17 +91,43 @@ _NONDETERMINISTIC_CALLS = frozenset(
 )
 _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS = frozenset(
     {
+        "asyncio",
+        "concurrent",
+        "ctypes",
+        "datetime",
+        "glob",
+        "importlib",
+        "inspect",
+        "marshal",
         "multiprocessing",
+        "os",
+        "pathlib",
+        "pickle",
+        "platform",
         "random",
+        "resource",
         "secrets",
+        "signal",
+        "socket",
         "subprocess",
+        "sys",
         "tempfile",
+        "threading",
         "time",
         "uuid",
     }
 )
-_STANDARD_LIBRARY_IMPORT_ROOTS = frozenset(sys.stdlib_module_names).union(
-    sys.builtin_module_names
+_FORBIDDEN_DETERMINISTIC_BUILTIN_CALLS = frozenset(
+    {
+        "__import__",
+        "breakpoint",
+        "compile",
+        "eval",
+        "exec",
+        "id",
+        "input",
+        "open",
+    }
 )
 
 
@@ -960,8 +990,10 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
             if not isinstance(node, ast.Call):
                 continue
             call_name = _python_call_name(node.func, aliases)
-            if call_name in _NONDETERMINISTIC_CALLS or call_name.startswith(
-                _NONDETERMINISTIC_CALL_PREFIXES
+            if (
+                call_name in _FORBIDDEN_DETERMINISTIC_BUILTIN_CALLS
+                or call_name in _NONDETERMINISTIC_CALLS
+                or call_name.startswith(_NONDETERMINISTIC_CALL_PREFIXES)
             ):
                 raise DeterministicPackageError(
                     "determinism_contract_violation",
@@ -996,7 +1028,11 @@ def _validate_deterministic_import_contract(
     absolute_search_roots: tuple[Path, ...],
 ) -> None:
     allowed_external = allowed_external_import_roots()
+    allowed_standard_library = allowed_standard_library_imports()
     allowed_runtime = allowed_runtime_imports()
+
+    def standard_library_allowed(module_name: str) -> bool:
+        return module_name in allowed_standard_library
 
     def reject(module_name: str, level: int = 0) -> None:
         raise DeterministicPackageError(
@@ -1023,7 +1059,7 @@ def _validate_deterministic_import_contract(
                 ) is not None:
                     continue
                 if (
-                    import_root in _STANDARD_LIBRARY_IMPORT_ROOTS
+                    standard_library_allowed(module_name)
                     or import_root in allowed_external
                 ):
                     continue
@@ -1076,7 +1112,7 @@ def _validate_deterministic_import_contract(
         if import_root in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS:
             continue
         if level == 0 and (
-            import_root in _STANDARD_LIBRARY_IMPORT_ROOTS
+            standard_library_allowed(base_module)
             or import_root in allowed_external
         ):
             continue
@@ -1119,6 +1155,14 @@ def _python_import_aliases(tree: ast.AST) -> dict[str, str]:
 def _python_call_name(node: ast.AST, aliases: Mapping[str, str]) -> str:
     if isinstance(node, ast.Name):
         return aliases.get(node.id, node.id)
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "__builtins__"
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    ):
+        return node.slice.value
     if isinstance(node, ast.Attribute):
         parent = _python_call_name(node.value, aliases)
         return "{}.{}".format(parent, node.attr) if parent else node.attr

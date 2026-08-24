@@ -2366,6 +2366,38 @@ def test_replace_ontology_dir_atomically_exchanges_existing_tree(tmp_path):
     assert not staged_dir.exists()
 
 
+def test_replace_ontology_dir_uses_portable_backup_when_exchange_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    ontology_dir = tmp_path / "knowledge-package-demo"
+    staged_dir = tmp_path / "staged-knowledge-package-demo"
+    ontology_dir.mkdir()
+    staged_dir.mkdir()
+    (ontology_dir / "old.md").write_text("old\n", encoding="utf-8")
+    (staged_dir / "new.md").write_text("new\n", encoding="utf-8")
+    monkeypatch.setattr(
+        ontologies_module,
+        "_atomic_exchange_paths",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError(ontologies_module.errno.ENOTSUP, "unsupported")
+        ),
+    )
+
+    ontologies_module._replace_ontology_dir(
+        staged_dir=staged_dir,
+        ontology_dir=ontology_dir,
+    )
+
+    assert (ontology_dir / "new.md").read_text(encoding="utf-8") == "new\n"
+    assert not staged_dir.exists()
+    assert not list(tmp_path.glob(".knowledge-package-demo.replace-backup-*"))
+
+
+def test_ontology_id_keeps_legacy_dot_compatibility():
+    assert ontologies_module._is_valid_ontology_id("factory.v2") is True
+
+
 def test_copy_versioned_package_keeps_existing_dir_when_copy_fails(tmp_path, monkeypatch):
     source_dir = tmp_path / "source"
     version_dir = tmp_path / "ontology" / "versions" / "1.0.0"
