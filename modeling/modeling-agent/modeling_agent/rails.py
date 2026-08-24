@@ -9,7 +9,16 @@ from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
 from openjiuwen.harness.rails.interrupt.interrupt_base import BaseInterruptRail, InterruptRequest
 
-from .tools import AskTool, EventSink, RequestConfirmationTool, RequestReleaseTool, ToolContext, input_dict, tool_spec
+from .tools import (
+    AskTool,
+    EventSink,
+    RequestConfirmationTool,
+    RequestReleaseTool,
+    ToolContext,
+    input_dict,
+    tool_spec,
+    tool_work_detail,
+)
 
 
 _EXPLICIT_DECISION_REQUESTS = (
@@ -581,7 +590,11 @@ class ActivityRail(AgentRail):
         self._emit = emit
 
     async def before_model_call(self, _ctx: AgentCallbackContext) -> None:
-        self._emit("progress", {"text": "助手正在整理下一步", "counters": {}})
+        self._emit("progress", {
+            "text": "助手正在整理下一步",
+            "detail": "正在根据已读取的事实判断下一项可执行工作",
+            "counters": {},
+        })
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if ctx.extra.get("_skip_tool"):
@@ -589,8 +602,18 @@ class ActivityRail(AgentRail):
         name = _tool_name(ctx)
         spec = tool_spec(name)
         display = _display_text(spec.display if spec else "正在处理", _call_args(ctx))
-        self._emit("progress", {"text": display, "counters": {}})
-        self._emit("tool", {"name": name, "phase": "started", "summary": display})
+        tool_call_id = _tool_call_id(ctx)
+        self._emit("progress", {
+            "text": display,
+            "detail": tool_work_detail(name),
+            "counters": {},
+        })
+        self._emit("tool", {
+            "name": name,
+            "phase": "started",
+            "summary": display,
+            "toolCallId": tool_call_id,
+        })
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         name = _tool_name(ctx)
@@ -598,7 +621,12 @@ class ActivityRail(AgentRail):
         display = result.get("display") if isinstance(result.get("display"), dict) else {}
         summary = str(display.get("text") or result.get("reason") or "处理完成")
         phase = "failed" if result.get("error") else "completed"
-        self._emit("tool", {"name": name, "phase": phase, "summary": summary})
+        self._emit("tool", {
+            "name": name,
+            "phase": phase,
+            "summary": summary,
+            "toolCallId": _tool_call_id(ctx),
+        })
 
 
 def check_write_safety(tool: str, arguments: dict[str, Any]) -> list[str]:

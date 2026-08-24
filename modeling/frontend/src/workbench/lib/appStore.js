@@ -297,7 +297,7 @@ export const actions = {
       const activity = replaying ? null : store.get().activity;
       store.set((state) => ({
         activity: activity ? { ...activity, sub: [line, ...(activity.sub || [])].slice(0, 8) } : activity,
-        trace: [...state.trace, { id: seq || `${Date.now()}-${event.name}`, at: timeOf(event.createdAt), name: event.name, phase: event.phase, summary: event.summary }].slice(-300),
+        trace: mergeToolTrace(state.trace, event, seq),
       }));
       if (!replaying && event.phase === 'completed' && ['write_file', 'delete_file', 'update_plan', 'update_project_context', 'transition_project_state', 'request_confirmation'].includes(event.name)) {
         void actions.refreshSnapshot();
@@ -792,6 +792,30 @@ export const actions = {
   toggleDrawer: () => store.set((s) => ({ drawerOpen: !s.drawerOpen })),
   pushMessage(msg) { store.set((s) => ({ userMessages: [...s.userMessages, { id: `u${s.userMessages.length + 1}`, ...msg }] })); },
 };
+
+function mergeToolTrace(trace, event, seq) {
+  const toolCallId = String(event.toolCallId || '');
+  const id = toolCallId
+    ? `tool:${event.runId || ''}:${toolCallId}`
+    : seq || `${Date.now()}-${event.name}`;
+  const entry = {
+    id,
+    at: timeOf(event.createdAt),
+    name: event.name,
+    phase: event.phase,
+    summary: event.summary,
+  };
+  if (!toolCallId) return [...trace, entry].slice(-300);
+  const index = trace.findIndex((item) => item.id === id);
+  if (index < 0) return [...trace, entry].slice(-300);
+  const merged = [...trace];
+  merged[index] = {
+    ...merged[index],
+    ...entry,
+    at: merged[index].at || entry.at,
+  };
+  return merged.slice(-300);
+}
 
 function projectFromUrl() {
   if (typeof window === 'undefined') return null;

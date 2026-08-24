@@ -95,7 +95,7 @@ export default function ProcessDrawer({ onClose }) {
           {tab === 'trace' ? <>
             <table className="grid" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--t-sm)' }}>
               <tbody>
-                {(demo ? TRACE : trace.map((item) => [item.at, '助手', humanizeTraceSummary(item.summary), phaseLabel(item.phase)])).map((r, i) => (
+                {(demo ? TRACE : trace.map((item) => [item.at, '助手', humanizeTraceSummary(item.summary, item.name), phaseLabel(item.phase)])).map((r, i) => (
                   <tr key={i} style={r[3].startsWith('等待') ? { background: 'var(--c-wait-bg)' } : undefined}>
                     <td className="faint" style={{ width: 66 }}>{r[0]}</td>
                     <td style={{ width: 108, color: 'var(--c-agent)' }}>{r[1]}</td>
@@ -149,14 +149,17 @@ export function restoredVersionMessage(packageVersion, target) {
   return `我已从版本历史恢复到${label}。请以恢复后的发布结果为准继续，无需重复评测。`;
 }
 
-export function humanizeTraceSummary(summary) {
+export function humanizeTraceSummary(summary, toolName = '') {
+  const completion = toolName === 'task_tool'
+    ? '一项子任务已完成，主任务继续处理中'
+    : '当前步骤已完成';
   let text = String(summary || '已记录一次处理')
     .replace(/^正在读取项目状态$/u, '正在核对当前进展')
     .replace(/^正在保存项目上下文$/u, '正在保存当前进展')
     .replace(/^正在核对项目状态转换$/u, '正在核对下一阶段')
     .replace(/^正在检查门禁$/u, '正在核对进入下一阶段的条件')
     .replace(/^指定评测轮次不存在$/u, '没有找到对应的评测记录')
-    .replace(/^处理完成$/u, '本次处理已完成')
+    .replace(/^处理完成$/u, completion)
     .replace(/^当前项目状态：(.+?)\s*\/\s*[a-z_]+$/iu, '当前阶段：$1')
     .replace(/项目状态已变化，正在重新对齐/gu, '当前进展已变化，正在重新核对')
     .replace(/项目状态已更新为/gu, '当前阶段已更新为');

@@ -63,6 +63,7 @@ PHASE_GATES = {
 MAX_AUTONOMOUS_CONTINUATIONS = 8
 MAX_STALLED_CONTINUATIONS = 2
 MAX_DECISION_CARD_RETRIES = 2
+MAX_EMPTY_RESPONSE_RETRIES = 1
 RECOVERY_RETRY_DELAYS = (0.5, 1.0, 2.0, 4.0)
 AUTONOMOUS_PROGRESS_TOOLS = frozenset({
     "analyze_material_impact",
@@ -1310,6 +1311,7 @@ class AgentService:
             continuations = 0
             decision_card_retries = 0
             confirmation_card_retries = 0
+            empty_response_retries = 0
             current_query = query
             while True:
                 def emit(kind: str, payload: dict[str, Any]) -> None:
@@ -1414,6 +1416,13 @@ class AgentService:
 
                 phase = self.store.project_state(run.project_id).state.partition(":")[0]
                 if phase == "release":
+                    result, current_query, empty_response_retries = self._ensure_visible_result(
+                        run,
+                        result,
+                        empty_response_retries,
+                    )
+                    if current_query:
+                        continue
                     self._settle(live, run, result)
                     return
 
@@ -1433,6 +1442,13 @@ class AgentService:
                     current_query = self._autonomous_continuation_prompt(run.project_id)
                     continue
 
+                result, current_query, empty_response_retries = self._ensure_visible_result(
+                    run,
+                    result,
+                    empty_response_retries,
+                )
+                if current_query:
+                    continue
                 self._settle(live, run, result)
                 return
         except asyncio.CancelledError:
@@ -1490,6 +1506,43 @@ class AgentService:
             "先调用 get_project_state 获取最新版本，状态转换只能调用 transition_project_state。"
         )
 
+    def _ensure_visible_result(
+        self,
+        run: RunRecord,
+        result: dict[str, Any],
+        retries: int,
+    ) -> tuple[dict[str, Any], str, int]:
+        if (
+            result.get("result_type") != "success"
+            or result.get("streamed")
+            or str(result.get("output") or "").strip()
+        ):
+            return result, "", retries
+        if retries < MAX_EMPTY_RESPONSE_RETRIES:
+            return result, (
+                "刚才已经完成了一批处理，但还没有向用户输出可读说明。"
+                "请基于真实工具结果直接输出 2 至 4 句公开工作摘要：说明核对了什么、得到什么事实、"
+                "接下来准备做什么。不要调用工具，不要声称整轮已经完成，也不要展示内部推理、"
+                "工具名、参数或内部标识。"
+            ), retries + 1
+
+        text = "当前步骤已结束，详细处理记录已保留；你可以继续补充要求。"
+        message_id = f"stream_{run.id}_{uuid.uuid4().hex[:8]}"
+        self.events.publish(run.project_id, run.id, "message_delta", {
+            "messageId": message_id,
+            "role": "assistant",
+            "delta": text,
+        })
+        self.events.publish(run.project_id, run.id, "message_done", {
+            "messageId": message_id,
+            "role": "assistant",
+        })
+        return {
+            **result,
+            "output": text,
+            "streamed": True,
+        }, "", retries
+
     async def _run_streaming(self, live: LiveRun, run: RunRecord, runner: Any, query: Any) -> dict[str, Any]:
         message_id = f"stream_{run.id}_{uuid.uuid4().hex[:8]}"
         output_parts: list[str] = []
@@ -1540,6 +1593,9 @@ class AgentService:
                     interaction = _interaction_from_stream(run, getattr(chunk, "payload", None))
         finally:
             if not _missing_required_tools(live):
+                if held_parts:
+                    publish_visible("".join(held_parts))
+                    held_parts.clear()
                 tail = sanitizer.finish()
                 if tail:
                     visible_parts.append(tail)

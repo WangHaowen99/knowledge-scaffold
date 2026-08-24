@@ -22,6 +22,18 @@ ToolReceiptLookup = Callable[[str, str, dict[str, Any]], dict[str, Any] | None]
 ToolReceiptSave = Callable[[str, str, dict[str, Any], dict[str, Any]], None]
 FULL_READ_PROGRESS_INTERVAL_SECONDS = 5.0
 
+TOOL_WORK_DETAILS = {
+    "list_documents": "先盘点可用资料，再确定需要精读的范围",
+    "read_document": "正在从原文提取与当前任务相关的事实和依据",
+    "read_documents_fully": "正在核对全文覆盖范围，并整理可引用的事实",
+    "search_documents": "正在定位相关原文，再与当前建模内容交叉核对",
+    "list_tables": "先盘点可用数据表，再选择需要核对的字段范围",
+    "describe_table": "正在核对字段含义、类型和样例，避免只按名称推断",
+    "read_table_rows": "正在用真实样例值复核字段口径和数据关系",
+    "read_file": "正在比对现有建模内容与资料依据是否一致",
+    "grep_package": "正在定位相关知识条目，再核对上下游引用关系",
+}
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -540,7 +552,7 @@ class CoreTool(Tool):
                     self.context.emit("progress", {
                         "activityId": activity_id,
                         "text": self.spec.display,
-                        "detail": _generic_long_task_detail(elapsed),
+                        "detail": tool_work_detail(self.spec.name, elapsed),
                         "phase": "tool",
                         "counters": {"elapsedSeconds": elapsed},
                     })
@@ -572,12 +584,12 @@ def _long_task_detail(elapsed: int) -> str:
     return "正在读取和整理原始资料"
 
 
-def _generic_long_task_detail(elapsed: int) -> str:
+def tool_work_detail(name: str, elapsed: int = 0) -> str:
     if elapsed >= 120:
         return "这一步等待时间较长，你可以继续输入或停止任务"
     if elapsed >= 30:
         return "仍在等待下一项进度，你可以继续输入或离开页面"
-    return "正在处理当前步骤"
+    return TOOL_WORK_DETAILS.get(name, "正在处理当前步骤")
 
 
 class ProjectStateTool(Tool):

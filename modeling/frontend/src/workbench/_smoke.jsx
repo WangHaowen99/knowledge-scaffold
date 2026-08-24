@@ -939,6 +939,8 @@ try {
     throw new Error('版本恢复没有形成自然业务消息');
   }
   if (humanizeTraceSummary('当前项目状态：评测 / running') !== '当前阶段：评测'
+    || humanizeTraceSummary('处理完成', 'task_tool') !== '一项子任务已完成，主任务继续处理中'
+    || humanizeTraceSummary('处理完成', 'read_document') !== '当前步骤已完成'
     || !html.includes('当前阶段：评测')) {
     throw new Error('历史过程摘要没有翻译成业务语言');
   }
@@ -960,6 +962,24 @@ try {
   }
   console.log('✓ 主流程不暴露运行时实现');
 } catch (e) { console.log('✗ 主流程实现隔离:', e.message); bad++; }
+
+store.set({ trace: [], lastSeq: 0, replayUntilSeq: 0, activity: null });
+actions.handleEvent({
+  eventType: 'tool', seq: 1, runId: 'run-trace', toolCallId: 'call-read',
+  name: 'read_document', phase: 'started', summary: '正在读取资料', createdAt: '2026-01-01T00:00:00Z',
+});
+actions.handleEvent({
+  eventType: 'tool', seq: 2, runId: 'run-trace', toolCallId: 'call-read',
+  name: 'read_document', phase: 'completed', summary: '资料读取完成', createdAt: '2026-01-01T00:00:01Z',
+});
+try {
+  const [entry] = store.get().trace;
+  if (store.get().trace.length !== 1 || entry?.phase !== 'completed'
+    || entry?.summary !== '资料读取完成' || !entry?.at.endsWith(':00')) {
+    throw new Error('同一工具调用的开始和结束没有合并为一条处理记录');
+  }
+  console.log('✓ 工具开始与结束合并为单条处理记录');
+} catch (e) { console.log('✗ 工具处理记录合并:', e.message); bad++; }
 
 try {
   const awaiting = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,8 @@ from modeling_agent.rails import (
     claims_confirmation_card,
 )
 from modeling_agent.errors import AgentRuntimeError
+from modeling_agent.schemas import RUN_RUNNING, RunRecord
+from modeling_agent.service import LiveRun
 from modeling_agent.tools import (
     CORE_TOOL_SPECS,
     PROJECT_STATE_TOOL_SPECS,
@@ -37,6 +40,64 @@ async def wait_for_status(runtime, run_id: str, statuses: set[str], timeout: flo
             return run
         await asyncio.sleep(0.02)
     raise AssertionError(f"run {run_id} did not reach {statuses}")
+
+
+async def test_held_text_is_flushed_when_required_tool_finishes_at_stream_boundary(settings) -> None:
+    runtime = service(settings, ScriptedModel([]))
+    run = runtime.store.create_run(RunRecord(
+        id="run_boundary",
+        project_id="project_boundary",
+        session_id="session_boundary",
+        status=RUN_RUNNING,
+        prompt="核对资料",
+        token_fingerprint="fingerprint",
+    ))
+    live = LiveRun(
+        run_id=run.id,
+        project_id=run.project_id,
+        token="token_1",
+        required_tools={"read_document"},
+    )
+    live.bundle = SimpleNamespace(agent=object())
+
+    class BoundaryRunner:
+        @staticmethod
+        async def run_agent_streaming(*_args, **_kwargs):
+            yield SimpleNamespace(type="llm_output", payload="已找到相关原文依据。")
+            live.observed_tools.add("read_document")
+
+    result = await runtime._run_streaming(live, run, BoundaryRunner, "核对资料")  # noqa: SLF001
+
+    assert result["streamed"] is True
+    events = runtime.store.events_after(run.project_id, 0)
+    assert "".join(
+        event.payload.get("delta", "") for event in events if event.kind == "message_delta"
+    ) == "已找到相关原文依据。"
+    assert len([event for event in events if event.kind == "message_done"]) == 1
+
+
+async def test_completed_run_never_ends_without_visible_assistant_output(settings) -> None:
+    model = ScriptedModel([[], []], final="")
+    runtime = service(settings, model)
+    await runtime.startup()
+    try:
+        started = await runtime.start_run(
+            project_id="project_empty_response",
+            token="token_1",
+            message="告诉我当前情况",
+        )
+        completed = await wait_for_status(runtime, started["id"], {"completed", "failed"})
+
+        assert completed["status"] == "completed", completed["error"]
+        events = runtime.store.events_after("project_empty_response", 0)
+        visible = "".join(
+            event.payload.get("delta", "") for event in events if event.kind == "message_delta"
+        )
+        assert visible == "当前步骤已结束，详细处理记录已保留；你可以继续补充要求。"
+        assert len([event for event in events if event.kind == "message_done"]) == 1
+        assert model.calls >= 2
+    finally:
+        await runtime.shutdown()
 
 
 async def test_real_openjiuwen_runner_focus_interrupt_and_resume(settings, caplog) -> None:
