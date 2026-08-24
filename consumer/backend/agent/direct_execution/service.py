@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import unicodedata
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry
@@ -670,7 +671,9 @@ class DeterministicExecutionService:
                 "Deterministic provider credentials do not meet the minimum length.",
                 operation_key=spec.operation_key,
             )
+        provider_protected_values = self._provider_protected_values(provider_binding)
         provider_network_endpoint = None
+        provider_network_domain_endpoint = None
         sandbox_provider_connection = None
         if provider_binding is not None:
             provider_network_endpoint = provider_binding.network_endpoint
@@ -698,6 +701,15 @@ class DeterministicExecutionService:
                         provider_network_endpoint,
                     ),
                 )
+                if (
+                    urlparse(provider_binding.effective_connection.endpoint)
+                    .scheme.strip()
+                    .casefold()
+                    in _TLS_ENDPOINT_SCHEMES
+                ):
+                    provider_network_domain_endpoint = (
+                        provider_binding.effective_connection.endpoint
+                    )
         env_overrides = self._fixed_environment(
             ontology_id=ontology.id,
             ontology_version=ontology.version,
@@ -813,6 +825,9 @@ class DeterministicExecutionService:
                     ),
                     sandbox_prepare_data_connection=False,
                     sandbox_network_endpoint=provider_network_endpoint,
+                    sandbox_network_domain_endpoint=(
+                        provider_network_domain_endpoint
+                    ),
                     sandbox_writable_paths=[artifact_root],
                     file_size_limit_bytes=MAX_ARTIFACT_BYTES,
                 )
@@ -880,7 +895,7 @@ class DeterministicExecutionService:
                     handler_execution_count=1,
                     internal_detail=self._redact_secret_values(
                         handler_output,
-                        provider_secrets,
+                        provider_protected_values,
                     ),
                 )
             if len(handler_output.encode("utf-8")) > HANDLER_STDOUT_LIMIT:
@@ -898,7 +913,10 @@ class DeterministicExecutionService:
                     "Deterministic handler did not return valid JSON.",
                     operation_key=spec.operation_key,
                     handler_execution_count=1,
-                    internal_detail=str(exc),
+                    internal_detail=self._redact_secret_values(
+                        str(exc),
+                        provider_protected_values,
+                    ),
                 )
             if not isinstance(structured_result, dict):
                 return Failed(
@@ -907,7 +925,10 @@ class DeterministicExecutionService:
                     operation_key=spec.operation_key,
                     handler_execution_count=1,
                 )
-            if self._value_contains_secret(structured_result, provider_secrets):
+            if self._value_contains_secret(
+                structured_result,
+                provider_protected_values,
+            ):
                 return Failed(
                     "secret_output_violation",
                     "Deterministic handler output contains protected provider credentials.",
@@ -956,7 +977,7 @@ class DeterministicExecutionService:
             artifact_result = self._collect_artifacts(
                 artifact_root,
                 writer=artifact_writer,
-                forbidden_values=provider_secrets,
+                forbidden_values=provider_protected_values,
             )
             if isinstance(artifact_result, Failed):
                 return Failed(
@@ -1404,6 +1425,7 @@ class DeterministicExecutionService:
         sandbox_prepare_data_connection: bool = False,
         sandbox_include_data_connection_env: bool = True,
         sandbox_network_endpoint: Optional[str] = None,
+        sandbox_network_domain_endpoint: Optional[str] = None,
         sandbox_writable_paths: list[Path] | None = None,
         sandbox_run_id: Optional[str] = None,
         file_size_limit_bytes: Optional[int] = None,
@@ -1436,6 +1458,7 @@ class DeterministicExecutionService:
             sandbox_prepare_data_connection=sandbox_prepare_data_connection,
             sandbox_include_data_connection_env=sandbox_include_data_connection_env,
             sandbox_network_endpoint=sandbox_network_endpoint,
+            sandbox_network_domain_endpoint=sandbox_network_domain_endpoint,
             sandbox_writable_paths=tuple(sandbox_writable_paths or ()),
             sandbox_run_id=sandbox_run_id,
             file_size_limit_bytes=file_size_limit_bytes,
@@ -2162,6 +2185,64 @@ class DeterministicExecutionService:
 
         collect_sensitive_options(connection.options)
         return tuple(sorted(values, key=lambda item: (-len(item), item)))
+
+    @staticmethod
+    def _protected_value_encodings(value: str) -> set[str]:
+        """Return deterministic encodings that remain credential-equivalent."""
+        raw = str(value or "")
+        if not raw:
+            return set()
+        payload = raw.encode("utf-8")
+        variants = {
+            raw,
+            payload.hex(),
+            payload.hex().upper(),
+            quote(raw, safe=""),
+            quote_plus(raw, safe=""),
+            raw.encode("unicode_escape").decode("ascii"),
+        }
+        for encoder in (
+            base64.b16encode,
+            base64.b32encode,
+            base64.b64encode,
+            base64.urlsafe_b64encode,
+            base64.b85encode,
+            base64.a85encode,
+        ):
+            encoded = encoder(payload).decode("ascii")
+            variants.add(encoded)
+            variants.add(encoded.rstrip("="))
+        variants.add(base64.encodebytes(payload).decode("ascii").strip())
+        for algorithm in (
+            hashlib.md5,
+            hashlib.sha1,
+            hashlib.sha224,
+            hashlib.sha256,
+            hashlib.sha384,
+            hashlib.sha512,
+            hashlib.blake2b,
+            hashlib.blake2s,
+        ):
+            variants.add(algorithm(payload).hexdigest())
+        return {item for item in variants if item}
+
+    @classmethod
+    def _provider_protected_values(
+        cls,
+        binding: Optional[DeterministicProviderBinding],
+    ) -> tuple[str, ...]:
+        if binding is None:
+            return ()
+        raw_values = set(cls._provider_secret_values(binding))
+        username = str(binding.effective_connection.auth.username or "")
+        if username:
+            raw_values.add(username)
+        protected_values: set[str] = set()
+        for raw_value in raw_values:
+            protected_values.update(cls._protected_value_encodings(raw_value))
+        return tuple(
+            sorted(protected_values, key=lambda item: (-len(item), item))
+        )
 
     @staticmethod
     def _value_contains_secret(value: Any, secret_values: tuple[str, ...]) -> bool:

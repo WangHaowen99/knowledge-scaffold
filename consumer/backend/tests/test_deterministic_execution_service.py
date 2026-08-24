@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -1619,6 +1620,12 @@ def test_workspace_provider_uses_pinned_egress_without_losing_tls_server_name(
     assert isinstance(outcome, Completed)
     handler_call = calls[0]
     assert handler_call["sandbox_network_endpoint"] == pinned_endpoint
+    expected_domain_endpoint = (
+        endpoint
+        if endpoint.startswith(("neo4j+s://", "https://"))
+        else None
+    )
+    assert handler_call["sandbox_network_domain_endpoint"] == expected_domain_endpoint
     connection_payload = json.loads(
         handler_call["env_overrides"]["ONTO_SCRIPT_BUSINESS_DATA_CONNECTION_JSON"]
     )
@@ -1811,6 +1818,68 @@ def test_provider_secret_in_artifact_is_rejected_before_persistence(tmp_path, mo
 
     assert isinstance(outcome, Failed)
     assert outcome.code == "secret_output_violation"
+    assert persisted == []
+
+
+@pytest.mark.parametrize("channel", ["result", "failure", "artifact"])
+@pytest.mark.parametrize("protected_value", ["reader", "synthetic-provider-secret"])
+def test_encoded_provider_credentials_are_blocked_on_every_output_channel(
+    tmp_path,
+    monkeypatch,
+    channel,
+    protected_value,
+):
+    ontology_dir = _write_package(tmp_path, data_access="workspace_provider")
+    service_module = _patch_manifest(monkeypatch, ontology_dir)
+    effective_connection = EffectiveConnection(
+        version=1,
+        provider="neo4j",
+        endpoint="neo4j+s://snapshot.example.com:7687",
+        auth=AuthSpec(
+            type="mindsdb_password",
+            username="reader",
+            password="synthetic-provider-secret",
+        ),
+        options={"database": "snapshot", "data_revision": "rev-synthetic"},
+    )
+    monkeypatch.setattr(
+        service_module,
+        "resolve_deterministic_provider_binding",
+        lambda **_kwargs: SimpleNamespace(
+            effective_connection=effective_connection,
+            source_ref="business_data",
+            data_revision="rev-synthetic",
+            scope_digest="sha256:synthetic-scope",
+            network_endpoint=effective_connection.endpoint,
+        ),
+    )
+    encoded_value = base64.b64encode(protected_value.encode("utf-8")).decode("ascii")
+
+    def execute(**kwargs):
+        if channel == "artifact":
+            artifact_dir = Path(kwargs["env_overrides"]["RUN_ARTIFACT_DIR"])
+            (artifact_dir / "result.txt").write_text(encoded_value, encoding="utf-8")
+            return json.dumps({"value": "ok"})
+        if channel == "failure":
+            return "Error: synthetic provider rejected {}".format(encoded_value)
+        return json.dumps({"value": encoded_value})
+
+    persisted = []
+    monkeypatch.setattr(service_module, "handle_execute_script_path", execute)
+
+    outcome = DeterministicExecutionService().execute(
+        _request(arguments={"code": "A"}),
+        enabled=True,
+        project_root=str(tmp_path),
+        timeout_seconds=30,
+        artifact_writer=lambda *args: persisted.append(args),
+    )
+
+    assert isinstance(outcome, Failed)
+    assert outcome.code == (
+        "handler_failed" if channel == "failure" else "secret_output_violation"
+    )
+    assert encoded_value not in str(outcome.internal_detail)
     assert persisted == []
 
 

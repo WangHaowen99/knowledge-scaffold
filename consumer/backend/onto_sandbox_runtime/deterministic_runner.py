@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import importlib.machinery
 import io
 import json
 import os
@@ -43,6 +44,49 @@ def _local_module_exists(module_name: str, search_roots: Sequence[Path]) -> bool
         if candidate.with_suffix(".py").is_file() or (candidate / "__init__.py").is_file():
             return True
     return False
+
+
+def _local_module_names(script_dir: Path, entrypoint: Path) -> frozenset[str]:
+    names: set[str] = set()
+    for candidate in script_dir.iterdir():
+        if candidate == entrypoint:
+            continue
+        if candidate.is_file() and candidate.suffix == ".py":
+            if candidate.stem != "__init__" and candidate.stem.isidentifier():
+                names.add(candidate.stem)
+            continue
+        if not candidate.is_dir() or not candidate.name.isidentifier():
+            continue
+        if (candidate / "__init__.py").is_file():
+            names.add(candidate.name)
+    return frozenset(names)
+
+
+def _reject_local_module_collisions(
+    import_roots: Sequence[Path],
+    entrypoint: Path,
+) -> None:
+    """Reject local imports that would shadow an installed runtime module."""
+    root_values = frozenset(os.path.realpath(root) for root in import_roots)
+    runtime_paths: list[str] = []
+    for raw_path in sys.path:
+        resolved = os.path.realpath(raw_path or os.getcwd())
+        if resolved not in root_values:
+            runtime_paths.append(raw_path)
+    local_modules: set[str] = set()
+    for import_root in import_roots:
+        for module_name in _local_module_names(import_root, entrypoint):
+            if module_name in local_modules:
+                raise ImportError("local deterministic module name is ambiguous")
+            local_modules.add(module_name)
+            runtime_spec = importlib.machinery.PathFinder.find_spec(
+                module_name,
+                runtime_paths,
+            )
+            if runtime_spec is not None:
+                raise ImportError(
+                    "local deterministic module collides with a runtime module"
+                )
 
 
 def _path_value_is_within(raw_path: object, root: str) -> bool:
@@ -99,6 +143,34 @@ def _install_runtime_guards(
 
     original_import = builtins.__import__
     ontology_root_value = os.path.realpath(ontology_root)
+    forbidden_import_exports = frozenset(
+        {
+            "asyncio",
+            "concurrent",
+            "ctypes",
+            "datetime",
+            "glob",
+            "importlib",
+            "inspect",
+            "marshal",
+            "multiprocessing",
+            "os",
+            "pathlib",
+            "pickle",
+            "platform",
+            "random",
+            "resource",
+            "secrets",
+            "signal",
+            "socket",
+            "subprocess",
+            "sys",
+            "tempfile",
+            "threading",
+            "time",
+            "uuid",
+        }
+    )
 
     def guarded_import(
         name: str,
@@ -118,6 +190,10 @@ def _install_runtime_guards(
         module_name = str(name or "").strip()
         import_root = module_name.split(".", 1)[0]
         requested_exports = frozenset(str(item).strip() for item in (fromlist or ()))
+        if package_call and requested_exports.intersection(forbidden_import_exports):
+            raise ImportError(
+                "module export is outside the deterministic runtime capability contract"
+            )
         runtime_import_allowed = (
             module_name in allowed_runtime_exports
             and bool(requested_exports)
@@ -150,6 +226,37 @@ def _install_runtime_guards(
 
     builtins.open = guard_callable(builtins.open, "filesystem open")
     io.open = guard_callable(io.open, "filesystem open")
+    for name in (
+        "getrandom",
+        "urandom",
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "fork",
+        "forkpty",
+        "popen",
+        "posix_spawn",
+        "posix_spawnp",
+        "setpgid",
+        "setsid",
+        "spawnl",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnv",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "system",
+    ):
+        original = getattr(os, name, None)
+        if callable(original):
+            setattr(os, name, guard_callable(original, "os.{}".format(name)))
     for name in ("breakpoint", "compile", "eval", "exec", "id", "input"):
         original = getattr(builtins, name, None)
         if callable(original):
@@ -168,14 +275,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not script_path.is_file() or not _is_within(script_path, ontology_root):
         raise ValueError("deterministic script must be inside the ontology directory")
     contract = _load_runtime_contract()
+    import_roots = [script_path.parent]
+    if script_path.parent != ontology_root:
+        import_roots.append(ontology_root)
+    _reject_local_module_collisions(import_roots, script_path)
     _install_runtime_guards(
         ontology_root=ontology_root,
         script_dir=script_path.parent,
         contract=contract,
     )
+    original_argv = sys.argv
+    original_path = sys.path
     sys.argv = [str(script_path), *arguments[1:]]
-    sys.path.insert(0, str(script_path.parent))
-    runpy.run_path(str(script_path), run_name="__main__")
+    sys.path = [*(str(root) for root in import_roots), *original_path]
+    try:
+        runpy.run_path(str(script_path), run_name="__main__")
+    finally:
+        sys.argv = original_argv
+        sys.path = original_path
     return 0
 
 

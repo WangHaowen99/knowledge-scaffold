@@ -249,6 +249,10 @@ def test_v1_lock_hashes_operation_declarations_before_routing(tmp_path):
         "import json\nprint(json.dumps({'value': open('/proc/self/stat').read()}))\n",
         "import json\nloader = __builtins__['__import__']\n"
         "module = loader('os')\nprint(json.dumps({'value': module.getpid()}))\n",
+        "import json\nfrom requests.utils import os\n"
+        "print(json.dumps({'value': os.urandom(8).hex()}))\n",
+        "import json\nfrom requests import utils\n"
+        "print(json.dumps({'value': utils.os.urandom(8).hex()}))\n",
     ),
 )
 def test_deterministic_package_rejects_obvious_nondeterministic_apis(

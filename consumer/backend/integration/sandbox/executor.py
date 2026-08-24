@@ -120,6 +120,7 @@ class SandboxScriptExecutor:
         prepare_data_connection: bool = True,
         include_data_connection_env: bool = True,
         network_endpoint: str | None = None,
+        network_domain_endpoint: str | None = None,
         writable_paths: Sequence[Path] = (),
         stdout_limit_bytes: int | None = None,
         stderr_limit_bytes: int | None = None,
@@ -188,6 +189,7 @@ class SandboxScriptExecutor:
             memory_max=self._config.memory_max,
             cpu_max=self._config.cpu_max,
             pids_max=self._config.pids_max,
+            egress_domain_url=str(network_domain_endpoint or "").strip() or None,
             writable_paths=tuple(resolved_writable_paths),
             read_only_paths=(resolved_ontology_dir,) if restrict_filesystem_to_ontology else (),
         )
@@ -214,6 +216,7 @@ class SandboxScriptExecutor:
             command = [
                 self._config.python_bin,
                 "-u",
+                "-P",
                 "-m",
                 "onto_sandbox_runtime.deterministic_runner",
                 "--",

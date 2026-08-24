@@ -492,10 +492,16 @@ def test_executor_mounts_only_workspace_for_global_project_root(tmp_path, monkey
         workspace_id="ws",
         ontology_id="demo",
         timeout_seconds=30,
+        network_endpoint="neo4j+s://192.0.2.24:7687",
+        network_domain_endpoint="neo4j+s://snapshot.example.com:7687",
     )
 
     assert result.returncode == 0
     assert captured["ctx"].workspace_root == workspace_root.resolve()
+    assert captured["ctx"].data_proxy_url == "neo4j+s://192.0.2.24:7687"
+    assert captured["ctx"].egress_domain_url == (
+        "neo4j+s://snapshot.example.com:7687"
+    )
     assert captured["workdir"] == str(workspace_root.resolve()).replace("\\", "/")
     assert captured["command"][2] == str(script.resolve()).replace("\\", "/")
     policy = OntoSandboxPolicyBuilder.build(captured["ctx"])
@@ -643,6 +649,7 @@ def test_sandbox_executor_wraps_commands_with_output_limits(tmp_path, monkeypatc
     assert captured["command"][bounded_separator + 1 :] == [
         "/usr/bin/python3",
         "-u",
+        "-P",
         "-m",
         "onto_sandbox_runtime.deterministic_runner",
         "--",
@@ -764,6 +771,7 @@ def test_deterministic_runtime_runner_allows_contract_capabilities(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "onto_sandbox_runtime.deterministic_runner",
             "--",
@@ -796,6 +804,7 @@ def test_deterministic_runtime_runner_blocks_dynamic_import_bypass(tmp_path):
     completed = subprocess.run(
         [
             sys.executable,
+            "-P",
             "-m",
             "onto_sandbox_runtime.deterministic_runner",
             "--",
@@ -810,6 +819,72 @@ def test_deterministic_runtime_runner_blocks_dynamic_import_bypass(tmp_path):
 
     assert completed.returncode != 0
     assert "outside the deterministic runtime capability contract" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "handler_source",
+    (
+        "from requests.utils import os\nprint(os.urandom(8).hex())\n",
+        "from requests import utils\nprint(utils.os.urandom(8).hex())\n",
+    ),
+)
+def test_deterministic_runtime_runner_blocks_external_module_reexport(
+    tmp_path,
+    handler_source,
+):
+    script = tmp_path / "handler.py"
+    script.write_text(handler_source, encoding="utf-8")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "onto_sandbox_runtime.deterministic_runner",
+            "--",
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert (
+        "deterministic runtime capability contract" in completed.stderr
+        or "unavailable to deterministic package code" in completed.stderr
+    )
+
+
+def test_deterministic_runtime_runner_rejects_local_module_collision(tmp_path):
+    (tmp_path / "json.py").write_text("value = 'shadowed'\n", encoding="utf-8")
+    script = tmp_path / "handler.py"
+    script.write_text("import json\nprint(json.dumps({'value': 'ok'}))\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-m",
+            "onto_sandbox_runtime.deterministic_runner",
+            "--",
+            str(script),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "collides with a runtime module" in completed.stderr
 
 
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires POSIX resource limits")
@@ -1000,6 +1075,31 @@ def test_egress_target_rules_use_exact_host_prefixes_for_ipv4_and_ipv6():
         [],
         ["2001:db8::1/128"],
     )
+
+
+def test_policy_builder_keeps_tls_domain_resolution_pinned_to_allowed_ip(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    ctx = PolicyContext(
+        run_id="run-tls",
+        workspace_id="ws",
+        ontology_id="demo",
+        workspace_root=workspace_root,
+        sandbox_runtime_python_dir=Path("/app/sandbox-runtime/python"),
+        data_proxy_url="neo4j+s://192.0.2.24:7687",
+        memory_max="256M",
+        cpu_max=0.5,
+        pids_max=32,
+        egress_domain_url="neo4j+s://snapshot.example.com:7687",
+    )
+
+    policy = OntoSandboxPolicyBuilder.build(ctx)
+    egress = policy["network"]["egress"]
+
+    assert egress["allowed_domains"] == ["snapshot.example.com"]
+    assert egress["allowed_ips"] == ["192.0.2.24/32"]
+    assert egress["allowed_ports"] == [7687]
+    assert egress["blocked_ports"] == []
 
 
 def test_extract_port_from_url_defaults_by_scheme():

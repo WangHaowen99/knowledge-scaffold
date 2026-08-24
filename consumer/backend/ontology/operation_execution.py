@@ -975,6 +975,24 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
                             imported_module or "relative",
                         ),
                     )
+                forbidden_export = next(
+                    (
+                        item.name
+                        for item in node.names
+                        if item.name.split(".", 1)[0]
+                        in _FORBIDDEN_DETERMINISTIC_IMPORT_ROOTS
+                    ),
+                    "",
+                )
+                if node.level == 0 and forbidden_export:
+                    raise DeterministicPackageError(
+                        "determinism_contract_violation",
+                        "Deterministic Python file '{}' imports unsupported module export '{}.{}'.".format(
+                            _relative_path(root, path),
+                            imported_module,
+                            forbidden_export,
+                        ),
+                    )
             if (
                 imported_module
                 and imported_module.split(".", 1)[0]
@@ -992,8 +1010,7 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
             call_name = _python_call_name(node.func, aliases)
             if (
                 call_name in _FORBIDDEN_DETERMINISTIC_BUILTIN_CALLS
-                or call_name in _NONDETERMINISTIC_CALLS
-                or call_name.startswith(_NONDETERMINISTIC_CALL_PREFIXES)
+                or _is_nondeterministic_call_name(call_name)
             ):
                 raise DeterministicPackageError(
                     "determinism_contract_violation",
@@ -1018,6 +1035,22 @@ def _validate_deterministic_python_closure(root: Path, entrypoints: Iterable[Pat
             dependency_key = (dependency, absolute_search_roots)
             if dependency_key not in visited:
                 pending.append(dependency_key)
+
+
+def _is_nondeterministic_call_name(call_name: str) -> bool:
+    normalized = str(call_name or "").strip()
+    if not normalized:
+        return False
+    if any(
+        normalized == forbidden or normalized.endswith("." + forbidden)
+        for forbidden in _NONDETERMINISTIC_CALLS
+    ):
+        return True
+    qualified = "." + normalized
+    return any(
+        "." + prefix in qualified
+        for prefix in _NONDETERMINISTIC_CALL_PREFIXES
+    )
 
 
 def _validate_deterministic_import_contract(
@@ -1155,14 +1188,12 @@ def _python_import_aliases(tree: ast.AST) -> dict[str, str]:
 def _python_call_name(node: ast.AST, aliases: Mapping[str, str]) -> str:
     if isinstance(node, ast.Name):
         return aliases.get(node.id, node.id)
-    if (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "__builtins__"
-        and isinstance(node.slice, ast.Constant)
-        and isinstance(node.slice.value, str)
-    ):
-        return node.slice.value
+    if isinstance(node, ast.Subscript):
+        container = node.value
+        key = node.slice
+        if isinstance(container, ast.Name) and container.id == "__builtins__":
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                return key.value
     if isinstance(node, ast.Attribute):
         parent = _python_call_name(node.value, aliases)
         return "{}.{}".format(parent, node.attr) if parent else node.attr
