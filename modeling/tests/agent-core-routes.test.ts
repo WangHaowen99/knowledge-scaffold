@@ -237,7 +237,15 @@ test('接管候选工作区时返回与核心校验器同源的生成契约', as
 
   assert.equal(claimed.statusCode, 200, claimed.body);
   const contract = claimed.json().packageContract;
-  assert.equal(contract.validatorVersion, 'package-contract-v2');
+  assert.equal(contract.validatorVersion, 'package-contract-v3');
+  assert.equal(contract.validators.goalEvidence, 'goal-evidence-v2');
+  assert.equal(contract.validators.diagramEvidence, 'diagram-evidence-v2');
+  assert.equal(contract.confirmation.repairRoundBoundary, 'model_call');
+  assert.equal(contract.confirmation.aggregateParallelFindings, true);
+  assert.deepEqual(contract.confirmation.recoveryToolsRemainAvailable, [
+    'delete_file', 'discard_rejected_candidate_changes',
+  ]);
+  assert.match(contract.authoring.goalEvidence.invariants.join('\n'), /正文中的每个 material token/u);
   assert.match(contract.validators.packageFormat, /^package-format-/u);
   assert.ok(contract.manifest.requiredFields.includes('status'));
   assert.deepEqual(
@@ -1794,7 +1802,7 @@ test('平台保留 manifest 管理字段，底层预检仍把详细错误返回�
   assert.equal(receipt.candidateRevision, accepted.json().candidate_revision);
   assert.equal(receipt.baseRevision, current.revision.oid);
   assert.match(receipt.candidateHash, /^sha256:[a-f0-9]{64}$/u);
-  assert.equal(receipt.validatorVersion, 'package-contract-v2');
+  assert.equal(receipt.validatorVersion, 'package-contract-v3');
 });
 
 test('接受候选前必须匹配预检回执中的内容哈希和校验器版本', async (t) => {

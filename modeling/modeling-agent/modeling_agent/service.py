@@ -1453,7 +1453,7 @@ class AgentService:
                     if kind == "tool":
                         phase = str(payload.get("phase") or "")
                         name = str(payload.get("name") or "")
-                        if phase in {"completed", "failed"}:
+                        if phase in {"completed", "failed", "repairing", "blocked", "rejected"}:
                             live.attempted_tools.add(name)
                             summary = sanitize_visible_text(str(payload.get("summary") or "")).strip()
                             if summary:
@@ -1488,6 +1488,7 @@ class AgentService:
                     confirmation_required=live.confirmation_required,
                     release_declined=live.release_declined,
                     validation_repair=live.validation_repair,
+                    package_contract=live.package_contract,
                 )
                 live.bundle = build_agent(
                     self.settings,

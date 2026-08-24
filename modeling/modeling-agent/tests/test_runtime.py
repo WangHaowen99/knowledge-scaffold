@@ -217,24 +217,104 @@ async def test_package_contract_is_injected_into_initial_agent_context() -> None
     assert "生成、修正和确认候选都必须以这份" in prompt
 
 
-async def test_candidate_validation_repair_allows_three_distinct_rounds_then_stops() -> None:
+async def test_candidate_validation_repair_aggregates_parallel_files_as_one_round() -> None:
+    state = CandidateValidationRepairState()
+    state.begin_round("model-1")
+
+    for index in range(1, 5):
+        result = state.record({
+            "error": "CANDIDATE_FORMAT_INVALID",
+            "validatorVersion": "package-v1",
+            "findings": [{"ruleId": "required-section", "path": f"file-{index}.md"}],
+        })
+        assert result["repairAttempt"] == 1
+        assert result["repairRoundId"] == "model-1"
+        assert result["repairStopped"] is False
+
+    state.begin_round("model-2")
+    assert state.attempts == 1
+    assert state.stopped is False
+    assert state.last_report["findingCount"] == 4
+    assert [item["path"] for item in state.last_report["findings"]] == [
+        "file-1.md", "file-2.md", "file-3.md", "file-4.md",
+    ]
+
+
+async def test_candidate_validation_repair_stops_after_three_distinct_model_rounds() -> None:
     state = CandidateValidationRepairState()
 
     for attempt in range(1, 4):
+        state.begin_round(f"model-{attempt}")
         result = state.record({
             "error": "CANDIDATE_FORMAT_INVALID",
+            "validatorVersion": "package-v1",
             "findings": [{"ruleId": f"rule-{attempt}", "path": f"file-{attempt}.md"}],
         })
         assert result["repairAttempt"] == attempt
         assert result["repairStopped"] is False
 
-    stopped = state.record({
+    state.begin_round("model-4")
+    assert state.attempts == 3
+    assert state.repeated_findings is False
+    assert state.stopped is True
+    assert state.blocked_result()["repairStopped"] is True
+
+
+async def test_candidate_validation_repair_stops_on_repeated_round_and_recovery_resets() -> None:
+    state = CandidateValidationRepairState()
+    report = {
         "error": "CANDIDATE_FORMAT_INVALID",
-        "findings": [{"ruleId": "rule-4", "path": "file-4.md"}],
-    })
-    assert stopped["repairAttempt"] == 4
-    assert stopped["repeatedFinding"] is False
-    assert stopped["repairStopped"] is True
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "same-rule", "path": "objects/customer.md"}],
+    }
+
+    state.begin_round("model-1")
+    state.record(report)
+    state.begin_round("model-2")
+    state.record(report)
+    state.begin_round("model-3")
+
+    assert state.attempts == 2
+    assert state.repeated_findings is True
+    assert state.stopped is True
+
+    state.record_success("discard_rejected_candidate_changes")
+
+    assert state.attempts == 0
+    assert state.stopped is False
+    assert state.current_round_id == "model-3"
+
+
+async def test_tool_context_applies_repair_policy_from_package_contract() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        package_contract={
+            "confirmation": {
+                "maxAutomaticRepairRounds": 4,
+                "stopOnRepeatedFindingFingerprint": False,
+            },
+        },
+    )
+    report = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "validatorVersion": "package-v1",
+        "findings": [{"ruleId": "same-rule", "path": "objects/customer.md"}],
+    }
+
+    context.validation_repair.begin_round("model-1")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-2")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-3")
+
+    assert context.validation_repair.max_attempts == 4
+    assert context.validation_repair.stop_on_repeated_fingerprint is False
+    assert context.validation_repair.repeated_findings is True
+    assert context.validation_repair.stopped is False
 
 
 async def test_quick_file_validation_error_reaches_agent_with_full_findings_and_repair_state() -> None:
@@ -273,8 +353,99 @@ async def test_quick_file_validation_error_reaches_agent_with_full_findings_and_
     assert result["error"] == "KNOWLEDGE_FILE_INVALID"
     assert result["findings"] == [finding]
     assert result["repairAttempt"] == 1
+    assert result["repairRoundId"] == "unscoped"
     assert result["repairStopped"] is False
     assert "完整处理 findings" in result["instruction"]
+
+
+async def test_parallel_quick_validation_failures_share_one_repair_round() -> None:
+    class PathValidationGateway(FakeGateway):
+        async def call(self, **kwargs):
+            path = str(kwargs["arguments"].get("path") or "")
+            return {
+                "error": "KNOWLEDGE_FILE_INVALID",
+                "reason": f"{path} 缺少必需章节",
+                "retryable": True,
+                "validatorVersion": "knowledge-markdown-v1",
+                "findingCount": 1,
+                "findings": [{
+                    "ruleId": "object.required_section",
+                    "path": path,
+                    "message": f"{path} 缺少必需章节",
+                    "suggestion": "补齐必需章节",
+                }],
+            }
+
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=PathValidationGateway(),
+        emit=lambda _kind, _payload: None,
+    )
+    context.validation_repair.begin_round("model-parallel")
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "write_file")
+    tool = CoreTool(spec, context)
+    paths = [
+        "objects/customer.md",
+        "objects/product.md",
+        "objects/ipo.md",
+        "objects/company.md",
+    ]
+
+    results = await asyncio.gather(*(
+        tool.invoke({
+            "path": path,
+            "content": "# 对象",
+            "change_group": "objects",
+            "evidence": ["user-decision:test"],
+        })
+        for path in paths
+    ))
+
+    delivered = [json.loads(item) for item in results]
+    assert {item["repairAttempt"] for item in delivered} == {1}
+    assert {item["repairRoundId"] for item in delivered} == {"model-parallel"}
+    assert all(item["repairStopped"] is False for item in delivered)
+    context.validation_repair.begin_round("model-repair")
+    assert context.validation_repair.attempts == 1
+    assert context.validation_repair.stopped is False
+    assert context.validation_repair.last_report["findingCount"] == 4
+    assert {item["path"] for item in context.validation_repair.last_report["findings"]} == set(paths)
+
+
+async def test_successful_candidate_discard_resets_stopped_repair_episode() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway({
+            "discard_rejected_candidate_changes": {
+                "ok": True,
+                "display": {"text": "已放弃退回的候选"},
+            },
+        }),
+        emit=lambda _kind, _payload: None,
+    )
+    report = {
+        "error": "KNOWLEDGE_FILE_INVALID",
+        "retryable": True,
+        "validatorVersion": "knowledge-markdown-v1",
+        "findings": [{"ruleId": "same", "path": "objects/customer.md"}],
+    }
+    context.validation_repair.begin_round("model-1")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-2")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-3")
+    assert context.validation_repair.stopped is True
+    spec = next(item for item in CORE_TOOL_SPECS if item.name == "discard_rejected_candidate_changes")
+
+    result = json.loads(await CoreTool(spec, context).invoke({}))
+
+    assert result["ok"] is True
+    assert context.validation_repair.stopped is False
+    assert context.validation_repair.attempts == 0
 
 
 async def test_real_openjiuwen_runner_focus_interrupt_and_resume(settings, caplog) -> None:
@@ -1977,14 +2148,22 @@ async def test_confirmation_preflight_delivers_detailed_findings_to_agent_tool_r
     assert delivered["findingFingerprint"].startswith("sha256:")
     assert "完整处理 findings" in delivered["instruction"]
 
+    context.validation_repair.begin_round("model-2")
     repeated = await rail.resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
     repeated_result = json.loads(repeated.tool_result)
     assert repeated_result["findings"] == [finding]
     assert repeated_result["repairAttempt"] == 2
-    assert repeated_result["repeatedFinding"] is True
-    assert repeated_result["repairStopped"] is True
-    assert repeated_result["retryable"] is False
-    assert "自动修正已停止" in repeated_result["instruction"]
+    assert repeated_result["repairRoundId"] == "model-2"
+    assert repeated_result["repairStopped"] is False
+
+    context.validation_repair.begin_round("model-3")
+    blocked = context.validation_repair.blocked_result()
+    assert blocked["findings"] == [finding]
+    assert blocked["repairAttempt"] == 2
+    assert blocked["repeatedFinding"] is True
+    assert blocked["repairStopped"] is True
+    assert blocked["retryable"] is False
+    assert "自动修正已停止" in blocked["instruction"]
 
 
 async def test_text_choice_request_rejects_confirmation_and_opens_ask_card(settings) -> None:
@@ -2301,6 +2480,64 @@ async def test_confirmation_tool_only_exposes_business_summary_to_model() -> Non
     schema = RequestConfirmationTool.SPEC.input_schema
     assert schema["required"] == ["summary"]
     assert set(schema["properties"]) == {"summary"}
+
+
+async def test_interrupt_rail_validation_errors_always_include_structured_findings() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway(),
+        emit=lambda _kind, _payload: None,
+        confirmation_required=True,
+    )
+    ask_call = type("Call", (), {"arguments": '{"question":"还要补充吗"}'})()
+    ask_result = json.loads((
+        await AskRail(context).resolve_interrupt(None, ask_call, None)  # type: ignore[arg-type]
+    ).tool_result)
+
+    assert ask_result["error"] == "OVERALL_CONFIRMATION_REQUIRED"
+    assert ask_result["validatorVersion"] == "interaction-boundary-v1"
+    assert ask_result["repairScope"] == "interaction"
+    assert ask_result["findingCount"] == 1
+    assert ask_result["findings"][0]["ruleId"] == "interaction.overall_confirmation.required"
+
+    context.confirmation_required = False
+    confirmation_call = type("Call", (), {"arguments": '{"summary":"确认候选"}'})()
+    confirmation_result = json.loads((
+        await ConfirmationRail(context).resolve_interrupt(None, confirmation_call, None)  # type: ignore[arg-type]
+    ).tool_result)
+
+    assert confirmation_result["error"] == "CONFIRMATION_GROUPS_UNAVAILABLE"
+    assert confirmation_result["validatorVersion"] == "confirmation-groups-v1"
+    assert confirmation_result["findingCount"] == 1
+    assert confirmation_result["findings"][0]["path"] == "candidate"
+
+
+async def test_release_preflight_blocker_is_structured_and_not_auto_retried() -> None:
+    context = ToolContext(
+        project_id="project_demo",
+        run_id="run_demo",
+        token="token_demo",
+        gateway=FakeGateway({
+            "release_preflight": {
+                "ready": False,
+                "reason": "真实用例尚未覆盖发布范围",
+            },
+        }),
+        emit=lambda _kind, _payload: None,
+    )
+    tool_call = type("Call", (), {"arguments": '{"summary":"确认正式发布"}'})()
+
+    result = json.loads((
+        await ReleaseConfirmationRail(context).resolve_interrupt(None, tool_call, None)  # type: ignore[arg-type]
+    ).tool_result)
+
+    assert result["error"] == "RELEASE_PREFLIGHT_BLOCKED"
+    assert result["retryable"] is False
+    assert result["tracePhase"] == "blocked"
+    assert result["repairScope"] == "release"
+    assert result["findings"][0]["ruleId"] == "release.preflight.blocked"
 
 
 async def test_release_confirmation_uses_core_preflight_and_focuses_evaluation() -> None:

@@ -846,7 +846,7 @@ export const actions = {
   pushMessage(msg) { store.set((s) => ({ userMessages: [...s.userMessages, { id: `u${s.userMessages.length + 1}`, ...msg }] })); },
 };
 
-function mergeToolTrace(trace, event, seq) {
+export function mergeToolTrace(trace, event, seq) {
   const toolCallId = String(event.toolCallId || '');
   const createdAt = event.createdAt || new Date().toISOString();
   const id = toolCallId
@@ -860,6 +860,12 @@ function mergeToolTrace(trace, event, seq) {
     name: event.name,
     phase: event.phase,
     summary: event.summary,
+    code: event.code || '',
+    retryable: Boolean(event.retryable),
+    repairStopped: Boolean(event.repairStopped),
+    repairAttempt: event.repairAttempt ?? null,
+    repairRoundId: event.repairRoundId || '',
+    findingCount: Number(event.findingCount) || 0,
   };
   if (!toolCallId) return [...trace, entry].slice(-300);
   const index = trace.findIndex((item) => item.id === id);

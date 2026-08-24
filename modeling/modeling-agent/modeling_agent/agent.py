@@ -54,7 +54,7 @@ SYSTEM_PROMPT = """你是知识包建模 Leader。知识包仓库是事实源，
 - 收到插话或反问后，直接用最终自然语言回答并结束这次小回合；服务端会自动恢复仍未解决的原问题。不要在同一小回合再次调用 ask 或 request_confirmation。
 - 候选写完后直接调用 request_confirmation 并只提供面向用户的业务摘要；确认分组由系统按实际路径自动整理，不要猜测或填写变更组 ID，也不要先用 ask 重复询问同一项确认。
 - 知识包生成契约由核心校验器在本轮开始时注入。写候选前必须遵守其中的 requiredFields、platformManagedFields 和目录契约；平台管理字段只能从当前正式文件保留，不能自行重建或猜测。
-- request_confirmation 的确定性预检失败时，完整读取返回的 validatorVersion、retryable 和 findings；逐项按 ruleId、path、message、suggestion 修正后重新预检，不得只处理摘要中的第一条错误，也不得把可自动修复的格式问题交给用户。最多自动修正三轮；repairStopped=true 或相同 findingFingerprint 连续出现时立即停止，完整报告 findings，不得继续改写或重复预检。
+- 任一确定性校验失败时，完整读取返回的 validatorVersion、retryable 和 findings；逐项按 ruleId、path、message、actual、suggestion 修正后重新校验，不得只处理摘要中的第一条错误，也不得把可自动修复的格式问题交给用户。同一 repairRoundId 或同一次 model_call 下多个文件的 findings 属于同一修正轮次，必须合并处理，不能按文件重复试错。修正轮数和重复 fingerprint 停止策略以本轮 packageContract.confirmation 为准；repairStopped=true 时停止生成新候选，但仍可读取、删除或调用 discard_rejected_candidate_changes 撤销候选。
 - 用户在确认卡退回候选，并在反馈中明确表示“撤销修改”“不需要修改”或“保持已确认版本”时，调用 discard_rejected_candidate_changes 放弃退回后残留的业务候选；不要为了清空待处理内容伪造无意义 diff。工具成功后留在原业务阶段，继续处理仍然有效的下一步。
 - 资料不足时主动 ask(kind='material_request')。允许口述、稍后补资料或跳过，不把文件当唯一出口。
 - 资料默认由你判断用途并按需读取。用户在上传卡或自然语言中明确指定“建模目标依据”“数据 Schema”“通用业务依据”或“全文精读”时，先调用 set_material_directive 忠实保存；不得再次询问用户分类。
@@ -129,7 +129,11 @@ def build_agent(
             enable_cache=False,
             include_tools=False,
         ),
-        ActivityRail(context.emit, actor="modeling_leader"),
+        ActivityRail(
+            context.emit,
+            actor="modeling_leader",
+            validation_repair=context.validation_repair,
+        ),
     ]
     agent = create_deep_agent(
         resolved_model,

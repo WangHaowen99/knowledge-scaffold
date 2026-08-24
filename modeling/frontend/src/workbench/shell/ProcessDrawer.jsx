@@ -150,8 +150,10 @@ const S = {
 function phasePresentation(phase) {
   return ({
     started: { label: '进行中', tone: 'active' },
+    repairing: { label: '自动修正中', tone: 'active' },
     completed: { label: '已完成', tone: 'done' },
     failed: { label: '失败', tone: 'failed' },
+    blocked: { label: '需要处理', tone: 'failed' },
     rejected: { label: '未执行', tone: 'muted' },
     waiting: { label: '等待决定', tone: 'waiting' },
   })[phase] || { label: '已记录', tone: 'muted' };

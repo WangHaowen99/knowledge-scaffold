@@ -10,7 +10,7 @@ import pytest
 import modeling_agent.service as service_module
 from modeling_agent.errors import AgentRuntimeError
 from modeling_agent.events import EventHub
-from modeling_agent.rails import ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
+from modeling_agent.rails import ActivityRail, ToolBoundaryRail, WriteSafetyRail, _phase_write_problem, check_write_safety
 from modeling_agent.schemas import InteractionRecord, RUN_QUEUED, RUN_RUNNING, RunRecord
 from modeling_agent.store import RuntimeStore
 from modeling_agent.tools import ToolContext
@@ -249,9 +249,125 @@ async def test_goal_write_rejects_material_evidence_missing_from_body() -> None:
     result = json.loads(call.inputs.tool_result)
     assert result["error"] == "GOAL_EVIDENCE_LINK_REQUIRED"
     assert result["display"]["text"] == "建模目标中的资料依据还不能打开原文"
+    assert result["retryable"] is True
+    assert result["tracePhase"] == "repairing"
+    assert result["validatorVersion"] == "goal-evidence-v2"
+    assert result["findings"][0]["ruleId"] == "goal.evidence.missing_from_body"
     assert "material:<资料 id>#<原文锚点>" in result["instruction"]
     assert call.extra["_skip_tool"] is True
-    assert events[-1][1]["phase"] == "rejected"
+    assert events == []
+
+    await ActivityRail(context.emit).after_tool_call(call)  # type: ignore[arg-type]
+
+    assert events == [("tool", {
+        "name": "write_file",
+        "phase": "repairing",
+        "summary": "建模目标中的资料依据还不能打开原文",
+        "toolCallId": "call_goal_evidence",
+        "code": "GOAL_EVIDENCE_LINK_REQUIRED",
+        "retryable": True,
+        "repairStopped": False,
+        "repairAttempt": 1,
+        "repairRoundId": "unscoped",
+        "findingCount": 1,
+    })]
+
+
+@pytest.mark.asyncio
+async def test_goal_write_reports_body_material_token_missing_from_evidence() -> None:
+    gateway = FakeGateway({
+        "list_documents": {
+            "documents": [{"id": "doc_1", "filename": "工艺规程.docx"}],
+        },
+    })
+    context = ToolContext(
+        project_id="project_goal",
+        run_id="run_goal",
+        token="token_goal",
+        gateway=gateway,
+        emit=lambda _kind, _payload: None,
+    )
+    rail = WriteSafetyRail(context)
+    declared = "material:doc_1#第1章"
+    undeclared = "material:doc_1#第2章"
+    call = _write_call_context({
+        "path": ".modeling/goal.md",
+        "content": f"# 建模目标\n\n依据 {declared} 与 {undeclared} 确定范围。",
+        "evidence": [declared],
+    })
+
+    await rail.before_tool_call(call)  # type: ignore[arg-type]
+
+    result = json.loads(call.inputs.tool_result)
+    finding = next(item for item in result["findings"] if item["ruleId"] == "goal.evidence.not_declared")
+    assert finding["path"] == ".modeling/goal.md"
+    assert finding["actual"] == undeclared
+    assert "加入 write_file.evidence" in finding["suggestion"]
+
+
+@pytest.mark.asyncio
+async def test_repair_stop_emits_one_blocker_and_keeps_recovery_tools_available() -> None:
+    events: list[tuple[str, dict]] = []
+
+    async def state_action(_name: str, _arguments: dict) -> dict:
+        return {"phase": "goal"}
+
+    context = ToolContext(
+        project_id="project_goal",
+        run_id="run_goal",
+        token="token_goal",
+        gateway=FakeGateway(),
+        emit=lambda kind, payload: events.append((kind, payload)),
+        state_action=state_action,
+    )
+    report = {
+        "error": "CANDIDATE_FORMAT_INVALID",
+        "retryable": True,
+        "validatorVersion": "package-v1",
+        "findings": [{
+            "ruleId": "object.required_section",
+            "path": "objects/customer.md",
+            "message": "缺少章节",
+            "suggestion": "补齐章节",
+        }],
+    }
+    context.validation_repair.begin_round("model-1")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-2")
+    context.validation_repair.record(report)
+    context.validation_repair.begin_round("model-3")
+    assert context.validation_repair.stopped is True
+
+    rail = WriteSafetyRail(context)
+    activity = ActivityRail(context.emit)
+    first = _write_call_context({"path": "objects/customer.md"})
+    second = _write_call_context({"path": "objects/product.md"})
+    second.inputs.tool_call.id = "call_second_blocked"
+
+    await rail.before_tool_call(first)  # type: ignore[arg-type]
+    await activity.after_tool_call(first)  # type: ignore[arg-type]
+    await rail.before_tool_call(second)  # type: ignore[arg-type]
+    await activity.after_tool_call(second)  # type: ignore[arg-type]
+
+    assert json.loads(first.inputs.tool_result)["error"] == "CANDIDATE_REPAIR_STOPPED"
+    assert json.loads(second.inputs.tool_result)["suppressTrace"] is True
+    assert len(events) == 1
+    assert events[0][1]["phase"] == "blocked"
+
+    for tool_name in ("delete_file", "discard_rejected_candidate_changes"):
+        recovery = SimpleNamespace(
+            inputs=SimpleNamespace(
+                tool_name=tool_name,
+                tool_args={"path": "objects/customer.md"} if tool_name == "delete_file" else {},
+                tool_call=SimpleNamespace(id=f"call_{tool_name}"),
+                tool_result=None,
+                tool_msg=None,
+            ),
+            extra={},
+        )
+        await rail.before_tool_call(recovery)  # type: ignore[arg-type]
+        assert recovery.extra == {}
+        assert recovery.inputs.tool_result is None
 
 
 @pytest.mark.asyncio

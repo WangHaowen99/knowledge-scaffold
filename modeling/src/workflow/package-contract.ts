@@ -6,7 +6,7 @@ import {
   knowledgeMarkdownGenerationContract,
 } from './knowledge-markdown-contract.js';
 
-export const PACKAGE_CONTRACT_VERSION = 'package-contract-v2';
+export const PACKAGE_CONTRACT_VERSION = 'package-contract-v3';
 export const PACKAGE_FORMAT_VALIDATOR_VERSION = 'package-format-v2';
 export const PACKAGE_MANIFEST_KIND = 'ontology-package';
 export const PACKAGE_MANIFEST_SCHEMA_VERSION = '0.1';
@@ -57,6 +57,11 @@ export function packageGenerationContract() {
     validators: {
       packageFormat: PACKAGE_FORMAT_VALIDATOR_VERSION,
       knowledgeMarkdown: KNOWLEDGE_MARKDOWN_VALIDATOR_VERSION,
+      goalEvidence: 'goal-evidence-v2',
+      diagramEvidence: 'diagram-evidence-v2',
+      writeBoundary: 'write-boundary-v2',
+      interactionBoundary: 'interaction-boundary-v1',
+      confirmationBoundary: 'confirmation-boundary-v1',
     },
     manifest: {
       path: 'manifest.yaml',
@@ -92,9 +97,36 @@ export function packageGenerationContract() {
       },
     },
     markdown: knowledgeMarkdownGenerationContract(),
+    authoring: {
+      goalEvidence: {
+        path: '.modeling/goal.md',
+        invariants: [
+          '每个 evidence 中的 material token 必须完整出现在对应事实正文',
+          '正文中的每个 material token 也必须完整登记到 write_file.evidence',
+          '资料 id 只能出现在完整 material:<资料 id>#<原文锚点> token 内',
+        ],
+      },
+      diagramEvidence: {
+        pathPattern: 'diagrams/*.mmd',
+        invariants: [
+          '每个 evidence 中的 material token 必须出现在对应分区旁的 evidence 注释',
+          '多分区流程至少在两个关键分区分别标注真实原文位置',
+          '三个以上分区不能全部共用同一个原文位置',
+        ],
+      },
+      writePhases: {
+        '.modeling/goal.md': 'goal',
+        'diagrams/*': 'process',
+        'objects|operations|rules|metrics|mappings|manifest|index': 'knowledge',
+        'scripts/*': 'validation',
+      },
+    },
     confirmation: {
       maxAutomaticRepairRounds: 3,
       stopOnRepeatedFindingFingerprint: true,
+      repairRoundBoundary: 'model_call',
+      aggregateParallelFindings: true,
+      recoveryToolsRemainAvailable: ['delete_file', 'discard_rejected_candidate_changes'],
       rule: '候选必须通过完整确定性预检并保存校验回执后才能冻结并展示给用户确认',
     },
   };
